@@ -18,6 +18,13 @@
 레인 allowlist 정본: `config/mcp_lane_allowlists/` (`tool<TAB>basis` 보존).
 계약 테스트: `tests/mcp_server/test_lane_allowlist_contract.py` — 레인별 배정 프로필의 실제 등록 합집합 검증.
 등록 스냅샷: `tests/mcp_server/test_profile_tool_snapshot.py`; D 제거·C niche 관측: `docs/runbooks/mcp-surface-cleanup-20260905.md`.
+
+**live-* 전용 유닛 (task 975, 운영자 Q-87 A)**: `scripts/deploy-ncp-pull.sh` 가 `at-mcp-live-kr/-us/-crypto`
+(`MCP_PROFILE=live-kr/live-us/live-crypto`, 루프백 8773/8774/8775, 토큰 `MCP_LIVE_{KR,US,CRYPTO}_AUTH_TOKEN`)를
+다른 고정 유닛과 같은 digest 고정·교체 로그·롤백·#934 prune 규칙으로 배포한다. HAProxy 는 tailnet
+`100.122.100.56:8773-8775` 만 바인드하며 렌더 가드가 루프백·tailnet 외 bind 를 거부한다. live-* 프로필은
+네트워크 전송에서 토큰 없이 부팅하지 않는다. 세션 전환은 robin-prefect-automations `KR_LIVE_MCP_MODE`
+(기본 `shared` = 기존 동작) — 절차·롤백은 `docs/runbooks/live-mcp-servers.md`.
 Task 881의 `kis_mock_ledger_expire_day_orders`는 별도 registrar로
 hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에는 없으며
 스냅샷과 과거 감사 예외 테스트가 이 물리적 경계를 검증한다. DB-only 도구여도

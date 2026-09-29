@@ -1,6 +1,6 @@
 # NCP MCP blue/green deployment
 
-This runbook deploys the seven NCP MCP server instances behind a private HAProxy
+This runbook deploys the ten NCP MCP server instances behind a private HAProxy
 listener. It does not perform the client cutover: changing .mcp.json, restarting
 consumer sessions, retiring the Mac services, and changing Cloudflare routes are
 owned by the orchestrator.
@@ -19,6 +19,13 @@ bind 0.0.0.0. Its backend is the active main MCP color.
 | at-mcp-tradingcodex-execution | 8770 | tradingcodex_execution | MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN |
 | at-mcp-paper-001 | 8771 | hermes-paper-kis | MCP_PAPER_001_AUTH_TOKEN |
 | at-mcp-kiwoom | 8772 | kiwoom | MCP_KIWOOM_AUTH_TOKEN |
+| at-mcp-live-kr | 8773 | live-kr | MCP_LIVE_KR_AUTH_TOKEN |
+| at-mcp-live-us | 8774 | live-us | MCP_LIVE_US_AUTH_TOKEN |
+| at-mcp-live-crypto | 8775 | live-crypto | MCP_LIVE_CRYPTO_AUTH_TOKEN |
+
+The three live-* units (task 975) have their own desk runbook:
+live-mcp-servers.md (tokens, deploy, read-only smoke, session switch,
+rollback).
 
 All units run with host networking, but the Python server itself is explicitly
 bound to MCP_HOST=127.0.0.1, MCP_TYPE=streamable-http, MCP_PATH=/mcp, and
@@ -32,7 +39,7 @@ tailnet. The Kiwoom profile also requires a token for HTTP transports.
    /root/at-run/.env.api, invoke the script with
    AT_RUNTIME_ENV_FILE=/root/at-run/.env.api; the second established secret
    env file remains AT_SECRETS_ENV_FILE.
-2. Confirm all seven token names in the table are non-empty across the two
+2. Confirm all ten token names in the table are non-empty across the two
    --env-file inputs. Do not print their values. MCP_PAPER_001_AUTH_TOKEN
    and MCP_KIWOOM_AUTH_TOKEN are required before normal deployment.
 3. Remove the legacy default listener before HAProxy claims its port:
@@ -92,6 +99,9 @@ the orchestrator may cut over consumers.
 | tradingcodex execution | http://100.122.100.56:8770/mcp |
 | paper 001 | http://100.122.100.56:8771/mcp |
 | kiwoom | http://100.122.100.56:8772/mcp |
+| live-kr | http://100.122.100.56:8773/mcp |
+| live-us | http://100.122.100.56:8774/mcp |
+| live-crypto | http://100.122.100.56:8775/mcp |
 
 1. Update each .mcp.json entry to its table URL and
    headers.Authorization: Bearer $MCP_AUTH_TOKEN (use that profile's secret
