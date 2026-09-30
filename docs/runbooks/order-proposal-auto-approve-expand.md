@@ -988,9 +988,14 @@ the same symbol and `instrument_type`, `source == "kis"`,
 `is_stale_price is False` (strict; absent is not fresh), `data_state ==
 "fresh"`, and the price is finite and positive. Freshness rule as implemented
 by `get_quote`: during the KRX regular session the daily candle must be dated
-today (KST) *and* the session must be trading now; during an NXT session the
-price is the NXT orderbook overlay and must be at most 5 minutes old.
-Premarket, after close, holidays and prior-day candles are rejected. US is
+today (KST) *and* the session must be trading now; during an NXT session
+(including NXT premarket 08:00-08:50 and NXT after-market) the price is the
+NXT orderbook overlay and must be at most 5 minutes old. A KRX-only premarket
+base quote, after close with no fresh NXT overlay, holidays and prior-day
+candles are rejected. Limit: for the KRX regular session the proof is
+date-level — a fresh KIS daily-chart read of today's candle is trusted to
+carry the current price; it is not an intraday timestamp-age proof (only the
+NXT path has one). US is
 `market_unsupported` — its `get_quote` carries no `is_stale_price` and can
 fall back to Yahoo. The decision records `price_source`
 (`toss_preview` | `kis_quote_fallback`) and, on the fallback, `current_price`.
@@ -1020,10 +1025,26 @@ on. A second run, a wrong/seeded token, or a manual redispatch during the wait
 returns `failure_code=auto_approve_price_retry_superseded` and does nothing.
 The broker path is the unchanged `revalidate_and_submit`.
 
-**Honest limits.** A graceful shutdown during the wait cancels the task, which
-then sends the ordinary card (after consuming the marker) before propagating
-the cancellation. A hard kill (SIGKILL/OOM) during those 30 s leaves the
-proposal `proposed` with a `scheduled` marker and **no card**; recover it with
-`order_proposal_redispatch` (its dispatch state is still empty, so it is
-eligible). The fallback applies to the auto path only; the manual Telegram
+**Cancellation (graceful shutdown) at any point of the task is a handoff,
+never silence.** Revalidation commits nothing before the broker send, so a
+cancelled re-evaluation rolls back to the pre-retry rows and the database
+cannot tell "before the send" from "during it". An in-process witness
+(`PriceRetryProgress`) can: the eligibility gate runs strictly before any
+broker mutation and sets it the moment it returns eligible.
+
+* cancelled during the wait, or during a re-evaluation whose gate never
+  returned eligible → no order can exist → the ordinary card is sent (after
+  consuming the marker);
+* cancelled after the gate returned eligible → the broker leg may have
+  started → **no card and no re-run**; the marker becomes `abandoned`
+  (`abandoned_reason=cancelled_after_eligible`) and the operator gets the
+  Discord alert `auto_approve_price_retry_cancelled_after_eligible`, whose
+  action text is: do not redispatch; first check the broker order list /
+  reconcile, and redispatch only if no order exists.
+
+**Honest limits.** A hard kill (SIGKILL/OOM) during the task leaves the
+proposal `proposed` with a `scheduled` marker and **no card and no alert**;
+recover it with `order_proposal_redispatch` after checking the broker (its
+dispatch state is still empty, so it is eligible). The MCP lifespan does not
+drain these tasks; the cancellation handoff above is what covers shutdown. The fallback applies to the auto path only; the manual Telegram
 click, loss-cut confirmation and redispatch previews are unchanged.

@@ -21,6 +21,7 @@ import logging
 import secrets
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -118,6 +119,24 @@ PriceRetryScheduler = Callable[[uuid.UUID, str], None]
 # already took the proposal over, so the delayed retry did nothing.
 AUTO_APPROVE_PRICE_RETRY_SCHEDULED = "auto_approve_price_retry_scheduled"
 AUTO_APPROVE_PRICE_RETRY_SUPERSEDED = "auto_approve_price_retry_superseded"
+
+
+@dataclass(slots=True)
+class PriceRetryProgress:
+    """#1067: in-process witness of how far a delayed re-evaluation got.
+
+    Revalidation commits nothing before the broker send, so a cancelled retry
+    rolls back to exactly the pre-retry rows and the database cannot tell a
+    pre-send cancellation from one that interrupted a submit. This flag can:
+    the eligibility gate runs strictly before any broker mutation, and it is
+    set the moment the gate returns an eligible decision. While it is
+    ``False`` no order can have been sent, so handing the proposal to a human
+    card is safe; once ``True`` the broker leg may have started and the
+    cancellation is ambiguous.
+    """
+
+    eligible_decision_seen: bool = False
+
 
 _SOURCE_ASOF_ABSENT = object()
 _AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
@@ -1017,6 +1036,7 @@ async def dispatch_proposal(
     price_retry_scheduler: PriceRetryScheduler | None = None,
     price_retry_token: str | None = None,
     price_retry_card_only: bool = False,
+    price_retry_progress: PriceRetryProgress | None = None,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Auto-submit an eligible resting proposal, otherwise send for approval.
 
@@ -1031,6 +1051,9 @@ async def dispatch_proposal(
     a fresh preview, never schedules again, and sends the card as before if
     the price is still missing. ``price_retry_card_only`` skips the
     re-evaluation and sends the card (used when the wait is cancelled).
+    ``price_retry_progress`` lets the caller learn whether the gate ever
+    returned eligible, i.e. whether a cancelled re-run could have reached the
+    broker (see ``PriceRetryProgress``).
     """
     if price_retry_token is not None and not settings.ORDER_PROPOSALS_AUTO_APPROVE:
         # Auto approval was switched off during the wait: the retry may still
@@ -1301,6 +1324,10 @@ async def dispatch_proposal(
                     if not isinstance(fallback, PriceFallback):
                         fallback = PriceFallback.failed("quote_unavailable")
                     decision = evaluate(fallback)
+                if decision.eligible and price_retry_progress is not None:
+                    # Set before anything else can await: from here on the
+                    # caller must treat a cancellation as a possible send.
+                    price_retry_progress.eligible_decision_seen = True
                 record: dict[str, Any] = {
                     "rung_index": kwargs["rung"].rung_index,
                     "eligible": decision.eligible,
@@ -1578,6 +1605,7 @@ __all__ = [
     "APPROVAL_NOT_DISPATCHABLE_PREFIX",
     "AUTO_APPROVE_PRICE_RETRY_SCHEDULED",
     "AUTO_APPROVE_PRICE_RETRY_SUPERSEDED",
+    "PriceRetryProgress",
     "approval_not_dispatchable_failure_code",
     "dispatch_proposal",
     "is_price_retry_non_failure",

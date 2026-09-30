@@ -3391,6 +3391,43 @@ class OrderProposalsService:
         await self._repo.update_group(group, source_asof=source_asof)
         return True
 
+    async def abandon_auto_approve_price_retry(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        token: str,
+        reason: str,
+        now: datetime,
+    ) -> bool:
+        """#1067: retire a still-``scheduled`` retry that must not run again.
+
+        Used when the delayed re-evaluation was cancelled after its gate had
+        already returned eligible: the broker leg may have started, so neither
+        a re-run nor an automatic card is safe. Compare-and-swap on the exact
+        token; returns ``False`` (no write) if anything else owns the marker.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        marker = source_asof.get(AUTO_APPROVE_PRICE_RETRY_KEY)
+        if (
+            not token
+            or not isinstance(marker, dict)
+            or marker.get("state") != "scheduled"
+            or marker.get("token") != token
+        ):
+            return False
+        source_asof[AUTO_APPROVE_PRICE_RETRY_KEY] = {
+            **marker,
+            "state": "abandoned",
+            "abandoned_reason": reason,
+            "abandoned_at": now.isoformat(),
+        }
+        await self._repo.update_group(group, source_asof=source_asof)
+        return True
+
     async def record_auto_veto(
         self,
         proposal_id: uuid.UUID,

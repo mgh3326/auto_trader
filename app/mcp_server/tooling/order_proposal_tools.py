@@ -50,6 +50,7 @@ from app.services.order_proposals.buying_power import (
     default_buying_power_reader,
 )
 from app.services.order_proposals.dispatch import (
+    PriceRetryProgress,
     approval_window_failure_code,
     dispatch_proposal,
     is_price_retry_non_failure,
@@ -253,6 +254,11 @@ async def _alert_non_sent_dispatch(
 # the event loop cannot garbage-collect a pending task mid-wait.
 _PRICE_RETRY_TASKS: set[asyncio.Task[None]] = set()
 
+# #1067: operator alert code for a retry cancelled after its gate cleared.
+AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE = (
+    "auto_approve_price_retry_cancelled_after_eligible"
+)
+
 
 def _schedule_auto_approve_price_retry(proposal_id: uuid.UUID, token: str) -> None:
     """#1067: arm the single delayed re-evaluation and return immediately.
@@ -281,24 +287,81 @@ async def _run_auto_approve_price_retry(
     *,
     sleep: Any = asyncio.sleep,
 ) -> None:
+    """Own the retry for the task's whole lifetime, including cancellation.
+
+    A cancellation (graceful shutdown) at any point must end in a human
+    handoff, never silence: during the wait, or during a re-evaluation that
+    never cleared the gate, no order can exist, so the ordinary card is sent;
+    once the gate cleared, the broker leg may have started, so no card is
+    sent and the operator is alerted to verify the broker first.
+    """
     try:
         await sleep(AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS)
     except asyncio.CancelledError:
-        # Process shutdown during the wait: send the ordinary card now rather
-        # than leave the proposal without one, then honour the cancellation.
-        await _complete_auto_approve_price_retry(proposal_id, token, card_only=True)
+        await _hand_off_cancelled_price_retry(
+            proposal_id, token, broker_leg_possible=False
+        )
         raise
-    await _complete_auto_approve_price_retry(proposal_id, token, card_only=False)
+    progress = PriceRetryProgress()
+    try:
+        await _complete_auto_approve_price_retry(
+            proposal_id, token, card_only=False, progress=progress
+        )
+    except asyncio.CancelledError:
+        await _hand_off_cancelled_price_retry(
+            proposal_id,
+            token,
+            broker_leg_possible=progress.eligible_decision_seen,
+        )
+        raise
+
+
+async def _hand_off_cancelled_price_retry(
+    proposal_id: uuid.UUID, token: str, *, broker_leg_possible: bool
+) -> None:
+    try:
+        if not broker_leg_possible:
+            # Proven pre-send: the rolled-back retry left the marker
+            # ``scheduled``; the card-only path consumes it and sends the card.
+            await _complete_auto_approve_price_retry(proposal_id, token, card_only=True)
+            return
+        async with AsyncSessionLocal() as session:
+            await OrderProposalsService(session).abandon_auto_approve_price_retry(
+                proposal_id,
+                token=token,
+                reason="cancelled_after_eligible",
+                now=now_kst(),
+            )
+            await session.commit()
+        await _alert_non_sent_dispatch(
+            proposal_id,
+            dispatch_state="unknown",
+            dispatch_failure_code=AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE,
+        )
+    except Exception as exc:  # noqa: BLE001 - detached task; nothing to return to
+        logger.error(
+            "order_proposal_create.auto_approve_price_retry_handoff_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "broker_leg_possible": broker_leg_possible,
+                "exception_type": type(exc).__name__,
+            },
+        )
 
 
 async def _complete_auto_approve_price_retry(
-    proposal_id: uuid.UUID, token: str, *, card_only: bool
+    proposal_id: uuid.UUID,
+    token: str,
+    *,
+    card_only: bool,
+    progress: PriceRetryProgress | None = None,
 ) -> None:
     try:
         result = await _dispatch_after_proposal_commit(
             proposal_id,
             price_retry_token=token,
             price_retry_card_only=card_only,
+            price_retry_progress=progress,
         )
         await _approval_dispatch_payload(proposal_id, result)
     except Exception as exc:  # noqa: BLE001 - detached task; nothing to return to
@@ -316,6 +379,7 @@ async def _dispatch_after_proposal_commit(
     *,
     price_retry_token: str | None = None,
     price_retry_card_only: bool = False,
+    price_retry_progress: PriceRetryProgress | None = None,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Run dispatch/attempt-ledger work behind a closed post-commit boundary."""
     try:
@@ -342,6 +406,7 @@ async def _dispatch_after_proposal_commit(
                     ),
                     price_retry_token=price_retry_token,
                     price_retry_card_only=price_retry_card_only,
+                    price_retry_progress=price_retry_progress,
                 )
                 if not isinstance(
                     result, (TelegramDispatchResult, ApprovalWindowDecision)

@@ -22,6 +22,7 @@ from app.services.order_proposals.auto_approve_price_fallback import (
 from app.services.order_proposals.dispatch import (
     AUTO_APPROVE_PRICE_RETRY_SCHEDULED,
     AUTO_APPROVE_PRICE_RETRY_SUPERSEDED,
+    PriceRetryProgress,
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalDispatchState,
@@ -138,9 +139,11 @@ async def test_runner_waits_thirty_seconds_then_re_evaluates(monkeypatch):
 
     assert AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS == 30
     assert slept == [30]
-    assert completed == [
-        (PROPOSAL_ID, {"price_retry_token": "tok", "price_retry_card_only": False})
-    ]
+    [(proposal_id, kwargs)] = completed
+    assert proposal_id == PROPOSAL_ID
+    assert kwargs["price_retry_token"] == "tok"
+    assert kwargs["price_retry_card_only"] is False
+    assert isinstance(kwargs["price_retry_progress"], PriceRetryProgress)
 
 
 @pytest.mark.unit
@@ -163,7 +166,13 @@ async def test_cancelled_wait_sends_card_only_then_propagates(monkeypatch):
         await order_proposal_tools._run_auto_approve_price_retry(
             PROPOSAL_ID, "tok", sleep=cancelled_sleep
         )
-    assert completed == [{"price_retry_token": "tok", "price_retry_card_only": True}]
+    assert completed == [
+        {
+            "price_retry_token": "tok",
+            "price_retry_card_only": True,
+            "price_retry_progress": None,
+        }
+    ]
 
 
 @pytest.mark.unit
@@ -229,3 +238,105 @@ async def test_deferred_card_is_not_alerted_as_a_delivery_failure(
     assert bool(alerts) is alerted
     assert ("operator_alert" in payload) is alerted
     assert payload["failure_code"] == result.failure_code
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_during_re_evaluation_before_gate_hands_off_to_card(
+    monkeypatch,
+):
+    """Tester r1 B1: cancellation after the wait, before any eligible gate."""
+    calls: list[dict] = []
+    alerts: list[dict] = []
+
+    async def fake_sleep(_seconds):
+        return None
+
+    async def fake_dispatch(proposal_id, **kwargs):
+        calls.append(kwargs)
+        if not kwargs["price_retry_card_only"]:
+            # e.g. cancelled while awaiting the fallback quote read
+            raise asyncio.CancelledError
+        return _result(ApprovalDispatchState.SENT_CURRENT)
+
+    async def fake_alert(proposal_id, **kwargs):
+        alerts.append(kwargs)
+        return {"state": "sent"}
+
+    monkeypatch.setattr(
+        order_proposal_tools, "_dispatch_after_proposal_commit", fake_dispatch
+    )
+    monkeypatch.setattr(order_proposal_tools, "_alert_non_sent_dispatch", fake_alert)
+
+    with pytest.raises(asyncio.CancelledError):
+        await order_proposal_tools._run_auto_approve_price_retry(
+            PROPOSAL_ID, "tok", sleep=fake_sleep
+        )
+
+    assert [c["price_retry_card_only"] for c in calls] == [False, True]
+    assert alerts == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_after_eligible_gate_alerts_and_never_sends_a_card(
+    monkeypatch,
+):
+    """Once the gate cleared, the broker leg may have started: no card."""
+    calls: list[dict] = []
+    alerts: list[dict] = []
+    abandoned: list[dict] = []
+
+    async def fake_sleep(_seconds):
+        return None
+
+    async def fake_dispatch(proposal_id, **kwargs):
+        calls.append(kwargs)
+        kwargs["price_retry_progress"].eligible_decision_seen = True
+        raise asyncio.CancelledError  # e.g. mid broker submit
+
+    async def fake_alert(proposal_id, **kwargs):
+        alerts.append(kwargs)
+        return {"state": "sent"}
+
+    class _Service:
+        def __init__(self, _session):
+            pass
+
+        async def abandon_auto_approve_price_retry(self, proposal_id, **kwargs):
+            abandoned.append({"proposal_id": proposal_id, **kwargs})
+            return True
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(
+        order_proposal_tools, "_dispatch_after_proposal_commit", fake_dispatch
+    )
+    monkeypatch.setattr(order_proposal_tools, "_alert_non_sent_dispatch", fake_alert)
+    monkeypatch.setattr(order_proposal_tools, "OrderProposalsService", _Service)
+    monkeypatch.setattr(order_proposal_tools, "AsyncSessionLocal", _Session)
+
+    with pytest.raises(asyncio.CancelledError):
+        await order_proposal_tools._run_auto_approve_price_retry(
+            PROPOSAL_ID, "tok", sleep=fake_sleep
+        )
+
+    assert len(calls) == 1  # no card-only follow-up
+    assert [a["token"] for a in abandoned] == ["tok"]
+    assert abandoned[0]["reason"] == "cancelled_after_eligible"
+    assert alerts == [
+        {
+            "dispatch_state": "unknown",
+            "dispatch_failure_code": (
+                order_proposal_tools.AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE
+            ),
+        }
+    ]

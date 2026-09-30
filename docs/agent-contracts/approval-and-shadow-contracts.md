@@ -199,6 +199,9 @@ fresh 아님), `data_state == "fresh"`, 유한 양수 가격. US 는 `market_uns
 - 🔴 재평가는 dispatch advisory lock 아래 토큰 CAS 로 marker 를 소비해야만 진행하고
   (카드 발행·승인 흔적이 있으면 no-op), 절대 재스케줄하지 않는다. 여전히 없으면
   기존 카드 + `price_context_message`·`price_fallback_reason` 보존.
+- 🔴 재평가 task 취소(graceful shutdown)는 침묵 금지: 게이트가 eligible 을 반환하기 전이면
+  카드 발송, 반환한 뒤면(브로커 leg 불명확) 카드·재실행 없이 marker `abandoned` + 운영자
+  알림(`auto_approve_price_retry_cancelled_after_eligible`, 브로커 확인 전 재발송 금지).
 - **런북**: `docs/runbooks/order-proposal-auto-approve-expand.md` §11 (SIGKILL 시
   카드 미발행 한계 포함)
 

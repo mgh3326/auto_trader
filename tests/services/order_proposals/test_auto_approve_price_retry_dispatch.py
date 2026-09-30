@@ -6,6 +6,7 @@ and the run-owned test database. No broker socket is opened.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,7 @@ from app.services.order_proposals.auto_approve_price_fallback import (
 from app.services.order_proposals.dispatch import (
     AUTO_APPROVE_PRICE_RETRY_SCHEDULED,
     AUTO_APPROVE_PRICE_RETRY_SUPERSEDED,
+    PriceRetryProgress,
     dispatch_proposal,
     is_price_retry_non_failure,
     send_proposal_for_approval,
@@ -693,3 +695,254 @@ async def test_real_revalidation_retry_submits_to_broker_exactly_once(db_session
     assert len(submits) == 1
     _refreshed, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "resting"
+
+
+# ---------------------------------------------------------------------------
+# Tester r1 B1: cancellation during the re-evaluation must end in a handoff
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_progress_witness_is_set_only_by_an_eligible_gate(db_session):
+    service, group = await _create_case(db_session)
+    notifier = _Notifier()
+    rejected = PriceRetryProgress()
+    token = await _first_pass_deferred(
+        db_session,
+        service,
+        group,
+        notifier,
+        _FakeRevalidate([_preview_without_price()]),
+    )
+    # A retry that is rejected again never clears the gate.
+    await _dispatch(
+        db_session,
+        group,
+        notifier,
+        _FakeRevalidate([_preview_without_price()]),
+        price_fallback_fn=_Fallback(PriceFallback.failed("quote_stale")),
+        price_retry_token=token,
+        price_retry_progress=rejected,
+    )
+    assert rejected.eligible_decision_seen is False
+
+    _service2, other = await _create_case(db_session)
+    eligible = PriceRetryProgress()
+    await _dispatch(
+        db_session,
+        other,
+        _Notifier(),
+        _FakeRevalidate([_preview_with_price()]),
+        price_retry_progress=eligible,
+    )
+    assert eligible.eligible_decision_seen is True
+
+
+@pytest.mark.asyncio
+async def test_abandon_retires_the_marker_so_no_retry_or_card_can_follow(
+    db_session,
+):
+    service, group = await _create_case(db_session)
+    notifier = _Notifier()
+    token = await _first_pass_deferred(
+        db_session,
+        service,
+        group,
+        notifier,
+        _FakeRevalidate([_preview_without_price()]),
+    )
+
+    assert (
+        await service.abandon_auto_approve_price_retry(
+            group.proposal_id, token="wrong", reason="cancelled_after_eligible", now=NOW
+        )
+        is False
+    )
+    assert (
+        await service.abandon_auto_approve_price_retry(
+            group.proposal_id, token=token, reason="cancelled_after_eligible", now=NOW
+        )
+        is True
+    )
+    await db_session.commit()
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    marker = refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]
+    assert marker["state"] == "abandoned"
+    assert marker["abandoned_reason"] == "cancelled_after_eligible"
+
+    async def must_not_revalidate(**_kwargs):
+        raise AssertionError("an abandoned retry must never run")
+
+    for card_only in (False, True):
+        replay = await _dispatch(
+            db_session,
+            group,
+            notifier,
+            must_not_revalidate,
+            price_retry_token=token,
+            price_retry_card_only=card_only,
+        )
+        assert replay.failure_code == AUTO_APPROVE_PRICE_RETRY_SUPERSEDED
+    assert notifier.sent == []
+
+
+def test_ambiguous_cancellation_alert_forbids_redispatch_before_broker_check():
+    from app.services.order_proposals.alerts import _recommended_action
+
+    action = _recommended_action("auto_approve_price_retry_cancelled_after_eligible")
+    assert action.startswith("재발송 금지")
+    assert "브로커" in action
+
+
+def _real_runner_seam(monkeypatch, *, notifier, revalidate, fallback, alerts):
+    """Drive the REAL runner -> post-commit boundary -> dispatch_proposal.
+
+    Only the broker/quote/notifier edges are fakes; sessions are independent
+    ``AsyncSessionLocal`` sessions so a cancelled transaction really rolls
+    back, exactly as in the MCP process.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.mcp_server.tooling import order_proposal_tools as tools
+    from app.monitoring.trade_notifier import notifier as notifier_module
+
+    real_dispatch = dispatch_module.dispatch_proposal
+
+    async def seam(proposal_id, **kwargs):
+        kwargs.update(now=NOW, now_fn=lambda: NOW)
+        return await real_dispatch(
+            proposal_id,
+            **kwargs,
+            service_factory=AsyncSessionLocal,
+            revalidate_fn=revalidate,
+            window_evaluator=allow_known_session,
+            price_fallback_fn=fallback,
+        )
+
+    async def record_alert(proposal_id, **kwargs):
+        alerts.append(kwargs)
+        return {"state": "sent"}
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(notifier_module, "get_trade_notifier", lambda: notifier)
+    monkeypatch.setattr(tools, "dispatch_proposal", seam)
+    monkeypatch.setattr(tools, "_alert_non_sent_dispatch", record_alert)
+    return tools, AsyncSessionLocal
+
+
+async def _instant_sleep(seconds):
+    assert seconds == 30
+
+
+@pytest.mark.asyncio
+async def test_real_runner_cancelled_before_gate_sends_the_card(
+    monkeypatch, db_session
+):
+    service, group = await _create_case(db_session)
+    notifier = _Notifier()
+    token = await _first_pass_deferred(
+        db_session,
+        service,
+        group,
+        notifier,
+        _FakeRevalidate([_preview_without_price()]),
+    )
+    await db_session.commit()
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    async def hanging_quote(**_kwargs):
+        entered.set()
+        await never.wait()
+
+    alerts: list[dict] = []
+    revalidate = _FakeRevalidate([_preview_without_price()])
+    tools, session_local = _real_runner_seam(
+        monkeypatch,
+        notifier=notifier,
+        revalidate=revalidate,
+        fallback=hanging_quote,
+        alerts=alerts,
+    )
+
+    task = asyncio.create_task(
+        tools._run_auto_approve_price_retry(
+            group.proposal_id, token, sleep=_instant_sleep
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    async with session_local() as fresh:
+        refreshed, rungs = await OrderProposalsService(fresh).get_proposal(
+            group.proposal_id
+        )
+    assert revalidate.submits == 0
+    assert alerts == []
+    assert notifier.sent and "주문 제안 승인" in notifier.sent[0][0]
+    assert rungs[0].state == "pending_approval"
+    assert refreshed.approval_dispatch_state == "sent_current"
+    assert refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]["state"] == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_real_runner_cancelled_after_eligible_gate_alerts_without_card(
+    monkeypatch, db_session
+):
+    service, group = await _create_case(db_session)
+    notifier = _Notifier()
+    token = await _first_pass_deferred(
+        db_session,
+        service,
+        group,
+        notifier,
+        _FakeRevalidate([_preview_without_price()]),
+    )
+    await db_session.commit()
+    in_submit = asyncio.Event()
+    never = asyncio.Event()
+
+    async def revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        decision = await eligibility_gate(
+            group=fresh_group, rung=rungs[0], preview=_preview_without_price(), now=now
+        )
+        assert decision.eligible is True
+        in_submit.set()
+        await never.wait()  # cancelled while the broker leg is in flight
+
+    alerts: list[dict] = []
+    tools, session_local = _real_runner_seam(
+        monkeypatch,
+        notifier=notifier,
+        revalidate=revalidate,
+        fallback=_Fallback(PriceFallback.observed(Decimal("33800"))),
+        alerts=alerts,
+    )
+
+    task = asyncio.create_task(
+        tools._run_auto_approve_price_retry(
+            group.proposal_id, token, sleep=_instant_sleep
+        )
+    )
+    await asyncio.wait_for(in_submit.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    async with session_local() as fresh:
+        refreshed, _rungs = await OrderProposalsService(fresh).get_proposal(
+            group.proposal_id
+        )
+    assert notifier.sent == []  # never a card on an ambiguous leg
+    assert alerts == [
+        {
+            "dispatch_state": "unknown",
+            "dispatch_failure_code": tools.AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE,
+        }
+    ]
+    marker = refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]
+    assert marker["state"] == "abandoned"
+    assert marker["abandoned_reason"] == "cancelled_after_eligible"
+    assert refreshed.approval_dispatch_state is None

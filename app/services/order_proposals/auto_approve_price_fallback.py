@@ -14,10 +14,13 @@ This module supplies a *substitute input*, never a relaxed gate:
   ``data_state == "fresh"`` and a finite positive price.  Freshness rule, as
   implemented by ``get_quote``: a KRX regular-session quote is fresh when its
   candle date is today's KST trading date *and* the KRX regular session is
-  trading right now (``kr_market_data_state``); during an NXT session the
-  quote is the NXT orderbook overlay and is fresh only if that orderbook is
-  at most 5 minutes old (``ORDERBOOK_ASOF_MAX_AGE_S148_N5``).  Anything else
-  -- premarket, after close, holiday, a prior-day candle -- is rejected.
+  trading right now (``kr_market_data_state``); during an NXT session
+  (NXT premarket included) the quote is the NXT orderbook overlay and is
+  fresh only if that orderbook is at most 5 minutes old
+  (``ORDERBOOK_ASOF_MAX_AGE_S148_N5``).  Anything else -- a KRX-only
+  premarket base quote, after close without a fresh NXT overlay, holiday, a
+  prior-day candle -- is rejected.  The KRX regular-session proof is
+  date-level (a fresh read of today's candle), not an intraday age proof.
 * ``fetch_kis_quote_fallback`` bounds the read with a timeout and turns every
   failure into a closed reason code.  Only ``equity_kr`` is supported: the US
   ``get_quote`` path carries no ``is_stale_price`` flag and can fall back to
