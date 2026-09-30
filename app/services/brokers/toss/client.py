@@ -315,9 +315,17 @@ class TossReadClient:
     # symbols param ^[A-Za-z0-9_,]+$.
     # ------------------------------------------------------------------
 
-    _KR_SYMBOL_RE = re.compile(r"^[A-Za-z0-9.\-]+$")
-    _UNTIL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-    _INDICATOR_SYMBOLS_RE = re.compile(r"^[A-Za-z0-9_,]+$")
+    _KR_SYMBOL_RE = re.compile(r"[A-Za-z0-9.\-]+", re.ASCII)
+    _UNTIL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", re.ASCII)
+    _INDICATOR_SYMBOLS_RE = re.compile(r"[A-Za-z0-9_]+(?:,[A-Za-z0-9_]+)*", re.ASCII)
+
+    @classmethod
+    def _check_kr_symbol(cls, symbol: str) -> None:
+        # Charset allowlist (spec KrSymbol pattern) plus a dot-segment guard:
+        # all-dot/hyphen values like ".." would be normalized into the URL
+        # path by httpx. fullmatch so a trailing newline cannot smuggle past.
+        if not cls._KR_SYMBOL_RE.fullmatch(symbol) or not symbol.strip(".-"):
+            raise ValueError(f"Invalid Toss KR symbol: {symbol!r}")
 
     @classmethod
     def _check_count(cls, count: int) -> None:
@@ -328,7 +336,7 @@ class TossReadClient:
 
     @classmethod
     def _check_until(cls, until: str | None) -> None:
-        if until is not None and not cls._UNTIL_DATE_RE.match(until):
+        if until is not None and not cls._UNTIL_DATE_RE.fullmatch(until):
             raise ValueError("Toss until cursor must be YYYY-MM-DD")
 
     async def stock_investor_trading(
@@ -346,8 +354,7 @@ class TossReadClient:
         ``until`` to continue pagination. Same-day records are provisional and
         may carry null sections.
         """
-        if not self._KR_SYMBOL_RE.match(symbol):
-            raise ValueError(f"Invalid Toss KR symbol: {symbol!r}")
+        self._check_kr_symbol(symbol)
         self._check_count(count)
         self._check_until(until)
         params: dict[str, Any] = {"count": count}
@@ -405,7 +412,7 @@ class TossReadClient:
         KR_BOND_*), max 200 per request.
         """
         symbols_param = self._symbols_param(symbols)
-        if not self._INDICATOR_SYMBOLS_RE.match(symbols_param):
+        if not self._INDICATOR_SYMBOLS_RE.fullmatch(symbols_param):
             raise ValueError(
                 f"Invalid Toss market-indicator symbols: {symbols_param!r}"
             )

@@ -1141,15 +1141,19 @@ async def test_stock_investor_trading_validates_symbol_until_and_count() -> None
         for bad_symbol in (
             "../accounts",
             "../",
+            "..",
+            ".",
+            "-",
             "%2F",
             "005930%2F..",
             "005930?x=1",
             "005930/investor-trading",
+            "005930\n",
             "",
         ):
             with pytest.raises(ValueError, match="symbol"):
                 await client.stock_investor_trading(bad_symbol)
-        for bad_until in ("junk", "2026-7-1", "20260731"):
+        for bad_until in ("junk", "2026-7-1", "20260731", "2026-07-31\n"):
             with pytest.raises(ValueError, match="YYYY-MM-DD"):
                 await client.stock_investor_trading("005930", until=bad_until)
         for bad_count in (True, 10.5, "50"):
@@ -1176,6 +1180,10 @@ async def test_market_indicator_prices_rejects_bad_symbols_param() -> None:
             await client.market_indicator_prices(["KOSPI", "../x"])
         with pytest.raises(ValueError, match="symbols"):
             await client.market_indicator_prices(["KOSPI?a=1"])
+        with pytest.raises(ValueError, match="symbols"):
+            await client.market_indicator_prices(["KOSPI", ""])
+        with pytest.raises(ValueError, match="symbols"):
+            await client.market_indicator_prices(["KOSPI\n"])
     finally:
         await client.aclose()
 
