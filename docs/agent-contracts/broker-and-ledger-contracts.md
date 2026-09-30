@@ -202,7 +202,7 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 ### KIS live KR ledger lots — get_holdings opt-in (#963)
 
 `get_holdings(include_ledger_lots=True)` (default `False`, default output byte-identical — golden test) attaches a read-only `ledger_lots`
-block to KIS live KR positions so a live session can use KIS lots and KIS own-open-buy evidence **without** a KIS broker order read.
+block to KIS live KR positions so a live session can use KIS lots and KIS own-open-buy / own-open-sell evidence **without** a KIS broker order read.
 The #678 harness denial of `kis_live_get_order_history` is unchanged and is asserted by test; no live.yaml, lane allowlist or robin
 allowlist change exists because `get_holdings` is already live-kr core.
 
@@ -221,11 +221,26 @@ allowlist change exists because `get_holdings` is already live-kr core.
 - **same_day_sell_evidence**: 당일(KST) 매도 체결(authoritative + authoritative 가 덮지 않는 provisional websocket 행, `provisional` 플래그)이 있거나 reconcile 이 stale/없으면 `blocking=true`.
   strategy-lab 판정(hk #963 comment 796/798): 보이는 반대방향 신호가 하나라도 있으면 그날 미배치, 없으면 caveat `kis_same_day_sell_chain_unverified` 부착. 오늘 이후 날짜로 찍힌 행(writer 시계 skew)은
   fail-closed 로 '오늘'로 취급한다(`open_buy_evidence`·`same_day_sell_evidence` 공통).
+- **매도측 증거 (task #1087, #1044 운영자 Q-107=A)** — 같은 블록에 DB-only 로 추가되며 KIS 호출·circuit breaker 접촉·신규 도구·LIVE_ALLOWED_TOOLS 변경이 없다.
+  - **open_sell_evidence**: `open_buy_evidence` 의 매도 쌍둥이. 당일(KST) `review.kis_live_order_ledger` 비터미널 **sell** 행이면 `own_nonterminal_sell_order_today`,
+    당일 매도 체결(authoritative + authoritative 가 덮지 않는 provisional websocket 행) 중 주문 완료가 원장으로 증명되지 않은 것이면 `same_day_sell_fill_order_not_proven_complete`,
+    reconcile 없음·90분 초과 stale·주문원장 읽기 실패면 `open_sell_evidence_unknown` — 모두 `blocking=true`. `state` 는 `known|unknown`, `scope="orders_known_to_auto_trader_only"`,
+    `external_orders_verifiable=false`. 전일 이전 비터미널 매도는 `presumed_dead_prior_day_sells` 로 보고만 한다. `own_open_sell_order_quantity` 는 당일 비터미널 자기 매도의
+    **주문 수량**(미체결 잔량이 아님 — 보수적) 합이며 unknown 이면 `null`.
+  - **same_day_buy_evidence**: `same_day_sell_evidence` 의 매수 쌍둥이. 당일(KST) 매수 체결(opening seed 제외, provisional 포함·`provisional` 플래그)이 있으면
+    `same_day_buy_fill_in_ledger`, reconcile stale/없음이면 `same_day_buy_evidence_unknown` — 매도의 same-day chain / wash 판정용 반대방향 시야.
+  - **sellable_by_ledger** (+ `sellable_by_ledger_basis`): `ledger_state=known`(fresh·브로커 수량과 순수량 일치) **AND** `open_sell_evidence.state=known` **AND** 모든 당일 자기
+    비터미널 매도에 수량이 있을 때만 `원장 순수량 − own_open_sell_order_quantity` 를 `[0, 브로커 수량]` 으로 clamp 한 값, 그 외는 `null` + `unknown_reasons`
+    (`ledger_state_unknown`/`open_sell_evidence_unknown`/`own_open_sell_quantity_unknown`). provisional websocket 행은 절대 이 수량에 들어가지 않는다.
+    🔴 이 값은 **상한이지 허가가 아니다** — 게이트는 `open_sell_evidence`·`same_day_buy_evidence` 둘 다 non-blocking.
+  - 후속 운영자 프롬프트 PR 이 쓸 caveat 이름: `kis_external_open_orders_unverified`(auto_trader 밖 미체결 매도 불가시), `kis_same_day_buy_chain_unverified`
+    (auto_trader 밖 당일 매수는 체결 전까지 불가시). 이 PR 은 프롬프트·`live/CLAUDE.md` 를 바꾸지 않는다.
 - 🔴 **`external_orders_verifiable` 는 항상 `false`**: KIS 앱/HTS 등 auto_trader 밖에서 낸 **미체결** 주문은 어떤 DB 읽기로도 보이지 않는다. 이 블록의 통과는
   "부재 증명"이 아니라 "auto_trader 가 아는 범위에 미체결 없음"이다. 운영자 승인 Q-81(#964)=A: 그 잔여는 caveat `kis_external_open_orders_unverified` 로 기록한다.
 - **실패 격리**: 블록의 어떤 실패도 `get_holdings` 를 실패시키지 않는다 — 포지션마다 `ledger_state="unknown"`, `unknown_reasons=["ledger_read_failed"]`.
 - **테스트**: `tests/services/execution_ledger/test_kis_lots.py`(순수), `test_kis_lots_db.py`(테스트 DB), `tests/mcp_server/test_get_holdings_ledger_lots.py`(golden·opt-in·격리),
-  `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678).
+  `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678), #1087 매도측: `test_kis_lots_sell_evidence.py`(순수·90분 경계·KST 자정·clamp),
+  `test_kis_lots_sell_evidence_db.py`(테스트 DB·KIS client/HTTP 트랩으로 무호출 단언·get_holdings end-to-end).
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 

@@ -63,7 +63,12 @@ def fill(
 
 
 def order(
-    oid: int, status: str, when: datetime, order_no: str | None = None
+    oid: int,
+    status: str,
+    when: datetime,
+    order_no: str | None = None,
+    *,
+    side: str = "buy",
 ) -> OrderRow:
     return OrderRow(
         id=oid,
@@ -72,6 +77,7 @@ def order(
         quantity=D("5"),
         price=D("1000"),
         trade_date=when,
+        side=side,
     )
 
 

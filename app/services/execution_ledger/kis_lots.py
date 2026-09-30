@@ -33,6 +33,14 @@ Two questions, both answered fail-closed:
   ``external_orders_verifiable`` is always ``False``: an order placed outside
   auto_trader (KIS app/HTS) and not yet filled is invisible here by
   construction. That residual is a recorded caveat, not a proof of absence.
+* **Own open sell evidence (task #1087, the sell-side twin).** Same-KST-day
+  non-terminal *sell* rows in the order ledger, same-day sell fills whose order
+  the order ledger has not proven complete, and ``same_day_buy_evidence`` (the
+  opposite-side view for a sell). ``sellable_by_ledger`` is the known lot net
+  minus the order quantity of own non-terminal sells today, clamped to
+  ``[0, broker quantity]``; it is ``None`` whenever any input is unknown. It is
+  a ceiling, not a permission: the gate is ``open_sell_evidence`` and
+  ``same_day_buy_evidence`` both non-blocking.
 
 The #678 harness denial of ``kis_live_get_order_history`` is untouched: nothing
 here calls a KIS order read.
@@ -97,6 +105,17 @@ BLOCK_SAME_DAY_FILL = "same_day_buy_fill_order_not_proven_complete"
 BLOCK_EVIDENCE_UNKNOWN = "open_buy_evidence_unknown"
 BLOCK_SAME_DAY_SELL_FILL = "same_day_sell_fill_in_ledger"
 BLOCK_SELL_EVIDENCE_UNKNOWN = "same_day_sell_evidence_unknown"
+# Task #1087 — sell-side twins.
+BLOCK_OWN_OPEN_SELL = "own_nonterminal_sell_order_today"
+BLOCK_SAME_DAY_SELL_FILL_UNPROVEN = "same_day_sell_fill_order_not_proven_complete"
+BLOCK_OPEN_SELL_EVIDENCE_UNKNOWN = "open_sell_evidence_unknown"
+BLOCK_SAME_DAY_BUY_FILL_IN_LEDGER = "same_day_buy_fill_in_ledger"
+BLOCK_BUY_EVIDENCE_UNKNOWN = "same_day_buy_evidence_unknown"
+
+SELLABLE_METHOD = "ledger_net_minus_own_open_sell_orders_today"
+SELLABLE_UNKNOWN_LEDGER_STATE = "ledger_state_unknown"
+SELLABLE_UNKNOWN_OPEN_SELL_EVIDENCE = "open_sell_evidence_unknown"
+SELLABLE_UNKNOWN_OPEN_SELL_QUANTITY = "own_open_sell_quantity_unknown"
 
 FreshnessState = Literal["fresh", "stale", "missing"]
 
@@ -116,7 +135,7 @@ class LedgerFill:
 
 @dataclass(frozen=True, slots=True)
 class OrderRow:
-    """Projection of one ``review.kis_live_order_ledger`` buy row."""
+    """Projection of one ``review.kis_live_order_ledger`` buy or sell row."""
 
     id: int
     order_no: str | None
@@ -124,6 +143,7 @@ class OrderRow:
     quantity: Decimal | None
     price: Decimal | None
     trade_date: datetime
+    side: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +370,8 @@ def _open_buy_evidence(
     prior_day_dead: list[OrderRow] = []
     resolved_order_ids: set[str] = set()
     for order in orders or ():
+        if order.side != "buy":
+            continue
         terminal = order.status in TERMINAL_ORDER_STATUSES
         if _from_today_kst(order.trade_date, now):
             if not terminal:
@@ -430,6 +452,166 @@ def _same_day_sell_evidence(
     }
 
 
+def _open_sell_evidence(
+    *,
+    fills: Sequence[LedgerFill],
+    orders: Sequence[OrderRow] | None,
+    freshness: Freshness,
+    now: datetime,
+) -> dict[str, Any]:
+    """Task #1087 — own non-terminal sells / same-day sell fills. Unknown => blocking.
+
+    The sell-side twin of ``_open_buy_evidence``: a same-KST-day non-terminal
+    own sell row, a same-day sell fill whose order the order ledger has not
+    proven terminal (authoritative, or a provisional websocket row no
+    authoritative row covers), a stale/missing reconcile or an unreadable order
+    ledger each block. ``own_open_sell_order_quantity`` sums the *order*
+    quantity (not the unfilled remainder) of today's non-terminal own sells, so
+    it can only overstate what is already committed; it is ``None`` when the
+    evidence is unknown or any such order has no quantity.
+    """
+    unknown: list[str] = []
+    if freshness.state == "missing":
+        unknown.append(UNKNOWN_NO_RECONCILE_RUN)
+    elif freshness.state == "stale":
+        unknown.append(UNKNOWN_LEDGER_STALE)
+    if orders is None:
+        unknown.append(UNKNOWN_ORDER_LEDGER_READ_FAILED)
+
+    open_sells: list[OrderRow] = []
+    prior_day_dead: list[OrderRow] = []
+    resolved_order_ids: set[str] = set()
+    for order in orders or ():
+        if order.side != "sell":
+            continue
+        terminal = order.status in TERMINAL_ORDER_STATUSES
+        if _from_today_kst(order.trade_date, now):
+            if not terminal:
+                open_sells.append(order)
+            elif order.order_no:
+                resolved_order_ids.add(_norm_order_id(order.order_no))
+        elif not terminal:
+            prior_day_dead.append(order)
+
+    authoritative, provisional, _ = _split_provisional(fills)
+    unproven_fills = [
+        f
+        for f in (*authoritative, *provisional)
+        if f.source != "manual_import"
+        and f.side == "sell"
+        and _from_today_kst(f.filled_at, now)
+        and _norm_order_id(f.broker_order_id) not in resolved_order_ids
+    ]
+
+    open_quantity: Decimal | None = None
+    if not unknown and all(
+        o.quantity is not None and o.quantity >= 0 for o in open_sells
+    ):
+        open_quantity = sum(
+            (o.quantity for o in open_sells if o.quantity is not None), Decimal("0")
+        )
+
+    reasons: list[str] = []
+    if unknown:
+        reasons.append(BLOCK_OPEN_SELL_EVIDENCE_UNKNOWN)
+    if open_sells:
+        reasons.append(BLOCK_OWN_OPEN_SELL)
+    if unproven_fills:
+        reasons.append(BLOCK_SAME_DAY_SELL_FILL_UNPROVEN)
+    return {
+        "state": "unknown" if unknown else "known",
+        "unknown_reasons": unknown,
+        "blocking": bool(reasons),
+        "blocking_reasons": reasons,
+        "kis_live_order_ledger_open_sells": [_order_view(o) for o in open_sells],
+        "own_open_sell_order_quantity": _fmt(open_quantity),
+        "same_day_sell_fills_unproven_complete": [
+            _fill_view(f) for f in unproven_fills
+        ],
+        "presumed_dead_prior_day_sells": [_order_view(o) for o in prior_day_dead],
+        "scope": "orders_known_to_auto_trader_only",
+        "external_orders_verifiable": False,
+        "_open_quantity": open_quantity,
+    }
+
+
+def _same_day_buy_evidence(
+    *, fills: Sequence[LedgerFill], freshness: Freshness, now: datetime
+) -> dict[str, Any]:
+    """Task #1087 — same-KST-day buy fills (the opposite-side view for a sell).
+
+    The twin of ``_same_day_sell_evidence``: any same-day buy fill in the ledger
+    (authoritative, or a provisional websocket row no authoritative row covers)
+    blocks, and an unverifiable ledger blocks too. Opening seeds are position
+    snapshots, not buys. Buys placed outside auto_trader are visible here only
+    once they fill.
+    """
+    unknown: list[str] = []
+    if freshness.state == "missing":
+        unknown.append(UNKNOWN_NO_RECONCILE_RUN)
+    elif freshness.state == "stale":
+        unknown.append(UNKNOWN_LEDGER_STALE)
+    authoritative, provisional, _ = _split_provisional(fills)
+    buys = [
+        f
+        for f in (*authoritative, *provisional)
+        if f.source != "manual_import"
+        and f.side == "buy"
+        and _from_today_kst(f.filled_at, now)
+    ]
+    reasons: list[str] = []
+    if unknown:
+        reasons.append(BLOCK_BUY_EVIDENCE_UNKNOWN)
+    if buys:
+        reasons.append(BLOCK_SAME_DAY_BUY_FILL_IN_LEDGER)
+    return {
+        "state": "unknown" if unknown else "known",
+        "unknown_reasons": unknown,
+        "blocking": bool(reasons),
+        "blocking_reasons": reasons,
+        "fills": [_fill_view(f) for f in buys],
+        "scope": "orders_known_to_auto_trader_only",
+    }
+
+
+def _sellable_by_ledger(
+    *,
+    known: bool,
+    net: Decimal,
+    reference_quantity: Decimal | None,
+    open_sell: dict[str, Any],
+) -> tuple[Decimal | None, dict[str, Any]]:
+    """Task #1087 — known lot net minus own open sell orders, clamped to [0, broker].
+
+    ``None`` unless the lot projection is known (fresh, reconciling with the
+    broker quantity) AND the open-sell evidence is known with a quantity for
+    every own open sell. Provisional websocket rows never reach ``net``.
+    """
+    reasons: list[str] = []
+    if not known:
+        reasons.append(SELLABLE_UNKNOWN_LEDGER_STATE)
+    if open_sell["state"] != "known":
+        reasons.append(SELLABLE_UNKNOWN_OPEN_SELL_EVIDENCE)
+    elif open_sell["_open_quantity"] is None:
+        reasons.append(SELLABLE_UNKNOWN_OPEN_SELL_QUANTITY)
+    open_quantity: Decimal | None = open_sell["_open_quantity"]
+    value: Decimal | None = None
+    clamped = False
+    if not reasons and open_quantity is not None and reference_quantity is not None:
+        raw = net - open_quantity
+        value = min(max(raw, Decimal("0")), reference_quantity, net)
+        clamped = value != raw
+    return value, {
+        "state": "known" if value is not None else "unknown",
+        "unknown_reasons": reasons,
+        "method": SELLABLE_METHOD,
+        "ledger_net_quantity": _fmt(net) if known else None,
+        "own_open_sell_order_quantity": _fmt(open_quantity),
+        "reference_quantity": _fmt(reference_quantity),
+        "clamped": clamped,
+    }
+
+
 def build_symbol_block(
     *,
     symbol: str,
@@ -502,6 +684,17 @@ def build_symbol_block(
                 (current_price - weighted_cost) / weighted_cost * Decimal("100")
             )
 
+    open_sell = _open_sell_evidence(
+        fills=fills, orders=orders, freshness=freshness, now=now
+    )
+    sellable, sellable_basis = _sellable_by_ledger(
+        known=known,
+        net=net,
+        reference_quantity=reference_quantity,
+        open_sell=open_sell,
+    )
+    open_sell_public = {k: v for k, v in open_sell.items() if not k.startswith("_")}
+
     return {
         "source": "execution_ledger",
         "symbol": symbol,
@@ -546,6 +739,12 @@ def build_symbol_block(
         "same_day_sell_evidence": _same_day_sell_evidence(
             fills=fills, freshness=freshness, now=now
         ),
+        "open_sell_evidence": open_sell_public,
+        "same_day_buy_evidence": _same_day_buy_evidence(
+            fills=fills, freshness=freshness, now=now
+        ),
+        "sellable_by_ledger": _fmt(sellable),
+        "sellable_by_ledger_basis": sellable_basis,
     }
 
 
@@ -592,6 +791,39 @@ def unknown_block(symbol: str, reason: str) -> dict[str, Any]:
             "fills": [],
             "scope": "orders_known_to_auto_trader_only",
         },
+        "open_sell_evidence": {
+            "state": "unknown",
+            "unknown_reasons": [reason],
+            "blocking": True,
+            "blocking_reasons": [BLOCK_OPEN_SELL_EVIDENCE_UNKNOWN],
+            "kis_live_order_ledger_open_sells": [],
+            "own_open_sell_order_quantity": None,
+            "same_day_sell_fills_unproven_complete": [],
+            "presumed_dead_prior_day_sells": [],
+            "scope": "orders_known_to_auto_trader_only",
+            "external_orders_verifiable": False,
+        },
+        "same_day_buy_evidence": {
+            "state": "unknown",
+            "unknown_reasons": [reason],
+            "blocking": True,
+            "blocking_reasons": [BLOCK_BUY_EVIDENCE_UNKNOWN],
+            "fills": [],
+            "scope": "orders_known_to_auto_trader_only",
+        },
+        "sellable_by_ledger": None,
+        "sellable_by_ledger_basis": {
+            "state": "unknown",
+            "unknown_reasons": [
+                SELLABLE_UNKNOWN_LEDGER_STATE,
+                SELLABLE_UNKNOWN_OPEN_SELL_EVIDENCE,
+            ],
+            "method": SELLABLE_METHOD,
+            "ledger_net_quantity": None,
+            "own_open_sell_order_quantity": None,
+            "reference_quantity": None,
+            "clamped": False,
+        },
     }
 
 
@@ -616,7 +848,8 @@ async def load_kis_live_kr_lot_blocks(
 
     Raises on a failed fills/reconcile-run read (the caller degrades every
     position to ``ledger_state="unknown"``). A failed order-ledger read only
-    degrades ``open_buy_evidence`` to unknown for all symbols.
+    degrades ``open_buy_evidence`` and ``open_sell_evidence`` (hence
+    ``sellable_by_ledger``) to unknown for all symbols.
     """
     moment = now or datetime.now(UTC)
     symbols = sorted({ref.symbol for ref in refs})
@@ -666,7 +899,7 @@ async def load_kis_live_kr_lot_blocks(
                     select(KISLiveOrderLedger)
                     .where(KISLiveOrderLedger.broker == "kis")
                     .where(KISLiveOrderLedger.account_mode == "kis_live")
-                    .where(KISLiveOrderLedger.side == "buy")
+                    .where(KISLiveOrderLedger.side.in_(("buy", "sell")))
                     .where(KISLiveOrderLedger.symbol.in_(symbols))
                     .where(
                         KISLiveOrderLedger.trade_date
@@ -688,6 +921,7 @@ async def load_kis_live_kr_lot_blocks(
                     quantity=to_decimal(row.quantity),
                     price=to_decimal(row.price),
                     trade_date=row.trade_date,
+                    side=row.side,
                 )
             )
     except Exception:  # noqa: BLE001 — read-only evidence degrades, never raises
