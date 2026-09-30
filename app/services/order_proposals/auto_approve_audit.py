@@ -41,6 +41,11 @@ _MAX_ATTEMPTS = 8
 _MAX_RUNGS_PER_ATTEMPT = 16
 _MAX_TAG_MATCHES_PER_RUNG = 12
 _MAX_CAP_OBSERVATIONS = 16
+# #1053: the Toss preview's ``price_context_message`` is the one bounded
+# diagnostic string this projection stores -- whitespace-collapsed and
+# truncated, so a runaway broker error body cannot bloat the JSONB row or
+# smuggle a payload past this boundary.
+_MAX_PRICE_CONTEXT_MESSAGE_LEN = 200
 # This is an audit retention vocabulary, intentionally not the classifier's
 # approval-blocking set. §156차 removed ``table_disagreement`` from eligibility
 # only; retaining it here preserves safe projections of historical rows and
@@ -251,6 +256,17 @@ def _safe_missing_inputs(value: Any) -> list[str]:
     return [field for field in value if field in _MISSING_INPUT_FIELDS]
 
 
+def _safe_price_context_message(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+    if len(normalized) > _MAX_PRICE_CONTEXT_MESSAGE_LEN:
+        return normalized[: _MAX_PRICE_CONTEXT_MESSAGE_LEN - 1] + "…"
+    return normalized
+
+
 def _safe_tag_matches(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
@@ -326,6 +342,9 @@ def _safe_inputs_from_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
         inputs["tags"] = tags
     if matches:
         inputs["tag_matches"] = matches
+    message = _safe_price_context_message(decision.get("price_context_message"))
+    if message is not None:
+        inputs["price_context_message"] = message
     return inputs
 
 

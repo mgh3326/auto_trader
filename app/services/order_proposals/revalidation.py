@@ -1128,6 +1128,12 @@ async def _apply_eligibility_gate(
         eligible = False
         reason = "eligibility_error"
         details = {"error": str(exc)}
+        # #1053: the preview ran, so keep its diagnostic on the outcome for the
+        # dispatch fallback row -- the gate never returned a decision to carry
+        # it. The audit projector bounds it before storage.
+        price_context = preview.get("price_context_message")
+        if isinstance(price_context, str) and price_context.strip():
+            details["price_context_message"] = price_context
     if eligible is True:
         return None
     await service.transition_rung(proposal_id, rung_index, new_state="pending_approval")

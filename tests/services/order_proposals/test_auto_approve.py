@@ -21,13 +21,21 @@ from app.services.order_proposals.auto_approve import (
     limits_for_market,
 )
 from app.services.order_proposals.auto_approve_audit import (
+    _MAX_PRICE_CONTEXT_MESSAGE_LEN,
     append_auto_approve_rejection_attempt,
     project_auto_approve_cap_observations,
     project_auto_approve_rejections,
 )
+from app.services.order_proposals.dispatch import (
+    _unrecorded_revalidation_fallbacks,
+)
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     build_proposal_dispatch_binding,
+)
+from app.services.order_proposals.revalidation import (
+    RungOutcome,
+    _apply_eligibility_gate,
 )
 from app.services.order_proposals.service import RungInput
 
@@ -2190,3 +2198,320 @@ async def test_daily_notional_reuses_durable_execution_price_cap_observation(
     assert await service.auto_approved_daily_notional(probe, now=now) == Decimal(
         "2000000"
     )
+
+
+# ---------------------------------------------------------------------------
+# #1053 — rejection audit keeps the Toss preview price_context_message
+# ---------------------------------------------------------------------------
+#
+# Desk incident (035720 card ffb19fa0, 09:13): auto-approve rejected
+# ``price_or_quantity_missing`` on ``current_price`` after a transient
+# ``client.prices`` failure inside the Toss preview. The preview emitted the
+# diagnostic ``price_context_message`` (orders_toss_variants.py:
+# ``_preview_price_context`` -> ``response["price_context_message"]``) but the
+# rejection record kept only the reason code, so the transient cause was
+# unprovable after the fact.
+
+_PRICE_CONTEXT_MESSAGE = "Failed to retrieve current price for 035720: boom"
+
+
+def _flatten_decision(decision, rung_index=0):
+    """Mirror dispatch's eligibility-gate closure exactly."""
+    return {
+        "rung_index": rung_index,
+        "eligible": decision.eligible,
+        "reason": decision.reason,
+        **decision.details,
+    }
+
+
+def _stored_source_asof(decisions):
+    source_asof = append_auto_approve_rejection_attempt(
+        {},
+        decisions=decisions,
+        now=datetime(2026, 9, 30, 9, 13, tzinfo=UTC),
+    )
+    # Round-trip through JSON as the JSONB column would.
+    return json.loads(json.dumps(source_asof))
+
+
+def _decide_price_missing(preview):
+    return evaluate_auto_approve_eligibility(
+        group=_group(),
+        rung=_rung(),
+        preview=preview,
+        limits=_LIMITS,
+        daily_notional=Decimal("0"),
+    )
+
+
+def test_price_missing_rejection_stores_preview_price_context_message():
+    """The incident row: missing current_price with a transient cause."""
+    decision = _decide_price_missing(
+        {"success": True, "price_context_message": _PRICE_CONTEXT_MESSAGE}
+    )
+
+    assert (decision.eligible, decision.reason) == (False, "price_or_quantity_missing")
+    assert decision.details["price_context_message"] == _PRICE_CONTEXT_MESSAGE
+
+    [attempt] = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(decision)])
+    )
+    [rung] = attempt["rungs"]
+    assert rung["reason_code"] == "price_or_quantity_missing"
+    assert rung["inputs"]["missing_inputs"] == ["current_price"]
+    assert rung["inputs"]["price_context_message"] == _PRICE_CONTEXT_MESSAGE
+
+
+def test_price_missing_rejection_without_message_stores_nothing_new():
+    decision = _decide_price_missing({"success": True})
+
+    assert (decision.eligible, decision.reason) == (False, "price_or_quantity_missing")
+    assert "price_context_message" not in decision.details
+
+    [attempt] = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(decision)])
+    )
+    inputs = attempt["rungs"][0]["inputs"]
+    assert inputs["missing_inputs"] == ["current_price"]
+    assert "price_context_message" not in inputs
+
+
+def test_oversize_price_context_message_is_truncated_to_fixed_bound():
+    oversized = "Failed to retrieve current price for 035720: " + "x" * 400
+    decision = _decide_price_missing(
+        {"success": True, "price_context_message": oversized}
+    )
+
+    [attempt] = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(decision)])
+    )
+    stored = attempt["rungs"][0]["inputs"]["price_context_message"]
+    normalized = " ".join(oversized.split())
+    assert stored == normalized[: _MAX_PRICE_CONTEXT_MESSAGE_LEN - 1] + "…"
+    assert len(stored) == _MAX_PRICE_CONTEXT_MESSAGE_LEN
+
+
+def test_price_context_message_is_whitespace_normalized_and_bounded():
+    messy = "\n  Failed to retrieve   current price \t for 035720 \n"
+    decision = _decide_price_missing(
+        {"success": True, "price_context_message": messy}
+    )
+
+    [attempt] = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(decision)])
+    )
+    stored = attempt["rungs"][0]["inputs"]["price_context_message"]
+    assert stored == "Failed to retrieve current price for 035720"
+
+
+def test_non_string_or_blank_price_context_message_is_dropped():
+    for bad in ({"raw": "payload"}, ["not", "a", "string"], "   ", 42):
+        decision = _decide_price_missing(
+            {"success": True, "price_context_message": bad}
+        )
+        assert "price_context_message" not in decision.details
+        [attempt] = project_auto_approve_rejections(
+            _stored_source_asof([_flatten_decision(decision)])
+        )
+        assert "price_context_message" not in attempt["rungs"][0]["inputs"]
+
+
+def test_only_the_message_string_is_stored_no_preview_payload_leak():
+    """A preview carrying broker-shaped payloads must not leak them."""
+    preview = {
+        "success": True,
+        "price_context_message": _PRICE_CONTEXT_MESSAGE,
+        "raw_response": {"headers": {"authorization": "Bearer SECRET-TOKEN-1"}},
+        "orderbook": {"asks": [["101", "5"]]},
+        "warnings": ["price_context_unavailable"],
+    }
+    decision = _decide_price_missing(preview)
+
+    source_asof = _stored_source_asof([_flatten_decision(decision)])
+    blob = json.dumps(source_asof)
+    assert "SECRET-TOKEN-1" not in blob
+    assert "raw_response" not in blob
+    assert "orderbook" not in blob
+    assert "price_context_unavailable" not in blob
+
+    [attempt] = project_auto_approve_rejections(source_asof)
+    inputs = attempt["rungs"][0]["inputs"]
+    assert inputs["price_context_message"] == _PRICE_CONTEXT_MESSAGE
+
+
+def test_price_context_message_does_not_change_the_eligibility_decision():
+    without = _decide_price_missing({"success": True})
+    with_ = _decide_price_missing(
+        {"success": True, "price_context_message": _PRICE_CONTEXT_MESSAGE}
+    )
+
+    assert (with_.eligible, with_.reason) == (without.eligible, without.reason)
+    stripped = {
+        key: value
+        for key, value in with_.details.items()
+        if key != "price_context_message"
+    }
+    assert stripped == without.details
+
+    stored_with = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(with_)])
+    )[0]["rungs"][0]
+    stored_without = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(without)])
+    )[0]["rungs"][0]
+    assert stored_with["reason_code"] == stored_without["reason_code"]
+    assert {
+        key: value
+        for key, value in stored_with["inputs"].items()
+        if key != "price_context_message"
+    } == stored_without["inputs"]
+
+
+def test_eligible_decision_never_carries_the_message():
+    """An approval never records the diagnostic, even if a preview shows one."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_group(),
+        rung=_rung(),
+        preview={
+            "success": True,
+            "current_price": "100000",
+            "price_context_message": "stale diagnostic",
+        },
+        limits=_LIMITS,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is True
+    assert "price_context_message" not in decision.details
+
+
+def test_eligibility_error_fallback_row_keeps_preview_message():
+    """A gate exception still had a preview: the fallback row keeps its message."""
+    outcomes = [
+        RungOutcome(
+            0,
+            "approval_required",
+            {
+                "reason": "eligibility_error",
+                "error": "gate boom",
+                "price_context_message": _PRICE_CONTEXT_MESSAGE,
+            },
+        )
+    ]
+    fallbacks = _unrecorded_revalidation_fallbacks(
+        outcomes=outcomes,
+        decisions=[],
+        policy_version="test-policy",
+        pending_count=1,
+    )
+
+    assert len(fallbacks) == 1
+    [attempt] = project_auto_approve_rejections(_stored_source_asof(fallbacks))
+    inputs = attempt["rungs"][0]["inputs"]
+    assert attempt["rungs"][0]["reason_code"] == "eligibility_error"
+    assert inputs["eligibility_error"] is True
+    assert inputs["price_context_message"] == _PRICE_CONTEXT_MESSAGE
+
+
+def test_fallback_row_without_preview_message_stays_unchanged():
+    outcomes = [
+        RungOutcome(
+            0,
+            "approval_required",
+            {"reason": "eligibility_error", "error": "gate boom"},
+        )
+    ]
+    fallbacks = _unrecorded_revalidation_fallbacks(
+        outcomes=outcomes,
+        decisions=[],
+        policy_version="test-policy",
+        pending_count=1,
+    )
+    [attempt] = project_auto_approve_rejections(_stored_source_asof(fallbacks))
+    assert "price_context_message" not in attempt["rungs"][0]["inputs"]
+
+
+@pytest.mark.asyncio
+async def test_gate_exception_outcome_detail_carries_preview_message():
+    """``_apply_eligibility_gate`` keeps the diagnostic when the gate raises."""
+
+    class _Service:
+        def __init__(self):
+            self.transitions = []
+
+        async def transition_rung(self, proposal_id, rung_index, new_state):
+            self.transitions.append((proposal_id, rung_index, new_state))
+
+    async def _broken_gate(**kwargs):
+        raise RuntimeError("boom")
+
+    outcome = await _apply_eligibility_gate(
+        service=_Service(),
+        group=_group(proposal_id=uuid.uuid4()),
+        rung=_rung(),
+        preview={"success": True, "price_context_message": _PRICE_CONTEXT_MESSAGE},
+        now=datetime.now(UTC),
+        eligibility_gate=_broken_gate,
+    )
+
+    assert outcome is not None
+    assert outcome.result == "approval_required"
+    assert outcome.detail["reason"] == "eligibility_error"
+    assert outcome.detail["price_context_message"] == _PRICE_CONTEXT_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_gate_exception_without_preview_message_stays_clean():
+    class _Service:
+        async def transition_rung(self, proposal_id, rung_index, new_state):
+            return None
+
+    async def _broken_gate(**kwargs):
+        raise RuntimeError("boom")
+
+    outcome = await _apply_eligibility_gate(
+        service=_Service(),
+        group=_group(proposal_id=uuid.uuid4()),
+        rung=_rung(),
+        preview={"success": True},
+        now=datetime.now(UTC),
+        eligibility_gate=_broken_gate,
+    )
+
+    assert outcome.detail["reason"] == "eligibility_error"
+    assert "price_context_message" not in outcome.detail
+
+
+@pytest.mark.asyncio
+async def test_record_auto_approve_rejections_persists_message_in_jsonb(
+    db_session,
+):
+    """Service-level: the durable source_asof row holds the bounded message."""
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="035720",
+        market="equity_kr",
+        account_mode="toss_live",
+        broker_account_id="acct-1",
+        side="buy",
+        order_type="limit",
+        proposer="price-context-fixture",
+        thesis="1053 evidence",
+        rungs=[RungInput(0, "buy", Decimal("2"), Decimal("97000"), None)],
+    )
+    decision = _decide_price_missing(
+        {"success": True, "price_context_message": _PRICE_CONTEXT_MESSAGE}
+    )
+
+    await service.record_auto_approve_rejections(
+        group.proposal_id,
+        decisions=[_flatten_decision(decision)],
+        now=datetime(2026, 9, 30, 9, 13, tzinfo=UTC),
+    )
+    await db_session.commit()
+
+    stored_group, _rungs = await service.get_proposal(group.proposal_id)
+    rungs = stored_group.source_asof["auto_approve_rejections"][0]["rungs"]
+    assert rungs[0]["reason_code"] == "price_or_quantity_missing"
+    assert rungs[0]["inputs"]["price_context_message"] == _PRICE_CONTEXT_MESSAGE
