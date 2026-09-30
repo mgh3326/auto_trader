@@ -217,6 +217,11 @@ def _unrecorded_revalidation_fallbacks(
             inputs["eligibility_error"] = True
         elif reason == "multi_rung_requires_approval":
             inputs["pending_rung_count"] = str(pending_count)
+        # #1053: a gate exception still had a preview result; keep its
+        # diagnostic on the fallback row (bounded at write by the projector).
+        price_context = detail.get("price_context_message")
+        if isinstance(price_context, str) and price_context.strip():
+            inputs["price_context_message"] = price_context
         fallbacks.append(
             {
                 "rung_index": outcome.rung_index,
