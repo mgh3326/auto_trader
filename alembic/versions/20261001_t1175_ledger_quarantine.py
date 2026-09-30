@@ -67,7 +67,10 @@ DECLARE
     tombstone RECORD;
 BEGIN
     IF NEW.quarantined_at IS NULL AND NEW.source = 'websocket'
-        AND NEW.broker = 'kis' THEN
+        AND NEW.broker = 'kis'
+        AND NEW.raw_payload_json ->> 'tr' = 'H0STCNI0'
+        AND jsonb_typeof(NEW.raw_payload_json -> 'fields') = 'array'
+        AND btrim(NEW.raw_payload_json -> 'fields' ->> 13) = '1' THEN
         SELECT e.reason, e.actor INTO tombstone
         FROM review.execution_ledger_quarantine_events AS e
         WHERE e.broker = NEW.broker
@@ -200,9 +203,10 @@ def upgrade() -> None:
         "review.reject_execution_ledger_quarantine_event_mutation()"
     )
 
-    # Tombstone: a KIS websocket row re-inserted with a quarantined key (for
-    # example after a maintenance DELETE and a replayed phantom frame) is
-    # born quarantined, so the phantom fill can never come back.
+    # Tombstone: a KIS websocket row re-inserted with a quarantined key whose
+    # own stored frame is again an H0STCNI0 accept notice (CNTG_YN=1), for
+    # example after a maintenance DELETE and a replayed phantom frame, is born
+    # quarantined. A CNTG_YN=2 execution is never matched.
     op.execute(REQUARANTINE_FUNCTION_DDL)
     op.execute(
         "CREATE TRIGGER trg_execution_ledger_requarantine_insert "

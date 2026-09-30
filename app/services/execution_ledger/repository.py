@@ -17,6 +17,7 @@ from app.models.execution_ledger import (
     execution_ledger_in_effect,
 )
 from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
+from app.services.execution_ledger.accept_notice import is_accept_notice_frame
 
 UpsertStatus = Literal["inserted", "updated", "unchanged"]
 
@@ -133,6 +134,19 @@ class ExecutionLedgerRepository:
     ) -> tuple[UpsertStatus, int]:
         """Insert or update one fill by the broker idempotency key."""
         status = await self.classify_fill(fill)
+        if status == "updated" and await self.is_tombstoned_accept_notice(fill):
+            # #1175: a replayed phantom whose key was quarantined never
+            # rewrites the row that now holds the key (the quarantined phantom
+            # itself, or an authoritative fill written after a maintenance
+            # DELETE). Report it as a duplicate and change nothing.
+            existing = await self.get_by_key(
+                fill.broker,
+                fill.account_mode,
+                fill.venue,
+                fill.broker_order_id,
+                fill.fill_seq,
+            )
+            return "unchanged", int(existing.id) if existing else 0
         if status == "unchanged":
             existing = await self.get_by_key(
                 fill.broker,
@@ -165,6 +179,25 @@ class ExecutionLedgerRepository:
             # downstream notification suppressed.
             return "unchanged", int(row_id)
         return status, int(row_id)
+
+    async def is_tombstoned_accept_notice(self, fill: ExecutionLedgerUpsert) -> bool:
+        """#1175: a KIS websocket accept notice whose key was quarantined."""
+        if fill.source != "websocket" or fill.broker != "kis":
+            return False
+        if not is_accept_notice_frame(fill.raw_payload_json):
+            return False
+        result = await self.db.execute(
+            select(ExecutionLedgerQuarantineEvent.id)
+            .where(
+                ExecutionLedgerQuarantineEvent.broker == fill.broker,
+                ExecutionLedgerQuarantineEvent.account_mode == fill.account_mode,
+                ExecutionLedgerQuarantineEvent.venue == fill.venue,
+                ExecutionLedgerQuarantineEvent.broker_order_id == fill.broker_order_id,
+                ExecutionLedgerQuarantineEvent.fill_seq == fill.fill_seq,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def rows_by_ids(
         self, ids: list[int], *, for_update: bool

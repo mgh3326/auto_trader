@@ -149,3 +149,20 @@ def test_orm_constraint_names_match_the_migration() -> None:
     text = MIGRATION.read_text("utf-8")
     for name in events:
         assert f'"{name}"' in text, name
+
+
+def test_requarantine_trigger_requires_an_accept_notice_frame() -> None:
+    migration = _load_migration()
+    body = _norm(migration.REQUARANTINE_FUNCTION_DDL)
+    for clause in (
+        "NEW.source = 'websocket'",
+        "NEW.broker = 'kis'",
+        "NEW.raw_payload_json ->> 'tr' = 'H0STCNI0'",
+        "jsonb_typeof(NEW.raw_payload_json -> 'fields') = 'array'",
+        "btrim(NEW.raw_payload_json -> 'fields' ->> 13) = '1'",
+        "e.broker_order_id = NEW.broker_order_id",
+        "e.fill_seq = NEW.fill_seq",
+        "e.venue = NEW.venue",
+        "e.account_mode = NEW.account_mode",
+    ):
+        assert clause in body, clause

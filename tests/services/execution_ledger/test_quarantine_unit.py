@@ -293,3 +293,20 @@ def test_the_only_ledger_update_is_the_guarded_quarantine_set() -> None:
     assert "import sqlalchemy" not in service
     assert "from sqlalchemy import" not in service
     assert ".execute(" not in service
+
+
+def test_accept_notice_predicate_matches_the_eligibility_rule() -> None:
+    from app.services.execution_ledger.accept_notice import is_accept_notice_frame
+
+    assert is_accept_notice_frame(frame())
+    assert is_accept_notice_frame(frame(cntg_yn=" 1 "))
+    for raw in (
+        None,
+        {},
+        frame(cntg_yn="2"),
+        frame(cntg_yn=""),
+        frame(tr="H0STCNI9"),
+        {"tr": "H0STCNI0", "fields": frame_fields()[:13]},
+        {"tr": "H0STCNI0", "fields": [None] * 23},
+    ):
+        assert not is_accept_notice_frame(raw), raw

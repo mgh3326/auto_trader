@@ -127,7 +127,9 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v54 (#1175 r2): audit rows carry the idempotency key (create_all) and a BEFORE
 # INSERT trigger re-quarantines a KIS websocket row re-inserted with a
 # tombstoned key.
-SCHEMA_BOOTSTRAP_VERSION = 54
+# v55 (#1175 r3): the re-quarantine trigger also requires the new row's own
+# frame to be an H0STCNI0 accept notice (CNTG_YN=1).
+SCHEMA_BOOTSTRAP_VERSION = 55
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2061,7 +2063,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         tombstone RECORD;
     BEGIN
         IF NEW.quarantined_at IS NULL AND NEW.source = 'websocket'
-            AND NEW.broker = 'kis' THEN
+            AND NEW.broker = 'kis'
+            AND NEW.raw_payload_json ->> 'tr' = 'H0STCNI0'
+            AND jsonb_typeof(NEW.raw_payload_json -> 'fields') = 'array'
+            AND btrim(NEW.raw_payload_json -> 'fields' ->> 13) = '1' THEN
             SELECT e.reason, e.actor INTO tombstone
             FROM review.execution_ledger_quarantine_events AS e
             WHERE e.broker = NEW.broker

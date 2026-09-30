@@ -34,18 +34,16 @@ from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.execution_ledger.accept_notice import (
+    ACCEPT_NOTICE_TR,
+    CNTG_YN_ACCEPT,
+    CNTG_YN_FILL,
+    FIELD_CNTG_YN,
+    FIELD_ORDER_NO,
+    FIELD_SIDE,
+    FIELD_SYMBOL,
+)
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
-
-#: KIS domestic execution-notice TR (live). Mock/overseas frames are refused.
-ACCEPT_NOTICE_TR = "H0STCNI0"
-#: Field indices of a decrypted H0STCNI0 record (go-kis ``kis/ws`` layout).
-FIELD_ORDER_NO = 2
-FIELD_SIDE = 4
-FIELD_SYMBOL = 8
-FIELD_CNTG_YN = 13
-#: ``CNTG_YN`` values: 1 = order accept/confirm notice, 2 = execution (fill).
-CNTG_YN_ACCEPT = "1"
-CNTG_YN_FILL = "2"
 
 MAX_IDS = 50
 MAX_REASON_CHARS = 500

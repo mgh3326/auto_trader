@@ -8,6 +8,7 @@ deleted afterwards. Audit rows are append-only by design and are left behind
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -378,16 +379,15 @@ async def test_replayed_phantom_frame_stays_quarantined(db_session, rows) -> Non
     await db_session.commit()
     assert (status, row_id) == ("unchanged", ledger_id)
 
-    # a changed replay of the same key updates the row but never un-quarantines
+    before = await _snapshot(db_session, [ledger_id])
+    # a changed replay of a tombstoned accept notice never rewrites the row
     changed = ExecutionLedgerUpsert(
         **row_kwargs(symbol=symbol, order_no=order_no, filled_price="5100")
     )
     status, row_id = await ExecutionLedgerRepository(db_session).upsert_fill(changed)
     await db_session.commit()
-    assert (status, row_id) == ("updated", ledger_id)
-    state = await _snapshot(db_session, [ledger_id])
-    assert state[0][1] is not None
-    assert state[0][2] == REASON
+    assert (status, row_id) == ("unchanged", ledger_id)
+    assert await _snapshot(db_session, [ledger_id]) == before
 
 
 async def test_concurrent_commit_of_the_same_batch_quarantines_once(
@@ -495,3 +495,136 @@ async def test_tombstone_never_hides_an_authoritative_or_different_key_row(
     assert status == "inserted"
     [state] = await _snapshot(db_session, [other_id])
     assert state[1:4] == (None, None, None)
+
+
+# ------------------------------------ tombstone directed probes (tester r2)
+
+
+def _fill_frame_twin(fill: ExecutionLedgerUpsert) -> ExecutionLedgerUpsert:
+    """The same idempotency key carrying a CNTG_YN=2 (real execution) frame."""
+    raw = dict(fill.raw_payload_json or {})
+    fields = list(raw["fields"])
+    fields[13] = "2"
+    raw["fields"] = fields
+    return fill.model_copy(update={"raw_payload_json": raw, "filled_qty": Decimal("2")})
+
+
+@pytest.mark.parametrize("path", ["raw_insert", "commit_fill", "http_ingest"])
+async def test_every_insert_path_re_quarantines_the_same_phantom(
+    db_session, rows, monkeypatch, path: str
+) -> None:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from app.core.db import AsyncSessionLocal
+
+    symbol, order_no, _ = await _quarantined_then_deleted(db_session, rows)
+    fill = ExecutionLedgerUpsert(**row_kwargs(symbol=symbol, order_no=order_no))
+    notified: list[str] = []
+    if path == "raw_insert":
+        row_id = (
+            await db_session.execute(
+                pg_insert(ExecutionLedger)
+                .values(**fill.model_dump())
+                .returning(ExecutionLedger.id)
+            )
+        ).scalar_one()
+        await db_session.commit()
+        status = None
+    elif path == "commit_fill":
+        from app.services.execution_ledger.fill_ingest import commit_fill
+
+        status, row_id = await commit_fill(fill, session_factory=AsyncSessionLocal)
+    else:
+        from app.routers import execution_ledger_ingest as router
+        from app.schemas.execution_ledger_ingest import ExecutionLedgerFillIngestRequest
+        from app.services.execution_ledger.fill_ingest import (
+            DownstreamHooks,
+            run_post_upsert_downstream,
+        )
+
+        async def notify(*_args, **_kwargs):
+            notified.append("notify")
+
+        async def committed():
+            notified.append("committed")
+
+        async def downstream(**kwargs):
+            return await run_post_upsert_downstream(
+                **kwargs,
+                hooks=DownstreamHooks(
+                    send_fill_notification=notify, on_fill_committed=committed
+                ),
+            )
+
+        monkeypatch.setattr(router, "run_post_upsert_downstream", downstream)
+        response = await router.ingest_execution_ledger_fills(
+            ExecutionLedgerFillIngestRequest(
+                source="fillwire", fills=[fill.model_dump(mode="json")]
+            ),
+            db_session,
+        )
+        status, row_id = response.results[0].status, response.results[0].row_id
+    assert status in (None, "unchanged")
+    [state] = await _snapshot(db_session, [row_id])
+    assert (state[2], state[3]) == (REASON, ACTOR)
+    assert notified == []
+    assert not await ExecutionLedgerRepository(db_session).has_fill_for_order(
+        broker="kis", account_mode="live", venue="krx", broker_order_id=order_no
+    )
+
+
+async def test_real_cntg2_fill_on_a_tombstoned_key_is_never_hidden(
+    db_session, rows
+) -> None:
+    symbol, order_no, _ = await _quarantined_then_deleted(db_session, rows)
+    phantom = ExecutionLedgerUpsert(**row_kwargs(symbol=symbol, order_no=order_no))
+    genuine = _fill_frame_twin(phantom)
+    assert genuine.fill_seq == phantom.fill_seq  # forced key collision
+    repo = ExecutionLedgerRepository(db_session)
+    status, row_id = await repo.upsert_fill(genuine)
+    await db_session.commit()
+    assert status == "inserted"
+    [state] = await _snapshot(db_session, [row_id])
+    assert state[1:4] == (None, None, None)
+    assert await repo.has_fill_for_order(
+        broker="kis", account_mode="live", venue="krx", broker_order_id=order_no
+    )
+
+
+async def test_phantom_replay_never_rewrites_an_authoritative_row_on_its_key(
+    db_session, rows
+) -> None:
+    symbol, order_no, _ = await _quarantined_then_deleted(db_session, rows)
+    phantom = ExecutionLedgerUpsert(**row_kwargs(symbol=symbol, order_no=order_no))
+    authoritative = phantom.model_copy(
+        update={
+            "source": "reconciler",
+            "filled_qty": Decimal("10"),
+            "filled_notional": Decimal("50000"),
+            "raw_payload_json": {"authority": "synthetic broker fill evidence"},
+        }
+    )
+    repo = ExecutionLedgerRepository(db_session)
+    status, row_id = await repo.upsert_fill(authoritative)
+    await db_session.commit()
+    assert status == "inserted"
+    before = await _snapshot(db_session, [row_id])
+
+    status, replay_id = await repo.upsert_fill(phantom)
+    await db_session.commit()
+    assert (status, replay_id) == ("unchanged", row_id)
+    after = await _snapshot(db_session, [row_id])
+    assert after == before
+    assert after[0][6] == "reconciler"
+    assert after[0][5] == 10
+
+
+async def test_non_accept_frames_are_never_tombstone_matched(db_session, rows) -> None:
+    symbol, order_no, _ = await _quarantined_then_deleted(db_session, rows)
+    phantom = ExecutionLedgerUpsert(**row_kwargs(symbol=symbol, order_no=order_no))
+    repo = ExecutionLedgerRepository(db_session)
+    for raw in (None, {"tr": "H0STCNI9", "fields": phantom.raw_payload_json["fields"]}):
+        candidate = phantom.model_copy(update={"raw_payload_json": raw})
+        assert not await repo.is_tombstoned_accept_notice(candidate)
+    assert await repo.is_tombstoned_accept_notice(phantom)
+    await db_session.rollback()
