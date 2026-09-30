@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260928_task847_h5_state"
+HEAD_REVISION = "20260930_rob1120_quotes"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -124,6 +124,10 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.binance_h5_opportunities",
     "review.binance_h5_nav_samples",
     "krx_after_market_eligibility",
+    # #1120 quotes consumer tables are later than this reconstructed
+    # boundary; their append-only triggers arrive only via alembic.
+    "review.quotes_trigger_firings",
+    "review.ladder_touch_events",
 )
 
 

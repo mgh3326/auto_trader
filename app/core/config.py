@@ -686,6 +686,11 @@ class Settings(BaseSettings):
     # ROB-595: 비공식 토스 컨슈머 API (wts-info-api) 신호 — ToS 리뷰 전까지 비활성
     toss_consumer_signals_enabled: bool = False
 
+    # #1120 — records-only quotes:toss stream consumer (Q-109 = A shadow).
+    # Default off: the resident TaskIQ task returns without consuming until
+    # an operator sets this. No scheduler/unit ever registers it.
+    quotes_toss_consumer_enabled: bool = False
+
     # ROB-281 — Gates cron registration for KR/US screener snapshot scheduled refreshes.
     # When False, scheduled tasks remain defined as broker tasks (so operators can still
     # kick them manually via ``taskiq kick``) but no cron entries are registered. Pairs
@@ -1090,6 +1095,14 @@ class Settings(BaseSettings):
     # `order_proposal_expire_sweep`); recurrence is a separate decision after
     # manual reps, mirroring `toss_manual_activity_sweep_enabled` (ROB-866).
     order_proposal_expire_sweep_enabled: bool = False
+    # #1112: the 16:30 / 07:00 KST night sweep (stale `proposed` groups past
+    # valid_until -> expired, and KIS leftover resting DAY buy rungs ->
+    # expired[inference]). Records only; never reaches a broker. BOTH default
+    # off: `_enabled` gates the task body, `_schedule_enabled` gates whether the
+    # declared cron labels are attached at import (scheduler restart needed).
+    # Activation is the desk's decision, not this repo's.
+    order_proposal_night_sweep_enabled: bool = False
+    order_proposal_night_sweep_schedule_enabled: bool = False
 
     @property
     def order_proposals_telegram_chat_allowlist(self) -> list[str]:

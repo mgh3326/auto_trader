@@ -70,6 +70,9 @@ from app.services.order_proposals.errors import (
     OrderProposalUnsupportedTargetAction,
     OrderProposalVoidNotAuthorized,
 )
+from app.services.order_proposals.kis_leftover_inference import (
+    EXPIRED_INFERENCE_VOID_REASON,
+)
 from app.services.order_proposals.parking_allowlist import (
     is_parking_daily_cap_exempt,
     is_parking_exposure_symbol,
@@ -1294,6 +1297,69 @@ class OrderProposalsService:
         to remove.
         """
         return await self._repo.list_evidence_accepting_rungs()
+
+    async def list_active_side_groups(
+        self, *, market: str, side: str, symbol: str | None = None
+    ) -> list[tuple[OrderProposal, list[OrderProposalRung]]]:
+        """#1112 — every non-terminal group of one market/side, with rungs.
+
+        Read-only and unbounded: the 7-D blocking count must see every row.
+        """
+        groups = await self._repo.list_active_side_groups(
+            market=market, side=side, symbol=symbol
+        )
+        return [(g, await self._repo.list_rungs(g.id)) for g in groups]
+
+    async def list_rungs_by_void_reasons(
+        self,
+        *,
+        market: str,
+        side: str,
+        void_reasons: frozenset[str],
+        since: datetime,
+        symbol: str | None = None,
+    ) -> list[tuple[OrderProposal, OrderProposalRung]]:
+        """#1112 — rungs recently closed by the night sweep or by inference."""
+        self._require_timezone_aware(since)
+        return await self._repo.list_rungs_by_void_reasons(
+            market=market,
+            side=side,
+            void_reasons=void_reasons,
+            since=since,
+            symbol=symbol,
+        )
+
+    async def expire_resting_rung_by_inference(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        now: datetime,
+        still_eligible: Callable[[OrderProposal, OrderProposalRung], Awaitable[bool]],
+    ) -> OrderProposalRung | None:
+        """#1112 — close one ``resting`` rung as ``expired[inference]``.
+
+        The group row is locked FIRST and ``still_eligible`` re-derives the
+        verdict from fresh facts under that lock, so a fill booked between the
+        caller's plan and this write cannot be overwritten. Returns ``None``
+        (and writes nothing) unless the rung is still ``resting`` and the
+        re-check passes. The marker is fixed here, not caller-supplied, so a
+        broker-confirmed expiry can never be stamped as an inference and vice
+        versa. No broker is contacted.
+        """
+        self._require_timezone_aware(now)
+        group, rung = await self._get_locked_rung(proposal_id, rung_index)
+        if rung.state != "resting":
+            return None
+        if not await still_eligible(group, rung):
+            return None
+        return await self._transition_locked_rung(
+            group,
+            rung,
+            new_state="expired",
+            void_reason=EXPIRED_INFERENCE_VOID_REASON,
+            updated_at=now,
+        )
 
     async def transition_rung(
         self,
@@ -4343,7 +4409,10 @@ class OrderProposalsService:
         return swept
 
     async def list_expiry_candidates(
-        self, *, now: datetime
+        self,
+        *,
+        now: datetime,
+        lifecycle_states: frozenset[str] | None = None,
     ) -> list[tuple[OrderProposal, list[OrderProposalRung]]]:
         """Read-only preview of groups ``sweep_expired`` would act on (ROB-897).
 
@@ -4351,7 +4420,9 @@ class OrderProposalsService:
         skipped-count accounting -- never mutates.
         """
         self._require_timezone_aware(now)
-        candidate_ids = await self._repo.list_expiry_candidates(now=now)
+        candidate_ids = await self._repo.list_expiry_candidates(
+            now=now, lifecycle_states=lifecycle_states
+        )
         results: list[tuple[OrderProposal, list[OrderProposalRung]]] = []
         for proposal_id in candidate_ids:
             group = await self._repo.get_group_by_proposal_id(proposal_id)
@@ -4360,8 +4431,21 @@ class OrderProposalsService:
             results.append((group, await self._repo.list_rungs(group.id)))
         return results
 
-    async def sweep_expired(self, *, now: datetime) -> list[ExpirySweepResult]:
+    async def sweep_expired(
+        self,
+        *,
+        now: datetime,
+        lifecycle_states: frozenset[str] | None = None,
+        rung_states: frozenset[str] | None = None,
+        void_reason: str | None = None,
+    ) -> list[ExpirySweepResult]:
         """Batch-expire every non-terminal group whose ``valid_until`` has passed.
+
+        #1112: ``lifecycle_states``/``rung_states`` can only NARROW the sweep
+        (the night sweep passes ``proposed`` and the still-awaiting-a-human
+        rung states); ``rung_states`` is intersected with the voidable set, so
+        no caller can widen it. ``void_reason`` is recorded on every expired
+        rung so the sweep that cleared it is identifiable afterwards.
 
         ROB-897 cause (1) structural fix: ``expire_if_needed`` only ran from the
         Telegram approval callback, so a proposal nobody tapped stayed
@@ -4374,7 +4458,20 @@ class OrderProposalsService:
         force-expired, and one bad group must not abort the whole sweep.
         """
         self._require_timezone_aware(now)
-        candidate_ids = await self._repo.list_expiry_candidates(now=now)
+        expirable_rung_states = (
+            _VOIDABLE_RUNG_STATES
+            if rung_states is None
+            else _VOIDABLE_RUNG_STATES & rung_states
+        )
+        rung_audit: dict[str, Any] = {}
+        if void_reason is not None:
+            rung_audit = {
+                "void_reason": void_reason,
+                "void_reason_group": classify_rung_void_reason(void_reason),
+            }
+        candidate_ids = await self._repo.list_expiry_candidates(
+            now=now, lifecycle_states=lifecycle_states
+        )
         results: list[ExpirySweepResult] = []
         for proposal_id in candidate_ids:
             group = await self._repo.get_group_by_proposal_id(
@@ -4389,10 +4486,15 @@ class OrderProposalsService:
                 continue
             if group.lifecycle_state in _APPROVAL_TERMINAL_GROUP_STATES:
                 continue
+            if (
+                lifecycle_states is not None
+                and group.lifecycle_state not in lifecycle_states
+            ):
+                continue
 
             rungs = await self._repo.list_rungs(group.id)
             non_voidable_rung = next(
-                (rung for rung in rungs if rung.state not in _VOIDABLE_RUNG_STATES),
+                (rung for rung in rungs if rung.state not in expirable_rung_states),
                 None,
             )
             if non_voidable_rung is not None:
@@ -4409,7 +4511,9 @@ class OrderProposalsService:
             for rung in rungs:
                 sm.assert_rung_transition(rung.state, "expired")
                 expired_rungs.append(
-                    await self._repo.update_rung(rung, state="expired", updated_at=now)
+                    await self._repo.update_rung(
+                        rung, state="expired", updated_at=now, **rung_audit
+                    )
                 )
             await self._repo.update_group(
                 group,
