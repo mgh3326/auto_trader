@@ -418,6 +418,23 @@ class NHPlugMockLedger:
             )
             return result.rowcount == 1
 
+    async def withdraw_unclaimed_intent(
+        self, row_id: int, request_id: UUID, reason: str
+    ) -> bool:
+        """T2: release a reservation only while T3 has not claimed it."""
+
+        async with self.engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    "UPDATE review.nhplug_mock_order_ledger "
+                    "SET state='withdrawn', withdraw_reason=:reason "
+                    "WHERE id=:id AND client_request_id=:request "
+                    "AND state='intent' AND claim_token IS NULL"
+                ),
+                {"id": row_id, "request": request_id, "reason": reason},
+            )
+            return result.rowcount == 1
+
     async def fence(
         self, claim: Claim, *, lease_seconds: int = 120, lock_timeout_ms: int = 5000
     ) -> bool:
