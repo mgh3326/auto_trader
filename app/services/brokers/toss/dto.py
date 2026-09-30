@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -867,4 +868,135 @@ def parse_listed_stocks(raw: list[dict[str, Any]]) -> list[TossListedStock]:
     except _CONTRACT_FIELDS as exc:
         raise TossResponseContractError(
             "stocks/all payload violates the documented schema"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# #1086 strict 1-minute candle page (GET /api/v1/candles, interval=1m).
+#
+# Field names quote the official schemas verbatim (openapi.json v1.2.19):
+#   CandlePageResponse: required ``candles`` (array of Candle, newest first),
+#                       optional nullable ``nextBefore`` (date-time).
+#   Candle: required timestamp (date-time), openPrice, highPrice, lowPrice,
+#           closePrice, volume (decimal strings), currency.
+# The spec documents ``timestamp`` for 1m as the bar END: the bar aggregates
+# trades in ``[timestamp - 1 minute, timestamp)``. ``bar_start`` is derived,
+# never sent by the provider.
+#
+# The loose ``parse_candles`` above stays as-is for its existing consumers.
+# ---------------------------------------------------------------------------
+
+MINUTE_BAR_LENGTH_SECONDS = 60
+
+
+def _req_datetime(value: Any, field: str) -> datetime:
+    text = _req_str(value, field)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise TossResponseContractError(
+            f"'{field}' must be an ISO 8601 date-time"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise TossResponseContractError(f"'{field}' must carry a timezone offset")
+    return parsed
+
+
+@dataclass(frozen=True)
+class TossMinuteCandle:
+    """Candle for interval=1m. ``timestamp`` is the provider bar END time."""
+
+    timestamp: datetime
+    open_price: Decimal
+    high_price: Decimal
+    low_price: Decimal
+    close_price: Decimal
+    volume: Decimal
+    currency: str
+
+    @property
+    def bar_start(self) -> datetime:
+        """Derived start of ``[timestamp - 1 minute, timestamp)``."""
+        return self.timestamp - timedelta(seconds=MINUTE_BAR_LENGTH_SECONDS)
+
+    def same_values(self, other: TossMinuteCandle) -> bool:
+        return (
+            self.open_price == other.open_price
+            and self.high_price == other.high_price
+            and self.low_price == other.low_price
+            and self.close_price == other.close_price
+            and self.volume == other.volume
+            and self.currency == other.currency
+        )
+
+
+@dataclass(frozen=True)
+class TossMinuteCandlePage:
+    candles: list[TossMinuteCandle]
+    next_before: datetime | None
+    #: The raw ``nextBefore`` string, passed back verbatim as ``before``.
+    next_before_raw: str | None
+
+
+def _parse_minute_candle(raw: Any) -> TossMinuteCandle:
+    row = _req_map(raw, "candles[]")
+    timestamp = _req_datetime(row["timestamp"], "timestamp")
+    if timestamp.second != 0 or timestamp.microsecond != 0:
+        raise TossResponseContractError(
+            "candles: 1m 'timestamp' must be minute-aligned"
+        )
+    candle = TossMinuteCandle(
+        timestamp=timestamp,
+        open_price=_req_decimal(row["openPrice"], "openPrice"),
+        high_price=_req_decimal(row["highPrice"], "highPrice"),
+        low_price=_req_decimal(row["lowPrice"], "lowPrice"),
+        close_price=_req_decimal(row["closePrice"], "closePrice"),
+        volume=_req_decimal(row["volume"], "volume"),
+        currency=_req_str(row["currency"], "currency"),
+    )
+    if (
+        candle.volume < 0
+        or min(
+            candle.open_price, candle.high_price, candle.low_price, candle.close_price
+        )
+        < 0
+    ):
+        raise TossResponseContractError("candles: negative price or volume")
+    if candle.high_price < max(
+        candle.open_price, candle.close_price, candle.low_price
+    ) or candle.low_price > min(candle.open_price, candle.close_price):
+        raise TossResponseContractError("candles: OHLC invariant violated")
+    return candle
+
+
+def parse_minute_candle_page(raw: Any) -> TossMinuteCandlePage:
+    try:
+        body = _req_map(raw, "response")
+        rows = body["candles"]
+        if not isinstance(rows, list):
+            raise TossResponseContractError("candles: 'candles' must be a list")
+        candles = [_parse_minute_candle(row) for row in rows]
+        # Official ordering: newest first. Equal timestamps are left for the
+        # paginator to judge (identical duplicate vs conflicting duplicate).
+        for newer, older in zip(candles, candles[1:], strict=False):
+            if older.timestamp > newer.timestamp:
+                raise TossResponseContractError(
+                    "candles: page is not ordered newest-first"
+                )
+        next_before_raw = _opt_str(body.get("nextBefore"), "nextBefore")
+        next_before = (
+            _req_datetime(next_before_raw, "nextBefore")
+            if next_before_raw is not None
+            else None
+        )
+        return TossMinuteCandlePage(
+            candles=candles,
+            next_before=next_before,
+            next_before_raw=next_before_raw,
+        )
+    except TossResponseContractError:
+        raise
+    except _CONTRACT_FIELDS as exc:
+        raise TossResponseContractError(
+            "candles payload violates the documented schema"
         ) from exc
