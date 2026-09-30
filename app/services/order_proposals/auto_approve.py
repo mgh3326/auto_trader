@@ -662,8 +662,20 @@ def evaluate_auto_approve_eligibility(
     """
 
     base = {"policy_version": limits.policy_version}
+    # #1053: the Toss preview's own diagnostic for *why* a field came back
+    # empty (e.g. a transient client.prices failure that emptied
+    # current_price). It is evidence, never a gate input: reject() copies the
+    # string into decision details so the bounded audit projector can store it
+    # next to the rung record. Non-string/malformed values are dropped here.
+    price_context_message = (
+        preview.get("price_context_message") if isinstance(preview, dict) else None
+    )
+    if not isinstance(price_context_message, str) or not price_context_message.strip():
+        price_context_message = None
 
     def reject(reason: str, **details: Any) -> AutoApproveDecision:
+        if price_context_message is not None:
+            details["price_context_message"] = price_context_message
         return AutoApproveDecision(False, reason, {**base, **details})
 
     mode = limits.mode

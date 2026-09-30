@@ -280,6 +280,82 @@ async def reconcile(day: date | None = None) -> dict[str, Any]:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError, UnicodeError])
+async def test_missing_lease_identity_withdraws_t1_and_same_key_can_retry(
+    ops_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: type[Exception],
+) -> None:
+    suffix = "bhost_same_key_" + failure.__name__
+    fake = install(monkeypatch, ops_engine, suffix)
+    original = client_module.current_lease_identity
+
+    def missing_identity() -> None:
+        raise failure("unreadable machine identity")
+
+    monkeypatch.setattr(client_module, "current_lease_identity", missing_identity)
+    first = await place(fake, suffix)
+    assert first["success"] is False
+    assert first["status"] == "not_submitted"
+    assert first["sent"] is False
+    assert fake.orders == []
+    rows = await ledger_rows(ops_engine, fake.account_no)
+    assert len(rows) == 1 and rows[0]["state"] == "withdrawn"
+
+    monkeypatch.setattr(client_module, "current_lease_identity", original)
+    second = await place(fake, suffix)
+    assert second["status"] == "uncertain"
+    assert len(fake.orders) == 1
+    rows = await ledger_rows(ops_engine, fake.account_no)
+    assert [row["state"] for row in rows] == ["withdrawn", "uncertain"]
+
+
+@pytest.mark.asyncio
+async def test_identity_loss_between_t1_and_t3_withdraws_only_intent(
+    ops_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suffix = "bhost_post_t1"
+    fake = install(monkeypatch, ops_engine, suffix)
+    original = client_module.current_lease_identity
+
+    def missing_identity() -> None:
+        raise OSError("unreadable machine identity")
+
+    monkeypatch.setattr(client_module, "current_lease_identity", missing_identity)
+    first = await place(fake, suffix)
+    assert first["status"] == "not_submitted"
+    assert first["sent"] is False
+    assert fake.orders == []
+    rows = await ledger_rows(ops_engine, fake.account_no)
+    assert len(rows) == 1 and rows[0]["state"] == "withdrawn"
+
+    monkeypatch.setattr(client_module, "current_lease_identity", original)
+    second = await place(fake, suffix, idempotency_key=key(suffix, 2))
+    assert second["status"] == "uncertain"
+    assert len(fake.orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_uncertain_replay_does_not_need_lease_identity(
+    ops_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suffix = "bhost_replay"
+    fake = install(monkeypatch, ops_engine, suffix)
+    first = await place(fake, suffix)
+    assert first["status"] == "uncertain"
+
+    def missing_identity() -> None:
+        raise OSError("unreadable machine identity")
+
+    monkeypatch.setattr(client_module, "current_lease_identity", missing_identity)
+    replay = await place(fake, suffix)
+    assert replay["status"] == "uncertain"
+    assert replay["replayed_existing_row"] is True
+    assert replay["ledger_row_id"] == first["ledger_row_id"]
+    assert len(fake.orders) == 1
+
+
 # ---------------------------------------------------------------------------
 # The Stage 2 round trip (fake NH): place -> reconcile -> detail/history ->
 # modify -> reconcile -> cancel -> reconcile
