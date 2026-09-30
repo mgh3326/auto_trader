@@ -379,6 +379,7 @@ async def send_telegram(
     text: str,
     parse_mode: str | None = "Markdown",
     reply_markup: dict[str, Any] | None = None,
+    message_thread_id: int | None = None,
 ) -> bool:
     """Send a message to multiple Telegram chat IDs.
 
@@ -400,6 +401,8 @@ async def send_telegram(
                 payload["parse_mode"] = parse_mode
             if reply_markup is not None:
                 payload["reply_markup"] = reply_markup
+            if message_thread_id is not None:
+                payload["message_thread_id"] = message_thread_id
             sent = await _send_telegram_payload(
                 http_client=http_client,
                 url=url,
@@ -431,6 +434,7 @@ async def send_telegram_message(
     text: str,
     parse_mode: str | None = "Markdown",
     reply_markup: dict[str, Any] | None = None,
+    message_thread_id: int | None = None,
 ) -> TelegramMethodResult:
     """Send one message and preserve only allowlisted response metadata."""
     payload_chars = telegram_text_length(text)
@@ -453,6 +457,8 @@ async def send_telegram_message(
         payload["parse_mode"] = parse_mode
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
+    if message_thread_id is not None:
+        payload["message_thread_id"] = message_thread_id
 
     try:
         response = await http_client.post(url, json=payload)

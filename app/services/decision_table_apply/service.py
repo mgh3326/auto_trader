@@ -673,7 +673,32 @@ async def apply_decision_table(
     marked immediately so the next call never creates a duplicate. Forecast
     rows are deliberately outside apply v1 and are reported as skipped.
     """
+    # ROB-1052: one apply call is one auto-approve notice round — the scope
+    # batches every auto-submitted proposal's notice into a single digest
+    # flushed when the row loop finishes.  Lazy import keeps this module's
+    # import graph free of the dispatch/broker chain (tool-surface contract).
+    from app.services.order_proposals.dispatch import open_auto_digest_round
 
+    async with open_auto_digest_round():
+        return await _apply_decision_table(
+            artifact_id,
+            table_hash,
+            dry_run=dry_run,
+            confirm=confirm,
+            dependencies=dependencies,
+            now=now,
+        )
+
+
+async def _apply_decision_table(
+    artifact_id: int | str,
+    table_hash: str,
+    *,
+    dry_run: bool = True,
+    confirm: bool = False,
+    dependencies: DecisionTableApplyDependencies,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     try:
         fetched = await dependencies.artifact_get(artifact_id)
     except Exception:  # noqa: BLE001 - stable MCP error, no write occurred

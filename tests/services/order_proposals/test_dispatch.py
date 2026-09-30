@@ -83,15 +83,23 @@ class _FakeNotifier:
     def __init__(self, *, message_id: int | None = 5001) -> None:
         self.sent_messages: list[tuple[str, dict | None, str]] = []
         self.parse_modes: list[str | None] = []
+        self.thread_ids: list[int | None] = []
         self.edited_messages: list[tuple[str, int, str, dict | None]] = []
         self.auto_veto_mirrors: list[dict] = []
         self._message_id = message_id
 
     async def send_approval_message(
-        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+        self,
+        text,
+        inline_keyboard,
+        *,
+        chat_id,
+        parse_mode="Markdown",
+        message_thread_id=None,
     ):
         self.sent_messages.append((text, inline_keyboard, chat_id))
         self.parse_modes.append(parse_mode)
+        self.thread_ids.append(message_thread_id)
         message_id = self._message_id
         if self._message_id is not None:
             self._message_id += 1
@@ -128,7 +136,13 @@ class _FakeNotifier:
 
 class _RaisingNotifier:
     async def send_approval_message(
-        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+        self,
+        text,
+        inline_keyboard,
+        *,
+        chat_id,
+        parse_mode="Markdown",
+        message_thread_id=None,
     ):
         raise RuntimeError("telegram down")
 
@@ -139,11 +153,18 @@ class _FailAtNotifier(_FakeNotifier):
         self._fail_at = fail_at
 
     async def send_approval_message(
-        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+        self,
+        text,
+        inline_keyboard,
+        *,
+        chat_id,
+        parse_mode="Markdown",
+        message_thread_id=None,
     ):
         if len(self.sent_messages) + 1 == self._fail_at:
             self.sent_messages.append((text, inline_keyboard, chat_id))
             self.parse_modes.append(parse_mode)
+            self.thread_ids.append(message_thread_id)
             return TelegramMethodResult.failed(
                 payload_chars=telegram_text_length(text),
                 failure_code="telegram_error_400",
@@ -155,6 +176,7 @@ class _FailAtNotifier(_FakeNotifier):
             inline_keyboard,
             chat_id=chat_id,
             parse_mode=parse_mode,
+            message_thread_id=message_thread_id,
         )
 
 
@@ -164,7 +186,13 @@ class _CommittedBatchNotifier(_FakeNotifier):
         self.visible_member_counts: list[int] = []
 
     async def send_approval_message(
-        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+        self,
+        text,
+        inline_keyboard,
+        *,
+        chat_id,
+        parse_mode="Markdown",
+        message_thread_id=None,
     ):
         button = inline_keyboard["inline_keyboard"][0][0]
         if button["text"] == "전체 승인":
@@ -178,7 +206,11 @@ class _CommittedBatchNotifier(_FakeNotifier):
                 _batch, proposals = await service.get_approval_batch_display(batch_id)
                 self.visible_member_counts.append(len(proposals))
         return await super().send_approval_message(
-            text, inline_keyboard, chat_id=chat_id, parse_mode=parse_mode
+            text,
+            inline_keyboard,
+            chat_id=chat_id,
+            parse_mode=parse_mode,
+            message_thread_id=message_thread_id,
         )
 
 
