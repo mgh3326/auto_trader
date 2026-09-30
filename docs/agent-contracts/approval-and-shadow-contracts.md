@@ -184,13 +184,18 @@ default-disabled 게이트, 스케줄러는 바뀌지 않는다. 자세한 운�
 
 ### Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
 
-승인 카드(사람 판단 필요: manual/reconfirm/loss-cut/batch/veto)는 항상
-승인 allowlist 첫 chat으로 간다. 자동승인·체결·만료 알림은
+승인 카드(사람 판단 필요: manual/reconfirm/loss-cut/batch)는 항상
+승인 allowlist 첫 chat으로 간다. 자동승인 카드는 `vc` veto 버튼을
+달고 notices 목적지로 가므로, `ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID`가
+설정되면 그 chat도 `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR`에
+들어 있어야 한다 — 빠져 있으면 notices chat에서 온 모든 veto tap이
+chat_not_allowed로 거부된다. 자동승인·체결·만료 알림은
 `ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID` /
 `ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID`가 설정됐을 때만 그 목적지로
 가며, 미설정이면 종전 팬아웃과 바이트 동일하게 동작한다. thread id는
-양의 정수만 유효하고 malformed/zero/negative는 전체가 미설정으로
-간주된다. thread만 설정되면 chat은 allowlist 첫 항목으로 fallback한다.
+양의 정수만 유효하고, notices chat 없이 malformed/zero/negative면
+전체가 미설정으로 간주된다(notices chat이 있으면 chat-only로
+degrade). thread만 설정되면 chat은 allowlist 첫 항목으로 fallback한다.
 
 자동승인 알림의 라운드 키는 `open_auto_digest_round()` 스코프 하나다 —
 현재 `support_reserve_net_consume`의 post-commit dispatch 루프와

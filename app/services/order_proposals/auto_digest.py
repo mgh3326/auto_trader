@@ -263,9 +263,7 @@ def render_auto_digest_chunks(
     # len(str(len(items))) digits, and len(str)-width "9" values are the
     # widest single-part headers renderable.
     widest = 10 ** len(str(len(items))) - 1
-    header_budget = telegram_text_length(
-        _digest_header(len(items), widest, widest)
-    )
+    header_budget = telegram_text_length(_digest_header(len(items), widest, widest))
     block_budget = TELEGRAM_SEND_MESSAGE_TEXT_LIMIT - header_budget - 2
     blocks: dict[uuid.UUID, str] = {}
     for item in items:
@@ -301,8 +299,10 @@ def render_auto_digest_chunks(
     total = len(groups)
     chunks: list[AutoDigestChunk] = []
     for part, group_items in enumerate(groups, start=1):
-        text = _digest_header(len(items), part, total) + "\n\n" + "\n\n".join(
-            blocks[item.proposal_id] for item in group_items
+        text = (
+            _digest_header(len(items), part, total)
+            + "\n\n"
+            + "\n\n".join(blocks[item.proposal_id] for item in group_items)
         )
         rows = [
             [_veto_button(item, item.callback_data)]
@@ -326,10 +326,7 @@ def _digest_item_from_group(
     display_name: str | None = None,
 ) -> AutoDigestItem:
     """Re-derive render fields from the current durable row at veto time."""
-    auto = (
-        (getattr(group, "source_asof", None) or {}).get("auto_approved", {})
-        or {}
-    )
+    auto = (getattr(group, "source_asof", None) or {}).get("auto_approved", {}) or {}
     outcomes = auto.get("outcomes") or []
     ordered = sorted(rungs, key=lambda rung: rung.rung_index)
     return AutoDigestItem(
@@ -368,8 +365,7 @@ def _digest_member_live(group: Any) -> bool:
         and bool(getattr(group, "approval_nonce", None))
         and getattr(group, "approval_nonce_used_at", None) is None
         and getattr(group, "approval_dispatch_attempt_id", None) is not None
-        and getattr(group, "approval_dispatch_membership_revision", None)
-        is not None
+        and getattr(group, "approval_dispatch_membership_revision", None) is not None
         and bool(getattr(group, "approval_dispatch_membership_digest", None))
     )
 
@@ -398,12 +394,9 @@ def _member_veto_callback(group: Any) -> str | None:
 def _member_handled_status(group: Any) -> str:
     """Summarize a consumed member from its recorded veto outcomes."""
     veto = (
-        (getattr(group, "source_asof", None) or {}).get("auto_approved", {})
-        or {}
+        (getattr(group, "source_asof", None) or {}).get("auto_approved", {}) or {}
     ).get("veto") or {}
-    kinds = {
-        classify_veto_outcome(outcome) for outcome in veto.get("outcomes") or []
-    }
+    kinds = {classify_veto_outcome(outcome) for outcome in veto.get("outcomes") or []}
     for kind in ("filled", "failed", "unconfirmed"):
         if kind in kinds:
             return _VETO_OUTCOME_LABELS[kind]
@@ -434,9 +427,7 @@ def render_auto_digest_veto_update(
             item = _digest_item_from_group(
                 group,
                 rungs,
-                display_name=(
-                    (display_names or {}).get(group.proposal_id)
-                ),
+                display_name=((display_names or {}).get(group.proposal_id)),
             )
             block = _render_item_block(item, compact=compact)
             if group.proposal_id == vetoed_proposal_id:

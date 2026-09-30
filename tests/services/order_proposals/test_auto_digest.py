@@ -66,9 +66,7 @@ def _known_market_session(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clear_notices_settings(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID", "")
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", ""
-    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", "")
 
 
 def _allowlist(*chats: str) -> str:
@@ -325,9 +323,7 @@ async def test_standalone_auto_notice_fallback_when_unconfigured(
 
 
 @pytest.mark.asyncio
-async def test_thread_only_keeps_chat_but_routes_to_topic(
-    monkeypatch, db_session
-):
+async def test_thread_only_keeps_chat_but_routes_to_topic(monkeypatch, db_session):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
@@ -347,9 +343,7 @@ async def test_thread_only_keeps_chat_but_routes_to_topic(
 
 
 @pytest.mark.asyncio
-async def test_pending_approval_card_stays_on_approval_chat(
-    monkeypatch, db_session
-):
+async def test_pending_approval_card_stays_on_approval_chat(monkeypatch, db_session):
     """A human-decision card must never enter the notices destination."""
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", False)
     monkeypatch.setattr(
@@ -400,9 +394,7 @@ async def test_digest_round_zero_items_sends_nothing(db_session):
 
 
 @pytest.mark.asyncio
-async def test_digest_round_batches_two_items_into_one_message(
-    monkeypatch, db_session
-):
+async def test_digest_round_batches_two_items_into_one_message(monkeypatch, db_session):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
@@ -485,9 +477,7 @@ async def test_digest_round_single_item_sends_card_without_digest_ref(
 
 
 @pytest.mark.asyncio
-async def test_digest_send_failure_compensates_every_member(
-    monkeypatch, db_session
-):
+async def test_digest_send_failure_compensates_every_member(monkeypatch, db_session):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
@@ -535,9 +525,7 @@ async def test_digest_send_failure_compensates_every_member(
 
 
 @pytest.mark.asyncio
-async def test_standalone_send_failure_keeps_compensation_path(
-    monkeypatch, db_session
-):
+async def test_standalone_send_failure_keeps_compensation_path(monkeypatch, db_session):
     """The standalone (no round) failure keeps today's cancel compensation."""
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
     monkeypatch.setattr(
@@ -578,9 +566,7 @@ async def test_standalone_send_failure_keeps_compensation_path(
         group.proposal_id
     )
     assert rungs[0].state == "cancelled"
-    assert (
-        refreshed.source_asof["auto_approved"]["notification_failure"]["error"]
-    )
+    assert refreshed.source_asof["auto_approved"]["notification_failure"]["error"]
 
 
 # ── veto on a shared digest re-renders, keeping sibling buttons ─────
@@ -898,10 +884,7 @@ def test_digest_chunks_never_exceed_limit_near_boundary():
             for i in range(trial.randint(20, 60))
         ]
         for chunk in render_auto_digest_chunks(trial_items):
-            assert (
-                telegram_text_length(chunk.text)
-                <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
-            )
+            assert telegram_text_length(chunk.text) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
 
 
 def test_digest_single_oversized_item_block_is_bounded():
@@ -943,9 +926,7 @@ def test_digest_single_oversized_item_block_is_bounded():
 
 
 @pytest.mark.asyncio
-async def test_digest_send_failure_alerts_and_records_outcomes(
-    monkeypatch, db_session
-):
+async def test_digest_send_failure_alerts_and_records_outcomes(monkeypatch, db_session):
     """A failed digest keeps the standalone-path operator alert and state."""
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
     monkeypatch.setattr(
@@ -986,7 +967,9 @@ async def test_digest_send_failure_alerts_and_records_outcomes(
                 "proposal_id": str(self._pid),
             }
 
-    async def fake_alert(proposal_id, *, dispatch_state, dispatch_failure_code, now, service_factory):
+    async def fake_alert(
+        proposal_id, *, dispatch_state, dispatch_failure_code, now, service_factory
+    ):
         alerts.append(
             {
                 "proposal_id": proposal_id,
@@ -996,9 +979,7 @@ async def test_digest_send_failure_alerts_and_records_outcomes(
         )
         return _Alert(proposal_id)
 
-    monkeypatch.setattr(
-        dispatch_module, "send_approval_dispatch_alert", fake_alert
-    )
+    monkeypatch.setattr(dispatch_module, "send_approval_dispatch_alert", fake_alert)
 
     async with open_auto_digest_round(
         notifier=notifier,
@@ -1057,7 +1038,9 @@ async def test_digest_allowlist_empty_alerts_and_records_outcomes(
         def as_dict(self):
             return {"state": "sent", "channel": "discord"}
 
-    async def fake_alert(proposal_id, *, dispatch_state, dispatch_failure_code, now, service_factory):
+    async def fake_alert(
+        proposal_id, *, dispatch_state, dispatch_failure_code, now, service_factory
+    ):
         alerts.append(
             {
                 "proposal_id": proposal_id,
@@ -1066,9 +1049,7 @@ async def test_digest_allowlist_empty_alerts_and_records_outcomes(
         )
         return _Alert()
 
-    monkeypatch.setattr(
-        dispatch_module, "send_approval_dispatch_alert", fake_alert
-    )
+    monkeypatch.setattr(dispatch_module, "send_approval_dispatch_alert", fake_alert)
 
     async with open_auto_digest_round(
         notifier=notifier,
@@ -1126,9 +1107,7 @@ def test_reconcile_pending_digest_outcomes_swaps_real_states():
     _reconcile_pending_digest_outcomes(completed, digest_round)
     assert completed[0]["approval_dispatch"] == {"state": "sent", "ok": True}
     assert completed[1]["approval_dispatch"]["state"] == "failed"
-    assert completed[1]["approval_dispatch"]["operator_alert"] == {
-        "state": "sent"
-    }
+    assert completed[1]["approval_dispatch"]["operator_alert"] == {"state": "sent"}
     # An item the flush never finalized keeps its pending marker.
     assert completed[2]["approval_dispatch"] == {"state": "pending"}
     # Non-pending entries are never touched.
@@ -1140,13 +1119,9 @@ def test_reconcile_pending_digest_outcomes_swaps_real_states():
 
 
 def test_notices_destination_nonpositive_thread_is_unconfigured(monkeypatch):
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID", ""
-    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID", "")
     for raw in ("0", "-5"):
-        monkeypatch.setattr(
-            settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", raw
-        )
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", raw)
         dest = notices_destination()
         assert dest.configured is False
         assert dest.message_thread_id is None
@@ -1154,9 +1129,7 @@ def test_notices_destination_nonpositive_thread_is_unconfigured(monkeypatch):
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID", NOTICES_CHAT_ID
     )
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", "-5"
-    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", "-5")
     dest = notices_destination()
     assert dest.configured is True
     assert dest.chat_id == NOTICES_CHAT_ID

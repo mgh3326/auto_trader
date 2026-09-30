@@ -1628,9 +1628,7 @@ async def _flush_auto_digest(
                     fetch_target_fn=fetch_target_fn,
                     toss_veto_reconcile_fn=toss_veto_reconcile_fn,
                     mirror_policy_version=item.policy_version or None,
-                    record_digest_ref=(
-                        method_result.ok and len(collector.items) > 1
-                    ),
+                    record_digest_ref=(method_result.ok and len(collector.items) > 1),
                 )
             except Exception:  # noqa: BLE001 - finalize each item, keep going
                 logger.exception(
