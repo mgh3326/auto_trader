@@ -9,6 +9,7 @@
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - Execution Ledger HTTP Ingest (fillwire P0)
+- Execution Ledger Quarantine (#1175)
 - 보호 수량 P 규칙 추종 (#943)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
@@ -186,6 +187,34 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (`127.0.0.1`/`localhost`/`::1`) + **정확한** ingest path + userinfo/query/fragment 금지를
   **생성 시와 전송 직전 두 번** 검증하고 `follow_redirects=False` 를 명시 고정한다. 거부된
   URL 은 **소켓을 열기 전에** DB 로 fail-open 하며 로그에 토큰·URL 을 남기지 않는다.
+
+### Execution Ledger Quarantine (#1175)
+
+websocket 탭이 KIS H0STCNI0 **접수** 통지(`CNTG_YN=1`)를 체결로 기록한 phantom 행을
+삭제·수동 UPDATE 없이 **격리**한다. fillwire 디코더 수정은 별건(#1172).
+
+- **CLI**: `scripts/quarantine_execution_ledger_rows.py` — preview 기본, `--commit` 적용,
+  `--ids` 정확한 10진 id 만(범위·패턴·부호·공백·중복 거부), `--reason`/`--actor` 필수,
+  DB 는 `--database-url-env NAME`(권장) 또는 `--database-url` 로 명시(값 출력 금지)
+- **서비스/쓰기**: `app/services/execution_ledger/quarantine.py`(순수 판정 + 트랜잭션) →
+  `ExecutionLedgerRepository.rows_by_ids`/`mark_quarantined`/`append_quarantine_events`
+  (레포지토리가 유일한 쓰기 표면)
+- **적격(전부 통과해야 배치 전체 진행)**: 존재 · 미격리 · `source=websocket` · `broker=kis` ·
+  `account_mode=live` · `equity_kr` · 저장된 `raw_payload_json` 이 `tr=H0STCNI0` 프레임이고
+  `fields[13]`(CNTG_YN) 이 정확히 `1` · 프레임 주문번호/종목이 행과 일치. 하나라도 부적격이면
+  **배치 전체 거부·무변경**, 전부 이미 격리면 no-op. `CNTG_YN=2`(실체결)는 항상 거부
+- **스키마**: `execution_ledger.quarantined_at/quarantine_reason/quarantined_by`(nullable) +
+  CHECK 2종(all-or-nothing · `source='websocket' AND broker='kis'` 만) + 영구화 트리거(해제·재작성
+  불가) + append-only `review.execution_ledger_quarantine_events`(ledger_id UNIQUE, FK 없음).
+  마이그레이션 `20261001_t1175_ledger_quar`, downgrade 는 격리를 잃는다
+- 🔴 **리더 계약**: fill/lot/evidence/리포트로 원장을 읽는 모든 함수는
+  `execution_ledger_in_effect()`(`quarantined_at IS NULL`)를 AND 한다. 업서트 식별 읽기
+  (`get_by_key`)·id 워터마크·격리 도구 자신만 예외이며,
+  `tests/services/execution_ledger/test_quarantine_mutants.py` 가 디스크에서 리더를 세어
+  필터 또는 예외 선언이 없는 새 리더를 red 로 만든다
+- **시드 주의**: 격리 전 phantom 이 있는 상태로 깎인 opening seed 는 격리로 고쳐지지 않는다
+  (seed 스크립트 preview 재실행 필요)
+- **런북**: `docs/runbooks/execution-ledger-quarantine.md`. 실DB 실행은 운영자 전용
 
 ### 보호 수량 P 규칙 추종 (#943)
 

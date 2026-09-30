@@ -18,7 +18,7 @@ from sqlalchemy import Integer, cast, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.execution_ledger import ExecutionLedger
+from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.manual_holdings import BrokerAccount, ManualHolding
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.models.protected_positions import ProtectedPosition
@@ -301,6 +301,7 @@ class QuotesConsumerRepository:
         stmt = (
             select(ExecutionLedger)
             .where(ExecutionLedger.id > watermark)
+            .where(execution_ledger_in_effect())
             .order_by(ExecutionLedger.id)
             .limit(limit)
         )

@@ -11,6 +11,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    ColumnElement,
     Enum,
     Index,
     Integer,
@@ -29,6 +30,17 @@ from app.models.trading import InstrumentType
 NOW_SQL = text("now()")
 FILLED_AT_DESC = text("filled_at DESC")
 STARTED_AT_DESC = text("started_at DESC")
+
+QUARANTINE_FIELDS_SQL = (
+    "(quarantined_at IS NULL AND quarantine_reason IS NULL "
+    "AND quarantined_by IS NULL) OR "
+    "(quarantined_at IS NOT NULL AND quarantine_reason IS NOT NULL "
+    "AND quarantined_by IS NOT NULL AND btrim(quarantine_reason) <> '' "
+    "AND btrim(quarantined_by) <> '')"
+)
+QUARANTINE_SCOPE_SQL = (
+    "quarantined_at IS NULL OR (source = 'websocket' AND broker = 'kis')"
+)
 
 
 class ExecutionLedger(Base):
@@ -59,6 +71,12 @@ class ExecutionLedger(Base):
         CheckConstraint(
             "filled_price > 0", name="execution_ledger_filled_price_positive"
         ),
+        # #1175: quarantine is all-or-nothing, carries a non-blank reason and
+        # actor, and is only ever applied to a KIS websocket row (a phantom
+        # accept notice). A reconciler, manual-import, Upbit or Toss row can
+        # never be quarantined, whatever writes the UPDATE.
+        CheckConstraint(QUARANTINE_FIELDS_SQL, name="quarantine_fields"),
+        CheckConstraint(QUARANTINE_SCOPE_SQL, name="quarantine_scope"),
         Index("ix_execution_ledger_filled_at", FILLED_AT_DESC),
         Index("ix_execution_ledger_symbol_filled_at", "symbol", FILLED_AT_DESC),
         Index("ix_execution_ledger_broker_filled_at", "broker", FILLED_AT_DESC),
@@ -92,6 +110,11 @@ class ExecutionLedger(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False, default="reconciler")
     source_run_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     raw_payload_json: Mapped[dict | None] = mapped_column(JSONB)
+    # #1175: a quarantined row is kept (never deleted) but is not a fill; every
+    # fill/lot/evidence reader excludes it via ``execution_ledger_in_effect``.
+    quarantined_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    quarantine_reason: Mapped[str | None] = mapped_column(Text)
+    quarantined_by: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=NOW_SQL, nullable=False
     )
@@ -100,6 +123,48 @@ class ExecutionLedger(Base):
         server_default=NOW_SQL,
         onupdate=NOW_SQL,
         nullable=False,
+    )
+
+
+def execution_ledger_in_effect() -> ColumnElement[bool]:
+    """Predicate for rows that count as fills: not quarantined (#1175).
+
+    Every reader that treats execution_ledger rows as fill evidence (lots,
+    open/same-day evidence, #1112 inference, reports, triage) must AND this
+    in. Identity reads used by the upsert path deliberately do not, so a
+    replayed phantom frame stays ``unchanged`` instead of being re-inserted.
+    """
+    return ExecutionLedger.quarantined_at.is_(None)
+
+
+class ExecutionLedgerQuarantineEvent(Base):
+    """Append-only audit of each quarantine commit (#1175).
+
+    One row per quarantined ledger row, grouped by ``batch_id``. The DB
+    rejects UPDATE/DELETE/TRUNCATE on this table. There is deliberately no
+    foreign key to ``execution_ledger`` so the audit survives any later
+    ledger maintenance; ``ledger_id`` is UNIQUE, so a row is quarantined once.
+    """
+
+    __tablename__ = "execution_ledger_quarantine_events"
+    __table_args__ = (
+        UniqueConstraint("ledger_id", name="uq_execution_ledger_quarantine_ledger"),
+        CheckConstraint("action = 'quarantine'", name="action"),
+        CheckConstraint("btrim(reason) <> ''", name="reason_nonblank"),
+        CheckConstraint("btrim(actor) <> ''", name="actor_nonblank"),
+        Index("ix_execution_ledger_quarantine_events_batch", "batch_id"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    ledger_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=NOW_SQL, nullable=False
     )
 
 

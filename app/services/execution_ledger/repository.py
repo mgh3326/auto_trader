@@ -6,11 +6,16 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
+from app.models.execution_ledger import (
+    ExecutionLedger,
+    ExecutionLedgerQuarantineEvent,
+    ExecutionLedgerReconcileRun,
+    execution_ledger_in_effect,
+)
 from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
 
 UpsertStatus = Literal["inserted", "updated", "unchanged"]
@@ -105,6 +110,7 @@ class ExecutionLedgerRepository:
                 ExecutionLedger.account_mode == account_mode,
                 ExecutionLedger.venue == venue,
                 ExecutionLedger.broker_order_id == broker_order_id,
+                execution_ledger_in_effect(),
             )
             .limit(1)
         )
@@ -153,6 +159,49 @@ class ExecutionLedgerRepository:
         result = await self.db.execute(stmt)
         row_id = int(result.scalar_one())
         return status, row_id
+
+    async def rows_by_ids(
+        self, ids: list[int], *, for_update: bool
+    ) -> dict[int, ExecutionLedger]:
+        """Exact-id read for the #1175 quarantine tool (sees quarantined rows)."""
+        stmt = (
+            select(ExecutionLedger)
+            .where(ExecutionLedger.id.in_(ids))
+            .order_by(ExecutionLedger.id.asc())
+            .execution_options(populate_existing=True)
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return {int(row.id): row for row in rows}
+
+    async def mark_quarantined(
+        self, ids: list[int], *, at: datetime, reason: str, actor: str
+    ) -> int:
+        """#1175: the one UPDATE of ledger rows. Returns the touched row count.
+
+        Guarded so it can only ever set the three quarantine columns on a
+        still-unquarantined KIS websocket row; the DB CHECKs and permanence
+        trigger enforce the same independently.
+        """
+        result = await self.db.execute(
+            update(ExecutionLedger)
+            .where(ExecutionLedger.id.in_(ids))
+            .where(ExecutionLedger.quarantined_at.is_(None))
+            .where(ExecutionLedger.source == "websocket")
+            .where(ExecutionLedger.broker == "kis")
+            .values(
+                quarantined_at=at,
+                quarantine_reason=reason,
+                quarantined_by=actor,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return int(getattr(result, "rowcount", -1))
+
+    async def append_quarantine_events(self, events: list[dict[str, Any]]) -> None:
+        """#1175: append-only audit rows, one per quarantined ledger row."""
+        await self.db.execute(insert(ExecutionLedgerQuarantineEvent), events)
 
     def record_run(self, run: ReconcileRunRecord) -> None:
         self.db.add(ExecutionLedgerReconcileRun(**run.model_dump()))
@@ -215,7 +264,7 @@ class ExecutionLedgerRepository:
         override and read every source. ``limit`` is clamped to the [1, 500]
         range to keep pollers safe against bad input.
         """
-        stmt = select(ExecutionLedger)
+        stmt = select(ExecutionLedger).where(execution_ledger_in_effect())
         if after_id is not None:
             stmt = stmt.where(ExecutionLedger.id > after_id)
         if side is not None:
@@ -259,6 +308,7 @@ class ExecutionLedgerRepository:
             )
             .where(ExecutionLedger.filled_at >= cutover)
             .where(ExecutionLedger.source != "manual_import")
+            .where(execution_ledger_in_effect())
             .group_by(
                 ExecutionLedger.broker,
                 ExecutionLedger.account_mode,
@@ -330,6 +380,7 @@ class ExecutionLedgerRepository:
                 ExecutionLedger.symbol == symbol,
                 ExecutionLedger.currency == currency,
                 before_boundary,
+                execution_ledger_in_effect(),
             )
         )
         qty_before, rows_before = result.one()

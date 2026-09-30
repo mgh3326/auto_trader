@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import kst_day_window
-from app.models.execution_ledger import ExecutionLedger
+from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.schemas.execution_ledger import (
     DataState,
     ExecutionLedgerFreshnessEntry,
@@ -326,6 +326,7 @@ class ExecutionLedgerQueryService:
         # 3x covers the worst-case number of sources for one order.
         stmt = (
             select(ExecutionLedger)
+            .where(execution_ledger_in_effect())
             .order_by(ExecutionLedger.filled_at.desc())
             .limit(limit * 3)
         )
@@ -357,6 +358,7 @@ class ExecutionLedgerQueryService:
             select(ExecutionLedger)
             .where(ExecutionLedger.symbol == symbol)
             .where(ExecutionLedger.filled_at >= cutoff)
+            .where(execution_ledger_in_effect())
             .order_by(ExecutionLedger.filled_at.desc())
         )
         rows = (await self.db.execute(stmt)).scalars().all()
@@ -388,6 +390,7 @@ class ExecutionLedgerQueryService:
             select(ExecutionLedger)
             .where(ExecutionLedger.filled_at >= start_kst)
             .where(ExecutionLedger.filled_at < end_kst)
+            .where(execution_ledger_in_effect())
             .order_by(ExecutionLedger.filled_at.desc())
         )
         rows = (await self.db.execute(stmt)).scalars().all()
@@ -418,6 +421,7 @@ class ExecutionLedgerQueryService:
             select(ExecutionLedger)
             .where(ExecutionLedger.side == "sell")
             .where(ExecutionLedger.filled_at >= cutoff)
+            .where(execution_ledger_in_effect())
             .order_by(ExecutionLedger.filled_at.desc())
         )
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
@@ -441,6 +445,7 @@ class ExecutionLedgerQueryService:
                 .where(ExecutionLedger.venue.in_(venues))
                 .where(ExecutionLedger.instrument_type.in_(instrument_types))
                 .where(ExecutionLedger.currency.in_(currencies))
+                .where(execution_ledger_in_effect())
                 .order_by(ExecutionLedger.filled_at.asc(), ExecutionLedger.id.asc())
             )
             history_rows = (await self.db.execute(history_stmt)).scalars().all()
