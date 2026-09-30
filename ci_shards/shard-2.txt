@@ -298,6 +298,7 @@ tests/test_auth_router.py
 tests/test_auth_security.py
 tests/test_auto_emit_candidate_citation.py
 tests/test_backfill_dart_disclosures.py
+tests/test_backfill_dart_disclosures_pacing.py
 tests/test_btc_dominance.py
 tests/test_build_invest_screener_snapshots_full_universe.py
 tests/test_call_duration_plugin.py

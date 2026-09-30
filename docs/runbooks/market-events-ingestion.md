@@ -398,10 +398,80 @@ SELECT partition_date, status, event_count, last_error
    AND status='failed';
 ```
 
-Exit codes: `0` = no failed or predicted-failed days, `2` = at least one,
-`1` = CLI crash. A failed day means "DART genuinely had nothing for a trading
-session" or "the scrape is still broken" — either way it must not be flipped
-to `succeeded` by hand.
+Exit codes: `0` = every processed day succeeded or is predicted to succeed
+(including runs truncated by `--max-days`), `2` = at least one failed or
+predicted-failed day, or the run stopped early on the call budget or the
+consecutive-failure rule, `1` = CLI crash. A failed day means "DART
+genuinely had nothing for a trading session" or "the scrape is still
+broken" — either way it must not be flipped to `succeeded` by hand.
+
+### Pacing, backoff, resume (#1097)
+
+Motivation: on 2026-09-30 the un-retried backfill walked dates
+2026-01-01..01-18 fine, then DART raised `ConnectionResetError(104)` on
+01-19 and the CLI exited with an exception; an immediate rerun failed at
+once — DART throttles rapid sequential calls, and the regular collector
+shares the same API key. The CLI now paces, retries, and resumable-stops.
+
+**Do not starve the regular collector.** Run the backfill **outside the
+collector windows** — the daily `market events` Prefect deployment runs at
+18:30 KST and 07:00 KST (Asia/Seoul); pick a quiet stretch away from those
+slots, **keep the pacing default** (`--pace-seconds 1.0`, one DART call per
+second at most), and bound each session with `--max-days` (e.g. 30) so a
+single run never monopolizes the shared API key.
+
+**Pacing and budget.** Every DART fetch — first attempt and retries alike —
+waits `--pace-seconds` (default `1.0`) after the previous call.
+`--max-calls` (default `1000`) is a hard global cap on DART fetch calls for
+the whole run; exhausting it stops the run cleanly.
+
+**Retryable faults.** Connection reset/refused/aborted, timeouts,
+DNS/TLS-level transport errors, `requests`/`urllib3` connection-retry
+errors, HTTP `429` and `5xx`, and the DART status codes OpenDartReader
+raises as `ValueError({'status': ..., 'message': ...})` on its
+official-API paths: **`'020'`** (request limit exceeded, 요청 제한 초과),
+**`'800'`** (system maintenance), **`'900'`** (undefined server error).
+These retry with bounded exponential backoff: `--retry-base-seconds`
+(default `5.0`) doubled per attempt, capped at `--retry-max-seconds`
+(default `60`), scaled by `[0.5, 1.5)` jitter, up to
+`--retry-max-attempts` total tries per day (default `5`). Non-transient
+faults — the other DART status codes (`'010'-'013'`, `'100'-'101'`), HTTP
+4xx other than 429, and scrape-contract drift
+(`DartResponseSchemaError`/`AttributeError` from an HTML error page) — are
+never retried: retries cannot repair them.
+
+No documented DART rate limit was found in this repo or in OpenDartReader's
+docs; `1.0s` pacing is a conservative desk default, not a spec value.
+
+**Failed days and clean stops.** A day that still fails after its attempts
+is recorded `failed` with the reason (commit mode also writes the partition
+row's `last_error` via the ingestion path) and the run continues — until
+`--max-consecutive-failures` (default `3`) days fail in a row, when it
+stops cleanly: a `stop:` line plus the JSON summary, no traceback, exit
+code `2`.
+
+**Per-day lines and the JSON summary.** Each day emits one line —
+dry-run: `date session=… rows=N parseable=N partition=… action=… calls=N`;
+commit: `date status=… events=N calls=N [error=…]`. The **last line is a
+single-line JSON summary**: `succeeded`, `failed`, `failed_dates`,
+`days_processed`, `days_remaining`, `consecutive_failures`, `stop_reason`
+(`completed` | `max_days` | `consecutive_failures` |
+`call_budget_exhausted`), `processed_through`, `next_from_date`,
+`dart_calls`, `dart_retries`, plus the effective pacing knobs.
+
+**Resume.** To continue exactly where a run stopped, rerun the same
+command with `--resume-from <next_from_date>` (dates before `--from-date`
+clamp; after `--to-date` is an error). Failed days are listed in
+`failed_dates` and, in commit mode, `failed` partition rows — repair them
+with a separate tight `--from-date/--to-date` run after the underlying
+cause clears.
+
+```bash
+# resume after a throttling stop, bounded to 30 days per session
+uv run python -m scripts.backfill_dart_disclosures \
+  --from-date 2026-01-01 --to-date 2026-07-21 \
+  --resume-from 2026-01-19 --max-days 30 --commit
+```
 
 ### Scheduling additional DART runs (18:30 KST + next-day 07:00 KST)
 
