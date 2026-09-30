@@ -478,8 +478,8 @@ def apply_toss_us_extended_order_shape(
     """Refuse a non-integer-LIMIT order an extended-session window allowed.
 
     The session resolver only sees the proposal group, so the rung shape is
-    checked here by every caller that holds the rungs (dispatch before a card,
-    revalidation before preview/submit and in the transport hook). A decision
+    checked here, from evaluate_approval_window_boundary, with the rungs that
+    every production gate passes to it. A decision
     that is not an allowed Toss US pre/post decision is returned unchanged,
     so the default regular-only key never reaches this refusal.
     """
@@ -512,6 +512,74 @@ def apply_toss_us_extended_order_shape(
         else ApprovalWindowCode.DEFER_SESSION_CLOSED
     )
     return replace(decision, code=code, evidence=refused, detail=reason)
+
+
+def toss_us_extended_order_shape_applies(group: Any) -> bool:
+    """Whether the pre/post order-shape rule can apply to this proposal.
+
+    True only for a toss_live / equity_us proposal while the policy key
+    enables pre or post. Callers use it to skip a rung read that the default
+    regular-only key never needs.
+    """
+    market, account_mode, _action, _order_type = _contract_fields(group)
+    return (
+        market == "equity_us"
+        and account_mode == "toss_live"
+        and bool(set(_toss_us_policy_sessions()) & _TOSS_US_EXTENDED_SESSIONS)
+    )
+
+
+async def _toss_us_session_label(now: datetime) -> str | None:
+    """Current Toss US session, or None when the calendar is unavailable."""
+    local = now.astimezone(_KST)
+    try:
+        calendar = await get_toss_market_calendar("us", local.date())
+    except Exception:  # noqa: BLE001 - unknown session keeps the exit exemption
+        return None
+    if calendar is None:
+        return None
+    return us_toss_session_for(local, calendar=calendar) or "closed"
+
+
+async def _toss_us_exit_extended_order_shape(
+    decision: ApprovalWindowDecision,
+    *,
+    group: Any,
+    rungs: Sequence[Any],
+    now: datetime,
+) -> ApprovalWindowDecision:
+    """Apply the pre/post order-shape rule to a protective-exit exemption.
+
+    Under the default regular-only key this returns the exemption untouched
+    without any I/O, exactly as before #1116. Once the operator enables an
+    extended session, a Toss US exit sent during pre/post must also be an
+    integer-quantity LIMIT: Toss refuses the other shapes outside regular on
+    the real order only. The session lookup fails open, so an unavailable
+    calendar never blocks a protective exit.
+    """
+    if not decision.allowed or not toss_us_extended_order_shape_applies(group):
+        return decision
+    session = await _toss_us_session_label(now)
+    if session not in _TOSS_US_EXTENDED_SESSIONS:
+        return decision
+    refusal = toss_us_extended_order_refusal(group, rungs)
+    if refusal is None:
+        return decision
+    reason = f"{TOSS_US_EXTENDED_REFUSAL_PREFIX}:{refusal}"
+    evidence = decision.evidence
+    assert evidence is not None
+    return replace(
+        decision,
+        code=ApprovalWindowCode.DEFER_SESSION_CLOSED,
+        evidence=replace(
+            evidence,
+            current_session=session,
+            allowed_now=False,
+            allowed_until=None,
+            detail=reason,
+        ),
+        detail=reason,
+    )
 
 
 def _toss_us_windows(
@@ -1116,6 +1184,7 @@ async def evaluate_approval_window_boundary(
     now_fn: Callable[[], datetime],
     expected_policy_stamp: str | None = None,
     require_policy_stamp: bool = True,
+    rungs: Sequence[Any] | None = None,
 ) -> ApprovalWindowDecision:
     """Evaluate and then re-sample at the exact caller boundary.
 
@@ -1123,10 +1192,20 @@ async def evaluate_approval_window_boundary(
     revalidation. It applies the exit-intent exemption before invoking even an
     injected evaluator, so protective exits cannot touch calendar/session I/O
     or degrade into ``CALENDAR_UNKNOWN`` through policy-stamp binding.
+
+    #1116: every production caller passes the proposal ``rungs``; they are
+    what the Toss US pre/post order-shape rule (integer LIMIT only) checks.
+    That rule is inert under the default regular-only key. Only when the
+    operator has enabled pre/post does a protective exit look up the Toss US
+    session, fail-open (an unknown calendar keeps the exemption).
     """
     evaluation_now = now_fn()
     exit_exemption = _exit_intent_window_exemption(group, now=evaluation_now)
     if exit_exemption is not None:
+        if rungs is not None:
+            exit_exemption = await _toss_us_exit_extended_order_shape(
+                exit_exemption, group=group, rungs=rungs, now=evaluation_now
+            )
         return recheck_approval_window_decision(
             group,
             exit_exemption,
@@ -1136,6 +1215,10 @@ async def evaluate_approval_window_boundary(
     decision = await window_evaluator(group, now=evaluation_now)
     if require_policy_stamp:
         decision = bind_approval_window_policy(decision, expected_policy_stamp)
+    if rungs is not None:
+        decision = apply_toss_us_extended_order_shape(
+            decision, group=group, rungs=rungs
+        )
     return recheck_approval_window_decision(group, decision, now=now_fn())
 
 

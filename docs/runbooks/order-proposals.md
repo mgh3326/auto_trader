@@ -142,10 +142,18 @@ See the full design in
   regular-only. Outside regular a rung with a `notional` (amount-based,
   Toss `orderAmount`), a fractional or non-positive quantity, or no limit
   price is refused as `DEFER_SESSION_CLOSED` with detail
-  `toss_us_extended_session_refused:<reason>` at dispatch, at every
-  revalidation rung gate and in the transport hook, always before any broker
-  preview or submit (`toss_preview_order` passes these shapes locally even
-  though the real order would 422 outside regular hours). KIS US, KR and
+  `toss_us_extended_session_refused:<reason>` inside
+  `evaluate_approval_window_boundary`, which every production gate calls
+  with the proposal rungs (dispatch, batch summary, single/batch/loss-cut
+  callbacks, reconfirm, redispatch, every revalidation rung gate and the
+  transport hook; a static test fails on a call without `rungs=`), always
+  before any broker preview or submit (`toss_preview_order` passes these
+  shapes locally even though the real order would 422 outside regular
+  hours). A refused member blocks a whole batch before its nonce. Protective
+  exits (`exit_intent`) keep their validity-only exemption and do no calendar
+  I/O under the default key; once pre/post is enabled, a Toss US exit also
+  looks up the Toss session (fail-open: an unknown calendar keeps the
+  exemption) and is refused the same way during pre/post. KIS US, KR and
   crypto never read the key. A pre/post decision carries
   `session_evidence.day_expiry` and a published card stores it as
   `source_asof.approval_window_day_expiry`: a pre submission's expected death

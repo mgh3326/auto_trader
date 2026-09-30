@@ -865,3 +865,352 @@ async def test_default_key_card_writes_no_day_expiry(monkeypatch, db_session):
     )
     assert "approval_window_day_expiry" not in refreshed.source_asof
     assert refreshed.source_asof["approval_window_policy_stamp"]
+
+
+# --- r1 tester findings: protective exits and batch paths --------------------
+# Ported from the round-1 tester reproductions (hk job
+# 1116-toss-us-ext-session-20260930-1719, tester-r1-repro.py).
+
+
+def _fake_valid_toss_preview(kwargs):
+    quantity, price = str(kwargs["quantity"]), str(kwargs["price"])
+    return {
+        "success": True,
+        "approval_hash": "t1116-token",
+        "quantity": quantity,
+        "price": price,
+        "payload_preview": {
+            "clientOrderId": kwargs["proposal_client_order_id"],
+            "quantity": quantity,
+            "price": price,
+        },
+    }
+
+
+def _loss_cut_service(quantity: str) -> _FakeRevalidationService:
+    item = _toss_revalidation_service(quantity=quantity)
+    item.group.side = item.rung.side = "sell"
+    item.group.exit_intent = "loss_cut"
+    item.group.exit_reason = "stop_loss"
+    item.group.retrospective_id = 1
+    item.group.approval_issue_id = "T1116"
+    return item
+
+
+def _counting_place(calls: dict[str, int]):
+    async def place(**kwargs):
+        if kwargs["dry_run"]:
+            calls["preview"] += 1
+            return _fake_valid_toss_preview(kwargs)
+        await kwargs["pre_send_hook"]()
+        calls["submit"] += 1
+        return {"success": True, "status": "resting", "broker_order_id": "t1116-order"}
+
+    return place
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "now",
+    [_kst(2026, 9, 30, 17, 0, 0), _kst(2026, 10, 1, 5, 0, 0)],
+    ids=["pre", "post"],
+)
+async def test_enabled_key_refuses_fractional_loss_cut_before_any_broker_call(
+    monkeypatch, now
+):
+    _use_calendar(monkeypatch, _SUMMER)
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    item = _loss_cut_service("0.5")
+    calls = {"preview": 0, "submit": 0}
+    stamp = (await evaluate_approval_window(item.group, now=now)).policy_stamp
+
+    outcomes = await revalidate_and_submit(
+        service=item,
+        proposal_id=item.group.proposal_id,
+        now=now,
+        now_fn=lambda: now,
+        place_order_fn=_counting_place(calls),
+        correlation_mint=lambda **kwargs: "t1116-corr",
+        expected_policy_stamp=stamp,
+    )
+
+    assert calls == {"preview": 0, "submit": 0}
+    assert outcomes[0].result == "defer_session_closed"
+    assert outcomes[0].detail["approval_window"]["detail"] == (
+        "toss_us_extended_session_refused:fractional_quantity"
+    )
+
+
+@pytest.mark.asyncio
+async def test_enabled_key_loss_cut_integer_limit_and_regular_stay_exempt(monkeypatch):
+    _use_calendar(monkeypatch, _SUMMER)
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    for quantity, now in (
+        ("1", _kst(2026, 9, 30, 17, 0, 0)),
+        ("0.5", _kst(2026, 9, 30, 22, 30, 0)),
+        ("0.5", _kst(2026, 9, 30, 12, 0, 0)),
+    ):
+        item = _loss_cut_service(quantity)
+        decision = await policy.evaluate_approval_window_boundary(
+            item.group,
+            window_evaluator=evaluate_approval_window,
+            now_fn=lambda now=now: now,
+            rungs=[item.rung],
+        )
+        assert decision.code is ApprovalWindowCode.ALLOW
+        assert decision.evidence.current_session == "exempt"
+
+
+@pytest.mark.asyncio
+async def test_enabled_key_loss_cut_with_unknown_calendar_stays_exempt(monkeypatch):
+    _use_calendar(monkeypatch, None)
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    item = _loss_cut_service("0.5")
+    now = _kst(2026, 9, 30, 17, 0, 0)
+    decision = await policy.evaluate_approval_window_boundary(
+        item.group,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+        rungs=[item.rung],
+    )
+    assert decision.code is ApprovalWindowCode.ALLOW
+    assert decision.evidence.current_session == "exempt"
+
+
+@pytest.mark.asyncio
+async def test_default_key_loss_cut_exemption_is_unchanged_and_io_free(monkeypatch):
+    """A1 for protective exits: the default key adds no calendar I/O."""
+
+    # Counted, not raised: the exit session lookup is fail-open and would
+    # swallow an exception, hiding the read.
+    calendar_calls = _use_calendar(monkeypatch, _SUMMER)
+    item = _loss_cut_service("0.5")
+    now = _kst(2026, 9, 30, 17, 0, 0)
+    with_rungs = await policy.evaluate_approval_window_boundary(
+        item.group,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+        rungs=[item.rung],
+    )
+    without_rungs = await policy.evaluate_approval_window_boundary(
+        item.group, window_evaluator=evaluate_approval_window, now_fn=lambda: now
+    )
+    assert with_rungs == without_rungs
+    assert with_rungs.code is ApprovalWindowCode.ALLOW
+    assert calendar_calls == {"calendar": 0}
+
+
+@pytest.mark.asyncio
+async def test_enabled_key_loss_cut_first_click_refuses_before_confirmation_preview(
+    monkeypatch,
+):
+    from app.services.order_proposals import telegram_callback as callback_module
+    from tests.services.order_proposals.test_approval_window import (
+        _callback_for_group,
+    )
+
+    _use_calendar(monkeypatch, _SUMMER)
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    now = _kst(2026, 9, 30, 17, 0, 0)
+    item = _loss_cut_service("0.5")
+    previews: list[object] = []
+
+    async def preview(**kwargs):
+        previews.append(kwargs["proposal_id"])
+        raise AssertionError("refusal must precede the confirmation preview")
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class Notifier:
+        async def edit_message(self, *args, **kwargs):
+            return None
+
+    outcome = await callback_module._handle_loss_cut_first_click(
+        session=FakeSession(),
+        service=item,
+        proposal_id=item.group.proposal_id,
+        callback=_callback_for_group(item.group),
+        now=now,
+        notifier=Notifier(),
+        chat_id=42,
+        message_id=None,
+        telegram_user_id="777",
+        loss_cut_preview_fn=preview,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+    )
+    assert previews == []
+    assert outcome["reason"] == "DEFER_SESSION_CLOSED"
+    assert outcome["approval_window"]["detail"] == (
+        "toss_us_extended_session_refused:fractional_quantity"
+    )
+
+
+async def _seed_batch_pair(monkeypatch, db_session, first_quantity):
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    _use_calendar(monkeypatch, _SUMMER)
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        "t1116-" + uuid.uuid4().hex,
+    )
+
+    async def advisory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(dispatch_module, "build_create_advisory", advisory)
+    service = OrderProposalsService(db_session)
+    groups = []
+    for symbol, quantity in (("SGOV", first_quantity), ("BIL", "1")):
+        groups.append(
+            await service.create_proposal(
+                symbol=symbol,
+                market="equity_us",
+                account_mode="toss_live",
+                side="sell",
+                order_type="limit",
+                proposer="t1116",
+                thesis="t1116 batch",
+                rungs=[RungInput(0, "sell", Decimal(quantity), Decimal("100"), None)],
+                valid_until=_kst(2026, 10, 1, 8),
+                now=_kst(2026, 10, 1, 4, 50),
+            )
+        )
+    await db_session.commit()
+    return groups
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_quantity", "expected_summaries"), [("1", 1), ("0.5", 0)]
+)
+async def test_batch_summary_in_post_checks_every_member_rung(
+    monkeypatch, db_session, first_quantity, expected_summaries
+):
+    from tests.services.order_proposals.test_dispatch import (
+        _FakeNotifier,
+        _session_factory,
+    )
+
+    groups = await _seed_batch_pair(monkeypatch, db_session, first_quantity)
+    notifier = _FakeNotifier(message_id=8001)
+    for group, now in zip(
+        groups, (_kst(2026, 10, 1, 4, 59), _kst(2026, 10, 1, 5, 1)), strict=True
+    ):
+        result = await dispatch_module.send_proposal_for_approval(
+            group.proposal_id,
+            notifier=notifier,
+            now=now,
+            service_factory=_session_factory(db_session),
+        )
+        assert result.ok
+    summaries = sum("*일괄 승인 대기*" in text for text, _, _ in notifier.sent_messages)
+    assert summaries == expected_summaries
+
+
+@pytest.mark.asyncio
+async def test_batch_callback_with_fractional_member_blocks_before_nonce_or_sibling(
+    monkeypatch, db_session
+):
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals import telegram_callback as callback_module
+    from tests.services.order_proposals.test_approval_window import (
+        _callback_for_batch,
+    )
+    from tests.services.order_proposals.test_dispatch import (
+        _FakeNotifier,
+        _session_factory,
+    )
+
+    groups = await _seed_batch_pair(monkeypatch, db_session, "0.5")
+    notifier = _FakeNotifier(message_id=9001)
+    chat = settings.ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR
+    for group, now in zip(
+        groups, (_kst(2026, 10, 1, 4, 58), _kst(2026, 10, 1, 4, 59)), strict=True
+    ):
+        result = await dispatch_module.send_proposal_for_approval(
+            group.proposal_id,
+            notifier=notifier,
+            now=now,
+            service_factory=_session_factory(db_session),
+        )
+        assert result.ok
+    service = OrderProposalsService(db_session)
+    _text, keyboard, _chat = next(
+        message
+        for message in notifier.sent_messages
+        if "*일괄 승인 대기*" in message[0]
+    )
+    envelope = callback_module.parse_callback_data(
+        keyboard["inline_keyboard"][0][0]["callback_data"]
+    )
+    assert envelope is not None
+    batch_id = await service.resolve_approval_batch_id_prefix(envelope.subject_short)
+    batch = await service._repo.get_approval_batch_by_id(batch_id)
+    assert batch is not None
+    now = _kst(2026, 10, 1, 5, 0, 0)
+    calls = {"preview": 0, "submit": 0}
+
+    async def revalidate(**kwargs):
+        return await revalidate_and_submit(
+            **kwargs,
+            now_fn=lambda: now,
+            place_order_fn=_counting_place(calls),
+            correlation_mint=lambda **ignored: "t1116-batch-corr",
+        )
+
+    outcome = await callback_module._handle_batch_approve(
+        service_factory=_session_factory(db_session),
+        batch_short=str(batch.batch_id)[:8],
+        callback=_callback_for_batch(batch),
+        now=now,
+        notifier=notifier,
+        chat_id=chat,
+        message_id=None,
+        telegram_user_id="777",
+        revalidate_fn=revalidate,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+    )
+    assert outcome["reason"] == "BATCH_WINDOW_BLOCKED"
+    assert calls == {"preview": 0, "submit": 0}
+    assert batch.approval_nonce_used_at is None
+
+
+def test_every_production_window_boundary_call_passes_rungs():
+    """Static guard: no production gate may evaluate the window without rungs.
+
+    The Toss US pre/post order-shape rule lives inside
+    evaluate_approval_window_boundary and only sees the rungs its caller
+    passes; a caller that forgets them would silently skip the rule.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3] / "app"
+    missing: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name not in {
+                "evaluate_approval_window_boundary",
+                "_evaluate_bound_window",
+            }:
+                continue
+            if path.name == "telegram_callback.py" and name == (
+                "evaluate_approval_window_boundary"
+            ):
+                # The wrapper forwards its required rungs argument.
+                assert any(k.arg == "rungs" for k in node.keywords)
+                continue
+            if not any(k.arg == "rungs" for k in node.keywords):
+                missing.append(f"{path.relative_to(root.parent)}:{node.lineno}")
+    assert missing == []

@@ -249,9 +249,14 @@ wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, 
   정규장 전용으로 fail-closed
 - 🔴 **정규장 밖은 정수 수량 LIMIT 만**: rung `notional`(금액 주문 = 토스
   `orderAmount`)·소수/비양수 수량·지정가 부재는 `DEFER_SESSION_CLOSED` +
-  `toss_us_extended_session_refused:<사유>` 로 거부된다. 적용 지점은 카드 발송
-  전(dispatch)·revalidation 의 모든 rung 게이트·전송 직전 transport hook 이며
-  **모두 브로커 preview/submit 이전**이다. `toss_preview_order` 는 이 형태들을 로컬에서
+  `toss_us_extended_session_refused:<사유>` 로 거부된다. 판정은
+  `evaluate_approval_window_boundary(rungs=...)` 안에 있고 모든 운영 게이트(카드·
+  일괄 요약·단건/일괄/손절 콜백·reconfirm·redispatch·revalidation rung 게이트·
+  transport hook)가 rungs 를 넘긴다(누락 시 정적 테스트 실패). **모두 브로커
+  preview/submit 이전**이며, 거부 멤버 하나가 일괄 승인 전체를 nonce 소비 전에 막는다.
+  보호 청산(`exit_intent`)은 기본 키에서 기존 validity-only 면제 그대로(캘린더 I/O
+  없음)이고, pre/post 를 켜면 토스 세션을 조회해(fail-open) pre/post 중에는 같은
+  형태 규칙을 적용한다. `toss_preview_order` 는 이 형태들을 로컬에서
   통과시키지만 실주문은 정규장 밖 422 — **preview 통과 ≠ 접수 가능**
 - 🔴 KIS US·KR·crypto 는 이 키를 읽지 않는다. 키 값이 바뀌면 stamp 가 바뀌어 이전
   값으로 발송된 카드는 승인 시 fail-closed

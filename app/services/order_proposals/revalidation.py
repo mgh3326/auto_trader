@@ -42,7 +42,6 @@ from app.services.order_proposals.approval_window import (
     ApprovalWindowCode,
     ApprovalWindowDecision,
     WindowEvaluator,
-    apply_toss_us_extended_order_shape,
     approval_window_rung_result,
     evaluate_approval_window,
     evaluate_approval_window_boundary,
@@ -183,14 +182,11 @@ async def _pre_mutation_window_gate(
     expected_policy_stamp: str,
     now_fn: Clock,
 ) -> RungOutcome | None:
-    decision = apply_toss_us_extended_order_shape(
-        await evaluate_approval_window_boundary(
-            group,
-            window_evaluator=window_evaluator,
-            now_fn=now_fn,
-            expected_policy_stamp=expected_policy_stamp,
-        ),
-        group=group,
+    decision = await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
+        expected_policy_stamp=expected_policy_stamp,
         rungs=(rung,),
     )
     if decision.allowed:
@@ -283,6 +279,7 @@ async def _post_cancel_replace_window_gate(
         window_evaluator=window_evaluator,
         now_fn=now_fn,
         expected_policy_stamp=expected_policy_stamp,
+        rungs=(rung,),
     )
     if decision.allowed:
         return None
@@ -346,14 +343,11 @@ class ApprovalWindowPreSendGate:
     async def __call__(self) -> None:
         # #1116: the session can change between the last rung gate and this
         # hook (e.g. regular -> post), so the rung shape is re-applied here.
-        decision = apply_toss_us_extended_order_shape(
-            await evaluate_approval_window_boundary(
-                self._group,
-                window_evaluator=self._window_evaluator,
-                now_fn=self._now_fn,
-                expected_policy_stamp=self._expected_policy_stamp,
-            ),
-            group=self._group,
+        decision = await evaluate_approval_window_boundary(
+            self._group,
+            window_evaluator=self._window_evaluator,
+            now_fn=self._now_fn,
+            expected_policy_stamp=self._expected_policy_stamp,
             rungs=(self._rung,),
         )
         if decision.allowed:
@@ -992,6 +986,7 @@ async def revalidate_and_submit(
         window_evaluator=evaluate_window,
         now_fn=clock,
         expected_policy_stamp=active_policy_stamp,
+        rungs=pending_rungs,
     )
     if not initial_window.allowed:
         outcomes: list[RungOutcome] = []
