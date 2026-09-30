@@ -197,6 +197,22 @@ class OrderProposalRepository:
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def list_auto_digest_groups(
+        self, *, chat_id: str, message_id: int
+    ) -> list[OrderProposal]:
+        """Return every proposal whose auto notice lives in one digest message."""
+        stmt = (
+            select(OrderProposal)
+            .where(
+                OrderProposal.source_asof["auto_digest"]["chat_id"].astext
+                == str(chat_id),
+                OrderProposal.source_asof["auto_digest"]["message_id"].astext
+                == str(int(message_id)),
+            )
+            .order_by(OrderProposal.id)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def list_recent_groups(
         self, *, limit: int, symbol: str | None, lifecycle_state: str | None
     ) -> list[OrderProposal]:

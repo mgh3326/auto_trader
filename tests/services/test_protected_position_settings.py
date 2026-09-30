@@ -9,9 +9,14 @@ import pytest
 
 from app.services import protected_position_settings as settings_read
 from app.services.protected_quantity_service import (
+    BrokerPositionUnobserved,
     ProtectedPositionSnapshot,
     ProtectionKey,
     ProtectionStateUnavailable,
+)
+from app.services.toss_portfolio_service import (
+    TossPortfolioPosition,
+    TossPortfolioSnapshot,
 )
 
 
@@ -188,3 +193,231 @@ async def test_policy_read_failure_keeps_raw_broker_facts_but_marks_unverified(
     assert row["broker_sellable"] == "8"
     assert row["headroom"] is None
     assert row["protected_quantity"] == "4"
+
+
+# --- #1061: one unreadable Toss position must not blank the whole account ---
+
+
+def _toss_position(
+    symbol: str, *, quantity: object, sellable: object, market: str = "kr"
+) -> TossPortfolioPosition:
+    return TossPortfolioPosition(
+        account="toss",
+        account_name="Toss",
+        broker="toss",
+        source="toss_api",
+        instrument_type="equity_kr" if market == "kr" else "equity_us",
+        market=market,
+        symbol=symbol,
+        name=f"name-{symbol}",
+        quantity=quantity,  # type: ignore[arg-type]
+        avg_buy_price=Decimal("1"),
+        current_price=Decimal("1"),
+        evaluation_amount=None,
+        profit_loss=None,
+        profit_rate=None,
+        sellable_quantity=sellable,  # type: ignore[arg-type]
+    )
+
+
+def _mixed_toss_account(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Declared-None 005930, declared-good 000660 and US AAPL, undeclared-None
+    035720, and an unreadable held on 051910.  Quantities are distinctive so a
+    leak into a log line is detectable."""
+
+    calls: list[int] = []
+
+    async def snapshot(**kwargs):
+        assert kwargs == {
+            "need_sellable": True,
+            "need_cash": False,
+            "use_shared_snapshot": False,
+        }
+        calls.append(1)
+        return TossPortfolioSnapshot(
+            positions=[
+                _toss_position("005930", quantity=Decimal("4321"), sellable=None),
+                _toss_position(
+                    "000660", quantity=Decimal("8765"), sellable=Decimal("8764")
+                ),
+                _toss_position("035720", quantity=Decimal("5555"), sellable=None),
+                _toss_position(
+                    "051910", quantity=Decimal("NaN"), sellable=Decimal("3")
+                ),
+                _toss_position(
+                    "AAPL",
+                    quantity=Decimal("2.5"),
+                    sellable=Decimal("2.5"),
+                    market="us",
+                ),
+            ],
+            errors=[
+                {
+                    "source": "toss_api",
+                    "stage": "sellable_quantity",
+                    "symbol": "005930",
+                    "error": "fake failure",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(settings_read, "fetch_toss_portfolio_snapshot", snapshot)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_toss_read_marks_only_the_unreadable_symbol_unobserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mixed_toss_account(monkeypatch)
+
+    observations = {o.key.symbol: o for o in await settings_read._read_toss_positions()}
+
+    assert set(observations) == {"005930", "000660", "035720", "051910", "AAPL"}
+    good = observations["000660"]
+    assert (good.held, good.sellable, good.error) == (
+        Decimal("8765"),
+        Decimal("8764"),
+        None,
+    )
+    assert good.observed_at is not None
+    assert observations["AAPL"].key == ProtectionKey("toss_live", "us", "AAPL")
+    assert observations["AAPL"].held == Decimal("2.5")
+    for symbol, field in (
+        ("005930", "sellable_quantity"),
+        ("035720", "sellable_quantity"),
+        ("051910", "quantity"),
+    ):
+        bad = observations[symbol]
+        # Unobserved is listed but carries no quantity at all: never held 0.
+        assert bad.unobserved_field == field
+        assert bad.error == f"{field}_unavailable"
+        assert (bad.held, bad.sellable, bad.observed_at) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_declared_good_toss_key_is_observed_despite_a_none_neighbour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mixed_toss_account(monkeypatch)
+
+    observation = await settings_read.fresh_broker_observation(
+        key=ProtectionKey("toss_live", "kr", "000660")
+    )
+
+    assert (observation.held, observation.sellable) == (
+        Decimal("8765"),
+        Decimal("8764"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("symbol", "field"), [("005930", "sellable_quantity"), ("051910", "quantity")]
+)
+async def test_declared_unreadable_toss_key_raises_unobserved_never_zero(
+    monkeypatch: pytest.MonkeyPatch, symbol: str, field: str
+) -> None:
+    _mixed_toss_account(monkeypatch)
+    key = ProtectionKey("toss_live", "kr", symbol)
+
+    with pytest.raises(settings_read.PositionObservationUnavailable) as caught:
+        await settings_read.fresh_broker_observation(key=key)
+
+    # Existing callers (router, CLI, save) keep catching the old class.
+    assert isinstance(caught.value, settings_read.BrokerObservationUnavailable)
+    assert isinstance(caught.value, BrokerPositionUnobserved)
+    assert (caught.value.key, caught.value.field) == (key, field)
+    message = str(caught.value)
+    assert symbol in message and field in message
+    for leaked in ("4321", "8765", "8764", "5555", "000660", "AAPL"):
+        assert leaked not in message
+
+
+@pytest.mark.asyncio
+async def test_successful_toss_absence_is_still_zero_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only an unreadable listed row is unobserved; a real absence stays 0."""
+
+    _mixed_toss_account(monkeypatch)
+
+    observation = await settings_read.fresh_broker_observation(
+        key=ProtectionKey("toss_live", "kr", "000270")
+    )
+
+    assert (observation.held, observation.sellable) == (Decimal("0"), Decimal("0"))
+
+
+@pytest.mark.asyncio
+async def test_toss_unobserved_log_names_symbol_and_field_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _mixed_toss_account(monkeypatch)
+
+    with caplog.at_level("WARNING", logger=settings_read.__name__):
+        await settings_read._read_toss_positions()
+
+    lines = [r.getMessage() for r in caplog.records if r.name == settings_read.__name__]
+    assert lines == [
+        "protected position unobserved: toss_live kr 005930 sellable_quantity is unavailable",
+        "protected position unobserved: toss_live kr 035720 sellable_quantity is unavailable",
+        "protected position unobserved: toss_live kr 051910 quantity is unavailable",
+    ]
+    text = "\n".join(lines)
+    for leaked in ("4321", "8765", "8764", "5555", "000660", "AAPL", "fake failure"):
+        assert leaked not in text
+
+
+@pytest.mark.asyncio
+async def test_settings_inventory_keeps_other_toss_rows_when_one_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mixed_toss_account(monkeypatch)
+
+    async def kis_ok(*, market: str):
+        return []
+
+    async def upbit_ok():
+        return []
+
+    monkeypatch.setattr(settings_read, "_read_kis_market", kis_ok)
+    monkeypatch.setattr(settings_read, "_read_upbit_positions", upbit_ok)
+
+    observations, failures = await settings_read.read_live_position_inventory()
+
+    assert failures == {}
+    good = observations[ProtectionKey("toss_live", "kr", "000660")]
+    bad = observations[ProtectionKey("toss_live", "kr", "005930")]
+    assert good.held == Decimal("8765") and good.error is None
+    assert bad.held is None and bad.error == "sellable_quantity_unavailable"
+    assert settings_read._state_from_observation(snapshot=None, observation=bad) == (
+        "unverified",
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_kis_missing_sellable_still_fails_the_whole_market_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1061 is Toss only: the KIS reader keeps its whole-market failure."""
+
+    class _KIS:
+        async def fetch_my_stocks(self):
+            return [
+                {"pdno": "005930", "prdt_name": "A", "hldg_qty": "3"},
+                {
+                    "pdno": "000660",
+                    "prdt_name": "B",
+                    "hldg_qty": "2",
+                    "ord_psbl_qty": "2",
+                },
+            ]
+
+    monkeypatch.setattr(settings_read, "KISClient", _KIS)
+    with pytest.raises(settings_read.BrokerObservationUnavailable) as caught:
+        await settings_read.fresh_broker_observation(
+            key=ProtectionKey("kis_live", "kr", "000660")
+        )
+    assert not isinstance(caught.value, BrokerPositionUnobserved)

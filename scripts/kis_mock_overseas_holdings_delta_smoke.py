@@ -77,6 +77,7 @@ from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from zoneinfo import ZoneInfo
 
+from app.services.brokers.kis.account_no import parse_kis_account_parts
 from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
     derive_fill_price,
 )
@@ -202,12 +203,14 @@ def _cleanup_path_preflight_error(settings_obj: object) -> str | None:
     holding a position we cannot flatten. There is no scalping-exit reason gate for
     overseas (that is KR-only).
     """
-    acct = getattr(settings_obj, "kis_mock_account_no", None)
-    digits = str(acct or "").replace("-", "")
-    if len(digits) < 10:
+    try:
+        parse_kis_account_parts(
+            getattr(settings_obj, "kis_mock_account_no", None), is_mock=True
+        )
+    except ValueError as exc:
         return (
-            "KIS_MOCK_ACCOUNT_NO must be >=10 digits to form CANO/ACNT_PRDT_CD for "
-            "the cleanup SELL/CANCEL; refusing to BUY a position we cannot flatten"
+            "KIS_MOCK_ACCOUNT_NO cannot form CANO/ACNT_PRDT_CD for the cleanup "
+            f"SELL/CANCEL; refusing to BUY a position we cannot flatten ({exc})"
         )
     return None
 

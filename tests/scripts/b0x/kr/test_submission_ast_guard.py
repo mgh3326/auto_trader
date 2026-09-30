@@ -73,6 +73,7 @@ ALLOWED_KIS_SURFACE = {
     "app.core.symbol",
     "app.mcp_server.tick_size",
     "app.services.brokers.kis.account",
+    "app.services.brokers.kis.account_no",
     "app.services.brokers.kis.base",
     "app.services.brokers.kis.protocols",
     "app.services.brokers.kis.mock_scalping_exec.adapters",

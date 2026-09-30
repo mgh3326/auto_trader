@@ -1,3 +1,4 @@
+import datetime as dt
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
@@ -8,6 +9,19 @@ from app.mcp_server.tooling import foreigners_liquidity as fl
 from app.services.invest_kr_fundamentals_snapshots.repository import (
     InvestKrFundamentalsSnapshotsRepository,
 )
+from app.services.market_valuation_snapshots.normalized_market_cap import (
+    NormalizedMarketCap,
+)
+
+
+def _caps(**symbol_to_cap: float) -> dict[str, NormalizedMarketCap]:
+    """Normalized Naver snapshot map: symbol -> raw-KRW market cap."""
+    return {
+        symbol: NormalizedMarketCap(
+            Decimal(str(value)), dt.date(2026, 9, 30), "naver_finance"
+        )
+        for symbol, value in symbol_to_cap.items()
+    }
 
 
 # --------------------------------------------------------------------------
@@ -93,31 +107,106 @@ class TestFilterIlliquidForeigners:
         ]
 
     def test_filter_excludes_low_foreign_amount(self):
-        kept, excluded = fl.filter_illiquid_foreigners(self._rows())
-        assert excluded == 1
+        kept, excluded = fl.filter_illiquid_foreigners(
+            self._rows(), normalized_market_caps=_caps(**{"005930": 1e14})
+        )
         assert [r["symbol"] for r in kept] == ["005930"]
+        assert excluded == [
+            {
+                "symbol": "JUNK1",
+                "name": None,
+                "reason": fl.REASON_NET_AMOUNT_BELOW_FLOOR,
+            }
+        ]
 
     def test_include_illiquid_keeps_all(self):
         rows = self._rows()
         kept, excluded = fl.filter_illiquid_foreigners(rows, include_illiquid=True)
-        assert excluded == 0
+        assert excluded == []
         assert len(kept) == 2
 
-    def test_market_cap_floor_excludes_when_known_and_tiny(self):
+    def test_market_cap_floor_excludes_below_floor_normalized_cap(self):
         rows = [
             {"symbol": "MICRO", "foreign_net_amount": 5e11, "market_cap": 1e9},
         ]
-        kept, excluded = fl.filter_illiquid_foreigners(rows, min_market_cap_krw=3e10)
-        assert excluded == 1
+        kept, excluded = fl.filter_illiquid_foreigners(
+            rows,
+            min_market_cap_krw=3e10,
+            normalized_market_caps=_caps(MICRO=1e9),
+        )
         assert kept == []
+        assert excluded == [
+            {
+                "symbol": "MICRO",
+                "name": None,
+                "reason": fl.REASON_MARKET_CAP_BELOW_FLOOR,
+            }
+        ]
 
-    def test_market_cap_null_does_not_trigger_floor(self):
+    def test_missing_normalized_cap_is_market_cap_unknown(self):
+        # #1105: with the floor active, no Naver-normalized coverage means the
+        # row can never establish the cap — excluded, fail-closed. (Pre-#1105 a
+        # null market_cap silently passed.)
         rows = [
             {"symbol": "OK", "foreign_net_amount": 5e11, "market_cap": None},
         ]
         kept, excluded = fl.filter_illiquid_foreigners(rows)
-        assert excluded == 0
+        assert kept == []
+        assert excluded == [
+            {
+                "symbol": "OK",
+                "name": None,
+                "reason": fl.REASON_MARKET_CAP_UNKNOWN,
+            }
+        ]
+
+    def test_row_market_cap_is_never_floor_evidence(self):
+        # #1105 core: a backfilled/KIS market_cap on the row can neither
+        # convict nor acquit — even a huge one cannot rescue a symbol that has
+        # no normalized coverage.
+        rows = [
+            {
+                "symbol": "FAKE",
+                "foreign_net_amount": 5e11,
+                "market_cap": 1e15,  # fabricated-looking backfill value
+            }
+        ]
+        kept, excluded = fl.filter_illiquid_foreigners(rows, normalized_market_caps={})
+        assert kept == []
+        assert [e["reason"] for e in excluded] == [fl.REASON_MARKET_CAP_UNKNOWN]
+
+    def test_wrong_unit_backfill_cap_does_not_convict(self):
+        # #1105 desk witness shape: fundamentals backfill holds 5.5e9 (wrong
+        # unit) while the normalized Naver cap is ~5.5e12 — the row must be
+        # judged on the normalized value and kept.
+        rows = [
+            {
+                "symbol": "047040",
+                "name": "대우건설",
+                "foreign_net_amount": 13_680_000_000.0,
+                "market_cap": 5_546_293_611.0,  # backfilled wrong-unit value
+            }
+        ]
+        kept, excluded = fl.filter_illiquid_foreigners(
+            rows, normalized_market_caps=_caps(**{"047040": 5_546_293_611_000.0})
+        )
+        assert [r["symbol"] for r in kept] == ["047040"]
+        assert excluded == []
+
+    def test_market_cap_floor_skipped_when_floor_none(self):
+        rows = [
+            {"symbol": "OK", "foreign_net_amount": 5e11, "market_cap": None},
+        ]
+        kept, excluded = fl.filter_illiquid_foreigners(rows, min_market_cap_krw=None)
         assert [r["symbol"] for r in kept] == ["OK"]
+        assert excluded == []
+
+    def test_amount_checked_before_market_cap(self):
+        # Junk amount + no cap coverage names the amount cause, not the cap.
+        rows = [{"symbol": "JUNK", "foreign_net_amount": 5_000_000.0}]
+        kept, excluded = fl.filter_illiquid_foreigners(rows, normalized_market_caps={})
+        assert kept == []
+        assert [e["reason"] for e in excluded] == [fl.REASON_NET_AMOUNT_BELOW_FLOOR]
 
     def test_only_uses_foreign_net_amount_not_whole_market_trade_amount(self):
         # F6: post-B1 the mapper ALWAYS emits foreign_net_amount; trade_amount is
@@ -134,20 +223,22 @@ class TestFilterIlliquidForeigners:
             }
         ]
         kept, excluded = fl.filter_illiquid_foreigners(rows)
-        assert excluded == 1
         assert kept == []
+        assert [e["reason"] for e in excluded] == [fl.REASON_NET_AMOUNT_BELOW_FLOOR]
 
     def test_missing_foreign_net_amount_is_excluded(self):
         # F6: with no foreign_net_amount, there is no real foreign-net signal —
         # the row is excluded (the old trade_amount fallback is gone).
         rows = [{"symbol": "005930", "trade_amount": 4e11, "market_cap": None}]
         kept, excluded = fl.filter_illiquid_foreigners(rows)
-        assert excluded == 1
         assert kept == []
+        assert [e["reason"] for e in excluded] == [fl.REASON_NET_AMOUNT_MISSING]
 
     def test_negative_net_sell_amount_uses_magnitude(self):
         rows = [{"symbol": "005930", "foreign_net_amount": -4e11, "market_cap": None}]
-        kept, _ = fl.filter_illiquid_foreigners(rows)
+        kept, _ = fl.filter_illiquid_foreigners(
+            rows, normalized_market_caps=_caps(**{"005930": 1e14})
+        )
         assert [r["symbol"] for r in kept] == ["005930"]
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
@@ -157,7 +248,7 @@ class TestFilterIlliquidForeigners:
         rows = [{"symbol": "005930", "foreign_net_amount": bad, "market_cap": None}]
         kept, excluded = fl.filter_illiquid_foreigners(rows)
         assert kept == []
-        assert excluded == 1
+        assert [e["reason"] for e in excluded] == [fl.REASON_NET_AMOUNT_MISSING]
 
 
 class TestKisMillionKrwUnit:
@@ -193,7 +284,8 @@ class TestKisMillionKrwUnit:
             rows, min_foreign_net_amount_krw=100_000_000.0, min_market_cap_krw=None
         )
         assert [r["symbol"] for r in kept] == ["AT"]
-        assert excluded == 1
+        assert len(excluded) == 1
+        assert excluded[0]["reason"] == fl.REASON_NET_AMOUNT_BELOW_FLOOR
 
     def test_source_state_block_is_explicitly_provisional(self):
         block = fl.foreign_ranking_source_state()

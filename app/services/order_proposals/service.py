@@ -3341,6 +3341,43 @@ class OrderProposalsService:
         source_asof["auto_approved"] = auto
         return await self._repo.update_group(group, source_asof=source_asof)
 
+    async def record_auto_digest_ref(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        chat_id: str,
+        message_id: int,
+    ) -> OrderProposal:
+        """Link a digest-published auto notice to its shared Telegram message.
+
+        Veto edits address ``(chat_id, message_id)``.  When N auto-approve
+        items share one digest message this durable link lets the callback
+        path find the sibling items so the message can be re-rendered
+        instead of wiped (ROB-1052).
+        """
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        source_asof["auto_digest"] = {
+            "chat_id": str(chat_id),
+            "message_id": int(message_id),
+        }
+        return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def list_auto_digest_members(
+        self, *, chat_id: str, message_id: int
+    ) -> list[tuple[OrderProposal, list[OrderProposalRung]]]:
+        """Return every proposal bound to one shared digest message."""
+        groups = await self._repo.list_auto_digest_groups(
+            chat_id=chat_id, message_id=message_id
+        )
+        members: list[tuple[OrderProposal, list[OrderProposalRung]]] = []
+        for group in groups:
+            rungs = await self._repo.list_rungs(group.id)
+            members.append((group, rungs))
+        return members
+
     async def record_auto_notification_failure(
         self,
         proposal_id: uuid.UUID,

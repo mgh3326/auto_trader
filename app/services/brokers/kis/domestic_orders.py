@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
+from .account_no import resolve_kis_account_parts
 from .base import _log_kis_api_failure
 from .live_shadow_witness import (
     current as current_live_shadow_witness,
@@ -231,17 +232,7 @@ class DomesticOrderClient:
         await self._parent._ensure_token()
 
         # 계좌번호 확인
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         # Live-only TR. Mock account returns EGW02006 모의투자 TR 이 아닙니다 —
         # is_mock=True is rejected at the top of this function.
@@ -368,17 +359,7 @@ class DomesticOrderClient:
         await self._parent._ensure_token()
 
         # 계좌번호 확인
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         # TR_ID 선택
         if order_type.lower() == "buy":
@@ -645,17 +626,7 @@ class DomesticOrderClient:
         await self._parent._ensure_token()
 
         # 계좌번호 확인
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         tr_id = (
             constants.DOMESTIC_ORDER_CANCEL_TR_MOCK
@@ -842,17 +813,7 @@ class DomesticOrderClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         tr_id = (
             constants.DOMESTIC_DAILY_ORDER_TR_MOCK
@@ -1027,17 +988,7 @@ class DomesticOrderClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         tr_id = (
             constants.DOMESTIC_ORDER_CANCEL_TR_MOCK

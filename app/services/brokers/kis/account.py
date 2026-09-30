@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from . import constants
+from .account_no import resolve_kis_account_parts
 from .base import _log_kis_api_failure
 
 if TYPE_CHECKING:
@@ -114,16 +115,7 @@ class AccountClient:
 
     def _resolve_account_parts(self) -> tuple[str, str]:
         """Parse account number into CANO (8-digit) and ACNT_PRDT_CD (2-digit)."""
-        if not self._settings.kis_account_no:
-            raise ValueError(
-                "KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. 계좌번호를 .env 파일에 추가해주세요."
-            )
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-        return account_no[:8], account_no[8:10]
+        return resolve_kis_account_parts(self._settings)
 
     def _build_balance_request_config(
         self, *, is_overseas: bool, is_mock: bool

@@ -7,7 +7,9 @@
 - Telegram 승인 콜백 durable inbox (W5)
 - 매수 게이트 A/B shadow (ROB-1301)
 - /trader 승인 대기함 (task 890 PR A)
+- 자동승인 가격 폴백 (#1067)
 - 주차자산 proposal-bound 자동 매도 (task 817)
+- Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
 
 ## 기준 원문 계약
 
@@ -194,6 +196,56 @@ trader.robinco.dev `/trader` 페이지의 승인/기각/손절 2클릭 버튼은
 `app/services/trader_page/approval_inbox.py::inbox_block_reason` 이다(자동승인·만료·
 nonce 소비·미게시·알림 카드 제외). `INVEST_APPROVALS_ENABLED`/
 `INVEST_LOSS_CUT_APPROVAL_ENABLED` 기본 false 유지. 런북: `docs/runbooks/trader-page.md`.
+
+### 자동승인 가격 폴백 (#1067)
+
+`toss_live` preview 의 `current_price` 가 없거나 null/blank 일 때만 자동승인
+게이트가 `get_quote` 경로로 KIS 시세 1회를 읽어 **입력만** 대체한다 — 모든
+게이트(캡·거리·tier·loss guard)는 그 값으로 그대로 돈다. 채택 조건: 같은
+심볼·`instrument_type`, `source == "kis"`, `is_stale_price is False`(부재는
+fresh 아님), `data_state == "fresh"`, 유한 양수 가격. US 는 `market_unsupported`.
+결정에 `price_source`(`toss_preview`/`kis_quote_fallback`) 기록.
+
+- **모듈**: `app/services/order_proposals/auto_approve_price_fallback.py`,
+  `auto_approve.evaluate_auto_approve_eligibility(price_fallback=...)`,
+  `dispatch.dispatch_proposal(price_fallback_fn=...)`
+- 🔴 폴백 실패/stale 이면 같은 dispatch 에서 즉시 기존 카드(`price_or_quantity_missing`) —
+  `price_context_message`(#1053) + 닫힌 `price_fallback_reason` 보존. **지연 재평가·재시도
+  없음**(운영자 결정 #1083 B). 스케줄러/TaskIQ/detached task 추가 금지.
+- **런북**: `docs/runbooks/order-proposal-auto-approve-expand.md` §11
+
+### Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
+
+승인 카드(사람 판단 필요: manual/reconfirm/loss-cut/batch)는 항상
+승인 allowlist 첫 chat으로 간다. 자동승인 카드는 `vc` veto 버튼을
+달고 notices 목적지로 가므로, `ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID`가
+설정되면 그 chat도 `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR`에
+들어 있어야 한다 — 빠져 있으면 notices chat에서 온 모든 veto tap이
+chat_not_allowed로 거부된다. 자동승인·체결·만료 알림은
+`ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID` /
+`ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID`가 설정됐을 때만 그 목적지로
+가며, 미설정이면 종전 팬아웃과 바이트 동일하게 동작한다. thread id는
+양의 정수만 유효하고, notices chat 없이 malformed/zero/negative면
+전체가 미설정으로 간주된다(notices chat이 있으면 chat-only로
+degrade). thread만 설정되면 chat은 allowlist 첫 항목으로 fallback한다.
+
+자동승인 알림의 라운드 키는 `open_auto_digest_round()` 스코프 하나다 —
+현재 `support_reserve_net_consume`의 post-commit dispatch 루프와
+`apply_decision_table`의 행 루프만 감싼다. 라운드 안의
+`dispatch_proposal`은 카드 발송 대신 item을 버퍼하고
+`ApprovalDispatchState.PENDING`을 반환하며, 스코프 종료 flush가
+Telegram UTF-16 4096 한계 안쪽으로 chunk를 만들어 한 메시지(필요시
+연속 chunk)로 보낸다. item 0개면 아무것도 보내지 않고, 라운드 밖
+standalone dispatch는 즉시 발송으로 유지된다. flush 실패는 item마다
+standalone과 동일한 durable 최종 처리(attempt fence, 브로커 cancel
+보상, `record_auto_notification_failure`) + Discord operator alert +
+`collector.outcomes` 기록이며, 호출자의 `pending` 결과는 scope 종료 후
+실제 outcome으로 reconcile된다. 공유 digest의 veto tap은
+`source_asof["auto_digest"]` 멤버를 재조회해 digest를 재렌더하므로
+형제 item의 살아있는 `vc` 버튼이 유지된다(standalone 카드는 종전
+wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, notices가
+설정됐을 때만 동일 본문을 별사본으로 보낸다(best-effort, 예외 삼킴).
+콜백 인가·nonce 단일소비·loss-cut 2클릭 규칙은 변경되지 않는다.
 
 ## 유지 규약
 

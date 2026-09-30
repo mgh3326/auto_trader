@@ -14,7 +14,9 @@ Q13 has broker evidence that sellableQuantity already excludes pending sells.
 The Toss verification setting defaults false and must never be used as a
 substitute for that evidence.
 
-This feature registers no scheduler, task, cron job, or automatic remediation.
+This feature registers no scheduler or cron job. Since #943 it does change P
+automatically, by rule only and behind a default-off kill switch: see
+"Rule-executed P follow" below (operator decision, hk doc 8274 section 7).
 
 Every live sell consults the protected-position table even while its scope
 mode is off. Under the approved Q15 rule, a missing table or failed lookup
@@ -33,8 +35,11 @@ sets protected_quantity to zero; it does not delete the head or its history.
 Every service-layer declaration write records a matching append-only row in
 review.protected_position_revisions in the same transaction. The revision
 table rejects update, delete, and truncate at the database layer. Protection
-never automatically decreases after a sell, cancels a pending order, or marks
-itself depleted.
+never cancels a pending order or marks itself depleted. With the #943 kill
+switch on, P follows the holding by rule (hk doc 8274 section 7): it is lowered
+to the holding when the holding falls below it, and raised to the holding after
+an authoritative buy fill on an already-declared name. With the switch off
+(the default) P never changes without an operator write.
 
 The tactical quantity is broker sellable minus protected quantity. Broker raw
 sellable, total held, and locked values remain separately visible. A missing,
@@ -75,6 +80,150 @@ deployment pointed at a different database, and a PostgreSQL restart can still
 change broker state outside the lease. The next fresh read becomes encroached,
 shortfall, or unverified and fails closed.
 
+## Rule-executed P follow (#943)
+
+Authority: operator decision 2026-09-29, hk doc 8274 section 7. P is a
+computed value, not a hand-tuned number. After the first declaration, P
+changes are rule-executed with a result notification only; there is no card
+and no question. Until the H6 ledger exists the interim rule is P = the full
+holding of each protected name. Monthly recompute from H6 NAV and target
+weights, cap-overflow sells, cards, and #728 enforce are out of scope.
+
+Kill switch: PROTECTED_POSITION_AUTO_FOLLOW_ENABLED (settings field
+protected_position_auto_follow_enabled), default false. Only an exact true
+arms it. While it is false the hooks and the lever read no head, read no
+broker, write nothing, and send nothing. Desk decides when to turn it on
+after deploy; turning it off again is the rollback.
+
+What changes P, and how:
+
+- Raise: an authoritative live buy fill, meaning an execution-ledger row with
+  source reconciler and account_mode live, on a key that already has an active
+  declaration (P above zero). P becomes the fresh broker holding. Revision
+  reason auto:fill LEDGER_ID, idempotency key auto:fill:LEDGER_ID.
+- Lower: whenever a fresh broker holding is below P, from any authoritative
+  fill (buy or sell) or from the lever. P becomes the holding; a holding of
+  zero is recorded as a release. Revision reason auto:reconcile, idempotency key
+  auto:reconcile:POSITION_ID:rREVISION.
+- Never: raise above the fresh holding (the service re-reads the broker inside
+  the per-key lock and refuses P above held); create a declaration for an
+  undeclared key; re-raise a released P of zero (P zero means released until an
+  operator declares again); act on websocket rows (provisional) or
+  manual_import rows; write from a read path or from the send-time guard.
+- Unobserved (#1061): when the broker answers but a key's own position is
+  unreadable (for Toss, the holding is listed with sellable_quantity None or an
+  unreadable quantity), that key is not judged. Its outcome is unobserved with
+  reason FIELD_unavailable:SYMBOL, P and revision stay as they are, and nothing
+  is notified. It is never treated as held 0, which would lower or release P.
+  The same holds when the pre-lock read was fine but the in-lock re-read inside
+  save finds the position unreadable: save rolls back and P is unchanged. Other
+  Toss keys in the same response, and undeclared holdings, are unaffected; a
+  whole-response failure (the holdings list itself) still fails every key of
+  that source. The KIS reader is unchanged: a missing KIS sellable still fails
+  that KIS market read as a whole.
+
+Every change goes through ProtectedQuantityService.save, the same path as an
+operator declaration: origin operator_cli, actor the fixed owner id
+(MCP_USER_ID, the value the /invest route resolves as its owner context),
+explicit confirmation, optimistic revision, and exact symbol confirmation. A
+concurrent writer makes the save fail stale and the rule re-decides from the
+new head, so two close fills end at the final holding with no extra revision.
+Replaying the same ledger row or re-running the lever adds no revision.
+
+Each revision sends exactly one message through the trade notifier
+(notify_agent_message, the alerts channel), for example
+"[protected P auto] kis_live kr 005930: P 1 -> 3 (raised, auto:fill 123,
+revision 2, broker held 3)". There is no protected-position-specific notifier.
+A notification failure is logged and does not undo the change.
+
+Where the rule runs:
+
+1. The execution-ledger reconciler, after its commit (TaskIQ
+   execution_ledger.reconcile_execution_ledger_recurring and
+   scripts/reconcile_execution_ledger.py --commit). It covers KIS and Upbit,
+   including orders placed in the broker apps. Production facts reported by
+   desk on 2026-09-29 (relayed by director-1): EXECUTION_LEDGER_RECONCILE_SCHEDULER_ENABLED=true
+   and EXECUTION_LEDGER_COMMIT_ENABLED=true on at-scheduler and at-worker
+   (.env.api), and that day's KIS fill landed through the reconciler at 09:30.
+   If either flag is turned off, KIS and Upbit fills stop reaching this rule.
+2. Toss reconcile booking (toss_reconcile_orders), after its session commits.
+   It covers only Toss orders placed through auto_trader.
+3. The manual lever, which lowers every active declared P that exceeds the fresh
+   holding and never raises. Either the CLI
+   protected_positions.py (--database-url URL | --database-url-env NAME) auto-reconcile [--scope SCOPE]
+   [--commit] (a preview unless --commit; exit 2 while the kill switch is off,
+   1 if any key failed or was unobserved) or the TaskIQ task protected_positions.auto_follow_reconcile,
+   which has no schedule and commits when called. The code registers no
+   schedule. Desk runs the one-shot CLI (auto-reconcile --commit) every 30 minutes during KR and US regular hours from an NCP systemd timer, per operator decision Q-75 on task 944 (option A).
+   See "Lever timer unit" below; the timer must use --database-url-env.
+
+Known gap, Toss app sales: a sale made in the Toss app never reaches the
+execution ledger (there is no account-wide Toss fill reconciler), so no hook
+sees it. P for a toss_live name stays above the holding until the lever runs.
+While P is above the holding, the protection state for that name reads
+shortfall. The ROB-866 Toss manual-activity sweep is not wired to this rule.
+
+### Lever timer unit
+
+Desk owns the NCP systemd service and timer; this repository ships no unit
+and registers no schedule. Constraints the unit must follow:
+
+- Name the database with --database-url-env NAME, never --database-url. A URL
+  given with --database-url is in the process arguments, which any user on the
+  host can read with ps every time the timer fires. With --database-url-env the
+  CLI reads the URL from that one environment variable, supplied by the unit's
+  EnvironmentFile (the variable may be DATABASE_URL itself). The CLI never
+  prints the value; an error about it names only the variable (not set or
+  empty, not a complete PostgreSQL URL, or an invalid variable name).
+- The same environment must carry the application's broker credentials and
+  settings, including PROTECTED_POSITION_AUTO_FOLLOW_ENABLED, because the lever
+  reads fresh broker holdings and honours the kill switch.
+- Command shape:
+  protected_positions.py --database-url-env NAME auto-reconcile --commit
+  with the working directory at the application root. Run it as a oneshot
+  service; the timer limits it to KR and US regular hours.
+- Output is one JSON line on stdout (per-key outcomes: lowered, unchanged,
+  skipped, unobserved, error). Only P decreases are written, one notification per decrease.
+
+Exit codes (unchanged by the timer; alert on them in the unit's logs):
+
+- 0: every declared key was reconciled or needed no change.
+- 1: partial broker-read failure. At least one key's outcome is error (for
+  example its broker read failed) or unobserved (its own position was listed
+  but unreadable; P unchanged, the reason names the field and symbol, and the
+  application log carries a warning naming only scope, market, symbol and
+  field); the other keys were still processed. It
+  also covers a database or unexpected failure before any key was read, which
+  prints only {"error": "protected_positions_unavailable"}.
+- 2: refused. The kill switch is off (error auto_follow_disabled, nothing was
+  read or written; the unit reports failed until desk turns the switch on), or
+  the request was invalid, for example a missing or malformed database variable
+  (error invalid_request).
+
+## Desk write CLI
+
+scripts/protected_positions.py has reviewed write commands alongside the
+read-only list, show, and history commands, to replace ad hoc declaration
+scripts:
+
+    protected_positions.py --database-url URL declare  SCOPE MARKET SYMBOL --quantity Q --reason R --confirm-symbol SYMBOL [--commit]
+    protected_positions.py --database-url URL increase SCOPE MARKET SYMBOL --quantity Q --expected-revision N --reason R --confirm-symbol SYMBOL [--commit]
+    protected_positions.py --database-url URL decrease SCOPE MARKET SYMBOL --quantity Q --expected-revision N --reason R --confirm-symbol SYMBOL [--commit]
+    protected_positions.py --database-url URL release  SCOPE MARKET SYMBOL --expected-revision N --reason R --confirm-symbol SYMBOL [--commit]
+
+Without --commit a write prints a preview (current P, requested P, fresh broker
+held and sellable, resulting state) and writes nothing. With --commit it calls
+ProtectedQuantityService.save with origin operator_cli, the fixed owner actor,
+and the fresh broker observation provider that runs after the per-key lock.
+--confirm-symbol must normalize to the same key. The command word must match
+the result: declare only for a new key, increase above current P, decrease to
+a positive quantity below current P, release to zero. --idempotency-key makes
+a retry of the same request safe; otherwise one is generated and printed. The
+database is only the one named explicitly, by --database-url URL or
+--database-url-env NAME (the value is never printed); the broker read uses the
+application's broker credentials. Exit codes: 0 ok, 1 broker or database
+unavailable, 2 invalid or refused request, 3 stale revision or conflict.
+
 ## Operator migration and later rollout
 
 1. Take a database backup and record its restore procedure before applying the
@@ -111,6 +260,8 @@ sell block.
 
 For a protected sell block, inspect the read-only protected-position head,
 fresh broker held and sellable evidence, and execution-ledger drift evidence.
-Resolve a stale declaration through the approved operator UI in the follow-up
-surface; do not use MCP, direct SQL, a placeholder symbol, or an order-ledger
-write. A broker or policy database outage stays fail-closed for live sells.
+Resolve a stale declaration through the approved operator UI or the desk
+write CLI above; do not use MCP, direct SQL, a placeholder symbol, or an
+order-ledger write. To stop rule-executed changes, set
+PROTECTED_POSITION_AUTO_FOLLOW_ENABLED=false; revisions already written stay
+as evidence. A broker or policy database outage stays fail-closed for live sells.

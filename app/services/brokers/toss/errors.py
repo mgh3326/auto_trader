@@ -49,6 +49,24 @@ class TossRateLimitError(TossApiResponseError):
     """Raised for Toss 429 responses."""
 
 
+class TossPaginationCapExceeded(ValueError):
+    """A paginated read hit its page cap with a cursor still pending.
+
+    A ``ValueError`` like the #1064 collectors' cap error, so existing
+    ``except ValueError`` callers keep working; typed so a caller can tell a
+    truncated walk apart from its own argument errors.
+    """
+
+
+class TossResponseContractError(TossApiErrorBase):
+    """A Toss 2xx payload diverged from the documented result schema.
+
+    Raised when a required field declared non-optional in the official
+    ``openapi.json`` is absent or unparseable. Unknown extra fields are
+    tolerated by design and never trigger this error.
+    """
+
+
 def _parse_error_envelope(payload: dict[str, Any]) -> TossErrorEnvelope:
     raw_error = payload.get("error")
     if not isinstance(raw_error, dict):

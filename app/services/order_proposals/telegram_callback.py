@@ -58,6 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var
+from app.services.fill_notification import resolve_display_name_db
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
@@ -78,12 +79,17 @@ from app.services.order_proposals.approval_window import (
     recheck_approval_window_decision,
     valid_until_block,
 )
+from app.services.order_proposals.auto_digest import (
+    render_auto_digest_veto_update,
+    send_order_proposal_expiry_notice,
+)
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
     TargetFetchFn,
     TossVetoReconcileFn,
     acquire_auto_veto_locks,
     cancel_auto_submitted_rungs,
+    classify_veto_outcome,
     reconcile_toss_auto_veto_terminal,
 )
 from app.services.order_proposals.broker_gateway import (
@@ -212,6 +218,10 @@ async def _reject_window_callback(
             text,
             reply_markup={"inline_keyboard": []},
         )
+    if decision.code is ApprovalWindowCode.EXPIRED:
+        # ROB-1052: expiry is a notice-class event -- mirror the same text
+        # to the notices destination when configured.
+        await send_order_proposal_expiry_notice(notifier=notifier, text=text)
     await _safe_answer(notifier, callback_query_id, text)
     return {
         "handled": False,
@@ -556,33 +566,72 @@ async def _handle_deny(
     }
 
 
-def _classify_veto_outcome(outcome: Mapping[str, Any]) -> str:
-    """Map one ``cancel_auto_submitted_rungs`` outcome to a display bucket.
+async def _edit_auto_notice_after_veto(
+    *,
+    notifier: Any,
+    service: OrderProposalsService,
+    chat_id: Any,
+    message_id: int,
+    proposal_id: uuid.UUID,
+    outcome_text: str,
+) -> None:
+    """Edit the auto notice a veto tapped without burning sibling buttons.
 
-    ``result: "cancel_failed"`` covers two evidentially distinct cases (see
-    ``auto_veto.cancel_auto_submitted_rungs``): (1) the fresh broker fetch
-    already reports the target ``cancelled`` but the Toss-only second-stage
-    ledger reconcile hasn't confirmed yet (``broker_status == "cancelled"``),
-    and (2) the fetch itself never produced a status (broker read failure ->
-    ``broker_status is None``). Neither is proof the cancel did NOT take
-    effect -- ROB-1246: the real Acceptance A run hit case (1) and the
-    operator saw a false "취소 실패" for a cancel that had already succeeded
-    at the broker and converged moments later via a follow-up reconcile.
-    Only a fetched, non-cancelled broker status is a confirmed failure.
+    ROB-1052: a shared digest binds N proposals to one ``(chat_id,
+    message_id)`` via ``source_asof["auto_digest"]``.  Wipe-editing that
+    message would strand every sibling's live ``vc`` nonce behind a dead
+    button, so a multi-member digest is re-rendered instead: the tapped
+    item shows the outcome and still-live siblings keep working buttons.
+    A standalone card (no or one digest member) keeps the historical
+    wipe-edit exactly.
     """
-    result = outcome.get("result")
-    if result in {"filled", "cancelled"}:
-        return result
-    if result == "cancel_failed":
-        broker_status = outcome.get("broker_status")
-        if broker_status == "cancelled" or broker_status is None:
-            return "unconfirmed"
-        return "failed"
-    # "not_cancellable": the rung was never in a broker-cancellable state
-    # (already resolved via another path, or missing a broker_order_id) --
-    # there is no pending broker evidence to wait on, so this is a definite
-    # failure bucket rather than "unconfirmed".
-    return "failed"
+    try:
+        members = await service.list_auto_digest_members(
+            chat_id=str(chat_id), message_id=int(message_id)
+        )
+    except Exception:  # noqa: BLE001 - member discovery must not lose feedback
+        logger.exception(
+            "order_proposals.auto_veto.digest_members_lookup_failed",
+            extra={"proposal_id": str(proposal_id)},
+        )
+        members = []
+    if len(members) <= 1:
+        await _safe_edit_message(
+            notifier,
+            chat_id,
+            message_id,
+            outcome_text,
+            reply_markup={"inline_keyboard": []},
+        )
+        return
+    display_names: dict[uuid.UUID, str | None] = {}
+    for group, _rungs in members:
+        try:
+            display_names[group.proposal_id] = await resolve_display_name_db(
+                {
+                    "equity_kr": "kr",
+                    "equity_us": "us",
+                }.get(
+                    str(getattr(group, "market", "") or ""),
+                    str(getattr(group, "market", "") or ""),
+                ),
+                str(getattr(group, "symbol", "") or ""),
+            )
+        except Exception:  # noqa: BLE001 - a missing label must not lose feedback
+            display_names[group.proposal_id] = None
+    rendered_text, keyboard = render_auto_digest_veto_update(
+        members,
+        vetoed_proposal_id=proposal_id,
+        outcome_text=outcome_text,
+        display_names=display_names,
+    )
+    await _safe_edit_message(
+        notifier,
+        chat_id,
+        message_id,
+        rendered_text,
+        reply_markup=keyboard,
+    )
 
 
 async def _handle_auto_veto(
@@ -634,7 +683,7 @@ async def _handle_auto_veto(
         fetch_fn=fetch_fn,
         toss_reconcile_fn=toss_reconcile_fn,
     )
-    outcome_kinds = {_classify_veto_outcome(outcome) for outcome in outcomes}
+    outcome_kinds = {classify_veto_outcome(outcome) for outcome in outcomes}
 
     await service.record_auto_veto(
         proposal_id,
@@ -665,12 +714,13 @@ async def _handle_auto_veto(
         reason = "auto_veto_cancelled"
         text = "🛑 취소됨"
     if message_id is not None:
-        await _safe_edit_message(
-            notifier,
-            chat_id,
-            message_id,
-            text,
-            reply_markup={"inline_keyboard": []},
+        await _edit_auto_notice_after_veto(
+            notifier=notifier,
+            service=service,
+            chat_id=chat_id,
+            message_id=message_id,
+            proposal_id=proposal_id,
+            outcome_text=text,
         )
     return {
         "handled": True,
@@ -1264,6 +1314,9 @@ async def _handle_batch_approve(
                     "⌛ 일괄 승인 만료",
                     reply_markup={"inline_keyboard": []},
                 )
+            await send_order_proposal_expiry_notice(
+                notifier=notifier, text="⌛ 일괄 승인 만료"
+            )
             return {"handled": False, "reason": "approval_batch_expired"}
 
         try:
@@ -1287,6 +1340,10 @@ async def _handle_batch_approve(
                     message_id,
                     "⌛ 일괄 승인 만료",
                     reply_markup={"inline_keyboard": []},
+                )
+            if str(exc) == "approval_batch_expired":
+                await send_order_proposal_expiry_notice(
+                    notifier=notifier, text="⌛ 일괄 승인 만료"
                 )
             return {"handled": False, "reason": str(exc)}
 
@@ -1666,6 +1723,10 @@ async def _handle_loss_cut_first_click(
                 message_id,
                 rejection_text,
                 reply_markup={"inline_keyboard": []},
+            )
+        if publish_window.code is ApprovalWindowCode.EXPIRED:
+            await send_order_proposal_expiry_notice(
+                notifier=notifier, text=rejection_text
             )
         return {
             "handled": False,

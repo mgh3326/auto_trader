@@ -49,6 +49,10 @@ class TradeNotifier:
         if not self._initialized:
             self._bot_token: str | None = None
             self._chat_ids: list[str] = []
+            # ROB-1052: optional second destination for notice-class traffic.
+            self._notices_chat_id: str | None = None
+            self._notices_thread_id: int | None = None
+            self._notices_configured: bool = False
             # Discord webhooks for different market types
             self._discord_webhook_us: str | None = None
             self._discord_webhook_kr: str | None = None
@@ -70,10 +74,16 @@ class TradeNotifier:
         discord_webhook_kr: str | None = None,
         discord_webhook_crypto: str | None = None,
         discord_webhook_alerts: str | None = None,
+        notices_chat_id: str | None = None,
+        notices_thread_id: int | None = None,
+        notices_configured: bool = False,
     ) -> None:
         """Configure the trade notifier."""
         self._bot_token = bot_token
         self._chat_ids = chat_ids
+        self._notices_chat_id = notices_chat_id
+        self._notices_thread_id = notices_thread_id
+        self._notices_configured = notices_configured
         self._discord_webhook_us = discord_webhook_us
         self._discord_webhook_kr = discord_webhook_kr
         self._discord_webhook_crypto = discord_webhook_crypto
@@ -162,11 +172,34 @@ class TradeNotifier:
     # ── transport wrappers (delegate to transports module) ──
 
     async def _send_to_telegram(
-        self, message: str, parse_mode: str | None = "Markdown"
+        self,
+        message: str,
+        parse_mode: str | None = "Markdown",
+        *,
+        destination: str = "default",
     ) -> bool:
-        """Send message to all configured Telegram chats."""
+        """Send message to the configured Telegram chats.
+
+        ``destination="notices"`` routes the message to the ROB-1052 notices
+        destination (one chat, optional forum thread) when it was configured;
+        an unconfigured notices destination falls back to the legacy fan-out
+        so pre-split behavior is preserved exactly.
+        """
         if not self._http_client or not self._bot_token or not self._chat_ids:
             return False
+        if (
+            destination == "notices"
+            and self._notices_configured
+            and self._notices_chat_id
+        ):
+            return await send_telegram(
+                http_client=self._http_client,
+                bot_token=self._bot_token,
+                chat_ids=[self._notices_chat_id],
+                text=message,
+                parse_mode=parse_mode,
+                message_thread_id=self._notices_thread_id,
+            )
         return await send_telegram(
             http_client=self._http_client,
             bot_token=self._bot_token,
@@ -182,6 +215,7 @@ class TradeNotifier:
         *,
         chat_id: str,
         parse_mode: str | None = "Markdown",
+        message_thread_id: int | None = None,
     ) -> TelegramMethodResult:
         """Send a Telegram approval message using the singleton HTTP client."""
         if not self._http_client or not self._bot_token:
@@ -197,6 +231,7 @@ class TradeNotifier:
             text=text,
             parse_mode=parse_mode,
             reply_markup=inline_keyboard,
+            message_thread_id=message_thread_id,
         )
 
     async def answer_callback(
@@ -264,6 +299,8 @@ class TradeNotifier:
         discord_embed: DiscordEmbed | None,
         telegram_message: str,
         market_type: str | None = None,
+        *,
+        telegram_destination: str = "default",
     ) -> bool:
         """Discord-first, Telegram-fallback dispatch.
 
@@ -271,6 +308,8 @@ class TradeNotifier:
             discord_embed: Discord embed to send. Skipped if None.
             telegram_message: Telegram fallback text. Skipped if empty.
             market_type: Market type for webhook routing. None skips Discord.
+            telegram_destination: ``"notices"`` routes the Telegram leg to the
+                notices destination when configured.
 
         Returns:
             True if notification was delivered via any channel.
@@ -288,7 +327,11 @@ class TradeNotifier:
                         return True
 
             if telegram_message:
-                return await self._send_to_telegram(telegram_message)
+                if telegram_destination == "default":
+                    return await self._send_to_telegram(telegram_message)
+                return await self._send_to_telegram(
+                    telegram_message, destination=telegram_destination
+                )
 
             return False
         except Exception:
@@ -454,7 +497,9 @@ class TradeNotifier:
             detail_url=detail_url,
             enrichment=enrichment,
         )
-        return await self._dispatch(embed, telegram_msg, order.market_type)
+        return await self._dispatch(
+            embed, telegram_msg, order.market_type, telegram_destination="notices"
+        )
 
     async def notify_investment_watch(
         self,

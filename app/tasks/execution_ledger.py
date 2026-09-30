@@ -15,6 +15,7 @@ from app.core.db import AsyncSessionLocal
 from app.core.taskiq_broker import broker as taskiq_broker
 from app.services.execution_ledger.reconciler import ExecutionLedgerReconciler
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
+from app.services.protected_position_auto_follow import follow_committed_fills
 
 ExecutionLedgerBroker = Literal["kis", "upbit"]
 
@@ -33,8 +34,9 @@ def _scheduled_reconcile_labels() -> list[dict[str, str]]:
 async def _run_reconciliation(broker: ExecutionLedgerBroker, window_hours: int) -> dict:
     async with AsyncSessionLocal() as db:
         dry_run = not settings.EXECUTION_LEDGER_COMMIT_ENABLED
+        reconciler = ExecutionLedgerReconciler(ExecutionLedgerRepository(db))
         try:
-            diff = await ExecutionLedgerReconciler(ExecutionLedgerRepository(db)).run(
+            diff = await reconciler.run(
                 broker,
                 window_hours=window_hours,
                 dry_run=dry_run,
@@ -48,6 +50,10 @@ async def _run_reconciliation(broker: ExecutionLedgerBroker, window_hours: int) 
             raise
         # Dry-run skips ledger upserts; commit only preserves the run audit row.
         await db.commit()
+    if not dry_run:
+        # #943: only after the ledger commit, only committed authoritative
+        # rows; kill-switched and fail-open inside follow_committed_fills.
+        await follow_committed_fills(getattr(reconciler, "committed_fill_ids", ()))
     return diff.model_dump(mode="json")
 
 

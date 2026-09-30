@@ -13,6 +13,7 @@
 - Negative-class(기각 코호트) 기록 — decision_bucket (ROB-1283)
 - 정지 종목 오염 차단 — halted_suspect (ROB-1236)
 - analyze quick fast projection (ROB-1311)
+- KR 1분봉 이벤트 수집기 — Toss → research.kr_candles_1m_toss (#1086)
 - KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
 
@@ -288,6 +289,14 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
   로 **정확히 한 번**만 한다. 비유한값(NaN/Inf)·파싱 불가는 None 이고 유동성 필터에서 제외된다.
 - 유동성 하한 `FOREIGNERS_MIN_NET_AMOUNT_KRW`(기본 1억 KRW = 100 백만원)는 변환된 KRW 값에 적용된다.
   #1029 이전에는 백만원 원값을 KRW 로 읽어 모든 행이 1억 미만으로 탈락하고 `status=degraded` 를 반환했다.
+- 🔴 시가총액 하한 `FOREIGNERS_MIN_MARKET_CAP_KRW`(기본 300억 KRW, #1105)는 **정규화된
+  `market_valuation_snapshots` 의 `naver_finance` 값(원화 KRW)에만** 적용된다. 행의
+  `market_cap`(KIS 페이로드·`invest_kr_fundamentals_snapshots`/TradingView 백필·
+  shares×price)은 단위가 정규화되지 않아 적격 증거로 쓰지 않는다. 정규화 커버리지가 없는
+  심볼은 `market_cap_unknown` 으로 **fail-closed 제외**되고 다른 소스로 대체 판정하지 않는다.
+  행별 제외 사유(`net_amount_missing`/`net_amount_below_floor`/`market_cap_below_floor`/
+  `market_cap_unknown`)는 `liquidity_filter.excluded_rows`/`excluded_reasons` 에 싣고
+  `degraded_reason` 에 사유별 건수를 표기한다. `include_illiquid=true` 는 전체 필터를 우회한다.
 - 🔴 이 소스는 **가집계(잠정)** 다: 증권사 직원 입력 누계, 외국인 입력 시각 약 09:30/11:20/13:20/14:30 KST(±10분).
   확정값으로 대체되지 않으며 ~14:30 입력이 이 소스의 최종 상태다. 그래서 KR 외국인 랭킹 응답(행 반환·
   유동성 degraded·호출자 품질 하한 degraded·장외 fake-0 억제 전부)은 `source_state="provisional"`,
@@ -295,6 +304,30 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
   `foreign_net_amount_unit="KRW"` 를 싣는다. 확정 일별 수급은 장 마감 후 확정 투자자 수급
   시리즈(`investor_flow_snapshots` 18:10 KST job, `get_intraday_investor_flow` confirmed 블록)에서 읽는다.
 - 순위 정렬은 `FID_DIV_CLS_CODE="0"`(수량정렬)이다 — 금액 기준 순위(Toss 등)와 순서가 다를 수 있다.
+
+### KR 1분봉 이벤트 수집기 — Toss → research.kr_candles_1m_toss (#1086)
+
+#1054 대상 유형 DART 공시(공급계약 의무·자율, 자사주 직접취득·신탁체결, 잠정실적,
+유상증자 — r3 `cohort_of` 이식)가 들어오면 해당 종목의 D0(공시일 이후 첫 KRX 세션)·D+1
+1분봉을 Toss `GET /api/v1/candles`(1m, `MARKET_DATA_CHART`)로 받아 저장한다.
+
+- **클라이언트**: `TossReadClient.minute_candles`/`collect_minute_candles` (strict DTO
+  `parse_minute_candle_page`; 기존 loose `candles` 는 불변). 커서는 spec 상 `before`/`nextBefore`
+  뿐(after 없음), non-advancing·충돌 중복 = `TossResponseContractError`, 페이지 상한 =
+  `TossPaginationCapExceeded`
+- **수집기/트리거**: `app/services/research_candles/{toss_minute_collector,dart_minute_trigger}.py`
+- **CLI**: `scripts/backfill_kr_candles_1m_toss.py` (dry-run 기본, `--commit` 시 INSERT 권한 사전확인)
+- **런북**: `docs/runbooks/kr-candles-1m-toss-collector.md`
+
+🔴 **대상 테이블은 `research.kr_candles_1m_toss`** — Toss 는 KRX+NXT 합산 상품이라
+venue 키를 가진 `research.kr_candles_1m` 에 쓰지 않는다. KIS 폴백 없음(`source='TOSS'` CHECK),
+Toss 무응답은 gap 기록(JSONL, 침묵 skip 금지).
+🔴 **`time_utc` = Toss 봉 종료시각(raw)**. 봉은 `[timestamp-1분, timestamp)`. 시작시각 라벨을
+쓰는 연구(#1054 N4 `bar_start >= rcept_dt + 6분`)는 반드시
+`time_utc - interval '1 minute' AS bar_start` 로 읽는다. `session_segment` 는 Phase-2 와 같은
+KST 시각 라벨(venue 아님). 가격은 `adjusted=false`. 쓰기는 `ON CONFLICT DO NOTHING`(기존 행 우선,
+불일치는 `existing_conflict` 로 보고만).
+🔴 **스케줄 등록 없음.** 배선(hk 1084 Q-122=A)은 머지 후 desk 가 등록한다(런북 §5).
 
 ## 유지 규약
 
