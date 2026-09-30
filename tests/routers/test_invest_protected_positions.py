@@ -166,7 +166,9 @@ def test_surface_requires_session_admin_and_csrf_protected_mount() -> None:
 
 
 @pytest.mark.unit
-def test_owner_context_is_fixed_and_mcp_and_cli_stay_read_only() -> None:
+def test_owner_context_is_fixed_mcp_stays_read_only_and_cli_writes_via_service() -> (
+    None
+):
     route_source = inspect.getsource(protected_router)
     mcp_source = Path("app/mcp_server/tooling/protected_positions.py").read_text(
         encoding="utf-8"
@@ -178,7 +180,10 @@ def test_owner_context_is_fixed_and_mcp_and_cli_stay_read_only() -> None:
     assert "get_protected_positions" in mcp_source
     assert ".save(" not in mcp_source
     assert "save" not in {"list", "show", "history"}
-    assert ".save(" not in cli_source
+    # #943: the desk CLI gained reviewed write commands; its only write is one
+    # service save as operator_cli, and it never imports a broker module.
+    assert cli_source.count(".save(") == 1
+    assert 'origin="operator_cli"' in cli_source
     assert "brokers" not in cli_source
 
 

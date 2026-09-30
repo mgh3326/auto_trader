@@ -10,6 +10,7 @@ from datetime import UTC, datetime, time
 from app.core.db import AsyncSessionLocal
 from app.services.execution_ledger.reconciler import ExecutionLedgerReconciler
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
+from app.services.protected_position_auto_follow import follow_committed_fills
 
 
 def _parse_cli_date(value: str, *, end_of_day: bool) -> datetime:
@@ -73,6 +74,9 @@ async def _main() -> int:
             raise
         # Dry-run skips ledger upserts; commit only preserves the run audit row.
         await db.commit()
+    if not dry_run:
+        # #943: after the ledger commit only; kill-switched and fail-open.
+        await follow_committed_fills(reconciler.committed_fill_ids)
     print(json.dumps(diff.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
     return 0
 
