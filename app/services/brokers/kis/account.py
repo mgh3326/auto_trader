@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from . import constants
-from .base import _log_kis_api_failure
+from .base import _log_kis_api_failure, mask_account_identifier
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -121,7 +121,8 @@ class AccountClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
         return account_no[:8], account_no[8:10]
 

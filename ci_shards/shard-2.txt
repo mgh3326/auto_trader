@@ -348,6 +348,7 @@ tests/test_investment_report_risk_reward.py
 tests/test_investment_reports_idempotency.py
 tests/test_investor_flow_service.py
 tests/test_investor_flow_snapshots_repository.py
+tests/test_kis_account_error_masking.py
 tests/test_kis_account_fetch_stocks.py
 tests/test_kis_constants.py
 tests/test_kis_domestic_order_normalization.py
