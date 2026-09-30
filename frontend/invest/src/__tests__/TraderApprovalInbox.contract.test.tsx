@@ -313,7 +313,10 @@ test("loss_cut: first click only asks; the token-bound second click confirms", a
   );
   route(
     (u, m) => m === "GET" && u === `/trading/api/trader/approvals/${LC}`,
-    () => jsonResponse(detail({ state: "acked", broker_order_id: "T-9" }, LC)),
+    () =>
+      jsonResponse(
+        mutations().length < 2 ? confirmationDetail(LC) : detail({ state: "acked", broker_order_id: "T-9" }, LC),
+      ),
   );
   const user = userEvent.setup();
   render(<TraderPage />);
@@ -492,6 +495,17 @@ test("trader sources never issue their own mutation requests", () => {
   expect(all).toMatch(/mutateOrderProposalApproval/);
   expect(all).toMatch(/saveProtectedPosition/);
 });
+
+/** The real core's detail after a web first click on a loss_cut proposal. */
+function confirmationDetail(id: string): TraderApprovalDetailResponse {
+  const base = item({ proposal_id: id, exit_intent: "loss_cut", requires_two_step: true });
+  return {
+    as_of: "2026-09-30T01:00:05+00:00",
+    actions_enabled: true,
+    loss_cut_actions_enabled: true,
+    item: { ...base, card_kind: "loss_cut_confirmation", actionable: false, block_reason: "not_human_card" },
+  };
+}
 
 function detail(
   rung: { state: string; broker_order_id?: string | null },

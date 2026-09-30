@@ -24,6 +24,8 @@ interface RowUi {
   result: RowResult | null;
   confirmToken: string | null;
   detail: TraderApprovalDetailResponse | null;
+  /** The last detail re-read failed (e.g. 404 once the proposal is gone). */
+  detailFailed: boolean;
 }
 
 interface RetainedRow {
@@ -36,7 +38,34 @@ const EMPTY_ROW: RowUi = {
   result: null,
   confirmToken: null,
   detail: null,
+  detailFailed: false,
 };
+
+const CONFIRMABLE_RUNG_STATES = new Set(["pending_approval", "needs_reconfirm"]);
+
+/**
+ * True only while the server-side detail is exactly the in-flight loss-cut
+ * confirmation step: the first click published the confirmation card
+ * (reported as not_human_card), nothing approved or leased it yet, it has not
+ * expired, a rung still awaits the decision and both approval gates are on.
+ * Denied (terminal), finished (approved_at / commit lease), expired, gated-off
+ * or missing proposals all read false, so the second-click button hides.
+ */
+function awaitingLossCutConfirmation(detail: TraderApprovalDetailResponse | null): boolean {
+  if (detail === null) return false;
+  const d = detail.item;
+  return (
+    detail.actions_enabled &&
+    detail.loss_cut_actions_enabled &&
+    d.card_kind === "loss_cut_confirmation" &&
+    d.block_reason === "not_human_card" &&
+    d.approved_at === null &&
+    !d.commit_lease_active &&
+    d.expires_in_seconds !== null &&
+    d.expires_in_seconds > 0 &&
+    d.rungs.some((rung) => CONFIRMABLE_RUNG_STATES.has(rung.state))
+  );
+}
 
 const RUNG_STATE_LABEL: Record<string, string> = {
   acked: "접수",
@@ -57,7 +86,27 @@ export function ApprovalInboxPanel() {
   const [rowUi, setRowUi] = useState<Record<string, RowUi>>({});
   const [retained, setRetained] = useState<Record<string, RetainedRow>>({});
   const pendingRef = useRef(new Set<string>());
+  const rowUiRef = useRef(rowUi);
+  rowUiRef.current = rowUi;
   const [, setTick] = useState(0);
+
+  const patchRow = useCallback((id: string, patch: Partial<RowUi>) => {
+    setRowUi((prev) => ({ ...prev, [id]: { ...EMPTY_ROW, ...prev[id], ...patch } }));
+  }, []);
+
+  const refreshDetail = useCallback(
+    async (id: string) => {
+      try {
+        const detail = await fetchTraderApproval(id);
+        patchRow(id, { detail, detailFailed: false });
+      } catch {
+        // A failed re-read keeps the last known broker state on the row but
+        // withdraws any pending loss-cut confirmation button.
+        patchRow(id, { detailFailed: true });
+      }
+    },
+    [patchRow],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,12 +128,17 @@ export function ApprovalInboxPanel() {
         }
         return next;
       });
+      // A row holding a first-click token re-reads its detail so a proposal
+      // denied, finished or expired elsewhere drops its confirmation button.
+      for (const [id, ui] of Object.entries(rowUiRef.current)) {
+        if (ui.confirmToken !== null) void refreshDetail(id);
+      }
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refreshDetail]);
 
   useEffect(() => {
     void load();
@@ -93,10 +147,6 @@ export function ApprovalInboxPanel() {
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(timer);
-  }, []);
-
-  const patchRow = useCallback((id: string, patch: Partial<RowUi>) => {
-    setRowUi((prev) => ({ ...prev, [id]: { ...EMPTY_ROW, ...prev[id], ...patch } }));
   }, []);
 
   const runAction = useCallback(
@@ -128,25 +178,13 @@ export function ApprovalInboxPanel() {
       } catch {
         detail = null;
       }
-      patchRow(id, { pending: false, result, confirmToken, detail });
+      patchRow(id, { pending: false, result, confirmToken, detail, detailFailed: detail === null });
       pendingRef.current.delete(id);
       setRetained((prev) =>
         prev[id] ? prev : { ...prev, [id]: { item, receivedAt: inboxReceivedAt } },
       );
     },
     [patchRow, inboxReceivedAt],
-  );
-
-  const refreshDetail = useCallback(
-    async (id: string) => {
-      try {
-        const detail = await fetchTraderApproval(id);
-        patchRow(id, { detail });
-      } catch {
-        // A failed re-read keeps the last known broker state on the row.
-      }
-    },
-    [patchRow],
   );
 
   const now = Date.now();
@@ -181,7 +219,14 @@ export function ApprovalInboxPanel() {
         const showBase = !acted && actionsEnabled && item.actionable && !expired;
         const showApprove = showBase && (!item.requires_two_step || lossCutEnabled);
         const showDeny = showBase;
-        const showConfirm = acted && ui.confirmToken !== null && actionsEnabled && !expired;
+        const showConfirm =
+          acted &&
+          ui.confirmToken !== null &&
+          actionsEnabled &&
+          lossCutEnabled &&
+          !expired &&
+          !ui.detailFailed &&
+          awaitingLossCutConfirmation(ui.detail);
         return (
           <article className="trader-approval-row" data-testid={`approval-row-${id}`} key={id}>
             <header className="trader-approval-head">
