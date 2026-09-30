@@ -1095,6 +1095,14 @@ class Settings(BaseSettings):
     # `order_proposal_expire_sweep`); recurrence is a separate decision after
     # manual reps, mirroring `toss_manual_activity_sweep_enabled` (ROB-866).
     order_proposal_expire_sweep_enabled: bool = False
+    # #1112: the 16:30 / 07:00 KST night sweep (stale `proposed` groups past
+    # valid_until -> expired, and KIS leftover resting DAY buy rungs ->
+    # expired[inference]). Records only; never reaches a broker. BOTH default
+    # off: `_enabled` gates the task body, `_schedule_enabled` gates whether the
+    # declared cron labels are attached at import (scheduler restart needed).
+    # Activation is the desk's decision, not this repo's.
+    order_proposal_night_sweep_enabled: bool = False
+    order_proposal_night_sweep_schedule_enabled: bool = False
 
     @property
     def order_proposals_telegram_chat_allowlist(self) -> list[str]:
