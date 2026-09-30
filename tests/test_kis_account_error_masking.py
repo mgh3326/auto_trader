@@ -274,3 +274,24 @@ class TestHttpStatusErrorSanitization:
         client = KISClient()
         with pytest.raises(httpx.HTTPStatusError):
             client._parse_kis_response(self._response(404), "fetch_test")
+
+    def test_http_error_exception_chain_is_suppressed(self):
+        """logging.exception / traceback / Sentry walk __cause__ + __context__.
+
+        If the original HTTPStatusError (whose message carries the request URL
+        with CANO/ACNT_PRDT_CD) survives in the chain, formatted tracebacks and
+        chained-exception handlers still leak the account fields.
+        """
+        import traceback
+
+        client = KISClient()
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            client._parse_kis_response(self._response(403), "fetch_test")
+        exc = exc_info.value
+        assert exc.__cause__ is None
+        assert exc.__suppress_context__ is True
+        rendered = "".join(traceback.format_exception(exc))
+        assert "12345678" not in rendered
+        assert "CANO" not in rendered
+        assert "ACNT_PRDT_CD" not in rendered
+        assert "for url" not in rendered

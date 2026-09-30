@@ -84,7 +84,9 @@ def _raise_sanitized_http_status(response: httpx.Response, api_name: str) -> Non
     a response-body snippet, and that text propagates into logs and MCP tool
     errors. Re-raise the same exception type (with ``request``/``response``
     attached for status-code retry handling) but restrict the message to the
-    status code and API name.
+    status code and API name. ``from None`` is required: the original message
+    must not survive via ``__cause__``/``__context__`` into traceback
+    rendering, ``logging.exception``, or Sentry's exception-chain walk.
     """
     try:
         response.raise_for_status()
@@ -93,7 +95,7 @@ def _raise_sanitized_http_status(response: httpx.Response, api_name: str) -> Non
             f"KIS API HTTP {_safe_status_code(exc.response)} error: {api_name}",
             request=exc.request,
             response=exc.response,
-        ) from exc
+        ) from None
 
 
 def _log_kis_api_failure(
