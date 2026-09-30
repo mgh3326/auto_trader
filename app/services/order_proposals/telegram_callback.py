@@ -58,6 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var
+from app.services.fill_notification import resolve_display_name_db
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
@@ -603,10 +604,26 @@ async def _edit_auto_notice_after_veto(
             reply_markup={"inline_keyboard": []},
         )
         return
+    display_names: dict[uuid.UUID, str | None] = {}
+    for group, _rungs in members:
+        try:
+            display_names[group.proposal_id] = await resolve_display_name_db(
+                {
+                    "equity_kr": "kr",
+                    "equity_us": "us",
+                }.get(
+                    str(getattr(group, "market", "") or ""),
+                    str(getattr(group, "market", "") or ""),
+                ),
+                str(getattr(group, "symbol", "") or ""),
+            )
+        except Exception:  # noqa: BLE001 - a missing label must not lose feedback
+            display_names[group.proposal_id] = None
     rendered_text, keyboard = render_auto_digest_veto_update(
         members,
         vetoed_proposal_id=proposal_id,
         outcome_text=outcome_text,
+        display_names=display_names,
     )
     await _safe_edit_message(
         notifier,

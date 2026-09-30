@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
+import uuid
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any, Final, Literal, TypeGuard
@@ -236,6 +237,30 @@ async def _rollback(session: Any, *, event: str) -> bool:
         return False
 
 
+def _reconcile_pending_digest_outcomes(
+    completed: list[dict[str, Any]],
+    digest_round: Any,
+) -> None:
+    """Rewrite still-``pending`` approval_dispatch entries after a round.
+
+    Buffered auto notices return ``PENDING`` inside the scope; the scope-exit
+    flush finalizes each item and records the durable outcome on the
+    collector, so post-block callers swap the placeholder for the real state
+    (failed items already fired the operator alert inside the flush).
+    """
+    for entry in completed:
+        dispatch = entry.get("approval_dispatch")
+        if not isinstance(dispatch, dict) or dispatch.get("state") != "pending":
+            continue
+        try:
+            proposal_key = uuid.UUID(str(entry.get("proposal_id")))
+        except (TypeError, ValueError):
+            continue
+        outcome = digest_round.outcomes.get(proposal_key)
+        if outcome is not None:
+            entry["approval_dispatch"] = dict(outcome)
+
+
 async def support_reserve_net_consume_impl(
     request: dict[str, Any],
     *,
@@ -406,7 +431,7 @@ async def support_reserve_net_consume_impl(
     # single digest after all post-commit dispatches finish.
     from app.services.order_proposals.dispatch import open_auto_digest_round
 
-    async with open_auto_digest_round():
+    async with open_auto_digest_round() as digest_round:
         for dispatch_args, committed in pending_dispatch:
             try:
                 completed.append(
@@ -429,6 +454,11 @@ async def support_reserve_net_consume_impl(
                     "failure_code": "approval_dispatch_boundary_failed",
                 }
                 completed.append(fallback)
+
+    # ROB-1052: buffered dispatches reported "pending" inside the round; the
+    # scope exit flushed and finalized them, so rewrite each still-pending
+    # entry with the durable outcome (failed items already alerted).
+    _reconcile_pending_digest_outcomes(completed, digest_round)
 
     return {
         "success": True,

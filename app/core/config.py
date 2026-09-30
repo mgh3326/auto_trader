@@ -1113,12 +1113,15 @@ class Settings(BaseSettings):
         thread_configured = False
         if raw_thread:
             try:
-                thread_id = int(raw_thread)
-                thread_configured = True
+                parsed_thread = int(raw_thread)
             except ValueError:
-                # A malformed thread id is ignored entirely -- it counts as
-                # "not configured" so the pre-split fallback stays exact.
-                thread_id = None
+                parsed_thread = None
+            # Telegram forum topic ids are positive ints; anything else
+            # (malformed, zero, negative) counts as "not configured" so the
+            # pre-split fallback stays exact.
+            if parsed_thread is not None and parsed_thread > 0:
+                thread_id = parsed_thread
+                thread_configured = True
         return OrderProposalsNoticesDestination(
             chat_id=notices_chat or (allowlist[0] if allowlist else None),
             message_thread_id=thread_id,

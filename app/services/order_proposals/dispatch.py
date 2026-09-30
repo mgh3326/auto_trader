@@ -32,6 +32,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.fill_notification import resolve_display_name_db
+from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     ApprovalDispatchMessages,
     build_approval_dispatch_messages,
@@ -1540,22 +1541,47 @@ async def _flush_auto_digest(
         # Empty allowlist: the durable failure + compensation branch still
         # runs per item, exactly as the standalone path records it.
         for item in collector.items:
-            await finalize_auto_notice(
-                proposal_id=item.proposal_id,
-                attempt_id=item.attempt_id,
-                publication=ApprovalPublication.failed(
+            try:
+                result = await finalize_auto_notice(
+                    proposal_id=item.proposal_id,
+                    attempt_id=item.attempt_id,
+                    publication=ApprovalPublication.failed(
+                        payload_chars=item.payload_chars,
+                        failure_code="telegram_allowlist_empty",
+                    ),
+                    chat_id=None,
+                    notifier=active_notifier,
+                    service_factory=service_factory,
+                    now=observed_now,
+                    cancel_target_fn=cancel_target_fn,
+                    fetch_target_fn=fetch_target_fn,
+                    toss_veto_reconcile_fn=toss_veto_reconcile_fn,
+                    mirror_policy_version=None,
+                    record_digest_ref=False,
+                )
+            except Exception:  # noqa: BLE001 - finalize each item, keep going
+                logger.exception(
+                    "order_proposals.auto_digest.finalize_failed",
+                    extra={
+                        "round_id": str(collector.round_id),
+                        "proposal_id": str(item.proposal_id),
+                    },
+                )
+                result = TelegramDispatchResult(
+                    state=ApprovalDispatchState.FAILED,
+                    message_id=None,
+                    status_code=None,
+                    error_code=None,
+                    error_classification=None,
                     payload_chars=item.payload_chars,
-                    failure_code="telegram_allowlist_empty",
-                ),
-                chat_id=None,
-                notifier=active_notifier,
+                    failure_code="auto_digest_finalize_error",
+                )
+            await _record_digest_outcome(
+                collector,
+                item=item,
+                result=result,
                 service_factory=service_factory,
-                now=observed_now,
-                cancel_target_fn=cancel_target_fn,
-                fetch_target_fn=fetch_target_fn,
-                toss_veto_reconcile_fn=toss_veto_reconcile_fn,
-                mirror_policy_version=None,
-                record_digest_ref=False,
+                observed_now=observed_now,
             )
         return
     for chunk in render_auto_digest_chunks(collector.items):
@@ -1590,7 +1616,7 @@ async def _flush_auto_digest(
                 )
             )
             try:
-                await finalize_auto_notice(
+                result = await finalize_auto_notice(
                     proposal_id=item.proposal_id,
                     attempt_id=item.attempt_id,
                     publication=publication,
@@ -1614,6 +1640,71 @@ async def _flush_auto_digest(
                         "proposal_id": str(item.proposal_id),
                     },
                 )
+                result = TelegramDispatchResult(
+                    state=ApprovalDispatchState.FAILED,
+                    message_id=None,
+                    status_code=None,
+                    error_code=None,
+                    error_classification=None,
+                    payload_chars=telegram_text_length(chunk.text),
+                    failure_code="auto_digest_finalize_error",
+                )
+            await _record_digest_outcome(
+                collector,
+                item=item,
+                result=result,
+                service_factory=service_factory,
+                observed_now=observed_now,
+            )
+
+
+async def _record_digest_outcome(
+    collector: AutoDigestCollector,
+    *,
+    item: Any,
+    result: TelegramDispatchResult,
+    service_factory: ServiceFactory,
+    observed_now: datetime,
+) -> None:
+    """Store the finalized dispatch payload and alert on failure.
+
+    A buffered item returned ``PENDING`` to its caller inside the round, so
+    the failure branches the standalone path exposes -- the Discord operator
+    alert and a real dispatch state in the caller's result -- are delivered
+    here at flush time instead: failed/partial outcomes fire
+    ``send_approval_dispatch_alert`` (the same alert the tooling layer sends
+    for a failed standalone card) and every outcome lands in
+    ``collector.outcomes`` for post-scope reconciliation.
+    """
+    outcome = result.as_dict()
+    if result.state in {
+        ApprovalDispatchState.FAILED,
+        ApprovalDispatchState.PARTIAL_FAILED,
+    }:
+        try:
+            alert = await send_approval_dispatch_alert(
+                item.proposal_id,
+                dispatch_state=result.state.value,
+                dispatch_failure_code=result.failure_code or result.state.value,
+                now=observed_now,
+                service_factory=service_factory,
+            )
+            outcome["operator_alert"] = alert.as_dict()
+        except Exception:  # noqa: BLE001 - alerting stays secondary
+            logger.exception(
+                "order_proposals.auto_digest.alert_failed",
+                extra={
+                    "round_id": str(collector.round_id),
+                    "proposal_id": str(item.proposal_id),
+                },
+            )
+            outcome["operator_alert"] = {
+                "state": "failed",
+                "channel": "discord",
+                "failure_code": "approval_dispatch_alert_internal_error",
+                "recorded": False,
+            }
+    collector.outcomes[item.proposal_id] = outcome
 
 
 __all__ = [

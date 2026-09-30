@@ -12,6 +12,7 @@ import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -838,3 +839,325 @@ def test_digest_chunks_respect_telegram_text_limit():
         assert telegram_text_length(chunk.text) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
     # every item lands in exactly one chunk
     assert sum(len(c.items) for c in chunks) == len(items)
+
+
+# ── B1 regression: the header separator + part digits belong to the budget ──
+
+
+def _sized_digest_item(index: int, acct_len: int) -> Any:
+    from app.services.order_proposals.auto_digest import AutoDigestItem
+
+    return AutoDigestItem(
+        proposal_id=uuid.uuid4(),
+        attempt_id=None,
+        vetoable=False,
+        callback_data=None,
+        payload_chars=0,
+        symbol=f"SYM{index:03d}",
+        display_name=None,
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id="a" * acct_len,
+        side="buy",
+        action="place",
+        target_broker_order_id=None,
+        quantities=["#1 1"],
+        prices=["#1 100"],
+        result="submitted_resting",
+        thesis_summary="t",
+        valid_until_text="2026-09-30 10:00",
+        policy_version="t",
+        detail_url=None,
+    )
+
+
+def test_digest_chunks_never_exceed_limit_near_boundary():
+    """Sizes landing exactly at the limit must not leak a 4097-char chunk."""
+    import random
+
+    from app.telegram_contract import (
+        TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+        telegram_text_length,
+    )
+
+    # The exact probe shape that exposed the bug: 42 items, acct 1..60 chars.
+    rng = random.Random(187)
+    items = [_sized_digest_item(i, rng.randint(1, 60)) for i in range(42)]
+    chunks = render_auto_digest_chunks(items)
+    assert all(
+        telegram_text_length(chunk.text) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+        for chunk in chunks
+    )
+    assert sum(len(c.items) for c in chunks) == len(items)
+
+    # Wider fuzz: many size profiles, every chunk must fit.
+    for seed in range(300):
+        trial = random.Random(seed)
+        trial_items = [
+            _sized_digest_item(i, trial.randint(1, 60))
+            for i in range(trial.randint(20, 60))
+        ]
+        for chunk in render_auto_digest_chunks(trial_items):
+            assert (
+                telegram_text_length(chunk.text)
+                <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+            )
+
+
+def test_digest_single_oversized_item_block_is_bounded():
+    """A lone block that outgrows a chunk is shortened, never sent oversized."""
+    from app.services.order_proposals.auto_digest import AutoDigestItem
+    from app.telegram_contract import (
+        TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+        telegram_text_length,
+    )
+
+    oversized = AutoDigestItem(
+        proposal_id=uuid.uuid4(),
+        attempt_id=None,
+        vetoable=False,
+        callback_data=None,
+        payload_chars=0,
+        symbol="HUGE",
+        display_name=None,
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id="acct",
+        side="buy",
+        action="place",
+        target_broker_order_id=None,
+        quantities=[f"#{i} 1" for i in range(400)],
+        prices=[f"#{i} 100" for i in range(400)],
+        result="submitted_resting",
+        thesis_summary="t",
+        valid_until_text="2026-09-30 10:00",
+        policy_version="t",
+        detail_url=None,
+    )
+    chunks = render_auto_digest_chunks([oversized])
+    assert len(chunks) == 1
+    assert telegram_text_length(chunks[0].text) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+
+
+# ── B2 regression: flush failures alert and expose real outcomes ───
+
+
+@pytest.mark.asyncio
+async def test_digest_send_failure_alerts_and_records_outcomes(
+    monkeypatch, db_session
+):
+    """A failed digest keeps the standalone-path operator alert and state."""
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID", NOTICES_CHAT_ID
+    )
+    first = await _auto_proposal(db_session, symbol="005930")
+    second = await _auto_proposal(db_session, symbol="000660")
+    notifier = _FakeNotifier(fail_sends=True, first_message_id=8400)
+
+    async def cancel_fn(**kwargs):
+        return {"success": True}
+
+    async def fetch_fn(**kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id=kwargs["order_id"],
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="0",
+            status="cancelled",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    alerts: list[dict[str, Any]] = []
+
+    class _Alert:
+        def __init__(self, proposal_id):
+            self._pid = proposal_id
+
+        def as_dict(self):
+            return {
+                "state": "sent",
+                "channel": "discord",
+                "proposal_id": str(self._pid),
+            }
+
+    async def fake_alert(proposal_id, *, dispatch_state, dispatch_failure_code, now, service_factory):
+        alerts.append(
+            {
+                "proposal_id": proposal_id,
+                "dispatch_state": dispatch_state,
+                "dispatch_failure_code": dispatch_failure_code,
+            }
+        )
+        return _Alert(proposal_id)
+
+    monkeypatch.setattr(
+        dispatch_module, "send_approval_dispatch_alert", fake_alert
+    )
+
+    async with open_auto_digest_round(
+        notifier=notifier,
+        service_factory=_session_factory(db_session),
+        cancel_target_fn=cancel_fn,
+        fetch_target_fn=fetch_fn,
+    ) as digest_round:
+        await _dispatch_auto(db_session, first, notifier, broker_suffix="g1")
+        await _dispatch_auto(db_session, second, notifier, broker_suffix="g2")
+
+    # Same alert the tooling fires for a failed standalone card — per member.
+    assert {a["proposal_id"] for a in alerts} == {
+        first.proposal_id,
+        second.proposal_id,
+    }
+    assert all(a["dispatch_state"] == "failed" for a in alerts)
+    # The collected outcomes let the caller rewrite its stale "pending".
+    assert set(digest_round.outcomes) == {
+        first.proposal_id,
+        second.proposal_id,
+    }
+    for outcome in digest_round.outcomes.values():
+        assert outcome["state"] == "failed"
+        assert outcome["ok"] is False
+        assert outcome["operator_alert"]["state"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_digest_allowlist_empty_alerts_and_records_outcomes(
+    monkeypatch, db_session
+):
+    """The empty-destination flush branch alerts exactly like a failed send."""
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "")
+    group = await _auto_proposal(db_session, symbol="005930")
+    notifier = _FakeNotifier(first_message_id=8500)
+
+    async def cancel_fn(**kwargs):
+        return {"success": True}
+
+    async def fetch_fn(**kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id=kwargs["order_id"],
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="0",
+            status="cancelled",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    alerts: list[dict[str, Any]] = []
+
+    class _Alert:
+        def as_dict(self):
+            return {"state": "sent", "channel": "discord"}
+
+    async def fake_alert(proposal_id, *, dispatch_state, dispatch_failure_code, now, service_factory):
+        alerts.append(
+            {
+                "proposal_id": proposal_id,
+                "dispatch_failure_code": dispatch_failure_code,
+            }
+        )
+        return _Alert()
+
+    monkeypatch.setattr(
+        dispatch_module, "send_approval_dispatch_alert", fake_alert
+    )
+
+    async with open_auto_digest_round(
+        notifier=notifier,
+        service_factory=_session_factory(db_session),
+        cancel_target_fn=cancel_fn,
+        fetch_target_fn=fetch_fn,
+    ) as digest_round:
+        await _dispatch_auto(db_session, group, notifier, broker_suffix="h1")
+
+    assert len(alerts) == 1
+    assert alerts[0]["proposal_id"] == group.proposal_id
+    assert alerts[0]["dispatch_failure_code"] == "telegram_allowlist_empty"
+    outcome = digest_round.outcomes[group.proposal_id]
+    assert outcome["state"] == "failed"
+    assert outcome["failure_code"] == "telegram_allowlist_empty"
+
+
+def test_reconcile_pending_digest_outcomes_swaps_real_states():
+    """Post-scope reconcile turns a buffered 'pending' into the flush outcome."""
+    from app.mcp_server.tooling.support_reserve_net_consumer_tool import (
+        _reconcile_pending_digest_outcomes,
+    )
+
+    pid_ok = uuid.uuid4()
+    pid_failed = uuid.uuid4()
+    pid_missing = uuid.uuid4()
+    completed = [
+        {"proposal_id": str(pid_ok), "approval_dispatch": {"state": "pending"}},
+        {
+            "proposal_id": str(pid_failed),
+            "approval_dispatch": {"state": "pending"},
+        },
+        {
+            "proposal_id": str(pid_missing),
+            "approval_dispatch": {"state": "pending"},
+        },
+        {"proposal_id": "x", "approval_dispatch": {"state": "sent"}},
+        {"proposal_id": "y"},
+    ]
+    digest_round = type(
+        "R",
+        (),
+        {
+            "outcomes": {
+                pid_ok: {"state": "sent", "ok": True},
+                pid_failed: {
+                    "state": "failed",
+                    "failure_code": "telegram_dispatch_failed",
+                    "ok": False,
+                    "operator_alert": {"state": "sent"},
+                },
+            }
+        },
+    )()
+    _reconcile_pending_digest_outcomes(completed, digest_round)
+    assert completed[0]["approval_dispatch"] == {"state": "sent", "ok": True}
+    assert completed[1]["approval_dispatch"]["state"] == "failed"
+    assert completed[1]["approval_dispatch"]["operator_alert"] == {
+        "state": "sent"
+    }
+    # An item the flush never finalized keeps its pending marker.
+    assert completed[2]["approval_dispatch"] == {"state": "pending"}
+    # Non-pending entries are never touched.
+    assert completed[3]["approval_dispatch"] == {"state": "sent"}
+    assert "approval_dispatch" not in completed[4]
+
+
+# ── N2: non-positive thread ids are unconfigured ────────────────────
+
+
+def test_notices_destination_nonpositive_thread_is_unconfigured(monkeypatch):
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID", ""
+    )
+    for raw in ("0", "-5"):
+        monkeypatch.setattr(
+            settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", raw
+        )
+        dest = notices_destination()
+        assert dest.configured is False
+        assert dest.message_thread_id is None
+    # A non-positive thread with a notices chat degrades to chat-only.
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID", NOTICES_CHAT_ID
+    )
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID", "-5"
+    )
+    dest = notices_destination()
+    assert dest.configured is True
+    assert dest.chat_id == NOTICES_CHAT_ID
+    assert dest.message_thread_id is None

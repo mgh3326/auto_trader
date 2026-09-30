@@ -7,6 +7,7 @@
 - Telegram 승인 콜백 durable inbox (W5)
 - 매수 게이트 A/B shadow (ROB-1301)
 - 주차자산 proposal-bound 자동 매도 (task 817)
+- Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
 
 ## 기준 원문 계약
 
@@ -180,6 +181,34 @@ dispatch와 send가 가능하다. 계좌 누락·불일치 또는 계측 실패�
 사람 승인 카드로 간다. 직접 주문 API, 기존 `cash_funding` 증거 계약,
 default-disabled 게이트, 스케줄러는 바뀌지 않는다. 자세한 운영 경계는
 `docs/runbooks/order-proposal-auto-approve-expand.md` §10을 따른다.
+
+### Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
+
+승인 카드(사람 판단 필요: manual/reconfirm/loss-cut/batch/veto)는 항상
+승인 allowlist 첫 chat으로 간다. 자동승인·체결·만료 알림은
+`ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID` /
+`ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID`가 설정됐을 때만 그 목적지로
+가며, 미설정이면 종전 팬아웃과 바이트 동일하게 동작한다. thread id는
+양의 정수만 유효하고 malformed/zero/negative는 전체가 미설정으로
+간주된다. thread만 설정되면 chat은 allowlist 첫 항목으로 fallback한다.
+
+자동승인 알림의 라운드 키는 `open_auto_digest_round()` 스코프 하나다 —
+현재 `support_reserve_net_consume`의 post-commit dispatch 루프와
+`apply_decision_table`의 행 루프만 감싼다. 라운드 안의
+`dispatch_proposal`은 카드 발송 대신 item을 버퍼하고
+`ApprovalDispatchState.PENDING`을 반환하며, 스코프 종료 flush가
+Telegram UTF-16 4096 한계 안쪽으로 chunk를 만들어 한 메시지(필요시
+연속 chunk)로 보낸다. item 0개면 아무것도 보내지 않고, 라운드 밖
+standalone dispatch는 즉시 발송으로 유지된다. flush 실패는 item마다
+standalone과 동일한 durable 최종 처리(attempt fence, 브로커 cancel
+보상, `record_auto_notification_failure`) + Discord operator alert +
+`collector.outcomes` 기록이며, 호출자의 `pending` 결과는 scope 종료 후
+실제 outcome으로 reconcile된다. 공유 digest의 veto tap은
+`source_asof["auto_digest"]` 멤버를 재조회해 digest를 재렌더하므로
+형제 item의 살아있는 `vc` 버튼이 유지된다(standalone 카드는 종전
+wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, notices가
+설정됐을 때만 동일 본문을 별사본으로 보낸다(best-effort, 예외 삼킴).
+콜백 인가·nonce 단일소비·loss-cut 2클릭 규칙은 변경되지 않는다.
 
 ## 유지 규약
 

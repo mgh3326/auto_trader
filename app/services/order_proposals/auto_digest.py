@@ -54,6 +54,7 @@ from app.services.order_proposals.dispatch_contract import (
 )
 from app.telegram_contract import (
     TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+    split_telegram_text,
     telegram_text_length,
 )
 
@@ -108,6 +109,10 @@ class AutoDigestCollector:
 
     round_id: uuid.UUID = field(default_factory=uuid.uuid4)
     items: list[AutoDigestItem] = field(default_factory=list)
+    # proposal_id -> the finalized approval_dispatch payload (filled by the
+    # scope-exit flush) so callers that received "pending" inside the round
+    # can reconcile their results after the block exits.
+    outcomes: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
 
     def add(self, item: AutoDigestItem) -> None:
         self.items.append(item)
@@ -252,24 +257,43 @@ def render_auto_digest_chunks(
     """Group items into sendable digest messages under the UTF-16 limit."""
     if not items:
         return []
-    blocks = {
-        item.proposal_id: "\n".join(_render_item_block(item)) for item in items
-    }
-    header_budget = telegram_text_length(_digest_header(len(items), 1, 2))
+    # Every chunk's text is header + "\n\n" + blocks.join("\n\n"), so the
+    # header block is charged its own trailing separator and the widest
+    # possible "(part/total)" suffix: part and total each take up to
+    # len(str(len(items))) digits, and len(str)-width "9" values are the
+    # widest single-part headers renderable.
+    widest = 10 ** len(str(len(items))) - 1
+    header_budget = telegram_text_length(
+        _digest_header(len(items), widest, widest)
+    )
+    block_budget = TELEGRAM_SEND_MESSAGE_TEXT_LIMIT - header_budget - 2
+    blocks: dict[uuid.UUID, str] = {}
+    for item in items:
+        block = "\n".join(_render_item_block(item))
+        if telegram_text_length(block) > block_budget:
+            # A lone block can outgrow a whole chunk: the thesis line is the
+            # only unbounded field, drop it first; hard-truncate as the last
+            # resort so a digest never fails with telegram_payload_too_long.
+            block = "\n".join(
+                line
+                for line in _render_item_block(item)
+                if not line.startswith("- 근거:")
+            )
+        if telegram_text_length(block) > block_budget:
+            block = split_telegram_text(block, max_units=block_budget)[0]
+        blocks[item.proposal_id] = block
     groups: list[list[AutoDigestItem]] = []
     current: list[AutoDigestItem] = []
     current_len = 0
     for item in items:
-        block_len = telegram_text_length(blocks[item.proposal_id])
-        additional = block_len if not current else block_len + 2
-        if (
-            current
-            and header_budget + current_len + additional
-            > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
-        ):
+        additional = telegram_text_length(blocks[item.proposal_id]) + (
+            2 if current else 0
+        )
+        if current and current_len + additional > block_budget:
             groups.append(current)
             current = []
             current_len = 0
+            additional = telegram_text_length(blocks[item.proposal_id])
         current.append(item)
         current_len += additional
     if current:
@@ -295,7 +319,12 @@ def render_auto_digest_chunks(
     return chunks
 
 
-def _digest_item_from_group(group: Any, rungs: Sequence[Any]) -> AutoDigestItem:
+def _digest_item_from_group(
+    group: Any,
+    rungs: Sequence[Any],
+    *,
+    display_name: str | None = None,
+) -> AutoDigestItem:
     """Re-derive render fields from the current durable row at veto time."""
     auto = (
         (getattr(group, "source_asof", None) or {}).get("auto_approved", {})
@@ -310,7 +339,7 @@ def _digest_item_from_group(group: Any, rungs: Sequence[Any]) -> AutoDigestItem:
         callback_data=None,
         payload_chars=0,
         symbol=str(group.symbol),
-        display_name=None,
+        display_name=display_name,
         market=str(getattr(group, "market", "") or ""),
         account_mode=str(getattr(group, "account_mode", "") or ""),
         broker_account_id=getattr(group, "broker_account_id", None),
@@ -388,6 +417,7 @@ def render_auto_digest_veto_update(
     *,
     vetoed_proposal_id: uuid.UUID,
     outcome_text: str,
+    display_names: dict[uuid.UUID, str | None] | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """Rebuild a multi-member digest after one veto was consumed.
 
@@ -401,7 +431,13 @@ def render_auto_digest_veto_update(
         blocks: list[str] = []
         rows: list[list[dict[str, Any]]] = []
         for group, rungs in members:
-            item = _digest_item_from_group(group, rungs)
+            item = _digest_item_from_group(
+                group,
+                rungs,
+                display_name=(
+                    (display_names or {}).get(group.proposal_id)
+                ),
+            )
             block = _render_item_block(item, compact=compact)
             if group.proposal_id == vetoed_proposal_id:
                 block.append(f"→ {outcome_text}")
