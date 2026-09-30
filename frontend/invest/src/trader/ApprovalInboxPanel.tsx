@@ -94,18 +94,30 @@ export function ApprovalInboxPanel() {
     setRowUi((prev) => ({ ...prev, [id]: { ...EMPTY_ROW, ...prev[id], ...patch } }));
   }, []);
 
+  // Detail reads for one row can overlap (post-action read, list reload,
+  // state refresh). Each read takes the next id for its row and applies its
+  // outcome -- success or failure -- only while it is still the latest, so a
+  // slow older response can never restore a withdrawn confirmation button.
+  const detailReadRef = useRef(new Map<string, number>());
+  const beginDetailRead = useCallback((id: string) => {
+    const readId = (detailReadRef.current.get(id) ?? 0) + 1;
+    detailReadRef.current.set(id, readId);
+    return () => detailReadRef.current.get(id) === readId;
+  }, []);
+
   const refreshDetail = useCallback(
     async (id: string) => {
+      const isLatest = beginDetailRead(id);
       try {
         const detail = await fetchTraderApproval(id);
-        patchRow(id, { detail, detailFailed: false });
+        if (isLatest()) patchRow(id, { detail, detailFailed: false });
       } catch {
         // A failed re-read keeps the last known broker state on the row but
         // withdraws any pending loss-cut confirmation button.
-        patchRow(id, { detailFailed: true });
+        if (isLatest()) patchRow(id, { detailFailed: true });
       }
     },
-    [patchRow],
+    [beginDetailRead, patchRow],
   );
 
   const load = useCallback(async () => {
@@ -172,19 +184,25 @@ export function ApprovalInboxPanel() {
           result = { reason: "error", message: toErrorMessage(err) };
         }
       }
+      const isLatest = beginDetailRead(id);
       let detail: TraderApprovalDetailResponse | null = null;
       try {
         detail = await fetchTraderApproval(id);
       } catch {
         detail = null;
       }
-      patchRow(id, { pending: false, result, confirmToken, detail, detailFailed: detail === null });
+      patchRow(id, {
+        pending: false,
+        result,
+        confirmToken,
+        ...(isLatest() ? { detail, detailFailed: detail === null } : {}),
+      });
       pendingRef.current.delete(id);
       setRetained((prev) =>
         prev[id] ? prev : { ...prev, [id]: { item, receivedAt: inboxReceivedAt } },
       );
     },
-    [patchRow, inboxReceivedAt],
+    [beginDetailRead, patchRow, inboxReceivedAt],
   );
 
   const now = Date.now();
