@@ -11,6 +11,7 @@ work.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -29,6 +30,7 @@ from app.services.protected_position_history import (
 )
 from app.services.protected_quantity_service import (
     BrokerPositionObservation,
+    BrokerPositionUnobserved,
     ProtectedPositionSnapshot,
     ProtectedQuantityService,
     ProtectedQuantityValidationError,
@@ -40,11 +42,23 @@ from app.services.protected_quantity_service import (
 )
 from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 
+logger = logging.getLogger(__name__)
+
 
 class BrokerObservationUnavailable(RuntimeError):
     """A settings read could not obtain fresh held and sellable evidence."""
 
     error = "broker_read_failed"
+
+
+class PositionObservationUnavailable(
+    BrokerObservationUnavailable, BrokerPositionUnobserved
+):
+    """The broker answered, but this one position's own H or S is unreadable.
+
+    Callers that already handle ``BrokerObservationUnavailable`` keep failing
+    closed; the auto-follow rule additionally recognizes the key and field.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +71,9 @@ class LivePositionObservation:
     sellable: Decimal | None
     observed_at: datetime | None
     error: str | None = None
+    # Set when the broker listed this position but its own held or sellable
+    # was unreadable (for Toss, ``quantity`` or ``sellable_quantity``).
+    unobserved_field: str | None = None
 
 
 def _decimal_text(value: Decimal | None) -> str | None:
@@ -169,6 +186,22 @@ async def _read_upbit_positions() -> list[LivePositionObservation]:
     return observations
 
 
+def _toss_unobserved_field(position: Any) -> str | None:
+    """Name the first unreadable quantity field of one Toss position."""
+
+    try:
+        coerce_broker_quantity(position.quantity, field="broker_held")
+    except ProtectedQuantityValidationError:
+        return "quantity"
+    # ``sellable_quantity`` is None exactly when this symbol's own
+    # /sellable-quantity request failed; the Toss DTO never parses None.
+    try:
+        coerce_broker_quantity(position.sellable_quantity, field="broker_sellable")
+    except ProtectedQuantityValidationError:
+        return "sellable_quantity"
+    return None
+
+
 async def _read_toss_positions() -> list[LivePositionObservation]:
     # Explicitly bypass both the portfolio snapshot and the sellable cache.
     # A settings declaration must record broker evidence, never a cached S.
@@ -186,19 +219,39 @@ async def _read_toss_positions() -> list[LivePositionObservation]:
         )
         if key is None:
             continue
-        held = _require_quantity(position.quantity, field="broker_held")
-        if position.sellable_quantity is None:
-            raise BrokerObservationUnavailable("Toss sellable quantity is unavailable")
-        sellable = _require_quantity(
-            position.sellable_quantity,
-            field="broker_sellable",
-        )
+        name = (position.name or "").strip() or key.symbol
+        unobserved_field = _toss_unobserved_field(position)
+        if unobserved_field is not None:
+            # One unreadable holding is unobserved for that symbol only. It is
+            # listed (so it can never look like a successful zero) but carries
+            # no quantity, and it does not fail the other positions.
+            logger.warning(
+                "protected position unobserved: %s %s %s %s is unavailable",
+                key.account_scope,
+                key.market,
+                key.symbol,
+                unobserved_field,
+            )
+            observations.append(
+                LivePositionObservation(
+                    key=key,
+                    name=name,
+                    held=None,
+                    sellable=None,
+                    observed_at=None,
+                    error=f"{unobserved_field}_unavailable",
+                    unobserved_field=unobserved_field,
+                )
+            )
+            continue
         observations.append(
             LivePositionObservation(
                 key=key,
-                name=position.name.strip() or key.symbol,
-                held=held,
-                sellable=sellable,
+                name=name,
+                held=coerce_broker_quantity(position.quantity, field="broker_held"),
+                sellable=coerce_broker_quantity(
+                    position.sellable_quantity, field="broker_sellable"
+                ),
                 observed_at=_observed_now(),
             )
         )
@@ -215,9 +268,15 @@ async def _read_single_from_market(*, key: ProtectionKey) -> LivePositionObserva
     else:  # normalize_protection_key makes this unreachable, retain fail-closed.
         raise BrokerObservationUnavailable("unsupported broker protection scope")
 
-    for observation in observations:
-        if observation.key == key:
-            return observation
+    matches = [observation for observation in observations if observation.key == key]
+    for observation in matches:
+        if observation.unobserved_field is not None:
+            # Never fall through to the zero-evidence branch below.
+            raise PositionObservationUnavailable(
+                key=key, field=observation.unobserved_field
+            )
+    if matches:
+        return matches[0]
     # The broker successfully answered and did not list this position. This is
     # real zero evidence, unlike a fetch failure; a release can therefore be
     # recorded while a nonzero declaration cannot exceed it.
@@ -469,6 +528,7 @@ def protection_change_preview(
 __all__ = [
     "BrokerObservationUnavailable",
     "LivePositionObservation",
+    "PositionObservationUnavailable",
     "fresh_broker_observation",
     "protection_change_preview",
     "read_live_position_inventory",

@@ -148,6 +148,23 @@ class ProtectionKey:
     symbol: str
 
 
+class BrokerPositionUnobserved(RuntimeError):
+    """The broker answered, but this key's own held or sellable is unreadable.
+
+    It is never zero evidence: the key's P must stay unchanged, because
+    treating an unreadable holding as 0 would lower or release protection.
+    It carries only the key and the unreadable field, never a quantity.
+    """
+
+    def __init__(self, *, key: ProtectionKey, field: str) -> None:
+        self.key = key
+        self.field = field
+        super().__init__(
+            f"{key.account_scope} {key.market} {key.symbol}: "
+            f"broker {field} is unavailable"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class BrokerPositionObservation:
     """Fresh broker evidence used only for an operator declaration write."""
@@ -1781,6 +1798,7 @@ __all__ = [
     "MODES",
     "AccountScope",
     "BrokerPositionObservation",
+    "BrokerPositionUnobserved",
     "Headroom",
     "ProtectedPositionSnapshot",
     "ProtectedPositionWriteResult",

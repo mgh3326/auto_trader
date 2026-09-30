@@ -20,7 +20,8 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -29,7 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst
 from app.services.fill_notification import resolve_display_name_db
+from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     ApprovalDispatchMessages,
     build_approval_dispatch_messages,
@@ -52,6 +55,15 @@ from app.services.order_proposals.auto_approve import (
 from app.services.order_proposals.auto_approve_audit import (
     AutoApproveNotEvaluatedReason,
     build_auto_approve_rejection_card_block,
+)
+from app.services.order_proposals.auto_digest import (
+    AutoDigestCollector,
+    activate_collector,
+    current_auto_digest,
+    notices_destination,
+    render_auto_digest_chunks,
+    reset_collector,
+    snapshot_auto_digest_item,
 )
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
@@ -217,6 +229,11 @@ def _unrecorded_revalidation_fallbacks(
             inputs["eligibility_error"] = True
         elif reason == "multi_rung_requires_approval":
             inputs["pending_rung_count"] = str(pending_count)
+        # #1053: a gate exception still had a preview result; keep its
+        # diagnostic on the fallback row (bounded at write by the projector).
+        price_context = detail.get("price_context_message")
+        if isinstance(price_context, str) and price_context.strip():
+            inputs["price_context_message"] = price_context
         fallbacks.append(
             {
                 "rung_index": outcome.rung_index,
@@ -795,6 +812,7 @@ async def publish_approval_messages(
     notifier: Any,
     messages: ApprovalDispatchMessages,
     chat_id: str,
+    message_thread_id: int | None = None,
 ) -> ApprovalPublication:
     """Publish the compact button card after payload validation."""
     all_messages = (*messages.context_messages, messages.approval_text)
@@ -818,6 +836,13 @@ async def publish_approval_messages(
         )
 
     successful_contexts = 0
+    # ``message_thread_id`` is only forwarded when set so the unconfigured
+    # path keeps the exact pre-split call signature.
+    thread_kwargs = (
+        {"message_thread_id": message_thread_id}
+        if message_thread_id is not None
+        else {}
+    )
     for context_text in messages.context_messages:
         try:
             context_result = await notifier.send_approval_message(
@@ -825,6 +850,7 @@ async def publish_approval_messages(
                 None,
                 chat_id=chat_id,
                 parse_mode=None,
+                **thread_kwargs,
             )
         except Exception:  # noqa: BLE001 - converted to a closed safe result
             context_result = TelegramMethodResult.failed(
@@ -846,6 +872,7 @@ async def publish_approval_messages(
             messages.approval_text,
             messages.inline_keyboard,
             chat_id=chat_id,
+            **thread_kwargs,
         )
     except Exception:  # noqa: BLE001 - converted to a closed safe result
         card_result = TelegramMethodResult.failed(
@@ -934,8 +961,13 @@ async def dispatch_proposal(
     auto_submitted = False
     messages: ApprovalDispatchMessages | None = None
     attempt_id: uuid.UUID | None = None
-    mirror_card: tuple[Any, list[Any], str] | None = None
     auto_policy_version: str | None = None
+    binding: DispatchBinding | None = None
+    veto_nonce: str | None = None
+    vetoable = False
+    outcomes: list[RungOutcome] = []
+    rungs: list[Any] = []
+    display_name: str | None = None
     not_evaluated_reason: AutoApproveNotEvaluatedReason | None = None
     async with service_factory() as session:
         service = OrderProposalsService(session)
@@ -1217,12 +1249,13 @@ async def dispatch_proposal(
                 else:
                     group, rungs = await service.get_proposal(proposal_id)
                     binding = None
+                display_name = await _resolve_card_display_name(group)
                 text, keyboard = build_auto_approved_message(
                     group=group,
                     rungs=rungs,
                     nonce=veto_nonce,
                     policy_version=limits.policy_version,
-                    display_name=await _resolve_card_display_name(group),
+                    display_name=display_name,
                     binding=binding,
                 )
                 messages = ApprovalDispatchMessages(
@@ -1274,13 +1307,43 @@ async def dispatch_proposal(
             not_evaluated_reason=not_evaluated_reason,
         )
 
-    allowlist = settings.order_proposals_telegram_chat_allowlist
-    chat_id = allowlist[0] if allowlist else None
+    collector = current_auto_digest()
+    if collector is not None:
+        # ROB-1052: inside a dispatch round the per-proposal auto card is
+        # replaced by one buffered digest item; ``open_auto_digest_round``'s
+        # exit flush publishes and finalizes it.
+        collector.add(
+            snapshot_auto_digest_item(
+                group=group,
+                rungs=rungs,
+                attempt_id=attempt_id,
+                binding=binding,
+                veto_nonce=veto_nonce,
+                vetoable=vetoable,
+                result=outcomes[0].result if outcomes else "",
+                policy_version=auto_policy_version or "",
+                display_name=display_name,
+                payload_chars=messages.payload_chars,
+            )
+        )
+        return TelegramDispatchResult(
+            state=ApprovalDispatchState.PENDING,
+            message_id=None,
+            status_code=None,
+            error_code=None,
+            error_classification=None,
+            payload_chars=messages.payload_chars,
+            failure_code=None,
+        )
+
+    notices_dest = notices_destination()
+    chat_id = notices_dest.chat_id
     publication = (
         await publish_approval_messages(
             notifier=notifier,
             messages=messages,
             chat_id=chat_id,
+            message_thread_id=notices_dest.message_thread_id,
         )
         if chat_id is not None
         else ApprovalPublication.failed(
@@ -1288,6 +1351,48 @@ async def dispatch_proposal(
             failure_code="telegram_allowlist_empty",
         )
     )
+    return await finalize_auto_notice(
+        proposal_id=proposal_id,
+        attempt_id=attempt_id,
+        publication=publication,
+        chat_id=chat_id,
+        notifier=notifier,
+        service_factory=service_factory,
+        now=now,
+        cancel_target_fn=cancel_target_fn,
+        fetch_target_fn=fetch_target_fn,
+        toss_veto_reconcile_fn=toss_veto_reconcile_fn,
+        mirror_policy_version=auto_policy_version,
+        record_digest_ref=False,
+    )
+
+
+async def finalize_auto_notice(
+    *,
+    proposal_id: uuid.UUID,
+    attempt_id: uuid.UUID | None,
+    publication: ApprovalPublication,
+    chat_id: str | None,
+    notifier: Any,
+    service_factory: ServiceFactory,
+    now: datetime,
+    cancel_target_fn: TargetCancelFn,
+    fetch_target_fn: TargetFetchFn,
+    toss_veto_reconcile_fn: TossVetoReconcileFn,
+    mirror_policy_version: str | None,
+    record_digest_ref: bool,
+) -> TelegramDispatchResult:
+    """Persist one auto-approve publication outcome and run its branches.
+
+    Shared by the immediate send at the tail of ``dispatch_proposal`` and by
+    ``_flush_auto_digest`` for each buffered item, so a digest item and a
+    standalone auto card keep byte-identical durable finalization: current-
+    owner fencing via ``finish_approval_dispatch``, broker-cancel
+    compensation + ``record_auto_notification_failure`` on any failed leg
+    (nothing is silently lost), and the Discord veto-card mirror on
+    ``sent_current``.
+    """
+    mirror_card: tuple[Any, list[Any], str] | None = None
     async with service_factory() as session:
         service = OrderProposalsService(session)
         # Preserve the established auto-dispatch lock order: advisory lock
@@ -1316,6 +1421,17 @@ async def dispatch_proposal(
                     else ApprovalDispatchState.FAILED
                 ),
             )
+        if (
+            record_digest_ref
+            and publication.card_published
+            and publication.message_id is not None
+            and chat_id is not None
+        ):
+            await service.record_auto_digest_ref(
+                proposal_id,
+                chat_id=chat_id,
+                message_id=publication.message_id,
+            )
         if result.state in {
             ApprovalDispatchState.FAILED,
             ApprovalDispatchState.PARTIAL_FAILED,
@@ -1339,11 +1455,11 @@ async def dispatch_proposal(
             )
         elif result.state is ApprovalDispatchState.SENT_CURRENT:
             group, rungs = await service.get_proposal(proposal_id)
-            # This branch is reachable only after `auto_submitted` above set
-            # the policy version.  Keep the guard defensive so a future
-            # refactor cannot emit an unversioned mirror card.
-            if auto_policy_version is not None:
-                mirror_card = (group, rungs, auto_policy_version)
+            # This branch is reachable only after the auto lane stamped the
+            # policy version.  Keep the guard defensive so a future refactor
+            # cannot emit an unversioned mirror card.
+            if mirror_policy_version is not None:
+                mirror_card = (group, rungs, mirror_policy_version)
         await session.commit()
     if mirror_card is not None:
         group, rungs, policy_version = mirror_card
@@ -1356,10 +1472,250 @@ async def dispatch_proposal(
     return result
 
 
+@asynccontextmanager
+async def open_auto_digest_round(
+    *,
+    notifier: Any | None = None,
+    service_factory: ServiceFactory = AsyncSessionLocal,
+    now_fn: Clock | None = None,
+    cancel_target_fn: TargetCancelFn = cancel_target_order,
+    fetch_target_fn: TargetFetchFn = fetch_target_order,
+    toss_veto_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
+) -> AsyncIterator[AutoDigestCollector]:
+    """Collect every auto-approve notice in this scope into one digest.
+
+    The scope itself IS the session-round key: batch producers of order
+    proposals wrap their per-proposal ``dispatch_proposal`` calls so one
+    round emits a single digest message (plus overflow chunks) instead of
+    one card per proposal.  Nested scopes join the outermost round.  A
+    round with zero items sends nothing.  Flush failures are contained:
+    a chunk that fails to send marks every item it carried through the
+    same durable finalization as a standalone card -- broker-cancel
+    compensation and ``record_auto_notification_failure`` included -- so
+    no notice is silently lost.
+    """
+    existing = current_auto_digest()
+    if existing is not None:
+        yield existing
+        return
+    collector = AutoDigestCollector()
+    token = activate_collector(collector)
+    try:
+        yield collector
+    finally:
+        reset_collector(token)
+        try:
+            await _flush_auto_digest(
+                collector=collector,
+                notifier=notifier,
+                service_factory=service_factory,
+                now_fn=now_fn,
+                cancel_target_fn=cancel_target_fn,
+                fetch_target_fn=fetch_target_fn,
+                toss_veto_reconcile_fn=toss_veto_reconcile_fn,
+            )
+        except Exception:  # noqa: BLE001 - flush failures stay local
+            logger.exception(
+                "order_proposals.auto_digest.flush_failed",
+                extra={"round_id": str(collector.round_id)},
+            )
+
+
+async def _flush_auto_digest(
+    *,
+    collector: AutoDigestCollector,
+    notifier: Any | None,
+    service_factory: ServiceFactory,
+    now_fn: Clock | None,
+    cancel_target_fn: TargetCancelFn,
+    fetch_target_fn: TargetFetchFn,
+    toss_veto_reconcile_fn: TossVetoReconcileFn,
+) -> None:
+    """Publish the collected digest and finalize every item it carried."""
+    if not collector.items:
+        return
+    active_notifier = notifier
+    if active_notifier is None:
+        from app.monitoring.trade_notifier import get_trade_notifier
+
+        active_notifier = get_trade_notifier()
+    observed_now = (now_fn or now_kst)()
+    dest = notices_destination()
+    chat_id = dest.chat_id
+    if chat_id is None:
+        # Empty allowlist: the durable failure + compensation branch still
+        # runs per item, exactly as the standalone path records it.
+        for item in collector.items:
+            try:
+                result = await finalize_auto_notice(
+                    proposal_id=item.proposal_id,
+                    attempt_id=item.attempt_id,
+                    publication=ApprovalPublication.failed(
+                        payload_chars=item.payload_chars,
+                        failure_code="telegram_allowlist_empty",
+                    ),
+                    chat_id=None,
+                    notifier=active_notifier,
+                    service_factory=service_factory,
+                    now=observed_now,
+                    cancel_target_fn=cancel_target_fn,
+                    fetch_target_fn=fetch_target_fn,
+                    toss_veto_reconcile_fn=toss_veto_reconcile_fn,
+                    mirror_policy_version=None,
+                    record_digest_ref=False,
+                )
+            except Exception:  # noqa: BLE001 - finalize each item, keep going
+                logger.exception(
+                    "order_proposals.auto_digest.finalize_failed",
+                    extra={
+                        "round_id": str(collector.round_id),
+                        "proposal_id": str(item.proposal_id),
+                    },
+                )
+                result = TelegramDispatchResult(
+                    state=ApprovalDispatchState.FAILED,
+                    message_id=None,
+                    status_code=None,
+                    error_code=None,
+                    error_classification=None,
+                    payload_chars=item.payload_chars,
+                    failure_code="auto_digest_finalize_error",
+                )
+            await _record_digest_outcome(
+                collector,
+                item=item,
+                result=result,
+                service_factory=service_factory,
+                observed_now=observed_now,
+            )
+        return
+    for chunk in render_auto_digest_chunks(collector.items):
+        try:
+            method_result = await active_notifier.send_approval_message(
+                chunk.text,
+                chunk.inline_keyboard,
+                chat_id=chat_id,
+                **(
+                    {"message_thread_id": dest.message_thread_id}
+                    if dest.message_thread_id is not None
+                    else {}
+                ),
+            )
+        except Exception:  # noqa: BLE001 - converted to a closed safe result
+            method_result = TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(chunk.text),
+                failure_code="telegram_transport_error",
+                error_classification=TelegramErrorClassification.TRANSPORT_ERROR,
+            )
+        for item in chunk.items:
+            publication = (
+                ApprovalPublication.published(
+                    payload_chars=telegram_text_length(chunk.text),
+                    method_result=method_result,
+                )
+                if method_result.ok
+                else ApprovalPublication.failed(
+                    payload_chars=telegram_text_length(chunk.text),
+                    failure_code="telegram_dispatch_failed",
+                    method_result=method_result,
+                )
+            )
+            try:
+                result = await finalize_auto_notice(
+                    proposal_id=item.proposal_id,
+                    attempt_id=item.attempt_id,
+                    publication=publication,
+                    chat_id=chat_id,
+                    notifier=active_notifier,
+                    service_factory=service_factory,
+                    now=observed_now,
+                    cancel_target_fn=cancel_target_fn,
+                    fetch_target_fn=fetch_target_fn,
+                    toss_veto_reconcile_fn=toss_veto_reconcile_fn,
+                    mirror_policy_version=item.policy_version or None,
+                    record_digest_ref=(method_result.ok and len(collector.items) > 1),
+                )
+            except Exception:  # noqa: BLE001 - finalize each item, keep going
+                logger.exception(
+                    "order_proposals.auto_digest.finalize_failed",
+                    extra={
+                        "round_id": str(collector.round_id),
+                        "proposal_id": str(item.proposal_id),
+                    },
+                )
+                result = TelegramDispatchResult(
+                    state=ApprovalDispatchState.FAILED,
+                    message_id=None,
+                    status_code=None,
+                    error_code=None,
+                    error_classification=None,
+                    payload_chars=telegram_text_length(chunk.text),
+                    failure_code="auto_digest_finalize_error",
+                )
+            await _record_digest_outcome(
+                collector,
+                item=item,
+                result=result,
+                service_factory=service_factory,
+                observed_now=observed_now,
+            )
+
+
+async def _record_digest_outcome(
+    collector: AutoDigestCollector,
+    *,
+    item: Any,
+    result: TelegramDispatchResult,
+    service_factory: ServiceFactory,
+    observed_now: datetime,
+) -> None:
+    """Store the finalized dispatch payload and alert on failure.
+
+    A buffered item returned ``PENDING`` to its caller inside the round, so
+    the failure branches the standalone path exposes -- the Discord operator
+    alert and a real dispatch state in the caller's result -- are delivered
+    here at flush time instead: failed/partial outcomes fire
+    ``send_approval_dispatch_alert`` (the same alert the tooling layer sends
+    for a failed standalone card) and every outcome lands in
+    ``collector.outcomes`` for post-scope reconciliation.
+    """
+    outcome = result.as_dict()
+    if result.state in {
+        ApprovalDispatchState.FAILED,
+        ApprovalDispatchState.PARTIAL_FAILED,
+    }:
+        try:
+            alert = await send_approval_dispatch_alert(
+                item.proposal_id,
+                dispatch_state=result.state.value,
+                dispatch_failure_code=result.failure_code or result.state.value,
+                now=observed_now,
+                service_factory=service_factory,
+            )
+            outcome["operator_alert"] = alert.as_dict()
+        except Exception:  # noqa: BLE001 - alerting stays secondary
+            logger.exception(
+                "order_proposals.auto_digest.alert_failed",
+                extra={
+                    "round_id": str(collector.round_id),
+                    "proposal_id": str(item.proposal_id),
+                },
+            )
+            outcome["operator_alert"] = {
+                "state": "failed",
+                "channel": "discord",
+                "failure_code": "approval_dispatch_alert_internal_error",
+                "recorded": False,
+            }
+    collector.outcomes[item.proposal_id] = outcome
+
+
 __all__ = [
     "APPROVAL_NOT_DISPATCHABLE_PREFIX",
     "approval_not_dispatchable_failure_code",
     "dispatch_proposal",
+    "finalize_auto_notice",
+    "open_auto_digest_round",
     "publish_approval_messages",
     "record_approval_dispatch_failure",
     "send_proposal_for_approval",
