@@ -6,7 +6,14 @@ value (frgn_ntby_tr_pbmn -> foreign_net_amount) but usually OMITS market cap.
 So we (1) backfill market_cap from invest_kr_fundamentals_snapshots, falling
 back to shares_outstanding x price, honest null when neither is available; and
 (2) drop clear-junk illiquid rows using the ALWAYS-PRESENT foreign_net_amount
-as the primary signal (NOT the null-prone market_cap).
+as the primary signal.
+
+#1105: the display backfill is never eligibility evidence — its
+invest_kr_fundamentals_snapshots (TradingView) values are not normalized to
+raw KRW. The default-ON market-cap floor is judged ONLY on the normalized
+naver_finance market_valuation_snapshots value handed in as
+``normalized_market_caps``; a symbol without normalized coverage is excluded
+as ``market_cap_unknown`` (fail-closed), never rescued by another source.
 
 #1029: the KIS spec for FHPTJ04400000 (국내기관_외국인 매매종목가집계,
 /uapi/domestic-stock/v1/quotations/foreign-institution-total) documents
@@ -19,6 +26,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -29,6 +37,9 @@ from app.mcp_server.tooling.shared import to_optional_float as _to_optional_floa
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services.invest_kr_fundamentals_snapshots.repository import (
     InvestKrFundamentalsSnapshotsRepository,
+)
+from app.services.market_valuation_snapshots.normalized_market_cap import (
+    NormalizedMarketCap,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,8 +70,10 @@ MIN_FOREIGN_NET_AMOUNT_KRW: float = _env_float(
     "FOREIGNERS_MIN_NET_AMOUNT_KRW",
     100000000.0,  # 1억 KRW
 )
-# Optional market-cap floor, applied ONLY where market_cap is known (never
-# excludes a row just because cap is null).
+# Default-ON market-cap floor, judged ONLY on the normalized Naver-backed
+# market_valuation_snapshots value (raw KRW) — never the KIS payload or the
+# fundamentals/shares display backfill, whose unit is not normalized (#1105).
+# A symbol without normalized coverage fails closed as market_cap_unknown.
 MIN_MARKET_CAP_KRW: float = _env_float(
     "FOREIGNERS_MIN_MARKET_CAP_KRW",
     30000000000.0,  # 300억 KRW
@@ -217,32 +230,63 @@ async def backfill_foreigners_market_cap(
     apply_market_cap_backfill(rows, snapshot_caps=snapshot_caps, shares_map=shares_map)
 
 
+# Per-row exclusion reasons (#1105) surfaced under
+# liquidity_filter.excluded_rows / excluded_reasons and named in
+# degraded_reason. The market-cap legs are judged on the normalized
+# naver_finance snapshot ONLY — the row's display market_cap (KIS payload /
+# fundamentals / shares backfill) is never floor evidence.
+REASON_NET_AMOUNT_MISSING = "net_amount_missing"
+REASON_NET_AMOUNT_BELOW_FLOOR = "net_amount_below_floor"
+REASON_MARKET_CAP_UNKNOWN = "market_cap_unknown"
+REASON_MARKET_CAP_BELOW_FLOOR = "market_cap_below_floor"
+
+
+def _exclusion(row: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "symbol": _row_symbol(row),
+        "name": row.get("name"),
+        "reason": reason,
+    }
+
+
 def filter_illiquid_foreigners(
     rows: list[dict[str, Any]],
     *,
     include_illiquid: bool = False,
     min_foreign_net_amount_krw: float = MIN_FOREIGN_NET_AMOUNT_KRW,
     min_market_cap_krw: float | None = MIN_MARKET_CAP_KRW,
-) -> tuple[list[dict[str, Any]], int]:
+    normalized_market_caps: Mapping[str, NormalizedMarketCap] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Default-ON liquidity filter. Robust signal = |foreign_net_amount| (KRW,
-    always present), with an OPTIONAL market_cap floor applied only where cap is
-    known. ``include_illiquid=True`` bypasses. Returns (kept_rows, excluded)."""
+    always present), plus an OPTIONAL market-cap floor judged ONLY on
+    ``normalized_market_caps`` — the normalized Naver-backed
+    market_valuation_snapshots value in raw KRW. The row's own ``market_cap``
+    field is deliberately NOT consulted: it can be the wrong-unit
+    TradingView fundamentals backfill (#1105). With the floor active, a
+    symbol missing normalized coverage is excluded as ``market_cap_unknown``
+    (fail-closed, same contract as the caller-side ``min_market_cap`` arg).
+    ``include_illiquid=True`` bypasses. Returns (kept_rows, excluded_rows)
+    where each excluded entry carries ``{symbol, name, reason}``."""
     if include_illiquid:
-        return list(rows), 0
+        return list(rows), []
+    caps = normalized_market_caps or {}
     kept: list[dict[str, Any]] = []
-    excluded = 0
+    excluded_rows: list[dict[str, Any]] = []
     for row in rows:
         amount = _abs_foreign_amount(row)
-        if amount is None or amount < min_foreign_net_amount_krw:
-            excluded += 1
+        if amount is None:
+            excluded_rows.append(_exclusion(row, REASON_NET_AMOUNT_MISSING))
             continue
-        cap = _to_optional_float(row.get("market_cap"))
-        if (
-            min_market_cap_krw is not None
-            and cap is not None
-            and cap < min_market_cap_krw
-        ):
-            excluded += 1
+        if amount < min_foreign_net_amount_krw:
+            excluded_rows.append(_exclusion(row, REASON_NET_AMOUNT_BELOW_FLOOR))
             continue
+        if min_market_cap_krw is not None:
+            cap = caps.get(_row_symbol(row))
+            if cap is None:
+                excluded_rows.append(_exclusion(row, REASON_MARKET_CAP_UNKNOWN))
+                continue
+            if float(cap.value) < min_market_cap_krw:
+                excluded_rows.append(_exclusion(row, REASON_MARKET_CAP_BELOW_FLOOR))
+                continue
         kept.append(row)
-    return kept, excluded
+    return kept, excluded_rows

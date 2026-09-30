@@ -289,6 +289,14 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
   로 **정확히 한 번**만 한다. 비유한값(NaN/Inf)·파싱 불가는 None 이고 유동성 필터에서 제외된다.
 - 유동성 하한 `FOREIGNERS_MIN_NET_AMOUNT_KRW`(기본 1억 KRW = 100 백만원)는 변환된 KRW 값에 적용된다.
   #1029 이전에는 백만원 원값을 KRW 로 읽어 모든 행이 1억 미만으로 탈락하고 `status=degraded` 를 반환했다.
+- 🔴 시가총액 하한 `FOREIGNERS_MIN_MARKET_CAP_KRW`(기본 300억 KRW, #1105)는 **정규화된
+  `market_valuation_snapshots` 의 `naver_finance` 값(원화 KRW)에만** 적용된다. 행의
+  `market_cap`(KIS 페이로드·`invest_kr_fundamentals_snapshots`/TradingView 백필·
+  shares×price)은 단위가 정규화되지 않아 적격 증거로 쓰지 않는다. 정규화 커버리지가 없는
+  심볼은 `market_cap_unknown` 으로 **fail-closed 제외**되고 다른 소스로 대체 판정하지 않는다.
+  행별 제외 사유(`net_amount_missing`/`net_amount_below_floor`/`market_cap_below_floor`/
+  `market_cap_unknown`)는 `liquidity_filter.excluded_rows`/`excluded_reasons` 에 싣고
+  `degraded_reason` 에 사유별 건수를 표기한다. `include_illiquid=true` 는 전체 필터를 우회한다.
 - 🔴 이 소스는 **가집계(잠정)** 다: 증권사 직원 입력 누계, 외국인 입력 시각 약 09:30/11:20/13:20/14:30 KST(±10분).
   확정값으로 대체되지 않으며 ~14:30 입력이 이 소스의 최종 상태다. 그래서 KR 외국인 랭킹 응답(행 반환·
   유동성 degraded·호출자 품질 하한 degraded·장외 fake-0 억제 전부)은 `source_state="provisional"`,
