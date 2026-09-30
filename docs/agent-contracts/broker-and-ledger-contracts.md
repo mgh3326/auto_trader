@@ -15,6 +15,7 @@
 - kis_mock 귀속 사슬 — pre-submit 강제
 - KIS Live Order Fill-Evidence Gate (ROB-395)
 - KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
+- 7-D stale blocker night sweep + KIS expired[inference] (#1112)
 - US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 - Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 - Kiwoom Live Read-Only Market Data (Stage 1)
@@ -317,6 +318,20 @@ stdlib only, 브로커/DB/네트워크/캘린더 import 없음, 주문 hot path 
 reconcile 종료 분류(`classify_day_order_expiry`)는 변경 없음 — 여전히
 evidence-first / fail-closed.
 
+
+### 7-D stale blocker night sweep + KIS expired[inference] (#1112)
+
+7-D(종목당 활성 매수 1건)를 영구 차단하던 stale 행을 **기록만으로** 닫는다. 주문 생성·정정·취소·브로커 호출 0.
+
+- **야간 스윕**: `order_proposal.night_sweep` (`app/tasks/order_proposal_expiry_tasks.py`) → `order_proposal_tools.run_order_proposal_night_sweep`.
+  ① ROB-897 `sweep_expired` 를 **좁힌 범위**로 재사용 — group `proposed` 이고 모든 rung 이 `draft`/`pending_approval`/`needs_reconfirm` 인 `valid_until` 경과 제안만 `expired`, rung `void_reason=expired_valid_until_night_sweep`. `revalidating`/`approved`/제출 이후 rung 이 하나라도 있으면 skip. 범위 인자는 좁히기만 한다(voidable 집합과 교집합).
+  ② KIS 잔존 rung 추론 종결(아래).
+- 🔴 **스케줄 선언만, 등록 0**: cron `30 16 * * 1-5`·`0 7 * * 1-5`(Asia/Seoul)는 `ORDER_PROPOSAL_NIGHT_SWEEP_SCHEDULE_ENABLED`(기본 false)일 때만 import 시점에 라벨로 붙고, 본문은 `ORDER_PROPOSAL_NIGHT_SWEEP_ENABLED`(기본 false) 뒤. 활성화(플래그 + 스케줄러 재시작)는 desk 결정.
+- **expired[inference]** (`app/services/order_proposals/kis_leftover_inference.py` 순수 규칙 + `kis_leftover_inference_service.py` I/O): `kis_live`/`equity_kr` BUY `resting` rung 을 브로커 원본 없이 `expired` 로 닫는 조건은 **전부**: 소유권 검증된 단일 open(`accepted`/`pending`) KIS 주문원장 행 · proposal·원장 모두 `limit`/`market`(DAY) · 송신·브로커 `ord_tmd` 가 XKRX 달력 정규장 안 + ROB-671 창 `regular` + 보고 venue 가 KRX/SOR(또는 미보고) · `now` 가 **max(접수일 15:30 KST, 달력 마감, ROB-671 기대만료)** 초과(기본 SOR 매수 = 20:00 → 16:30 스윕은 추론 안 함, 07:00 스윕이 닫음) · 성공·커밋된 KIS execution-ledger reconcile run 이 접수~deadline 을 덮고 deadline 이후 종료 · 그 주문의 fill(웹소켓 포함)·부분체결 없음 · 종목 원장 행 존재 + 접수 이후 종목 fill 0(순증감 0 이어도 차단). 하나라도 불만족/판독불가면 **차단 유지**. 적용은 group row lock 후 사실을 재조회·재판정해서만 쓴다.
+- 🔴 **마커**: rung `void_reason=expired_inference:kis_regular_day_order_no_broker_original`(group `cancelled_or_expired`). `order_proposal_get/list` rung 투영에 `expiry_basis="inference"`·`expiry_caveat="no_broker_original"` 가 이 마커일 때만 붙는다. `review.kis_live_order_ledger`·`execution_ledger` 는 **쓰지 않는다**(브로커 증거 원장 불변). 추론 후 실체결이 오면 원장은 정상 기록되고 rung 은 terminal 이라 투영되지 않는다 — 마커로 감사.
+- **7-D 차단 사유**: `order_proposal_list(include_kr_buy_blocking=true)`(기본 false·기본 출력 불변) → `kr_buy_blocking`: 비터미널 KR buy 제안 rung 마다 `proposal_id`·`rung_id`·`rule`(`nonterminal_buy_proposal`/`stale_proposal_past_valid_until`/`kis_resting_rung_inference_conditions_not_met`/`kis_resting_rung_inference_eligible_pending_sweep`/`broker_live_rung_awaiting_broker_evidence`) + KIS resting 은 조건별 판정, 그리고 최근 7일 스윕/추론으로 닫힌 행(`basis`·`cleared_at`·`caveat`). 읽기 시점 제외 없음 — DB 에 terminal 로 써진 행만 빠진다. 범위는 제안 행뿐(Toss 원본·KIS `open_buy_evidence` 는 별도 입력, 부재 증명 아님). 판독 실패는 `state="unknown"`.
+- **알려진 한계**: 라이브러리 XKRX 달력은 수능일 16:30 마감을 모델링하지 않는다 — 기본 SOR 매수는 20:00 deadline 이라 무관, `KRX` venue + 15:30 강등 플래그 조합에서만 잔여.
+- **테스트**: `tests/services/order_proposals/test_kis_leftover_inference.py`(조건별 단독 실패), `test_kis_leftover_inference_mutants.py`(디스크 카운트 mutant + 주문경로 import 가드), `test_night_sweep_unit.py`, `test_night_sweep_db.py`(A1 브로커 트랩·A5 멱등).
 
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 ...
