@@ -143,6 +143,7 @@ tests/services/brokers/nhplug/test_live_period_collect.py
 tests/services/brokers/toss/test_candles.py
 tests/services/brokers/toss/test_errors.py
 tests/services/brokers/toss/test_health.py
+tests/services/brokers/toss/test_market_data.py
 tests/services/brokers/toss/test_no_mutation_surface.py
 tests/services/execution_ledger/test_fill_sinks.py
 tests/services/execution_ledger/test_query_service_names.py

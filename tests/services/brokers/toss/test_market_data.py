@@ -1138,7 +1138,15 @@ async def test_stock_investor_trading_validates_symbol_until_and_count() -> None
 
     client = _client(handler)
     try:
-        for bad_symbol in ("../accounts", "005930?x=1", "005930/investor-trading", ""):
+        for bad_symbol in (
+            "../accounts",
+            "../",
+            "%2F",
+            "005930%2F..",
+            "005930?x=1",
+            "005930/investor-trading",
+            "",
+        ):
             with pytest.raises(ValueError, match="symbol"):
                 await client.stock_investor_trading(bad_symbol)
         for bad_until in ("junk", "2026-7-1", "20260731"):
