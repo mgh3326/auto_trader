@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -15,6 +16,8 @@ from app.services.brokers.toss.dto import (
     TossMarketIndicatorPrice,
     TossMarketInvestorTradingPage,
     TossMarketInvestorTradingRecord,
+    TossMinuteCandle,
+    TossMinuteCandlePage,
     TossOrderOperationResult,
     TossOrderPlacementResult,
     TossRankings,
@@ -29,6 +32,7 @@ from app.services.brokers.toss.dto import (
     parse_listed_stocks,
     parse_market_indicator_prices,
     parse_market_investor_trading_page,
+    parse_minute_candle_page,
     parse_order,
     parse_order_operation_result,
     parse_order_placement_result,
@@ -42,6 +46,7 @@ from app.services.brokers.toss.dto import (
 )
 from app.services.brokers.toss.errors import (
     TossApiResponseError,
+    TossPaginationCapExceeded,
     TossResponseContractError,
     parse_toss_response,
 )
@@ -70,6 +75,18 @@ def _should_retry_get_non_json_auth_error(
         and exc.status_code in _GET_REISSUABLE_NON_JSON_STATUSES
         and exc.envelope.code == "non-json-response"
     )
+
+
+def _parse_offset_datetime(value: str) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
 
 
 class TossReadClient:
@@ -639,6 +656,139 @@ class TossReadClient:
                 params=params,
             )
         )
+
+    # ------------------------------------------------------------------
+    # #1086 strict 1-minute candles. Same official path and rate group as
+    # ``candles`` above (GET /api/v1/candles, "Rate Limits Group":
+    # MARKET_DATA_CHART in openapi.json v1.2.19), but parsed by the strict
+    # ``parse_minute_candle_page`` so a schema drift raises
+    # TossResponseContractError instead of leaking KeyError/ValueError.
+    # ``candles`` keeps its loose contract for its existing consumers.
+    #
+    # The spec's only cursor is ``before`` (inclusive, ISO 8601); there is no
+    # ``after`` parameter. Pagination walks backwards via ``nextBefore``.
+    # ------------------------------------------------------------------
+
+    MINUTE_CANDLE_MAX_COUNT = 200
+
+    async def minute_candles(
+        self,
+        symbol: str,
+        *,
+        adjusted: bool,
+        count: int = MINUTE_CANDLE_MAX_COUNT,
+        before: str | None = None,
+    ) -> TossMinuteCandlePage:
+        """One page of GET /api/v1/candles?interval=1m (group MARKET_DATA_CHART).
+
+        ``before`` is sent verbatim (a previous page's ``nextBefore`` or an
+        offset-qualified ISO 8601 date-time); httpx percent-encodes its ``+``
+        offset as the spec requires. ``adjusted`` is mandatory so every caller
+        states which price basis it stores.
+        """
+        self._check_kr_symbol(symbol)
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ValueError("Toss candle count must be an integer")
+        if not 1 <= count <= self.MINUTE_CANDLE_MAX_COUNT:
+            raise ValueError("Toss candle count must be 1..200")
+        if not isinstance(adjusted, bool):
+            raise ValueError("Toss candle adjusted flag must be a bool")
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "interval": "1m",
+            "count": count,
+            "adjusted": "true" if adjusted else "false",
+        }
+        if before is not None:
+            parsed = _parse_offset_datetime(before)
+            if parsed is None:
+                raise ValueError(
+                    "Toss candle before cursor must be an offset-qualified "
+                    "ISO 8601 date-time"
+                )
+            params["before"] = before
+        return parse_minute_candle_page(
+            await self._request(
+                "GET",
+                "/api/v1/candles",
+                group=TossApiGroup.MARKET_DATA_CHART,
+                params=params,
+            )
+        )
+
+    async def collect_minute_candles(
+        self,
+        symbol: str,
+        *,
+        adjusted: bool,
+        before: str,
+        not_before: datetime,
+        max_pages: int = 16,
+        page_count: int = MINUTE_CANDLE_MAX_COUNT,
+        pace: Callable[[], Awaitable[None]] | None = None,
+    ) -> list[TossMinuteCandle]:
+        """Walk ``nextBefore`` backwards and return bars with
+        ``not_before <= timestamp <= before``, oldest first.
+
+        Termination: an empty page, a null ``nextBefore``, or a page whose
+        oldest bar is already older than ``not_before``. ``before`` is
+        inclusive, so consecutive pages may repeat the boundary bar; an
+        identical repeat is dropped, a repeat with different values is a
+        TossResponseContractError. A ``nextBefore`` that is not strictly
+        older than the cursor just sent is a non-advancing cursor and also a
+        TossResponseContractError. Hitting ``max_pages`` with a pending cursor
+        raises TossPaginationCapExceeded (a ValueError) instead of silently
+        truncating.
+
+        ``pace`` is an optional extra throttle awaited before every page, on
+        top of (never instead of) the shared MARKET_DATA_CHART limiter.
+        """
+        upper = _parse_offset_datetime(before)
+        if upper is None:
+            raise ValueError("before must be an offset-qualified ISO 8601 date-time")
+        if not_before.tzinfo is None:
+            raise ValueError("not_before must be timezone-aware")
+        by_timestamp: dict[datetime, TossMinuteCandle] = {}
+        cursor_raw = before
+        cursor = upper
+        for _ in range(max_pages):
+            if pace is not None:
+                await pace()
+            page = await self.minute_candles(
+                symbol, adjusted=adjusted, count=page_count, before=cursor_raw
+            )
+            for candle in page.candles:
+                if candle.timestamp > cursor:
+                    raise TossResponseContractError(
+                        "candles: bar newer than the inclusive before cursor"
+                    )
+                if candle.timestamp < not_before:
+                    continue
+                seen = by_timestamp.get(candle.timestamp)
+                if seen is None:
+                    by_timestamp[candle.timestamp] = candle
+                elif not seen.same_values(candle):
+                    raise TossResponseContractError(
+                        "candles: conflicting duplicate bar at "
+                        f"{candle.timestamp.isoformat()} for {symbol}"
+                    )
+            if not page.candles or page.next_before is None:
+                break
+            if page.candles[-1].timestamp < not_before:
+                break
+            if page.next_before >= cursor:
+                raise TossResponseContractError(
+                    "candles: non-advancing nextBefore "
+                    f"{page.next_before_raw!r} for {symbol}"
+                )
+            cursor = page.next_before
+            cursor_raw = page.next_before_raw or cursor.isoformat()
+        else:
+            raise TossPaginationCapExceeded(
+                f"Toss minute-candle pagination exceeded max_pages={max_pages} "
+                f"for {symbol}"
+            )
+        return [by_timestamp[key] for key in sorted(by_timestamp)]
 
     async def exchange_rate(
         self,
