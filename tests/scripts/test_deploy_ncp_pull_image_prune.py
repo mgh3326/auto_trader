@@ -52,6 +52,9 @@ MCP_PROFILES = (
     "at-mcp-tradingcodex-execution",
     "at-mcp-paper-001",
     "at-mcp-kiwoom",
+    "at-mcp-live-kr",
+    "at-mcp-live-us",
+    "at-mcp-live-crypto",
 )
 UNITS = (
     "at-api-blue",
@@ -324,6 +327,9 @@ class Env:
                     "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN",
                     "MCP_PAPER_001_AUTH_TOKEN",
                     "MCP_KIWOOM_AUTH_TOKEN",
+                    "MCP_LIVE_KR_AUTH_TOKEN",
+                    "MCP_LIVE_US_AUTH_TOKEN",
+                    "MCP_LIVE_CRYPTO_AUTH_TOKEN",
                 )
             )
         )

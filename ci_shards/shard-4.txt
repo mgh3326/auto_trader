@@ -170,6 +170,7 @@ tests/services/nhplug_mock/test_dispatch_state_machine.py
 tests/services/nhplug_mock/test_lease_host.py
 tests/services/nhplug_mock/test_nh_mock_mutants.py
 tests/services/nhplug_mock/test_nh_mock_operations.py
+tests/services/nhplug_mock/test_nh_mock_status_honesty.py
 tests/services/nhplug_mock/test_outcome.py
 tests/services/nhplug_mock/test_readiness.py
 tests/services/nhplug_mock/test_section7_dispatch_contract.py

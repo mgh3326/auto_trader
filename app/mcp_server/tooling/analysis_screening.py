@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from app.mcp_server.tooling import analysis_analyze
+from app.mcp_server.tooling import analysis_analyze, foreigners_liquidity
 from app.mcp_server.tooling.analysis_rankings import (
     calculate_pearson_correlation as _calculate_pearson_correlation_impl,
 )
@@ -151,6 +151,9 @@ def _map_kr_foreign_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
     from ``acml_vol`` / ``acml_tr_pbmn`` / ``hts_avls`` when KIS returns them
     (the foreign ranking typically omits them), else ``None`` — never
     fabricated from the foreign fields.
+
+    #1029: ``frgn_ntby_tr_pbmn`` is documented by KIS in 백만원 (net qty x
+    current price), so ``foreign_net_amount`` is that value x 1,000,000 KRW.
     """
     symbol = _first_present(row, "stck_shrn_iscd", "mksc_shrn_iscd") or ""
     name = row.get("hts_kor_isnm", "")
@@ -168,7 +171,10 @@ def _map_kr_foreign_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
         "market_cap": market_cap,
         "trade_amount": _to_optional_float(row.get("acml_tr_pbmn")),
         "foreign_net_qty": _to_optional_int(row.get("frgn_ntby_qty")),
-        "foreign_net_amount": _to_optional_float(row.get("frgn_ntby_tr_pbmn")),
+        # #1029: KIS documents frgn_ntby_tr_pbmn in 백만원; surface KRW.
+        "foreign_net_amount": foreigners_liquidity.kis_million_krw_to_krw(
+            row.get("frgn_ntby_tr_pbmn")
+        ),
     }
 
 

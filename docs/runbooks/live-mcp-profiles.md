@@ -99,6 +99,12 @@ same manifest line is refused on live-kr / live-us.
 
 ## Switching the NCP live sessions to a live-* profile
 
+Superseded for the NCP live sessions by task 975: each profile now runs in
+its own deployed unit (at-mcp-live-kr / -us / -crypto) and sessions move to
+it through the robin-prefect-automations `KR_LIVE_MCP_MODE` switch. Follow
+`live-mcp-servers.md`. The steps below describe the older in-place profile
+change of an existing MCP process and are kept for reference.
+
 Desk-owned; do this **only after the #180 freeze** (about
 2026-09-29 18:00 KST).
 
@@ -142,7 +148,8 @@ Desk-owned; do this **only after the #180 freeze** (about
    per-lane counts asserted in
    `tests/mcp_server/test_live_profiles.py::TestGroupCounts`.
 6. CI must pass: `test_live_profiles.py`, `test_profile_tool_snapshot.py`,
-   `test_lane_allowlist_contract.py`, `test_route_request_registry_diff.py`.
+   `test_lane_allowlist_contract.py`, `test_route_request_registry_diff.py`,
+   `test_live_prompt_profile_contract.py`.
 
 ## Removing a tool
 
@@ -166,3 +173,74 @@ failures, refusals, and one-minute corrections).
   `analysis_artifact_get`, `session_bootstrap_pack`,
   `get_protected_positions` — below the documented cutoff or not
   evidenced for live lanes; returnable via an operator-approved PR.
+
+Note (#1003): several of these exclusions are named as steps by the live
+prompts (for example `get_trading_policy`, `analysis_artifact_get`,
+`session_bootstrap_pack`, `screen_stocks`). See the next section.
+
+## Prompt-to-profile contract (#1003)
+
+Incident 2026-09-29 22:35: us-2235 ran on at-mcp-live-us (29 tools). Its
+prompt requires tools `live-us` does not serve, and the session ended with 0
+orders and 0 proposals. Inventory, per-rep impact and operator options A/B/C:
+`hk:doc incident/2026-09-29/live-profile-gap`.
+
+`tests/mcp_server/test_live_prompt_profile_contract.py` enforces that every
+tool a live prompt requires is served by its lane's `live-*` profile.
+
+- Pin: `tests/fixtures/live_prompt_tool_requirements.yaml`, written at an
+  operator and prefect commit. Per lane it records the rep keys, the prompt
+  files, `served` (referenced and in the profile), and the classes of
+  referenced tools the profile does not serve: `required`, `conditional`,
+  `guarded`, `not_required` (NEG/DESC/NA), each with file:line refs.
+  `prose_served` records served tools that a step describes without naming
+  them (us/crypto: live/CLAUDE.md §8 item 4 "broker `order_history`" =
+  `get_order_history`, which is served but missing from prefect
+  `LIVE_ALLOWED_TOOLS`). Scope is only the files a REPS rep runs.
+- Always run (no checkout needed): `served` must stay in the profile. The
+  required-but-unserved set must equal `KNOWN_REQUIRED_GAP` exactly. The
+  contract test itself is `xfail(strict=True)` for each lane whose known gap
+  is non-empty.
+- With `AUTO_TRADER_OPERATOR_ROOT=<auto_trader-operator checkout>`: the
+  prompts are re-read. Any referenced tool the pin does not record, any pinned
+  tool no longer referenced, or any pinned file:line that no longer names its
+  tool fails. Unset means skip. Set but not an operator checkout means fail.
+- With `ROBIN_PREFECT_AUTOMATIONS_ROOT=<checkout>`: REPS, REP_MCP_PROFILES
+  and the pinned lanes must agree, and every `required` tool must be in
+  prefect `LIVE_ALLOWED_TOOLS`.
+- The always-run half trusts the pin. The operator and prefect repos are
+  private, so CI cannot run the drift half. Whenever live.yaml, the pin or a
+  live prompt changes, run it by hand with both checkouts and paste the
+  result into the PR:
+  `AUTO_TRADER_OPERATOR_ROOT=<op checkout> ROBIN_PREFECT_AUTOMATIONS_ROOT=<prefect checkout> make test-live-prompt-contract`.
+  The target refuses to run (exit 2) if either variable is unset, so the
+  drift tests cannot silently skip.
+
+Flipping to strict after the operator decision:
+
+- **A (shared mode)**: no change here; the gap stays visible as xfail.
+- **B (widen live.yaml)**: add the tools to live.yaml in the same PR, empty
+  that lane's `KNOWN_REQUIRED_GAP` entry (the xfail mark goes with it), and
+  move the newly served tools from `required` to `served` in the pin. This is
+  not executable under today's rules; the loader rejects it until these
+  prerequisites land:
+  - an operator Q-53 cap change: core is full at 15 and extension at 10, and
+    even the required tools alone take core+extension to kr 31 / us 32 /
+    crypto 30;
+  - for `order_proposal_void` (crypto required), an operator Q-62 revisit
+    plus a `live_profile_registration` code change, because it is
+    loader-forbidden outside emergency and not a named emergency tool;
+  - a prefect `LIVE_ALLOWED_TOOLS` PR for any COND/GUARD tool the operator
+    adds that the harness lacks (`toss_get_orderable_cash`,
+    `sweep_expired_watches`, `toss_preview_order`).
+
+  See the inventory doc's option B section for the counts.
+- **C (shrink prompts)**: after the operator PR merges, re-pin the fixture
+  at the new operator commit with the drift tests on. Tools whose steps were
+  removed leave `required` (reclassify or drop them per the new text). Then
+  empty `KNOWN_REQUIRED_GAP` for each lane whose remaining `required` set is
+  fully served.
+
+If `KNOWN_REQUIRED_GAP` is left stale, the build breaks either way:
+`test_known_gap_is_exact` fails, and a closed gap XPASS-fails the strict
+xfail.

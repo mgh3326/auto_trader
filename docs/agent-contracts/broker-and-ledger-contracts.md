@@ -10,6 +10,7 @@
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - 보호 수량 P 규칙 추종 (#943)
+- KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
 - KIS Live Order Fill-Evidence Gate (ROB-395)
@@ -197,6 +198,34 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 - **알려진 공백**: Toss 앱 수동 매도는 원장에 안 들어온다 — 레버 실행 전까지 P 가 보유보다 높게 남는다
 - **런북**: `docs/runbooks/longterm-lot-protection.md` §Rule-executed P follow · §Desk write CLI
 
+### KIS live KR ledger lots — get_holdings opt-in (#963)
+
+`get_holdings(include_ledger_lots=True)` (default `False`, default output byte-identical — golden test) attaches a read-only `ledger_lots`
+block to KIS live KR positions so a live session can use KIS lots and KIS own-open-buy evidence **without** a KIS broker order read.
+The #678 harness denial of `kis_live_get_order_history` is unchanged and is asserted by test; no live.yaml, lane allowlist or robin
+allowlist change exists because `get_holdings` is already live-kr core.
+
+- **서비스**: `app/services/execution_ledger/kis_lots.py` — 순수 투영(`build_symbol_block`) + DB 로더(`load_kis_live_kr_lot_blocks`). MCP 레이어는
+  `app/mcp_server/tooling/portfolio_ledger_lots.py` 얇은 attach 뿐이다. 브로커 client import·쓰기 없음(AST/소스 가드 테스트).
+- **lots**: authoritative 행(`reconciler`/`manual_import`)만의 FIFO 잔여 lot, `cost_method="fifo_remaining_lots_from_ledger"` — **브로커 이동평균 평균단가가 아니다.**
+  `websocket` 행은 provisional 이라 lot 에 절대 세지 않는다. authoritative 행이 같은 주문을 덮지 않는 websocket 행만 `provisional_rows_excluded` 에 나열되고, 덮인 중복 행은
+  나열 없이 `diagnostics.superseded_websocket_duplicates` 로만 센다.
+- **freshness / unknown**: 마지막 성공 non-dry-run KIS reconcile `finished_at` 이 90분 이내여야 `fresh`. `ledger_state` 는 fresh AND authoritative 행 존재 AND 역매도 없음
+  AND 원장 순수량 == 같은 응답의 브로커 수량일 때만 `known`. 그 외는 `unknown` + `unknown_reasons`, `lots=null` — **빈 리스트로 표현하지 않는다.**
+  브로커 수량 교차검증은 **모든 심볼에** 적용된다 — 같은 fill 이 reconciler 행과 websocket 행(다른 `fill_seq`, #935 Part B)으로 함께 있으면 websocket 행은 주문 단위로 supersede 되어
+  이중 계상되지 않고, websocket 행으로**만** 존재하는 fill 은 lot 수를 줄이는 대신 `quantity_mismatch_with_reference`(+ 진단용 `provisional_rows_pending_reconcile`) 로 `unknown` 이 된다.
+  websocket 행은 어떤 lot/net 합에도 들어가지 않는다(합산은 진단 `provisional_net_quantity` 뿐). 재현 fixture: `test_kis_lots.py`·`test_kis_lots_db.py` 의 `test_935_*`.
+- **open_buy_evidence (S2/S3)**: 당일(KST) `review.kis_live_order_ledger` 비터미널 buy 행(S2), 당일 buy 체결 중 주문 완료가 원장으로 증명되지 않은 것(S3)이 있거나 증거가
+  unknown(stale·읽기 실패)이면 `blocking=true`. 전일 이전 비터미널 행은 `presumed_dead_prior_day_buys` 로 보고만 한다(KRX/NXT day order 는 거래일을 넘기지 못한다는 가정).
+- **same_day_sell_evidence**: 당일(KST) 매도 체결(authoritative + authoritative 가 덮지 않는 provisional websocket 행, `provisional` 플래그)이 있거나 reconcile 이 stale/없으면 `blocking=true`.
+  strategy-lab 판정(hk #963 comment 796/798): 보이는 반대방향 신호가 하나라도 있으면 그날 미배치, 없으면 caveat `kis_same_day_sell_chain_unverified` 부착. 오늘 이후 날짜로 찍힌 행(writer 시계 skew)은
+  fail-closed 로 '오늘'로 취급한다(`open_buy_evidence`·`same_day_sell_evidence` 공통).
+- 🔴 **`external_orders_verifiable` 는 항상 `false`**: KIS 앱/HTS 등 auto_trader 밖에서 낸 **미체결** 주문은 어떤 DB 읽기로도 보이지 않는다. 이 블록의 통과는
+  "부재 증명"이 아니라 "auto_trader 가 아는 범위에 미체결 없음"이다. 운영자 승인 Q-81(#964)=A: 그 잔여는 caveat `kis_external_open_orders_unverified` 로 기록한다.
+- **실패 격리**: 블록의 어떤 실패도 `get_holdings` 를 실패시키지 않는다 — 포지션마다 `ledger_state="unknown"`, `unknown_reasons=["ledger_read_failed"]`.
+- **테스트**: `tests/services/execution_ledger/test_kis_lots.py`(순수), `test_kis_lots_db.py`(테스트 DB), `tests/mcp_server/test_get_holdings_ledger_lots.py`(golden·opt-in·격리),
+  `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678).
+
 ### KIS WebSocket Mock Smoke (ROB-104)
 
 `scripts/kis_websocket_mock_smoke.py` — KIS 모의 WebSocket 핸드셰이크 검증 (주문/체결/Redis publish 없음).
@@ -350,7 +379,7 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 - **No unsupported acceptance or rejection**: success-proof and no-order-proof code tables start empty. A response with an order number but no documented success code records uncertain and preserves the number. The sending-to-rejected transition requires a DB-listed no-order proof code, so it is unreachable while the table is empty. An uncertain row retains its reservation across trading days. The DB refuses uncertain-to-anomaly without its own number and a positive conflicting listing row; it refuses arbitrary reservation release.
 - **Manual evidence and authority**: a complete all-orders listing containing the same acknowledged number and matching order attributes may promote uncertain to accepted. Other similar orders are candidates only. Filled needs a second filled-scope confirmation; cancelled and modified need our own acknowledged request and positive original-order evidence. Operator candidate binding and unresolved-risk abandonment consume a matching, one-use authorization row. The application role has SELECT only on authorization, code, and key-version tables. T14 also requires the lease-host process-death witness, elapsed grace, a complete listing, and explicit operator risk acceptance. Unknown or partial listings never prove absence.
 - **Identity and uniqueness**: all retained key versions are checked before account binding writes. The account reference stays stable across rotation. The order-number UNIQUE premise is exactly account reference plus trading day plus broker order number; this vendor premise remains B-VENDOR until confirmed. Intent, claim, fence, and evidence columns are protected by DB constraints and transition triggers. Service code is the only normal ledger writer.
-- **MCP surface (#849)**: `app/mcp_server/tooling/orders_nh_mock_variants.py` declares nine `nh_mock_*` tools (preview/place/modify/cancel, order history/detail, positions, orderable cash, reconcile). They register only in the DEFAULT profile when `NH_MOCK_MCP_ENABLED=true` (default false); no live profile, lane allowlist, or TradingCodex profile lists them. Every check lives in `app/services/nhplug_mock/operations.py` (design actor O): limit-only grammar (the exact string "limit" plus a positive integer price) before any network or DB access, exact `dry_run`/`confirm`, a required idempotency key, all Stage 2 gates, credentials by key name, the retained key registry, and a fresh `/n2/acctinfo` acct_type=03 check before T1. Modify and cancel need a same-day place/modify row this ledger dispatched whose broker number is bound, plus a complete all-scope listing that still shows the order open; `amend_scope` comes from that listing. The one send site is `_dispatch_new_intent` calling the #711 dispatcher, and the caller answer is read back from the durable row. History, detail, and reconcile report empty or incomplete listings as unknown. `nh_mock_reconcile_orders` defaults to a read-only dry run; its confirmed run does V recovery, T9b, candidate recording, and T11/T12 through the ledger service and never sends. Static guard and mutant tests: `tests/services/brokers/nhplug/test_static_guard.py`, `tests/services/nhplug_mock/test_nh_mock_mutants.py`.
+- **MCP surface (#849)**: `app/mcp_server/tooling/orders_nh_mock_variants.py` declares nine `nh_mock_*` tools (preview/place/modify/cancel, order history/detail, positions, orderable cash, reconcile). They register only in the DEFAULT profile when `NH_MOCK_MCP_ENABLED=true` (default false); no live profile, lane allowlist, or TradingCodex profile lists them. Every check lives in `app/services/nhplug_mock/operations.py` (design actor O): limit-only grammar (the exact string "limit" plus a positive integer price) before any network or DB access, exact `dry_run`/`confirm`, a required idempotency key, all Stage 2 gates, credentials by key name, the retained key registry, and a fresh `/n2/acctinfo` acct_type=03 check before T1. Modify and cancel need a same-day place/modify row this ledger dispatched whose broker number is bound, plus a complete all-scope listing that still shows the order open; `amend_scope` comes from that listing. The one send site is `_dispatch_new_intent` calling the #711 dispatcher, and the caller answer is read back from the durable row. History, detail, and reconcile report empty or incomplete listings as unknown. `nh_mock_reconcile_orders` defaults to a read-only dry run; its confirmed run does V recovery, T9b, candidate recording, and T11/T12 through the ledger service and never sends. Reconcile answers `reconciled` only when every targeted row (sending/uncertain plus bound rows) is resolved; an incomplete scope or unverified bound row is `unknown`, otherwise any row left sending/uncertain is `partial` (some resolved) or `uncertain` (none); with none unresolved, an `anomaly` or `requires_manual_review` row is `needs_review` and is never counted as resolved; all with `success=false` and the rows named (#942). The dry run predicts the same words in `would_be_status` and says `verification_pending`, never `reconciled`, while bound or listed rows still need the confirmed ledger checks. Order detail on an incomplete all-scope listing is `success=false`, `status=unknown`, `reason=order_listing_incomplete`. Static guard and mutant tests: `tests/services/brokers/nhplug/test_static_guard.py`, `tests/services/nhplug_mock/test_nh_mock_mutants.py`, `tests/services/nhplug_mock/test_nh_mock_status_honesty.py`.
 - **Existing Stage 1 boundary**: the vendor nhplug SDK and NHPLUG_BASE_URL/NHPLUG_AUTH_URL overrides remain forbidden. The old read smoke is still limited to its operator-created three-key file, and the live same-key risk remains. No real order smoke is run by builders or testers; operator-desk performs it after merge.
 
 ### 토스증권 Open API (ROB-529)

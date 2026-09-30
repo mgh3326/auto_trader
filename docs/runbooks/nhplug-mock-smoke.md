@@ -103,10 +103,25 @@ MCP 서버가 `NH_MOCK_MCP_ENABLED=true` 일 때 DEFAULT 프로필에만 아홉 
 0. **계좌·현금 확인**: `nh_mock_get_orderable_cash()` → `status=ok`, `cash` 정수. `nh_mock_get_positions()` → `positions_state` 기록. `mock_account_rejected`/`mock_account_unverified` 면 중단.
 1. **미리보기**: `nh_mock_preview_order(symbol, side="buy", quantity=1, price=P1)` → `status=preview`, `network_calls=0`.
 2. **지정가 매수**: `nh_mock_place_order(..., price=P1, idempotency_key=K1, dry_run=False, confirm=True)` → 기대 `status=uncertain`, `reconcile_required=true`, `retry_allowed=false`, `ack_evidence_order_id=N`. `N` 기록. 응답을 못 받았으면 **같은 K1** 으로 다시 호출한다(행을 돌려줄 뿐 다시 보내지 않는다).
-3. **reconcile 로 결속**: `nh_mock_reconcile_orders()`(dry run) → 해당 행 `planned_action=verify_own_number`. 이어서 `nh_mock_reconcile_orders(dry_run=False, confirm=True)` → 행 `state=open`, `broker_order_id=N`. 여전히 `uncertain` 이면 잠시 뒤 한 번 더 reconcile. 계속 미해결이면 중단하고 운영자 절차로 넘긴다(아래).
-4. **조회**: `nh_mock_get_order_detail(order_id=N)` → `broker_view=listed`, `owned_by_ledger=true`, `derived_status=open`. `nh_mock_get_order_history()` → `orders_state=complete`, `open_orders_state=present`, `open_orders` 에 `N`.
-5. **정정**: `nh_mock_modify_order(order_id=N, new_price=P2, new_quantity=1, idempotency_key=K2, dry_run=False, confirm=True)` (P2 도 체결되지 않을 가격) → `status=uncertain`, `ack_evidence_order_id=M`. reconcile(확정 실행) → 원주문 행 `modified`(`successor_order_id=M`), 정정 행 `confirmed`.
-6. **취소**: `nh_mock_cancel_order(order_id=M, idempotency_key=K3, dry_run=False, confirm=True)` → `status=uncertain`, `ack_evidence_order_id=C`. reconcile(확정 실행) → 취소 행 `confirmed`, `unresolved_row_ids=[]`.
+3. **reconcile 로 결속**: `nh_mock_reconcile_orders()`(dry run) → `status=dry_run`, 해당 행 `planned_action=verify_own_number`, `would_be_status=verification_pending`, `verification_pending_row_ids` 에 그 행, `would_be_unresolved_row_ids=[]`. 이어서 `nh_mock_reconcile_orders(dry_run=False, confirm=True)` → **`status=reconciled`, `success=true`**, `unresolved_row_ids=[]`, 행 `state=open`, `broker_order_id=N`. dry run 이 `would_be_status=uncertain`(목록에 `N` 이 아직 없음)이면 잠시 뒤 dry run 을 한 번 더 본다. 확정 실행이 `partial`/`uncertain`/`needs_review`/`unknown` 이면 **왕복을 멈추고 보고한다**(아래 상태 표). reconcile 은 주문을 보내지 않으므로 한 번 더 확정 실행하는 것은 허용되지만, 그래도 `reconciled` 가 아니면 중단·보고한다.
+4. **조회**: `nh_mock_get_order_detail(order_id=N)` → `success=true`, `status=listed`(=`broker_view`), `owned_by_ledger=true`, `derived_status=open`. `success=false`·`status=unknown`·`reason=order_listing_incomplete` 면 전체 목록 조회가 불완전한 것이다 — 레저 행이 있어도 확인된 것이 아니므로 조회를 반복하거나 중단한다. `nh_mock_get_order_history()` → `orders_state=complete`, `open_orders_state=present`, `open_orders` 에 `N`.
+5. **정정**: `nh_mock_modify_order(order_id=N, new_price=P2, new_quantity=1, idempotency_key=K2, dry_run=False, confirm=True)` (P2 도 체결되지 않을 가격) → `status=uncertain`, `ack_evidence_order_id=M`. reconcile dry run → `would_be_status=verification_pending`(원주문 행과 정정 행이 `verification_pending_row_ids`). reconcile(확정 실행) → **`status=reconciled`, `success=true`**, 원주문 행 `modified`(`successor_order_id=M`), 정정 행 `confirmed`. `partial` 이면 원주문 행만 재검증되고 정정 행이 `uncertain` 으로 남은 것이다 — 멈추고 보고한다.
+6. **취소**: `nh_mock_cancel_order(order_id=M, idempotency_key=K3, dry_run=False, confirm=True)` → `status=uncertain`, `ack_evidence_order_id=C`. reconcile(확정 실행) → **`status=reconciled`, `success=true`**, 취소 행 `confirmed`, `unresolved_row_ids=[]`.
+
+reconcile 응답 상태 표(확정 실행 `status`, dry run 은 같은 단어를 `would_be_status` 로 예측):
+
+| `status` | 뜻 | desk 행동 |
+|---|---|---|
+| `reconciled` (`success=true`) | 세 조회가 모두 완전하고 대상 행(`uncertain`/`sending` 행 + 결속 행)이 **전부** 해결됨. `unresolved_row_ids=[]`, `needs_review_row_ids=[]` | 다음 단계 진행 |
+| `partial` (`success=false`) | 일부 행은 해결(`resolved_row_ids`), 나머지는 여전히 `uncertain`/`sending`(`unresolved_row_ids`). 검토 필요 행은 해결로 세지 않는다 | **멈추고 보고**. 새 주문·정정·취소 금지 |
+| `uncertain` (`success=false`) | 대상 행 중 해결된 것이 하나도 없음. `unresolved_row_ids` 의 행이 그대로 미확정 | **멈추고 보고**. 새 주문·정정·취소 금지 |
+| `needs_review` (`success=false`) | 미해결 행은 없지만 `anomaly` 이거나 `requires_manual_review=true` 인 행이 있음(`needs_review_row_ids`). 예: 우리 주문번호가 다른 종목·방향·수량·가격으로 조회되어 T9b 가 `anomaly` 로 기록. 이런 행은 종결 상태라 MCP 로 풀리지 않으므로 그 날짜의 reconcile 은 계속 `needs_review` 다 | **멈추고 보고**. 새 주문·정정·취소 금지. 행을 그대로 두고 운영자 판단을 받는다 |
+| `unknown` (`success=false`) | 조회 하나 이상이 불완전(`incomplete_scopes`)하거나 결속 행 재검증 실패(`unverified_row_ids`). 미해결 행이 있어도 이 값이 우선 | 정상 완료로 기록하지 않는다. 조회 반복 또는 중단·보고 |
+| `verification_pending` (dry run 전용) | 미해결로 남을 것으로 예측되는 행은 없고, `verification_pending_row_ids` 의 행은 확정 실행의 레저 검사로만 판정됨 | 확정 실행. 결과는 `reconciled`·`unknown`·`error` 중 하나이며 dry run 만으로 `reconciled` 를 기록하지 않는다 |
+| `error` (`error=internal_error`, `sent=false`) | 도구가 예외를 삼킨 정제된 실패. 알려진 경우: 결속된 `open`/`partially_filled` 행의 번호가 완전한 전체·미체결 목록에서 사라지면 #711 트리거가 레저의 `reconcile_state=unknown` 기록을 거부한다(기존 결함, 별도 후속). 그 행의 레저 쓰기는 없고 송신도 없다(같은 실행에서 먼저 처리된 다른 행의 기록은 남을 수 있다) | **멈추고 보고**. 정상 완료로 기록하지 않는다 |
+
+dry run 은 검토 필요 행도 `would_be_needs_review_row_ids` 로 예측한다(이미 `anomaly`/검토 표시된 행, 번호 없는 `uncertain` 행, 번호가 다른 속성으로 조회되는 행). dry run 예측은 같은 조회·레저 상태에서 확정 실행보다 **좋게** 나오지 않는다(`partial`/`uncertain` 예측은 확정 실행에서 같은 값이거나 `unknown`, 위 `error` 경우 포함).
+
 7. **"빈 배열 ≠ 미체결 없음" 실증**: 마지막으로 `nh_mock_get_order_history()` → 미체결 목록이 비었을 때 `open_orders_state` 는 **`unknown`** 이어야 하며(`"none"` 같은 값은 존재하지 않는다) 사유에 `empty_open_listing_is_not_evidence_of_no_open_orders` 가 있어야 한다. 운영자가 HTS/앱에서 미체결이 실제로 없음을 눈으로 확인하고 기록한다.
 
 ### 결과 기록
@@ -117,5 +132,5 @@ MCP 서버가 `NH_MOCK_MCP_ENABLED=true` 일 때 DEFAULT 프로필에만 아홉 
 
 - `uncertain` 행은 같은 계좌·종목·방향의 새 주문을 **날짜와 무관하게** 막는다(설계 §5.2). reconcile 로 풀리지 않으면 T9h(후보 확인)·T14(위험 인수 종결)는 운영자 역할의 1회용 승인 행이 필요한 운영자 전용 절차이며 MCP 로는 할 수 없다(설계 §4.5–4.6). 이 절차의 운영자 CLI 는 아직 없으므로 행을 그대로 두고 보고한다.
 - 정정·취소가 `order_not_bound_reconcile_first` 면 3단계 reconcile 을 먼저 한다. `order_not_owned` 는 이 레저가 보낸 주문이 아니라는 뜻이다 — HTS 에서 직접 낸 주문은 이 도구로 정정·취소하지 않는다.
-- reconcile 은 전체·미체결·체결 세 조회가 모두 완전하고 결속 행이 전부 재검증된 경우에만 `status=reconciled` 다. 하나라도 불완전하면 `status=unknown`, `success=false` 이며 `incomplete_scopes`·`unverified_row_ids` 에 이름이 남는다. 이것을 정상 완료로 기록하지 않는다.
+- reconcile 은 전체·미체결·체결 세 조회가 모두 완전하고 결속 행이 전부 재검증되며 **미해결 행이 하나도 없을 때만** `status=reconciled` 다. 하나라도 불완전하면 `status=unknown`, `success=false` 이며 `incomplete_scopes`·`unverified_row_ids` 에 이름이 남는다. 행이 `uncertain`/`sending` 으로 남으면 `status=partial`(일부 해결) 또는 `status=uncertain`(해결 0), `success=false` 이며 `unresolved_row_ids` 에 이름이 남는다. 미해결 행이 없어도 `anomaly`/`requires_manual_review=true` 행이 있으면 `status=needs_review`, `success=false` 이며 `needs_review_row_ids` 에 이름이 남는다. 어느 것도 정상 완료로 기록하지 않는다 — 멈추고 보고한다.
 - `listing_incomplete`/`order_not_listed` 는 브로커 조회가 그 주문을 미체결로 보여주지 못한 것이다. 없다는 증거가 아니므로 다시 보내지 말고 조회를 반복하거나 중단한다.

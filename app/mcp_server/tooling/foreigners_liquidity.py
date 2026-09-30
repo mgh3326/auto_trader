@@ -6,11 +6,18 @@ value (frgn_ntby_tr_pbmn -> foreign_net_amount) but usually OMITS market cap.
 So we (1) backfill market_cap from invest_kr_fundamentals_snapshots, falling
 back to shares_outstanding x price, honest null when neither is available; and
 (2) drop clear-junk illiquid rows using the ALWAYS-PRESENT foreign_net_amount
-as the primary signal (NOT the null-prone market_cap)."""
+as the primary signal (NOT the null-prone market_cap).
+
+#1029: the KIS spec for FHPTJ04400000 (국내기관_외국인 매매종목가집계,
+/uapi/domestic-stock/v1/quotations/foreign-institution-total) documents
+frgn_ntby_tr_pbmn ~ etc_corp_ntby_tr_pbmn as "단위 : 백만원, 수량*현재가". The
+row mapper converts that million-KRW value to KRW exactly once, so every
+consumer of foreign_net_amount (this filter included) reads KRW."""
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 from decimal import Decimal
 from typing import Any
@@ -59,6 +66,45 @@ MIN_MARKET_CAP_KRW: float = _env_float(
     30000000000.0,  # 300억 KRW
 )
 
+# KIS documents frgn_ntby_tr_pbmn in 백만원 (1,000,000 KRW per unit).
+KIS_FOREIGN_TOTAL_AMOUNT_UNIT_KRW: int = 1_000_000
+
+# #1029: FHPTJ04400000 is a broker-staff 가집계 (provisional tally), never a
+# confirmed KRX figure. Every KR foreign ranking response says so explicitly.
+SOURCE_STATE_PROVISIONAL = "provisional"
+SOURCE_STATE_REASON = "kis_foreign_institution_total_provisional_tally"
+SOURCE_STATE_NOTE = (
+    "KIS FHPTJ04400000 (HTS 0440 외국인/기관 매매종목 가집계) is a provisional "
+    "tally keyed in by broker staff at about 09:30, 11:20, 13:20 and 14:30 KST "
+    "(±10 min). foreign_net_amount is net qty x current price (KIS unit 백만원, "
+    "converted to KRW), not confirmed KRX trade value. The ~14:30 tally is the "
+    "most complete this source gets; it is never replaced by confirmed values, "
+    "so after the close it can differ from confirmed foreign net-buy figures "
+    "(KRX/Toss). Confirmed daily investor flow comes from the confirmed "
+    "investor-flow series after the close (investor_flow_snapshots, 18:10 KST "
+    "job; get_intraday_investor_flow confirmed block)."
+)
+
+
+def foreign_ranking_source_state() -> dict[str, Any]:
+    """Response-level provenance block shared by every KR foreign-ranking
+    response shape (rows, liquidity-degraded, off-session suppressed)."""
+    return {
+        "source_state": SOURCE_STATE_PROVISIONAL,
+        "source_state_reason": SOURCE_STATE_REASON,
+        "source_state_note": SOURCE_STATE_NOTE,
+        "foreign_net_amount_unit": "KRW",
+    }
+
+
+def kis_million_krw_to_krw(value: Any) -> float | None:
+    """KIS 백만원 amount -> KRW. Blank, unparseable or non-finite -> None."""
+    val = _to_optional_float(value)
+    if val is None or not math.isfinite(val):
+        return None
+    return val * KIS_FOREIGN_TOTAL_AMOUNT_UNIT_KRW
+
+
 _FOREIGNERS_RANKING_TYPES: frozenset[str] = frozenset(
     {"foreign_net_buy", "foreign_net_sell", "foreigners"}
 )
@@ -83,7 +129,9 @@ def _abs_foreign_amount(row: dict[str, Any]) -> float | None:
     would be the wrong signal. No row in the shipped pipeline reaches this filter
     without a ``foreign_net_amount`` key, so honest null (excluded) is correct."""
     val = _to_optional_float(row.get("foreign_net_amount"))
-    return abs(val) if val is not None else None
+    if val is None or not math.isfinite(val):
+        return None
+    return abs(val)
 
 
 async def _fetch_market_cap_maps(
