@@ -122,6 +122,12 @@ function serveInbox(body: TraderApprovalInboxResponse) {
   route((u, m) => m === "GET" && u === "/trading/api/trader/approvals", () => jsonResponse(body));
 }
 
+function nth<T>(values: T[], index: number): T {
+  const value = values[index];
+  if (value === undefined) throw new Error(`missing element ${index}`);
+  return value;
+}
+
 function mutations(): Call[] {
   return calls.filter((c) => c.method !== "GET");
 }
@@ -204,7 +210,7 @@ test("approve posts once to the existing /invest approve endpoint with CSRF", as
   // In flight: a second click must not send a second request.
   await user.click(approve).catch(() => undefined);
   await waitFor(() => expect(mutations()).toHaveLength(1));
-  const [call] = mutations();
+  const call = nth(mutations(), 0);
   expect(call.url).toBe(`/invest/api/approvals/${ID}/approve`);
   expect(call.method).toBe("POST");
   expect(call.headers["x-csrftoken"]).toBe("csrf-abc");
@@ -235,8 +241,8 @@ test("reject posts to the existing /invest deny endpoint", async () => {
   const r = await row();
   await user.click(within(r).getByTestId(`deny-${ID}`));
   await waitFor(() => expect(mutations()).toHaveLength(1));
-  expect(mutations()[0].url).toBe(`/invest/api/approvals/${ID}/deny`);
-  expect(mutations()[0].headers["x-csrftoken"]).toBe("csrf-abc");
+  expect(nth(mutations(), 0).url).toBe(`/invest/api/approvals/${ID}/deny`);
+  expect(nth(mutations(), 0).headers["x-csrftoken"]).toBe("csrf-abc");
   const result = await within(r).findByTestId(`approval-result-${ID}`);
   expect(result).toHaveAttribute("data-reason", "denied");
 });
@@ -294,7 +300,7 @@ test("loss_cut: first click only asks; the token-bound second click confirms", a
 
   await user.click(confirm);
   await waitFor(() => expect(mutations()).toHaveLength(2));
-  const second = mutations()[1];
+  const second = nth(mutations(), 1);
   expect(second.url).toBe(`/invest/api/approvals/${LC}/loss-cut-confirm`);
   expect(second.body).toEqual({ confirmation_token: "tok-123" });
   expect(second.headers["x-csrftoken"]).toBe("csrf-abc");
@@ -477,7 +483,7 @@ function detail(
       approved_by_channel: "web",
       actionable: false,
       block_reason: "nonce_used",
-      rungs: [{ ...base.rungs[0], state: rung.state, broker_order_id: rung.broker_order_id ?? null }],
+      rungs: [{ ...nth(base.rungs, 0), state: rung.state, broker_order_id: rung.broker_order_id ?? null }],
     },
   };
 }
