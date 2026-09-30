@@ -6,6 +6,7 @@
 
 - Telegram 승인 콜백 durable inbox (W5)
 - 매수 게이트 A/B shadow (ROB-1301)
+- /trader 승인 대기함 (task 890 PR A)
 - 주차자산 proposal-bound 자동 매도 (task 817)
 
 ## 기준 원문 계약
@@ -180,6 +181,19 @@ dispatch와 send가 가능하다. 계좌 누락·불일치 또는 계측 실패�
 사람 승인 카드로 간다. 직접 주문 API, 기존 `cash_funding` 증거 계약,
 default-disabled 게이트, 스케줄러는 바뀌지 않는다. 자세한 운영 경계는
 `docs/runbooks/order-proposal-auto-approve-expand.md` §10을 따른다.
+
+### /trader 승인 대기함 (task 890 PR A)
+
+trader.robinco.dev `/trader` 페이지의 승인/기각/손절 2클릭 버튼은 **새 승인 경로가
+아니다** — 기존 `/invest/api/approvals/{id}/{approve|deny|loss-cut-confirm}`
+(`handle_web_approval`)만 호출하며, 그 함수는 Telegram 콜백과 같은
+`_handle_approve`/`_handle_deny`/`_handle_loss_cut_first_click` 을 부른다
+(`tests/services/order_proposals/test_trader_page_same_approval_path.py`).
+🔴 `/trading/` 은 CSRF 면제 경로이므로 이 페이지용 상태 변경 라우트를 `/trading/api/trader/`
+에 추가하지 마라. 목록 포함 규칙의 단일 정본은
+`app/services/trader_page/approval_inbox.py::inbox_block_reason` 이다(자동승인·만료·
+nonce 소비·미게시·알림 카드 제외). `INVEST_APPROVALS_ENABLED`/
+`INVEST_LOSS_CUT_APPROVAL_ENABLED` 기본 false 유지. 런북: `docs/runbooks/trader-page.md`.
 
 ## 유지 규약
 
