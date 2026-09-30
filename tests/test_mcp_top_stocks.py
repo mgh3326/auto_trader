@@ -45,13 +45,30 @@ class TestMCPTopStocks:
             _no_op_fetch,
         )
 
-        async def _no_normalized_caps(*args, **kwargs):
-            return {}
+        async def _permissive_normalized_caps(symbols, *args, **kwargs):
+            # #1105: the foreigners liquidity floor now judges ONLY the
+            # normalized Naver-backed snapshot, failing closed on missing
+            # coverage. Grant every requested symbol a comfortably-passing
+            # raw-KRW cap so these routing/mapping tests keep their rows;
+            # TestForeignersLiquidity covers the real source/reason matrix.
+            import datetime as _dt
+            from decimal import Decimal as _D
+
+            from app.services.market_valuation_snapshots.normalized_market_cap import (
+                NormalizedMarketCap,
+            )
+
+            return {
+                str(symbol): NormalizedMarketCap(
+                    _D("100000000000000"), _dt.date(2026, 9, 30), "naver_finance"
+                )
+                for symbol in symbols
+            }
 
         monkeypatch.setattr(
             analysis_tool_handlers,
             "fetch_normalized_kr_market_caps",
-            _no_normalized_caps,
+            _permissive_normalized_caps,
         )
 
     async def test_get_top_stocks_us_uses_analysis_screening_rankings_alias(
@@ -991,8 +1008,12 @@ class TestMCPTopStocks:
         # Generic slots are NO LONGER stuffed with the foreign values.
         assert first["volume"] is None
         assert first["trade_amount"] is None
-        # market_cap honestly null (hts_avls not returned by the foreign ranking).
-        assert first["market_cap"] is None
+        # market_cap is never populated from the foreign fields — #1105: with
+        # normalized Naver coverage present the liquidity filter stamps the
+        # trusted raw-KRW snapshot value (with provenance), not hts_avls.
+        assert first["market_cap"] == pytest.approx(100_000_000_000_000.0)
+        assert first["market_cap_source"] == "market_valuation_snapshots:naver_finance"
+        assert first["market_cap_snapshot_date"] == "2026-09-30"
 
         second = result["rankings"][1]
         assert second["symbol"] == "005380"
@@ -1726,10 +1747,16 @@ class TestMCPRegressionTests:
 
 @pytest.mark.asyncio
 class TestForeignersLiquidity:
-    async def _patch_fetch(self, monkeypatch, snapshot_caps=None, shares=None):
+    async def _patch_fetch(
+        self, monkeypatch, snapshot_caps=None, shares=None, normalized=None
+    ):
+        import datetime as _dt
         from decimal import Decimal as _D
 
         from app.mcp_server.tooling import foreigners_liquidity
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
 
         async def fake_fetch(symbols, *, session_factory=None):
             return (
@@ -1738,6 +1765,20 @@ class TestForeignersLiquidity:
             )
 
         monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
+
+        async def fake_normalized(symbols):
+            return {
+                k: NormalizedMarketCap(
+                    _D(str(v)), _dt.date(2026, 9, 30), "naver_finance"
+                )
+                for k, v in (normalized or {}).items()
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "fetch_normalized_kr_market_caps",
+            fake_normalized,
+        )
 
     async def test_backfill_wired_from_snapshot(self, monkeypatch):
         tools = build_tools()
@@ -1757,16 +1798,22 @@ class TestForeignersLiquidity:
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
-        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        # include_illiquid bypasses the floors, so no normalized fetch runs and
+        # the display market_cap is pure backfill with honest provenance.
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreigners", include_illiquid=True
+        )
         row = result["rankings"][0]
         assert row["market_cap"] == 4e14
         assert row["market_cap_source"] == "fundamentals_snapshot"
-        assert result["liquidity_filter"]["include_illiquid"] is False
+        assert result["liquidity_filter"]["include_illiquid"] is True
         assert result["liquidity_filter"]["excluded_count"] == 0
 
     async def test_filter_excludes_junk_default_on(self, monkeypatch):
         tools = build_tools()
-        await self._patch_fetch(monkeypatch)  # no caps -> null
+        # The kept row carries normalized Naver coverage; the junk row fails on
+        # net amount before its (absent) coverage is ever consulted.
+        await self._patch_fetch(monkeypatch, normalized={"005930": 4e14})
 
         class MockKISClient:
             async def foreign_buying_rank(self, market, limit, rank_sort="0"):
@@ -1792,6 +1839,12 @@ class TestForeignersLiquidity:
         assert [r["symbol"] for r in result["rankings"]] == ["005930"]
         assert result["rankings"][0]["rank"] == 1
         assert result["liquidity_filter"]["excluded_count"] == 1
+        assert result["liquidity_filter"]["excluded_reasons"] == {
+            "net_amount_below_floor": 1
+        }
+        assert result["liquidity_filter"]["excluded_rows"] == [
+            {"symbol": "900111", "name": "잡주", "reason": "net_amount_below_floor"}
+        ]
 
     async def test_include_illiquid_keeps_all(self, monkeypatch):
         tools = build_tools()
@@ -1837,7 +1890,11 @@ class TestForeignersLiquidity:
         assert result["total_count"] == 0
         assert result["status"] == "degraded"
         assert "liquidity threshold" in result["degraded_reason"]
+        assert "net_amount_below_floor=1" in result["degraded_reason"]
         assert result["liquidity_filter"]["excluded_count"] == 1
+        assert result["liquidity_filter"]["excluded_reasons"] == {
+            "net_amount_below_floor": 1
+        }
 
     async def test_foreigners_offsession_fake_zero_flow_suppressed(self, monkeypatch):
         """T1: off-session the KIS foreign-buying-rank returns fake-0 가집계 rows
@@ -1889,7 +1946,7 @@ class TestForeignersLiquidity:
         foreign net flow (has_real_flow=True) must NOT be suppressed — the guard
         only drops the all-fake-0 case."""
         tools = build_tools()
-        await self._patch_fetch(monkeypatch)
+        await self._patch_fetch(monkeypatch, normalized={"005930": 4e14})
 
         class MockKISClient:
             async def foreign_buying_rank(self, market, limit, rank_sort="0"):
@@ -1949,7 +2006,10 @@ class TestForeignersLiquidity:
 
     async def test_1029_post_close_documented_unit_rows_survive(self, monkeypatch):
         tools = build_tools()
-        await self._patch_fetch(monkeypatch)
+        await self._patch_fetch(
+            monkeypatch,
+            normalized={code: 5e10 for code, *_ in self._POST_CLOSE_ROWS_20260929},
+        )
         rows = self._kis_rows_20260929()
 
         class MockKISClient:
@@ -2001,7 +2061,10 @@ class TestForeignersLiquidity:
 
     async def test_1029_net_sell_documented_unit_rows_survive(self, monkeypatch):
         tools = build_tools()
-        await self._patch_fetch(monkeypatch)
+        await self._patch_fetch(
+            monkeypatch,
+            normalized={code: 5e10 for code, *_ in self._POST_CLOSE_ROWS_20260929},
+        )
         rows = self._kis_rows_20260929(sign="-")
 
         class MockKISClient:
@@ -2026,7 +2089,11 @@ class TestForeignersLiquidity:
     async def test_1029_threshold_boundary_uses_documented_unit(self, monkeypatch):
         """1억 KRW == "100" 백만원: kept; "99" (9,900만 KRW): excluded."""
         tools = build_tools()
-        await self._patch_fetch(monkeypatch)
+        # Both rows carry normalized coverage so the exclusion is purely the
+        # net-amount floor — the reason must say so.
+        await self._patch_fetch(
+            monkeypatch, normalized={"000100": 5e10, "000099": 5e10}
+        )
 
         class MockKISClient:
             async def foreign_buying_rank(self, market, limit, rank_sort="0"):
@@ -2058,6 +2125,9 @@ class TestForeignersLiquidity:
         assert result["rankings"][0]["foreign_net_amount"] == 100_000_000.0
         assert result["liquidity_filter"]["excluded_count"] == 1
         assert result["liquidity_filter"]["min_foreign_net_amount_krw"] == 1e8
+        assert result["liquidity_filter"]["excluded_reasons"] == {
+            "net_amount_below_floor": 1
+        }
 
     async def test_1029_degraded_and_suppressed_shapes_carry_source_state(
         self, monkeypatch
@@ -2158,6 +2228,340 @@ class TestForeignersLiquidity:
         result = await tools["get_top_stocks"](market="kr", ranking_type="volume")
         assert len(result["rankings"]) == 1
         assert "source_state" not in result
+
+    # ------------------------------------------------------------------
+    # #1105 — the liquidity-filter market-cap floor judges ONLY the
+    # normalized Naver-backed market_valuation_snapshots value (raw KRW);
+    # the fundamentals/shares display backfill is never floor evidence.
+    # ------------------------------------------------------------------
+
+    async def test_1105_witness_daewoo_kept_despite_wrong_unit_backfill(
+        self, monkeypatch
+    ):
+        """Desk witness 2026-09-30: a Daewoo E&C-like row whose fundamentals
+        backfill cap is 5.5e9 (wrong unit — real cap ~5.5e12) was dropped by
+        the 30bn floor pre-#1105. The floor reads the normalized Naver value,
+        so the row survives and the displayed cap is the normalized one."""
+        tools = build_tools()
+        await self._patch_fetch(
+            monkeypatch,
+            snapshot_caps={"047040": 5_546_293_611},  # wrong-unit backfill
+            normalized={"047040": 5_546_293_611_000},  # Naver: ~5.5조 KRW
+        )
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "047040",
+                        "hts_kor_isnm": "대우건설",
+                        "stck_prpr": "3200",
+                        "prdy_ctrt": "1.5",
+                        "frgn_ntby_qty": "4275000",
+                        "frgn_ntby_tr_pbmn": "13680",  # 136.8억 KRW
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+
+        assert "status" not in result
+        assert [r["symbol"] for r in result["rankings"]] == ["047040"]
+        row = result["rankings"][0]
+        assert row["foreign_net_amount"] == pytest.approx(13_680_000_000.0)
+        # Display + floor evidence are the normalized raw-KRW value, with
+        # honest provenance — not the wrong-unit backfill.
+        assert row["market_cap"] == pytest.approx(5_546_293_611_000.0)
+        assert row["market_cap_source"] == "market_valuation_snapshots:naver_finance"
+        assert row["market_cap_snapshot_date"] == "2026-09-30"
+        assert result["liquidity_filter"]["excluded_count"] == 0
+        assert (
+            result["liquidity_filter"]["market_cap_floor_source"]
+            == "market_valuation_snapshots:naver_finance"
+        )
+
+    async def test_1105_missing_naver_cap_excluded_market_cap_unknown(
+        self, monkeypatch
+    ):
+        """#1105: a large backfill/KIS-side cap can NEVER rescue a symbol that
+        has no normalized Naver coverage — excluded, fail-closed."""
+        tools = build_tools()
+        await self._patch_fetch(
+            monkeypatch,
+            snapshot_caps={"900222": 4e14},  # huge backfill — must NOT count
+            normalized={},  # no Naver coverage
+        )
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900222",
+                        "hts_kor_isnm": "미확인커버리지",
+                        "stck_prpr": "5000",
+                        "prdy_ctrt": "2.0",
+                        "frgn_ntby_qty": "1000000",
+                        "frgn_ntby_tr_pbmn": "5000",  # 50억 KRW — fine
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert "market_cap_unknown=1" in result["degraded_reason"]
+        lf = result["liquidity_filter"]
+        assert lf["excluded_count"] == 1
+        assert lf["excluded_reasons"] == {"market_cap_unknown": 1}
+        assert lf["excluded_rows"] == [
+            {
+                "symbol": "900222",
+                "name": "미확인커버리지",
+                "reason": "market_cap_unknown",
+            }
+        ]
+
+    async def test_1105_naver_cap_below_floor_excluded(self, monkeypatch):
+        """A normalized Naver cap that is genuinely under 30bn excludes the
+        row as market_cap_below_floor."""
+        tools = build_tools()
+        await self._patch_fetch(
+            monkeypatch,
+            normalized={"900333": 5e9},  # 50억 KRW — real but under the floor
+        )
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900333",
+                        "hts_kor_isnm": "소형주",
+                        "stck_prpr": "1200",
+                        "prdy_ctrt": "3.0",
+                        "frgn_ntby_qty": "500000",
+                        "frgn_ntby_tr_pbmn": "600",  # 6억 KRW — fine
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert "market_cap_below_floor=1" in result["degraded_reason"]
+        assert result["liquidity_filter"]["excluded_reasons"] == {
+            "market_cap_below_floor": 1
+        }
+        assert result["liquidity_filter"]["excluded_rows"] == [
+            {
+                "symbol": "900333",
+                "name": "소형주",
+                "reason": "market_cap_below_floor",
+            }
+        ]
+
+    async def test_1105_missing_net_amount_excluded_net_amount_missing(
+        self, monkeypatch
+    ):
+        """A row without foreign_net_amount has no foreign-flow evidence —
+        excluded as net_amount_missing before the cap check."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch, normalized={"900444": 4e14})
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900444",
+                        "hts_kor_isnm": "금액없음",
+                        "stck_prpr": "2000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "100000",
+                        # frgn_ntby_tr_pbmn omitted -> foreign_net_amount None
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert "net_amount_missing=1" in result["degraded_reason"]
+        assert result["liquidity_filter"]["excluded_reasons"] == {
+            "net_amount_missing": 1
+        }
+
+    async def test_1105_degraded_reason_names_market_cap_cause(self, monkeypatch):
+        """Witness regression: when every row died on the CAP floor the
+        degraded reason must not claim the net-amount floor was the cause."""
+        tools = build_tools()
+        await self._patch_fetch(
+            monkeypatch,
+            normalized={"900555": 4e9},  # below 30bn floor
+            # 900556 has no normalized coverage at all
+        )
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900555",
+                        "hts_kor_isnm": "소캡제외",
+                        "stck_prpr": "900",
+                        "prdy_ctrt": "1.2",
+                        "frgn_ntby_qty": "300000",
+                        "frgn_ntby_tr_pbmn": "270",  # 2.7억 KRW — above floor
+                    },
+                    {
+                        "stck_shrn_iscd": "900556",
+                        "hts_kor_isnm": "커버리지없음",
+                        "stck_prpr": "1500",
+                        "prdy_ctrt": "0.8",
+                        "frgn_ntby_qty": "200000",
+                        "frgn_ntby_tr_pbmn": "300",  # 3억 KRW — above floor
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert "market_cap_below_floor=1" in result["degraded_reason"]
+        assert "market_cap_unknown=1" in result["degraded_reason"]
+        lf = result["liquidity_filter"]
+        assert lf["excluded_count"] == 2
+        assert lf["excluded_reasons"] == {
+            "market_cap_below_floor": 1,
+            "market_cap_unknown": 1,
+        }
+        assert lf["excluded_rows"] == [
+            {
+                "symbol": "900555",
+                "name": "소캡제외",
+                "reason": "market_cap_below_floor",
+            },
+            {
+                "symbol": "900556",
+                "name": "커버리지없음",
+                "reason": "market_cap_unknown",
+            },
+        ]
+
+    async def test_1105_mixed_rows_keep_survivors_and_report_each_reason(
+        self, monkeypatch
+    ):
+        """Every exclusion carries its own precise reason; passing rows stay."""
+        tools = build_tools()
+        await self._patch_fetch(
+            monkeypatch,
+            normalized={
+                "005930": 4e14,  # passes
+                "900601": 2e9,  # below 30bn floor
+                "900603": 5e10,  # cap fine; amount is the failure
+            },
+        )
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {  # kept
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000",
+                    },
+                    {  # cap below floor
+                        "stck_shrn_iscd": "900601",
+                        "hts_kor_isnm": "소캡",
+                        "stck_prpr": "700",
+                        "prdy_ctrt": "0.5",
+                        "frgn_ntby_qty": "200000",
+                        "frgn_ntby_tr_pbmn": "140",
+                    },
+                    {  # no normalized coverage
+                        "stck_shrn_iscd": "900602",
+                        "hts_kor_isnm": "무커버",
+                        "stck_prpr": "3000",
+                        "prdy_ctrt": "0.7",
+                        "frgn_ntby_qty": "100000",
+                        "frgn_ntby_tr_pbmn": "300",
+                    },
+                    {  # amount below floor
+                        "stck_shrn_iscd": "900603",
+                        "hts_kor_isnm": "미량",
+                        "stck_prpr": "15000",
+                        "prdy_ctrt": "0.3",
+                        "frgn_ntby_qty": "10",
+                        "frgn_ntby_tr_pbmn": "20",  # 2천만 KRW
+                    },
+                    {  # amount missing entirely
+                        "stck_shrn_iscd": "900604",
+                        "hts_kor_isnm": "금액결손",
+                        "stck_prpr": "5000",
+                        "prdy_ctrt": "0.1",
+                        "frgn_ntby_qty": "5",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+
+        assert "status" not in result
+        assert [r["symbol"] for r in result["rankings"]] == ["005930"]
+        lf = result["liquidity_filter"]
+        assert lf["excluded_count"] == 4
+        assert lf["excluded_reasons"] == {
+            "market_cap_below_floor": 1,
+            "market_cap_unknown": 1,
+            "net_amount_below_floor": 1,
+            "net_amount_missing": 1,
+        }
+        assert {(e["symbol"], e["reason"]) for e in lf["excluded_rows"]} == {
+            ("900601", "market_cap_below_floor"),
+            ("900602", "market_cap_unknown"),
+            ("900603", "net_amount_below_floor"),
+            ("900604", "net_amount_missing"),
+        }
 
 
 # ---------------------------------------------------------------------------

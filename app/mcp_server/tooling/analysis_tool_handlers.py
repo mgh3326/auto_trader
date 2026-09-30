@@ -10,6 +10,7 @@ import asyncio
 import datetime
 import logging
 import math
+from collections import Counter
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -45,6 +46,8 @@ from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 from app.services.decision_history import build_decision_context
 from app.services.market_valuation_snapshots.normalized_market_cap import (
+    KR_NORMALIZED_MARKET_CAP_SOURCE,
+    NormalizedMarketCap,
     fetch_normalized_kr_market_caps,
 )
 
@@ -385,24 +388,67 @@ async def get_top_stocks_impl(
                     ),
                 }
 
-    # ROB-629 B2: foreigners liquidity backfill + default-ON liquidity filter.
+    # ROB-629 B2 / #1105: foreigners liquidity backfill + default-ON liquidity
+    # filter. The market-cap leg judges ONLY the normalized naver_finance
+    # market_valuation_snapshots value (raw KRW) — the fundamentals/shares
+    # backfill above is display enrichment in a non-normalized provider unit
+    # and is never eligibility evidence. Missing normalized coverage excludes
+    # the row as market_cap_unknown (fail-closed, same contract as the
+    # caller-side min_market_cap arg).
     liquidity_filter_meta: dict[str, Any] | None = None
     if market == "kr" and foreigners_liquidity.is_foreigners_ranking(ranking_type):
         await foreigners_liquidity.backfill_foreigners_market_cap(rankings)
-        kept, excluded = foreigners_liquidity.filter_illiquid_foreigners(
-            rankings, include_illiquid=include_illiquid
+        normalized_caps: dict[str, NormalizedMarketCap] = {}
+        if (
+            not include_illiquid
+            and rankings
+            and foreigners_liquidity.MIN_MARKET_CAP_KRW is not None
+        ):
+            normalized_caps = await fetch_normalized_kr_market_caps(
+                row["symbol"] for row in rankings
+            )
+            for row in rankings:
+                cap = normalized_caps.get(row["symbol"])
+                if cap is None:
+                    continue
+                row["market_cap"] = float(cap.value)
+                row["market_cap_source"] = f"market_valuation_snapshots:{cap.source}"
+                row["market_cap_snapshot_date"] = cap.snapshot_date.isoformat()
+        kept, excluded_rows = foreigners_liquidity.filter_illiquid_foreigners(
+            rankings,
+            include_illiquid=include_illiquid,
+            normalized_market_caps=normalized_caps,
         )
+        excluded = len(excluded_rows)
+        excluded_reasons = dict(Counter(item["reason"] for item in excluded_rows))
         liquidity_filter_meta = {
             "include_illiquid": include_illiquid,
             "min_foreign_net_amount_krw": (
                 foreigners_liquidity.MIN_FOREIGN_NET_AMOUNT_KRW
             ),
             "min_market_cap_krw": foreigners_liquidity.MIN_MARKET_CAP_KRW,
+            "market_cap_floor_source": (
+                f"market_valuation_snapshots:{KR_NORMALIZED_MARKET_CAP_SOURCE}"
+            ),
             "excluded_count": excluded,
+            "excluded_reasons": excluded_reasons,
+            "excluded_rows": excluded_rows,
         }
         if not include_illiquid and rankings and not kept:
             # Filter emptied a non-empty list (e.g. off-hours / all-junk).
-            # Honest degraded signal — never fabricate rows.
+            # Honest degraded signal naming the real per-row causes — never
+            # fabricate rows and never blame the wrong floor.
+            reason_summary = ", ".join(
+                f"{reason}={count}"
+                for reason, count in sorted(excluded_reasons.items())
+            )
+            market_cap_floor_text = (
+                ", market_cap >= "
+                f"{foreigners_liquidity.MIN_MARKET_CAP_KRW:.0f} KRW "
+                "(normalized market_valuation_snapshots:naver_finance only)"
+                if foreigners_liquidity.MIN_MARKET_CAP_KRW is not None
+                else ""
+            )
             return {
                 "rankings": [],
                 "total_count": 0,
@@ -414,11 +460,13 @@ async def get_top_stocks_impl(
                 **foreigners_liquidity.foreign_ranking_source_state(),
                 "status": "degraded",
                 "degraded_reason": (
-                    f"all {excluded} foreign-flow row(s) fell below the liquidity "
-                    f"threshold (foreign_net_amount >= "
-                    f"{foreigners_liquidity.MIN_FOREIGN_NET_AMOUNT_KRW:.0f} KRW); "
-                    "pass include_illiquid=true to bypass, or retry during market "
-                    "hours when foreign net flow is non-trivial"
+                    f"all {excluded} foreign-flow row(s) were excluded by the "
+                    f"liquidity threshold ({reason_summary}); floors: "
+                    f"|foreign_net_amount| >= "
+                    f"{foreigners_liquidity.MIN_FOREIGN_NET_AMOUNT_KRW:.0f} KRW"
+                    f"{market_cap_floor_text}; pass include_illiquid=true to "
+                    "bypass, or retry during market hours when foreign net "
+                    "flow is non-trivial"
                 ),
                 "liquidity_filter": liquidity_filter_meta,
             }
