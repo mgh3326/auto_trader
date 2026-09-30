@@ -110,6 +110,17 @@ What changes P, and how:
   undeclared key; re-raise a released P of zero (P zero means released until an
   operator declares again); act on websocket rows (provisional) or
   manual_import rows; write from a read path or from the send-time guard.
+- Unobserved (#1061): when the broker answers but a key's own position is
+  unreadable (for Toss, the holding is listed with sellable_quantity None or an
+  unreadable quantity), that key is not judged. Its outcome is unobserved with
+  reason FIELD_unavailable:SYMBOL, P and revision stay as they are, and nothing
+  is notified. It is never treated as held 0, which would lower or release P.
+  The same holds when the pre-lock read was fine but the in-lock re-read inside
+  save finds the position unreadable: save rolls back and P is unchanged. Other
+  Toss keys in the same response, and undeclared holdings, are unaffected; a
+  whole-response failure (the holdings list itself) still fails every key of
+  that source. The KIS reader is unchanged: a missing KIS sellable still fails
+  that KIS market read as a whole.
 
 Every change goes through ProtectedQuantityService.save, the same path as an
 operator declaration: origin operator_cli, actor the fixed owner id
@@ -141,7 +152,7 @@ Where the rule runs:
    holding and never raises. Either the CLI
    protected_positions.py (--database-url URL | --database-url-env NAME) auto-reconcile [--scope SCOPE]
    [--commit] (a preview unless --commit; exit 2 while the kill switch is off,
-   1 if any key failed) or the TaskIQ task protected_positions.auto_follow_reconcile,
+   1 if any key failed or was unobserved) or the TaskIQ task protected_positions.auto_follow_reconcile,
    which has no schedule and commits when called. The code registers no
    schedule. Desk runs the one-shot CLI (auto-reconcile --commit) every 30 minutes during KR and US regular hours from an NCP systemd timer, per operator decision Q-75 on task 944 (option A).
    See "Lever timer unit" below; the timer must use --database-url-env.
@@ -172,13 +183,16 @@ and registers no schedule. Constraints the unit must follow:
   with the working directory at the application root. Run it as a oneshot
   service; the timer limits it to KR and US regular hours.
 - Output is one JSON line on stdout (per-key outcomes: lowered, unchanged,
-  skipped, error). Only P decreases are written, one notification per decrease.
+  skipped, unobserved, error). Only P decreases are written, one notification per decrease.
 
 Exit codes (unchanged by the timer; alert on them in the unit's logs):
 
 - 0: every declared key was reconciled or needed no change.
 - 1: partial broker-read failure. At least one key's outcome is error (for
-  example its broker read failed); the other keys were still processed. It
+  example its broker read failed) or unobserved (its own position was listed
+  but unreadable; P unchanged, the reason names the field and symbol, and the
+  application log carries a warning naming only scope, market, symbol and
+  field); the other keys were still processed. It
   also covers a database or unexpected failure before any key was read, which
   prints only {"error": "protected_positions_unavailable"}.
 - 2: refused. The kill switch is off (error auto_follow_disabled, nothing was
