@@ -541,6 +541,9 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "modify_order",
         "live_reconcile_orders",
     },
+    # #1171 — the H3-CRYPTO paper pilot's only order surface is the ROB-703
+    # paper simulator (no broker call); every live order tool is absent.
+    McpProfile.H3_CRYPTO_PAPER: set(PAPER_LIMIT_ORDER_TOOL_NAMES),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -602,6 +605,8 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.LIVE_KR,
         McpProfile.LIVE_US,
         McpProfile.LIVE_CRYPTO,
+        # #1171 — the H3-CRYPTO paper surface is the runner's exact 20 tools.
+        McpProfile.H3_CRYPTO_PAPER,
     )
 ]
 

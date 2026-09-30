@@ -36,6 +36,7 @@ tests/mcp_server/test_earnings_context.py
 tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_get_holdings_ledger_lots.py
 tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
+tests/mcp_server/test_h3_crypto_paper_profile.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
