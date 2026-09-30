@@ -143,8 +143,12 @@ tests/services/brokers/nhplug/test_live_period_collect.py
 tests/services/brokers/toss/test_candles.py
 tests/services/brokers/toss/test_errors.py
 tests/services/brokers/toss/test_health.py
+tests/services/brokers/toss/test_market_data.py
+tests/services/brokers/toss/test_minute_candles.py
 tests/services/brokers/toss/test_no_mutation_surface.py
 tests/services/execution_ledger/test_fill_sinks.py
+tests/services/execution_ledger/test_kis_lots_sell_evidence.py
+tests/services/execution_ledger/test_kis_lots_sell_evidence_db.py
 tests/services/execution_ledger/test_query_service_names.py
 tests/services/execution_ledger/test_reconciler.py
 tests/services/execution_outcomes/test_mapping_catalog.py
@@ -225,6 +229,7 @@ tests/services/research/test_rob984_cp6_diagnostics.py
 tests/services/research/test_rob984_cp7_fixture_closure.py
 tests/services/research/test_strategy_experiment_registry.py
 tests/services/research/test_strategy_learning_event_service.py
+tests/services/research_candles/test_dart_minute_trigger.py
 tests/services/scalping_reviews/test_rollup.py
 tests/services/scalping_reviews/test_serialize_benchmark.py
 tests/services/screener_evidence/test_builder.py
@@ -296,6 +301,8 @@ tests/test_auth_middleware.py
 tests/test_auth_router.py
 tests/test_auth_security.py
 tests/test_auto_emit_candidate_citation.py
+tests/test_backfill_dart_disclosures.py
+tests/test_backfill_dart_disclosures_pacing.py
 tests/test_btc_dominance.py
 tests/test_build_invest_screener_snapshots_full_universe.py
 tests/test_call_duration_plugin.py

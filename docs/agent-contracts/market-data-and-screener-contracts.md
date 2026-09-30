@@ -13,6 +13,7 @@
 - Negative-class(기각 코호트) 기록 — decision_bucket (ROB-1283)
 - 정지 종목 오염 차단 — halted_suspect (ROB-1236)
 - analyze quick fast projection (ROB-1311)
+- KR 1분봉 이벤트 수집기 — Toss → research.kr_candles_1m_toss (#1086)
 - KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
 
@@ -295,6 +296,30 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
   `foreign_net_amount_unit="KRW"` 를 싣는다. 확정 일별 수급은 장 마감 후 확정 투자자 수급
   시리즈(`investor_flow_snapshots` 18:10 KST job, `get_intraday_investor_flow` confirmed 블록)에서 읽는다.
 - 순위 정렬은 `FID_DIV_CLS_CODE="0"`(수량정렬)이다 — 금액 기준 순위(Toss 등)와 순서가 다를 수 있다.
+
+### KR 1분봉 이벤트 수집기 — Toss → research.kr_candles_1m_toss (#1086)
+
+#1054 대상 유형 DART 공시(공급계약 의무·자율, 자사주 직접취득·신탁체결, 잠정실적,
+유상증자 — r3 `cohort_of` 이식)가 들어오면 해당 종목의 D0(공시일 이후 첫 KRX 세션)·D+1
+1분봉을 Toss `GET /api/v1/candles`(1m, `MARKET_DATA_CHART`)로 받아 저장한다.
+
+- **클라이언트**: `TossReadClient.minute_candles`/`collect_minute_candles` (strict DTO
+  `parse_minute_candle_page`; 기존 loose `candles` 는 불변). 커서는 spec 상 `before`/`nextBefore`
+  뿐(after 없음), non-advancing·충돌 중복 = `TossResponseContractError`, 페이지 상한 =
+  `TossPaginationCapExceeded`
+- **수집기/트리거**: `app/services/research_candles/{toss_minute_collector,dart_minute_trigger}.py`
+- **CLI**: `scripts/backfill_kr_candles_1m_toss.py` (dry-run 기본, `--commit` 시 INSERT 권한 사전확인)
+- **런북**: `docs/runbooks/kr-candles-1m-toss-collector.md`
+
+🔴 **대상 테이블은 `research.kr_candles_1m_toss`** — Toss 는 KRX+NXT 합산 상품이라
+venue 키를 가진 `research.kr_candles_1m` 에 쓰지 않는다. KIS 폴백 없음(`source='TOSS'` CHECK),
+Toss 무응답은 gap 기록(JSONL, 침묵 skip 금지).
+🔴 **`time_utc` = Toss 봉 종료시각(raw)**. 봉은 `[timestamp-1분, timestamp)`. 시작시각 라벨을
+쓰는 연구(#1054 N4 `bar_start >= rcept_dt + 6분`)는 반드시
+`time_utc - interval '1 minute' AS bar_start` 로 읽는다. `session_segment` 는 Phase-2 와 같은
+KST 시각 라벨(venue 아님). 가격은 `adjusted=false`. 쓰기는 `ON CONFLICT DO NOTHING`(기존 행 우선,
+불일치는 `existing_conflict` 로 보고만).
+🔴 **스케줄 등록 없음.** 배선(hk 1084 Q-122=A)은 머지 후 desk 가 등록한다(런북 §5).
 
 ## 유지 규약
 

@@ -14,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 
 from app.core.config import Settings
 from app.core.db import AsyncSessionLocal
@@ -28,6 +29,31 @@ from app.services.protected_quantity_service import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _drop_auto_follow_ledger_rows(request):
+    """Ledger rows are shared state: other suites (the ROB-755 triage reader
+    orders every websocket row by id) must not see this file's fixtures."""
+
+    yield
+    if "db_session" not in request.fixturenames:
+        return
+    from sqlalchemy import delete
+
+    from app.core.db import engine
+    from app.models.execution_ledger import ExecutionLedger
+    from tests._run_owned_database import validate_run_owned_database_url
+
+    validate_run_owned_database_url(engine.url)
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("auto-follow-%")
+            )
+        )
+        await db.commit()
+
 
 ON = SimpleNamespace(protected_position_auto_follow_enabled=True)
 OFF = SimpleNamespace(protected_position_auto_follow_enabled=False)
@@ -507,3 +533,190 @@ async def test_broker_read_failure_is_an_outcome_not_an_exception(db_session) ->
     head, _ = await _state(symbol)
     assert (outcome.status, outcome.reason) == ("error", "RuntimeError")
     assert head is not None and head.protected_quantity == Decimal("4")
+
+
+# --- #1061: an unobserved Toss position keeps its own P and only its own ---
+
+
+def _toss_position(symbol: str, held: str | None, sellable: str | None):
+    from app.services.toss_portfolio_service import TossPortfolioPosition
+
+    return TossPortfolioPosition(
+        account="toss",
+        account_name="Toss",
+        broker="toss",
+        source="toss_api",
+        instrument_type="equity_kr",
+        market="kr",
+        symbol=symbol,
+        name=symbol,
+        quantity=None if held is None else Decimal(held),  # type: ignore[arg-type]
+        avg_buy_price=Decimal("1"),
+        current_price=Decimal("1"),
+        evaluation_amount=None,
+        profit_loss=None,
+        profit_rate=None,
+        sellable_quantity=None if sellable is None else Decimal(sellable),
+    )
+
+
+class FakeToss:
+    """Scripted Toss snapshots read through the real settings reader.
+
+    ``snapshots`` are consumed per read (the last one repeats).  Keys outside
+    ``mine`` get a huge fake observation so shared-database heads stay put.
+    """
+
+    def __init__(self, monkeypatch, snapshots: list[list[Any]], mine: set[str]):
+        from app.services import protected_position_settings as settings_read
+        from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+        self.snapshots = [TossPortfolioSnapshot(positions=rows) for rows in snapshots]
+        self.mine = mine
+        self.reads = 0
+        self._settings_read = settings_read
+
+        async def fetch(**_kwargs):
+            self.reads += 1
+            if len(self.snapshots) > 1:
+                return self.snapshots.pop(0)
+            return self.snapshots[0]
+
+        monkeypatch.setattr(settings_read, "fetch_toss_portfolio_snapshot", fetch)
+
+    def factory(self, key: ProtectionKey):
+        if key.symbol not in self.mine:
+            return FakeBroker("1000000000").factory(key)
+
+        async def observe() -> BrokerPositionObservation:
+            return await self._settings_read.fresh_broker_observation(key=key)
+
+        return observe
+
+
+async def _toss_lever(toss: FakeToss, notes: Notes, *, dry_run: bool = False):
+    return await auto.reconcile_declared_positions(
+        account_scope="toss_live",
+        dry_run=dry_run,
+        session_factory=AsyncSessionLocal,
+        provider_factory=toss.factory,
+        notify=notes,
+        settings_obj=ON,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mixed_toss_account_judges_each_declared_key_on_its_own_position(
+    db_session, monkeypatch
+) -> None:
+    good, unread, undeclared = _symbol(), _symbol(), _symbol()
+    await _declare(db_session, good, "4", scope="toss_live")
+    await _declare(db_session, unread, "5", scope="toss_live")
+    toss = FakeToss(
+        monkeypatch,
+        [
+            [
+                _toss_position(unread, "5", None),
+                _toss_position(good, "2", "2"),
+                _toss_position(undeclared, "9", None),
+            ]
+        ],
+        mine={good, unread, undeclared},
+    )
+    notes = Notes()
+
+    preview = await _toss_lever(toss, notes, dry_run=True)
+    result = await _toss_lever(toss, notes)
+
+    for payload, good_status in ((preview, "would_lower"), (result, "lowered")):
+        [good_item] = _mine(payload, good)
+        [unread_item] = _mine(payload, unread)
+        assert good_item["status"] == good_status
+        assert unread_item["status"] == "unobserved"
+        assert unread_item["reason"] == f"sellable_quantity_unavailable:{unread}"
+        assert Decimal(unread_item["previous_quantity"]) == Decimal("5")
+        assert unread_item["new_quantity"] is None
+        assert unread_item["broker_held"] is None
+        assert _mine(payload, undeclared) == []
+    good_head, _ = await _state(good, "toss_live")
+    unread_head, unread_revisions = await _state(unread, "toss_live")
+    assert good_head is not None and good_head.protected_quantity == Decimal("2")
+    # Never held 0: P is neither lowered nor released, and no revision exists.
+    assert unread_head is not None and unread_head.protected_quantity == Decimal("5")
+    assert len(unread_revisions) == 1
+    assert sum(good in m for m in notes.messages) == 1
+    assert not any(unread in m or undeclared in m for m in notes.messages)
+
+
+@pytest.mark.asyncio
+async def test_in_lock_unobserved_reread_blocks_the_save_and_keeps_p(
+    db_session, monkeypatch
+) -> None:
+    symbol = _symbol()
+    await _declare(db_session, symbol, "4", scope="toss_live")
+    # pre-lock read decides lower-to-1; the in-lock re-read is unreadable.
+    toss = FakeToss(
+        monkeypatch,
+        [[_toss_position(symbol, "1", "1")], [_toss_position(symbol, "1", None)]],
+        mine={symbol},
+    )
+    notes = Notes()
+
+    result = await _toss_lever(toss, notes)
+
+    [item] = _mine(result, symbol)
+    head, revisions = await _state(symbol, "toss_live")
+    assert toss.reads == 2
+    assert (item["status"], item["reason"]) == (
+        "unobserved",
+        f"sellable_quantity_unavailable:{symbol}",
+    )
+    assert head is not None and head.protected_quantity == Decimal("4")
+    assert head.revision == 1 and len(revisions) == 1
+    assert notes.messages == []
+
+
+@pytest.mark.asyncio
+async def test_unreadable_held_is_unobserved_not_zero(db_session, monkeypatch) -> None:
+    symbol = _symbol()
+    await _declare(db_session, symbol, "3", scope="toss_live")
+    toss = FakeToss(monkeypatch, [[_toss_position(symbol, None, "3")]], mine={symbol})
+
+    result = await _toss_lever(toss, Notes())
+
+    [item] = _mine(result, symbol)
+    head, _ = await _state(symbol, "toss_live")
+    assert (item["status"], item["reason"]) == (
+        "unobserved",
+        f"quantity_unavailable:{symbol}",
+    )
+    assert head is not None and head.protected_quantity == Decimal("3")
+
+
+@pytest.mark.asyncio
+async def test_toss_buy_fill_on_an_unobserved_key_keeps_p(
+    db_session, monkeypatch
+) -> None:
+    symbol = _symbol()
+    await _declare(db_session, symbol, "1", scope="toss_live")
+    ledger_id = await _fill(db_session, symbol, side="buy", broker="toss")
+    toss = FakeToss(monkeypatch, [[_toss_position(symbol, "3", None)]], mine={symbol})
+    notes = Notes()
+
+    [outcome] = await auto.follow_committed_fills(
+        [ledger_id],
+        session_factory=AsyncSessionLocal,
+        provider_factory=toss.factory,
+        notify=notes,
+        settings_obj=ON,
+    )
+
+    head, revisions = await _state(symbol, "toss_live")
+    assert (outcome.status, outcome.reason) == (
+        "unobserved",
+        f"sellable_quantity_unavailable:{symbol}",
+    )
+    assert outcome.ledger_id == ledger_id
+    assert head is not None and head.protected_quantity == Decimal("1")
+    assert len(revisions) == 1
+    assert notes.messages == []

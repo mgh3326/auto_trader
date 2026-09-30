@@ -212,6 +212,11 @@ def _assert_all_kis_kr_unknown(result: dict[str, Any]) -> None:
         assert block["unknown_reasons"] == ["ledger_read_failed"]
         assert block["lots"] is None
         assert block["open_buy_evidence"]["blocking"] is True
+        # task #1087: the sell-side views fail closed too
+        assert block["open_sell_evidence"]["state"] == "unknown"
+        assert block["open_sell_evidence"]["blocking"] is True
+        assert block["same_day_buy_evidence"]["blocking"] is True
+        assert block["sellable_by_ledger"] is None
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,11 @@ notification only:
   holding;
 * whenever the fresh broker holding is below P, P is lowered to the holding.
 
+A key whose own broker position is unobserved (the broker answered but that
+position's held or sellable was unreadable) is never judged: it is reported as
+``unobserved`` and its P is left unchanged.  Treating it as held 0 would lower
+or release P, the dangerous direction.  Other keys are judged as usual.
+
 Every change goes through ``ProtectedQuantityService.save`` -- the same path
 an operator declaration uses -- so it takes the per-key advisory lock, re-reads
 the broker inside that lock, can never exceed the fresh holding, bumps the head
@@ -44,6 +49,7 @@ from app.models.execution_ledger import ExecutionLedger
 from app.models.protected_positions import ProtectedPositionRevision
 from app.services.protected_quantity_service import (
     BrokerPositionObservation,
+    BrokerPositionUnobserved,
     ProtectedQuantityConflictError,
     ProtectedQuantityService,
     ProtectedQuantityValidationError,
@@ -75,7 +81,7 @@ class AutoFollowOutcome:
     """Closed-vocabulary result for one ledger row or one declared key.
 
     status: raised | lowered | would_raise | would_lower | unchanged | skipped
-    | error.
+    | unobserved | error.  ``unobserved`` and ``error`` are partial failures.
     """
 
     status: str
@@ -205,6 +211,35 @@ def _recording_provider(
     return observe
 
 
+def _unobserved(
+    exc: BrokerPositionUnobserved,
+    *,
+    key: ProtectionKey,
+    ledger_id: int | None,
+    previous: Decimal,
+) -> AutoFollowOutcome:
+    """P stays as it is; name only the key and the unreadable field."""
+
+    outcome = AutoFollowOutcome(
+        "unobserved",
+        f"{exc.field}_unavailable:{key.symbol}",
+        key=key,
+        ledger_id=ledger_id,
+        previous_quantity=previous,
+    )
+    try:
+        logger.warning(
+            "protected_position_auto_follow unobserved %s %s %s: %s is unavailable",
+            key.account_scope,
+            key.market,
+            key.symbol,
+            exc.field,
+        )
+    except Exception:
+        pass
+    return outcome
+
+
 async def _revision_exists(db: Any, *, position_id: int, idempotency_key: str) -> bool:
     found = (
         await db.execute(
@@ -267,7 +302,12 @@ async def _follow_key(
             provider = provider_factory(key)
             # Pre-lock read decides the direction only.  ``save`` repeats the
             # broker read inside the per-key lock and refuses P > fresh held.
-            pre = await provider()
+            try:
+                pre = await provider()
+            except BrokerPositionUnobserved as exc:
+                return _unobserved(
+                    exc, key=key, ledger_id=raise_for_ledger_id, previous=previous
+                )
             held = _floor_quantity(
                 coerce_broker_quantity(pre.held, field="broker_held")
             )
@@ -320,6 +360,12 @@ async def _follow_key(
                     observation_provider=observe_in_lock,
                     confirm_protection_change=True,
                     confirm_symbol=key.symbol,
+                )
+            except BrokerPositionUnobserved as exc:
+                # The in-lock re-read found this position unreadable; save
+                # rolled back.  Never retry toward held 0 or a stale value.
+                return _unobserved(
+                    exc, key=key, ledger_id=raise_for_ledger_id, previous=previous
                 )
             except ProtectedQuantityConflictError as exc:
                 # A concurrent writer advanced the head (or used the same
