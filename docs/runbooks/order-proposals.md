@@ -153,7 +153,10 @@ See the full design in
   exits (`exit_intent`) keep their validity-only exemption and do no calendar
   I/O under the default key; once pre/post is enabled, a Toss US exit also
   looks up the Toss session (fail-open: an unknown calendar keeps the
-  exemption) and is refused the same way during pre/post. KIS US, KR and
+  exemption), classifies it at a clock sample taken after that lookup, is
+  refused the same way during pre/post, and otherwise keeps an exemption
+  that ends with the current Toss session, so a session roll before the send
+  re-sample fails closed. KIS US, KR and
   crypto never read the key. A pre/post decision carries
   `session_evidence.day_expiry` and a published card stores it as
   `source_asof.approval_window_day_expiry`: a pre submission's expected death

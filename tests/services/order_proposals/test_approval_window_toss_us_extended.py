@@ -1214,3 +1214,177 @@ def test_every_production_window_boundary_call_passes_rungs():
             if not any(k.arg == "rungs" for k in node.keywords):
                 missing.append(f"{path.relative_to(root.parent)}:{node.lineno}")
     assert missing == []
+
+
+# --- r2 tester finding: a session roll during/after the exit calendar await --
+# Ported from the round-2 tester reproductions (tester-r2-repro.py).
+
+_ROLLS = [
+    (_SUMMER, _kst(2026, 10, 1, 4, 59, 59), _kst(2026, 10, 1, 5, 0, 0), "post"),
+    (_SUMMER, _kst(2026, 9, 30, 16, 59, 59), _kst(2026, 9, 30, 17, 0, 0), "pre"),
+    (_DST_SHIFT, _kst(2026, 11, 3, 5, 59, 59), _kst(2026, 11, 3, 6, 0, 0), "post"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("calendar", "start", "end", "session"), _ROLLS)
+async def test_exit_classifies_the_session_after_the_calendar_await(
+    monkeypatch, calendar, start, end, session
+):
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    item = _loss_cut_service("0.5")
+    item.group.valid_until = end + timedelta(days=1)
+    current = start
+
+    async def crossing_calendar(market, query_date):
+        nonlocal current
+        current = end
+        return calendar
+
+    monkeypatch.setattr(policy, "get_toss_market_calendar", crossing_calendar)
+    decision = await policy.evaluate_approval_window_boundary(
+        item.group,
+        rungs=[item.rung],
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: current,
+    )
+    assert decision.observed_at == end
+    assert decision.code is ApprovalWindowCode.DEFER_SESSION_CLOSED
+    assert decision.evidence.current_session == session
+    assert decision.detail == "toss_us_extended_session_refused:fractional_quantity"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("calendar", "start", "end", "session"), _ROLLS)
+async def test_exit_interval_ends_with_its_session_so_a_later_roll_fails_closed(
+    monkeypatch, calendar, start, end, session
+):
+    """A roll after the classification sample is caught by the recheck."""
+    _use_calendar(monkeypatch, calendar)
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    item = _loss_cut_service("0.5")
+    item.group.valid_until = end + timedelta(days=1)
+    clock = iter((start, start, end))
+
+    decision = await policy.evaluate_approval_window_boundary(
+        item.group,
+        rungs=[item.rung],
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: next(clock),
+    )
+    assert decision.allowed is False
+    assert decision.observed_at == end
+
+
+@pytest.mark.asyncio
+async def test_exit_integer_limit_keeps_exemption_bounded_by_its_session(monkeypatch):
+    _use_calendar(monkeypatch, _SUMMER)
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    item = _loss_cut_service("1")
+    now = _kst(2026, 9, 30, 17, 30)
+    decision = await policy.evaluate_approval_window_boundary(
+        item.group,
+        rungs=[item.rung],
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+    )
+    assert decision.code is ApprovalWindowCode.ALLOW
+    assert decision.evidence.current_session == "exempt"
+    assert decision.evidence.allowed_until == _kst(2026, 9, 30, 22, 30)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("calendar", "start", "end"),
+    [(c, s, e) for c, s, e, _session in _ROLLS if e.hour in (5, 6)],
+)
+async def test_loss_cut_transport_calendar_roll_blocks_the_wire(
+    monkeypatch, calendar, start, end
+):
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    item = _loss_cut_service("0.5")
+    item.group.valid_until = end + timedelta(days=1)
+    current, armed = start, False
+    calls = {"preview": 0, "wire": 0}
+
+    async def crossing_calendar(market, query_date):
+        nonlocal current
+        if armed:
+            current = end
+        return calendar
+
+    async def place(**kwargs):
+        nonlocal armed
+        if kwargs["dry_run"]:
+            calls["preview"] += 1
+            return _fake_valid_toss_preview(kwargs)
+        armed = True
+        await kwargs["pre_send_hook"]()
+        calls["wire"] += 1
+        return {"success": True, "status": "resting", "broker_order_id": "t1116-roll"}
+
+    monkeypatch.setattr(policy, "get_toss_market_calendar", crossing_calendar)
+    stamp = (await evaluate_approval_window(item.group, now=start)).policy_stamp
+    outcomes = await revalidate_and_submit(
+        service=item,
+        proposal_id=item.group.proposal_id,
+        now=start,
+        now_fn=lambda: current,
+        place_order_fn=place,
+        expected_policy_stamp=stamp,
+        correlation_mint=lambda **ignored: "t1116-roll-corr",
+    )
+    assert calls == {"preview": 1, "wire": 0}
+    assert outcomes[0].result == "defer_session_closed"
+    assert item.rung.state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_first_click_second_calendar_roll_blocks_preview(monkeypatch):
+    from app.services.order_proposals import telegram_callback as callback_module
+    from tests.services.order_proposals.test_approval_window import (
+        _callback_for_group,
+    )
+
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    item = _loss_cut_service("0.5")
+    start, end = _kst(2026, 10, 1, 4, 59, 59), _kst(2026, 10, 1, 5, 0, 0)
+    current, lookups = start, 0
+    previews: list[object] = []
+
+    async def crossing_calendar(market, query_date):
+        nonlocal current, lookups
+        lookups += 1
+        if lookups == 2:
+            current = end
+        return _SUMMER
+
+    async def preview(**kwargs):
+        previews.append(kwargs["now"])
+        raise AssertionError("refusal must precede the confirmation preview")
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class Notifier:
+        async def edit_message(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(policy, "get_toss_market_calendar", crossing_calendar)
+    outcome = await callback_module._handle_loss_cut_first_click(
+        session=FakeSession(),
+        service=item,
+        proposal_id=item.group.proposal_id,
+        callback=_callback_for_group(item.group),
+        now=start,
+        notifier=Notifier(),
+        chat_id=42,
+        message_id=None,
+        telegram_user_id="777",
+        loss_cut_preview_fn=preview,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: current,
+    )
+    assert previews == []
+    assert outcome["reason"] == "DEFER_SESSION_CLOSED"

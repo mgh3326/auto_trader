@@ -529,16 +529,41 @@ def toss_us_extended_order_shape_applies(group: Any) -> bool:
     )
 
 
-async def _toss_us_session_label(now: datetime) -> str | None:
-    """Current Toss US session, or None when the calendar is unavailable."""
-    local = now.astimezone(_KST)
-    try:
-        calendar = await get_toss_market_calendar("us", local.date())
-    except Exception:  # noqa: BLE001 - unknown session keeps the exit exemption
-        return None
-    if calendar is None:
-        return None
-    return us_toss_session_for(local, calendar=calendar) or "closed"
+def _toss_us_session_window(
+    local: datetime, calendar: Any
+) -> tuple[str, datetime | None]:
+    """(session, end of that session) for one Toss US instant.
+
+    Every calendar window (day/pre/regular/post) is considered. Outside all
+    of them the session is ``closed`` and it ends at the next window start;
+    None when the calendar shows no later window.
+    """
+    windows: list[tuple[str, TossSessionWindow]] = []
+    for day in calendar.days:
+        if not isinstance(day, TossUsMarketDay):
+            continue
+        for label, window in (
+            ("day", day.day_market),
+            ("pre", day.pre_market),
+            ("regular", day.regular_market),
+            ("post", day.after_market),
+        ):
+            if window is not None:
+                windows.append((label, window))
+    session = us_toss_session_for(local, calendar=calendar) or "closed"
+    containing = next(
+        (
+            window
+            for label, window in windows
+            if label == session and window.contains(local)
+        ),
+        None,
+    )
+    if containing is not None:
+        return session, containing.end
+    return session, _next_window_start(
+        [window for _label, window in windows], after=local
+    )
 
 
 async def _toss_us_exit_extended_order_shape(
@@ -546,7 +571,7 @@ async def _toss_us_exit_extended_order_shape(
     *,
     group: Any,
     rungs: Sequence[Any],
-    now: datetime,
+    now_fn: Callable[[], datetime],
 ) -> ApprovalWindowDecision:
     """Apply the pre/post order-shape rule to a protective-exit exemption.
 
@@ -554,32 +579,55 @@ async def _toss_us_exit_extended_order_shape(
     without any I/O, exactly as before #1116. Once the operator enables an
     extended session, a Toss US exit sent during pre/post must also be an
     integer-quantity LIMIT: Toss refuses the other shapes outside regular on
-    the real order only. The session lookup fails open, so an unavailable
-    calendar never blocks a protective exit.
+    the real order only. The session is classified at a clock sample taken
+    after the calendar await, and the exemption's allowed interval is cut at
+    the end of that session, so a session roll before the completion
+    re-sample fails closed instead of carrying an old classification. The
+    calendar lookup fails open: an unavailable calendar never blocks a
+    protective exit.
     """
     if not decision.allowed or not toss_us_extended_order_shape_applies(group):
         return decision
-    session = await _toss_us_session_label(now)
-    if session not in _TOSS_US_EXTENDED_SESSIONS:
+    try:
+        calendar = await get_toss_market_calendar(
+            "us", decision.observed_at.astimezone(_KST).date()
+        )
+    except Exception:  # noqa: BLE001 - unknown session keeps the exit exemption
+        calendar = None
+    if calendar is None:
         return decision
-    refusal = toss_us_extended_order_refusal(group, rungs)
-    if refusal is None:
-        return decision
-    reason = f"{TOSS_US_EXTENDED_REFUSAL_PREFIX}:{refusal}"
+    sampled = now_fn()
+    session, session_end = _toss_us_session_window(sampled.astimezone(_KST), calendar)
     evidence = decision.evidence
     assert evidence is not None
-    return replace(
-        decision,
-        code=ApprovalWindowCode.DEFER_SESSION_CLOSED,
-        evidence=replace(
-            evidence,
-            current_session=session,
-            allowed_now=False,
-            allowed_until=None,
-            detail=reason,
-        ),
-        detail=reason,
+    refusal = (
+        toss_us_extended_order_refusal(group, rungs)
+        if session in _TOSS_US_EXTENDED_SESSIONS
+        else None
     )
+    if refusal is not None:
+        reason = f"{TOSS_US_EXTENDED_REFUSAL_PREFIX}:{refusal}"
+        return replace(
+            decision,
+            code=ApprovalWindowCode.DEFER_SESSION_CLOSED,
+            observed_at=sampled,
+            evidence=replace(
+                evidence,
+                current_session=session,
+                allowed_now=False,
+                allowed_until=None,
+                detail=reason,
+            ),
+            detail=reason,
+        )
+    if session_end is None:
+        return decision
+    bounded_until = (
+        min(evidence.allowed_until, session_end)
+        if evidence.allowed_until is not None
+        else session_end
+    )
+    return replace(decision, evidence=replace(evidence, allowed_until=bounded_until))
 
 
 def _toss_us_windows(
@@ -1197,14 +1245,16 @@ async def evaluate_approval_window_boundary(
     what the Toss US pre/post order-shape rule (integer LIMIT only) checks.
     That rule is inert under the default regular-only key. Only when the
     operator has enabled pre/post does a protective exit look up the Toss US
-    session, fail-open (an unknown calendar keeps the exemption).
+    session, fail-open (an unknown calendar keeps the exemption); its allowed
+    interval then ends with that session, so the completion re-sample below
+    catches a session roll.
     """
     evaluation_now = now_fn()
     exit_exemption = _exit_intent_window_exemption(group, now=evaluation_now)
     if exit_exemption is not None:
         if rungs is not None:
             exit_exemption = await _toss_us_exit_extended_order_shape(
-                exit_exemption, group=group, rungs=rungs, now=evaluation_now
+                exit_exemption, group=group, rungs=rungs, now_fn=now_fn
             )
         return recheck_approval_window_decision(
             group,
