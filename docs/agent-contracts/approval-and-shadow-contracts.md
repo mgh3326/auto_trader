@@ -9,6 +9,7 @@
 - 자동승인 가격 폴백 (#1067)
 - 주차자산 proposal-bound 자동 매도 (task 817)
 - Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
+- Toss US 확장세션 승인 창 (#1116)
 
 ## 기준 원문 계약
 
@@ -232,6 +233,41 @@ standalone과 동일한 durable 최종 처리(attempt fence, 브로커 cancel
 wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, notices가
 설정됐을 때만 동일 본문을 별사본으로 보낸다(best-effort, 예외 삼킴).
 콜백 인가·nonce 단일소비·loss-cut 2클릭 규칙은 변경되지 않는다.
+
+### Toss US 확장세션 승인 창 (#1116)
+
+정책 키 `order_proposals.approval_window.toss_live_us_sessions`
+(`config/trading_policy.yaml`, 스키마 `OrderProposalApprovalWindowPolicy`)가
+`toss_live`/`equity_us` 제안이 쓸 수 있는 토스 US 세션을 정한다. 🔴 기본값
+`[regular]` 은 기존 하드코딩(정규장 전용)과 결정·policy stamp 가 바이트 동일하다.
+운영자가 정책 PR 로 `pre`/`post` 를 더할 때만 LIMIT `place` 제안에 그 세션이 열린다
+(`regular` 필수, 토스 데이마켓은 어휘에 없음, MARKET·replace·cancel 은 정규장 전용).
+
+- **모듈**: `app/services/order_proposals/approval_window.py`
+  (`_resolve_toss_us_session`, `apply_toss_us_extended_order_shape`),
+  읽기 `trading_policy_service.toss_live_us_approval_sessions` — 읽기 실패는
+  정규장 전용으로 fail-closed
+- 🔴 **정규장 밖은 정수 수량 LIMIT 만**: rung `notional`(금액 주문 = 토스
+  `orderAmount`)·소수/비양수 수량·지정가 부재는 `DEFER_SESSION_CLOSED` +
+  `toss_us_extended_session_refused:<사유>` 로 거부된다. 판정은
+  `evaluate_approval_window_boundary(rungs=...)` 안에 있고 모든 운영 게이트(카드·
+  일괄 요약·단건/일괄/손절 콜백·reconfirm·redispatch·revalidation rung 게이트·
+  transport hook)가 rungs 를 넘긴다(누락 시 정적 테스트 실패). **모두 브로커
+  preview/submit 이전**이며, 거부 멤버 하나가 일괄 승인 전체를 nonce 소비 전에 막는다.
+  보호 청산(`exit_intent`)은 기본 키에서 기존 validity-only 면제 그대로(캘린더 I/O
+  없음)이고, pre/post 를 켜면 토스 세션을 조회해(fail-open) 조회 뒤의 시각으로
+  세션을 판정하고 pre/post 중에는 같은 형태 규칙을 적용하며, 통과한 면제도 현재
+  토스 세션 종료 시각까지만 유효해 전송 직전 재표본에서 세션 전환이 fail-closed 된다. `toss_preview_order` 는 이 형태들을 로컬에서
+  통과시키지만 실주문은 정규장 밖 422 — **preview 통과 ≠ 접수 가능**
+- 🔴 KIS US·KR·crypto 는 이 키를 읽지 않는다. 키 값이 바뀌면 stamp 가 바뀌어 이전
+  값으로 발송된 카드는 승인 시 fail-closed
+- **DAY 만료 기록**: pre/post 결정의 `session_evidence.day_expiry` 와 발송 카드의
+  `source_asof.approval_window_day_expiry`. pre 접수는 다음 토스 정규장 종료(토스
+  문서 근거, `measured=false`), post 접수는 `expected_expiry_at=null`(미측정).
+  KR 키 `order.day_expiry_kst` 에서 유도하지 않는다. 실측 카드(#908/#1032)가
+  채운다
+- **금지**: 이 PR 은 키를 켜지 않는다. 스케줄러·자동 플립 없음
+- **런북**: `docs/runbooks/order-proposals.md` §Approval-window defense in depth
 
 ## 유지 규약
 

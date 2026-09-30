@@ -138,6 +138,15 @@ def _single_share_policy_document() -> TradingPolicyDocument:
     return _load()[0]
 
 
+def toss_live_us_approval_sessions() -> tuple[str, ...]:
+    """#1116 ``order_proposals.approval_window.toss_live_us_sessions``.
+
+    Read on every Toss US approval-window evaluation, so it reads the cached
+    document without the deep copy; the value is an immutable tuple.
+    """
+    return tuple(_load()[0].order_proposals.approval_window.toss_live_us_sessions)
+
+
 def policy_content_hash() -> str:
     return _load()[1]
 

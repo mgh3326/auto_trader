@@ -123,6 +123,7 @@ async def validate_proposal_redispatch(
         window_evaluator=window_evaluator,
         now_fn=clock,
         require_policy_stamp=False,
+        rungs=rungs,
     )
     if not window.allowed:
         return _blocked(

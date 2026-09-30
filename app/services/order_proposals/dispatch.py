@@ -506,13 +506,14 @@ async def _register_and_publish_batch_summary(
         for_update=True,
     )
     decisions: list[tuple[Any, ApprovalWindowDecision]] = []
-    for group, _rungs in proposals:
+    for group, member_rungs in proposals:
         expected = (group.source_asof or {}).get("approval_window_policy_stamp")
         decision = await evaluate_approval_window_boundary(
             group,
             window_evaluator=window_evaluator,
             now_fn=now_fn,
             expected_policy_stamp=str(expected) if expected is not None else None,
+            rungs=member_rungs,
         )
         if not decision.allowed:
             if decision.code is ApprovalWindowCode.EXPIRED:
@@ -643,7 +644,7 @@ async def send_proposal_for_approval(
 
     async with service_factory() as session:
         service = OrderProposalsService(session)
-        group, _rungs = await service.get_proposal(proposal_id)
+        group, window_rungs = await service.get_proposal(proposal_id)
         evaluate_window = window_evaluator or evaluate_approval_window
         clock = now_fn or (lambda: now)
         window = await evaluate_approval_window_boundary(
@@ -651,6 +652,7 @@ async def send_proposal_for_approval(
             window_evaluator=evaluate_window,
             now_fn=clock,
             require_policy_stamp=False,
+            rungs=window_rungs,
         )
         observed_now = window.observed_at
         if not window.allowed:
@@ -676,6 +678,7 @@ async def send_proposal_for_approval(
             window_evaluator=evaluate_window,
             now_fn=clock,
             require_policy_stamp=False,
+            rungs=window_rungs,
         )
         publish_now = window.observed_at
         if not window.allowed:
@@ -755,6 +758,7 @@ async def send_proposal_for_approval(
             window_evaluator=evaluate_window,
             now_fn=clock,
             expected_policy_stamp=window.policy_stamp,
+            rungs=rungs,
         )
         if not send_window.allowed:
             await _record_approval_window_block(
@@ -806,6 +810,11 @@ async def send_proposal_for_approval(
             chat_id=chat_id,
             now=send_window.observed_at,
             approval_window_policy_stamp=send_window.policy_stamp,
+            approval_window_day_expiry=(
+                send_window.evidence.day_expiry
+                if send_window.evidence is not None
+                else None
+            ),
         )
         await session.commit()
         if result.approvable and result.message_id is not None:
@@ -1005,6 +1014,7 @@ async def dispatch_proposal(
             window_evaluator=evaluate_window,
             now_fn=clock,
             require_policy_stamp=False,
+            rungs=initial_rungs,
         )
         gate_now = window.observed_at
         if not window.allowed:

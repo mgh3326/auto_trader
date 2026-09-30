@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,6 +99,9 @@ from app.services.order_proposals.void_authorization import (
 from app.services.trade_journal.trade_retrospective_service import (
     get_retrospective_by_id,
 )
+
+if TYPE_CHECKING:
+    from app.services.order_proposals.approval_window import DayExpiryExpectation
 
 logger = logging.getLogger(__name__)
 
@@ -2521,8 +2524,14 @@ class OrderProposalsService:
         chat_id: str | None,
         now: datetime,
         approval_window_policy_stamp: str | None = None,
+        approval_window_day_expiry: DayExpiryExpectation | None = None,
     ) -> TelegramDispatchResult:
-        """Resolve physical publication through the current-owner fence."""
+        """Resolve physical publication through the current-owner fence.
+
+        #1116: ``approval_window_day_expiry`` is the expected DAY-order death
+        of a Toss US pre/post submission (flagged unmeasured). It is stored
+        only when present, so every other card writes exactly what it did.
+        """
         self._require_timezone_aware(now)
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
@@ -2631,6 +2640,15 @@ class OrderProposalsService:
                 **(
                     {"approval_window_policy_stamp": approval_window_policy_stamp}
                     if approval_window_policy_stamp is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "approval_window_day_expiry": (
+                            approval_window_day_expiry.to_dict()
+                        )
+                    }
+                    if approval_window_day_expiry is not None
                     else {}
                 ),
             }
