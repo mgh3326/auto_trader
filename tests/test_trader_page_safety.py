@@ -82,6 +82,10 @@ ALLOWED_ORDER_PROPOSALS_ENUM_SURFACE = {
     "app.services.order_proposals.auto_approve_audit",
     "app.services.order_proposals.cash_funding_exemption",
     "app.services.order_proposals.parking_allowlist",
+    # #1067 (merged from main): auto_approve_audit imports two vocabulary
+    # constants from it. Stdlib-only at import time; its quote read is a
+    # function-local import the inbox never calls.
+    "app.services.order_proposals.auto_approve_price_fallback",
 }
 
 # Method/function names that mutate orders, approvals, watches, or ledgers.
