@@ -41,8 +41,11 @@ async def _drop_auto_follow_ledger_rows(request):
         return
     from sqlalchemy import delete
 
+    from app.core.db import engine
     from app.models.execution_ledger import ExecutionLedger
+    from tests._run_owned_database import validate_run_owned_database_url
 
+    validate_run_owned_database_url(engine.url)
     async with AsyncSessionLocal() as db:
         await db.execute(
             delete(ExecutionLedger).where(
