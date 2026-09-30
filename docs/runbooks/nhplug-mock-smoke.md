@@ -98,24 +98,28 @@ MCP 서버가 `NH_MOCK_MCP_ENABLED=true` 일 때 DEFAULT 프로필에만 아홉 
 
 ### B-HOST 재실측과 T14 호스트 증언
 
-desk가 배포 후 NCP 호스트에서 다음을 실행한다. DEFAULT 프로필에만 `nh_mock_*`가 등록되므로 두 MCP 색상에만 machine-id 읽기 전용 마운트가 있어야 한다. live MCP와 나머지 컨테이너에는 이 마운트가 없어야 한다. 출력에 계좌·키·토큰은 포함되지 않는다.
+desk가 배포 후 NCP 호스트에서 다음을 실행한다. DEFAULT 프로필에만 `nh_mock_*`가 등록되므로 DEFAULT MCP 색상(green·blue)에만 machine-id 읽기 전용 마운트가 있어야 한다. live MCP와 나머지 컨테이너에는 이 마운트가 없어야 한다. 출력에 계좌·키·토큰은 포함되지 않는다. 증언 스크립트는 배포 스크립트처럼 먼저 설치한다.
 
 ```bash
-for name in at-mcp-green at-mcp-blue at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto; do
-  docker inspect --format '{{.Name}} {{.HostConfig.PidMode}} {{range .Mounts}}{{if eq .Destination "/etc/machine-id"}}{{.Source}}:{{.Destination}}:{{.RW}}{{end}}{{end}}' "$name"
+install -m 0750 scripts/nhplug-t14-host-witness.sh /root/at-run/nhplug-t14-host-witness.sh
+for name in $(docker ps -a --format '{{.Names}}'); do
+  docker inspect --format '{{.Name}} pid={{.HostConfig.PidMode}} {{range .Mounts}}{{if eq .Destination "/etc/machine-id"}}{{.Source}}:{{.Destination}}:{{.RW}}{{end}}{{end}}' "$name"
 done
-scripts/nhplug-t14-host-witness.sh --self-check
+stat -Lc %i /proc/1/ns/pid
+/root/at-run/nhplug-t14-host-witness.sh --self-check; echo "rc=$?"
 ```
 
-기대: green·blue만 `/etc/machine-id:/etc/machine-id:false`를 보이고 모든 장기 실행 MCP의 PidMode는 비어 있다. 일회성 증언의 출력은 `host_pid_visibility_verified`다. 이 스크립트는 현재 배포된 이미지 digest로 `docker run --rm --pid=host --network none -v /etc/machine-id:/etc/machine-id:ro`를 실행하며 포트를 열지 않는다. blue/green 전환과 rollback 뒤에도 위 명령을 반복한다.
+기대: 지금 떠 있는 DEFAULT MCP 색상(교대 중이면 두 색상 모두)만 `/etc/machine-id:/etc/machine-id:false`를 보이고, 그 밖의 컨테이너에는 이 마운트가 없으며, 모든 장기 실행 컨테이너는 `pid=`가 비어 있다. 증언 스크립트는 현재 배포된 이미지 digest로 `docker run --rm --pid=host --network none -v /etc/machine-id:/etc/machine-id:ro`를 한 번 실행하며 포트를 열지 않는다. blue/green 전환과 rollback 뒤에도 위 명령을 반복한다.
 
-T14에서 lease 행의 다섯 불변 필드를 운영자 검토 뒤 전달하는 정확한 일회성 형식은 다음과 같다. `lease_process_gone_proven`만 소멸 증명이며, 다른 출력이나 종료코드 1은 불충분하다. 이 증언은 읽기 전용이다. 완전한 브로커 전체 조회와 운영자 승인 행을 포함한 설계 §4.6의 다른 조건을 대신하지 않으며, 증언만으로 예약을 해제하지 않는다.
+self-check 판정은 fail-closed다. `host_pid_visibility_verified`(rc 0)는 증언 프로세스가 커널 초기 PID 네임스페이스(`stat` 출력 `4026531836`이자 호스트에서 잰 값과 같음) 안에서 호스트의 모든 `/proc/*/ns/pid` 링크를 직접 읽었을 때만 나온다. 링크 하나라도 못 읽거나(ptrace 거부 포함), 형제 컨테이너처럼 다른 네임스페이스에서 돌거나, 호스트 측정값과 다르면 `host_pid_visibility_unverified`(rc 1)다. 이미지 기본 사용자(비 root)·`CAP_SYS_PTRACE` 없음·Docker 기본 AppArmor에서는 다른 사용자 프로세스의 링크가 거부되므로 NCP의 예상 출력은 `host_pid_visibility_unverified`다. 그 경우 설계 §4.6 ③의 (c) 소멸 증명은 불가능하고, 컨테이너 dispatcher가 남긴 `uncertain` 행은 재부팅(a) 전까지 예약을 유지한다(§8 D-RES·B-HOST 미충족). 증언 권한(예: root·`CAP_SYS_PTRACE`·AppArmor 해제)을 넓히는 것은 운영자 결정이며 이 절차는 그렇게 하지 않는다. 출력과 rc를 그대로 기록한다.
+
+T14에서 lease 행의 다섯 불변 필드를 운영자 검토 뒤 전달하는 정확한 일회성 형식은 다음과 같다. `lease_process_gone_proven`(rc 0)만 소멸 증명이며, 이는 위 self-check와 같은 전수 읽기가 성공하고 lease의 `machine_id`가 이 호스트와 같을 때만 나온다. 다른 출력이나 rc 1은 불충분하다. 이 증언은 읽기 전용이다. 완전한 브로커 전체 조회와 운영자 승인 행을 포함한 설계 §4.6의 다른 조건을 대신하지 않으며, 증언만으로 예약을 해제하지 않는다. T14 상태 전이 CLI는 아직 없다(아래 중단·미해결 처리).
 
 ```bash
-scripts/nhplug-t14-host-witness.sh \
+/root/at-run/nhplug-t14-host-witness.sh \
   --machine-id LEASE_MACHINE_ID --boot-id LEASE_BOOT_ID \
   --pid-ns LEASE_PID_NS --pid LEASE_PID \
-  --process-start LEASE_PROCESS_START
+  --process-start LEASE_PROCESS_START; echo "rc=$?"
 ```
 
 ### 절차

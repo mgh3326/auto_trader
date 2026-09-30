@@ -753,7 +753,6 @@ class NHPlugMockLedger:
         all_listing: OrderListing,
         *,
         readiness: Stage2Readiness,
-        expected_host_pid_ns: str | None = None,
     ) -> bool:
         """T14 accepts documented unresolved risk only after local host death proof."""
 
@@ -797,15 +796,7 @@ class NHPlugMockLedger:
                 raise LedgerConflict("own_number_present")
             if row["candidate_order_ids"]:
                 raise LedgerConflict("candidate_risk_unresolved")
-            witness = lease_identity_from_row(dict(row))
-            gone = (
-                process_gone_on_lease_host(witness)
-                if expected_host_pid_ns is None
-                else process_gone_on_lease_host(
-                    witness, expected_host_pid_ns=expected_host_pid_ns
-                )
-            )
-            if not gone:
+            if not process_gone_on_lease_host(lease_identity_from_row(dict(row))):
                 raise LedgerConflict("lease_process_not_proven_gone")
             result = await conn.execute(
                 text(

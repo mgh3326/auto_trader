@@ -296,6 +296,40 @@ async def test_r2_b1_unreadable_host_identity_refuses_before_claim(
     )
 
 
+@pytest.mark.asyncio
+async def test_identity_loss_withdrawal_never_releases_a_claimed_row(
+    seeded_engine: AsyncEngine,
+) -> None:
+    """T2 releases only an unclaimed intent; a claimed row keeps its reservation."""
+
+    ledger, row, ref = await intent_row(seeded_engine, "bhost-t2-claimed")
+    spoof = LeaseIdentity("spoof-machine", "spoof-boot", "spoof-ns", 4_000_000, 1)
+    await ledger.claim(
+        row["id"], row["client_request_id"], row["body_digest"], ref, spoof
+    )
+    released = await ledger.withdraw_unclaimed_intent(
+        row["id"], row["client_request_id"], "lease_identity_unavailable"
+    )
+    stored = await ledger.get(row["id"])
+    assert released is False
+    assert stored["state"] == "claimed" and stored["withdraw_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_identity_loss_withdrawal_needs_the_same_request(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, _ = await intent_row(seeded_engine, "bhost-t2-request")
+    assert not await ledger.withdraw_unclaimed_intent(
+        row["id"], uuid4(), "lease_identity_unavailable"
+    )
+    assert (await ledger.get(row["id"]))["state"] == "intent"
+    assert await ledger.withdraw_unclaimed_intent(
+        row["id"], row["client_request_id"], "lease_identity_unavailable"
+    )
+    assert (await ledger.get(row["id"]))["state"] == "withdrawn"
+
+
 # ------------------------------------------------------------------ B2
 def test_r2_b2_allowlist_cannot_be_hand_made_replaced_or_copied_into_new_data() -> None:
     verified = MockAccountAllowlist.from_acctinfo_response(
