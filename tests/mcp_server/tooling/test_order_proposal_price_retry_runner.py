@@ -89,7 +89,7 @@ async def test_first_pass_arms_the_scheduler_and_retry_pass_never_does(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_scheduler_returns_immediately_and_tracks_the_task(monkeypatch):
+async def test_scheduler_starts_eagerly_returns_and_tracks_the_task(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
     runs: list[tuple] = []
@@ -102,15 +102,16 @@ async def test_scheduler_returns_immediately_and_tracks_the_task(monkeypatch):
     monkeypatch.setattr(order_proposal_tools, "_run_auto_approve_price_retry", fake_run)
 
     order_proposal_tools._schedule_auto_approve_price_retry(PROPOSAL_ID, "tok")
-    # Scheduling did not wait for the retry: nothing has run yet.
-    assert runs == []
+    # Eager start: the body is already inside its first await (so its own
+    # cancellation handler is active), yet scheduling returned without waiting.
+    assert runs == [(PROPOSAL_ID, "tok")]
+    assert started.is_set() and not release.is_set()
     [task] = [
         t
         for t in order_proposal_tools._PRICE_RETRY_TASKS
         if t.get_name().endswith(str(PROPOSAL_ID))
     ]
-    await asyncio.wait_for(started.wait(), 1)
-    assert runs == [(PROPOSAL_ID, "tok")]
+    assert not task.done()
     release.set()
     await asyncio.wait_for(task, 1)
     assert task not in order_proposal_tools._PRICE_RETRY_TASKS
@@ -340,3 +341,43 @@ async def test_cancel_after_eligible_gate_alerts_and_never_sends_a_card(
             ),
         }
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ambiguous_alert_goes_out_even_if_the_abandon_write_fails(monkeypatch):
+    alerts: list[dict] = []
+
+    async def fake_alert(proposal_id, **kwargs):
+        alerts.append(kwargs)
+        return {"state": "sent"}
+
+    class _BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("db unavailable")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(order_proposal_tools, "_alert_non_sent_dispatch", fake_alert)
+    monkeypatch.setattr(order_proposal_tools, "AsyncSessionLocal", _BrokenSession)
+
+    await order_proposal_tools._run_price_retry_handoff(
+        PROPOSAL_ID, "tok", broker_leg_possible=True
+    )
+
+    codes = [a["dispatch_failure_code"] for a in alerts]
+    assert codes[0] == (
+        order_proposal_tools.AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE
+    )
+    assert set(codes) == {
+        order_proposal_tools.AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE
+    }
+
+
+def test_handoff_interrupted_alert_text_is_pre_send_redispatch_guidance():
+    from app.services.order_proposals.alerts import _recommended_action
+
+    text = _recommended_action("auto_approve_price_retry_handoff_interrupted")
+    assert "브로커 전송 전" in text
+    assert "order_proposal_redispatch" in text

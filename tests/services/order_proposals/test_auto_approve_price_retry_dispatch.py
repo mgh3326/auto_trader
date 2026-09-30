@@ -568,7 +568,7 @@ async def test_cancelled_wait_sends_the_card_without_re_evaluating(db_session):
     [(text, _keyboard)] = notifier.sent
     assert "주문 제안 승인" in text
     refreshed, _ = await service.get_proposal(group.proposal_id)
-    assert refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]["state"] == "consumed"
+    assert refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]["state"] == "handed_off"
 
 
 @pytest.mark.asyncio
@@ -883,7 +883,7 @@ async def test_real_runner_cancelled_before_gate_sends_the_card(
     assert notifier.sent and "주문 제안 승인" in notifier.sent[0][0]
     assert rungs[0].state == "pending_approval"
     assert refreshed.approval_dispatch_state == "sent_current"
-    assert refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]["state"] == "consumed"
+    assert refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]["state"] == "handed_off"
 
 
 @pytest.mark.asyncio
@@ -946,3 +946,293 @@ async def test_real_runner_cancelled_after_eligible_gate_alerts_without_card(
     assert marker["state"] == "abandoned"
     assert marker["abandoned_reason"] == "cancelled_after_eligible"
     assert refreshed.approval_dispatch_state is None
+
+
+# ---------------------------------------------------------------------------
+# Tester r2 B2/B3/B4 + handoff interruption: every cancellation interleaving
+# ends in a delivered card (proven pre-send) or an operator alert.
+# ---------------------------------------------------------------------------
+
+
+class _FirstSendBlocks(_Notifier):
+    """The first send blocks until released; later sends go straight out."""
+
+    def __init__(self, *, block_first: bool = True) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._block = block_first
+
+    async def send_approval_message(self, *args, **kwargs):
+        if self._block:
+            self._block = False
+            self.entered.set()
+            await self.release.wait()
+        return await super().send_approval_message(*args, **kwargs)
+
+
+class _RealToss:
+    """Real revalidate_and_submit with fake Toss preview/submit/quote edges."""
+
+    def __init__(self, group, *, quote_blocks: bool = False) -> None:
+        self.group = group
+        self.quote_blocks = quote_blocks
+        self.quote_entered = asyncio.Event()
+        self._never = asyncio.Event()
+        self.evaluations = 0
+        self.submits = 0
+
+    async def fallback(self, *, symbol, market):
+        if self.quote_blocks:
+            self.quote_entered.set()
+            await self._never.wait()
+        return PriceFallback.failed("quote_unavailable")
+
+    async def place(self, **kwargs):
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "preview-token",
+                "price": "32750",
+                "quantity": "3",
+                "estimated_value": "98250",
+                "fee": "0",
+                "price_context_message": _PRICE_CONTEXT_MESSAGE,
+                "payload_preview": {
+                    "clientOrderId": kwargs["proposal_client_order_id"],
+                    "price": "32750",
+                    "quantity": "3",
+                },
+            }
+        self.submits += 1
+        return {"success": True, "status": "resting", "broker_order_id": "x"}
+
+    async def revalidate(self, **kwargs):
+        self.evaluations += 1
+        stamp = (await allow_known_session(self.group, now=NOW)).policy_stamp
+        return await revalidate_and_submit(
+            **kwargs,
+            place_order_fn=self.place,
+            window_evaluator=allow_known_session,
+            expected_policy_stamp=stamp,
+            now_fn=lambda: NOW,
+        )
+
+
+async def _drain_retry_tasks(tools):
+    for _ in range(10):
+        pending = [t for t in tools._PRICE_RETRY_TASKS if not t.done()]
+        if not pending:
+            return
+        await asyncio.wait(pending, timeout=5)
+    raise AssertionError("retry/handoff tasks did not finish")
+
+
+async def _approval_cards(notifier):
+    return [text for text, _kb in notifier.sent if "주문 제안 승인" in text]
+
+
+async def _defer_real(db_session, notifier):
+    service, group = await _create_case(db_session)
+    token = await _first_pass_deferred(
+        db_session,
+        service,
+        group,
+        notifier,
+        _FakeRevalidate([_preview_without_price()]),
+    )
+    await db_session.commit()
+    return group, token
+
+
+@pytest.mark.asyncio
+async def test_b2_cancel_while_rejected_retry_publishes_still_delivers_a_card(
+    monkeypatch, db_session
+):
+    notifier = _FirstSendBlocks()
+    group, token = await _defer_real(db_session, notifier)
+    real = _RealToss(group)
+    alerts: list[dict] = []
+    tools, session_local = _real_runner_seam(
+        monkeypatch,
+        notifier=notifier,
+        revalidate=real.revalidate,
+        fallback=real.fallback,
+        alerts=alerts,
+    )
+
+    task = asyncio.create_task(
+        tools._run_auto_approve_price_retry(
+            group.proposal_id, token, sleep=_instant_sleep
+        )
+    )
+    await asyncio.wait_for(notifier.entered.wait(), 5)  # rejection committed
+    notifier.release.set()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    await _drain_retry_tasks(tools)
+
+    async with session_local() as fresh:
+        refreshed, rungs = await OrderProposalsService(fresh).get_proposal(
+            group.proposal_id
+        )
+    assert real.evaluations == 1 and real.submits == 0
+    assert len(await _approval_cards(notifier)) == 1
+    assert alerts == []
+    assert refreshed.approval_dispatch_state == "sent_current"
+    assert refreshed.approval_dispatch_published_at is not None
+    marker = refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]
+    assert (marker["state"], marker["handed_off_from"]) == ("handed_off", "consumed")
+    assert rungs[0].state == "pending_approval"
+    rung = _latest_rejection(refreshed)
+    assert rung["inputs"]["price_retry_reevaluation"] is True
+    assert rung["inputs"]["price_context_message"] == _PRICE_CONTEXT_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_b3_second_cancel_cannot_interrupt_the_handoff(monkeypatch, db_session):
+    notifier = _FirstSendBlocks()
+    group, token = await _defer_real(db_session, notifier)
+    real = _RealToss(group, quote_blocks=True)
+    alerts: list[dict] = []
+    tools, session_local = _real_runner_seam(
+        monkeypatch,
+        notifier=notifier,
+        revalidate=real.revalidate,
+        fallback=real.fallback,
+        alerts=alerts,
+    )
+
+    task = asyncio.create_task(
+        tools._run_auto_approve_price_retry(
+            group.proposal_id, token, sleep=_instant_sleep
+        )
+    )
+    await asyncio.wait_for(real.quote_entered.wait(), 5)
+    task.cancel()  # first: pre-eligible -> handoff starts publishing
+    await asyncio.wait_for(notifier.entered.wait(), 5)
+    task.cancel()  # second: while the handoff is mid-publication
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    notifier.release.set()
+    await _drain_retry_tasks(tools)
+
+    async with session_local() as fresh:
+        refreshed, rungs = await OrderProposalsService(fresh).get_proposal(
+            group.proposal_id
+        )
+    assert real.submits == 0
+    assert len(await _approval_cards(notifier)) == 1
+    assert alerts == []
+    assert refreshed.approval_dispatch_state == "sent_current"
+    marker = refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]
+    assert (marker["state"], marker["handed_off_from"]) == ("handed_off", "scheduled")
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_b4_cancel_before_first_step_still_hands_off(monkeypatch, db_session):
+    notifier = _Notifier()
+    group, token = await _defer_real(db_session, notifier)
+    real = _RealToss(group)
+    alerts: list[dict] = []
+    tools, session_local = _real_runner_seam(
+        monkeypatch,
+        notifier=notifier,
+        revalidate=real.revalidate,
+        fallback=real.fallback,
+        alerts=alerts,
+    )
+
+    tools._schedule_auto_approve_price_retry(group.proposal_id, token)
+    [task] = [
+        t
+        for t in tools._PRICE_RETRY_TASKS
+        if t.get_name()
+        == f"order_proposals.auto_approve_price_retry:{group.proposal_id}"
+    ]
+    task.cancel()  # before the loop ever resumes it
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    await _drain_retry_tasks(tools)
+
+    async with session_local() as fresh:
+        refreshed, _rungs = await OrderProposalsService(fresh).get_proposal(
+            group.proposal_id
+        )
+    assert real.evaluations == 0 and real.submits == 0
+    assert len(await _approval_cards(notifier)) == 1
+    assert alerts == []
+    assert refreshed.source_asof[AUTO_APPROVE_PRICE_RETRY_KEY]["state"] == "handed_off"
+
+
+@pytest.mark.asyncio
+async def test_handoff_task_cancelled_mid_publish_unblocks_redispatch_and_alerts(
+    monkeypatch, db_session
+):
+    from app.services.order_proposals.redispatch import validate_proposal_redispatch
+
+    notifier = _FirstSendBlocks()
+    group, token = await _defer_real(db_session, notifier)
+    real = _RealToss(group, quote_blocks=True)
+    alerts: list[dict] = []
+    tools, session_local = _real_runner_seam(
+        monkeypatch,
+        notifier=notifier,
+        revalidate=real.revalidate,
+        fallback=real.fallback,
+        alerts=alerts,
+    )
+
+    task = asyncio.create_task(
+        tools._run_auto_approve_price_retry(
+            group.proposal_id, token, sleep=_instant_sleep
+        )
+    )
+    await asyncio.wait_for(real.quote_entered.wait(), 5)
+    task.cancel()
+    await asyncio.wait_for(notifier.entered.wait(), 5)
+    [handoff] = [
+        t
+        for t in tools._PRICE_RETRY_TASKS
+        if "handoff" in t.get_name() and not t.done()
+    ]
+    handoff.cancel()  # loop-shutdown analogue: the handoff itself is cancelled
+    for joined in (task, handoff):
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(joined, 5)
+    await _drain_retry_tasks(tools)
+
+    async with session_local() as fresh:
+        refreshed, rungs = await OrderProposalsService(fresh).get_proposal(
+            group.proposal_id
+        )
+    assert real.submits == 0
+    assert await _approval_cards(notifier) == []
+    assert alerts == [
+        {
+            "dispatch_state": "unknown",
+            "dispatch_failure_code": tools.AUTO_APPROVE_PRICE_RETRY_HANDOFF_INTERRUPTED,
+        }
+    ]
+    # The stale pending attempt was superseded by a durable failed one, so the
+    # ordinary manual recovery is no longer blocked.
+    assert refreshed.approval_dispatch_state == "failed"
+    assert refreshed.approval_nonce is None
+
+    async def recovery_preview(**kwargs):
+        # The operator's later redispatch runs its own fresh preview; by then
+        # the transient Toss price gap is over.
+        return {**(await real.place(**kwargs)), "current_price": "33800"}
+
+    verdict = await validate_proposal_redispatch(
+        group=refreshed,
+        rungs=rungs,
+        now=NOW,
+        place_order_fn=recovery_preview,
+        window_evaluator=allow_known_session,
+        now_fn=lambda: NOW,
+    )
+    assert verdict.failure_code != "redispatch_dispatch_pending"
+    assert verdict.eligible is True, verdict

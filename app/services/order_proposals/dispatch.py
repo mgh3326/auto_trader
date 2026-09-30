@@ -1050,7 +1050,7 @@ async def dispatch_proposal(
     lock (a no-op if anything else took the proposal over), re-evaluates with
     a fresh preview, never schedules again, and sends the card as before if
     the price is still missing. ``price_retry_card_only`` skips the
-    re-evaluation and sends the card (used when the wait is cancelled).
+    re-evaluation and sends the card (the cancellation handoff).
     ``price_retry_progress`` lets the caller learn whether the gate ever
     returned eligible, i.e. whether a cancelled re-run could have reached the
     broker (see ``PriceRetryProgress``).
@@ -1078,17 +1078,18 @@ async def dispatch_proposal(
     auto_policy_version: str | None = None
     not_evaluated_reason: AutoApproveNotEvaluatedReason | None = None
     if price_retry_token is not None and price_retry_card_only:
-        # #1067: the wait was cancelled (process shutdown). Hand the proposal to
-        # a human now -- the card exactly as before -- but only if this retry
-        # still owns it.
+        # #1067: hand the proposal to a human now -- the card exactly as before
+        # -- but only if this retry still owns it and never cleared the gate
+        # (the caller's ``PriceRetryProgress`` proof). The claim also covers a
+        # retry that committed a rejection and was cancelled mid-publication.
         async with service_factory() as session:
             service = OrderProposalsService(session)
             await service.acquire_auto_dispatch_lock(proposal_id)
-            consumed = await service.consume_auto_approve_price_retry(
+            claimed = await service.claim_auto_approve_price_retry_handoff(
                 proposal_id, token=price_retry_token, now=now
             )
             await session.commit()
-        if not consumed:
+        if not claimed:
             return _price_retry_result(
                 ApprovalDispatchState.FAILED_SUPERSEDED,
                 AUTO_APPROVE_PRICE_RETRY_SUPERSEDED,

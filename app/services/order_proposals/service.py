@@ -3391,6 +3391,75 @@ class OrderProposalsService:
         await self._repo.update_group(group, source_asof=source_asof)
         return True
 
+    async def claim_auto_approve_price_retry_handoff(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        token: str,
+        now: datetime,
+    ) -> bool:
+        """#1067: take ownership of handing a proven pre-send retry to a human.
+
+        Compare-and-swap on the exact token, moving the marker to
+        ``handed_off`` so exactly one handoff can publish:
+
+        * ``scheduled`` -- the retry never ran (or rolled back): allowed only
+          while no card was dispatched or acted on, exactly like consumption;
+        * ``consumed`` -- the retry committed a *rejection* and was interrupted
+          while (or before) publishing its card: allowed while no card was
+          published or acted on, no auto-approval was recorded and every rung
+          is still ``pending_approval``. A stale ``pending`` attempt left by
+          that interruption is superseded by the fresh dispatch that follows.
+
+        Callers must only use this when the retry never cleared the
+        eligibility gate (no order can exist). Returns ``False`` (no write)
+        when anything else already owns or delivered the proposal.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        marker = source_asof.get(AUTO_APPROVE_PRICE_RETRY_KEY)
+        if not token or not isinstance(marker, dict) or marker.get("token") != token:
+            return False
+        state = marker.get("state")
+        undelivered = (
+            group.approval_dispatch_published_at is None
+            and group.approval_nonce_used_at is None
+            and group.approval_dispatch_state
+            != ApprovalDispatchState.SENT_CURRENT.value
+        )
+        if state == "scheduled":
+            allowed = (
+                undelivered
+                and group.approval_dispatch_state is None
+                and group.approval_nonce is None
+            )
+        elif state == "consumed":
+            # The consumed retry must have ended in a *rejection*: an
+            # auto-approval record or any rung past pending_approval means it
+            # auto-submitted (its veto card may simply not be published yet).
+            _group, rungs = await self.get_proposal(proposal_id)
+            allowed = (
+                undelivered
+                and "auto_approved" not in source_asof
+                and bool(rungs)
+                and all(rung.state == "pending_approval" for rung in rungs)
+            )
+        else:
+            allowed = False
+        if not allowed:
+            return False
+        source_asof[AUTO_APPROVE_PRICE_RETRY_KEY] = {
+            **marker,
+            "state": "handed_off",
+            "handed_off_from": state,
+            "handed_off_at": now.isoformat(),
+        }
+        await self._repo.update_group(group, source_asof=source_asof)
+        return True
+
     async def abandon_auto_approve_price_retry(
         self,
         proposal_id: uuid.UUID,

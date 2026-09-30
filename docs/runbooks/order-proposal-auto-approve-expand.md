@@ -1026,25 +1026,40 @@ returns `failure_code=auto_approve_price_retry_superseded` and does nothing.
 The broker path is the unchanged `revalidate_and_submit`.
 
 **Cancellation (graceful shutdown) at any point of the task is a handoff,
-never silence.** Revalidation commits nothing before the broker send, so a
-cancelled re-evaluation rolls back to the pre-retry rows and the database
-cannot tell "before the send" from "during it". An in-process witness
+never silence.** Revalidation commits nothing before the broker send, so the
+database cannot tell "before the send" from "during it". An in-process witness
 (`PriceRetryProgress`) can: the eligibility gate runs strictly before any
 broker mutation and sets it the moment it returns eligible.
 
-* cancelled during the wait, or during a re-evaluation whose gate never
-  returned eligible → no order can exist → the ordinary card is sent (after
-  consuming the marker);
-* cancelled after the gate returned eligible → the broker leg may have
-  started → **no card and no re-run**; the marker becomes `abandoned`
-  (`abandoned_reason=cancelled_after_eligible`) and the operator gets the
-  Discord alert `auto_approve_price_retry_cancelled_after_eligible`, whose
-  action text is: do not redispatch; first check the broker order list /
-  reconcile, and redispatch only if no order exists.
+* The retry task is started **eagerly**: its body is inside its cancellation
+  handler before scheduling returns, so there is no "cancelled before it ever
+  ran" window.
+* Gate never returned eligible (cancelled during the wait, the preview, the
+  quote read, or while the retry was publishing its rejection card) → no
+  order can exist → the ordinary card is sent. The handoff claims the marker
+  by token compare-and-swap (`scheduled` or `consumed` → `handed_off`) while
+  no card has been published or acted on; a stale `pending` attempt left by
+  the interrupted publication is superseded by the fresh dispatch.
+* Gate returned eligible → the broker leg may have started → **no card and no
+  re-run**; the marker becomes `abandoned` (`cancelled_after_eligible`) and
+  the operator gets `auto_approve_price_retry_cancelled_after_eligible`: do
+  not redispatch; check the broker order list / reconcile first. The alert is
+  sent even if the marker write fails.
+* The handoff runs as its **own task behind `asyncio.shield`**, so further
+  cancellations of the retry task cannot interrupt it. If the handoff task
+  itself is cancelled (loop shutdown) or fails, a last resort supersedes our
+  own never-published `pending` attempt with a durable failed one (clearing
+  the nonce, so `order_proposal_redispatch` is not blocked) and sends
+  `auto_approve_price_retry_handoff_interrupted` (pre-send proven: redispatch
+  with dry_run first).
 
 **Honest limits.** A hard kill (SIGKILL/OOM) during the task leaves the
-proposal `proposed` with a `scheduled` marker and **no card and no alert**;
-recover it with `order_proposal_redispatch` after checking the broker (its
-dispatch state is still empty, so it is eligible). The MCP lifespan does not
-drain these tasks; the cancellation handoff above is what covers shutdown. The fallback applies to the auto path only; the manual Telegram
+proposal `proposed` with a `scheduled` (or `consumed`) marker and **no card
+and no alert**; recover it with `order_proposal_redispatch` after checking the
+broker. The same applies if the last-resort step itself is cancelled again (a
+third cancellation of the same task; `asyncio.run` cancels each task once).
+A Telegram send whose response was lost to the cancellation can be followed by
+the handoff's fresh card; the earlier one is superseded and its button fails
+closed. The MCP lifespan does not drain these tasks; the handoff above is what
+covers shutdown. The fallback applies to the auto path only; the manual Telegram
 click, loss-cut confirmation and redispatch previews are unchanged.
