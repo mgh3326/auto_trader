@@ -42,6 +42,7 @@ from app.services.order_proposals.approval_window import (
     ApprovalWindowCode,
     ApprovalWindowDecision,
     WindowEvaluator,
+    apply_toss_us_extended_order_shape,
     evaluate_approval_window,
     evaluate_approval_window_boundary,
     recheck_approval_window_decision,
@@ -643,14 +644,18 @@ async def send_proposal_for_approval(
 
     async with service_factory() as session:
         service = OrderProposalsService(session)
-        group, _rungs = await service.get_proposal(proposal_id)
+        group, window_rungs = await service.get_proposal(proposal_id)
         evaluate_window = window_evaluator or evaluate_approval_window
         clock = now_fn or (lambda: now)
-        window = await evaluate_approval_window_boundary(
-            group,
-            window_evaluator=evaluate_window,
-            now_fn=clock,
-            require_policy_stamp=False,
+        window = apply_toss_us_extended_order_shape(
+            await evaluate_approval_window_boundary(
+                group,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
+                require_policy_stamp=False,
+            ),
+            group=group,
+            rungs=window_rungs,
         )
         observed_now = window.observed_at
         if not window.allowed:
@@ -671,11 +676,15 @@ async def send_proposal_for_approval(
         # the clock and policy again at the actual nonce/card boundary so a
         # validity or session edge crossed during that I/O cannot mint a
         # nonce or publish an already-stale button.
-        window = await evaluate_approval_window_boundary(
-            group,
-            window_evaluator=evaluate_window,
-            now_fn=clock,
-            require_policy_stamp=False,
+        window = apply_toss_us_extended_order_shape(
+            await evaluate_approval_window_boundary(
+                group,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
+                require_policy_stamp=False,
+            ),
+            group=group,
+            rungs=window_rungs,
         )
         publish_now = window.observed_at
         if not window.allowed:
@@ -750,11 +759,15 @@ async def send_proposal_for_approval(
             binding=binding,
         )
 
-        send_window = await evaluate_approval_window_boundary(
-            group,
-            window_evaluator=evaluate_window,
-            now_fn=clock,
-            expected_policy_stamp=window.policy_stamp,
+        send_window = apply_toss_us_extended_order_shape(
+            await evaluate_approval_window_boundary(
+                group,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
+                expected_policy_stamp=window.policy_stamp,
+            ),
+            group=group,
+            rungs=rungs,
         )
         if not send_window.allowed:
             await _record_approval_window_block(
@@ -806,6 +819,11 @@ async def send_proposal_for_approval(
             chat_id=chat_id,
             now=send_window.observed_at,
             approval_window_policy_stamp=send_window.policy_stamp,
+            approval_window_day_expiry=(
+                send_window.evidence.day_expiry
+                if send_window.evidence is not None
+                else None
+            ),
         )
         await session.commit()
         if result.approvable and result.message_id is not None:
@@ -1000,11 +1018,15 @@ async def dispatch_proposal(
         await service.acquire_auto_dispatch_lock(proposal_id)
         group, initial_rungs = await service.get_proposal(proposal_id)
         evaluate_window = window_evaluator or evaluate_approval_window
-        window = await evaluate_approval_window_boundary(
-            group,
-            window_evaluator=evaluate_window,
-            now_fn=clock,
-            require_policy_stamp=False,
+        window = apply_toss_us_extended_order_shape(
+            await evaluate_approval_window_boundary(
+                group,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
+                require_policy_stamp=False,
+            ),
+            group=group,
+            rungs=initial_rungs,
         )
         gate_now = window.observed_at
         if not window.allowed:

@@ -132,6 +132,27 @@ See the full design in
   when calendar evidence is unavailable. Expired, missing, malformed, or
   timezone-naive `valid_until` still fails closed, and `exit_reason` without
   `exit_intent` does not qualify.
+- **Toss US extended sessions (#1116, default off).** The policy key
+  `order_proposals.approval_window.toss_live_us_sessions` in
+  `config/trading_policy.yaml` lists the Toss US sessions a `toss_live` /
+  `equity_us` proposal may use. The default `[regular]` is the previous
+  hardcoded regular-only window, with identical decisions and policy stamps.
+  Adding `pre` and/or `post` (the operator's flip, by policy PR) opens them
+  only for LIMIT `place` proposals; MARKET, replace and cancel stay
+  regular-only. Outside regular a rung with a `notional` (amount-based,
+  Toss `orderAmount`), a fractional or non-positive quantity, or no limit
+  price is refused as `DEFER_SESSION_CLOSED` with detail
+  `toss_us_extended_session_refused:<reason>` at dispatch, at every
+  revalidation rung gate and in the transport hook, always before any broker
+  preview or submit (`toss_preview_order` passes these shapes locally even
+  though the real order would 422 outside regular hours). KIS US, KR and
+  crypto never read the key. A pre/post decision carries
+  `session_evidence.day_expiry` and a published card stores it as
+  `source_asof.approval_window_day_expiry`: a pre submission's expected death
+  is the following Toss regular close (Toss documentation, `measured=false`);
+  a post submission's is unknown (`expected_expiry_at=null`). It is never
+  derived from the KR key `order.day_expiry_kst`. Flipping the key changes
+  the policy stamp, so a card published under the other value fails closed.
 - **Batch nonce is not proposal authorization.** ROB-870 atomically consumes a
   separate batch nonce only after every locked member passes the approval-
   window preflight and the exact ordered `(proposal_id, nonce snapshot)`

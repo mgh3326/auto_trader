@@ -42,6 +42,7 @@ from app.services.order_proposals.approval_window import (
     ApprovalWindowCode,
     ApprovalWindowDecision,
     WindowEvaluator,
+    apply_toss_us_extended_order_shape,
     approval_window_rung_result,
     evaluate_approval_window,
     evaluate_approval_window_boundary,
@@ -182,11 +183,15 @@ async def _pre_mutation_window_gate(
     expected_policy_stamp: str,
     now_fn: Clock,
 ) -> RungOutcome | None:
-    decision = await evaluate_approval_window_boundary(
-        group,
-        window_evaluator=window_evaluator,
-        now_fn=now_fn,
-        expected_policy_stamp=expected_policy_stamp,
+    decision = apply_toss_us_extended_order_shape(
+        await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
+            expected_policy_stamp=expected_policy_stamp,
+        ),
+        group=group,
+        rungs=(rung,),
     )
     if decision.allowed:
         return None
@@ -326,22 +331,30 @@ class ApprovalWindowPreSendGate:
         self,
         *,
         group: OrderProposal,
+        rung: OrderProposalRung,
         window_evaluator: WindowEvaluator,
         expected_policy_stamp: str,
         now_fn: Clock,
     ) -> None:
         self._group = group
+        self._rung = rung
         self._window_evaluator = window_evaluator
         self._expected_policy_stamp = expected_policy_stamp
         self._now_fn = now_fn
         self.blocked_decision: ApprovalWindowDecision | None = None
 
     async def __call__(self) -> None:
-        decision = await evaluate_approval_window_boundary(
-            self._group,
-            window_evaluator=self._window_evaluator,
-            now_fn=self._now_fn,
-            expected_policy_stamp=self._expected_policy_stamp,
+        # #1116: the session can change between the last rung gate and this
+        # hook (e.g. regular -> post), so the rung shape is re-applied here.
+        decision = apply_toss_us_extended_order_shape(
+            await evaluate_approval_window_boundary(
+                self._group,
+                window_evaluator=self._window_evaluator,
+                now_fn=self._now_fn,
+                expected_policy_stamp=self._expected_policy_stamp,
+            ),
+            group=self._group,
+            rungs=(self._rung,),
         )
         if decision.allowed:
             return
@@ -1420,6 +1433,7 @@ async def _revalidate_place_rung(
     corr = await _maybe_await(correlation_mint(group=group, rung=rung, now=now))
     transport_gate = ApprovalWindowPreSendGate(
         group=group,
+        rung=rung,
         window_evaluator=window_evaluator,
         expected_policy_stamp=expected_policy_stamp,
         now_fn=now_fn,
@@ -1751,6 +1765,7 @@ async def _cancel_and_confirm_target(
 
     transport_gate = ApprovalWindowPreSendGate(
         group=group,
+        rung=rung,
         window_evaluator=window_evaluator,
         expected_policy_stamp=expected_policy_stamp,
         now_fn=now_fn,
@@ -2049,6 +2064,7 @@ async def _revalidate_replace_rung(
 
     transport_gate = ApprovalWindowPreSendGate(
         group=group,
+        rung=rung,
         window_evaluator=window_evaluator,
         expected_policy_stamp=expected_policy_stamp,
         now_fn=now_fn,
