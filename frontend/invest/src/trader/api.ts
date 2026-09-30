@@ -1,4 +1,6 @@
 import type {
+  TraderApprovalDetailResponse,
+  TraderApprovalInboxResponse,
   TraderFillsResponse,
   TraderOpenOrdersResponse,
   TraderWatchesResponse,
@@ -41,4 +43,20 @@ export async function fetchTraderFillsToday(): Promise<TraderFillsResponse> {
 
 export async function fetchTraderWatches(): Promise<TraderWatchesResponse> {
   return getJson<TraderWatchesResponse>("/watches");
+}
+
+// Task 890 PR A: approval inbox reads. The approve/reject/loss-cut buttons do
+// NOT post to /trading/api/trader -- they call mutateOrderProposalApproval
+// from ../api/orderProposalApproval (the existing /invest web approval
+// endpoints, CSRF-protected). No mutation helper belongs in this file.
+export async function fetchTraderApprovals(): Promise<TraderApprovalInboxResponse> {
+  return getJson<TraderApprovalInboxResponse>("/approvals");
+}
+
+export async function fetchTraderApproval(
+  proposalId: string,
+): Promise<TraderApprovalDetailResponse> {
+  return getJson<TraderApprovalDetailResponse>(
+    `/approvals/${encodeURIComponent(proposalId)}`,
+  );
 }

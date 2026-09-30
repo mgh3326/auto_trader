@@ -25,6 +25,9 @@ NEW_MODULES = [
     "app.services.trader_page.service",
     "app.services.trader_page.open_orders_cache",
     "app.schemas.trader_page",
+    # task 890 PR A: approval inbox reads (the buttons post to /invest)
+    "app.services.trader_page.approval_inbox",
+    "app.schemas.trader_approvals",
 ]
 
 # Mutation orchestration surfaces the read-only page must never import.
@@ -74,6 +77,11 @@ ALLOWED_ORDER_PROPOSALS_ENUM_SURFACE = {
     "app.services.order_proposals.callback_inbox",
     "app.services.order_proposals.callback_inbox.contracts",
     "app.services.order_proposals.callback_inbox.result_boundary",
+    # task 890: pure, DB-free auto-approve audit projection used by the inbox
+    # read model, plus its two pure vocabulary imports.
+    "app.services.order_proposals.auto_approve_audit",
+    "app.services.order_proposals.cash_funding_exemption",
+    "app.services.order_proposals.parking_allowlist",
 }
 
 # Method/function names that mutate orders, approvals, watches, or ledgers.
@@ -150,6 +158,8 @@ def test_trader_page_modules_call_no_mutation_names() -> None:
         project_root / "app/services/trader_page/service.py",
         project_root / "app/services/trader_page/open_orders_cache.py",
         project_root / "app/schemas/trader_page.py",
+        project_root / "app/services/trader_page/approval_inbox.py",
+        project_root / "app/schemas/trader_approvals.py",
     ]
     offenders: list[str] = []
     for path in targets:
