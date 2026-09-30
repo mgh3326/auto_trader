@@ -49,6 +49,15 @@ class TossRateLimitError(TossApiResponseError):
     """Raised for Toss 429 responses."""
 
 
+class TossResponseContractError(TossApiErrorBase):
+    """A Toss 2xx payload diverged from the documented result schema.
+
+    Raised when a required field declared non-optional in the official
+    ``openapi.json`` is absent or unparseable. Unknown extra fields are
+    tolerated by design and never trigger this error.
+    """
+
+
 def _parse_error_envelope(payload: dict[str, Any]) -> TossErrorEnvelope:
     raw_error = payload.get("error")
     if not isinstance(raw_error, dict):
