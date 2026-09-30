@@ -468,7 +468,10 @@ async def lever_command(
         await engine.dispose()
     if payload["status"] == "disabled":
         return 2, {"error": "auto_follow_disabled", **payload}
-    failed = any(item["status"] == "error" for item in payload["outcomes"])
+    # An unobserved key kept its P but was not judged: a partial failure.
+    failed = any(
+        item["status"] in {"error", "unobserved"} for item in payload["outcomes"]
+    )
     return (1 if failed else 0), payload
 
 

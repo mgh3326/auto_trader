@@ -594,3 +594,76 @@ def test_cli_subprocess_env_form_keeps_url_out_of_argv_and_output(db_session) ->
     assert json.loads(result.stdout)["error"] == "not_found"
     assert not any(_url() in part for part in argv)
     _assert_no_leak(result.stdout + result.stderr)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_cli_lever_exits_partial_failure_when_a_key_is_unobserved(
+    db_session,
+) -> None:
+    """#1061: the good key is judged, the unobserved key keeps P, exit is 1."""
+
+    from types import SimpleNamespace
+
+    from app.services.protected_position_settings import (
+        PositionObservationUnavailable,
+    )
+
+    validate_run_owned_database_url(engine.url)
+    good = f"TG{uuid4().hex[:8].upper()}"
+    unread = f"TU{uuid4().hex[:8].upper()}"
+    for symbol in (good, unread):
+        await protected_positions.write_command(
+            _write_args(
+                "declare", symbol, quantity="4", commit=True, account_scope="toss_live"
+            ),
+            provider_factory=_Broker("4").factory,
+        )
+
+    class Mixed(_Broker):
+        def factory(self, key):
+            if key.symbol == unread:
+
+                async def unobserved() -> BrokerPositionObservation:
+                    raise PositionObservationUnavailable(
+                        key=key, field="sellable_quantity"
+                    )
+
+                return unobserved
+            self.held = Decimal("1") if key.symbol == good else Decimal("100000")
+            return super().factory(key)
+
+    messages: list[str] = []
+
+    async def notify(message: str) -> None:
+        messages.append(message)
+
+    code, payload = await protected_positions.lever_command(
+        Namespace(
+            command="auto-reconcile",
+            database_url=engine.url.render_as_string(hide_password=False),
+            account_scope="toss_live",
+            commit=True,
+        ),
+        provider_factory=Mixed().factory,
+        notify=notify,
+        settings_obj=SimpleNamespace(protected_position_auto_follow_enabled=True),
+    )
+
+    [good_item] = [o for o in payload["outcomes"] if o["symbol"] == good]
+    [unread_item] = [o for o in payload["outcomes"] if o["symbol"] == unread]
+    assert code == 1
+    assert good_item["status"] == "lowered"
+    assert unread_item["status"] == "unobserved"
+    assert unread_item["reason"] == f"sellable_quantity_unavailable:{unread}"
+    assert not any(unread in message for message in messages)
+    from app.core.db import AsyncSessionLocal
+    from app.services.protected_quantity_service import ProtectionKey
+
+    async with AsyncSessionLocal() as db:
+        service = ProtectedQuantityService(db)
+        unread_head = await service.get(key=ProtectionKey("toss_live", "kr", unread))
+        good_head = await service.get(key=ProtectionKey("toss_live", "kr", good))
+    assert unread_head is not None and unread_head.protected_quantity == 4
+    assert unread_head.revision == 1
+    assert good_head is not None and good_head.protected_quantity == 1

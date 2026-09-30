@@ -195,6 +195,7 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 - **훅 위치**: 원장 커밋 **이후**만 — `ExecutionLedgerReconciler` 커밋(task·script `--commit`), Toss reconcile 부킹 세션 종료 후. dry-run 에서는 호출 안 함. `source=reconciler`·`account_mode=live` 행만(websocket 은 provisional 이라 무시)
 - **레버**: `scripts/protected_positions.py auto-reconcile`(기본 preview, `--commit` 필요) + TaskIQ `protected_positions.auto_follow_reconcile` — 🔴 **코드에 스케줄 없음**. desk 가 NCP systemd timer 로 KR/US 정규장 30분 간격 one-shot CLI 실행(운영자 Q-75, #944 option A). 🔴 timer 는 `--database-url-env NAME` 필수 — `--database-url` 은 수동용(argv 에 비밀 노출). URL 값은 출력·로그 금지, 오류는 변수 이름만
 - 🔴 **금지**: 미선언 키 자동 선언, P=0(해제) 재상향, 보유 초과 P, 읽기 경로·send-time guard 에서의 쓰기(`test_auto_follow_writer_is_unreachable_from_read_and_guard_paths` import allowlist 가 강제)
+- 🔴 **unobserved (#1061)**: 브로커가 응답했지만 그 키의 보유/매도가능 수량이 판독 불가(Toss `sellable_quantity=None` 등)면 그 키만 `unobserved`(reason `FIELD_unavailable:SYMBOL`) — P·revision 불변, 알림 없음, 레버 exit 1. **held 0 으로 취급 금지**(P 하향·해제 = 위험 방향). 락 안 재조회도 동일(save 롤백). 같은 응답의 다른 Toss 키·미선언 종목은 영향 없음. KIS 리더는 불변(시장 단위 실패)
 - **알려진 공백**: Toss 앱 수동 매도는 원장에 안 들어온다 — 레버 실행 전까지 P 가 보유보다 높게 남는다
 - **런북**: `docs/runbooks/longterm-lot-protection.md` §Rule-executed P follow · §Desk write CLI
 
