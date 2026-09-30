@@ -241,10 +241,20 @@ async def test_stock_investor_trading_empty_page_terminates() -> None:
 
 @pytest.mark.asyncio
 async def test_stock_investor_trading_max_pages_bounds_walk() -> None:
+    # Each page advances the cursor so only the max_pages bound can stop it.
+    pages = 0
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal pages
+        pages += 1
         return httpx.Response(
             200,
-            json=_json({"records": [_CONFIRMED_RECORD], "nextUntil": "2026-01-01"}),
+            json=_json(
+                {
+                    "records": [_CONFIRMED_RECORD],
+                    "nextUntil": f"2026-01-{pages:02d}",
+                }
+            ),
             request=request,
         )
 
@@ -254,6 +264,8 @@ async def test_stock_investor_trading_max_pages_bounds_walk() -> None:
             await client.collect_stock_investor_trading("005930", max_pages=3)
     finally:
         await client.aclose()
+
+    assert pages == 3
 
 
 @pytest.mark.asyncio
@@ -808,3 +820,399 @@ def test_new_methods_route_through_shared_limiter_and_get_only() -> None:
         assert "group=TossApiGroup." in body
         assert "TossApiGroup.ORDER" not in body
         assert "account_required" not in body
+
+
+# ---------------------------------------------------------------------------
+# Round-2 strictness regression tests (verdict F1/F2/F3/F4): every malformed
+# required field must surface as TossResponseContractError — never an
+# AttributeError/TypeError leak and never a silently coerced wrong value.
+# ---------------------------------------------------------------------------
+
+
+def _stock_page(records: list) -> dict:
+    return _json({"records": records, "nextUntil": None})
+
+
+async def _expect_contract_error(method, payload) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload, request=request)
+
+    client = _client(handler)
+    try:
+        await method(client)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_institution", [None, "x", 3, []])
+async def test_stock_institution_null_or_non_dict_is_contract_error(
+    bad_institution,
+) -> None:
+    record = dict(_CONFIRMED_RECORD, institution=bad_institution)
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.stock_investor_trading("005930"), _stock_page([record])
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["foreigner", "institution"])
+async def test_stock_required_nested_object_wrong_type_is_contract_error(
+    field,
+) -> None:
+    record = dict(_CONFIRMED_RECORD, **{field: "x"})
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.stock_investor_trading("005930"), _stock_page([record])
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", [None, 123, ["2026-07-16"], {"d": 1}])
+async def test_stock_required_string_fields_reject_non_strings(bad_value) -> None:
+    for field in ("date", "updatedAt"):
+        record = dict(_CONFIRMED_RECORD, **{field: bad_value})
+        with pytest.raises(TossResponseContractError):
+            await _expect_contract_error(
+                lambda c: c.stock_investor_trading("005930"),
+                _stock_page([record]),
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_volume", ["NaN", "Infinity", "-Infinity", 5, 1.5])
+async def test_decimal_fields_reject_non_finite_and_non_string(bad_volume) -> None:
+    record = dict(_CONFIRMED_RECORD, foreigner=_volume(bad_volume, "1", "1"))
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.stock_investor_trading("005930"), _stock_page([record])
+        )
+
+
+@pytest.mark.asyncio
+async def test_nullable_field_wrong_type_is_contract_error() -> None:
+    # A documented-nullable section that arrives as a non-object non-null
+    # value is malformed, not absent.
+    record = dict(_CONFIRMED_RECORD, individual="x")
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.stock_investor_trading("005930"), _stock_page([record])
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [None, "x"])
+async def test_market_investor_nested_required_objects_are_strict(bad) -> None:
+    record = {
+        "date": "2026-06-11",
+        "updatedAt": "2026-06-11T18:10:00+09:00",
+        "individual": _amount("1", "2"),
+        "foreigner": _amount("3", "4"),
+        "institution": bad,
+        "otherCorporation": _amount("7", "8"),
+    }
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.market_indicator_investor_trading("KOSPI", interval="1d"),
+            _stock_page([record]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_market_investor_breakdown_is_required() -> None:
+    record = {
+        "date": "2026-06-11",
+        "updatedAt": "2026-06-11T18:10:00+09:00",
+        "individual": _amount("1", "2"),
+        "foreigner": _amount("3", "4"),
+        "institution": {
+            "buyAmount": "5",
+            "sellAmount": "6",
+            "breakdown": None,
+        },
+        "otherCorporation": _amount("7", "8"),
+    }
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.market_indicator_investor_trading("KOSPI", interval="1d"),
+            _stock_page([record]),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"symbol": None},
+        {"symbol": 1},
+        {"lastPrice": "NaN"},
+        {"lastPrice": 2812.45},
+        {"lastPrice": None},
+        {"timestamp": 7},
+    ],
+)
+async def test_market_indicator_prices_strict_fields(patch) -> None:
+    row = {
+        "symbol": "KOSPI",
+        "timestamp": "2026-06-11T15:30:00+09:00",
+        "lastPrice": "2812.45",
+    }
+    row.update(patch)
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.market_indicator_prices(["KOSPI"]), _json([row])
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_rank", ["3", 1.9, True, None])
+async def test_rankings_rank_must_be_plain_int(bad_rank) -> None:
+    row = {
+        "rank": bad_rank,
+        "symbol": "AAPL",
+        "currency": "USD",
+        "price": {"lastPrice": "1", "basePrice": "1", "changeRate": None},
+        "tradingVolume": "1",
+        "tradingAmount": "1",
+    }
+    payload = _json({"rankedAt": None, "rankings": [row]})
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.rankings(
+                ranking_type="TOP_GAINERS", market_country="KR", duration="1d"
+            ),
+            payload,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"symbol": None},
+        {"currency": None},
+        {"currency": 9},
+        {"price": None},
+        {"price": "x"},
+        {"tradingVolume": "Infinity"},
+        {"tradingAmount": 5},
+    ],
+)
+async def test_rankings_strict_fields(patch) -> None:
+    row = {
+        "rank": 1,
+        "symbol": "AAPL",
+        "currency": "USD",
+        "price": {"lastPrice": "1", "basePrice": "1", "changeRate": None},
+        "tradingVolume": "1",
+        "tradingAmount": "1",
+    }
+    row.update(patch)
+    payload = _json({"rankedAt": None, "rankings": [row]})
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.rankings(
+                ranking_type="TOP_GAINERS", market_country="KR", duration="1d"
+            ),
+            payload,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"isCommonShare": "false"},
+        {"isCommonShare": 1},
+        {"isCommonShare": None},
+        {"symbol": None},
+        {"name": 9},
+        {"isinCode": None},
+        {"securityType": None},
+    ],
+)
+async def test_listed_stocks_strict_fields(patch) -> None:
+    row = {
+        "symbol": "000020",
+        "name": "동화약품",
+        "securityType": "STOCK",
+        "isCommonShare": True,
+        "isinCode": "KR7000020008",
+    }
+    row.update(patch)
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.stocks_all(market="KOSPI"), _json([row])
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_next", [123, {"d": 1}, ["x"], 1.5])
+async def test_non_string_next_until_is_contract_error(bad_next) -> None:
+    payload = _json({"records": [_CONFIRMED_RECORD], "nextUntil": bad_next})
+    with pytest.raises(TossResponseContractError):
+        await _expect_contract_error(
+            lambda c: c.stock_investor_trading("005930"), payload
+        )
+
+
+@pytest.mark.asyncio
+async def test_collect_stops_on_empty_page_even_with_cursor() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json=_json({"records": [], "nextUntil": "2026-07-01"}),
+            request=request,
+        )
+
+    client = _client(handler)
+    try:
+        records = await client.collect_stock_investor_trading("005930")
+    finally:
+        await client.aclose()
+
+    assert calls == 1
+    assert records == []
+
+
+@pytest.mark.asyncio
+async def test_collect_raises_on_non_advancing_cursor() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        # Always returns the same cursor -> second page makes no progress.
+        return httpx.Response(
+            200,
+            json=_json({"records": [_CONFIRMED_RECORD], "nextUntil": "2026-07-01"}),
+            request=request,
+        )
+
+    client = _client(handler)
+    try:
+        with pytest.raises(TossResponseContractError, match="non-advancing"):
+            await client.collect_stock_investor_trading("005930")
+    finally:
+        await client.aclose()
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_treats_empty_string_next_until_as_terminal() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json=_json({"records": [_CONFIRMED_RECORD], "nextUntil": ""}),
+            request=request,
+        )
+
+    client = _client(handler)
+    try:
+        records = await client.collect_stock_investor_trading("005930")
+    finally:
+        await client.aclose()
+
+    assert calls == 1
+    assert len(records) == 1
+
+
+@pytest.mark.asyncio
+async def test_stock_investor_trading_validates_symbol_until_and_count() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500, request=request)
+
+    client = _client(handler)
+    try:
+        for bad_symbol in ("../accounts", "005930?x=1", "005930/investor-trading", ""):
+            with pytest.raises(ValueError, match="symbol"):
+                await client.stock_investor_trading(bad_symbol)
+        for bad_until in ("junk", "2026-7-1", "20260731"):
+            with pytest.raises(ValueError, match="YYYY-MM-DD"):
+                await client.stock_investor_trading("005930", until=bad_until)
+        for bad_count in (True, 10.5, "50"):
+            with pytest.raises(ValueError, match="integer"):
+                await client.stock_investor_trading("005930", count=bad_count)
+    finally:
+        await client.aclose()
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_market_indicator_prices_rejects_bad_symbols_param() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500, request=request)
+
+    client = _client(handler)
+    try:
+        with pytest.raises(ValueError, match="symbols"):
+            await client.market_indicator_prices(["KOSPI", "../x"])
+        with pytest.raises(ValueError, match="symbols"):
+            await client.market_indicator_prices(["KOSPI?a=1"])
+    finally:
+        await client.aclose()
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_market_investor_trading_until_validated_and_count_typed() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500, request=request)
+
+    client = _client(handler)
+    try:
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            await client.market_indicator_investor_trading(
+                "KOSPI", interval="1d", until="junk"
+            )
+        with pytest.raises(ValueError, match="integer"):
+            await client.market_indicator_investor_trading(
+                "KOSPI", interval="1d", count=True
+            )
+    finally:
+        await client.aclose()
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_rankings_count_must_be_plain_int() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, request=request)
+
+    client = _client(handler)
+    try:
+        for bad_count in (True, 10.5, "50"):
+            with pytest.raises(ValueError, match="integer"):
+                await client.rankings(
+                    ranking_type="TOP_GAINERS",
+                    market_country="KR",
+                    duration="1d",
+                    count=bad_count,
+                )
+    finally:
+        await client.aclose()

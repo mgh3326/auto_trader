@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.services.brokers.toss.errors import TossResponseContractError
@@ -371,7 +371,63 @@ def parse_warnings(raw: list[dict[str, Any]]) -> list[TossWarningInfo]:
 # TossResponseContractError.
 # ---------------------------------------------------------------------------
 
-_CONTRACT_FIELDS = (KeyError, TypeError, ValueError, ArithmeticError)
+_CONTRACT_FIELDS = (KeyError, TypeError, ValueError, ArithmeticError, AttributeError)
+
+
+def _req_map(value: Any, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TossResponseContractError(f"'{field}' must be a JSON object")
+    return value
+
+
+def _opt_map(value: Any, field: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return _req_map(value, field)
+
+
+def _req_str(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise TossResponseContractError(f"'{field}' must be a string")
+    return value
+
+
+def _opt_str(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    return _req_str(value, field)
+
+
+def _req_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TossResponseContractError(f"'{field}' must be an integer")
+    return value
+
+
+def _req_bool(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise TossResponseContractError(f"'{field}' must be a boolean")
+    return value
+
+
+def _req_decimal(value: Any, field: str) -> Decimal:
+    # Official schemas type these as decimal strings; a bare JSON number or a
+    # non-finite literal is a contract violation, not input to coerce.
+    if not isinstance(value, str):
+        raise TossResponseContractError(f"'{field}' must be a decimal string")
+    try:
+        result = Decimal(value)
+    except InvalidOperation as exc:
+        raise TossResponseContractError(f"'{field}' must be a decimal string") from exc
+    if not result.is_finite():
+        raise TossResponseContractError(f"'{field}' must be finite")
+    return result
+
+
+def _opt_decimal(value: Any, field: str) -> Decimal | None:
+    if value is None:
+        return None
+    return _req_decimal(value, field)
 
 
 @dataclass(frozen=True)
@@ -452,46 +508,42 @@ class TossStockInvestorTradingPage:
     next_until: str | None
 
 
-def _parse_investor_volume(raw: dict[str, Any]) -> TossInvestorTradingVolume:
+def _parse_investor_volume(raw: Any) -> TossInvestorTradingVolume:
+    obj = _req_map(raw, "investorVolume")
     return TossInvestorTradingVolume(
-        buy_volume=parse_decimal_string(raw["buyVolume"]),
-        sell_volume=parse_decimal_string(raw["sellVolume"]),
-        net_buy_volume=parse_decimal_string(raw["netBuyVolume"]),
+        buy_volume=_req_decimal(obj["buyVolume"], "buyVolume"),
+        sell_volume=_req_decimal(obj["sellVolume"], "sellVolume"),
+        net_buy_volume=_req_decimal(obj["netBuyVolume"], "netBuyVolume"),
     )
 
 
-def _parse_optional_investor_volume(
-    raw: dict[str, Any] | None,
-) -> TossInvestorTradingVolume | None:
-    if raw is None:
-        return None
-    return _parse_investor_volume(raw)
+def _parse_optional_investor_volume(raw: Any) -> TossInvestorTradingVolume | None:
+    obj = _opt_map(raw, "investorVolume")
+    return None if obj is None else _parse_investor_volume(obj)
 
 
-def _parse_stock_institution_breakdown(
-    raw: dict[str, Any],
-) -> TossStockInstitutionBreakdown:
+def _parse_stock_institution_breakdown(raw: Any) -> TossStockInstitutionBreakdown:
+    obj = _req_map(raw, "breakdown")
     return TossStockInstitutionBreakdown(
-        financial_investment=_parse_investor_volume(raw["financialInvestment"]),
-        insurance=_parse_investor_volume(raw["insurance"]),
-        trust=_parse_investor_volume(raw["trust"]),
-        private_equity_fund=_parse_investor_volume(raw["privateEquityFund"]),
-        bank=_parse_investor_volume(raw["bank"]),
+        financial_investment=_parse_investor_volume(obj["financialInvestment"]),
+        insurance=_parse_investor_volume(obj["insurance"]),
+        trust=_parse_investor_volume(obj["trust"]),
+        private_equity_fund=_parse_investor_volume(obj["privateEquityFund"]),
+        bank=_parse_investor_volume(obj["bank"]),
         other_financial_institution=_parse_investor_volume(
-            raw["otherFinancialInstitution"]
+            obj["otherFinancialInstitution"]
         ),
-        pension_fund=_parse_investor_volume(raw["pensionFund"]),
+        pension_fund=_parse_investor_volume(obj["pensionFund"]),
     )
 
 
-def _parse_stock_institution_trading(
-    raw: dict[str, Any],
-) -> TossStockInstitutionTrading:
-    breakdown_raw = raw.get("breakdown")
+def _parse_stock_institution_trading(raw: Any) -> TossStockInstitutionTrading:
+    obj = _req_map(raw, "institution")
+    breakdown_raw = _opt_map(obj.get("breakdown"), "institution.breakdown")
     return TossStockInstitutionTrading(
-        buy_volume=parse_decimal_string(raw["buyVolume"]),
-        sell_volume=parse_decimal_string(raw["sellVolume"]),
-        net_buy_volume=parse_decimal_string(raw["netBuyVolume"]),
+        buy_volume=_req_decimal(obj["buyVolume"], "institution.buyVolume"),
+        sell_volume=_req_decimal(obj["sellVolume"], "institution.sellVolume"),
+        net_buy_volume=_req_decimal(obj["netBuyVolume"], "institution.netBuyVolume"),
         breakdown=(
             None
             if breakdown_raw is None
@@ -500,39 +552,44 @@ def _parse_stock_institution_trading(
     )
 
 
-def _parse_foreigner_holding(raw: dict[str, Any] | None) -> TossForeignerHolding | None:
-    if raw is None:
+def _parse_foreigner_holding(raw: Any) -> TossForeignerHolding | None:
+    obj = _opt_map(raw, "foreignerHolding")
+    if obj is None:
         return None
     return TossForeignerHolding(
-        holding_quantity=parse_decimal_string(raw["holdingQuantity"]),
-        limit_quantity=parse_decimal_string(raw["limitQuantity"]),
-        holding_rate=parse_decimal_string(raw["holdingRate"]),
+        holding_quantity=_req_decimal(obj["holdingQuantity"], "holdingQuantity"),
+        limit_quantity=_req_decimal(obj["limitQuantity"], "limitQuantity"),
+        holding_rate=_req_decimal(obj["holdingRate"], "holdingRate"),
     )
 
 
-def _parse_cfd_balance(raw: dict[str, Any] | None) -> TossCfdBalance | None:
-    if raw is None:
+def _parse_cfd_balance(raw: Any) -> TossCfdBalance | None:
+    obj = _opt_map(raw, "cfd")
+    if obj is None:
         return None
     return TossCfdBalance(
-        buy_balance_quantity=parse_decimal_string(raw["buyBalanceQuantity"]),
-        buy_balance_rate=parse_decimal_string(raw["buyBalanceRate"]),
-        sell_balance_quantity=parse_decimal_string(raw["sellBalanceQuantity"]),
-        sell_balance_rate=parse_decimal_string(raw["sellBalanceRate"]),
+        buy_balance_quantity=_req_decimal(
+            obj["buyBalanceQuantity"], "buyBalanceQuantity"
+        ),
+        buy_balance_rate=_req_decimal(obj["buyBalanceRate"], "buyBalanceRate"),
+        sell_balance_quantity=_req_decimal(
+            obj["sellBalanceQuantity"], "sellBalanceQuantity"
+        ),
+        sell_balance_rate=_req_decimal(obj["sellBalanceRate"], "sellBalanceRate"),
     )
 
 
-def _parse_stock_investor_record(
-    raw: dict[str, Any],
-) -> TossStockInvestorTradingRecord:
+def _parse_stock_investor_record(raw: Any) -> TossStockInvestorTradingRecord:
+    obj = _req_map(raw, "records[]")
     return TossStockInvestorTradingRecord(
-        date=str(raw["date"]),
-        updated_at=str(raw["updatedAt"]),
-        foreigner=_parse_investor_volume(raw["foreigner"]),
-        institution=_parse_stock_institution_trading(raw["institution"]),
-        individual=_parse_optional_investor_volume(raw.get("individual")),
-        other_corporation=_parse_optional_investor_volume(raw.get("otherCorporation")),
-        foreigner_holding=_parse_foreigner_holding(raw.get("foreignerHolding")),
-        cfd=_parse_cfd_balance(raw.get("cfd")),
+        date=_req_str(obj["date"], "date"),
+        updated_at=_req_str(obj["updatedAt"], "updatedAt"),
+        foreigner=_parse_investor_volume(obj["foreigner"]),
+        institution=_parse_stock_institution_trading(obj["institution"]),
+        individual=_parse_optional_investor_volume(obj.get("individual")),
+        other_corporation=_parse_optional_investor_volume(obj.get("otherCorporation")),
+        foreigner_holding=_parse_foreigner_holding(obj.get("foreignerHolding")),
+        cfd=_parse_cfd_balance(obj.get("cfd")),
     )
 
 
@@ -540,16 +597,15 @@ def parse_stock_investor_trading_page(
     raw: dict[str, Any],
 ) -> TossStockInvestorTradingPage:
     try:
-        records_raw = raw["records"]
+        records_raw = _req_map(raw, "response")["records"]
         if not isinstance(records_raw, list):
             raise TossResponseContractError(
                 "stocks/{symbol}/investor-trading: 'records' must be a list"
             )
         records = [_parse_stock_investor_record(row) for row in records_raw]
-        next_until = raw.get("nextUntil")
         return TossStockInvestorTradingPage(
             records=records,
-            next_until=str(next_until) if next_until is not None else None,
+            next_until=_opt_str(raw.get("nextUntil"), "nextUntil"),
         )
     except TossResponseContractError:
         raise
@@ -572,14 +628,20 @@ def parse_market_indicator_prices(
     raw: list[dict[str, Any]],
 ) -> list[TossMarketIndicatorPrice]:
     try:
+        if not isinstance(raw, list):
+            raise TossResponseContractError(
+                "market-indicators/prices: result must be a list"
+            )
         return [
             TossMarketIndicatorPrice(
-                symbol=str(row["symbol"]),
-                timestamp=row.get("timestamp"),
-                last_price=parse_decimal_string(row["lastPrice"]),
+                symbol=_req_str(row.get("symbol"), "symbol"),
+                timestamp=_opt_str(row.get("timestamp"), "timestamp"),
+                last_price=_req_decimal(row.get("lastPrice"), "lastPrice"),
             )
-            for row in raw
+            for row in (_req_map(item, "result[]") for item in raw)
         ]
+    except TossResponseContractError:
+        raise
     except _CONTRACT_FIELDS as exc:
         raise TossResponseContractError(
             "market-indicators/prices payload violates the documented schema"
@@ -636,48 +698,49 @@ class TossMarketInvestorTradingPage:
     next_until: str | None
 
 
-def _parse_trading_amount(raw: dict[str, Any]) -> TossInvestorTradingAmount:
+def _parse_trading_amount(raw: Any) -> TossInvestorTradingAmount:
+    obj = _req_map(raw, "tradingAmount")
     return TossInvestorTradingAmount(
-        buy_amount=parse_decimal_string(raw["buyAmount"]),
-        sell_amount=parse_decimal_string(raw["sellAmount"]),
+        buy_amount=_req_decimal(obj["buyAmount"], "buyAmount"),
+        sell_amount=_req_decimal(obj["sellAmount"], "sellAmount"),
     )
 
 
-def _parse_market_institution_trading(
-    raw: dict[str, Any],
-) -> TossMarketInstitutionTrading:
-    breakdown_raw = raw["breakdown"]
+def _parse_market_institution_trading(raw: Any) -> TossMarketInstitutionTrading:
+    obj = _req_map(raw, "institution")
+    breakdown_obj = _req_map(obj["breakdown"], "institution.breakdown")
     return TossMarketInstitutionTrading(
-        buy_amount=parse_decimal_string(raw["buyAmount"]),
-        sell_amount=parse_decimal_string(raw["sellAmount"]),
+        buy_amount=_req_decimal(obj["buyAmount"], "institution.buyAmount"),
+        sell_amount=_req_decimal(obj["sellAmount"], "institution.sellAmount"),
         breakdown=TossMarketInstitutionBreakdown(
             financial_investment=_parse_trading_amount(
-                breakdown_raw["financialInvestment"]
+                breakdown_obj["financialInvestment"]
             ),
-            insurance=_parse_trading_amount(breakdown_raw["insurance"]),
-            trust=_parse_trading_amount(breakdown_raw["trust"]),
+            insurance=_parse_trading_amount(breakdown_obj["insurance"]),
+            trust=_parse_trading_amount(breakdown_obj["trust"]),
             private_equity_fund=_parse_trading_amount(
-                breakdown_raw["privateEquityFund"]
+                breakdown_obj["privateEquityFund"]
             ),
-            bank=_parse_trading_amount(breakdown_raw["bank"]),
+            bank=_parse_trading_amount(breakdown_obj["bank"]),
             other_financial_institution=_parse_trading_amount(
-                breakdown_raw["otherFinancialInstitution"]
+                breakdown_obj["otherFinancialInstitution"]
             ),
-            pension_fund=_parse_trading_amount(breakdown_raw["pensionFund"]),
+            pension_fund=_parse_trading_amount(breakdown_obj["pensionFund"]),
         ),
     )
 
 
 def _parse_market_investor_record(
-    raw: dict[str, Any],
+    raw: Any,
 ) -> TossMarketInvestorTradingRecord:
+    obj = _req_map(raw, "records[]")
     return TossMarketInvestorTradingRecord(
-        date=str(raw["date"]),
-        updated_at=str(raw["updatedAt"]),
-        individual=_parse_trading_amount(raw["individual"]),
-        foreigner=_parse_trading_amount(raw["foreigner"]),
-        institution=_parse_market_institution_trading(raw["institution"]),
-        other_corporation=_parse_trading_amount(raw["otherCorporation"]),
+        date=_req_str(obj["date"], "date"),
+        updated_at=_req_str(obj["updatedAt"], "updatedAt"),
+        individual=_parse_trading_amount(obj["individual"]),
+        foreigner=_parse_trading_amount(obj["foreigner"]),
+        institution=_parse_market_institution_trading(obj["institution"]),
+        other_corporation=_parse_trading_amount(obj["otherCorporation"]),
     )
 
 
@@ -685,16 +748,15 @@ def parse_market_investor_trading_page(
     raw: dict[str, Any],
 ) -> TossMarketInvestorTradingPage:
     try:
-        records_raw = raw["records"]
+        records_raw = _req_map(raw, "response")["records"]
         if not isinstance(records_raw, list):
             raise TossResponseContractError(
                 "market-indicators/{symbol}/investor-trading: 'records' must be a list"
             )
         records = [_parse_market_investor_record(row) for row in records_raw]
-        next_until = raw.get("nextUntil")
         return TossMarketInvestorTradingPage(
             records=records,
-            next_until=str(next_until) if next_until is not None else None,
+            next_until=_opt_str(raw.get("nextUntil"), "nextUntil"),
         )
     except TossResponseContractError:
         raise
@@ -736,32 +798,32 @@ class TossRankings:
 
 def parse_rankings(raw: dict[str, Any]) -> TossRankings:
     try:
-        rankings_raw = raw["rankings"]
+        rankings_raw = _req_map(raw, "response")["rankings"]
         if not isinstance(rankings_raw, list):
             raise TossResponseContractError("rankings: 'rankings' must be a list")
         items = []
         for row in rankings_raw:
-            price_raw = row["price"]
+            obj = _req_map(row, "rankings[]")
+            price_obj = _req_map(obj["price"], "price")
             items.append(
                 TossRankingItem(
-                    rank=int(row["rank"]),
-                    symbol=str(row["symbol"]),
-                    currency=str(row["currency"]),
+                    rank=_req_int(obj["rank"], "rank"),
+                    symbol=_req_str(obj["symbol"], "symbol"),
+                    currency=_req_str(obj["currency"], "currency"),
                     price=TossRankingPrice(
-                        last_price=parse_decimal_string(price_raw["lastPrice"]),
-                        base_price=parse_decimal_string(price_raw["basePrice"]),
-                        change_rate=parse_optional_decimal_string(
-                            price_raw.get("changeRate")
+                        last_price=_req_decimal(price_obj["lastPrice"], "lastPrice"),
+                        base_price=_req_decimal(price_obj["basePrice"], "basePrice"),
+                        change_rate=_opt_decimal(
+                            price_obj.get("changeRate"), "changeRate"
                         ),
                     ),
-                    trading_volume=parse_decimal_string(row["tradingVolume"]),
-                    trading_amount=parse_decimal_string(row["tradingAmount"]),
+                    trading_volume=_req_decimal(obj["tradingVolume"], "tradingVolume"),
+                    trading_amount=_req_decimal(obj["tradingAmount"], "tradingAmount"),
                 )
             )
-        ranked_at = raw.get("rankedAt")
         return TossRankings(
             rankings=items,
-            ranked_at=str(ranked_at) if ranked_at is not None else None,
+            ranked_at=_opt_str(raw.get("rankedAt"), "rankedAt"),
         )
     except TossResponseContractError:
         raise
@@ -788,16 +850,20 @@ class TossListedStock:
 
 def parse_listed_stocks(raw: list[dict[str, Any]]) -> list[TossListedStock]:
     try:
+        if not isinstance(raw, list):
+            raise TossResponseContractError("stocks/all: result must be a list")
         return [
             TossListedStock(
-                symbol=str(row["symbol"]),
-                name=str(row["name"]),
-                security_type=str(row["securityType"]),
-                is_common_share=bool(row["isCommonShare"]),
-                isin_code=str(row["isinCode"]),
+                symbol=_req_str(row.get("symbol"), "symbol"),
+                name=_req_str(row.get("name"), "name"),
+                security_type=_req_str(row.get("securityType"), "securityType"),
+                is_common_share=_req_bool(row.get("isCommonShare"), "isCommonShare"),
+                isin_code=_req_str(row.get("isinCode"), "isinCode"),
             )
-            for row in raw
+            for row in (_req_map(item, "result[]") for item in raw)
         ]
+    except TossResponseContractError:
+        raise
     except _CONTRACT_FIELDS as exc:
         raise TossResponseContractError(
             "stocks/all payload violates the documented schema"

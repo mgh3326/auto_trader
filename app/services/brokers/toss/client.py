@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -39,7 +40,11 @@ from app.services.brokers.toss.dto import (
     parse_stocks,
     parse_warnings,
 )
-from app.services.brokers.toss.errors import TossApiResponseError, parse_toss_response
+from app.services.brokers.toss.errors import (
+    TossApiResponseError,
+    TossResponseContractError,
+    parse_toss_response,
+)
 from app.services.brokers.toss.health import publish_toss_api_error
 from app.services.brokers.toss.rate_limiter import (
     TossApiGroup,
@@ -304,7 +309,27 @@ class TossReadClient:
     # MARKET_INDICATOR 10/s, RANKING 5/s, STOCK_ALL 1/s per
     # openapi-docs/overview.md) rather than MARKET_DATA, whose official 15/s
     # cap would over-admit RANKING (5/s) and STOCK_ALL (1/s) traffic.
+    #
+    # Request-side patterns quote the official param schemas: KrSymbol
+    # ^[A-Za-z0-9.\-]+$, until format=date (YYYY-MM-DD), market-indicator
+    # symbols param ^[A-Za-z0-9_,]+$.
     # ------------------------------------------------------------------
+
+    _KR_SYMBOL_RE = re.compile(r"^[A-Za-z0-9.\-]+$")
+    _UNTIL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    _INDICATOR_SYMBOLS_RE = re.compile(r"^[A-Za-z0-9_,]+$")
+
+    @classmethod
+    def _check_count(cls, count: int) -> None:
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ValueError("Toss count must be an integer")
+        if not 1 <= count <= 100:
+            raise ValueError("Toss count must be 1..100")
+
+    @classmethod
+    def _check_until(cls, until: str | None) -> None:
+        if until is not None and not cls._UNTIL_DATE_RE.match(until):
+            raise ValueError("Toss until cursor must be YYYY-MM-DD")
 
     async def stock_investor_trading(
         self,
@@ -321,8 +346,10 @@ class TossReadClient:
         ``until`` to continue pagination. Same-day records are provisional and
         may carry null sections.
         """
-        if not 1 <= count <= 100:
-            raise ValueError("Toss investor-trading count must be 1..100")
+        if not self._KR_SYMBOL_RE.match(symbol):
+            raise ValueError(f"Invalid Toss KR symbol: {symbol!r}")
+        self._check_count(count)
+        self._check_until(until)
         params: dict[str, Any] = {"count": count}
         if until is not None:
             params["until"] = until
@@ -345,17 +372,24 @@ class TossReadClient:
     ) -> list[TossStockInvestorTradingRecord]:
         """Follow ``nextUntil`` pagination and return all collected records.
 
-        Terminates when a page reports ``next_until is None`` (or carries no
-        records). ``max_pages`` bounds the walk; hitting it with a pending
-        cursor raises ValueError rather than silently truncating history.
+        Terminates when a page reports a falsy ``next_until`` or carries no
+        records. A ``next_until`` identical to the cursor just sent means the
+        server made no progress — a TossResponseContractError, not a retry.
+        ``max_pages`` bounds the walk; hitting it with a pending cursor raises
+        ValueError rather than silently truncating history.
         """
         records: list[TossStockInvestorTradingRecord] = []
         cursor = until
         for _ in range(max_pages):
             page = await self.stock_investor_trading(symbol, count=count, until=cursor)
             records.extend(page.records)
-            if page.next_until is None:
+            if not page.next_until or not page.records:
                 return records
+            if page.next_until == cursor:
+                raise TossResponseContractError(
+                    "stocks/{symbol}/investor-trading: non-advancing "
+                    f"nextUntil {page.next_until!r} for {symbol}"
+                )
             cursor = page.next_until
         raise ValueError(
             f"Toss investor-trading pagination exceeded max_pages={max_pages} "
@@ -370,12 +404,17 @@ class TossReadClient:
         ``symbols`` is the documented comma-separated catalog (KOSPI, KOSDAQ,
         KR_BOND_*), max 200 per request.
         """
+        symbols_param = self._symbols_param(symbols)
+        if not self._INDICATOR_SYMBOLS_RE.match(symbols_param):
+            raise ValueError(
+                f"Invalid Toss market-indicator symbols: {symbols_param!r}"
+            )
         return parse_market_indicator_prices(
             await self._request(
                 "GET",
                 "/api/v1/market-indicators/prices",
                 group=TossApiGroup.MARKET_INDICATOR,
-                params={"symbols": self._symbols_param(symbols)},
+                params={"symbols": symbols_param},
             )
         )
 
@@ -401,8 +440,8 @@ class TossReadClient:
             )
         if interval not in self._INVESTOR_TRADING_INTERVALS:
             raise ValueError("Toss investor-trading interval must be 1d/1w/1mo/1y")
-        if not 1 <= count <= 100:
-            raise ValueError("Toss investor-trading count must be 1..100")
+        self._check_count(count)
+        self._check_until(until)
         params: dict[str, Any] = {"interval": interval, "count": count}
         if until is not None:
             params["until"] = until
@@ -434,8 +473,13 @@ class TossReadClient:
                 symbol, interval=interval, count=count, until=cursor
             )
             records.extend(page.records)
-            if page.next_until is None:
+            if not page.next_until or not page.records:
                 return records
+            if page.next_until == cursor:
+                raise TossResponseContractError(
+                    "market-indicators/{symbol}/investor-trading: "
+                    f"non-advancing nextUntil {page.next_until!r} for {symbol}"
+                )
             cursor = page.next_until
         raise ValueError(
             f"Toss market-indicator investor-trading pagination exceeded "
@@ -483,8 +527,7 @@ class TossReadClient:
             raise ValueError(
                 f"Toss ranking type {ranking_type} does not support realtime"
             )
-        if not 1 <= count <= 100:
-            raise ValueError("Toss ranking count must be 1..100")
+        self._check_count(count)
         return parse_rankings(
             await self._request(
                 "GET",
