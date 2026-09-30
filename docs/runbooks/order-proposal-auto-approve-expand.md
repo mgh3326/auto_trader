@@ -967,7 +967,7 @@ pre-send boundary. Pre-open, NXT, after-hours, holidays, and the close of a
 shortened session are outside it. No scheduler, migration, automatic trigger,
 or new direct-order permission is added. No live smoke is part of task 817.
 
-## 11. Toss preview without `current_price` — KIS quote fallback and one retry (#1067)
+## 11. Toss preview without `current_price` — KIS quote fallback (#1067)
 
 Case: 09-30 09:13 Toss 035720 buy 3 @ 32,750 (98,250 KRW, inside every cap,
 mode `expanded`) became a card as `price_or_quantity_missing` /
@@ -995,71 +995,16 @@ base quote, after close with no fresh NXT overlay, holidays and prior-day
 candles are rejected. Limit: for the KRX regular session the proof is
 date-level — a fresh KIS daily-chart read of today's candle is trusted to
 carry the current price; it is not an intraday timestamp-age proof (only the
-NXT path has one). US is
-`market_unsupported` — its `get_quote` carries no `is_stale_price` and can
-fall back to Yahoo. The decision records `price_source`
-(`toss_preview` | `kis_quote_fallback`) and, on the fallback, `current_price`.
+NXT path has one). US is `market_unsupported` — its `get_quote` carries no
+`is_stale_price` and can fall back to Yahoo. The decision records
+`price_source` (`toss_preview` | `kis_quote_fallback`) and, on the fallback,
+`current_price`.
 
-**One re-evaluation.** If the fallback also fails (closed
-`price_fallback_reason`), a single-rung Toss proposal whose only rejection is
-that missing price records the rejection, commits the marker
-`source_asof.auto_approve_price_retry = {state: scheduled, token, …}` and
-returns `state=pending`, `failure_code=auto_approve_price_retry_scheduled`
-without a card and without a Discord non-sent alert. After 30 s the
-MCP post-commit boundary re-runs `dispatch_proposal` with that token: a fresh
-preview, a fresh fallback, never a second schedule. Still missing → the
-ordinary card, whose latest rejection keeps `price_context_message`,
-`price_fallback_reason` and `price_retry_reevaluation=true`.
-
-**Where the wait runs.** In a detached task in the same event loop, never
-inline: `dispatch_proposal` holds a DB session and the per-proposal
-`pg_advisory_xact_lock`, and `support_reserve_net_consume_impl` dispatches the
-proposals it creates one after another, so an inline wait would pin both and
-stall every later proposal. Nothing is held while sleeping. No TaskIQ/cron
-schedule is registered.
-
-**No double dispatch.** The retry proceeds only by consuming the exact
-`scheduled` marker with its random token under the dispatch lock, in the same
-transaction as the evaluation, and only while no card was dispatched or acted
-on. A second run, a wrong/seeded token, or a manual redispatch during the wait
-returns `failure_code=auto_approve_price_retry_superseded` and does nothing.
-The broker path is the unchanged `revalidate_and_submit`.
-
-**Cancellation (graceful shutdown) at any point of the task is a handoff,
-never silence.** Revalidation commits nothing before the broker send, so the
-database cannot tell "before the send" from "during it". An in-process witness
-(`PriceRetryProgress`) can: the eligibility gate runs strictly before any
-broker mutation and sets it the moment it returns eligible.
-
-* The retry task is started **eagerly**: its body is inside its cancellation
-  handler before scheduling returns, so there is no "cancelled before it ever
-  ran" window.
-* Gate never returned eligible (cancelled during the wait, the preview, the
-  quote read, or while the retry was publishing its rejection card) → no
-  order can exist → the ordinary card is sent. The handoff claims the marker
-  by token compare-and-swap (`scheduled` or `consumed` → `handed_off`) while
-  no card has been published or acted on; a stale `pending` attempt left by
-  the interrupted publication is superseded by the fresh dispatch.
-* Gate returned eligible → the broker leg may have started → **no card and no
-  re-run**; the marker becomes `abandoned` (`cancelled_after_eligible`) and
-  the operator gets `auto_approve_price_retry_cancelled_after_eligible`: do
-  not redispatch; check the broker order list / reconcile first. The alert is
-  sent even if the marker write fails.
-* The handoff runs as its **own task behind `asyncio.shield`**, so further
-  cancellations of the retry task cannot interrupt it. If the handoff task
-  itself is cancelled (loop shutdown) or fails, a last resort supersedes our
-  own never-published `pending` attempt with a durable failed one (clearing
-  the nonce, so `order_proposal_redispatch` is not blocked) and sends
-  `auto_approve_price_retry_handoff_interrupted` (pre-send proven: redispatch
-  with dry_run first).
-
-**Honest limits.** A hard kill (SIGKILL/OOM) during the task leaves the
-proposal `proposed` with a `scheduled` (or `consumed`) marker and **no card
-and no alert**; recover it with `order_proposal_redispatch` after checking the
-broker. The same applies if the last-resort step itself is cancelled again (a
-third cancellation of the same task; `asyncio.run` cancels each task once).
-A Telegram send whose response was lost to the cancellation can be followed by
-the handoff's fresh card; the earlier one is superseded and its button fails
-closed. The MCP lifespan does not drain these tasks; the handoff above is what
-covers shutdown. The fallback applies to the auto path only; the manual Telegram
-click, loss-cut confirmation and redispatch previews are unchanged.
+**Fallback failure.** If the read fails, times out or is stale, the rung is
+rejected as `price_or_quantity_missing` and goes to the ordinary approval card
+in the same dispatch, exactly as before #1067. The rejection keeps the
+preview's `price_context_message` (#1053) and adds the closed
+`price_fallback_reason` (also shown on the card). There is no delayed
+re-evaluation: operator decision #1083 (option B) removed the 30-second retry
+that earlier revisions of #1067 carried, together with its retry marker, task
+and residual limits. No scheduler, task or new broker path exists.

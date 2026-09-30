@@ -37,21 +37,6 @@ class ApprovalDispatchAlertResult:
 
 def _recommended_action(failure_code: str) -> str:
     upper = failure_code.upper()
-    if "AUTO_APPROVE_PRICE_RETRY_HANDOFF_INTERRUPTED" in upper:
-        # #1067: proven pre-send (the gate never cleared), but the card could
-        # not be delivered before the task was interrupted.
-        return (
-            "브로커 전송 전 중단(주문 없음 증명) — 승인 카드가 발송되지 않았을 수 있음. "
-            "order_proposal_redispatch(dry_run=true → false)로 재발송하세요."
-        )
-    if "AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE" in upper:
-        # #1067: the delayed re-evaluation was interrupted after its gate
-        # cleared the order, so a broker submit may already exist.
-        return (
-            "재발송 금지. 자동승인 재평가가 브로커 전송 가능 구간에서 중단됨 — "
-            "먼저 브로커 주문내역/reconcile 로 주문 존재 여부를 확인하고, "
-            "주문이 없을 때만 order_proposal_redispatch(dry_run=true)로 재검증하세요."
-        )
     if "EXPIRED" in upper or "INVALID_VALID_UNTIL" in upper:
         return "재발송 금지. 제안을 재평가한 뒤 void + 새 제안을 생성하세요."
     if "CALENDAR_UNKNOWN" in upper or "NXT_CAPABILITY_STALE" in upper:

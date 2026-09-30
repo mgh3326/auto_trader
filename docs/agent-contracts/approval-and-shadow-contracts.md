@@ -192,21 +192,12 @@ fresh 아님), `data_state == "fresh"`, 유한 양수 가격. US 는 `market_uns
 결정에 `price_source`(`toss_preview`/`kis_quote_fallback`) 기록.
 
 - **모듈**: `app/services/order_proposals/auto_approve_price_fallback.py`,
-  `auto_approve.evaluate_auto_approve_eligibility(price_fallback=...)`
-- **재평가 1회**: 폴백도 실패하면 단일 rung Toss 제안만 `source_asof.auto_approve_price_retry`
-  (랜덤 토큰) 를 커밋하고 30초 뒤 1회 재평가. MCP post-commit 경계의 in-process
-  detached task — **스케줄러/TaskIQ 등록 없음**, dispatch 안에서 inline 대기 금지.
-- 🔴 재평가는 dispatch advisory lock 아래 토큰 CAS 로 marker 를 소비해야만 진행하고
-  (카드 발행·승인 흔적이 있으면 no-op), 절대 재스케줄하지 않는다. 여전히 없으면
-  기존 카드 + `price_context_message`·`price_fallback_reason` 보존.
-- 🔴 재평가 task 취소(graceful shutdown)는 침묵 금지: task 는 eager start, handoff 는 별도
-  task + shield. 게이트가 eligible 을 반환하기 전이면 marker 토큰 CAS(`scheduled`/`consumed`
-  → `handed_off`) 후 카드 발송(끊긴 pending attempt 는 대체), 반환한 뒤면(브로커 leg 불명확)
-  카드·재실행 없이 marker `abandoned` + 운영자 알림(`auto_approve_price_retry_cancelled_after_eligible`,
-  브로커 확인 전 재발송 금지). handoff 자체가 끊기면 우리 pending attempt 를 failed 로 대체
-  (redispatch 가능) + `auto_approve_price_retry_handoff_interrupted` 알림.
-- **런북**: `docs/runbooks/order-proposal-auto-approve-expand.md` §11 (SIGKILL 시
-  카드 미발행 한계 포함)
+  `auto_approve.evaluate_auto_approve_eligibility(price_fallback=...)`,
+  `dispatch.dispatch_proposal(price_fallback_fn=...)`
+- 🔴 폴백 실패/stale 이면 같은 dispatch 에서 즉시 기존 카드(`price_or_quantity_missing`) —
+  `price_context_message`(#1053) + 닫힌 `price_fallback_reason` 보존. **지연 재평가·재시도
+  없음**(운영자 결정 #1083 B). 스케줄러/TaskIQ/detached task 추가 금지.
+- **런북**: `docs/runbooks/order-proposal-auto-approve-expand.md` §11
 
 ## 유지 규약
 

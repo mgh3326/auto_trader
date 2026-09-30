@@ -60,10 +60,6 @@ PRICE_FALLBACK_FAILURE_REASONS = frozenset(
 
 PRICE_FALLBACK_TIMEOUT_SECONDS = 5.0
 
-# Durable marker in ``source_asof`` for the one 30s re-evaluation.
-AUTO_APPROVE_PRICE_RETRY_KEY = "auto_approve_price_retry"
-AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS = 30
-
 QuoteFn = Callable[[str, str], Awaitable[Any]]
 
 
@@ -158,8 +154,6 @@ async def fetch_kis_quote_fallback(
 
 
 __all__ = [
-    "AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS",
-    "AUTO_APPROVE_PRICE_RETRY_KEY",
     "PRICE_FALLBACK_FAILURE_REASONS",
     "PRICE_FALLBACK_TIMEOUT_SECONDS",
     "PRICE_SOURCES",

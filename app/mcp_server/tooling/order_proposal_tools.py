@@ -9,7 +9,6 @@ row has committed and the existing fresh revalidation path passes.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import uuid
@@ -37,10 +36,6 @@ from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_not_evaluated,
     project_auto_approve_rejections,
 )
-from app.services.order_proposals.auto_approve_price_fallback import (
-    AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS,
-    AUTO_APPROVE_PRICE_RETRY_KEY,
-)
 from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
     fetch_target_order,
@@ -51,10 +46,8 @@ from app.services.order_proposals.buying_power import (
     default_buying_power_reader,
 )
 from app.services.order_proposals.dispatch import (
-    PriceRetryProgress,
     approval_window_failure_code,
     dispatch_proposal,
-    is_price_retry_non_failure,
     record_approval_dispatch_failure,
     send_proposal_for_approval,
 )
@@ -251,252 +244,8 @@ async def _alert_non_sent_dispatch(
         }
 
 
-# #1067: strong references to the in-flight delayed price re-evaluations, so
-# the event loop cannot garbage-collect a pending task mid-wait.
-_PRICE_RETRY_TASKS: set[asyncio.Task[None]] = set()
-
-# #1067: operator alert code for a retry cancelled after its gate cleared.
-AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE = (
-    "auto_approve_price_retry_cancelled_after_eligible"
-)
-# #1067: operator alert code when a proven pre-send handoff could not finish.
-AUTO_APPROVE_PRICE_RETRY_HANDOFF_INTERRUPTED = (
-    "auto_approve_price_retry_handoff_interrupted"
-)
-
-
-def _spawn_price_retry_task(coro: Any, *, name: str) -> asyncio.Task[None]:
-    """Start a #1067 retry/handoff task *eagerly* and keep a strong reference.
-
-    Eager start runs the coroutine synchronously up to its first ``await``,
-    so its cancellation handler is already active when this returns: there is
-    no window in which a cancelled task never enters its own body.
-    """
-    task: asyncio.Task[None] = asyncio.Task(
-        coro, loop=asyncio.get_running_loop(), name=name, eager_start=True
-    )
-    _PRICE_RETRY_TASKS.add(task)
-    task.add_done_callback(_PRICE_RETRY_TASKS.discard)
-    return task
-
-
-def _schedule_auto_approve_price_retry(proposal_id: uuid.UUID, token: str) -> None:
-    """#1067: arm the single delayed re-evaluation and return immediately.
-
-    Why a detached task and not an inline ``asyncio.sleep``: ``dispatch_proposal``
-    holds a DB session and the per-proposal ``pg_advisory_xact_lock`` for its
-    whole body, and ``support_reserve_net_consume_impl`` dispatches the
-    proposals it creates one after another. An inline 30s wait would pin a
-    connection and lock and stall every later proposal in that loop (and the
-    MCP caller). The task instead runs after the first pass committed its
-    rejection and retry marker, holding nothing while it sleeps; the re-run
-    re-acquires the lock like any dispatch. No TaskIQ/cron/scheduler is
-    registered: it lives only in this process's event loop.
-    """
-    _spawn_price_retry_task(
-        _run_auto_approve_price_retry(proposal_id, token),
-        name=f"order_proposals.auto_approve_price_retry:{proposal_id}",
-    )
-
-
-async def _run_auto_approve_price_retry(
-    proposal_id: uuid.UUID,
-    token: str,
-    *,
-    sleep: Any = asyncio.sleep,
-) -> None:
-    """Own the retry for the task's whole lifetime, including cancellation.
-
-    A cancellation (graceful shutdown) at any point must end in a human
-    handoff, never silence: during the wait, or during a re-evaluation that
-    never cleared the gate, no order can exist, so the ordinary card is sent;
-    once the gate cleared, the broker leg may have started, so no card is
-    sent and the operator is alerted to verify the broker first.
-    """
-    try:
-        await sleep(AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS)
-    except asyncio.CancelledError:
-        await _hand_off_cancelled_price_retry(
-            proposal_id, token, broker_leg_possible=False
-        )
-        raise
-    progress = PriceRetryProgress()
-    try:
-        await _complete_auto_approve_price_retry(
-            proposal_id, token, card_only=False, progress=progress
-        )
-    except asyncio.CancelledError:
-        await _hand_off_cancelled_price_retry(
-            proposal_id,
-            token,
-            broker_leg_possible=progress.eligible_decision_seen,
-        )
-        raise
-
-
-async def _hand_off_cancelled_price_retry(
-    proposal_id: uuid.UUID, token: str, *, broker_leg_possible: bool
-) -> None:
-    """Run the handoff as its own task and wait for it behind a shield.
-
-    A further cancellation of the (already cancelling) runner stops only this
-    wait; the handoff task keeps running to completion on its own.
-    """
-    handoff = _spawn_price_retry_task(
-        _run_price_retry_handoff(
-            proposal_id, token, broker_leg_possible=broker_leg_possible
-        ),
-        name=f"order_proposals.auto_approve_price_retry_handoff:{proposal_id}",
-    )
-    await asyncio.shield(handoff)
-
-
-async def _run_price_retry_handoff(
-    proposal_id: uuid.UUID, token: str, *, broker_leg_possible: bool
-) -> None:
-    try:
-        if broker_leg_possible:
-            await _abandon_price_retry_and_alert(proposal_id, token)
-        else:
-            # Proven pre-send. The card-only path claims the marker whether the
-            # retry rolled back (``scheduled``) or committed a rejection and was
-            # cut off while publishing (``consumed``), then sends the card.
-            await _complete_auto_approve_price_retry(proposal_id, token, card_only=True)
-    except asyncio.CancelledError:
-        # The handoff task itself was cancelled (loop shutdown): leave the
-        # proposal recoverable and tell the operator, then honour it.
-        await _price_retry_last_resort(
-            proposal_id, token, broker_leg_possible=broker_leg_possible
-        )
-        raise
-    except Exception as exc:  # noqa: BLE001 - detached task; nothing to return to
-        logger.error(
-            "order_proposal_create.auto_approve_price_retry_handoff_failed",
-            extra={
-                "proposal_id": str(proposal_id),
-                "broker_leg_possible": broker_leg_possible,
-                "exception_type": type(exc).__name__,
-            },
-        )
-        await _price_retry_last_resort(
-            proposal_id, token, broker_leg_possible=broker_leg_possible
-        )
-
-
-async def _abandon_price_retry_and_alert(proposal_id: uuid.UUID, token: str) -> None:
-    try:
-        async with AsyncSessionLocal() as session:
-            await OrderProposalsService(session).abandon_auto_approve_price_retry(
-                proposal_id,
-                token=token,
-                reason="cancelled_after_eligible",
-                now=now_kst(),
-            )
-            await session.commit()
-    finally:
-        # The alert is the handoff; it must go out even if the marker write
-        # failed.
-        await _alert_non_sent_dispatch(
-            proposal_id,
-            dispatch_state="unknown",
-            dispatch_failure_code=AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE,
-        )
-
-
-async def _price_retry_last_resort(
-    proposal_id: uuid.UUID, token: str, *, broker_leg_possible: bool
-) -> None:
-    """Best effort when the handoff itself could not finish.
-
-    Pre-send only: a pending, never-published attempt left behind by our own
-    interrupted publication would block ``order_proposal_redispatch``; it is
-    superseded by a durable failed attempt (which also clears the nonce) so
-    ordinary recovery works. Always alerts.
-    """
-    try:
-        if not broker_leg_possible:
-            async with AsyncSessionLocal() as session:
-                service = OrderProposalsService(session)
-                await service.acquire_auto_dispatch_lock(proposal_id)
-                group, _rungs = await service.get_proposal(proposal_id)
-                marker = (group.source_asof or {}).get(AUTO_APPROVE_PRICE_RETRY_KEY)
-                stuck = (
-                    isinstance(marker, dict)
-                    and marker.get("token") == token
-                    and marker.get("state") in {"consumed", "handed_off"}
-                    and group.approval_dispatch_state
-                    == ApprovalDispatchState.PENDING.value
-                    and group.approval_dispatch_published_at is None
-                )
-                await session.commit()
-            if stuck:
-                await record_approval_dispatch_failure(
-                    proposal_id,
-                    publication=ApprovalPublication.failed(
-                        payload_chars=0,
-                        failure_code=AUTO_APPROVE_PRICE_RETRY_HANDOFF_INTERRUPTED,
-                    ),
-                    now=now_kst(),
-                )
-    except Exception as exc:  # noqa: BLE001 - still alert below
-        logger.error(
-            "order_proposal_create.auto_approve_price_retry_last_resort_failed",
-            extra={
-                "proposal_id": str(proposal_id),
-                "exception_type": type(exc).__name__,
-            },
-        )
-    try:
-        await _alert_non_sent_dispatch(
-            proposal_id,
-            dispatch_state="unknown",
-            dispatch_failure_code=(
-                AUTO_APPROVE_PRICE_RETRY_CANCELLED_AFTER_ELIGIBLE
-                if broker_leg_possible
-                else AUTO_APPROVE_PRICE_RETRY_HANDOFF_INTERRUPTED
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001 - detached task; nothing to return to
-        logger.error(
-            "order_proposal_create.auto_approve_price_retry_alert_failed",
-            extra={
-                "proposal_id": str(proposal_id),
-                "exception_type": type(exc).__name__,
-            },
-        )
-
-
-async def _complete_auto_approve_price_retry(
-    proposal_id: uuid.UUID,
-    token: str,
-    *,
-    card_only: bool,
-    progress: PriceRetryProgress | None = None,
-) -> None:
-    try:
-        result = await _dispatch_after_proposal_commit(
-            proposal_id,
-            price_retry_token=token,
-            price_retry_card_only=card_only,
-            price_retry_progress=progress,
-        )
-        await _approval_dispatch_payload(proposal_id, result)
-    except Exception as exc:  # noqa: BLE001 - detached task; nothing to return to
-        logger.error(
-            "order_proposal_create.auto_approve_price_retry_failed",
-            extra={
-                "proposal_id": str(proposal_id),
-                "exception_type": type(exc).__name__,
-            },
-        )
-
-
 async def _dispatch_after_proposal_commit(
     proposal_id: uuid.UUID,
-    *,
-    price_retry_token: str | None = None,
-    price_retry_card_only: bool = False,
-    price_retry_progress: PriceRetryProgress | None = None,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Run dispatch/attempt-ledger work behind a closed post-commit boundary."""
     try:
@@ -515,15 +264,6 @@ async def _dispatch_after_proposal_commit(
                     notifier=get_trade_notifier(),
                     now=dispatch_now,
                     now_fn=now_kst,
-                    # #1067: only a first pass may arm the one re-evaluation.
-                    price_retry_scheduler=(
-                        _schedule_auto_approve_price_retry
-                        if price_retry_token is None
-                        else None
-                    ),
-                    price_retry_token=price_retry_token,
-                    price_retry_card_only=price_retry_card_only,
-                    price_retry_progress=price_retry_progress,
                 )
                 if not isinstance(
                     result, (TelegramDispatchResult, ApprovalWindowDecision)
@@ -572,37 +312,6 @@ async def _dispatch_after_proposal_commit(
             },
         )
         return _approval_dispatch_ledger_error_result()
-
-
-async def _approval_dispatch_payload(
-    proposal_id: uuid.UUID,
-    dispatch_result: TelegramDispatchResult | ApprovalWindowDecision,
-) -> dict[str, Any]:
-    """Project a dispatch result, alerting the operator when no card went out."""
-    if isinstance(dispatch_result, ApprovalWindowDecision):
-        operator_alert = await _alert_non_sent_dispatch(
-            proposal_id,
-            dispatch_state="blocked",
-            dispatch_failure_code=approval_window_failure_code(dispatch_result),
-        )
-        return {
-            "status": "blocked",
-            **dispatch_result.to_dict(),
-            "operator_alert": operator_alert,
-        }
-    dispatch_payload = dispatch_result.as_dict()
-    # #1067: a deferred card (one price re-evaluation pending) or a retry that
-    # found the proposal already handled is not a delivery failure.
-    if not dispatch_result.ok and not is_price_retry_non_failure(dispatch_result):
-        operator_alert = await _alert_non_sent_dispatch(
-            proposal_id,
-            dispatch_state=dispatch_result.state.value,
-            dispatch_failure_code=(
-                dispatch_result.failure_code or dispatch_result.state.value
-            ),
-        )
-        dispatch_payload["operator_alert"] = operator_alert
-    return dispatch_payload
 
 
 async def _complete_committed_proposal_create(
@@ -660,9 +369,29 @@ async def _complete_committed_proposal_create(
                 )
 
         dispatch_result = await _dispatch_after_proposal_commit(proposal_id)
-        result["approval_dispatch"] = await _approval_dispatch_payload(
-            proposal_id, dispatch_result
-        )
+        if isinstance(dispatch_result, ApprovalWindowDecision):
+            operator_alert = await _alert_non_sent_dispatch(
+                proposal_id,
+                dispatch_state="blocked",
+                dispatch_failure_code=approval_window_failure_code(dispatch_result),
+            )
+            result["approval_dispatch"] = {
+                "status": "blocked",
+                **dispatch_result.to_dict(),
+                "operator_alert": operator_alert,
+            }
+        else:
+            dispatch_payload = dispatch_result.as_dict()
+            if not dispatch_result.ok:
+                operator_alert = await _alert_non_sent_dispatch(
+                    proposal_id,
+                    dispatch_state=dispatch_result.state.value,
+                    dispatch_failure_code=(
+                        dispatch_result.failure_code or dispatch_result.state.value
+                    ),
+                )
+                dispatch_payload["operator_alert"] = operator_alert
+            result["approval_dispatch"] = dispatch_payload
         return result
     except Exception as exc:  # noqa: BLE001 - committed create result is immutable
         logger.error(

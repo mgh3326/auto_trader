@@ -2,8 +2,8 @@
 
 Pure-layer evidence: the quote freshness contract, the evaluator's
 "substitute the input, never the gate" property, and the audit projection.
-Dispatch/retry lifecycle evidence lives in
-``test_auto_approve_price_retry_dispatch.py``.
+Dispatch-level evidence lives in
+``test_auto_approve_price_fallback_dispatch.py``.
 """
 
 from __future__ import annotations
@@ -468,7 +468,7 @@ def test_malformed_fallback_object_is_recorded_as_unrecognized():
     assert rung["inputs"]["price_fallback_reason"] == "unrecognized"
 
 
-def test_audit_projects_price_source_and_retry_flag_only_from_closed_values():
+def test_audit_projects_price_source_only_from_closed_values():
     decision = {
         "rung_index": 0,
         "eligible": False,
@@ -490,7 +490,8 @@ def test_audit_projects_price_source_and_retry_flag_only_from_closed_values():
     [attempt] = project_auto_approve_rejections(stored)
     first, second = attempt["rungs"]
     assert first["inputs"]["price_source"] == "kis_quote_fallback"
-    assert first["inputs"]["price_retry_reevaluation"] is True
+    # The retry flag was removed with the retry (#1067 option B): never stored.
+    assert "price_retry_reevaluation" not in first["inputs"]
     assert "price_source" not in second["inputs"]
     assert "price_fallback_reason" not in second["inputs"]
     assert "price_retry_reevaluation" not in second["inputs"]

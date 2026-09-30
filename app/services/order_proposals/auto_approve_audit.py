@@ -141,7 +141,6 @@ _BOOLEAN_INPUT_KEYS = frozenset(
     {
         "eligibility_error",
         "exit_intent_present",
-        "price_retry_reevaluation",
         "thesis_present",
         "toss_auto_submission_frozen",
     }
