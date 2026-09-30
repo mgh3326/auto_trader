@@ -378,3 +378,269 @@ async def test_real_server_get_holdings_refuses_a_live_account() -> None:
     assert result.isError is True
     text = " ".join(getattr(part, "text", "") for part in result.content)
     assert "pinned to DB paper accounts" in text
+
+
+# ---------------------------------------------------------------------------
+# Round 2 (#1171 tester B1/B2): argument pins keep every listed tool off live
+# broker credentials — market pinned to crypto, briefing pinned to DB paper.
+# ---------------------------------------------------------------------------
+
+
+class _BrokerTrap:
+    """Records any construction/call of a credential-backed broker client."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.mcp_server.tooling import portfolio_holdings
+        from app.services.brokers.kis import client as kis_client
+        from app.services.brokers.upbit import client as upbit_client
+
+        self.hits: list[str] = []
+
+        def trap(label: str) -> Any:
+            def raising(*_args: Any, **_kwargs: Any) -> Any:
+                self.hits.append(label)
+                raise AssertionError(f"credential-backed broker read: {label}")
+
+            return raising
+
+        def async_trap(label: str) -> Any:
+            async def raising(*_args: Any, **_kwargs: Any) -> Any:
+                self.hits.append(label)
+                raise AssertionError(f"credential-backed broker read: {label}")
+
+            return raising
+
+        monkeypatch.setattr(kis_client.KISClient, "__init__", trap("KISClient"))
+        monkeypatch.setattr(
+            upbit_client, "_request_with_auth", async_trap("upbit_auth")
+        )
+        monkeypatch.setattr(upbit_client, "fetch_my_coins", async_trap("upbit_coins"))
+        for name in (
+            "_collect_kis_positions",
+            "_collect_upbit_positions",
+            "_collect_manual_positions",
+            "_collect_toss_api_positions",
+            "_collect_whole_portfolio_positions",
+        ):
+            monkeypatch.setattr(portfolio_holdings, name, async_trap(name))
+        from app.services.action_report.snapshot_backed.collectors import registry
+
+        monkeypatch.setattr(
+            registry,
+            "production_collector_registry",
+            trap("pending_orders_collector_registry"),
+        )
+
+
+def test_every_market_taking_tool_is_pinned_or_reviewed_db_only() -> None:
+    import inspect
+
+    tools = _register(PROFILE).tools
+    takes_market = {
+        name
+        for name, function in tools.items()
+        if "market" in inspect.signature(function).parameters
+    }
+    pinned = h3.H3_CRYPTO_PAPER_MARKET_PINNED_TOOLS
+    unpinned = h3.H3_CRYPTO_PAPER_MARKET_UNPINNED_DB_ONLY
+    assert pinned.isdisjoint(unpinned)
+    assert takes_market == pinned | unpinned
+    for name in pinned:
+        assert inspect.signature(tools[name]).parameters["market"].default == "crypto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", sorted(h3.H3_CRYPTO_PAPER_MARKET_PINNED_TOOLS))
+@pytest.mark.parametrize("market", ["kr", "us", "KR", "Crypto", " crypto", "upbit"])
+async def test_pinned_tool_refuses_a_non_crypto_market_before_its_body(
+    monkeypatch: pytest.MonkeyPatch, tool: str, market: str
+) -> None:
+    import inspect
+
+    trap = _BrokerTrap(monkeypatch)
+    function = _register(PROFILE).tools[tool]
+    kwargs: dict[str, Any] = {"market": market}
+    if "symbol" in inspect.signature(function).parameters:
+        kwargs["symbol"] = "005930"
+    if tool == "analyze_stock_batch":
+        kwargs["symbols"] = ["005930", "AAPL"]
+    if tool == "get_holdings":
+        kwargs["account"] = "paper"
+    with pytest.raises(ValueError, match="pinned to market='crypto'"):
+        await function(**kwargs)
+    assert trap.hits == []
+
+
+@pytest.mark.parametrize("tool", sorted(h3.H3_CRYPTO_PAPER_MARKET_PINNED_TOOLS))
+def test_pinned_tool_passes_crypto_when_market_is_omitted(tool: str) -> None:
+    import asyncio
+    import inspect
+
+    real = _register(McpProfile.DEFAULT).tools[tool]
+    seen: dict[str, Any] = {}
+
+    async def body(*args: Any, **kwargs: Any) -> None:
+        seen.update(inspect.signature(real).bind(*args, **kwargs).arguments)
+
+    body.__signature__ = inspect.signature(real)  # type: ignore[attr-defined]
+    wrapped = h3._pinned_tool(tool, body)
+    kwargs: dict[str, Any] = {}
+    for name, parameter in inspect.signature(real).parameters.items():
+        if parameter.default is inspect.Parameter.empty and name != "market":
+            kwargs[name] = ["KRW-BTC"] if name == "symbols" else "KRW-BTC"
+    if tool == "get_holdings":
+        kwargs["account"] = "paper:h3-crypto"
+    asyncio.run(wrapped(**kwargs))
+    assert seen["market"] == "crypto"
+    if tool == "get_operating_briefing":
+        assert seen["account_scope"] == "db_simulated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["upbit_live", "kis_live", "kis_mock", "toss"])
+async def test_briefing_refuses_a_live_account_scope(
+    monkeypatch: pytest.MonkeyPatch, scope: str
+) -> None:
+    trap = _BrokerTrap(monkeypatch)
+    function = _register(PROFILE).tools["get_operating_briefing"]
+    with pytest.raises(ValueError, match="account_scope='db_simulated'"):
+        await function(market="crypto", account_scope=scope)
+    assert trap.hits == []
+
+
+@pytest.mark.asyncio
+async def test_required_crypto_briefing_reads_no_broker_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # B1 counterexample: get_operating_briefing(market="crypto") — the exact
+    # bootstrap call — reached authenticated Upbit GET /v1/accounts. Every
+    # broker read is trapped; DB sections fail open against a dead session.
+    from app.mcp_server.tooling import operating_briefing, paper_portfolio_handler
+
+    trap = _BrokerTrap(monkeypatch)
+    paper_calls: list[Any] = []
+
+    async def fake_paper_positions(**kwargs: Any) -> tuple[list, list]:
+        paper_calls.append(kwargs)
+        return [], []
+
+    class _DeadSession:
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+        def __getattr__(self, name: str) -> Any:
+            raise RuntimeError("db unavailable in this test")
+
+    monkeypatch.setattr(
+        paper_portfolio_handler, "collect_paper_positions", fake_paper_positions
+    )
+    monkeypatch.setattr(operating_briefing, "AsyncSessionLocal", _DeadSession)
+
+    result = await _register(PROFILE).tools["get_operating_briefing"](market="crypto")
+
+    assert trap.hits == []
+    assert len(paper_calls) == 1
+    assert result["success"] is True
+    assert result["account_scope"] == "db_simulated"
+    assert result["pending_orders"]["unavailable_reason"] == (
+        "db_simulated_scope_uses_paper_list_pending_orders"
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_briefing_scope_is_unchanged() -> None:
+    from app.mcp_server.tooling.operating_briefing import (
+        _default_account_scope,
+        _holdings_kwargs,
+    )
+
+    assert _default_account_scope("crypto", None) == "upbit_live"
+    assert _holdings_kwargs("crypto", "upbit_live", False)["account"] == "upbit"
+    assert "account" not in _holdings_kwargs("kr", "kis_live", False)
+    assert _holdings_kwargs("crypto", "db_simulated", False)["account"] == "paper"
+
+
+@pytest.mark.asyncio
+async def test_kr_quote_counterexample_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # B2 counterexample: get_quote(symbol="005930", market="kr") built a
+    # KISClient. It is refused before the body on this profile.
+    trap = _BrokerTrap(monkeypatch)
+    with pytest.raises(ValueError, match="pinned to market='crypto'"):
+        await _register(PROFILE).tools["get_quote"](symbol="005930", market="kr")
+    assert trap.hits == []
+
+
+@pytest.mark.asyncio
+async def test_paper_holdings_valuation_is_crypto_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # B2 counterexample: get_holdings(account="paper", market="kr") valued a
+    # KR paper position through KIS. market=kr is refused; an omitted market
+    # becomes crypto, so the paper collector is asked for crypto only.
+    from app.mcp_server.tooling import paper_portfolio_handler
+
+    trap = _BrokerTrap(monkeypatch)
+    calls: list[Any] = []
+
+    async def fake_paper_positions(**kwargs: Any) -> tuple[list, list]:
+        calls.append(kwargs)
+        return [], []
+
+    monkeypatch.setattr(
+        paper_portfolio_handler, "collect_paper_positions", fake_paper_positions
+    )
+    tool = _register(PROFILE).tools["get_holdings"]
+    with pytest.raises(ValueError, match="pinned to market='crypto'"):
+        await tool(account="paper", market="kr", include_current_price=True)
+    await tool(account="paper", include_current_price=True, minimum_value=0)
+    assert trap.hits == []
+    assert len(calls) == 1
+    assert "crypto" in repr(calls[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "kwargs"),
+    [
+        ("get_quote", {"symbol": "005930"}),
+        ("get_quote", {"symbol": "AAPL"}),
+        ("get_ohlcv", {"symbol": "005930"}),
+        ("get_indicators", {"symbol": "AAPL", "indicators": ["rsi"]}),
+        ("get_support_resistance", {"symbol": "005930"}),
+        ("analyze_stock", {"symbol": "005930"}),
+        ("analyze_stock_batch", {"symbols": ["005930", "AAPL"], "quick": False}),
+        ("screen_stocks", {}),
+        ("get_momentum_candidates", {}),
+    ],
+)
+async def test_crypto_pinned_bodies_never_build_a_kis_client(
+    monkeypatch: pytest.MonkeyPatch, tool: str, kwargs: dict[str, Any]
+) -> None:
+    # Equity symbols with the market omitted run the crypto path (public
+    # Upbit / DB; the suite's socket guard blocks the network). Whatever the
+    # body returns or raises, no credential-backed broker client is reached.
+    trap = _BrokerTrap(monkeypatch)
+    try:
+        await _register(PROFILE).tools[tool](**kwargs)
+    except Exception:  # noqa: BLE001 - public-data failure is fine; hits decide
+        pass
+    assert trap.hits == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["get_quote", "get_ohlcv"])
+async def test_trap_is_live_on_the_unpinned_default_surface(
+    monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    # Non-vacuity for the probe above: the same call on DEFAULT reaches KIS.
+    trap = _BrokerTrap(monkeypatch)
+    try:
+        await _register(McpProfile.DEFAULT).tools[tool](symbol="005930")
+    except Exception:  # noqa: BLE001 - the tool may or may not surface the trap
+        pass
+    assert "KISClient" in trap.hits

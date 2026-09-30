@@ -31,6 +31,8 @@ auto_trader-operator H3-CRYPTO 파일럿 러너(`registered_tools("crypto")`)의
 (`app/mcp_server/tooling/h3_crypto_paper_registration.py`, "Always" 블록 전 early return, 등록 집합 ≠ 목록이면 부팅 실패).
 주문 표면은 ROB-703 paper 시뮬레이터 4종뿐이고 live 주문·live 계좌 조회·proposal/watch/설정/정책 변경 도구는 없다.
 `get_holdings` 는 이 프로필에서 DB paper 계좌(`paper`/`paper:<이름>`, `account_mode=db_simulated`)로 고정된다.
+브로커 자격증명에 닿을 수 있는 목록 도구 11종은 `market="crypto"` 로 고정되고(생략 시 crypto, 그 밖은 본문 실행 전 거부),
+`get_operating_briefing` 은 `account_scope="db_simulated"`(DB paper 보유, 브로커 미체결 수집기 미생성)로 고정된다.
 네트워크 전송은 토큰 없이 부팅하지 않는다. 유닛(`at-mcp-h3-crypto-paper`, 8776)은 `docs/runbooks/h3-crypto-paper-mcp.md`
 에 선언만 되어 있고 deploy 스크립트·HAProxy·스케줄러에는 연결되지 않는다(활성화는 운영자 별도 승인).
 계약 테스트: `tests/mcp_server/test_h3_crypto_paper_profile.py`.

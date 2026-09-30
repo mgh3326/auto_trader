@@ -106,6 +106,10 @@ def _holdings_kwargs(
         kwargs["account"] = "upbit"
     if account_scope == "alpaca_paper":
         kwargs["account"] = "paper"
+    if account_scope == "db_simulated":
+        # #1171 — DB paper accounts only (the h3-crypto-paper profile pins
+        # this scope): the paper short-circuit never reaches a broker client.
+        kwargs["account"] = "paper"
     return kwargs
 
 

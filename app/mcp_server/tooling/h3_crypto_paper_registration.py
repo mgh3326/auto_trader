@@ -20,14 +20,17 @@ Closed world, same shape as the other allowlist profiles:
   profile. The only mutations on it are the four ROB-703 paper simulator
   tools (``paper.*`` tables, no broker call) plus the two record writes the
   runner's record phase makes.
-* ``get_holdings`` is the one listed read whose arguments can select a live
-  broker account (KIS/Upbit/Toss holdings with the server's credentials). On
-  this profile it is pinned to DB paper accounts: ``account`` must be a paper
-  token (``paper`` / ``paper:<name>``), ``account_mode`` is forced to
-  ``db_simulated``, and ``account_type`` / ``fresh_sellable`` /
-  ``include_ledger_lots`` (KIS live evidence) are refused. The paper
-  short-circuit in ``_collect_portfolio_positions`` then never reaches a
-  broker client.
+* Argument pins (round 2 of #1171 verification): a listed tool can still
+  read through broker credentials for the wrong arguments. Every tool in
+  ``H3_CRYPTO_PAPER_MARKET_PINNED_TOOLS`` is pinned to ``market="crypto"``
+  (omitted -> crypto, anything else refused before the body runs), so KIS
+  quote/candle/indicator/analysis/screen paths and paper equity valuation are
+  unreachable. ``get_operating_briefing`` is pinned to
+  ``account_scope="db_simulated"`` (DB paper holdings, no live Upbit account
+  read, no broker pending-order collector). ``get_holdings`` is pinned to DB
+  paper accounts: ``account`` must be a paper token (``paper`` /
+  ``paper:<name>``), ``account_mode`` is forced to ``db_simulated``, and
+  ``account_type`` / ``fresh_sellable`` / ``include_ledger_lots`` are refused.
 
 What this module does not do: it chooses what is registered. The paper
 simulator semantics, the runner's per-call guard (account_id=2, exact runner
@@ -114,48 +117,129 @@ H3_CRYPTO_PAPER_TOOL_NAMES: frozenset[str] = frozenset(
 
 H3_CRYPTO_PAPER_PINNED_HOLDINGS_TOOL = "get_holdings"
 H3_CRYPTO_PAPER_ACCOUNT_MODE = "db_simulated"
+H3_CRYPTO_PAPER_MARKET = "crypto"
+H3_CRYPTO_PAPER_BRIEFING_SCOPE = "db_simulated"
+
+# Every listed tool whose body can reach a broker client for a non-crypto
+# market (KIS quotes/candles/indicators, equity screen enrichment, the equity
+# analysis pipeline, paper equity valuation) or a live account (the briefing's
+# holdings summary and pending-order collector). On this profile each one is
+# pinned to market="crypto": an omitted market is filled in, any other value
+# is refused before the tool body runs. The crypto paths read public Upbit
+# market data and the DB only.
+H3_CRYPTO_PAPER_MARKET_PINNED_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_operating_briefing",
+        "get_quote",
+        "get_ohlcv",
+        "get_indicators",
+        "get_support_resistance",
+        "get_momentum_candidates",
+        "screen_stocks",
+        "screen_stocks_snapshot",
+        "analyze_stock",
+        "analyze_stock_batch",
+        "get_holdings",
+    }
+)
+# Listed tools that take a market argument but only read or write the DB or
+# the policy file, never a broker client; left unpinned on purpose.
+H3_CRYPTO_PAPER_MARKET_UNPINNED_DB_ONLY: frozenset[str] = frozenset(
+    {
+        "route_request",
+        "get_trading_policy",
+        "session_context_get_recent",
+        "analysis_artifact_save",
+    }
+)
 
 
 class H3CryptoPaperProfileError(RuntimeError):
     """The registered h3-crypto-paper surface is not exactly the allowlist."""
 
 
-def _paper_pinned_get_holdings[F: Callable[..., Any]](function: F) -> F:
-    """Refuse every get_holdings argument that could reach a live account."""
+def _refuse(tool: str, detail: str) -> ValueError:
+    return ValueError(f"h3-crypto-paper {tool} {detail}")
+
+
+def _check_holdings(arguments: dict[str, Any]) -> None:
+    account = arguments.get("account")
+    if not isinstance(account, str) or not is_paper_account_token(account):
+        raise _refuse(
+            "get_holdings",
+            "is pinned to DB paper accounts: account must be 'paper' or 'paper:<name>'",
+        )
+    mode = arguments.get("account_mode")
+    if mode is not None and mode != H3_CRYPTO_PAPER_ACCOUNT_MODE:
+        raise _refuse(
+            "get_holdings",
+            f"is pinned to account_mode='{H3_CRYPTO_PAPER_ACCOUNT_MODE}'",
+        )
+    for refused in ("account_type", "fresh_sellable", "include_ledger_lots"):
+        if arguments.get(refused):
+            raise _refuse("get_holdings", f"does not accept {refused}")
+    arguments["account_mode"] = H3_CRYPTO_PAPER_ACCOUNT_MODE
+
+
+def _check_briefing(arguments: dict[str, Any]) -> None:
+    # The default crypto scope (upbit_live) reads the live Upbit account and
+    # its open orders; db_simulated reads DB paper holdings and skips the
+    # broker pending-order collector.
+    scope = arguments.get("account_scope")
+    if scope is not None and scope != H3_CRYPTO_PAPER_BRIEFING_SCOPE:
+        raise _refuse(
+            "get_operating_briefing",
+            f"is pinned to account_scope='{H3_CRYPTO_PAPER_BRIEFING_SCOPE}'",
+        )
+    arguments["account_scope"] = H3_CRYPTO_PAPER_BRIEFING_SCOPE
+
+
+_ARGUMENT_CHECKS: dict[str, Callable[[dict[str, Any]], None]] = {
+    H3_CRYPTO_PAPER_PINNED_HOLDINGS_TOOL: _check_holdings,
+    "get_operating_briefing": _check_briefing,
+}
+_PINNED_DEFAULTS: dict[str, dict[str, str]] = {
+    H3_CRYPTO_PAPER_PINNED_HOLDINGS_TOOL: {
+        "account_mode": H3_CRYPTO_PAPER_ACCOUNT_MODE,
+    },
+    "get_operating_briefing": {"account_scope": H3_CRYPTO_PAPER_BRIEFING_SCOPE},
+}
+
+
+def _pinned_tool[F: Callable[..., Any]](name: str, function: F) -> F:
+    """Wrap one listed tool so it cannot select a live account or market."""
+    market_pinned = name in H3_CRYPTO_PAPER_MARKET_PINNED_TOOLS
+    check = _ARGUMENT_CHECKS.get(name)
+    if not market_pinned and check is None:
+        return function
     signature = inspect.signature(function)
+    if market_pinned and "market" not in signature.parameters:
+        raise H3CryptoPaperProfileError(f"{name} has no market parameter to pin")
+    defaults = dict(_PINNED_DEFAULTS.get(name, {}))
+    if market_pinned:
+        defaults["market"] = H3_CRYPTO_PAPER_MARKET
 
     @wraps(function)
     async def pinned(*call_args: Any, **call_kwargs: Any) -> Any:
         bound = signature.bind_partial(*call_args, **call_kwargs)
         arguments = bound.arguments
-        account = arguments.get("account")
-        if not isinstance(account, str) or not is_paper_account_token(account):
-            raise ValueError(
-                "h3-crypto-paper get_holdings is pinned to DB paper accounts: "
-                "account must be 'paper' or 'paper:<name>'"
-            )
-        mode = arguments.get("account_mode")
-        if mode is not None and mode != H3_CRYPTO_PAPER_ACCOUNT_MODE:
-            raise ValueError(
-                "h3-crypto-paper get_holdings is pinned to "
-                f"account_mode='{H3_CRYPTO_PAPER_ACCOUNT_MODE}'"
-            )
-        for refused in ("account_type", "fresh_sellable", "include_ledger_lots"):
-            if arguments.get(refused):
-                raise ValueError(
-                    f"h3-crypto-paper get_holdings does not accept {refused}"
-                )
-        arguments["account_mode"] = H3_CRYPTO_PAPER_ACCOUNT_MODE
+        if market_pinned:
+            market = arguments.get("market")
+            if market is not None and market != H3_CRYPTO_PAPER_MARKET:
+                raise _refuse(name, f"is pinned to market='{H3_CRYPTO_PAPER_MARKET}'")
+            arguments["market"] = H3_CRYPTO_PAPER_MARKET
+        if check is not None:
+            check(arguments)
         return await function(*bound.args, **bound.kwargs)
 
     pinned.__signature__ = signature.replace(
         parameters=[
             (
-                parameter.replace(default=H3_CRYPTO_PAPER_ACCOUNT_MODE)
-                if name == "account_mode"
+                parameter.replace(default=defaults[parameter_name])
+                if parameter_name in defaults
                 else parameter
             )
-            for name, parameter in signature.parameters.items()
+            for parameter_name, parameter in signature.parameters.items()
         ]
     )
     return cast(F, pinned)
@@ -183,9 +267,7 @@ class _H3CryptoPaperMCP:
             return drop
 
         def pin(function: _F) -> _F:
-            if name == H3_CRYPTO_PAPER_PINNED_HOLDINGS_TOOL:
-                return _paper_pinned_get_holdings(function)
-            return function
+            return _pinned_tool(name, function)
 
         if direct is not None:
             self.registered.add(name)

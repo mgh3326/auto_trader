@@ -32,18 +32,30 @@ same list the operator contract registers as the prompt's `allowed_tools`):
   `session_bootstrap_pack`.
 - The only mutations are the ROB-703 paper simulator tools (writes only the
   `paper.*` tables) and the two record writes.
-- `get_holdings` is pinned to DB paper accounts: `account` must be `paper` or
-  `paper:<name>`, `account_mode` is forced to `db_simulated`, and
-  `account_type`, `fresh_sellable` and `include_ledger_lots` are refused.
+- Argument pins keep every listed tool off live broker credentials:
+  - `get_quote`, `get_ohlcv`, `get_indicators`, `get_support_resistance`,
+    `get_momentum_candidates`, `screen_stocks`, `screen_stocks_snapshot`,
+    `analyze_stock`, `analyze_stock_batch`, `get_holdings` and
+    `get_operating_briefing` are pinned to `market="crypto"` (omitted becomes
+    crypto; any other value is refused before the tool body runs). The crypto
+    paths read public Upbit market data and the DB; the KIS quote, candle,
+    indicator, screen-enrichment and equity-analysis paths are unreachable.
+  - `get_operating_briefing` is pinned to `account_scope="db_simulated"`:
+    holdings come from DB paper accounts and the broker pending-order
+    collector is not built (the default crypto scope `upbit_live` would read
+    the live Upbit account and its open orders).
+  - `get_holdings` is pinned to DB paper accounts: `account` must be `paper`
+    or `paper:<name>`, `account_mode` is forced to `db_simulated`, and
+    `account_type`, `fresh_sellable` and `include_ledger_lots` are refused.
+  - `route_request`, `get_trading_policy`, `session_context_get_recent` and
+    `analysis_artifact_save` take a market but touch only the DB or the
+    policy file; they are reviewed and left unpinned.
 - The runner's guard hook still enforces the account (`account_id=2`) and
   exact runner intents per call; the profile does not replace it.
 
-What the profile does not change: `get_operating_briefing`, `get_quote`,
-`get_ohlcv`, the screens and `analyze_stock*` are the same read-only
-implementations as on every other profile. In a process that holds broker
-credentials the briefing's holdings/pending-orders summary and non-crypto
-quotes read through them (read-only). The credential boundary for those reads
-is the unit's environment, decided at enablement below.
+The unit env should still carry no broker credentials it does not need
+(defense in depth, decided at enablement below), but the code pins above no
+longer depend on it.
 
 A network boot without `MCP_AUTH_TOKEN` is refused (same rule as live-*).
 
