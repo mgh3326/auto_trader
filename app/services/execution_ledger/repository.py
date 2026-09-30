@@ -155,10 +155,16 @@ class ExecutionLedgerRepository:
         stmt = stmt.on_conflict_do_update(
             constraint="uq_execution_ledger_fill",
             set_=update_payload,
-        ).returning(ExecutionLedger.id)
+        ).returning(ExecutionLedger.id, ExecutionLedger.quarantined_at)
         result = await self.db.execute(stmt)
-        row_id = int(result.scalar_one())
-        return status, row_id
+        row_id, quarantined_at = result.one()
+        if status == "inserted" and quarantined_at is not None:
+            # #1175 tombstone: the DB trigger re-quarantined a re-inserted
+            # phantom (its key was quarantined before and the row deleted).
+            # It is not a new fill, so report it as a duplicate and keep the
+            # downstream notification suppressed.
+            return "unchanged", int(row_id)
+        return status, int(row_id)
 
     async def rows_by_ids(
         self, ids: list[int], *, for_update: bool

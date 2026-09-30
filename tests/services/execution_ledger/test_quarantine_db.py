@@ -92,6 +92,22 @@ async def _snapshot(db, ids) -> list[tuple]:
     return [tuple(r) for r in result.all()]
 
 
+async def _snapshot_rows(db, ids) -> list[Any]:
+    await db.rollback()
+    result = await db.execute(
+        select(
+            ExecutionLedger.broker,
+            ExecutionLedger.account_mode,
+            ExecutionLedger.venue,
+            ExecutionLedger.broker_order_id,
+            ExecutionLedger.fill_seq,
+        )
+        .where(ExecutionLedger.id.in_(list(ids)))
+        .order_by(ExecutionLedger.id)
+    )
+    return list(result.all())
+
+
 async def _audit(db, ids) -> list[ExecutionLedgerQuarantineEvent]:
     await db.rollback()
     result = await db.execute(
@@ -233,11 +249,20 @@ async def test_a4_audit_record_carries_reason_actor_and_evidence(
     result = await q.commit_quarantine(
         db_session, [ledger_id], reason=REASON, actor=ACTOR
     )
+    [row] = await _snapshot_rows(db_session, [ledger_id])
     [audit] = await _audit(db_session, [ledger_id])
     assert audit.action == "quarantine"
     assert audit.reason == REASON
     assert audit.actor == ACTOR
     assert audit.batch_id == result.batch_id
+    # the audit row doubles as the idempotency-key tombstone
+    assert (
+        audit.broker,
+        audit.account_mode,
+        audit.venue,
+        audit.broker_order_id,
+        audit.fill_seq,
+    ) == (row.broker, row.account_mode, row.venue, row.broker_order_id, row.fill_seq)
     assert audit.evidence["raw_cntg_yn"] == "1"
     assert audit.evidence["raw_tr"] == "H0STCNI0"
     assert audit.evidence["source"] == "websocket"
@@ -383,3 +408,90 @@ async def test_concurrent_commit_of_the_same_batch_quarantines_once(
     first, second = await asyncio.gather(attempt(), attempt())
     assert sorted([first.status, second.status]) == ["committed", "noop"]
     assert len(await _audit(db_session, targets)) == 2
+
+
+# ------------------------------------------------ tombstone (tester r1 B1)
+
+
+async def _quarantined_then_deleted(db_session, rows) -> tuple[str, str, int]:
+    tag = _tag()
+    symbol, order_no = f"Q{tag}", f"Q{tag}0001"
+    ledger_id = await rows.add(symbol=symbol, order_no=order_no)
+    await q.commit_quarantine(db_session, [ledger_id], reason=REASON, actor=ACTOR)
+    # an ordinary maintenance DELETE of the quarantined row is not blocked
+    await db_session.execute(
+        delete(ExecutionLedger).where(ExecutionLedger.id == ledger_id)
+    )
+    await db_session.commit()
+    return symbol, order_no, ledger_id
+
+
+async def test_delete_then_replay_is_born_quarantined_and_not_a_fill(
+    db_session, rows
+) -> None:
+    symbol, order_no, old_id = await _quarantined_then_deleted(db_session, rows)
+    repo = ExecutionLedgerRepository(db_session)
+    replay = ExecutionLedgerUpsert(**row_kwargs(symbol=symbol, order_no=order_no))
+    status, new_id = await repo.upsert_fill(replay)
+    await db_session.commit()
+
+    # reported as a duplicate, so downstream notification stays suppressed
+    assert status == "unchanged"
+    assert new_id != old_id
+    [state] = await _snapshot(db_session, [new_id])
+    assert state[1] is not None
+    assert (state[2], state[3]) == (REASON, ACTOR)
+    assert not await repo.has_fill_for_order(
+        broker="kis", account_mode="live", venue="krx", broker_order_id=order_no
+    )
+    # the original audit record stands; the re-insert is re-quarantined by key
+    assert [a.ledger_id for a in await _audit(db_session, [old_id, new_id])] == [old_id]
+    preview = await q.preview_quarantine(db_session, [new_id])
+    assert preview.status == "noop"
+
+
+async def test_trigger_mutant_would_restore_the_phantom(db_session, rows) -> None:
+    symbol, order_no, _ = await _quarantined_then_deleted(db_session, rows)
+    repo = ExecutionLedgerRepository(db_session)
+    await db_session.execute(
+        sa.text(
+            "ALTER TABLE review.execution_ledger "
+            "DISABLE TRIGGER trg_execution_ledger_requarantine_insert"
+        )
+    )
+    try:
+        replay = ExecutionLedgerUpsert(**row_kwargs(symbol=symbol, order_no=order_no))
+        status, _row_id = await repo.upsert_fill(replay)
+        assert status == "inserted"
+        assert await repo.has_fill_for_order(
+            broker="kis", account_mode="live", venue="krx", broker_order_id=order_no
+        )
+    finally:
+        await db_session.rollback()  # restores the trigger and drops the row
+
+
+async def test_tombstone_never_hides_an_authoritative_or_different_key_row(
+    db_session, rows
+) -> None:
+    symbol, order_no, _ = await _quarantined_then_deleted(db_session, rows)
+    repo = ExecutionLedgerRepository(db_session)
+    original_seq = row_kwargs(symbol=symbol, order_no=order_no)["fill_seq"]
+
+    reconciler = ExecutionLedgerUpsert(
+        **row_kwargs(symbol=symbol, order_no=order_no, source="reconciler")
+    )
+    assert reconciler.fill_seq == original_seq
+    status, reconciler_id = await repo.upsert_fill(reconciler)
+    await db_session.commit()
+    assert status == "inserted"
+    [state] = await _snapshot(db_session, [reconciler_id])
+    assert state[1:4] == (None, None, None)
+
+    other_seq = ExecutionLedgerUpsert(
+        **row_kwargs(symbol=symbol, order_no=order_no, fill_seq=original_seq ^ 1)
+    )
+    status, other_id = await repo.upsert_fill(other_seq)
+    await db_session.commit()
+    assert status == "inserted"
+    [state] = await _snapshot(db_session, [other_id])
+    assert state[1:4] == (None, None, None)

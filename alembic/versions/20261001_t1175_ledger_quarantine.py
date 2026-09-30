@@ -3,8 +3,15 @@
 Adds three nullable quarantine columns to ``review.execution_ledger`` (no
 backfill, every existing row stays in effect), two CHECKs that keep a
 quarantine all-or-nothing and confined to KIS websocket rows, a trigger that
-makes a quarantine monotonic (it can never be cleared or rewritten), and the
-append-only ``review.execution_ledger_quarantine_events`` audit table.
+makes a quarantine monotonic (it can never be cleared or rewritten), the
+append-only ``review.execution_ledger_quarantine_events`` audit table whose
+rows double as idempotency-key tombstones, and a BEFORE INSERT trigger that
+re-quarantines a KIS websocket row inserted with a tombstoned key.
+
+Locking: ADD COLUMN (nullable, no default) is catalog-only, but the two
+ADD CONSTRAINT CHECKs scan execution_ledger under the ACCESS EXCLUSIVE lock
+the transaction already holds. Apply outside market hours like other ledger
+DDL.
 
 Revision ID: 20261001_t1175_ledger_quar
 Revises: 20260930_rob1120_quotes
@@ -47,6 +54,34 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'review.execution_ledger quarantine is permanent; row % rejected',
             OLD.id USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+"""
+
+REQUARANTINE_FUNCTION_DDL = """
+CREATE OR REPLACE FUNCTION review.requarantine_execution_ledger_insert()
+RETURNS trigger AS $$
+DECLARE
+    tombstone RECORD;
+BEGIN
+    IF NEW.quarantined_at IS NULL AND NEW.source = 'websocket'
+        AND NEW.broker = 'kis' THEN
+        SELECT e.reason, e.actor INTO tombstone
+        FROM review.execution_ledger_quarantine_events AS e
+        WHERE e.broker = NEW.broker
+          AND e.account_mode = NEW.account_mode
+          AND e.venue = NEW.venue
+          AND e.broker_order_id = NEW.broker_order_id
+          AND e.fill_seq = NEW.fill_seq
+        ORDER BY e.id
+        LIMIT 1;
+        IF FOUND THEN
+            NEW.quarantined_at := now();
+            NEW.quarantine_reason := tombstone.reason;
+            NEW.quarantined_by := tombstone.actor;
+        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -104,6 +139,11 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
         sa.Column("batch_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("ledger_id", sa.BigInteger(), nullable=False),
+        sa.Column("broker", sa.Text(), nullable=False),
+        sa.Column("account_mode", sa.Text(), nullable=False),
+        sa.Column("venue", sa.Text(), nullable=False),
+        sa.Column("broker_order_id", sa.Text(), nullable=False),
+        sa.Column("fill_seq", sa.Integer(), nullable=False),
         sa.Column("action", sa.Text(), nullable=False),
         sa.Column("reason", sa.Text(), nullable=False),
         sa.Column("actor", sa.Text(), nullable=False),
@@ -140,6 +180,12 @@ def upgrade() -> None:
         ["batch_id"],
         schema="review",
     )
+    op.create_index(
+        "ix_execution_ledger_quarantine_events_key",
+        "execution_ledger_quarantine_events",
+        ["broker", "account_mode", "venue", "broker_order_id", "fill_seq"],
+        schema="review",
+    )
     op.execute(AUDIT_REJECT_FUNCTION_DDL)
     op.execute(
         "CREATE TRIGGER trg_execution_ledger_quarantine_events_append_only "
@@ -152,6 +198,16 @@ def upgrade() -> None:
         "BEFORE TRUNCATE ON review.execution_ledger_quarantine_events "
         "FOR EACH STATEMENT EXECUTE FUNCTION "
         "review.reject_execution_ledger_quarantine_event_mutation()"
+    )
+
+    # Tombstone: a KIS websocket row re-inserted with a quarantined key (for
+    # example after a maintenance DELETE and a replayed phantom frame) is
+    # born quarantined, so the phantom fill can never come back.
+    op.execute(REQUARANTINE_FUNCTION_DDL)
+    op.execute(
+        "CREATE TRIGGER trg_execution_ledger_requarantine_insert "
+        "BEFORE INSERT ON review.execution_ledger "
+        "FOR EACH ROW EXECUTE FUNCTION review.requarantine_execution_ledger_insert()"
     )
 
     # Stage-4 role may not exist in dev/CI databases — conditional GRANT.
@@ -168,6 +224,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
+        "DROP TRIGGER IF EXISTS trg_execution_ledger_requarantine_insert "
+        "ON review.execution_ledger"
+    )
+    op.execute("DROP FUNCTION IF EXISTS review.requarantine_execution_ledger_insert()")
+    op.execute(
         "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_events_truncate "
         "ON review.execution_ledger_quarantine_events"
     )
@@ -178,6 +239,11 @@ def downgrade() -> None:
     op.execute(
         "DROP FUNCTION IF EXISTS "
         "review.reject_execution_ledger_quarantine_event_mutation()"
+    )
+    op.drop_index(
+        "ix_execution_ledger_quarantine_events_key",
+        table_name="execution_ledger_quarantine_events",
+        schema="review",
     )
     op.drop_index(
         "ix_execution_ledger_quarantine_events_batch",

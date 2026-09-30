@@ -199,6 +199,7 @@ def evaluate_row(ledger_id: int, row: Any | None) -> RowVerdict:
         "source": row.source,
         "broker": row.broker,
         "account_mode": row.account_mode,
+        "venue": row.venue,
         "instrument_type": str(
             getattr(row.instrument_type, "value", row.instrument_type)
         ),
@@ -339,6 +340,12 @@ async def commit_quarantine(
                 {
                     "batch_id": batch_id,
                     "ledger_id": verdict.ledger_id,
+                    # idempotency-key tombstone (re-insert is re-quarantined)
+                    "broker": verdict.detail["broker"],
+                    "account_mode": verdict.detail["account_mode"],
+                    "venue": verdict.detail["venue"],
+                    "broker_order_id": verdict.detail["broker_order_id"],
+                    "fill_seq": verdict.detail["fill_seq"],
                     "action": "quarantine",
                     "reason": reason_text,
                     "actor": actor_text,

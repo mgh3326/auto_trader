@@ -124,7 +124,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # execution_ledger predates the columns is widened), plus the append-only
 # review.execution_ledger_quarantine_events audit table (create_all) and its
 # rejection triggers; the production migration is 20261001_t1175_ledger_quar.
-SCHEMA_BOOTSTRAP_VERSION = 53
+# v54 (#1175 r2): audit rows carry the idempotency key (create_all) and a BEFORE
+# INSERT trigger re-quarantines a KIS websocket row re-inserted with a
+# tombstoned key.
+SCHEMA_BOOTSTRAP_VERSION = 54
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2051,6 +2054,38 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.execution_ledger_quarantine_events "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_execution_ledger_quarantine_event_mutation()",
+    """
+    CREATE OR REPLACE FUNCTION review.requarantine_execution_ledger_insert()
+    RETURNS trigger AS $$
+    DECLARE
+        tombstone RECORD;
+    BEGIN
+        IF NEW.quarantined_at IS NULL AND NEW.source = 'websocket'
+            AND NEW.broker = 'kis' THEN
+            SELECT e.reason, e.actor INTO tombstone
+            FROM review.execution_ledger_quarantine_events AS e
+            WHERE e.broker = NEW.broker
+              AND e.account_mode = NEW.account_mode
+              AND e.venue = NEW.venue
+              AND e.broker_order_id = NEW.broker_order_id
+              AND e.fill_seq = NEW.fill_seq
+            ORDER BY e.id
+            LIMIT 1;
+            IF FOUND THEN
+                NEW.quarantined_at := now();
+                NEW.quarantine_reason := tombstone.reason;
+                NEW.quarantined_by := tombstone.actor;
+            END IF;
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_requarantine_insert "
+    "ON review.execution_ledger",
+    "CREATE TRIGGER trg_execution_ledger_requarantine_insert "
+    "BEFORE INSERT ON review.execution_ledger "
+    "FOR EACH ROW EXECUTE FUNCTION review.requarantine_execution_ledger_insert()",
 )
 
 

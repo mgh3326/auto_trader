@@ -60,6 +60,7 @@ def test_bootstrap_mirrors_the_migration_triggers_and_checks() -> None:
     ddl = [_norm(s) for s in bootstrap._DDL_STATEMENTS]
     assert _norm(migration.GUARD_FUNCTION_DDL) in ddl
     assert _norm(migration.AUDIT_REJECT_FUNCTION_DDL) in ddl
+    assert _norm(migration.REQUARANTINE_FUNCTION_DDL) in ddl
     joined = "\n".join(ddl)
     assert f"CHECK ({_norm(model.QUARANTINE_FIELDS_SQL)})" in joined
     assert f"CHECK ({_norm(model.QUARANTINE_SCOPE_SQL)})" in joined
@@ -67,6 +68,7 @@ def test_bootstrap_mirrors_the_migration_triggers_and_checks() -> None:
         "trg_execution_ledger_quarantine_guard",
         "trg_execution_ledger_quarantine_events_append_only",
         "trg_execution_ledger_quarantine_events_truncate",
+        "trg_execution_ledger_requarantine_insert",
     ):
         assert f"CREATE TRIGGER {trigger} " in joined
         assert trigger in MIGRATION.read_text("utf-8")
@@ -116,6 +118,9 @@ def test_downgrade_reverses_everything_upgrade_creates() -> None:
     text = MIGRATION.read_text("utf-8")
     down = text[text.index("def downgrade") :]
     for name in (
+        "trg_execution_ledger_requarantine_insert",
+        "requarantine_execution_ledger_insert",
+        "ix_execution_ledger_quarantine_events_key",
         "trg_execution_ledger_quarantine_events_truncate",
         "trg_execution_ledger_quarantine_events_append_only",
         "reject_execution_ledger_quarantine_event_mutation",

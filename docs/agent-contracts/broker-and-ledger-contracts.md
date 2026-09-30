@@ -206,6 +206,9 @@ websocket 탭이 KIS H0STCNI0 **접수** 통지(`CNTG_YN=1`)를 체결로 기록
 - **스키마**: `execution_ledger.quarantined_at/quarantine_reason/quarantined_by`(nullable) +
   CHECK 2종(all-or-nothing · `source='websocket' AND broker='kis'` 만) + 영구화 트리거(해제·재작성
   불가) + append-only `review.execution_ledger_quarantine_events`(ledger_id UNIQUE, FK 없음).
+  감사 행은 멱등키 tombstone 이기도 하다 — BEFORE INSERT 트리거가 tombstone 키로 재삽입되는
+  KIS websocket 행을 격리 상태로 태어나게 하고 `upsert_fill` 은 `unchanged` 로 보고한다
+  (삭제 후 재생으로 phantom 복귀 불가, reconciler 행·다른 키는 불변).
   마이그레이션 `20261001_t1175_ledger_quar`, downgrade 는 격리를 잃는다
 - 🔴 **리더 계약**: fill/lot/evidence/리포트로 원장을 읽는 모든 함수는
   `execution_ledger_in_effect()`(`quarantined_at IS NULL`)를 AND 한다. 업서트 식별 읽기

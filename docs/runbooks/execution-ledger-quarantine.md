@@ -118,8 +118,22 @@ expected correction. Test:
 - A replayed phantom frame with the same idempotency key is `unchanged` (the
   upsert identity read does not filter) and stays quarantined; a changed
   replay updates the row but never clears the quarantine.
+- Tombstone: each audit row keeps the ledger row's idempotency key (broker,
+  account_mode, venue, broker_order_id, fill_seq).
+  `trg_execution_ledger_requarantine_insert` (BEFORE INSERT) quarantines any
+  `source=websocket`, `broker=kis` row inserted with a tombstoned key, copying
+  the original reason and actor. A maintenance DELETE of a quarantined row is
+  not blocked, but a later replay of the same phantom frame is born
+  quarantined, and `upsert_fill` reports it as `unchanged` so no fill
+  notification goes out. A reconciler or manual_import row, or a row whose key
+  differs, is never touched by the tombstone.
 - Downgrade drops the columns and the audit table, i.e. it un-quarantines
   everything. Do not downgrade after a commit without re-planning.
+- Locking: ADD COLUMN (nullable, no default) is catalog-only, but the two
+  ADD CONSTRAINT CHECKs scan `review.execution_ledger` while the migration
+  transaction holds ACCESS EXCLUSIVE on it, blocking ledger writes (fill
+  ingest, reconcile) for the scan. Apply outside market hours like other
+  ledger DDL.
 
 Live migration proof (2026-10-01, throwaway TimescaleDB 2.22.1-pg17 container,
 fresh `alembic upgrade` from base): upgrade to head with existing ledger rows
