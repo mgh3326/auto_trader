@@ -31,6 +31,13 @@ class TossApiGroup(StrEnum):
     MARKET_INFO = "MARKET_INFO"
     MARKET_DATA = "MARKET_DATA"
     MARKET_DATA_CHART = "MARKET_DATA_CHART"
+    # Read-only market-data groups added for #1064. Names mirror the "Rate
+    # Limits Group" declared per path in the official openapi.json
+    # (openapi.tossinvest.com/openapi-docs/latest/openapi.json, v1.2.19).
+    STOCK_TRADING_TREND = "STOCK_TRADING_TREND"
+    MARKET_INDICATOR = "MARKET_INDICATOR"
+    RANKING = "RANKING"
+    STOCK_ALL = "STOCK_ALL"
     ORDER = "ORDER"
     ORDER_HISTORY = "ORDER_HISTORY"
     ORDER_INFO = "ORDER_INFO"
@@ -53,6 +60,11 @@ def toss_rate_limit_key(client_id: str, group: TossApiGroup) -> str:
     return f"toss:ratelimit:{_client_fingerprint(client_id)}:{group.value}"
 
 
+# Values mirror the official doc's per-group TPS table
+# (openapi.tossinvest.com/openapi-docs/overview.md, spec v1.2.19). The doc has
+# since raised several existing groups (MARKET_DATA is now 15/s officially);
+# pre-existing entries intentionally keep their older, stricter values — only
+# the #1064 groups use the current documented caps.
 _BASE_LIMITS: dict[TossApiGroup, int] = {
     TossApiGroup.AUTH: 5,
     TossApiGroup.ACCOUNT: 1,
@@ -61,6 +73,10 @@ _BASE_LIMITS: dict[TossApiGroup, int] = {
     TossApiGroup.MARKET_INFO: 3,
     TossApiGroup.MARKET_DATA: 10,
     TossApiGroup.MARKET_DATA_CHART: 5,
+    TossApiGroup.STOCK_TRADING_TREND: 10,
+    TossApiGroup.MARKET_INDICATOR: 10,
+    TossApiGroup.RANKING: 5,
+    TossApiGroup.STOCK_ALL: 1,
     TossApiGroup.ORDER: 6,
     TossApiGroup.ORDER_HISTORY: 5,
     TossApiGroup.ORDER_INFO: 6,

@@ -34,6 +34,10 @@ class TossConsumerClient:
     """
 
     async def fetch_buy_balance(self, product_code: str) -> dict[str, Any]:
+        # REMOVAL CANDIDATE (#1064): unofficial wts-info-api path absent from the
+        # official openapi.json. Investor-flow data is available officially via
+        # TossReadClient.stock_investor_trading; removal/migration is a
+        # follow-up — no behaviour change in this PR.
         async with build_toss_consumer_client() as client:
             response = await client.get(
                 "/api/v1/stock-infos/trade/trend/trading-trend",
@@ -63,6 +67,9 @@ class TossConsumerClient:
         }
 
     async def fetch_ai_signal(self, product_code: str) -> dict[str, Any]:
+        # REMOVAL CANDIDATE (#1064): unofficial wts-info-api path absent from
+        # the official openapi.json. No direct official equivalent; removal is
+        # a follow-up — no behaviour change in this PR.
         async with build_toss_consumer_client() as client:
             response = await client.get(
                 "/api/v1/dashboard/wts/overview/ai-signals/detail",
