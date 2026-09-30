@@ -14,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 
 from app.core.config import Settings
 from app.core.db import AsyncSessionLocal
@@ -28,6 +29,28 @@ from app.services.protected_quantity_service import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _drop_auto_follow_ledger_rows(request):
+    """Ledger rows are shared state: other suites (the ROB-755 triage reader
+    orders every websocket row by id) must not see this file's fixtures."""
+
+    yield
+    if "db_session" not in request.fixturenames:
+        return
+    from sqlalchemy import delete
+
+    from app.models.execution_ledger import ExecutionLedger
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("auto-follow-%")
+            )
+        )
+        await db.commit()
+
 
 ON = SimpleNamespace(protected_position_auto_follow_enabled=True)
 OFF = SimpleNamespace(protected_position_auto_follow_enabled=False)
