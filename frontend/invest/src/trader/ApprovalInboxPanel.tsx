@@ -66,6 +66,19 @@ export function ApprovalInboxPanel() {
       const data = await fetchTraderApprovals();
       setInbox(data);
       setInboxReceivedAt(Date.now());
+      // A row the server lists again as actionable (e.g. a republished
+      // reconfirm card with a fresh nonce) gets its buttons back. Rows with a
+      // request in flight or a pending loss-cut confirmation keep their state.
+      const relisted = new Set(data.items.map((i) => i.proposal_id));
+      setRowUi((prev) => {
+        const next: Record<string, RowUi> = {};
+        for (const [id, ui] of Object.entries(prev)) {
+          const keep =
+            !relisted.has(id) || ui.pending || pendingRef.current.has(id) || ui.confirmToken !== null;
+          if (keep) next[id] = ui;
+        }
+        return next;
+      });
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {

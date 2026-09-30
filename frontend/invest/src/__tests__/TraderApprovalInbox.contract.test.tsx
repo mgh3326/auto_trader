@@ -263,6 +263,32 @@ test("a 409 processing answer is shown and never auto-retried", async () => {
   expect(mutations()).toHaveLength(1);
 });
 
+test("a row the server re-lists after needs_reconfirm gets its buttons back on refresh", async () => {
+  serveInbox(inbox([item()]));
+  route(
+    (u, m) => m === "POST" && u === `/invest/api/approvals/${ID}/approve`,
+    () => jsonResponse({ handled: true, reason: "needs_reconfirm", proposal_id: ID, results: ["needs_reconfirm"] }),
+  );
+  route(
+    (u, m) => m === "GET" && u === `/trading/api/trader/approvals/${ID}`,
+    () => jsonResponse(detail({ state: "needs_reconfirm" })),
+  );
+  const user = userEvent.setup();
+  render(<TraderPage />);
+  const r = await row();
+  await user.click(within(r).getByTestId(`approve-${ID}`));
+  await within(r).findByTestId(`approval-result-${ID}`);
+  expect(within(r).queryByTestId(`approve-${ID}`)).toBeNull();
+
+  // The republished reconfirm card is listed again as actionable.
+  serveInbox(inbox([item({ card_kind: "reconfirm", caveats: ["reconfirm"] })]));
+  const panel = screen.getByTestId("panel-approval-inbox");
+  await user.click(within(panel).getByRole("button", { name: "새로고침" }));
+  const again = await within(await row()).findByTestId(`approve-${ID}`);
+  expect(again).toBeInTheDocument();
+  expect(mutations()).toHaveLength(1);
+});
+
 // ------------------------------------------------------- loss cut 2-click ----
 
 test("loss_cut: first click only asks; the token-bound second click confirms", async () => {
