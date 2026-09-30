@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.symbol import to_kis_symbol
 
 from . import constants
+from .base import mask_account_identifier
 from .order_throttle import (
     MAX_THROTTLE_RESUBMITS,
     is_provider_throttle_reject,
@@ -140,7 +141,8 @@ class OverseasOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -448,7 +450,8 @@ class OverseasOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -588,7 +591,8 @@ class OverseasOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -745,7 +749,8 @@ class OverseasOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -938,7 +943,8 @@ class OverseasOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]

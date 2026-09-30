@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
-from .base import _log_kis_api_failure
+from .base import _log_kis_api_failure, mask_account_identifier
 from .live_shadow_witness import (
     current as current_live_shadow_witness,
 )
@@ -237,7 +237,8 @@ class DomesticOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -374,7 +375,8 @@ class DomesticOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -651,7 +653,8 @@ class DomesticOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -848,7 +851,8 @@ class DomesticOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
@@ -1033,7 +1037,8 @@ class DomesticOrderClient:
         account_no = self._settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
             raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+                "계좌번호 형식이 올바르지 않습니다: "
+                f"{mask_account_identifier(self._settings.kis_account_no)}"
             )
 
         cano = account_no[:8]
