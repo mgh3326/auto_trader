@@ -37,7 +37,7 @@ async def test_fetch_uses_list_date_ex_and_returns_json_safe_records(
 
     rows = await dart_helpers.fetch_dart_filings_for_date(date(2026, 7, 24))
 
-    client.list_date_ex.assert_called_once_with("2026-07-24")
+    client.list_date_ex.assert_called_once_with("2026-07-24", cache=True)
     assert rows == [
         {
             "rcept_dt": "2026-07-24T07:31:00",
