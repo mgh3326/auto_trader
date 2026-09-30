@@ -259,7 +259,10 @@ def _safe_missing_inputs(value: Any) -> list[str]:
 def _safe_price_context_message(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    normalized = " ".join(value.split())
+    # Collapse whitespace, then drop remaining non-printable code points:
+    # Postgres jsonb rejects \u0000 outright, and an unfiltered broker error
+    # string must not be able to fail the rejection write itself.
+    normalized = "".join(ch for ch in " ".join(value.split()) if ch.isprintable())
     if not normalized:
         return None
     if len(normalized) > _MAX_PRICE_CONTEXT_MESSAGE_LEN:

@@ -1131,7 +1131,9 @@ async def _apply_eligibility_gate(
         # #1053: the preview ran, so keep its diagnostic on the outcome for the
         # dispatch fallback row -- the gate never returned a decision to carry
         # it. The audit projector bounds it before storage.
-        price_context = preview.get("price_context_message")
+        price_context = (
+            preview.get("price_context_message") if isinstance(preview, dict) else None
+        )
         if isinstance(price_context, str) and price_context.strip():
             details["price_context_message"] = price_context
     if eligible is True:

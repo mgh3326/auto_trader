@@ -2294,15 +2294,63 @@ def test_oversize_price_context_message_is_truncated_to_fixed_bound():
 
 def test_price_context_message_is_whitespace_normalized_and_bounded():
     messy = "\n  Failed to retrieve   current price \t for 035720 \n"
-    decision = _decide_price_missing(
-        {"success": True, "price_context_message": messy}
-    )
+    decision = _decide_price_missing({"success": True, "price_context_message": messy})
 
     [attempt] = project_auto_approve_rejections(
         _stored_source_asof([_flatten_decision(decision)])
     )
     stored = attempt["rungs"][0]["inputs"]["price_context_message"]
     assert stored == "Failed to retrieve current price for 035720"
+
+
+def test_price_context_message_strips_control_characters():
+    """Postgres jsonb rejects NUL; control chars must not reach the write."""
+    messy = "Failed to retrieve current price\x00 for 035720\x1b[B now"
+    decision = _decide_price_missing({"success": True, "price_context_message": messy})
+
+    [attempt] = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(decision)])
+    )
+    stored = attempt["rungs"][0]["inputs"]["price_context_message"]
+    assert "\x00" not in stored
+    assert "\x1b" not in stored
+    assert stored == "Failed to retrieve current price for 035720[B now"
+
+
+@pytest.mark.parametrize(
+    ("preview", "rung_overrides", "expected_reason"),
+    [
+        (
+            {"success": False, "error": "sell guard"},
+            {},
+            "preview_guard_failed",
+        ),
+        (
+            {"success": True, "current_price": "100000"},
+            {"quantity": Decimal("3")},
+            "per_order_cap_exceeded",
+        ),
+    ],
+)
+def test_other_reject_reasons_also_store_the_preview_message(
+    preview, rung_overrides, expected_reason
+):
+    """The message is attached in reject(), so every reason carries it."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_group(),
+        rung=_rung(**rung_overrides),
+        preview={**preview, "price_context_message": _PRICE_CONTEXT_MESSAGE},
+        limits=_LIMITS,
+        daily_notional=Decimal("0"),
+    )
+
+    assert (decision.eligible, decision.reason) == (False, expected_reason)
+    [attempt] = project_auto_approve_rejections(
+        _stored_source_asof([_flatten_decision(decision)])
+    )
+    rung = attempt["rungs"][0]
+    assert rung["reason_code"] == expected_reason
+    assert rung["inputs"]["price_context_message"] == _PRICE_CONTEXT_MESSAGE
 
 
 def test_non_string_or_blank_price_context_message_is_dropped():

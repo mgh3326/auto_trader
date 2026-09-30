@@ -667,7 +667,9 @@ def evaluate_auto_approve_eligibility(
     # current_price). It is evidence, never a gate input: reject() copies the
     # string into decision details so the bounded audit projector can store it
     # next to the rung record. Non-string/malformed values are dropped here.
-    price_context_message = preview.get("price_context_message")
+    price_context_message = (
+        preview.get("price_context_message") if isinstance(preview, dict) else None
+    )
     if not isinstance(price_context_message, str) or not price_context_message.strip():
         price_context_message = None
 
