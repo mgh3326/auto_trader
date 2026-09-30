@@ -1146,6 +1146,9 @@ class _KISMockSettingsProxy:
     def __init__(self, real_settings: Any) -> None:
         self._real = real_settings
 
+    #: Account binding marker read by the shared account-number parser.
+    account_scope = "kis_mock"
+
     @property
     def kis_app_key(self) -> str | None:
         return self._real.kis_mock_app_key
