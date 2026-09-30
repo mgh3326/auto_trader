@@ -349,3 +349,81 @@ uv run python -m pytest tests/test_market_events_cli.py -v
 4. **UI surface**: `/invest/calendar` already consumes
    `GET /trading/api/market-events/range`. Once `WISEFN_EARNINGS_ENABLED=true`
    in production, KR earnings will appear automatically — no UI change needed.
+
+## KR DART disclosures: zero-filings guard + backfill (#1085)
+
+### Zero-filings guard
+
+`app/services/market_events/ingestion.py::_require_legitimate_dart_zero` runs
+after row normalization, before `mark_partition_succeeded`:
+
+| XKRX session status | upserted events | partition outcome |
+| --- | --- | --- |
+| `open` (trading session, including shortened sessions like the delayed-open first trading day of a year) | 0 | `failed` — `last_error` = "DART returned zero filings on confirmed XKRX trading session …" |
+| `open` | >0 | `succeeded` |
+| `closed` (weekend / KRX holiday / substitute holiday) | 0 | `succeeded`, `event_count=0` — a legitimate empty day |
+| `unknown` (calendar cannot classify) | 0 | `failed` — `last_error` = "DART returned zero filings for …, but XKRX calendar classification is unknown; cannot distinguish a legitimate empty day from a broken DART scraper" |
+
+"Zero" is measured on **upserted** events, not raw rows: a fetch that returns
+only unparseable rows is still a zero-filings day. A `failed` partition stays
+visible and retryable — the DART per-day path re-ingests every requested date
+unconditionally, so the next run covering that date retries it automatically.
+
+### Backfill CLI (desk-owned, after merge)
+
+`scripts/backfill_dart_disclosures.py` is read-only against DART's public
+`list_date_ex` scrape and writes only through
+`ingest_kr_disclosures_for_date` (idempotent on `rcept_no` →
+`source_event_id`). It re-ingests every date in the range unconditionally —
+that is the point: it repairs partitions that were wrongly marked
+`succeeded`/`event_count=0` on trading sessions before the guard existed.
+
+Desk steps for the 2026-01-01..2026-07-21 repair (requires `OPENDART_API_KEY`
+in the runtime env, i.e. run on the ingest host — never locally):
+
+```bash
+# 1) dry-run (default): per-day session/rows/parseable/partition/prediction
+uv run python -m scripts.backfill_dart_disclosures \
+  --from-date 2026-01-01 --to-date 2026-07-21
+
+# 2) write
+uv run python -m scripts.backfill_dart_disclosures \
+  --from-date 2026-01-01 --to-date 2026-07-21 --commit
+
+# 3) verify: trading days that still return zero stay failed on purpose
+SELECT partition_date, status, event_count, last_error
+  FROM market_event_ingestion_partitions
+ WHERE source='dart' AND category='disclosure' AND market='kr'
+   AND partition_date BETWEEN '2026-01-01' AND '2026-07-21'
+   AND status='failed';
+```
+
+Exit codes: `0` = no failed or predicted-failed days, `2` = at least one,
+`1` = CLI crash. A failed day means "DART genuinely had nothing for a trading
+session" or "the scrape is still broken" — either way it must not be flipped
+to `succeeded` by hand.
+
+### Scheduling additional DART runs (18:30 KST + next-day 07:00 KST)
+
+The schedule definition for the daily market-events ingestion does **not**
+live in this repository. The `daily market events` Prefect deployment is
+defined in `robin-prefect-automations` (`market_events_ingestion.py`; see the
+excluded-B table in `docs/runbooks/ncp-job-timers.md` — it was deliberately
+kept out of the `ops/ncp/systemd` migration because its rolling-window and
+notification behavior is not a static argv). This PR therefore adds **no**
+scheduler wiring of any kind — merging it registers nothing.
+
+Desk steps (all gated on operator decision **hk 1084** — do not run without
+that approval on record):
+
+1. In `robin-prefect-automations`, on the `daily market events` deployment
+   (`market_events_ingestion.py`), add two schedules: `30 18 * * *` and
+   `0 7 * * *`, `timezone="Asia/Seoul"` — the deployment already computes the
+   KST rolling window per run, so the 18:30 run picks up post-close filings
+   and the next-day 07:00 run re-covers the previous day plus overnight
+   filings. Re-ingestion is idempotent, so overlapping windows are safe.
+2. After redeploying, confirm the deployment's next scheduled run times show
+   both new KST slots, then confirm `market_event_ingestion_partitions` rows
+   for the covered dates reach `succeeded`/`failed` as expected — a `failed`
+   row with the zero-filings `last_error` above is the intended failure mode,
+   not a scheduling bug.
