@@ -49,6 +49,15 @@ class TossRateLimitError(TossApiResponseError):
     """Raised for Toss 429 responses."""
 
 
+class TossPaginationCapExceeded(ValueError):
+    """A paginated read hit its page cap with a cursor still pending.
+
+    A ``ValueError`` like the #1064 collectors' cap error, so existing
+    ``except ValueError`` callers keep working; typed so a caller can tell a
+    truncated walk apart from its own argument errors.
+    """
+
+
 class TossResponseContractError(TossApiErrorBase):
     """A Toss 2xx payload diverged from the documented result schema.
 
