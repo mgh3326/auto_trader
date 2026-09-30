@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -55,6 +55,11 @@ from app.services.order_proposals.auto_approve import (
 from app.services.order_proposals.auto_approve_audit import (
     AutoApproveNotEvaluatedReason,
     build_auto_approve_rejection_card_block,
+)
+from app.services.order_proposals.auto_approve_price_fallback import (
+    PriceFallback,
+    fetch_kis_quote_fallback,
+    preview_current_price_absent,
 )
 from app.services.order_proposals.auto_digest import (
     AutoDigestCollector,
@@ -113,6 +118,7 @@ logger = logging.getLogger(__name__)
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
 Clock = Callable[[], datetime]
+PriceFallbackFn = Callable[..., Awaitable[PriceFallback]]
 
 _SOURCE_ASOF_ABSENT = object()
 _AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
@@ -244,6 +250,17 @@ def _unrecorded_revalidation_fallbacks(
             }
         )
     return fallbacks
+
+
+def _needs_price_fallback(*, decision: Any, group: Any, preview: Any) -> bool:
+    """#1067: only a Toss rung rejected *solely* for an absent preview price."""
+    return (
+        getattr(group, "account_mode", None) == "toss_live"
+        and decision.eligible is False
+        and decision.reason == "price_or_quantity_missing"
+        and decision.details.get("missing_inputs") == ["current_price"]
+        and preview_current_price_absent(preview)
+    )
 
 
 def _not_evaluated_reason_from_outcomes(
@@ -944,8 +961,17 @@ async def dispatch_proposal(
     toss_veto_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
+    price_fallback_fn: PriceFallbackFn | None = fetch_kis_quote_fallback,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
-    """Auto-submit an eligible resting proposal, otherwise send for approval."""
+    """Auto-submit an eligible resting proposal, otherwise send for approval.
+
+    #1067: when a ``toss_live`` preview comes back without ``current_price``
+    the gate reads one fresh KIS quote (``price_fallback_fn``) and runs every
+    classifier gate on it. If that read fails or is stale, the rung is
+    rejected as before and goes to the ordinary approval card immediately,
+    with the closed ``price_fallback_reason`` next to the preview's
+    ``price_context_message``.
+    """
     if not settings.ORDER_PROPOSALS_AUTO_APPROVE:
         return await send_proposal_for_approval(
             proposal_id,
@@ -1142,17 +1168,41 @@ async def dispatch_proposal(
                     daily_notional, \
                     parking_exposure, \
                     cash_funding_cumulative_notional
-                decision = evaluate_auto_approve_eligibility(
+
+                def evaluate(price_fallback: PriceFallback | None = None) -> Any:
+                    return evaluate_auto_approve_eligibility(
+                        group=kwargs["group"],
+                        rung=kwargs["rung"],
+                        preview=kwargs["preview"],
+                        limits=limits,
+                        daily_notional=daily_notional,
+                        parking_exposure=parking_exposure,
+                        cash_funding_shortfall=cash_funding_shortfall,
+                        cash_funding_cumulative_notional=cash_funding_cumulative_notional,
+                        now=kwargs["now"],
+                        price_fallback=price_fallback,
+                    )
+
+                decision = evaluate()
+                if price_fallback_fn is not None and _needs_price_fallback(
+                    decision=decision,
                     group=kwargs["group"],
-                    rung=kwargs["rung"],
                     preview=kwargs["preview"],
-                    limits=limits,
-                    daily_notional=daily_notional,
-                    parking_exposure=parking_exposure,
-                    cash_funding_shortfall=cash_funding_shortfall,
-                    cash_funding_cumulative_notional=cash_funding_cumulative_notional,
-                    now=kwargs["now"],
-                )
+                ):
+                    # #1067: the first classification is exactly the pre-#1067
+                    # one. Only when its sole defect is an absent Toss preview
+                    # price is one fresh KIS quote read and the whole
+                    # classifier re-run on it; nothing is loosened.
+                    try:
+                        fallback = await price_fallback_fn(
+                            symbol=getattr(kwargs["group"], "symbol", None),
+                            market=getattr(kwargs["group"], "market", None),
+                        )
+                    except Exception:  # noqa: BLE001 - a failed read is a reason
+                        fallback = None
+                    if not isinstance(fallback, PriceFallback):
+                        fallback = PriceFallback.failed("quote_unavailable")
+                    decision = evaluate(fallback)
                 decisions.append(
                     {
                         "rung_index": kwargs["rung"].rung_index,
