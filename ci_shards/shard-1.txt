@@ -195,6 +195,8 @@ tests/services/order_proposals/callback_inbox/test_retry_contract_surfaces.py
 tests/services/order_proposals/callback_inbox/test_runtime_surface.py
 tests/services/order_proposals/callback_inbox/test_seam_equivalence.py
 tests/services/order_proposals/test_auto_approve_parking_allowlist.py
+tests/services/order_proposals/test_auto_approve_price_fallback.py
+tests/services/order_proposals/test_auto_approve_price_fallback_dispatch.py
 tests/services/order_proposals/test_auto_digest.py
 tests/services/order_proposals/test_broker_gateway.py
 tests/services/order_proposals/test_cash_funding_service.py
