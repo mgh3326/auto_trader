@@ -9,6 +9,7 @@ row has committed and the existing fresh revalidation path passes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -36,6 +37,9 @@ from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_not_evaluated,
     project_auto_approve_rejections,
 )
+from app.services.order_proposals.auto_approve_price_fallback import (
+    AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS,
+)
 from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
     fetch_target_order,
@@ -48,6 +52,7 @@ from app.services.order_proposals.buying_power import (
 from app.services.order_proposals.dispatch import (
     approval_window_failure_code,
     dispatch_proposal,
+    is_price_retry_non_failure,
     record_approval_dispatch_failure,
     send_proposal_for_approval,
 )
@@ -244,8 +249,73 @@ async def _alert_non_sent_dispatch(
         }
 
 
+# #1067: strong references to the in-flight delayed price re-evaluations, so
+# the event loop cannot garbage-collect a pending task mid-wait.
+_PRICE_RETRY_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _schedule_auto_approve_price_retry(proposal_id: uuid.UUID, token: str) -> None:
+    """#1067: arm the single delayed re-evaluation and return immediately.
+
+    Why a detached task and not an inline ``asyncio.sleep``: ``dispatch_proposal``
+    holds a DB session and the per-proposal ``pg_advisory_xact_lock`` for its
+    whole body, and ``support_reserve_net_consume_impl`` dispatches the
+    proposals it creates one after another. An inline 30s wait would pin a
+    connection and lock and stall every later proposal in that loop (and the
+    MCP caller). The task instead runs after the first pass committed its
+    rejection and retry marker, holding nothing while it sleeps; the re-run
+    re-acquires the lock like any dispatch. No TaskIQ/cron/scheduler is
+    registered: it lives only in this process's event loop.
+    """
+    task = asyncio.get_running_loop().create_task(
+        _run_auto_approve_price_retry(proposal_id, token),
+        name=f"order_proposals.auto_approve_price_retry:{proposal_id}",
+    )
+    _PRICE_RETRY_TASKS.add(task)
+    task.add_done_callback(_PRICE_RETRY_TASKS.discard)
+
+
+async def _run_auto_approve_price_retry(
+    proposal_id: uuid.UUID,
+    token: str,
+    *,
+    sleep: Any = asyncio.sleep,
+) -> None:
+    try:
+        await sleep(AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS)
+    except asyncio.CancelledError:
+        # Process shutdown during the wait: send the ordinary card now rather
+        # than leave the proposal without one, then honour the cancellation.
+        await _complete_auto_approve_price_retry(proposal_id, token, card_only=True)
+        raise
+    await _complete_auto_approve_price_retry(proposal_id, token, card_only=False)
+
+
+async def _complete_auto_approve_price_retry(
+    proposal_id: uuid.UUID, token: str, *, card_only: bool
+) -> None:
+    try:
+        result = await _dispatch_after_proposal_commit(
+            proposal_id,
+            price_retry_token=token,
+            price_retry_card_only=card_only,
+        )
+        await _approval_dispatch_payload(proposal_id, result)
+    except Exception as exc:  # noqa: BLE001 - detached task; nothing to return to
+        logger.error(
+            "order_proposal_create.auto_approve_price_retry_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "exception_type": type(exc).__name__,
+            },
+        )
+
+
 async def _dispatch_after_proposal_commit(
     proposal_id: uuid.UUID,
+    *,
+    price_retry_token: str | None = None,
+    price_retry_card_only: bool = False,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Run dispatch/attempt-ledger work behind a closed post-commit boundary."""
     try:
@@ -264,6 +334,14 @@ async def _dispatch_after_proposal_commit(
                     notifier=get_trade_notifier(),
                     now=dispatch_now,
                     now_fn=now_kst,
+                    # #1067: only a first pass may arm the one re-evaluation.
+                    price_retry_scheduler=(
+                        _schedule_auto_approve_price_retry
+                        if price_retry_token is None
+                        else None
+                    ),
+                    price_retry_token=price_retry_token,
+                    price_retry_card_only=price_retry_card_only,
                 )
                 if not isinstance(
                     result, (TelegramDispatchResult, ApprovalWindowDecision)
@@ -312,6 +390,37 @@ async def _dispatch_after_proposal_commit(
             },
         )
         return _approval_dispatch_ledger_error_result()
+
+
+async def _approval_dispatch_payload(
+    proposal_id: uuid.UUID,
+    dispatch_result: TelegramDispatchResult | ApprovalWindowDecision,
+) -> dict[str, Any]:
+    """Project a dispatch result, alerting the operator when no card went out."""
+    if isinstance(dispatch_result, ApprovalWindowDecision):
+        operator_alert = await _alert_non_sent_dispatch(
+            proposal_id,
+            dispatch_state="blocked",
+            dispatch_failure_code=approval_window_failure_code(dispatch_result),
+        )
+        return {
+            "status": "blocked",
+            **dispatch_result.to_dict(),
+            "operator_alert": operator_alert,
+        }
+    dispatch_payload = dispatch_result.as_dict()
+    # #1067: a deferred card (one price re-evaluation pending) or a retry that
+    # found the proposal already handled is not a delivery failure.
+    if not dispatch_result.ok and not is_price_retry_non_failure(dispatch_result):
+        operator_alert = await _alert_non_sent_dispatch(
+            proposal_id,
+            dispatch_state=dispatch_result.state.value,
+            dispatch_failure_code=(
+                dispatch_result.failure_code or dispatch_result.state.value
+            ),
+        )
+        dispatch_payload["operator_alert"] = operator_alert
+    return dispatch_payload
 
 
 async def _complete_committed_proposal_create(
@@ -369,29 +478,9 @@ async def _complete_committed_proposal_create(
                 )
 
         dispatch_result = await _dispatch_after_proposal_commit(proposal_id)
-        if isinstance(dispatch_result, ApprovalWindowDecision):
-            operator_alert = await _alert_non_sent_dispatch(
-                proposal_id,
-                dispatch_state="blocked",
-                dispatch_failure_code=approval_window_failure_code(dispatch_result),
-            )
-            result["approval_dispatch"] = {
-                "status": "blocked",
-                **dispatch_result.to_dict(),
-                "operator_alert": operator_alert,
-            }
-        else:
-            dispatch_payload = dispatch_result.as_dict()
-            if not dispatch_result.ok:
-                operator_alert = await _alert_non_sent_dispatch(
-                    proposal_id,
-                    dispatch_state=dispatch_result.state.value,
-                    dispatch_failure_code=(
-                        dispatch_result.failure_code or dispatch_result.state.value
-                    ),
-                )
-                dispatch_payload["operator_alert"] = operator_alert
-            result["approval_dispatch"] = dispatch_payload
+        result["approval_dispatch"] = await _approval_dispatch_payload(
+            proposal_id, dispatch_result
+        )
         return result
     except Exception as exc:  # noqa: BLE001 - committed create result is immutable
         logger.error(

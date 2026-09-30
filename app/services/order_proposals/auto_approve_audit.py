@@ -15,6 +15,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from app.services.order_proposals.auto_approve_price_fallback import (
+    PRICE_FALLBACK_FAILURE_REASONS,
+    PRICE_SOURCES,
+)
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_REJECT_REASONS,
 )
@@ -121,17 +125,23 @@ _ENUM_INPUT_VALUES = {
     # §S177 -- the cash-funding boundary's own closed verdict vocabulary.
     "cash_funding_reason": CASH_FUNDING_REJECT_REASONS,
     "cash_funding_cumulative_reason": frozenset({"unmeasured"}),
+    # #1067 -- which price the gates ran on, and why the KIS quote fallback
+    # could not supply one when the Toss preview came back without a price.
+    "price_source": PRICE_SOURCES,
+    "price_fallback_reason": PRICE_FALLBACK_FAILURE_REASONS | {"unrecognized"},
 }
 # Sub-reasons rendered next to the reason code on the manual approval card.
 _CARD_DETAIL_REASON_KEYS = (
     "parking_exposure_reason",
     "cash_funding_reason",
     "cash_funding_cumulative_reason",
+    "price_fallback_reason",
 )
 _BOOLEAN_INPUT_KEYS = frozenset(
     {
         "eligibility_error",
         "exit_intent_present",
+        "price_retry_reevaluation",
         "thesis_present",
         "toss_auto_submission_frozen",
     }

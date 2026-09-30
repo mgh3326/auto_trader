@@ -966,3 +966,64 @@ KR parking sells require the XKRX **regular** session at dispatch and at the
 pre-send boundary. Pre-open, NXT, after-hours, holidays, and the close of a
 shortened session are outside it. No scheduler, migration, automatic trigger,
 or new direct-order permission is added. No live smoke is part of task 817.
+
+## 11. Toss preview without `current_price` — KIS quote fallback and one retry (#1067)
+
+Case: 09-30 09:13 Toss 035720 buy 3 @ 32,750 (98,250 KRW, inside every cap,
+mode `expanded`) became a card as `price_or_quantity_missing` /
+`missing_inputs=[current_price]` because the Toss preview's `current_price`
+was momentarily empty (#1053 stores the preview's `price_context_message`).
+
+**Scope.** Only a `toss_live` rung whose preview omitted `current_price` or
+sent it null/blank. A present value — including a malformed or non-positive
+one — is used or rejected exactly as before. Every other account mode is
+byte-identical and never reads the fallback.
+
+**Fallback input, not a relaxed gate.** The dispatch gate first classifies
+exactly as before. Only if the *sole* defect is the absent preview price does
+it read one quote through the `get_quote` path
+(`app/services/order_proposals/auto_approve_price_fallback.py`, 5 s timeout)
+and re-run the whole classifier on it. The quote is used only when it is for
+the same symbol and `instrument_type`, `source == "kis"`,
+`is_stale_price is False` (strict; absent is not fresh), `data_state ==
+"fresh"`, and the price is finite and positive. Freshness rule as implemented
+by `get_quote`: during the KRX regular session the daily candle must be dated
+today (KST) *and* the session must be trading now; during an NXT session the
+price is the NXT orderbook overlay and must be at most 5 minutes old.
+Premarket, after close, holidays and prior-day candles are rejected. US is
+`market_unsupported` — its `get_quote` carries no `is_stale_price` and can
+fall back to Yahoo. The decision records `price_source`
+(`toss_preview` | `kis_quote_fallback`) and, on the fallback, `current_price`.
+
+**One re-evaluation.** If the fallback also fails (closed
+`price_fallback_reason`), a single-rung Toss proposal whose only rejection is
+that missing price records the rejection, commits the marker
+`source_asof.auto_approve_price_retry = {state: scheduled, token, …}` and
+returns `state=pending`, `failure_code=auto_approve_price_retry_scheduled`
+without a card and without a Discord non-sent alert. After 30 s the
+MCP post-commit boundary re-runs `dispatch_proposal` with that token: a fresh
+preview, a fresh fallback, never a second schedule. Still missing → the
+ordinary card, whose latest rejection keeps `price_context_message`,
+`price_fallback_reason` and `price_retry_reevaluation=true`.
+
+**Where the wait runs.** In a detached task in the same event loop, never
+inline: `dispatch_proposal` holds a DB session and the per-proposal
+`pg_advisory_xact_lock`, and `support_reserve_net_consume_impl` dispatches the
+proposals it creates one after another, so an inline wait would pin both and
+stall every later proposal. Nothing is held while sleeping. No TaskIQ/cron
+schedule is registered.
+
+**No double dispatch.** The retry proceeds only by consuming the exact
+`scheduled` marker with its random token under the dispatch lock, in the same
+transaction as the evaluation, and only while no card was dispatched or acted
+on. A second run, a wrong/seeded token, or a manual redispatch during the wait
+returns `failure_code=auto_approve_price_retry_superseded` and does nothing.
+The broker path is the unchanged `revalidate_and_submit`.
+
+**Honest limits.** A graceful shutdown during the wait cancels the task, which
+then sends the ordinary card (after consuming the marker) before propagating
+the cancellation. A hard kill (SIGKILL/OOM) during those 30 s leaves the
+proposal `proposed` with a `scheduled` marker and **no card**; recover it with
+`order_proposal_redispatch` (its dispatch state is still empty, so it is
+eligible). The fallback applies to the auto path only; the manual Telegram
+click, loss-cut confirmation and redispatch previews are unchanged.

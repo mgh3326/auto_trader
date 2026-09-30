@@ -40,6 +40,9 @@ from app.services.order_proposals.auto_approve_audit import (
     append_auto_approve_rejection_attempt,
     build_auto_approve_cap_observations,
 )
+from app.services.order_proposals.auto_approve_price_fallback import (
+    AUTO_APPROVE_PRICE_RETRY_KEY,
+)
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.buying_power import build_create_advisory
 from app.services.order_proposals.cash_funding_exemption import (
@@ -3318,6 +3321,75 @@ class OrderProposalsService:
             return group
         source_asof[AUTO_APPROVE_NOT_EVALUATED_KEY] = reason.value
         return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def schedule_auto_approve_price_retry(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        token: str,
+        now: datetime,
+        due_at: datetime,
+    ) -> OrderProposal:
+        """#1067: durably record the single scheduled price re-evaluation.
+
+        The random ``token`` is the only authority the delayed retry carries;
+        writing it here overwrites any value a proposer may have supplied under
+        the same key, so a seeded marker can never be consumed.
+        """
+        self._require_timezone_aware(now)
+        self._require_timezone_aware(due_at)
+        if not token:
+            raise ValueError("price_retry_token_required")
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        source_asof[AUTO_APPROVE_PRICE_RETRY_KEY] = {
+            "state": "scheduled",
+            "token": token,
+            "scheduled_at": now.isoformat(),
+            "due_at": due_at.isoformat(),
+        }
+        return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def consume_auto_approve_price_retry(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        token: str,
+        now: datetime,
+    ) -> bool:
+        """#1067: consume the scheduled retry once; ``False`` means do nothing.
+
+        Compare-and-swap under the row lock: the marker must still be the
+        ``scheduled`` one carrying this token, and no approval card may have
+        been dispatched or acted on in the meantime (for example a manual
+        redispatch). Any mismatch leaves the proposal untouched.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        marker = source_asof.get(AUTO_APPROVE_PRICE_RETRY_KEY)
+        if (
+            not token
+            or not isinstance(marker, dict)
+            or marker.get("state") != "scheduled"
+            or marker.get("token") != token
+            or group.approval_dispatch_state is not None
+            or group.approval_dispatch_published_at is not None
+            or group.approval_nonce is not None
+            or group.approval_nonce_used_at is not None
+        ):
+            return False
+        source_asof[AUTO_APPROVE_PRICE_RETRY_KEY] = {
+            **marker,
+            "state": "consumed",
+            "consumed_at": now.isoformat(),
+        }
+        await self._repo.update_group(group, source_asof=source_asof)
+        return True
 
     async def record_auto_veto(
         self,

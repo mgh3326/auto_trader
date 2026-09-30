@@ -20,8 +20,8 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
-from collections.abc import Callable
-from datetime import datetime
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -52,6 +52,12 @@ from app.services.order_proposals.auto_approve import (
 from app.services.order_proposals.auto_approve_audit import (
     AutoApproveNotEvaluatedReason,
     build_auto_approve_rejection_card_block,
+)
+from app.services.order_proposals.auto_approve_price_fallback import (
+    AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS,
+    PriceFallback,
+    fetch_kis_quote_fallback,
+    preview_current_price_absent,
 )
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
@@ -101,6 +107,17 @@ logger = logging.getLogger(__name__)
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
 Clock = Callable[[], datetime]
+PriceFallbackFn = Callable[..., Awaitable[PriceFallback]]
+# #1067: arms the single delayed price re-evaluation. It must only *schedule*
+# (return promptly) -- the 30s wait may never run inside ``dispatch_proposal``.
+PriceRetryScheduler = Callable[[uuid.UUID, str], None]
+
+# #1067 caller-visible results of the price re-evaluation lifecycle. Neither is
+# a Telegram failure: the first means the card decision is deferred by one
+# re-evaluation, the second that something else (e.g. a manual redispatch)
+# already took the proposal over, so the delayed retry did nothing.
+AUTO_APPROVE_PRICE_RETRY_SCHEDULED = "auto_approve_price_retry_scheduled"
+AUTO_APPROVE_PRICE_RETRY_SUPERSEDED = "auto_approve_price_retry_superseded"
 
 _SOURCE_ASOF_ABSENT = object()
 _AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
@@ -232,6 +249,80 @@ def _unrecorded_revalidation_fallbacks(
             }
         )
     return fallbacks
+
+
+def _price_retry_result(
+    state: ApprovalDispatchState, failure_code: str
+) -> TelegramDispatchResult:
+    return TelegramDispatchResult(
+        state=state,
+        message_id=None,
+        status_code=None,
+        error_code=None,
+        error_classification=None,
+        payload_chars=0,
+        failure_code=failure_code,
+    )
+
+
+def is_price_retry_non_failure(result: Any) -> bool:
+    """True for the two #1067 results that must not raise an operator alert."""
+    return isinstance(result, TelegramDispatchResult) and (
+        (
+            result.state is ApprovalDispatchState.PENDING
+            and result.failure_code == AUTO_APPROVE_PRICE_RETRY_SCHEDULED
+        )
+        or (
+            result.state is ApprovalDispatchState.FAILED_SUPERSEDED
+            and result.failure_code == AUTO_APPROVE_PRICE_RETRY_SUPERSEDED
+        )
+    )
+
+
+def _needs_price_fallback(*, decision: Any, group: Any, preview: Any) -> bool:
+    """#1067: only a Toss rung rejected *solely* for an absent preview price."""
+    return (
+        getattr(group, "account_mode", None) == "toss_live"
+        and decision.eligible is False
+        and decision.reason == "price_or_quantity_missing"
+        and decision.details.get("missing_inputs") == ["current_price"]
+        and preview_current_price_absent(preview)
+    )
+
+
+def _price_retry_eligible(
+    *,
+    group: Any,
+    decisions: list[dict[str, Any]],
+    outcomes: list[RungOutcome],
+    pending_count: int,
+) -> bool:
+    """#1067: the one demotion that earns a single 30s re-evaluation.
+
+    A single-rung Toss proposal whose only rejection is an absent preview price
+    after the KIS quote fallback also failed. Every other rejection -- and any
+    proposal whose rungs did not all come back ``approval_required`` -- goes to
+    the human card immediately, exactly as before.
+    """
+    if getattr(group, "account_mode", None) != "toss_live":
+        return False
+    if pending_count != 1 or len(outcomes) != 1 or len(decisions) != 1:
+        return False
+    outcome = outcomes[0]
+    detail = outcome.detail if isinstance(outcome.detail, dict) else {}
+    if (
+        outcome.result != "approval_required"
+        or detail.get("reason") != "price_or_quantity_missing"
+    ):
+        return False
+    decision = decisions[0]
+    return (
+        decision.get("eligible") is False
+        and decision.get("rung_index") == outcome.rung_index
+        and decision.get("reason") == "price_or_quantity_missing"
+        and decision.get("missing_inputs") == ["current_price"]
+        and isinstance(decision.get("price_fallback_reason"), str)
+    )
 
 
 def _not_evaluated_reason_from_outcomes(
@@ -922,9 +1013,30 @@ async def dispatch_proposal(
     toss_veto_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
+    price_fallback_fn: PriceFallbackFn | None = fetch_kis_quote_fallback,
+    price_retry_scheduler: PriceRetryScheduler | None = None,
+    price_retry_token: str | None = None,
+    price_retry_card_only: bool = False,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
-    """Auto-submit an eligible resting proposal, otherwise send for approval."""
-    if not settings.ORDER_PROPOSALS_AUTO_APPROVE:
+    """Auto-submit an eligible resting proposal, otherwise send for approval.
+
+    #1067: when a ``toss_live`` preview comes back without ``current_price``
+    the gate reads one fresh KIS quote (``price_fallback_fn``) and runs every
+    classifier gate on it. If that also fails and a ``price_retry_scheduler``
+    was supplied, the first pass records the rejection, commits a durable
+    retry marker, asks the scheduler to re-run this function once after
+    ``AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS`` with ``price_retry_token``, and
+    returns without a card. That re-run consumes the marker under the dispatch
+    lock (a no-op if anything else took the proposal over), re-evaluates with
+    a fresh preview, never schedules again, and sends the card as before if
+    the price is still missing. ``price_retry_card_only`` skips the
+    re-evaluation and sends the card (used when the wait is cancelled).
+    """
+    if price_retry_token is not None and not settings.ORDER_PROPOSALS_AUTO_APPROVE:
+        # Auto approval was switched off during the wait: the retry may still
+        # only send the card after consuming its own marker.
+        price_retry_card_only = True
+    if not settings.ORDER_PROPOSALS_AUTO_APPROVE and price_retry_token is None:
         return await send_proposal_for_approval(
             proposal_id,
             notifier=notifier,
@@ -942,9 +1054,48 @@ async def dispatch_proposal(
     mirror_card: tuple[Any, list[Any], str] | None = None
     auto_policy_version: str | None = None
     not_evaluated_reason: AutoApproveNotEvaluatedReason | None = None
+    if price_retry_token is not None and price_retry_card_only:
+        # #1067: the wait was cancelled (process shutdown). Hand the proposal to
+        # a human now -- the card exactly as before -- but only if this retry
+        # still owns it.
+        async with service_factory() as session:
+            service = OrderProposalsService(session)
+            await service.acquire_auto_dispatch_lock(proposal_id)
+            consumed = await service.consume_auto_approve_price_retry(
+                proposal_id, token=price_retry_token, now=now
+            )
+            await session.commit()
+        if not consumed:
+            return _price_retry_result(
+                ApprovalDispatchState.FAILED_SUPERSEDED,
+                AUTO_APPROVE_PRICE_RETRY_SUPERSEDED,
+            )
+        return await send_proposal_for_approval(
+            proposal_id,
+            notifier=notifier,
+            now=now,
+            service_factory=service_factory,
+            window_evaluator=window_evaluator,
+            now_fn=clock,
+        )
+    scheduled_price_retry: str | None = None
     async with service_factory() as session:
         service = OrderProposalsService(session)
         await service.acquire_auto_dispatch_lock(proposal_id)
+        if price_retry_token is not None:
+            # #1067: the delayed re-evaluation proceeds only by consuming the
+            # exact marker its first pass committed, under this same advisory
+            # lock and in the same transaction as the evaluation below. A
+            # second run, a manual redispatch, or any published card in
+            # between makes this a no-op -- it can never add a dispatch.
+            if not await service.consume_auto_approve_price_retry(
+                proposal_id, token=price_retry_token, now=now
+            ):
+                await session.commit()
+                return _price_retry_result(
+                    ApprovalDispatchState.FAILED_SUPERSEDED,
+                    AUTO_APPROVE_PRICE_RETRY_SUPERSEDED,
+                )
         group, initial_rungs = await service.get_proposal(proposal_id)
         evaluate_window = window_evaluator or evaluate_approval_window
         window = await evaluate_approval_window_boundary(
@@ -1115,25 +1266,50 @@ async def dispatch_proposal(
                     daily_notional, \
                     parking_exposure, \
                     cash_funding_cumulative_notional
-                decision = evaluate_auto_approve_eligibility(
+
+                def evaluate(price_fallback: PriceFallback | None = None) -> Any:
+                    return evaluate_auto_approve_eligibility(
+                        group=kwargs["group"],
+                        rung=kwargs["rung"],
+                        preview=kwargs["preview"],
+                        limits=limits,
+                        daily_notional=daily_notional,
+                        parking_exposure=parking_exposure,
+                        cash_funding_shortfall=cash_funding_shortfall,
+                        cash_funding_cumulative_notional=cash_funding_cumulative_notional,
+                        now=kwargs["now"],
+                        price_fallback=price_fallback,
+                    )
+
+                decision = evaluate()
+                if price_fallback_fn is not None and _needs_price_fallback(
+                    decision=decision,
                     group=kwargs["group"],
-                    rung=kwargs["rung"],
                     preview=kwargs["preview"],
-                    limits=limits,
-                    daily_notional=daily_notional,
-                    parking_exposure=parking_exposure,
-                    cash_funding_shortfall=cash_funding_shortfall,
-                    cash_funding_cumulative_notional=cash_funding_cumulative_notional,
-                    now=kwargs["now"],
-                )
-                decisions.append(
-                    {
-                        "rung_index": kwargs["rung"].rung_index,
-                        "eligible": decision.eligible,
-                        "reason": decision.reason,
-                        **decision.details,
-                    }
-                )
+                ):
+                    # #1067: the first classification is exactly the pre-#1067
+                    # one. Only when its sole defect is an absent Toss preview
+                    # price is one fresh KIS quote read and the whole
+                    # classifier re-run on it; nothing is loosened.
+                    try:
+                        fallback = await price_fallback_fn(
+                            symbol=getattr(kwargs["group"], "symbol", None),
+                            market=getattr(kwargs["group"], "market", None),
+                        )
+                    except Exception:  # noqa: BLE001 - a failed read is a reason
+                        fallback = None
+                    if not isinstance(fallback, PriceFallback):
+                        fallback = PriceFallback.failed("quote_unavailable")
+                    decision = evaluate(fallback)
+                record: dict[str, Any] = {
+                    "rung_index": kwargs["rung"].rung_index,
+                    "eligible": decision.eligible,
+                    "reason": decision.reason,
+                    **decision.details,
+                }
+                if price_retry_token is not None:
+                    record["price_retry_reevaluation"] = True
+                decisions.append(record)
                 if decision.eligible:
                     daily_notional = Decimal(decision.details["daily_notional_after"])
                     # §163차 — the parking cap is CUMULATIVE, so it has to
@@ -1254,6 +1430,27 @@ async def dispatch_proposal(
                         pending_count=pending_count,
                     )
                 )
+                if (
+                    price_retry_scheduler is not None
+                    and price_retry_token is None
+                    and _price_retry_eligible(
+                        group=group,
+                        decisions=decisions,
+                        outcomes=outcomes,
+                        pending_count=pending_count,
+                    )
+                ):
+                    # #1067: defer the card by exactly one re-evaluation. The
+                    # rejection is still recorded below; the marker commits in
+                    # the same transaction, before the scheduler is asked.
+                    scheduled_price_retry = secrets.token_hex(16)
+                    await service.schedule_auto_approve_price_retry(
+                        proposal_id,
+                        token=scheduled_price_retry,
+                        now=gate_now,
+                        due_at=gate_now
+                        + timedelta(seconds=AUTO_APPROVE_PRICE_RETRY_DELAY_SECONDS),
+                    )
         if not auto_submitted:
             rejected_decisions = [
                 decision for decision in decisions if decision["eligible"] is False
@@ -1267,6 +1464,22 @@ async def dispatch_proposal(
                 )
         # Persist broker outcomes and the audit/nonce before Telegram I/O.
         await session.commit()
+
+    if scheduled_price_retry is not None and price_retry_scheduler is not None:
+        try:
+            price_retry_scheduler(proposal_id, scheduled_price_retry)
+        except Exception as exc:  # noqa: BLE001 - fall back to the card now
+            logger.error(
+                "order_proposals.auto_approve_price_retry_schedule_failed",
+                extra={
+                    "proposal_id": str(proposal_id),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        else:
+            return _price_retry_result(
+                ApprovalDispatchState.PENDING, AUTO_APPROVE_PRICE_RETRY_SCHEDULED
+            )
 
     if not auto_submitted or messages is None:
         return await send_proposal_for_approval(
@@ -1363,8 +1576,11 @@ async def dispatch_proposal(
 
 __all__ = [
     "APPROVAL_NOT_DISPATCHABLE_PREFIX",
+    "AUTO_APPROVE_PRICE_RETRY_SCHEDULED",
+    "AUTO_APPROVE_PRICE_RETRY_SUPERSEDED",
     "approval_not_dispatchable_failure_code",
     "dispatch_proposal",
+    "is_price_retry_non_failure",
     "publish_approval_messages",
     "record_approval_dispatch_failure",
     "send_proposal_for_approval",

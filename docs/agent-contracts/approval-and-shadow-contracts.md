@@ -6,6 +6,7 @@
 
 - Telegram 승인 콜백 durable inbox (W5)
 - 매수 게이트 A/B shadow (ROB-1301)
+- 자동승인 가격 폴백 (#1067)
 - 주차자산 proposal-bound 자동 매도 (task 817)
 
 ## 기준 원문 계약
@@ -180,6 +181,26 @@ dispatch와 send가 가능하다. 계좌 누락·불일치 또는 계측 실패�
 사람 승인 카드로 간다. 직접 주문 API, 기존 `cash_funding` 증거 계약,
 default-disabled 게이트, 스케줄러는 바뀌지 않는다. 자세한 운영 경계는
 `docs/runbooks/order-proposal-auto-approve-expand.md` §10을 따른다.
+
+### 자동승인 가격 폴백 (#1067)
+
+`toss_live` preview 의 `current_price` 가 없거나 null/blank 일 때만 자동승인
+게이트가 `get_quote` 경로로 KIS 시세 1회를 읽어 **입력만** 대체한다 — 모든
+게이트(캡·거리·tier·loss guard)는 그 값으로 그대로 돈다. 채택 조건: 같은
+심볼·`instrument_type`, `source == "kis"`, `is_stale_price is False`(부재는
+fresh 아님), `data_state == "fresh"`, 유한 양수 가격. US 는 `market_unsupported`.
+결정에 `price_source`(`toss_preview`/`kis_quote_fallback`) 기록.
+
+- **모듈**: `app/services/order_proposals/auto_approve_price_fallback.py`,
+  `auto_approve.evaluate_auto_approve_eligibility(price_fallback=...)`
+- **재평가 1회**: 폴백도 실패하면 단일 rung Toss 제안만 `source_asof.auto_approve_price_retry`
+  (랜덤 토큰) 를 커밋하고 30초 뒤 1회 재평가. MCP post-commit 경계의 in-process
+  detached task — **스케줄러/TaskIQ 등록 없음**, dispatch 안에서 inline 대기 금지.
+- 🔴 재평가는 dispatch advisory lock 아래 토큰 CAS 로 marker 를 소비해야만 진행하고
+  (카드 발행·승인 흔적이 있으면 no-op), 절대 재스케줄하지 않는다. 여전히 없으면
+  기존 카드 + `price_context_message`·`price_fallback_reason` 보존.
+- **런북**: `docs/runbooks/order-proposal-auto-approve-expand.md` §11 (SIGKILL 시
+  카드 미발행 한계 포함)
 
 ## 유지 규약
 
