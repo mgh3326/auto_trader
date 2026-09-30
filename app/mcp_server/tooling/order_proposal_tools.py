@@ -36,6 +36,9 @@ from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_not_evaluated,
     project_auto_approve_rejections,
 )
+from app.services.order_proposals.auto_digest import (
+    send_order_proposal_expiry_notice,
+)
 from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
     fetch_target_order,
@@ -382,7 +385,13 @@ async def _complete_committed_proposal_create(
             }
         else:
             dispatch_payload = dispatch_result.as_dict()
-            if not dispatch_result.ok:
+            # PENDING is not a failure: the proposal's auto-approve notice was
+            # buffered into the active digest round (ROB-1052) and will be
+            # finalized by that scope's flush, so no operator alert fires.
+            if (
+                not dispatch_result.ok
+                and dispatch_result.state is not ApprovalDispatchState.PENDING
+            ):
                 operator_alert = await _alert_non_sent_dispatch(
                     proposal_id,
                     dispatch_state=dispatch_result.state.value,
@@ -477,6 +486,24 @@ async def _edit_expired_approval_message(
             "message_id=%s",
             message_id,
         )
+
+
+async def _send_expiry_notice(*, symbol: str) -> None:
+    """Send the same expiry text to the notices destination (ROB-1052).
+
+    The approval card edit stays at its original destination; this is the
+    standalone notice copy.  Best-effort exactly like the card edit: the
+    sweep's durable expiry is already committed.
+    """
+    try:
+        notifier = _get_trade_notifier()
+    except Exception:  # noqa: BLE001 - notices never fail the sweep
+        logger.debug("order_proposal_expire_sweep: notifier unavailable")
+        return
+    await send_order_proposal_expiry_notice(
+        notifier=notifier,
+        text=f"⏰ 제안 만료됨\n종목: {_escape_telegram_markdown(symbol)}",
+    )
 
 
 async def _edit_superseded_approval_message(
@@ -966,6 +993,7 @@ async def run_order_proposal_expire_sweep(*, now: datetime) -> dict[str, Any]:
             message_id=result.message_id,
             symbol=result.symbol,
         )
+        await _send_expiry_notice(symbol=result.symbol)
     return {
         "success": True,
         "swept_count": len(swept),

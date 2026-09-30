@@ -1,5 +1,6 @@
 import json
 import os
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator
@@ -217,6 +218,15 @@ def _load_settings() -> "Settings":
     if not isinstance(loaded_settings, Settings):
         raise TypeError("Settings bootstrap returned an unexpected object")
     return loaded_settings
+
+
+@dataclass(frozen=True, slots=True)
+class OrderProposalsNoticesDestination:
+    """Resolved Telegram destination for auto-approve/fill/expiry notices."""
+
+    chat_id: str | None
+    message_thread_id: int | None
+    configured: bool
 
 
 class Settings(BaseSettings):
@@ -1020,6 +1030,18 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_TOKEN: str = ""
     ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER: str = "X-Telegram-Bot-Api-Secret-Token"
     ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
+    # ROB-1052 — optional second destination for auto-approve/fill/expiry
+    # notices so human approval cards stay visible.  Empty chat id + no
+    # thread id reproduces the pre-split behavior exactly: every notice is
+    # delivered exactly where it went before (auto-approve and expiry to
+    # ``allowlist[0]``, fills to every ``TELEGRAM_CHAT_IDS_STR`` chat).
+    # A thread id alone keeps one chat and splits by forum topic; a chat id
+    # sends notices to a separate chat (add it to the allowlist so auto-veto
+    # callbacks from that chat stay authorized).
+    ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID: str = ""
+    # Raw string so an empty env value cannot fail startup validation; parsed
+    # (and validated) lazily in `order_proposals_telegram_notices_destination`.
+    ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID: str = ""
     # Keep the current callback buttons by default.  Operators may retire
     # Telegram mutation buttons only after the authenticated /invest route has
     # been deployed and verified; the URL entrypoint remains separate.
@@ -1071,6 +1093,37 @@ class Settings(BaseSettings):
             for chat_id in self.ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR.split(",")
             if chat_id.strip()
         ]
+
+    @property
+    def order_proposals_telegram_notices_destination(
+        self,
+    ) -> OrderProposalsNoticesDestination:
+        """Resolve the auto-approve/fill/expiry notice destination.
+
+        ``configured`` reports whether any ``ORDER_PROPOSALS_TELEGRAM_NOTICES_*``
+        value was supplied at all; callers use it to decide between the new
+        single-destination routing and today's per-class default fan-out.
+        ``chat_id`` falls back to the approval allowlist's first entry so a
+        thread-only configuration still resolves a concrete chat.
+        """
+        notices_chat = self.ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID.strip()
+        allowlist = self.order_proposals_telegram_chat_allowlist
+        raw_thread = self.ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID.strip()
+        thread_id: int | None = None
+        thread_configured = False
+        if raw_thread:
+            try:
+                thread_id = int(raw_thread)
+                thread_configured = True
+            except ValueError:
+                # A malformed thread id is ignored entirely -- it counts as
+                # "not configured" so the pre-split fallback stays exact.
+                thread_id = None
+        return OrderProposalsNoticesDestination(
+            chat_id=notices_chat or (allowlist[0] if allowlist else None),
+            message_thread_id=thread_id,
+            configured=bool(notices_chat) or thread_configured,
+        )
 
     # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
     execution_ledger_reconcile_scheduler_enabled: bool = False

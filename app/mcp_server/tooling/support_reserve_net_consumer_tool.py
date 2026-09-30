@@ -401,28 +401,34 @@ async def support_reserve_net_consume_impl(
         }
 
     completed: list[dict[str, Any]] = []
-    for dispatch_args, committed in pending_dispatch:
-        try:
-            completed.append(
-                await complete_committed_create(
-                    committed,
-                    **dispatch_args,
+    # ROB-1052: one consume call is one auto-approve notice round — the
+    # scope collects every auto-submitted proposal's notice and flushes a
+    # single digest after all post-commit dispatches finish.
+    from app.services.order_proposals.dispatch import open_auto_digest_round
+
+    async with open_auto_digest_round():
+        for dispatch_args, committed in pending_dispatch:
+            try:
+                completed.append(
+                    await complete_committed_create(
+                        committed,
+                        **dispatch_args,
+                    )
                 )
-            )
-        except Exception as exc:  # noqa: BLE001 - proposal is already durable
-            logger.error(
-                "support_reserve_net_consume.post_commit_boundary_failed",
-                extra={
-                    "proposal_id": str(dispatch_args["proposal_id"]),
-                    "exception_type": type(exc).__name__,
-                },
-            )
-            fallback = dict(committed)
-            fallback["approval_dispatch"] = {
-                "state": "failed",
-                "failure_code": "approval_dispatch_boundary_failed",
-            }
-            completed.append(fallback)
+            except Exception as exc:  # noqa: BLE001 - proposal is already durable
+                logger.error(
+                    "support_reserve_net_consume.post_commit_boundary_failed",
+                    extra={
+                        "proposal_id": str(dispatch_args["proposal_id"]),
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+                fallback = dict(committed)
+                fallback["approval_dispatch"] = {
+                    "state": "failed",
+                    "failure_code": "approval_dispatch_boundary_failed",
+                }
+                completed.append(fallback)
 
     return {
         "success": True,
