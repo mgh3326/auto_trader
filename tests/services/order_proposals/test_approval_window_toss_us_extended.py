@@ -1388,3 +1388,219 @@ async def test_loss_cut_first_click_second_calendar_roll_blocks_preview(monkeypa
     )
     assert previews == []
     assert outcome["reason"] == "DEFER_SESSION_CLOSED"
+
+
+# --- r3 tester finding: a session roll during the awaited revalidating --------
+# transition must not reach the broker preview or the target read.
+# Ported from the round-3 tester reproductions (tester-r3-repro.py).
+
+_TRANSITION_ROLLS = [
+    pytest.param(
+        _SUMMER, _kst(2026, 9, 30, 16, 59, 59), _kst(2026, 9, 30, 17), id="edt-day-pre"
+    ),
+    pytest.param(
+        _SUMMER, _kst(2026, 10, 1, 4, 59, 59), _kst(2026, 10, 1, 5), id="edt-reg-post"
+    ),
+    pytest.param(
+        _DST_SHIFT,
+        _kst(2026, 11, 2, 17, 59, 59),
+        _kst(2026, 11, 2, 18),
+        id="est-day-pre",
+    ),
+    pytest.param(
+        _DST_SHIFT,
+        _kst(2026, 11, 3, 5, 59, 59),
+        _kst(2026, 11, 3, 6),
+        id="est-reg-post",
+    ),
+]
+
+
+def _rolling_transition(item, *, end):
+    """Wrap transition_rung so the clock rolls when a rung enters revalidating."""
+    state = {"current": None}
+    transition = item.transition_rung
+
+    async def crossing_transition(*args, **kwargs):
+        result = await transition(*args, **kwargs)
+        if kwargs.get("new_state") == "revalidating":
+            state["current"] = end
+        return result
+
+    item.transition_rung = crossing_transition
+    return state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("calendar", "start", "end"), _TRANSITION_ROLLS)
+@pytest.mark.parametrize("shape", ["fractional", "amount", "integer"])
+async def test_exit_roll_during_revalidating_transition_precedes_preview(
+    monkeypatch, calendar, start, end, shape
+):
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    _use_calendar(monkeypatch, calendar)
+    item = _loss_cut_service("0.5" if shape == "fractional" else "1")
+    if shape == "amount":
+        item.rung.notional = Decimal("100")
+    item.group.valid_until = end + timedelta(days=2)
+    clock = _rolling_transition(item, end=end)
+    clock["current"] = start
+    calls = {"preview": 0, "submit": 0}
+
+    stamp = (await evaluate_approval_window(item.group, now=start)).policy_stamp
+    outcomes = await revalidate_and_submit(
+        service=item,
+        proposal_id=item.group.proposal_id,
+        now=start,
+        now_fn=lambda: clock["current"],
+        place_order_fn=_counting_place(calls),
+        expected_policy_stamp=stamp,
+        correlation_mint=lambda **ignored: "t1116-r3-corr",
+    )
+    if shape == "integer":
+        assert calls == {"preview": 1, "submit": 1}
+        assert outcomes[0].result == "submitted_resting"
+    else:
+        assert calls == {"preview": 0, "submit": 0}
+        assert outcomes[0].result == "defer_session_closed"
+        assert item.rung.state == "pending_approval"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("calendar", "start", "end", "expected"),
+    [
+        (
+            _SUMMER,
+            _kst(2026, 10, 1, 4, 59, 59),
+            _kst(2026, 10, 1, 5),
+            "defer_session_closed",
+        ),
+        # The DST fixture has no regular window after this post session, so
+        # the regular-only action fails closed as unknown.
+        (
+            _DST_SHIFT,
+            _kst(2026, 11, 3, 5, 59, 59),
+            _kst(2026, 11, 3, 6),
+            "calendar_unknown",
+        ),
+    ],
+)
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_action_roll_during_revalidating_transition_precedes_target_read(
+    monkeypatch, calendar, start, end, expected, action
+):
+    from dataclasses import replace as dc_replace
+
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    _use_calendar(monkeypatch, calendar)
+    item = _toss_revalidation_service()
+    item.group.action = action
+    item.group.side = item.rung.side = "sell"
+    item.group.target_broker_order_id = "r3-target"
+    item.group.valid_until = end + timedelta(days=2)
+    approved = TargetOrderSnapshot(
+        broker_order_id="r3-target",
+        symbol="SGOV",
+        side="sell",
+        order_type="limit",
+        limit_price="100",
+        remaining_quantity="1",
+        status="open",
+        observed_at=start.isoformat(),
+    )
+    item.group.source_asof = {"target_order_snapshot": approved.to_payload()}
+    clock = _rolling_transition(item, end=end)
+    clock["current"] = start
+    calls = {"preview": 0, "fetch": 0, "cancel": 0, "opposite": 0}
+
+    async def fetch_target(**kwargs):
+        calls["fetch"] += 1
+        return dc_replace(approved, observed_at=clock["current"].isoformat())
+
+    async def place(**kwargs):
+        calls["preview"] += 1
+        raise AssertionError("place trap")
+
+    async def cancel(**kwargs):
+        calls["cancel"] += 1
+        raise AssertionError("cancel trap")
+
+    async def opposite(**kwargs):
+        calls["opposite"] += 1
+        raise AssertionError("opposite trap")
+
+    stamp = (await evaluate_approval_window(item.group, now=start)).policy_stamp
+    outcomes = await revalidate_and_submit(
+        service=item,
+        proposal_id=item.group.proposal_id,
+        now=start,
+        now_fn=lambda: clock["current"],
+        place_order_fn=place,
+        expected_policy_stamp=stamp,
+        fetch_target_fn=fetch_target,
+        cancel_target_fn=cancel,
+        opposite_pending_check_fn=opposite,
+    )
+    assert calls == {"preview": 0, "fetch": 0, "cancel": 0, "opposite": 0}
+    assert outcomes[0].result == expected
+    assert item.rung.state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_real_service_transition_roll_blocks_before_fractional_preview(
+    monkeypatch, db_session
+):
+    from types import SimpleNamespace as NS
+
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals import service as service_module
+    from app.services.order_proposals.service import RungInput
+
+    _use_key(monkeypatch, ("pre", "regular", "post"))
+    _use_calendar(monkeypatch, _SUMMER)
+    start, end = _kst(2026, 10, 1, 4, 59, 59), _kst(2026, 10, 1, 5)
+    calls = {"preview": 0, "submit": 0}
+
+    async def retrospective(session, retro_id):
+        return NS(symbol="SGOV", trigger_type="stop_loss", created_at=start)
+
+    monkeypatch.setattr(service_module, "get_retrospective_by_id", retrospective)
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="t1116-r3",
+        thesis="t1116 transition roll",
+        rungs=[RungInput(0, "sell", Decimal("0.5"), Decimal("100"), None)],
+        valid_until=end + timedelta(days=2),
+        now=start,
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=1,
+        approval_issue_id="T1116-R3",
+    )
+    await db_session.commit()
+    clock = _rolling_transition(service, end=end)
+    clock["current"] = start
+
+    stamp = (await evaluate_approval_window(group, now=start)).policy_stamp
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=start,
+        now_fn=lambda: clock["current"],
+        place_order_fn=_counting_place(calls),
+        expected_policy_stamp=stamp,
+    )
+    await db_session.commit()
+    stored_group, rungs = await service.get_proposal(group.proposal_id)
+    assert calls == {"preview": 0, "submit": 0}
+    assert outcomes[0].result == "defer_session_closed"
+    assert rungs[0].state == "pending_approval"
+    assert stored_group.exit_intent == "loss_cut"

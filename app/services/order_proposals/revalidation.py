@@ -1184,6 +1184,11 @@ async def _revalidate_place_rung(
         bind_parking_sell_context(group, rung) if parking_sell_auto_enabled else None
     )
 
+    await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
+
+    # #1116 r4: the transition is awaited, so the session can roll across it.
+    # The gate therefore runs after it, immediately before the broker preview
+    # (a block restores the rung to pending_approval).
     window_outcome = await _pre_mutation_window_gate(
         service=service,
         group=group,
@@ -1194,8 +1199,6 @@ async def _revalidate_place_rung(
     )
     if window_outcome is not None:
         return window_outcome
-
-    await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
 
     try:
         preview = await _maybe_await(
@@ -1601,10 +1604,27 @@ async def _validate_target_action(
     rung: OrderProposalRung,
     now: datetime,
     fetch_target_fn: TargetFetchFn,
+    window_evaluator: WindowEvaluator,
+    expected_policy_stamp: str,
+    now_fn: Clock,
 ) -> RungOutcome | None:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
     await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
+
+    # #1116 r4: the window gate runs after the awaited transition, immediately
+    # before the broker target read, so a session roll across the transition
+    # is caught (a block restores the rung to pending_approval).
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
 
     try:
         target_id = group.target_broker_order_id
@@ -1918,23 +1938,15 @@ async def _revalidate_replace_rung(
         if group.account_mode == "upbit"
         else None
     )
-    window_outcome = await _pre_mutation_window_gate(
-        service=service,
-        group=group,
-        rung=rung,
-        window_evaluator=window_evaluator,
-        expected_policy_stamp=expected_policy_stamp,
-        now_fn=now_fn,
-    )
-    if window_outcome is not None:
-        return window_outcome
-
     target_outcome = await _validate_target_action(
         service=service,
         group=group,
         rung=rung,
         now=now,
         fetch_target_fn=fetch_target_fn,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
     )
     if target_outcome is not None:
         return target_outcome
@@ -2160,23 +2172,15 @@ async def _revalidate_cancel_rung(
     expected_policy_stamp: str,
     now_fn: Clock,
 ) -> RungOutcome:
-    window_outcome = await _pre_mutation_window_gate(
-        service=service,
-        group=group,
-        rung=rung,
-        window_evaluator=window_evaluator,
-        expected_policy_stamp=expected_policy_stamp,
-        now_fn=now_fn,
-    )
-    if window_outcome is not None:
-        return window_outcome
-
     target_outcome = await _validate_target_action(
         service=service,
         group=group,
         rung=rung,
         now=now,
         fetch_target_fn=fetch_target_fn,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
     )
     if target_outcome is not None:
         return target_outcome
