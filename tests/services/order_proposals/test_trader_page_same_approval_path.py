@@ -29,7 +29,7 @@ from __future__ import annotations
 import inspect
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -193,6 +193,20 @@ def _assert_same_call(telegram: dict[str, Any], web: dict[str, Any]) -> None:
     assert web["notifier"] is None
     assert web["chat_id"] is None
     assert web["message_id"] is None
+    _assert_web_uses_the_real_clock(web)
+
+
+def _assert_web_uses_the_real_clock(web: dict[str, Any]) -> None:
+    """``now``/``now_fn`` are channel keys but decide expiry and TTL checks.
+
+    Behavioural check: the web path hands the core the real wall clock, so a
+    shifted clock cannot pass the equality proof above.
+    """
+    tolerance = timedelta(seconds=60)
+    real_now = datetime.now(UTC)
+    assert abs(web["now"] - real_now) < tolerance, web["now"]
+    if "now_fn" in web:
+        assert abs(web["now_fn"]() - real_now) < tolerance
 
 
 def _latest_group(db_session):

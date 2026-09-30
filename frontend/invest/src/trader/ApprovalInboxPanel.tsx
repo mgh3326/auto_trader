@@ -181,6 +181,7 @@ export function ApprovalInboxPanel() {
         const showBase = !acted && actionsEnabled && item.actionable && !expired;
         const showApprove = showBase && (!item.requires_two_step || lossCutEnabled);
         const showDeny = showBase;
+        const showConfirm = acted && ui.confirmToken !== null && actionsEnabled && !expired;
         return (
           <article className="trader-approval-row" data-testid={`approval-row-${id}`} key={id}>
             <header className="trader-approval-head">
@@ -215,7 +216,7 @@ export function ApprovalInboxPanel() {
             <p className="trader-dim">
               남은 시간 <span data-testid={`expires-${id}`}>{formatCountdown(remaining)}</span>
             </p>
-            {showApprove || showDeny || (acted && ui.confirmToken !== null) ? (
+            {showApprove || showDeny || showConfirm ? (
               <div className="trader-approval-actions">
                 {showApprove ? (
                   <button
@@ -237,7 +238,7 @@ export function ApprovalInboxPanel() {
                     기각
                   </button>
                 ) : null}
-                {acted && ui.confirmToken !== null ? (
+                {showConfirm ? (
                   <button
                     type="button"
                     data-testid={`loss-cut-confirm-${id}`}
