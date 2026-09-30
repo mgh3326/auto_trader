@@ -39,7 +39,8 @@ Conditions (ALL must hold; anything else keeps blocking — fail closed)
 6. ``execution_ledger_covers_order_day`` — a successful, committed KIS
    execution-ledger reconcile run covered the whole window from the accept
    instant to that deadline and finished after the deadline, so "no fill" is
-   an observation, not a missing read.
+   an observation, not a missing read. "After" is strict: a run finishing
+   exactly at the deadline does not count.
 7. ``no_fill_in_execution_ledger`` — no execution-ledger fill (any source,
    including provisional websocket rows) for this order number, no partial on
    the rung, no partial on the order-ledger row.
@@ -56,6 +57,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import re
 from collections.abc import Callable
 from decimal import Decimal
 
@@ -108,6 +110,7 @@ _DAY_ORDER_TYPES = frozenset({"limit", "market"})
 # ``None`` (not echoed) is allowed: the send path only ever routes SOR or KRX.
 _REGULAR_VENUES = frozenset({"KRX", "SOR"})
 _REGULAR_CLOSE_FLOOR = datetime.time(hour=15, minute=30)
+_ORDER_TIME = re.compile(r"[0-9]{6}|[0-9]{4}", re.ASCII)
 
 
 def is_expired_inference_reason(void_reason: object) -> bool:
@@ -232,10 +235,12 @@ def resolve_accept_at(row: KisOrderLedgerFacts) -> datetime.datetime | None:
     """
     if row.trade_date is None or row.order_time is None:
         return None
-    digits = "".join(ch for ch in str(row.order_time) if ch.isdigit())
-    if len(digits) not in (4, 6):
+    raw = str(row.order_time).strip()
+    # Exact ASCII HHMMSS (or HHMM) only. Stripping separators or accepting
+    # non-ASCII digits would turn a garbled value into a plausible time.
+    if _ORDER_TIME.fullmatch(raw) is None:
         return None
-    digits = (digits + "00")[:6]
+    digits = (raw + "00")[:6]
     try:
         clock = datetime.time(
             hour=int(digits[0:2]), minute=int(digits[2:4]), second=int(digits[4:6])
@@ -363,7 +368,7 @@ def _check_execution_ledger_covers_order_day(ctx: _Context) -> bool:
     return any(
         _aware(run.window_start) <= ctx.accept_at
         and _aware(run.window_end) >= ctx.deadline
-        and _aware(run.finished_at) >= ctx.deadline
+        and _aware(run.finished_at) > ctx.deadline
         for run in runs
     )
 

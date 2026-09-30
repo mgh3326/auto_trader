@@ -114,7 +114,9 @@ class KisLeftoverInferenceService:
             rows = (
                 (
                     await self._session.execute(
-                        select(KISLiveOrderLedger).where(column == value)
+                        select(KISLiveOrderLedger)
+                        .where(column == value)
+                        .execution_options(populate_existing=True)
                     )
                 )
                 .scalars()
@@ -167,6 +169,7 @@ class KisLeftoverInferenceService:
                     .where(ExecutionLedger.account_mode == "live")
                     .where(ExecutionLedger.symbol == symbol)
                     .order_by(ExecutionLedger.filled_at.asc(), ExecutionLedger.id.asc())
+                    .execution_options(populate_existing=True)
                 )
             )
             .scalars()
@@ -197,6 +200,7 @@ class KisLeftoverInferenceService:
                     .where(ExecutionLedgerReconcileRun.finished_at.is_not(None))
                     .where(ExecutionLedgerReconcileRun.window_start <= accept_at)
                     .where(ExecutionLedgerReconcileRun.window_end >= accept_at)
+                    .execution_options(populate_existing=True)
                 )
             )
             .scalars()
@@ -307,7 +311,9 @@ class KisLeftoverInferenceService:
         """Close every rung that is STILL eligible under its group row lock.
 
         Idempotent: a closed rung is no longer ``resting`` and is not a
-        candidate on the next run. The caller owns the commit.
+        candidate on the next run. Each rung runs in its own savepoint; every
+        fact read uses ``populate_existing`` so the locked re-check never sees
+        a stale identity-map row. The caller owns the commit.
         """
         from app.services.order_proposals.service import OrderProposalsService
 
@@ -329,12 +335,15 @@ class KisLeftoverInferenceService:
                 return fresh.eligible
 
             try:
-                rung = await service.expire_resting_rung_by_inference(
-                    uuid.UUID(facts.proposal_id),
-                    facts.rung_index,
-                    now=now,
-                    still_eligible=_still_eligible,
-                )
+                # One savepoint per rung: a failure rolls back only this rung
+                # and cannot abort the transaction holding earlier closures.
+                async with self._session.begin_nested():
+                    rung = await service.expire_resting_rung_by_inference(
+                        uuid.UUID(facts.proposal_id),
+                        facts.rung_index,
+                        now=now,
+                        still_eligible=_still_eligible,
+                    )
             except Exception as exc:  # noqa: BLE001 - surface, never swallow
                 logger.error(
                     "#1112 inference transition failed rung_id=%s: %s",

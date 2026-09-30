@@ -635,15 +635,24 @@ class OrderProposalRepository:
 
         The 7-D "one active buy per symbol" count must see every blocker; a
         paged read would silently undercount exactly the stale rows this
-        exists to surface.
+        exists to surface. A group counts when its lifecycle is non-terminal
+        OR any of its rungs is still non-terminal: supersession only retires
+        still-local rungs, so a ``superseded`` group can keep a broker-live
+        (``acked``/``resting``) buy that must keep blocking.
         """
+        live_rung_groups = select(OrderProposalRung.proposal_pk).where(
+            OrderProposalRung.state.not_in(PROPOSAL_TERMINAL_STATES)
+        )
         stmt = (
             select(OrderProposal)
             .where(
                 OrderProposal.market == market,
                 OrderProposal.side == side,
-                OrderProposal.lifecycle_state.not_in(
-                    self._EXPIRY_TERMINAL_GROUP_STATES
+                or_(
+                    OrderProposal.lifecycle_state.not_in(
+                        self._EXPIRY_TERMINAL_GROUP_STATES
+                    ),
+                    OrderProposal.id.in_(live_rung_groups),
                 ),
             )
             .order_by(OrderProposal.id)

@@ -403,3 +403,48 @@ def test_rung_projection_marks_inferred_expiry_only():
         projected = opt._rung_dict(_projection_rung(other))
         assert "expiry_basis" not in projected
         assert "expiry_caveat" not in projected
+
+
+def test_revalidate_terminal_evidence_distinguishes_inferred_expiry():
+    from app.mcp_server.tooling.proposal_revalidate import _terminal_evidence
+
+    group = SimpleNamespace(
+        lifecycle_state="partially_submitted",
+        valid_until=NOW + datetime.timedelta(days=1),
+    )
+
+    def _r(index: int, state: str, void_reason: str | None) -> SimpleNamespace:
+        return SimpleNamespace(
+            rung_index=index, state=state, updated_at=NOW, void_reason=void_reason
+        )
+
+    pending = _r(1, "pending_approval", None)
+    inferred = _terminal_evidence(
+        group, [_r(0, "expired", EXPIRED_INFERENCE_VOID_REASON), pending], NOW
+    )
+    broker = _terminal_evidence(group, [_r(0, "expired", None), pending], NOW)
+    assert inferred is not None and broker is not None
+    assert inferred["inferred_expiry_rung_indexes"] == [0]
+    assert inferred["expiry_caveat"] == "no_broker_original"
+    assert "inferred_expiry_rung_indexes" not in broker
+    assert "expiry_caveat" not in broker
+
+
+@pytest.mark.asyncio
+async def test_sweep_eligible_is_false_when_any_rung_is_outside_the_night_scope(
+    monkeypatch,
+):
+    # sweep_expired skips a group holding ANY rung outside its scope, terminal
+    # ones included, so the report must not promise the sweep will clear it.
+    mixed = _group(symbol="000400", valid_until=NOW - datetime.timedelta(days=2))
+    done = _rung("expired", rung_index=0)
+    waiting = _rung("pending_approval", rung_index=1)
+    _install(monkeypatch, active=[(mixed, [done, waiting])])
+
+    report = await kbb.build_kr_buy_blocking_report(object(), now=NOW)  # type: ignore[arg-type]
+
+    [item] = _items(report, "000400")
+    assert item["rung_id"] == waiting.id
+    assert item["rule"] == kbb.RULE_STALE_PROPOSAL
+    assert item["sweep_eligible"] is False
+    assert item["cleared_by"] is None

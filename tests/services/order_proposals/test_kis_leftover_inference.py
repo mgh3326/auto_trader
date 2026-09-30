@@ -325,7 +325,24 @@ def test_fail_closed_shapes_keep_blocking(label, overrides, expected):
     assert expected in decision.failed_conditions, (label, decision.failed_conditions)
 
 
-@pytest.mark.parametrize("order_time", [None, "", "10", "1000000", "2561xx", "256100"])
+@pytest.mark.parametrize(
+    "order_time",
+    [
+        None,
+        "",
+        "10",
+        "1000000",
+        "2561xx",
+        "256100",
+        "10xx0000",
+        "-100000",
+        "10:00:00",
+        "10:00:00INVALID",
+        "1000unknown",
+        "\u0661\u0660\u0660\u0660\u0660\u0660",
+        "１００００００",
+    ],
+)
 def test_unknown_accept_time_is_unknown_session(order_time):
     decision = _verdict(_facts(order_ledger_rows=(_row(order_time=order_time),)))
     assert decision.eligible is False
@@ -479,3 +496,18 @@ def test_marker_is_distinct_from_broker_confirmed_expiry_but_same_group():
         classify_rung_void_reason(EXPIRED_INFERENCE_VOID_REASON)
         == RUNG_VOID_REASON_CANCELLED_OR_EXPIRED
     )
+
+
+def test_reconcile_run_finishing_exactly_at_the_deadline_is_not_coverage():
+    run = _run(window_end=DEADLINE, finished_at=DEADLINE)
+    decision = _verdict(_facts(reconcile_runs=(run,)))
+    assert decision.failed_conditions == (rule.COND_LEDGER_COVERAGE,)
+    later = _run(
+        window_end=DEADLINE, finished_at=DEADLINE + datetime.timedelta(seconds=1)
+    )
+    assert _verdict(_facts(reconcile_runs=(later,))).eligible is True
+
+
+def test_whitespace_around_a_valid_ord_tmd_is_tolerated():
+    decision = _verdict(_facts(order_ledger_rows=(_row(order_time=" 100000 "),)))
+    assert decision.eligible is True

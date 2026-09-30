@@ -376,3 +376,36 @@ async def test_default_list_output_has_no_blocking_key(broker_traps):
     await _create(symbol, valid_until=None)
     result = await opt.order_proposal_list(symbol=symbol)
     assert "kr_buy_blocking" not in result
+
+
+@pytest.mark.asyncio
+async def test_superseded_group_with_a_broker_live_rung_still_blocks(broker_traps):
+    symbol = _sym()
+    proposal_id = await _create(symbol, valid_until=NOW + datetime.timedelta(hours=8))
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        for state in ("revalidating", "approved", "submitting"):
+            await service.transition_rung(proposal_id, 0, new_state=state)
+        await service.record_ack(
+            proposal_id,
+            0,
+            broker_order_id=f"ACK-{symbol}",
+            correlation_id=f"corr-ack-{symbol}",
+            idempotency_key=f"idem-ack-{symbol}",
+            approval_hash_digest="digest",
+            now=NOW - datetime.timedelta(hours=1),
+        )
+        group, _ = await service.get_proposal(proposal_id)
+        # Supersession retires only still-local rungs; the acked one stays live.
+        group.lifecycle_state = "superseded"
+        await session.commit()
+
+    report = await opt.order_proposal_list(symbol=symbol, include_kr_buy_blocking=True)
+
+    row = _blocking_row(report["kr_buy_blocking"], symbol)
+    assert row["blocked"] is True
+    [item] = row["blocking"]
+    assert item["proposal_id"] == str(proposal_id)
+    assert item["lifecycle_state"] == "superseded"
+    assert item["rung_state"] == "acked"
+    assert item["rule"] == "broker_live_rung_awaiting_broker_evidence"

@@ -12,8 +12,9 @@ Scope: order-proposal rows only (component 1 of the 7-D rule). Broker-side open
 orders (Toss order history, KIS ``open_buy_evidence``) remain separate inputs
 and are not counted here — this report never claims their absence.
 
-The count is exactly the non-terminal groups: nothing is excluded at read
-time. A row stops counting only when the night sweep or the inference rule has
+The count is every group with a non-terminal lifecycle or any non-terminal
+rung (a superseded group can keep a broker-live buy): nothing is excluded at
+read time. A row stops counting only when the night sweep or the inference rule has
 actually written it terminal. For a KIS ``resting`` rung the report runs the
 #1112 inference rule read-only and shows every failed condition, or that the
 rung is eligible and waiting for the sweep to close it. Read-only; no broker.
@@ -102,8 +103,10 @@ async def _blocking_items(
     items: list[dict[str, Any]] = []
     past_valid_until = group.valid_until is not None and group.valid_until <= now
     live_rungs = [rung for rung in rungs if not sm.is_terminal(rung.state)]
+    # Mirrors sweep_expired: ANY rung outside the night scope (terminal ones
+    # included) makes the whole group skipped, so it is not sweep-eligible.
     sweepable = group.lifecycle_state == "proposed" and all(
-        rung.state in NIGHT_SWEEP_RUNG_STATES for rung in live_rungs
+        rung.state in NIGHT_SWEEP_RUNG_STATES for rung in rungs
     )
     for rung in live_rungs:
         item = _base_item(group, rung)
