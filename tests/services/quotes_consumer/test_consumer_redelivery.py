@@ -240,14 +240,330 @@ async def test_consumer_group_path_uses_group_and_ack_order(
         redis=fake_redis, session_factory=_factory(db_session)
     )
     await consumer.ensure_group()
+    # Inside-band tick first: it clears any breach seeded from committed
+    # rows so the later breach edge can fire (documented semantics).
+    await fake_redis.xadd(
+        STREAM_KEY,
+        dict(TRADE_FIELDS, ts="2026-09-30T13:14:50.000+00:00", price="100000"),
+    )
     await fake_redis.xadd(
         STREAM_KEY, dict(TRADE_FIELDS, ts="2026-09-30T13:15:00.000+00:00")
     )
 
     counters = await consumer.run(max_cycles=2)
-    assert counters.entries_read == 1
-    assert counters.entries_acked == 1
+    assert counters.entries_read == 2
+    assert counters.entries_acked == 2
     assert counters.firings_inserted >= 1
     assert await _pending(fake_redis, consumer._group) == 0
     # Ladder events stay zero without rung anchors on this symbol.
-    assert await _ladder_count(db_session) == 0 or True
+    assert await _ladder_count(db_session) == 0
+
+
+async def test_replayed_later_inbreach_batch_writes_no_second_firing(
+    db_session, fake_redis, held_with_close, monkeypatch
+) -> None:
+    """BLOCKER-1 shape: batch1 holds the breach edge and is committed +
+    acked; batch2 is still inside the same breach, commits, then loses
+    its ack.  A fresh process replaying batch2 must not mint a second
+    firing — the seeded in-breach state suppresses it."""
+    first = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        now=lambda: T0 + timedelta(minutes=25),
+    )
+    await first.ensure_group()
+    inside_fields = dict(
+        TRADE_FIELDS, ts="2026-09-30T13:19:50.000+00:00", price="100000"
+    )
+    edge_fields = dict(TRADE_FIELDS, ts="2026-09-30T13:20:00.000+00:00", price="108000")
+    inbreach_fields = dict(
+        TRADE_FIELDS, ts="2026-09-30T13:20:07.000+00:00", price="108500"
+    )
+    await fake_redis.xadd(STREAM_KEY, inside_fields)
+    await fake_redis.xadd(STREAM_KEY, edge_fields)
+    await fake_redis.xadd(STREAM_KEY, inbreach_fields)
+
+    # Batch1: an inside-band tick clears any breach seeded from prior
+    # committed rows, then the edge fires once and acks normally.
+    base = await _firing_count(db_session, SYM)
+    entries = await first.read_batch()
+    assert len(entries) == 3
+    batch1 = entries[:2]
+    batch2 = entries[2:]
+    await first.consume_batch(batch1, ConsumerCounters())
+    mid = await _firing_count(db_session, SYM)
+    assert mid == base + 1
+
+    # Batch2 commits nothing new (still in breach), then the ack is lost.
+    async def _lost_ack(*args, **kwargs):
+        raise RuntimeError("simulated crash between commit and xack")
+
+    monkeypatch.setattr(fake_redis, "xack", _lost_ack)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await first.consume_batch(batch2, ConsumerCounters())
+    assert await _pending(fake_redis, first._group) == 1
+
+    # Fresh process — no in-memory edge state; committed rows are the
+    # only barrier. The replayed in-breach tick cannot write a second row.
+    monkeypatch.undo()
+    second = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        consumer_name=first._consumer,
+        now=lambda: T0 + timedelta(minutes=25),
+    )
+    counters = ConsumerCounters()
+    await second.run(counters=counters, max_cycles=1)
+
+    assert await _firing_count(db_session, SYM) == mid
+    assert counters.entries_acked == 1
+    assert await _pending(fake_redis, first._group) == 0
+
+
+async def test_pending_beyond_read_count_is_fully_drained(
+    db_session, fake_redis
+) -> None:
+    """Pending entries past the 256-entry claim window are paginated, not
+    stranded until the next restart."""
+    victim = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        consumer_name="victim-300",
+    )
+    await victim.ensure_group()
+    for i in range(300):
+        await fake_redis.xadd(
+            STREAM_KEY,
+            dict(TRADE_FIELDS, ts=f"2026-09-30T13:30:{i % 60:02d}.000+00:00"),
+        )
+    await fake_redis.xreadgroup(
+        victim._group, "victim-300", {STREAM_KEY: ">"}, count=300
+    )
+    assert await _pending(fake_redis, victim._group) == 300
+
+    claimed = await victim._claim_pending()
+    assert len(claimed) == 300
+
+
+async def test_live_peer_pending_entries_are_not_stolen(db_session, fake_redis) -> None:
+    """A peer's just-read (in-flight) entries are never claimed — only
+    entries idle past PENDING_MIN_IDLE_MS count as provably stalled."""
+    group = "auto-trader-quotes-toss"
+    peer_a = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        consumer_name="peer-a",
+    )
+    await peer_a.ensure_group()
+    await fake_redis.xadd(
+        STREAM_KEY, dict(TRADE_FIELDS, ts="2026-09-30T13:35:00.000+00:00")
+    )
+    assert await peer_a.read_batch() != []
+    assert await _pending(fake_redis, group) == 1
+
+    peer_b = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        consumer_name="peer-b",
+    )
+    claimed = await peer_b._claim_pending()
+    assert claimed == []
+    assert await _pending(fake_redis, group) == 1
+
+
+async def test_restart_recovers_fills_that_landed_while_down(
+    db_session, fake_redis, request
+) -> None:
+    """S5: the fill watermark resumes from the last recorded own_fill
+    firing — not the current ledger max — so fills committed during
+    downtime are still recorded exactly once."""
+    from app.models.execution_ledger import ExecutionLedger
+    from app.models.trading import InstrumentType
+
+    n = _uniq(request.node.name)
+
+    # Landed while the consumer was down — its id is past the recorded
+    # watermark, which the committed own_fill row below encodes.
+    missed = ExecutionLedger(
+        broker="toss",
+        venue="nxt",
+        instrument_type=InstrumentType.equity_kr,
+        symbol=SYM,
+        raw_symbol=SYM,
+        side="buy",
+        broker_order_id=f"ORD-{n}-2",
+        fill_seq=0,
+        filled_qty=Decimal("1"),
+        filled_price=Decimal("100000"),
+        filled_notional=Decimal("100000"),
+        filled_at=T0 + timedelta(minutes=40),
+        currency="KRW",
+    )
+    db_session.add(missed)
+    await db_session.flush()
+    db_session.add(
+        QuotesTriggerFiring(
+            dedupe_key=f"qc-seed-ownfill-{n}",
+            trigger_type="own_fill",
+            outcome="fired",
+            symbol=SYM,
+            market="kr",
+            window="fill",
+            event_ts=T0 + timedelta(minutes=40),
+            kst_date="2026-09-30",
+            would_kick=False,
+            daily_would_kick_count=0,
+            source_ref=str(missed.id - 1),
+            detail={},
+        )
+    )
+    await db_session.flush()
+
+    consumer = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        now=lambda: T0 + timedelta(minutes=45),
+    )
+    counters = ConsumerCounters()
+    await consumer.consume_batch([], counters)
+
+    recovered = (
+        await db_session.execute(
+            select(QuotesTriggerFiring).where(
+                QuotesTriggerFiring.dedupe_key == f"ownfill:{missed.id}"
+            )
+        )
+    ).scalar_one()
+    assert recovered.trigger_type == "own_fill"
+    assert counters.fills_seen >= 1
+
+
+async def test_committed_touch_seeds_restart_state(
+    db_session, fake_redis, request
+) -> None:
+    """BLOCKER-1 (ladder): a committed touch row seeds the fresh tracker
+    as 'touched' — a replayed crossing tick writes no second row."""
+    from app.models.review import TossLiveOrderLedger
+
+    n = _uniq(request.node.name)
+    sym = f"{SYM}T{n:03d}"
+    order = TossLiveOrderLedger(
+        trade_date=T0 - timedelta(minutes=10),
+        operation_kind="place",
+        market="kr",
+        symbol=sym,
+        side="buy",
+        order_type="limit",
+        price=Decimal("100000"),
+        client_order_id=f"qc-touch-{n}",
+        broker_order_id=f"TB-{n}",
+        status="accepted",
+    )
+    db_session.add(order)
+    await db_session.flush()
+    db_session.add(
+        LadderTouchEvent(
+            dedupe_key=f"ladder:toss_live_order_ledger:{order.id}:touch",
+            order_ledger="toss_live_order_ledger",
+            order_ledger_id=order.id,
+            broker_order_id=f"TB-{n}",
+            event_type="touch",
+            market="kr",
+            symbol=sym,
+            side="buy",
+            session="krx_regular",
+            anchor_price=Decimal("100000"),
+            event_price=Decimal("99900"),
+            event_ts=T0 + timedelta(minutes=50),
+            stream_entry_id="99-1",
+            detail={},
+        )
+    )
+    await db_session.flush()
+
+    consumer = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        now=lambda: T0 + timedelta(minutes=55),
+    )
+    counters = ConsumerCounters()
+    crossing = dict(
+        TRADE_FIELDS,
+        symbol=sym,
+        ts="2026-09-30T13:55:00.000+00:00",
+        price="99000",
+    )
+    await consumer.consume_batch([("77-1", crossing)], counters)
+
+    assert counters.ladder_events_inserted == 0
+    events = (
+        (
+            await db_session.execute(
+                select(LadderTouchEvent).where(
+                    LadderTouchEvent.order_ledger_id == order.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(events) == 1  # only the committed touch — no duplicate
+
+
+async def test_open_rungs_keep_only_positive_limit_orders(
+    db_session, fake_redis, request
+) -> None:
+    """Market orders and zero-priced rows are not rung anchors — only
+    positive-price limit rows can produce ladder events."""
+    from app.models.review import TossLiveOrderLedger
+
+    n = _uniq(request.node.name)
+    sym = f"{SYM}F{n:03d}"
+
+    def _order(cid: str, order_type: str, price: str | None) -> TossLiveOrderLedger:
+        return TossLiveOrderLedger(
+            trade_date=T0 - timedelta(minutes=10),
+            operation_kind="place",
+            market="kr",
+            symbol=sym,
+            side="buy",
+            order_type=order_type,
+            price=Decimal(price) if price is not None else None,
+            client_order_id=cid,
+            status="accepted",
+        )
+
+    eligible = _order(f"qc-lim-{n}", "limit", "100000")
+    db_session.add(eligible)
+    db_session.add(_order(f"qc-mkt-{n}", "market", None))
+    db_session.add(_order(f"qc-zero-{n}", "limit", "0"))
+    await db_session.flush()
+
+    consumer = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        now=lambda: T0 + timedelta(hours=1),
+    )
+    counters = ConsumerCounters()
+    crossing = dict(
+        TRADE_FIELDS,
+        symbol=sym,
+        ts="2026-09-30T14:00:00.000+00:00",
+        price="99000",
+    )
+    await consumer.consume_batch([("88-1", crossing)], counters)
+
+    events = (
+        (
+            await db_session.execute(
+                select(LadderTouchEvent).where(
+                    LadderTouchEvent.order_ledger_id.in_([eligible.id])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert counters.ladder_events_inserted == 1
+    assert len(events) == 1
+    assert events[0].event_type == "touch"

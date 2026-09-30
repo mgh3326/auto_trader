@@ -30,6 +30,7 @@ DROP_REASONS = (
     "bad_ts",
     "bad_number",
     "empty_tick",
+    "mixed_fields",
 )
 
 

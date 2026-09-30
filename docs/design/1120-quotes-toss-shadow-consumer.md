@@ -30,22 +30,23 @@ runtime registration.
 | Holdings universe | `manual_holdings` (qty>0 on active accounts) ∪ `protected_positions` (qty>0) | yes |
 | "core" holdings | `protected_positions` rows (`purpose='long_term'`, `protected_quantity>0`) — the operator-declared long-term floor = the existing holdings source for core inventory | yes |
 | Own fills | `review.execution_ledger` (read-only, id watermark) | yes |
-| Open rung anchors | non-terminal (`accepted`,`pending`,`partial`) rows in `review.kis_live_order_ledger`, `review.toss_live_order_ledger`, `review.live_order_ledger` with a limit `price`; anchor = the order's limit price | yes |
+| Open rung anchors | non-terminal (`accepted`,`pending`,`partial`) rows in `review.kis_live_order_ledger`, `review.toss_live_order_ledger`, `review.live_order_ledger` where `order_type='limit'` and `price > 0`; anchor = the order's limit price | yes |
 
 `received_at` = the order ledger row's `trade_date` (recorded at send).
-`died_at` = the ledger's `reconciled_at` when the order is already terminal
-at event time. `nxt_tradable` has no stored source → **always NULL**.
-All three are copied onto event rows when known, NULL otherwise — never
-guessed.
+`died_at` has no dedicated ledger source — `reconciled_at` is when the
+order was *observed* terminal, not when it died, so `died_at` stays NULL.
+`nxt_tradable` has no stored source → **always NULL**.  All three are
+copied onto event rows when known, NULL otherwise — never guessed.
 
 ## 3. Trigger semantics (per-second evaluation)
 
 - `holding_spike`: |price / prev_close − 1| ≥ 5% for **core** symbols,
   ≥ 7% for other held symbols. Window `day`.
 - `vi_proxy`: |price / ref_price − 1| ≥ 3% where ref_price is the most
-  recent trade tick at or before `ts − 60s`; warm-up with no tick ≥60s old
-  evaluates nothing (not a missing *source*). Window `60s`. All stream
-  symbols (VI is market-wide).
+  recent trade tick at or before `ts − 60s` (rejected when the reference
+  is older than 75s — a staler gap is a longer window, not the proxy);
+  warm-up with no tick ≥60s old evaluates nothing (not a missing
+  *source*). Window `60s`. All stream symbols (VI is market-wide).
 - `index_spike`: ±3% vs reference — always `not_evaluable` in v0
   (`index_level_unavailable`); recorded once per KST day.
 - `own_fill`: each new `review.execution_ledger` row past the id
@@ -63,7 +64,15 @@ Each firing row stores `would_kick`, `suppress_reason`,
 gate's arithmetic per **market** (`kr`, `us` from session;
 `equity_kr/equity_us/crypto`→`kr/us/crypto` for ledger fills):
 daily cap 2, 60-minute cooldown, counted as if `would_kick=true` rows had
-actually kicked. Startup re-seeds the gate from today's firing rows.
+actually kicked. The daily cap is keyed `(market, KST date)` and resets
+at KST midnight; the cooldown is one timestamp per market and **carries
+across midnight** — matching #906 `cooldowns[market]`. Startup re-seeds
+both from committed firing rows (today's cap count, all-time latest
+would-kick timestamp) and re-seeds in-breach keys so a replayed batch
+during the same breach can only conflict, never write a second row.
+Fills landed while the consumer was down are also recovered: the
+restart watermark resumes from the last recorded `own_fill` firing, not
+the current ledger max.
 
 ## 5. Ladder events
 
@@ -71,7 +80,12 @@ Per open rung (§2): `approach` = trade tick enters ±0.5% of anchor without
 crossing (edge into band; re-arms when price leaves the band);
 `touch` = trade tick crosses the anchor (buy: `price ≤ anchor`;
 sell: `price ≥ anchor`), once per rung lifetime; `fill` = the rung's order
-reaches `filled` in its ledger (once). Rows carry symbol, side, market,
+reaches `filled` in its ledger, or an `execution_ledger` row matching the
+rung's `broker_order_id` (+ ledger-mapped broker when the ledger is
+broker-specific) arrives — the second path to arrive conflicts on the
+constant fill dedupe key. Runtime state (far/near/touched/done) is
+re-seeded from committed event rows at startup, so replayed pending
+entries cannot mint a second event. Rows carry symbol, side, market,
 session (verbatim; NULL for ledger-derived fills), `anchor_price`,
 `event_price`, `event_ts`, order refs (`order_ledger`,
 `order_ledger_id`, `broker_order_id`, `client_order_id`,
@@ -84,14 +98,22 @@ tick, and `detail` JSONB (latest bid1/ask1 when known).
 Every row carries a deterministic `dedupe_key` and the insert is
 `INSERT … ON CONFLICT DO NOTHING`:
 
-- firing (edge): `spike:{trigger}:{symbol}:{kst_date}:{breach_epoch_second}`
+- firing (edge): `spike:{trigger}:{symbol}:{kst_date}:{stream_entry_id}`
 - not_evaluable: `ne:{trigger}:{symbol-or-*}:{reason}:{kst_date}`
 - own_fill: `ownfill:{execution_ledger_id}`
-- ladder event: `ladder:{ledger}:{ledger_id}:{event}:{event_epoch_second}`
-- ladder fill: `ladder:{ledger}:{ledger_id}:fill:{fill_ledger_id_or_ts}`
+- ladder approach: `ladder:{ledger}:{ledger_id}:approach:{stream_entry_id}`
+- ladder touch/fill: `ladder:{ledger}:{ledger_id}:{touch|fill}` (constant —
+  once per rung lifetime, so no event identity is needed)
 
 Stream entries are XACK-ed **after** the DB commit. Redelivery replays the
-same dedupe keys → conflicts → zero new rows (A3).
+same dedupe keys → conflicts → zero new rows (A3). Pending entries are
+reclaimed in two phases: entries pending under this consumer's own name
+are claimed immediately (consumer names are host-derived, so a same-name
+PEL means a dead same-host process), while foreign consumers' entries are
+XAUTOCLAIM-ed only after `min_idle_time=30s` — long enough that a live
+peer's in-flight batch can never be stolen — in bounded cursor passes.
+The drain runs at startup and then every 30s so dead-peer work is
+rescued rather than stranded.
 
 ## 7. Invariants (mutants — counted from disk)
 

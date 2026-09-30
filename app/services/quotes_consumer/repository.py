@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -191,7 +191,9 @@ class QuotesConsumerRepository:
             await self._session.execute(
                 select(KISLiveOrderLedger).where(
                     KISLiveOrderLedger.status.in_(OPEN_ORDER_STATUSES),
+                    KISLiveOrderLedger.order_type == "limit",
                     KISLiveOrderLedger.price.is_not(None),
+                    KISLiveOrderLedger.price > 0,
                 )
             )
         ).scalars()
@@ -216,7 +218,9 @@ class QuotesConsumerRepository:
             await self._session.execute(
                 select(TossLiveOrderLedger).where(
                     TossLiveOrderLedger.status.in_(OPEN_ORDER_STATUSES),
+                    TossLiveOrderLedger.order_type == "limit",
                     TossLiveOrderLedger.price.is_not(None),
+                    TossLiveOrderLedger.price > 0,
                 )
             )
         ).scalars()
@@ -240,7 +244,9 @@ class QuotesConsumerRepository:
             await self._session.execute(
                 select(LiveOrderLedger).where(
                     LiveOrderLedger.status.in_(OPEN_ORDER_STATUSES),
+                    LiveOrderLedger.order_kind == "limit",
                     LiveOrderLedger.price.is_not(None),
+                    LiveOrderLedger.price > 0,
                 )
             )
         ).scalars()
@@ -322,15 +328,34 @@ class QuotesConsumerRepository:
         value = await self._session.scalar(select(func.max(ExecutionLedger.id)))
         return int(value or 0)
 
+    async def fills_seed_watermark(self) -> int | None:
+        """Last execution_ledger id already recorded as own_fill, or None.
+
+        On restart this resumes from the last recorded fill instead of
+        the install boundary, so fills that landed while the consumer was
+        down are still recorded — dedupe keys make re-observing them safe.
+        """
+        stmt = select(func.max(cast(QuotesTriggerFiring.source_ref, Integer))).where(
+            QuotesTriggerFiring.trigger_type == "own_fill",
+            QuotesTriggerFiring.source_ref.op("~")("^[0-9]+$"),
+        )
+        value = await self._session.scalar(stmt)
+        return int(value) if value is not None else None
+
     async def gate_seed(self, kst_date: str) -> list[tuple[str, int, datetime | None]]:
-        """(market, would_kick_count, last_would_kick_at) for today."""
+        """(market, today's would_kick_count, latest would_kick_at ever).
+
+        The cap is per KST day but the cooldown timestamp is per market
+        and carries across midnight — matching #906 ``cooldowns[market]``.
+        """
         stmt = (
             select(
                 QuotesTriggerFiring.market,
-                func.count().label("n"),
+                func.count(QuotesTriggerFiring.id)
+                .filter(QuotesTriggerFiring.kst_date == kst_date)
+                .label("n"),
                 func.max(QuotesTriggerFiring.event_ts).label("last_at"),
             )
-            .where(QuotesTriggerFiring.kst_date == kst_date)
             .where(QuotesTriggerFiring.would_kick.is_(True))
             .group_by(QuotesTriggerFiring.market)
         )
@@ -339,15 +364,56 @@ class QuotesConsumerRepository:
             for row in (await self._session.execute(stmt)).all()
         ]
 
-    async def filled_rung_keys(self) -> set[tuple[str, int]]:
-        """Rungs with a committed 'fill' event — suppress double-recording."""
-        stmt = select(
-            LadderTouchEvent.order_ledger, LadderTouchEvent.order_ledger_id
-        ).where(LadderTouchEvent.event_type == "fill")
+    async def breach_seed(self, since: datetime) -> set[tuple[str, str, str]]:
+        """(trigger_type, symbol, kst_date) triples with a committed firing.
+
+        The evaluator treats these as still-in-breach until an
+        inside-band tick clears them — replayed pending entries then
+        conflict instead of writing a second row for the same breach.
+        The tuple carries each row's own KST day so a replay after
+        midnight still matches its event-day key; the ``since`` window
+        keeps the scan bounded while covering any plausible redelivery.
+        """
+        stmt = (
+            select(
+                QuotesTriggerFiring.trigger_type,
+                QuotesTriggerFiring.symbol,
+                QuotesTriggerFiring.kst_date,
+            )
+            .where(
+                QuotesTriggerFiring.outcome == "fired",
+                QuotesTriggerFiring.event_ts >= since,
+                QuotesTriggerFiring.trigger_type.in_(("holding_spike", "vi_proxy")),
+            )
+            .distinct()
+        )
         return {
-            (row.order_ledger, int(row.order_ledger_id))
+            (row.trigger_type, row.symbol, row.kst_date)
             for row in (await self._session.execute(stmt)).all()
         }
+
+    async def rung_event_states(
+        self, keys: list[tuple[str, int]]
+    ) -> dict[tuple[str, int], set[str]]:
+        """Committed event_types per rung — restart state reconstruction."""
+        if not keys:
+            return {}
+        pairs = [(name, row_id) for name, row_id in keys]
+        stmt = select(
+            LadderTouchEvent.order_ledger,
+            LadderTouchEvent.order_ledger_id,
+            LadderTouchEvent.event_type,
+        ).where(
+            tuple_(LadderTouchEvent.order_ledger, LadderTouchEvent.order_ledger_id).in_(
+                pairs
+            )
+        )
+        states: dict[tuple[str, int], set[str]] = {}
+        for row in (await self._session.execute(stmt)).all():
+            states.setdefault((row.order_ledger, int(row.order_ledger_id)), set()).add(
+                row.event_type
+            )
+        return states
 
 
 __all__ = [

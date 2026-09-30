@@ -1,16 +1,25 @@
 """Ladder rung approach / touch / fill tracker.
 
-Anchors are open (non-terminal) order-ledger rows with a limit price —
-see ``repository.py`` for the read.  Events are edge-driven:
+Anchors are open (non-terminal) limit order-ledger rows — see
+``repository.py`` for the read.  Events are edge-driven:
 
 - ``approach`` — a trade tick enters ±0.5% of the anchor while still on
   the resting order's untriggered side; re-arms when the price leaves the
-  band without touching.
+  band without touching.  The dedupe key carries the entering tick's
+  stream entry id, so a replayed batch can only ever conflict.
 - ``touch`` — a trade tick crosses the anchor (buy: ``price <= anchor``,
-  sell: ``price >= anchor``); once per rung lifetime.
+  sell: ``price >= anchor``); once per rung lifetime, so the key has no
+  time component at all.
 - ``fill`` — first authoritative fill evidence for the rung's order,
   either an ``execution_ledger`` row or the order ledger reconciling to
-  ``filled``; once per rung lifetime.
+  ``filled``; one constant key per rung, so the second evidence path to
+  arrive can only conflict.
+
+Per-process state is seeded from committed rows (``seed``): a restart
+assumes the recorded state is current, so replayed pending entries
+cannot mint a second event.  The conservative trade-off mirrors the
+trigger evaluator — a quiet rung keeps its seeded state until a
+contradicting tick arrives.
 
 Order facts (``received_at``/``nxt_tradable``/``died_at``) are copied
 from the ledger row only — NULL when unknown, never guessed.
@@ -28,10 +37,6 @@ from .types import LadderRow, OwnFill, QuoteTick, RungAnchor
 APPROACH_BAND = Decimal("0.005")  # ±0.5%
 
 RungState = Literal["far", "near", "touched", "done"]
-
-
-def _epoch_second(ts: datetime) -> int:
-    return int(ts.timestamp())
 
 
 @dataclass
@@ -61,6 +66,25 @@ class LadderTracker:
                     del self._rungs[key]
         for rung in rungs:
             self._rungs.setdefault((rung.ledger_name, rung.ledger_id), _RungRuntime())
+
+    def seed(
+        self,
+        key: tuple[str, int],
+        *,
+        state: RungState,
+        filled: bool = False,
+    ) -> None:
+        """Seed committed-state for a rung after a restart.
+
+        A rung with a committed 'approach' resumes 'near' (suppresses a
+        replayed entering tick until the price leaves the band), a
+        committed 'touch' resumes 'touched', and a committed 'fill'
+        resumes 'done' — replayed or late evidence then conflicts at the
+        dedupe key instead of writing a second row.
+        """
+        runtime = self._rungs.setdefault(key, _RungRuntime())
+        runtime.state = state
+        runtime.filled = filled or state == "done"
 
     def mark_filled(self, rung_key: tuple[str, int]) -> None:
         runtime = self._rungs.setdefault(rung_key, _RungRuntime())
@@ -96,6 +120,10 @@ class LadderTracker:
         for rung in rungs:
             if rung.symbol != tick.symbol:
                 continue
+            if rung.anchor_price is None or rung.anchor_price <= 0:
+                # A zero/missing anchor cannot bear a distance or a cross;
+                # the repository filters these too — this is the guard.
+                continue
             key = (rung.ledger_name, rung.ledger_id)
             runtime = self._rungs.setdefault(key, _RungRuntime())
             if runtime.state in ("touched", "done"):
@@ -115,8 +143,7 @@ class LadderTracker:
                 rows.append(
                     LadderRow(
                         dedupe_key=(
-                            f"ladder:{rung.ledger_name}:{rung.ledger_id}:touch:"
-                            f"{_epoch_second(tick.ts)}"
+                            f"ladder:{rung.ledger_name}:{rung.ledger_id}:touch"
                         ),
                         order_ledger=rung.ledger_name,
                         order_ledger_id=rung.ledger_id,
@@ -148,7 +175,7 @@ class LadderTracker:
                         LadderRow(
                             dedupe_key=(
                                 f"ladder:{rung.ledger_name}:{rung.ledger_id}:"
-                                f"approach:{_epoch_second(tick.ts)}"
+                                f"approach:{tick.entry_id}"
                             ),
                             order_ledger=rung.ledger_name,
                             order_ledger_id=rung.ledger_id,
@@ -178,6 +205,8 @@ class LadderTracker:
 
     def on_fill(self, rung: RungAnchor, fill: OwnFill) -> LadderRow | None:
         """Record the rung's first fill evidence."""
+        if rung.anchor_price is None or rung.anchor_price <= 0:
+            return None
         key = (rung.ledger_name, rung.ledger_id)
         runtime = self._rungs.setdefault(key, _RungRuntime())
         if runtime.filled:
@@ -185,9 +214,7 @@ class LadderTracker:
         runtime.filled = True
         runtime.state = "done"
         return LadderRow(
-            dedupe_key=(
-                f"ladder:{rung.ledger_name}:{rung.ledger_id}:fill:{fill.ledger_id}"
-            ),
+            dedupe_key=(f"ladder:{rung.ledger_name}:{rung.ledger_id}:fill"),
             order_ledger=rung.ledger_name,
             order_ledger_id=rung.ledger_id,
             broker_order_id=rung.broker_order_id,
@@ -220,12 +247,16 @@ class LadderTracker:
     ) -> LadderRow | None:
         """Resolve a rung whose order row left the open set.
 
-        ``filled`` produces a fill event whose ``died_at`` is the ledger's
-        reconcile timestamp — the honest evidence for when the death was
-        observed.  Any other terminal status just marks the rung done.
-        A ``filled`` row without ``avg_fill_price`` records nothing:
-        the fill price is never guessed.
+        ``filled`` produces a fill event whose ``event_ts`` is the
+        ledger's reconcile timestamp — the honest evidence for when the
+        fill was *observed*.  ``died_at`` stays NULL: the reconcile time
+        is when we learned of the death, not when it happened, and the
+        field is never guessed.  Any other terminal status just marks
+        the rung done.  A ``filled`` row without ``avg_fill_price``
+        records nothing: the fill price is never guessed.
         """
+        if rung.anchor_price is None or rung.anchor_price <= 0:
+            return None
         key = (rung.ledger_name, rung.ledger_id)
         runtime = self._rungs.setdefault(key, _RungRuntime())
         if runtime.filled:
@@ -236,12 +267,8 @@ class LadderTracker:
             # fill timestamp — nothing is recorded instead of guessing.
             return None
         runtime.filled = True
-        event_ts = reconciled_at
         return LadderRow(
-            dedupe_key=(
-                f"ladder:{rung.ledger_name}:{rung.ledger_id}:fill:"
-                f"ledger:{_epoch_second(event_ts)}"
-            ),
+            dedupe_key=(f"ladder:{rung.ledger_name}:{rung.ledger_id}:fill"),
             order_ledger=rung.ledger_name,
             order_ledger_id=rung.ledger_id,
             broker_order_id=rung.broker_order_id,
@@ -255,13 +282,16 @@ class LadderTracker:
             anchor_price=rung.anchor_price,
             event_price=avg_fill_price,
             distance_pct=(avg_fill_price - rung.anchor_price) / rung.anchor_price,
-            event_ts=event_ts,
+            event_ts=reconciled_at,
             received_at=rung.received_at,
             nxt_tradable=rung.nxt_tradable,
-            died_at=reconciled_at,
+            died_at=None,
             stream_entry_id=None,
             fill_ledger_id=None,
-            detail={"terminal_status": status},
+            detail={
+                "terminal_status": status,
+                "reconciled_at": reconciled_at.isoformat(),
+            },
         )
 
 

@@ -73,9 +73,22 @@ def parse_quote_entry(
     except ValueError:
         return DroppedEntry(entry_id, "bad_number")
 
+    # Non-positive prices are malformed: a 0/-1 trade price would fabricate
+    # a -100% spike and a 0-price touch. Quantities may legitimately be 0.
+    if (
+        (price is not None and price <= 0)
+        or (bid1 is not None and bid1 <= 0)
+        or (ask1 is not None and ask1 <= 0)
+    ):
+        return DroppedEntry(entry_id, "bad_number")
+
     has_book = any(v is not None for v in (bid1, bid_qty, ask1, ask_qty))
     if price is None and not has_book:
         return DroppedEntry(entry_id, "empty_tick")
+    # Trade ticks leave book fields empty; orderbook ticks leave price
+    # empty. Both populated is malformed, not a trade tick with extras.
+    if price is not None and has_book:
+        return DroppedEntry(entry_id, "mixed_fields")
 
     kind = "trade" if price is not None else "orderbook"
     return QuoteTick(

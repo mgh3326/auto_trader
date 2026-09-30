@@ -35,10 +35,10 @@ def _rung(**over) -> RungAnchor:
 
 
 def _trade(
-    symbol: str, price: str, *, ts: datetime = T0, entry: str = "1-2"
+    symbol: str, price: str, *, ts: datetime = T0, entry: str | None = None
 ) -> QuoteTick:
     return QuoteTick(
-        entry_id=entry,
+        entry_id=entry or f"1-{int(ts.timestamp() * 1_000_000)}",
         symbol=symbol,
         source_symbol=symbol,
         ts=ts,
@@ -182,8 +182,11 @@ def test_terminal_fill_records_with_evidence_and_null_session() -> None:
     assert row is not None
     assert row.event_type == "fill"
     assert row.event_price == Decimal("70050")
+    # event_ts is the reconcile timestamp — the honest evidence for when
+    # the fill was *observed*; died_at stays NULL because the ledger has
+    # no dedicated death-time field and it is never guessed.
     assert row.event_ts == T0 + timedelta(minutes=3)
-    assert row.died_at == T0 + timedelta(minutes=3)
+    assert row.died_at is None
     assert row.session is None  # ledger carries no session — stays null
 
 
@@ -260,3 +263,126 @@ def test_symbol_mismatch_emits_nothing() -> None:
     rung = _rung()
     tr.prime([rung])
     assert tr.on_trade_tick(_trade("000660", "70000"), [rung]) == []
+
+
+# ---------------------------------------------------------------------------
+# Restart durability — committed-state seeds suppress replayed events
+# ---------------------------------------------------------------------------
+def test_seeded_touch_suppresses_replayed_cross() -> None:
+    """A fresh tracker seeded from committed events treats the rung as
+    already touched — a replayed crossing tick cannot mint a second row."""
+    tr = LadderTracker()
+    rung = _rung()
+    tr.prime([rung])
+    tr.seed((rung.ledger_name, rung.ledger_id), state="touched")
+    assert tr.on_trade_tick(_trade("005930", "69900"), [rung]) == []
+
+
+def test_seeded_fill_suppresses_both_evidence_paths() -> None:
+    tr = LadderTracker()
+    rung = _rung()
+    tr.prime([rung])
+    tr.seed((rung.ledger_name, rung.ledger_id), state="done", filled=True)
+    fill = OwnFill(
+        ledger_id=77,
+        symbol="005930",
+        market="kr",
+        side="buy",
+        price=Decimal("70000"),
+        qty=Decimal("3"),
+        filled_at=T0,
+        broker_order_id="T-501",
+        broker="toss",
+    )
+    assert tr.on_fill(rung, fill) is None
+    assert (
+        tr.on_terminal(
+            rung,
+            status="filled",
+            reconciled_at=T0,
+            avg_fill_price=Decimal("70000"),
+        )
+        is None
+    )
+
+
+def test_fill_records_once_across_both_evidence_paths() -> None:
+    """One rung, two evidence sources — whichever arrives second finds
+    the constant dedupe key already taken (and runtime.filled set)."""
+    fill = OwnFill(
+        ledger_id=77,
+        symbol="005930",
+        market="kr",
+        side="buy",
+        price=Decimal("70000"),
+        qty=Decimal("3"),
+        filled_at=T0,
+        broker_order_id="T-501",
+        broker="toss",
+    )
+    tr = LadderTracker()
+    rung = _rung()
+    tr.prime([rung])
+    ledger_path = tr.on_fill(rung, fill)
+    assert ledger_path is not None
+    assert (
+        tr.on_terminal(
+            rung,
+            status="filled",
+            reconciled_at=T0 + timedelta(minutes=1),
+            avg_fill_price=Decimal("70000"),
+        )
+        is None
+    )
+
+    tr2 = LadderTracker()
+    tr2.prime([rung])
+    terminal_path = tr2.on_terminal(
+        rung,
+        status="filled",
+        reconciled_at=T0 + timedelta(minutes=1),
+        avg_fill_price=Decimal("70000"),
+    )
+    assert terminal_path is not None
+    assert tr2.on_fill(rung, fill) is None
+    # Both paths mint the SAME constant key — a commit race still dedupes.
+    assert ledger_path.dedupe_key == terminal_path.dedupe_key
+
+
+def test_zero_anchor_rung_never_crashes_or_fires() -> None:
+    """A price-0 order row would divide by zero — the guard drops it
+    silently on every event path."""
+    tr = LadderTracker()
+    rung = _rung(anchor_price=Decimal("0"))
+    tr.prime([rung])
+    assert tr.on_trade_tick(_trade("005930", "1"), [rung]) == []
+    assert (
+        tr.on_terminal(
+            rung,
+            status="filled",
+            reconciled_at=T0,
+            avg_fill_price=Decimal("1"),
+        )
+        is None
+    )
+
+
+def test_tick_rows_copy_order_facts_verbatim_never_substitute() -> None:
+    """Kills the received_at/died_at mutants: unknown order facts must
+    stay NULL on tick-derived rows — tick.ts is never a substitute."""
+    tr = LadderTracker()
+    rung = _rung(received_at=None, died_at=None, nxt_tradable=None)
+    tr.prime([rung])
+    rows = tr.on_trade_tick(_trade("005930", "70000"), [rung])
+    assert [r.event_type for r in rows] == ["touch"]
+    row = rows[0]
+    assert row.received_at is None
+    assert row.died_at is None
+    assert row.nxt_tradable is None
+    assert row.event_ts == T0  # event time is the tick's own ts
+
+    known = _rung(ledger_id=502, received_at=T0 - timedelta(hours=2))
+    tr2 = LadderTracker()
+    tr2.prime([known])
+    rows = tr2.on_trade_tick(_trade("005930", "70000"), [known])
+    assert rows[0].received_at == T0 - timedelta(hours=2)

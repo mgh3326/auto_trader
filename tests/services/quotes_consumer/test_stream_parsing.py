@@ -112,6 +112,39 @@ def test_bad_number_is_dropped() -> None:
     assert dropped.reason == "bad_number"
 
 
+def test_non_positive_prices_are_dropped() -> None:
+    """A 0/negative trade price would fabricate a -100% spike and a
+    zero-price touch — malformed, not a tick."""
+    for price in ("0", "-1", "-71500"):
+        dropped = parse_quote_entry("1-11", _fields(price=price))
+        assert isinstance(dropped, DroppedEntry)
+        assert dropped.reason == "bad_number"
+    for field in ("bid1", "ask1"):
+        book = _fields(price="", bid1="100", bid_qty="1", ask1="101", ask_qty="1")
+        book[field] = "0"
+        dropped = parse_quote_entry("1-12", book)
+        assert isinstance(dropped, DroppedEntry)
+        assert dropped.reason == "bad_number"
+
+
+def test_mixed_trade_and_book_fields_are_dropped() -> None:
+    """The contract gives trade ticks empty book fields and orderbook
+    ticks an empty price — both populated is malformed, not a trade tick
+    with extras to silently discard."""
+    dropped = parse_quote_entry(
+        "1-13",
+        _fields(price="71500", bid1="71400"),
+    )
+    assert isinstance(dropped, DroppedEntry)
+    assert dropped.reason == "mixed_fields"
+    dropped = parse_quote_entry(
+        "1-14",
+        _fields(price="71500", ask1="71600", ask_qty="5"),
+    )
+    assert isinstance(dropped, DroppedEntry)
+    assert dropped.reason == "mixed_fields"
+
+
 def test_empty_symbol_is_dropped() -> None:
     dropped = parse_quote_entry("1-9", _fields(symbol=" "))
     assert isinstance(dropped, DroppedEntry)

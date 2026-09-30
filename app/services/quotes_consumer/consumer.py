@@ -12,7 +12,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -33,12 +33,31 @@ READ_COUNT = 256
 RUNG_REFRESH_SECONDS = 30.0
 CONTEXT_REFRESH_SECONDS = 60.0
 FILL_POLL_SECONDS = 1.0
+PENDING_DRAIN_SECONDS = 30.0
+# An entry idle this long is provably stalled; a live peer holds its
+# batch for milliseconds, so this never steals in-flight work.
+PENDING_MIN_IDLE_MS = 30_000
+_CLAIM_MAX_PASSES = 40
+# Committed firings within this window seed the evaluator's in-breach
+# set — wide enough to cover any plausible pending replay.
+_BREACH_SEED_DAYS = 2
+
+# Ledger name -> execution_ledger.broker. live_order_ledger spans more
+# than one broker lineage, so it stays unconstrained.
+_LEDGER_BROKER = {
+    "kis_live_order_ledger": "kis",
+    "toss_live_order_ledger": "toss",
+}
 
 
 class _Redis(Protocol):
     async def xgroup_create(self, *args: Any, **kwargs: Any) -> Any: ...
 
     async def xreadgroup(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    async def xpending_range(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    async def xclaim(self, *args: Any, **kwargs: Any) -> Any: ...
 
     async def xautoclaim(self, *args: Any, **kwargs: Any) -> Any: ...
 
@@ -101,6 +120,7 @@ class QuotesTossConsumer:
         self._last_rung_refresh = 0.0
         self._last_context_refresh = 0.0
         self._last_fill_poll = 0.0
+        self._last_pending_drain = 0.0
         self._gate_seeded = False
 
     # ------------------------------------------------------------------
@@ -125,15 +145,21 @@ class QuotesTossConsumer:
             if by_market.get(market):
                 prev.update(await repo.previous_closes(market, by_market[market]))
         self._prev_close = prev
+        kst = _kst_date(self._now())
         if not self._gate_seeded:
-            for market, count, last_at in await repo.gate_seed(_kst_date(self._now())):
-                self._evaluator.gate.seed(
-                    market, _kst_date(self._now()), count, last_at
-                )
+            for market, count, last_at in await repo.gate_seed(kst):
+                self._evaluator.gate.seed(market, kst, count, last_at)
+            self._evaluator.seed_breach(
+                await repo.breach_seed(self._now() - timedelta(days=_BREACH_SEED_DAYS))
+            )
             self._gate_seeded = True
         if self._fill_watermark is None:
-            # Install boundary: fills before startup are history, not a queue.
-            self._fill_watermark = await repo.fills_watermark()
+            # Restart resumes from the last recorded fill; a fresh install
+            # treats ledger history as context, not a backlog to record.
+            seed = await repo.fills_seed_watermark()
+            self._fill_watermark = (
+                seed if seed is not None else await repo.fills_watermark()
+            )
 
     async def _refresh_rungs(
         self, session: Any, repo: QuotesConsumerRepository
@@ -159,6 +185,18 @@ class QuotesTossConsumer:
                     rows.append(row)
                 del self._rungs[key]
         self._ladder.prime(rungs)
+        # Reconstruct per-rung state from committed events so a restart
+        # cannot mint a second approach/touch/fill for recorded events.
+        committed = await repo.rung_event_states(
+            [(r.ledger_name, r.ledger_id) for r in rungs]
+        )
+        for key, event_types in committed.items():
+            if "fill" in event_types:
+                self._ladder.seed(key, state="done", filled=True)
+            elif "touch" in event_types:
+                self._ladder.seed(key, state="touched")
+            elif "approach" in event_types:
+                self._ladder.seed(key, state="near")
         self._rungs = {(r.ledger_name, r.ledger_id): r for r in rungs}
         return rows
 
@@ -248,6 +286,9 @@ class QuotesTossConsumer:
                     or rung.broker_order_id != fill.broker_order_id
                 ):
                     continue
+                expected_broker = _LEDGER_BROKER.get(rung.ledger_name)
+                if expected_broker is not None and fill.broker != expected_broker:
+                    continue
                 row = self._ladder.on_fill(rung, fill)
                 if row is not None:
                     rows.append(row)
@@ -258,9 +299,9 @@ class QuotesTossConsumer:
         """One read call; [] on timeout.
 
         ``pending=True`` claims pending entries (committed-but-unacked
-        work left by a crashed process — possibly under a different
-        consumer name) via XAUTOCLAIM.  That is the only redelivery
-        path, and dedupe keys make replaying it safe.
+        work left by a crashed process) — this consumer's own name
+        immediately, foreign consumers' only once idle.  That is the
+        only redelivery path, and dedupe keys make replaying it safe.
         """
         if pending:
             return await self._claim_pending()
@@ -280,19 +321,63 @@ class QuotesTossConsumer:
         return entries
 
     async def _claim_pending(self) -> list[tuple[str, dict]]:
-        """Claim up to ``READ_COUNT`` pending entries into this consumer's
-        PEL.  One call per drain pass: pending entries beyond the count
-        are picked up on the next restart's drain pass.
+        """Claim stalled pending entries into this consumer's PEL.
+
+        Two phases, both bounded by ``_CLAIM_MAX_PASSES``:
+
+        1. Entries pending under *this* consumer's name are claimed
+           immediately — consumer names are host-derived, so a same-name
+           PEL means a dead same-host process, never a live peer.  The
+           id list is fetched in one wide XPENDING RANGE (bounded by
+           READ_COUNT × _CLAIM_MAX_PASSES) and the entries claimed in
+           READ_COUNT chunks — XCLAIM to the same name does not remove
+           them from the range, so cursor-style pagination cannot work.
+        2. Entries owned by other consumers are claimed only once they
+           have been idle for ``PENDING_MIN_IDLE_MS`` — long enough that
+           the owner is provably stalled — so in-flight batches of live
+           peers are never stolen.  The XAUTOCLAIM cursor is followed to
+           completion, bounded by _CLAIM_MAX_PASSES.
         """
-        _cursor, claimed, _deleted = await self._redis.xautoclaim(
+        entries: dict[str, dict] = {}
+        pending = await self._redis.xpending_range(
             STREAM_KEY,
             self._group,
-            self._consumer,
-            min_idle_time=0,
-            start_id="0-0",
-            count=READ_COUNT,
+            min="-",
+            max="+",
+            count=READ_COUNT * _CLAIM_MAX_PASSES,
+            consumername=self._consumer,
         )
-        return list(claimed or [])
+        own_ids = [
+            (p["message_id"] if isinstance(p, dict) else p[0]) for p in (pending or [])
+        ]
+        for i in range(0, len(own_ids), READ_COUNT):
+            for entry_id, fields in (
+                await self._redis.xclaim(
+                    STREAM_KEY,
+                    self._group,
+                    self._consumer,
+                    0,
+                    own_ids[i : i + READ_COUNT],
+                )
+                or []
+            ):
+                entries.setdefault(entry_id, fields)
+        start = "0-0"
+        for _ in range(_CLAIM_MAX_PASSES):
+            cursor, claimed, _deleted = await self._redis.xautoclaim(
+                STREAM_KEY,
+                self._group,
+                self._consumer,
+                min_idle_time=PENDING_MIN_IDLE_MS,
+                start_id=start,
+                count=READ_COUNT,
+            )
+            for entry_id, fields in claimed or []:
+                entries.setdefault(entry_id, fields)
+            if not claimed or cursor in ("0-0", "0", b"0-0", b"0") or cursor == start:
+                break
+            start = cursor
+        return list(entries.items())
 
     async def run(
         self,
@@ -307,11 +392,17 @@ class QuotesTossConsumer:
         cycles = 0
         # First pass drains this consumer's own pending entries — anything
         # committed-but-unacked from a previous process replays through the
-        # same dedupe keys instead of stranding forever.
+        # same dedupe keys instead of stranding forever.  The drain then
+        # repeats every PENDING_DRAIN_SECONDS so foreign dead-peer work is
+        # rescued once it has been idle long enough to be provably stalled.
+        self._last_pending_drain = time.monotonic()
         pending = True
         while stop is None or not stop():
             entries = await self.read_batch(pending=pending)
-            pending = False
+            now_mono = time.monotonic()
+            pending = now_mono - self._last_pending_drain >= PENDING_DRAIN_SECONDS
+            if pending:
+                self._last_pending_drain = now_mono
             await self.consume_batch(entries, counters)
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:

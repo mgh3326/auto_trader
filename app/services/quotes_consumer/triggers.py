@@ -18,6 +18,7 @@ kick: it has no kick, session, broker, or order callable to invoke.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -31,6 +32,9 @@ HOLDING_CORE_THRESHOLD = Decimal("0.05")
 HOLDING_OTHER_THRESHOLD = Decimal("0.07")
 VI_THRESHOLD = Decimal("0.03")
 VI_WINDOW = timedelta(seconds=60)
+# The 60-second reference must land near the boundary; a stale reference
+# would compare across a longer-than-60s window, which is not the proxy.
+VI_REF_MAX_AGE = timedelta(seconds=75)
 HISTORY_KEEP = timedelta(seconds=120)
 
 KICK_DAILY_CAP = 2
@@ -43,46 +47,44 @@ def _kst_date(ts: datetime) -> str:
     return f"{ts.astimezone(KST):%Y-%m-%d}"
 
 
-def _epoch_second(ts: datetime) -> int:
-    return int(ts.timestamp())
-
-
-@dataclass
-class _GateState:
-    count: int = 0
-    last_at: datetime | None = None
-
-
 class ShadowKickGate:
     """Would-be suppression arithmetic: cap 2/day + 60-minute cooldown.
 
-    State lives in-process but re-seeds from today's committed firing
-    rows, so a restart continues the same shadow budget instead of
+    Mirrors #906 ``_gated_kick`` (fill_event_handoff/service.py): the
+    daily cap is keyed by (market, KST day) and resets at KST midnight,
+    while the cooldown is a single per-market timestamp that carries
+    across midnight.  State lives in-process but re-seeds from committed
+    firing rows, so a restart continues the same shadow budget instead of
     resetting it.  ``decide`` only computes; nothing here can kick.
     """
 
     def __init__(self) -> None:
-        self._days: dict[tuple[str, str], _GateState] = {}
+        self._caps: dict[tuple[str, str], int] = {}
+        self._cooldown: dict[str, datetime] = {}
 
     def seed(self, market: str, kst_date: str, count: int, last_at) -> None:
         key = (market, kst_date)
-        state = self._days.setdefault(key, _GateState())
-        state.count = max(state.count, count)
-        if last_at is not None and (state.last_at is None or last_at > state.last_at):
-            state.last_at = last_at
+        self._caps[key] = max(self._caps.get(key, 0), count)
+        if last_at is not None:
+            prev = self._cooldown.get(market)
+            if prev is None or last_at > prev:
+                self._cooldown[market] = last_at
 
     def decide(
         self, market: str | None, now: datetime
     ) -> tuple[bool, str | None, int, datetime | None]:
         bucket = market or "other"
-        state = self._days.setdefault((bucket, _kst_date(now)), _GateState())
-        if state.count >= KICK_DAILY_CAP:
-            return False, "daily_cap", state.count, state.last_at
-        if state.last_at is not None and now - state.last_at < KICK_COOLDOWN:
-            return False, "cooldown", state.count, state.last_at
-        state.count += 1
-        state.last_at = now
-        return True, None, state.count, state.last_at
+        key = (bucket, _kst_date(now))
+        count = self._caps.get(key, 0)
+        last_at = self._cooldown.get(bucket)
+        if count >= KICK_DAILY_CAP:
+            return False, "daily_cap", count, last_at
+        if last_at is not None and now - last_at < KICK_COOLDOWN:
+            return False, "cooldown", count, last_at
+        count += 1
+        self._caps[key] = count
+        self._cooldown[bucket] = now
+        return True, None, count, now
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,17 @@ class TriggerEvaluator:
         self._in_breach: set[tuple[str, str, str]] = set()
         self._emitted_ne: set[tuple[str, str, str]] = set()
         self.gate = ShadowKickGate()
+
+    def seed_breach(self, pairs: Iterable[tuple[str, str, str]]) -> None:
+        """Assume committed (trigger, symbol, kst_date) keys are still in
+        breach until an inside-band tick proves otherwise.
+
+        Conservative by design: after a restart a quiet symbol suppresses
+        a genuinely new breach until the next inside tick, which loses one
+        shadow record — the alternative (unseeded) re-fires and writes a
+        second row for the same breach on every redelivery.
+        """
+        self._in_breach.update(pairs)
 
     # ------------------------------------------------------------------
     def _fire(
@@ -200,15 +213,18 @@ class TriggerEvaluator:
     def _reference_at_60s(
         self, hist: deque[tuple[datetime, Decimal]], now_ts: datetime
     ) -> Decimal | None:
-        """Most recent tick price at or before ``now_ts - 60s``."""
+        """Most recent tick price at or before ``now_ts - 60s``, or None
+        when that reference is too stale to stand in for it."""
         boundary = now_ts - VI_WINDOW
-        ref: Decimal | None = None
+        ref: tuple[datetime, Decimal] | None = None
         for ts, price in hist:
             if ts <= boundary:
-                ref = price
+                ref = (ts, price)
             else:
                 break
-        return ref
+        if ref is None or now_ts - ref[0] > VI_REF_MAX_AGE:
+            return None
+        return ref[1]
 
     def evaluate_tick(
         self,
@@ -266,7 +282,7 @@ class TriggerEvaluator:
                                 source_ref=tick.entry_id,
                                 dedupe=(
                                     f"spike:holding_spike:{tick.symbol}:"
-                                    f"{_kst_date(tick.ts)}:{_epoch_second(tick.ts)}"
+                                    f"{_kst_date(tick.ts)}:{tick.entry_id}"
                                 ),
                                 detail={
                                     "threshold": str(threshold),
@@ -279,9 +295,9 @@ class TriggerEvaluator:
                     self._in_breach.discard(key)
 
         # vi_proxy ------------------------------------------------------
-        # VI is a KRX mechanism; US sessions have no volatility halt to
-        # proxy, so only KR ticks are candidates.
-        ref_60s = self._reference_at_60s(hist, tick.ts) if market == "kr" else None
+        # Market-wide per the design: the proxy measures reaction latency
+        # on any stream symbol, not only sessions with a real halt.
+        ref_60s = self._reference_at_60s(hist, tick.ts)
         if ref_60s is not None and ref_60s > 0:
             change = (tick.price - ref_60s) / ref_60s
             key = ("vi_proxy", tick.symbol, _kst_date(tick.ts))
@@ -302,7 +318,7 @@ class TriggerEvaluator:
                             source_ref=tick.entry_id,
                             dedupe=(
                                 f"spike:vi_proxy:{tick.symbol}:"
-                                f"{_kst_date(tick.ts)}:{_epoch_second(tick.ts)}"
+                                f"{_kst_date(tick.ts)}:{tick.entry_id}"
                             ),
                             detail={"change_pct": str(change)},
                         )

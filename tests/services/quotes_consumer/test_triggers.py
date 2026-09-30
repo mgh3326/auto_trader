@@ -28,11 +28,11 @@ def _tick(
     ts: datetime = T0,
     session: str = "krx_regular",
     kind: str = "trade",
-    entry: str = "1-0",
+    entry: str | None = None,
 ) -> QuoteTick:
     market: Literal["kr", "us"] = "kr" if session.startswith(("nxt", "krx")) else "us"
     return QuoteTick(
-        entry_id=entry,
+        entry_id=entry or f"1-{int(ts.timestamp() * 1_000_000)}",
         symbol=symbol,
         source_symbol=symbol,
         ts=ts,
@@ -178,7 +178,45 @@ def test_vi_proxy_fires_at_3pct_within_60s() -> None:
     assert row.session == "krx_regular"
 
 
-def test_vi_proxy_ignores_us_ticks() -> None:
+def test_vi_reference_staler_than_75s_is_rejected() -> None:
+    """A reference older than the bounded age compares across a longer
+    than 60s window — that is a different measurement, not the proxy."""
+    ev = TriggerEvaluator()
+    holdings = _holdings(held={}, core=frozenset())
+    ev.evaluate_tick(_tick("005930", "100000", ts=T0), holdings, {})
+    # Reference at 75s old: still admissible, +3.5% fires.
+    fired = ev.evaluate_tick(
+        _tick("005930", "103500", ts=T0 + timedelta(seconds=75)),
+        holdings,
+        {},
+    )
+    assert len(fired) == 1
+
+    ev2 = TriggerEvaluator()
+    ev2.evaluate_tick(_tick("005930", "100000", ts=T0), holdings, {})
+    # Reference at 76s old: too stale — evaluates nothing.
+    assert (
+        ev2.evaluate_tick(
+            _tick("005930", "103500", ts=T0 + timedelta(seconds=76)),
+            holdings,
+            {},
+        )
+        == []
+    )
+    # And a 119s-old reference can never proxy a 60s window.
+    assert (
+        ev2.evaluate_tick(
+            _tick("005930", "103500", ts=T0 + timedelta(seconds=119)),
+            holdings,
+            {},
+        )
+        == []
+    )
+
+
+def test_vi_proxy_fires_for_us_sessions_market_wide() -> None:
+    """Design §3: VI is market-wide — the proxy measures reaction latency
+    on every stream symbol, not only sessions with a real halt."""
     ev = TriggerEvaluator()
     holdings = _holdings(held={}, core=frozenset())
     ev.evaluate_tick(_tick("AAPL", "100", ts=T0, session="us_regular"), holdings, {})
@@ -187,7 +225,9 @@ def test_vi_proxy_ignores_us_ticks() -> None:
         holdings,
         {},
     )
-    assert fired == []
+    assert len(fired) == 1
+    assert fired[0].trigger_type == "vi_proxy"
+    assert fired[0].market == "us"
 
 
 def test_orderbook_tick_drives_no_price_trigger() -> None:
@@ -285,6 +325,74 @@ def test_would_kick_cooldown_60_minutes() -> None:
     assert later[0].daily_would_kick_count == 2
 
 
+def test_cooldown_carries_across_kst_midnight() -> None:
+    """#906 parity: the cap resets at KST midnight but the 60-minute
+    cooldown is one timestamp per market — it never resets with the day.
+    KST midnight falls inside us_regular (22:30–05:00 KST)."""
+    ev = TriggerEvaluator()
+    us_holdings = _holdings(held={"AAPL": "us"}, core=frozenset())
+    prev = {"AAPL": Decimal("100")}
+
+    # 2026-09-30 23:40 KST = 14:40 UTC — first would-kick of the day.
+    first = ev.evaluate_tick(
+        _tick(
+            "AAPL",
+            "108",
+            ts=datetime(2026, 9, 30, 14, 40, tzinfo=UTC),
+            session="us_regular",
+        ),
+        us_holdings,
+        prev,
+    )
+    assert first[0].would_kick is True
+    assert first[0].kst_date == "2026-09-30"
+
+    # 2026-10-01 00:10 KST = 15:10 UTC — new day, 30 min later: the cap
+    # bucket resets but the cooldown still suppresses.
+    second = ev.evaluate_tick(
+        _tick(
+            "AAPL",
+            "109",
+            ts=datetime(2026, 9, 30, 15, 10, tzinfo=UTC),
+            session="us_regular",
+        ),
+        us_holdings,
+        prev,
+    )
+    assert second[0].kst_date == "2026-10-01"
+    assert second[0].would_kick is False
+    assert second[0].suppress_reason == "cooldown"
+
+    # 00:20 KST — back inside the band re-arms the edge.
+    assert (
+        ev.evaluate_tick(
+            _tick(
+                "AAPL",
+                "101",
+                ts=datetime(2026, 9, 30, 15, 20, tzinfo=UTC),
+                session="us_regular",
+            ),
+            us_holdings,
+            prev,
+        )
+        == []
+    )
+    # 00:41 KST — 61 minutes after the first kick: cooldown expired, the
+    # new-day cap allows it again.
+    third = ev.evaluate_tick(
+        _tick(
+            "AAPL",
+            "110",
+            ts=datetime(2026, 9, 30, 15, 41, tzinfo=UTC),
+            session="us_regular",
+        ),
+        us_holdings,
+        prev,
+    )
+    assert third[0].would_kick is True
+    assert third[0].daily_would_kick_count == 1  # new KST day's count
+
+
 def test_capped_markets_are_independent() -> None:
     ev = TriggerEvaluator()
     kr = _fire_symbols(ev, ["AAA"], T0)
@@ -304,6 +412,50 @@ def test_gate_reseed_continues_the_shadow_budget() -> None:
     rows = _fire_symbols(ev, ["AAA"], T0 + timedelta(minutes=90))
     assert rows[0].would_kick is False
     assert rows[0].suppress_reason == "daily_cap"
+
+
+def test_gate_seed_restores_cooldown_from_an_earlier_day() -> None:
+    """A restart just after midnight keeps yesterday's still-active
+    cooldown — the seed carries the all-time latest kick timestamp."""
+    ev = TriggerEvaluator()
+    ev.gate.seed("us", "2026-10-01", 0, datetime(2026, 9, 30, 14, 40, tzinfo=UTC))
+    us_holdings = _holdings(held={"AAPL": "us"}, core=frozenset())
+    row = ev.evaluate_tick(
+        _tick(
+            "AAPL",
+            "108",
+            ts=datetime(2026, 9, 30, 15, 10, tzinfo=UTC),
+            session="us_regular",
+        ),
+        us_holdings,
+        {"AAPL": Decimal("100")},
+    )
+    assert row[0].would_kick is False
+    assert row[0].suppress_reason == "cooldown"
+
+
+def test_seed_breach_suppresses_replay_of_the_same_breach() -> None:
+    """A fresh evaluator seeded from committed rows cannot refire a
+    breach that is still in progress — the replayed tick conflicts."""
+    ev = TriggerEvaluator()
+    ev.seed_breach({("holding_spike", "005930", "2026-09-30")})
+    holdings = _holdings(held={"005930": "kr"}, core=frozenset({"005930"}))
+    prev = {"005930": Decimal("100000")}
+    assert ev.evaluate_tick(_tick("005930", "106500", ts=T0), holdings, prev) == []
+    # An inside-band tick clears the seeded state; a genuinely new
+    # breach then records normally.
+    assert (
+        ev.evaluate_tick(
+            _tick("005930", "101000", ts=T0 + timedelta(seconds=1)),
+            holdings,
+            prev,
+        )
+        == []
+    )
+    rows = ev.evaluate_tick(
+        _tick("005930", "106000", ts=T0 + timedelta(seconds=2)), holdings, prev
+    )
+    assert len(rows) == 1
 
 
 def test_evaluator_never_calls_a_session_kick(monkeypatch) -> None:
