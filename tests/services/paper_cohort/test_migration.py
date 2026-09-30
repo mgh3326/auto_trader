@@ -311,6 +311,15 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE public.krx_after_market_eligibility")
             )
+            # #1120 quotes consumer tables are later than this reconstructed
+            # boundary and already in Base.metadata; drop them so the
+            # migration creates them (their append-only triggers arrive only
+            # via alembic, not create_all).
+            for table in (
+                "quotes_trigger_firings",
+                "ladder_touch_events",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

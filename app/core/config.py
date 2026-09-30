@@ -686,6 +686,11 @@ class Settings(BaseSettings):
     # ROB-595: 비공식 토스 컨슈머 API (wts-info-api) 신호 — ToS 리뷰 전까지 비활성
     toss_consumer_signals_enabled: bool = False
 
+    # #1120 — records-only quotes:toss stream consumer (Q-109 = A shadow).
+    # Default off: the resident TaskIQ task returns without consuming until
+    # an operator sets this. No scheduler/unit ever registers it.
+    quotes_toss_consumer_enabled: bool = False
+
     # ROB-281 — Gates cron registration for KR/US screener snapshot scheduled refreshes.
     # When False, scheduled tasks remain defined as broker tasks (so operators can still
     # kick them manually via ``taskiq kick``) but no cron entries are registered. Pairs
