@@ -147,6 +147,8 @@ tests/services/brokers/toss/test_market_data.py
 tests/services/brokers/toss/test_minute_candles.py
 tests/services/brokers/toss/test_no_mutation_surface.py
 tests/services/execution_ledger/test_fill_sinks.py
+tests/services/execution_ledger/test_kis_lots_sell_evidence.py
+tests/services/execution_ledger/test_kis_lots_sell_evidence_db.py
 tests/services/execution_ledger/test_query_service_names.py
 tests/services/execution_ledger/test_reconciler.py
 tests/services/execution_outcomes/test_mapping_catalog.py
