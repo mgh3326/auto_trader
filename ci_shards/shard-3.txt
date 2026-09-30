@@ -227,6 +227,8 @@ tests/services/protected_quantity/test_acceptance.py
 tests/services/protected_quantity/test_auto_follow.py
 tests/services/protected_quantity/test_auto_follow_wiring.py
 tests/services/protected_quantity/test_service.py
+tests/services/quotes_consumer/test_stream_parsing.py
+tests/services/quotes_consumer/test_triggers.py
 tests/services/research/test_research_contracts_wheel.py
 tests/services/research/test_research_offline_gate_service.py
 tests/services/research/test_rob974_h6a_reason_taxonomy.py

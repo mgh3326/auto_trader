@@ -115,6 +115,7 @@ from .paper_validation import (
 from .portfolio_decision_run import PortfolioDecisionRun
 from .prompt import PromptResult
 from .protected_positions import ProtectedPosition, ProtectedPositionRevision
+from .quotes_consumer import LadderTouchEvent, QuotesTriggerFiring
 from .research_backtest import (
     ResearchBacktestPair,
     ResearchBacktestRun,
@@ -228,6 +229,8 @@ __all__ = [
     "UserChannel",
     "UserWatchItem",
     "PromptResult",
+    "LadderTouchEvent",
+    "QuotesTriggerFiring",
     "ResearchBacktestRun",
     "ResearchBacktestPair",
     "ResearchPromotionCandidate",
