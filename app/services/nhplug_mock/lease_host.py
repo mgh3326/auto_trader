@@ -40,6 +40,7 @@ def process_gone_on_lease_host(
     *,
     machine_id: Path = Path("/etc/machine-id"),
     proc_root: Path = Path("/proc"),
+    expected_host_pid_ns: str | None = None,
 ) -> bool:
     """Return true only with same-host reboot or positive Linux /proc death evidence.
 
@@ -59,9 +60,23 @@ def process_gone_on_lease_host(
             return True
         namespace = str((proc_root / "self/ns/pid").stat().st_ino)
         if namespace != identity.pid_ns:
-            # This process cannot prove host-wide namespace disappearance.
-            # A dedicated host-visible witness is required before T14.
-            return False
+            # Case (c): only an explicitly host-visible witness may enumerate
+            # every PID namespace. The caller must supply the namespace inode
+            # measured on the lease host outside the container.
+            if (
+                expected_host_pid_ns != namespace
+                or str((proc_root / "1/ns/pid").stat().st_ino) != namespace
+            ):
+                return False
+            for entry in proc_root.iterdir():
+                if not entry.name.isdecimal():
+                    continue
+                try:
+                    if str((entry / "ns/pid").stat().st_ino) == identity.pid_ns:
+                        return False
+                except FileNotFoundError:
+                    continue  # PID exited during the scan.
+            return True
         stat_path = proc_root / str(identity.pid) / "stat"
         try:
             current_start = _starttime(stat_path.read_text())

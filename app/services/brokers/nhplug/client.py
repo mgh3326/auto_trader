@@ -374,7 +374,15 @@ class NHPlugMockClient:
             raise LedgerConflict("account_ref_mismatch")
         # T3 must record this send process, not an identity supplied by a caller.
         # The T14 death witness uses these immutable fields to release a reservation.
-        identity = current_lease_identity()
+        try:
+            identity = current_lease_identity()
+        except (OSError, UnicodeError, LedgerConflict):
+            # No T3 claim occurred. Release only this still-unclaimed T1
+            # reservation; never touch a lease or an uncertain order.
+            await ledger.withdraw_unclaimed_intent(
+                row_id, request_id, "lease_identity_unavailable"
+            )
+            raise
         claim = await ledger.claim(
             row_id,
             request_id,

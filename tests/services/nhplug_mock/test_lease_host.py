@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -56,4 +57,40 @@ def test_unknown_namespace_or_proc_visibility_is_not_death_proof(
     (proc / "sys/kernel/random/boot_id").unlink()
     assert not process_gone_on_lease_host(
         wrong_namespace, machine_id=machine, proc_root=proc
+    )
+
+
+def test_host_visible_namespace_scan_proves_only_absence(tmp_path: Path) -> None:
+    machine = tmp_path / "machine-id"
+    machine.write_text("machine-a")
+    proc = tmp_path / "proc"
+    (proc / "sys/kernel/random").mkdir(parents=True)
+    (proc / "sys/kernel/random/boot_id").write_text("boot-a")
+    (proc / "self/ns").mkdir(parents=True)
+    host_ns = proc / "self/ns/pid"
+    host_ns.write_text("host")
+    (proc / "1/ns").mkdir(parents=True)
+    os.link(host_ns, proc / "1/ns/pid")
+    (proc / "321/ns").mkdir(parents=True)
+    lease_ns = proc / "321/ns/pid"
+    lease_ns.write_text("lease")
+    identity = LeaseIdentity(
+        "machine-a", "boot-a", str(lease_ns.stat().st_ino), 321, 777
+    )
+    assert not process_gone_on_lease_host(identity, machine_id=machine, proc_root=proc)
+    assert not process_gone_on_lease_host(
+        identity, machine_id=machine, proc_root=proc, expected_host_pid_ns="wrong"
+    )
+    assert not process_gone_on_lease_host(
+        identity,
+        machine_id=machine,
+        proc_root=proc,
+        expected_host_pid_ns=str(host_ns.stat().st_ino),
+    )
+    lease_ns.unlink()
+    assert process_gone_on_lease_host(
+        identity,
+        machine_id=machine,
+        proc_root=proc,
+        expected_host_pid_ns=str(host_ns.stat().st_ino),
     )

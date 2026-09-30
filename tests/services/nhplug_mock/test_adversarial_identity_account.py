@@ -291,7 +291,7 @@ async def test_r2_b1_unreadable_host_identity_refuses_before_claim(
     stored = await ledger.get(row["id"])
     assert (
         broker.requests == []
-        and stored["state"] == "intent"
+        and stored["state"] == "withdrawn"
         and stored["claim_token"] is None
     )
 
