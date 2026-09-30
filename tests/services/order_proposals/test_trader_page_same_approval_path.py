@@ -29,7 +29,7 @@ from __future__ import annotations
 import inspect
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -150,12 +150,17 @@ def _web_app(db_session, monkeypatch, factory) -> FastAPI:
     return app
 
 
+#: Real wall-clock reads taken immediately before and after the web POST.
+ClickWindow = tuple[datetime, datetime]
+
+
 async def _click_web(app: FastAPI, proposal_id: uuid.UUID, action: str, body=None):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         await client.get("/csrf-seed")
-        return await client.post(
+        before = datetime.now(UTC)
+        response = await client.post(
             f"/invest/api/approvals/{proposal_id}/{action}",
             json=body or {},
             headers={
@@ -163,6 +168,7 @@ async def _click_web(app: FastAPI, proposal_id: uuid.UUID, action: str, body=Non
                 "Idempotency-Key": f"click-{uuid.uuid4()}",
             },
         )
+        return response, (before, datetime.now(UTC))
 
 
 async def _click_telegram(group, *, action: str, factory) -> dict[str, Any]:
@@ -174,7 +180,9 @@ async def _click_telegram(group, *, action: str, factory) -> dict[str, Any]:
     )
 
 
-def _assert_same_call(telegram: dict[str, Any], web: dict[str, Any]) -> None:
+def _assert_same_call(
+    telegram: dict[str, Any], web: dict[str, Any], window: ClickWindow
+) -> None:
     assert set(telegram) == set(web)
     differing = {key for key in telegram if telegram[key] != web[key]}
     assert differing <= CHANNEL_IDENTITY_KEYS, differing - CHANNEL_IDENTITY_KEYS
@@ -193,20 +201,21 @@ def _assert_same_call(telegram: dict[str, Any], web: dict[str, Any]) -> None:
     assert web["notifier"] is None
     assert web["chat_id"] is None
     assert web["message_id"] is None
-    _assert_web_uses_the_real_clock(web)
+    _assert_web_uses_the_real_clock(web, window)
 
 
-def _assert_web_uses_the_real_clock(web: dict[str, Any]) -> None:
+def _assert_web_uses_the_real_clock(web: dict[str, Any], window: ClickWindow) -> None:
     """``now``/``now_fn`` are channel keys but decide expiry and TTL checks.
 
-    Behavioural check: the web path hands the core the real wall clock, so a
-    shifted clock cannot pass the equality proof above.
+    Behavioural check: the web path hands the core the real wall clock read
+    during the request -- inside the real timestamps taken just before and
+    just after the POST -- so even a small skew fails the proof above.
     """
-    tolerance = timedelta(seconds=60)
-    real_now = datetime.now(UTC)
-    assert abs(web["now"] - real_now) < tolerance, web["now"]
+    before, after = window
+    assert before <= web["now"] <= after, (before, web["now"], after)
     if "now_fn" in web:
-        assert abs(web["now_fn"]() - real_now) < tolerance
+        clock_now = web["now_fn"]()
+        assert before <= clock_now <= after, (before, clock_now, after)
 
 
 def _latest_group(db_session):
@@ -226,7 +235,7 @@ async def test_approve_click_reaches_handle_approve_with_the_telegram_arguments(
     factory = _session_factory(db_session)
 
     telegram_result = await _click_telegram(group, action="op", factory=factory)
-    response = await _click_web(
+    response, window = await _click_web(
         _web_app(db_session, monkeypatch, factory), group.proposal_id, "approve"
     )
 
@@ -236,7 +245,7 @@ async def test_approve_click_reaches_handle_approve_with_the_telegram_arguments(
     calls = spies["_handle_approve"].calls
     assert len(calls) == 2
     telegram, web = calls
-    _assert_same_call(telegram, web)
+    _assert_same_call(telegram, web, window)
     assert telegram["callback"].action == "op"
     assert telegram["revalidate_fn"] is revalidation_module.revalidate_and_submit
     assert web["revalidate_fn"] is revalidation_module.revalidate_and_submit
@@ -257,7 +266,7 @@ async def test_reject_click_reaches_handle_deny_with_the_telegram_arguments(
     factory = _session_factory(db_session)
 
     await _click_telegram(group, action="dn", factory=factory)
-    response = await _click_web(
+    response, window = await _click_web(
         _web_app(db_session, monkeypatch, factory), group.proposal_id, "deny"
     )
 
@@ -265,7 +274,7 @@ async def test_reject_click_reaches_handle_deny_with_the_telegram_arguments(
     calls = spies["_handle_deny"].calls
     assert len(calls) == 2
     telegram, web = calls
-    _assert_same_call(telegram, web)
+    _assert_same_call(telegram, web, window)
     assert telegram["callback"].action == "dn"
     assert spies["_handle_approve"].calls == []
 
@@ -279,7 +288,7 @@ async def test_loss_cut_approve_click_is_only_the_first_step_on_both_channels(
     factory = _session_factory(db_session)
 
     await _click_telegram(group, action="op", factory=factory)
-    response = await _click_web(
+    response, window = await _click_web(
         _web_app(db_session, monkeypatch, factory), group.proposal_id, "approve"
     )
 
@@ -289,7 +298,7 @@ async def test_loss_cut_approve_click_is_only_the_first_step_on_both_channels(
     calls = spies["_handle_loss_cut_first_click"].calls
     assert len(calls) == 2
     telegram, web = calls
-    _assert_same_call(telegram, web)
+    _assert_same_call(telegram, web, window)
     assert telegram["callback"].action == "op"
     assert (
         telegram["loss_cut_preview_fn"]
@@ -316,7 +325,7 @@ async def test_loss_cut_second_click_reaches_handle_approve_as_confirmation(
     factory = _session_factory(db_session)
 
     await _click_telegram(group, action="lc", factory=factory)
-    response = await _click_web(
+    response, window = await _click_web(
         _web_app(db_session, monkeypatch, factory),
         group.proposal_id,
         "loss-cut-confirm",
@@ -327,7 +336,7 @@ async def test_loss_cut_second_click_reaches_handle_approve_as_confirmation(
     calls = spies["_handle_approve"].calls
     assert len(calls) == 2
     telegram, web = calls
-    _assert_same_call(telegram, web)
+    _assert_same_call(telegram, web, window)
     assert telegram["callback"].action == "lc"
     assert telegram["loss_cut_confirmation"] is True
     assert web["loss_cut_confirmation"] is True
