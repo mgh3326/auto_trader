@@ -21,6 +21,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
+from app.core.timezone import KST
 from app.models.manual_holdings import BrokerAccount, ManualHolding, MarketType
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.models.quotes_consumer import LadderTouchEvent, QuotesTriggerFiring
@@ -29,6 +30,8 @@ from app.services.quotes_consumer.consumer import (
     ConsumerCounters,
     QuotesTossConsumer,
 )
+from app.services.quotes_consumer.repository import QuotesConsumerRepository
+from app.services.quotes_consumer.triggers import ShadowKickGate, TriggerRow
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -567,3 +570,217 @@ async def test_open_rungs_keep_only_positive_limit_orders(
     assert counters.ladder_events_inserted == 1
     assert len(events) == 1
     assert events[0].event_type == "touch"
+
+
+async def test_gate_seed_restores_cooldown_across_midnight(db_session, request) -> None:
+    """r2 SHOULD-5 (gate_seed scope): the seed returns the all-time
+    latest would_kick timestamp, so a kick committed before KST
+    midnight still suppresses on the new day after a restart — the
+    same-day-only variant silently loses it."""
+    n = _uniq(request.node.name)
+    repo = QuotesConsumerRepository(db_session)
+    kick_at = datetime(2026, 9, 29, 23, 40, tzinfo=KST)
+    await repo.insert_firings(
+        [
+            TriggerRow(
+                dedupe_key=f"qc-gateseed-{n}",
+                trigger_type="own_fill",
+                outcome="fired",
+                symbol=f"{SYM}G{n:03d}",
+                source_symbol=None,
+                market="us",
+                session=None,
+                reference_price=None,
+                current_price=Decimal("1"),
+                window="fill",
+                event_ts=kick_at,
+                kst_date="2026-09-29",
+                would_kick=True,
+                suppress_reason=None,
+                daily_would_kick_count=1,
+                last_would_kick_at=kick_at,
+                not_evaluable_reason=None,
+                source_ref=f"gate-seed-{n}",
+                detail={},
+            )
+        ]
+    )
+    await db_session.flush()
+
+    gate = ShadowKickGate()
+    for market, count, last_at in await repo.gate_seed("2026-09-30"):
+        gate.seed(market, "2026-09-30", count, last_at)
+    would_kick, reason, *_ = gate.decide("us", datetime(2026, 9, 30, 0, 10, tzinfo=KST))
+    assert (would_kick, reason) == (False, "cooldown")
+
+
+async def test_committed_approach_seeds_restart_state(
+    db_session, fake_redis, request
+) -> None:
+    """r2 SHOULD-5 (rung_event_states seeding): a committed approach row
+    seeds the fresh tracker as 'near' — a replayed in-band tick writes
+    no second approach for the same rung."""
+    from app.models.review import TossLiveOrderLedger
+
+    n = _uniq(request.node.name)
+    sym = f"{SYM}A{n:03d}"
+    order = TossLiveOrderLedger(
+        trade_date=T0 - timedelta(minutes=10),
+        operation_kind="place",
+        market="kr",
+        symbol=sym,
+        side="buy",
+        order_type="limit",
+        price=Decimal("100000"),
+        client_order_id=f"qc-appr-{n}",
+        broker_order_id=f"TA-{n}",
+        status="accepted",
+    )
+    db_session.add(order)
+    await db_session.flush()
+    db_session.add(
+        LadderTouchEvent(
+            dedupe_key=f"ladder:toss_live_order_ledger:{order.id}:approach:11-1",
+            order_ledger="toss_live_order_ledger",
+            order_ledger_id=order.id,
+            broker_order_id=f"TA-{n}",
+            event_type="approach",
+            market="kr",
+            symbol=sym,
+            side="buy",
+            session="krx_regular",
+            anchor_price=Decimal("100000"),
+            event_price=Decimal("100400"),
+            event_ts=T0 + timedelta(minutes=50),
+            stream_entry_id="11-1",
+            detail={},
+        )
+    )
+    await db_session.flush()
+
+    consumer = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        now=lambda: T0 + timedelta(minutes=56),
+    )
+    counters = ConsumerCounters()
+    in_band = dict(
+        TRADE_FIELDS,
+        symbol=sym,
+        ts="2026-09-30T13:56:00.000+00:00",
+        price="100300",
+    )
+    await consumer.consume_batch([("78-1", in_band)], counters)
+
+    assert counters.ladder_events_inserted == 0
+    events = (
+        (
+            await db_session.execute(
+                select(LadderTouchEvent).where(
+                    LadderTouchEvent.order_ledger_id == order.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(events) == 1  # only the committed approach — no duplicate
+
+
+async def test_fill_from_wrong_broker_does_not_match_rung(
+    db_session, fake_redis, request
+) -> None:
+    """r2 SHOULD-5 (broker constraint): a kis_live_order_ledger rung
+    must not latch a toss-sourced execution_ledger row — broker
+    identity is part of the match, not just symbol + order id."""
+    from app.models.execution_ledger import ExecutionLedger
+    from app.models.review import KISLiveOrderLedger
+    from app.models.trading import InstrumentType
+
+    n = _uniq(request.node.name)
+    sym = f"{SYM}B{n:03d}"
+    order = KISLiveOrderLedger(
+        trade_date=T0 - timedelta(minutes=10),
+        symbol=sym,
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=Decimal("1"),
+        price=Decimal("100000"),
+        order_no=f"KB-{n}",
+        account_mode="kis_live",
+        broker="kis",
+        status="accepted",
+        lifecycle_state="open",
+    )
+    db_session.add(order)
+    foreign_fill = ExecutionLedger(
+        broker="toss",  # wrong broker for a kis-ledger rung
+        venue="nxt",
+        instrument_type=InstrumentType.equity_kr,
+        symbol=sym,
+        raw_symbol=sym,
+        side="buy",
+        broker_order_id=f"KB-{n}",
+        fill_seq=0,
+        filled_qty=Decimal("1"),
+        filled_price=Decimal("100000"),
+        filled_notional=Decimal("100000"),
+        filled_at=T0 + timedelta(minutes=58),
+        currency="KRW",
+    )
+    db_session.add(foreign_fill)
+    await db_session.flush()
+    # Seed the fill watermark just below this row so the poll returns
+    # exactly it — otherwise a fresh install's ledger-max watermark
+    # would hide it and the match path would never run.
+    db_session.add(
+        QuotesTriggerFiring(
+            dedupe_key=f"qc-broker-seed-{n}",
+            trigger_type="own_fill",
+            outcome="fired",
+            symbol=sym,
+            market="kr",
+            window="fill",
+            event_ts=T0 + timedelta(minutes=58),
+            kst_date="2026-09-30",
+            would_kick=False,
+            daily_would_kick_count=0,
+            source_ref=str(foreign_fill.id - 1),
+            detail={},
+        )
+    )
+    await db_session.flush()
+
+    consumer = QuotesTossConsumer(
+        redis=fake_redis,
+        session_factory=_factory(db_session),
+        now=lambda: T0 + timedelta(minutes=59),
+    )
+    counters = ConsumerCounters()
+    await consumer.consume_batch([], counters)
+
+    fills = (
+        (
+            await db_session.execute(
+                select(LadderTouchEvent).where(
+                    LadderTouchEvent.order_ledger == "kis_live_order_ledger",
+                    LadderTouchEvent.order_ledger_id == order.id,
+                    LadderTouchEvent.event_type == "fill",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert fills == []
+    # The fill itself is still recorded as an own_fill firing — the
+    # broker mismatch only blocks the rung match.
+    own = (
+        await db_session.execute(
+            select(QuotesTriggerFiring).where(
+                QuotesTriggerFiring.dedupe_key == f"ownfill:{foreign_fill.id}"
+            )
+        )
+    ).scalar_one()
+    assert own.trigger_type == "own_fill"
