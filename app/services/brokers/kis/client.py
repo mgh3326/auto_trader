@@ -52,6 +52,11 @@ class _KISSettingsView:
         return getattr(settings, name)
 
     @property
+    def account_scope(self) -> str:
+        """Account binding marker read by the shared account-number parser."""
+        return "kis_mock" if self._is_mock else "kis_live"
+
+    @property
     def kis_app_key(self) -> str:
         if self._is_mock:
             return str(settings.kis_mock_app_key or "")

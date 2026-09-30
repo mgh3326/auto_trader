@@ -95,12 +95,9 @@ def missing_mock_credential_names(
 
 
 def _account_parts(account_no: str) -> tuple[str, str]:
-    compact = account_no.strip().replace("-", "")
-    if len(compact) < 3 or not compact.isdigit():
-        raise ValueError(
-            "KIS_MOCK_ACCOUNT_NO must be digits with an account product code"
-        )
-    return compact[:-2], compact[-2:]
+    from app.services.brokers.kis.account_no import parse_kis_account_parts
+
+    return parse_kis_account_parts(account_no, is_mock=True)
 
 
 class KISReadOnlyTransport:

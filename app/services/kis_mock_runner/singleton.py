@@ -519,15 +519,26 @@ _KIS_MOCK_FINGERPRINT_V1_PREFIX: Final[str] = "kismock:v1:"
 
 
 def kis_mock_account_fingerprint(*, app_key: str, account_no: str) -> str:
-    """Derive the secret-free identity a J2A ``physical_account_id`` must equal."""
+    """Derive the secret-free identity a J2A ``physical_account_id`` must equal.
+
+    The account is canonicalized by the shared mock parser first, so the
+    8-digit, ``8-2``, and 10-digit spellings of one account all hash
+    identically. For every spelling accepted before this change the hashed
+    input is byte-identical (the digits in their original order), so existing
+    registry pins stay valid.
+    """
+
+    from app.services.brokers.kis.account_no import parse_kis_account_parts
 
     normalized_app_key = app_key.strip() if isinstance(app_key, str) else ""
-    normalized_account = (
-        "".join(char for char in account_no if char.isdigit())
-        if isinstance(account_no, str)
-        else ""
-    )
-    if not normalized_app_key or len(normalized_account) < 10:
+    try:
+        cano, acnt_prdt_cd = parse_kis_account_parts(
+            account_no if isinstance(account_no, str) else None, is_mock=True
+        )
+    except ValueError:
+        cano, acnt_prdt_cd = "", ""
+    normalized_account = cano + acnt_prdt_cd
+    if not normalized_app_key or not normalized_account:
         raise KISMockSendBoundaryRejected(
             KIS_MOCK_ACCOUNT_FINGERPRINT_MISMATCH,
             detail="actual mock credentials are incomplete",

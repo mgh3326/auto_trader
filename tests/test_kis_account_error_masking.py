@@ -189,14 +189,16 @@ class TestOrderPathMasking:
     @pytest.mark.asyncio
     async def test_mock_order_history_path_masks_mock_account(self, monkeypatch):
         """The reported #1093 path: kis_mock order history via a mock client."""
-        monkeypatch.setattr(settings, "kis_mock_account_no", "50712345")
+        # 9 digits: malformed under the mock grammar (8 bare digits are a
+        # valid account now — #1104 — so the fixture must be longer).
+        monkeypatch.setattr(settings, "kis_mock_account_no", "507123456")
         client = KISClient(is_mock=True)
         with patch.object(client, "_ensure_token"):
             with pytest.raises(ValueError) as exc_info:
                 await client.inquire_daily_order_domestic(
                     "20260101", "20260102", is_mock=True
                 )
-        _assert_masked(str(exc_info.value), "50712345")
+        _assert_masked(str(exc_info.value), "507123456")
 
     @pytest.mark.asyncio
     async def test_mcp_tool_error_payload_is_masked(self, monkeypatch):
@@ -213,7 +215,8 @@ class TestOrderPathMasking:
         async def _no_shadow_orders(**kwargs):
             return []
 
-        monkeypatch.setattr(settings, "kis_mock_account_no", "50712345")
+        # 9 digits: malformed under the mock grammar — see above.
+        monkeypatch.setattr(settings, "kis_mock_account_no", "507123456")
         monkeypatch.setattr(KISClient, "_ensure_token", _noop_token)
         # Keep the broker fetcher path deterministic: the shadow pending
         # ledger needs a DB that may not exist under a throwaway env.
@@ -231,7 +234,7 @@ class TestOrderPathMasking:
         assert kr_errors, "expected the masked ValueError in errors[]"
         joined = " ".join(e["error"] for e in kr_errors)
         assert "[MASKED]" in joined
-        assert "50712345" not in joined
+        assert "507123456" not in joined
 
 
 class TestHttpStatusErrorSanitization:

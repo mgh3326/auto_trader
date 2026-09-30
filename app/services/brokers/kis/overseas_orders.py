@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.symbol import to_kis_symbol
 
 from . import constants
-from .base import mask_account_identifier
+from .account_no import resolve_kis_account_parts
 from .order_throttle import (
     MAX_THROTTLE_RESUBMITS,
     is_provider_throttle_reject,
@@ -135,18 +135,7 @@ class OverseasOrderClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                "계좌번호 형식이 올바르지 않습니다: "
-                f"{mask_account_identifier(self._settings.kis_account_no)}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
         exchange_code_normalized = _EXCHANGE_ALIAS_MAP.get(
             str(exchange_code or "").strip().upper(),
             str(exchange_code or "").strip().upper(),
@@ -444,18 +433,7 @@ class OverseasOrderClient:
         await self._parent._ensure_token()
 
         # 계좌번호 확인
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                "계좌번호 형식이 올바르지 않습니다: "
-                f"{mask_account_identifier(self._settings.kis_account_no)}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         # 미체결 조회는 실전/모의 구분 없이 동일한 TR_ID 사용
         tr_id = constants.OVERSEAS_ORDER_INQUIRY_TR
@@ -585,18 +563,7 @@ class OverseasOrderClient:
         await self._parent._ensure_token()
 
         # 계좌번호 확인
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                "계좌번호 형식이 올바르지 않습니다: "
-                f"{mask_account_identifier(self._settings.kis_account_no)}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         # Normalize exchange code to KIS format
         normalized_exchange_code = _normalize_kis_exchange_code(exchange_code)
@@ -743,18 +710,7 @@ class OverseasOrderClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                "계좌번호 형식이 올바르지 않습니다: "
-                f"{mask_account_identifier(self._settings.kis_account_no)}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         tr_id = (
             constants.OVERSEAS_DAILY_ORDER_TR_MOCK
@@ -937,18 +893,7 @@ class OverseasOrderClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                "계좌번호 형식이 올바르지 않습니다: "
-                f"{mask_account_identifier(self._settings.kis_account_no)}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = resolve_kis_account_parts(self._settings)
 
         tr_id = (
             constants.OVERSEAS_ORDER_CANCEL_TR_MOCK

@@ -348,6 +348,7 @@ tests/test_kis_base_rate_limit.py
 tests/test_kis_circuit_breaker_dispatch.py
 tests/test_kis_domestic_orders_nxt.py
 tests/test_kis_domestic_pending_mock.py
+tests/test_kis_mock_account_parse.py
 tests/test_kis_mock_cancel_modify.py
 tests/test_kis_mock_holdings_delta_fill.py
 tests/test_kis_mock_scalping_adapters.py
