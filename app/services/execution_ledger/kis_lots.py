@@ -216,6 +216,17 @@ def _from_today_kst(when: datetime, now: datetime) -> bool:
     return _aware_utc(when) >= start
 
 
+def _is_opening_seed(fill: LedgerFill) -> bool:
+    """A ``manual_import`` ``SEED-*`` row: a position snapshot, not a fill.
+
+    Same rule as the seed cutover. A ``manual_import`` row without the prefix
+    is an authoritative actual fill and counts as same-day evidence.
+    """
+    return fill.source == "manual_import" and fill.broker_order_id.startswith(
+        _SEED_ORDER_ID_PREFIX
+    )
+
+
 def _split_provisional(
     fills: Sequence[LedgerFill],
 ) -> tuple[list[LedgerFill], list[LedgerFill], int]:
@@ -382,13 +393,14 @@ def _open_buy_evidence(
             prior_day_dead.append(order)
 
     # Authoritative rows plus provisional rows no authoritative row covers:
-    # websocket duplicates of a reconciled order are not counted twice. Seeded
-    # opening lots (manual_import) are position snapshots, not orders.
+    # websocket duplicates of a reconciled order are not counted twice. Opening
+    # seeds (manual_import SEED-*) are position snapshots, not orders; any other
+    # manual_import row is an actual fill (task #1087 round 1).
     authoritative, provisional, _ = _split_provisional(fills)
     unproven_fills = [
         f
         for f in (*authoritative, *provisional)
-        if f.source != "manual_import"
+        if not _is_opening_seed(f)
         and f.side == "buy"
         and _from_today_kst(f.filled_at, now)
         and _norm_order_id(f.broker_order_id) not in resolved_order_ids
@@ -433,7 +445,7 @@ def _same_day_sell_evidence(
     sells = [
         f
         for f in (*authoritative, *provisional)
-        if f.source != "manual_import"
+        if not _is_opening_seed(f)
         and f.side == "sell"
         and _from_today_kst(f.filled_at, now)
     ]
@@ -497,7 +509,7 @@ def _open_sell_evidence(
     unproven_fills = [
         f
         for f in (*authoritative, *provisional)
-        if f.source != "manual_import"
+        if not _is_opening_seed(f)
         and f.side == "sell"
         and _from_today_kst(f.filled_at, now)
         and _norm_order_id(f.broker_order_id) not in resolved_order_ids
@@ -542,8 +554,8 @@ def _same_day_buy_evidence(
 
     The twin of ``_same_day_sell_evidence``: any same-day buy fill in the ledger
     (authoritative, or a provisional websocket row no authoritative row covers)
-    blocks, and an unverifiable ledger blocks too. Opening seeds are position
-    snapshots, not buys. Buys placed outside auto_trader are visible here only
+    blocks, and an unverifiable ledger blocks too. Opening seeds (``SEED-*``)
+    are position snapshots, not buys; other ``manual_import`` rows are fills. Buys placed outside auto_trader are visible here only
     once they fill.
     """
     unknown: list[str] = []
@@ -555,7 +567,7 @@ def _same_day_buy_evidence(
     buys = [
         f
         for f in (*authoritative, *provisional)
-        if f.source != "manual_import"
+        if not _is_opening_seed(f)
         and f.side == "buy"
         and _from_today_kst(f.filled_at, now)
     ]

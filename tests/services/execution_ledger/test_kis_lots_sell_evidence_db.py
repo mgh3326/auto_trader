@@ -395,6 +395,46 @@ async def test_provisional_websocket_rows_block_but_never_count(db_session) -> N
     assert bought["sellable_by_ledger"] is None  # never 15, never 12
 
 
+@pytest.mark.parametrize("side", ["buy", "sell"])
+async def test_nonseed_manual_import_fill_today_is_evidence_through_the_loader(
+    db_session, side: str
+) -> None:
+    """Round 1 BLOCKER: a non-SEED manual_import row is an actual fill."""
+    sym = "T108709" if side == "buy" else "T108710"
+    blocks = await _load(
+        db_session,
+        [
+            _run(timedelta(minutes=90)),
+            _fill(symbol=sym),
+            _fill(
+                symbol=sym,
+                side=side,
+                filled_qty=Decimal("2"),
+                filled_at=KST_MIDNIGHT,
+                broker_order_id="MANUAL-FIX-1087",
+                source="manual_import",
+            ),
+        ],
+        [PositionRef(sym, Decimal("14" if side == "buy" else "10"))],
+    )
+    block = blocks[sym]
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
+    if side == "buy":
+        assert block["same_day_buy_evidence"]["blocking_reasons"] == [
+            "same_day_buy_fill_in_ledger"
+        ]
+        assert block["open_buy_evidence"]["blocking_reasons"] == [
+            "same_day_buy_fill_order_not_proven_complete"
+        ]
+    else:
+        assert block["open_sell_evidence"]["blocking_reasons"] == [
+            "same_day_sell_fill_order_not_proven_complete"
+        ]
+        assert block["same_day_sell_evidence"]["blocking_reasons"] == [
+            "same_day_sell_fill_in_ledger"
+        ]
+
+
 async def test_order_ledger_read_failure_degrades_both_order_views(db_session) -> None:
     class OrderReadFails:
         def __init__(self, inner):

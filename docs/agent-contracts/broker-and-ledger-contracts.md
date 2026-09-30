@@ -227,12 +227,14 @@ allowlist change exists because `get_holdings` is already live-kr core.
     reconcile 없음·90분 초과 stale·주문원장 읽기 실패면 `open_sell_evidence_unknown` — 모두 `blocking=true`. `state` 는 `known|unknown`, `scope="orders_known_to_auto_trader_only"`,
     `external_orders_verifiable=false`. 전일 이전 비터미널 매도는 `presumed_dead_prior_day_sells` 로 보고만 한다. `own_open_sell_order_quantity` 는 당일 비터미널 자기 매도의
     **주문 수량**(미체결 잔량이 아님 — 보수적) 합이며 unknown 이면 `null`.
-  - **same_day_buy_evidence**: `same_day_sell_evidence` 의 매수 쌍둥이. 당일(KST) 매수 체결(opening seed 제외, provisional 포함·`provisional` 플래그)이 있으면
+  - **same_day_buy_evidence**: `same_day_sell_evidence` 의 매수 쌍둥이. 당일(KST) 매수 체결(opening seed=`manual_import` 이면서 `SEED-*` 주문번호인 행만 제외 — 그 밖의 `manual_import` 는 실제 체결로 센다, provisional 포함·`provisional` 플래그)이 있으면
     `same_day_buy_fill_in_ledger`, reconcile stale/없음이면 `same_day_buy_evidence_unknown` — 매도의 same-day chain / wash 판정용 반대방향 시야.
   - **sellable_by_ledger** (+ `sellable_by_ledger_basis`): `ledger_state=known`(fresh·브로커 수량과 순수량 일치) **AND** `open_sell_evidence.state=known` **AND** 모든 당일 자기
     비터미널 매도에 수량이 있을 때만 `원장 순수량 − own_open_sell_order_quantity` 를 `[0, 브로커 수량]` 으로 clamp 한 값, 그 외는 `null` + `unknown_reasons`
     (`ledger_state_unknown`/`open_sell_evidence_unknown`/`own_open_sell_quantity_unknown`). provisional websocket 행은 절대 이 수량에 들어가지 않는다.
     🔴 이 값은 **상한이지 허가가 아니다** — 게이트는 `open_sell_evidence`·`same_day_buy_evidence` 둘 다 non-blocking.
+  - 당일 증거 4종(`open_buy_evidence` S3·`same_day_sell_evidence`·`open_sell_evidence`·`same_day_buy_evidence`) 모두 `SEED-*` 가 아닌 `manual_import` 행을
+    실제 체결로 센다(#1087 에서 #963 두 뷰도 함께 교정 — blocking 을 더할 뿐 줄이지 않는다).
   - 후속 운영자 프롬프트 PR 이 쓸 caveat 이름: `kis_external_open_orders_unverified`(auto_trader 밖 미체결 매도 불가시), `kis_same_day_buy_chain_unverified`
     (auto_trader 밖 당일 매수는 체결 전까지 불가시). 이 PR 은 프롬프트·`live/CLAUDE.md` 를 바꾸지 않는다.
 - 🔴 **`external_orders_verifiable` 는 항상 `false`**: KIS 앱/HTS 등 auto_trader 밖에서 낸 **미체결** 주문은 어떤 DB 읽기로도 보이지 않는다. 이 블록의 통과는

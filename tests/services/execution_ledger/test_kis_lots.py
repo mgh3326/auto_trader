@@ -414,7 +414,19 @@ def test_same_day_fill_with_partial_order_row_blocks_via_s2() -> None:
 
 
 def test_seeded_opening_lot_dated_today_is_not_a_same_day_buy() -> None:
-    out = block([fill(1, "buy", "12", "100000", TODAY_MORNING, source="manual_import")])
+    out = block(
+        [
+            fill(
+                1,
+                "buy",
+                "12",
+                "100000",
+                TODAY_MORNING,
+                source="manual_import",
+                order="SEED-20260929-kis-krx-196170",
+            )
+        ]
+    )
     assert out["ledger_state"] == "known"
     assert out["open_buy_evidence"]["blocking"] is False
 

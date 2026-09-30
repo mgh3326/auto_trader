@@ -702,3 +702,83 @@ def test_every_new_blocking_reason_constant_is_exercised_here() -> None:
         == "same_day_sell_fill_order_not_proven_complete"
     )
     assert kis_lots.BLOCK_OPEN_SELL_EVIDENCE_UNKNOWN == "open_sell_evidence_unknown"
+
+
+# ---------------------------------------------------------------------------
+# round 1 (tester BLOCKER): only SEED-* manual_import rows are opening
+# snapshots; any other manual_import row is an actual authoritative fill and
+# must count as same-day evidence in all four same-day views.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("when", [KST_MIDNIGHT, TODAY_MORNING])
+def test_nonseed_manual_import_buy_today_blocks_both_buy_views(when) -> None:
+    out = block(
+        [
+            fill(1, "buy", "12", EARLIER),
+            fill(2, "buy", "3", when, source="manual_import", order="MANUAL-FIX-1"),
+        ],
+        reference="15",
+        freshness=AT_CAP,
+    )
+    assert out["ledger_state"] == "known", out["unknown_reasons"]
+    assert sbe(out)["blocking_reasons"] == [BLOCK_SAME_DAY_BUY_FILL_IN_LEDGER]
+    assert [f["broker_order_id"] for f in sbe(out)["fills"]] == ["MANUAL-FIX-1"]
+    # the #963 buy view: an actual buy fill whose order is not proven complete
+    assert out["open_buy_evidence"]["blocking_reasons"] == [
+        kis_lots.BLOCK_SAME_DAY_FILL
+    ]
+
+
+@pytest.mark.parametrize("when", [KST_MIDNIGHT, TODAY_MORNING])
+def test_nonseed_manual_import_sell_today_blocks_both_sell_views(when) -> None:
+    out = block(
+        [
+            fill(1, "buy", "12", EARLIER),
+            fill(2, "sell", "2", when, source="manual_import", order="MANUAL-FIX-2"),
+        ],
+        reference="10",
+        freshness=AT_CAP,
+    )
+    assert out["ledger_state"] == "known", out["unknown_reasons"]
+    assert ose(out)["blocking_reasons"] == [BLOCK_SAME_DAY_SELL_FILL_UNPROVEN]
+    assert [
+        f["broker_order_id"] for f in ose(out)["same_day_sell_fills_unproven_complete"]
+    ] == ["MANUAL-FIX-2"]
+    # the #963 sell view for buys
+    assert out["same_day_sell_evidence"]["blocking_reasons"] == [
+        kis_lots.BLOCK_SAME_DAY_SELL_FILL
+    ]
+
+
+def test_seed_prefixed_manual_import_today_is_still_not_same_day_evidence() -> None:
+    out = block(
+        [
+            fill(
+                1,
+                "buy",
+                "12",
+                KST_MIDNIGHT,
+                source="manual_import",
+                order="SEED-20260929-kis-krx-196170",
+            )
+        ],
+    )
+    for key in ("open_buy_evidence", "same_day_buy_evidence"):
+        assert out[key]["blocking"] is False, key
+
+
+def test_nonseed_manual_import_prior_day_does_not_block() -> None:
+    out = block(
+        [
+            fill(1, "buy", "12", EARLIER),
+            fill(
+                2, "buy", "3", JUST_BEFORE_MIDNIGHT, source="manual_import", order="M1"
+            ),
+            fill(
+                3, "sell", "2", JUST_BEFORE_MIDNIGHT, source="manual_import", order="M2"
+            ),
+        ],
+        reference="13",
+    )
+    assert ose(out)["blocking"] is False
+    assert sbe(out)["blocking"] is False
+    assert out["sellable_by_ledger"] == "13"
