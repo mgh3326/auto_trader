@@ -37,8 +37,11 @@ defaults, frontend and backend; directives log, master-worker, mode, timeout,
 bind, default_backend, option, http-check, default-server and server; every
 bind on loopback or the tailnet address and every server on 127.0.0.1. Any
 other listener form (stats socket, listen, peers, ...) refuses the render.
-The deploy script also turns off shell tracing (bash -x, SHELLOPTS) at
-start, because MCP tokens pass through it.
+MCP tokens pass through the deploy script, so it never runs traced: when it
+inherits tracing or anything that could re-enable it (bash -x, an exported
+SHELLOPTS/BASHOPTS, a BASH_ENV/ENV startup file, or a trap that runs code),
+it re-executes itself once in a clean shell and says so on stderr. Signals
+ignored at entry (nohup) do not trigger this.
 
 All units run with host networking, but the Python server itself is explicitly
 bound to MCP_HOST=127.0.0.1, MCP_TYPE=streamable-http, MCP_PATH=/mcp, and

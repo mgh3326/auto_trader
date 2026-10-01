@@ -546,11 +546,17 @@ def _traced(tmp_path: Path, how: str) -> Path:
     wrapper = tmp_path / "deploy-traced.sh"
     if how == "bash-x":
         body = f'exec bash -x "{DEPLOY}" "$@"\n'
-    elif how == "bash-env-debug-trap":
-        # A BASH_ENV file whose DEBUG trap turns tracing back on after the
-        # script's own set +x (round 2 self-check of the F2 fix).
+    elif how.startswith("bash-env-"):
+        # A BASH_ENV startup file whose trap turns tracing back on after the
+        # script's own set +x: DEBUG (builder self-check after round 1), CHLD
+        # (round 2 finding: any child exit re-enables it) and EXIT.
+        trap = {
+            "bash-env-debug-trap": "trap 'set -x' DEBUG\nset -o functrace\n",
+            "bash-env-chld-trap": "trap 'set -x' CHLD\n",
+            "bash-env-exit-trap": "trap 'set -x' EXIT\n",
+        }[how]
         env_file = tmp_path / "bash-env.sh"
-        env_file.write_text("trap 'set -x' DEBUG\nset -o functrace\n")
+        env_file.write_text(trap)
         body = f'export BASH_ENV="{env_file}"\nexec bash "{DEPLOY}" "$@"\n'
     else:
         body = f'export SHELLOPTS\nset -o xtrace\nexec bash "{DEPLOY}" "$@"\n'
@@ -559,7 +565,16 @@ def _traced(tmp_path: Path, how: str) -> Path:
     return wrapper
 
 
-@pytest.mark.parametrize("how", ["bash-x", "shellopts", "bash-env-debug-trap"])
+@pytest.mark.parametrize(
+    "how",
+    [
+        "bash-x",
+        "shellopts",
+        "bash-env-debug-trap",
+        "bash-env-chld-trap",
+        "bash-env-exit-trap",
+    ],
+)
 @pytest.mark.parametrize("args", [(), ("--rollback",)], ids=["deploy", "rollback"])
 def test_inherited_tracing_never_prints_a_token(
     tmp_path: Path, how: str, args: tuple[str, ...]
@@ -576,3 +591,43 @@ def test_inherited_tracing_never_prints_a_token_on_failure(tmp_path: Path) -> No
     result, _, _, _ = _run(tmp_path, fail_name=UNIT, deploy=_traced(tmp_path, "bash-x"))
     assert result.returncode != 0
     assert "tok-MCP_" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("ignored", ["HUP", "PIPE", "HUP PIPE INT"])
+def test_signals_ignored_at_entry_neither_re_exec_nor_loop(
+    tmp_path: Path, ignored: str
+) -> None:
+    # nohup and some service managers start the script with signals ignored;
+    # those list as trap -- '' and run no code, so the clean-shell re-exec
+    # must not fire (and so cannot loop) and the deploy runs once, untraced.
+    wrapper = tmp_path / "deploy-ignored.sh"
+    wrapper.write_text(
+        f'#!/usr/bin/env bash\ntrap \'\' {ignored}\nexec bash "{DEPLOY}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    result, calls, state, _ = _run(tmp_path, deploy=wrapper)
+    assert result.returncode == 0, result.stderr
+    assert "clean shell" not in result.stderr
+    assert "tok-MCP_" not in result.stdout + result.stderr
+    assert len([c for c in calls if c[0] == "pull"]) == 1
+    assert state[UNIT] == NEW
+
+
+def test_any_startup_file_forces_the_clean_re_exec(tmp_path: Path) -> None:
+    # A BASH_ENV startup file ran arbitrary code before the script; even one
+    # that set no trap and no option is not trusted. The clean shell must not
+    # read it again.
+    marker = tmp_path / "bash-env-ran.log"
+    env_file = tmp_path / "bash-env.sh"
+    env_file.write_text(f'printf "ran\\n" >> "{marker}"\n')
+    wrapper = tmp_path / "deploy-bash-env.sh"
+    wrapper.write_text(
+        f'#!/usr/bin/env bash\nexport BASH_ENV="{env_file}"\nexec bash "{DEPLOY}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    result, _, state, _ = _run(tmp_path, deploy=wrapper)
+    assert result.returncode == 0, result.stderr
+    assert "re-running in a clean shell" in result.stderr
+    # read once by the first shell, never by the clean one or its children
+    assert marker.read_text() == "ran\n"
+    assert state[UNIT] == NEW

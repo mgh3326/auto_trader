@@ -2,11 +2,26 @@
 # Pull and promote a digest-pinned NCP deployment. API and MCP backends are
 # private behind HAProxy; never add a wildcard or public bind here.
 set -Eeuo pipefail
-# MCP tokens pass through env_value and run_mcp. Never trace them (#1189):
-# this also turns off tracing inherited from bash -x, SHELLOPTS or BASH_ENV,
-# after dropping any inherited DEBUG/RETURN trap that could turn it back on.
-trap - DEBUG RETURN; set +o functrace
-if [[ $- == *x* ]]; then { set +x; } 2>/dev/null; printf 'xtrace disabled: this script handles MCP tokens\n' >&2; fi
+# MCP tokens pass through env_value and run_mcp, so this script never runs
+# traced (#1189). Anything inherited that can trace or turn tracing back on
+# (bash -x, an exported SHELLOPTS/BASHOPTS, a BASH_ENV/ENV startup file, or a
+# trap that runs code: DEBUG, RETURN, CHLD, EXIT, ...) makes it re-exec itself
+# once in a clean shell: exec drops every trap, and the new shell starts with
+# xtrace off and reads no startup file. Signals ignored at entry (nohup's
+# HUP, an ignored PIPE) list as trap -- '' and run no code, so they neither
+# count nor can make the re-exec loop.
+inherited_code_trap() {
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == "trap -- '' "* ]] || return 0
+  done <<<"$(trap -p)"
+  return 1
+}
+if [[ $- == *x* || -n "${BASH_ENV-}${ENV-}" || ":${SHELLOPTS-}:" == *:xtrace:* || ":${SHELLOPTS-}:" == *:functrace:* ]] || inherited_code_trap; then
+  { set +x; } 2>/dev/null
+  printf 'xtrace disabled: this script handles MCP tokens; re-running in a clean shell\n' >&2
+  exec env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS "$BASH" +x "$0" "$@"
+fi
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
 readonly HAPROXY_IMAGE="haproxy:3.1-alpine"
