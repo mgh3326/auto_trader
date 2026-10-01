@@ -17,7 +17,6 @@ from app.models.execution_ledger import (
     execution_ledger_in_effect,
 )
 from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
-from app.services.execution_ledger.accept_notice import is_accept_notice_frame
 
 UpsertStatus = Literal["inserted", "updated", "unchanged"]
 
@@ -134,19 +133,6 @@ class ExecutionLedgerRepository:
     ) -> tuple[UpsertStatus, int]:
         """Insert or update one fill by the broker idempotency key."""
         status = await self.classify_fill(fill)
-        if status == "updated" and await self.is_tombstoned_accept_notice(fill):
-            # #1175: a replayed phantom whose key was quarantined never
-            # rewrites the row that now holds the key (the quarantined phantom
-            # itself, or an authoritative fill written after a maintenance
-            # DELETE). Report it as a duplicate and change nothing.
-            existing = await self.get_by_key(
-                fill.broker,
-                fill.account_mode,
-                fill.venue,
-                fill.broker_order_id,
-                fill.fill_seq,
-            )
-            return "unchanged", int(existing.id) if existing else 0
         if status == "unchanged":
             existing = await self.get_by_key(
                 fill.broker,
@@ -169,35 +155,10 @@ class ExecutionLedgerRepository:
         stmt = stmt.on_conflict_do_update(
             constraint="uq_execution_ledger_fill",
             set_=update_payload,
-        ).returning(ExecutionLedger.id, ExecutionLedger.quarantined_at)
+        ).returning(ExecutionLedger.id)
         result = await self.db.execute(stmt)
-        row_id, quarantined_at = result.one()
-        if status == "inserted" and quarantined_at is not None:
-            # #1175 tombstone: the DB trigger re-quarantined a re-inserted
-            # phantom (its key was quarantined before and the row deleted).
-            # It is not a new fill, so report it as a duplicate and keep the
-            # downstream notification suppressed.
-            return "unchanged", int(row_id)
-        return status, int(row_id)
-
-    async def is_tombstoned_accept_notice(self, fill: ExecutionLedgerUpsert) -> bool:
-        """#1175: a KIS websocket accept notice whose key was quarantined."""
-        if fill.source != "websocket" or fill.broker != "kis":
-            return False
-        if not is_accept_notice_frame(fill.raw_payload_json):
-            return False
-        result = await self.db.execute(
-            select(ExecutionLedgerQuarantineEvent.id)
-            .where(
-                ExecutionLedgerQuarantineEvent.broker == fill.broker,
-                ExecutionLedgerQuarantineEvent.account_mode == fill.account_mode,
-                ExecutionLedgerQuarantineEvent.venue == fill.venue,
-                ExecutionLedgerQuarantineEvent.broker_order_id == fill.broker_order_id,
-                ExecutionLedgerQuarantineEvent.fill_seq == fill.fill_seq,
-            )
-            .limit(1)
-        )
-        return result.scalar_one_or_none() is not None
+        row_id = int(result.scalar_one())
+        return status, row_id
 
     async def rows_by_ids(
         self, ids: list[int], *, for_update: bool
@@ -220,8 +181,9 @@ class ExecutionLedgerRepository:
         """#1175: the one UPDATE of ledger rows. Returns the touched row count.
 
         Guarded so it can only ever set the three quarantine columns on a
-        still-unquarantined KIS websocket row; the DB CHECKs and permanence
-        trigger enforce the same independently.
+        still-unquarantined KIS websocket row; the DB CHECKs and the terminal
+        trigger enforce the same independently. Once set, the DB refuses any
+        further change to or removal of the row.
         """
         result = await self.db.execute(
             update(ExecutionLedger)

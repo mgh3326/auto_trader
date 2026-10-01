@@ -110,3 +110,22 @@ def fake_row(**overrides: Any) -> SimpleNamespace:
     data.setdefault("quarantine_reason", "earlier" if data["quarantined_at"] else None)
     data.setdefault("quarantined_by", "desk" if data["quarantined_at"] else None)
     return SimpleNamespace(**data)
+
+
+async def purge_test_ledger_rows(db, *where) -> None:
+    """Test-only cleanup that can remove quarantined rows.
+
+    A quarantined row is terminal: the DB refuses DELETE through the
+    trg_execution_ledger_quarantine_guard trigger. Test teardown is the one
+    place rows must still go, so this sets session_replication_role=replica
+    for this transaction only (ordinary triggers do not fire; superuser-only,
+    which the throwaway test databases are and the application role is not).
+    """
+    import sqlalchemy as sa
+
+    from app.models.execution_ledger import ExecutionLedger
+
+    await db.rollback()
+    await db.execute(sa.text("SET LOCAL session_replication_role = replica"))
+    await db.execute(sa.delete(ExecutionLedger).where(*where))
+    await db.commit()

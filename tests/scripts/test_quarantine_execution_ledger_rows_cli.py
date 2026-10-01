@@ -7,7 +7,7 @@ import json
 import uuid
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.models.execution_ledger import (
     ExecutionLedger,
@@ -15,7 +15,10 @@ from app.models.execution_ledger import (
 )
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
 from scripts import quarantine_execution_ledger_rows as cli
-from tests.services.execution_ledger._quarantine_fixtures import row_kwargs
+from tests.services.execution_ledger._quarantine_fixtures import (
+    purge_test_ledger_rows,
+    row_kwargs,
+)
 
 SECRET = "S3cretPassw0rd"
 
@@ -202,8 +205,4 @@ async def test_cli_preview_commit_noop_and_refusal_exit_codes(db_session) -> Non
         ).scalars()
         assert sorted(audit) == [phantom_a, phantom_b]
     finally:
-        await db_session.rollback()
-        await db_session.execute(
-            delete(ExecutionLedger).where(ExecutionLedger.symbol == symbol)
-        )
-        await db_session.commit()
+        await purge_test_ledger_rows(db_session, ExecutionLedger.symbol == symbol)

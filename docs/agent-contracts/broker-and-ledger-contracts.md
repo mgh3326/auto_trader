@@ -204,12 +204,15 @@ websocket 탭이 KIS H0STCNI0 **접수** 통지(`CNTG_YN=1`)를 체결로 기록
   `fields[13]`(CNTG_YN) 이 정확히 `1` · 프레임 주문번호/종목이 행과 일치. 하나라도 부적격이면
   **배치 전체 거부·무변경**, 전부 이미 격리면 no-op. `CNTG_YN=2`(실체결)는 항상 거부
 - **스키마**: `execution_ledger.quarantined_at/quarantine_reason/quarantined_by`(nullable) +
-  CHECK 2종(all-or-nothing · `source='websocket' AND broker='kis'` 만) + 영구화 트리거(해제·재작성
-  불가) + append-only `review.execution_ledger_quarantine_events`(ledger_id UNIQUE, FK 없음).
-  감사 행은 멱등키 tombstone 이기도 하다 — BEFORE INSERT 트리거가 tombstone 키로 재삽입되는
-  KIS websocket 행을 격리 상태로 태어나게 하고 `upsert_fill` 은 `unchanged` 로 보고한다
-  (삭제 후 재생으로 phantom 복귀 불가, reconciler 행·다른 키는 불변).
-  마이그레이션 `20261001_t1175_ledger_quar`, downgrade 는 격리를 잃는다
+  CHECK 2종(all-or-nothing · `source='websocket' AND broker='kis'` 만) + append-only
+  `review.execution_ledger_quarantine_events`(ledger_id UNIQUE, FK 없음). 마이그레이션
+  `20261001_t1175_ledger_quar`, downgrade 는 격리를 잃는다
+- 🔴 **격리 행은 terminal**: 트리거가 격리된 행의 모든 UPDATE·DELETE 와(격리 행이 있는 동안)
+  TRUNCATE 를 `restrict_violation` 으로 거부한다. 같은 키로 들어오는 변경된 쓰기(바뀐 phantom
+  재생, 우연히 키가 같은 실체결·reconciler 행)는 덮어쓰거나 숨기지 않고 **거부되어 운영자 검토로
+  드러난다**(HTTP ingest 항목 `rejected` + 경고 로그, reconcile run 실패·`error_summary`).
+  동일 재생은 `unchanged`. ingest 경로(repository upsert·commit_fill·router)는 이 기능으로
+  바뀌지 않았다. tombstone/재격리 로직은 r4(hk 1224=A)에서 제거
 - 🔴 **리더 계약**: fill/lot/evidence/리포트로 원장을 읽는 모든 함수는
   `execution_ledger_in_effect()`(`quarantined_at IS NULL`)를 AND 한다. 업서트 식별 읽기
   (`get_by_key`)·id 워터마크·격리 도구 자신만 예외이며,

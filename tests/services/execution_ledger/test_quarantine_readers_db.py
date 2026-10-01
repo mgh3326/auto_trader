@@ -45,7 +45,10 @@ from app.services.fill_event_handoff import broker_risk
 from app.services.market_close_digest import queries as digest_queries
 from app.services.order_proposals import kis_leftover_inference_service as inference
 from app.services.quotes_consumer import repository as quotes_repository
-from tests.services.execution_ledger._quarantine_fixtures import row_kwargs
+from tests.services.execution_ledger._quarantine_fixtures import (
+    purge_test_ledger_rows,
+    row_kwargs,
+)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -119,10 +122,7 @@ class _Seed:
         return result
 
     async def cleanup(self) -> None:
-        await self.db.rollback()
-        await self.db.execute(
-            delete(ExecutionLedger).where(ExecutionLedger.symbol.in_(self.symbols))
-        )
+        await purge_test_ledger_rows(self.db, ExecutionLedger.symbol.in_(self.symbols))
         await self.db.execute(
             delete(ExecutionLedgerReconcileRun).where(
                 ExecutionLedgerReconcileRun.run_id.in_(self.run_ids)

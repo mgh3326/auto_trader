@@ -129,7 +129,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # tombstoned key.
 # v55 (#1175 r3): the re-quarantine trigger also requires the new row's own
 # frame to be an H0STCNI0 accept notice (CNTG_YN=1).
-SCHEMA_BOOTSTRAP_VERSION = 55
+# v56 (#1175 r4): the tombstone and its audit key columns are gone; a
+# quarantined row is terminal (any UPDATE or DELETE refused, TRUNCATE refused
+# while one exists).
+SCHEMA_BOOTSTRAP_VERSION = 56
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2017,13 +2020,21 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     CREATE OR REPLACE FUNCTION review.guard_execution_ledger_quarantine()
     RETURNS trigger AS $$
     BEGIN
-        IF OLD.quarantined_at IS NOT NULL AND (
-            NEW.quarantined_at IS DISTINCT FROM OLD.quarantined_at
-            OR NEW.quarantine_reason IS DISTINCT FROM OLD.quarantine_reason
-            OR NEW.quarantined_by IS DISTINCT FROM OLD.quarantined_by
-        ) THEN
-            RAISE EXCEPTION 'review.execution_ledger quarantine is permanent; row % rejected',
-                OLD.id USING ERRCODE = 'restrict_violation';
+        IF TG_OP = 'TRUNCATE' THEN
+            IF EXISTS (
+                SELECT 1 FROM review.execution_ledger WHERE quarantined_at IS NOT NULL
+            ) THEN
+                RAISE EXCEPTION 'review.execution_ledger holds quarantined rows; TRUNCATE rejected'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NULL;
+        END IF;
+        IF OLD.quarantined_at IS NOT NULL THEN
+            RAISE EXCEPTION 'review.execution_ledger row % is quarantined and terminal; % rejected',
+                OLD.id, TG_OP USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+            RETURN OLD;
         END IF;
         RETURN NEW;
     END;
@@ -2032,8 +2043,14 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_guard "
     "ON review.execution_ledger",
     "CREATE TRIGGER trg_execution_ledger_quarantine_guard "
-    "BEFORE UPDATE ON review.execution_ledger "
+    "BEFORE UPDATE OR DELETE ON review.execution_ledger "
     "FOR EACH ROW EXECUTE FUNCTION review.guard_execution_ledger_quarantine()",
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_truncate "
+    "ON review.execution_ledger",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_truncate "
+    "BEFORE TRUNCATE ON review.execution_ledger "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.guard_execution_ledger_quarantine()",
     """
     CREATE OR REPLACE FUNCTION
         review.reject_execution_ledger_quarantine_event_mutation()
@@ -2056,41 +2073,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.execution_ledger_quarantine_events "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_execution_ledger_quarantine_event_mutation()",
-    """
-    CREATE OR REPLACE FUNCTION review.requarantine_execution_ledger_insert()
-    RETURNS trigger AS $$
-    DECLARE
-        tombstone RECORD;
-    BEGIN
-        IF NEW.quarantined_at IS NULL AND NEW.source = 'websocket'
-            AND NEW.broker = 'kis'
-            AND NEW.raw_payload_json ->> 'tr' = 'H0STCNI0'
-            AND jsonb_typeof(NEW.raw_payload_json -> 'fields') = 'array'
-            AND btrim(NEW.raw_payload_json -> 'fields' ->> 13) = '1' THEN
-            SELECT e.reason, e.actor INTO tombstone
-            FROM review.execution_ledger_quarantine_events AS e
-            WHERE e.broker = NEW.broker
-              AND e.account_mode = NEW.account_mode
-              AND e.venue = NEW.venue
-              AND e.broker_order_id = NEW.broker_order_id
-              AND e.fill_seq = NEW.fill_seq
-            ORDER BY e.id
-            LIMIT 1;
-            IF FOUND THEN
-                NEW.quarantined_at := now();
-                NEW.quarantine_reason := tombstone.reason;
-                NEW.quarantined_by := tombstone.actor;
-            END IF;
-        END IF;
-        RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql
-    """,
+    # r4 removed the tombstone; drop any copy a persistent test DB still has.
     "DROP TRIGGER IF EXISTS trg_execution_ledger_requarantine_insert "
     "ON review.execution_ledger",
-    "CREATE TRIGGER trg_execution_ledger_requarantine_insert "
-    "BEFORE INSERT ON review.execution_ledger "
-    "FOR EACH ROW EXECUTE FUNCTION review.requarantine_execution_ledger_insert()",
+    "DROP FUNCTION IF EXISTS review.requarantine_execution_ledger_insert()",
 )
 
 

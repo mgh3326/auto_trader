@@ -110,8 +110,10 @@ class ExecutionLedger(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False, default="reconciler")
     source_run_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     raw_payload_json: Mapped[dict | None] = mapped_column(JSONB)
-    # #1175: a quarantined row is kept (never deleted) but is not a fill; every
-    # fill/lot/evidence reader excludes it via ``execution_ledger_in_effect``.
+    # #1175: a quarantined row is kept but is not a fill; every fill/lot/
+    # evidence reader excludes it via ``execution_ledger_in_effect``. The row is
+    # terminal: the DB refuses any UPDATE or DELETE of it (and a TRUNCATE of the
+    # table while one exists), so a colliding write is refused loudly.
     quarantined_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     quarantine_reason: Mapped[str | None] = mapped_column(Text)
     quarantined_by: Mapped[str | None] = mapped_column(Text)
@@ -144,12 +146,6 @@ class ExecutionLedgerQuarantineEvent(Base):
     rejects UPDATE/DELETE/TRUNCATE on this table. There is deliberately no
     foreign key to ``execution_ledger`` so the audit survives any later
     ledger maintenance; ``ledger_id`` is UNIQUE, so a row is quarantined once.
-
-    The event also keeps the row's idempotency key (broker, account_mode,
-    venue, broker_order_id, fill_seq) as a tombstone: a BEFORE INSERT trigger
-    on ``execution_ledger`` quarantines any KIS websocket row re-inserted with
-    a tombstoned key, so deleting a quarantined row and replaying the phantom
-    frame can never bring the fill back.
     """
 
     __tablename__ = "execution_ledger_quarantine_events"
@@ -159,25 +155,12 @@ class ExecutionLedgerQuarantineEvent(Base):
         CheckConstraint("btrim(reason) <> ''", name="reason_nonblank"),
         CheckConstraint("btrim(actor) <> ''", name="actor_nonblank"),
         Index("ix_execution_ledger_quarantine_events_batch", "batch_id"),
-        Index(
-            "ix_execution_ledger_quarantine_events_key",
-            "broker",
-            "account_mode",
-            "venue",
-            "broker_order_id",
-            "fill_seq",
-        ),
         {"schema": "review"},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     batch_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     ledger_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    broker: Mapped[str] = mapped_column(Text, nullable=False)
-    account_mode: Mapped[str] = mapped_column(Text, nullable=False)
-    venue: Mapped[str] = mapped_column(Text, nullable=False)
-    broker_order_id: Mapped[str] = mapped_column(Text, nullable=False)
-    fill_seq: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     actor: Mapped[str] = mapped_column(Text, nullable=False)

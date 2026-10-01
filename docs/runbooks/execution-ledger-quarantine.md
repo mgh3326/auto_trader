@@ -104,47 +104,78 @@ now excludes quarantined rows) and commit only if the preview shows exactly the
 expected correction. Test:
 `test_quarantine_readers_db.py::test_lots_symbol_whose_only_mismatch_was_the_phantom_becomes_known`.
 
-## 5. Database guarantees
+## 5. Database guarantees: a quarantined row is terminal
 
 - `ck_execution_ledger_quarantine_fields`: the three columns are all NULL or
   all set, with non-blank reason and actor.
 - `ck_execution_ledger_quarantine_scope`: only `source='websocket' AND
   broker='kis'` rows can be quarantined, whatever issues the UPDATE.
-- `trg_execution_ledger_quarantine_guard`: once set, a quarantine cannot be
-  cleared or rewritten (permanent).
+- `trg_execution_ledger_quarantine_guard` (BEFORE UPDATE OR DELETE, per row):
+  once `quarantined_at` is set, **any** UPDATE (payload, source, quarantine
+  columns, even `updated_at`) and any DELETE of that row raises
+  `review.execution_ledger row <id> is quarantined and terminal; <op> rejected`
+  (SQLSTATE 23001 restrict_violation). The quarantining UPDATE itself is
+  allowed because the row was not yet quarantined.
+- `trg_execution_ledger_quarantine_truncate` (BEFORE TRUNCATE): TRUNCATE of
+  `review.execution_ledger` is refused while any quarantined row exists.
 - `review.execution_ledger_quarantine_events`: UNIQUE `ledger_id`; UPDATE,
-  DELETE and TRUNCATE are rejected by triggers. There is no foreign key to the
-  ledger on purpose (existing ledger maintenance and test cleanup keep working).
-- A replayed phantom frame with the same idempotency key is `unchanged` (the
-  upsert identity read does not filter) and stays quarantined; a changed
-  replay updates the row but never clears the quarantine.
-- Tombstone: each audit row keeps the ledger row's idempotency key (broker,
-  account_mode, venue, broker_order_id, fill_seq).
-  `trg_execution_ledger_requarantine_insert` (BEFORE INSERT) quarantines any
-  `source=websocket`, `broker=kis` row inserted with a tombstoned key, copying
-  the original reason and actor. A maintenance DELETE of a quarantined row is
-  not blocked, but a later replay of the same phantom frame is born
-  quarantined, and `upsert_fill` reports it as `unchanged` so no fill
-  notification goes out. A reconciler or manual_import row, or a row whose key
-  differs, is never touched by the tombstone.
-- Downgrade drops the columns and the audit table, i.e. it un-quarantines
-  everything. Do not downgrade after a commit without re-planning.
+  DELETE and TRUNCATE are rejected by triggers; no foreign key.
+
+What that means for writers (nothing in the ingest path was changed):
+
+- Identical replay of the phantom frame (same key, same payload): the
+  repository classifies it `unchanged` and writes nothing; the row stays
+  quarantined.
+- Any changed write on a quarantined key (a changed phantom replay, or a real
+  fill or reconciler/manual_import row that collides with the exact key
+  broker/account_mode/venue/broker_order_id/fill_seq): the ON CONFLICT UPDATE
+  hits the terminal trigger and fails. Nothing is overwritten or hidden; the
+  write is refused loudly for operator review:
+  - HTTP ingest (fillwire): that item is `rejected` with reason
+    `IntegrityError`, no downstream notification, and the API logs
+    `Execution ledger ingest rejected one fill: broker=... order_id=...
+    fill_seq=...`; other items in the batch are unaffected (per-item savepoint).
+  - websocket monitor `commit_fill`: the upsert raises and the monitor logs the
+    error for that fill.
+  - reconciler (task or script, commit mode): the run fails, its run record's
+    `error_summary` carries the terminal message, the caller rolls the run back
+    and re-raises. Until resolved, KIS reconcile runs keep failing, the ledger
+    goes stale and lots fall back to `unknown` (fail-closed). A real collision
+    needs all five key fields equal; fillwire derives fill_seq from a digest of
+    the whole frame, so in practice it is a deliberate or corrupted write.
+  - Operator response: read the refused key from the log or run record, compare
+    it with the quarantined row and its audit event, and decide out of band
+    (hk task). There is no in-app override.
+- Any later data migration that UPDATEs or DELETEs execution_ledger rows must
+  exclude quarantined rows or it will fail; that is intended.
+- Test databases only: `tests/services/execution_ledger/_quarantine_fixtures.py`
+  `purge_test_ledger_rows` cleans up with `SET LOCAL session_replication_role =
+  replica` (superuser-only, one transaction). The application role cannot do
+  this.
+- Downgrade drops the columns, triggers and the audit table, i.e. it
+  un-quarantines everything. Do not downgrade after a commit without
+  re-planning.
 - Locking: ADD COLUMN (nullable, no default) is catalog-only, but the two
   ADD CONSTRAINT CHECKs scan `review.execution_ledger` while the migration
   transaction holds ACCESS EXCLUSIVE on it, blocking ledger writes (fill
   ingest, reconcile) for the scan. Apply outside market hours like other
   ledger DDL.
 
-Live migration proof (2026-10-01, throwaway TimescaleDB 2.22.1-pg17 container,
-fresh `alembic upgrade` from base): upgrade to head with existing ledger rows
-kept them in effect; the reconciler-row and partial quarantines were refused by
-the two CHECKs, clearing was refused by the guard trigger, audit DELETE by the
-append-only trigger; `downgrade -1` produced a `pg_dump -s` identical to the
-pre-upgrade dump; up/down/up produced identical dumps; the migrated tables
-match the ORM `create_all` copy for every quarantine column, constraint and
-the audit table (the remaining diff is pre-existing column order/defaults).
-The CLI was run end to end against it (preview, refused mixed batch with a
-`CNTG_YN=2` row, commit, repeat no-op, pattern id refused).
+Live migration proof (2026-10-01, round 4, throwaway TimescaleDB 2.22.1-pg17
+container, fresh `alembic upgrade` from base with fake placeholder settings):
+upgrade to head kept an existing reconciler row in effect and still updatable;
+after quarantining a websocket row, DELETE, payload UPDATE, an ON CONFLICT
+collision from a reconciler-sourced insert and TRUNCATE were each refused by
+the terminal trigger; `downgrade -1` (with a quarantined row present) produced
+a `pg_dump -s` identical to the pre-upgrade dump and kept every row;
+up/down/up dumps identical; the audit table and the quarantine columns/CHECKs
+match the ORM `create_all` copy. The CLI was run end to end against it
+(preview, refused mixed batch with a `CNTG_YN=2` row, commit, repeat no-op,
+then a DELETE of a committed row was refused).
+
+History: rounds 2-3 tried a delete-plus-replay tombstone instead of a terminal
+row; round-3 testing broke it (whitespace parity, same-key real fill hidden,
+classify/upsert race). Round 4 (operator decision hk 1224 = A) removed it.
 
 ## 6. Readers
 

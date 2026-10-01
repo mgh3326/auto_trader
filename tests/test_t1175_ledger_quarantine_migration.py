@@ -60,7 +60,6 @@ def test_bootstrap_mirrors_the_migration_triggers_and_checks() -> None:
     ddl = [_norm(s) for s in bootstrap._DDL_STATEMENTS]
     assert _norm(migration.GUARD_FUNCTION_DDL) in ddl
     assert _norm(migration.AUDIT_REJECT_FUNCTION_DDL) in ddl
-    assert _norm(migration.REQUARANTINE_FUNCTION_DDL) in ddl
     joined = "\n".join(ddl)
     assert f"CHECK ({_norm(model.QUARANTINE_FIELDS_SQL)})" in joined
     assert f"CHECK ({_norm(model.QUARANTINE_SCOPE_SQL)})" in joined
@@ -68,7 +67,7 @@ def test_bootstrap_mirrors_the_migration_triggers_and_checks() -> None:
         "trg_execution_ledger_quarantine_guard",
         "trg_execution_ledger_quarantine_events_append_only",
         "trg_execution_ledger_quarantine_events_truncate",
-        "trg_execution_ledger_requarantine_insert",
+        "trg_execution_ledger_quarantine_truncate",
     ):
         assert f"CREATE TRIGGER {trigger} " in joined
         assert trigger in MIGRATION.read_text("utf-8")
@@ -118,9 +117,7 @@ def test_downgrade_reverses_everything_upgrade_creates() -> None:
     text = MIGRATION.read_text("utf-8")
     down = text[text.index("def downgrade") :]
     for name in (
-        "trg_execution_ledger_requarantine_insert",
-        "requarantine_execution_ledger_insert",
-        "ix_execution_ledger_quarantine_events_key",
+        "trg_execution_ledger_quarantine_truncate",
         "trg_execution_ledger_quarantine_events_truncate",
         "trg_execution_ledger_quarantine_events_append_only",
         "reject_execution_ledger_quarantine_event_mutation",
@@ -151,18 +148,35 @@ def test_orm_constraint_names_match_the_migration() -> None:
         assert f'"{name}"' in text, name
 
 
-def test_requarantine_trigger_requires_an_accept_notice_frame() -> None:
+def test_quarantined_rows_are_terminal_in_every_copy() -> None:
     migration = _load_migration()
-    body = _norm(migration.REQUARANTINE_FUNCTION_DDL)
-    for clause in (
-        "NEW.source = 'websocket'",
-        "NEW.broker = 'kis'",
-        "NEW.raw_payload_json ->> 'tr' = 'H0STCNI0'",
-        "jsonb_typeof(NEW.raw_payload_json -> 'fields') = 'array'",
-        "btrim(NEW.raw_payload_json -> 'fields' ->> 13) = '1'",
-        "e.broker_order_id = NEW.broker_order_id",
-        "e.fill_seq = NEW.fill_seq",
-        "e.venue = NEW.venue",
-        "e.account_mode = NEW.account_mode",
-    ):
-        assert clause in body, clause
+    guard = _norm(migration.GUARD_FUNCTION_DDL)
+    assert "IF OLD.quarantined_at IS NOT NULL THEN RAISE EXCEPTION" in guard
+    assert "ERRCODE = 'restrict_violation'" in guard
+    assert "IF TG_OP = 'TRUNCATE' THEN" in guard
+    text = MIGRATION.read_text("utf-8")
+    migration_sql = "\n".join(
+        _norm(node.value)
+        for node in ast.walk(ast.parse(text))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+    joined = "\n".join(_norm(s) for s in bootstrap._DDL_STATEMENTS)
+    for source in (migration_sql, joined):
+        assert (
+            "CREATE TRIGGER trg_execution_ledger_quarantine_guard "
+            "BEFORE UPDATE OR DELETE ON review.execution_ledger" in source
+        )
+        assert (
+            "CREATE TRIGGER trg_execution_ledger_quarantine_truncate "
+            "BEFORE TRUNCATE ON review.execution_ledger" in source
+        )
+    # round 4 removed the replay tombstone everywhere it existed
+    for name in ("requarantine", "is_tombstoned", "tombstone"):
+        assert name not in text.lower()
+    repo = (
+        MIGRATION.parents[2] / "app/services/execution_ledger/repository.py"
+    ).read_text("utf-8")
+    assert "tombstone" not in repo.lower()
+    assert not (
+        MIGRATION.parents[2] / "app/services/execution_ledger/accept_notice.py"
+    ).exists()
