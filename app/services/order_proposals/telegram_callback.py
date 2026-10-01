@@ -47,7 +47,7 @@ import hashlib
 import logging
 import secrets
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -77,6 +77,7 @@ from app.services.order_proposals.approval_window import (
     evaluate_approval_window,
     evaluate_approval_window_boundary,
     recheck_approval_window_decision,
+    toss_us_extended_order_shape_applies,
     valid_until_block,
 )
 from app.services.order_proposals.auto_digest import (
@@ -174,6 +175,7 @@ _BATCH_SKIP_RESULTS = _BATCH_SKIP_RESULTS | _WINDOW_BLOCK_RESULTS
 async def _evaluate_bound_window(
     group: Any,
     *,
+    rungs: Sequence[Any] | None = None,
     window_evaluator: WindowEvaluator,
     now_fn: Clock | None = None,
     now: datetime | None = None,
@@ -191,6 +193,7 @@ async def _evaluate_bound_window(
         window_evaluator=window_evaluator,
         now_fn=now_fn,
         expected_policy_stamp=str(expected) if expected is not None else None,
+        rungs=rungs,
     )
 
 
@@ -766,11 +769,14 @@ async def _handle_approve(
     # Lock the broker target before taking any proposal row lock. Independently
     # created proposals may point at the same manual/session order, so the
     # proposal-scoped commit lease alone cannot prevent a double mutation.
-    target_group, _ = await service.get_proposal(proposal_id)
+    target_group, target_rungs = await service.get_proposal(proposal_id)
     await service.acquire_target_mutation_lock(target_group)
 
     window = await _evaluate_bound_window(
-        target_group, window_evaluator=window_evaluator, now_fn=now_fn
+        target_group,
+        rungs=target_rungs,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
     )
     approval_now = window.observed_at
     if not window.allowed:
@@ -790,7 +796,10 @@ async def _handle_approve(
     # re-evaluate at the nonce boundary so an edge crossed during that lookup
     # cannot consume the single-use approval token.
     window = await _evaluate_bound_window(
-        target_group, window_evaluator=window_evaluator, now_fn=now_fn
+        target_group,
+        rungs=target_rungs,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
     )
     approval_now = window.observed_at
     if not window.allowed:
@@ -938,9 +947,10 @@ async def _handle_approve(
 
     reconfirm_outcomes = [o for o in outcomes if o.result == "needs_reconfirm"]
     if reconfirm_outcomes:
-        reconfirm_group, _ = await service.get_proposal(proposal_id)
+        reconfirm_group, reconfirm_rungs = await service.get_proposal(proposal_id)
         reconfirm_window = await _evaluate_bound_window(
             reconfirm_group,
+            rungs=reconfirm_rungs,
             window_evaluator=window_evaluator,
             now_fn=now_fn,
         )
@@ -959,6 +969,7 @@ async def _handle_approve(
             )
         reconfirm_window = await _evaluate_bound_window(
             reconfirm_group,
+            rungs=reconfirm_rungs,
             window_evaluator=window_evaluator,
             now_fn=now_fn,
         )
@@ -1011,6 +1022,7 @@ async def _handle_approve(
         )
         send_window = await _evaluate_bound_window(
             group,
+            rungs=rungs,
             window_evaluator=window_evaluator,
             now_fn=now_fn,
         )
@@ -1213,7 +1225,7 @@ async def _handle_batch_approve(
         for group, rungs in proposals:
             block_reason = batch_member_block_reason(group, rungs, now=gate_now)
             decision = await _evaluate_bound_window(
-                group, window_evaluator=window_evaluator, now_fn=now_fn
+                group, rungs=rungs, window_evaluator=window_evaluator, now_fn=now_fn
             )
             gate_now = decision.observed_at
             if block_reason is not None or not decision.allowed:
@@ -1234,7 +1246,10 @@ async def _handle_batch_approve(
                     now=gate_now,
                 )
                 decision = await _evaluate_bound_window(
-                    group, window_evaluator=window_evaluator, now_fn=now_fn
+                    group,
+                    rungs=rungs,
+                    window_evaluator=window_evaluator,
+                    now_fn=now_fn,
                 )
                 gate_now = decision.observed_at
                 if block_reason is not None or not decision.allowed:
@@ -1528,8 +1543,19 @@ async def _handle_loss_cut_first_click(
         proposal_id,
         callback=callback,
     )
+    # #1116: rung shape is immutable per proposal; read once for every gate,
+    # and only when a Toss US extended session is enabled (the default key
+    # keeps the exit exemption I/O-free, exactly as before).
+    loss_cut_rungs = (
+        (await service.get_proposal(proposal_id))[1]
+        if toss_us_extended_order_shape_applies(group)
+        else None
+    )
     window = await _evaluate_bound_window(
-        group, window_evaluator=window_evaluator, now_fn=now_fn
+        group,
+        rungs=loss_cut_rungs,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
     )
     click_now = window.observed_at
     if not window.allowed:
@@ -1548,7 +1574,10 @@ async def _handle_loss_cut_first_click(
     # Repeat immediately before the external preview. The first calendar
     # resolution itself may have crossed a validity/session boundary.
     window = await _evaluate_bound_window(
-        group, window_evaluator=window_evaluator, now_fn=now_fn
+        group,
+        rungs=loss_cut_rungs,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
     )
     click_now = window.observed_at
     if not window.allowed:
@@ -1582,6 +1611,7 @@ async def _handle_loss_cut_first_click(
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
     post_preview_window = await _evaluate_bound_window(
         group,
+        rungs=loss_cut_rungs,
         window_evaluator=window_evaluator,
         now_fn=now_fn,
     )
@@ -1601,6 +1631,7 @@ async def _handle_loss_cut_first_click(
 
     post_preview_window = await _evaluate_bound_window(
         group,
+        rungs=loss_cut_rungs,
         window_evaluator=window_evaluator,
         now_fn=now_fn,
     )
@@ -1695,6 +1726,7 @@ async def _handle_loss_cut_first_click(
     )
     publish_window = await _evaluate_bound_window(
         group,
+        rungs=rungs,
         window_evaluator=window_evaluator,
         now_fn=now_fn,
     )

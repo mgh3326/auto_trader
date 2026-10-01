@@ -116,7 +116,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # tables via create_all (no trigger DDL); the production additive migration is
 # 20260928_task847_h5_state. The bump forces one re-bootstrap of persistent
 # local test DBs.
-SCHEMA_BOOTSTRAP_VERSION = 51
+# v52 (#1120): review.quotes_trigger_firings / review.ladder_touch_events
+# (new ORM tables via create_all) + append-only triggers mirrored below;
+# the production additive migration is 20260930_rob1120_quotes.
+SCHEMA_BOOTSTRAP_VERSION = 52
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1947,6 +1950,39 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_protected_position_revisions_truncate_append_only "
     "BEFORE TRUNCATE ON review.protected_position_revisions "
     "FOR EACH STATEMENT EXECUTE FUNCTION review.reject_protected_position_revision_mutation()",
+    # ---- #1120: quotes:toss shadow consumer append-only records
+    # (tables via create_all; mirrors 20260930_rob1120_quotes).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_quotes_consumer_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.% is append-only; % rejected',
+            TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_quotes_trigger_firings_append_only "
+    "ON review.quotes_trigger_firings",
+    "CREATE TRIGGER trg_quotes_trigger_firings_append_only "
+    "BEFORE UPDATE OR DELETE ON review.quotes_trigger_firings "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_quotes_consumer_mutation()",
+    "DROP TRIGGER IF EXISTS trg_quotes_trigger_firings_truncate "
+    "ON review.quotes_trigger_firings",
+    "CREATE TRIGGER trg_quotes_trigger_firings_truncate "
+    "BEFORE TRUNCATE ON review.quotes_trigger_firings "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_quotes_consumer_mutation()",
+    "DROP TRIGGER IF EXISTS trg_ladder_touch_events_append_only "
+    "ON review.ladder_touch_events",
+    "CREATE TRIGGER trg_ladder_touch_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.ladder_touch_events "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_quotes_consumer_mutation()",
+    "DROP TRIGGER IF EXISTS trg_ladder_touch_events_truncate "
+    "ON review.ladder_touch_events",
+    "CREATE TRIGGER trg_ladder_touch_events_truncate "
+    "BEFORE TRUNCATE ON review.ladder_touch_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_quotes_consumer_mutation()",
 )
 
 

@@ -36,6 +36,7 @@ tests/mcp_server/test_earnings_context.py
 tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_get_holdings_ledger_lots.py
 tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
+tests/mcp_server/test_h3_crypto_paper_profile.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
@@ -202,6 +203,7 @@ tests/services/order_proposals/callback_inbox/test_retry_and_recovery_semantics.
 tests/services/order_proposals/callback_inbox/test_telegram_identifier_boundary.py
 tests/services/order_proposals/callback_inbox/test_worker_concurrency.py
 tests/services/order_proposals/callback_inbox/test_worker_outcomes.py
+tests/services/order_proposals/test_approval_window_toss_us_extended.py
 tests/services/order_proposals/test_auto_approve_audit_reason_vocabulary.py
 tests/services/order_proposals/test_cash_funding_exemption.py
 tests/services/order_proposals/test_no_repository_imports.py
@@ -227,6 +229,8 @@ tests/services/protected_quantity/test_acceptance.py
 tests/services/protected_quantity/test_auto_follow.py
 tests/services/protected_quantity/test_auto_follow_wiring.py
 tests/services/protected_quantity/test_service.py
+tests/services/quotes_consumer/test_stream_parsing.py
+tests/services/quotes_consumer/test_triggers.py
 tests/services/research/test_research_contracts_wheel.py
 tests/services/research/test_research_offline_gate_service.py
 tests/services/research/test_rob974_h6a_reason_taxonomy.py

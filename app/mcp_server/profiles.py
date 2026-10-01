@@ -48,6 +48,11 @@ class McpProfile(StrEnum):
     LIVE_KR = "live-kr"
     LIVE_US = "live-us"
     LIVE_CRYPTO = "live-crypto"
+    # #1171 (operator hk 1135 = A) — closed-world H3-CRYPTO paper pilot
+    # surface: the runner's 20 tools exactly (crypto paper simulator orders +
+    # the prompt's reads + record writes). No live order tool, no live
+    # account read; get_holdings is pinned to DB paper accounts.
+    H3_CRYPTO_PAPER = "h3-crypto-paper"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

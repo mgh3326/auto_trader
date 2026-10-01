@@ -11,6 +11,8 @@ DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE: dict[str, str] = {
     "crypto": "upbit_live",
 }
 
+DB_SIMULATED_ACCOUNT_SCOPE = "db_simulated"
+
 
 @dataclass(frozen=True)
 class PendingOrdersSnapshot:
@@ -33,6 +35,17 @@ async def collect_pending_orders_snapshot(
     from app.services.investment_snapshots.collectors import CollectorRequest
 
     effective_scope = account_scope or DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE.get(market)
+    if effective_scope == DB_SIMULATED_ACCOUNT_SCOPE:
+        # #1171 — paper orders live in paper.paper_pending_orders
+        # (paper_list_pending_orders); the broker collector is never built or
+        # called for this scope, so no live account is read.
+        return PendingOrdersSnapshot(
+            orders=None,
+            as_of=None,
+            freshness_status=None,
+            unavailable_reason="db_simulated_scope_uses_paper_list_pending_orders",
+            account_scope=effective_scope,
+        )
     if effective_scope is None:
         return PendingOrdersSnapshot(
             orders=None,

@@ -474,6 +474,28 @@
       "fill_watch_context_consume_artifact",
       "fill_watch_context_outcome_get"
     ],
+    "h3-crypto-paper": [
+      "analysis_artifact_save",
+      "analyze_stock",
+      "analyze_stock_batch",
+      "get_holdings",
+      "get_indicators",
+      "get_momentum_candidates",
+      "get_ohlcv",
+      "get_operating_briefing",
+      "get_quote",
+      "get_support_resistance",
+      "get_trading_policy",
+      "paper_cancel_pending_order",
+      "paper_list_pending_orders",
+      "paper_place_limit_order",
+      "paper_reconcile_orders",
+      "route_request",
+      "screen_stocks",
+      "screen_stocks_snapshot",
+      "session_context_append",
+      "session_context_get_recent"
+    ],
     "hermes-paper-kis": [
       "analysis_artifact_get",
       "analysis_artifact_list",
@@ -1752,6 +1774,28 @@
     "fill-watch-context": [
       "fill_watch_context_consume_artifact",
       "fill_watch_context_outcome_get"
+    ],
+    "h3-crypto-paper": [
+      "analysis_artifact_save",
+      "analyze_stock",
+      "analyze_stock_batch",
+      "get_holdings",
+      "get_indicators",
+      "get_momentum_candidates",
+      "get_ohlcv",
+      "get_operating_briefing",
+      "get_quote",
+      "get_support_resistance",
+      "get_trading_policy",
+      "paper_cancel_pending_order",
+      "paper_list_pending_orders",
+      "paper_place_limit_order",
+      "paper_reconcile_orders",
+      "route_request",
+      "screen_stocks",
+      "screen_stocks_snapshot",
+      "session_context_append",
+      "session_context_get_recent"
     ],
     "hermes-paper-kis": [
       "analysis_artifact_get",

@@ -18,6 +18,10 @@ from app.core.timezone import now_kst
 from app.mcp_server.tooling import market_data_quotes, order_proposal_tools
 from app.mcp_server.tooling.session_bootstrap_pack import _registered_names
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.kis_leftover_inference import (
+    EXPIRED_INFERENCE_CAVEAT,
+    is_expired_inference_reason,
+)
 from app.services.order_proposals.state_machine import GROUP_STATES
 from app.services.order_proposals.void_authorization import extract_loss_guard_violation
 from app.services.trading_policy_service import policy_version_stamp
@@ -167,7 +171,7 @@ def _terminal_evidence(
         for rung in terminal_rungs
         if getattr(rung, "updated_at", None) is not None
     ]
-    return {
+    evidence: dict[str, Any] = {
         "lifecycle_state": group.lifecycle_state,
         "rung_states": [
             rung.state for rung in sorted(rungs, key=lambda item: item.rung_index)
@@ -176,6 +180,16 @@ def _terminal_evidence(
         "observed_at": now.isoformat(),
         "terminal_at": max(timestamps) if timestamps else None,
     }
+    inferred = sorted(
+        rung.rung_index
+        for rung in terminal_rungs
+        if is_expired_inference_reason(getattr(rung, "void_reason", None))
+    )
+    if inferred:
+        # #1112: an inferred expiry must never read like a broker-confirmed one.
+        evidence["inferred_expiry_rung_indexes"] = inferred
+        evidence["expiry_caveat"] = EXPIRED_INFERENCE_CAVEAT
+    return evidence
 
 
 async def _label(

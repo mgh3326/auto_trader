@@ -149,6 +149,13 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
         McpProfile.LIVE_CRYPTO,
     ):
         expected[live_profile.value] = set(live_profile_tool_names(live_profile))
+    # #1171 — the H3-CRYPTO paper surface postdates the audit; its expected
+    # surface is the reviewed closed-world allowlist.
+    from app.mcp_server.tooling.h3_crypto_paper_registration import (
+        H3_CRYPTO_PAPER_TOOL_NAMES,
+    )
+
+    expected[McpProfile.H3_CRYPTO_PAPER.value] = set(H3_CRYPTO_PAPER_TOOL_NAMES)
     actual = collect_profile_tools(monkeypatch, gates_enabled=True)
     assert {profile: set(names) for profile, names in actual.items()} == expected, (
         "surface must preserve A/B/C/U and only the reviewed D exceptions"

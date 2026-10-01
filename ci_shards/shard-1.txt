@@ -201,8 +201,12 @@ tests/services/order_proposals/test_auto_approve_price_fallback_dispatch.py
 tests/services/order_proposals/test_auto_digest.py
 tests/services/order_proposals/test_broker_gateway.py
 tests/services/order_proposals/test_cash_funding_service.py
+tests/services/order_proposals/test_kis_leftover_inference.py
+tests/services/order_proposals/test_kis_leftover_inference_mutants.py
 tests/services/order_proposals/test_loss_cut_approval.py
 tests/services/order_proposals/test_models_smoke.py
+tests/services/order_proposals/test_night_sweep_db.py
+tests/services/order_proposals/test_night_sweep_unit.py
 tests/services/order_proposals/test_parking_sell_exemption.py
 tests/services/order_proposals/test_projection_evidence_resolution.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py
@@ -218,6 +222,8 @@ tests/services/paper_cohort/test_signals.py
 tests/services/paper_evaluation/test_gate.py
 tests/services/paper_validation/test_contracts.py
 tests/services/protected_quantity/test_db.py
+tests/services/quotes_consumer/test_consumer_redelivery.py
+tests/services/quotes_consumer/test_migration.py
 tests/services/research/test_honest_trial_evidence.py
 tests/services/research/test_research_campaign_bridge_trials.py
 tests/services/research/test_rob1025_funding_and_observability.py

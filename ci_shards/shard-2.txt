@@ -221,6 +221,8 @@ tests/services/paper_evaluation/test_integration.py
 tests/services/paper_evaluation/test_migration.py
 tests/services/paper_validation/test_service_concurrency.py
 tests/services/protected_quantity/test_guard_wiring.py
+tests/services/quotes_consumer/test_ladder.py
+tests/services/quotes_consumer/test_shadow_invariants.py
 tests/services/research/test_alpaca_track_seal_registration.py
 tests/services/research/test_research_canonical_hash.py
 tests/services/research/test_research_db_write_guard.py

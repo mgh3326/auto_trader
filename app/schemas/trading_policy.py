@@ -1817,10 +1817,52 @@ class OrderProposalAutoApprovePolicy(BaseModel):
         return self
 
 
+TossLiveUsSession = Literal["pre", "regular", "post"]
+# Canonical order; the approval-window policy stamp hashes this order, so a
+# YAML list written in any order yields the same stamp.
+TOSS_LIVE_US_SESSION_ORDER: tuple[TossLiveUsSession, ...] = ("pre", "regular", "post")
+TOSS_LIVE_US_DEFAULT_SESSIONS: tuple[TossLiveUsSession, ...] = ("regular",)
+
+
+class OrderProposalApprovalWindowPolicy(BaseModel):
+    """#1116 — Toss US session capability for the order-proposal window.
+
+    ``toss_live_us_sessions`` lists the Toss US sessions in which a
+    ``toss_live``/``equity_us`` place proposal may pass the approval window.
+    The default ``[regular]`` is the pre-#1116 hardcoded behaviour. ``day``
+    (the Toss day market) is not in the vocabulary, and ``regular`` is always
+    required, so the key can only add ``pre``/``post`` on top of regular.
+    Outside regular only integer-quantity LIMIT orders pass; see
+    ``order_proposals/approval_window.py``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    toss_live_us_sessions: tuple[TossLiveUsSession, ...] = Field(
+        default=TOSS_LIVE_US_DEFAULT_SESSIONS
+    )
+
+    @field_validator("toss_live_us_sessions")
+    @classmethod
+    def validate_toss_live_us_sessions(
+        cls, value: tuple[TossLiveUsSession, ...]
+    ) -> tuple[TossLiveUsSession, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("toss_live_us_sessions must not repeat a session")
+        if "regular" not in value:
+            raise ValueError("toss_live_us_sessions must include regular")
+        return tuple(
+            session for session in TOSS_LIVE_US_SESSION_ORDER if session in value
+        )
+
+
 class OrderProposalsPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     auto_approve: OrderProposalAutoApprovePolicy
+    approval_window: OrderProposalApprovalWindowPolicy = Field(
+        default_factory=OrderProposalApprovalWindowPolicy
+    )
 
 
 class CrashDayTrigger(BaseModel):
