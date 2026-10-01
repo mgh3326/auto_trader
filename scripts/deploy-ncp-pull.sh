@@ -10,6 +10,8 @@ set -Eeuo pipefail
 # xtrace off and reads no startup file. Signals ignored at entry (nohup's
 # HUP, an ignored PIPE) list as trap -- '' and run no code, so they neither
 # count nor can make the re-exec loop.
+# The trap scan also covers the script being sourced into a shell that
+# already holds a trap; BASH_SOURCE names this file even then.
 inherited_code_trap() {
   local line
   while IFS= read -r line; do
@@ -20,7 +22,7 @@ inherited_code_trap() {
 if [[ $- == *x* || -n "${BASH_ENV-}${ENV-}" || ":${SHELLOPTS-}:" == *:xtrace:* || ":${SHELLOPTS-}:" == *:functrace:* ]] || inherited_code_trap; then
   { set +x; } 2>/dev/null
   printf 'xtrace disabled: this script handles MCP tokens; re-running in a clean shell\n' >&2
-  exec env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS "$BASH" +x "$0" "$@"
+  exec env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS "$BASH" +x "${BASH_SOURCE[0]}" "$@"
 fi
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"

@@ -631,3 +631,20 @@ def test_any_startup_file_forces_the_clean_re_exec(tmp_path: Path) -> None:
     # read once by the first shell, never by the clean one or its children
     assert marker.read_text() == "ran\n"
     assert state[UNIT] == NEW
+
+
+def test_sourced_into_a_shell_holding_a_trap_re_execs_clean(tmp_path: Path) -> None:
+    # The round 2 reproduction shape: the script's code runs in a shell that
+    # already holds a CHLD trap re-enabling xtrace, with no BASH_ENV involved.
+    # The trap scan alone must force the clean re-exec of this very file.
+    wrapper = tmp_path / "deploy-sourced.sh"
+    wrapper.write_text(
+        f'#!/usr/bin/env bash\ntrap \'set -x\' CHLD\nsource "{DEPLOY}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    result, calls, state, _ = _run(tmp_path, deploy=wrapper)
+    assert result.returncode == 0, result.stderr
+    assert "re-running in a clean shell" in result.stderr
+    assert "tok-MCP_" not in result.stdout + result.stderr
+    assert len([c for c in calls if c[0] == "pull"]) == 1
+    assert state[UNIT] == NEW
