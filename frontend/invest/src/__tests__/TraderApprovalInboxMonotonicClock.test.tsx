@@ -192,6 +192,35 @@ test("a forwards wall-clock jump does not expire a row early", async () => {
   expect(within(row).getByTestId(`expires-${ID}`)).not.toHaveTextContent("만료");
 });
 
+test("a throttled panel interval cannot keep controls live past the true deadline", async () => {
+  // A backgrounded tab throttles the 1 s interval (Chrome: ~once a minute);
+  // a frozen one stops it entirely. performance.now() keeps tracking real
+  // elapsed time, so the default clock's performance floor must still expire
+  // the row even though the tick counter has almost stopped.
+  vi.useRealTimers();
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval", "performance"] });
+  vi.setSystemTime(T0);
+  const fakeSetInterval = globalThis.setInterval;
+  globalThis.setInterval = ((cb: TimerHandler, ms?: number, ...rest: unknown[]) =>
+    fakeSetInterval(cb, (ms ?? 0) * 60, ...rest)) as typeof setInterval;
+  try {
+    listResponse = () => listBody([item(300)]);
+    render(<ApprovalInboxPanel />);
+    const row = await screen.findByTestId(`approval-row-${ID}`);
+    await advance(1000);
+    expect(controls(row)).toEqual(["approve", "deny"]);
+
+    // 400 real seconds pass while the interval fires only ~6 times.
+    await advance(399_000);
+
+    expect(controls(row)).toEqual([]);
+    expect(within(row).getByTestId(`expires-${ID}`)).toHaveTextContent("만료");
+    expect(posts).toHaveLength(0);
+  } finally {
+    globalThis.setInterval = fakeSetInterval;
+  }
+});
+
 test("the injected clock drives the deadline model instead of the interval tick", async () => {
   let mono = 0;
   render(<ApprovalInboxPanel clock={() => mono} />);

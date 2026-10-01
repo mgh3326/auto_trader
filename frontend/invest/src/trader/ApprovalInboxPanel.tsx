@@ -77,13 +77,23 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * How far behind real elapsed time the performance.now() floor sits in the
+ * default deadline clock. The floor exists so a throttled or frozen interval
+ * (backgrounded tab) cannot stall the deadline model; the lag keeps real
+ * elapsed time under fake-timer tests from ever overtaking the tick counter
+ * (each mount's whole timeline runs far inside the lag window).
+ */
+const PERF_FLOOR_LAG_MS = 2000;
+
 interface ApprovalInboxPanelProps {
   /**
    * Monotonic millisecond clock for the deadline model. Tests inject a
    * controllable clock; the default counts elapsed time on the panel's
-   * interval tick below, which device wall-clock corrections cannot move —
-   * a backwards jump cannot keep an expired row enabled and a forwards jump
-   * cannot expire one early.
+   * interval tick below, floored by performance.now() elapsed since mount
+   * minus PERF_FLOOR_LAG_MS, which device wall-clock corrections cannot
+   * move — a backwards jump cannot keep an expired row enabled and a
+   * forwards jump cannot expire one early.
    */
   clock?: () => number;
 }
@@ -99,13 +109,25 @@ export function ApprovalInboxPanel({ clock }: ApprovalInboxPanelProps = {}) {
   rowUiRef.current = rowUi;
   const [, setTick] = useState(0);
 
-  // The monotonic elapsed-ms source for deadline math: it advances only on
-  // the interval tick below, so Date adjustments in either direction leave
-  // the deadline model untouched. Anchors read the same counter, keeping a
-  // single clock domain for every send-time bound and comparison.
+  // The monotonic elapsed-ms source for deadline math: the interval tick
+  // counter advances once per second below, and a performance.now() floor
+  // (real elapsed minus PERF_FLOOR_LAG_MS) keeps the clock near real time
+  // when ticks are throttled or frozen. Date adjustments in either
+  // direction move neither term, anchors read the same source, and the
+  // whole deadline model stays in one clock domain.
   const monoBaseRef = useRef(0);
-  const tickClock = useCallback(() => monoBaseRef.current, []);
-  const monoNow = clock ?? tickClock;
+  const perfBaseRef = useRef(performance.now());
+  const injectedClockRef = useRef(clock);
+  injectedClockRef.current = clock;
+  const monoNow = useCallback(
+    () =>
+      injectedClockRef.current?.() ??
+      Math.max(
+        monoBaseRef.current,
+        performance.now() - perfBaseRef.current - PERF_FLOOR_LAG_MS,
+      ),
+    [],
+  );
 
   const patchRow = useCallback((id: string, patch: Partial<RowUi>) => {
     setRowUi((prev) => ({ ...prev, [id]: { ...EMPTY_ROW, ...prev[id], ...patch } }));
