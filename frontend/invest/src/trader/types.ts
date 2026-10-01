@@ -102,3 +102,63 @@ export interface TraderWatchesResponse {
   count: number;
   items: TraderWatchRow[];
 }
+
+// --- task 890 PR A: approval inbox (mirrors app/schemas/trader_approvals.py) ---
+
+export interface TraderApprovalRung {
+  rung_index: number;
+  side: string;
+  quantity: string;
+  limit_price: string | null;
+  notional: string | null;
+  /** acked/resting = broker accepted, unverified = unknown, rejected = refused. */
+  state: string;
+  broker_order_id: string | null;
+  filled_qty: string | null;
+  void_reason: string | null;
+  distance_pct: string | null;
+}
+
+export interface TraderApprovalItem {
+  proposal_id: string;
+  symbol: string;
+  market: string;
+  account_mode: string;
+  broker_account_id: string | null;
+  side: string;
+  order_type: string;
+  action: string;
+  exit_intent: string | null;
+  requires_two_step: boolean;
+  card_kind: string | null;
+  lifecycle_state: string;
+  rungs: TraderApprovalRung[];
+  total_quantity: string | null;
+  total_notional: string | null;
+  distance_pct: string | null;
+  distance_price_asof: string | null;
+  tier: string | null;
+  caveats: string[];
+  valid_until: string | null;
+  expires_in_seconds: number | null;
+  approved_at: string | null;
+  approved_by_channel: string | null;
+  commit_lease_active: boolean;
+  actionable: boolean;
+  block_reason: string | null;
+}
+
+export interface TraderApprovalInboxResponse {
+  as_of: string;
+  actions_enabled: boolean;
+  loss_cut_actions_enabled: boolean;
+  count: number;
+  items: TraderApprovalItem[];
+}
+
+export interface TraderApprovalDetailResponse {
+  as_of: string;
+  actions_enabled: boolean;
+  loss_cut_actions_enabled: boolean;
+  item: TraderApprovalItem;
+}

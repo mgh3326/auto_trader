@@ -208,6 +208,7 @@ tests/services/order_proposals/test_revalidation.py
 tests/services/order_proposals/test_rob1284_resting_sweep.py
 tests/services/order_proposals/test_rob1284_sweep_seams.py
 tests/services/order_proposals/test_rung_reason_tier.py
+tests/services/order_proposals/test_trader_page_same_approval_path.py
 tests/services/order_proposals/test_watch_to_order_scope.py
 tests/services/paper_cohort/test_ast_safety.py
 tests/services/paper_cohort/test_cohort_service.py
@@ -287,6 +288,7 @@ tests/services/test_toss_live_order_ledger_service.py
 tests/services/test_toss_manual_activity.py
 tests/services/test_trade_journal_aggregates_scoreboard.py
 tests/services/test_trade_journal_read_service.py
+tests/services/test_trader_approval_inbox.py
 tests/services/test_trader_open_orders_cache.py
 tests/services/us_dual_paper/test_capability_matrix.py
 tests/services/us_dual_paper/test_kis_mock_preview.py
