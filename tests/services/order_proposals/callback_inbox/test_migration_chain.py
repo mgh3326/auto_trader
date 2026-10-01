@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260930_rob1120_quotes"
+HEAD_REVISION = "20261001_t1175_ledger_quar"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -128,6 +128,8 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # boundary; their append-only triggers arrive only via alembic.
     "review.quotes_trigger_firings",
     "review.ladder_touch_events",
+    # #1175 quarantine audit table is later than this boundary.
+    "review.execution_ledger_quarantine_events",
 )
 
 
@@ -161,6 +163,19 @@ async def scratch_database() -> AsyncIterator[str]:
                 await connection.run_sync(Base.metadata.create_all)
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                # #1175 quarantine columns are later than this boundary;
+                # their CHECKs drop with them and the migration adds all back.
+                for column in (
+                    "quarantined_by",
+                    "quarantine_reason",
+                    "quarantined_at",
+                ):
+                    await connection.execute(
+                        text(
+                            "ALTER TABLE review.execution_ledger "
+                            f"DROP COLUMN IF EXISTS {column}"
+                        )
+                    )
                 # ROB-s257 E-2 is later than this reconstructed boundary.
                 # Current metadata already contains its nullable observation
                 # column, so drop it and let the migration add it back.

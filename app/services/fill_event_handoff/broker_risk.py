@@ -35,7 +35,7 @@ from typing import Any, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.execution_ledger import ExecutionLedger
+from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.execution_ledger.fill_event_sanitizer import sanitize_fill
 
@@ -123,6 +123,7 @@ class SqlAlchemyEvidenceSource:
                 ExecutionLedger.account_mode == account_mode,
                 ExecutionLedger.venue == venue,
                 ExecutionLedger.broker_order_id == broker_order_id,
+                execution_ledger_in_effect(),
             )
             .order_by(ExecutionLedger.id.asc())
         )

@@ -138,6 +138,8 @@ tests/services/daily_candles/test_migration_round_trip.py
 tests/services/daily_candles/test_repository_crypto_path.py
 tests/services/daily_candles/test_sync_service.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py
+tests/services/execution_ledger/test_quarantine_mutants.py
+tests/services/execution_ledger/test_quarantine_unit.py
 tests/services/fill_watch_context/test_scope_contract.py
 tests/services/funding_advisory/test_external_cash.py
 tests/services/funding_advisory/test_migration.py

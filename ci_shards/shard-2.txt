@@ -89,6 +89,7 @@ tests/scripts/test_binance_spot_demo_smoke.py
 tests/scripts/test_deploy_ncp_pull_live_mcp.py
 tests/scripts/test_hermes_roundtrip_smoke_cli.py
 tests/scripts/test_live_mcp_tools_list.py
+tests/scripts/test_quarantine_execution_ledger_rows_cli.py
 tests/scripts/test_record_strategy_learning_event.py
 tests/scripts/test_spot_demo_confirm_lifecycle.py
 tests/services/action_report/common/test_source_kind_mapping.py
@@ -458,6 +459,7 @@ tests/test_support_proximity_snapshot_builder.py
 tests/test_support_proximity_snapshot_job.py
 tests/test_symbol_analysis_floor.py
 tests/test_symbol_mapping.py
+tests/test_t1175_ledger_quarantine_migration.py
 tests/test_toss_cash_orderable_gate.py
 tests/test_trade_journal_mock_unblock.py
 tests/test_trade_notifier_types.py

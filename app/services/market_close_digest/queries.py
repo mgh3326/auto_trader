@@ -13,7 +13,7 @@ from typing import Protocol
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.execution_ledger import ExecutionLedger
+from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import (
     KISLiveOrderLedger,
@@ -337,6 +337,7 @@ class SqlAlchemyDigestSources:
                 ExecutionLedger.instrument_type == instrument,
                 ExecutionLedger.filled_at >= window_start,
                 ExecutionLedger.filled_at < window_end,
+                execution_ledger_in_effect(),
             )
             .order_by(ExecutionLedger.filled_at.asc())
         )

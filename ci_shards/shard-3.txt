@@ -157,6 +157,8 @@ tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/execution_ledger/test_kis_lots.py
 tests/services/execution_ledger/test_kis_lots_db.py
 tests/services/execution_ledger/test_kis_lots_seed_cutover.py
+tests/services/execution_ledger/test_quarantine_db.py
+tests/services/execution_ledger/test_quarantine_readers_db.py
 tests/services/execution_ledger/test_repository.py
 tests/services/execution_outcomes/test_static_boundaries.py
 tests/services/fill_watch_context/test_consumption.py

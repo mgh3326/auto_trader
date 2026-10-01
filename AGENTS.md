@@ -37,6 +37,9 @@
    `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
    `toss_live_order_ledger` 등 주문 레저에 직접 SQL INSERT/UPDATE/DELETE 금지.
    fill 기록은 evidence-first — 브로커 증거 없이 `filled` 마킹 금지.
+   `execution_ledger` phantom 행은 삭제·수동 UPDATE 가 아니라
+   `scripts/quarantine_execution_ledger_rows.py`(preview 기본·감사 기록)로만 격리하고,
+   원장을 fill 로 읽는 새 리더는 `execution_ledger_in_effect()` 를 AND 한다 (#1175).
 6. **스케줄러 등록 금지**: 신규 TaskIQ/cron/Prefect 스케줄 연결은 명시 승인 없이 금지.
    기본은 scheduleless 출고(CLI/수동 lever만).
 7. **kis_mock 주문은 귀속 없이 나가지 않는다**: `place_order(is_mock=True)` /

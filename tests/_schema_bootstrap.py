@@ -119,7 +119,20 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v52 (#1120): review.quotes_trigger_firings / review.ladder_touch_events
 # (new ORM tables via create_all) + append-only triggers mirrored below;
 # the production additive migration is 20260930_rob1120_quotes.
-SCHEMA_BOOTSTRAP_VERSION = 52
+# v53 (#1175): review.execution_ledger quarantine columns + CHECKs + permanence
+# trigger (ADD COLUMN IF NOT EXISTS mirrored below so a persistent test DB whose
+# execution_ledger predates the columns is widened), plus the append-only
+# review.execution_ledger_quarantine_events audit table (create_all) and its
+# rejection triggers; the production migration is 20261001_t1175_ledger_quar.
+# v54 (#1175 r2): audit rows carry the idempotency key (create_all) and a BEFORE
+# INSERT trigger re-quarantines a KIS websocket row re-inserted with a
+# tombstoned key.
+# v55 (#1175 r3): the re-quarantine trigger also requires the new row's own
+# frame to be an H0STCNI0 accept notice (CNTG_YN=1).
+# v56 (#1175 r4): the tombstone and its audit key columns are gone; a
+# quarantined row is terminal (any UPDATE or DELETE refused, TRUNCATE refused
+# while one exists).
+SCHEMA_BOOTSTRAP_VERSION = 56
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1983,6 +1996,87 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.ladder_touch_events "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_quotes_consumer_mutation()",
+    # ---- #1175: execution_ledger quarantine (mirrors 20261001_t1175_ledger_quar).
+    "ALTER TABLE review.execution_ledger "
+    "ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE review.execution_ledger "
+    "ADD COLUMN IF NOT EXISTS quarantine_reason TEXT",
+    "ALTER TABLE review.execution_ledger ADD COLUMN IF NOT EXISTS quarantined_by TEXT",
+    "ALTER TABLE review.execution_ledger "
+    "DROP CONSTRAINT IF EXISTS ck_execution_ledger_quarantine_fields",
+    "ALTER TABLE review.execution_ledger "
+    "ADD CONSTRAINT ck_execution_ledger_quarantine_fields CHECK ("
+    "(quarantined_at IS NULL AND quarantine_reason IS NULL "
+    "AND quarantined_by IS NULL) OR "
+    "(quarantined_at IS NOT NULL AND quarantine_reason IS NOT NULL "
+    "AND quarantined_by IS NOT NULL AND btrim(quarantine_reason) <> '' "
+    "AND btrim(quarantined_by) <> ''))",
+    "ALTER TABLE review.execution_ledger "
+    "DROP CONSTRAINT IF EXISTS ck_execution_ledger_quarantine_scope",
+    "ALTER TABLE review.execution_ledger "
+    "ADD CONSTRAINT ck_execution_ledger_quarantine_scope CHECK ("
+    "quarantined_at IS NULL OR (source = 'websocket' AND broker = 'kis'))",
+    """
+    CREATE OR REPLACE FUNCTION review.guard_execution_ledger_quarantine()
+    RETURNS trigger AS $$
+    BEGIN
+        IF TG_OP = 'TRUNCATE' THEN
+            IF EXISTS (
+                SELECT 1 FROM review.execution_ledger WHERE quarantined_at IS NOT NULL
+            ) THEN
+                RAISE EXCEPTION 'review.execution_ledger holds quarantined rows; TRUNCATE rejected'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NULL;
+        END IF;
+        IF OLD.quarantined_at IS NOT NULL THEN
+            RAISE EXCEPTION 'review.execution_ledger row % is quarantined and terminal; % rejected',
+                OLD.id, TG_OP USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+            RETURN OLD;
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_guard "
+    "ON review.execution_ledger",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_guard "
+    "BEFORE UPDATE OR DELETE ON review.execution_ledger "
+    "FOR EACH ROW EXECUTE FUNCTION review.guard_execution_ledger_quarantine()",
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_truncate "
+    "ON review.execution_ledger",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_truncate "
+    "BEFORE TRUNCATE ON review.execution_ledger "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.guard_execution_ledger_quarantine()",
+    """
+    CREATE OR REPLACE FUNCTION
+        review.reject_execution_ledger_quarantine_event_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.% is append-only; % rejected',
+            TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_events_append_only "
+    "ON review.execution_ledger_quarantine_events",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.execution_ledger_quarantine_events "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_execution_ledger_quarantine_event_mutation()",
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_events_truncate "
+    "ON review.execution_ledger_quarantine_events",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_events_truncate "
+    "BEFORE TRUNCATE ON review.execution_ledger_quarantine_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_execution_ledger_quarantine_event_mutation()",
+    # r4 removed the tombstone; drop any copy a persistent test DB still has.
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_requarantine_insert "
+    "ON review.execution_ledger",
+    "DROP FUNCTION IF EXISTS review.requarantine_execution_ledger_insert()",
 )
 
 

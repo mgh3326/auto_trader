@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.core.symbol import to_db_symbol, to_upbit_symbol
-from app.models.execution_ledger import ExecutionLedger
+from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.protected_positions import ProtectedPosition, ProtectedPositionRevision
 
 logger = logging.getLogger(__name__)
@@ -459,6 +459,7 @@ async def _net_execution_quantity_since(
             ExecutionLedger.currency == currency,
             ExecutionLedger.filled_at >= since,
             ExecutionLedger.source != "manual_import",
+            execution_ledger_in_effect(),
         )
     )
     return Decimal(str(result.scalar_one()))

@@ -26,7 +26,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
+from app.models.execution_ledger import (
+    ExecutionLedger,
+    ExecutionLedgerReconcileRun,
+    execution_ledger_in_effect,
+)
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import KISLiveOrderLedger
 from app.services.market_events.session_calendar import regular_session_bounds
@@ -168,6 +172,7 @@ class KisLeftoverInferenceService:
                     .where(ExecutionLedger.broker == "kis")
                     .where(ExecutionLedger.account_mode == "live")
                     .where(ExecutionLedger.symbol == symbol)
+                    .where(execution_ledger_in_effect())
                     .order_by(ExecutionLedger.filled_at.asc(), ExecutionLedger.id.asc())
                     .execution_options(populate_existing=True)
                 )
