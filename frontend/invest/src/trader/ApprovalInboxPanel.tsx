@@ -77,7 +77,18 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function ApprovalInboxPanel() {
+interface ApprovalInboxPanelProps {
+  /**
+   * Monotonic millisecond clock for the deadline model. Tests inject a
+   * controllable clock; the default counts elapsed time on the panel's
+   * interval tick below, which device wall-clock corrections cannot move —
+   * a backwards jump cannot keep an expired row enabled and a forwards jump
+   * cannot expire one early.
+   */
+  clock?: () => number;
+}
+
+export function ApprovalInboxPanel({ clock }: ApprovalInboxPanelProps = {}) {
   const [inbox, setInbox] = useState<TraderApprovalInboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,12 +99,20 @@ export function ApprovalInboxPanel() {
   rowUiRef.current = rowUi;
   const [, setTick] = useState(0);
 
+  // The monotonic elapsed-ms source for deadline math: it advances only on
+  // the interval tick below, so Date adjustments in either direction leave
+  // the deadline model untouched. Anchors read the same counter, keeping a
+  // single clock domain for every send-time bound and comparison.
+  const monoBaseRef = useRef(0);
+  const tickClock = useCallback(() => monoBaseRef.current, []);
+  const monoNow = clock ?? tickClock;
+
   const patchRow = useCallback((id: string, patch: Partial<RowUi>) => {
     setRowUi((prev) => ({ ...prev, [id]: { ...EMPTY_ROW, ...prev[id], ...patch } }));
   }, []);
 
   // Deadline model: every relative expiry the server reports (list rows and
-  // detail reads) becomes a client-clock deadline anchored to the moment its
+  // detail reads) becomes a monotonic-clock deadline anchored to the moment its
   // request was SENT, so a response that arrives late cannot restart the
   // countdown. A row keeps one deadline -- the minimum of all observations --
   // so no later response can ever extend it, and a row that has expired
@@ -126,7 +145,7 @@ export function ApprovalInboxPanel() {
   const refreshDetail = useCallback(
     async (id: string) => {
       const isLatest = beginDetailRead(id);
-      const sentAt = Date.now();
+      const sentAt = monoNow();
       try {
         const detail = await fetchTraderApproval(id);
         observeDeadline(id, sentAt, detail.item.expires_in_seconds);
@@ -137,7 +156,7 @@ export function ApprovalInboxPanel() {
         if (isLatest()) patchRow(id, { detailFailed: true });
       }
     },
-    [beginDetailRead, observeDeadline, patchRow],
+    [beginDetailRead, monoNow, observeDeadline, patchRow],
   );
 
   // List reads are fenced like detail reads: only the latest list request may
@@ -149,7 +168,7 @@ export function ApprovalInboxPanel() {
     const isLatest = () => listReadRef.current === readId;
     setLoading(true);
     setError(null);
-    const sentAt = Date.now();
+    const sentAt = monoNow();
     try {
       const data = await fetchTraderApprovals();
       for (const item of data.items) {
@@ -180,14 +199,17 @@ export function ApprovalInboxPanel() {
     } finally {
       if (isLatest()) setLoading(false);
     }
-  }, [observeDeadline, refreshDetail]);
+  }, [monoNow, observeDeadline, refreshDetail]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 1000);
+    const timer = setInterval(() => {
+      monoBaseRef.current += 1000;
+      setTick((t) => t + 1);
+    }, 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -215,7 +237,7 @@ export function ApprovalInboxPanel() {
         }
       }
       const isLatest = beginDetailRead(id);
-      const sentAt = Date.now();
+      const sentAt = monoNow();
       let detail: TraderApprovalDetailResponse | null = null;
       try {
         detail = await fetchTraderApproval(id);
@@ -232,10 +254,10 @@ export function ApprovalInboxPanel() {
       pendingRef.current.delete(id);
       setRetained((prev) => (prev[id] ? prev : { ...prev, [id]: { item } }));
     },
-    [beginDetailRead, observeDeadline, patchRow],
+    [beginDetailRead, monoNow, observeDeadline, patchRow],
   );
 
-  const now = Date.now();
+  const now = monoNow();
   const items = inbox?.items ?? [];
   const listed = new Set(items.map((i) => i.proposal_id));
   const rows: RetainedRow[] = [
