@@ -41,7 +41,7 @@ uv run uvicorn app.main:api --reload --host 0.0.0.0 --port 8000
 uv run celery -A app.core.celery_app.celery_app worker --loglevel=info
 
 # MCP
-uv run python -m app.mcp_server.main
+MCP_PROFILE=default uv run python -m app.mcp_server.main
 
 # WS
 uv run python websocket_monitor.py --mode upbit

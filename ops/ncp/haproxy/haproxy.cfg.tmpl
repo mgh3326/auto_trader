@@ -130,3 +130,16 @@ backend bk_mcp_live_crypto
     http-check expect status 200
     default-server inter 5s fall 2 rise 1
     server mcp_live_crypto 127.0.0.1:8775 check
+
+# #1189 (part C of #1171): the H3-CRYPTO paper pilot unit serving the
+# closed-world MCP_PROFILE=h3-crypto-paper. Tailnet only, like the units above.
+
+frontend ft_mcp_h3_crypto_paper_tailnet
+    bind 100.122.100.56:8776
+    default_backend bk_mcp_h3_crypto_paper
+
+backend bk_mcp_h3_crypto_paper
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_h3_crypto_paper 127.0.0.1:8776 check

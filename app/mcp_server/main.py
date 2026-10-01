@@ -9,7 +9,7 @@ from app.mcp_server.env_utils import (
     get_mcp_tool_timeout_default,
     get_mcp_tool_timeout_enabled,
 )
-from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
+from app.mcp_server.profiles import McpProfile, require_mcp_profile
 from app.monitoring.sentry import capture_exception, init_sentry
 
 # ──────────────────────────────────────────────────────────────────────
@@ -51,7 +51,10 @@ from app.mcp_server.tool_call_log_middleware import (  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
-_mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
+# #1189: no blank-to-DEFAULT fallback for a server process. A blank, missing
+# or whitespace-only MCP_PROFILE raises here, before FastMCP is built or any
+# tool is registered.
+_mcp_profile = require_mcp_profile(_env("MCP_PROFILE"))
 _mcp_type = _env("MCP_TYPE", "streamable-http")
 
 

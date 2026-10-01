@@ -55,6 +55,7 @@ MCP_PROFILES = (
     "at-mcp-live-kr",
     "at-mcp-live-us",
     "at-mcp-live-crypto",
+    "at-mcp-h3-crypto-paper",
 )
 UNITS = (
     "at-api-blue",
@@ -330,6 +331,7 @@ class Env:
                     "MCP_LIVE_KR_AUTH_TOKEN",
                     "MCP_LIVE_US_AUTH_TOKEN",
                     "MCP_LIVE_CRYPTO_AUTH_TOKEN",
+                    "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
                 )
             )
         )

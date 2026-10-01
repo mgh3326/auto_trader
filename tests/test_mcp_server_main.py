@@ -68,6 +68,7 @@ def _load_main_module(
     unrelated_profile: bool = False,
     kiwoom_mock_us_enabled: bool = False,
     live_profile: str | None = None,
+    real_profile_guard: bool = False,
 ) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object, object]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
@@ -199,6 +200,16 @@ def _load_main_module(
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
     )
+    # #1189: main.py resolves its profile through require_mcp_profile. The
+    # real guard (no blank-to-DEFAULT fallback) is swapped in on request.
+    if real_profile_guard:
+        from app.mcp_server.profiles import require_mcp_profile as _real_guard
+
+        fake_profiles.__dict__["require_mcp_profile"] = _real_guard
+    else:
+        fake_profiles.__dict__["require_mcp_profile"] = MagicMock(
+            return_value=resolved_profile
+        )
 
     # ROB-469: main.py now imports the lifecycle module (unauth /health route +
     # startup/shutdown lifespan logging). Stub it like the other dependencies so
@@ -803,3 +814,58 @@ class TestMcpServerMain:
                 auth_token="restricted-profile-token",
                 **profile_kwargs,
             )
+
+
+# ---------------------------------------------------------------------------
+# #1189: a blank, missing or whitespace-only MCP_PROFILE refuses to start.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "profile_env",
+    [None, "", " ", "   ", "\t", "\n", " \t\n "],
+    ids=["missing", "empty", "space", "spaces", "tab", "newline", "mixed"],
+)
+@pytest.mark.parametrize("mcp_type", ["streamable-http", "sse", "stdio"])
+def test_blank_profile_refuses_before_any_tool_registers(
+    monkeypatch: pytest.MonkeyPatch, profile_env: str | None, mcp_type: str
+) -> None:
+    from app.mcp_server.profiles import McpProfileRequiredError
+
+    if profile_env is None:
+        monkeypatch.delenv("MCP_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("MCP_PROFILE", profile_env)
+    monkeypatch.setenv("MCP_TYPE", mcp_type)
+    with pytest.raises(McpProfileRequiredError, match="MCP_PROFILE is required"):
+        _load_main_module(monkeypatch, auth_token="tok", real_profile_guard=True)
+    # The refusal happens before FastMCP exists or any tool registers.
+    assert _FakeFastMCP.init_count == 0
+    register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
+    register_all_tools.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("profile", ["default", "h3-crypto-paper", " live-kr "])
+def test_explicit_profile_passes_the_guard(
+    monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    monkeypatch.setenv("MCP_PROFILE", profile)
+    monkeypatch.setenv("MCP_TYPE", "stdio")
+    # The real guard returns real enum members; main.py's validators compare
+    # them against the harness fakes, so a pass here means "no refusal".
+    module, _, _, _, _ = _load_main_module(
+        monkeypatch, auth_token="tok", real_profile_guard=True
+    )
+    assert module._mcp_profile.value == profile.strip()
+    assert _FakeFastMCP.init_count == 1
+
+
+@pytest.mark.unit
+def test_entrypoint_uses_the_strict_guard_not_the_lenient_resolver() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
+    ).read_text()
+    assert '_mcp_profile = require_mcp_profile(_env("MCP_PROFILE"))' in source
+    assert "resolve_mcp_profile" not in source

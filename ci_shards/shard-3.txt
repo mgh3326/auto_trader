@@ -41,6 +41,7 @@ tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
 tests/mcp_server/test_kis_mock_terminal_registration.py
+tests/mcp_server/test_mcp_profile_required.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_operating_briefing_tools.py
 tests/mcp_server/test_portfolio_helpers.py

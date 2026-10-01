@@ -100,6 +100,8 @@ services:
       MCP_HOST: ${MCP_HOST:-0.0.0.0}
       MCP_PORT: ${MCP_PORT:-8765}
       MCP_PATH: ${MCP_PATH:-/mcp}
+      # #1189: the server refuses a blank MCP_PROFILE; name DEFAULT explicitly.
+      MCP_PROFILE: default
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
     # network_mode: host 사용 시 ports 매핑은 적용되지 않습니다.
     restart: unless-stopped
