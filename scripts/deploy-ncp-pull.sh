@@ -3,7 +3,9 @@
 # private behind HAProxy; never add a wildcard or public bind here.
 set -Eeuo pipefail
 # MCP tokens pass through env_value and run_mcp. Never trace them (#1189):
-# this also turns off tracing inherited from bash -x, SHELLOPTS or BASH_ENV.
+# this also turns off tracing inherited from bash -x, SHELLOPTS or BASH_ENV,
+# after dropping any inherited DEBUG/RETURN trap that could turn it back on.
+trap - DEBUG RETURN; set +o functrace
 if [[ $- == *x* ]]; then { set +x; } 2>/dev/null; printf 'xtrace disabled: this script handles MCP tokens\n' >&2; fi
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"

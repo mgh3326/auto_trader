@@ -546,6 +546,12 @@ def _traced(tmp_path: Path, how: str) -> Path:
     wrapper = tmp_path / "deploy-traced.sh"
     if how == "bash-x":
         body = f'exec bash -x "{DEPLOY}" "$@"\n'
+    elif how == "bash-env-debug-trap":
+        # A BASH_ENV file whose DEBUG trap turns tracing back on after the
+        # script's own set +x (round 2 self-check of the F2 fix).
+        env_file = tmp_path / "bash-env.sh"
+        env_file.write_text("trap 'set -x' DEBUG\nset -o functrace\n")
+        body = f'export BASH_ENV="{env_file}"\nexec bash "{DEPLOY}" "$@"\n'
     else:
         body = f'export SHELLOPTS\nset -o xtrace\nexec bash "{DEPLOY}" "$@"\n'
     wrapper.write_text("#!/usr/bin/env bash\n" + body)
@@ -553,7 +559,7 @@ def _traced(tmp_path: Path, how: str) -> Path:
     return wrapper
 
 
-@pytest.mark.parametrize("how", ["bash-x", "shellopts"])
+@pytest.mark.parametrize("how", ["bash-x", "shellopts", "bash-env-debug-trap"])
 @pytest.mark.parametrize("args", [(), ("--rollback",)], ids=["deploy", "rollback"])
 def test_inherited_tracing_never_prints_a_token(
     tmp_path: Path, how: str, args: tuple[str, ...]
