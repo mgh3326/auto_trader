@@ -2541,10 +2541,12 @@ docker compose -f docker-compose.prod.yml up -d mcp
 ### Overview
 
 The `MCP_PROFILE` env var selects which tool subset is registered at startup.
+It is required (#1189): a blank, missing or whitespace-only value refuses to
+start instead of falling back to DEFAULT, so DEFAULT is `MCP_PROFILE=default`.
 
 | Profile | Value | Order surface |
 |---|---|---|
-| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; typed `kiwoom_mock_*` is added only by the existing `KIWOOM_MOCK_ENABLED=true` ROB-601 gate; typed `nh_mock_*` (#849, NHPLUG mock account only) is added only by `NH_MOCK_MCP_ENABLED=true`; Alpaca/us-dual paper tools are absent |
+| Default | `default` (explicit; unset refuses to start) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; typed `kiwoom_mock_*` is added only by the existing `KIWOOM_MOCK_ENABLED=true` ROB-601 gate; typed `nh_mock_*` (#849, NHPLUG mock account only) is added only by `NH_MOCK_MCP_ENABLED=true`; Alpaca/us-dual paper tools are absent |
 | Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` plus the explicit Q-46 `kis_mock_ledger_expire_day_orders` registrar — live surface **physically absent** |
 | Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |

@@ -2,6 +2,9 @@
 # Pull and promote a digest-pinned NCP deployment. API and MCP backends are
 # private behind HAProxy; never add a wildcard or public bind here.
 set -Eeuo pipefail
+# MCP tokens pass through env_value and run_mcp. Never trace them (#1189):
+# this also turns off tracing inherited from bash -x, SHELLOPTS or BASH_ENV.
+if [[ $- == *x* ]]; then { set +x; } 2>/dev/null; printf 'xtrace disabled: this script handles MCP tokens\n' >&2; fi
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
 readonly HAPROXY_IMAGE="haproxy:3.1-alpine"
@@ -299,6 +302,10 @@ wait_ws() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS;
 # Every bind line names exactly one loopback or tailnet address and a port:
 # a wildcard, an IPv6 any-address, a bare port or an extra address fails.
 haproxy_binds_are_private() { awk '/^[[:space:]]*bind([[:space:]]|$)/ && $0 !~ /^[[:space:]]*bind[[:space:]]+(127\.0\.0\.1|100\.122\.100\.56):[0-9]+[[:space:]]*$/ { bad = 1 } END { exit bad }' "$1"; }
+# #1189: closed config shape. Only these sections and directives may appear,
+# so no other listener form (stats socket, listen, peers, ...) can open a
+# port the bind check above never sees; every server targets loopback.
+haproxy_shape_is_closed() { awk '/^[[:space:]]*(#|$)/ { next } /^[^[:space:]]/ { if ($1 !~ /^(global|defaults|frontend|backend)$/ || NF != ($1 ~ /^(frontend|backend)$/ ? 2 : 1)) bad = 1; next } $1 !~ /^(log|master-worker|mode|timeout|bind|default_backend|option|http-check|default-server|server)$/ { bad = 1 } $1 == "server" && $3 !~ /^127\.0\.0\.1:[0-9]+$/ { bad = 1 } END { exit bad }' "$1"; }
 # Keep 0644 and preserve the existing inode: deploy umask 077 otherwise makes
 # the bind-mounted config unreadable, and mv leaves a file bind mount stale.
 render_haproxy() {
@@ -306,7 +313,7 @@ render_haproxy() {
   api="$(api_port "$1")"; mcp="$(mcp_port "$2")"; tmp="${HAPROXY_CONFIG}.tmp"
   [[ -f "$HAPROXY_TEMPLATE" ]] || return 78; mkdir -p "$RUN_DIRECTORY"
   sed -e "s/__API_ACTIVE_PORT__/${api}/g" -e "s/__MCP_ACTIVE_PORT__/${mcp}/g" "$HAPROXY_TEMPLATE" >"$tmp"
-  if grep -q '0.0.0.0' "$tmp" || ! grep -q 'bind 127.0.0.1:8000' "$tmp" || ! grep -q 'bind 100.122.100.56:8000' "$tmp" || ! haproxy_binds_are_private "$tmp"; then rm -f "$tmp"; printf 'HAProxy binds must be loopback and tailnet only\n' >&2; return 78; fi
+  if grep -q '0.0.0.0' "$tmp" || ! grep -q 'bind 127.0.0.1:8000' "$tmp" || ! grep -q 'bind 100.122.100.56:8000' "$tmp" || ! haproxy_binds_are_private "$tmp" || ! haproxy_shape_is_closed "$tmp"; then rm -f "$tmp"; printf 'HAProxy binds must be loopback and tailnet only (closed config shape)\n' >&2; return 78; fi
   chmod 0644 "$tmp"
   if [[ -e "$HAPROXY_CONFIG" ]]; then cp "$HAPROXY_CONFIG" "$HAPROXY_CONFIG_PREVIOUS"; cat "$tmp" >"$HAPROXY_CONFIG" && rm -f "$tmp"; else mv -f "$tmp" "$HAPROXY_CONFIG"; fi
 }

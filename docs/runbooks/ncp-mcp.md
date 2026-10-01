@@ -32,6 +32,14 @@ h3-crypto-paper-mcp.md.
 Every unit passes an explicit MCP_PROFILE; the server refuses a blank or
 missing one (#1189) instead of falling back to DEFAULT.
 
+The render step accepts only a closed HAProxy shape (#1189): sections global,
+defaults, frontend and backend; directives log, master-worker, mode, timeout,
+bind, default_backend, option, http-check, default-server and server; every
+bind on loopback or the tailnet address and every server on 127.0.0.1. Any
+other listener form (stats socket, listen, peers, ...) refuses the render.
+The deploy script also turns off shell tracing (bash -x, SHELLOPTS) at
+start, because MCP tokens pass through it.
+
 All units run with host networking, but the Python server itself is explicitly
 bound to MCP_HOST=127.0.0.1, MCP_TYPE=streamable-http, MCP_PATH=/mcp, and
 MCP_USER_ID=1. The main profile is authenticated because it is exposed over

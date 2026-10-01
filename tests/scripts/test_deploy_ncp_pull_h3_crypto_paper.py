@@ -486,3 +486,87 @@ def test_run_mcp_refuses_a_blank_profile_even_past_the_pre_check(
         if unit != UNIT:
             assert state[unit] == _expected(unit), unit
     assert "rollback or digest verification is incomplete" in result.stderr
+
+
+# --- round 1 findings: closed HAProxy shape, no traced tokens -------------------
+
+
+_GLOBAL = "global\n    log stdout format raw local0\n"
+
+
+@pytest.mark.parametrize(
+    ("anchor", "line"),
+    [
+        (_GLOBAL, "    stats socket [::]:8776 v6only level admin\n"),
+        (_GLOBAL, "    stats socket 0.0.0.0:8776 level admin\n"),
+        (_GLOBAL, "    stats socket /run/haproxy.sock mode 600\n"),
+        ("defaults\n", "    stats enable\n"),
+        ("", "listen ls_open\n    bind 100.122.100.56:8776\n\n"),
+        ("", "peers mypeers\n    peer local [::]:8777\n\n"),
+        ("", "userlist ops\n    user admin insecure-password x\n\n"),
+        (
+            "    server mcp_h3_crypto_paper 127.0.0.1:8776 check\n",
+            "    server extra 203.0.113.10:8776 check\n",
+        ),
+    ],
+    ids=[
+        "stats-socket-ipv6",
+        "stats-socket-ipv4",
+        "stats-socket-unix",
+        "stats-enable",
+        "listen-section",
+        "peers-section",
+        "userlist-section",
+        "non-loopback-server",
+    ],
+)
+def test_render_refuses_any_listener_outside_the_closed_shape(
+    tmp_path: Path, anchor: str, line: str
+) -> None:
+    text = TEMPLATE.read_text()
+    if anchor:
+        assert text.count(anchor) == 1
+        mutated = text.replace(anchor, anchor + line)
+    else:
+        mutated = text + "\n" + line
+    template = tmp_path / "haproxy.cfg.tmpl"
+    template.write_text(mutated)
+    result, calls, state, run_dir = _run(
+        tmp_path, extra_env={"MCP_HAPROXY_TEMPLATE": str(template)}
+    )
+    assert result.returncode != 0
+    assert "HAProxy binds must be loopback and tailnet only" in result.stderr
+    for unit in INITIAL:
+        assert state[unit] == _expected(unit), unit
+    cfg = run_dir / "haproxy.cfg"
+    assert not cfg.exists() or line.strip() not in cfg.read_text()
+
+
+def _traced(tmp_path: Path, how: str) -> Path:
+    wrapper = tmp_path / "deploy-traced.sh"
+    if how == "bash-x":
+        body = f'exec bash -x "{DEPLOY}" "$@"\n'
+    else:
+        body = f'export SHELLOPTS\nset -o xtrace\nexec bash "{DEPLOY}" "$@"\n'
+    wrapper.write_text("#!/usr/bin/env bash\n" + body)
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+@pytest.mark.parametrize("how", ["bash-x", "shellopts"])
+@pytest.mark.parametrize("args", [(), ("--rollback",)], ids=["deploy", "rollback"])
+def test_inherited_tracing_never_prints_a_token(
+    tmp_path: Path, how: str, args: tuple[str, ...]
+) -> None:
+    result, _, state, _ = _run(tmp_path, args=args, deploy=_traced(tmp_path, how))
+    assert result.returncode == 0, result.stderr
+    assert "xtrace disabled: this script handles MCP tokens" in result.stderr
+    output = result.stdout + result.stderr
+    assert "tok-MCP_" not in output  # no unit's synthetic token, H3 included
+    assert state[UNIT] == NEW
+
+
+def test_inherited_tracing_never_prints_a_token_on_failure(tmp_path: Path) -> None:
+    result, _, _, _ = _run(tmp_path, fail_name=UNIT, deploy=_traced(tmp_path, "bash-x"))
+    assert result.returncode != 0
+    assert "tok-MCP_" not in result.stdout + result.stderr
