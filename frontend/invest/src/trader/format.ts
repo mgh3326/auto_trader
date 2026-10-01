@@ -25,13 +25,19 @@ export function fmtPct(value: string | null | undefined): string {
   return `${value}%`;
 }
 
-export function remainingSeconds(
-  expiresInSeconds: number | null,
-  receivedAt: number,
-  now: number,
-): number | null {
-  if (expiresInSeconds === null) return null;
-  return expiresInSeconds - Math.floor((now - receivedAt) / 1000);
+/**
+ * Client-clock deadline for a server-relative expiry, anchored to the moment
+ * its request was SENT. The server sampled no earlier than that, so the result
+ * is never later than the true deadline, without any client/server clock sync.
+ * A missing expiry means the server has no valid_until: already expired.
+ */
+export function deadlineFrom(sentAt: number, expiresInSeconds: number | null): number {
+  return expiresInSeconds === null ? sentAt : sentAt + expiresInSeconds * 1000;
+}
+
+export function secondsUntil(deadline: number | undefined, now: number): number | null {
+  if (deadline === undefined) return null;
+  return Math.max(0, Math.ceil((deadline - now) / 1000));
 }
 
 export function formatCountdown(remaining: number | null): string {

@@ -7,7 +7,7 @@ import {
 } from "../api/orderProposalApproval";
 import type { ApprovalAction } from "../types/orderProposalApproval";
 import { fetchTraderApproval, fetchTraderApprovals } from "./api";
-import { fmtNum, fmtPct, formatCountdown, remainingSeconds } from "./format";
+import { deadlineFrom, fmtNum, fmtPct, formatCountdown, secondsUntil } from "./format";
 import type {
   TraderApprovalDetailResponse,
   TraderApprovalInboxResponse,
@@ -30,7 +30,6 @@ interface RowUi {
 
 interface RetainedRow {
   item: TraderApprovalItem;
-  receivedAt: number;
 }
 
 const EMPTY_ROW: RowUi = {
@@ -80,7 +79,6 @@ function toErrorMessage(err: unknown): string {
 
 export function ApprovalInboxPanel() {
   const [inbox, setInbox] = useState<TraderApprovalInboxResponse | null>(null);
-  const [inboxReceivedAt, setInboxReceivedAt] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rowUi, setRowUi] = useState<Record<string, RowUi>>({});
@@ -93,6 +91,26 @@ export function ApprovalInboxPanel() {
   const patchRow = useCallback((id: string, patch: Partial<RowUi>) => {
     setRowUi((prev) => ({ ...prev, [id]: { ...EMPTY_ROW, ...prev[id], ...patch } }));
   }, []);
+
+  // Deadline model: every relative expiry the server reports (list rows and
+  // detail reads) becomes a client-clock deadline anchored to the moment its
+  // request was SENT, so a response that arrives late cannot restart the
+  // countdown. A row keeps one deadline -- the minimum of all observations --
+  // so no later response can ever extend it, and a row that has expired
+  // locally stays expired. Every observation is a lower bound on the true
+  // deadline, so observations from superseded responses are safe to fold in.
+  const [deadlines, setDeadlines] = useState<Record<string, number>>({});
+  const expiredRef = useRef(new Set<string>());
+  const observeDeadline = useCallback(
+    (id: string, sentAt: number, expiresInSeconds: number | null) => {
+      const observed = deadlineFrom(sentAt, expiresInSeconds);
+      setDeadlines((prev) => {
+        const known = prev[id];
+        return known !== undefined && known <= observed ? prev : { ...prev, [id]: observed };
+      });
+    },
+    [],
+  );
 
   // Detail reads for one row can overlap (post-action read, list reload,
   // state refresh). Each read takes the next id for its row and applies its
@@ -108,8 +126,10 @@ export function ApprovalInboxPanel() {
   const refreshDetail = useCallback(
     async (id: string) => {
       const isLatest = beginDetailRead(id);
+      const sentAt = Date.now();
       try {
         const detail = await fetchTraderApproval(id);
+        observeDeadline(id, sentAt, detail.item.expires_in_seconds);
         if (isLatest()) patchRow(id, { detail, detailFailed: false });
       } catch {
         // A failed re-read keeps the last known broker state on the row but
@@ -117,16 +137,26 @@ export function ApprovalInboxPanel() {
         if (isLatest()) patchRow(id, { detailFailed: true });
       }
     },
-    [beginDetailRead, patchRow],
+    [beginDetailRead, observeDeadline, patchRow],
   );
 
+  // List reads are fenced like detail reads: only the latest list request may
+  // replace the inbox, so an older list never overwrites a newer one.
+  const listReadRef = useRef(0);
+
   const load = useCallback(async () => {
+    const readId = ++listReadRef.current;
+    const isLatest = () => listReadRef.current === readId;
     setLoading(true);
     setError(null);
+    const sentAt = Date.now();
     try {
       const data = await fetchTraderApprovals();
+      for (const item of data.items) {
+        observeDeadline(item.proposal_id, sentAt, item.expires_in_seconds);
+      }
+      if (!isLatest()) return;
       setInbox(data);
-      setInboxReceivedAt(Date.now());
       // A row the server lists again as actionable (e.g. a republished
       // reconfirm card with a fresh nonce) gets its buttons back. Rows with a
       // request in flight or a pending loss-cut confirmation keep their state.
@@ -146,11 +176,11 @@ export function ApprovalInboxPanel() {
         if (ui.confirmToken !== null) void refreshDetail(id);
       }
     } catch (err) {
-      setError(toErrorMessage(err));
+      if (isLatest()) setError(toErrorMessage(err));
     } finally {
-      setLoading(false);
+      if (isLatest()) setLoading(false);
     }
-  }, [refreshDetail]);
+  }, [observeDeadline, refreshDetail]);
 
   useEffect(() => {
     void load();
@@ -185,9 +215,11 @@ export function ApprovalInboxPanel() {
         }
       }
       const isLatest = beginDetailRead(id);
+      const sentAt = Date.now();
       let detail: TraderApprovalDetailResponse | null = null;
       try {
         detail = await fetchTraderApproval(id);
+        observeDeadline(id, sentAt, detail.item.expires_in_seconds);
       } catch {
         detail = null;
       }
@@ -198,18 +230,16 @@ export function ApprovalInboxPanel() {
         ...(isLatest() ? { detail, detailFailed: detail === null } : {}),
       });
       pendingRef.current.delete(id);
-      setRetained((prev) =>
-        prev[id] ? prev : { ...prev, [id]: { item, receivedAt: inboxReceivedAt } },
-      );
+      setRetained((prev) => (prev[id] ? prev : { ...prev, [id]: { item } }));
     },
-    [beginDetailRead, patchRow, inboxReceivedAt],
+    [beginDetailRead, observeDeadline, patchRow],
   );
 
   const now = Date.now();
   const items = inbox?.items ?? [];
   const listed = new Set(items.map((i) => i.proposal_id));
   const rows: RetainedRow[] = [
-    ...items.map((item) => ({ item, receivedAt: inboxReceivedAt })),
+    ...items.map((item) => ({ item })),
     ...Object.values(retained).filter((r) => !listed.has(r.item.proposal_id)),
   ];
   const actionsEnabled = inbox?.actions_enabled === true;
@@ -228,11 +258,14 @@ export function ApprovalInboxPanel() {
         <p className="trader-dim">대기 중인 승인 요청 없음</p>
       ) : null}
       {!inbox && !error && loading ? <p className="trader-dim">불러오는 중…</p> : null}
-      {rows.map(({ item, receivedAt }) => {
+      {rows.map(({ item }) => {
         const id = item.proposal_id;
         const ui = rowUi[id] ?? EMPTY_ROW;
-        const remaining = remainingSeconds(item.expires_in_seconds, receivedAt, now);
-        const expired = remaining !== null && remaining <= 0;
+        const deadline = deadlines[id];
+        // No deadline yet is treated as expired (fail-closed); once expired, latched.
+        const expired = expiredRef.current.has(id) || deadline === undefined || now >= deadline;
+        if (expired && deadline !== undefined) expiredRef.current.add(id);
+        const remaining = expired ? (deadline === undefined ? null : 0) : secondsUntil(deadline, now);
         const acted = ui.result !== null;
         const showBase = !acted && actionsEnabled && item.actionable && !expired;
         const showApprove = showBase && (!item.requires_two_step || lossCutEnabled);
