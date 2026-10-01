@@ -33,6 +33,9 @@ from tests.mcp_server._registration_recorder import (
             McpProfile.LIVE_KR,
             McpProfile.LIVE_US,
             McpProfile.LIVE_CRYPTO,
+            # #1171 — the H3-CRYPTO paper surface is the runner's exact 20
+            # tools; session_bootstrap_pack is not one of them.
+            McpProfile.H3_CRYPTO_PAPER,
         )
     ],
 )
