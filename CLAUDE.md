@@ -208,6 +208,8 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
     등록 변경은 `tests/mcp_server/test_lane_allowlist_contract.py`와
     `test_profile_tool_snapshot.py`로 검증한다. D 제거·C niche 관측의 감사 범위와
     보존 예외는 `docs/runbooks/mcp-surface-cleanup-20260905.md`를 따른다.
+    서버 진입점은 비었거나·없거나·공백뿐인 `MCP_PROFILE` 을 DEFAULT 로 폴백하지 않고
+    기동을 거부한다(#1189). 모든 서버 정의는 프로필을 명시하며 이 폴백을 되살리지 마라.
 
 ## 계약 찾아보기
 

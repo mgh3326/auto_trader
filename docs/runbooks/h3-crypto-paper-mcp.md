@@ -1,4 +1,4 @@
-# h3-crypto-paper MCP profile (#1171) — declared, not enabled
+# h3-crypto-paper MCP profile (#1171) — deployed by the deploy script (#1189)
 
 Operator decision hk 1135 = A. The H3-CRYPTO managed-envelope pilot
 (auto_trader-operator `runners/h3_pilot_runner.py --market crypto`) failed
@@ -6,9 +6,10 @@ closed on 2026-09-30 (rc 78, hk:doc ops/2026-09-30/h3-crypto-first-run)
 because no MCP server served a least-privilege surface for it: the crypto
 paper tools were only on DEFAULT, which also carries every live order tool.
 
-This change adds the profile and declares its unit. **Nothing here starts a
-container, edits the deploy script, touches HAProxy or registers a
-schedule.** Enabling the unit is a separate operator step.
+#1171 added the profile and declared its unit. #1189 (part C) wires the unit
+into `scripts/deploy-ncp-pull.sh` and the HAProxy template, so the next
+operator deploy starts it. **Nothing registers a schedule, and no code
+generates the token or deploys.** Those are operator steps below.
 
 ## What the profile serves
 
@@ -59,7 +60,7 @@ longer depend on it.
 
 A network boot without `MCP_AUTH_TOKEN` is refused (same rule as live-*).
 
-## Declared unit
+## Unit
 
 | Unit | MCP_PROFILE | Container port (loopback) | HAProxy frontend (tailnet only) | Token env name |
 | --- | --- | ---: | --- | --- |
@@ -74,22 +75,42 @@ Port 8776 had no user repo-wide (auto_trader, auto_trader-operator,
 robin-prefect-automations, fillwire, go-kis, handoffkeep, herdr). The live
 host listener table was not inspected.
 
-`scripts/deploy-ncp-pull.sh` deliberately does not list this unit
-(`tests/mcp_server/test_h3_crypto_paper_profile.py` pins that). Until an
-operator enables it, the operator runner keeps failing closed because its
-endpoint probe does not answer.
+`scripts/deploy-ncp-pull.sh` lists this unit in its `MCP_NAMES` /
+`MCP_PROFILES` / `MCP_PORTS` / `MCP_TOKENS` / `APP_CONTAINERS` arrays and in
+the tailnet route probe, exactly like the live-* units: digest-pinned,
+replacement-logged, rolled back on any failure (an introduced unit that fails
+is removed again), restored by `--rollback`, kept by the #934 image prune
+while it runs, and skippable with `MCP_UNITS_SKIP=h3-crypto-paper`.
+`tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py` and
+`tests/mcp_server/test_h3_crypto_paper_profile.py` pin the profile, port and
+token name by equality.
 
-## Enabling (operator only, separate approval)
+The deploy refuses to start before any pull or container change when
+`MCP_H3_CRYPTO_PAPER_AUTH_TOKEN` is missing from both env files (unless the
+unit is skipped). The server itself refuses a blank or missing `MCP_PROFILE`
+(#1189), so this unit can never come up as DEFAULT.
 
-1. Decide the unit's environment. The fixed units run with both deploy
-   env files; that is also what this unit gets if added to the deploy arrays
-   as-is. A narrower env file is possible but must still let the paper
-   simulator reach the database.
-2. Confirm 8776 is free on the host listener table.
-3. Create `MCP_H3_CRYPTO_PAPER_AUTH_TOKEN` in the deploy secrets file and the
-   operator session env (same value), never printed.
-4. Add the unit to the `MCP_NAMES` / `MCP_PROFILES` / `MCP_PORTS` /
-   `MCP_TOKENS` / `APP_CONTAINERS` arrays and the HAProxy template in a PR
-   (update the test above in that PR), deploy, and smoke with a read-only
-   `tools/list`: exactly the 20 names.
-5. Render the operator configs; the runner preflight then probes the endpoint.
+## Enabling (operator only)
+
+1. Environment: the fixed units, this one included, run with both deploy env
+   files (`AT_RUNTIME_ENV_FILE`, `AT_SECRETS_ENV_FILE`). A narrower env file
+   would be a separate change.
+2. Confirm 8776 is free on the host listener table (desk: confirmed free).
+3. Create `MCP_H3_CRYPTO_PAPER_AUTH_TOKEN` in one of the two deploy env files
+   (for example the runtime file the host passes as
+   `AT_RUNTIME_ENV_FILE=/root/at-run/.env.api`) and in the operator session
+   env, same value, never printed. Check presence by name only:
+
+       grep -c '^MCP_H3_CRYPTO_PAPER_AUTH_TOKEN=.' /root/at-run/.env.api
+
+4. Deploy with the normal pull script after this PR is merged and its image
+   is built; a `--dry-run` first lists `at-mcp-h3-crypto-paper` as planned.
+5. Smoke with a read-only `tools/list` through the tailnet frontend: exactly
+   the 20 names above. `/health` on `http://100.122.100.56:8776/health`
+   answers 200.
+6. Render the operator configs; the runner preflight then probes the endpoint.
+
+To hold the unit back on a deploy, run with `MCP_UNITS_SKIP=h3-crypto-paper`
+(no token needed, container untouched). To take it out entirely after a
+deploy, `docker rm -f at-mcp-h3-crypto-paper`; the next deploy starts it
+again unless skipped.

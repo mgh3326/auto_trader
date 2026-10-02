@@ -24,6 +24,7 @@ MCP_PROFILES = (
     "at-mcp-live-kr",
     "at-mcp-live-us",
     "at-mcp-live-crypto",
+    "at-mcp-h3-crypto-paper",
 )
 INITIAL = (
     "at-api-blue",
@@ -62,6 +63,7 @@ def _run(
     extra_env: dict[str, str] | None = None,
     active_mcp_color: str = "blue",
     both_mcp_colors_present: bool = False,
+    deploy: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -201,6 +203,7 @@ def _run(
                 "MCP_LIVE_KR_AUTH_TOKEN",
                 "MCP_LIVE_US_AUTH_TOKEN",
                 "MCP_LIVE_CRYPTO_AUTH_TOKEN",
+                "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
             )
             if name not in omit_tokens
         )
@@ -217,7 +220,7 @@ def _run(
     (run_dir / "api-active-color").write_text("blue\n")
     (run_dir / "mcp-active-color").write_text(active_mcp_color + "\n")
     result = subprocess.run(
-        [str(DEPLOY), *args],
+        [str(deploy or DEPLOY), *args],
         capture_output=True,
         text=True,
         timeout=90,

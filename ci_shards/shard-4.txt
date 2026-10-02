@@ -77,6 +77,7 @@ tests/scripts/b0x/us/test_alpaca.py
 tests/scripts/b0x/us/test_alpaca_lab_mutation_seam.py
 tests/scripts/b0x/us/test_guards.py
 tests/scripts/test_binance_demo_strategy_loop.py
+tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_invest_perf_report.py
 tests/scripts/test_invest_reports_us_schedule_cli.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py

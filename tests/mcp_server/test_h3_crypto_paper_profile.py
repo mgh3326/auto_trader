@@ -12,11 +12,13 @@ profile. These tests pin:
   literal, copied below as ``RUNNER_REGISTERED_TOOLS_CRYPTO``;
 * ``get_holdings`` on this profile cannot select a live account;
 * the boot fails when the registered set drifts from the allowlist;
-* deployment is declared only (no deploy script unit).
+* the deploy script runs the unit (#1189) with exactly this profile, port
+  8776 and token env name, behind a tailnet-only HAProxy frontend.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -308,14 +310,46 @@ def test_default_get_holdings_is_not_pinned() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Deployment is declared, not enabled.
+# Deployment is enabled through the deploy script (#1189).
 # ---------------------------------------------------------------------------
 
+DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "deploy-ncp-pull.sh"
+HAPROXY_TEMPLATE = REPO_ROOT / "ops" / "ncp" / "haproxy" / "haproxy.cfg.tmpl"
 
-def test_deploy_script_does_not_run_the_profile() -> None:
-    script = (REPO_ROOT / "scripts" / "deploy-ncp-pull.sh").read_text(encoding="utf-8")
-    assert "h3-crypto-paper" not in script
-    assert "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN" not in script
+
+def _deploy_array(name: str) -> list[str]:
+    match = re.search(
+        rf"^declare -a {name}=\((.*)\)$",
+        DEPLOY_SCRIPT.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match, name
+    return match.group(1).split()
+
+
+def test_deploy_script_runs_the_profile_with_exact_port_and_token() -> None:
+    names = _deploy_array("MCP_NAMES")
+    profiles = _deploy_array("MCP_PROFILES")
+    ports = _deploy_array("MCP_PORTS")
+    tokens = _deploy_array("MCP_TOKENS")
+    assert len(names) == len(profiles) == len(ports) == len(tokens)
+    assert names.count("h3-crypto-paper") == 1
+    i = names.index("h3-crypto-paper")
+    assert profiles[i] == PROFILE.value == "h3-crypto-paper"
+    assert ports[i] == "8776"
+    assert tokens[i] == "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN"
+    assert profiles.count("h3-crypto-paper") == 1
+    assert ports.count("8776") == 1
+    assert tokens.count("MCP_H3_CRYPTO_PAPER_AUTH_TOKEN") == 1
+    assert "at-mcp-h3-crypto-paper" in _deploy_array("APP_CONTAINERS")
+    assert "h3-crypto-paper" in _deploy_array("MCP_LIVE_ROUTE_NAMES")
+
+
+def test_haproxy_exposes_the_unit_on_the_tailnet_only() -> None:
+    text = HAPROXY_TEMPLATE.read_text(encoding="utf-8")
+    binds = re.findall(r"^\s*bind (\S+)\s*$", text, re.MULTILINE)
+    assert [b for b in binds if b.endswith(":8776")] == ["100.122.100.56:8776"]
+    assert "server mcp_h3_crypto_paper 127.0.0.1:8776 check" in text
 
 
 def test_runbook_declares_the_unit() -> None:

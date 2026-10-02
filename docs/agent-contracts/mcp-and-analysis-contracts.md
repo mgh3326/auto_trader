@@ -33,9 +33,15 @@ auto_trader-operator H3-CRYPTO 파일럿 러너(`registered_tools("crypto")`)의
 `get_holdings` 는 이 프로필에서 DB paper 계좌(`paper`/`paper:<이름>`, `account_mode=db_simulated`)로 고정된다.
 브로커 자격증명에 닿을 수 있는 목록 도구 11종은 `market="crypto"` 로 고정되고(생략 시 crypto, 그 밖은 본문 실행 전 거부),
 `get_operating_briefing` 은 `account_scope="db_simulated"`(DB paper 보유, 브로커 미체결 수집기 미생성)로 고정된다.
-네트워크 전송은 토큰 없이 부팅하지 않는다. 유닛(`at-mcp-h3-crypto-paper`, 8776)은 `docs/runbooks/h3-crypto-paper-mcp.md`
-에 선언만 되어 있고 deploy 스크립트·HAProxy·스케줄러에는 연결되지 않는다(활성화는 운영자 별도 승인).
-계약 테스트: `tests/mcp_server/test_h3_crypto_paper_profile.py`.
+네트워크 전송은 토큰 없이 부팅하지 않는다. 유닛(`at-mcp-h3-crypto-paper`, 루프백 8776, 토큰 `MCP_H3_CRYPTO_PAPER_AUTH_TOKEN`)은
+#1189부터 `scripts/deploy-ncp-pull.sh` 가 live-* 와 같은 digest 고정·교체 로그·롤백·tailnet 라우트 probe·#934 prune 규칙으로
+배포하고, HAProxy 는 tailnet `100.122.100.56:8776` 만 바인드한다. 스케줄러 연결은 없다. 토큰 생성·배포는 운영자 몫이다
+(`docs/runbooks/h3-crypto-paper-mcp.md`). 계약 테스트: `tests/mcp_server/test_h3_crypto_paper_profile.py`,
+`tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py`.
+**MCP_PROFILE 필수 (#1189)**: 서버 진입점은 `require_mcp_profile` 로 프로필을 해석하며 비었거나·없거나·공백뿐인
+`MCP_PROFILE` 은 DEFAULT 로 폴백하지 않고 기동을 거부한다(DEFAULT 는 `MCP_PROFILE=default` 로 명시). deploy 스크립트도
+배포 전 모든 유닛의 프로필이 비어 있지 않음을 검사한다. 레포 안 모든 서버 정의의 명시 프로필은
+`tests/mcp_server/test_mcp_profile_required.py` 가 목록으로 검증한다. 이 폴백을 되살리지 마라.
 Task 881의 `kis_mock_ledger_expire_day_orders`는 별도 registrar로
 hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에는 없으며
 스냅샷과 과거 감사 예외 테스트가 이 물리적 경계를 검증한다. DB-only 도구여도

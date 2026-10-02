@@ -117,6 +117,8 @@
     등록 변경은 `tests/mcp_server/test_lane_allowlist_contract.py`와
     `test_profile_tool_snapshot.py`로 검증한다. D 제거·C niche 관측의 감사 범위와
     보존 예외는 `docs/runbooks/mcp-surface-cleanup-20260905.md`를 따른다.
+    서버 진입점은 비었거나·없거나·공백뿐인 `MCP_PROFILE` 을 DEFAULT 로 폴백하지 않고
+    기동을 거부한다(#1189). 모든 서버 정의는 프로필을 명시하며 이 폴백을 되살리지 마라.
 
 18. **#789 DB 역할 전환 후 migration**: Stage 4 승인 뒤 분리된 프로덕션
     migration runner는 `SET ROLE at_migration_owner`로 DDL을 실행한다.

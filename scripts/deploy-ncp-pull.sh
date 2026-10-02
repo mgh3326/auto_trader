@@ -2,6 +2,28 @@
 # Pull and promote a digest-pinned NCP deployment. API and MCP backends are
 # private behind HAProxy; never add a wildcard or public bind here.
 set -Eeuo pipefail
+# MCP tokens pass through env_value and run_mcp, so this script never runs
+# traced (#1189). Anything inherited that can trace or turn tracing back on
+# (bash -x, an exported SHELLOPTS/BASHOPTS, a BASH_ENV/ENV startup file, or a
+# trap that runs code: DEBUG, RETURN, CHLD, EXIT, ...) makes it re-exec itself
+# once in a clean shell: exec drops every trap, and the new shell starts with
+# xtrace off and reads no startup file. Signals ignored at entry (nohup's
+# HUP, an ignored PIPE) list as trap -- '' and run no code, so they neither
+# count nor can make the re-exec loop.
+# The trap scan also covers the script being sourced into a shell that
+# already holds a trap; BASH_SOURCE names this file even then.
+inherited_code_trap() {
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == "trap -- '' "* ]] || return 0
+  done <<<"$(trap -p)"
+  return 1
+}
+if [[ $- == *x* || -n "${BASH_ENV-}${ENV-}" || ":${SHELLOPTS-}:" == *:xtrace:* || ":${SHELLOPTS-}:" == *:functrace:* ]] || inherited_code_trap; then
+  { set +x; } 2>/dev/null
+  printf 'xtrace disabled: this script handles MCP tokens; re-running in a clean shell\n' >&2
+  exec env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS "$BASH" +x "${BASH_SOURCE[0]}" "$@"
+fi
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
 readonly HAPROXY_IMAGE="haproxy:3.1-alpine"
@@ -53,16 +75,18 @@ readonly IMAGE_PRUNE_ENABLED="${AT_IMAGE_PRUNE_ENABLED-1}"
 declare -a ENV_FILE_ARGS=(--env-file "$RUNTIME_ENV_FILE" --env-file "$SECRETS_ENV_FILE")
 # Fixed-profile units. The live-* trio (task 975, operator Q-87 A) serves the
 # closed-world config/mcp_profiles/live.yaml surfaces, one market each, on
-# ports 8773-8775 with their own token names.
-declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom live-kr live-us live-crypto)
-declare -a MCP_PROFILES=(analysis_readonly account_read tradingcodex_execution hermes-paper-kis kiwoom live-kr live-us live-crypto)
-declare -a MCP_PORTS=(8768 8769 8770 8771 8772 8773 8774 8775)
-declare -a MCP_TOKENS=(MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN MCP_LIVE_CRYPTO_AUTH_TOKEN)
-# Units whose HAProxy tailnet route is also probed after the MCP promotion.
-declare -a MCP_LIVE_ROUTE_NAMES=(live-kr live-us live-crypto)
+# ports 8773-8775 with their own token names. h3-crypto-paper (#1189, part C
+# of #1171) serves the closed-world H3-CRYPTO paper pilot surface on 8776.
+declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom live-kr live-us live-crypto h3-crypto-paper)
+declare -a MCP_PROFILES=(analysis_readonly account_read tradingcodex_execution hermes-paper-kis kiwoom live-kr live-us live-crypto h3-crypto-paper)
+declare -a MCP_PORTS=(8768 8769 8770 8771 8772 8773 8774 8775 8776)
+declare -a MCP_TOKENS=(MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN MCP_LIVE_CRYPTO_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN)
+# Units whose HAProxy tailnet route is also probed after the MCP promotion:
+# their sessions reach them only through that tailnet frontend.
+declare -a MCP_LIVE_ROUTE_NAMES=(live-kr live-us live-crypto h3-crypto-paper)
 API_DRAIN_PENDING_COLOR=""
 MCP_DRAIN_PENDING_COLOR=""
-declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto)
+declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto at-mcp-h3-crypto-paper)
 declare -a REPLACED_CONTAINERS=()
 declare -A ORIGINAL_IMAGES=() EXPECTED_IMAGES=()
 ORIGINAL_API_COLOR=""
@@ -280,6 +304,10 @@ unit_image_summary() {
   if [[ -n "$image" ]]; then printf 'unresolved (configured: %s)' "$image"; else printf 'unresolved'; fi
 }
 env_value() { local key="$1" file line value=""; for file in "$RUNTIME_ENV_FILE" "$SECRETS_ENV_FILE"; do line="$(awk -v key="$key" '$0 ~ "^[[:space:]]*(export[[:space:]]+)?" key "=" { sub("^[[:space:]]*(export[[:space:]]+)?" key "=", ""); print }' "$file" | tail -n 1)"; [[ -n "$line" ]] && value="$line"; done; value="${value#\"}"; value="${value%\"}"; value="${value#\'}"; value="${value%\'}"; [[ -n "${value//[[:space:]]/}" ]] && printf '%s' "$value"; }
+# #1189: the arrays line up one unit per index and every unit names an explicit
+# profile; a blank one would boot the server's refusal path, so stop here
+# before any pull or container mutation.
+validate_mcp_units() { local i; ((${#MCP_NAMES[@]} == ${#MCP_PROFILES[@]} && ${#MCP_NAMES[@]} == ${#MCP_PORTS[@]} && ${#MCP_NAMES[@]} == ${#MCP_TOKENS[@]})) || { printf 'MCP unit arrays are misaligned\n' >&2; return 78; }; for i in "${!MCP_NAMES[@]}"; do [[ -n "${MCP_PROFILES[$i]//[[:space:]]/}" ]] || { printf 'MCP_PROFILE is required for at-mcp-%s\n' "${MCP_NAMES[$i]}" >&2; return 78; }; done; }
 validate_mcp_tokens() { local i; env_value MCP_AUTH_TOKEN >/dev/null || { printf 'MCP_AUTH_TOKEN is required\n' >&2; return 78; }; for i in "${!MCP_NAMES[@]}"; do mcp_unit_is_skipped "${MCP_NAMES[$i]}" && continue; env_value "${MCP_TOKENS[$i]}" >/dev/null || { printf '%s is required\n' "${MCP_TOKENS[$i]}" >&2; return 78; }; done; }
 
 run_api() { local color="$1" image="$2" port; port="$(api_port "$color")"; docker run -d --name "at-api-${color}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$image" /app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port "$port"; }
@@ -293,6 +321,10 @@ wait_ws() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS;
 # Every bind line names exactly one loopback or tailnet address and a port:
 # a wildcard, an IPv6 any-address, a bare port or an extra address fails.
 haproxy_binds_are_private() { awk '/^[[:space:]]*bind([[:space:]]|$)/ && $0 !~ /^[[:space:]]*bind[[:space:]]+(127\.0\.0\.1|100\.122\.100\.56):[0-9]+[[:space:]]*$/ { bad = 1 } END { exit bad }' "$1"; }
+# #1189: closed config shape. Only these sections and directives may appear,
+# so no other listener form (stats socket, listen, peers, ...) can open a
+# port the bind check above never sees; every server targets loopback.
+haproxy_shape_is_closed() { awk '/^[[:space:]]*(#|$)/ { next } /^[^[:space:]]/ { if ($1 !~ /^(global|defaults|frontend|backend)$/ || NF != ($1 ~ /^(frontend|backend)$/ ? 2 : 1)) bad = 1; next } $1 !~ /^(log|master-worker|mode|timeout|bind|default_backend|option|http-check|default-server|server)$/ { bad = 1 } $1 == "server" && $3 !~ /^127\.0\.0\.1:[0-9]+$/ { bad = 1 } END { exit bad }' "$1"; }
 # Keep 0644 and preserve the existing inode: deploy umask 077 otherwise makes
 # the bind-mounted config unreadable, and mv leaves a file bind mount stale.
 render_haproxy() {
@@ -300,7 +332,7 @@ render_haproxy() {
   api="$(api_port "$1")"; mcp="$(mcp_port "$2")"; tmp="${HAPROXY_CONFIG}.tmp"
   [[ -f "$HAPROXY_TEMPLATE" ]] || return 78; mkdir -p "$RUN_DIRECTORY"
   sed -e "s/__API_ACTIVE_PORT__/${api}/g" -e "s/__MCP_ACTIVE_PORT__/${mcp}/g" "$HAPROXY_TEMPLATE" >"$tmp"
-  if grep -q '0.0.0.0' "$tmp" || ! grep -q 'bind 127.0.0.1:8000' "$tmp" || ! grep -q 'bind 100.122.100.56:8000' "$tmp" || ! haproxy_binds_are_private "$tmp"; then rm -f "$tmp"; printf 'HAProxy binds must be loopback and tailnet only\n' >&2; return 78; fi
+  if grep -q '0.0.0.0' "$tmp" || ! grep -q 'bind 127.0.0.1:8000' "$tmp" || ! grep -q 'bind 100.122.100.56:8000' "$tmp" || ! haproxy_binds_are_private "$tmp" || ! haproxy_shape_is_closed "$tmp"; then rm -f "$tmp"; printf 'HAProxy binds must be loopback and tailnet only (closed config shape)\n' >&2; return 78; fi
   chmod 0644 "$tmp"
   if [[ -e "$HAPROXY_CONFIG" ]]; then cp "$HAPROXY_CONFIG" "$HAPROXY_CONFIG_PREVIOUS"; cat "$tmp" >"$HAPROXY_CONFIG" && rm -f "$tmp"; else mv -f "$tmp" "$HAPROXY_CONFIG"; fi
 }
@@ -375,7 +407,9 @@ deploy_singletons() {
   fi
 }
 
-run_mcp() { local name="$1" port="$2" profile="$3" token_env="$4" color="$5" image="$6" token heartbeat; local -a policy_args=() lease_host_args=(); token="$(env_value "$token_env")" || return 78; heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"; [[ "$profile" == tradingcodex_execution ]] && policy_args=(-e ORDER_APPROVAL_HASH_MODE=required -e TOSS_APPROVAL_HASH_MODE=required); [[ "$profile" == default ]] && lease_host_args=(-v /etc/machine-id:/etc/machine-id:ro); docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" "${lease_host_args[@]}" "${policy_args[@]}" -e "MCP_AUTH_TOKEN=${token}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" python -m app.mcp_server.main; }
+# Every unit names its MCP_PROFILE explicitly; the server also refuses a blank
+# one (#1189), and this check keeps a blank array entry from reaching docker.
+run_mcp() { local name="$1" port="$2" profile="$3" token_env="$4" color="$5" image="$6" token heartbeat; local -a policy_args=() lease_host_args=(); [[ -n "${profile//[[:space:]]/}" ]] || { printf 'MCP_PROFILE is required for at-mcp-%s\n' "$name" >&2; return 78; }; token="$(env_value "$token_env")" || return 78; heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"; [[ "$profile" == tradingcodex_execution ]] && policy_args=(-e ORDER_APPROVAL_HASH_MODE=required -e TOSS_APPROVAL_HASH_MODE=required); [[ "$profile" == default ]] && lease_host_args=(-v /etc/machine-id:/etc/machine-id:ro); docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" "${lease_host_args[@]}" "${policy_args[@]}" -e "MCP_AUTH_TOKEN=${token}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" python -m app.mcp_server.main; }
 wait_mcp() { local port="$1" attempt status; for ((attempt=1; attempt<=MCP_HEALTH_ATTEMPTS; attempt++)); do status="$(curl --silent --show-error --max-time 3 --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${port}/health")" && [[ "$status" == 200 ]] && return 0; sleep "$MCP_HEALTH_SLEEP_SECONDS"; done; return 1; }
 deploy_mcp() {
   local image="$1" old new i
@@ -467,7 +501,7 @@ promote_digest() {
   fi
   printf 'deployment completed: %s\n' "$digest"
 }
-prepare() { require_command docker; require_command curl; require_command awk; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"; validate_mcp_tokens; }
+prepare() { require_command docker; require_command curl; require_command awk; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"; validate_mcp_units || return $?; validate_mcp_tokens; }
 
 # Image prune (task 934; contract docs/contracts/task-934-image-prune.md).
 # Only the successful deploy path runs it; rollback, failure and dry-run never
