@@ -2,8 +2,10 @@
 # Pull and promote a digest-pinned NCP deployment. API and MCP backends are
 # private behind HAProxy; never add a wildcard or public bind here.
 set -Eeuo pipefail
-# MCP tokens pass through env_value and run_mcp, so this script never runs
-# traced (#1189). Anything inherited that can trace or turn tracing back on
+# #1240: MCP token values never enter a shell variable or an argv (see
+# mcp_token_env_line), so tracing has no token to print. This clean-shell
+# re-exec (#1189) stays as a second layer. Anything inherited that can trace
+# or turn tracing back on
 # (bash -x, an exported SHELLOPTS/BASHOPTS, a BASH_ENV/ENV startup file, or a
 # trap that runs code: DEBUG, RETURN, CHLD, EXIT, ...) makes it re-exec itself
 # once in a clean shell: exec drops every trap, and the new shell starts with
@@ -12,14 +14,16 @@ set -Eeuo pipefail
 # count nor can make the re-exec loop.
 # The trap scan also covers the script being sourced into a shell that
 # already holds a trap; BASH_SOURCE names this file even then.
+# trap -p is expanded here, at top level: inside a function a DEBUG or
+# RETURN trap is invisible unless functrace is on.
 inherited_code_trap() {
   local line
   while IFS= read -r line; do
     [[ -z "$line" || "$line" == "trap -- '' "* ]] || return 0
-  done <<<"$(trap -p)"
+  done <<<"$1"
   return 1
 }
-if [[ $- == *x* || -n "${BASH_ENV-}${ENV-}" || ":${SHELLOPTS-}:" == *:xtrace:* || ":${SHELLOPTS-}:" == *:functrace:* ]] || inherited_code_trap; then
+if [[ $- == *x* || -n "${BASH_ENV-}${ENV-}" || ":${SHELLOPTS-}:" == *:xtrace:* || ":${SHELLOPTS-}:" == *:functrace:* ]] || inherited_code_trap "$(trap -p)"; then
   { set +x; } 2>/dev/null
   printf 'xtrace disabled: this script handles MCP tokens; re-running in a clean shell\n' >&2
   exec env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS "$BASH" +x "${BASH_SOURCE[0]}" "$@"
@@ -303,12 +307,33 @@ unit_image_summary() {
   image="$(configured_image "$container" 2>/dev/null || true)"
   if [[ -n "$image" ]]; then printf 'unresolved (configured: %s)' "$image"; else printf 'unresolved'; fi
 }
-env_value() { local key="$1" file line value=""; for file in "$RUNTIME_ENV_FILE" "$SECRETS_ENV_FILE"; do line="$(awk -v key="$key" '$0 ~ "^[[:space:]]*(export[[:space:]]+)?" key "=" { sub("^[[:space:]]*(export[[:space:]]+)?" key "=", ""); print }' "$file" | tail -n 1)"; [[ -n "$line" ]] && value="$line"; done; value="${value#\"}"; value="${value%\"}"; value="${value#\'}"; value="${value%\'}"; [[ -n "${value//[[:space:]]/}" ]] && printf '%s' "$value"; }
+# #1240: the only reader of MCP token values. awk takes KEY from the runtime
+# and secrets env files exactly as the old shell reader did (the last
+# non-empty KEY= line of a later file wins; one leading and one trailing
+# double, then single quote is dropped; a blank value is absent) and prints
+# the single docker env-file line MCP_AUTH_TOKEN=<value>. Every caller sends
+# that line straight to /dev/null or to a 0600 file handed to docker
+# --env-file, so no token is ever held in a shell variable or placed in an
+# argv: set -x, a BASH_ENV file or a DEBUG/CHLD/RETURN trap can print only
+# the key name and the file path. A value with a control character is
+# refused: docker env files cannot carry it verbatim.
+mcp_token_env_line() {
+  awk -v key="$1" -v dq='"' -v sq="'" '
+    BEGIN { prefix = "^[[:space:]]*(export[[:space:]]+)?" key "=" }
+    $0 ~ prefix { line = $0; sub(prefix, "", line); last[FILENAME] = line }
+    END {
+      value = ""
+      for (i = 1; i < ARGC; i++) if (last[ARGV[i]] != "") value = last[ARGV[i]]
+      sub("^" dq, "", value); sub(dq "$", "", value); sub("^" sq, "", value); sub(sq "$", "", value)
+      if (value !~ /[^[:space:]]/ || value ~ /[[:cntrl:]]/) exit 1
+      print "MCP_AUTH_TOKEN=" value
+    }' "$RUNTIME_ENV_FILE" "$SECRETS_ENV_FILE"
+}
 # #1189: the arrays line up one unit per index and every unit names an explicit
 # profile; a blank one would boot the server's refusal path, so stop here
 # before any pull or container mutation.
 validate_mcp_units() { local i; ((${#MCP_NAMES[@]} == ${#MCP_PROFILES[@]} && ${#MCP_NAMES[@]} == ${#MCP_PORTS[@]} && ${#MCP_NAMES[@]} == ${#MCP_TOKENS[@]})) || { printf 'MCP unit arrays are misaligned\n' >&2; return 78; }; for i in "${!MCP_NAMES[@]}"; do [[ -n "${MCP_PROFILES[$i]//[[:space:]]/}" ]] || { printf 'MCP_PROFILE is required for at-mcp-%s\n' "${MCP_NAMES[$i]}" >&2; return 78; }; done; }
-validate_mcp_tokens() { local i; env_value MCP_AUTH_TOKEN >/dev/null || { printf 'MCP_AUTH_TOKEN is required\n' >&2; return 78; }; for i in "${!MCP_NAMES[@]}"; do mcp_unit_is_skipped "${MCP_NAMES[$i]}" && continue; env_value "${MCP_TOKENS[$i]}" >/dev/null || { printf '%s is required\n' "${MCP_TOKENS[$i]}" >&2; return 78; }; done; }
+validate_mcp_tokens() { local i; mcp_token_env_line MCP_AUTH_TOKEN >/dev/null || { printf 'MCP_AUTH_TOKEN is required\n' >&2; return 78; }; for i in "${!MCP_NAMES[@]}"; do mcp_unit_is_skipped "${MCP_NAMES[$i]}" && continue; mcp_token_env_line "${MCP_TOKENS[$i]}" >/dev/null || { printf '%s is required\n' "${MCP_TOKENS[$i]}" >&2; return 78; }; done; }
 
 run_api() { local color="$1" image="$2" port; port="$(api_port "$color")"; docker run -d --name "at-api-${color}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$image" /app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port "$port"; }
 run_scheduler() { docker run -d --name at-scheduler --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$1" /app/.venv/bin/taskiq scheduler app.core.scheduler:sched app.tasks; }
@@ -324,7 +349,51 @@ haproxy_binds_are_private() { awk '/^[[:space:]]*bind([[:space:]]|$)/ && $0 !~ /
 # #1189: closed config shape. Only these sections and directives may appear,
 # so no other listener form (stats socket, listen, peers, ...) can open a
 # port the bind check above never sees; every server targets loopback.
-haproxy_shape_is_closed() { awk '/^[[:space:]]*(#|$)/ { next } /^[^[:space:]]/ { if ($1 !~ /^(global|defaults|frontend|backend)$/ || NF != ($1 ~ /^(frontend|backend)$/ ? 2 : 1)) bad = 1; next } $1 !~ /^(log|master-worker|mode|timeout|bind|default_backend|option|http-check|default-server|server)$/ { bad = 1 } $1 == "server" && $3 !~ /^127\.0\.0\.1:[0-9]+$/ { bad = 1 } END { exit bad }' "$1"; }
+# #1240: every line is matched whole, field by field, against the exact forms
+# the template uses, so no trailing option can reach off the box (socks4,
+# source, addr, a remote log target, http-check connect, ...). server takes
+# a plain name, a literal 127.0.0.1:port and then only check, inter <time>,
+# fall <n> and rise <n>; default-server takes only those options. Anything
+# else (an unknown keyword, other case, quotes, escapes, a trailing comment
+# or a field holding a control character) refuses the render. A bind names
+# only a listener this deploy owns: loopback 8000 (API) and 8765 (MCP), and
+# on the tailnet address those two plus each MCP unit port, so no extra
+# listener can open on any other port of either address.
+haproxy_shape_is_closed() {
+  awk -v loopback_ports="8000 8765" -v tailnet_ports="8000 8765 ${MCP_PORTS[*]}" '
+    BEGIN {
+      n = split(loopback_ports, ports, " "); for (i = 1; i <= n; i++) owned["127.0.0.1:" ports[i]] = 1
+      n = split(tailnet_ports, ports, " "); for (i = 1; i <= n; i++) owned["100.122.100.56:" ports[i]] = 1
+    }
+    function name(v) { return v ~ /^[A-Za-z0-9_]+$/ }
+    function count(v) { return v ~ /^[0-9]+$/ }
+    function duration(v) { return v ~ /^[0-9]+(us|ms|s|m|h|d)?$/ }
+    function server_options(first,   i) {
+      for (i = first; i <= NF; i++) {
+        if ($i == "check") continue
+        if (i < NF && (($i == "inter" && duration($(i + 1))) || (($i == "fall" || $i == "rise") && count($(i + 1))))) { i++; continue }
+        return 0
+      }
+      return 1
+    }
+    /^[[:space:]]*(#|$)/ { next }
+    /^[^[:space:]]/ {
+      if (!(($1 ~ /^(global|defaults)$/ && NF == 1) || ($1 ~ /^(frontend|backend)$/ && NF == 2 && name($2)))) bad = 1
+      next
+    }
+    $1 == "log" && ((NF == 2 && $2 == "global") || (NF == 5 && $2 == "stdout" && $3 == "format" && $4 == "raw" && $5 == "local0")) { next }
+    $1 == "master-worker" && NF == 1 { next }
+    $1 == "mode" && NF == 2 && $2 == "http" { next }
+    $1 == "timeout" && NF == 3 && $2 ~ /^(connect|client|server|tunnel|http-request)$/ && duration($3) { next }
+    $1 == "bind" && NF == 2 && ($2 in owned) { next }
+    $1 == "default_backend" && NF == 2 && name($2) { next }
+    $1 == "option" && NF == 4 && $2 == "httpchk" && $3 == "GET" && $4 ~ /^\/[A-Za-z0-9_.\/-]*$/ { next }
+    $1 == "http-check" && NF == 4 && $2 == "expect" && $3 == "status" && $4 ~ /^[0-9][0-9][0-9]$/ { next }
+    $1 == "default-server" && NF >= 2 && server_options(2) { next }
+    $1 == "server" && NF >= 3 && name($2) && $3 ~ /^127\.0\.0\.1:[0-9]+$/ && server_options(4) { next }
+    { bad = 1 }
+    END { exit bad }' "$1"
+}
 # Keep 0644 and preserve the existing inode: deploy umask 077 otherwise makes
 # the bind-mounted config unreadable, and mv leaves a file bind mount stale.
 render_haproxy() {
@@ -409,7 +478,24 @@ deploy_singletons() {
 
 # Every unit names its MCP_PROFILE explicitly; the server also refuses a blank
 # one (#1189), and this check keeps a blank array entry from reaching docker.
-run_mcp() { local name="$1" port="$2" profile="$3" token_env="$4" color="$5" image="$6" token heartbeat; local -a policy_args=() lease_host_args=(); [[ -n "${profile//[[:space:]]/}" ]] || { printf 'MCP_PROFILE is required for at-mcp-%s\n' "$name" >&2; return 78; }; token="$(env_value "$token_env")" || return 78; heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"; [[ "$profile" == tradingcodex_execution ]] && policy_args=(-e ORDER_APPROVAL_HASH_MODE=required -e TOSS_APPROVAL_HASH_MODE=required); [[ "$profile" == default ]] && lease_host_args=(-v /etc/machine-id:/etc/machine-id:ro); docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" "${lease_host_args[@]}" "${policy_args[@]}" -e "MCP_AUTH_TOKEN=${token}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" python -m app.mcp_server.main; }
+# #1240: the token reaches the container through a per-run 0600 env file in
+# RUN_DIRECTORY (next to the secrets file it is copied from), listed after
+# the shared env files so its MCP_AUTH_TOKEN wins exactly as the old -e flag
+# did. docker reads it before run returns; it is removed on every outcome.
+run_mcp() {
+  local name="$1" port="$2" profile="$3" token_env="$4" color="$5" image="$6" heartbeat token_file status=0
+  local -a policy_args=() lease_host_args=()
+  [[ -n "${profile//[[:space:]]/}" ]] || { printf 'MCP_PROFILE is required for at-mcp-%s\n' "$name" >&2; return 78; }
+  mkdir -p "$RUN_DIRECTORY" || return 78
+  token_file="$(umask 077 && mktemp "${RUN_DIRECTORY}/.mcp-token-env.XXXXXX")" || return 78
+  mcp_token_env_line "$token_env" >"$token_file" || { rm -f "$token_file"; return 78; }
+  heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"
+  [[ "$profile" == tradingcodex_execution ]] && policy_args=(-e ORDER_APPROVAL_HASH_MODE=required -e TOSS_APPROVAL_HASH_MODE=required)
+  [[ "$profile" == default ]] && lease_host_args=(-v /etc/machine-id:/etc/machine-id:ro)
+  docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" --env-file "$token_file" -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" "${lease_host_args[@]}" "${policy_args[@]}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" python -m app.mcp_server.main || status=$?
+  rm -f "$token_file"
+  return "$status"
+}
 wait_mcp() { local port="$1" attempt status; for ((attempt=1; attempt<=MCP_HEALTH_ATTEMPTS; attempt++)); do status="$(curl --silent --show-error --max-time 3 --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${port}/health")" && [[ "$status" == 200 ]] && return 0; sleep "$MCP_HEALTH_SLEEP_SECONDS"; done; return 1; }
 deploy_mcp() {
   local image="$1" old new i

@@ -373,7 +373,9 @@ class Env:
             [str(deploy or DEPLOY), *args],
             capture_output=True,
             text=True,
-            timeout=90,
+            # #1240: same bound as the rollback harness; on a loaded host one
+            # fake deploy exceeds 90s. It only stops a hung run.
+            timeout=600,
             env={
                 **base,
                 "PATH": f"{self.bindir}:{os.environ['PATH']}",

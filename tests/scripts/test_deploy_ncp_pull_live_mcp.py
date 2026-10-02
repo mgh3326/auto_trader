@@ -30,6 +30,7 @@ from tests.scripts.test_deploy_ncp_pull_rollback import (
     OLD,
     _mutations,
     _run,
+    container_env,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -63,13 +64,9 @@ def _unit_runs(calls: list[list[str]], unit: str) -> list[list[str]]:
     return [c for c in calls if c[0] == "run" and c[c.index("--name") + 1] == unit]
 
 
-def _env_of(call: list[str]) -> dict[str, str]:
-    env: dict[str, str] = {}
-    for flag, value in zip(call, call[1:], strict=False):
-        if flag == "-e":
-            key, _, val = value.partition("=")
-            env[key] = val
-    return env
+def _env_of(tmp_path: Path, call: list[str]) -> dict[str, str]:
+    # The env the container resolves (#1240: the token arrives in an env file).
+    return container_env(tmp_path, call)
 
 
 # --- static wiring -----------------------------------------------------------
@@ -175,7 +172,7 @@ def test_first_deploy_starts_each_live_unit_with_its_profile_port_and_token(
         unit = f"at-mcp-{name}"
         runs = _unit_runs(calls, unit)
         assert len(runs) == 1, unit
-        env = _env_of(runs[0])
+        env = _env_of(tmp_path, runs[0])
         assert env["MCP_PROFILE"] == profile
         assert env["MCP_PORT"] == port
         assert env["MCP_HOST"] == "127.0.0.1"
@@ -304,7 +301,7 @@ def test_manual_rollback_restores_live_units_to_the_previous_digest(
     for name, (profile, port, token) in LIVE.items():
         unit = f"at-mcp-{name}"
         assert state[unit] == NEW
-        env = _env_of(_unit_runs(calls, unit)[-1])
+        env = _env_of(tmp_path, _unit_runs(calls, unit)[-1])
         assert (env["MCP_PROFILE"], env["MCP_PORT"]) == (profile, port)
         assert env["MCP_AUTH_TOKEN"] == f"tok-{token}"
         assert f"{unit}\t{NEW}\t{NEW}\tMATCH" in result.stdout
@@ -321,7 +318,7 @@ def test_rollback_of_a_live_unit_restarts_it_with_its_own_profile(
         unit = f"at-mcp-{name}"
         restored = [c for c in _unit_runs(calls, unit) if OLD in c]
         assert restored, unit
-        env = _env_of(restored[-1])
+        env = _env_of(tmp_path, restored[-1])
         assert (env["MCP_PROFILE"], env["MCP_PORT"]) == LIVE[name][:2]
         assert env["MCP_AUTH_TOKEN"] == f"tok-{LIVE[name][2]}"
         assert state[unit] == OLD
