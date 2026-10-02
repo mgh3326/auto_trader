@@ -60,7 +60,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import kst_day_window
-from app.models.execution_ledger import ExecutionLedger
+from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.review import KISLiveOrderLedger
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
 
@@ -882,6 +882,7 @@ async def load_kis_live_kr_lot_blocks(
                 .where(ExecutionLedger.instrument_type == "equity_kr")
                 .where(ExecutionLedger.currency == "KRW")
                 .where(ExecutionLedger.symbol.in_(symbols))
+                .where(execution_ledger_in_effect())
                 .order_by(ExecutionLedger.filled_at.asc(), ExecutionLedger.id.asc())
             )
         )

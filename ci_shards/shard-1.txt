@@ -71,6 +71,7 @@ tests/routers/test_order_previews.py
 tests/routers/test_research_pipeline_router.py
 tests/routers/test_strategy_events_router.py
 tests/routers/test_telegram_callback_route.py
+tests/routers/test_trader_approval_routes.py
 tests/routers/test_trader_page_router.py
 tests/schemas/test_pagination.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_coordination_wiring.py
@@ -209,6 +210,7 @@ tests/services/order_proposals/test_night_sweep_unit.py
 tests/services/order_proposals/test_parking_sell_exemption.py
 tests/services/order_proposals/test_projection_evidence_resolution.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py
+tests/services/order_proposals/test_trader_page_loss_cut_two_click.py
 tests/services/order_proposals/test_void_authorization.py
 tests/services/order_proposals/test_web_approvals.py
 tests/services/paper_cohort/test_kill_switch.py

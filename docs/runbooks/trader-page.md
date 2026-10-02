@@ -1,8 +1,9 @@
-# /trader operator page (task 889, stage 1)
+# /trader operator page (task 889 stage 1, task 890 stage 2 PR A)
 
-Read-only operator surface for trader.robinco.dev — broker open orders,
-today's fills (KST), and active watches. Stage 2 action buttons are #890 and
-do not exist yet.
+Operator surface for trader.robinco.dev — broker open orders, today's fills
+(KST), active watches (stage 1, read-only), plus the approval inbox and the
+protected-quantity form (task 890 PR A). Order/watch creation buttons are
+#890 PR B and do not exist yet.
 
 ## What shipped
 
@@ -66,3 +67,36 @@ the page instead of its current target: add a redirect at the front layer.
 
 Do not add DNS, do not add cloudflared ingress entries, and do not bind new
 listeners — the page is served by the existing app on the existing chain.
+
+## Stage 2 PR A (task 890): approval inbox + protected-quantity form
+
+No new write route exists. The page's buttons call pre-existing endpoints:
+
+| control | endpoint (existing) | shared core |
+|---|---|---|
+| 승인 | `POST /invest/api/approvals/{id}/approve` | `handle_web_approval` → `telegram_callback._handle_approve` |
+| 기각 | `POST /invest/api/approvals/{id}/deny` | `handle_web_approval` → `telegram_callback._handle_deny` |
+| 손절 승인 (1st click) | `POST /invest/api/approvals/{id}/approve` | `_handle_loss_cut_first_click` (issues a browser-bound token, submits nothing) |
+| 손절 최종 확인 (2nd click) | `POST /invest/api/approvals/{id}/loss-cut-confirm` | `_handle_approve(loss_cut_confirmation=True)` |
+| 보호 수량 미리보기/저장 | `PUT /invest/api/settings/protected-positions/{scope}/{market}/{symbol}` | `ProtectedQuantityService.save` |
+
+These are the same handlers the Telegram callback runs
+(`tests/services/order_proposals/test_trader_page_same_approval_path.py`).
+All of them live under `/invest/api/`, which the CSRF middleware protects;
+`/trading/` is CSRF-exempt, so no state-changing route may be added there.
+
+New reads (trader role, same 401/403 as the /invest approval hub):
+
+- `GET /trading/api/trader/approvals` — actionable proposals only
+  (`app/services/trader_page/approval_inbox.py::inbox_block_reason`): a
+  published human card (manual/reconfirm), not auto-approved, unused nonce,
+  `valid_until` in the future, a rung still `pending_approval`/`needs_reconfirm`.
+- `GET /trading/api/trader/approvals/{proposal_id}` — any proposal, with
+  `actionable`/`block_reason` and per-rung broker acceptance state; the row
+  re-reads it after an action.
+
+Gates are unchanged. The buttons only work while `INVEST_APPROVALS_ENABLED`
+is true, and the loss-cut confirmation also needs
+`INVEST_LOSS_CUT_APPROVAL_ENABLED` (both default false). The inbox reports them
+as `actions_enabled` / `loss_cut_actions_enabled` and hides the buttons when
+off. The protected-quantity save still requires the admin role.

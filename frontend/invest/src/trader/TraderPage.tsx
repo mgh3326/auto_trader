@@ -6,8 +6,10 @@ import {
   fetchTraderWatches,
 } from "./api";
 import { ActiveWatchesPanel } from "./ActiveWatchesPanel";
+import { ApprovalInboxPanel } from "./ApprovalInboxPanel";
 import { FillsTodayPanel } from "./FillsTodayPanel";
 import { OpenOrdersPanel } from "./OpenOrdersPanel";
+import { ProtectedQuantityPanel } from "./ProtectedQuantityPanel";
 import type {
   TraderFillsResponse,
   TraderOpenOrdersResponse,
@@ -76,6 +78,7 @@ export function TraderPage() {
         <h1>운영자 현황</h1>
         <p className="trader-dim">읽기 전용 · trader.robinco.dev</p>
       </header>
+      <ApprovalInboxPanel />
       <OpenOrdersPanel
         data={openOrders.data}
         loading={openOrders.loading}
@@ -94,6 +97,7 @@ export function TraderPage() {
         error={watches.error}
         onRefresh={() => void loadWatches()}
       />
+      <ProtectedQuantityPanel />
     </main>
   );
 }

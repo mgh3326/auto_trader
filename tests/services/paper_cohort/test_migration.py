@@ -320,6 +320,16 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "ladder_touch_events",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
+            # #1175 execution_ledger quarantine is later than this
+            # reconstructed boundary: drop the audit table and the three
+            # columns (their CHECKs go with them) so the migration adds them.
+            await connection.execute(
+                text("DROP TABLE review.execution_ledger_quarantine_events")
+            )
+            for column in ("quarantined_by", "quarantine_reason", "quarantined_at"):
+                await connection.execute(
+                    text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")
+                )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

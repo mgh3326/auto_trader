@@ -323,13 +323,20 @@ test("manual refresh calls the open-orders API with refresh=1", async () => {
   });
 });
 
-test("page renders no order/approval/watch mutation controls", async () => {
+test("with an empty inbox the only write controls live in the protected-quantity panel", async () => {
+  // Task 890 PR A replaced the stage-1 "no mutation controls" pin: approval
+  // buttons exist only on actionable inbox rows (none here, the inbox read
+  // fails) and the protected-quantity form is the only other write surface.
   mockAllOk();
   render(<TraderPage />);
   await screen.findByTestId("panel-watches");
+  const protectedPanel = await screen.findByTestId("panel-protected-quantity");
 
-  const buttons = screen.getAllByRole("button").map((b) => b.textContent);
-  expect(buttons.every((b) => b === "새로고침" || b === "조회 중…")).toBe(true);
-  expect(screen.queryByRole("button", { name: /주문|취소|승인|거절|등록|해지/ }))
+  const outside = screen
+    .getAllByRole("button")
+    .filter((b) => !protectedPanel.contains(b))
+    .map((b) => b.textContent);
+  expect(outside.every((b) => b === "새로고침" || b === "조회 중…")).toBe(true);
+  expect(screen.queryByRole("button", { name: /주문|취소|승인|거절|기각|해지/ }))
     .toBeNull();
 });
