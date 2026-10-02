@@ -53,6 +53,15 @@ same list the operator contract registers as the prompt's `allowed_tools`):
     policy file; they are reviewed and left unpinned.
 - The runner's guard hook still enforces the account (`account_id=2`) and
   exact runner intents per call; the profile does not replace it.
+- `route_request` (#1244): this registration selects the paper-simulator
+  route surface, so crypto `buy_analysis` / `profit_taking` answer the
+  `paper-execution-v1` contract (execution tools `paper_place_limit_order`,
+  `paper_cancel_pending_order`; required also `paper_list_pending_orders`,
+  `paper_reconcile_orders`) with `success: true`, `degraded: false`. Before
+  #1244 they answered the proposal-led contract, which needs the absent
+  `order_proposal_create`, and the runner's bootstrap check halted every run.
+  Any proposal, live or mock order tool registered beside it degrades the
+  paper contract. Every other profile's route_request output is unchanged.
 
 The unit env should still carry no broker credentials it does not need
 (defense in depth, decided at enablement below), but the code pins above no

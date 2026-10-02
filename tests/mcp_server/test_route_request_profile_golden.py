@@ -39,6 +39,11 @@ PURPOSES = (None, "account_cleanup")
 H3_PROFILE = McpProfile.H3_CRYPTO_PAPER.value
 # The only cases #1244 lets move: crypto buy/sell on the h3-crypto-paper profile.
 H3_MOVED_CASES = frozenset({"profit_taking|crypto|-", "buy_analysis|crypto|-"})
+# sha256 of the route_request tool description registered by main (f24eb3a7f
+# route_request_registration.py, loaded from git and registered once).
+MAIN_DESCRIPTION_SHA256 = (
+    "4058f1378548e422054db997f8a2ef34545c9529f6eedb2909bd1ccdca1e7739"
+)
 
 
 class _ListingRecorder(RegistrationRecorder):
@@ -54,6 +59,23 @@ def case_key(intent: str, market: str, purpose: str | None) -> str:
 
 def response_bytes(response: dict[str, Any]) -> bytes:
     return json.dumps(response, ensure_ascii=False).encode("utf-8")
+
+
+def collect_route_descriptions(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Every profile's registered route_request description (gates on)."""
+    with monkeypatch.context() as gate_patch:
+        for name in type(settings).model_fields:
+            if name.lower().endswith("enabled"):
+                gate_patch.setattr(settings, name, True)
+        descriptions: dict[str, str] = {}
+        for profile in McpProfile:
+            recorder = _ListingRecorder()
+            register_all_tools(cast(Any, recorder), profile=profile)
+            if "route_request" in recorder.options:
+                descriptions[profile.value] = recorder.options["route_request"][
+                    "description"
+                ]
+        return descriptions
 
 
 def collect_route_responses(
@@ -133,4 +155,87 @@ def test_regenerate_golden(monkeypatch: pytest.MonkeyPatch) -> None:
         golden[key] = _digests(
             collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
         )
-    GOLDEN_PATH.write_text(json.dumps(golden, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    GOLDEN_PATH.write_text(
+        json.dumps(golden, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def test_route_request_description_is_main_off_the_h3_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling.route_request_registration import (
+        PAPER_SURFACE_DESCRIPTION,
+    )
+
+    descriptions = collect_route_descriptions(monkeypatch)
+    assert H3_PROFILE in descriptions
+    for profile, description in descriptions.items():
+        if profile == H3_PROFILE:
+            continue
+        digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
+        assert digest == MAIN_DESCRIPTION_SHA256, f"{profile}: description drifted"
+    base = descriptions[H3_PROFILE].removesuffix(PAPER_SURFACE_DESCRIPTION)
+    assert base != descriptions[H3_PROFILE], "h3 must carry the paper suffix"
+    assert hashlib.sha256(base.encode("utf-8")).hexdigest() == MAIN_DESCRIPTION_SHA256
+
+
+@pytest.mark.parametrize("gates_enabled", [True, False], ids=["gates-on", "gates-off"])
+@pytest.mark.parametrize("intent", ["profit_taking", "buy_analysis"])
+def test_h3_crypto_buy_sell_report_the_paper_contract_not_degraded(
+    monkeypatch: pytest.MonkeyPatch, gates_enabled: bool, intent: str
+) -> None:
+    from app.mcp_server.tooling.h3_crypto_paper_registration import (
+        H3_CRYPTO_PAPER_TOOL_NAMES,
+    )
+    from app.mcp_server.tooling.route_request_lanes import (
+        HARD_CONSTRAINTS,
+        PAPER_EXECUTION_HARD_CONSTRAINTS,
+        PAPER_EXECUTION_TOOLS,
+        PROPOSAL_CHANNEL_HARD_CONSTRAINTS,
+    )
+
+    responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
+    out = responses[H3_PROFILE][case_key(intent, "crypto", None)]
+    # The runner's bootstrap_health reads exactly these three top-level keys.
+    assert out["success"] is True
+    assert out["degraded"] is False
+    assert "error" not in out
+    assert out["intent"] == intent
+    contract = out["route_contract"]
+    assert contract == {
+        "version": "paper-execution-v1",
+        "state": "ready",
+        "execution_mode": "paper_simulator",
+        "execution_ready": True,
+        "proposal_tool": None,
+        "approval_channel": "runner_intent_guard",
+        "human_approval_required": False,
+        "preview_owner": "runner_decision",
+        "reconcile_requirement": "paper_reconcile",
+        "execution_tools": ["paper_cancel_pending_order", "paper_place_limit_order"],
+        "required_tools": [
+            "paper_cancel_pending_order",
+            "paper_list_pending_orders",
+            "paper_place_limit_order",
+            "paper_reconcile_orders",
+        ],
+        "missing_required_tools": [],
+        "foreign_execution_tools": [],
+    }
+    # Everything the route names is on the h3 allowlist; the only order tools
+    # it allows are the two paper simulator tools.
+    named = set(out["allowed_tools"]) | {
+        s["tool"] for s in out["standard_tool_sequence"]
+    }
+    assert named <= H3_CRYPTO_PAPER_TOOL_NAMES
+    assert set(contract["required_tools"]) <= H3_CRYPTO_PAPER_TOOL_NAMES
+    assert PAPER_EXECUTION_TOOLS <= set(out["allowed_tools"])
+    assert out["blocked_actions"] == []
+    # Exactly the proposal-channel lines are replaced by the paper lines; the
+    # remaining lane constraints (loss guard scope included) are kept verbatim.
+    lane = "sell" if intent == "profit_taking" else "buy"
+    replaced = PROPOSAL_CHANNEL_HARD_CONSTRAINTS[lane]
+    assert replaced <= set(HARD_CONSTRAINTS[lane]), "replaced lines drifted"
+    assert out["hard_constraints"] == [
+        c for c in HARD_CONSTRAINTS[lane] if c not in replaced
+    ] + list(PAPER_EXECUTION_HARD_CONSTRAINTS)

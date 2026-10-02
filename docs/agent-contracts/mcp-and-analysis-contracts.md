@@ -38,6 +38,13 @@ auto_trader-operator H3-CRYPTO 파일럿 러너(`registered_tools("crypto")`)의
 배포하고, HAProxy 는 tailnet `100.122.100.56:8776` 만 바인드한다. 스케줄러 연결은 없다. 토큰 생성·배포는 운영자 몫이다
 (`docs/runbooks/h3-crypto-paper-mcp.md`). 계약 테스트: `tests/mcp_server/test_h3_crypto_paper_profile.py`,
 `tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py`.
+**h3 paper-execution route 계약 (#1244)**: 이 프로필에는 proposal 도구가 설계상 없으므로 `route_request` 는
+등록 시점에 명시한 `execution_surface="paper_simulator"`(h3 registrar 한 곳만 지정, 도구 집합으로 추론하지 않음)로
+crypto buy/sell(`buy_analysis`/`profit_taking`)에 `paper-execution-v1` 계약을 낸다 — 실행 도구는
+`paper_place_limit_order`/`paper_cancel_pending_order` 두 개뿐이고, 같은 표면에 proposal·live·mock 주문 도구가 하나라도
+등록되면 degraded + `foreign_execution_tools` 로 fail-closed 하며 그 도구를 허용·시퀀스에 넣지 않는다. 그 밖의 프로필·intent·
+market·purpose 의 출력은 main 과 바이트 동일하다(`tests/mcp_server/test_route_request_profile_golden.py`,
+`test_route_request_paper_surface.py`).
 **MCP_PROFILE 필수 (#1189)**: 서버 진입점은 `require_mcp_profile` 로 프로필을 해석하며 비었거나·없거나·공백뿐인
 `MCP_PROFILE` 은 DEFAULT 로 폴백하지 않고 기동을 거부한다(DEFAULT 는 `MCP_PROFILE=default` 로 명시). deploy 스크립트도
 배포 전 모든 유닛의 프로필이 비어 있지 않음을 검사한다. 레포 안 모든 서버 정의의 명시 프로필은
