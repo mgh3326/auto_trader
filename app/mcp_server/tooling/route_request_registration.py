@@ -23,6 +23,10 @@ from app.mcp_server.tooling.route_request_lanes import (
     ACCOUNT_CLEANUP_PURPOSE,
     INTENT_TO_LANE,
     LANE_TO_POLICY_LANE,
+    PAPER_ROUTE_CONTRACT_VERSION,
+    ROUTE_SURFACE_PAPER_SIMULATOR,
+    ROUTE_SURFACE_PROPOSAL_LED,
+    ROUTE_SURFACES,
     VALID_MARKETS,
     build_registry_unavailable_plan,
     build_route_plan,
@@ -66,7 +70,28 @@ async def _live_registered_names(mcp: Any) -> _RegistrySnapshot:
     return _RegistrySnapshot(available=True, names=frozenset(names))
 
 
-def register_route_request_tools(mcp: FastMCP) -> None:
+# #1244: appended to the tool description only on a paper-simulator
+# registration (h3-crypto-paper), so every other profile's listing is unchanged.
+PAPER_SURFACE_DESCRIPTION = (
+    f" On this profile crypto buy/sell use the {PAPER_ROUTE_CONTRACT_VERSION} "
+    "contract instead: the order intent is paper_place_limit_order / "
+    "paper_cancel_pending_order on the paper simulator, each call bound to a "
+    "runner-approved intent; there is no proposal tool and no live order tool. "
+    "The paper contract is degraded if any proposal, live or mock order tool "
+    "is registered beside it."
+)
+
+
+def register_route_request_tools(
+    mcp: FastMCP, *, execution_surface: str = ROUTE_SURFACE_PROPOSAL_LED
+) -> None:
+    """Register route_request; ``execution_surface`` is chosen by the profile.
+
+    Only the h3-crypto-paper registrar passes ``ROUTE_SURFACE_PAPER_SIMULATOR``.
+    """
+    if execution_surface not in ROUTE_SURFACES:
+        raise ValueError(f"unknown route execution surface {execution_surface!r}")
+
     async def route_request(
         intent: str | None = None,
         market: str | None = None,
@@ -154,6 +179,7 @@ def register_route_request_tools(mcp: FastMCP) -> None:
                 verdict_thresholds=verdict_thresholds,
                 policy_version=version,
                 purpose=normalized_purpose,
+                execution_surface=execution_surface,
             )
         return build_route_plan(
             intent,
@@ -162,6 +188,7 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             verdict_thresholds=verdict_thresholds,
             policy_version=version,
             purpose=normalized_purpose,
+            execution_surface=execution_surface,
         )
 
     _ = mcp.tool(
@@ -198,6 +225,11 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             "Missing or unknown intent/market returns a deterministic "
             "success=false envelope (error in {missing_intent, unknown_intent, "
             "missing_market, unknown_market})."
+            + (
+                PAPER_SURFACE_DESCRIPTION
+                if execution_surface == ROUTE_SURFACE_PAPER_SIMULATOR
+                else ""
+            )
         ),
     )(route_request)
 

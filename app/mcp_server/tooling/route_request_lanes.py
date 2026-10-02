@@ -193,6 +193,59 @@ ROUTE_CONTRACT_VERSION = "proposal-led-v1"
 PROPOSAL_TOOL = "order_proposal_create"
 PROPOSAL_LED_LANES: frozenset[str] = frozenset({"buy", "sell"})
 
+# #1244: the execution surface a route_request registration describes. Every
+# profile is proposal-led except the one registrar that explicitly selects the
+# paper simulator (h3-crypto-paper, #1171): that profile has no proposal tool
+# by design, so the proposal-led buy/sell contract would be degraded on every
+# run. The surface is chosen at registration, never inferred from the
+# registered tool set, so no other profile can drift into it.
+ROUTE_SURFACE_PROPOSAL_LED = "proposal_led"
+ROUTE_SURFACE_PAPER_SIMULATOR = "paper_simulator"
+ROUTE_SURFACES: frozenset[str] = frozenset(
+    {ROUTE_SURFACE_PROPOSAL_LED, ROUTE_SURFACE_PAPER_SIMULATOR}
+)
+PAPER_ROUTE_CONTRACT_VERSION = "paper-execution-v1"
+# The paper simulator lanes: crypto buy/sell only. Other markets and lanes on
+# a paper-simulator registration keep the proposal-led/legacy contracts.
+PAPER_EXECUTION_LANES: frozenset[str] = PROPOSAL_LED_LANES
+PAPER_EXECUTION_MARKETS: frozenset[str] = frozenset({"crypto"})
+# ROB-703 paper simulator order tools (paper.* tables, no broker call). A
+# literal: the paper contract can name and allow these two and nothing else.
+PAPER_EXECUTION_TOOLS: frozenset[str] = frozenset(
+    {"paper_place_limit_order", "paper_cancel_pending_order"}
+)
+PAPER_EXECUTION_REQUIRED_TOOLS: frozenset[str] = PAPER_EXECUTION_TOOLS | frozenset(
+    {"paper_list_pending_orders", "paper_reconcile_orders"}
+)
+# Proposal-led lines of HARD_CONSTRAINTS that describe the proposal/Telegram
+# order-intent channel. The paper contract replaces exactly these with
+# PAPER_EXECUTION_HARD_CONSTRAINTS; every other lane constraint is kept.
+PROPOSAL_CHANNEL_HARD_CONSTRAINTS: dict[str, frozenset[str]] = {
+    "buy": frozenset(
+        {
+            "generic order-intent step: order_proposal_create with Telegram human "
+            "approval; conditional support_reserve_net_consume is non-sequenced "
+            "and seam-gated",
+        }
+    ),
+    "sell": frozenset(
+        {
+            "order intent: order_proposal_create only; Telegram human approval required",
+            "sell from the holding account selected in the proposal",
+            "same-symbol buy pending -> separate cancel proposal and confirmed broker evidence before the sell proposal",
+        }
+    ),
+}
+PAPER_EXECUTION_HARD_CONSTRAINTS: tuple[str, ...] = (
+    "order intent: paper_place_limit_order / paper_cancel_pending_order on the "
+    "paper simulator only (paper.* tables, no broker call); no proposal, live "
+    "or mock broker order tool is part of this route",
+    "each paper order call must equal a runner-approved intent; the runner's "
+    "per-call guard owns approval and the session never improvises an order",
+    "paper fills are evidence only after paper_reconcile_orders and an "
+    "all-status paper_list_pending_orders read",
+)
+
 # ROB-1209: maintenance is not a strategic order.  This narrow route is still
 # advisory, but it expresses the only direct broker action an account-cleanup
 # caller may be shown: a preflighted, quantity-bounded Alpaca Paper sell.  The
@@ -285,6 +338,16 @@ PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
     }
 )
 RESERVE_NET_CONSUMER_TOOLS: frozenset[str] = frozenset({"support_reserve_net_consume"})
+# #1244: everything that must never be allowed, sequenced or registered beside
+# the paper-execution contract — every direct broker mutation except the two
+# paper simulator tools, the proposal tool, the proposal lifecycle tools and
+# the proposal-creating reserve-net consumer.
+PAPER_FOREIGN_EXECUTION_TOOLS: frozenset[str] = (
+    DIRECT_BROKER_MUTATION_TOOLS
+    | PROPOSAL_LED_TOOLS
+    | PROPOSAL_LIFECYCLE_TOOLS
+    | RESERVE_NET_CONSUMER_TOOLS
+) - PAPER_EXECUTION_TOOLS
 # Local persistence coordinators are mutations, but unlike proposal-led tools
 # they are not a route_request ordered lane step.  A table apply is explicitly
 # invoked by an operator after artifact validation; adding it to a buy/sell
@@ -320,6 +383,12 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
         "paper_reconcile_orders",
         "toss_reconcile_orders",
     }
+)
+# #1244: hidden on the paper route (never allowed or sequenced) — every
+# foreign order/proposal tool plus the non-paper reconcile writers (live/mock
+# ledgers). Hidden helpers do not degrade the paper contract; foreign ones do.
+PAPER_ROUTE_EXCLUDED_TOOLS: frozenset[str] = PAPER_FOREIGN_EXECUTION_TOOLS | (
+    RECONCILE_TOOLS - {"paper_reconcile_orders"}
 )
 
 # These are read/status/non-broker helper tools that remain in MUTATION_TOOLS
@@ -698,6 +767,76 @@ def lane_tool_names(lane: str) -> set[str]:
     return set(ordered_lane_tool_names(lane))
 
 
+def _check_surface(execution_surface: str) -> None:
+    if execution_surface not in ROUTE_SURFACES:
+        raise ValueError(f"unknown route execution surface {execution_surface!r}")
+
+
+def _paper_route(
+    lane: str,
+    market: str,
+    *,
+    purpose: str | None,
+    execution_surface: str,
+) -> bool:
+    """True only for crypto buy/sell on a paper-simulator registration."""
+    _check_surface(execution_surface)
+    return (
+        execution_surface == ROUTE_SURFACE_PAPER_SIMULATOR
+        and purpose is None
+        and lane in PAPER_EXECUTION_LANES
+        and market in PAPER_EXECUTION_MARKETS
+    )
+
+
+def _foreign_execution_tools(registered_tools: set[str] | None) -> list[str]:
+    """Order/proposal tools that must not coexist with the paper contract."""
+    if registered_tools is None:
+        return []
+    return sorted(PAPER_FOREIGN_EXECUTION_TOOLS & registered_tools)
+
+
+def _paper_route_contract(registered_tools: set[str] | None) -> dict[str, Any]:
+    required_tools = sorted(PAPER_EXECUTION_REQUIRED_TOOLS)
+    missing_required_tools = (
+        required_tools
+        if registered_tools is None
+        else sorted(set(required_tools) - registered_tools)
+    )
+    foreign_execution_tools = _foreign_execution_tools(registered_tools)
+    # Fail closed: an unknown registry (every required tool counts as
+    # missing), a missing paper tool, or any proposal / live / mock order tool
+    # on the same surface leaves the paper contract degraded rather than
+    # describing a surface it does not match.
+    execution_ready = not missing_required_tools and not foreign_execution_tools
+    return {
+        "version": PAPER_ROUTE_CONTRACT_VERSION,
+        "state": "ready" if execution_ready else "degraded",
+        "execution_mode": "paper_simulator",
+        "execution_ready": execution_ready,
+        "proposal_tool": None,
+        "approval_channel": "runner_intent_guard",
+        "human_approval_required": False,
+        "preview_owner": "runner_decision",
+        "reconcile_requirement": "paper_reconcile",
+        "execution_tools": sorted(PAPER_EXECUTION_TOOLS),
+        "required_tools": required_tools,
+        "missing_required_tools": missing_required_tools,
+        "foreign_execution_tools": foreign_execution_tools,
+    }
+
+
+def _hard_constraints(lane: str, *, paper: bool) -> list[str]:
+    if not paper:
+        return list(HARD_CONSTRAINTS[lane])
+    replaced = PROPOSAL_CHANNEL_HARD_CONSTRAINTS.get(lane, frozenset())
+    return [
+        constraint
+        for constraint in HARD_CONSTRAINTS[lane]
+        if constraint not in replaced
+    ] + list(PAPER_EXECUTION_HARD_CONSTRAINTS)
+
+
 def _route_contract(
     lane: str,
     *,
@@ -779,9 +918,13 @@ def build_registry_unavailable_plan(
     verdict_thresholds: dict[str, Any],
     policy_version: dict[str, str],
     purpose: str | None = None,
+    execution_surface: str = ROUTE_SURFACE_PROPOSAL_LED,
 ) -> dict[str, Any]:
     """Return a stable fail-closed response when live registry state is unknown."""
     lane = INTENT_TO_LANE[intent]
+    paper = _paper_route(
+        lane, market, purpose=purpose, execution_surface=execution_surface
+    )
     return {
         "success": False,
         "error": "registry_introspection_unavailable",
@@ -797,17 +940,21 @@ def build_registry_unavailable_plan(
         "harness_denied_tools": dict.fromkeys(
             sorted(HARNESS_DENIED_TOOLS), HARNESS_DENIED_TOOL_BASIS
         ),
-        "route_contract": _route_contract(
-            lane,
-            registered_tools=None,
-            purpose=purpose,
+        "route_contract": (
+            _paper_route_contract(None)
+            if paper
+            else _route_contract(
+                lane,
+                registered_tools=None,
+                purpose=purpose,
+            )
         ),
         "verdict_thresholds": verdict_thresholds,
         "policy_version": policy_version,
         "hard_constraints": list(
             ACCOUNT_CLEANUP_HARD_CONSTRAINTS
             if purpose == ACCOUNT_CLEANUP_PURPOSE
-            else HARD_CONSTRAINTS[lane]
+            else _hard_constraints(lane, paper=paper)
         ),
     }
 
@@ -820,10 +967,14 @@ def build_route_plan(
     verdict_thresholds: dict[str, Any],
     policy_version: dict[str, str],
     purpose: str | None = None,
+    execution_surface: str = ROUTE_SURFACE_PROPOSAL_LED,
 ) -> dict[str, Any]:
     """Assemble the deterministic route plan. Pure — no IO. Caller validates
     intent/market and resolves policy before calling."""
     lane = INTENT_TO_LANE[intent]
+    paper = _paper_route(
+        lane, market, purpose=purpose, execution_surface=execution_surface
+    )
     account_cleanup = purpose == ACCOUNT_CLEANUP_PURPOSE
     if account_cleanup and (
         intent != "profit_taking" or market not in ACCOUNT_CLEANUP_MARKETS
@@ -920,6 +1071,11 @@ def build_route_plan(
         for tool in sorted(market_exec & registered_tools):
             seq_steps.append({"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]})
 
+    # The paper route never sequences or allows a proposal/live/mock order tool
+    # (its contract is then degraded anyway) or a non-paper reconcile writer,
+    # even when one is registered.
+    paper_excluded = PAPER_ROUTE_EXCLUDED_TOOLS if paper else frozenset()
+    seq_steps = [step for step in seq_steps if step["tool"] not in paper_excluded]
     standard_tool_sequence = [
         {"step": i, "tool": step["tool"], "purpose": step["purpose"]}
         for i, step in enumerate(seq_steps, start=1)
@@ -945,13 +1101,21 @@ def build_route_plan(
         | HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
         | set(READ_ONLY_ADVISORY_TOOLS)
     )
-    allowed = (allowed_candidates - denied) & registered_tools
-    blocked = (MUTATION_TOOLS & registered_tools) - allowed
-    route_contract = _route_contract(
-        lane,
-        registered_tools=registered_tools,
-        purpose=purpose,
+    route_contract = (
+        _paper_route_contract(registered_tools)
+        if paper
+        else _route_contract(
+            lane,
+            registered_tools=registered_tools,
+            purpose=purpose,
+        )
     )
+    if paper and route_contract["execution_ready"]:
+        # The paper order tools are allowed only while the contract proved the
+        # surface carries no proposal/live/mock order tool beside them.
+        allowed_candidates = allowed_candidates | PAPER_EXECUTION_TOOLS
+    allowed = (allowed_candidates - denied - paper_excluded) & registered_tools
+    blocked = (MUTATION_TOOLS & registered_tools) - allowed
     success = route_contract["execution_ready"]
 
     result: dict[str, Any] = {
@@ -972,7 +1136,7 @@ def build_route_plan(
         "route_contract": route_contract,
         "verdict_thresholds": verdict_thresholds,
         "policy_version": policy_version,
-        "hard_constraints": list(HARD_CONSTRAINTS[lane]),
+        "hard_constraints": _hard_constraints(lane, paper=paper),
     }
     if not success:
         result["error"] = "required_route_tool_unavailable"
@@ -986,6 +1150,18 @@ __all__ = [
     "LANE_SEQUENCES",
     "HARD_CONSTRAINTS",
     "ROUTE_CONTRACT_VERSION",
+    "ROUTE_SURFACE_PROPOSAL_LED",
+    "ROUTE_SURFACE_PAPER_SIMULATOR",
+    "ROUTE_SURFACES",
+    "PAPER_ROUTE_CONTRACT_VERSION",
+    "PAPER_EXECUTION_LANES",
+    "PAPER_EXECUTION_MARKETS",
+    "PAPER_EXECUTION_TOOLS",
+    "PAPER_EXECUTION_REQUIRED_TOOLS",
+    "PAPER_FOREIGN_EXECUTION_TOOLS",
+    "PAPER_ROUTE_EXCLUDED_TOOLS",
+    "PROPOSAL_CHANNEL_HARD_CONSTRAINTS",
+    "PAPER_EXECUTION_HARD_CONSTRAINTS",
     "ACCOUNT_CLEANUP_PURPOSE",
     "ACCOUNT_CLEANUP_MARKETS",
     "ACCOUNT_CLEANUP_DIRECT_TOOL",
