@@ -42,6 +42,9 @@ uses: server takes a plain name, a literal 127.0.0.1:port and then only check,
 inter, fall and rise; default-server only those options. A trailing socks4,
 source, addr or any other option, a remote log target, http-check connect,
 other case, quotes, escapes or a trailing comment refuse the render.
+A bind may name only a listener the deploy owns: 127.0.0.1 on 8000 and 8765,
+and 100.122.100.56 on 8000, 8765 and each MCP unit port; a new tailnet
+frontend therefore needs its unit in the deploy script's MCP arrays first.
 
 MCP token values never enter a shell variable or a process argv (#1240): awk
 copies the one key from the two env files into a per-start 0600 file in the

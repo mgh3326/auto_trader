@@ -355,9 +355,16 @@ haproxy_binds_are_private() { awk '/^[[:space:]]*bind([[:space:]]|$)/ && $0 !~ /
 # a plain name, a literal 127.0.0.1:port and then only check, inter <time>,
 # fall <n> and rise <n>; default-server takes only those options. Anything
 # else (an unknown keyword, other case, quotes, escapes, a trailing comment
-# or a field holding a control character) refuses the render.
+# or a field holding a control character) refuses the render. A bind names
+# only a listener this deploy owns: loopback 8000 (API) and 8765 (MCP), and
+# on the tailnet address those two plus each MCP unit port, so no extra
+# listener can open on any other port of either address.
 haproxy_shape_is_closed() {
-  awk '
+  awk -v loopback_ports="8000 8765" -v tailnet_ports="8000 8765 ${MCP_PORTS[*]}" '
+    BEGIN {
+      n = split(loopback_ports, ports, " "); for (i = 1; i <= n; i++) owned["127.0.0.1:" ports[i]] = 1
+      n = split(tailnet_ports, ports, " "); for (i = 1; i <= n; i++) owned["100.122.100.56:" ports[i]] = 1
+    }
     function name(v) { return v ~ /^[A-Za-z0-9_]+$/ }
     function count(v) { return v ~ /^[0-9]+$/ }
     function duration(v) { return v ~ /^[0-9]+(us|ms|s|m|h|d)?$/ }
@@ -378,7 +385,7 @@ haproxy_shape_is_closed() {
     $1 == "master-worker" && NF == 1 { next }
     $1 == "mode" && NF == 2 && $2 == "http" { next }
     $1 == "timeout" && NF == 3 && $2 ~ /^(connect|client|server|tunnel|http-request)$/ && duration($3) { next }
-    $1 == "bind" && NF == 2 && $2 ~ /^(127\.0\.0\.1|100\.122\.100\.56):[0-9]+$/ { next }
+    $1 == "bind" && NF == 2 && ($2 in owned) { next }
     $1 == "default_backend" && NF == 2 && name($2) { next }
     $1 == "option" && NF == 4 && $2 == "httpchk" && $3 == "GET" && $4 ~ /^\/[A-Za-z0-9_.\/-]*$/ { next }
     $1 == "http-check" && NF == 4 && $2 == "expect" && $3 == "status" && $4 ~ /^[0-9][0-9][0-9]$/ { next }

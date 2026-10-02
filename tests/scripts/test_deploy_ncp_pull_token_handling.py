@@ -403,6 +403,19 @@ REFUSED_OTHER = {
         "backend bk_mcp_h3_crypto_paper x\n",
     ),
     "global-comment": ("global\n", "global # x\n"),
+    # tester r1: any other port on either address would be an extra listener
+    "extra-tailnet-listener": (
+        "    bind 100.122.100.56:8776\n",
+        "    bind 100.122.100.56:8776\n    bind 100.122.100.56:9988\n",
+    ),
+    "loopback-unit-port": (
+        "    bind 100.122.100.56:8776\n",
+        "    bind 127.0.0.1:8776\n",
+    ),
+    "tailnet-api-color-port": (
+        "    bind 100.122.100.56:8776\n",
+        "    bind 100.122.100.56:8001\n",
+    ),
     "bind-extra-option": (
         "    bind 100.122.100.56:8776\n",
         "    bind 100.122.100.56:8776 v4v6\n",

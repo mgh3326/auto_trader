@@ -259,7 +259,9 @@ def _run(
         [str(deploy or DEPLOY), *args],
         capture_output=True,
         text=True,
-        timeout=90,
+        # #1240: a full fake deploy takes over a minute on a loaded host; the
+        # bound only stops a hung run and is not part of any assertion.
+        timeout=600,
         env={
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
