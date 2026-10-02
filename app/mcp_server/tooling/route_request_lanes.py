@@ -384,6 +384,12 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
         "toss_reconcile_orders",
     }
 )
+# #1244: hidden on the paper route (never allowed or sequenced) — every
+# foreign order/proposal tool plus the non-paper reconcile writers (live/mock
+# ledgers). Hidden helpers do not degrade the paper contract; foreign ones do.
+PAPER_ROUTE_EXCLUDED_TOOLS: frozenset[str] = PAPER_FOREIGN_EXECUTION_TOOLS | (
+    RECONCILE_TOOLS - {"paper_reconcile_orders"}
+)
 
 # These are read/status/non-broker helper tools that remain in MUTATION_TOOLS
 # because that legacy bucket predates the action taxonomy.
@@ -1065,9 +1071,10 @@ def build_route_plan(
         for tool in sorted(market_exec & registered_tools):
             seq_steps.append({"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]})
 
-    # The paper route never sequences or allows a proposal/live/mock order tool,
-    # even when one is registered (its contract is then degraded anyway).
-    paper_excluded = PAPER_FOREIGN_EXECUTION_TOOLS if paper else frozenset()
+    # The paper route never sequences or allows a proposal/live/mock order tool
+    # (its contract is then degraded anyway) or a non-paper reconcile writer,
+    # even when one is registered.
+    paper_excluded = PAPER_ROUTE_EXCLUDED_TOOLS if paper else frozenset()
     seq_steps = [step for step in seq_steps if step["tool"] not in paper_excluded]
     standard_tool_sequence = [
         {"step": i, "tool": step["tool"], "purpose": step["purpose"]}
@@ -1152,6 +1159,7 @@ __all__ = [
     "PAPER_EXECUTION_TOOLS",
     "PAPER_EXECUTION_REQUIRED_TOOLS",
     "PAPER_FOREIGN_EXECUTION_TOOLS",
+    "PAPER_ROUTE_EXCLUDED_TOOLS",
     "PROPOSAL_CHANNEL_HARD_CONSTRAINTS",
     "PAPER_EXECUTION_HARD_CONSTRAINTS",
     "ACCOUNT_CLEANUP_PURPOSE",

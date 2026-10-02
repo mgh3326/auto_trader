@@ -42,7 +42,7 @@ auto_trader-operator H3-CRYPTO 파일럿 러너(`registered_tools("crypto")`)의
 등록 시점에 명시한 `execution_surface="paper_simulator"`(h3 registrar 한 곳만 지정, 도구 집합으로 추론하지 않음)로
 crypto buy/sell(`buy_analysis`/`profit_taking`)에 `paper-execution-v1` 계약을 낸다 — 실행 도구는
 `paper_place_limit_order`/`paper_cancel_pending_order` 두 개뿐이고, 같은 표면에 proposal·live·mock 주문 도구가 하나라도
-등록되면 degraded + `foreign_execution_tools` 로 fail-closed 하며 그 도구를 허용·시퀀스에 넣지 않는다. 그 밖의 프로필·intent·
+등록되면 degraded + `foreign_execution_tools` 로 fail-closed 하며 그 도구를 허용·시퀀스에 넣지 않는다. paper 가 아닌 reconcile writer(live/mock 원장)도 paper route 에서는 허용·시퀀스에서 숨긴다(degrade 는 아님). 그 밖의 프로필·intent·
 market·purpose 의 출력은 main 과 바이트 동일하다(`tests/mcp_server/test_route_request_profile_golden.py`,
 `test_route_request_paper_surface.py`).
 **MCP_PROFILE 필수 (#1189)**: 서버 진입점은 `require_mcp_profile` 로 프로필을 해석하며 비었거나·없거나·공백뿐인

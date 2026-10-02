@@ -28,7 +28,11 @@ Invariant sentences (one per mutant):
 - ALLOW_PAPER: a proposal-led route never allows the paper order tools.
 - ALLOW_READY: a degraded paper contract never allows the paper order tools.
 - NO_FOREIGN: the paper route never allows or sequences a proposal, live or
-  mock order tool, even when one is registered.
+  mock order tool or a non-paper reconcile writer, even when one is registered.
+
+The foreign and hidden sets are also pinned to literal oracles written in this
+file (not derived from the production constants), so dropping a union term
+from either constant is RED (r1 tester survivor: PROPOSAL_LIFECYCLE_TOOLS).
 
 The NO_FOREIGN mutant replaces the single on-disk ``paper_excluded``
 assignment in ``build_route_plan`` with an empty set.
@@ -163,6 +167,9 @@ def invariant_no_foreign(module: Any) -> None:
     }
     assert "order_proposal_create" not in named
     assert "order_proposal_create" in out["route_contract"]["foreign_execution_tools"]
+    hidden = _plan(module, "profit_taking", "crypto", H3 | {"live_reconcile_orders"})
+    assert hidden["success"] is True
+    assert "live_reconcile_orders" not in hidden["allowed_tools"]
 
 
 INVARIANTS = {
@@ -280,7 +287,7 @@ def test_no_foreign_mutant_breaks_its_invariant_by_assertion() -> None:
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     [assignment] = _paper_excluded_assignments(tree)
     assert ast.unparse(assignment.value) == (
-        "PAPER_FOREIGN_EXECUTION_TOOLS if paper else frozenset()"
+        "PAPER_ROUTE_EXCLUDED_TOOLS if paper else frozenset()"
     )
     assignment.value = ast.parse("frozenset()", mode="eval").body
     module = _compile(tree, "_route_lanes_mutant_no_foreign")
@@ -410,3 +417,86 @@ def test_only_the_h3_registrar_selects_the_paper_surface() -> None:
     assert [ast.unparse(k.value) for k in calls[0].keywords] == [
         "ROUTE_SURFACE_PAPER_SIMULATOR"
     ]
+
+
+# Literal oracles (#1244 r2) — independent of DIRECT_BROKER_MUTATION_TOOLS,
+# PROPOSAL_LIFECYCLE_TOOLS and RECONCILE_TOOLS, so removing a member or a union
+# term from the production constants cannot also remove its test.
+FOREIGN_ORACLE = frozenset(
+    {
+        "alpaca_paper_automated_submit_order",
+        "alpaca_paper_cancel_order",
+        "alpaca_paper_submit_order",
+        "cancel_order",
+        "kis_live_cancel_order",
+        "kis_live_modify_order",
+        "kis_live_place_order",
+        "kis_mock_cancel_order",
+        "kis_mock_mirror_execute_report",
+        "kis_mock_modify_order",
+        "kis_mock_place_order",
+        "kiwoom_mock_cancel_order",
+        "kiwoom_mock_modify_order",
+        "kiwoom_mock_place_order",
+        "kiwoom_mock_us_cancel_order",
+        "kiwoom_mock_us_modify_order",
+        "kiwoom_mock_us_place_order",
+        "modify_order",
+        "nh_mock_cancel_order",
+        "nh_mock_modify_order",
+        "nh_mock_place_order",
+        "place_order",
+        "toss_cancel_order",
+        "toss_modify_order",
+        "toss_place_order",
+        "order_proposal_create",
+        "order_proposal_expire_sweep",
+        "order_proposal_redispatch",
+        "order_proposal_void",
+        "proposal_revalidate",
+        "support_reserve_net_consume",
+    }
+)
+HIDDEN_RECONCILE_ORACLE = frozenset(
+    {
+        "alpaca_paper_reconcile_orders",
+        "kis_live_reconcile_orders",
+        "kis_mock_reconciliation_run",
+        "live_reconcile_orders",
+        "nh_mock_reconcile_orders",
+        "toss_reconcile_orders",
+    }
+)
+
+
+def test_foreign_and_hidden_sets_equal_the_literal_oracles() -> None:
+    # A new direct broker mutation must be added here too, deliberately.
+    assert lanes.PAPER_FOREIGN_EXECUTION_TOOLS == FOREIGN_ORACLE
+    assert lanes.PAPER_ROUTE_EXCLUDED_TOOLS == FOREIGN_ORACLE | HIDDEN_RECONCILE_ORACLE
+    assert "paper_reconcile_orders" not in lanes.PAPER_ROUTE_EXCLUDED_TOOLS
+
+
+@pytest.mark.parametrize("foreign", sorted(FOREIGN_ORACLE))
+def test_each_oracle_foreign_tool_degrades_the_paper_route(foreign: str) -> None:
+    out = _plan(lanes, "profit_taking", "crypto", H3 | {foreign})
+    assert out["success"] is False and out["degraded"] is True
+    assert out["route_contract"]["foreign_execution_tools"] == [foreign]
+    named = set(out["allowed_tools"]) | {
+        s["tool"] for s in out["standard_tool_sequence"]
+    }
+    assert foreign not in named
+    assert not lanes.PAPER_EXECUTION_TOOLS & set(out["allowed_tools"])
+
+
+@pytest.mark.parametrize("writer", sorted(HIDDEN_RECONCILE_ORACLE))
+def test_non_paper_reconcile_writers_are_hidden_on_the_paper_route(writer: str) -> None:
+    out = _plan(lanes, "buy_analysis", "crypto", H3 | {writer})
+    assert out["success"] is True  # hidden, not foreign
+    named = set(out["allowed_tools"]) | {
+        s["tool"] for s in out["standard_tool_sequence"]
+    }
+    assert writer not in named
+    assert "paper_reconcile_orders" in out["allowed_tools"]
+    # The proposal-led route keeps its existing reconcile allowance.
+    proposal = _plan(lanes, "buy_analysis", "crypto", H3 | {writer}, surface=PROPOSAL)
+    assert writer in proposal["allowed_tools"]
