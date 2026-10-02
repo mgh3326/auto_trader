@@ -28,6 +28,7 @@ from tests.scripts.test_deploy_ncp_pull_rollback import (
     OLD,
     _mutations,
     _run,
+    container_env,
 )
 
 pytestmark = pytest.mark.unit
@@ -101,13 +102,9 @@ def _unit_runs(calls: list[list[str]], unit: str) -> list[list[str]]:
     return [c for c in calls if c[0] == "run" and c[c.index("--name") + 1] == unit]
 
 
-def _env_of(call: list[str]) -> dict[str, str]:
-    env: dict[str, str] = {}
-    for flag, value in zip(call, call[1:], strict=False):
-        if flag == "-e":
-            key, _, val = value.partition("=")
-            env[key] = val
-    return env
+def _env_of(tmp_path: Path, call: list[str]) -> dict[str, str]:
+    # The env the container resolves (#1240: the token arrives in an env file).
+    return container_env(tmp_path, call)
 
 
 def _mutant(tmp_path: Path, old: str, new: str) -> Path:
@@ -234,7 +231,7 @@ def test_deploy_starts_the_unit_with_its_profile_port_and_token(
     assert result.returncode == 0, result.stderr
     runs = _unit_runs(calls, UNIT)
     assert len(runs) == 1
-    env = _env_of(runs[0])
+    env = _env_of(tmp_path, runs[0])
     assert env["MCP_PROFILE"] == PROFILE
     assert env["MCP_PORT"] == PORT
     assert env["MCP_HOST"] == "127.0.0.1"
@@ -260,11 +257,11 @@ def test_existing_units_receive_the_same_environment_as_before(
     assert result.returncode == 0, result.stderr
     for name, (profile, port) in EXISTING.items():
         (run,) = _unit_runs(calls, f"at-mcp-{name}")
-        env = _env_of(run)
+        env = _env_of(tmp_path, run)
         assert (env["MCP_PROFILE"], env["MCP_PORT"]) == (profile, port), name
     for color in ("at-mcp-green",):
         (run,) = _unit_runs(calls, color)
-        assert _env_of(run)["MCP_PROFILE"] == "default"
+        assert _env_of(tmp_path, run)["MCP_PROFILE"] == "default"
 
 
 def test_missing_token_fails_closed_before_pull_or_mutation(tmp_path: Path) -> None:
@@ -357,7 +354,7 @@ def test_later_failure_restores_the_unit_with_its_own_profile(tmp_path: Path) ->
     assert result.returncode != 0
     restored = [c for c in _unit_runs(calls, UNIT) if OLD in c]
     assert restored
-    env = _env_of(restored[-1])
+    env = _env_of(tmp_path, restored[-1])
     assert (env["MCP_PROFILE"], env["MCP_PORT"]) == (PROFILE, PORT)
     assert env["MCP_AUTH_TOKEN"] == f"tok-{TOKEN}"
     assert state[UNIT] == OLD
@@ -370,7 +367,7 @@ def test_manual_rollback_restores_the_unit_to_the_previous_digest(
     result, calls, state, _ = _run(tmp_path, args=("--rollback",))
     assert result.returncode == 0, result.stderr
     assert state[UNIT] == NEW
-    env = _env_of(_unit_runs(calls, UNIT)[-1])
+    env = _env_of(tmp_path, _unit_runs(calls, UNIT)[-1])
     assert (env["MCP_PROFILE"], env["MCP_PORT"]) == (PROFILE, PORT)
     assert env["MCP_AUTH_TOKEN"] == f"tok-{TOKEN}"
     assert f"{UNIT}\t{NEW}\t{NEW}\tMATCH" in result.stdout

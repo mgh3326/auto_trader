@@ -37,11 +37,26 @@ defaults, frontend and backend; directives log, master-worker, mode, timeout,
 bind, default_backend, option, http-check, default-server and server; every
 bind on loopback or the tailnet address and every server on 127.0.0.1. Any
 other listener form (stats socket, listen, peers, ...) refuses the render.
-MCP tokens pass through the deploy script, so it never runs traced: when it
-inherits tracing or anything that could re-enable it (bash -x, an exported
-SHELLOPTS/BASHOPTS, a BASH_ENV/ENV startup file, or a trap that runs code),
-it re-executes itself once in a clean shell and says so on stderr. Signals
-ignored at entry (nohup) do not trigger this.
+Since #1240 every line is matched whole against the exact forms the template
+uses: server takes a plain name, a literal 127.0.0.1:port and then only check,
+inter, fall and rise; default-server only those options. A trailing socks4,
+source, addr or any other option, a remote log target, http-check connect,
+other case, quotes, escapes or a trailing comment refuse the render.
+
+MCP token values never enter a shell variable or a process argv (#1240): awk
+copies the one key from the two env files into a per-start 0600 file in the
+run directory, docker reads it through --env-file (listed after the shared
+files, so its MCP_AUTH_TOKEN wins as the old -e flag did), and the file is
+removed whether docker run succeeds or fails. Tracing can print only key names
+and that file path. A token value with a control character (tab, CR, ...) is
+refused before any pull or container change. If the script is killed between
+creating and removing that file, a .mcp-token-env.* file can remain in the
+run directory next to the secrets file it came from; delete it.
+As a second layer (#1189), when the script inherits tracing or anything that
+could re-enable it (bash -x, an exported SHELLOPTS/BASHOPTS, a BASH_ENV/ENV
+startup file, or a trap that runs code), it re-executes itself once in a clean
+shell and says so on stderr. Signals ignored at entry (nohup) do not trigger
+this.
 
 All units run with host networking, but the Python server itself is explicitly
 bound to MCP_HOST=127.0.0.1, MCP_TYPE=streamable-http, MCP_PATH=/mcp, and

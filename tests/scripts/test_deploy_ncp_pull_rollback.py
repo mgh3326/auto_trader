@@ -59,6 +59,7 @@ def _run(
     fail_digest_record: bool = False,
     absent_names: tuple[str, ...] = (),
     omit_tokens: tuple[str, ...] = (),
+    extra_secrets: dict[str, str] | None = None,
     fail_route_url: str = "",
     extra_env: dict[str, str] | None = None,
     active_mcp_color: str = "blue",
@@ -132,6 +133,40 @@ def _run(
             print('\\n'.join(state))
         elif cmd == 'run':
             name = args[args.index('--name') + 1]
+            # #1240: resolve the container env as the docker CLI and daemon
+            # do: every --env-file (read now, as the CLI reads it before the
+            # API call) in order, then every -e; a repeated key keeps its
+            # first position and takes the last value.
+            env_lines, modes = [], {}
+            for flag, value in zip(args, args[1:]):
+                if flag != '--env-file':
+                    continue
+                try:
+                    modes[value] = oct(os.stat(value).st_mode & 0o777)
+                    text = pathlib.Path(value).read_bytes().decode('utf-8')
+                except (OSError, UnicodeDecodeError) as exc:
+                    print('docker: open ' + value + ': ' + type(exc).__name__, file=sys.stderr)
+                    sys.exit(125)
+                for raw in text.split('\\n'):
+                    line = (raw[:-1] if raw.endswith('\\r') else raw).lstrip()
+                    if not line or line.startswith('#'):
+                        continue
+                    key, eq, val = line.partition('=')
+                    if eq:
+                        env_lines.append(key + '=' + val)
+                    elif key in os.environ:
+                        env_lines.append(key + '=' + os.environ[key])
+            env_lines += [v for f, v in zip(args, args[1:]) if f == '-e']
+            resolved, position = [], {}
+            for entry in env_lines:
+                key = entry.partition('=')[0]
+                if key in position:
+                    resolved[position[key]] = entry
+                else:
+                    position[key] = len(resolved)
+                    resolved.append(entry)
+            with open(os.environ['FAKE_DOCKER_LOG'] + '.env', 'a') as f:
+                f.write(json.dumps({'args': args, 'env': resolved, 'modes': modes}) + '\\n')
             image = next((a for a in args if a.startswith('ghcr.io/mgh3326/auto_trader@sha256:')), 'haproxy:3.1-alpine')
             if name == os.environ.get('FAKE_FAIL_NAME') and image == os.environ['FAKE_NEW_DIGEST']:
                 sys.exit(23)
@@ -208,6 +243,7 @@ def _run(
             if name not in omit_tokens
         )
         + "\n"
+        + "".join(f"{key}={value}\n" for key, value in (extra_secrets or {}).items())
     )
     (run_dir / "deployed-digest").write_text(OLD + "\n")
     if fail_digest_record:
@@ -258,6 +294,15 @@ def _run(
     )
     calls = [json.loads(line) for line in log_path.read_text().splitlines()]
     return result, calls, json.loads(state_path.read_text()), run_dir
+
+
+def container_env(tmp_path: Path, call: list[str]) -> dict[str, str]:
+    """The env the fake daemon resolved for this exact docker run call."""
+    env_log = tmp_path / "docker-calls.jsonl.env"
+    entries = [json.loads(line) for line in env_log.read_text().splitlines()]
+    matches = [entry["env"] for entry in entries if entry["args"] == call]
+    assert matches, call
+    return dict(line.partition("=")[::2] for line in matches[-1])
 
 
 def _mutations(calls: list[list[str]], name: str) -> list[list[str]]:
