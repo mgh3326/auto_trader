@@ -1,0 +1,2568 @@
+{
+ "known_with_seed_and_evidence": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "known",
+  "unknown_reasons": [],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": [
+   {
+    "opened_at": "2026-09-01T00:00:00+00:00",
+    "quantity": "7",
+    "unit_cost": "65000.0000",
+    "origin": "opening_seed",
+    "source": "manual_import",
+    "broker_order_id": "SEED-20260901-196170",
+    "unrealized_pnl_pct": "10.77"
+   },
+   {
+    "opened_at": "2026-09-28T05:30:00+00:00",
+    "quantity": "4",
+    "unit_cost": "68000.0000",
+    "origin": "fill",
+    "source": "reconciler",
+    "broker_order_id": "0000123",
+    "unrealized_pnl_pct": "5.88"
+   },
+   {
+    "opened_at": "2026-09-30T05:30:00+00:00",
+    "quantity": "1",
+    "unit_cost": "69500.0000",
+    "origin": "opening_seed",
+    "source": "manual_import",
+    "broker_order_id": "M-1",
+    "unrealized_pnl_pct": "3.60"
+   }
+  ],
+  "net_quantity": "12",
+  "weighted_avg_cost": "66375.0000",
+  "weighted_unrealized_pnl_pct": "8.47",
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "12",
+  "quantity_reconciles": true,
+  "diagnostics": {
+   "authoritative_row_count": 5,
+   "counted_row_count": 4,
+   "ledger_net_quantity": "12",
+   "oversold_quantity": "0",
+   "provisional_row_count": 1,
+   "provisional_net_quantity": "2",
+   "superseded_websocket_duplicates": 1,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_buy_order_today",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": "4",
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": "8",
+  "sellable_by_ledger_basis": {
+   "state": "known",
+   "unknown_reasons": [],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": "12",
+   "own_open_sell_order_quantity": "4",
+   "reference_quantity": "12",
+   "clamped": false
+  }
+ },
+ "quantity_mismatch_provisional_pending": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "quantity_mismatch_with_reference",
+   "provisional_rows_pending_reconcile"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "14",
+  "quantity_reconciles": false,
+  "diagnostics": {
+   "authoritative_row_count": 5,
+   "counted_row_count": 4,
+   "ledger_net_quantity": "12",
+   "oversold_quantity": "0",
+   "provisional_row_count": 1,
+   "provisional_net_quantity": "2",
+   "superseded_websocket_duplicates": 1,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_buy_order_today",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": "4",
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": "4",
+   "reference_quantity": "14",
+   "clamped": false
+  }
+ },
+ "stale": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "ledger_stale"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T00:30:00+00:00",
+  "freshness": {
+   "state": "stale",
+   "last_kis_reconcile_finished_at": "2026-09-29T00:30:00+00:00",
+   "lag_minutes": 300.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "12",
+  "quantity_reconciles": true,
+  "diagnostics": {
+   "authoritative_row_count": 5,
+   "counted_row_count": 4,
+   "ledger_net_quantity": "12",
+   "oversold_quantity": "0",
+   "provisional_row_count": 1,
+   "provisional_net_quantity": "2",
+   "superseded_websocket_duplicates": 1,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_stale"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_buy_evidence_unknown",
+    "own_nonterminal_buy_order_today",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_stale"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_evidence_unknown",
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_stale"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_sell_evidence_unknown",
+    "own_nonterminal_sell_order_today"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": null,
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_stale"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_evidence_unknown",
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown",
+    "open_sell_evidence_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": null,
+   "reference_quantity": "12",
+   "clamped": false
+  }
+ },
+ "missing": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "no_reconcile_run"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": null,
+  "freshness": {
+   "state": "missing",
+   "last_kis_reconcile_finished_at": null,
+   "lag_minutes": null,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "12",
+  "quantity_reconciles": true,
+  "diagnostics": {
+   "authoritative_row_count": 5,
+   "counted_row_count": 4,
+   "ledger_net_quantity": "12",
+   "oversold_quantity": "0",
+   "provisional_row_count": 1,
+   "provisional_net_quantity": "2",
+   "superseded_websocket_duplicates": 1,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "no_reconcile_run"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_buy_evidence_unknown",
+    "own_nonterminal_buy_order_today",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "no_reconcile_run"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_evidence_unknown",
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "no_reconcile_run"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_sell_evidence_unknown",
+    "own_nonterminal_sell_order_today"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": null,
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "no_reconcile_run"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_evidence_unknown",
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown",
+    "open_sell_evidence_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": null,
+   "reference_quantity": "12",
+   "clamped": false
+  }
+ },
+ "order_ledger_unreadable": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "known",
+  "unknown_reasons": [],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": [
+   {
+    "opened_at": "2026-09-01T00:00:00+00:00",
+    "quantity": "7",
+    "unit_cost": "65000.0000",
+    "origin": "opening_seed",
+    "source": "manual_import",
+    "broker_order_id": "SEED-20260901-196170",
+    "unrealized_pnl_pct": "10.77"
+   },
+   {
+    "opened_at": "2026-09-28T05:30:00+00:00",
+    "quantity": "4",
+    "unit_cost": "68000.0000",
+    "origin": "fill",
+    "source": "reconciler",
+    "broker_order_id": "0000123",
+    "unrealized_pnl_pct": "5.88"
+   },
+   {
+    "opened_at": "2026-09-30T05:30:00+00:00",
+    "quantity": "1",
+    "unit_cost": "69500.0000",
+    "origin": "opening_seed",
+    "source": "manual_import",
+    "broker_order_id": "M-1",
+    "unrealized_pnl_pct": "3.60"
+   }
+  ],
+  "net_quantity": "12",
+  "weighted_avg_cost": "66375.0000",
+  "weighted_unrealized_pnl_pct": "8.47",
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "12",
+  "quantity_reconciles": true,
+  "diagnostics": {
+   "authoritative_row_count": 5,
+   "counted_row_count": 4,
+   "ledger_net_quantity": "12",
+   "oversold_quantity": "0",
+   "provisional_row_count": 1,
+   "provisional_net_quantity": "2",
+   "superseded_websocket_duplicates": 1,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "order_ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_buy_evidence_unknown",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "order_ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_sell_evidence_unknown",
+    "same_day_sell_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_sells": [],
+   "own_open_sell_order_quantity": null,
+   "same_day_sell_fills_unproven_complete": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "open_sell_evidence_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": "12",
+   "own_open_sell_order_quantity": null,
+   "reference_quantity": "12",
+   "clamped": false
+  }
+ },
+ "no_orders_known": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "quantity_mismatch_with_reference"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "12",
+  "quantity_reconciles": false,
+  "diagnostics": {
+   "authoritative_row_count": 4,
+   "counted_row_count": 3,
+   "ledger_net_quantity": "11",
+   "oversold_quantity": "0",
+   "provisional_row_count": 0,
+   "provisional_net_quantity": "0",
+   "superseded_websocket_duplicates": 0,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_sells": [],
+   "own_open_sell_order_quantity": "0",
+   "same_day_sell_fills_unproven_complete": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": "0",
+   "reference_quantity": "12",
+   "clamped": false
+  }
+ },
+ "reference_missing": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "reference_quantity_unavailable"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": null,
+  "quantity_reconciles": null,
+  "diagnostics": {
+   "authoritative_row_count": 5,
+   "counted_row_count": 4,
+   "ledger_net_quantity": "12",
+   "oversold_quantity": "0",
+   "provisional_row_count": 1,
+   "provisional_net_quantity": "2",
+   "superseded_websocket_duplicates": 1,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_buy_order_today",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": "4",
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": "4",
+   "reference_quantity": null,
+   "clamped": false
+  }
+ },
+ "reference_zero": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "reference_quantity_unavailable"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "0",
+  "quantity_reconciles": null,
+  "diagnostics": {
+   "authoritative_row_count": 5,
+   "counted_row_count": 4,
+   "ledger_net_quantity": "12",
+   "oversold_quantity": "0",
+   "provisional_row_count": 1,
+   "provisional_net_quantity": "2",
+   "superseded_websocket_duplicates": 1,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_buy_order_today",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": "4",
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "M-1",
+     "side": "buy",
+     "quantity": "1",
+     "price": "69500.0000",
+     "filled_at": "2026-09-30T05:30:00+00:00",
+     "source": "manual_import",
+     "provisional": false
+    },
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": "4",
+   "reference_quantity": "0",
+   "clamped": false
+  }
+ },
+ "no_rows": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "no_ledger_rows",
+   "quantity_mismatch_with_reference"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "12",
+  "quantity_reconciles": false,
+  "diagnostics": {
+   "authoritative_row_count": 0,
+   "counted_row_count": 0,
+   "ledger_net_quantity": "0",
+   "oversold_quantity": "0",
+   "provisional_row_count": 0,
+   "provisional_net_quantity": "0",
+   "superseded_websocket_duplicates": 0,
+   "seed_cutover": null,
+   "pre_seed_rows_superseded": []
+  },
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "kis_live_order_ledger_open_sells": [],
+   "own_open_sell_order_quantity": "0",
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": "0",
+   "reference_quantity": "12",
+   "clamped": false
+  }
+ },
+ "only_provisional": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "only_provisional_rows",
+   "quantity_mismatch_with_reference"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "12",
+  "quantity_reconciles": false,
+  "diagnostics": {
+   "authoritative_row_count": 0,
+   "counted_row_count": 0,
+   "ledger_net_quantity": "0",
+   "oversold_quantity": "0",
+   "provisional_row_count": 2,
+   "provisional_net_quantity": "-1",
+   "superseded_websocket_duplicates": 0,
+   "seed_cutover": null,
+   "pre_seed_rows_superseded": []
+  },
+  "provisional_rows_excluded": [
+   {
+    "broker_order_id": "456",
+    "side": "sell",
+    "quantity": "3",
+    "price": "71000.0000",
+    "filled_at": "2026-09-29T00:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   },
+   {
+    "broker_order_id": "999",
+    "side": "buy",
+    "quantity": "2",
+    "price": "69000.0000",
+    "filled_at": "2026-09-29T01:30:00+00:00",
+    "source": "websocket",
+    "provisional": true
+   }
+  ],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_buy_order_today",
+    "same_day_buy_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": "4",
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "999",
+     "side": "buy",
+     "quantity": "2",
+     "price": "69000.0000",
+     "filled_at": "2026-09-29T01:30:00+00:00",
+     "source": "websocket",
+     "provisional": true
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": "4",
+   "reference_quantity": "12",
+   "clamped": false
+  }
+ },
+ "oversold": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "oversold_history_gap",
+   "quantity_mismatch_with_reference"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "1",
+  "quantity_reconciles": false,
+  "diagnostics": {
+   "authoritative_row_count": 2,
+   "counted_row_count": 2,
+   "ledger_net_quantity": "0",
+   "oversold_quantity": "2",
+   "provisional_row_count": 0,
+   "provisional_net_quantity": "0",
+   "superseded_websocket_duplicates": 0,
+   "seed_cutover": null,
+   "pre_seed_rows_superseded": []
+  },
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_buy_order_today"
+   ],
+   "kis_live_order_ledger_open_buys": [
+    {
+     "order_no": "0000777",
+     "status": "accepted",
+     "quantity": "2",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [
+    {
+     "order_no": "0000100",
+     "status": "accepted",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "2",
+     "side": "sell",
+     "quantity": "3",
+     "price": "100.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today",
+    "same_day_sell_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000778",
+     "status": "partial",
+     "quantity": "4",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": "4",
+   "same_day_sell_fills_unproven_complete": [
+    {
+     "broker_order_id": "2",
+     "side": "sell",
+     "quantity": "3",
+     "price": "100.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "presumed_dead_prior_day_sells": [
+    {
+     "order_no": "0000101",
+     "status": "pending",
+     "quantity": "1",
+     "price": "70000.0000",
+     "trade_date": "2026-09-28T05:30:00+00:00"
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": "4",
+   "reference_quantity": "1",
+   "clamped": false
+  }
+ },
+ "clamped_sellable": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "known",
+  "unknown_reasons": [],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": [
+   {
+    "opened_at": "2026-09-01T00:00:00+00:00",
+    "quantity": "7",
+    "unit_cost": "65000.0000",
+    "origin": "opening_seed",
+    "source": "manual_import",
+    "broker_order_id": "SEED-20260901-196170",
+    "unrealized_pnl_pct": "10.77"
+   },
+   {
+    "opened_at": "2026-09-28T05:30:00+00:00",
+    "quantity": "4",
+    "unit_cost": "68000.0000",
+    "origin": "fill",
+    "source": "reconciler",
+    "broker_order_id": "0000123",
+    "unrealized_pnl_pct": "5.88"
+   }
+  ],
+  "net_quantity": "11",
+  "weighted_avg_cost": "66090.9091",
+  "weighted_unrealized_pnl_pct": "8.94",
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "11",
+  "quantity_reconciles": true,
+  "diagnostics": {
+   "authoritative_row_count": 4,
+   "counted_row_count": 3,
+   "ledger_net_quantity": "11",
+   "oversold_quantity": "0",
+   "provisional_row_count": 0,
+   "provisional_net_quantity": "0",
+   "superseded_websocket_duplicates": 0,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today",
+    "same_day_sell_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000999",
+     "status": "accepted",
+     "quantity": "40",
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": "40",
+   "same_day_sell_fills_unproven_complete": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": "0",
+  "sellable_by_ledger_basis": {
+   "state": "known",
+   "unknown_reasons": [],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": "11",
+   "own_open_sell_order_quantity": "40",
+   "reference_quantity": "11",
+   "clamped": true
+  }
+ },
+ "open_sell_quantity_missing": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "known",
+  "unknown_reasons": [],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": [
+   {
+    "opened_at": "2026-09-01T00:00:00+00:00",
+    "quantity": "7",
+    "unit_cost": "65000.0000",
+    "origin": "opening_seed",
+    "source": "manual_import",
+    "broker_order_id": "SEED-20260901-196170",
+    "unrealized_pnl_pct": "10.77"
+   },
+   {
+    "opened_at": "2026-09-28T05:30:00+00:00",
+    "quantity": "4",
+    "unit_cost": "68000.0000",
+    "origin": "fill",
+    "source": "reconciler",
+    "broker_order_id": "0000123",
+    "unrealized_pnl_pct": "5.88"
+   }
+  ],
+  "net_quantity": "11",
+  "weighted_avg_cost": "66090.9091",
+  "weighted_unrealized_pnl_pct": "8.94",
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "11",
+  "quantity_reconciles": true,
+  "diagnostics": {
+   "authoritative_row_count": 4,
+   "counted_row_count": 3,
+   "ledger_net_quantity": "11",
+   "oversold_quantity": "0",
+   "provisional_row_count": 0,
+   "provisional_net_quantity": "0",
+   "superseded_websocket_duplicates": 0,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "own_nonterminal_sell_order_today",
+    "same_day_sell_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_sells": [
+    {
+     "order_no": "0000999",
+     "status": "accepted",
+     "quantity": null,
+     "price": "70000.0000",
+     "trade_date": "2026-09-29T00:30:00+00:00"
+    }
+   ],
+   "own_open_sell_order_quantity": null,
+   "same_day_sell_fills_unproven_complete": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "own_open_sell_quantity_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": "11",
+   "own_open_sell_order_quantity": null,
+   "reference_quantity": "11",
+   "clamped": false
+  }
+ },
+ "no_current_price": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "known",
+  "unknown_reasons": [],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": [
+   {
+    "opened_at": "2026-09-01T00:00:00+00:00",
+    "quantity": "7",
+    "unit_cost": "65000.0000",
+    "origin": "opening_seed",
+    "source": "manual_import",
+    "broker_order_id": "SEED-20260901-196170",
+    "unrealized_pnl_pct": null
+   },
+   {
+    "opened_at": "2026-09-28T05:30:00+00:00",
+    "quantity": "4",
+    "unit_cost": "68000.0000",
+    "origin": "fill",
+    "source": "reconciler",
+    "broker_order_id": "0000123",
+    "unrealized_pnl_pct": null
+   }
+  ],
+  "net_quantity": "11",
+  "weighted_avg_cost": "66090.9091",
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": "2026-09-29T05:20:00+00:00",
+  "freshness": {
+   "state": "fresh",
+   "last_kis_reconcile_finished_at": "2026-09-29T05:20:00+00:00",
+   "lag_minutes": 10.0,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": "11",
+  "quantity_reconciles": true,
+  "diagnostics": {
+   "authoritative_row_count": 4,
+   "counted_row_count": 3,
+   "ledger_net_quantity": "11",
+   "oversold_quantity": "0",
+   "provisional_row_count": 0,
+   "provisional_net_quantity": "0",
+   "superseded_websocket_duplicates": 0,
+   "seed_cutover": "2026-09-01T00:00:00+00:00",
+   "pre_seed_rows_superseded": [
+    {
+     "broker_order_id": "0007",
+     "side": "buy",
+     "quantity": "5",
+     "price": "60000.0000",
+     "filled_at": "2026-08-29T00:00:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ]
+  },
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_in_ledger"
+   ],
+   "fills": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_fill_order_not_proven_complete"
+   ],
+   "kis_live_order_ledger_open_sells": [],
+   "own_open_sell_order_quantity": "0",
+   "same_day_sell_fills_unproven_complete": [
+    {
+     "broker_order_id": "0000456",
+     "side": "sell",
+     "quantity": "3",
+     "price": "71000.0000",
+     "filled_at": "2026-09-29T00:30:00+00:00",
+     "source": "reconciler",
+     "provisional": false
+    }
+   ],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "known",
+   "unknown_reasons": [],
+   "blocking": false,
+   "blocking_reasons": [],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": "11",
+  "sellable_by_ledger_basis": {
+   "state": "known",
+   "unknown_reasons": [],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": "11",
+   "own_open_sell_order_quantity": "0",
+   "reference_quantity": "11",
+   "clamped": false
+  }
+ },
+ "unknown_block": {
+  "source": "execution_ledger",
+  "symbol": "196170",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "ledger_read_failed"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": null,
+  "freshness": {
+   "state": "missing",
+   "last_kis_reconcile_finished_at": null,
+   "lag_minutes": null,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": null,
+  "quantity_reconciles": null,
+  "diagnostics": null,
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_buy_evidence_unknown"
+   ],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_evidence_unknown"
+   ],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_sell_evidence_unknown"
+   ],
+   "kis_live_order_ledger_open_sells": [],
+   "own_open_sell_order_quantity": null,
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_evidence_unknown"
+   ],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown",
+    "open_sell_evidence_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": null,
+   "reference_quantity": null,
+   "clamped": false
+  }
+ },
+ "unknown_block_order_read": {
+  "source": "execution_ledger",
+  "symbol": "171090",
+  "ledger_state": "unknown",
+  "unknown_reasons": [
+   "order_ledger_read_failed"
+  ],
+  "cost_method": "fifo_remaining_lots_from_ledger",
+  "cost_basis_note": "FIFO over execution_ledger fills (reconciler/manual_import only). Pre-ledger holdings are one opening_seed lot at the broker average price as of the seed. This is NOT the broker moving-average avg_buy_price.",
+  "lots": null,
+  "net_quantity": null,
+  "weighted_avg_cost": null,
+  "weighted_unrealized_pnl_pct": null,
+  "as_of": null,
+  "freshness": {
+   "state": "missing",
+   "last_kis_reconcile_finished_at": null,
+   "lag_minutes": null,
+   "fresh_max_minutes": 90
+  },
+  "reference_quantity": null,
+  "quantity_reconciles": null,
+  "diagnostics": null,
+  "provisional_rows_excluded": [],
+  "open_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "order_ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_buy_evidence_unknown"
+   ],
+   "kis_live_order_ledger_open_buys": [],
+   "same_day_buy_fills_unproven_complete": [],
+   "presumed_dead_prior_day_buys": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "order_ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_sell_evidence_unknown"
+   ],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "open_sell_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "order_ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "open_sell_evidence_unknown"
+   ],
+   "kis_live_order_ledger_open_sells": [],
+   "own_open_sell_order_quantity": null,
+   "same_day_sell_fills_unproven_complete": [],
+   "presumed_dead_prior_day_sells": [],
+   "scope": "orders_known_to_auto_trader_only",
+   "external_orders_verifiable": false
+  },
+  "same_day_buy_evidence": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "order_ledger_read_failed"
+   ],
+   "blocking": true,
+   "blocking_reasons": [
+    "same_day_buy_evidence_unknown"
+   ],
+   "fills": [],
+   "scope": "orders_known_to_auto_trader_only"
+  },
+  "sellable_by_ledger": null,
+  "sellable_by_ledger_basis": {
+   "state": "unknown",
+   "unknown_reasons": [
+    "ledger_state_unknown",
+    "open_sell_evidence_unknown"
+   ],
+   "method": "ledger_net_minus_own_open_sell_orders_today",
+   "ledger_net_quantity": null,
+   "own_open_sell_order_quantity": null,
+   "reference_quantity": null,
+   "clamped": false
+  }
+ }
+}

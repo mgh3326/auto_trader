@@ -279,6 +279,21 @@ allowlist change exists because `get_holdings` is already live-kr core.
 - **테스트**: `tests/services/execution_ledger/test_kis_lots.py`(순수), `test_kis_lots_db.py`(테스트 DB), `tests/mcp_server/test_get_holdings_ledger_lots.py`(golden·opt-in·격리),
   `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678), #1087 매도측: `test_kis_lots_sell_evidence.py`(순수·90분 경계·KST 자정·clamp),
   `test_kis_lots_sell_evidence_db.py`(테스트 DB·KIS client/HTTP 트랩으로 무호출 단언·get_holdings end-to-end).
+- **KIS live US 확장 (task #1173, 운영자 10-01)**: 같은 블록을 KIS live **US** 포지션(`market="us"`, `equity_us`)에도 붙인다 — `load_kis_live_us_lot_blocks` +
+  `build_symbol_block(market="us")`. KR 블록은 바이트 동일(`test_kis_lots_us.py` 의 pre-change golden `kis_lots_kr_blocks_golden.json`), 기본 출력도 불변.
+  - fill: `broker=kis`·`account_mode=live`·`instrument_type=equity_us`·`currency=USD`. authoritative 행의 venue 가 정확히 `NASD`/`NYSE`/`AMEX`(KIS 해외 주문 거래소 코드, 대소문자·공백만 정규화)가
+    아니면(`NASDAQ`·`NAS`·`krx`·빈값 …) 세지 않고 블록을 `unknown`(`unrecognized_us_venue_rows`)으로 만든다 — 조용히 거르지 않는다. 심볼은 holdings 의 DB dot-format 키로
+    `app/core/symbol.py` 변환(`BRK/B`·`BRK-B` → `BRK.B`)을 거쳐 맞춘다.
+  - 자기 주문: `review.live_order_ledger`(`broker=kis`·`account_scope=kis_live`·`market=us`, ROB-407) + `review.kis_live_order_ledger` 의 `equity_us` 행(계약상 없어야 하지만 있으면 차단에 쓴다).
+    증거 키 이름(`kis_live_order_ledger_open_*`)은 KR 과 동일하게 유지하고 출처는 `order_ledger_sources` 로 밝힌다.
+  - 🔴 "당일" = **US 거래일**: 20:00 America/New_York(애프터 마감, DST 반영)에 넘어간다 — KST 자정 이후에도 그 US 거래일의 주문·체결은 차단한다. KIS 주간거래(10:00 KST = 전일 20:00/21:00 ET) 주문은 다음 US 거래일 소속.
+  - freshness 는 같은 KIS reconcile run(한 run 이 `kr,us` 를 읽고 US fetch 오류는 run 전체를 실패시킴)을 쓴다. 브로커 수량 불일치는 항상 `unknown`. `external_orders_verifiable=false`·`scope` 문구 동일.
+  - 격리 행(#1175)은 어느 뷰에도 안 들어간다(`execution_ledger_in_effect()`, `test_quarantine_readers_db::test_us_lots_drop_the_quarantined_row` 가 filter-dropped 뮤턴트까지 증명).
+    아직 격리 안 된 접수통지 팬텀은 `websocket` 행이라 lot·순수량·수량대조·`sellable_by_ledger` 에 절대 안 들어가고, 당일 증거에서는 차단을 더할 뿐 줄이지 않는다.
+  - KR·US 는 별도 세션으로 읽어 한 시장 실패가 다른 시장 블록을 깎지 않는다. summary 는 `scope="kis_live_kr_us_positions"`·`positions_covered_by_market`, 비-live 라우팅은 `reason="kis_live_only"`.
+  - 🔴 #678 `kis_live_get_order_history` 차단·harness deny 불변. us-open-trade 프롬프트 문장은 운영자 PR 별건.
+  - **테스트**: `test_kis_lots_us.py`(순수·US 거래일·venue·팬텀·KR golden), `test_kis_lots_us_db.py`(테스트 DB·KIS/HTTP 트랩·get_holdings KR+US end-to-end),
+    `test_kis_lots_us_mutants.py`(디스크에서 센 US 가드 9곳의 assertion-RED 뮤턴트).
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 
