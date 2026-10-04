@@ -326,6 +326,10 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE review.execution_ledger_quarantine_events")
             )
+            # #1250 kis_mock inference-expiry audit table is later too.
+            await connection.execute(
+                text("DROP TABLE review.kis_mock_inference_expiry_events")
+            )
             for column in ("quarantined_by", "quarantine_reason", "quarantined_at"):
                 await connection.execute(
                     text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")

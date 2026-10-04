@@ -132,7 +132,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v56 (#1175 r4): the tombstone and its audit key columns are gone; a
 # quarantined row is terminal (any UPDATE or DELETE refused, TRUNCATE refused
 # while one exists).
-SCHEMA_BOOTSTRAP_VERSION = 56
+# v57 (#1250): append-only review.kis_mock_inference_expiry_events audit table
+# (create_all) and its rejection triggers; the production migration is
+# 20261005_t1250_kismock_inf.
+SCHEMA_BOOTSTRAP_VERSION = 57
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2077,6 +2080,28 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "DROP TRIGGER IF EXISTS trg_execution_ledger_requarantine_insert "
     "ON review.execution_ledger",
     "DROP FUNCTION IF EXISTS review.requarantine_execution_ledger_insert()",
+    # ---- #1250: kis_mock inference-expiry audit (mirrors 20261005_t1250_kismock_inf).
+    """
+CREATE OR REPLACE FUNCTION review.reject_kis_mock_inference_expiry_event_mutation()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'review.% is append-only; % rejected',
+        TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_append_only "
+    "ON review.kis_mock_inference_expiry_events",
+    "CREATE TRIGGER trg_kis_mock_inference_expiry_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.kis_mock_inference_expiry_events "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_kis_mock_inference_expiry_event_mutation()",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_truncate "
+    "ON review.kis_mock_inference_expiry_events",
+    "CREATE TRIGGER trg_kis_mock_inference_expiry_events_truncate "
+    "BEFORE TRUNCATE ON review.kis_mock_inference_expiry_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_kis_mock_inference_expiry_event_mutation()",
 )
 
 

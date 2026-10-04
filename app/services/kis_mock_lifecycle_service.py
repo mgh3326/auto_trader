@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger
@@ -313,6 +313,45 @@ class KISMockLifecycleService:
             "rule_version": RULE_VERSION,
             "operator_decision_ref": decision_ref,
         }
+
+    async def close_rows_by_q46_inference(
+        self,
+        *,
+        details: dict[int, dict[str, Any]],
+        closed_at: datetime,
+    ) -> int:
+        """#1250 guarded write for the Q-46 ``expired[inference]`` close.
+
+        Called only by ``kis_mock_inference_expiry_service.commit_inference_expiry``
+        after it has locked and re-classified the rows in the same transaction.
+        Each UPDATE is itself guarded on the id allowlist and on the row still
+        being ``accepted``/``pending``; the caller compares the returned count
+        with the batch size and owns the commit/rollback. Never commits.
+        """
+        from app.services.kis_mock_inference_expiry import ALLOWED_LEDGER_IDS
+
+        if set(details) != ALLOWED_LEDGER_IDS:
+            raise ValueError("q46_inference_ids_outside_allowlist")
+        changed = 0
+        for ledger_id, detail in sorted(details.items()):
+            result = await self._db.execute(
+                update(KISMockOrderLedger)
+                .where(
+                    KISMockOrderLedger.id == ledger_id,
+                    KISMockOrderLedger.id.in_(sorted(ALLOWED_LEDGER_IDS)),
+                    KISMockOrderLedger.account_mode == "kis_mock",
+                    KISMockOrderLedger.lifecycle_state.in_(("accepted", "pending")),
+                )
+                .values(
+                    lifecycle_state="expired",
+                    reconcile_attempts=KISMockOrderLedger.reconcile_attempts + 1,
+                    last_reconcile_detail=detail,
+                    reconciled_at=closed_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            changed += int(result.rowcount or 0)
+        return changed
 
     async def update_order_terms(
         self,
