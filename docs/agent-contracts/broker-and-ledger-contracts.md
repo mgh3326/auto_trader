@@ -138,6 +138,25 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
   마이그레이션도 별도 운영 절차로 적용한다. 상세는
   docs/runbooks/binance-h5-demo.md를 따른다.
+- **NCP 수동 운영·알림 (task 1251)**: 정확한 복붙 절차는
+  `docs/runbooks/binance-h5-ncp-manual-playbook.md`(명령의 플래그는
+  `tests/scripts/test_binance_h5_ncp_playbook.py`가 각 스크립트의 실제 argparse로
+  검증). 데모 플래그 3종(`BINANCE_H5_DEMO_ENABLED`·`BINANCE_FUTURES_DEMO_ENABLED`·
+  `BINANCE_H5_ALERT_ENABLED`)은 해당 일회성 컨테이너의 `docker run -e` 에만 둔다 —
+  공유 env 파일(`.env.api`) 편집·`--restart`·`-d`·cron/systemd 등록 금지.
+  시작 전 `scripts/binance_h5_truth_gate.py --confirm-demo`(서명 GET + SELECT 만,
+  주문·쓰기 도달 불가를 AST 테스트로 고정)가 PASS 해야 한다.
+- **장애 알림 (default off, `BINANCE_H5_ALERT_ENABLED` 정확히 `true` 일 때만)**:
+  `h5/alerting.py`. `stopped`(SIGINT 외의 종료)·`error`(`blocked`/`entry_uncertain`/
+  `close_uncertain` 틱)는 러너 안에서, `heartbeat_missed`는 별도 읽기 전용
+  `scripts/binance_h5_heartbeat_watch.py`가 `review.binance_h5_lane_state.updated_at`
+  (`record_nav` 가 틱마다 갱신)이 N분(기본 10) 이상 묵었을 때 보낸다 — SIGKILL/OOM 은
+  이 경로만 잡는다. 채널은 기존 ops 채널 `settings.discord_webhook_alerts`(Hermes 아님,
+  신규 provider 없음). 에피소드당 1회·리마인더 최대 6시간 1회·전송 실패 재시도 5분
+  간격이며 전송 실패·지연은 러너 동작을 바꾸지 못한다(타임아웃 10초, 예외 삼킴).
+  H5 에는 거래소 측 손절이 없으므로 모든 종류가 "포지션이 있으면 손절 감시 중단"을 뜻한다.
+  코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
+  core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 

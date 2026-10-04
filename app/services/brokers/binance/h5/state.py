@@ -299,6 +299,12 @@ class H5StateService:
                 row.halt_reason = "mdd_lane_stop"
             row.updated_at = now
 
+    async def last_tick_at(self) -> dt.datetime | None:
+        """Read-only runner liveness: ``record_nav`` stamps this row each tick."""
+        async with self._factory() as db:
+            row = await db.get(BinanceH5LaneState, 1)
+            return row.updated_at if row is not None else None
+
     async def decision_processed(self, decision_ts: int) -> bool:
         async with self._factory() as db:
             row = await db.get(BinanceH5LaneState, 1)

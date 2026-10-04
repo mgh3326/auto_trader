@@ -8,10 +8,18 @@ import dataclasses
 import datetime as dt
 import json
 import os
+import signal
 from typing import Any
 
 from app.core.db import AsyncSessionLocal
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
+from app.services.brokers.binance.h5.alerting import (
+    FAILURE_EVENTS,
+    H5Alerter,
+    H5RunMonitor,
+    alert_enabled,
+    build_default_channel,
+)
 from app.services.brokers.binance.h5.client import H5DemoClient
 from app.services.brokers.binance.h5.executor import H5Executor
 from app.services.brokers.binance.h5.state import H5StateService
@@ -27,11 +35,49 @@ def _guard_cli(args: argparse.Namespace) -> None:
         raise SystemExit("BINANCE_FUTURES_DEMO_ENABLED must be true")
 
 
-async def _run(args: argparse.Namespace) -> int:
-    _guard_cli(args)
-    client = H5DemoClient.from_env()
-    strategy = H5Strategy(base_url=client._base_url)
-    state = H5StateService(AsyncSessionLocal)
+class _StopState:
+    """Why the loop was cancelled; only filled in when alerts are enabled."""
+
+    def __init__(self) -> None:
+        self.installed = False
+        self.operator = False
+        self.reason = "cancelled"
+
+
+def _install_stop_signals(stop: _StopState) -> None:
+    """Ctrl-C is the operator's own stop; SIGTERM and anything else is not."""
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    if task is None:
+        return
+
+    def _on_signal(reason: str, operator: bool) -> None:
+        stop.reason, stop.operator = reason, operator
+        task.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, _on_signal, "sigint", True)
+        loop.add_signal_handler(signal.SIGTERM, _on_signal, "sigterm", False)
+    except (NotImplementedError, RuntimeError):
+        return
+    stop.installed = True
+
+
+def _build_monitor() -> H5RunMonitor:
+    enabled = alert_enabled(os.environ)
+    channel = build_default_channel() if enabled else None
+    return H5RunMonitor(H5Alerter(channel=channel, enabled=enabled))
+
+
+async def _run_ticks(
+    args: argparse.Namespace,
+    *,
+    client: H5DemoClient,
+    strategy: H5Strategy,
+    state: H5StateService,
+    monitor: H5RunMonitor,
+    stop: _StopState,
+) -> int:
     try:
         while True:
             async with AsyncSessionLocal() as db:
@@ -50,14 +96,41 @@ async def _run(args: argparse.Namespace) -> int:
                 except Exception as exc:
                     payload = {"event": "blocked", "error_class": type(exc).__name__}
                 print(json.dumps(payload, sort_keys=True), flush=True)
+            await monitor.tick_done(payload)
             if not args.loop:
-                return (
-                    2
-                    if payload["event"]
-                    in {"blocked", "entry_uncertain", "close_uncertain"}
-                    else 0
-                )
+                return 2 if payload["event"] in FAILURE_EVENTS else 0
             await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        if not stop.installed:
+            raise
+        await monitor.stopped(operator=stop.operator, reason=stop.reason)
+        return 130 if stop.operator else 143
+    except KeyboardInterrupt:
+        await monitor.stopped(operator=True, reason="keyboard_interrupt")
+        raise
+    except Exception as exc:
+        await monitor.stopped(operator=False, reason=f"exception:{type(exc).__name__}")
+        raise
+
+
+async def _run(args: argparse.Namespace) -> int:
+    _guard_cli(args)
+    client = H5DemoClient.from_env()
+    strategy = H5Strategy(base_url=client._base_url)
+    state = H5StateService(AsyncSessionLocal)
+    monitor = _build_monitor()
+    stop = _StopState()
+    try:
+        if monitor.enabled:
+            _install_stop_signals(stop)
+        return await _run_ticks(
+            args,
+            client=client,
+            strategy=strategy,
+            state=state,
+            monitor=monitor,
+            stop=stop,
+        )
     finally:
         await client.aclose()
 
