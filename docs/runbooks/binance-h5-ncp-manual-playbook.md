@@ -302,6 +302,11 @@ tick.
   runs longer than the miss window would raise a false `heartbeat_missed`. The
   longest tick is not measured here: watch the first 4h-boundary tick (33
   history page reads) and widen `--miss-minutes` if needed.
+- A failure that clears and comes back is a new episode and alerts again, so a
+  flapping fault (failing tick, healthy tick, failing tick) sends one message per
+  flap. That is deliberate: silence on a recurring fault is the worse error.
+- A stop signal that arrives while a tick alert is still being delivered replaces
+  that alert with the stop alert (the stop is the more important message).
 - The watcher's own read has a 15 second deadline; a stalled read is reported as
   `unreadable`, not left waiting.
 - No MCP tool reports H5 runner health to the coin session, so the operator

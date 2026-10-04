@@ -16,6 +16,7 @@ Invariant sentences (one per mutant):
 - REPEAT_WINDOW: a delivered failure is never re-sent inside the reminder window.
 - RETRY_BACKOFF: a failed delivery is not retried inside the retry back-off.
 - OPERATOR_STOP: the operator's own stop (Ctrl-C) is never an alert.
+- OFF_NO_TASK: with alerts off a failed tick schedules no background task.
 - FAILURE_EVENT: a blocked or uncertain tick is an error alert.
 - NO_STAMP: a lane that has never ticked is absent, not a failure.
 - AWARE_ONLY: a naive timestamp is refused, never compared.
@@ -132,6 +133,23 @@ def sc_operator_stop(m):
     assert channel.sent == []
 
 
+def sc_off_no_task(m):
+    channel = Channel()
+    a, _ = alerter(m, channel, enabled=False)
+
+    async def go():
+        monitor = m.H5RunMonitor(a)
+        before = len(asyncio.all_tasks())
+        await monitor.tick_done({"event": "blocked"})
+        after = len(asyncio.all_tasks())
+        await monitor.drain()
+        return before, after
+
+    before, after = call(asyncio.run, go())
+    assert after == before, "a disabled monitor scheduled a background task"
+    assert channel.sent == []
+
+
 def sc_failure_event(m):
     channel = Channel()
     a, _ = alerter(m, channel)
@@ -199,6 +217,7 @@ DECLARED: dict[tuple[str, str], tuple[str, Callable[[types.ModuleType], None]]] 
         sc_retry_backoff,
     ),
     ("H5RunMonitor.stopped", "operator"): ("OPERATOR_STOP", sc_operator_stop),
+    ("H5RunMonitor.tick_done", "not self.enabled"): ("OFF_NO_TASK", sc_off_no_task),
     ("H5RunMonitor.tick_done", "payload.get('event') in FAILURE_EVENTS"): (
         "FAILURE_EVENT",
         sc_failure_event,
@@ -280,7 +299,7 @@ def test_invariant_sentences_match_the_declared_mutants():
     ]
     declared = [key for key, _ in DECLARED.values()]
     assert sorted(keys) == sorted(declared)
-    assert len(set(declared)) == len(declared) == 11
+    assert len(set(declared)) == len(declared) == 12
 
 
 @pytest.mark.parametrize("target", sorted(DECLARED), ids=lambda t: DECLARED[t][0])

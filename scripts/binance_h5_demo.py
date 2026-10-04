@@ -98,7 +98,11 @@ async def _run_ticks(
                 print(json.dumps(payload, sort_keys=True), flush=True)
             await monitor.tick_done(payload)
             if not args.loop:
-                return 2 if payload["event"] in FAILURE_EVENTS else 0
+                code = 2 if payload["event"] in FAILURE_EVENTS else 0
+                # Inside the try: a stop that lands while the alert is still
+                # being delivered goes through the handlers below, never around them.
+                await monitor.drain()
+                return code
             await asyncio.sleep(60)
     except asyncio.CancelledError:
         if not monitor.enabled:
@@ -112,9 +116,8 @@ async def _run_ticks(
         raise
     except Exception as exc:
         await monitor.stopped(operator=False, reason=f"exception:{type(exc).__name__}")
-        raise
-    finally:
         await monitor.drain()
+        raise
 
 
 async def _run(args: argparse.Namespace) -> int:

@@ -268,6 +268,8 @@ class H5RunMonitor:
         return self._alerter.enabled
 
     async def tick_done(self, payload: Mapping[str, Any]) -> None:
+        if not self.enabled:
+            return  # flag off: no task, no scheduling difference from the old runner
         try:
             if payload.get("event") in FAILURE_EVENTS:
                 task = asyncio.get_running_loop().create_task(

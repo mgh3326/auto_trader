@@ -40,6 +40,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -160,6 +161,11 @@ def parse_with_script(script: str, argv: list[str]) -> str | None:
     return None
 
 
+BLOCKER_INSTRUCTIONS = (
+    "Do not work around it",
+    "Stop and report to the director",
+    "a new deployed digest",
+)
 SCRIPT_FILES = (
     "scripts/binance_h5_demo.py",
     "scripts/binance_h5_truth_gate.py",
@@ -199,17 +205,48 @@ def first_party_roots(entry_files: tuple[str, ...]) -> set[str]:
                 )
                 names = [prefix] + [f"{prefix}.{a.name}" for a in node.names]
             for name in names:
-                target = _module_file(name)
-                if target is not None:
-                    roots.add(name.split(".")[0])
-                    stack.append(target)
+                parts = name.split(".")
+                # Importing a.b.c also executes the __init__ of a and a.b.
+                for end in range(1, len(parts) + 1):
+                    target = _module_file(".".join(parts[:end]))
+                    if target is not None:
+                        roots.add(parts[0])
+                        stack.append(target)
     return roots
 
 
 def image_roots() -> set[str]:
-    """Source roots COPYed into the final stage of Dockerfile.api."""
-    stages = re.split(r"^FROM ", (REPO_ROOT / "Dockerfile.api").read_text(), flags=re.M)
-    return set(re.findall(r"^COPY (?!--)([A-Za-z_]+)/", stages[-1], re.M))
+    """Source roots importable from the final stage's working directory.
+
+    A COPY counts only when it lands at <WORKDIR>/<root>: a source name alone, or a
+    copy to some other path, does not make the root importable. A --from copy is
+    counted by where it lands (its source is a build stage we do not unpack).
+    """
+    final = re.split(r"^FROM ", (REPO_ROOT / "Dockerfile.api").read_text(), flags=re.M)[
+        -1
+    ]
+    workdir = "/"
+    roots: set[str] = set()
+    for raw in re.sub(r"\\\n", " ", final).splitlines():
+        keyword = (raw.split(None, 1) or [""])[0].upper()
+        if keyword not in {"WORKDIR", "COPY"}:
+            continue
+        words = shlex.split(raw, comments=True)
+        if keyword == "WORKDIR" and len(words) == 2:
+            workdir = posixpath.normpath(posixpath.join(workdir, words[1]))
+        elif keyword == "COPY":
+            operands = [w for w in words[1:] if not w.startswith("--")]
+            if len(operands) < 2:
+                continue
+            from_stage = any(w.startswith("--from=") for w in words)
+            dest = posixpath.normpath(posixpath.join(workdir, operands[-1]))
+            if posixpath.dirname(dest) != workdir:
+                continue
+            name = posixpath.basename(dest)
+            sources = [posixpath.basename(src.rstrip("/")) for src in operands[:-1]]
+            if from_stage or sources == [name]:
+                roots.add(name)
+    return roots
 
 
 def image_missing_roots() -> set[str]:
@@ -408,9 +445,18 @@ def check_playbook(text: str, facts: dict) -> list[tuple[str, str]]:
         r"\*\*KNOWN BLOCKER \(image\):\*\*(.*?)(?:\n\n|\Z)", text, re.S
     )
     if facts["image_missing"]:
-        named = set(re.findall(r"`([a-z_]+)/?`", paragraph[1])) if paragraph else set()
-        if not facts["image_missing"] <= named:
-            bad("IMAGE_IMPORTS", f"missing roots {sorted(facts['image_missing'])}")
+        words = " ".join(paragraph[1].split()) if paragraph else ""
+        # Roots the image lacks are written with a trailing slash; roots it ships
+        # are written bare. The slashed set must be exactly the missing set.
+        named = set(re.findall(r"`([a-z_]+)/`", words))
+        if named != facts["image_missing"]:
+            bad(
+                "IMAGE_IMPORTS",
+                f"slashed roots {sorted(named)} != {sorted(facts['image_missing'])}",
+            )
+        for phrase in BLOCKER_INSTRUCTIONS:
+            if phrase not in words:
+                bad("IMAGE_IMPORTS", f"instruction missing: {phrase}")
     elif paragraph:
         bad("IMAGE_IMPORTS", "a blocker is named but the image ships every root")
 
@@ -561,6 +607,12 @@ MUTANTS: dict[str, list] = {
             text,
             count=1,
         ),
+        lambda text: text.replace(
+            "**KNOWN BLOCKER (image):**",
+            "**KNOWN BLOCKER (image):** Also missing: `nonexistent_root/`.",
+            1,
+        ),
+        swap("Stop and report to the director", "Ignore this and proceed to section 5"),
     ],
 }
 
@@ -677,3 +729,66 @@ def test_h5_and_new_scripts_never_reference_a_live_broker_credential():
     ]
     assert len(paths) >= 16
     assert [p.name for p in paths if live.search(p.read_text())] == []
+
+
+# --- the image pin itself, on synthetic trees (round-2 S2) -----------------------
+
+
+def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
+    for relative, content in files.items():
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    return tmp_path
+
+
+def test_import_closure_follows_package_initializers_and_lazy_relative_imports(
+    monkeypatch, tmp_path
+):
+    base = _tree(
+        tmp_path,
+        {
+            "scripts/entry.py": "from app.tools.worker import run\n",
+            "app/__init__.py": "",
+            "app/tools/__init__.py": "from research.hidden import marker\n",
+            "app/tools/worker.py": "def run():\n    from .helper import h\n",
+            "app/tools/helper.py": "def h():\n    import config.loader\n",
+            "research/hidden.py": "marker = 1\n",
+            "config/loader.py": "",
+        },
+    )
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", base)
+    assert first_party_roots(("scripts/entry.py",)) == {"app", "research", "config"}
+
+
+@pytest.mark.parametrize(
+    ("dockerfile", "expected"),
+    [
+        (
+            "WORKDIR /app\nCOPY app/ ./app/\nCOPY research/ ./research/\n",
+            {"app", "research"},
+        ),
+        ("WORKDIR /app\nCOPY research/ /not-on-python-path/research/\n", set()),
+        ("WORKDIR /app\nCOPY research/ ./elsewhere/\n", set()),
+        (
+            "WORKDIR /app\nCOPY --from=builder /build/research /app/research\n",
+            {"research"},
+        ),
+        ("COPY app/ ./app/\n", {"app"}),  # no WORKDIR: relative to /
+        ("WORKDIR /srv\nCOPY app/ /app/app/\n", set()),
+        (
+            "FROM x AS early\nCOPY research/ ./research/\nFROM y\nWORKDIR /app\nCOPY app/ ./app/\n",
+            {"app"},
+        ),
+    ],
+)
+def test_image_roots_need_the_copy_to_land_in_the_working_directory(
+    monkeypatch, tmp_path, dockerfile, expected
+):
+    base = _tree(tmp_path, {"Dockerfile.api": dockerfile})
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", base)
+    assert image_roots() == expected
+
+
+def test_the_real_dockerfile_roots_parse_as_before():
+    assert {"app", "scripts", "config", "research_contracts"} <= image_roots()

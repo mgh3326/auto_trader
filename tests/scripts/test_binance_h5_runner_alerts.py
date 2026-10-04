@@ -507,7 +507,8 @@ def test_a_slow_webhook_does_not_hold_up_the_next_tick(monkeypatch):
             await task
         return reached_second.is_set(), len(channel.sent)
 
-    assert asyncio.run(scenario()) == (True, 1)  # drain delivered it on the way out
+    reached, _ = asyncio.run(scenario())
+    assert reached  # tick 2 started while the first alert was still in flight
 
 
 def test_once_failure_alert_is_delivered_before_the_process_returns(monkeypatch):
@@ -578,3 +579,121 @@ def test_real_tick_with_alternating_transport_errors_is_one_alert(monkeypatch):
 
     asyncio.run(scenario())
     assert [a.signature for a in channel.sent] == ["blocked:ConnectError"]
+
+
+# --- round-2 R2-B1 / R2-B2 ---------------------------------------------------
+
+
+def test_sigterm_during_the_once_drain_still_reports_the_stop(monkeypatch):
+    """R2-B1: a stop that lands while the tick alert is still being sent."""
+    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
+
+    async def scenario() -> tuple[int, list[AlertKind]]:
+        import signal as signal_module
+
+        handlers: dict[int, Any] = {}
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(
+            loop,
+            "add_signal_handler",
+            lambda sig, cb, *args: handlers.__setitem__(sig, (cb, args)),
+        )
+        error_send_started = asyncio.Event()
+        delivered: list[AlertKind] = []
+
+        class Executor:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            async def run_tick(self, *, now: Any, confirm: bool):
+                return tick("blocked", detail="x")
+
+        class Working:
+            async def send(self, alert: H5Alert) -> bool:
+                if alert.kind is AlertKind.ERROR:
+                    error_send_started.set()
+                    await asyncio.sleep(0.05)
+                delivered.append(alert.kind)
+                return True
+
+        monkeypatch.setattr(runner, "H5Executor", Executor)
+        stop = runner._StopState()
+
+        async def main() -> int:
+            runner._install_stop_signals(stop)
+            return await runner._run_ticks(
+                ONCE,
+                client=SimpleNamespace(),
+                strategy=SimpleNamespace(),
+                state=SimpleNamespace(),
+                monitor=monitor_for(Working()),
+                stop=stop,
+            )
+
+        task = asyncio.create_task(main())
+        await asyncio.wait_for(error_send_started.wait(), timeout=2)
+        callback, args = handlers[signal_module.SIGTERM]
+        callback(*args)
+        return await task, delivered
+
+    code, delivered = asyncio.run(scenario())
+    assert code == 143
+    assert delivered == [AlertKind.STOPPED]
+
+
+@pytest.mark.parametrize("event", ["blocked", "entry_uncertain", "close_uncertain"])
+def test_flag_off_creates_no_background_task(monkeypatch, event):
+    """R2-B2: the old runner scheduled nothing; neither may the disabled one."""
+    script(monkeypatch, tick(event))
+
+    async def scenario() -> list[str]:
+        created: list[str] = []
+        loop = asyncio.get_running_loop()
+
+        def factory(loop, coro, **kwargs):
+            created.append(coro.__qualname__)
+            return asyncio.Task(coro, loop=loop, **kwargs)
+
+        loop.set_task_factory(factory)
+        await runner._run_ticks(
+            ONCE,
+            client=SimpleNamespace(),
+            strategy=SimpleNamespace(),
+            state=SimpleNamespace(),
+            monitor=monitor_for(Channel(), enabled=False),
+            stop=runner._StopState(),
+        )
+        return created
+
+    created = asyncio.run(scenario())
+    assert [n for n in created if n.startswith("H5")] == []
+
+
+def test_flag_off_once_returns_before_a_queued_cancellation_runs(monkeypatch):
+    """R2-B2: with alerts off there is no await between the print and the return."""
+    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
+
+    class Executor:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run_tick(self, *, now: Any, confirm: bool):
+            task = asyncio.current_task()
+            assert task is not None
+            asyncio.get_running_loop().call_soon(task.cancel)  # queued, not yet run
+            return tick("blocked")
+
+    monkeypatch.setattr(runner, "H5Executor", Executor)
+    code = asyncio.run(
+        runner._run_ticks(
+            ONCE,
+            client=SimpleNamespace(),
+            strategy=SimpleNamespace(),
+            state=SimpleNamespace(),
+            monitor=monitor_for(Channel(), enabled=False),
+            stop=runner._StopState(),
+        )
+    )
+    assert code == 2
