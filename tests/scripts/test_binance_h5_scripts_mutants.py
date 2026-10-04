@@ -15,6 +15,7 @@ Invariant sentences (one per mutant):
   is exactly true.
 - ONCE_EXITS: --once runs exactly one tick and returns its exit code.
 - CANCEL_ALERTS_OFF: with alerts off a cancellation is neither reported nor swallowed.
+- EXCEPTION_REPORTS: an exception that escapes the loop is reported and still raised.
 - CANCEL_UNHANDLED: a cancellation without our signal handlers is still reported
   and still propagates.
 - NO_TASK_NO_HANDLERS: signal handlers are never installed outside a task.
@@ -77,6 +78,7 @@ def run_one_tick_scenario(
     *,
     monitor: Any = None,
     stop: Any = None,
+    session_factory: Any = None,
 ) -> Any:
     """Drive ``m._run_ticks`` with a scripted executor; ends with ``Done``."""
     queue = list(results)
@@ -98,7 +100,7 @@ def run_one_tick_scenario(
 
     saved = (m.AsyncSessionLocal, m.BinanceDemoLedgerService, m.H5Executor)
     saved_sleep = m.asyncio.sleep
-    m.AsyncSessionLocal = lambda: Session()
+    m.AsyncSessionLocal = session_factory or (lambda: Session())
     m.BinanceDemoLedgerService = lambda db: object()
     m.H5Executor = Executor
     m.asyncio.sleep = no_sleep
@@ -190,6 +192,28 @@ def sc_cancel_alerts_off(m: types.ModuleType) -> None:
     _expect_cancelled(m, stop=stop)
 
 
+def sc_exception_reports(m: types.ModuleType) -> None:
+    channel = Channel()
+    monitor = m.H5RunMonitor(m.H5Alerter(channel=channel, enabled=True))
+
+    class BrokenSession:
+        async def __aenter__(self) -> None:
+            raise RuntimeError("session entry failed")
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    try:
+        run_one_tick_scenario(
+            m, [], monitor=monitor, session_factory=lambda: BrokenSession()
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("the escaped exception was swallowed")
+    assert len(channel.sent) == 1, "the escaped exception was not reported"
+
+
 def sc_cancel_unhandled(m: types.ModuleType) -> None:
     channel = Channel()
     monitor = m.H5RunMonitor(m.H5Alerter(channel=channel, enabled=True))
@@ -227,6 +251,10 @@ DECLARED: dict[tuple[str, str, str], tuple[str, Callable[[types.ModuleType], Non
     ("runner", "_run_ticks", "not monitor.enabled"): (
         "CANCEL_ALERTS_OFF",
         sc_cancel_alerts_off,
+    ),
+    ("runner", "_run_ticks", "monitor.enabled"): (
+        "EXCEPTION_REPORTS",
+        sc_exception_reports,
     ),
     ("runner", "_run_ticks", "not stop.installed"): (
         "CANCEL_UNHANDLED",
@@ -303,7 +331,7 @@ def test_invariant_sentences_match_the_mutants():
     ]
     declared = [key for key, _ in DECLARED.values()]
     assert sorted(keys) == sorted(declared)
-    assert len(set(declared)) == len(declared) == 8
+    assert len(set(declared)) == len(declared) == 9
 
 
 @pytest.mark.parametrize("target", sorted(DECLARED), ids=lambda t: DECLARED[t][0])

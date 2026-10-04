@@ -697,3 +697,168 @@ def test_flag_off_once_returns_before_a_queued_cancellation_runs(monkeypatch):
         )
     )
     assert code == 2
+
+
+# --- round-3 finding: a stop landing while the stop alert itself is in flight ----
+
+
+def _stop_during_stop_alert(monkeypatch, how: str, args) -> tuple[Any, list[AlertKind]]:
+    monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
+
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("session entry failed")
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: BrokenSession())
+
+    async def scenario() -> tuple[Any, list[AlertKind]]:
+        import signal as signal_module
+
+        handlers: dict[int, Any] = {}
+        monkeypatch.setattr(
+            asyncio.get_running_loop(),
+            "add_signal_handler",
+            lambda sig, cb, *a: handlers.__setitem__(sig, (cb, a)),
+        )
+        started = asyncio.Event()
+        delivered: list[AlertKind] = []
+
+        class Working:
+            async def send(self, alert: H5Alert) -> bool:
+                started.set()
+                await asyncio.sleep(0.05)
+                delivered.append(alert.kind)
+                return True
+
+        stop = runner._StopState()
+
+        async def main() -> int:
+            runner._install_stop_signals(stop)
+            return await runner._run_ticks(
+                args,
+                client=SimpleNamespace(),
+                strategy=SimpleNamespace(),
+                state=SimpleNamespace(),
+                monitor=monitor_for(Working()),
+                stop=stop,
+            )
+
+        task = asyncio.create_task(main())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if how == "sigterm":
+            callback, cb_args = handlers[signal_module.SIGTERM]
+            callback(*cb_args)
+        else:
+            task.cancel()
+        try:
+            outcome: Any = await task
+        except BaseException as exc:
+            outcome = type(exc).__name__
+        return outcome, delivered
+
+    return asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("how", ["sigterm", "cancel"])
+@pytest.mark.parametrize("args", [ONCE, LOOP], ids=["once", "loop"])
+def test_a_stop_during_the_exception_stop_alert_still_delivers_it(
+    monkeypatch, how, args
+):
+    outcome, delivered = _stop_during_stop_alert(monkeypatch, how, args)
+    assert delivered == [AlertKind.STOPPED]
+    assert outcome == "CancelledError"  # the stop still propagates
+
+
+def test_a_second_stop_during_the_signal_stop_alert_still_delivers_it(monkeypatch):
+    """SIGTERM starts the stop alert; a second signal must not cancel its send."""
+    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
+
+    async def scenario() -> tuple[Any, list[AlertKind]]:
+        import signal as signal_module
+
+        handlers: dict[int, Any] = {}
+        monkeypatch.setattr(
+            asyncio.get_running_loop(),
+            "add_signal_handler",
+            lambda sig, cb, *a: handlers.__setitem__(sig, (cb, a)),
+        )
+        started = asyncio.Event()
+        delivered: list[AlertKind] = []
+
+        class Hold:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            async def run_tick(self, *, now: Any, confirm: bool):
+                await asyncio.Event().wait()
+
+        class Working:
+            async def send(self, alert: H5Alert) -> bool:
+                started.set()
+                await asyncio.sleep(0.05)
+                delivered.append(alert.kind)
+                return True
+
+        monkeypatch.setattr(runner, "H5Executor", Hold)
+        stop = runner._StopState()
+
+        async def main() -> int:
+            runner._install_stop_signals(stop)
+            return await runner._run_ticks(
+                LOOP,
+                client=SimpleNamespace(),
+                strategy=SimpleNamespace(),
+                state=SimpleNamespace(),
+                monitor=monitor_for(Working()),
+                stop=stop,
+            )
+
+        task = asyncio.create_task(main())
+        await asyncio.sleep(0.01)
+        callback, cb_args = handlers[signal_module.SIGTERM]
+        callback(*cb_args)
+        await asyncio.wait_for(started.wait(), timeout=2)
+        callback, cb_args = handlers[signal_module.SIGINT]
+        callback(*cb_args)
+        try:
+            outcome: Any = await task
+        except BaseException as exc:
+            outcome = type(exc).__name__
+        return outcome, delivered
+
+    outcome, delivered = asyncio.run(scenario())
+    assert delivered == [AlertKind.STOPPED]
+
+
+def test_flag_off_escaped_exception_is_not_replaced_by_a_queued_cancellation(
+    monkeypatch,
+):
+    """OFF gains no await on the exception path either."""
+    monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
+
+    class BrokenSession:
+        async def __aenter__(self):
+            task = asyncio.current_task()
+            assert task is not None
+            asyncio.get_running_loop().call_soon(task.cancel)  # queued, not yet run
+            raise RuntimeError("session entry failed")
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: BrokenSession())
+    with pytest.raises(RuntimeError, match="session entry failed"):
+        asyncio.run(
+            runner._run_ticks(
+                LOOP,
+                client=SimpleNamespace(),
+                strategy=SimpleNamespace(),
+                state=SimpleNamespace(),
+                monitor=monitor_for(Channel(), enabled=False),
+                stop=runner._StopState(),
+            )
+        )

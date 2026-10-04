@@ -15,6 +15,7 @@ from app.core.db import AsyncSessionLocal
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
 from app.services.brokers.binance.h5.alerting import (
     FAILURE_EVENTS,
+    SEND_TIMEOUT_SECONDS,
     H5Alerter,
     H5RunMonitor,
     alert_enabled,
@@ -69,6 +70,21 @@ def _build_monitor() -> H5RunMonitor:
     return H5RunMonitor(H5Alerter(channel=channel, enabled=enabled))
 
 
+async def _report_stop(monitor: H5RunMonitor, *, operator: bool, reason: str) -> None:
+    """Send the stop alert even if a stop signal lands while it is in flight.
+
+    The send runs as its own task behind a shield; a cancellation of this task
+    waits (bounded by the send timeout) for the in-flight send and then
+    propagates. Only called when alerts are on, so the OFF path gains no await.
+    """
+    report = asyncio.ensure_future(monitor.stopped(operator=operator, reason=reason))
+    try:
+        await asyncio.shield(report)
+    except asyncio.CancelledError:
+        await asyncio.wait({report}, timeout=SEND_TIMEOUT_SECONDS + 1)
+        raise
+
+
 async def _run_ticks(
     args: argparse.Namespace,
     *,
@@ -107,7 +123,7 @@ async def _run_ticks(
     except asyncio.CancelledError:
         if not monitor.enabled:
             raise
-        await monitor.stopped(operator=stop.operator, reason=stop.reason)
+        await _report_stop(monitor, operator=stop.operator, reason=stop.reason)
         if not stop.installed:
             raise
         return 130 if stop.operator else 143
@@ -115,8 +131,10 @@ async def _run_ticks(
         await monitor.stopped(operator=True, reason="keyboard_interrupt")
         raise
     except Exception as exc:
-        await monitor.stopped(operator=False, reason=f"exception:{type(exc).__name__}")
-        await monitor.drain()
+        if monitor.enabled:
+            reason = f"exception:{type(exc).__name__}"
+            await _report_stop(monitor, operator=False, reason=reason)
+            await monitor.drain()
         raise
 
 
