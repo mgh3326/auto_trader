@@ -48,6 +48,9 @@ ALL_SYMBOLS = [
     "T1173-B",
     "T1173.C",
     "T1173/C",
+    "t1173a",
+    " T1173A ",
+    "t1173/b",
 ]
 
 
@@ -369,6 +372,71 @@ async def test_a2_loader_keeps_today_fills_that_reuse_old_order_numbers(
         "same_day_buy_evidence",
     ):
         assert block[key]["blocking"] is True, key
+
+
+async def test_a2_symbol_case_and_whitespace_cannot_hide_today_fills(
+    db_session,
+) -> None:
+    """Tester r2 F2: the ingest schema accepts any symbol case.
+
+    A lowercase or padded spelling must reach the same position in SQL, so a
+    net-zero buy/sell pair of today still blocks every evidence view.
+    """
+    blocks = await _load(
+        db_session,
+        [
+            _run(timedelta(minutes=10)),
+            _fill(filled_qty=Decimal("8")),
+            _fill(
+                symbol="t1173a",
+                source="websocket",
+                filled_qty=Decimal("1"),
+                filled_at=datetime(2099, 8, 12, 14, 30, tzinfo=UTC),
+            ),
+            _fill(
+                symbol=" T1173A ",
+                source="websocket",
+                side="sell",
+                filled_qty=Decimal("1"),
+                filled_at=datetime(2099, 8, 12, 15, 30, tzinfo=UTC),
+            ),
+        ],
+        [PositionRef(SYM, Decimal("8"))],
+        now=datetime(2099, 8, 12, 16, 0, tzinfo=UTC),
+    )
+    block = blocks[SYM]
+    assert len(block["provisional_rows_excluded"]) == 2
+    for key in (
+        "open_buy_evidence",
+        "same_day_sell_evidence",
+        "open_sell_evidence",
+        "same_day_buy_evidence",
+    ):
+        assert block[key]["blocking"] is True, key
+
+
+async def test_symbol_case_reaches_authoritative_rows_and_both_order_ledgers(
+    db_session,
+) -> None:
+    blocks = await _load(
+        db_session,
+        [
+            _run(timedelta(minutes=10)),
+            _seed(symbol="t1173/b", qty="5"),
+            _live_order(f"{ORDER_PREFIX}61", symbol="t1173.b", quantity=Decimal("2")),
+            _kis_order(f"{ORDER_PREFIX}62", symbol=" T1173.B "),
+        ],
+        [PositionRef(DOT, Decimal("5"))],
+    )
+    block = blocks[DOT]
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
+    assert block["net_quantity"] == "5"
+    assert block["open_sell_evidence"]["own_open_sell_order_quantity"] == "2"
+    assert block["sellable_by_ledger"] == "3"
+    assert [
+        o["order_no"]
+        for o in block["open_buy_evidence"]["kis_live_order_ledger_open_buys"]
+    ] == [f"{ORDER_PREFIX}62"]
 
 
 # ------------------------------------------------------------------ A3

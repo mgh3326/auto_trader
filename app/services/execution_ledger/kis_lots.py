@@ -82,7 +82,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol, to_kis_symbol, to_yahoo_symbol
@@ -1128,6 +1128,16 @@ def _us_symbol_spellings(keys: Sequence[str]) -> list[str]:
     )
 
 
+def _symbol_matches(column: Any, spellings: Sequence[str]) -> Any:
+    """SQL twin of ``_us_symbol_key``'s case/whitespace normalization.
+
+    The spellings are upper-case and trimmed; a stored ``brk.b`` (the ingest
+    schema accepts any case) must reach the Python mapping instead of being
+    dropped by an exact-case ``IN`` before it (tester r2 F2).
+    """
+    return func.upper(func.btrim(column)).in_(spellings)
+
+
 async def load_kis_live_us_lot_blocks(
     db: AsyncSession,
     refs: Sequence[PositionRef],
@@ -1165,7 +1175,7 @@ async def load_kis_live_us_lot_blocks(
                 .where(ExecutionLedger.account_mode == "live")
                 .where(ExecutionLedger.instrument_type == "equity_us")
                 .where(ExecutionLedger.currency == US_CURRENCY)
-                .where(ExecutionLedger.symbol.in_(spellings))
+                .where(_symbol_matches(ExecutionLedger.symbol, spellings))
                 # #1175: a quarantined row (an accept notice recorded as a
                 # fill) is not a fill for any view of this block.
                 .where(execution_ledger_in_effect())
@@ -1204,7 +1214,7 @@ async def load_kis_live_us_lot_blocks(
                     .where(LiveOrderLedger.account_scope == "kis_live")
                     .where(LiveOrderLedger.market == "us")
                     .where(LiveOrderLedger.side.in_(("buy", "sell")))
-                    .where(LiveOrderLedger.symbol.in_(spellings))
+                    .where(_symbol_matches(LiveOrderLedger.symbol, spellings))
                     .where(LiveOrderLedger.trade_date >= window_start)
                     .order_by(LiveOrderLedger.id.asc())
                 )
@@ -1222,7 +1232,7 @@ async def load_kis_live_us_lot_blocks(
                     .where(KISLiveOrderLedger.account_mode == "kis_live")
                     .where(KISLiveOrderLedger.instrument_type == "equity_us")
                     .where(KISLiveOrderLedger.side.in_(("buy", "sell")))
-                    .where(KISLiveOrderLedger.symbol.in_(spellings))
+                    .where(_symbol_matches(KISLiveOrderLedger.symbol, spellings))
                     .where(KISLiveOrderLedger.trade_date >= window_start)
                     .order_by(KISLiveOrderLedger.id.asc())
                 )
