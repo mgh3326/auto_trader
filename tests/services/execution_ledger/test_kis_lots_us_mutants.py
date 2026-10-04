@@ -27,6 +27,9 @@ Invariant sentences (one per mutant):
 - US_KEYS: a US block names its market, currency, venues, trading-date basis
   and order-ledger sources.
 - US_UNKNOWN_KEYS: a US fail-closed unknown block carries the same US keys.
+- SUPERSEDE_DATE: an authoritative row covers a websocket row only on the
+  same US trading date, so a reused KIS order number of an older date never
+  hides a fill of today.
 - ATTACH_LOADER: US positions go to the US loader, never the KR loader.
 - ATTACH_UNKNOWN: a US position whose read failed gets the US unknown block.
 """
@@ -132,6 +135,31 @@ def scenario_us_unknown_keys(m: types.ModuleType) -> bool:
     return block["market"] == "us" and block["trading_day_basis"].startswith("us_")
 
 
+def scenario_supersede_date(m: types.ModuleType) -> bool:
+    old = m.LedgerFill(
+        id=1,
+        source="reconciler",
+        side="buy",
+        quantity=Decimal("8"),
+        price=Decimal("400"),
+        filled_at=NOW - timedelta(days=9),
+        broker_order_id="000123",
+        venue="NASD",
+    )
+    today = m.LedgerFill(
+        id=2,
+        source="websocket",
+        side="buy",
+        quantity=Decimal("1"),
+        price=Decimal("400"),
+        filled_at=SESSION,
+        broker_order_id="123",
+        venue="NASD",
+    )
+    block = _us_block(m, [old, today], reference="8", now=NOW)
+    return block["same_day_buy_evidence"]["blocking"] is True
+
+
 def scenario_attach_loader(m: types.ModuleType) -> bool:
     return m._loader("us") is m.load_kis_live_us_lot_blocks
 
@@ -156,6 +184,10 @@ DECLARED: dict[tuple[str, str], tuple[str, Callable[[types.ModuleType], bool]]] 
     ("kis_lots", "build_symbol_block:market == 'us'#1"): (
         "US_KEYS",
         scenario_us_keys,
+    ),
+    ("kis_lots", "_supersede_key:market == 'us'#0"): (
+        "SUPERSEDE_DATE",
+        scenario_supersede_date,
     ),
     ("kis_lots", "unknown_block:market == 'us'#0"): (
         "US_UNKNOWN_KEYS",

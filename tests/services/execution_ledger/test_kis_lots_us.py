@@ -320,6 +320,75 @@ def test_a2_phantom_never_raises_sellable_above_the_authoritative_net() -> None:
     assert block["same_day_sell_evidence"]["blocking"] is True
 
 
+def _recurring_order_numbers() -> list[LedgerFill]:
+    """Old reconciled orders 000123/000456; today's websocket fills reuse them."""
+    return [
+        fill(1, "buy", "10", "380", NOW - timedelta(days=9), order="000123"),
+        fill(2, "sell", "2", "410", NOW - timedelta(days=5), order="000456"),
+        fill(3, "buy", "1", "400", SESSION_FILL, source="websocket", order="123"),
+        fill(4, "sell", "1", "410", SESSION_FILL, source="websocket", order="456"),
+    ]
+
+
+def test_a2_old_order_number_never_hides_a_fill_of_the_current_us_date() -> None:
+    """Tester r1 F1: KIS order numbers recur across days.
+
+    An authoritative row of an older US trading date must not supersede a
+    websocket fill of today that reuses its normalized order number; the four
+    evidence views keep blocking even though the net is unchanged.
+    """
+    block = us_block(_recurring_order_numbers(), reference="8")
+    assert block["ledger_state"] == "known"
+    assert block["diagnostics"]["superseded_websocket_duplicates"] == 0
+    assert [r["broker_order_id"] for r in block["provisional_rows_excluded"]] == [
+        "123",
+        "456",
+    ]
+    assert (
+        BLOCK_SAME_DAY_BUY_FILL_IN_LEDGER
+        in (block["same_day_buy_evidence"]["blocking_reasons"])
+    )
+    assert (
+        BLOCK_SAME_DAY_SELL_FILL in block["same_day_sell_evidence"]["blocking_reasons"]
+    )
+    assert BLOCK_SAME_DAY_FILL in block["open_buy_evidence"]["blocking_reasons"]
+    assert (
+        kis_lots.BLOCK_SAME_DAY_SELL_FILL_UNPROVEN
+        in block["open_sell_evidence"]["blocking_reasons"]
+    )
+
+
+def test_a2_websocket_duplicate_of_the_same_us_date_is_still_superseded() -> None:
+    # Order placed 09:45 EDT (reconciler stamps order time), websocket fill
+    # 15:30 EDT: one US trading date, one fill, counted once.
+    fills = [
+        *msft_history(),
+        fill(9, "buy", "1", "401", SESSION_FILL, order="0000777"),
+        fill(
+            10,
+            "buy",
+            "1",
+            "401",
+            SESSION_FILL + timedelta(hours=5, minutes=45),
+            source="websocket",
+            order="777",
+        ),
+    ]
+    block = us_block(fills, reference="9")
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
+    assert block["diagnostics"]["superseded_websocket_duplicates"] == 1
+    assert block["provisional_rows_excluded"] == []
+
+
+def test_kr_supersession_key_is_unchanged() -> None:
+    # KR keeps the pre-#1173 rule (the golden pins the KR output); the US date
+    # term is US-only.
+    old = fill(1, "buy", "10", "380", NOW - timedelta(days=9), order="000123")
+    today = fill(3, "buy", "1", "400", SESSION_FILL, source="websocket", order="123")
+    assert kis_lots._supersede_key(old, "kr") == kis_lots._supersede_key(today, "kr")
+    assert kis_lots._supersede_key(old, "us") != kis_lots._supersede_key(today, "us")
+
+
 # ------------------------------------------------------------------ A3
 
 

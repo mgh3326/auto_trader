@@ -327,6 +327,50 @@ async def test_a2_unquarantined_phantom_websocket_row_never_counts(db_session) -
     assert block["sellable_by_ledger"] is None
 
 
+async def test_a2_loader_keeps_today_fills_that_reuse_old_order_numbers(
+    db_session,
+) -> None:
+    """Tester r1 F1 through the real loader: recurring KIS order numbers."""
+    blocks = await _load(
+        db_session,
+        [
+            _run(timedelta(minutes=10)),
+            _fill(filled_qty=Decimal("10"), broker_order_id="000123"),
+            _fill(
+                side="sell",
+                filled_qty=Decimal("2"),
+                broker_order_id="000456",
+                filled_at=NOW - timedelta(days=2),
+            ),
+            # 23:30 KST and 00:30 KST, one US trading date, reused numbers
+            _fill(
+                source="websocket",
+                filled_qty=Decimal("1"),
+                broker_order_id="123",
+                filled_at=datetime(2099, 8, 12, 14, 30, tzinfo=UTC),
+            ),
+            _fill(
+                source="websocket",
+                side="sell",
+                filled_qty=Decimal("1"),
+                broker_order_id="456",
+                filled_at=datetime(2099, 8, 12, 15, 30, tzinfo=UTC),
+            ),
+        ],
+        [PositionRef(SYM, Decimal("8"))],
+        now=datetime(2099, 8, 12, 16, 0, tzinfo=UTC),
+    )
+    block = blocks[SYM]
+    assert block["diagnostics"]["superseded_websocket_duplicates"] == 0
+    for key in (
+        "open_buy_evidence",
+        "same_day_sell_evidence",
+        "open_sell_evidence",
+        "same_day_buy_evidence",
+    ):
+        assert block[key]["blocking"] is True, key
+
+
 # ------------------------------------------------------------------ A3
 
 

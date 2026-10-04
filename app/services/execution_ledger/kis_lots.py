@@ -300,24 +300,41 @@ def _is_opening_seed(fill: LedgerFill) -> bool:
     )
 
 
+def _supersede_key(fill: LedgerFill, market: MarketCode) -> tuple[Any, ...]:
+    """Identity under which an authoritative row covers a websocket row.
+
+    KR keeps the pre-#1173 key (side, normalized order id). US adds the US
+    trading date: a KIS order number is reused across days, and a day order's
+    order time and fill time share one US trading date, so an old reconciled
+    order must never hide a fill of the current date that reuses its number.
+    A websocket row whose date does not match stays provisional (it can only
+    add blocking).
+    """
+    key = (fill.side, _norm_order_id(fill.broker_order_id))
+    if market == "us":
+        return (*key, us_trading_day_window(fill.filled_at)[0])
+    return key
+
+
 def _split_provisional(
-    fills: Sequence[LedgerFill],
+    fills: Sequence[LedgerFill], market: MarketCode = "kr"
 ) -> tuple[list[LedgerFill], list[LedgerFill], int]:
     """Return (authoritative, provisional-not-superseded, superseded_count).
 
     A websocket row is a duplicate once an authoritative row covers the same
     order (same rule as query_service._supersede_provisional_fills; venue and
     fill_seq are deliberately ignored because the two writers derive them
-    independently).
+    independently). For US the order must also be on the same US trading date
+    (``_supersede_key``).
     """
     authoritative = [f for f in fills if f.source in AUTHORITATIVE_SOURCES]
-    covered = {(f.side, _norm_order_id(f.broker_order_id)) for f in authoritative}
+    covered = {_supersede_key(f, market) for f in authoritative}
     provisional: list[LedgerFill] = []
     superseded = 0
     for fill in fills:
         if fill.source != _PROVISIONAL_SOURCE:
             continue
-        if (fill.side, _norm_order_id(fill.broker_order_id)) in covered:
+        if _supersede_key(fill, market) in covered:
             superseded += 1
         else:
             provisional.append(fill)
@@ -440,6 +457,7 @@ def _open_buy_evidence(
     orders: Sequence[OrderRow] | None,
     freshness: Freshness,
     day_start: datetime,
+    market: MarketCode = "kr",
 ) -> dict[str, Any]:
     """S2 + S3: own non-terminal buys / same-day buy fills. Unknown => blocking."""
     unknown: list[str] = []
@@ -469,7 +487,7 @@ def _open_buy_evidence(
     # websocket duplicates of a reconciled order are not counted twice. Opening
     # seeds (manual_import SEED-*) are position snapshots, not orders; any other
     # manual_import row is an actual fill (task #1087 round 1).
-    authoritative, provisional, _ = _split_provisional(fills)
+    authoritative, provisional, _ = _split_provisional(fills, market)
     unproven_fills = [
         f
         for f in (*authoritative, *provisional)
@@ -500,7 +518,11 @@ def _open_buy_evidence(
 
 
 def _same_day_sell_evidence(
-    *, fills: Sequence[LedgerFill], freshness: Freshness, day_start: datetime
+    *,
+    fills: Sequence[LedgerFill],
+    freshness: Freshness,
+    day_start: datetime,
+    market: MarketCode = "kr",
 ) -> dict[str, Any]:
     """Same-KST-day sell fills for the symbol (opposite-side visibility).
 
@@ -514,7 +536,7 @@ def _same_day_sell_evidence(
         unknown.append(UNKNOWN_NO_RECONCILE_RUN)
     elif freshness.state == "stale":
         unknown.append(UNKNOWN_LEDGER_STALE)
-    authoritative, provisional, _ = _split_provisional(fills)
+    authoritative, provisional, _ = _split_provisional(fills, market)
     sells = [
         f
         for f in (*authoritative, *provisional)
@@ -543,6 +565,7 @@ def _open_sell_evidence(
     orders: Sequence[OrderRow] | None,
     freshness: Freshness,
     day_start: datetime,
+    market: MarketCode = "kr",
 ) -> dict[str, Any]:
     """Task #1087 — own non-terminal sells / same-day sell fills. Unknown => blocking.
 
@@ -578,7 +601,7 @@ def _open_sell_evidence(
         elif not terminal:
             prior_day_dead.append(order)
 
-    authoritative, provisional, _ = _split_provisional(fills)
+    authoritative, provisional, _ = _split_provisional(fills, market)
     unproven_fills = [
         f
         for f in (*authoritative, *provisional)
@@ -621,7 +644,11 @@ def _open_sell_evidence(
 
 
 def _same_day_buy_evidence(
-    *, fills: Sequence[LedgerFill], freshness: Freshness, day_start: datetime
+    *,
+    fills: Sequence[LedgerFill],
+    freshness: Freshness,
+    day_start: datetime,
+    market: MarketCode = "kr",
 ) -> dict[str, Any]:
     """Task #1087 — same-KST-day buy fills (the opposite-side view for a sell).
 
@@ -636,7 +663,7 @@ def _same_day_buy_evidence(
         unknown.append(UNKNOWN_NO_RECONCILE_RUN)
     elif freshness.state == "stale":
         unknown.append(UNKNOWN_LEDGER_STALE)
-    authoritative, provisional, _ = _split_provisional(fills)
+    authoritative, provisional, _ = _split_provisional(fills, market)
     buys = [
         f
         for f in (*authoritative, *provisional)
@@ -715,7 +742,7 @@ def build_symbol_block(
     keys; the KR block is unchanged.
     """
     day_start = _day_start(market, now)
-    authoritative, provisional, superseded = _split_provisional(fills)
+    authoritative, provisional, superseded = _split_provisional(fills, market)
     # US: an authoritative row on an unrecognized venue is never counted. It
     # stays visible to the evidence views below (where it can only block) and
     # makes the block unknown, so a NASDAQ/NAS/krx mapping error is loud.
@@ -790,7 +817,11 @@ def build_symbol_block(
             )
 
     open_sell = _open_sell_evidence(
-        fills=fills, orders=orders, freshness=freshness, day_start=day_start
+        fills=fills,
+        orders=orders,
+        freshness=freshness,
+        day_start=day_start,
+        market=market,
     )
     sellable, sellable_basis = _sellable_by_ledger(
         known=known,
@@ -839,14 +870,18 @@ def build_symbol_block(
         },
         "provisional_rows_excluded": [_fill_view(f) for f in provisional],
         "open_buy_evidence": _open_buy_evidence(
-            fills=fills, orders=orders, freshness=freshness, day_start=day_start
+            fills=fills,
+            orders=orders,
+            freshness=freshness,
+            day_start=day_start,
+            market=market,
         ),
         "same_day_sell_evidence": _same_day_sell_evidence(
-            fills=fills, freshness=freshness, day_start=day_start
+            fills=fills, freshness=freshness, day_start=day_start, market=market
         ),
         "open_sell_evidence": open_sell_public,
         "same_day_buy_evidence": _same_day_buy_evidence(
-            fills=fills, freshness=freshness, day_start=day_start
+            fills=fills, freshness=freshness, day_start=day_start, market=market
         ),
         "sellable_by_ledger": _fmt(sellable),
         "sellable_by_ledger_basis": sellable_basis,
