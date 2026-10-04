@@ -33,6 +33,13 @@ class Channel:
         return True
 
 
+async def _turn() -> None:
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    loop.call_soon(future.set_result, None)
+    await future
+
+
 class _Done(BaseException):
     """Ends a scripted loop without being an Exception or a cancellation."""
 
@@ -63,7 +70,11 @@ def script(monkeypatch, *items: Any) -> deque:
             return item
 
     async def no_sleep(seconds: float) -> None:
+        # The real runner sleeps 60 s between ticks, which is when background
+        # alert sends run; give the loop a few turns to model that gap.
         assert seconds == 60
+        for _ in range(3):
+            await _turn()
 
     monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: _Session())
     monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
@@ -279,12 +290,64 @@ def test_keyboard_interrupt_is_the_operator_and_propagates(monkeypatch):
     assert channel.sent == []
 
 
-def test_unexpected_cancellation_without_our_handlers_is_not_swallowed(monkeypatch):
+def test_a_cancellation_without_our_handlers_is_reported_and_still_propagates(
+    monkeypatch,
+):
+    """Round-1 B4: the signal-install fallback must not silence the stop alert."""
     script(monkeypatch, asyncio.CancelledError())
     channel = Channel()
     with pytest.raises(asyncio.CancelledError):
-        run_loop(LOOP, monitor_for(channel))
-    assert channel.sent == []
+        run_loop(LOOP, monitor_for(channel))  # stop.installed is False
+    assert [(a.kind, a.signature) for a in channel.sent] == [
+        (AlertKind.STOPPED, "cancelled")
+    ]
+
+
+def test_installing_the_handlers_can_fail_without_losing_the_alert(monkeypatch):
+    script(monkeypatch)
+    channel = Channel()
+    monkeypatch.setenv("BINANCE_H5_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_H5_ALERT_ENABLED", "true")
+    monkeypatch.setattr(runner, "build_default_channel", lambda: channel)
+
+    class Client:
+        _base_url = DEMO_URL
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        runner.H5DemoClient, "from_env", classmethod(lambda cls: Client())
+    )
+
+    async def scenario() -> None:
+        entered = asyncio.Event()
+
+        class Hold:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            async def run_tick(self, *, now: Any, confirm: bool):
+                entered.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(runner, "H5Executor", Hold)
+
+        def unavailable(*args: Any) -> None:
+            raise NotImplementedError("loop without signal handler support")
+
+        monkeypatch.setattr(
+            asyncio.get_running_loop(), "add_signal_handler", unavailable
+        )
+        task = asyncio.create_task(runner._run(LOOP))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert [a.kind for a in channel.sent] == [AlertKind.STOPPED]
 
 
 # --- signal wiring on a real loop (handlers are called, not signalled) -------
@@ -388,3 +451,130 @@ def test_a_broken_alert_path_changes_nothing_the_runner_does(monkeypatch, capsys
     with pytest.raises(_Done):
         run_loop(LOOP, monitor)
     assert [line["event"] for line in printed(capsys)] == ["blocked", "no_entry"]
+
+
+# --- round-1 B1 / B2 through the real loop and the real tick ----------------
+
+
+def test_a_slow_webhook_does_not_hold_up_the_next_tick(monkeypatch):
+    """B1: tick 2 starts while the alert for tick 1 is still being delivered."""
+    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
+
+    async def scenario() -> tuple[bool, int]:
+        release = asyncio.Event()
+        calls: list[int] = []
+        reached_second = asyncio.Event()
+
+        class Executor:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            async def run_tick(self, *, now: Any, confirm: bool):
+                calls.append(1)
+                if len(calls) == 1:
+                    return tick("blocked", detail="temporary read failure")
+                reached_second.set()
+                release.set()
+                raise _Done()
+
+        class Slow:
+            sent: list[H5Alert] = []
+
+            async def send(self, alert: H5Alert) -> bool:
+                await release.wait()
+                self.sent.append(alert)
+                return True
+
+        async def instant(seconds: float) -> None:
+            await _turn()
+
+        monkeypatch.setattr(runner, "H5Executor", Executor)
+        monkeypatch.setattr(runner.asyncio, "sleep", instant)
+        channel = Slow()
+        task = asyncio.create_task(
+            runner._run_ticks(
+                LOOP,
+                client=SimpleNamespace(),
+                strategy=SimpleNamespace(),
+                state=SimpleNamespace(),
+                monitor=monitor_for(channel),
+                stop=runner._StopState(),
+            )
+        )
+        await asyncio.wait_for(reached_second.wait(), timeout=2)
+        with pytest.raises(_Done):
+            await task
+        return reached_second.is_set(), len(channel.sent)
+
+    assert asyncio.run(scenario()) == (True, 1)  # drain delivered it on the way out
+
+
+def test_once_failure_alert_is_delivered_before_the_process_returns(monkeypatch):
+    """The drain in finally means a --once failure still reaches the channel."""
+    script(monkeypatch, tick("close_uncertain"))
+
+    class Slow:
+        sent: list[H5Alert] = []
+
+        async def send(self, alert: H5Alert) -> bool:
+            await _turn()
+            await _turn()
+            self.sent.append(alert)
+            return True
+
+    channel = Slow()
+    assert run_loop(ONCE, monitor_for(channel)) == 2
+    assert len(channel.sent) == 1
+
+
+def test_real_tick_with_alternating_transport_errors_is_one_alert(monkeypatch):
+    """B2 through the real run_tick: one unresolved intent, errors alternate."""
+    import dataclasses
+    import datetime as dt
+    from unittest.mock import AsyncMock
+
+    import httpx
+
+    from app.services.brokers.binance.h5.executor import H5Executor
+
+    now0 = dt.datetime(2026, 10, 5, tzinfo=dt.UTC)
+    clock = [now0]
+    channel = Channel()
+    monitor = H5RunMonitor(
+        H5Alerter(channel=channel, enabled=True, clock=lambda: clock[0])
+    )
+    intent = SimpleNamespace(state="sending", client_order_id="h5-same-intent")
+    state = SimpleNamespace(
+        record_nav=AsyncMock(),
+        list_unresolved_intents=AsyncMock(return_value=(intent,)),
+    )
+    executor = H5Executor(
+        client=SimpleNamespace(
+            read_account=AsyncMock(return_value=SimpleNamespace(nav_usdt=1000))
+        ),
+        strategy=SimpleNamespace(),
+        state=state,
+        demo_ledger=object(),
+        ledger_session=object(),
+    )
+    executor._guard = lambda **kwargs: None  # type: ignore[method-assign]
+    executor._reconcile_intent = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            httpx.ConnectError("outage"),
+            httpx.ReadTimeout("outage"),
+            httpx.ConnectError("outage"),
+            httpx.ReadTimeout("outage"),
+        ]
+    )
+
+    async def scenario() -> None:
+        for minute in range(4):
+            clock[0] = now0 + dt.timedelta(minutes=minute)
+            result = await executor.run_tick(now=clock[0], confirm=True)
+            assert result.event == "blocked"
+            await monitor.tick_done(dataclasses.asdict(result))
+            await monitor.drain()
+
+    asyncio.run(scenario())
+    assert [a.signature for a in channel.sent] == ["blocked:ConnectError"]

@@ -18,9 +18,9 @@ H5 has no exchange-side stop, so every kind means stop-loss observation is
 degraded while a position is open.
 
 Nothing here touches the broker, a ledger or any trading state. Delivery is
-best-effort and bounded by a timeout; a failed or slow webhook never changes
-what the runner does. Every entry point is a no-op unless
-``BINANCE_H5_ALERT_ENABLED`` is exactly ``true``.
+best-effort, bounded by a timeout and sent off the tick path; a failed or slow
+webhook never changes what the runner does or when its next tick starts. Every
+entry point is a no-op unless ``BINANCE_H5_ALERT_ENABLED`` is exactly ``true``.
 """
 
 from __future__ import annotations
@@ -59,7 +59,9 @@ DEFAULT_MISS_MINUTES = 10
 MIN_MISS_MINUTES = 3
 REPEAT_AFTER = dt.timedelta(hours=6)
 RETRY_AFTER_FAILED_SEND = dt.timedelta(minutes=5)
-SEND_TIMEOUT_SECONDS = 10.0
+SEND_TIMEOUT_SECONDS = 5.0
+READ_TIMEOUT_SECONDS = 15.0
+DRAIN_TIMEOUT_SECONDS = SEND_TIMEOUT_SECONDS + 2.0
 _SIGNATURE_MAX = 120
 
 
@@ -169,12 +171,15 @@ class _Episode:
 
 
 class H5Alerter:
-    """One alert per failure episode per kind, with bounded reminders.
+    """One alert per failure episode, with bounded reminders.
 
-    An episode ends when the caller reports health with ``clear``. While it
-    lasts, the same signature is sent once, re-sent at most every
-    ``repeat_after`` as a reminder, and a failed delivery is retried no sooner
-    than ``retry_after``. A different signature is a new failure and sends.
+    An episode is keyed by ``(kind, bucket)``; the bucket is a coarse class the
+    caller picks (for tick errors, the tick event), never diagnostic text such
+    as an exception class that can change from one tick to the next. An episode
+    ends when the caller reports health with ``clear(kind)``. While it lasts,
+    one alert is sent, a reminder at most every ``repeat_after``, and a failed
+    delivery is retried no sooner than ``retry_after``. The episode is recorded
+    before delivery starts, so a send still in flight also counts.
     """
 
     def __init__(
@@ -193,32 +198,36 @@ class H5Alerter:
         self._repeat_after = repeat_after
         self._retry_after = retry_after
         self._send_timeout = send_timeout
-        self._episodes: dict[AlertKind, _Episode] = {}
+        self._episodes: dict[tuple[AlertKind, str], _Episode] = {}
 
     @property
     def enabled(self) -> bool:
         return self._enabled and self._channel is not None
 
-    async def fire(self, kind: AlertKind, signature: str) -> bool:
+    async def fire(self, kind: AlertKind, signature: str, bucket: str = "") -> bool:
         """Return True only when a message was delivered by this call."""
         channel = self._channel
         if not self._enabled or channel is None:
             return False
         cleaned = _clean(signature)
         now = self._clock()
-        episode = self._episodes.get(kind)
-        if episode is not None and episode.signature == cleaned:
+        key = (kind, bucket)
+        episode = self._episodes.get(key)
+        if episode is not None:
             if episode.delivered_at is not None:
                 if now - episode.delivered_at < self._repeat_after:
                     return False
             elif now - episode.attempted_at < self._retry_after:
                 return False
+        current = _Episode(cleaned, now, None)
+        self._episodes[key] = current
         delivered = await self._deliver(channel, H5Alert(kind, cleaned, now))
-        self._episodes[kind] = _Episode(cleaned, now, now if delivered else None)
+        current.delivered_at = now if delivered else None
         return delivered
 
     def clear(self, kind: AlertKind) -> None:
-        self._episodes.pop(kind, None)
+        for key in [k for k in self._episodes if k[0] is kind]:
+            del self._episodes[key]
 
     async def _deliver(self, channel: AlertChannel, alert: H5Alert) -> bool:
         try:
@@ -245,10 +254,14 @@ class H5RunMonitor:
 
     Never raises ``Exception``: the runner must behave the same with the alert
     path broken. ``BaseException`` (cancellation, interrupts) still propagates.
+    A tick's alert is sent by a background task, so a slow webhook can never
+    delay the next tick; ``drain`` waits (bounded) for those tasks on exit. The
+    stop alert is awaited inline because the process is already leaving.
     """
 
     def __init__(self, alerter: H5Alerter) -> None:
         self._alerter = alerter
+        self._pending: set[asyncio.Task[bool]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -257,11 +270,25 @@ class H5RunMonitor:
     async def tick_done(self, payload: Mapping[str, Any]) -> None:
         try:
             if payload.get("event") in FAILURE_EVENTS:
-                await self._alerter.fire(AlertKind.ERROR, _tick_signature(payload))
+                task = asyncio.get_running_loop().create_task(
+                    self._alerter.fire(
+                        AlertKind.ERROR,
+                        _tick_signature(payload),
+                        str(payload.get("event")),
+                    )
+                )
+                self._pending.add(task)
+                task.add_done_callback(self._forget)
             else:
                 self._alerter.clear(AlertKind.ERROR)
         except Exception:  # noqa: BLE001
             logger.exception("h5 alert tick hook failed")
+
+    def _forget(self, task: asyncio.Task[bool]) -> None:
+        self._pending.discard(task)
+        # Retrieve the outcome so a bug in the alerter is never an unhandled
+        # "exception was never retrieved" report on the runner's loop.
+        _ = task.cancelled() or task.exception()
 
     async def stopped(self, *, operator: bool, reason: str) -> None:
         if operator:
@@ -270,6 +297,16 @@ class H5RunMonitor:
             await self._alerter.fire(AlertKind.STOPPED, reason)
         except Exception:  # noqa: BLE001
             logger.exception("h5 alert stop hook failed")
+
+    async def drain(self) -> None:
+        """Wait, bounded, for in-flight tick alerts; cancel any that overrun."""
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*self._pending, return_exceptions=True),
+                timeout=DRAIN_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("h5 alert drain overran; pending alerts cancelled")
 
 
 class HeartbeatVerdict(StrEnum):
@@ -301,17 +338,24 @@ async def poll_heartbeat(
     *,
     miss_after: dt.timedelta,
     now: dt.datetime,
+    read_timeout: float = READ_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """One watcher poll: read the stamp, judge it, alert or re-arm."""
+    """One watcher poll: read the stamp, judge it, alert or re-arm.
+
+    The read has a deadline: a stalled SELECT must end as an ``unreadable``
+    alert, never leave the only hung-runner detector waiting forever.
+    """
     try:
-        last = await state.last_tick_at()
+        last = await asyncio.wait_for(state.last_tick_at(), timeout=read_timeout)
     except Exception as exc:  # noqa: BLE001 - a blind watcher is itself a failure
         error_class = type(exc).__name__
-        await alerter.fire(AlertKind.HEARTBEAT_MISSED, f"unreadable:{error_class}")
+        await alerter.fire(
+            AlertKind.HEARTBEAT_MISSED, f"unreadable:{error_class}", "unreadable"
+        )
         return {"event": "watch", "verdict": "unreadable", "error_class": error_class}
     verdict = judge_heartbeat(last, now=now, miss_after=miss_after)
     if verdict is HeartbeatVerdict.MISSED:
-        await alerter.fire(AlertKind.HEARTBEAT_MISSED, "stale_tick")
+        await alerter.fire(AlertKind.HEARTBEAT_MISSED, "stale_tick", "stale")
     else:
         alerter.clear(AlertKind.HEARTBEAT_MISSED)
     return {

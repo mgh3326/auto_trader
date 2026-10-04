@@ -64,6 +64,15 @@ docker run --rm --network host --env-file "$env_file" "$image" /app/.venv/bin/py
 docker run --rm --network host --env-file "$env_file" "$image" /app/.venv/bin/python -m scripts.binance_h5_heartbeat_watch --help
 ```
 
+**KNOWN BLOCKER (image):** `Dockerfile.api` copies `app`, `research_contracts`,
+`scripts` and other roots but not `research/`, and all three scripts import
+`research.nautilus_scalping.rob974_features` through the H5 modules. In an image
+built from it each command above ends with `ModuleNotFoundError: No module named
+'research'` before argparse runs. Do not work around it (no bind mount, no
+`PYTHONPATH`, no run from a checkout). Stop and report to the director: the fix is
+a Dockerfile change and a new deployed digest. A test pins this paragraph to the
+Dockerfile and requires its removal once the image ships `research`.
+
 2. The shared env file does not enable the lane. Expect only `=false` lines or
    no output; any `=true` means someone enabled it globally, so stop:
 
@@ -276,14 +285,25 @@ Steps, in order:
    then `docker kill at-h5-demo` if it is still `Up`.
 4. Record what happened in the hk record. Keep T0.
 
-An alert burst is bounded: one message per failure episode per kind, a reminder
-at most every six hours while it persists, and nothing when
-`BINANCE_H5_ALERT_ENABLED` is not exactly `true`.
+An alert burst is bounded: one message per failure episode per kind (tick
+errors are one episode per tick event, so alternating exception classes inside
+one outage stay one message), a reminder at most every six hours while it
+persists, and nothing when `BINANCE_H5_ALERT_ENABLED` is not exactly `true`.
+Tick alerts are sent in the background, so a slow webhook never delays the next
+tick.
 
 ## 10. Known limits
 
 - The watcher is not itself watched. If both it and the runner die, no alert
   is sent. The `docker logs` check at each coin session is the backstop.
+- The heartbeat is the stamp written at the start of each tick. It proves recent
+  NAV and state activity, not completed stop management; a blocked tick can still
+  advance it, which is why `error` is a separate alert. A tick that legitimately
+  runs longer than the miss window would raise a false `heartbeat_missed`. The
+  longest tick is not measured here: watch the first 4h-boundary tick (33
+  history page reads) and widen `--miss-minutes` if needed.
+- The watcher's own read has a 15 second deadline; a stalled read is reported as
+  `unreadable`, not left waiting.
 - No MCP tool reports H5 runner health to the coin session, so the operator
   routine cannot read it yet. A read-only tool over `review.binance_h5_lane_state`
   is the follow-up from task 1251.

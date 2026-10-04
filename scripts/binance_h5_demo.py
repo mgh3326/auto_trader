@@ -101,9 +101,11 @@ async def _run_ticks(
                 return 2 if payload["event"] in FAILURE_EVENTS else 0
             await asyncio.sleep(60)
     except asyncio.CancelledError:
-        if not stop.installed:
+        if not monitor.enabled:
             raise
         await monitor.stopped(operator=stop.operator, reason=stop.reason)
+        if not stop.installed:
+            raise
         return 130 if stop.operator else 143
     except KeyboardInterrupt:
         await monitor.stopped(operator=True, reason="keyboard_interrupt")
@@ -111,6 +113,8 @@ async def _run_ticks(
     except Exception as exc:
         await monitor.stopped(operator=False, reason=f"exception:{type(exc).__name__}")
         raise
+    finally:
+        await monitor.drain()
 
 
 async def _run(args: argparse.Namespace) -> int:

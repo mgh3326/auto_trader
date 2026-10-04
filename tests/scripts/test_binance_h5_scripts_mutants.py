@@ -14,7 +14,9 @@ Invariant sentences (one per mutant):
 - GATE_FUTURES_FLAG: the truth gate refuses to run unless the Futures Demo flag
   is exactly true.
 - ONCE_EXITS: --once runs exactly one tick and returns its exit code.
-- CANCEL_NOT_OURS: a cancellation this script did not request is never swallowed.
+- CANCEL_ALERTS_OFF: with alerts off a cancellation is neither reported nor swallowed.
+- CANCEL_UNHANDLED: a cancellation without our signal handlers is still reported
+  and still propagates.
 - NO_TASK_NO_HANDLERS: signal handlers are never installed outside a task.
 """
 
@@ -60,7 +62,22 @@ class Session:
         return None
 
 
-def run_one_tick_scenario(m: types.ModuleType, results: list[Any]) -> Any:
+class Channel:
+    def __init__(self) -> None:
+        self.sent: list[Any] = []
+
+    async def send(self, alert: Any) -> bool:
+        self.sent.append(alert)
+        return True
+
+
+def run_one_tick_scenario(
+    m: types.ModuleType,
+    results: list[Any],
+    *,
+    monitor: Any = None,
+    stop: Any = None,
+) -> Any:
     """Drive ``m._run_ticks`` with a scripted executor; ends with ``Done``."""
     queue = list(results)
 
@@ -87,7 +104,7 @@ def run_one_tick_scenario(m: types.ModuleType, results: list[Any]) -> Any:
     m.asyncio.sleep = no_sleep
     try:
         args = argparse.Namespace(once=True, loop=False, confirm_demo=True)
-        monitor = m.H5RunMonitor(m.H5Alerter(channel=None, enabled=False))
+        monitor = monitor or m.H5RunMonitor(m.H5Alerter(channel=None, enabled=False))
         return asyncio.run(
             m._run_ticks(
                 args,
@@ -95,9 +112,11 @@ def run_one_tick_scenario(m: types.ModuleType, results: list[Any]) -> Any:
                 strategy=SimpleNamespace(),
                 state=SimpleNamespace(),
                 monitor=monitor,
-                stop=m._StopState(),
+                stop=stop or m._StopState(),
             )
         )
+    except Done as exc:
+        raise AssertionError("the loop did not stop after the scripted ticks") from exc
     finally:
         m.AsyncSessionLocal, m.BinanceDemoLedgerService, m.H5Executor = saved
         m.asyncio.sleep = saved_sleep
@@ -157,9 +176,25 @@ def sc_once_exits(m: types.ModuleType) -> None:
     assert run_one_tick_scenario(m, [tick(m, "no_entry")]) == 0
 
 
-def sc_cancel_not_ours(m: types.ModuleType) -> None:
-    with pytest.raises(asyncio.CancelledError):
-        run_one_tick_scenario(m, [asyncio.CancelledError()])
+def _expect_cancelled(m: types.ModuleType, **kwargs: Any) -> None:
+    try:
+        run_one_tick_scenario(m, [asyncio.CancelledError()], **kwargs)
+    except asyncio.CancelledError:
+        return
+    raise AssertionError("the cancellation was swallowed")
+
+
+def sc_cancel_alerts_off(m: types.ModuleType) -> None:
+    stop = m._StopState()
+    stop.installed = True  # isolates the alerts-off branch from the handler branch
+    _expect_cancelled(m, stop=stop)
+
+
+def sc_cancel_unhandled(m: types.ModuleType) -> None:
+    channel = Channel()
+    monitor = m.H5RunMonitor(m.H5Alerter(channel=channel, enabled=True))
+    _expect_cancelled(m, monitor=monitor)  # stop.installed stays False
+    assert len(channel.sent) == 1, "the cancellation was not reported"
 
 
 def sc_no_task_no_handlers(m: types.ModuleType) -> None:
@@ -189,9 +224,13 @@ DECLARED: dict[tuple[str, str, str], tuple[str, Callable[[types.ModuleType], Non
         "os.environ.get('BINANCE_FUTURES_DEMO_ENABLED') != 'true'",
     ): ("GATE_FUTURES_FLAG", sc_gate_futures),
     ("runner", "_run_ticks", "not args.loop"): ("ONCE_EXITS", sc_once_exits),
+    ("runner", "_run_ticks", "not monitor.enabled"): (
+        "CANCEL_ALERTS_OFF",
+        sc_cancel_alerts_off,
+    ),
     ("runner", "_run_ticks", "not stop.installed"): (
-        "CANCEL_NOT_OURS",
-        sc_cancel_not_ours,
+        "CANCEL_UNHANDLED",
+        sc_cancel_unhandled,
     ),
     ("runner", "_install_stop_signals", "task is None"): (
         "NO_TASK_NO_HANDLERS",
@@ -264,7 +303,7 @@ def test_invariant_sentences_match_the_mutants():
     ]
     declared = [key for key, _ in DECLARED.values()]
     assert sorted(keys) == sorted(declared)
-    assert len(set(declared)) == len(declared) == 7
+    assert len(set(declared)) == len(declared) == 8
 
 
 @pytest.mark.parametrize("target", sorted(DECLARED), ids=lambda t: DECLARED[t][0])
@@ -276,8 +315,8 @@ def test_scenario_passes_on_the_real_script(target):
 def test_mutant_is_killed_by_its_invariant(target):
     mutant = _mutant(target)
     try:
-        with pytest.raises(BaseException) as killed:  # noqa: PT011
+        # Only a readable assertion (or pytest.fail) is the invariant going RED.
+        with pytest.raises((AssertionError, pytest.fail.Exception)):
             DECLARED[target][1](mutant)
-        assert not isinstance(killed.value, KeyboardInterrupt)
     finally:
         sys.modules.pop(mutant.__name__, None)

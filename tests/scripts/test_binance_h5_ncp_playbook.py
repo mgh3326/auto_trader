@@ -25,11 +25,14 @@ Invariant sentences (one per key):
 - XREF: every section reference resolves and the Incident section exists.
 - KINDS: the incident table covers exactly the alert kinds the code can send.
 - COVERAGE: every command the procedure needs is present.
+- IMAGE_IMPORTS: the playbook names exactly the source roots the deployed image lacks
+  for the scripts' imports, and names none once the image ships them.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import contextlib
 import dataclasses
@@ -157,6 +160,62 @@ def parse_with_script(script: str, argv: list[str]) -> str | None:
     return None
 
 
+SCRIPT_FILES = (
+    "scripts/binance_h5_demo.py",
+    "scripts/binance_h5_truth_gate.py",
+    "scripts/binance_h5_heartbeat_watch.py",
+)
+
+
+def _module_file(name: str) -> Path | None:
+    base = REPO_ROOT.joinpath(*name.split("."))
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def first_party_roots(entry_files: tuple[str, ...]) -> set[str]:
+    """Top-level source roots reached by every import (lazy ones too), statically."""
+    seen: set[Path] = set()
+    roots: set[str] = set()
+    stack = [REPO_ROOT / f for f in entry_files]
+    while stack:
+        path = stack.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        for node in ast.walk(ast.parse(path.read_text())):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level > 0:
+                package = path.relative_to(REPO_ROOT).parent.parts
+                base = package[: len(package) - (node.level - 1)]
+                prefix = ".".join(
+                    base + (tuple(node.module.split(".")) if node.module else ())
+                )
+                names = [prefix] + [f"{prefix}.{a.name}" for a in node.names]
+            for name in names:
+                target = _module_file(name)
+                if target is not None:
+                    roots.add(name.split(".")[0])
+                    stack.append(target)
+    return roots
+
+
+def image_roots() -> set[str]:
+    """Source roots COPYed into the final stage of Dockerfile.api."""
+    stages = re.split(r"^FROM ", (REPO_ROOT / "Dockerfile.api").read_text(), flags=re.M)
+    return set(re.findall(r"^COPY (?!--)([A-Za-z_]+)/", stages[-1], re.M))
+
+
+def image_missing_roots() -> set[str]:
+    return first_party_roots(SCRIPT_FILES) - image_roots()
+
+
 def read_facts() -> dict:
     import scripts.binance_h5_demo  # noqa: F401
     import scripts.binance_h5_truth_gate  # noqa: F401
@@ -174,6 +233,7 @@ def read_facts() -> dict:
     handoff = (REPO_ROOT / "docs/runbooks/fill-event-handoff.md").read_text()
     pull = (REPO_ROOT / "docs/runbooks/ncp-pull-deploy.md").read_text()
     return {
+        "image_missing": image_missing_roots(),
         "send_test_line": send_test,
         "tick_line": json.dumps(
             dataclasses.asdict(H5TickResult(1_790_000_000_000, "no_entry")),
@@ -205,6 +265,7 @@ KEYS = (
     "XREF",
     "KINDS",
     "COVERAGE",
+    "IMAGE_IMPORTS",
 )
 
 
@@ -343,6 +404,16 @@ def check_playbook(text: str, facts: dict) -> list[tuple[str, str]]:
     if facts["tick_line"] not in text.replace("`", ""):
         bad("OUTPUTS", f"tick example missing: {facts['tick_line']}")
 
+    paragraph = re.search(
+        r"\*\*KNOWN BLOCKER \(image\):\*\*(.*?)(?:\n\n|\Z)", text, re.S
+    )
+    if facts["image_missing"]:
+        named = set(re.findall(r"`([a-z_]+)/?`", paragraph[1])) if paragraph else set()
+        if not facts["image_missing"] <= named:
+            bad("IMAGE_IMPORTS", f"missing roots {sorted(facts['image_missing'])}")
+    elif paragraph:
+        bad("IMAGE_IMPORTS", "a blocker is named but the image ships every root")
+
     section4 = text.split("## 4.")[1].split("## 5.")[0] if "## 4." in text else ""
     rows = re.findall(r"^\| `([a-z0-9_]+)` \|", section4, re.M)
     if rows != facts["check_names"]:
@@ -478,6 +549,19 @@ MUTANTS: dict[str, list] = {
             "scripts.binance_h5_heartbeat_watch --help",
         ),
     ],
+    "IMAGE_IMPORTS": [
+        swap("**KNOWN BLOCKER (image):**", "**Note:**"),
+        lambda text: re.sub(
+            r"(?s)(\*\*KNOWN BLOCKER \(image\):\*\*.*?)(?=\n\n)",
+            lambda hit: (
+                hit.group(1)
+                .replace("`research/`", "`resarch/`")
+                .replace("`research`", "`resarch`")
+            ),
+            text,
+            count=1,
+        ),
+    ],
 }
 
 
@@ -511,6 +595,12 @@ def test_invariant_sentences_match_the_mutants():
 )
 def test_every_mutant_is_caught_by_its_own_invariant(playbook, facts, key, index):
     mutated = MUTANTS[key][index](playbook)
+    if key == "IMAGE_IMPORTS" and not facts["image_missing"]:
+        # Once the image ships every root the attack inverts: a blocker paragraph
+        # that names a root the image has is the corruption.
+        mutated = playbook.replace(
+            "## 4.", "**KNOWN BLOCKER (image):** `research/`\n\n## 4.", 1
+        )
     assert mutated != playbook
     assert key in violation_keys(mutated, facts), check_playbook(mutated, facts)
 

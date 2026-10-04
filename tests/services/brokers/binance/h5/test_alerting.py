@@ -120,12 +120,65 @@ def test_reminder_is_bounded_to_one_per_repeat_window():
     assert len(channel.sent) == 2
 
 
-def test_a_different_signature_is_a_new_failure():
+def test_diagnostic_text_inside_one_bucket_never_opens_a_new_episode():
+    """Round-1 B2: ConnectError then ReadTimeout during one outage is one episode."""
+    channel = FakeChannel()
+    alerter, clock = make(channel)
+    for i, text in enumerate(["blocked:A", "blocked:B", "blocked:A", "blocked:B"]):
+        clock.advance(minutes=1)
+        delivered = asyncio.run(alerter.fire(AlertKind.ERROR, text, "blocked"))
+        assert delivered is (i == 0)
+    assert [a.signature for a in channel.sent] == ["blocked:A"]
+
+
+def test_failed_delivery_backoff_holds_across_changing_diagnostic_text():
+    channel = FakeChannel(False, False, True)
+    alerter, clock = make(channel, retry_after=dt.timedelta(minutes=5))
+    attempts = []
+    for text in ["blocked:A", "blocked:B", "blocked:A", "blocked:B"]:
+        attempts.append(asyncio.run(alerter.fire(AlertKind.ERROR, text, "blocked")))
+        clock.advance(minutes=1)
+    assert len(channel.sent) == 1 and attempts == [False] * 4
+    clock.advance(minutes=5)
+    assert asyncio.run(alerter.fire(AlertKind.ERROR, "blocked:C", "blocked")) is False
+    assert len(channel.sent) == 2
+
+
+def test_a_different_bucket_is_a_new_failure_but_a_seen_bucket_is_not_resent():
     channel = FakeChannel()
     alerter, _ = make(channel)
-    assert fire(alerter, AlertKind.ERROR, "blocked:A") is True
-    assert fire(alerter, AlertKind.ERROR, "blocked:B") is True
-    assert [a.signature for a in channel.sent] == ["blocked:A", "blocked:B"]
+    sends = [
+        asyncio.run(alerter.fire(AlertKind.ERROR, f"{b}:x", b))
+        for b in ("blocked", "entry_uncertain", "blocked", "entry_uncertain")
+    ]
+    assert sends == [True, True, False, False]
+    assert [a.signature for a in channel.sent] == ["blocked:x", "entry_uncertain:x"]
+
+
+def test_a_send_still_in_flight_counts_as_the_episode():
+    """Two failing ticks while the first webhook call is outstanding send once."""
+    release_started = []
+
+    class Slow:
+        sent: list[H5Alert] = []
+
+        async def send(self, alert: H5Alert) -> bool:
+            self.sent.append(alert)
+            release_started.append(1)
+            await asyncio.sleep(0.05)
+            return True
+
+    channel = Slow()
+    alerter = H5Alerter(channel=channel, enabled=True)
+
+    async def go() -> tuple[bool, bool]:
+        first = asyncio.create_task(alerter.fire(AlertKind.ERROR, "e", "blocked"))
+        await asyncio.sleep(0.01)
+        second = await alerter.fire(AlertKind.ERROR, "e", "blocked")
+        return await first, second
+
+    assert asyncio.run(go()) == (True, False)
+    assert len(channel.sent) == 1
 
 
 def test_clear_rearms_the_kind_and_only_that_kind():
@@ -201,9 +254,12 @@ def test_signature_is_single_line_and_bounded():
 
 
 def run_ticks(monitor: H5RunMonitor, *payloads: dict) -> None:
+    """Report each tick, letting its background alert finish before the next."""
+
     async def go():
         for payload in payloads:
             await monitor.tick_done(payload)
+            await monitor.drain()
 
     asyncio.run(go())
 
@@ -274,6 +330,57 @@ def test_monitor_swallows_a_broken_alerter():
     monitor = H5RunMonitor(Broken())  # type: ignore[arg-type]
     run_ticks(monitor, {"event": "blocked"}, {"event": "no_entry"})
     asyncio.run(monitor.stopped(operator=False, reason="x"))
+
+
+def test_a_slow_webhook_never_delays_the_tick_that_reported_the_failure():
+    """Round-1 B1: tick_done returns before the webhook answers."""
+
+    class Gate:
+        def __init__(self) -> None:
+            self.release = asyncio.Event()
+            self.sent: list[H5Alert] = []
+
+        async def send(self, alert: H5Alert) -> bool:
+            await self.release.wait()
+            self.sent.append(alert)
+            return True
+
+    async def go() -> list[str]:
+        gate = Gate()
+        monitor = H5RunMonitor(H5Alerter(channel=gate, enabled=True))
+        order = []
+        await monitor.tick_done({"event": "blocked"})
+        order.append("tick_done returned")
+        assert gate.sent == []
+        gate.release.set()
+        await monitor.drain()
+        order.append(f"sent={len(gate.sent)}")
+        return order
+
+    assert asyncio.run(go()) == ["tick_done returned", "sent=1"]
+
+
+def test_drain_is_bounded_and_cancels_an_overrunning_send(monkeypatch):
+    monkeypatch.setattr(alerting, "DRAIN_TIMEOUT_SECONDS", 0.05)
+
+    class Hang:
+        async def send(self, alert: H5Alert) -> bool:
+            await asyncio.sleep(30)
+            return True
+
+    async def go() -> int:
+        monitor = H5RunMonitor(H5Alerter(channel=Hang(), enabled=True, send_timeout=30))
+        await monitor.tick_done({"event": "blocked"})
+        await monitor.drain()
+        await asyncio.sleep(0)
+        return len(monitor._pending)
+
+    assert asyncio.run(go()) == 0
+
+
+def test_drain_with_nothing_pending_is_a_no_op():
+    monitor = H5RunMonitor(H5Alerter(channel=FakeChannel(), enabled=True))
+    asyncio.run(monitor.drain())
 
 
 # --- heartbeat -------------------------------------------------------------
@@ -355,6 +462,42 @@ def test_poll_record_reports_age_without_secrets():
     record = poll(FakeTicks(T0 - dt.timedelta(minutes=3)), make(FakeChannel())[0], T0)
     assert record["age_seconds"] == 180
     assert record["last_tick_at"] == (T0 - dt.timedelta(minutes=3)).isoformat()
+
+
+def test_a_stalled_heartbeat_read_is_an_unreadable_alert_not_a_hang():
+    """Round-1 B5: the read has a deadline, so the detector cannot wait forever."""
+
+    class Stalled:
+        async def last_tick_at(self):
+            await asyncio.sleep(30)
+
+    channel = FakeChannel()
+    alerter, _ = make(channel)
+
+    async def go():
+        return await asyncio.wait_for(
+            poll_heartbeat(
+                Stalled(), alerter, miss_after=MISS, now=T0, read_timeout=0.05
+            ),
+            timeout=5,
+        )
+
+    record = asyncio.run(go())
+    assert record["verdict"] == "unreadable"
+    assert record["error_class"] == "TimeoutError"
+    assert [a.signature for a in channel.sent] == ["unreadable:TimeoutError"]
+
+
+def test_changing_unreadable_causes_stay_one_episode():
+    channel = FakeChannel()
+    alerter, _ = make(channel)
+    for error in (ConnectionRefusedError("a"), TimeoutError("b"), OSError("c")):
+        poll(FakeTicks(error=error), alerter, T0)
+    assert len(channel.sent) == 1
+
+
+def test_the_read_deadline_default_is_shorter_than_the_poll_pace():
+    assert 0 < alerting.READ_TIMEOUT_SECONDS < 60
 
 
 # --- embed and channel -----------------------------------------------------

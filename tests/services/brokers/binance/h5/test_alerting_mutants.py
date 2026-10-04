@@ -10,7 +10,8 @@ way round) fails ``test_invariant_sentences_match_the_declared_mutants``.
 
 Invariant sentences (one per mutant):
 - DISABLED: a disabled alerter, or one without a channel, sends nothing.
-- SAME_EPISODE: the same failure is one episode, however often it recurs.
+- OPEN_EPISODE: a failure that keeps recurring is one episode, whatever its diagnostic
+  text.
 - DELIVERED_BRANCH: a delivered failure stays quiet until its reminder window.
 - REPEAT_WINDOW: a delivered failure is never re-sent inside the reminder window.
 - RETRY_BACKOFF: a failed delivery is not retried inside the retry back-off.
@@ -69,8 +70,16 @@ def alerter(m, channel, *, enabled=True):
     return m.H5Alerter(channel=channel, enabled=enabled, clock=clock), clock
 
 
+def call(fn, *args, **kwargs):
+    """Turn any unexpected exception into a readable assertion failure."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        raise AssertionError(f"raised {type(exc).__name__}: {exc}") from exc
+
+
 def fire(m, a, signature="sig"):
-    return asyncio.run(a.fire(m.AlertKind.ERROR, signature))
+    return call(asyncio.run, a.fire(m.AlertKind.ERROR, signature, "blocked"))
 
 
 def sc_disabled(m):
@@ -82,7 +91,7 @@ def sc_disabled(m):
     assert fire(m, a) is False
 
 
-def sc_same_episode(m):
+def sc_open_episode(m):
     channel = Channel()
     a, clock = alerter(m, channel)
     fire(m, a)
@@ -119,34 +128,44 @@ def sc_retry_backoff(m):
 def sc_operator_stop(m):
     channel = Channel()
     a, _ = alerter(m, channel)
-    asyncio.run(m.H5RunMonitor(a).stopped(operator=True, reason="sigint"))
+    call(asyncio.run, m.H5RunMonitor(a).stopped(operator=True, reason="sigint"))
     assert channel.sent == []
 
 
 def sc_failure_event(m):
     channel = Channel()
     a, _ = alerter(m, channel)
-    asyncio.run(m.H5RunMonitor(a).tick_done({"event": "blocked"}))
+
+    async def go():
+        monitor = m.H5RunMonitor(a)
+        await monitor.tick_done({"event": "blocked"})
+        await monitor.drain()
+
+    call(asyncio.run, go())
     assert len(channel.sent) == 1
 
 
 def sc_no_stamp(m):
-    assert m.judge_heartbeat(None, now=T0, miss_after=MISS) is m.HeartbeatVerdict.ABSENT
+    verdict = call(m.judge_heartbeat, None, now=T0, miss_after=MISS)
+    assert verdict is m.HeartbeatVerdict.ABSENT
 
 
 def sc_aware_only(m):
-    with pytest.raises(ValueError):
+    try:
         m.judge_heartbeat(T0.replace(tzinfo=None), now=T0, miss_after=MISS)
+    except ValueError:
+        return
+    except Exception as exc:
+        raise AssertionError(f"wrong error {type(exc).__name__}") from exc
+    raise AssertionError("a naive timestamp was compared")
 
 
 def sc_stale_threshold(m):
     stale = T0 - MISS - dt.timedelta(seconds=1)
-    assert (
-        m.judge_heartbeat(stale, now=T0, miss_after=MISS) is m.HeartbeatVerdict.MISSED
-    )
-    assert (
-        m.judge_heartbeat(T0 - MISS, now=T0, miss_after=MISS) is m.HeartbeatVerdict.OK
-    )
+    missed = call(m.judge_heartbeat, stale, now=T0, miss_after=MISS)
+    assert missed is m.HeartbeatVerdict.MISSED
+    edge = call(m.judge_heartbeat, T0 - MISS, now=T0, miss_after=MISS)
+    assert edge is m.HeartbeatVerdict.OK
 
 
 def sc_missed_alerts(m):
@@ -156,7 +175,7 @@ def sc_missed_alerts(m):
 
     channel = Channel()
     a, _ = alerter(m, channel)
-    asyncio.run(m.poll_heartbeat(State(), a, miss_after=MISS, now=T0))
+    call(asyncio.run, m.poll_heartbeat(State(), a, miss_after=MISS, now=T0))
     assert len(channel.sent) == 1
 
 
@@ -166,10 +185,7 @@ DECLARED: dict[tuple[str, str], tuple[str, Callable[[types.ModuleType], None]]] 
         "DISABLED",
         sc_disabled,
     ),
-    (
-        "H5Alerter.fire",
-        "episode is not None and episode.signature == cleaned",
-    ): ("SAME_EPISODE", sc_same_episode),
+    ("H5Alerter.fire", "episode is not None"): ("OPEN_EPISODE", sc_open_episode),
     ("H5Alerter.fire", "episode.delivered_at is not None"): (
         "DELIVERED_BRANCH",
         sc_delivered_branch,
@@ -277,8 +293,9 @@ def test_mutant_is_killed_by_its_invariant(target):
     key, scenario = DECLARED[target]
     mutant = _mutant_module(target)
     try:
-        with pytest.raises(BaseException) as killed:  # noqa: PT011
+        # Only a readable assertion (or pytest.fail) counts as the invariant
+        # going RED; an AttributeError or TypeError from a broken mutant does not.
+        with pytest.raises((AssertionError, pytest.fail.Exception)):
             scenario(mutant)
-        assert not isinstance(killed.value, KeyboardInterrupt), key
     finally:
         sys.modules.pop(mutant.__name__, None)
