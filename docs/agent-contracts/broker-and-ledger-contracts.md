@@ -115,6 +115,12 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 
 - **표면**: app/services/brokers/binance/h5, scripts/binance_h5_demo.py,
   scripts/binance_h5_weekly_score.py. 수동 CLI만 있으며 scheduler 등록은 없다.
+- **배포 이미지 (task 1254)**: H5 모듈이 research.nautilus_scalping.rob974_features를
+  import하므로 `Dockerfile.api` 최종 단계는 `research/nautilus_scalping/`만 복사한다
+  (`research/`의 나머지는 이미지에 넣지 않는다). 이 COPY는 order permission이 아니다.
+  `tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py`가 최종 단계의 COPY
+  집합과 `.dockerignore`를 시뮬레이션해 `scripts/binance_h5_*.py`의 import 폐쇄(정적 +
+  이미지 파일만 둔 새 인터프리터 import)와 `research/` 범위를 고정한다.
 - **호스트/게이트**: exact https://demo-fapi.binance.com 및 H5DemoClient identity를
   HTTP/DB 전에 검사한다. BINANCE_H5_DEMO_ENABLED와
   BINANCE_FUTURES_DEMO_ENABLED는 기본 false이고, 각 runner tick과 모든 주문은

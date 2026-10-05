@@ -99,6 +99,7 @@ tests/scripts/b0x/test_table_gate.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_build_policy_table_out_dir.py
+tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_lane_event_kickoff.py
