@@ -29,6 +29,8 @@ tests/mcp_server/test_niche_tools.py
 tests/mcp_server/test_operating_briefing_policy_version.py
 tests/mcp_server/test_profile_tool_snapshot.py
 tests/mcp_server/test_rob1311_quick_projection.py
+tests/mcp_server/test_route_request_paper_surface.py
+tests/mcp_server/test_route_request_profile_golden.py
 tests/mcp_server/test_session_bootstrap_pack_no_write.py
 tests/mcp_server/test_session_bootstrap_profile_sections.py
 tests/mcp_server/test_toss_proposal_accounts.py

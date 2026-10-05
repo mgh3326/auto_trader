@@ -74,20 +74,22 @@ the 20 names the runner lists in `registered_tools("us")`:
 A network boot without `MCP_AUTH_TOKEN` is refused (same rule as live-* and
 h3-crypto-paper).
 
-### route_request on this profile (open dependency)
+### route_request on this profile (#1244 r3)
 
-`route_request(intent="buy_analysis"|"profit_taking", market="us")` uses the
-proposal-led contract, which requires `order_proposal_create`; this profile
-omits it by design, so those two bootstrap routes answer `success=false` /
-`degraded=true` and the runner's bootstrap check stops the run ("bootstrap
-incomplete"), exactly as h3-crypto-paper did on 2026-10-02. #1244 adds a
-paper-execution route contract for h3-crypto-paper only. H3-US needs the same
-for `us` on this profile: execution tools `alpaca_paper_submit_order` and
-`alpaca_paper_cancel_order`, required reads `alpaca_paper_list_orders`,
+This registration selects the Alpaca paper route surface
+(`execution_surface="alpaca_paper"`), so `route_request(intent="buy_analysis"|"profit_taking", market="us")`
+answers the `paper-execution-v1` contract with `success=true` /
+`degraded=false`: execution tools `alpaca_paper_submit_order` and
+`alpaca_paper_cancel_order`, required also `alpaca_paper_list_orders`,
 `alpaca_paper_get_order`, `alpaca_paper_list_positions` and
 `market_quote_snapshot_ensure`, approval channel runner intent guard, no
-proposal tool. Until then the unit serves its tools, and the H3-US runner
-stays fail-closed at bootstrap.
+proposal tool. Any proposal, live, mock or crypto paper order tool registered
+beside it degrades the contract; every reconcile writer is hidden on this
+route. The broker-only line "accepted/resting is not a fill; broker evidence
+reconcile is required" is replaced by confirming fills from the Alpaca paper
+account's own order read. Before #1244 r3 these two routes were degraded and
+the H3-US runner's bootstrap check stopped the run, exactly as h3-crypto-paper
+did on 2026-10-02.
 
 ## Unit
 

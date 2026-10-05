@@ -61,6 +61,7 @@ from app.mcp_server.tooling.market_quote_snapshot_tools import (
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
+from app.mcp_server.tooling.route_request_lanes import ROUTE_SURFACE_ALPACA_PAPER
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
 )
@@ -337,7 +338,10 @@ def register_h3_us_paper_tools(mcp: FastMCP) -> None:
     proxy = _H3UsPaperMCP(mcp)
     filtered = cast("FastMCP", proxy)
     register_operating_briefing_tools(filtered)
-    register_route_request_tools(filtered)
+    # #1244 r3: us buy/sell report the Alpaca paper-execution route contract
+    # here; this profile has no proposal tool, so proposal-led would always
+    # degrade (the open dependency in docs/runbooks/h3-us-paper-mcp.md).
+    register_route_request_tools(filtered, execution_surface=ROUTE_SURFACE_ALPACA_PAPER)
     register_trading_policy_tools(filtered)
     register_market_data_tools(filtered)
     register_analysis_tools(filtered)
