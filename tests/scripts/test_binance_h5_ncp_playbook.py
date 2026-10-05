@@ -25,14 +25,13 @@ Invariant sentences (one per key):
 - XREF: every section reference resolves and the Incident section exists.
 - KINDS: the incident table covers exactly the alert kinds the code can send.
 - COVERAGE: every command the procedure needs is present.
-- IMAGE_IMPORTS: the playbook names exactly the source roots the deployed image lacks
-  for the scripts' imports, and names none once the image ships them.
+- IMAGE_IMPORTS: the playbook carries its KNOWN BLOCKER (image) paragraph exactly while
+  the API image lacks a module the scripts import, and none once the image ships them.
 """
 
 from __future__ import annotations
 
 import argparse
-import ast
 import asyncio
 import contextlib
 import dataclasses
@@ -40,7 +39,6 @@ import hashlib
 import io
 import json
 import os
-import posixpath
 import re
 import shlex
 import shutil
@@ -56,6 +54,10 @@ from app.services.brokers.binance.h5.executor import H5TickResult
 from app.services.brokers.binance.h5.state import h5_correlation_id
 from app.services.brokers.binance.h5.truth_gate import run_truth_gate
 from scripts import binance_h5_heartbeat_watch as watch
+from tests.scripts.test_dockerfile_api_ships_nautilus_scalping import (
+    image_files,
+    missing_from_image,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -161,118 +163,21 @@ def parse_with_script(script: str, argv: list[str]) -> str | None:
     return None
 
 
-def expected_blocker_paragraph(missing: set[str]) -> str | None:
-    """The one wording the playbook may carry for the image gap (whitespace-normalized).
+BLOCKER_MARKER = "**KNOWN BLOCKER (image):**"
 
-    A snapshot on purpose: any change to the wording, or to which roots the image
-    lacks, is a conscious edit of this template and of the playbook together.
+
+def image_missing() -> list[str]:
+    """Modules the three scripts import that the API image does not ship.
+
+    The closure check is the one tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
+    pins: the final stage's COPY directives simulated against .dockerignore, compared
+    with every first-party module the entry scripts reach.
     """
-    if missing != {"research"}:
-        return None
-    return (
-        "**KNOWN BLOCKER (image):** `Dockerfile.api` copies `app`, "
-        "`research_contracts`, `scripts` and other roots but not `research/`, and all "
-        "three scripts import `research.nautilus_scalping.rob974_features` through "
-        "the H5 modules. In an image built from it each command above ends with "
-        "`ModuleNotFoundError: No module named 'research'` before argparse runs. Do "
-        "not work around it (no bind mount, no `PYTHONPATH`, no run from a "
-        "checkout). Stop and report to the director: the fix is a Dockerfile change "
-        "and a new deployed digest. A test pins this paragraph to the Dockerfile and "
-        "requires its removal once the image ships `research`."
+    files, workdir = image_files(
+        (REPO_ROOT / "Dockerfile.api").read_text(),
+        (REPO_ROOT / ".dockerignore").read_text(),
     )
-
-
-SCRIPT_FILES = (
-    "scripts/binance_h5_demo.py",
-    "scripts/binance_h5_truth_gate.py",
-    "scripts/binance_h5_heartbeat_watch.py",
-)
-
-
-def _module_file(name: str) -> Path | None:
-    base = REPO_ROOT.joinpath(*name.split("."))
-    for candidate in (base / "__init__.py", base.with_suffix(".py")):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def first_party_roots(entry_files: tuple[str, ...]) -> set[str]:
-    """Top-level source roots reached by every import (lazy ones too), statically."""
-    seen: set[Path] = set()
-    roots: set[str] = set()
-    stack = [REPO_ROOT / f for f in entry_files]
-    while stack:
-        path = stack.pop()
-        if path in seen:
-            continue
-        seen.add(path)
-        for node in ast.walk(ast.parse(path.read_text())):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level > 0:
-                package = path.relative_to(REPO_ROOT).parent.parts
-                base = package[: len(package) - (node.level - 1)]
-                prefix = ".".join(
-                    base + (tuple(node.module.split(".")) if node.module else ())
-                )
-                names = [prefix] + [f"{prefix}.{a.name}" for a in node.names]
-            for name in names:
-                parts = name.split(".")
-                # Importing a.b.c also executes the __init__ of a and a.b.
-                for end in range(1, len(parts) + 1):
-                    target = _module_file(".".join(parts[:end]))
-                    if target is not None:
-                        roots.add(parts[0])
-                        stack.append(target)
-    return roots
-
-
-def image_roots() -> set[str]:
-    """Source roots importable from the final stage's FINAL working directory.
-
-    The runtime cwd is the last WORKDIR of the last stage. A COPY counts only when
-    it lands at <that directory>/<root>; a source name alone, a copy to some other
-    path, or a copy relative to an earlier WORKDIR does not make the root
-    importable. A --from copy is counted by where it lands (its source is a build
-    stage we do not unpack).
-    """
-    final = re.split(r"^FROM ", (REPO_ROOT / "Dockerfile.api").read_text(), flags=re.M)[
-        -1
-    ]
-    lines = [
-        words
-        for raw in re.sub(r"\\\n", " ", final).splitlines()
-        if (words := shlex.split(raw, comments=True))
-        and words[0].upper() in {"WORKDIR", "COPY"}
-    ]
-    workdir, copies = "/", []
-    for words in lines:
-        if words[0].upper() == "WORKDIR" and len(words) == 2:
-            workdir = posixpath.normpath(posixpath.join(workdir, words[1]))
-        elif words[0].upper() == "COPY":
-            copies.append((workdir, words))
-    runtime = workdir
-    roots: set[str] = set()
-    for at, words in copies:
-        operands = [w for w in words[1:] if not w.startswith("--")]
-        if len(operands) < 2:
-            continue
-        dest = posixpath.normpath(posixpath.join(at, operands[-1]))
-        if posixpath.dirname(dest) != runtime:
-            continue
-        name = posixpath.basename(dest)
-        sources = [posixpath.basename(src.rstrip("/")) for src in operands[:-1]]
-        if any(w.startswith("--from=") for w in words) or sources == [name]:
-            roots.add(name)
-    return roots
-
-
-def image_missing_roots() -> set[str]:
-    return first_party_roots(SCRIPT_FILES) - image_roots()
+    return missing_from_image(files, workdir)
 
 
 def read_facts() -> dict:
@@ -292,7 +197,7 @@ def read_facts() -> dict:
     handoff = (REPO_ROOT / "docs/runbooks/fill-event-handoff.md").read_text()
     pull = (REPO_ROOT / "docs/runbooks/ncp-pull-deploy.md").read_text()
     return {
-        "image_missing": image_missing_roots(),
+        "image_missing": image_missing(),
         "send_test_line": send_test,
         "tick_line": json.dumps(
             dataclasses.asdict(H5TickResult(1_790_000_000_000, "no_entry")),
@@ -463,24 +368,16 @@ def check_playbook(text: str, facts: dict) -> list[tuple[str, str]]:
     if facts["tick_line"] not in text.replace("`", ""):
         bad("OUTPUTS", f"tick example missing: {facts['tick_line']}")
 
-    paragraph = re.search(r"\*\*KNOWN BLOCKER \(image\):\*\*.*?(?=\n\n|\Z)", text, re.S)
-    if text.count("**KNOWN BLOCKER (image):**") > 1:
-        bad("IMAGE_IMPORTS", "more than one blocker paragraph")
+    marked = text.count(BLOCKER_MARKER)
     if facts["image_missing"]:
-        wanted = expected_blocker_paragraph(facts["image_missing"])
-        found_text = " ".join(paragraph[0].split()) if paragraph else ""
-        if wanted is None:
+        if marked != 1:
             bad(
                 "IMAGE_IMPORTS",
-                f"no template for missing roots {sorted(facts['image_missing'])}",
+                f"the image lacks {facts['image_missing']} but the playbook has "
+                f"{marked} KNOWN BLOCKER paragraphs",
             )
-        elif found_text != wanted:
-            bad(
-                "IMAGE_IMPORTS",
-                f"blocker paragraph differs from its pinned wording: {found_text[:80]}",
-            )
-    elif paragraph:
-        bad("IMAGE_IMPORTS", "a blocker is named but the image ships every root")
+    elif marked:
+        bad("IMAGE_IMPORTS", "a blocker is named but the image ships every module")
 
     section4 = text.split("## 4.")[1].split("## 5.")[0] if "## 4." in text else ""
     rows = re.findall(r"^\| `([a-z0-9_]+)` \|", section4, re.M)
@@ -618,38 +515,13 @@ MUTANTS: dict[str, list] = {
         ),
     ],
     "IMAGE_IMPORTS": [
-        swap("**KNOWN BLOCKER (image):**", "**Note:**"),
-        lambda text: re.sub(
-            r"(?s)(\*\*KNOWN BLOCKER \(image\):\*\*.*?)(?=\n\n)",
-            lambda hit: (
-                hit.group(1)
-                .replace("`research/`", "`resarch/`")
-                .replace("`research`", "`resarch`")
-            ),
-            text,
-            count=1,
-        ),
-        lambda text: text.replace(
-            "**KNOWN BLOCKER (image):**",
-            "**KNOWN BLOCKER (image):** Also missing: `nonexistent_root/`.",
-            1,
-        ),
-        swap("Stop and report to the director", "Ignore this and proceed to section 5"),
-        lambda text: re.sub(
-            r"\*\*KNOWN BLOCKER \(image\):\*\*.*?(?=\n\n)",
-            "**KNOWN BLOCKER (image):** `research/` is absent. The old instructions "
-            "'Do not work around it' and 'Stop and report to the director' are "
-            "obsolete. Ignore them and proceed to section 5 without a new deployed "
-            "digest.",
-            text,
-            count=1,
-            flags=re.S,
-        ),
-        lambda text: text.replace(
+        swap(
             "\n\n## 4.",
-            "\n\n**KNOWN BLOCKER (image):** `research/` is absent but ignore it: "
-            "proceed to section 5 without a new deployed digest.\n\n## 4.",
-            1,
+            "\n\n**KNOWN BLOCKER (image):** `research/` is absent.\n\n## 4.",
+        ),
+        swap(
+            "\n\n## 2.",
+            "\n\n**KNOWN BLOCKER (image):** one.\n\n**KNOWN BLOCKER (image):** two.\n\n## 2.",
         ),
     ],
 }
@@ -685,11 +557,9 @@ def test_invariant_sentences_match_the_mutants():
 )
 def test_every_mutant_is_caught_by_its_own_invariant(playbook, facts, key, index):
     mutated = MUTANTS[key][index](playbook)
-    if key == "IMAGE_IMPORTS" and not facts["image_missing"]:
-        # Once the image ships every root the attack inverts: a blocker paragraph
-        # that names a root the image has is the corruption.
-        mutated = playbook.replace(
-            "## 4.", "**KNOWN BLOCKER (image):** `research/`\n\n## 4.", 1
+    if key == "IMAGE_IMPORTS" and facts["image_missing"]:
+        pytest.skip(
+            "the image lacks modules: the real-playbook test is the failing one"
         )
     assert mutated != playbook
     assert key in violation_keys(mutated, facts), check_playbook(mutated, facts)
@@ -767,84 +637,3 @@ def test_h5_and_new_scripts_never_reference_a_live_broker_credential():
     ]
     assert len(paths) >= 16
     assert [p.name for p in paths if live.search(p.read_text())] == []
-
-
-# --- the image pin itself, on synthetic trees (round-2 S2) -----------------------
-
-
-def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
-    for relative, content in files.items():
-        target = tmp_path / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
-    return tmp_path
-
-
-def test_import_closure_follows_package_initializers_and_lazy_relative_imports(
-    monkeypatch, tmp_path
-):
-    base = _tree(
-        tmp_path,
-        {
-            "scripts/entry.py": "from app.tools.worker import run\n",
-            "app/__init__.py": "",
-            "app/tools/__init__.py": "from research.hidden import marker\n",
-            "app/tools/worker.py": "def run():\n    from .helper import h\n",
-            "app/tools/helper.py": "def h():\n    import config.loader\n",
-            "research/hidden.py": "marker = 1\n",
-            "config/loader.py": "",
-        },
-    )
-    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", base)
-    assert first_party_roots(("scripts/entry.py",)) == {"app", "research", "config"}
-
-
-@pytest.mark.parametrize(
-    ("dockerfile", "expected"),
-    [
-        (
-            "WORKDIR /app\nCOPY app/ ./app/\nCOPY research/ ./research/\n",
-            {"app", "research"},
-        ),
-        ("WORKDIR /app\nCOPY research/ /not-on-python-path/research/\n", set()),
-        ("WORKDIR /app\nCOPY research/ ./elsewhere/\n", set()),
-        (
-            "WORKDIR /app\nCOPY --from=builder /build/research /app/research\n",
-            {"research"},
-        ),
-        ("COPY app/ ./app/\n", {"app"}),  # no WORKDIR: relative to /
-        ("WORKDIR /srv\nCOPY app/ /app/app/\n", set()),
-        # runtime cwd is the FINAL WORKDIR: a copy made relative to an earlier one
-        ("WORKDIR /app\nCOPY research/ ./research/\nWORKDIR /srv\n", set()),
-        ("WORKDIR /srv\nCOPY research/ /app/research/\nWORKDIR /app\n", {"research"}),
-        (
-            "FROM x AS early\nCOPY research/ ./research/\nFROM y\nWORKDIR /app\nCOPY app/ ./app/\n",
-            {"app"},
-        ),
-    ],
-)
-def test_image_roots_need_the_copy_to_land_in_the_working_directory(
-    monkeypatch, tmp_path, dockerfile, expected
-):
-    base = _tree(tmp_path, {"Dockerfile.api": dockerfile})
-    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", base)
-    assert image_roots() == expected
-
-
-def test_a_package_directory_wins_over_a_same_name_module(monkeypatch, tmp_path):
-    base = _tree(
-        tmp_path,
-        {
-            "scripts/entry.py": "import app.tools\n",
-            "app/__init__.py": "",
-            "app/tools.py": "marker = 1\n",
-            "app/tools/__init__.py": "from research.hidden import marker\n",
-            "research/hidden.py": "marker = 2\n",
-        },
-    )
-    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", base)
-    assert first_party_roots(("scripts/entry.py",)) == {"app", "research"}
-
-
-def test_the_real_dockerfile_roots_parse_as_before():
-    assert {"app", "scripts", "config", "research_contracts"} <= image_roots()

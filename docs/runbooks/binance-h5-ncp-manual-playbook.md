@@ -64,15 +64,6 @@ docker run --rm --network host --env-file "$env_file" "$image" /app/.venv/bin/py
 docker run --rm --network host --env-file "$env_file" "$image" /app/.venv/bin/python -m scripts.binance_h5_heartbeat_watch --help
 ```
 
-**KNOWN BLOCKER (image):** `Dockerfile.api` copies `app`, `research_contracts`,
-`scripts` and other roots but not `research/`, and all three scripts import
-`research.nautilus_scalping.rob974_features` through the H5 modules. In an image
-built from it each command above ends with `ModuleNotFoundError: No module named
-'research'` before argparse runs. Do not work around it (no bind mount, no
-`PYTHONPATH`, no run from a checkout). Stop and report to the director: the fix is
-a Dockerfile change and a new deployed digest. A test pins this paragraph to the
-Dockerfile and requires its removal once the image ships `research`.
-
 2. The shared env file does not enable the lane. Expect only `=false` lines or
    no output; any `=true` means someone enabled it globally, so stop:
 

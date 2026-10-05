@@ -163,9 +163,6 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   알림은 백그라운드 태스크라 다음 틱을 늦추지 않고 종료 시 drain). 에피소드 키는
   (종류, 버킷)이며 틱 오류의 버킷은 틱 event 라서 예외 클래스가 바뀌어도 같은
   에피소드다. 감시자의 heartbeat 읽기는 15초 데드라인이며 초과는 `unreadable` 알림이다.
-  🔴 `Dockerfile.api` 가 `research/` 를 복사하지 않는 동안(플레이북 §3 의 KNOWN BLOCKER
-  문단이 있는 동안 — 테스트가 Dockerfile 과 대조한다) 이 세 스크립트와 H5 러너는 배포
-  이미지에서 import 되지 않으므로 이미지 수정과 새 digest 전에는 시작할 수 없다.
   H5 에는 거래소 측 손절이 없으므로 모든 종류가 "포지션이 있으면 손절 감시 중단"을 뜻한다.
   코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
   core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
