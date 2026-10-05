@@ -82,6 +82,8 @@ def _validate_profile_auth_token(
         McpProfile.LIVE_CRYPTO,
         # #1171: the H3 paper pilot surface carries paper order mutations.
         McpProfile.H3_CRYPTO_PAPER,
+        # #1257: the H3-US paper pilot surface carries Alpaca paper orders.
+        McpProfile.H3_US_PAPER,
     }:
         raise RuntimeError(
             f"MCP_PROFILE={profile.value} requires non-empty MCP_AUTH_TOKEN "

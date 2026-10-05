@@ -158,6 +158,7 @@ def _load_main_module(
     live_us_profile = _FakeProfileMember("live-us")
     live_crypto_profile = _FakeProfileMember("live-crypto")
     h3_crypto_paper_profile = _FakeProfileMember("h3-crypto-paper")
+    h3_us_paper_profile = _FakeProfileMember("h3-us-paper")
     live_profiles = {
         member.value: member
         for member in (
@@ -165,6 +166,7 @@ def _load_main_module(
             live_us_profile,
             live_crypto_profile,
             h3_crypto_paper_profile,
+            h3_us_paper_profile,
         )
     }
     if live_profile is not None:
@@ -196,6 +198,7 @@ def _load_main_module(
         LIVE_US=live_us_profile,
         LIVE_CRYPTO=live_crypto_profile,
         H3_CRYPTO_PAPER=h3_crypto_paper_profile,
+        H3_US_PAPER=h3_us_paper_profile,
     )
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
@@ -646,6 +649,35 @@ class TestMcpServerMain:
         assert register_all_tools.call_args.kwargs["profile"].value == (
             "h3-crypto-paper"
         )
+
+    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+    def test_h3_us_paper_network_profile_requires_auth_at_import(
+        self, monkeypatch: pytest.MonkeyPatch, transport: str
+    ) -> None:
+        # #1257: the H3-US paper pilot surface carries Alpaca paper orders; a
+        # tokenless network boot fails before FastMCP exists.
+        monkeypatch.setenv("MCP_TYPE", transport)
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=h3-us-paper requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, live_profile="h3-us-paper")
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_h3_us_paper_network_profile_accepts_auth_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "streamable-http")
+        module, _, _, _, _ = _load_main_module(
+            monkeypatch, auth_token="h3-us-token", live_profile="h3-us-paper"
+        )
+        assert module._mcp_profile.value == "h3-us-paper"
+        register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
+        register_all_tools.assert_called_once()
+        assert register_all_tools.call_args.kwargs["profile"].value == "h3-us-paper"
 
     @pytest.mark.parametrize("profile", ["live-kr", "live-us", "live-crypto"])
     def test_live_network_profile_accepts_auth_token_and_registers_itself(

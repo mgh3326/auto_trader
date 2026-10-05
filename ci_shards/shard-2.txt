@@ -86,6 +86,7 @@ tests/scripts/b0x/test_owner_release_observation.py
 tests/scripts/b0x/us/test_cycle.py
 tests/scripts/b0x/us/test_run_b0x_us_cycle_cli.py
 tests/scripts/test_binance_spot_demo_smoke.py
+tests/scripts/test_deploy_ncp_pull_h3_us_paper.py
 tests/scripts/test_deploy_ncp_pull_live_mcp.py
 tests/scripts/test_hermes_roundtrip_smoke_cli.py
 tests/scripts/test_live_mcp_tools_list.py

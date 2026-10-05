@@ -38,6 +38,18 @@ auto_trader-operator H3-CRYPTO 파일럿 러너(`registered_tools("crypto")`)의
 배포하고, HAProxy 는 tailnet `100.122.100.56:8776` 만 바인드한다. 스케줄러 연결은 없다. 토큰 생성·배포는 운영자 몫이다
 (`docs/runbooks/h3-crypto-paper-mcp.md`). 계약 테스트: `tests/mcp_server/test_h3_crypto_paper_profile.py`,
 `tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py`.
+**h3-us-paper 전용 프로필 (#1257, #1245)**: `MCP_PROFILE=h3-us-paper` 는 H3-US 파일럿 러너(`registered_tools("us")`)의
+20개 도구만 등록하는 closed world다(`app/mcp_server/tooling/h3_us_paper_registration.py`, us-paper 의 strict subset).
+주문 표면은 수동 Alpaca paper submit/cancel 2종뿐이고 automated submit·preview·reconcile writer·live 주문·live 계좌 조회·
+proposal/watch/설정 도구는 없다. 시장 인자 도구 10종은 `market="us"`, Alpaca 5종은 `account_mode="alpaca_paper"`
+(lab/crypto 거부), submit 은 `asset_class="us_equity"`, `get_operating_briefing` 은 `account_scope="db_simulated"` 로 고정된다.
+🔴 모든 도구 본문은 `app/services/brokers/credential_firewall.broker_credentials_blocked` 안에서 실행되어 KIS·Toss·Upbit 인증
+클라이언트는 토큰 조회·breaker lease·전송 전에 `BrokerCredentialsBlocked` 로 거부된다(US 시세는 Yahoo, 일봉은 캐시 행,
+USD/KRW 는 open.er-api 로 기존 폴백). 이 방화벽 검사를 KIS/Toss/Upbit 클라이언트에서 제거하지 마라.
+유닛 `at-mcp-h3-us-paper`(루프백 8777, 토큰 `MCP_H3_US_PAPER_AUTH_TOKEN`, tailnet `100.122.100.56:8777`)는 h3-crypto-paper 와
+같은 규칙으로 배포된다. buy_analysis/profit_taking route 는 #1244 류 paper-execution 계약이 us 에 생기기 전까지 degraded 다
+(`docs/runbooks/h3-us-paper-mcp.md`). 계약 테스트: `tests/mcp_server/test_h3_us_paper_profile.py`,
+`tests/scripts/test_deploy_ncp_pull_h3_us_paper.py`, `tests/services/brokers/test_credential_firewall.py`.
 **MCP_PROFILE 필수 (#1189)**: 서버 진입점은 `require_mcp_profile` 로 프로필을 해석하며 비었거나·없거나·공백뿐인
 `MCP_PROFILE` 은 DEFAULT 로 폴백하지 않고 기동을 거부한다(DEFAULT 는 `MCP_PROFILE=default` 로 명시). deploy 스크립트도
 배포 전 모든 유닛의 프로필이 비어 있지 않음을 검사한다. 레포 안 모든 서버 정의의 명시 프로필은
