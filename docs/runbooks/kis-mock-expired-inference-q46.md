@@ -27,6 +27,21 @@ only ran it against throwaway databases.
 - A second `--commit` after a successful one is a no-op (exit 0, `status: noop`,
   `changed: 0`; no UPDATE, no audit row, no attempt-counter change).
 - No delete path. No broker call. No live ledger is read.
+- Ids are accepted only as exactly the four built-in ints (API callers too):
+  `63.0`, `numpy.int64(63)`, `True` and `"63"` are refused before any SQL.
+- Inside the one commit transaction: lock + classify; the write chokepoint
+  (`KISMockLifecycleService.close_rows_by_q46_inference`) re-locks and
+  re-classifies the batch itself and accepts only this rule's marker-shaped
+  details, so a direct call cannot close a refused row; guarded UPDATEs (exactly
+  four, else it raises); **every fill source is re-read after the UPDATEs** and
+  the batch re-classified on the pre-update facts (a fill committed between the
+  evidence read and the UPDATE refuses the batch with full rollback); four
+  audit rows; COMMIT.
+- The DB couples close and audit: an audit INSERT is refused unless its ledger
+  row is already `expired` with this marker, Q-46 and the same batch id; a
+  deferred constraint trigger refuses at COMMIT any row carrying the marker
+  that is outside the four ids, not an accepted/pending -> expired transition,
+  or has no same-batch audit row (so a closed row also cannot be rewritten).
 
 Exit codes: 0 eligible preview / committed / no-op, 1 input or database error,
 2 refused batch.
@@ -84,7 +99,11 @@ Prerequisite: migration `20261005_t1250_kismock_inf` applied
 (`uv run alembic upgrade head`, operator step; CREATE TABLE only). Under the
 #789 Stage 4 split the migration grants `at_app` SELECT, INSERT on the audit
 table and its sequence; the CLI also needs the existing UPDATE privilege on
-`review.kis_mock_order_ledger` (row lock + guarded UPDATE).
+`review.kis_mock_order_ledger` (row lock + guarded UPDATE). The migration also
+adds a BEFORE INSERT trigger on the audit table and a deferred constraint
+trigger on `review.kis_mock_order_ledger` (fires only for rows carrying this
+rule's marker; CREATE TRIGGER takes a brief SHARE ROW EXCLUSIVE lock — apply
+outside KRX hours).
 
 Name the database through one environment variable that already holds the URL
 (the value is never printed); replace `AT_DB_URL_ENV_NAME` with that variable's
@@ -127,6 +146,12 @@ new operator decision.
 
 ## 5. Residual risk
 
+- A fill committed after the post-UPDATE re-read and before COMMIT (a few
+  statements) is not seen — the same as a fill arriving just after COMMIT. The
+  row stays expired with the inference marker and the fill is still recorded in
+  `execution_ledger`; the marker makes the inference auditable (#1112 accepts
+  the same).
+
 - No broker read is made: a fill KIS mock recorded but this repository never
   ledgered would not be seen. That is exactly the `no_broker_original` caveat
   the decision accepts; the holding check at least requires that no ledgered
@@ -158,4 +183,6 @@ Fresh database, `create extension timescaledb`, `alembic upgrade head`
 (whole chain) → `downgrade -1` → `upgrade head`: both head schema dumps of
 `review` identical; the downgraded dump identical to a separate database
 upgraded only to `20261001_t1175_ledger_quar` (only pg_dump's per-run
-`\restrict` token differs).
+`\restrict` token differs). Re-run after the r2 triggers with the same result,
+plus an end-to-end CLI preview (eligible) -> `--commit` (committed, 4) ->
+`--commit` (noop) against the alembic-migrated database.

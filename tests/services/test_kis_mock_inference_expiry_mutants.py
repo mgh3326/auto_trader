@@ -33,6 +33,14 @@ Invariant sentences (one per mutant):
   predicate, and no waived name is also a predicate.
 - NO_BROKER: the rule, the service and the CLI import no broker client, no
   order-execution path and no live ledger model.
+- EXACT_INT: ids are accepted only as exactly the four built-in ints; floats,
+  numpy ints, bools and strings that compare equal are refused.
+- WRITER_VERIFY: the write chokepoint re-locks and re-classifies the batch
+  itself, so a direct call cannot close a row the rule refuses.
+- RECHECK: every fill source is re-read after the guarded UPDATEs and before
+  commit; a fill committed in between refuses the batch with full rollback.
+- AUDIT_COUPLING: the DB refuses an audit row whose ledger row is not closed by
+  the same batch, and refuses at COMMIT a closed row without its audit row.
 """
 
 from __future__ import annotations
@@ -79,6 +87,10 @@ INVARIANT_KEYS = {
     "BATCH_NOOP",
     "WAIVED_ONLY",
     "NO_BROKER",
+    "EXACT_INT",
+    "WRITER_VERIFY",
+    "RECHECK",
+    "AUDIT_COUPLING",
 }
 
 
@@ -302,3 +314,67 @@ def test_no_broker_client_order_path_or_live_ledger(rel: str) -> None:
     text = path.read_text("utf-8")
     assert "KISLiveOrderLedger" not in text
     assert "kis_live_order_ledger" not in text
+
+
+class _AnyToFalse(ast.NodeTransformer):
+    """Inside ``exact_ids``, drop the exact-type check (``any(...)`` -> False)."""
+
+    def __init__(self) -> None:
+        self.replaced = 0
+        self.inside = False
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        if node.name != "exact_ids":
+            return node
+        self.inside = True
+        self.generic_visit(node)
+        self.inside = False
+        return node
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        if self.inside and isinstance(node.func, ast.Name) and node.func.id == "any":
+            self.replaced += 1
+            return ast.Constant(value=False)
+        return node
+
+
+def test_exact_int_mutant_would_accept_float_ids() -> None:
+    floats = (80.0, 66.0, 64.0, 63.0)
+    with pytest.raises(rule.InferenceInputError):
+        rule.exact_ids(floats)
+    tree = ast.parse(RULE_SOURCE.read_text("utf-8"))
+    transformer = _AnyToFalse()
+    tree = transformer.visit(tree)
+    assert transformer.replaced == 1
+    mutant = _compile(tree, "exact_ids")
+    assert mutant.exact_ids(floats) == floats
+
+
+# The DB-level invariants are proven by DB tests that run their own mutant
+# (monkeypatched no-op) and by the trigger refusals; pin that they exist.
+_DB_PROOFS = {
+    "WRITER_VERIFY": (
+        "test_r2_direct_writer_re_verifies_and_writes_nothing",
+        "test_r2_writer_verify_mutant_would_close_a_filled_row",
+    ),
+    "RECHECK": (
+        "test_r2_fill_committed_just_before_the_first_update_refuses",
+        "test_r2_recheck_mutant_would_close_despite_the_fill",
+    ),
+    "AUDIT_COUPLING": (
+        "test_an_audit_row_without_a_close_is_refused",
+        "test_a_close_committed_without_its_audit_is_refused_at_commit",
+    ),
+    "EXACT_INT": ("test_r2_non_builtin_int_ids_refuse_before_any_sql",),
+}
+
+
+def test_db_level_invariants_have_db_proofs() -> None:
+    source = (
+        REPO_ROOT / "tests/services/test_kis_mock_inference_expiry_db.py"
+    ).read_text("utf-8")
+    assert set(_DB_PROOFS) <= INVARIANT_KEYS
+    for names in _DB_PROOFS.values():
+        for name in names:
+            assert f"async def {name}(" in source, name

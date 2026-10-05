@@ -69,14 +69,29 @@ def test_model_checks_match_the_migration() -> None:
         assert sql in _norm(text), sql
 
 
+def test_marker_strings_match_the_rule() -> None:
+    from app.services import kis_mock_inference_expiry as rule
+
+    migration = _load_migration()
+    assert migration.INFERENCE_REASON_CODE == rule.INFERENCE_REASON_CODE
+    assert migration.INFERENCE_RULE_ID == rule.RULE_ID
+
+
 def test_bootstrap_mirrors_the_migration_triggers() -> None:
     migration = _load_migration()
     ddl = [_norm(s) for s in bootstrap._DDL_STATEMENTS]
-    assert _norm(migration.AUDIT_REJECT_FUNCTION_DDL) in ddl
+    for function_ddl in (
+        migration.AUDIT_REJECT_FUNCTION_DDL,
+        migration.REQUIRE_CLOSE_FUNCTION_DDL,
+        migration.REQUIRE_AUDIT_FUNCTION_DDL,
+        migration.REQUIRE_AUDIT_TRIGGER_DDL,
+    ):
+        assert _norm(function_ddl) in ddl
     joined = "\n".join(ddl)
     for trigger in (
         "trg_kis_mock_inference_expiry_events_append_only",
         "trg_kis_mock_inference_expiry_events_truncate",
+        "trg_kis_mock_inference_expiry_events_require_close",
     ):
         assert f"CREATE TRIGGER {trigger} " in joined
         assert trigger in MIGRATION.read_text("utf-8")
@@ -101,7 +116,10 @@ def test_upgrade_only_creates_and_never_touches_ledger_data() -> None:
     names = [call.func.attr for call in _op_calls("upgrade")]  # type: ignore[attr-defined]
     assert set(names) <= {"create_table", "create_index", "execute", "f"}
     text = MIGRATION.read_text("utf-8").upper()
-    assert "KIS_MOCK_ORDER_LEDGER" not in text
+    # The ledger is only read by the trigger function and gets one trigger;
+    # no statement rewrites its rows or columns.
+    assert "UPDATE REVIEW.KIS_MOCK_ORDER_LEDGER" not in text
+    assert "ALTER TABLE REVIEW.KIS_MOCK_ORDER_LEDGER" not in text
     assert "UPDATE REVIEW." not in text
     assert "DELETE FROM" not in text
     assert "TRUNCATE REVIEW" not in text
@@ -116,9 +134,13 @@ def test_downgrade_reverses_everything_upgrade_creates() -> None:
         "reject_kis_mock_inference_expiry_event_mutation",
         "ix_kis_mock_inference_expiry_events_batch",
         'drop_table("kis_mock_inference_expiry_events"',
+        "trg_kis_mock_inference_requires_audit",
+        "require_kis_mock_inference_audit",
+        "trg_kis_mock_inference_expiry_events_require_close",
+        "require_kis_mock_inference_close",
     ):
         assert name in down, name
 
 
 def test_bootstrap_version_was_bumped() -> None:
-    assert bootstrap.SCHEMA_BOOTSTRAP_VERSION >= 57
+    assert bootstrap.SCHEMA_BOOTSTRAP_VERSION >= 58

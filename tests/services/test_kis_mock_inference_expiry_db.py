@@ -16,13 +16,16 @@ A4 the audit table is append-only and confined to the four ids.
 from __future__ import annotations
 
 import datetime
+import uuid
 from decimal import Decimal
 from typing import Any
 
+import numpy as np
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.review import (
@@ -32,7 +35,12 @@ from app.models.review import (
 )
 from app.services import kis_mock_inference_expiry_service as service
 from app.services import kis_mock_lifecycle_service as lifecycle_module
-from app.services.kis_mock_inference_expiry import InferenceInputError
+from app.services.kis_mock_inference_expiry import (
+    INFERENCE_REASON_CODE,
+    InferenceInputError,
+    InferenceRecheckRefused,
+    closed_detail,
+)
 from app.services.kis_mock_lifecycle_service import (
     ExpiredLifecycleConflict,
     KISMockLifecycleService,
@@ -48,6 +56,7 @@ from tests.services._kis_mock_inference_fixtures import (
     live_row,
     mock_row,
     purge,
+    purge_audit_only,
 )
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -522,7 +531,7 @@ async def test_waiver_never_reaches_a_row_outside_the_allowlist(world) -> None:
     with pytest.raises(IntegrityError):
         world.db.add(
             KISMockInferenceExpiryEvent(
-                batch_id=__import__("uuid").uuid4(),
+                batch_id=uuid.uuid4(),
                 ledger_id=81,
                 action="expire_inference",
                 operator_decision_ref="Q-46",
@@ -619,21 +628,9 @@ async def test_a4_audit_rows_are_append_only(world) -> None:
     assert (await _snapshot(world.db))["audit"] == 4
 
 
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"ledger_id": 81},
-        {"operator_decision_ref": "Q-47"},
-        {"action": "delete"},
-        {"after_state": "cancelled"},
-        {"before_state": "fill"},
-        {"reason": "  "},
-        {"actor": ""},
-    ],
-)
-async def test_a4_audit_checks_refuse_out_of_contract_rows(world, changes) -> None:
+def _event(**changes: Any) -> KISMockInferenceExpiryEvent:
     values: dict[str, Any] = {
-        "batch_id": __import__("uuid").uuid4(),
+        "batch_id": uuid.uuid4(),
         "ledger_id": 63,
         "action": "expire_inference",
         "operator_decision_ref": "Q-46",
@@ -645,31 +642,341 @@ async def test_a4_audit_checks_refuse_out_of_contract_rows(world, changes) -> No
         "evidence": {},
     }
     values.update(changes)
-    world.db.add(KISMockInferenceExpiryEvent(**values))
-    with pytest.raises(IntegrityError):
+    return KISMockInferenceExpiryEvent(**values)
+
+
+@pytest.mark.parametrize(
+    ("changes", "constraint"),
+    [
+        ({"ledger_id": 81}, "ck_kis_mock_inference_expiry_events_ledger_id"),
+        (
+            {"operator_decision_ref": "Q-47"},
+            "ck_kis_mock_inference_expiry_events_decision_ref",
+        ),
+        ({"action": "delete"}, "ck_kis_mock_inference_expiry_events_action"),
+        (
+            {"after_state": "cancelled"},
+            "ck_kis_mock_inference_expiry_events_after_state",
+        ),
+        ({"before_state": "fill"}, "ck_kis_mock_inference_expiry_events_before_state"),
+        ({"reason": "  "}, "ck_kis_mock_inference_expiry_events_reason_nonblank"),
+        ({"actor": ""}, "ck_kis_mock_inference_expiry_events_actor_nonblank"),
+    ],
+)
+async def test_a4_audit_checks_refuse_out_of_contract_rows(
+    world, changes, constraint
+) -> None:
+    # Ordinary triggers off (test-only, transaction-local, superuser test DB) so
+    # each CHECK is proven on its own; CHECKs are not triggers and still fire.
+    await world.db.execute(sa.text("SET LOCAL session_replication_role = replica"))
+    world.db.add(_event(**changes))
+    with pytest.raises(IntegrityError) as excinfo:
         await world.db.flush()
+    assert constraint in str(excinfo.value)
     await world.db.rollback()
 
 
 async def test_a4_unique_ledger_id_means_one_close_per_row(world) -> None:
     await world.seed()
+    result = await _commit(world.db)
+    assert result.status == "committed"
+    # Same batch id, so the close-coupling trigger passes and UNIQUE decides.
+    world.db.add(_event(batch_id=result.batch_id))
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.flush()
+    assert "uq_kis_mock_inference_expiry_ledger" in str(excinfo.value)
+    await world.db.rollback()
+
+
+# ------------------------------------------------- r2: close <-> audit coupling
+
+
+async def test_an_audit_row_without_a_close_is_refused(world) -> None:
+    await world.seed()
+    world.db.add(_event())
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.flush()
+    assert "is not closed by batch" in str(excinfo.value)
+    await world.db.rollback()
+    assert (await _snapshot(world.db))["audit"] == 0
+
+
+async def test_an_audit_row_for_another_batch_is_refused(world) -> None:
+    await world.seed()
     assert (await _commit(world.db)).status == "committed"
-    world.db.add(
-        KISMockInferenceExpiryEvent(
-            batch_id=__import__("uuid").uuid4(),
-            ledger_id=63,
-            action="expire_inference",
-            operator_decision_ref="Q-46",
-            rule_version="v",
+    await purge_audit_only(world.db)
+    world.db.add(_event(batch_id=uuid.uuid4()))
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.flush()
+    assert "is not closed by batch" in str(excinfo.value)
+    await world.db.rollback()
+
+
+async def test_a_close_committed_without_its_audit_is_refused_at_commit(world) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+    svc = KISMockLifecycleService(world.db)
+    decisions = await service.verify_locked_batch(world.db, IDS)
+    details = {
+        d.ledger_id: closed_detail(
+            d,
+            decision_ref="Q-46",
             reason="r",
             actor="a",
-            before_state="accepted",
-            after_state="expired",
-            evidence={},
+            batch_id=str(uuid.uuid4()),
+            closed_at=NOW,
+        )
+        for d in decisions
+    }
+    assert await svc.close_rows_by_q46_inference(details=details, closed_at=NOW) == 4
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.commit()
+    assert "without its audit row" in str(excinfo.value)
+    await world.db.rollback()
+    assert await _snapshot(world.db) == before
+
+
+async def test_a_closed_row_cannot_be_rewritten(world) -> None:
+    await world.seed()
+    assert (await _commit(world.db)).status == "committed"
+    await world.db.execute(
+        sa.update(KISMockOrderLedger)
+        .where(KISMockOrderLedger.id == 63)
+        .values(reconcile_attempts=KISMockOrderLedger.reconcile_attempts + 1)
+    )
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.commit()
+    assert "outside its contract" in str(excinfo.value)
+    await world.db.rollback()
+
+
+async def test_the_marker_cannot_be_put_on_a_row_outside_the_allowlist(world) -> None:
+    await world.seed()
+    twin = mock_row(63, order_no="0000026081", correlation_id="twin-81")
+    twin.raw_response = {**twin.raw_response, "odno": "0000026081"}
+    await world.add_mock(81, twin)
+    await world.db.execute(
+        sa.update(KISMockOrderLedger)
+        .where(KISMockOrderLedger.id == 81)
+        .values(
+            lifecycle_state="expired",
+            last_reconcile_detail={"reason_code": INFERENCE_REASON_CODE},
         )
     )
-    with pytest.raises(IntegrityError):
-        await world.db.flush()
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.commit()
+    assert "outside its contract" in str(excinfo.value)
+    await world.db.rollback()
+
+
+# --------------------------------------------- r2: exact ids + writer + race
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        tuple(float(x) for x in IDS),
+        tuple(np.int64(x) for x in IDS),
+        (True, 64, 66, 80),
+        ("80", "66", "64", "63"),
+        (80, 66, 64, 63.0),
+    ],
+)
+async def test_r2_non_builtin_int_ids_refuse_before_any_sql(world, ids) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+    calls: list[Any] = []
+    original = world.db.execute
+
+    async def trap(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        raise AssertionError("SQL reached with non-int ids")
+
+    world.db.execute = trap  # type: ignore[method-assign]
+    try:
+        with pytest.raises(InferenceInputError):
+            await service.preview_inference_expiry(world.db, ids, decision_ref=REF)
+        with pytest.raises(InferenceInputError):
+            await _commit(world.db, ids=ids)
+        with pytest.raises(InferenceInputError):
+            await KISMockLifecycleService(world.db).close_rows_by_q46_inference(
+                details={x: {} for x in ids}, closed_at=NOW
+            )
+        assert calls == []
+    finally:
+        world.db.execute = original  # type: ignore[method-assign]
+    assert await _snapshot(world.db) == before
+
+
+async def _valid_details(db) -> dict[int, dict[str, Any]]:
+    decisions = await service.verify_locked_batch(db, IDS)
+    batch = str(uuid.uuid4())
+    out = {
+        d.ledger_id: closed_detail(
+            d, decision_ref="Q-46", reason="r", actor="a", batch_id=batch, closed_at=NOW
+        )
+        for d in decisions
+    }
+    await db.rollback()
+    return out
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        {
+            "r63": {
+                "last_reconcile_detail": {
+                    "reason_code": "fill_detected",
+                    "attributed_fill_qty": "2",
+                }
+            }
+        },
+        {"r66": {"lifecycle_state": "cancelled"}},
+        {"r64": {"holdings_baseline_qty": None}},
+    ],
+)
+async def test_r2_direct_writer_re_verifies_and_writes_nothing(world, seed) -> None:
+    await world.seed()
+    details = await _valid_details(world.db)
+    # Break one row only after valid details exist, then call the writer
+    # directly (no service): it must refuse before any UPDATE.
+    for key, changes in seed.items():
+        await world.db.execute(
+            sa.update(KISMockOrderLedger)
+            .where(KISMockOrderLedger.id == int(key[1:]))
+            .values(**changes)
+        )
+    await world.db.commit()
+    before = await _snapshot(world.db)
+    with pytest.raises(InferenceRecheckRefused):
+        await KISMockLifecycleService(world.db).close_rows_by_q46_inference(
+            details=details, closed_at=NOW
+        )
+    await world.db.rollback()
+    assert await _snapshot(world.db) == before
+
+
+@pytest.mark.parametrize(
+    "mangle",
+    [
+        lambda d: {},
+        lambda d: {**d, "reason_code": "operator_legacy_day_expired"},
+        lambda d: {**d, "operator_decision_ref": "Q-47"},
+        lambda d: {**d, "waived_conditions": ["strategy_match"]},
+        lambda d: {
+            **d,
+            "waived_conditions": ["strategy_match", "reconcile_coverage", "day_order"],
+        },
+        lambda d: {**d, "expiry_caveat": None},
+        lambda d: {k: v for k, v in d.items() if k != "batch_id"},
+    ],
+)
+async def test_r2_writer_refuses_hand_made_details(world, mangle) -> None:
+    await world.seed()
+    details = await _valid_details(world.db)
+    details[66] = mangle(details[66])
+    before = await _snapshot(world.db)
+    with pytest.raises(InferenceInputError):
+        await KISMockLifecycleService(world.db).close_rows_by_q46_inference(
+            details=details, closed_at=NOW
+        )
+    await world.db.rollback()
+    assert await _snapshot(world.db) == before
+
+
+async def _commit_fill_elsewhere(world) -> None:
+    async with AsyncSession(bind=world.db.bind, expire_on_commit=False) as other:
+        fill = exec_row(source="reconciler")
+        other.add(fill)
+        await other.flush()
+        world.exec_ids.add(int(fill.id))
+        await other.commit()
+
+
+async def test_r2_fill_committed_before_the_writer_refuses(world, monkeypatch) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+    original = KISMockLifecycleService.close_rows_by_q46_inference
+
+    async def inject(self, *, details, closed_at):
+        await _commit_fill_elsewhere(world)
+        return await original(self, details=details, closed_at=closed_at)
+
+    monkeypatch.setattr(KISMockLifecycleService, "close_rows_by_q46_inference", inject)
+    result = await _commit(world.db)
+    assert result.status == "refused" and result.changed == 0
+    assert result.refused_ids == [63]
+    assert await _snapshot(world.db) == before
+
+
+async def _commit_with_fill_before_first_update(world):
+    original = world.db.execute
+    injected = False
+
+    async def interleave(stmt, *args, **kwargs):
+        nonlocal injected
+        if getattr(stmt, "is_update", False) and not injected:
+            injected = True
+            await _commit_fill_elsewhere(world)
+        return await original(stmt, *args, **kwargs)
+
+    world.db.execute = interleave  # type: ignore[method-assign]
+    try:
+        return await _commit(world.db), injected
+    finally:
+        world.db.execute = original  # type: ignore[method-assign]
+
+
+async def test_r2_fill_committed_just_before_the_first_update_refuses(world) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+    result, injected = await _commit_with_fill_before_first_update(world)
+    assert injected
+    assert result.status == "refused" and result.changed == 0
+    assert result.refused_ids == [63]
+    [row63] = [r for r in result.rows if r.ledger_id == 63]
+    assert "no_fill_recorded_for_order" in row63.failed_conditions
+    assert await _snapshot(world.db) == before
+
+
+async def test_r2_recheck_mutant_would_close_despite_the_fill(
+    world, monkeypatch
+) -> None:
+    # Mutant: the post-UPDATE re-check always answers eligible. The race test
+    # above must then see a commit — proving that test depends on the re-check.
+    await world.seed()
+
+    async def always_ok(session, evidence, *, now):
+        return "eligible", ()
+
+    monkeypatch.setattr(service, "_recheck_after_update", always_ok)
+    result, injected = await _commit_with_fill_before_first_update(world)
+    assert injected and result.status == "committed"
+
+
+async def test_r2_writer_verify_mutant_would_close_a_filled_row(
+    world, monkeypatch
+) -> None:
+    # Mutant: the writer's own locked re-verification is a no-op. The direct
+    # writer test above must then see the rows closed.
+    await world.seed()
+    details = await _valid_details(world.db)
+    await world.db.execute(
+        sa.update(KISMockOrderLedger)
+        .where(KISMockOrderLedger.id == 63)
+        .values(last_reconcile_detail={"reason_code": "fill_detected"})
+    )
+    await world.db.commit()
+
+    async def noop(session, ids):
+        return ()
+
+    monkeypatch.setattr(service, "verify_locked_batch", noop)
+    changed = await KISMockLifecycleService(world.db).close_rows_by_q46_inference(
+        details=details, closed_at=NOW
+    )
+    assert changed == 4
     await world.db.rollback()
 
 

@@ -159,6 +159,18 @@ def live_row(ledger_id: int) -> KISLiveOrderLedger:
     )
 
 
+async def purge_audit_only(db) -> None:
+    """Test-only: drop the audit rows (replica role) and keep the closed rows."""
+    await db.rollback()
+    await db.execute(sa.text("SET LOCAL session_replication_role = replica"))
+    await db.execute(
+        sa.delete(KISMockInferenceExpiryEvent).where(
+            KISMockInferenceExpiryEvent.ledger_id.in_(IDS)
+        )
+    )
+    await db.commit()
+
+
 async def purge(db, *, mock_ids=(), exec_ids=(), live_ids=()) -> None:
     """Test-only teardown, including append-only audit rows (replica role)."""
     await db.rollback()

@@ -345,6 +345,11 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
   일반 전이 API 는 거부, #881 도구는 `already_terminal`
 - **감사**: append-only `review.kis_mock_inference_expiry_events`(ledger_id UNIQUE, CHECK
   ledger_id ∈ {63,64,66,80}·decision ref Q-46, UPDATE/DELETE/TRUNCATE 트리거 거부).
+  🔴 close↔audit 는 DB 가 결속: 같은 batch 로 닫힌 행이 아니면 감사 INSERT 거부, 마커가
+  붙은 행은 COMMIT 시 같은 batch 감사 행 필수(deferred constraint trigger — 4 id 밖·
+  accepted/pending→expired 외 전이·닫힌 행 재기록도 거부). id 는 정확히 built-in int 4개만
+  (float/numpy/bool/str 거부). 쓰기 초크포인트가 배치를 스스로 재잠금·재판정하고, UPDATE 뒤
+  모든 체결 소스를 다시 읽어 그 사이 커밋된 체결이면 전체 롤백
   마이그레이션 `20261005_t1250_kismock_inf`(CREATE TABLE 만). 두 번째 commit 은 무변경 no-op
 - **런북**: `docs/runbooks/kis-mock-expired-inference-q46.md`. 실DB 실행은 운영자 전용
 

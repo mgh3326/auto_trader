@@ -4,10 +4,23 @@ Creates ``review.kis_mock_inference_expiry_events``: one row per kis_mock
 ledger row closed by ``scripts/expire_kis_mock_rows_by_inference.py``
 (``ledger_id`` UNIQUE, CHECK confines it to the decision's four ids 63/64/66/80,
 fixed action / decision ref / after state), and triggers that reject UPDATE,
-DELETE and TRUNCATE. No existing table, column or row is touched; the kis_mock
-ledger rows themselves are closed later by the operator's CLI run, not here.
+DELETE and TRUNCATE. Two more triggers couple a close and its audit row:
 
-Locking: CREATE TABLE only; no existing table is locked.
+* BEFORE INSERT on the audit table: the ledger row must already be
+  ``expired`` with this rule's marker, decision ref Q-46 and the same batch id
+  (no orphan audit row).
+* a DEFERRABLE INITIALLY DEFERRED constraint trigger AFTER UPDATE on
+  ``review.kis_mock_order_ledger``, firing only for rows whose detail carries
+  this rule's marker: the row must be one of the four ids, the transition must
+  be accepted/pending -> expired, and at COMMIT the same-batch audit row must
+  exist (no close without its audit; a closed row cannot be rewritten).
+
+No existing column or row is touched; the kis_mock ledger rows themselves are
+closed later by the operator's CLI run, not here.
+
+Locking: CREATE TABLE plus CREATE TRIGGER on review.kis_mock_order_ledger
+(SHARE ROW EXCLUSIVE, brief; the table is low-volume). Apply outside KRX
+hours like other ledger DDL.
 
 Revision ID: 20261005_t1250_kismock_inf
 Revises: 20261001_t1175_ledger_quar
@@ -29,6 +42,66 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 LEDGER_IDS_SQL = "ledger_id IN (63, 64, 66, 80)"
+#: Mirrors app/services/kis_mock_inference_expiry.py (pinned by a test).
+INFERENCE_REASON_CODE = "expired_inference:kis_regular_day_order_no_broker_original"
+INFERENCE_RULE_ID = "kis_mock_regular_day_leftover_expired_inference_q46"
+
+REQUIRE_CLOSE_FUNCTION_DDL = f"""
+CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_close()
+RETURNS trigger AS $$
+DECLARE
+    v_state text;
+    v_detail jsonb;
+BEGIN
+    SELECT lifecycle_state, last_reconcile_detail INTO v_state, v_detail
+      FROM review.kis_mock_order_ledger WHERE id = NEW.ledger_id;
+    IF v_state IS DISTINCT FROM 'expired'
+       OR v_detail->>'reason_code' IS DISTINCT FROM '{INFERENCE_REASON_CODE}'
+       OR v_detail->>'inference_rule' IS DISTINCT FROM '{INFERENCE_RULE_ID}'
+       OR v_detail->>'operator_decision_ref' IS DISTINCT FROM 'Q-46'
+       OR v_detail->>'batch_id' IS DISTINCT FROM NEW.batch_id::text THEN
+        RAISE EXCEPTION 'review.kis_mock_inference_expiry_events: ledger row % is not closed by batch %',
+            NEW.ledger_id, NEW.batch_id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+"""
+
+REQUIRE_AUDIT_FUNCTION_DDL = """
+CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_audit()
+RETURNS trigger AS $$
+BEGIN
+    IF NEW.id NOT IN (63, 64, 66, 80)
+       OR NEW.lifecycle_state IS DISTINCT FROM 'expired'
+       OR OLD.lifecycle_state NOT IN ('accepted', 'pending') THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close outside its contract',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM review.kis_mock_inference_expiry_events e
+         WHERE e.ledger_id = NEW.id
+           AND e.batch_id::text = NEW.last_reconcile_detail->>'batch_id'
+    ) THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close without its audit row',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql
+"""
+
+REQUIRE_AUDIT_TRIGGER_DDL = f"""
+CREATE CONSTRAINT TRIGGER trg_kis_mock_inference_requires_audit
+AFTER UPDATE ON review.kis_mock_order_ledger
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+WHEN (
+    NEW.last_reconcile_detail->>'reason_code' = '{INFERENCE_REASON_CODE}'
+    OR NEW.last_reconcile_detail->>'inference_rule' = '{INFERENCE_RULE_ID}'
+)
+EXECUTE FUNCTION review.require_kis_mock_inference_audit()
+"""
 
 AUDIT_REJECT_FUNCTION_DDL = """
 CREATE OR REPLACE FUNCTION review.reject_kis_mock_inference_expiry_event_mutation()
@@ -114,6 +187,14 @@ def upgrade() -> None:
         "FOR EACH STATEMENT EXECUTE FUNCTION "
         "review.reject_kis_mock_inference_expiry_event_mutation()"
     )
+    op.execute(REQUIRE_CLOSE_FUNCTION_DDL)
+    op.execute(
+        "CREATE TRIGGER trg_kis_mock_inference_expiry_events_require_close "
+        "BEFORE INSERT ON review.kis_mock_inference_expiry_events "
+        "FOR EACH ROW EXECUTE FUNCTION review.require_kis_mock_inference_close()"
+    )
+    op.execute(REQUIRE_AUDIT_FUNCTION_DDL)
+    op.execute(REQUIRE_AUDIT_TRIGGER_DDL)
 
     # Stage-4 role may not exist in dev/CI databases — conditional GRANT.
     op.execute(
@@ -128,6 +209,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_kis_mock_inference_requires_audit "
+        "ON review.kis_mock_order_ledger"
+    )
+    op.execute("DROP FUNCTION IF EXISTS review.require_kis_mock_inference_audit()")
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_require_close "
+        "ON review.kis_mock_inference_expiry_events"
+    )
+    op.execute("DROP FUNCTION IF EXISTS review.require_kis_mock_inference_close()")
     op.execute(
         "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_truncate "
         "ON review.kis_mock_inference_expiry_events"

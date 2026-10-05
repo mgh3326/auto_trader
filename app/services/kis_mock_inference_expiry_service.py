@@ -39,7 +39,7 @@ from app.services.kis_mock_inference_expiry import (
     WAIVED_CONDITIONS,
     BatchStatus,
     ExecFillFacts,
-    InferenceInputError,
+    InferenceRecheckRefused,
     MockLedgerRowFacts,
     MockSiblingFacts,
     RowDecision,
@@ -48,6 +48,7 @@ from app.services.kis_mock_inference_expiry import (
     classify_row,
     closed_detail,
     decide_batch,
+    exact_ids,
     validate_decision_ref,
     validate_text,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "InferenceConflictError",
     "commit_inference_expiry",
     "preview_inference_expiry",
+    "verify_locked_batch",
 ]
 
 
@@ -221,11 +223,58 @@ async def _mock_rows_where(
     return tuple(_sibling(row) for row in rows)
 
 
+async def _gather(
+    session: AsyncSession,
+    facts: MockLedgerRowFacts,
+    *,
+    audit_recorded: bool,
+) -> RowEvidence:
+    """Every fill/holding source for one row, read now (READ COMMITTED)."""
+    ledger_id = facts.ledger_id
+    accept_at = accept_instant(facts)
+    bounds = (
+        regular_session_bounds("kr", accept_at.astimezone(KST).date())
+        if accept_at is not None
+        else None
+    )
+    order_fills = (
+        await _mock_exec_rows_for_order(session, facts.order_no)
+        if isinstance(facts.order_no, str) and facts.order_no.strip()
+        else None
+    )
+    symbol_fills = symbol_rows = None
+    if isinstance(facts.symbol, str) and facts.symbol:
+        symbol_fills = await _mock_exec_rows_for_symbol(session, facts.symbol)
+        symbol_rows = await _mock_rows_where(
+            session,
+            ledger_id=ledger_id,
+            column=KISMockOrderLedger.symbol,
+            value=facts.symbol,
+        )
+    correlation_rows: tuple[MockSiblingFacts, ...] = ()
+    if facts.correlation_id:
+        correlation_rows = await _mock_rows_where(
+            session,
+            ledger_id=ledger_id,
+            column=KISMockOrderLedger.correlation_id,
+            value=facts.correlation_id,
+        )
+    return RowEvidence(
+        ledger_id=ledger_id,
+        row=facts,
+        session_bounds=bounds,
+        order_exec_fills=order_fills,
+        symbol_exec_fills=symbol_fills,
+        symbol_rows=symbol_rows,
+        correlation_rows=correlation_rows,
+        audit_recorded=audit_recorded,
+    )
+
+
 async def _load_evidence(
     session: AsyncSession, ids: Sequence[int], *, for_update: bool
 ) -> tuple[RowEvidence, ...]:
-    if set(ids) != ALLOWED_LEDGER_IDS or len(ids) != len(ALLOWED_LEDGER_IDS):
-        raise InferenceInputError(f"ids must be exactly {sorted(ALLOWED_LEDGER_IDS)}")
+    ids = exact_ids(ids)
     stmt = (
         select(KISMockOrderLedger)
         .where(KISMockOrderLedger.id.in_(sorted(ids)))
@@ -247,52 +296,15 @@ async def _load_evidence(
         .scalars()
         .all()
     )
-
     out: list[RowEvidence] = []
     for ledger_id in ids:
         model = found.get(ledger_id)
         if model is None:
             out.append(RowEvidence(ledger_id, None, None, None, None, None, None))
             continue
-        facts = _row_facts(model)
-        accept_at = accept_instant(facts)
-        bounds = (
-            regular_session_bounds("kr", accept_at.astimezone(KST).date())
-            if accept_at is not None
-            else None
-        )
-        order_fills = (
-            await _mock_exec_rows_for_order(session, facts.order_no)
-            if isinstance(facts.order_no, str) and facts.order_no.strip()
-            else None
-        )
-        symbol_fills = symbol_rows = None
-        if isinstance(facts.symbol, str) and facts.symbol:
-            symbol_fills = await _mock_exec_rows_for_symbol(session, facts.symbol)
-            symbol_rows = await _mock_rows_where(
-                session,
-                ledger_id=ledger_id,
-                column=KISMockOrderLedger.symbol,
-                value=facts.symbol,
-            )
-        correlation_rows: tuple[MockSiblingFacts, ...] = ()
-        if facts.correlation_id:
-            correlation_rows = await _mock_rows_where(
-                session,
-                ledger_id=ledger_id,
-                column=KISMockOrderLedger.correlation_id,
-                value=facts.correlation_id,
-            )
         out.append(
-            RowEvidence(
-                ledger_id=ledger_id,
-                row=facts,
-                session_bounds=bounds,
-                order_exec_fills=order_fills,
-                symbol_exec_fills=symbol_fills,
-                symbol_rows=symbol_rows,
-                correlation_rows=correlation_rows,
-                audit_recorded=ledger_id in audited,
+            await _gather(
+                session, _row_facts(model), audit_recorded=ledger_id in audited
             )
         )
     return tuple(out)
@@ -304,10 +316,56 @@ async def _decide(
     *,
     for_update: bool,
     now: datetime.datetime,
-) -> tuple[BatchStatus, tuple[RowDecision, ...]]:
+) -> tuple[BatchStatus, tuple[RowEvidence, ...], tuple[RowDecision, ...]]:
     evidence = await _load_evidence(session, ids, for_update=for_update)
     decisions = tuple(classify_row(item, now=now) for item in evidence)
-    return decide_batch(tuple(ids), decisions), decisions
+    return decide_batch(tuple(ids), decisions), evidence, decisions
+
+
+async def verify_locked_batch(
+    session: AsyncSession, ids: Sequence[int]
+) -> tuple[RowDecision, ...]:
+    """Lock the four rows and require the whole batch eligible right now.
+
+    Used by the write chokepoint itself
+    (``KISMockLifecycleService.close_rows_by_q46_inference``) so the writer
+    can never close a row the rule refuses, whoever calls it.
+    """
+    status, _evidence, decisions = await _decide(
+        session, ids, for_update=True, now=_utcnow()
+    )
+    if status != "eligible":
+        raise InferenceRecheckRefused(decisions)
+    return decisions
+
+
+async def _recheck_after_update(
+    session: AsyncSession,
+    evidence: tuple[RowEvidence, ...],
+    *,
+    now: datetime.datetime,
+) -> tuple[str, tuple[RowDecision, ...]]:
+    """Re-read every fill source after the guarded UPDATEs, before commit.
+
+    The kis_mock rows are locked, but a fill writer does not take those locks:
+    a fill committed between the evidence read and the UPDATE would otherwise
+    be ignored. Under READ COMMITTED each statement here sees every fill
+    committed before it starts, so the window that remains ends at these
+    reads, a few statements before COMMIT — the same as a fill arriving just
+    after the commit, which the no_broker_original caveat already names.
+    Classification reuses the PRE-update row facts (the rows are ``expired`` in
+    this transaction by now).
+    """
+    fresh = tuple(
+        [
+            await _gather(session, item.row, audit_recorded=False)
+            for item in evidence
+            if item.row is not None
+        ]
+    )
+    decisions = tuple(classify_row(item, now=now) for item in fresh)
+    status = decide_batch(tuple(item.ledger_id for item in fresh), decisions)
+    return status, decisions
 
 
 # ---------------------------------------------------------------- operations
@@ -318,9 +376,12 @@ async def preview_inference_expiry(
 ) -> InferenceBatchResult:
     """Read-only verdicts for the four rows. Writes nothing; ends in rollback."""
     validate_decision_ref(decision_ref)
+    ids = exact_ids(ids)
     now = _utcnow()
     try:
-        status, decisions = await _decide(session, ids, for_update=False, now=now)
+        status, _evidence, decisions = await _decide(
+            session, ids, for_update=False, now=now
+        )
     finally:
         await session.rollback()
     return InferenceBatchResult(status, tuple(ids), decisions, now)
@@ -336,17 +397,23 @@ async def commit_inference_expiry(
 ) -> InferenceBatchResult:
     """Close exactly the four rows in one transaction, or change nothing.
 
-    Rows are locked (``FOR UPDATE``) and re-classified under the lock; only an
-    ``eligible`` batch writes. The guarded per-row UPDATEs must touch exactly
-    four rows and four audit rows are appended in the same transaction. A
-    refused or no-op batch rolls back without writing.
+    Order inside the one transaction: lock and classify the four rows; the
+    write chokepoint re-verifies under the same locks, then runs the guarded
+    per-row UPDATEs (exactly four); every fill source is re-read fresh and the
+    batch re-classified on the pre-update facts; four audit rows are inserted
+    (the DB refuses an audit row whose ledger row is not closed by the same
+    batch, and refuses at COMMIT a closed row without its audit row); commit.
+    A refused, no-op or failed batch rolls back without writing.
     """
     ref = validate_decision_ref(decision_ref)
+    ids = exact_ids(ids)
     reason_text = validate_text("reason", reason, max_chars=MAX_REASON_CHARS)
     actor_text = validate_text("actor", actor, max_chars=MAX_ACTOR_CHARS)
     now = _utcnow()
     try:
-        status, decisions = await _decide(session, ids, for_update=True, now=now)
+        status, evidence, decisions = await _decide(
+            session, ids, for_update=True, now=now
+        )
         if status != "eligible":
             await session.rollback()
             return InferenceBatchResult(status, tuple(ids), decisions, now)
@@ -363,14 +430,24 @@ async def commit_inference_expiry(
             )
             for d in decisions
         }
-        changed = await KISMockLifecycleService(session).close_rows_by_q46_inference(
-            details=details, closed_at=now
-        )
+        try:
+            changed = await KISMockLifecycleService(
+                session
+            ).close_rows_by_q46_inference(details=details, closed_at=now)
+        except InferenceRecheckRefused as refused:
+            await session.rollback()
+            return InferenceBatchResult("refused", tuple(ids), refused.decisions, now)
         if changed != len(ALLOWED_LEDGER_IDS):
             raise InferenceConflictError(
                 f"guarded update touched {changed} rows, "
                 f"expected {len(ALLOWED_LEDGER_IDS)}"
             )
+        recheck_status, recheck = await _recheck_after_update(
+            session, evidence, now=now
+        )
+        if recheck_status != "eligible":
+            await session.rollback()
+            return InferenceBatchResult("refused", tuple(ids), recheck, now)
         session.add_all(
             [
                 KISMockInferenceExpiryEvent(

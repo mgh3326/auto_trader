@@ -135,7 +135,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v57 (#1250): append-only review.kis_mock_inference_expiry_events audit table
 # (create_all) and its rejection triggers; the production migration is
 # 20261005_t1250_kismock_inf.
-SCHEMA_BOOTSTRAP_VERSION = 57
+# v58 (#1250 r2): close<->audit coupling — BEFORE INSERT audit trigger requires
+# the same-batch closed ledger row; deferred constraint trigger on
+# review.kis_mock_order_ledger requires the audit row at COMMIT.
+SCHEMA_BOOTSTRAP_VERSION = 58
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2102,6 +2105,67 @@ $$ LANGUAGE plpgsql
     "BEFORE TRUNCATE ON review.kis_mock_inference_expiry_events "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_kis_mock_inference_expiry_event_mutation()",
+    """
+CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_close()
+RETURNS trigger AS $$
+DECLARE
+    v_state text;
+    v_detail jsonb;
+BEGIN
+    SELECT lifecycle_state, last_reconcile_detail INTO v_state, v_detail
+      FROM review.kis_mock_order_ledger WHERE id = NEW.ledger_id;
+    IF v_state IS DISTINCT FROM 'expired'
+       OR v_detail->>'reason_code' IS DISTINCT FROM 'expired_inference:kis_regular_day_order_no_broker_original'
+       OR v_detail->>'inference_rule' IS DISTINCT FROM 'kis_mock_regular_day_leftover_expired_inference_q46'
+       OR v_detail->>'operator_decision_ref' IS DISTINCT FROM 'Q-46'
+       OR v_detail->>'batch_id' IS DISTINCT FROM NEW.batch_id::text THEN
+        RAISE EXCEPTION 'review.kis_mock_inference_expiry_events: ledger row % is not closed by batch %',
+            NEW.ledger_id, NEW.batch_id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_require_close "
+    "ON review.kis_mock_inference_expiry_events",
+    "CREATE TRIGGER trg_kis_mock_inference_expiry_events_require_close "
+    "BEFORE INSERT ON review.kis_mock_inference_expiry_events "
+    "FOR EACH ROW EXECUTE FUNCTION review.require_kis_mock_inference_close()",
+    """
+CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_audit()
+RETURNS trigger AS $$
+BEGIN
+    IF NEW.id NOT IN (63, 64, 66, 80)
+       OR NEW.lifecycle_state IS DISTINCT FROM 'expired'
+       OR OLD.lifecycle_state NOT IN ('accepted', 'pending') THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close outside its contract',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM review.kis_mock_inference_expiry_events e
+         WHERE e.ledger_id = NEW.id
+           AND e.batch_id::text = NEW.last_reconcile_detail->>'batch_id'
+    ) THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close without its audit row',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_requires_audit "
+    "ON review.kis_mock_order_ledger",
+    """
+CREATE CONSTRAINT TRIGGER trg_kis_mock_inference_requires_audit
+AFTER UPDATE ON review.kis_mock_order_ledger
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+WHEN (
+    NEW.last_reconcile_detail->>'reason_code' = 'expired_inference:kis_regular_day_order_no_broker_original'
+    OR NEW.last_reconcile_detail->>'inference_rule' = 'kis_mock_regular_day_leftover_expired_inference_q46'
+)
+EXECUTE FUNCTION review.require_kis_mock_inference_audit()
+""",
 )
 
 

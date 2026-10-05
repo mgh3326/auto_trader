@@ -98,6 +98,9 @@ __all__ = [
     "classify_row",
     "closed_detail",
     "decide_batch",
+    "exact_ids",
+    "InferenceRecheckRefused",
+    "validate_closed_detail",
     "is_closed_by_this_rule",
     "parse_ids",
     "validate_decision_ref",
@@ -146,6 +149,18 @@ class InferenceInputError(ValueError):
     """Operator input (ids, decision ref, reason, actor) is not acceptable."""
 
 
+class InferenceRecheckRefused(ValueError):
+    """A locked re-check found the batch no longer eligible; nothing may close.
+
+    ``decisions`` carries the fresh per-row verdicts so callers can report the
+    refusal exactly like a preview refusal.
+    """
+
+    def __init__(self, decisions: tuple[RowDecision, ...]) -> None:
+        super().__init__("q46_inference_recheck_refused")
+        self.decisions = decisions
+
+
 # --------------------------------------------------------------------- input
 
 
@@ -179,6 +194,45 @@ def parse_ids(values: Iterable[str]) -> tuple[int, ...]:
             f"--ids must name exactly {sorted(ALLOWED_LEDGER_IDS)}"
         )
     return tuple(ids)
+
+
+def exact_ids(values: Iterable[Any]) -> tuple[int, ...]:
+    """The API-level id gate: exactly the four ids as built-in ``int`` values.
+
+    Equality alone is not enough: ``63.0``, ``numpy.int64(63)`` and ``True``
+    compare equal to ints, so every element must be exactly ``int`` (bool is
+    a subclass and is refused), each id once, and the set must be the
+    allowlist.
+    """
+    ids = tuple(values)
+    if (
+        len(ids) != len(ALLOWED_LEDGER_IDS)
+        or any(type(item) is not int for item in ids)
+        or set(ids) != ALLOWED_LEDGER_IDS
+    ):
+        raise InferenceInputError(
+            f"ids must be exactly the built-in ints {sorted(ALLOWED_LEDGER_IDS)}"
+        )
+    return ids
+
+
+def validate_closed_detail(detail: Any, ledger_id: int) -> None:
+    """A detail the writer may store: this rule's marker, nothing hand-made."""
+    if (
+        type(detail) is not dict
+        or detail.get("reason_code") != INFERENCE_REASON_CODE
+        or detail.get("inference_rule") != RULE_ID
+        or detail.get("rule_version") != RULE_VERSION
+        or detail.get("operator_decision_ref") != REQUIRED_DECISION_REF
+        or detail.get("expiry_basis") != EXPIRY_BASIS
+        or detail.get("expiry_caveat") != INFERENCE_CAVEAT
+        or detail.get("waived_conditions") != list(WAIVED_CONDITIONS)
+        or not isinstance(detail.get("batch_id"), str)
+        or not detail["batch_id"]
+    ):
+        raise InferenceInputError(
+            f"detail for ledger row {ledger_id} is not a Q-46 close"
+        )
 
 
 def validate_decision_ref(value: Any) -> str:
@@ -615,7 +669,11 @@ def decide_batch(
     ids: tuple[int, ...], decisions: tuple[RowDecision, ...]
 ) -> BatchStatus:
     """All already closed → noop; all eligible → eligible; anything else refused."""
-    if set(ids) != ALLOWED_LEDGER_IDS or len(decisions) != len(ids):
+    try:
+        exact_ids(ids)
+    except InferenceInputError:
+        return "refused"
+    if len(decisions) != len(ids):
         return "refused"
     if all(d.verdict == "already_closed" for d in decisions):
         return "noop"

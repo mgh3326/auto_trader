@@ -320,20 +320,33 @@ class KISMockLifecycleService:
         details: dict[int, dict[str, Any]],
         closed_at: datetime,
     ) -> int:
-        """#1250 guarded write for the Q-46 ``expired[inference]`` close.
+        """#1250 write chokepoint for the Q-46 ``expired[inference]`` close.
 
-        Called only by ``kis_mock_inference_expiry_service.commit_inference_expiry``
-        after it has locked and re-classified the rows in the same transaction.
-        Each UPDATE is itself guarded on the id allowlist and on the row still
-        being ``accepted``/``pending``; the caller compares the returned count
-        with the batch size and owns the commit/rollback. Never commits.
+        Self-verifying, so no caller can use it to skip the rule: the keys must
+        be exactly the four allowlisted ids as built-in ints, every detail must
+        be this rule's marker (``validate_closed_detail``), and the whole batch
+        is re-locked and re-classified here
+        (``kis_mock_inference_expiry_service.verify_locked_batch``) before any
+        UPDATE. Each UPDATE is guarded on the allowlist and on the row still
+        being ``accepted``/``pending``; anything but exactly four rows raises.
+        Never commits — and a close that is committed without its audit rows is
+        refused by the DB at COMMIT (``trg_kis_mock_inference_requires_audit``).
         """
-        from app.services.kis_mock_inference_expiry import ALLOWED_LEDGER_IDS
+        from app.services.kis_mock_inference_expiry import (
+            ALLOWED_LEDGER_IDS,
+            exact_ids,
+            validate_closed_detail,
+        )
+        from app.services.kis_mock_inference_expiry_service import (
+            verify_locked_batch,
+        )
 
-        if set(details) != ALLOWED_LEDGER_IDS:
-            raise ValueError("q46_inference_ids_outside_allowlist")
+        ids = exact_ids(details.keys())
+        for ledger_id in ids:
+            validate_closed_detail(details[ledger_id], ledger_id)
+        await verify_locked_batch(self._db, ids)
         changed = 0
-        for ledger_id, detail in sorted(details.items()):
+        for ledger_id in sorted(ids):
             result = await self._db.execute(
                 update(KISMockOrderLedger)
                 .where(
@@ -345,12 +358,14 @@ class KISMockLifecycleService:
                 .values(
                     lifecycle_state="expired",
                     reconcile_attempts=KISMockOrderLedger.reconcile_attempts + 1,
-                    last_reconcile_detail=detail,
+                    last_reconcile_detail=details[ledger_id],
                     reconciled_at=closed_at,
                 )
                 .execution_options(synchronize_session=False)
             )
             changed += int(result.rowcount or 0)
+        if changed != len(ALLOWED_LEDGER_IDS):
+            raise ValueError(f"q46_inference_partial_update:{changed}")
         return changed
 
     async def update_order_terms(

@@ -512,3 +512,64 @@ def test_q46_tool_expiry_is_not_mistaken_for_this_rule() -> None:
     assert rule.classify_row(_evidence(q46, audit_recorded=True), now=NOW).verdict == (
         "refused"
     )
+
+
+# ------------------------------------------------------- r2: exact int ids
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        (80, 66, 64, 63.0),
+        (80.0, 66.0, 64.0, 63.0),
+        (True, 66, 64, 80),
+        ("80", 66, 64, 63),
+        (80, 66, 64),
+        (80, 66, 64, 63, 63),
+        (80, 66, 64, 81),
+    ],
+)
+def test_exact_ids_refuses_anything_but_the_four_builtin_ints(ids) -> None:
+    with pytest.raises(rule.InferenceInputError):
+        rule.exact_ids(ids)
+    assert rule.decide_batch(ids, tuple(_decision("eligible", 63) for _ in ids)) == (
+        "refused"
+    )
+
+
+def test_exact_ids_refuses_numpy_ints() -> None:
+    np = pytest.importorskip("numpy")
+    with pytest.raises(rule.InferenceInputError):
+        rule.exact_ids(tuple(np.int64(x) for x in (80, 66, 64, 63)))
+
+
+def test_exact_ids_accepts_the_four_in_any_order() -> None:
+    assert rule.exact_ids([63, 80, 66, 64]) == (63, 80, 66, 64)
+
+
+def test_validate_closed_detail_accepts_only_the_rule_marker() -> None:
+    decision = rule.classify_row(_evidence(), now=NOW)
+    good = rule.closed_detail(
+        decision,
+        decision_ref="Q-46",
+        reason="r",
+        actor="a",
+        batch_id="b",
+        closed_at=NOW,
+    )
+    rule.validate_closed_detail(good, 63)
+    for bad in (
+        {},
+        None,
+        {**good, "reason_code": "operator_legacy_day_expired"},
+        {**good, "inference_rule": "other"},
+        {**good, "rule_version": "v0"},
+        {**good, "operator_decision_ref": "hk:task/706 Q-46"},
+        {**good, "expiry_basis": "broker"},
+        {**good, "expiry_caveat": None},
+        {**good, "waived_conditions": ["strategy_match"]},
+        {**good, "batch_id": ""},
+        {k: v for k, v in good.items() if k != "batch_id"},
+    ):
+        with pytest.raises(rule.InferenceInputError):
+            rule.validate_closed_detail(bad, 63)
