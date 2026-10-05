@@ -29,7 +29,13 @@ per condition so the mutant test can count and break each one from disk:
 5. ``day_close_passed`` — ``now`` is after the #1112 deadline (the latest of
    submit-day 15:30 KST, the calendar close and the ROB-671 conservative
    expiry), computed by the #1112 function itself.
-6. ``reconcile_coverage`` — see ``WAIVED_CONDITIONS``.
+6. ``reconcile_coverage`` (#1112 ``execution_ledger_covers_order_day``) —
+   WAIVED. No kis_mock execution-ledger reconcile run can exist (the
+   reconciler reads only the live account) and the kis_mock holdings
+   reconciler never touched these July/August rows; the Q-46 decision exists
+   precisely because that evidence cannot exist (strategy-lab, hk #706 comment
+   1053; director-1 option A, hk task 1250). This module never reads reconcile
+   runs.
 7. ``no_fill_recorded_for_order`` — no fill evidence for this order in any fill
    source the ledgers have: ``review.execution_ledger`` kis/mock rows for the
    order number (any source, quarantined rows included), the row's own fill
@@ -40,9 +46,11 @@ per condition so the mutant test can count and break each one from disk:
    is recorded at or after the accept instant (kis_mock ledger rows with fill
    evidence, execution_ledger kis/mock rows).
 
-Strategy match is skipped by the decision and is the only condition listed as
-waived besides those named in ``WAIVED_CONDITIONS``; it is recorded in every
-audit row. Pure: stdlib plus the stdlib-only #1112 / ROB-671 helpers. No DB,
+``WAIVED_CONDITIONS`` names exactly what the decision waives — the strategy
+match and the reconcile coverage — and nothing else. It is printed per row in
+the preview (so the operator sees it before ``--commit``) and recorded in every
+closed row and audit row next to the ``no_broker_original`` caveat. The waiver
+only exists inside the hard four-id allowlist. Pure: stdlib plus the stdlib-only #1112 / ROB-671 helpers. No DB,
 broker, network or clock — the caller injects facts and ``now``.
 """
 
@@ -106,8 +114,9 @@ RULE_VERSION = "kis_mock_expired_inference_t1250_v1"
 INFERENCE_REASON_CODE = EXPIRED_INFERENCE_VOID_REASON
 INFERENCE_CAVEAT = EXPIRED_INFERENCE_CAVEAT
 EXPIRY_BASIS = "inference"
-#: Conditions of the #1112 rule that the Q-46 decision explicitly waives.
-WAIVED_CONDITIONS: tuple[str, ...] = ("strategy_match",)
+#: Conditions of the #1112 rule that the Q-46 decision explicitly waives
+#: (hk #706 comment 1092; director-1 option A on hk task 1250). Nothing else.
+WAIVED_CONDITIONS: tuple[str, ...] = ("strategy_match", "reconcile_coverage")
 
 MAX_REASON_CHARS = 500
 MAX_ACTOR_CHARS = 100

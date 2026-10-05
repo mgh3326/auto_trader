@@ -173,6 +173,12 @@ async def test_a1_preview_writes_nothing(world) -> None:
     result = await _preview(world.db)
     assert result.status == "eligible", [r.as_dict() for r in result.rows]
     assert all(r.failed_conditions == () for r in result.rows)
+    printed = result.as_dict()
+    assert printed["waived_conditions"] == ["strategy_match", "reconcile_coverage"]
+    assert all(
+        row["waived_conditions"] == ["strategy_match", "reconcile_coverage"]
+        for row in printed["rows"]
+    )
     assert await _snapshot(world.db) == before
 
 
@@ -217,7 +223,15 @@ async def test_a1_commit_closes_exactly_the_four_and_second_commit_is_noop(
         assert event.before_state == "accepted" and event.after_state == "expired"
         assert event.evidence["row"]["lifecycle_state"] == "accepted"
         assert event.evidence["closed_detail"]["operator_decision_ref"] == "Q-46"
-        assert event.evidence["waived_conditions"] == ["strategy_match"]
+        assert event.evidence["waived_conditions"] == [
+            "strategy_match",
+            "reconcile_coverage",
+        ]
+        assert event.evidence["closed_detail"]["expiry_caveat"] == "no_broker_original"
+        assert event.evidence["closed_detail"]["waived_conditions"] == [
+            "strategy_match",
+            "reconcile_coverage",
+        ]
 
     second = await _commit(world.db)
     assert second.status == "noop"
@@ -474,6 +488,56 @@ async def test_writer_refuses_ids_outside_the_allowlist(world) -> None:
     await world.db.rollback()
 
 
+async def test_waiver_never_reaches_a_row_outside_the_allowlist(world) -> None:
+    """Director-1 option A: the waiver exists only inside the four-id allowlist.
+
+    Row 81 has exactly the shape that passes every strict condition, and the
+    live ledger holds a row with id 63; neither is read or written.
+    """
+    await world.seed()
+    twin = mock_row(63, order_no="0000026081", correlation_id="twin-81")
+    twin.raw_response = {**twin.raw_response, "odno": "0000026081"}
+    twin.symbol = "000660"
+    await world.add_mock(81, twin)
+    await world.add_live(63)
+
+    for ids in ((80, 66, 64, 81), (80, 66, 64, 63, 81), (81,)):
+        with pytest.raises(InferenceInputError):
+            await _commit(world.db, ids=ids)
+    assert (await _commit(world.db)).status == "committed"
+
+    await world.db.rollback()
+    outside = await world.db.get(KISMockOrderLedger, 81)
+    assert outside is not None
+    assert (outside.lifecycle_state, outside.reconcile_attempts) == ("accepted", 0)
+    assert outside.last_reconcile_detail is None
+    live = await world.db.get(KISLiveOrderLedger, 63)
+    assert live is not None and live.lifecycle_state == "accepted"
+    audited = (
+        (await world.db.execute(sa.select(KISMockInferenceExpiryEvent.ledger_id)))
+        .scalars()
+        .all()
+    )
+    assert sorted(audited) == [63, 64, 66, 80]
+    with pytest.raises(IntegrityError):
+        world.db.add(
+            KISMockInferenceExpiryEvent(
+                batch_id=__import__("uuid").uuid4(),
+                ledger_id=81,
+                action="expire_inference",
+                operator_decision_ref="Q-46",
+                rule_version="v",
+                reason="r",
+                actor="a",
+                before_state="accepted",
+                after_state="expired",
+                evidence={},
+            )
+        )
+        await world.db.flush()
+    await world.db.rollback()
+
+
 # ----------------------------------------------------------------------- A3
 
 
@@ -504,7 +568,7 @@ async def test_a3_closed_rows_carry_marker_and_leave_every_open_reader(
         assert detail["expiry_basis"] == "inference"
         assert detail["expiry_caveat"] == "no_broker_original"
         assert detail["operator_decision_ref"] == "Q-46"
-        assert detail["waived_conditions"] == ["strategy_match"]
+        assert detail["waived_conditions"] == ["strategy_match", "reconcile_coverage"]
         assert row.reconciled_at is not None
     await world.db.rollback()
 

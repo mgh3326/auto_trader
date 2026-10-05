@@ -330,7 +330,10 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
   `kis_mock_inference_expiry_service.py`(사실 수집·FOR UPDATE 재판정) →
   `KISMockLifecycleService.close_rows_by_q46_inference`(허용 id·open 상태로 가드된
   UPDATE, 4행 아니면 전부 롤백). 브로커 호출·live 원장 읽기 0
-- 🔴 **생략은 strategy 대조 하나뿐**(감사에 `waived_conditions` 기록). 나머지 #1112 조건은
+- 🔴 **생략은 정확히 2개**: strategy 대조와 reconcile coverage(#1112
+  `execution_ledger_covers_order_day` — kis_mock 에는 그 run 이 존재할 수 없음, director-1
+  option A). preview 가 행마다 `waived_conditions` 를 출력하고 닫힌 행·감사 행에 caveat 와 함께
+  기록한다. 생략은 4-id allowlist 안에서만 존재한다. 나머지 #1112 조건은
   kis_mock 증거로 번역해 전부 판정하고, 한 행이라도 실패하면 배치 전체 무변경:
   수락된 kis_mock KR 현금 BUY(native 응답 rt_cd 0·odno·ord_tmd 일치) · lifecycle
   accepted/pending · DAY(00/01) · 정규장 접수 · #1112 deadline 경과 · 그 주문의 체결 증거

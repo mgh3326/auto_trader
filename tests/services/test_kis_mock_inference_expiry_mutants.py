@@ -27,8 +27,10 @@ Invariant sentences (one per mutant):
 - BATCH_ALL: one refused row refuses the whole batch.
 - BATCH_NOOP: a batch is a no-op only when every row was already closed by
   this rule (with its audit row).
-- STRATEGY_ONLY: the strategy field is read by no condition, and strategy is
-  the only waived condition.
+- WAIVED_ONLY: exactly two #1112 conditions are waived (strategy_match and
+  reconcile_coverage); the strategy field is read by no condition, the rule,
+  service and CLI never read reconcile runs, every other condition is a wired
+  predicate, and no waived name is also a predicate.
 - NO_BROKER: the rule, the service and the CLI import no broker client, no
   order-execution path and no live ledger model.
 """
@@ -75,7 +77,7 @@ INVARIANT_KEYS = {
     "HOLDING",
     "BATCH_ALL",
     "BATCH_NOOP",
-    "STRATEGY_ONLY",
+    "WAIVED_ONLY",
     "NO_BROKER",
 }
 
@@ -228,17 +230,36 @@ def test_batch_all_mutant_would_commit_a_mixed_batch() -> None:
     assert mutant.decide_batch(IDS, mixed) == "eligible"
 
 
-def test_no_condition_reads_strategy_and_only_strategy_is_waived() -> None:
+def test_only_strategy_and_reconcile_coverage_are_waived() -> None:
     tree = ast.parse(RULE_SOURCE.read_text("utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name.startswith("_check_"):
             attrs = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
             assert "strategy" not in attrs, node.name
-    assert rule.WAIVED_CONDITIONS == ("strategy_match",)
-    # And dropping the waiver vocabulary does not make a broken row pass.
+    assert rule.WAIVED_CONDITIONS == ("strategy_match", "reconcile_coverage")
+    wired = {name for name, _ in rule.CONDITIONS}
+    assert not wired & set(rule.WAIVED_CONDITIONS)
+    # The six other #1112 conditions (rung/ledger-row ownership is folded into
+    # the accepted-buy predicate) stay wired: 7 predicates, none waived.
+    assert len(wired) == 7
+    # The waiver vocabulary does not make a broken row pass.
     evidence, now = ISOLATED_BREAKS["holding_quantity_unchanged"]
     assert rule.classify_row(evidence, now=now).verdict == "refused"
     assert rule.classify_row(_evidence(), now=NOW).verdict == "eligible"
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "app/services/kis_mock_inference_expiry.py",
+        "app/services/kis_mock_inference_expiry_service.py",
+        "scripts/expire_kis_mock_rows_by_inference.py",
+    ],
+)
+def test_waived_coverage_is_not_silently_half_read(rel: str) -> None:
+    text = (REPO_ROOT / rel).read_text("utf-8")
+    assert "ExecutionLedgerReconcileRun" not in text
+    assert "execution_ledger_reconcile_runs" not in text
 
 
 _GUARDED_FILES = (

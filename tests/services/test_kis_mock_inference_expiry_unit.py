@@ -148,7 +148,7 @@ def test_conditions_cover_the_1112_rule_minus_waived_strategy() -> None:
     names = [name for name, _ in rule.CONDITIONS]
     assert names == sorted(ISOLATED_BREAKS, key=names.index)
     assert set(names) == set(ISOLATED_BREAKS)
-    assert rule.WAIVED_CONDITIONS == ("strategy_match",)
+    assert rule.WAIVED_CONDITIONS == ("strategy_match", "reconcile_coverage")
 
 
 def test_strategy_text_is_never_read_by_any_condition() -> None:
@@ -488,7 +488,7 @@ def test_closed_detail_carries_the_1112_marker_caveat_and_decision_ref() -> None
     assert detail["expiry_caveat"] == EXPIRED_INFERENCE_CAVEAT == "no_broker_original"
     assert detail["expiry_basis"] == "inference"
     assert detail["operator_decision_ref"] == "Q-46"
-    assert detail["waived_conditions"] == ["strategy_match"]
+    assert detail["waived_conditions"] == ["strategy_match", "reconcile_coverage"]
     closed = dataclasses.replace(
         _row(), lifecycle_state="expired", last_reconcile_detail=detail
     )

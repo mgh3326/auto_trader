@@ -33,8 +33,12 @@ Exit codes: 0 eligible preview / committed / no-op, 1 input or database error,
 
 ## 2. Conditions (every one must hold for every row, or the batch is refused)
 
-The #1112 rule translated to kis_mock evidence. Strategy match is the waived
-condition and is recorded in every audit row (`waived_conditions`).
+The #1112 rule translated to kis_mock evidence. Two #1112 conditions are waived
+by the Q-46 decision and nothing else: `strategy_match` and `reconcile_coverage`
+(section 6). The preview prints `waived_conditions` on every row, so the
+operator sees exactly what is waived before `--commit`; the commit is the
+operator's confirmation. The same list is written to every closed row and audit
+row next to the `no_broker_original` caveat.
 
 | # | condition | kis_mock evidence |
 |---|---|---|
@@ -133,12 +137,20 @@ new operator decision.
   (20:00 KST); that is the conservative choice and irrelevant for months-old
   rows.
 
-## 6. #1112 reconcile-coverage condition
+## 6. #1112 reconcile-coverage condition — waived (director-1 option A)
 
-See the PR description and hk task 1250 for the director decision on how
-`execution_ledger_covers_order_day` applies to kis_mock (no kis_mock
-execution-ledger reconcile run exists; the mock holdings reconciler never
-touched these rows).
+#1112 `execution_ledger_covers_order_day` requires a committed KIS
+execution-ledger reconcile run covering accept..deadline. For kis_mock no such
+run can exist: `review.execution_ledger_reconcile_runs` has no account mode and
+the reconciler reads only the live account, and the kis_mock holdings
+reconciler never touched rows 80/66/64/63 (still `accepted`, never `pending`).
+The 10-05 decision exists precisely because that evidence cannot exist for
+July/August kis_mock rows (strategy-lab, hk #706 comment 1053). Director-1
+ruled option A on hk task 1250: the condition is waived under the same Q-46
+decision, recorded per row as `waived_conditions = [strategy_match,
+reconcile_coverage]` with the `no_broker_original` caveat. The rule, service and
+CLI never read reconcile runs (a test pins this). The waiver exists only inside
+the hard four-id allowlist; every other condition stays strict.
 
 ## 7. Migration proof (builder, throwaway TimescaleDB PostgreSQL 17)
 

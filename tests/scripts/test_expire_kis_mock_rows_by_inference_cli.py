@@ -137,7 +137,11 @@ async def test_cli_preview_refusal_commit_noop_exit_codes(
             "refused",
         )
         assert payload["refused_ids"] == [64]
-        assert payload["waived_conditions"] == ["strategy_match"]
+        assert payload["waived_conditions"] == ["strategy_match", "reconcile_coverage"]
+        # Printed per row, so the operator sees the waiver before --commit.
+        assert [r["waived_conditions"] for r in payload["rows"]] == [
+            ["strategy_match", "reconcile_coverage"]
+        ] * 4
 
         code, payload = await cli.run(
             _args(*base, "--commit"), session_factory=AsyncSessionLocal
