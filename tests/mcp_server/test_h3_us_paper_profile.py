@@ -711,6 +711,41 @@ async def test_us_daily_candles_refuse_the_toss_fallback(
     assert any("Toss client" in refusal for refusal in spy.refusals), spy.refusals
 
 
+@pytest.mark.asyncio
+async def test_toss_fallback_never_unwraps_the_toss_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #1257 r1 B1 (tester reproduction): Yahoo down -> Toss daily fallback.
+    # The Toss client secret must not even be unwrapped on this profile.
+    from pydantic import SecretStr
+
+    from app.core.config import settings
+    from app.mcp_server.tooling import market_data_quotes
+
+    unwrapped: list[str] = []
+
+    class _SpySecret(SecretStr):
+        def get_secret_value(self) -> str:
+            unwrapped.append("toss_secret")
+            return super().get_secret_value()
+
+    async def yahoo_down(**_kwargs: Any) -> Any:
+        raise RuntimeError("yahoo unavailable")
+
+    monkeypatch.setattr(market_data_quotes.yahoo_service, "fetch_ohlcv", yahoo_down)
+    _enable_fake_toss(monkeypatch)
+    monkeypatch.setattr(
+        settings, "toss_api_client_secret", _SpySecret("fake-secret"), raising=False
+    )
+    trap = _BrokerTrap(monkeypatch)
+    try:
+        await _register(PROFILE).tools["get_ohlcv"](symbol="SPY", period="day", count=3)
+    except Exception:  # noqa: BLE001 - the refusal may propagate
+        pass
+    assert unwrapped == []
+    assert trap.hits == []
+
+
 # ---------------------------------------------------------------------------
 # Real FastMCP server (in-memory client, no network): what a session sees.
 # ---------------------------------------------------------------------------

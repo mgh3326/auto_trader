@@ -123,6 +123,8 @@ class TossReadClient:
 
     @classmethod
     def from_settings(cls, settings_obj: Any = settings) -> TossReadClient:
+        # #1257: refused before the token manager reads any credential.
+        assert_broker_credentials_allowed("Toss client")
         base_url = (
             getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
         )

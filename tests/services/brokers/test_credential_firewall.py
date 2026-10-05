@@ -90,6 +90,27 @@ def test_kis_client_construction_is_refused_inside_only() -> None:
         KISClient(is_mock=True)
 
 
+def test_kis_client_refuses_before_building_its_credential_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.brokers.kis import client as kis_client
+
+    built: list[bool] = []
+
+    class _RecordingView:
+        def __init__(self, *, is_mock: bool) -> None:
+            built.append(is_mock)
+            raise AssertionError("credential view built inside the firewall")
+
+    monkeypatch.setattr(kis_client, "_KISSettingsView", _RecordingView)
+    with (
+        broker_credentials_blocked(OWNER),
+        pytest.raises(BrokerCredentialsBlocked, match="KIS client"),
+    ):
+        kis_client.KISClient()
+    assert built == []
+
+
 @pytest.mark.asyncio
 async def test_import_time_kis_client_refuses_before_its_token_lookup(
     monkeypatch: pytest.MonkeyPatch,
@@ -195,6 +216,55 @@ async def test_toss_request_refuses_before_rate_limit_and_token() -> None:
         await client._request("GET", "/x", group=group)
     assert recorder.calls == ["toss_rate_limit"]
     await client.aclose()
+
+
+class _SettingsSpy:
+    """A settings object that records every attribute read."""
+
+    def __init__(self) -> None:
+        self.reads: list[str] = []
+
+    def __getattr__(self, name: str) -> Any:
+        self.reads.append(name)
+        raise AssertionError(f"setting read inside the firewall: {name}")
+
+
+def test_toss_settings_factories_refuse_before_reading_any_setting() -> None:
+    # #1257 r1 B1: TossReadClient.from_settings built the token manager (which
+    # unwraps the client secret) before the client constructor's guard ran.
+    from app.services.brokers.toss.auth import TossOAuthTokenManager
+    from app.services.brokers.toss.client import TossReadClient
+
+    for factory in (TossReadClient.from_settings, TossOAuthTokenManager.from_settings):
+        spy = _SettingsSpy()
+        with (
+            broker_credentials_blocked(OWNER),
+            pytest.raises(BrokerCredentialsBlocked),
+        ):
+            factory(spy)
+        assert spy.reads == []
+
+
+def test_toss_token_manager_refuses_before_unwrapping_the_secret() -> None:
+    from pydantic import SecretStr
+
+    from app.services.brokers.toss.auth import TossOAuthTokenManager
+
+    unwrapped: list[str] = []
+
+    class _SpySecret(SecretStr):
+        def get_secret_value(self) -> str:
+            unwrapped.append("secret")
+            return super().get_secret_value()
+
+    with (
+        broker_credentials_blocked(OWNER),
+        pytest.raises(BrokerCredentialsBlocked, match="Toss token manager"),
+    ):
+        TossOAuthTokenManager(client_id="fake-id", client_secret=_SpySecret("fake"))
+    assert unwrapped == []
+    TossOAuthTokenManager(client_id="fake-id", client_secret=_SpySecret("fake"))
+    assert unwrapped == ["secret"]  # outside: unchanged
 
 
 # --- Upbit ----------------------------------------------------------------------
