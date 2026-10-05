@@ -120,13 +120,11 @@ _LIVE_ORDER_NAME_RE = re.compile(
 # config/mcp_lane_allowlists — each entry is a deliberate, doc-evidenced or
 # Q-53-named exception:
 #   execution_ledger_fill_events_list_recent — 99 calls/30d; fill-event read.
-#   investment_watch_void — watch-void emergency exception (Q-53).
 #   kis_live_reconcile_orders — KR emergency reconcile (Q-53).
 #   toss_modify_order — Toss KR emergency modify (Q-53).
 _MANIFEST_TOOLS_WITHOUT_LANE_AUDIT = frozenset(
     {
         "execution_ledger_fill_events_list_recent",
-        "investment_watch_void",
         "kis_live_reconcile_orders",
         "toss_modify_order",
     }
@@ -619,6 +617,36 @@ class TestLaneAndRouteConsistency:
                 f"{profile.value}: manifest tools with no audited lane "
                 f"allowlist coverage and no named exception: {sorted(uncovered)}"
             )
+
+    def test_us_watch_tools_parity_with_live_us(self) -> None:
+        """#1247 V3 (operator 10-05; director ruling: descope) — the two watch
+        tools admitted for US live sessions must be listed on the us lane
+        allowlist AND served by the live-us profile; the third argv surface
+        is pinned in robin-prefect-automations
+        tests/test_live_allowed_prompt_parity.py.  A lane listing the
+        profile cannot serve is the #1003 failure shape, so
+        list_active_watches stays off us.txt until an operator slot decision
+        frees a live-us slot (swap an extension tool or raise the Q-53 cap —
+        not emergency)."""
+        us_lane = {
+            line.split("\t")[0]
+            for line in (ALLOWLIST_DIR / "us.txt").read_text().splitlines()
+            if line and not line.startswith("#")
+        }
+        served = set(_manifest().spec_for(McpProfile.LIVE_US).selected_tool_names())
+        admitted = {"investment_watch_create", "investment_watch_void"}
+        assert admitted <= us_lane, (
+            f"us.txt missing admitted watch tools: {sorted(admitted - us_lane)}"
+        )
+        assert admitted <= served, (
+            f"live-us does not serve lane-listed watch tools: "
+            f"{sorted(admitted - served)}"
+        )
+        assert "list_active_watches" not in us_lane, (
+            "list_active_watches lane-listed while live-us cannot serve it "
+            "(the #1003 gap shape); keep it off us.txt until the slot ruling"
+        )
+        assert "list_active_watches" not in served
 
     @pytest.mark.parametrize("profile", sorted(LIVE_PROFILES, key=str))
     @pytest.mark.parametrize("market", ["kr", "us", "crypto"])
