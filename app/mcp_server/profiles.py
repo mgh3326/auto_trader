@@ -55,6 +55,11 @@ class McpProfile(StrEnum):
     # the prompt's reads + record writes). No live order tool, no live
     # account read; get_holdings is pinned to DB paper accounts.
     H3_CRYPTO_PAPER = "h3-crypto-paper"
+    # #1257 (#1245) — closed-world H3-US paper pilot surface: the runner's 20
+    # tools exactly (Alpaca paper orders on account_mode alpaca_paper + the
+    # prompt's US reads + record writes). No live order tool; every listed
+    # tool is pinned to market us / account_mode alpaca_paper.
+    H3_US_PAPER = "h3-us-paper"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

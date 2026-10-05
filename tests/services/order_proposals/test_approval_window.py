@@ -561,6 +561,9 @@ async def test_toss_us_regular_only_uses_broker_calendar(monkeypatch):
         return calendar
 
     monkeypatch.setattr(policy, "get_toss_market_calendar", calendar_reader)
+    # #1248: pin the code default; the shipped YAML is temporarily
+    # [pre, regular, post] for the one-day measurement.
+    monkeypatch.setattr(policy, "toss_live_us_approval_sessions", lambda: ("regular",))
     group = _group(
         account_mode="toss_live",
         valid_until=datetime(2026, 7, 25, tzinfo=policy._KST),

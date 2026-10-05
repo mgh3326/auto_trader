@@ -40,6 +40,8 @@ investment_report_create_from_hermes_composition	prompt
 investment_report_generate_from_bundle	prompt
 investment_report_get_hermes_context	prompt
 investment_report_prepare_bundle	prompt
+investment_watch_create	spec:1247-us-watch
+investment_watch_void	spec:1247-us-watch
 kis_live_cancel_order	prompt
 kis_live_modify_order	prompt
 kis_live_place_order	prompt

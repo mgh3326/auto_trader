@@ -77,16 +77,18 @@ declare -a ENV_FILE_ARGS=(--env-file "$RUNTIME_ENV_FILE" --env-file "$SECRETS_EN
 # closed-world config/mcp_profiles/live.yaml surfaces, one market each, on
 # ports 8773-8775 with their own token names. h3-crypto-paper (#1189, part C
 # of #1171) serves the closed-world H3-CRYPTO paper pilot surface on 8776.
-declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom live-kr live-us live-crypto h3-crypto-paper)
-declare -a MCP_PROFILES=(analysis_readonly account_read tradingcodex_execution hermes-paper-kis kiwoom live-kr live-us live-crypto h3-crypto-paper)
-declare -a MCP_PORTS=(8768 8769 8770 8771 8772 8773 8774 8775 8776)
-declare -a MCP_TOKENS=(MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN MCP_LIVE_CRYPTO_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN)
+# h3-us-paper (#1257, #1245) serves the closed-world H3-US paper pilot surface
+# on 8777.
+declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom live-kr live-us live-crypto h3-crypto-paper h3-us-paper)
+declare -a MCP_PROFILES=(analysis_readonly account_read tradingcodex_execution hermes-paper-kis kiwoom live-kr live-us live-crypto h3-crypto-paper h3-us-paper)
+declare -a MCP_PORTS=(8768 8769 8770 8771 8772 8773 8774 8775 8776 8777)
+declare -a MCP_TOKENS=(MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN MCP_LIVE_CRYPTO_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN MCP_H3_US_PAPER_AUTH_TOKEN)
 # Units whose HAProxy tailnet route is also probed after the MCP promotion:
 # their sessions reach them only through that tailnet frontend.
-declare -a MCP_LIVE_ROUTE_NAMES=(live-kr live-us live-crypto h3-crypto-paper)
+declare -a MCP_LIVE_ROUTE_NAMES=(live-kr live-us live-crypto h3-crypto-paper h3-us-paper)
 API_DRAIN_PENDING_COLOR=""
 MCP_DRAIN_PENDING_COLOR=""
-declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto at-mcp-h3-crypto-paper)
+declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto at-mcp-h3-crypto-paper at-mcp-h3-us-paper)
 declare -a REPLACED_CONTAINERS=()
 declare -A ORIGINAL_IMAGES=() EXPECTED_IMAGES=()
 ORIGINAL_API_COLOR=""

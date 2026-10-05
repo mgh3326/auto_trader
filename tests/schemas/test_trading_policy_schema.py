@@ -377,7 +377,7 @@ def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
     assert doc.version == "2026-09-30.1"
-    assert policy_content_hash() == "62c7a733a778"
+    assert policy_content_hash() == "79f3e7289dd4"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1988,6 +1988,18 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert "nxt_tradable alone does NOT" in cur_expiry["semantics"]
     cur_expiry["value"] = base_expiry["value"]
     cur_expiry["semantics"] = base_expiry["semantics"]
+
+    # #1248 ONE-DAY MEASUREMENT — order_proposals.approval_window.
+    # toss_live_us_sessions is [pre, regular, post] for one day so a single
+    # small integer limit card can measure Toss pre-market acceptance and DAY
+    # expiry (#908/#1032). The baseline carries the schema default
+    # ([regular]); pin the exact shipped value and normalize it to the
+    # baseline. The revert PR restores [regular] and drops this block.
+    cur_window = normalized_current_dump["order_proposals"]["approval_window"]
+    base_window = baseline_dump["order_proposals"]["approval_window"]
+    assert base_window == {"toss_live_us_sessions": ("regular",)}
+    assert cur_window == {"toss_live_us_sessions": ("pre", "regular", "post")}
+    normalized_current_dump["order_proposals"]["approval_window"] = base_window
 
     # Only the six explicitly enumerated cap deltas and the enumerated
     # §115차 additions are accepted; every other pre-existing key/value,

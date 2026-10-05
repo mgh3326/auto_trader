@@ -14,6 +14,9 @@ import redis.asyncio as redis
 from pydantic import SecretStr
 
 from app.core.config import settings, validate_toss_api_config
+from app.services.brokers.credential_firewall import (
+    assert_broker_credentials_allowed,
+)
 from app.services.brokers.token_issuance import (
     TokenIssuanceUnavailable,
     ensure_gatewayd_token,
@@ -81,6 +84,8 @@ class TossOAuthTokenManager:
         base_url: str = DEFAULT_TOSS_BASE_URL,
         rate_limiter: TossRateLimiter | None = None,
     ) -> None:
+        # #1257: refused before the secret is unwrapped.
+        assert_broker_credentials_allowed("Toss token manager")
         if not client_id.strip():
             raise TossMissingCredentials("TOSS_API_CLIENT_ID is empty")
         secret_value = client_secret.get_secret_value()
@@ -112,6 +117,8 @@ class TossOAuthTokenManager:
         *,
         rate_limiter: TossRateLimiter | None = None,
     ) -> TossOAuthTokenManager:
+        # #1257: refused before any Toss setting (client id/secret) is read.
+        assert_broker_credentials_allowed("Toss token manager")
         if not bool(getattr(settings_obj, "toss_api_enabled", False)):
             raise TossApiDisabled(
                 "Toss API is disabled: TOSS_API_ENABLED is not truthy"
