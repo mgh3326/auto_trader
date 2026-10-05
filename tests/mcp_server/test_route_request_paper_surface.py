@@ -5,11 +5,13 @@ proposal-led buy/sell contract was degraded on every H3 run and the runner's
 bootstrap check halted. route_request now takes an explicit
 ``execution_surface`` chosen at registration; only that profile selects the
 paper simulator, and only crypto buy/sell move to ``paper-execution-v1``.
+Round 3 adds the Alpaca paper surface for h3-us-paper (#1257): us buy/sell.
 
 Mutants are counted from ``route_request_lanes.py`` ON DISK: every operand of
-the three fail-closed conjunctions (``_paper_route``'s return, the paper
-contract's ``execution_ready`` and the paper-tool allowance in
-``build_route_plan``). Each mutant compiles a copy of the module with ONE
+the two fail-closed conjunctions (``_paper_route``'s ``selected`` and the
+paper contract's ``execution_ready``), plus the declared assignment sites in
+``DECLARED_ASSIGNMENTS`` (spec lookup, paper-tool allowance, hidden set). Each
+operand mutant compiles a copy of the module with ONE
 operand forced to ``True`` and runs the scenario only that operand protects;
 the real module satisfies the invariant, the mutant must fail it by assertion
 (not by crashing). An operand without a declared invariant fails
@@ -35,7 +37,9 @@ file (not derived from the production constants), so dropping a union term
 from either constant is RED (r1 tester survivor: PROPOSAL_LIFECYCLE_TOOLS).
 
 The NO_FOREIGN mutant replaces the single on-disk ``paper_excluded``
-assignment in ``build_route_plan`` with an empty set.
+assignment in ``build_route_plan`` with an empty set; the SURFACE mutant makes
+the single on-disk ``spec`` lookup in ``_paper_route`` ignore the registered
+surface (a proposal-led registration then gets the crypto paper spec).
 """
 
 from __future__ import annotations
@@ -52,6 +56,9 @@ import pytest
 from app.mcp_server.tooling import route_request_lanes as lanes
 from app.mcp_server.tooling.h3_crypto_paper_registration import (
     H3_CRYPTO_PAPER_TOOL_NAMES,
+)
+from app.mcp_server.tooling.h3_us_paper_registration import (
+    H3_US_PAPER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.route_request_registration import (
     PAPER_SURFACE_DESCRIPTION,
@@ -186,14 +193,34 @@ INVARIANTS = {
 
 # (function, unparsed operand) -> invariant sentence key
 DECLARED_OPERANDS: dict[tuple[str, str], str] = {
-    ("_paper_route", "execution_surface == ROUTE_SURFACE_PAPER_SIMULATOR"): "SURFACE",
     ("_paper_route", "purpose is None"): "PURPOSE",
     ("_paper_route", "lane in PAPER_EXECUTION_LANES"): "LANE",
-    ("_paper_route", "market in PAPER_EXECUTION_MARKETS"): "MARKET",
+    ("_paper_route", "market == spec_market"): "MARKET",
     ("_paper_route_contract", "not missing_required_tools"): "MISSING",
     ("_paper_route_contract", "not foreign_execution_tools"): "FOREIGN",
-    ("build_route_plan", "paper"): "ALLOW_PAPER",
-    ("build_route_plan", "route_contract['execution_ready']"): "ALLOW_READY",
+}
+# Assignment mutants (anchor = the unparsed right-hand side on disk).
+DECLARED_ASSIGNMENTS: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("_paper_route", "spec"): (
+        "PAPER_SURFACE_SPECS.get(execution_surface)",
+        "PAPER_SURFACE_SPECS.get(ROUTE_SURFACE_PAPER_SIMULATOR)",
+        "SURFACE",
+    ),
+    ("build_route_plan", "paper_tools"): (
+        "paper.execution_tools if paper is not None else frozenset()",
+        "PAPER_EXECUTION_TOOLS",
+        "ALLOW_PAPER",
+    ),
+    ("build_route_plan", "paper_allowed"): (
+        "paper_tools if route_contract['execution_ready'] else frozenset()",
+        "paper_tools",
+        "ALLOW_READY",
+    ),
+    ("build_route_plan", "paper_excluded"): (
+        "paper_route_excluded_tools(paper) if paper is not None else frozenset()",
+        "frozenset()",
+        "NO_FOREIGN",
+    ),
 }
 
 
@@ -204,7 +231,11 @@ def _guard_conjunctions(tree: ast.Module) -> dict[str, ast.BoolOp]:
         if not isinstance(node, ast.FunctionDef):
             continue
         for child in ast.walk(node):
-            if node.name == "_paper_route" and isinstance(child, ast.Return):
+            if (
+                node.name == "_paper_route"
+                and isinstance(child, ast.Assign)
+                and ast.unparse(child.targets[0]) == "selected"
+            ):
                 found[node.name] = cast(ast.BoolOp, child.value)
             elif (
                 node.name == "_paper_route_contract"
@@ -212,13 +243,6 @@ def _guard_conjunctions(tree: ast.Module) -> dict[str, ast.BoolOp]:
                 and ast.unparse(child.targets[0]) == "execution_ready"
             ):
                 found[node.name] = cast(ast.BoolOp, child.value)
-            elif (
-                node.name == "build_route_plan"
-                and isinstance(child, ast.If)
-                and isinstance(child.test, ast.BoolOp)
-                and "paper" in [ast.unparse(v) for v in child.test.values]
-            ):
-                found[node.name] = child.test
     for name, conjunction in found.items():
         assert isinstance(conjunction, ast.BoolOp), name
         assert isinstance(conjunction.op, ast.And), name
@@ -261,38 +285,44 @@ def test_every_fail_closed_operand_has_a_mutant() -> None:
     assert set(_guard_conjunctions(ast.parse(SOURCE.read_text()))) == {
         "_paper_route",
         "_paper_route_contract",
-        "build_route_plan",
     }
-    assert len(operands) == len(set(operands)) == 8
+    assert len(operands) == len(set(operands)) == 5
     assert set(operands) == set(DECLARED_OPERANDS)
-    assert set(DECLARED_OPERANDS.values()) == set(INVARIANTS) - {"NO_FOREIGN"}
-    assert len(_paper_excluded_assignments(ast.parse(SOURCE.read_text()))) == 1
+    declared = set(DECLARED_OPERANDS.values()) | {
+        key for _a, _r, key in DECLARED_ASSIGNMENTS.values()
+    }
+    assert declared == set(INVARIANTS)
+    tree = ast.parse(SOURCE.read_text())
+    for (function, target), (anchor, _r, _k) in DECLARED_ASSIGNMENTS.items():
+        [assignment] = _assignments(tree, function, target)
+        assert ast.unparse(assignment.value) == anchor
 
 
-def _paper_excluded_assignments(tree: ast.Module) -> list[ast.Assign]:
-    [plan] = [
+def _assignments(tree: ast.Module, function: str, target: str) -> list[ast.Assign]:
+    [fn] = [
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "build_route_plan"
+        if isinstance(node, ast.FunctionDef) and node.name == function
     ]
     return [
         node
-        for node in ast.walk(plan)
-        if isinstance(node, ast.Assign)
-        and ast.unparse(node.targets[0]) == "paper_excluded"
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == target
     ]
 
 
-def test_no_foreign_mutant_breaks_its_invariant_by_assertion() -> None:
+@pytest.mark.parametrize("site", sorted(DECLARED_ASSIGNMENTS), ids=lambda v: str(v))
+def test_assignment_mutant_breaks_its_invariant_by_assertion(
+    site: tuple[str, str],
+) -> None:
+    anchor, replacement, key = DECLARED_ASSIGNMENTS[site]
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-    [assignment] = _paper_excluded_assignments(tree)
-    assert ast.unparse(assignment.value) == (
-        "PAPER_ROUTE_EXCLUDED_TOOLS if paper else frozenset()"
-    )
-    assignment.value = ast.parse("frozenset()", mode="eval").body
-    module = _compile(tree, "_route_lanes_mutant_no_foreign")
+    [assignment] = _assignments(tree, *site)
+    assert ast.unparse(assignment.value) == anchor
+    assignment.value = ast.parse(replacement, mode="eval").body
+    module = _compile(tree, f"_route_lanes_mutant_{site[0]}_{site[1]}")
     with pytest.raises(AssertionError):
-        invariant_no_foreign(module)
+        INVARIANTS[key](module)
 
 
 @pytest.mark.parametrize("key", sorted(INVARIANTS))
@@ -391,32 +421,40 @@ def test_registered_paper_tool_answers_the_paper_contract() -> None:
 
 def test_only_the_h3_registrar_selects_the_paper_surface() -> None:
     """No other app module names the paper surface, so no profile can drift in."""
+    registrars = {
+        "app/mcp_server/tooling/h3_crypto_paper_registration.py": (
+            "ROUTE_SURFACE_PAPER_SIMULATOR"
+        ),
+        "app/mcp_server/tooling/h3_us_paper_registration.py": (
+            "ROUTE_SURFACE_ALPACA_PAPER"
+        ),
+    }
     allowed = {
         "app/mcp_server/tooling/route_request_lanes.py",
         "app/mcp_server/tooling/route_request_registration.py",
-        "app/mcp_server/tooling/h3_crypto_paper_registration.py",
+        *registrars,
     }
     hits = set()
     for path in sorted((REPO_ROOT / "app").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        if "ROUTE_SURFACE_PAPER_SIMULATOR" in text or '"paper_simulator"' in text:
+        if (
+            "ROUTE_SURFACE_PAPER_SIMULATOR" in text
+            or "ROUTE_SURFACE_ALPACA_PAPER" in text
+            or '"paper_simulator"' in text
+            or "execution_surface=" in text
+        ):
             hits.add(str(path.relative_to(REPO_ROOT)))
     assert hits == allowed
-    tree = ast.parse(
-        (
-            REPO_ROOT / "app/mcp_server/tooling/h3_crypto_paper_registration.py"
-        ).read_text()
-    )
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "register_route_request_tools"
-    ]
-    assert len(calls) == 1
-    assert [ast.unparse(k.value) for k in calls[0].keywords] == [
-        "ROUTE_SURFACE_PAPER_SIMULATOR"
-    ]
+    for registrar, surface in registrars.items():
+        tree = ast.parse((REPO_ROOT / registrar).read_text())
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and ast.unparse(node.func) == "register_route_request_tools"
+        ]
+        assert len(calls) == 1, registrar
+        assert [ast.unparse(k.value) for k in calls[0].keywords] == [surface]
 
 
 # Literal oracles (#1244 r2) — independent of DIRECT_BROKER_MUTATION_TOOLS,
@@ -500,3 +538,91 @@ def test_non_paper_reconcile_writers_are_hidden_on_the_paper_route(writer: str) 
     # The proposal-led route keeps its existing reconcile allowance.
     proposal = _plan(lanes, "buy_analysis", "crypto", H3 | {writer}, surface=PROPOSAL)
     assert writer in proposal["allowed_tools"]
+
+
+# --- Alpaca paper surface (h3-us-paper, #1257; #1244 r3) --------------------
+
+ALPACA = lanes.ROUTE_SURFACE_ALPACA_PAPER
+H3_US = set(H3_US_PAPER_TOOL_NAMES)
+ALPACA_ORDER_TOOLS = frozenset(
+    {"alpaca_paper_submit_order", "alpaca_paper_cancel_order"}
+)
+CRYPTO_PAPER_ORDER_TOOLS = frozenset(
+    {"paper_place_limit_order", "paper_cancel_pending_order"}
+)
+US_FOREIGN_ORACLE = (FOREIGN_ORACLE - ALPACA_ORDER_TOOLS) | CRYPTO_PAPER_ORDER_TOOLS
+US_HIDDEN_RECONCILE_ORACLE = HIDDEN_RECONCILE_ORACLE | {"paper_reconcile_orders"}
+US_SPEC = lanes.PAPER_SURFACE_SPECS[ALPACA]
+
+
+def test_us_foreign_and_hidden_sets_equal_the_literal_oracles() -> None:
+    assert lanes.paper_foreign_execution_tools(US_SPEC) == US_FOREIGN_ORACLE
+    assert (
+        lanes.paper_route_excluded_tools(US_SPEC)
+        == US_FOREIGN_ORACLE | US_HIDDEN_RECONCILE_ORACLE
+    )
+    assert US_SPEC.market == "us"
+    assert US_SPEC.execution_tools == ALPACA_ORDER_TOOLS
+    assert US_SPEC.required_tools == ALPACA_ORDER_TOOLS | {
+        "alpaca_paper_list_orders",
+        "alpaca_paper_get_order",
+        "alpaca_paper_list_positions",
+        "market_quote_snapshot_ensure",
+    }
+    assert US_SPEC.required_tools <= H3_US
+
+
+@pytest.mark.parametrize("intent", ["profit_taking", "buy_analysis"])
+def test_alpaca_paper_route_on_the_h3_us_surface_is_ready(intent: str) -> None:
+    out = _plan(lanes, intent, "us", H3_US, surface=ALPACA)
+    assert out["success"] is True and out["degraded"] is False
+    assert out["route_contract"]["execution_mode"] == "alpaca_paper"
+    assert set(out["allowed_tools"]) <= H3_US
+    assert ALPACA_ORDER_TOOLS <= set(out["allowed_tools"])
+    assert out["blocked_actions"] == []
+
+
+@pytest.mark.parametrize("foreign", sorted(US_FOREIGN_ORACLE))
+def test_each_us_oracle_foreign_tool_degrades_the_alpaca_paper_route(
+    foreign: str,
+) -> None:
+    out = _plan(lanes, "buy_analysis", "us", H3_US | {foreign}, surface=ALPACA)
+    assert out["success"] is False and out["degraded"] is True
+    assert out["route_contract"]["foreign_execution_tools"] == [foreign]
+    named = set(out["allowed_tools"]) | {
+        s["tool"] for s in out["standard_tool_sequence"]
+    }
+    assert foreign not in named
+    assert not ALPACA_ORDER_TOOLS & set(out["allowed_tools"])
+
+
+@pytest.mark.parametrize("writer", sorted(US_HIDDEN_RECONCILE_ORACLE))
+def test_every_reconcile_writer_is_hidden_on_the_alpaca_paper_route(
+    writer: str,
+) -> None:
+    out = _plan(lanes, "profit_taking", "us", H3_US | {writer}, surface=ALPACA)
+    assert out["success"] is True
+    named = set(out["allowed_tools"]) | {
+        s["tool"] for s in out["standard_tool_sequence"]
+    }
+    assert writer not in named
+
+
+@pytest.mark.parametrize("missing", sorted(US_SPEC.required_tools))
+def test_alpaca_paper_route_is_degraded_without_a_required_tool(missing: str) -> None:
+    out = _plan(lanes, "buy_analysis", "us", H3_US - {missing}, surface=ALPACA)
+    assert out["success"] is False and out["degraded"] is True
+    assert out["route_contract"]["missing_required_tools"] == [missing]
+    assert not ALPACA_ORDER_TOOLS & set(out["allowed_tools"])
+
+
+@pytest.mark.parametrize("intent", sorted(lanes.INTENT_TO_LANE))
+@pytest.mark.parametrize("market", sorted(lanes.VALID_MARKETS))
+def test_alpaca_surface_matches_proposal_led_off_us_buy_sell(
+    intent: str, market: str
+) -> None:
+    moved = market == "us" and intent in {"profit_taking", "buy_analysis"}
+    for registered in (H3_US, H3_US | {"order_proposal_create"}, None):
+        paper = _plan(lanes, intent, market, registered, surface=ALPACA)
+        proposal = _plan(lanes, intent, market, registered, surface=PROPOSAL)
+        assert (paper != proposal) is moved

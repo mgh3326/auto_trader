@@ -61,7 +61,10 @@ same list the operator contract registers as the prompt's `allowed_tools`):
   #1244 they answered the proposal-led contract, which needs the absent
   `order_proposal_create`, and the runner's bootstrap check halted every run.
   Any proposal, live or mock order tool registered beside it degrades the
-  paper contract. Every other profile's route_request output is unchanged.
+  paper contract. The broker-only constraint "accepted/resting is not a fill;
+  broker evidence reconcile is required" is replaced on this route by
+  confirming fills from the paper account's own order read (#1244 r3). Every
+  other profile's route_request output is unchanged.
 
 The unit env should still carry no broker credentials it does not need
 (defense in depth, decided at enablement below), but the code pins above no

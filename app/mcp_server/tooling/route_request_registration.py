@@ -24,6 +24,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     INTENT_TO_LANE,
     LANE_TO_POLICY_LANE,
     PAPER_ROUTE_CONTRACT_VERSION,
+    ROUTE_SURFACE_ALPACA_PAPER,
     ROUTE_SURFACE_PAPER_SIMULATOR,
     ROUTE_SURFACE_PROPOSAL_LED,
     ROUTE_SURFACES,
@@ -80,6 +81,19 @@ PAPER_SURFACE_DESCRIPTION = (
     "The paper contract is degraded if any proposal, live or mock order tool "
     "is registered beside it."
 )
+ALPACA_PAPER_SURFACE_DESCRIPTION = (
+    f" On this profile us buy/sell use the {PAPER_ROUTE_CONTRACT_VERSION} "
+    "contract instead: the order intent is alpaca_paper_submit_order / "
+    "alpaca_paper_cancel_order on the Alpaca paper account (a submit needs a "
+    "fresh market_quote_snapshot_ensure id), each call bound to a "
+    "runner-approved intent; there is no proposal tool and no live order tool. "
+    "The paper contract is degraded if any proposal, live, mock or crypto "
+    "paper order tool is registered beside it."
+)
+_SURFACE_DESCRIPTIONS: dict[str, str] = {
+    ROUTE_SURFACE_PAPER_SIMULATOR: PAPER_SURFACE_DESCRIPTION,
+    ROUTE_SURFACE_ALPACA_PAPER: ALPACA_PAPER_SURFACE_DESCRIPTION,
+}
 
 
 def register_route_request_tools(
@@ -87,7 +101,8 @@ def register_route_request_tools(
 ) -> None:
     """Register route_request; ``execution_surface`` is chosen by the profile.
 
-    Only the h3-crypto-paper registrar passes ``ROUTE_SURFACE_PAPER_SIMULATOR``.
+    Only the h3-crypto-paper registrar passes ``ROUTE_SURFACE_PAPER_SIMULATOR``
+    and only the h3-us-paper registrar passes ``ROUTE_SURFACE_ALPACA_PAPER``.
     """
     if execution_surface not in ROUTE_SURFACES:
         raise ValueError(f"unknown route execution surface {execution_surface!r}")
@@ -225,11 +240,7 @@ def register_route_request_tools(
             "Missing or unknown intent/market returns a deterministic "
             "success=false envelope (error in {missing_intent, unknown_intent, "
             "missing_market, unknown_market})."
-            + (
-                PAPER_SURFACE_DESCRIPTION
-                if execution_surface == ROUTE_SURFACE_PAPER_SIMULATOR
-                else ""
-            )
+            + _SURFACE_DESCRIPTIONS.get(execution_surface, "")
         ),
     )(route_request)
 
