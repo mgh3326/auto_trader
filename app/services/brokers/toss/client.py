@@ -9,6 +9,9 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.services.brokers.credential_firewall import (
+    assert_broker_credentials_allowed,
+)
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.dto import (
     TossAccount,
@@ -103,6 +106,8 @@ class TossReadClient:
         response_observer: ResponseObserver | None = None,
         publish_error_signals: bool = True,
     ) -> None:
+        # #1257: refused inside a broker_credentials_blocked context.
+        assert_broker_credentials_allowed("Toss client")
         self._token_manager = token_manager
         self._account_seq = account_seq
         self._client = build_toss_client(base_url=base_url, transport=transport)
@@ -180,6 +185,7 @@ class TossReadClient:
         account_required: bool = False,
         pre_send_hook: PreSendHook | None = None,
     ) -> Any:
+        assert_broker_credentials_allowed("Toss request")
         await self._rate_limiter.acquire(group)
         token = await self._token_manager.get_access_token()
         headers = {"Authorization": f"Bearer {token}"}
