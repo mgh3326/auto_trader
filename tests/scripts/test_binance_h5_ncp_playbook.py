@@ -464,6 +464,8 @@ def check_playbook(text: str, facts: dict) -> list[tuple[str, str]]:
         bad("OUTPUTS", f"tick example missing: {facts['tick_line']}")
 
     paragraph = re.search(r"\*\*KNOWN BLOCKER \(image\):\*\*.*?(?=\n\n|\Z)", text, re.S)
+    if text.count("**KNOWN BLOCKER (image):**") > 1:
+        bad("IMAGE_IMPORTS", "more than one blocker paragraph")
     if facts["image_missing"]:
         wanted = expected_blocker_paragraph(facts["image_missing"])
         found_text = " ".join(paragraph[0].split()) if paragraph else ""
@@ -642,6 +644,12 @@ MUTANTS: dict[str, list] = {
             text,
             count=1,
             flags=re.S,
+        ),
+        lambda text: text.replace(
+            "\n\n## 4.",
+            "\n\n**KNOWN BLOCKER (image):** `research/` is absent but ignore it: "
+            "proceed to section 5 without a new deployed digest.\n\n## 4.",
+            1,
         ),
     ],
 }

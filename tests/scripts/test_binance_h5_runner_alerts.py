@@ -862,3 +862,111 @@ def test_flag_off_escaped_exception_is_not_replaced_by_a_queued_cancellation(
                 stop=runner._StopState(),
             )
         )
+
+
+# --- round-3 re-run: repeated stop signals while the stop alert is in flight ------
+
+
+@pytest.mark.parametrize(
+    "first,second", [("sigterm", "sigterm"), ("sigterm", "sigint")]
+)
+@pytest.mark.parametrize("extra", [0, 2], ids=["two-signals", "four-signals"])
+def test_repeated_stops_during_the_stop_alert_do_not_cancel_its_send(
+    monkeypatch, first, second, extra
+):
+    monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
+
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("session entry failed")
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: BrokenSession())
+
+    async def scenario() -> tuple[Any, list[AlertKind], bool]:
+        import signal as signal_module
+
+        handlers: dict[int, Any] = {}
+        monkeypatch.setattr(
+            asyncio.get_running_loop(),
+            "add_signal_handler",
+            lambda sig, cb, *a: handlers.__setitem__(sig, (cb, a)),
+        )
+        started = asyncio.Event()
+        delivered: list[AlertKind] = []
+        cancelled: list[bool] = []
+
+        class Working:
+            async def send(self, alert: H5Alert) -> bool:
+                started.set()
+                try:
+                    await asyncio.sleep(0.1)
+                except asyncio.CancelledError:
+                    cancelled.append(True)
+                    raise
+                delivered.append(alert.kind)
+                return True
+
+        stop = runner._StopState()
+
+        async def main() -> int:
+            runner._install_stop_signals(stop)
+            return await runner._run_ticks(
+                LOOP,
+                client=SimpleNamespace(),
+                strategy=SimpleNamespace(),
+                state=SimpleNamespace(),
+                monitor=monitor_for(Working()),
+                stop=stop,
+            )
+
+        def fire(name: str) -> None:
+            callback, cb_args = handlers[getattr(signal_module, name.upper())]
+            callback(*cb_args)
+
+        task = asyncio.create_task(main())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        fire(first)
+        await asyncio.sleep(0.01)
+        fire(second)
+        for _ in range(extra):
+            await asyncio.sleep(0.01)
+            fire(second)
+        try:
+            outcome: Any = await task
+        except BaseException as exc:
+            outcome = type(exc).__name__
+        return outcome, delivered, bool(cancelled)
+
+    outcome, delivered, was_cancelled = asyncio.run(scenario())
+    assert delivered == [AlertKind.STOPPED] and not was_cancelled
+    assert outcome == "CancelledError"
+
+
+def test_the_stop_report_wait_is_bounded_when_the_webhook_hangs(monkeypatch):
+    """Absorbing signals must not turn into waiting forever on a dead webhook."""
+    monkeypatch.setattr(runner, "SEND_TIMEOUT_SECONDS", 0.05)
+
+    class Hang:
+        async def send(self, alert: H5Alert) -> bool:
+            await asyncio.sleep(30)
+            return True
+
+    async def scenario() -> float:
+        loop = asyncio.get_running_loop()
+        monitor = H5RunMonitor(H5Alerter(channel=Hang(), enabled=True, send_timeout=30))
+        task = asyncio.create_task(
+            runner._report_stop(monitor, operator=False, reason="sigterm")
+        )
+        await asyncio.sleep(0.01)
+        started = loop.time()
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0.01)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=3)
+        return loop.time() - started
+
+    assert asyncio.run(scenario()) < 2.5

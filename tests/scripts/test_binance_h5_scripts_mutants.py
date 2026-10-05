@@ -15,6 +15,8 @@ Invariant sentences (one per mutant):
   is exactly true.
 - ONCE_EXITS: --once runs exactly one tick and returns its exit code.
 - CANCEL_ALERTS_OFF: with alerts off a cancellation is neither reported nor swallowed.
+- STOP_PROPAGATES: a stop that interrupts the stop alert is still raised once the
+  alert is done.
 - EXCEPTION_REPORTS: an exception that escapes the loop is reported and still raised.
 - CANCEL_UNHANDLED: a cancellation without our signal handlers is still reported
   and still propagates.
@@ -47,7 +49,7 @@ SCRIPTS = {
 TARGETS = {
     "watch": {"_guard"},
     "gate": {"_guard_cli"},
-    "runner": {"_run_ticks", "_install_stop_signals"},
+    "runner": {"_run_ticks", "_install_stop_signals", "_report_stop"},
 }
 
 
@@ -178,6 +180,13 @@ def sc_once_exits(m: types.ModuleType) -> None:
     assert run_one_tick_scenario(m, [tick(m, "no_entry")]) == 0
 
 
+def call_async(factory: Any) -> Any:
+    try:
+        return asyncio.run(factory())
+    except Exception as exc:
+        raise AssertionError(f"raised {type(exc).__name__}: {exc}") from exc
+
+
 def _expect_cancelled(m: types.ModuleType, **kwargs: Any) -> None:
     try:
         run_one_tick_scenario(m, [asyncio.CancelledError()], **kwargs)
@@ -190,6 +199,36 @@ def sc_cancel_alerts_off(m: types.ModuleType) -> None:
     stop = m._StopState()
     stop.installed = True  # isolates the alerts-off branch from the handler branch
     _expect_cancelled(m, stop=stop)
+
+
+def sc_stop_propagates(m: types.ModuleType) -> None:
+    class Slow:
+        sent: list[Any] = []
+
+        async def send(self, alert: Any) -> bool:
+            await asyncio.sleep(0.02)
+            self.sent.append(alert)
+            return True
+
+    channel = Slow()
+    channel.sent = []
+    monitor = m.H5RunMonitor(m.H5Alerter(channel=channel, enabled=True))
+
+    async def go() -> str:
+        task = asyncio.create_task(
+            m._report_stop(monitor, operator=False, reason="sigterm")
+        )
+        await asyncio.sleep(0.005)  # the send is in flight
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return "cancelled"
+        return "returned"
+
+    outcome = call_async(go)
+    assert outcome == "cancelled", "the interrupting stop was swallowed"
+    assert len(channel.sent) == 1, "the in-flight stop alert was not delivered"
 
 
 def sc_exception_reports(m: types.ModuleType) -> None:
@@ -251,6 +290,10 @@ DECLARED: dict[tuple[str, str, str], tuple[str, Callable[[types.ModuleType], Non
     ("runner", "_run_ticks", "not monitor.enabled"): (
         "CANCEL_ALERTS_OFF",
         sc_cancel_alerts_off,
+    ),
+    ("runner", "_report_stop", "interrupted"): (
+        "STOP_PROPAGATES",
+        sc_stop_propagates,
     ),
     ("runner", "_run_ticks", "monitor.enabled"): (
         "EXCEPTION_REPORTS",
@@ -331,7 +374,7 @@ def test_invariant_sentences_match_the_mutants():
     ]
     declared = [key for key, _ in DECLARED.values()]
     assert sorted(keys) == sorted(declared)
-    assert len(set(declared)) == len(declared) == 9
+    assert len(set(declared)) == len(declared) == 10
 
 
 @pytest.mark.parametrize("target", sorted(DECLARED), ids=lambda t: DECLARED[t][0])

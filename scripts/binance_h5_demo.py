@@ -71,18 +71,27 @@ def _build_monitor() -> H5RunMonitor:
 
 
 async def _report_stop(monitor: H5RunMonitor, *, operator: bool, reason: str) -> None:
-    """Send the stop alert even if a stop signal lands while it is in flight.
+    """Send the stop alert even if stop signals keep landing while it is in flight.
 
-    The send runs as its own task behind a shield; a cancellation of this task
-    waits (bounded by the send timeout) for the in-flight send and then
-    propagates. Only called when alerts are on, so the OFF path gains no await.
+    The send runs as its own task. This coroutine waits for it (bounded by the
+    send timeout plus a second) and absorbs any number of cancellations while it
+    waits: ``asyncio.wait`` never cancels the task it waits on, so each signal only
+    interrupts one wait, which is then resumed. After the send is done (or the
+    bound is spent) a single CancelledError is raised if any signal arrived, so
+    the stop still propagates. Only called when alerts are on, so the OFF path
+    gains no await.
     """
+    loop = asyncio.get_running_loop()
     report = asyncio.ensure_future(monitor.stopped(operator=operator, reason=reason))
-    try:
-        await asyncio.shield(report)
-    except asyncio.CancelledError:
-        await asyncio.wait({report}, timeout=SEND_TIMEOUT_SECONDS + 1)
-        raise
+    deadline = loop.time() + SEND_TIMEOUT_SECONDS + 1
+    interrupted = False
+    while not report.done() and loop.time() < deadline:
+        try:
+            await asyncio.wait({report}, timeout=max(deadline - loop.time(), 0))
+        except asyncio.CancelledError:
+            interrupted = True
+    if interrupted:
+        raise asyncio.CancelledError
 
 
 async def _run_ticks(
