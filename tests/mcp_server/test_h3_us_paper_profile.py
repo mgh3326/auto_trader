@@ -406,6 +406,17 @@ def _required_kwargs(function: Any) -> dict[str, Any]:
     return kwargs
 
 
+async def _refusal(call: Any) -> str:
+    """The pin refusal message; anything else (a body run) is an assertion."""
+    try:
+        await call
+    except ValueError as exc:
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 - the body ran: the pin failed
+        raise AssertionError(f"the tool body ran instead of the pin: {exc!r}") from exc
+    raise AssertionError("the call was not refused by the pin")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", sorted(h3.H3_US_PAPER_MARKET_PINNED_TOOLS))
 @pytest.mark.parametrize("market", ["kr", "crypto", "US", " us", "nyse", "upbit"])
@@ -416,8 +427,7 @@ async def test_pinned_tool_refuses_a_non_us_market_before_its_body(
     function = _register(PROFILE).tools[tool]
     kwargs = _required_kwargs(function)
     kwargs["market"] = market
-    with pytest.raises(ValueError, match="pinned to market='us'"):
-        await function(**kwargs)
+    assert "pinned to market='us'" in await _refusal(function(**kwargs))
     assert trap.hits == []
 
 
@@ -459,8 +469,8 @@ async def test_alpaca_tool_refuses_another_account_before_its_body(
     function = _register(PROFILE).tools[tool]
     kwargs = _required_kwargs(function)
     kwargs["account_mode"] = account_mode
-    with pytest.raises(ValueError, match="pinned to account_mode='alpaca_paper'"):
-        await function(**kwargs)
+    message = await _refusal(function(**kwargs))
+    assert "pinned to account_mode='alpaca_paper'" in message
 
 
 @pytest.mark.asyncio
@@ -518,8 +528,8 @@ async def test_briefing_refuses_a_live_account_scope(
 ) -> None:
     trap = _BrokerTrap(monkeypatch)
     function = _register(PROFILE).tools["get_operating_briefing"]
-    with pytest.raises(ValueError, match="account_scope='db_simulated'"):
-        await function(market="us", account_scope=scope)
+    message = await _refusal(function(market="us", account_scope=scope))
+    assert "account_scope='db_simulated'" in message
     assert trap.hits == []
 
 
