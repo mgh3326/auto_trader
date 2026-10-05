@@ -3,7 +3,7 @@
 ``route_request_profile_golden.json`` holds, for every profile that registers
 ``route_request`` (gates on and off), the sha256 of the exact JSON response
 (key order preserved) for every intent x market x purpose case. It was
-generated from main (f24eb3a7f) before #1244 changed any route code, by
+generated from main before #1244 changed any route code (recaptured on main 49d56cc0b in round 3), by
 running this module as a script. The test then pins every profile except
 ``h3-crypto-paper`` to those bytes; on ``h3-crypto-paper`` only the crypto
 buy/sell routes may move (to the paper-execution contract) and every other
