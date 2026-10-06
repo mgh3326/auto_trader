@@ -239,14 +239,8 @@ _SUMMER_INSTANTS = [
 # --- A1: the default key is byte-identical to main ---------------------------
 
 
-def test_shipped_policy_key_is_the_one_day_measurement_window():
-    """#1248 ONE-DAY MEASUREMENT: the shipped value opens pre and post.
-
-    The code default stays [regular] (pinned by
-    test_policy_key_schema_is_closed_and_canonical); the revert PR restores
-    the shipped value to it.
-    """
-    assert toss_live_us_approval_sessions() == ("pre", "regular", "post")
+def test_shipped_policy_key_defaults_to_regular_only():
+    assert toss_live_us_approval_sessions() == ("regular",)
 
 
 @pytest.mark.asyncio
@@ -258,10 +252,7 @@ def test_shipped_policy_key_is_the_one_day_measurement_window():
 async def test_default_key_decisions_equal_main_for_every_session(
     monkeypatch, now, order_type, action
 ):
-    """A1: the default key ([regular]) decides exactly like main."""
-    # #1248: pin the code default; the shipped YAML is temporarily
-    # [pre, regular, post] for the one-day measurement.
-    _use_key(monkeypatch, ("regular",))
+    """A1: the shipped key (no monkeypatch) decides exactly like main."""
     _use_calendar(monkeypatch, _SUMMER)
     group = _group(order_type=order_type, action=action)
 
@@ -282,7 +273,6 @@ async def test_default_key_decisions_equal_main_for_every_session(
 
 @pytest.mark.asyncio
 async def test_default_key_calendar_unavailable_equals_main(monkeypatch):
-    _use_key(monkeypatch, ("regular",))  # #1248: pin the code default
     _use_calendar(monkeypatch, None)
     group = _group()
     now = _kst(2026, 9, 30, 17, 0, 0)
@@ -991,7 +981,6 @@ async def test_enabled_key_loss_cut_with_unknown_calendar_stays_exempt(monkeypat
 async def test_default_key_loss_cut_exemption_is_unchanged_and_io_free(monkeypatch):
     """A1 for protective exits: the default key adds no calendar I/O."""
 
-    _use_key(monkeypatch, ("regular",))  # #1248: pin the code default
     # Counted, not raised: the exit session lookup is fail-open and would
     # swallow an exception, hiding the read.
     calendar_calls = _use_calendar(monkeypatch, _SUMMER)
