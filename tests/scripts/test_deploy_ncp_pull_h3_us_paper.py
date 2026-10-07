@@ -1,7 +1,9 @@
-"""#1189 (part C of #1171): the at-mcp-h3-crypto-paper unit in the NCP deploy.
+"""#1257 (#1245): the at-mcp-h3-us-paper unit in the NCP deploy.
 
-Fake Docker/curl only (the stateful harnesses of the rollback and image-prune
-suites). Nothing here talks to a real daemon, HAProxy or host.
+Same wiring as the #1189 h3-crypto-paper unit, one port up (8777). Fake
+Docker/curl only (the stateful harnesses of the rollback and image-prune
+suites). Nothing here talks to a real daemon, HAProxy or host. The generic
+render-shape and tracing tests stay in the #1189 suite.
 """
 
 from __future__ import annotations
@@ -15,9 +17,7 @@ import pytest
 
 from app.mcp_server.profiles import McpProfile, require_mcp_profile
 from app.mcp_server.tooling import register_all_tools
-from app.mcp_server.tooling.h3_crypto_paper_registration import (
-    H3_CRYPTO_PAPER_TOOL_NAMES,
-)
+from app.mcp_server.tooling.h3_us_paper_registration import H3_US_PAPER_TOOL_NAMES
 from tests.mcp_server._registration_recorder import RegistrationRecorder
 from tests.scripts import test_deploy_ncp_pull_image_prune as prune
 from tests.scripts.test_deploy_ncp_pull_rollback import (
@@ -35,30 +35,30 @@ pytestmark = pytest.mark.unit
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO / "ops/ncp/haproxy/haproxy.cfg.tmpl"
 TAILNET = "100.122.100.56"
-NAME = "h3-crypto-paper"
-UNIT = "at-mcp-h3-crypto-paper"
-PROFILE = "h3-crypto-paper"
-PORT = "8776"
-TOKEN = "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN"
+NAME = "h3-us-paper"
+UNIT = "at-mcp-h3-us-paper"
+PROFILE = "h3-us-paper"
+PORT = "8777"
+TOKEN = "MCP_H3_US_PAPER_AUTH_TOKEN"
 
-# The arrays exactly as they were before #1189: the existing units must stay
+# The arrays exactly as they were before #1257: the existing units must stay
 # byte-identical, in order, with the new unit appended after them.
 BEFORE = {
     "MCP_NAMES": "analysis-readonly account-read tradingcodex-execution paper-001 "
-    "kiwoom live-kr live-us live-crypto",
+    "kiwoom live-kr live-us live-crypto h3-crypto-paper",
     "MCP_PROFILES": "analysis_readonly account_read tradingcodex_execution "
-    "hermes-paper-kis kiwoom live-kr live-us live-crypto",
-    "MCP_PORTS": "8768 8769 8770 8771 8772 8773 8774 8775",
+    "hermes-paper-kis kiwoom live-kr live-us live-crypto h3-crypto-paper",
+    "MCP_PORTS": "8768 8769 8770 8771 8772 8773 8774 8775 8776",
     "MCP_TOKENS": "MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN "
     "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN "
     "MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN "
-    "MCP_LIVE_CRYPTO_AUTH_TOKEN",
-    "MCP_LIVE_ROUTE_NAMES": "live-kr live-us live-crypto",
+    "MCP_LIVE_CRYPTO_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
+    "MCP_LIVE_ROUTE_NAMES": "live-kr live-us live-crypto h3-crypto-paper",
     "APP_CONTAINERS": "at-api at-api-blue at-api-green at-worker at-worker-new "
     "at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green "
     "at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution "
     "at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us "
-    "at-mcp-live-crypto",
+    "at-mcp-live-crypto at-mcp-h3-crypto-paper",
 }
 APPENDED = {
     "MCP_NAMES": NAME,
@@ -68,16 +68,7 @@ APPENDED = {
     "MCP_LIVE_ROUTE_NAMES": NAME,
     "APP_CONTAINERS": UNIT,
 }
-# #1257 appends the h3-us-paper unit after this one; the order is pinned.
-LATER = {
-    "MCP_NAMES": "h3-us-paper",
-    "MCP_PROFILES": "h3-us-paper",
-    "MCP_PORTS": "8777",
-    "MCP_TOKENS": "MCP_H3_US_PAPER_AUTH_TOKEN",
-    "MCP_LIVE_ROUTE_NAMES": "h3-us-paper",
-    "APP_CONTAINERS": "at-mcp-h3-us-paper",
-}
-# Existing units and the environment their containers received before #1189.
+# Existing units and the environment their containers received before #1257.
 EXISTING = {
     "analysis-readonly": ("analysis_readonly", "8768"),
     "account-read": ("account_read", "8769"),
@@ -87,6 +78,7 @@ EXISTING = {
     "live-kr": ("live-kr", "8773"),
     "live-us": ("live-us", "8774"),
     "live-crypto": ("live-crypto", "8775"),
+    "h3-crypto-paper": ("h3-crypto-paper", "8776"),
 }
 
 
@@ -140,7 +132,7 @@ def test_unit_is_declared_with_exactly_its_profile_port_and_token() -> None:
     i = names.index(NAME)
     assert (profiles[i], ports[i], tokens[i]) == (PROFILE, PORT, TOKEN)
     assert names.count(NAME) == ports.count(PORT) == tokens.count(TOKEN) == 1
-    assert require_mcp_profile(profiles[i]) is McpProfile.H3_CRYPTO_PAPER
+    assert require_mcp_profile(profiles[i]) is McpProfile.H3_US_PAPER
     assert UNIT in _array_text("APP_CONTAINERS").split()
 
 
@@ -148,7 +140,7 @@ def test_unit_is_declared_with_exactly_its_profile_port_and_token() -> None:
 def test_existing_units_are_byte_identical_and_the_unit_is_appended(
     array: str,
 ) -> None:
-    assert _array_text(array) == f"{BEFORE[array]} {APPENDED[array]} {LATER[array]}"
+    assert _array_text(array) == f"{BEFORE[array]} {APPENDED[array]}"
 
 
 def test_port_collides_with_nothing_and_token_is_never_assigned() -> None:
@@ -191,7 +183,7 @@ def test_haproxy_frontend_is_tailnet_only_and_shaped_like_the_others() -> None:
 
 
 @pytest.mark.parametrize(
-    "bind", ["*:8776", ":8776", "[::]:8776", "0.0.0.0:8776", "10.0.0.5:8776"]
+    "bind", ["*:8777", ":8777", "[::]:8777", "0.0.0.0:8777", "10.0.0.5:8777"]
 )
 def test_render_refuses_a_public_or_unknown_bind_for_the_unit(
     tmp_path: Path, bind: str
@@ -212,7 +204,7 @@ def test_render_refuses_a_public_or_unknown_bind_for_the_unit(
 # --- boot: the unit's MCP_PROFILE registers exactly the H3 allowlist ----------
 
 
-def test_unit_profile_boots_the_h3_surface_not_default(
+def test_unit_profile_boots_the_h3_us_surface_not_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.config import settings
@@ -220,14 +212,15 @@ def test_unit_profile_boots_the_h3_surface_not_default(
     names = _array_text("MCP_NAMES").split()
     value = _array_text("MCP_PROFILES").split()[names.index(NAME)]
     profile = require_mcp_profile(value)
-    assert profile is McpProfile.H3_CRYPTO_PAPER
+    assert profile is McpProfile.H3_US_PAPER
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
     recorder = RegistrationRecorder()
     register_all_tools(cast(Any, recorder), profile=profile)
-    assert set(recorder.tools) == set(H3_CRYPTO_PAPER_TOOL_NAMES)
-    default = RegistrationRecorder()
-    register_all_tools(cast(Any, default), profile=McpProfile.DEFAULT)
-    assert set(recorder.tools) < set(default.tools)
+    assert set(recorder.tools) == set(H3_US_PAPER_TOOL_NAMES)
+    # A strict narrowing of us-paper (the existing Alpaca paper surface).
+    broad = RegistrationRecorder()
+    register_all_tools(cast(Any, broad), profile=McpProfile.US_PAPER)
+    assert set(recorder.tools) < set(broad.tools)
 
 
 # --- deploy: introduction and replacement --------------------------------------
@@ -357,8 +350,8 @@ def test_success_path_digest_mismatch_on_the_unit_rolls_back(tmp_path: Path) -> 
 
 
 def test_later_failure_restores_the_unit_with_its_own_profile(tmp_path: Path) -> None:
-    # Fail the HAProxy route probe of an earlier unit after every unit
-    # started (#1257 appends h3-us-paper after this one): rollback must restart this unit
+    # The unit is the last MCP unit, so fail the HAProxy route probe of an
+    # earlier one after every unit started: rollback must restart this unit
     # from OLD with its own profile, port and token.
     result, calls, state, _ = _run(
         tmp_path, fail_route_url=f"http://{TAILNET}:8773/health"
@@ -435,10 +428,7 @@ def test_prune_keeps_a_skipped_units_own_image(tmp_path: Path) -> None:
 
 # --- A4: a blank profile never reaches docker ----------------------------------
 
-_PROFILES_LINE = (
-    f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {PROFILE} "
-    f"{LATER['MCP_PROFILES']})"
-)
+_PROFILES_LINE = f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {PROFILE})"
 
 
 @pytest.mark.parametrize("blank", ["''", "' '", '"\t"'], ids=["empty", "space", "tab"])
@@ -448,8 +438,7 @@ def test_blank_profile_in_the_arrays_refuses_before_pull_or_mutation(
     deploy = _mutant(
         tmp_path,
         _PROFILES_LINE,
-        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {blank} "
-        f"{LATER['MCP_PROFILES']})",
+        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {blank})",
     )
     result, calls, state, _ = _run(tmp_path, deploy=deploy)
     assert result.returncode == 78
@@ -463,9 +452,7 @@ def test_blank_profile_in_the_arrays_refuses_before_pull_or_mutation(
 
 def test_misaligned_arrays_refuse_before_pull_or_mutation(tmp_path: Path) -> None:
     deploy = _mutant(
-        tmp_path,
-        _PROFILES_LINE,
-        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {LATER['MCP_PROFILES']})",
+        tmp_path, _PROFILES_LINE, f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']})"
     )
     result, calls, _, _ = _run(tmp_path, deploy=deploy)
     assert result.returncode == 78
@@ -484,10 +471,7 @@ def test_run_mcp_refuses_a_blank_profile_even_past_the_pre_check(
     mutated = source.replace(
         "validate_mcp_units || return $?; validate_mcp_tokens; }",
         "validate_mcp_tokens; }",
-    ).replace(
-        _PROFILES_LINE,
-        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} '' {LATER['MCP_PROFILES']})",
-    )
+    ).replace(_PROFILES_LINE, f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} '')")
     assert mutated.count("validate_mcp_units") == 1  # definition only
     deploy = tmp_path / "deploy-mutant.sh"
     deploy.write_text(mutated)
@@ -504,165 +488,3 @@ def test_run_mcp_refuses_a_blank_profile_even_past_the_pre_check(
         if unit != UNIT:
             assert state[unit] == _expected(unit), unit
     assert "rollback or digest verification is incomplete" in result.stderr
-
-
-# --- round 1 findings: closed HAProxy shape, no traced tokens -------------------
-
-
-_GLOBAL = "global\n    log stdout format raw local0\n"
-
-
-@pytest.mark.parametrize(
-    ("anchor", "line"),
-    [
-        (_GLOBAL, "    stats socket [::]:8776 v6only level admin\n"),
-        (_GLOBAL, "    stats socket 0.0.0.0:8776 level admin\n"),
-        (_GLOBAL, "    stats socket /run/haproxy.sock mode 600\n"),
-        ("defaults\n", "    stats enable\n"),
-        ("", "listen ls_open\n    bind 100.122.100.56:8776\n\n"),
-        ("", "peers mypeers\n    peer local [::]:8777\n\n"),
-        ("", "userlist ops\n    user admin insecure-password x\n\n"),
-        (
-            "    server mcp_h3_crypto_paper 127.0.0.1:8776 check\n",
-            "    server extra 203.0.113.10:8776 check\n",
-        ),
-    ],
-    ids=[
-        "stats-socket-ipv6",
-        "stats-socket-ipv4",
-        "stats-socket-unix",
-        "stats-enable",
-        "listen-section",
-        "peers-section",
-        "userlist-section",
-        "non-loopback-server",
-    ],
-)
-def test_render_refuses_any_listener_outside_the_closed_shape(
-    tmp_path: Path, anchor: str, line: str
-) -> None:
-    text = TEMPLATE.read_text()
-    if anchor:
-        assert text.count(anchor) == 1
-        mutated = text.replace(anchor, anchor + line)
-    else:
-        mutated = text + "\n" + line
-    template = tmp_path / "haproxy.cfg.tmpl"
-    template.write_text(mutated)
-    result, calls, state, run_dir = _run(
-        tmp_path, extra_env={"MCP_HAPROXY_TEMPLATE": str(template)}
-    )
-    assert result.returncode != 0
-    assert "HAProxy binds must be loopback and tailnet only" in result.stderr
-    for unit in INITIAL:
-        assert state[unit] == _expected(unit), unit
-    cfg = run_dir / "haproxy.cfg"
-    assert not cfg.exists() or line.strip() not in cfg.read_text()
-
-
-def _traced(tmp_path: Path, how: str) -> Path:
-    wrapper = tmp_path / "deploy-traced.sh"
-    if how == "bash-x":
-        body = f'exec bash -x "{DEPLOY}" "$@"\n'
-    elif how.startswith("bash-env-"):
-        # A BASH_ENV startup file whose trap turns tracing back on after the
-        # script's own set +x: DEBUG (builder self-check after round 1), CHLD
-        # (round 2 finding: any child exit re-enables it) and EXIT.
-        trap = {
-            "bash-env-debug-trap": "trap 'set -x' DEBUG\nset -o functrace\n",
-            "bash-env-chld-trap": "trap 'set -x' CHLD\n",
-            "bash-env-exit-trap": "trap 'set -x' EXIT\n",
-        }[how]
-        env_file = tmp_path / "bash-env.sh"
-        env_file.write_text(trap)
-        body = f'export BASH_ENV="{env_file}"\nexec bash "{DEPLOY}" "$@"\n'
-    else:
-        body = f'export SHELLOPTS\nset -o xtrace\nexec bash "{DEPLOY}" "$@"\n'
-    wrapper.write_text("#!/usr/bin/env bash\n" + body)
-    wrapper.chmod(0o755)
-    return wrapper
-
-
-@pytest.mark.parametrize(
-    "how",
-    [
-        "bash-x",
-        "shellopts",
-        "bash-env-debug-trap",
-        "bash-env-chld-trap",
-        "bash-env-exit-trap",
-    ],
-)
-@pytest.mark.parametrize("args", [(), ("--rollback",)], ids=["deploy", "rollback"])
-def test_inherited_tracing_never_prints_a_token(
-    tmp_path: Path, how: str, args: tuple[str, ...]
-) -> None:
-    result, _, state, _ = _run(tmp_path, args=args, deploy=_traced(tmp_path, how))
-    assert result.returncode == 0, result.stderr
-    assert "xtrace disabled: this script handles MCP tokens" in result.stderr
-    output = result.stdout + result.stderr
-    assert "tok-MCP_" not in output  # no unit's synthetic token, H3 included
-    assert state[UNIT] == NEW
-
-
-def test_inherited_tracing_never_prints_a_token_on_failure(tmp_path: Path) -> None:
-    result, _, _, _ = _run(tmp_path, fail_name=UNIT, deploy=_traced(tmp_path, "bash-x"))
-    assert result.returncode != 0
-    assert "tok-MCP_" not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize("ignored", ["HUP", "PIPE", "HUP PIPE INT"])
-def test_signals_ignored_at_entry_neither_re_exec_nor_loop(
-    tmp_path: Path, ignored: str
-) -> None:
-    # nohup and some service managers start the script with signals ignored;
-    # those list as trap -- '' and run no code, so the clean-shell re-exec
-    # must not fire (and so cannot loop) and the deploy runs once, untraced.
-    wrapper = tmp_path / "deploy-ignored.sh"
-    wrapper.write_text(
-        f'#!/usr/bin/env bash\ntrap \'\' {ignored}\nexec bash "{DEPLOY}" "$@"\n'
-    )
-    wrapper.chmod(0o755)
-    result, calls, state, _ = _run(tmp_path, deploy=wrapper)
-    assert result.returncode == 0, result.stderr
-    assert "clean shell" not in result.stderr
-    assert "tok-MCP_" not in result.stdout + result.stderr
-    assert len([c for c in calls if c[0] == "pull"]) == 1
-    assert state[UNIT] == NEW
-
-
-def test_any_startup_file_forces_the_clean_re_exec(tmp_path: Path) -> None:
-    # A BASH_ENV startup file ran arbitrary code before the script; even one
-    # that set no trap and no option is not trusted. The clean shell must not
-    # read it again.
-    marker = tmp_path / "bash-env-ran.log"
-    env_file = tmp_path / "bash-env.sh"
-    env_file.write_text(f'printf "ran\\n" >> "{marker}"\n')
-    wrapper = tmp_path / "deploy-bash-env.sh"
-    wrapper.write_text(
-        f'#!/usr/bin/env bash\nexport BASH_ENV="{env_file}"\nexec bash "{DEPLOY}" "$@"\n'
-    )
-    wrapper.chmod(0o755)
-    result, _, state, _ = _run(tmp_path, deploy=wrapper)
-    assert result.returncode == 0, result.stderr
-    assert "re-running in a clean shell" in result.stderr
-    # read once by the first shell, never by the clean one or its children
-    assert marker.read_text() == "ran\n"
-    assert state[UNIT] == NEW
-
-
-def test_sourced_into_a_shell_holding_a_trap_re_execs_clean(tmp_path: Path) -> None:
-    # The round 2 reproduction shape: the script's code runs in a shell that
-    # already holds a CHLD trap re-enabling xtrace, with no BASH_ENV involved.
-    # The trap scan alone must force the clean re-exec of this very file.
-    wrapper = tmp_path / "deploy-sourced.sh"
-    wrapper.write_text(
-        f'#!/usr/bin/env bash\ntrap \'set -x\' CHLD\nsource "{DEPLOY}" "$@"\n'
-    )
-    wrapper.chmod(0o755)
-    result, calls, state, _ = _run(tmp_path, deploy=wrapper)
-    assert result.returncode == 0, result.stderr
-    assert "re-running in a clean shell" in result.stderr
-    assert "tok-MCP_" not in result.stdout + result.stderr
-    assert len([c for c in calls if c[0] == "pull"]) == 1
-    assert state[UNIT] == NEW

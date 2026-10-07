@@ -144,6 +144,7 @@ tests/services/brokers/binance/test_transport_event_hooks.py
 tests/services/brokers/kis/test_live_order_expiry.py
 tests/services/brokers/paper/test_application.py
 tests/services/brokers/paper/test_production_adapter_contract.py
+tests/services/brokers/test_credential_firewall.py
 tests/services/brokers/test_edge_client.py
 tests/services/brokers/toss/test_auth_single_flight.py
 tests/services/brokers/toss/test_token_issuance_gatewayd.py

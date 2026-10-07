@@ -447,7 +447,7 @@ order_proposals:
   # session case is unknown). order.day_expiry_kst is KR-only and is NOT
   # read for Toss US. The measurement card (#908/#1032) fills it in.
   approval_window:
-    toss_live_us_sessions: [pre, regular, post]
+    toss_live_us_sessions: [regular]
 
 # Raw-sector -> cluster grouping for the concentration advisory. A member matches a
 # symbol's symbol_sectors label (name_kr / name_en / source_key) when the member
