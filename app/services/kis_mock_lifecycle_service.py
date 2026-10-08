@@ -335,6 +335,7 @@ class KISMockLifecycleService:
         from app.services.kis_mock_inference_expiry import (
             ALLOWED_LEDGER_IDS,
             exact_ids,
+            validate_closed_accept_at,
             validate_closed_detail,
         )
         from app.services.kis_mock_inference_expiry_service import (
@@ -344,7 +345,11 @@ class KISMockLifecycleService:
         ids = exact_ids(details.keys())
         for ledger_id in ids:
             validate_closed_detail(details[ledger_id], ledger_id)
-        await verify_locked_batch(self._db, ids)
+        decisions = await verify_locked_batch(self._db, ids)
+        for decision in decisions:
+            # The stored accept instant is the locked row's own, never the
+            # caller's (the DB fill gate re-derives it from the row as well).
+            validate_closed_accept_at(details[decision.ledger_id], decision)
         changed = 0
         for ledger_id in sorted(ids):
             result = await self._db.execute(

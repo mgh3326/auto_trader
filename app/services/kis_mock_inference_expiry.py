@@ -235,6 +235,18 @@ def validate_closed_detail(detail: Any, ledger_id: int) -> None:
         )
 
 
+def validate_closed_accept_at(detail: Mapping[str, Any], decision: RowDecision) -> None:
+    """The detail's ``accept_at`` must be the locked row's own accept instant."""
+    if (
+        decision.accept_at is None
+        or detail.get("accept_at") != decision.accept_at.isoformat()
+    ):
+        raise InferenceInputError(
+            f"detail for ledger row {decision.ledger_id} does not carry the row's "
+            "accept instant"
+        )
+
+
 def validate_decision_ref(value: Any) -> str:
     if value != REQUIRED_DECISION_REF:
         raise InferenceInputError(

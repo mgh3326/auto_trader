@@ -33,6 +33,7 @@ from app.models.review import (
     KISMockInferenceExpiryEvent,
     KISMockOrderLedger,
 )
+from app.services import kis_mock_inference_expiry as rule
 from app.services import kis_mock_inference_expiry_service as service
 from app.services import kis_mock_lifecycle_service as lifecycle_module
 from app.services.kis_mock_inference_expiry import (
@@ -48,6 +49,7 @@ from app.services.kis_mock_lifecycle_service import (
 from app.services.order_proposals.kis_leftover_inference import (
     is_expired_inference_reason,
 )
+from tests import _schema_bootstrap as bootstrap
 from tests.services._kis_mock_inference_fixtures import (
     IDS,
     KST,
@@ -1195,6 +1197,187 @@ async def test_r2_writer_verify_mutant_would_close_a_filled_row(
     )
     assert changed == 4
     await world.db.rollback()
+
+
+# ------------------------------------------------ r4: accept instant from the row
+# Round-3 BLOCKER: the writer stored a caller-supplied accept_at and the
+# COMMIT-time fill gate used it as its symbol-fill cutoff, so a forged
+# accept_at let a late same-symbol fill through.
+
+_FORGED_ACCEPT = "9999-01-01T00:00:00+00:00"
+
+
+async def _late_symbol_fill(world) -> None:
+    async with AsyncSession(bind=world.db.bind, expire_on_commit=False) as other:
+        fill = exec_row(
+            source="websocket",
+            broker_order_id="0000077701",
+            side="sell",
+            filled_at=NOW,
+        )
+        other.add(fill)
+        await other.flush()
+        world.exec_ids.add(int(fill.id))
+        await other.commit()
+
+
+async def _forged_close_with_late_fill(world) -> int:
+    """The round-3 reproduction: a direct writer call with a forged accept_at,
+    a same-symbol fill committed after the writer, four audit rows, COMMIT."""
+    details = await _valid_details(world.db)
+    forged = {k: {**v, "accept_at": _FORGED_ACCEPT} for k, v in details.items()}
+    changed = await KISMockLifecycleService(world.db).close_rows_by_q46_inference(
+        details=forged, closed_at=NOW
+    )
+    await _late_symbol_fill(world)
+    batch = uuid.UUID(forged[63]["batch_id"])
+    for ledger_id in IDS:
+        world.db.add(_event(batch_id=batch, ledger_id=ledger_id))
+    await world.db.flush()
+    await world.db.commit()
+    return changed
+
+
+def _writer_accept_check_off(monkeypatch) -> None:
+    monkeypatch.setattr(
+        rule, "validate_closed_accept_at", lambda detail, decision: None
+    )
+
+
+class _StoredAcceptTrusted:
+    """Test-only mutant: the COMMIT-time gate trusts the stored detail
+    accept_at again (the round-3 body). Worker-owned throwaway DB; the real
+    function is always restored afterwards."""
+
+    _REAL = "IF v_accept IS NULL OR v_stored IS DISTINCT FROM v_accept THEN"
+    _MUTANT = "v_accept := v_stored;\n    IF v_accept IS NULL THEN"
+
+    def __init__(self, world) -> None:
+        self.world = world
+        [self.real] = [
+            ddl
+            for ddl in bootstrap._DDL_STATEMENTS
+            if "CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_audit()"
+            in ddl
+        ]
+        assert self.real.count(self._REAL) == 1
+        self.mutant = self.real.replace(self._REAL, self._MUTANT)
+
+    async def _install(self, ddl: str) -> None:
+        async with AsyncSession(bind=self.world.db.bind) as other:
+            await other.execute(sa.text(ddl))
+            await other.commit()
+
+    async def __aenter__(self):
+        await self._install(self.mutant)
+        return self
+
+    async def __aexit__(self, *exc):
+        await self._install(self.real)
+
+
+@pytest.mark.parametrize(
+    "mangle",
+    [
+        lambda d: {**d, "accept_at": _FORGED_ACCEPT},
+        lambda d: {**d, "accept_at": None},
+        lambda d: {k: v for k, v in d.items() if k != "accept_at"},
+    ],
+)
+async def test_r4_writer_refuses_a_forged_accept_at(world, mangle) -> None:
+    await world.seed()
+    details = await _valid_details(world.db)
+    details[63] = mangle(details[63])
+    before = await _snapshot(world.db)
+    with pytest.raises(InferenceInputError, match="accept instant"):
+        await KISMockLifecycleService(world.db).close_rows_by_q46_inference(
+            details=details, closed_at=NOW
+        )
+    await world.db.rollback()
+    assert await _snapshot(world.db) == before
+
+
+async def test_r4_writer_accept_check_mutant_would_store_a_forged_accept_at(
+    world, monkeypatch
+) -> None:
+    # Mutant: the writer trusts the detail accept_at again. The test above
+    # must then see the forged detail written.
+    await world.seed()
+    details = await _valid_details(world.db)
+    details[63] = {**details[63], "accept_at": _FORGED_ACCEPT}
+    _writer_accept_check_off(monkeypatch)
+    changed = await KISMockLifecycleService(world.db).close_rows_by_q46_inference(
+        details=details, closed_at=NOW
+    )
+    assert changed == 4
+    await world.db.rollback()
+
+
+async def test_r4_forged_stored_accept_at_is_refused_at_commit(
+    world, monkeypatch
+) -> None:
+    # Even with the writer check gone, the DB derives the accept instant from
+    # the ledger row: the forged close with a late same-symbol fill is refused
+    # at COMMIT and nothing changes except the other session's fill.
+    await world.seed()
+    before = await _snapshot(world.db)
+    _writer_accept_check_off(monkeypatch)
+    with pytest.raises(IntegrityError, match="accept instant does not match"):
+        await _forged_close_with_late_fill(world)
+    await world.db.rollback()
+    assert await _snapshot(world.db) == before
+
+
+async def test_r4_stored_accept_mutant_would_close_despite_a_late_fill(
+    world, monkeypatch
+) -> None:
+    # Mutant: the COMMIT-time gate trusts the stored accept_at (round-3
+    # body). The forged close then commits over the late fill — proving
+    # test_r4_forged_stored_accept_at_is_refused_at_commit depends on the
+    # row-derived accept instant.
+    await world.seed()
+    _writer_accept_check_off(monkeypatch)
+    async with _StoredAcceptTrusted(world):
+        changed = await _forged_close_with_late_fill(world)
+    assert changed == 4
+    states = (
+        (
+            await world.db.execute(
+                sa.select(KISMockOrderLedger.lifecycle_state).where(
+                    KISMockOrderLedger.id.in_(IDS)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    await world.db.rollback()
+    assert sorted(states) == ["expired"] * 4
+
+
+async def test_r4_the_close_cannot_move_the_accept_instant(world) -> None:
+    # The derived cutoff cannot be shifted inside the close UPDATE itself:
+    # trade_date / order_time must be unchanged by it.
+    await world.seed()
+    details = await _valid_details(world.db)
+    for ledger_id in IDS:
+        await world.db.execute(
+            sa.update(KISMockOrderLedger)
+            .where(KISMockOrderLedger.id == ledger_id)
+            .values(
+                lifecycle_state="expired",
+                last_reconcile_detail=details[ledger_id],
+                order_time="235959",
+            )
+        )
+    batch = uuid.UUID(details[63]["batch_id"])
+    for ledger_id in IDS:
+        world.db.add(_event(batch_id=batch, ledger_id=ledger_id))
+    await world.db.flush()
+    with pytest.raises(IntegrityError, match="outside its contract"):
+        await world.db.commit()
+    await world.db.rollback()
+    assert (await _snapshot(world.db))["audit"] == 0
 
 
 async def test_execution_ledger_is_never_written(world) -> None:

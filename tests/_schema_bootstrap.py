@@ -141,7 +141,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v59 (#1250 r3): COMMIT-time fill gate + four-row batch check in the deferred
 # trigger (helper review.kis_mock_q46_detail_has_fill) and a BEFORE UPDATE OR
 # DELETE guard that makes a closed (marked) row terminal.
-SCHEMA_BOOTSTRAP_VERSION = 59
+# v60 (#1250 r4): the COMMIT-time fill gate derives the accept instant from the
+# ledger row (trade_date KST date + order_time) and refuses a detail accept_at
+# that differs; trade_date/order_time may not change in the close UPDATE.
+SCHEMA_BOOTSTRAP_VERSION = 60
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2171,10 +2174,14 @@ CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_audit()
 RETURNS trigger AS $$
 DECLARE
     v_accept timestamptz;
+    v_time text;
+    v_stored timestamptz;
 BEGIN
     IF NEW.id NOT IN (63, 64, 66, 80)
        OR NEW.lifecycle_state IS DISTINCT FROM 'expired'
-       OR OLD.lifecycle_state NOT IN ('accepted', 'pending') THEN
+       OR OLD.lifecycle_state NOT IN ('accepted', 'pending')
+       OR NEW.trade_date IS DISTINCT FROM OLD.trade_date
+       OR NEW.order_time IS DISTINCT FROM OLD.order_time THEN
         RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close outside its contract',
             NEW.id USING ERRCODE = 'check_violation';
     END IF;
@@ -2193,13 +2200,32 @@ BEGIN
         RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close is not a four-row batch',
             NEW.id USING ERRCODE = 'check_violation';
     END IF;
+    -- The fill cutoff comes from the ledger row itself (send-day KST date +
+    -- broker ord_tmd, as kis_leftover_inference.resolve_accept_at), never from
+    -- the stored detail a caller writes. A detail accept_at that differs from
+    -- the row's own instant is refused.
+    v_time := NEW.order_time;
+    IF v_time ~ '^[0-9]{4}$' THEN
+        v_time := v_time || '00';
+    END IF;
+    v_accept := NULL;
+    IF v_time ~ '^[0-9]{6}$'
+       AND substr(v_time, 1, 2)::int < 24
+       AND substr(v_time, 3, 2)::int < 60
+       AND substr(v_time, 5, 2)::int < 60 THEN
+        v_accept := (
+            (NEW.trade_date AT TIME ZONE 'Asia/Seoul')::date
+            + make_time(substr(v_time, 1, 2)::int, substr(v_time, 3, 2)::int,
+                        substr(v_time, 5, 2)::int)
+        ) AT TIME ZONE 'Asia/Seoul';
+    END IF;
     BEGIN
-        v_accept := (NEW.last_reconcile_detail->>'accept_at')::timestamptz;
+        v_stored := (NEW.last_reconcile_detail->>'accept_at')::timestamptz;
     EXCEPTION WHEN others THEN
-        v_accept := NULL;
+        v_stored := NULL;
     END;
-    IF v_accept IS NULL THEN
-        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close without an accept instant',
+    IF v_accept IS NULL OR v_stored IS DISTINCT FROM v_accept THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close accept instant does not match the ledger row',
             NEW.id USING ERRCODE = 'check_violation';
     END IF;
     -- Last fill gate, evaluated at COMMIT (deferred): every statement here

@@ -46,6 +46,10 @@ Invariant sentences (one per mutant):
 - COMMIT_GATE: at COMMIT the DB re-checks order, symbol and sibling fills and
   the four-row batch, so a fill committed after the service re-check, or a
   one-row raw close, refuses the whole close.
+- ACCEPT_FROM_ROW: the COMMIT-time fill gate takes the accept instant from the
+  ledger row (send-day KST date + order_time), never from the stored detail;
+  the writer and the DB both refuse a detail accept_at that differs, and the
+  close UPDATE cannot change trade_date or order_time.
 """
 
 from __future__ import annotations
@@ -98,6 +102,7 @@ INVARIANT_KEYS = {
     "AUDIT_COUPLING",
     "TERMINAL",
     "COMMIT_GATE",
+    "ACCEPT_FROM_ROW",
 }
 
 
@@ -385,6 +390,13 @@ _DB_PROOFS = {
         "test_r3_sibling_fill_after_the_recheck_refuses_at_commit",
         "test_r3_a_one_row_raw_close_with_its_audit_is_refused",
         "test_r3_commit_gate_mutant_would_close_despite_a_late_fill",
+    ),
+    "ACCEPT_FROM_ROW": (
+        "test_r4_writer_refuses_a_forged_accept_at",
+        "test_r4_writer_accept_check_mutant_would_store_a_forged_accept_at",
+        "test_r4_forged_stored_accept_at_is_refused_at_commit",
+        "test_r4_stored_accept_mutant_would_close_despite_a_late_fill",
+        "test_r4_the_close_cannot_move_the_accept_instant",
     ),
 }
 
