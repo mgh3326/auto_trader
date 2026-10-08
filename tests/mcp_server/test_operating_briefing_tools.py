@@ -598,6 +598,13 @@ async def test_get_operating_briefing_fail_opens_optional_sections(
             "count": 0,
             "entries": [],
             "unavailable_reason": "session_context_failed:RuntimeError:section boom",
+            "constraints": {
+                "count": 0,
+                "entries": [],
+                "unavailable_reason": (
+                    "session_context_failed:RuntimeError:section boom"
+                ),
+            },
         }
     elif section_name == "analysis_artifacts":
         assert result["analysis_artifacts"] == {
@@ -1013,3 +1020,350 @@ async def test_operating_briefing_supports_trading_scoreboards(monkeypatch) -> N
     )
     assert res_delta["trading_scoreboards"] is not None
     assert res_delta["trading_scoreboards"]["paired_count"] == 42
+
+
+_ENTRY_REFS = {
+    "alert_uuid": None,
+    "broker_order_id": None,
+    "correlation_id": None,
+    "currency": None,
+    "event_key": None,
+    "fill_handoff": None,
+    "filled_notional": None,
+    "item_uuid": None,
+    "journal_id": None,
+    "kick_filter_class": None,
+    "kick_filter_reason": None,
+    "ledger_id": None,
+    "order_id": None,
+    "position_after": None,
+    "position_before": None,
+    "report_uuid": None,
+    "side": None,
+    "symbols": [],
+}
+
+
+def _briefing_entry(
+    *,
+    title: str,
+    entry_type: str,
+    created_at: str,
+) -> dict:
+    return {
+        "account_scope": "kis_live",
+        "body": f"{title} body",
+        "created_at": created_at,
+        "created_by": "operator",
+        "entry_type": entry_type,
+        "entry_uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "kst_date": "2026-09-04",
+        "market": "kr",
+        "refs": dict(_ENTRY_REFS),
+        "session_label": None,
+        "title": title,
+    }
+
+
+def _install_session_context_service(monkeypatch, get_recent) -> None:
+    """Patch briefing I/O so session-context tests never open a database."""
+    from zoneinfo import ZoneInfo
+
+    from app.mcp_server.tooling import operating_briefing as ob
+    from app.services.trade_journal import aggregates as aggregate_service
+
+    fixed_now = datetime(2026, 9, 4, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    class FakeSessionContextService:
+        def __init__(self, _db) -> None:
+            pass
+
+        async def get_recent(self, **kwargs):
+            return await get_recent(**kwargs)
+
+    class FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+    async def fake_holdings(**kwargs):
+        return {
+            "filters": {"market": kwargs["market"]},
+            "total_accounts": 0,
+            "total_positions": 0,
+            "summary": {},
+            "accounts": [],
+            "errors": [],
+        }
+
+    class EmptyPendingSnapshot:
+        orders: list[dict] = []
+        as_of = fixed_now.isoformat()
+        freshness_status = "fresh"
+        unavailable_reason = None
+        account_scope = "kis_live"
+
+    async def fake_pending(db, *, market, account_scope):
+        return EmptyPendingSnapshot()
+
+    async def fake_latest_report(db, *, market, account_scope):
+        return None
+
+    async def fake_analysis_artifacts(db, *, market, limit=10):
+        return {"count": 0, "artifacts": []}
+
+    async def fake_active_watches(**kwargs):
+        return {"count": 0, "active_watches": []}
+
+    async def fake_account_costs():
+        return None
+
+    async def fake_negative_class_health(db, *, market, now):
+        return SimpleNamespace(to_dict=lambda: {"status": "ok"})
+
+    async def fake_scoreboard(db, *, market, cohort):
+        return {"cohort": cohort, "market": market}
+
+    monkeypatch.setattr(ob, "AsyncSessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(ob, "SessionContextService", FakeSessionContextService)
+    monkeypatch.setattr(ob, "now_kst", lambda: fixed_now)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
+    monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
+    monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
+    monkeypatch.setattr(ob, "_recent_analysis_artifacts", fake_analysis_artifacts)
+    monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
+    monkeypatch.setattr(ob, "get_account_costs_setting", fake_account_costs)
+    monkeypatch.setattr(ob, "load_negative_class_health", fake_negative_class_health)
+    monkeypatch.setattr(ob, "policy_version_stamp", lambda: {"version": "test"})
+    monkeypatch.setattr(aggregate_service, "build_trading_scoreboard", fake_scoreboard)
+
+
+def _origin_main_success_rows():
+    from zoneinfo import ZoneInfo
+
+    fixed_now = datetime(2026, 9, 4, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    fixed_uuid = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+    def make_entry(*, row_id, title, entry_type, created_at):
+        return SimpleNamespace(
+            id=row_id,
+            entry_uuid=fixed_uuid,
+            kst_date=fixed_now.date(),
+            market="kr",
+            account_scope="kis_live",
+            entry_type=entry_type,
+            title=title,
+            body=f"{title} body",
+            refs={},
+            created_by="operator",
+            session_label=None,
+            created_at=created_at,
+        )
+
+    return [
+        make_entry(
+            row_id=1,
+            title="ordinary-1",
+            entry_type="next_action",
+            created_at=fixed_now - timedelta(seconds=1),
+        ),
+        make_entry(
+            row_id=101,
+            title="constraint-newer",
+            entry_type="constraint",
+            created_at=fixed_now - timedelta(minutes=5),
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", [RuntimeError, TimeoutError])
+async def test_constraint_query_failure_keeps_general_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    exc_type: type[Exception],
+) -> None:
+    """A1: constraint-only failure keeps entries and is not fully fresh."""
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    rows = _origin_main_success_rows()
+    ordinary = rows[0]
+
+    async def get_recent(**kwargs):
+        if kwargs.get("entry_type") == "constraint":
+            raise exc_type("constraint boom")
+        return [ordinary]
+
+    _install_session_context_service(monkeypatch, get_recent)
+    result = await ob.get_operating_briefing_impl(
+        market="kr",
+        account_scope="kis_live",
+        session_context_limit=10,
+    )
+
+    reason = f"session_context_constraints_failed:{exc_type.__name__}:constraint boom"
+    assert result["success"] is True
+    section = result["session_context"]
+    assert section.get("count") == 1
+    assert section.get("unavailable_reason") is None
+    assert section.get("entries") == [
+        _briefing_entry(
+            title="ordinary-1",
+            entry_type="next_action",
+            created_at="2026-09-04T09:59:59+09:00",
+        )
+    ]
+    assert section.get("constraints") == {
+        "count": 0,
+        "entries": [],
+        "unavailable_reason": reason,
+    }
+    assert result["staleness"]["session_context"] == {
+        "freshness_status": "unavailable",
+        "unavailable_reason": reason,
+    }
+    assert result["staleness"]["session_context"]["freshness_status"] != "db_read"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", [RuntimeError, TimeoutError])
+async def test_general_session_context_query_failure_includes_constraints(
+    monkeypatch: pytest.MonkeyPatch,
+    exc_type: type[Exception],
+) -> None:
+    """A2: the general-query fallback carries constraints in the unavailable shape."""
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    async def get_recent(**kwargs):
+        raise exc_type("section boom")
+
+    _install_session_context_service(monkeypatch, get_recent)
+    result = await ob.get_operating_briefing_impl(
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    reason = f"session_context_failed:{exc_type.__name__}:section boom"
+    assert result["success"] is True
+    assert result["session_context"] == {
+        "count": 0,
+        "entries": [],
+        "unavailable_reason": reason,
+        "constraints": {
+            "count": 0,
+            "entries": [],
+            "unavailable_reason": reason,
+        },
+    }
+    assert result["staleness"]["session_context"] == {
+        "freshness_status": "unavailable",
+        "unavailable_reason": reason,
+    }
+
+
+@pytest.mark.asyncio
+async def test_both_session_context_queries_match_origin_main_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A3: both queries succeeding matches the origin/main section bytes."""
+    import json
+
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    rows = _origin_main_success_rows()
+
+    async def get_recent(**kwargs):
+        selected = rows
+        if entry_type := kwargs.get("entry_type"):
+            selected = [row for row in selected if row.entry_type == entry_type]
+        if kst_date_from := kwargs.get("kst_date_from"):
+            selected = [row for row in selected if row.kst_date >= kst_date_from]
+        return sorted(
+            selected,
+            key=lambda row: (row.created_at, row.id),
+            reverse=True,
+        )[: kwargs["limit"]]
+
+    _install_session_context_service(monkeypatch, get_recent)
+    result = await ob.get_operating_briefing_impl(
+        market="kr",
+        account_scope="kis_live",
+        session_context_limit=10,
+    )
+
+    expected_context = {
+        "constraints": {
+            "count": 1,
+            "entries": [
+                _briefing_entry(
+                    title="constraint-newer",
+                    entry_type="constraint",
+                    created_at="2026-09-04T09:55:00+09:00",
+                )
+            ],
+        },
+        "count": 2,
+        "entries": [
+            _briefing_entry(
+                title="ordinary-1",
+                entry_type="next_action",
+                created_at="2026-09-04T09:59:59+09:00",
+            ),
+            _briefing_entry(
+                title="constraint-newer",
+                entry_type="constraint",
+                created_at="2026-09-04T09:55:00+09:00",
+            ),
+        ],
+    }
+    assert result["success"] is True
+    assert result["session_context"] == expected_context
+    assert result["staleness"]["session_context"] == {"freshness_status": "db_read"}
+    assert json.dumps(
+        result["session_context"], ensure_ascii=False, sort_keys=True
+    ) == json.dumps(expected_context, ensure_ascii=False, sort_keys=True)
+    assert "unavailable_reason" not in result["session_context"]
+    assert "unavailable_reason" not in result["session_context"]["constraints"]
+
+
+@pytest.mark.asyncio
+async def test_constraint_query_cancelled_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    rows = _origin_main_success_rows()
+
+    async def get_recent(**kwargs):
+        if kwargs.get("entry_type") == "constraint":
+            raise asyncio.CancelledError()
+        return [rows[0]]
+
+    _install_session_context_service(monkeypatch, get_recent)
+    with pytest.raises(asyncio.CancelledError):
+        await ob.get_operating_briefing_impl(
+            market="kr",
+            account_scope="kis_live",
+        )
+
+
+@pytest.mark.asyncio
+async def test_general_session_context_query_cancelled_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    async def get_recent(**kwargs):
+        raise asyncio.CancelledError()
+
+    _install_session_context_service(monkeypatch, get_recent)
+    with pytest.raises(asyncio.CancelledError):
+        await ob.get_operating_briefing_impl(
+            market="kr",
+            account_scope="kis_live",
+        )
