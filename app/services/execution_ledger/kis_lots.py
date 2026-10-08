@@ -85,7 +85,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.symbol import to_db_symbol, to_kis_symbol, to_yahoo_symbol
+from app.core.symbol import to_db_symbol
 from app.core.timezone import kst_day_window
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.review import KISLiveOrderLedger, LiveOrderLedger
@@ -1112,30 +1112,23 @@ def _us_symbol_key(symbol: str) -> str:
     return to_db_symbol(symbol.strip()).upper()
 
 
-def _us_symbol_spellings(keys: Sequence[str]) -> list[str]:
-    """Every spelling a US ledger writer may have stored for these DB symbols.
+# ASCII whitespace ``str.strip`` removes; the writers strip before persisting,
+# so this only has to cover what could still reach a stored symbol.
+_SQL_TRIM_CHARS = " \t\n\r\x0b\x0c"
 
-    The reconciler and the opening seed store the KIS ``pdno`` as received
-    (``BRK/B``), the websocket tap the upper-cased raw symbol; rows are mapped
-    back with ``_us_symbol_key`` so no spelling is counted under another key.
+
+def _symbol_matches(column: Any, keys: Sequence[str]) -> Any:
+    """SQL twin of ``_us_symbol_key``: the same canonical identity, in SQL.
+
+    ``to_db_symbol`` maps every ``/`` and ``-`` to ``.``, so the column is
+    normalized the same way (trim, translate, upper) and compared with the DB
+    keys. Enumerating spellings missed mixed forms such as ``r3pref/a-b``
+    (tester r3 F3) and exact case missed ``brk.b`` (r2 F2); a row the Python
+    mapping would attribute to a position must never be dropped before it.
     """
-    return sorted(
-        {
-            spelling
-            for key in keys
-            for spelling in (key, to_kis_symbol(key), to_yahoo_symbol(key))
-        }
-    )
-
-
-def _symbol_matches(column: Any, spellings: Sequence[str]) -> Any:
-    """SQL twin of ``_us_symbol_key``'s case/whitespace normalization.
-
-    The spellings are upper-case and trimmed; a stored ``brk.b`` (the ingest
-    schema accepts any case) must reach the Python mapping instead of being
-    dropped by an exact-case ``IN`` before it (tester r2 F2).
-    """
-    return func.upper(func.btrim(column)).in_(spellings)
+    return func.upper(
+        func.translate(func.btrim(column, _SQL_TRIM_CHARS), "/-", "..")
+    ).in_(keys)
 
 
 async def load_kis_live_us_lot_blocks(
@@ -1158,7 +1151,6 @@ async def load_kis_live_us_lot_blocks(
     keys = sorted({_us_symbol_key(ref.symbol) for ref in refs})
     if not keys:
         return {}
-    spellings = _us_symbol_spellings(keys)
 
     repo = ExecutionLedgerRepository(db)
     latest = await repo.latest_run_per_broker()
@@ -1175,7 +1167,7 @@ async def load_kis_live_us_lot_blocks(
                 .where(ExecutionLedger.account_mode == "live")
                 .where(ExecutionLedger.instrument_type == "equity_us")
                 .where(ExecutionLedger.currency == US_CURRENCY)
-                .where(_symbol_matches(ExecutionLedger.symbol, spellings))
+                .where(_symbol_matches(ExecutionLedger.symbol, keys))
                 # #1175: a quarantined row (an accept notice recorded as a
                 # fill) is not a fill for any view of this block.
                 .where(execution_ledger_in_effect())
@@ -1214,7 +1206,7 @@ async def load_kis_live_us_lot_blocks(
                     .where(LiveOrderLedger.account_scope == "kis_live")
                     .where(LiveOrderLedger.market == "us")
                     .where(LiveOrderLedger.side.in_(("buy", "sell")))
-                    .where(_symbol_matches(LiveOrderLedger.symbol, spellings))
+                    .where(_symbol_matches(LiveOrderLedger.symbol, keys))
                     .where(LiveOrderLedger.trade_date >= window_start)
                     .order_by(LiveOrderLedger.id.asc())
                 )
@@ -1232,7 +1224,7 @@ async def load_kis_live_us_lot_blocks(
                     .where(KISLiveOrderLedger.account_mode == "kis_live")
                     .where(KISLiveOrderLedger.instrument_type == "equity_us")
                     .where(KISLiveOrderLedger.side.in_(("buy", "sell")))
-                    .where(_symbol_matches(KISLiveOrderLedger.symbol, spellings))
+                    .where(_symbol_matches(KISLiveOrderLedger.symbol, keys))
                     .where(KISLiveOrderLedger.trade_date >= window_start)
                     .order_by(KISLiveOrderLedger.id.asc())
                 )

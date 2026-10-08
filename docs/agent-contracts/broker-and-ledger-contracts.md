@@ -291,7 +291,7 @@ allowlist change exists because `get_holdings` is already live-kr core.
   - 격리 행(#1175)은 어느 뷰에도 안 들어간다(`execution_ledger_in_effect()`, `test_quarantine_readers_db::test_us_lots_drop_the_quarantined_row` 가 filter-dropped 뮤턴트까지 증명).
     아직 격리 안 된 접수통지 팬텀은 `websocket` 행이라 lot·순수량·수량대조·`sellable_by_ledger` 에 절대 안 들어가고, 당일 증거에서는 차단을 더할 뿐 줄이지 않는다.
   - 🔴 websocket 행의 supersede(authoritative 행이 같은 주문을 덮음)는 US 에서 **같은 US 거래일**일 때만 성립한다 — KIS 주문번호는 날짜를 넘어 재사용되므로
-    과거 주문이 오늘 체결을 증거 뷰에서 지우지 못한다(tester r1 F1). 심볼은 SQL 에서도 대소문자·공백 정규화(`upper(btrim(symbol))`)로 맞춰 `brk.b` 같은 행을 놓치지 않는다(tester r2 F2). KR 키는 변경 전 그대로(golden 고정)이며 같은 잠재 문제는 별건 후속이다.
+    과거 주문이 오늘 체결을 증거 뷰에서 지우지 못한다(tester r1 F1). 심볼은 SQL 에서도 Python `_us_symbol_key`(`to_db_symbol`)와 같은 정규 식별자(`upper(translate(btrim(symbol), '/-', '..'))`)로 DB 키와 비교해 `brk.b`(r2 F2)·`r3pref/a-b` 같은 혼합 구분자(r3 F3) 행을 놓치지 않는다 — 철자 나열 방식은 폐기. KR 키는 변경 전 그대로(golden 고정)이며 같은 잠재 문제는 별건 후속이다.
   - KR·US 는 별도 세션으로 읽어 한 시장 실패가 다른 시장 블록을 깎지 않는다. summary 는 `scope="kis_live_kr_us_positions"`·`positions_covered_by_market`, 비-live 라우팅은 `reason="kis_live_only"`.
   - 🔴 #678 `kis_live_get_order_history` 차단·harness deny 불변. us-open-trade 프롬프트 문장은 운영자 PR 별건.
   - **테스트**: `test_kis_lots_us.py`(순수·US 거래일·venue·팬텀·KR golden), `test_kis_lots_us_db.py`(테스트 DB·KIS/HTTP 트랩·get_holdings KR+US end-to-end),

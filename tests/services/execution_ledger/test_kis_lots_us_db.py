@@ -24,6 +24,7 @@ from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcil
 from app.models.review import KISLiveOrderLedger, LiveOrderLedger
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
 from app.services.brokers.kis.base import BaseKISClient
+from app.services.execution_ledger import kis_lots
 from app.services.execution_ledger.kis_lots import (
     PositionRef,
     load_kis_live_kr_lot_blocks,
@@ -35,6 +36,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 # 2099-08-12 10:00 EDT = 23:00 KST, inside the US regular session
 NOW = datetime(2099, 8, 12, 14, 0, tzinfo=UTC)
 SESSION = datetime(2099, 8, 12, 13, 45, tzinfo=UTC)  # 09:45 EDT
+LATE = datetime(2099, 8, 12, 16, 0, tzinfo=UTC)  # 01:00 KST, same US date
 SYM = "T1173A"
 DOT = "T1173.B"  # DB dot-format; the reconciler stores KIS pdno "T1173/B"
 ORDER_PREFIX = "T1173"
@@ -52,6 +54,19 @@ ALL_SYMBOLS = [
     " T1173A ",
     "t1173/b",
 ]
+MIXED_KEY = "T1173.X.Y"
+# r3 F3 / round 4: spellings _us_symbol_key maps to MIXED_KEY ...
+MIXED_SAME = [
+    "t1173/x-y",
+    "T1173.X/Y",
+    "T1173-X.Y",
+    "t1173-x-y",
+    "T1173/X/Y",
+    "\tt1173.x.y ",
+]
+# ... and near misses it does not (must not be merged into the position).
+MIXED_OTHER = ["T1173_X.Y", "T1173 X.Y", "T1173.XY", "T1173.X.Y.Z", "T1173XY"]
+ALL_SYMBOLS += [MIXED_KEY, *MIXED_SAME, *MIXED_OTHER]
 
 
 @pytest.fixture(autouse=True)
@@ -361,7 +376,7 @@ async def test_a2_loader_keeps_today_fills_that_reuse_old_order_numbers(
             ),
         ],
         [PositionRef(SYM, Decimal("8"))],
-        now=datetime(2099, 8, 12, 16, 0, tzinfo=UTC),
+        now=LATE,
     )
     block = blocks[SYM]
     assert block["diagnostics"]["superseded_websocket_duplicates"] == 0
@@ -385,7 +400,7 @@ async def test_a2_symbol_case_and_whitespace_cannot_hide_today_fills(
     blocks = await _load(
         db_session,
         [
-            _run(timedelta(minutes=10)),
+            _run(timedelta(minutes=10), now=LATE),
             _fill(filled_qty=Decimal("8")),
             _fill(
                 symbol="t1173a",
@@ -402,9 +417,11 @@ async def test_a2_symbol_case_and_whitespace_cannot_hide_today_fills(
             ),
         ],
         [PositionRef(SYM, Decimal("8"))],
-        now=datetime(2099, 8, 12, 16, 0, tzinfo=UTC),
+        now=LATE,
     )
     block = blocks[SYM]
+    assert block["freshness"]["state"] == "fresh"
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
     assert len(block["provisional_rows_excluded"]) == 2
     for key in (
         "open_buy_evidence",
@@ -437,6 +454,102 @@ async def test_symbol_case_reaches_authoritative_rows_and_both_order_ledgers(
         o["order_no"]
         for o in block["open_buy_evidence"]["kis_live_order_ledger_open_buys"]
     ] == [f"{ORDER_PREFIX}62"]
+
+
+async def test_a2_mixed_separator_spellings_cannot_hide_today_fills(
+    db_session,
+) -> None:
+    """Tester r3 F3: to_db_symbol maps every / and - to a dot.
+
+    A stored r3pref/a-b style spelling of the held key must pass the SQL
+    prefilter; an authoritative mixed row counts toward the lots, and a
+    net-zero websocket buy/sell pair of today blocks every evidence view.
+    """
+    blocks = await _load(
+        db_session,
+        [
+            _run(timedelta(minutes=10), now=LATE),
+            _fill(symbol="T1173/X-Y", filled_qty=Decimal("5")),
+            _fill(symbol="t1173-x.y", filled_qty=Decimal("3")),
+            _fill(
+                symbol="t1173/x-y",
+                source="websocket",
+                filled_qty=Decimal("1"),
+                filled_at=datetime(2099, 8, 12, 14, 30, tzinfo=UTC),
+            ),
+            _fill(
+                symbol="T1173.X/Y",
+                source="websocket",
+                side="sell",
+                filled_qty=Decimal("1"),
+                filled_at=datetime(2099, 8, 12, 15, 30, tzinfo=UTC),
+            ),
+        ],
+        [PositionRef(MIXED_KEY, Decimal("8"))],
+        now=LATE,
+    )
+    block = blocks[MIXED_KEY]
+    assert block["freshness"]["state"] == "fresh"
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
+    assert block["net_quantity"] == "8"
+    assert len(block["provisional_rows_excluded"]) == 2
+    for key in (
+        "open_buy_evidence",
+        "same_day_sell_evidence",
+        "open_sell_evidence",
+        "same_day_buy_evidence",
+    ):
+        assert block[key]["blocking"] is True, key
+
+
+async def test_sql_prefilter_selects_exactly_what_the_python_key_maps(
+    db_session,
+) -> None:
+    """The SQL identity and _us_symbol_key agree on every stored spelling.
+
+    Selected rows must be exactly the ones whose Python key is the position
+    key: nothing the mapping would attribute is dropped (fail-open), and no
+    near-miss spelling is merged into the position.
+    """
+    spellings = [*MIXED_SAME, *MIXED_OTHER]
+    rows = [
+        _fill(symbol=sym, broker_order_id=f"{ORDER_PREFIX}-M{i:02d}")
+        for i, sym in enumerate(spellings)
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        selected = set(
+            (
+                await db_session.execute(
+                    select(ExecutionLedger.symbol)
+                    .where(ExecutionLedger.broker_order_id.like(f"{ORDER_PREFIX}-M%"))
+                    .where(
+                        kis_lots._symbol_matches(ExecutionLedger.symbol, [MIXED_KEY])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        stored = set(
+            (
+                await db_session.execute(
+                    select(ExecutionLedger.symbol).where(
+                        ExecutionLedger.broker_order_id.like(f"{ORDER_PREFIX}-M%")
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    finally:
+        await _cleanup(db_session, [])
+    expected = {sym for sym in stored if kis_lots._us_symbol_key(sym) == MIXED_KEY}
+    # the write schema strips outer whitespace only; every spelling is stored
+    assert stored == {sym.strip() for sym in spellings}
+    assert expected == {sym.strip() for sym in MIXED_SAME}
+    assert selected == expected
 
 
 # ------------------------------------------------------------------ A3
