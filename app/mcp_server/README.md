@@ -1627,10 +1627,19 @@ Response sections:
 - `latest_report`: latest report summary and item status counts, or `null`.
 - `session_context`: recent ROB-516 handoff entries. Its additive `constraints`
   subsection is `{count, entries}` for `entry_type="constraint"` rows from the
-  current KST date plus the prior two KST dates, newest first. It is queried
-  independently of `session_context_limit`; the original `count`/`entries`
-  window remains unchanged.
-- `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
+  current KST date plus the prior two KST dates, newest first, when that query
+  succeeds. It is queried independently of `session_context_limit`; the original
+  `count`/`entries` window remains unchanged. If only the constraint query fails,
+  `count` and `entries` stay as fetched and `constraints` is
+  `{count: 0, entries: [], unavailable_reason}` with `unavailable_reason` shaped as
+  `session_context_constraints_failed:<ExceptionType>:<message>`.
+  `staleness.session_context.freshness_status` is then `unavailable` with that
+  same reason, so the section is not fully fresh, and `success` stays true.
+  If the general session-context query fails, the section fallback remains
+  `{count: 0, entries: [], unavailable_reason}` and also includes `constraints`
+  in that same unavailable shape, using the section reason
+  `session_context_failed:<ExceptionType>:<message>`.
+- `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`. A constraint-only failure uses that same `unavailable` pair on `staleness.session_context` and does not drop the general entries. The general-query fallback includes `constraints` in the unavailable shape above. `success` stays true on both paths.
 - `trading_scoreboards`: trading scoreboard or counterfactual delta metrics, depending on `include_counterfactual_delta` parameter.
 
 The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
