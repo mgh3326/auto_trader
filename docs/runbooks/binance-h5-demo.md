@@ -40,6 +40,10 @@ exposure or incomplete read blocks entry. NAV sizing floors quantity to
 MARKET_LOT_SIZE under NAV × 0.01 / 0.05 notional; it never rounds up to pass
 MIN_NOTIONAL. Isolated 1x and one-way position mode require positive broker
 readback and are never changed by this adapter.
+Non-USDT balances (the Demo account's immovable USDC and BTC grants) are
+accepted only when the same account read proves single-asset margin
+(multiAssetsMargin exactly false) and NAV equals the USDT balance; see
+docs/contracts/h5-deviation-20261008-single-asset-margin-foreign-balances.md.
 
 ## Fills, restart and holding
 

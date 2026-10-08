@@ -71,7 +71,18 @@ async def _account(client: GateClient) -> GateCheck:
     bad = sorted(s for s in UNIVERSE if configured.get(s) is not True)
     if bad:
         return GateCheck(name, False, "not isolated 1x BOTH: " + ",".join(bad))
-    return GateCheck(name, True, f"nav_usdt={account.nav_usdt} symbols=all")
+    detail = f"nav_usdt={account.nav_usdt} symbols=all"
+    # #1272 (hk 1271 B): non-USDT balances pass only with single-asset margin
+    # proved by the same read; anything but exactly False fails closed.
+    foreign = tuple(getattr(account, "non_usdt_assets", ()))
+    if foreign:
+        assets = ",".join(sorted(foreign))
+        if getattr(account, "multi_assets_margin", None) is not False:
+            return GateCheck(
+                name, False, f"non-USDT assets without single-asset margin: {assets}"
+            )
+        detail += f" margin_mode=single_asset non_usdt_assets={assets}"
+    return GateCheck(name, True, detail)
 
 
 async def _mode(client: GateClient) -> GateCheck:
