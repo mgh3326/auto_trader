@@ -739,15 +739,97 @@ async def test_a_close_committed_without_its_audit_is_refused_at_commit(world) -
 async def test_a_closed_row_cannot_be_rewritten(world) -> None:
     await world.seed()
     assert (await _commit(world.db)).status == "committed"
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.execute(
+            sa.update(KISMockOrderLedger)
+            .where(KISMockOrderLedger.id == 63)
+            .values(reconcile_attempts=KISMockOrderLedger.reconcile_attempts + 1)
+        )
+    assert "closed by the Q-46 inference and terminal" in str(excinfo.value)
+    await world.db.rollback()
+
+
+# ------------------------------------------- r3: closed rows are terminal (r2 F1)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"lifecycle_state": "accepted", "last_reconcile_detail": {}},
+        {"lifecycle_state": "accepted", "last_reconcile_detail": None},
+        {"last_reconcile_detail": {"reason_code": "operator_note"}},
+        {"lifecycle_state": "pending"},
+    ],
+)
+async def test_r3_clearing_the_marker_cannot_reopen_a_closed_row(world, values) -> None:
+    await world.seed()
+    assert (await _commit(world.db)).status == "committed"
+    after = await _snapshot(world.db)
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.execute(
+            sa.update(KISMockOrderLedger)
+            .where(KISMockOrderLedger.id == 63)
+            .values(**values)
+        )
+    assert "closed by the Q-46 inference and terminal" in str(excinfo.value)
+    await world.db.rollback()
+    assert await _snapshot(world.db) == after
+    svc = KISMockLifecycleService(world.db)
+    assert await svc.list_open_orders(ledger_ids=list(IDS)) == []
+    await world.db.rollback()
+
+
+async def test_r3_update_order_terms_cannot_strip_the_marker(world) -> None:
+    await world.seed()
+    assert (await _commit(world.db)).status == "committed"
+    after = await _snapshot(world.db)
+    with pytest.raises(IntegrityError):
+        await KISMockLifecycleService(world.db).update_order_terms(
+            ledger_id=63,
+            detail={"reason_code": "operator_note", "inference_rule": "cleared"},
+        )
+    await world.db.rollback()
+    assert await _snapshot(world.db) == after
+
+
+async def test_r3_a_closed_row_cannot_be_deleted(world) -> None:
+    await world.seed()
+    assert (await _commit(world.db)).status == "committed"
+    with pytest.raises(IntegrityError) as excinfo:
+        await world.db.execute(
+            sa.delete(KISMockOrderLedger).where(KISMockOrderLedger.id == 63)
+        )
+    assert "closed by the Q-46 inference and terminal" in str(excinfo.value)
+    await world.db.rollback()
+
+
+async def test_r3_a_one_row_raw_close_with_its_audit_is_refused(world) -> None:
+    # The four-row rule is DB-enforced too: a raw-SQL close of one allowlisted
+    # row with a matching audit row is refused at COMMIT.
+    await world.seed()
+    decisions = await service.verify_locked_batch(world.db, IDS)
+    batch = uuid.uuid4()
+    [d63] = [d for d in decisions if d.ledger_id == 63]
+    detail = closed_detail(
+        d63,
+        decision_ref="Q-46",
+        reason="r",
+        actor="a",
+        batch_id=str(batch),
+        closed_at=NOW,
+    )
     await world.db.execute(
         sa.update(KISMockOrderLedger)
         .where(KISMockOrderLedger.id == 63)
-        .values(reconcile_attempts=KISMockOrderLedger.reconcile_attempts + 1)
+        .values(lifecycle_state="expired", last_reconcile_detail=detail)
     )
+    world.db.add(_event(batch_id=batch))
+    await world.db.flush()
     with pytest.raises(IntegrityError) as excinfo:
         await world.db.commit()
-    assert "outside its contract" in str(excinfo.value)
+    assert "four-row batch" in str(excinfo.value)
     await world.db.rollback()
+    assert (await _snapshot(world.db))["audit"] == 0
 
 
 async def test_the_marker_cannot_be_put_on_a_row_outside_the_allowlist(world) -> None:
@@ -940,19 +1022,154 @@ async def test_r2_fill_committed_just_before_the_first_update_refuses(world) -> 
     assert await _snapshot(world.db) == before
 
 
+async def _commit_with_late_write(world, late) -> Any:
+    """Run the real post-UPDATE re-check, then let another session commit
+    ``late`` before the audit insert and COMMIT (r2 finding 2)."""
+    real = service._recheck_after_update
+
+    async def recheck_then_write(session, evidence, *, now):
+        result = await real(session, evidence, now=now)
+        await late()
+        return result
+
+    original = service._recheck_after_update
+    service._recheck_after_update = recheck_then_write  # type: ignore[assignment]
+    try:
+        return await _commit(world.db)
+    finally:
+        service._recheck_after_update = original  # type: ignore[assignment]
+
+
+async def test_r3_order_fill_after_the_recheck_refuses_at_commit(world) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+    result = await _commit_with_late_write(world, lambda: _commit_fill_elsewhere(world))
+    assert result.status == "refused" and result.changed == 0
+    assert result.refused_ids == [63]
+    assert await _snapshot(world.db) == before
+
+
+async def test_r3_symbol_fill_after_the_recheck_refuses_at_commit(world) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+
+    async def late():
+        async with AsyncSession(bind=world.db.bind, expire_on_commit=False) as other:
+            fill = exec_row(
+                source="websocket",
+                broker_order_id="0000077701",
+                side="sell",
+                filled_at=NOW,
+            )
+            other.add(fill)
+            await other.flush()
+            world.exec_ids.add(int(fill.id))
+            await other.commit()
+
+    result = await _commit_with_late_write(world, late)
+    assert result.status == "refused" and result.changed == 0
+    assert 63 in result.refused_ids
+    assert await _snapshot(world.db) == before
+
+
+async def test_r3_sibling_fill_after_the_recheck_refuses_at_commit(world) -> None:
+    await world.seed()
+    sibling = mock_row(66, order_no="0000066601", correlation_id="kis-mock-66-t1250")
+    sibling.symbol = "999998"
+    sibling.raw_response = {**sibling.raw_response, "odno": "0000066601"}
+    await world.add_mock(950_066, sibling)
+    before = await _snapshot(world.db)
+
+    async def late():
+        async with AsyncSession(bind=world.db.bind, expire_on_commit=False) as other:
+            await other.execute(
+                sa.update(KISMockOrderLedger)
+                .where(KISMockOrderLedger.id == 950_066)
+                .values(
+                    lifecycle_state="fill",
+                    last_reconcile_detail={
+                        "reason_code": "fill_detected",
+                        "attributed_fill_qty": "1",
+                    },
+                )
+            )
+            await other.commit()
+
+    result = await _commit_with_late_write(world, late)
+    assert result.status == "refused" and result.changed == 0
+    assert 66 in result.refused_ids
+    assert await _snapshot(world.db) == before
+
+
+class _CommitGateOff:
+    """Test-only: disable the COMMIT-time fill gate for one test (worker-owned
+    throwaway DB), always re-enabled afterwards."""
+
+    def __init__(self, world) -> None:
+        self.world = world
+
+    async def _set(self, state: str) -> None:
+        async with AsyncSession(bind=self.world.db.bind) as other:
+            await other.execute(
+                sa.text(
+                    f"ALTER TABLE review.kis_mock_order_ledger {state} TRIGGER "
+                    "trg_kis_mock_inference_requires_audit"
+                )
+            )
+            await other.commit()
+
+    async def __aenter__(self):
+        await self._set("DISABLE")
+        return self
+
+    async def __aexit__(self, *exc):
+        await self._set("ENABLE")
+
+
 async def test_r2_recheck_mutant_would_close_despite_the_fill(
     world, monkeypatch
 ) -> None:
-    # Mutant: the post-UPDATE re-check always answers eligible. The race test
-    # above must then see a commit — proving that test depends on the re-check.
+    # Mutant: the post-UPDATE re-check always answers eligible AND the
+    # COMMIT-time gate is off. The race test must then see a commit — proving
+    # the two gates are what stop it.
     await world.seed()
 
     async def always_ok(session, evidence, *, now):
         return "eligible", ()
 
     monkeypatch.setattr(service, "_recheck_after_update", always_ok)
-    result, injected = await _commit_with_fill_before_first_update(world)
+    async with _CommitGateOff(world):
+        result, injected = await _commit_with_fill_before_first_update(world)
     assert injected and result.status == "committed"
+
+
+async def test_r3_commit_gate_alone_refuses_when_the_recheck_is_mutated(
+    world, monkeypatch
+) -> None:
+    # Defense in depth: with the Python re-check disabled, the COMMIT-time
+    # trigger still refuses the same race.
+    await world.seed()
+    before = await _snapshot(world.db)
+
+    async def always_ok(session, evidence, *, now):
+        return "eligible", ()
+
+    monkeypatch.setattr(service, "_recheck_after_update", always_ok)
+    result, injected = await _commit_with_fill_before_first_update(world)
+    assert injected and result.status == "refused" and result.changed == 0
+    assert await _snapshot(world.db) == before
+
+
+async def test_r3_commit_gate_mutant_would_close_despite_a_late_fill(world) -> None:
+    # Mutant: the COMMIT-time gate off. A fill committed after the re-check
+    # then closes — proving test_r3_order_fill_after_the_recheck_refuses_at_commit
+    # depends on that trigger.
+    await world.seed()
+    async with _CommitGateOff(world):
+        result = await _commit_with_late_write(
+            world, lambda: _commit_fill_elsewhere(world)
+        )
+    assert result.status == "committed" and result.changed == 4
 
 
 async def test_r2_writer_verify_mutant_would_close_a_filled_row(

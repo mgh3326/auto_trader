@@ -41,6 +41,11 @@ Invariant sentences (one per mutant):
   commit; a fill committed in between refuses the batch with full rollback.
 - AUDIT_COUPLING: the DB refuses an audit row whose ledger row is not closed by
   the same batch, and refuses at COMMIT a closed row without its audit row.
+- TERMINAL: a row carrying the Q-46 inference marker cannot be updated or
+  deleted at all, so clearing the marker cannot reopen it.
+- COMMIT_GATE: at COMMIT the DB re-checks order, symbol and sibling fills and
+  the four-row batch, so a fill committed after the service re-check, or a
+  one-row raw close, refuses the whole close.
 """
 
 from __future__ import annotations
@@ -91,6 +96,8 @@ INVARIANT_KEYS = {
     "WRITER_VERIFY",
     "RECHECK",
     "AUDIT_COUPLING",
+    "TERMINAL",
+    "COMMIT_GATE",
 }
 
 
@@ -367,6 +374,18 @@ _DB_PROOFS = {
         "test_a_close_committed_without_its_audit_is_refused_at_commit",
     ),
     "EXACT_INT": ("test_r2_non_builtin_int_ids_refuse_before_any_sql",),
+    "TERMINAL": (
+        "test_r3_clearing_the_marker_cannot_reopen_a_closed_row",
+        "test_r3_update_order_terms_cannot_strip_the_marker",
+        "test_r3_a_closed_row_cannot_be_deleted",
+    ),
+    "COMMIT_GATE": (
+        "test_r3_order_fill_after_the_recheck_refuses_at_commit",
+        "test_r3_symbol_fill_after_the_recheck_refuses_at_commit",
+        "test_r3_sibling_fill_after_the_recheck_refuses_at_commit",
+        "test_r3_a_one_row_raw_close_with_its_audit_is_refused",
+        "test_r3_commit_gate_mutant_would_close_despite_a_late_fill",
+    ),
 }
 
 

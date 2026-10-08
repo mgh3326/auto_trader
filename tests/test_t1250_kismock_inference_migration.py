@@ -85,6 +85,9 @@ def test_bootstrap_mirrors_the_migration_triggers() -> None:
         migration.REQUIRE_CLOSE_FUNCTION_DDL,
         migration.REQUIRE_AUDIT_FUNCTION_DDL,
         migration.REQUIRE_AUDIT_TRIGGER_DDL,
+        migration.FILL_DETAIL_FUNCTION_DDL,
+        migration.TERMINAL_GUARD_FUNCTION_DDL,
+        migration.TERMINAL_GUARD_TRIGGER_DDL,
     ):
         assert _norm(function_ddl) in ddl
     joined = "\n".join(ddl)
@@ -138,9 +141,20 @@ def test_downgrade_reverses_everything_upgrade_creates() -> None:
         "require_kis_mock_inference_audit",
         "trg_kis_mock_inference_expiry_events_require_close",
         "require_kis_mock_inference_close",
+        "trg_kis_mock_inference_closed_row_terminal",
+        "guard_kis_mock_inference_closed_row",
+        "kis_mock_q46_detail_has_fill",
     ):
         assert name in down, name
 
 
 def test_bootstrap_version_was_bumped() -> None:
-    assert bootstrap.SCHEMA_BOOTSTRAP_VERSION >= 58
+    assert bootstrap.SCHEMA_BOOTSTRAP_VERSION >= 59
+
+
+def test_sql_fill_reason_codes_match_the_rule() -> None:
+    from app.services import kis_mock_inference_expiry as rule
+
+    migration = _load_migration()
+    for code in rule._FILL_REASON_CODES:
+        assert f"'{code}'" in migration.FILL_DETAIL_FUNCTION_DDL, code

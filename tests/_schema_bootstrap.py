@@ -138,7 +138,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v58 (#1250 r2): close<->audit coupling — BEFORE INSERT audit trigger requires
 # the same-batch closed ledger row; deferred constraint trigger on
 # review.kis_mock_order_ledger requires the audit row at COMMIT.
-SCHEMA_BOOTSTRAP_VERSION = 58
+# v59 (#1250 r3): COMMIT-time fill gate + four-row batch check in the deferred
+# trigger (helper review.kis_mock_q46_detail_has_fill) and a BEFORE UPDATE OR
+# DELETE guard that makes a closed (marked) row terminal.
+SCHEMA_BOOTSTRAP_VERSION = 59
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2132,8 +2135,42 @@ $$ LANGUAGE plpgsql
     "BEFORE INSERT ON review.kis_mock_inference_expiry_events "
     "FOR EACH ROW EXECUTE FUNCTION review.require_kis_mock_inference_close()",
     """
+CREATE OR REPLACE FUNCTION review.kis_mock_q46_detail_has_fill(d jsonb)
+RETURNS boolean AS $$
+BEGIN
+    -- Mirrors kis_mock_inference_expiry._detail_has_fill_evidence: unknown is
+    -- never zero.
+    IF d IS NULL OR jsonb_typeof(d) = 'null' THEN
+        RETURN false;
+    END IF;
+    IF jsonb_typeof(d) <> 'object' THEN
+        RETURN true;
+    END IF;
+    IF d->>'reason_code' IN (
+        'fill_detected', 'partial_fill_detected', 'position_reconciled',
+        'holdings_mismatch', 'attribution_unconfirmed'
+    ) THEN
+        RETURN true;
+    END IF;
+    IF d ? 'attributed_fill_qty' THEN
+        IF jsonb_typeof(d->'attributed_fill_qty') NOT IN ('string', 'number') THEN
+            RETURN true;
+        END IF;
+        BEGIN
+            RETURN (d->>'attributed_fill_qty')::numeric <> 0;
+        EXCEPTION WHEN others THEN
+            RETURN true;
+        END;
+    END IF;
+    RETURN false;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE
+""",
+    """
 CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_audit()
 RETURNS trigger AS $$
+DECLARE
+    v_accept timestamptz;
 BEGIN
     IF NEW.id NOT IN (63, 64, 66, 80)
        OR NEW.lifecycle_state IS DISTINCT FROM 'expired'
@@ -2147,6 +2184,51 @@ BEGIN
            AND e.batch_id::text = NEW.last_reconcile_detail->>'batch_id'
     ) THEN
         RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close without its audit row',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    IF (
+        SELECT count(*) FROM review.kis_mock_inference_expiry_events e
+         WHERE e.batch_id::text = NEW.last_reconcile_detail->>'batch_id'
+    ) <> 4 THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close is not a four-row batch',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    BEGIN
+        v_accept := (NEW.last_reconcile_detail->>'accept_at')::timestamptz;
+    EXCEPTION WHEN others THEN
+        v_accept := NULL;
+    END;
+    IF v_accept IS NULL THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close without an accept instant',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    -- Last fill gate, evaluated at COMMIT (deferred): every statement here
+    -- sees every fill committed before it, so a fill committed after the
+    -- service's own re-check still refuses the whole close. Quarantined
+    -- execution-ledger rows count (the safe direction).
+    IF EXISTS (
+        SELECT 1 FROM review.execution_ledger x
+         WHERE x.broker = 'kis' AND x.account_mode = 'mock'
+           AND (x.broker_order_id = NEW.order_no
+                OR ltrim(x.broker_order_id, '0') = ltrim(NEW.order_no, '0'))
+    ) OR EXISTS (
+        SELECT 1 FROM review.execution_ledger x
+         WHERE x.broker = 'kis' AND x.account_mode = 'mock'
+           AND x.symbol = NEW.symbol AND x.filled_at >= v_accept
+    ) OR EXISTS (
+        SELECT 1 FROM review.kis_mock_order_ledger s
+         WHERE s.id <> NEW.id
+           AND (s.lifecycle_state IN ('fill', 'reconciled')
+                OR review.kis_mock_q46_detail_has_fill(s.last_reconcile_detail))
+           AND (
+                (NEW.correlation_id IS NOT NULL
+                 AND s.correlation_id = NEW.correlation_id)
+                OR (s.symbol = NEW.symbol
+                    AND (s.trade_date IS NULL OR s.reconciled_at IS NULL
+                         OR s.trade_date >= v_accept OR s.reconciled_at >= v_accept))
+           )
+    ) THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: fill recorded before COMMIT of the Q-46 inference close',
             NEW.id USING ERRCODE = 'check_violation';
     END IF;
     RETURN NULL;
@@ -2165,6 +2247,27 @@ WHEN (
     OR NEW.last_reconcile_detail->>'inference_rule' = 'kis_mock_regular_day_leftover_expired_inference_q46'
 )
 EXECUTE FUNCTION review.require_kis_mock_inference_audit()
+""",
+    """
+CREATE OR REPLACE FUNCTION review.guard_kis_mock_inference_closed_row()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'review.kis_mock_order_ledger row % is closed by the Q-46 inference and terminal; % rejected',
+        OLD.id, TG_OP USING ERRCODE = 'restrict_violation';
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_closed_row_terminal "
+    "ON review.kis_mock_order_ledger",
+    """
+CREATE TRIGGER trg_kis_mock_inference_closed_row_terminal
+BEFORE UPDATE OR DELETE ON review.kis_mock_order_ledger
+FOR EACH ROW
+WHEN (
+    OLD.last_reconcile_detail->>'reason_code' = 'expired_inference:kis_regular_day_order_no_broker_original'
+    OR OLD.last_reconcile_detail->>'inference_rule' = 'kis_mock_regular_day_leftover_expired_inference_q46'
+)
+EXECUTE FUNCTION review.guard_kis_mock_inference_closed_row()
 """,
 )
 

@@ -37,11 +37,15 @@ only ran it against throwaway databases.
   the batch re-classified on the pre-update facts (a fill committed between the
   evidence read and the UPDATE refuses the batch with full rollback); four
   audit rows; COMMIT.
+- A closed row is terminal in the DB: a BEFORE UPDATE OR DELETE trigger
+  refuses any change or removal of a row carrying the marker, so clearing the
+  marker cannot reopen it (r3).
 - The DB couples close and audit: an audit INSERT is refused unless its ledger
   row is already `expired` with this marker, Q-46 and the same batch id; a
   deferred constraint trigger refuses at COMMIT any row carrying the marker
   that is outside the four ids, not an accepted/pending -> expired transition,
-  or has no same-batch audit row (so a closed row also cannot be rewritten).
+  or has no same-batch audit row; at COMMIT it also requires exactly four
+  audit rows in the batch and re-checks every fill source (see section 5).
 
 Exit codes: 0 eligible preview / committed / no-op, 1 input or database error,
 2 refused batch.
@@ -146,11 +150,17 @@ new operator decision.
 
 ## 5. Residual risk
 
-- A fill committed after the post-UPDATE re-read and before COMMIT (a few
-  statements) is not seen — the same as a fill arriving just after COMMIT. The
-  row stays expired with the inference marker and the fill is still recorded in
-  `execution_ledger`; the marker makes the inference auditable (#1112 accepts
-  the same).
+- Fill timing (r3): a fill committed after the service's post-UPDATE re-read
+  is caught by the deferred COMMIT-time trigger, which re-runs the order,
+  symbol (at/after accept) and same-correlation / same-symbol kis_mock fill
+  checks in SQL while COMMIT is processed and refuses the whole close (the CLI
+  then reports `refused`). What remains is a fill that commits during this
+  transaction's own COMMIT processing, after the trigger's statements — two
+  transactions committing at the same instant. The row then stays expired with
+  the inference marker and the fill is still recorded in `execution_ledger`;
+  the marker makes the inference auditable (#1112 accepts the same). The SQL
+  fill helper `review.kis_mock_q46_detail_has_fill` mirrors the Python rule
+  (fill reason codes pinned by a test).
 
 - No broker read is made: a fill KIS mock recorded but this repository never
   ledgered would not be seen. That is exactly the `no_broker_original` caveat

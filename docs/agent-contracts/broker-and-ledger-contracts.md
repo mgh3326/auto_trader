@@ -349,7 +349,9 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
   붙은 행은 COMMIT 시 같은 batch 감사 행 필수(deferred constraint trigger — 4 id 밖·
   accepted/pending→expired 외 전이·닫힌 행 재기록도 거부). id 는 정확히 built-in int 4개만
   (float/numpy/bool/str 거부). 쓰기 초크포인트가 배치를 스스로 재잠금·재판정하고, UPDATE 뒤
-  모든 체결 소스를 다시 읽어 그 사이 커밋된 체결이면 전체 롤백
+  모든 체결 소스를 다시 읽어 그 사이 커밋된 체결이면 전체 롤백. COMMIT 시점 deferred 트리거가 주문·종목·형제
+  행 체결과 4행 배치를 SQL 로 재확인(재확인 이후 커밋된 체결도 전체 거부). 마커가 붙은 닫힌 행은
+  UPDATE·DELETE 전부 거부(terminal — 마커를 지워 재오픈 불가)
   마이그레이션 `20261005_t1250_kismock_inf`(CREATE TABLE 만). 두 번째 commit 은 무변경 no-op
 - **런북**: `docs/runbooks/kis-mock-expired-inference-q46.md`. 실DB 실행은 운영자 전용
 

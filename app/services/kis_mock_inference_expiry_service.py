@@ -26,6 +26,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger
@@ -350,9 +351,10 @@ async def _recheck_after_update(
     The kis_mock rows are locked, but a fill writer does not take those locks:
     a fill committed between the evidence read and the UPDATE would otherwise
     be ignored. Under READ COMMITTED each statement here sees every fill
-    committed before it starts, so the window that remains ends at these
-    reads, a few statements before COMMIT — the same as a fill arriving just
-    after the commit, which the no_broker_original caveat already names.
+    committed before it starts. A fill committed after these reads (before
+    the audit insert or COMMIT) is caught by the deferred COMMIT-time trigger
+    ``trg_kis_mock_inference_requires_audit``, which re-runs the order,
+    symbol and sibling fill checks in SQL while COMMIT is processed.
     Classification reuses the PRE-update row facts (the rows are ``expired`` in
     this transaction by now).
     """
@@ -466,7 +468,21 @@ async def commit_inference_expiry(
             ]
         )
         await session.flush()
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # The COMMIT-time trigger (trg_kis_mock_inference_requires_audit)
+            # refused the close — the last fill gate. Report it like any other
+            # refusal when a fresh read confirms the batch is no longer
+            # eligible; otherwise surface the error.
+            await session.rollback()
+            fresh_status, _fresh_evidence, fresh = await _decide(
+                session, ids, for_update=False, now=now
+            )
+            await session.rollback()
+            if fresh_status == "refused":
+                return InferenceBatchResult("refused", tuple(ids), fresh, now)
+            raise
     except Exception:
         await session.rollback()
         raise
