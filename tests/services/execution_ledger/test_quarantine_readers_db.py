@@ -247,11 +247,11 @@ async def test_us_lots_drop_the_quarantined_row(db_session, seed, monkeypatch) -
     phantom_id = int(phantom.id)
 
     async def us_lots() -> dict[str, Any]:
-        blocks = await kis_lots.load_kis_live_us_lot_blocks(
+        [block] = await kis_lots.load_kis_live_us_lot_blocks(
             db_session, [PositionRef(symbol, Decimal("10"), Decimal("410"))], now=NOW
         )
         await db_session.rollback()
-        return blocks[symbol]
+        return block
 
     before = await us_lots()
     assert [r["broker_order_id"] for r in before["provisional_rows_excluded"]] == [

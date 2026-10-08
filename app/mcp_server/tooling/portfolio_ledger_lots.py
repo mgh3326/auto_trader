@@ -50,11 +50,29 @@ def _eligible_positions(
 
 def _loader(
     market: MarketCode,
-) -> Callable[[Any, Sequence[PositionRef]], Awaitable[dict[str, dict[str, Any]]]]:
+) -> Callable[[Any, Sequence[PositionRef]], Awaitable[Any]]:
     # Resolved at call time so tests can monkeypatch the module attributes.
     if market == "us":
         return load_kis_live_us_lot_blocks
     return load_kis_live_kr_lot_blocks
+
+
+def _per_position(
+    market: MarketCode, result: Any, refs: Sequence[PositionRef]
+) -> list[dict[str, Any] | None]:
+    """The loader result as one entry per position, in position order.
+
+    US (#1173 B3): the loader returns one block per broker position; it is
+    taken by index, never looked up by symbol, so two positions with the same
+    symbol can never share a block. A result that is not a list of exactly one
+    entry per position is unusable and every US position degrades to unknown.
+    KR keeps its pre-#1173 symbol-keyed lookup (byte-identical; hk 1295).
+    """
+    if market == "us":
+        if isinstance(result, list) and len(result) == len(refs):
+            return [block if isinstance(block, dict) else None for block in result]
+        return [None] * len(refs)
+    return [result.get(ref.symbol) for ref in refs]
 
 
 async def _attach_market(positions: list[dict[str, Any]], market: MarketCode) -> None:
@@ -66,15 +84,15 @@ async def _attach_market(positions: list[dict[str, Any]], market: MarketCode) ->
         )
         for position in positions
     ]
-    blocks: dict[str, dict[str, Any]] = {}
+    blocks: list[dict[str, Any] | None] = [None] * len(positions)
     try:
         async with AsyncSessionLocal() as db:
-            blocks = await _loader(market)(db, refs)
+            blocks = _per_position(market, await _loader(market)(db, refs), refs)
     except Exception:  # noqa: BLE001 — the block must never fail get_holdings
         logger.warning("ledger lots read failed market=%s", market, exc_info=True)
-    for position in positions:
+    for position, block in zip(positions, blocks, strict=True):
         symbol = str(position.get("symbol") or "")
-        position["ledger_lots"] = blocks.get(symbol) or _unknown(symbol, market)
+        position["ledger_lots"] = block or _unknown(symbol, market)
 
 
 def _unknown(symbol: str, market: MarketCode) -> dict[str, Any]:

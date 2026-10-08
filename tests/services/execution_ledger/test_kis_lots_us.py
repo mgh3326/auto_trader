@@ -571,6 +571,40 @@ def test_future_dated_us_row_is_treated_as_today() -> None:
     assert block["same_day_sell_evidence"]["blocking"] is True
 
 
+def test_b3_single_position_equals_the_plain_us_projection() -> None:
+    """us_position_blocks on one position is exactly build_symbol_block(us)."""
+    ref = kis_lots.PositionRef("MSFT", Decimal("8"), Decimal("420"))
+    orders = [order(1, "sell", "accepted", SESSION_FILL, qty="3")]
+    [block] = kis_lots.us_position_blocks(
+        [ref],
+        fills_by_key={"MSFT": msft_history()},
+        orders_by_key={"MSFT": orders},
+        freshness=FRESH,
+        now=NOW,
+    )
+    assert block == us_block(msft_history(), orders=orders)
+
+
+def test_b3_shared_key_positions_are_all_unknown_in_order() -> None:
+    refs = [
+        kis_lots.PositionRef("BRK/B", Decimal("1")),
+        kis_lots.PositionRef("MSFT", Decimal("8"), Decimal("420")),
+        kis_lots.PositionRef("BRK.B", Decimal("8")),
+    ]
+    blocks = kis_lots.us_position_blocks(
+        refs,
+        fills_by_key={"MSFT": msft_history(), "BRK.B": msft_history()},
+        orders_by_key={},
+        freshness=FRESH,
+        now=NOW,
+    )
+    assert [b["symbol"] for b in blocks] == ["BRK/B", "MSFT", "BRK.B"]
+    for block in (blocks[0], blocks[2]):
+        assert block["unknown_reasons"] == [kis_lots.UNKNOWN_DUPLICATE_POSITIONS]
+        assert block["sellable_by_ledger"] is None
+    assert blocks[1]["ledger_state"] == "known"
+
+
 # ------------------------------------------------------------------ A4
 
 

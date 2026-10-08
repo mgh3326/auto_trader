@@ -30,6 +30,11 @@ Invariant sentences (one per mutant):
 - SUPERSEDE_DATE: an authoritative row covers a websocket row only on the
   same US trading date, so a reused KIS order number of an older date never
   hides a fill of today.
+- DUPLICATE_POSITIONS: when two or more US positions share a symbol key,
+  every one of them is unknown; no position gets a block proven against
+  another position's quantity (last-write-wins is impossible).
+- ATTACH_PER_POSITION: US blocks are attached by position, never looked up
+  by symbol, so positions with one symbol cannot share a block.
 - ATTACH_LOADER: US positions go to the US loader, never the KR loader.
 - ATTACH_UNKNOWN: a US position whose read failed gets the US unknown block.
 """
@@ -62,6 +67,7 @@ GUARD_TESTS = frozenset(
         "market == 'us'",
         "off_venue",
         "local.time() >= _US_TRADING_DATE_ROLLOVER",
+        "key_counts[key] > 1",
     }
 )
 
@@ -160,6 +166,30 @@ def scenario_supersede_date(m: types.ModuleType) -> bool:
     return block["same_day_buy_evidence"]["blocking"] is True
 
 
+def scenario_duplicate_positions(m: types.ModuleType) -> bool:
+    refs = [
+        m.PositionRef("MSFT", Decimal("1")),
+        m.PositionRef("msft", Decimal("8")),
+    ]
+    blocks = m.us_position_blocks(
+        refs,
+        fills_by_key={"MSFT": _history(m)},
+        orders_by_key={},
+        freshness=m.Freshness("fresh", NOW - timedelta(minutes=5), 5.0),
+        now=NOW,
+    )
+    return all(b["unknown_reasons"] == [m.UNKNOWN_DUPLICATE_POSITIONS] for b in blocks)
+
+
+def scenario_attach_per_position(m: types.ModuleType) -> bool:
+    refs = [
+        kis_lots.PositionRef("MSFT", Decimal("1")),
+        kis_lots.PositionRef("MSFT", Decimal("8")),
+    ]
+    first, second = {"marker": 1}, {"marker": 2}
+    return m._per_position("us", [first, second], refs) == [first, second]
+
+
 def scenario_attach_loader(m: types.ModuleType) -> bool:
     return m._loader("us") is m.load_kis_live_us_lot_blocks
 
@@ -192,6 +222,14 @@ DECLARED: dict[tuple[str, str], tuple[str, Callable[[types.ModuleType], bool]]] 
     ("kis_lots", "unknown_block:market == 'us'#0"): (
         "US_UNKNOWN_KEYS",
         scenario_us_unknown_keys,
+    ),
+    ("kis_lots", "us_position_blocks:key_counts[key] > 1#0"): (
+        "DUPLICATE_POSITIONS",
+        scenario_duplicate_positions,
+    ),
+    ("portfolio_ledger_lots", "_per_position:market == 'us'#0"): (
+        "ATTACH_PER_POSITION",
+        scenario_attach_per_position,
     ),
     ("portfolio_ledger_lots", "_loader:market == 'us'#0"): (
         "ATTACH_LOADER",

@@ -74,7 +74,7 @@ here calls a KIS order read.
 from __future__ import annotations
 
 import logging
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -126,6 +126,8 @@ UNKNOWN_QTY_MISMATCH = "quantity_mismatch_with_reference"
 UNKNOWN_PROVISIONAL_PENDING = "provisional_rows_pending_reconcile"
 UNKNOWN_LOAD_FAILED = "ledger_read_failed"
 UNKNOWN_ORDER_LEDGER_READ_FAILED = "order_ledger_read_failed"
+# Task #1173 B3 — two or more KIS live US positions share one symbol key.
+UNKNOWN_DUPLICATE_POSITIONS = "duplicate_positions_for_symbol"
 
 BLOCK_OWN_OPEN_BUY = "own_nonterminal_buy_order_today"
 BLOCK_SAME_DAY_FILL = "same_day_buy_fill_order_not_proven_complete"
@@ -1123,7 +1125,7 @@ async def load_kis_live_us_lot_blocks(
     refs: Sequence[PositionRef],
     *,
     now: datetime | None = None,
-) -> dict[str, dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Task #1173 — the ``load_kis_live_kr_lot_blocks`` twin for KIS live US.
 
     Same contract: raises on a failed fills/reconcile-run read (the caller
@@ -1132,7 +1134,8 @@ async def load_kis_live_us_lot_blocks(
     are ``broker='kis'``, ``account_mode='live'``, ``equity_us``, ``USD``, not
     quarantined. Venue is checked per row by ``build_symbol_block`` (an
     unrecognized venue is unknown, never silently filtered here). Blocks are
-    keyed by the caller's ``ref.symbol``.
+    returned as a list aligned with ``refs`` (one per broker position, see
+    ``us_position_blocks``), never keyed by symbol.
 
     SQL filters only on columns whose comparison cannot diverge from Python
     (broker, mode, instrument type, currency, quarantine, and the order
@@ -1144,7 +1147,7 @@ async def load_kis_live_us_lot_blocks(
     moment = now or datetime.now(UTC)
     keys = sorted({_us_symbol_key(ref.symbol) for ref in refs})
     if not keys:
-        return {}
+        return []
 
     repo = ExecutionLedgerRepository(db)
     latest = await repo.latest_run_per_broker()
@@ -1246,17 +1249,50 @@ async def load_kis_live_us_lot_blocks(
         await db.rollback()
         orders_by_key = None
 
-    blocks: dict[str, dict[str, Any]] = {}
+    return us_position_blocks(
+        refs,
+        fills_by_key=fills_by_key,
+        orders_by_key=orders_by_key,
+        freshness=freshness,
+        now=moment,
+    )
+
+
+def us_position_blocks(
+    refs: Sequence[PositionRef],
+    *,
+    fills_by_key: dict[str, list[LedgerFill]],
+    orders_by_key: dict[str, list[OrderRow]] | None,
+    freshness: Freshness,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """One block per broker position, in ``refs`` order (task #1173 B3).
+
+    Blocks are never keyed by symbol: two positions whose symbols share a
+    ``_us_symbol_key`` (e.g. holdings rows BRK/B and BRK.B, both normalized to
+    BRK.B) would otherwise share one block and one position's quantity proof
+    would be shown for the other. Every position of such a key is unknown
+    (``duplicate_positions_for_symbol``) and nothing known is produced for it.
+    """
+    key_counts = Counter(_us_symbol_key(ref.symbol) for ref in refs)
+    blocks: list[dict[str, Any]] = []
     for ref in refs:
         key = _us_symbol_key(ref.symbol)
-        blocks[ref.symbol] = build_symbol_block(
-            symbol=ref.symbol,
-            reference_quantity=ref.reference_quantity,
-            current_price=ref.current_price,
-            fills=fills_by_key[key],
-            orders=None if orders_by_key is None else orders_by_key[key],
-            freshness=freshness,
-            now=moment,
-            market="us",
+        if key_counts[key] > 1:
+            blocks.append(
+                unknown_block(ref.symbol, UNKNOWN_DUPLICATE_POSITIONS, market="us")
+            )
+            continue
+        blocks.append(
+            build_symbol_block(
+                symbol=ref.symbol,
+                reference_quantity=ref.reference_quantity,
+                current_price=ref.current_price,
+                fills=fills_by_key.get(key, []),
+                orders=None if orders_by_key is None else orders_by_key.get(key, []),
+                freshness=freshness,
+                now=now,
+                market="us",
+            )
         )
     return blocks

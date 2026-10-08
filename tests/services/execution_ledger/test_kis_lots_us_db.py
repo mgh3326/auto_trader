@@ -215,12 +215,21 @@ async def _cleanup(db_session, run_ids: list[uuid.UUID]) -> None:
     await db_session.commit()
 
 
+def _by_symbol(refs, blocks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The per-position list (#1173 B3) keyed back by symbol, unique refs only."""
+    assert len(blocks) == len(refs)
+    assert len({ref.symbol for ref in refs}) == len(refs)
+    return {ref.symbol: block for ref, block in zip(refs, blocks, strict=True)}
+
+
 async def _load(db_session, rows: list[Any], refs, *, now: datetime = NOW):
     run_ids = [r.run_id for r in rows if isinstance(r, ExecutionLedgerReconcileRun)]
     db_session.add_all(rows)
     await db_session.commit()
     try:
-        return await load_kis_live_us_lot_blocks(db_session, refs, now=now)
+        return _by_symbol(
+            refs, await load_kis_live_us_lot_blocks(db_session, refs, now=now)
+        )
     finally:
         await _cleanup(db_session, run_ids)
 
@@ -619,8 +628,9 @@ async def test_b2_padding_stored_by_the_live_order_writer_is_attributed(
             .scalars()
             .all()
         )
-        blocks = await load_kis_live_us_lot_blocks(
-            db_session, [PositionRef("T1173.Q", Decimal("8"))], now=now
+        refs = [PositionRef("T1173.Q", Decimal("8"))]
+        blocks = _by_symbol(
+            refs, await load_kis_live_us_lot_blocks(db_session, refs, now=now)
         )
     finally:
         await _cleanup(db_session, run_ids)
@@ -680,8 +690,9 @@ async def test_loader_attribution_equals_a_pure_python_filter(db_session) -> Non
                 )
             )
         ).all()
-        blocks = await load_kis_live_us_lot_blocks(
-            db_session, [PositionRef(k, Decimal("1")) for k in keys], now=LATE
+        refs = [PositionRef(k, Decimal("1")) for k in keys]
+        blocks = _by_symbol(
+            refs, await load_kis_live_us_lot_blocks(db_session, refs, now=LATE)
         )
     finally:
         await _cleanup(db_session, run_ids)
@@ -704,6 +715,123 @@ async def test_loader_attribution_equals_a_pure_python_filter(db_session) -> Non
     assert blocks["T1173.NONE"]["provisional_rows_excluded"] == []
     # the mixed set really exercises merging: several spellings share one key
     assert len(keys) < len(spellings)
+
+
+_EVIDENCE = (
+    "open_buy_evidence",
+    "same_day_sell_evidence",
+    "open_sell_evidence",
+    "same_day_buy_evidence",
+)
+
+
+def _assert_duplicate_unknown(block: dict[str, Any]) -> None:
+    assert block["ledger_state"] == "unknown"
+    assert block["unknown_reasons"] == ["duplicate_positions_for_symbol"]
+    assert block["lots"] is None
+    assert block["net_quantity"] is None
+    assert block["sellable_by_ledger"] is None
+    assert block["market"] == "us"
+    for key in _EVIDENCE:
+        assert block[key]["blocking"] is True, key
+
+
+async def test_b3_duplicate_normalized_holdings_never_share_a_known_block(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tester r5 B3 end to end: holdings R5TEST/B qty 1 and R5TEST.B qty 8.
+
+    Holdings normalization gives both positions the symbol T1173.B. With a
+    fresh run and a seed of 8, the qty-1 position must never be shown the
+    qty-8 known proof: every position of a duplicated key is unknown and
+    nothing known is attached.
+    """
+    from tests.mcp_server import get_holdings_golden_support as support
+
+    small = {**support.kis_us_position("T1173.B"), "quantity": 1.0}
+    large = {**support.kis_us_position("T1173.B"), "quantity": 8.0}
+    support.install_fake_collect(monkeypatch, [small, large])
+    now = datetime.now(UTC)
+    run = _run(timedelta(minutes=10), now=now)
+    db_session.add_all([run, _seed(symbol="T1173.B", qty="8")])
+    await db_session.commit()
+    try:
+        result = await support.call_get_holdings(
+            include_current_price=False, minimum_value=0, include_ledger_lots=True
+        )
+    finally:
+        await _cleanup(db_session, [run.run_id])
+    positions = [
+        p
+        for g in result["accounts"]
+        for p in g["positions"]
+        if p.get("market") == "us" and p["source"] == "kis_api"
+    ]
+    assert sorted(p["quantity"] for p in positions) == [1.0, 8.0]
+    for position in positions:
+        _assert_duplicate_unknown(position["ledger_lots"])
+    assert result["ledger_lots"]["positions_covered_by_market"]["us"] == 2
+
+
+async def test_b3_loader_marks_every_position_of_a_shared_key_unknown(
+    db_session,
+) -> None:
+    refs = [
+        PositionRef("T1173/B", Decimal("1")),
+        PositionRef("T1173.B", Decimal("8")),
+        PositionRef(SYM, Decimal("8")),
+    ]
+    rows = [
+        _run(timedelta(minutes=10)),
+        _seed(symbol="T1173.B", qty="8"),
+        _seed(qty="8"),
+    ]
+    run_ids = [rows[0].run_id]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        blocks = await load_kis_live_us_lot_blocks(db_session, refs, now=NOW)
+    finally:
+        await _cleanup(db_session, run_ids)
+    assert len(blocks) == 3
+    assert [b["symbol"] for b in blocks] == ["T1173/B", "T1173.B", SYM]
+    _assert_duplicate_unknown(blocks[0])
+    _assert_duplicate_unknown(blocks[1])
+    # the unrelated single position is untouched by its neighbours' collision
+    assert blocks[2]["ledger_state"] == "known", blocks[2]["unknown_reasons"]
+    assert blocks[2]["net_quantity"] == "8"
+
+
+async def test_b3_single_position_block_is_unchanged_by_other_positions(
+    db_session,
+) -> None:
+    """A single position's block is identical alone or beside other positions."""
+    rows = [
+        _run(timedelta(minutes=10)),
+        _seed(qty="5"),
+        _fill(venue="NYSE", filled_qty=Decimal("3")),
+        _seed(symbol="T1173C", qty="2"),
+    ]
+    run_ids = [rows[0].run_id]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        [alone] = await load_kis_live_us_lot_blocks(
+            db_session, [PositionRef(SYM, Decimal("8"), Decimal("420"))], now=NOW
+        )
+        together = await load_kis_live_us_lot_blocks(
+            db_session,
+            [
+                PositionRef("T1173C", Decimal("2")),
+                PositionRef(SYM, Decimal("8"), Decimal("420")),
+            ],
+            now=NOW,
+        )
+    finally:
+        await _cleanup(db_session, run_ids)
+    assert alone["ledger_state"] == "known", alone["unknown_reasons"]
+    assert together[1] == alone
+    assert together[0]["ledger_state"] == "known"
 
 
 # ------------------------------------------------------------------ A3
@@ -774,10 +902,14 @@ async def test_a3_us_order_read_failure_degrades_only_the_order_evidence(
     db_session.add_all([run, _seed(qty="8")])
     await db_session.commit()
     try:
-        blocks = await load_kis_live_us_lot_blocks(
-            OrderReadFails(db_session),  # type: ignore[arg-type]
-            [PositionRef(SYM, Decimal("8"))],
-            now=NOW,
+        refs = [PositionRef(SYM, Decimal("8"))]
+        blocks = _by_symbol(
+            refs,
+            await load_kis_live_us_lot_blocks(
+                OrderReadFails(db_session),  # type: ignore[arg-type]
+                refs,
+                now=NOW,
+            ),
         )
     finally:
         await _cleanup(db_session, run_ids)
@@ -801,7 +933,7 @@ async def test_us_fills_read_failure_raises_for_the_caller_to_degrade() -> None:
             [PositionRef(SYM, Decimal("1"))],
             now=NOW,
         )
-    assert await load_kis_live_us_lot_blocks(Boom(), [], now=NOW) == {}  # type: ignore[arg-type]
+    assert await load_kis_live_us_lot_blocks(Boom(), [], now=NOW) == []  # type: ignore[arg-type]
 
 
 # ------------------------------------------------------------------ A4

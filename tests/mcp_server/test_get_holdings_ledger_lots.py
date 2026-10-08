@@ -52,16 +52,17 @@ def _install_fake_loader(
     seen_us: list[Any] | None = None,
 ) -> None:
     def make(market: str, sink: list[Any] | None):
-        async def fake_loader(db: Any, refs: Any, **_kwargs: Any) -> dict[str, Any]:
+        async def fake_loader(db: Any, refs: Any, **_kwargs: Any) -> Any:
             if sink is not None:
                 sink.extend(refs)
-            return {
-                ref.symbol: {
-                    "ledger_state": "known",
-                    "marker": f"blk-{market}-{ref.symbol}",
-                }
+            blocks = [
+                {"ledger_state": "known", "marker": f"blk-{market}-{ref.symbol}"}
                 for ref in refs
-            }
+            ]
+            # KR: symbol-keyed dict (unchanged); US: one block per position (#1173 B3)
+            if market == "us":
+                return blocks
+            return {ref.symbol: block for ref, block in zip(refs, blocks, strict=True)}
 
         return fake_loader
 
