@@ -58,6 +58,15 @@
 - **선물 path**: PR 2에서 별도 `futures_demo/` backend로 추가 (아래 참고)
 - **스케줄러 활성화 없음**: TaskIQ/cron/Prefect 연결 없음. CLI에서만 호출
 - **프로덕션 cutover gate**: alembic 마이그레이션은 PR에 포함되지만 operator가 별도로 `alembic upgrade head` 실행
+- **D2 remediation root reconcile (#1268)**: `scripts/binance_spot_demo_d2_root_reconcile.py`
+  (`app/services/brokers/binance/spot_demo/d2_root_reconcile.py`) — `filled` 인
+  `d2_remediation_single` SPOT 루트만 서비스의 `record_closed` → `record_reconciled` 로
+  종결한다. preview 기본·`--commit` 적용·`--ids` 정확한 목록(최대 3)·`--reason`/`--actor` 필수.
+  모든 id 가 D2 바운드 주문과 일치하고 Spot Demo 읽기 전용 `GET /api/v3/order` 가
+  `FILLED`+심볼·사이드·타입·수량·지정가·TIF·주문번호 일치를 보여야 하며, 하나라도 부적격·증거
+  불일치·조회 실패면 배치 전체 거부·무변경. 이미 이 도구로 종결된 배치는 no-op. 감사 기록은
+  `extra_metadata["d2_root_reconcile"]`(마이그레이션 0). 🔴 직접 SQL·삭제·주문 경로 없음,
+  H5 truth gate 범위는 변경하지 않는다. 실행은 운영자 전용(런북 §8)
 
 **USD-M Futures Demo (ROB-298 PR 2)**:
 - **실행 어댑터**: `app/services/brokers/binance/futures_demo/execution_client.BinanceFuturesDemoExecutionClient` — `demo-fapi.binance.com` only; mutation은 `submit_order(..., confirm=True)`만; close 주문에는 `reduce_only=True` 필수
