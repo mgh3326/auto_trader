@@ -39,6 +39,12 @@ LONG_RATIONALE = (
     "손절은 직전 저점 이탈 시. "
 ) * 6
 
+#: Row 63's real symbol is 005930. Other test files leave kis_mock rows on
+#: 005930 in the shared worker DB, which the same-symbol holding check then
+#: (correctly) treats as fills that may postdate the accept, so the fixtures
+#: use a symbol no other test writes.
+T1250_SYMBOL_63 = "990063"
+
 ROW_SPECS: dict[int, dict[str, Any]] = {
     80: {
         "symbol": "000100",
@@ -65,7 +71,7 @@ ROW_SPECS: dict[int, dict[str, Any]] = {
         "strategy": LONG_RATIONALE,
     },
     63: {
-        "symbol": "005930",
+        "symbol": T1250_SYMBOL_63,
         "quantity": Decimal("2"),
         "price": Decimal("234500"),
         "sent": datetime.datetime(2026, 7, 21, 13, 10, 2, tzinfo=KST),
@@ -121,8 +127,8 @@ def exec_row(**changes: Any) -> ExecutionLedger:
         "account_mode": "mock",
         "venue": "krx",
         "instrument_type": "equity_kr",
-        "symbol": "005930",
-        "raw_symbol": "005930",
+        "symbol": T1250_SYMBOL_63,
+        "raw_symbol": T1250_SYMBOL_63,
         "side": "buy",
         "broker_order_id": "0000026063",
         "fill_seq": 1,
