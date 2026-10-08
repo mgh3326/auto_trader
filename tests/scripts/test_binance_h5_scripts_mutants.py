@@ -1,0 +1,393 @@
+"""Assertion-RED mutants for every branch of the new H5 script guards.
+
+Branches are counted from the three scripts ON DISK: every ``if`` inside the
+functions listed in ``TARGETS``. Each mutant compiles a copy of the script with
+ONE condition forced false and runs the scenario only that branch should
+satisfy; the real script passes it, the mutant must fail it. A new branch
+without a declared invariant fails ``test_every_branch_has_a_mutant``; sentences
+and mutants must match (``test_invariant_sentences_match_the_mutants``).
+
+Invariant sentences (one per mutant):
+- WATCH_GATE: the watcher refuses to run unless the alert flag is exactly true.
+- GATE_CONFIRM: the truth gate refuses to run without --confirm-demo.
+- GATE_H5_FLAG: the truth gate refuses to run unless the H5 flag is exactly true.
+- GATE_FUTURES_FLAG: the truth gate refuses to run unless the Futures Demo flag
+  is exactly true.
+- ONCE_EXITS: --once runs exactly one tick and returns its exit code.
+- CANCEL_ALERTS_OFF: with alerts off a cancellation is neither reported nor swallowed.
+- STOP_PROPAGATES: a stop that interrupts the stop alert is still raised once the
+  alert is done.
+- EXCEPTION_REPORTS: an exception that escapes the loop is reported and still raised.
+- CANCEL_UNHANDLED: a cancellation without our signal handlers is still reported
+  and still propagates.
+- NO_TASK_NO_HANDLERS: signal handlers are never installed outside a task.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import asyncio
+import os
+import sys
+import types
+from collections.abc import Callable
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+pytestmark = pytest.mark.unit
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = {
+    "watch": REPO_ROOT / "scripts/binance_h5_heartbeat_watch.py",
+    "gate": REPO_ROOT / "scripts/binance_h5_truth_gate.py",
+    "runner": REPO_ROOT / "scripts/binance_h5_demo.py",
+}
+TARGETS = {
+    "watch": {"_guard"},
+    "gate": {"_guard_cli"},
+    "runner": {"_run_ticks", "_install_stop_signals", "_report_stop"},
+}
+
+
+class Done(BaseException):
+    pass
+
+
+class Session:
+    async def __aenter__(self) -> Session:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+
+class Channel:
+    def __init__(self) -> None:
+        self.sent: list[Any] = []
+
+    async def send(self, alert: Any) -> bool:
+        self.sent.append(alert)
+        return True
+
+
+def run_one_tick_scenario(
+    m: types.ModuleType,
+    results: list[Any],
+    *,
+    monitor: Any = None,
+    stop: Any = None,
+    session_factory: Any = None,
+) -> Any:
+    """Drive ``m._run_ticks`` with a scripted executor; ends with ``Done``."""
+    queue = list(results)
+
+    class Executor:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run_tick(self, *, now: Any, confirm: bool) -> Any:
+            if not queue:
+                raise Done
+            item = queue.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    async def no_sleep(seconds: float) -> None:
+        return None
+
+    saved = (m.AsyncSessionLocal, m.BinanceDemoLedgerService, m.H5Executor)
+    saved_sleep = m.asyncio.sleep
+    m.AsyncSessionLocal = session_factory or (lambda: Session())
+    m.BinanceDemoLedgerService = lambda db: object()
+    m.H5Executor = Executor
+    m.asyncio.sleep = no_sleep
+    try:
+        args = argparse.Namespace(once=True, loop=False, confirm_demo=True)
+        monitor = monitor or m.H5RunMonitor(m.H5Alerter(channel=None, enabled=False))
+        return asyncio.run(
+            m._run_ticks(
+                args,
+                client=SimpleNamespace(),
+                strategy=SimpleNamespace(),
+                state=SimpleNamespace(),
+                monitor=monitor,
+                stop=stop or m._StopState(),
+            )
+        )
+    except Done as exc:
+        raise AssertionError("the loop did not stop after the scripted ticks") from exc
+    finally:
+        m.AsyncSessionLocal, m.BinanceDemoLedgerService, m.H5Executor = saved
+        m.asyncio.sleep = saved_sleep
+
+
+def tick(m: types.ModuleType, event: str) -> Any:
+    from app.services.brokers.binance.h5.executor import H5TickResult
+
+    return H5TickResult(1, event)
+
+
+def with_env(**values: str | None):
+    class Ctx:
+        def __enter__(self) -> None:
+            self.saved = {k: os.environ.get(k) for k in values}
+            for key, value in values.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        def __exit__(self, *exc: object) -> None:
+            for key, value in self.saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    return Ctx()
+
+
+def sc_watch_gate(m: types.ModuleType) -> None:
+    with with_env(BINANCE_H5_ALERT_ENABLED="false"):
+        with pytest.raises(SystemExit):
+            m._guard(argparse.Namespace())
+
+
+def _gate(m: types.ModuleType, *, confirm: bool, h5: str, futures: str) -> None:
+    with with_env(BINANCE_H5_DEMO_ENABLED=h5, BINANCE_FUTURES_DEMO_ENABLED=futures):
+        with pytest.raises(SystemExit):
+            m._guard_cli(argparse.Namespace(confirm_demo=confirm))
+
+
+def sc_gate_confirm(m: types.ModuleType) -> None:
+    _gate(m, confirm=False, h5="true", futures="true")
+
+
+def sc_gate_h5(m: types.ModuleType) -> None:
+    _gate(m, confirm=True, h5="false", futures="true")
+
+
+def sc_gate_futures(m: types.ModuleType) -> None:
+    _gate(m, confirm=True, h5="true", futures="false")
+
+
+def sc_once_exits(m: types.ModuleType) -> None:
+    assert run_one_tick_scenario(m, [tick(m, "no_entry")]) == 0
+
+
+def call_async(factory: Any) -> Any:
+    try:
+        return asyncio.run(factory())
+    except Exception as exc:
+        raise AssertionError(f"raised {type(exc).__name__}: {exc}") from exc
+
+
+def _expect_cancelled(m: types.ModuleType, **kwargs: Any) -> None:
+    try:
+        run_one_tick_scenario(m, [asyncio.CancelledError()], **kwargs)
+    except asyncio.CancelledError:
+        return
+    raise AssertionError("the cancellation was swallowed")
+
+
+def sc_cancel_alerts_off(m: types.ModuleType) -> None:
+    stop = m._StopState()
+    stop.installed = True  # isolates the alerts-off branch from the handler branch
+    _expect_cancelled(m, stop=stop)
+
+
+def sc_stop_propagates(m: types.ModuleType) -> None:
+    class Slow:
+        sent: list[Any] = []
+
+        async def send(self, alert: Any) -> bool:
+            await asyncio.sleep(0.02)
+            self.sent.append(alert)
+            return True
+
+    channel = Slow()
+    channel.sent = []
+    monitor = m.H5RunMonitor(m.H5Alerter(channel=channel, enabled=True))
+
+    async def go() -> str:
+        task = asyncio.create_task(
+            m._report_stop(monitor, operator=False, reason="sigterm")
+        )
+        await asyncio.sleep(0.005)  # the send is in flight
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return "cancelled"
+        return "returned"
+
+    outcome = call_async(go)
+    assert outcome == "cancelled", "the interrupting stop was swallowed"
+    assert len(channel.sent) == 1, "the in-flight stop alert was not delivered"
+
+
+def sc_exception_reports(m: types.ModuleType) -> None:
+    channel = Channel()
+    monitor = m.H5RunMonitor(m.H5Alerter(channel=channel, enabled=True))
+
+    class BrokenSession:
+        async def __aenter__(self) -> None:
+            raise RuntimeError("session entry failed")
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    try:
+        run_one_tick_scenario(
+            m, [], monitor=monitor, session_factory=lambda: BrokenSession()
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("the escaped exception was swallowed")
+    assert len(channel.sent) == 1, "the escaped exception was not reported"
+
+
+def sc_cancel_unhandled(m: types.ModuleType) -> None:
+    channel = Channel()
+    monitor = m.H5RunMonitor(m.H5Alerter(channel=channel, enabled=True))
+    _expect_cancelled(m, monitor=monitor)  # stop.installed stays False
+    assert len(channel.sent) == 1, "the cancellation was not reported"
+
+
+def sc_no_task_no_handlers(m: types.ModuleType) -> None:
+    stop = m._StopState()
+
+    async def main() -> None:
+        asyncio.get_running_loop().call_soon(m._install_stop_signals, stop)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(main())
+    assert stop.installed is False
+
+
+# (script, function, condition source) -> (key, scenario)
+DECLARED: dict[tuple[str, str, str], tuple[str, Callable[[types.ModuleType], None]]] = {
+    ("watch", "_guard", "not alert_enabled(os.environ)"): ("WATCH_GATE", sc_watch_gate),
+    ("gate", "_guard_cli", "not args.confirm_demo"): ("GATE_CONFIRM", sc_gate_confirm),
+    (
+        "gate",
+        "_guard_cli",
+        "os.environ.get('BINANCE_H5_DEMO_ENABLED') != 'true'",
+    ): ("GATE_H5_FLAG", sc_gate_h5),
+    (
+        "gate",
+        "_guard_cli",
+        "os.environ.get('BINANCE_FUTURES_DEMO_ENABLED') != 'true'",
+    ): ("GATE_FUTURES_FLAG", sc_gate_futures),
+    ("runner", "_run_ticks", "not args.loop"): ("ONCE_EXITS", sc_once_exits),
+    ("runner", "_run_ticks", "not monitor.enabled"): (
+        "CANCEL_ALERTS_OFF",
+        sc_cancel_alerts_off,
+    ),
+    ("runner", "_report_stop", "interrupted"): (
+        "STOP_PROPAGATES",
+        sc_stop_propagates,
+    ),
+    ("runner", "_run_ticks", "monitor.enabled"): (
+        "EXCEPTION_REPORTS",
+        sc_exception_reports,
+    ),
+    ("runner", "_run_ticks", "not stop.installed"): (
+        "CANCEL_UNHANDLED",
+        sc_cancel_unhandled,
+    ),
+    ("runner", "_install_stop_signals", "task is None"): (
+        "NO_TASK_NO_HANDLERS",
+        sc_no_task_no_handlers,
+    ),
+}
+
+
+def _branches(name: str, tree: ast.Module) -> list[tuple[tuple[str, str, str], ast.If]]:
+    found = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name in TARGETS[name]
+        ):
+            for child in ast.walk(node):
+                if isinstance(child, ast.If):
+                    found.append(((name, node.name, ast.unparse(child.test)), child))
+    return found
+
+
+def _mutant(target: tuple[str, str, str]) -> types.ModuleType:
+    name = target[0]
+    tree = ast.parse(SCRIPTS[name].read_text("utf-8"))
+    hits = [n for t, n in _branches(name, tree) if t == target]
+    assert len(hits) == 1, target
+    hits[0].test = ast.Constant(False)
+    ast.fix_missing_locations(tree)
+    module_name = f"h5_script_mutant_{name}_{abs(hash(target)) % 10**8}"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(SCRIPTS[name])
+    sys.modules[module_name] = module
+    try:
+        exec(compile(tree, str(SCRIPTS[name]), "exec"), module.__dict__)  # noqa: S102
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def _real(name: str) -> types.ModuleType:
+    import importlib
+
+    return importlib.import_module(
+        {
+            "watch": "scripts.binance_h5_heartbeat_watch",
+            "gate": "scripts.binance_h5_truth_gate",
+            "runner": "scripts.binance_h5_demo",
+        }[name]
+    )
+
+
+def test_every_branch_has_a_mutant():
+    on_disk = {
+        target
+        for name in SCRIPTS
+        for target, _ in _branches(name, ast.parse(SCRIPTS[name].read_text("utf-8")))
+    }
+    assert on_disk == set(DECLARED), {
+        "undeclared": sorted(on_disk - set(DECLARED)),
+        "stale": sorted(set(DECLARED) - on_disk),
+    }
+
+
+def test_invariant_sentences_match_the_mutants():
+    keys = [
+        line[2:].split(":", 1)[0]
+        for line in (__doc__ or "").splitlines()
+        if line.startswith("- ") and ": " in line
+    ]
+    declared = [key for key, _ in DECLARED.values()]
+    assert sorted(keys) == sorted(declared)
+    assert len(set(declared)) == len(declared) == 10
+
+
+@pytest.mark.parametrize("target", sorted(DECLARED), ids=lambda t: DECLARED[t][0])
+def test_scenario_passes_on_the_real_script(target):
+    DECLARED[target][1](_real(target[0]))
+
+
+@pytest.mark.parametrize("target", sorted(DECLARED), ids=lambda t: DECLARED[t][0])
+def test_mutant_is_killed_by_its_invariant(target):
+    mutant = _mutant(target)
+    try:
+        # Only a readable assertion (or pytest.fail) is the invariant going RED.
+        with pytest.raises((AssertionError, pytest.fail.Exception)):
+            DECLARED[target][1](mutant)
+    finally:
+        sys.modules.pop(mutant.__name__, None)

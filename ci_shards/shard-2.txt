@@ -122,6 +122,8 @@ tests/services/brokers/binance/futures_demo/test_execution_client_position_mode.
 tests/services/brokers/binance/futures_demo/test_execution_client_position_side.py
 tests/services/brokers/binance/futures_demo/test_execution_client_reduce_only.py
 tests/services/brokers/binance/futures_demo/test_signing.py
+tests/services/brokers/binance/h5/test_alerting.py
+tests/services/brokers/binance/h5/test_alerting_mutants.py
 tests/services/brokers/binance/h5/test_client.py
 tests/services/brokers/binance/h5/test_control_scoring.py
 tests/services/brokers/binance/h5/test_execution_contract.py
