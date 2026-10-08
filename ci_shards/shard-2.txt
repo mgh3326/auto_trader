@@ -131,6 +131,8 @@ tests/services/brokers/binance/h5/test_single_asset_margin_gate.py
 tests/services/brokers/binance/h5/test_single_asset_margin_mutants.py
 tests/services/brokers/binance/spot_demo/test_config_env.py
 tests/services/brokers/binance/spot_demo/test_cross_environment_leakage.py
+tests/services/brokers/binance/spot_demo/test_d2_root_reconcile_mutants.py
+tests/services/brokers/binance/spot_demo/test_d2_root_reconcile_unit.py
 tests/services/brokers/binance/spot_demo/test_execution_client_get_order_status.py
 tests/services/brokers/binance/spot_demo/test_execution_client_order_test.py
 tests/services/brokers/binance/spot_demo/test_get_asset_balance.py
