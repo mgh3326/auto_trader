@@ -361,6 +361,26 @@ async def test_a2_evidence_mismatch_or_missing_refuses_the_batch(answer) -> None
     assert await _snapshot() == before
 
 
+@pytest.mark.parametrize("bad_id", ["0", "-1", "True", "Infinity", "0.0"])
+async def test_a2_malformed_matching_broker_order_id_refuses(bad_id: str) -> None:
+    """r1 B1: a stored id and an evidence id that agree on a malformed value."""
+    row_id = await _filled_root(
+        client_order_id=ETH.client_order_id,
+        symbol=ETH.symbol,
+        qty=ETH.quantity,
+        price=ETH.price,
+        broker_order_id=bad_id,
+        metadata=d2_metadata(ETH),
+    )
+    client = FakeSpotDemoReader({ETH.client_order_id: filled_body(ETH, bad_id)})
+    before = await _snapshot()
+    result = await _commit(client, (row_id,))
+    assert result.status == "refused"
+    assert result.rows[0].verdict == "broker_order_id_missing"
+    assert client.calls == []
+    assert await _snapshot() == before
+
+
 async def test_a2_failure_mid_transitions_leaves_nothing_applied(monkeypatch) -> None:
     ids = tuple((await _d2_roots()).values())
     before = await _snapshot()

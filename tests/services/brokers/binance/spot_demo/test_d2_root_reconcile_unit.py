@@ -268,3 +268,56 @@ def test_decide_empty_or_short_is_refused() -> None:
     assert r.decide((), ()) == "refused"
     assert r.decide((1, 2), (_ok(1),)) == "refused"
     assert r.decide((1, 2), (_done(1),)) == "refused"
+
+
+# ------------------------------------------------- broker order id (r1 B1)
+
+_MALFORMED_IDS = [
+    "0",
+    "-1",
+    "+7",
+    "07",
+    " 7",
+    "7 ",
+    "True",
+    "true",
+    "None",
+    "null",
+    "Infinity",
+    "NaN",
+    "0.0",
+    "7.0",
+    "1e3",
+    "７",
+    str(2**63),
+    "",
+]
+
+
+@pytest.mark.parametrize("bad", _MALFORMED_IDS)
+def test_malformed_stored_broker_order_id_is_not_row_eligible(bad: str) -> None:
+    verdict = r.evaluate_row(1, fake_row(broker_order_id=bad), fake_instrument())
+    assert verdict.verdict == "broker_order_id_missing"
+
+
+@pytest.mark.parametrize(
+    "bad", [*_MALFORMED_IDS, 0, -1, True, False, 2**63, 7.0, None, [7]]
+)
+def test_malformed_evidence_order_id_never_matches_even_if_row_agrees(bad) -> None:
+    # The tester's exploit: stored id and evidence id agree on a malformed value.
+    row = fake_row(broker_order_id=bad if isinstance(bad, str) else "9000001")
+    assert not r.evaluate_evidence(row, filled_body(broker_order_id=bad)).matches
+
+
+@pytest.mark.parametrize("good", ["1", "9000001", str(2**63 - 1)])
+def test_canonical_order_ids_match_as_int_or_string(good: str) -> None:
+    row = fake_row(broker_order_id=good)
+    assert r.evaluate_row(1, row, fake_instrument()).row_eligible
+    assert r.evaluate_evidence(row, filled_body(broker_order_id=good)).matches
+    assert r.evaluate_evidence(row, filled_body(broker_order_id=int(good))).matches
+
+
+def test_non_string_client_order_id_never_matches() -> None:
+    body = filled_body()
+    body["clientOrderId"] = ["d2rem-x"]
+    assert r.evaluate_evidence(fake_row(), body).verdict == "evidence_client_order_id"

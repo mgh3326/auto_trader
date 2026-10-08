@@ -66,7 +66,6 @@ from app.services.brokers.binance.spot_demo.d2_remediation_single import (
     D2_VENUE_HOST,
     WRITER_NAME,
     D2BoundOrder,
-    broker_identifier_problem,
 )
 from app.services.brokers.binance.spot_demo.host_allowlist import assert_spot_demo_host
 
@@ -298,6 +297,24 @@ def _decimal(value: Any) -> Decimal | None:
     return parsed if parsed.is_finite() else None
 
 
+def _positive_order_id(value: Any) -> int | None:
+    """A Binance order id as a positive int64, or ``None`` when it is not one.
+
+    Accepts an ``int`` (never a ``bool``) or a canonical ASCII decimal string:
+    no sign, no leading zero, no whitespace, no exponent or fraction. ``"0"``,
+    ``"-1"``, ``"True"``, ``"Infinity"``, ``"0.0"`` and pseudo-null spellings
+    are all absent, not identifiers (#1268 r1 B1).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 0 < value <= _BIGINT_MAX else None
+    if isinstance(value, str) and _ID_TOKEN.fullmatch(value):
+        number = int(value)
+        return number if number <= _BIGINT_MAX else None
+    return None
+
+
 def _fmt(value: Decimal | None) -> str | None:
     return None if value is None else format(value, "f")
 
@@ -384,7 +401,7 @@ def evaluate_row(ledger_id: int, row: Any | None, instrument: Any | None) -> Row
         return RowVerdict(ledger_id, "qty_mismatch", identity)
     if row.price != bound.price:
         return RowVerdict(ledger_id, "price_mismatch", identity)
-    if broker_identifier_problem(row.broker_order_id, field="broker_order_id"):
+    if _positive_order_id(row.broker_order_id) is None:
         return RowVerdict(ledger_id, "broker_order_id_missing", identity)
     return RowVerdict(ledger_id, "d2_filled_root", identity)
 
@@ -427,15 +444,10 @@ def evaluate_evidence(
         "updateTime": body.get("updateTime"),
     }
     raw_cid = body.get("clientOrderId")
-    if (
-        broker_identifier_problem(raw_cid, field="clientOrderId")
-        or str(raw_cid) != row.client_order_id
-    ):
+    if not isinstance(raw_cid, str) or raw_cid != row.client_order_id:
         return EvidenceVerdict("evidence_client_order_id", detail)
-    raw_oid = body.get("orderId")
-    if broker_identifier_problem(raw_oid, field="orderId") or str(raw_oid) != str(
-        row.broker_order_id
-    ):
+    evidence_oid = _positive_order_id(body.get("orderId"))
+    if evidence_oid is None or evidence_oid != _positive_order_id(row.broker_order_id):
         return EvidenceVerdict("evidence_order_id", detail)
     if body.get("symbol") != bound.symbol:
         return EvidenceVerdict("evidence_symbol", detail)
