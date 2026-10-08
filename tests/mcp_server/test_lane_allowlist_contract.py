@@ -45,7 +45,7 @@ LANE_COUNTS = {
     "orch-live": 55,
     "orch-mock": 10,
     "shadow-crypto": 1,
-    "us": 70,
+    "us": 72,
     "watch-alert-relay": 54,
 }
 LANE_SHA256 = {
@@ -58,7 +58,7 @@ LANE_SHA256 = {
     "orch-live": "de00e7848570616f70c90641a2bb70299d1a8befdeade65719e9647d7e0e2895",
     "orch-mock": "e942cf3f43f184fb6c5893e53582ad027d2e9abd50a19126d6e52c1fd905cd36",
     "shadow-crypto": "ca565c27d6d8bfb34386f1fa0bc3457afa194961c9a1797d1d1c94e59195500a",
-    "us": "8f5c5e732dee9129af112853710c66ad16fb0fe7a823c3ee1ed685e5a6d1b74b",
+    "us": "4731c93b37cd4e440ec1f5e30798dcd3ab5c060706914d9b01fe7ff3e697f702",
     "watch-alert-relay": "fea6739a48bc10e9707eff60d7aa1df987949f8ab0e041169bbeaf8a2202833e",
 }
 

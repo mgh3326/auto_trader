@@ -68,6 +68,15 @@ APPENDED = {
     "MCP_LIVE_ROUTE_NAMES": NAME,
     "APP_CONTAINERS": UNIT,
 }
+# #1257 appends the h3-us-paper unit after this one; the order is pinned.
+LATER = {
+    "MCP_NAMES": "h3-us-paper",
+    "MCP_PROFILES": "h3-us-paper",
+    "MCP_PORTS": "8777",
+    "MCP_TOKENS": "MCP_H3_US_PAPER_AUTH_TOKEN",
+    "MCP_LIVE_ROUTE_NAMES": "h3-us-paper",
+    "APP_CONTAINERS": "at-mcp-h3-us-paper",
+}
 # Existing units and the environment their containers received before #1189.
 EXISTING = {
     "analysis-readonly": ("analysis_readonly", "8768"),
@@ -139,7 +148,7 @@ def test_unit_is_declared_with_exactly_its_profile_port_and_token() -> None:
 def test_existing_units_are_byte_identical_and_the_unit_is_appended(
     array: str,
 ) -> None:
-    assert _array_text(array) == f"{BEFORE[array]} {APPENDED[array]}"
+    assert _array_text(array) == f"{BEFORE[array]} {APPENDED[array]} {LATER[array]}"
 
 
 def test_port_collides_with_nothing_and_token_is_never_assigned() -> None:
@@ -348,8 +357,8 @@ def test_success_path_digest_mismatch_on_the_unit_rolls_back(tmp_path: Path) -> 
 
 
 def test_later_failure_restores_the_unit_with_its_own_profile(tmp_path: Path) -> None:
-    # The unit is the last MCP unit, so fail the HAProxy route probe of an
-    # earlier one after every unit started: rollback must restart this unit
+    # Fail the HAProxy route probe of an earlier unit after every unit
+    # started (#1257 appends h3-us-paper after this one): rollback must restart this unit
     # from OLD with its own profile, port and token.
     result, calls, state, _ = _run(
         tmp_path, fail_route_url=f"http://{TAILNET}:8773/health"
@@ -426,7 +435,10 @@ def test_prune_keeps_a_skipped_units_own_image(tmp_path: Path) -> None:
 
 # --- A4: a blank profile never reaches docker ----------------------------------
 
-_PROFILES_LINE = f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {PROFILE})"
+_PROFILES_LINE = (
+    f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {PROFILE} "
+    f"{LATER['MCP_PROFILES']})"
+)
 
 
 @pytest.mark.parametrize("blank", ["''", "' '", '"\t"'], ids=["empty", "space", "tab"])
@@ -436,7 +448,8 @@ def test_blank_profile_in_the_arrays_refuses_before_pull_or_mutation(
     deploy = _mutant(
         tmp_path,
         _PROFILES_LINE,
-        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {blank})",
+        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {blank} "
+        f"{LATER['MCP_PROFILES']})",
     )
     result, calls, state, _ = _run(tmp_path, deploy=deploy)
     assert result.returncode == 78
@@ -450,7 +463,9 @@ def test_blank_profile_in_the_arrays_refuses_before_pull_or_mutation(
 
 def test_misaligned_arrays_refuse_before_pull_or_mutation(tmp_path: Path) -> None:
     deploy = _mutant(
-        tmp_path, _PROFILES_LINE, f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']})"
+        tmp_path,
+        _PROFILES_LINE,
+        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} {LATER['MCP_PROFILES']})",
     )
     result, calls, _, _ = _run(tmp_path, deploy=deploy)
     assert result.returncode == 78
@@ -469,7 +484,10 @@ def test_run_mcp_refuses_a_blank_profile_even_past_the_pre_check(
     mutated = source.replace(
         "validate_mcp_units || return $?; validate_mcp_tokens; }",
         "validate_mcp_tokens; }",
-    ).replace(_PROFILES_LINE, f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} '')")
+    ).replace(
+        _PROFILES_LINE,
+        f"declare -a MCP_PROFILES=({BEFORE['MCP_PROFILES']} '' {LATER['MCP_PROFILES']})",
+    )
     assert mutated.count("validate_mcp_units") == 1  # definition only
     deploy = tmp_path / "deploy-mutant.sh"
     deploy.write_text(mutated)

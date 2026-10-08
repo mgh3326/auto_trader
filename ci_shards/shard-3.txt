@@ -37,6 +37,7 @@ tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_get_holdings_ledger_lots.py
 tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
 tests/mcp_server/test_h3_crypto_paper_profile.py
+tests/mcp_server/test_h3_us_paper_profile.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
@@ -99,6 +100,7 @@ tests/scripts/b0x/test_table_gate.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_build_policy_table_out_dir.py
+tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
@@ -133,6 +135,8 @@ tests/services/brokers/binance/futures_demo/test_execution_client_submit_cancel.
 tests/services/brokers/binance/futures_demo/test_preflight.py
 tests/services/brokers/binance/h5/test_forecast_cli.py
 tests/services/brokers/binance/h5/test_history_executor.py
+tests/services/brokers/binance/h5/test_last_tick.py
+tests/services/brokers/binance/h5/test_truth_gate.py
 tests/services/brokers/binance/spot_demo/test_close_sizing.py
 tests/services/brokers/binance/spot_demo/test_execution_client_fail_closed.py
 tests/services/brokers/binance/spot_demo/test_execution_client_submit_cancel.py

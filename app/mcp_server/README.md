@@ -1627,10 +1627,19 @@ Response sections:
 - `latest_report`: latest report summary and item status counts, or `null`.
 - `session_context`: recent ROB-516 handoff entries. Its additive `constraints`
   subsection is `{count, entries}` for `entry_type="constraint"` rows from the
-  current KST date plus the prior two KST dates, newest first. It is queried
-  independently of `session_context_limit`; the original `count`/`entries`
-  window remains unchanged.
-- `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
+  current KST date plus the prior two KST dates, newest first, when that query
+  succeeds. It is queried independently of `session_context_limit`; the original
+  `count`/`entries` window remains unchanged. If only the constraint query fails,
+  `count` and `entries` stay as fetched and `constraints` is
+  `{count: 0, entries: [], unavailable_reason}` with `unavailable_reason` shaped as
+  `session_context_constraints_failed:<ExceptionType>:<message>`.
+  `staleness.session_context.freshness_status` is then `unavailable` with that
+  same reason, so the section is not fully fresh, and `success` stays true.
+  If the general session-context query fails, the section fallback remains
+  `{count: 0, entries: [], unavailable_reason}` and also includes `constraints`
+  in that same unavailable shape, using the section reason
+  `session_context_failed:<ExceptionType>:<message>`.
+- `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`. A constraint-only failure uses that same `unavailable` pair on `staleness.session_context` and does not drop the general entries. The general-query fallback includes `constraints` in the unavailable shape above. `success` stays true on both paths.
 - `trading_scoreboards`: trading scoreboard or counterfactual delta metrics, depending on `include_counterfactual_delta` parameter.
 
 The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
@@ -2061,7 +2070,7 @@ Parameters:
 - `market`: optional market filter (`kr`, `us`, `crypto`)
 - `include_current_price`: if `True`, tries to fetch latest prices and calculate PnL fields
 - `minimum_value`: optional numeric threshold. When `None` (default), per-currency thresholds apply: KRW=5000, USD=10. Explicit number uses uniform threshold. Positions below threshold are excluded only when `include_current_price=True`
-- `include_ledger_lots`: opt-in (default `False`; the default response is byte-identical to before). When `True` and the routing is KIS live, every KIS live KR position gains a read-only `ledger_lots` block and the response gains a top-level `ledger_lots` summary (task #963). See "Ledger lots block" below.
+- `include_ledger_lots`: opt-in (default `False`; the default response is byte-identical to before). When `True` and the routing is KIS live, every KIS live KR position (task #963) and every KIS live US position (task #1173) gains a read-only `ledger_lots` block and the response gains a top-level `ledger_lots` summary. See "Ledger lots block" below.
 
 Filtering rules:
 - With `account_mode="kis_mock"`, holdings collection is KIS-only. Upbit,
@@ -2111,11 +2120,13 @@ Response contract additions:
 
 Ledger lots block (`include_ledger_lots=True`, task #963):
 - DB-only and read-only: no broker call (the broker quantity/price already in the response are the reference values) and no write. Contract text: `docs/agent-contracts/broker-and-ledger-contracts.md` "KIS live KR ledger lots".
-- Attached only to KIS live KR positions (`broker="kis"`, `source="kis_api"`, `market="kr"`, `account_mode="kis_live"`). Toss, manual, US and Upbit positions never get one. Under `kis_mock`/`db_simulated` routing no block is attached and the top-level summary reports `applied=false` (`reason="kis_live_kr_only"`); under KIS-live routing with no KIS KR position the summary reports `applied=true`, `positions_covered=0`.
+- Attached only to KIS live KR and US positions (`broker="kis"`, `source="kis_api"`, `market="kr"|"us"`, `account_mode="kis_live"`). Toss, manual and Upbit positions never get one. The summary has `scope="kis_live_kr_us_positions"`, `positions_covered` and `positions_covered_by_market={"kr": n, "us": m}`. Under `kis_mock`/`db_simulated` routing no block is attached and the summary reports `applied=false` (`reason="kis_live_only"`); under KIS-live routing with no KIS position the summary reports `applied=true`, `positions_covered=0`. KR and US are read in separate sessions: a failure on one market never degrades the other's blocks.
+- KR blocks are unchanged by #1173. A US block (task #1173) has the same fields plus `market="us"`, `currency="USD"`, `accepted_venues`, `trading_day_basis`, `trading_day_start`, `order_ledger_sources` and `diagnostics.unrecognized_venue_rows`. US differences: fills are `equity_us`/`USD` rows; an authoritative row whose venue is not `NASD`/`NYSE`/`AMEX` is never counted and makes the block `unknown` (`unrecognized_us_venue_rows`); own orders come from `review.live_order_ledger` (`broker="kis"`, `account_scope="kis_live"`, `market="us"`) plus any `equity_us` row of `review.kis_live_order_ledger` (the evidence keys keep their `kis_live_order_ledger_*` names); "today" is the US trading date, rolling over at 20:00 America/New_York, not the KST day; a websocket row is superseded by an authoritative row only for the same order on the same US trading date (KIS order numbers recur across days). Symbol attribution is done only in Python with one identity (`to_db_symbol(symbol.strip()).upper()`); SQL never filters on the symbol. US blocks are one per broker position (attached by position, never by symbol); positions sharing a normalized symbol are all `unknown` with `duplicate_positions_for_symbol`. The KIS reconcile freshness is shared (one run fetches KR and US).
 - `ledger_lots.ledger_state` is `known` or `unknown`. `unknown` carries `unknown_reasons` and `lots=null` (never an empty list). `known` requires a KIS reconcile finished within 90 minutes, authoritative rows only (`reconciler`/`manual_import`; provisional `websocket` rows are listed in `provisional_rows_excluded` and never counted) and a ledger net quantity equal to the broker quantity.
 - `lots[]` are FIFO remaining lots (`cost_method="fifo_remaining_lots_from_ledger"`), not the broker moving-average `avg_buy_price`; pre-ledger holdings are one `origin="opening_seed"` lot at the broker average as of the seed.
 - `open_buy_evidence` (`state`, `blocking`, `blocking_reasons`): same-KST-day non-terminal buy rows in `review.kis_live_order_ledger` and same-day buy fills whose order the order ledger has not proven complete. `unknown` evidence is `blocking`. `external_orders_verifiable` is always `false`: an unfilled order placed outside auto_trader (KIS app/HTS) is invisible.
 - `same_day_sell_evidence` (`state`, `blocking`, `blocking_reasons`, `fills[]`): same-KST-day sell fills for the symbol (authoritative rows, plus provisional websocket rows no authoritative row covers, flagged `provisional`). Any such fill, or a stale/missing reconcile, is `blocking` (opposite-side chain / wash visibility; strategy-lab hk #963 comments 796/798). Rows dated later than today (writer clock skew) count as today in both evidence blocks.
+- Quarantined rows (#1175) never reach any view. A `websocket` row (including an accept notice recorded as a fill and not yet quarantined) never reaches `lots`, net quantity, the broker-quantity cross-check or `sellable_by_ledger`; in the same-day evidence views it can only add blocking.
 - The block can never fail `get_holdings`: any read failure returns `ledger_state="unknown"` with `unknown_reasons=["ledger_read_failed"]`.
 
 Market routing:

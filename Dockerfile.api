@@ -70,6 +70,10 @@ COPY --from=builder /app/.venv /app/.venv
 # 앱 소스 코드 복사
 COPY app/ ./app/
 COPY research_contracts/ ./research_contracts/
+# scripts/binance_h5_*.py (H5 demo runner, truth gate, heartbeat watcher) import
+# research.nautilus_scalping.rob974_features through the H5 modules. Ship that one
+# package, never the rest of research/ (a namespace package: no __init__.py chain).
+COPY research/nautilus_scalping/ ./research/nautilus_scalping/
 COPY alembic/ ./alembic/
 COPY alembic.ini pyproject.toml README.md ./
 # NCP runs the Upbit/KIS websocket monitors from this image (at-upbit-ws /

@@ -7,6 +7,7 @@ All H5 calls revalidate the exact demo origin before signing or dispatching.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -27,6 +28,8 @@ from app.services.brokers.binance.futures_demo.signing import (
 
 from .strategy import DEMO_URL, UNIVERSE, assert_h5_demo_url
 
+_ASSET_NAME = re.compile(r"[A-Z0-9]{1,20}")
+
 
 class H5BrokerTruthUnavailable(RuntimeError):
     """Missing, malformed or contradictory broker evidence blocks H5 action."""
@@ -36,6 +39,11 @@ class H5BrokerTruthUnavailable(RuntimeError):
 class H5Account:
     nav_usdt: Decimal
     per_symbol_isolated_1x: dict[str, bool]
+    # #1272 (hk 1271 B): non-USDT assets holding a positive balance. They are
+    # admitted only because the same /fapi/v2/account response proved
+    # multiAssetsMargin is exactly False, so they cannot margin USDT-M H5.
+    non_usdt_assets: tuple[str, ...] = ()
+    multi_assets_margin: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +128,8 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
         if not isinstance(assets, list) or not assets:
             raise H5BrokerTruthUnavailable("complete account assets unavailable")
         usdt_seen = False
+        usdt_margin: Any = None
+        non_usdt: set[str] = set()
         for asset in assets:
             if not isinstance(asset, dict):
                 raise H5BrokerTruthUnavailable("malformed account asset")
@@ -127,15 +137,35 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
                 if usdt_seen:
                     raise H5BrokerTruthUnavailable("duplicate USDT account asset")
                 usdt_seen = True
+                usdt_margin = asset.get("marginBalance")
             else:
                 try:
                     balance = Decimal(str(asset.get("marginBalance")))
                 except (InvalidOperation, TypeError, ValueError) as exc:
                     raise H5BrokerTruthUnavailable("non-USDT asset unreadable") from exc
-                if not balance.is_finite() or balance != 0:
+                if not balance.is_finite() or balance < 0:
                     raise H5BrokerTruthUnavailable("foreign account asset exposure")
+                if balance != 0:
+                    # Admissible only under the single-asset proof above.
+                    name = asset.get("asset")
+                    if not isinstance(name, str) or not _ASSET_NAME.fullmatch(name):
+                        raise H5BrokerTruthUnavailable("non-USDT asset unreadable")
+                    non_usdt.add(name)
         if not usdt_seen:
             raise H5BrokerTruthUnavailable("USDT account asset unavailable")
+        if non_usdt:
+            # Single-asset mode reports totalMarginBalance for USDT only; with
+            # foreign balances present, prove NAV did not absorb them.
+            try:
+                usdt_balance = Decimal(str(usdt_margin))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise H5BrokerTruthUnavailable(
+                    "USDT margin balance unreadable"
+                ) from exc
+            if not usdt_balance.is_finite() or usdt_balance != nav:
+                raise H5BrokerTruthUnavailable(
+                    "USDT NAV not separable from non-USDT assets"
+                )
         positions = body.get("positions")
         if not isinstance(positions, list):
             raise H5BrokerTruthUnavailable("complete margin configuration unavailable")
@@ -152,7 +182,12 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
                     and str(row.get("leverage")) == "1"
                     and row.get("positionSide") == "BOTH"
                 )
-        return H5Account(nav_usdt=nav, per_symbol_isolated_1x=configured)
+        return H5Account(
+            nav_usdt=nav,
+            per_symbol_isolated_1x=configured,
+            non_usdt_assets=tuple(sorted(non_usdt)),
+            multi_assets_margin=body.get("multiAssetsMargin"),
+        )
 
     async def get_book_quote(self, symbol: str) -> H5Quote:
         self._assert_h5()

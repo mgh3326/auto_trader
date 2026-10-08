@@ -40,6 +40,10 @@ exposure or incomplete read blocks entry. NAV sizing floors quantity to
 MARKET_LOT_SIZE under NAV × 0.01 / 0.05 notional; it never rounds up to pass
 MIN_NOTIONAL. Isolated 1x and one-way position mode require positive broker
 readback and are never changed by this adapter.
+Non-USDT balances (the Demo account's immovable USDC and BTC grants) are
+accepted only when the same account read proves single-asset margin
+(multiAssetsMargin exactly false) and NAV equals the USDT balance; see
+docs/contracts/h5-deviation-20261008-single-asset-margin-foreign-balances.md.
 
 ## Fills, restart and holding
 
@@ -100,3 +104,12 @@ The computed control observes four-hour grid quotes and conservative stop
 touches rather than a replay of executable minute quotes; report this
 resolution limit with every score. A restart after 24h reads the declared
 first 24h envelope plus a current executable quote and exits by wall clock.
+
+## NCP operation and failure alerts
+
+The exact copy-paste procedure for NCP (truth gate, flag-scoped one-off
+containers, T0 record, stop, incident response, rollback) is
+[binance-h5-ncp-manual-playbook.md](binance-h5-ncp-manual-playbook.md). Failure
+alerts (`stopped`, `error`, `heartbeat_missed`) are off unless
+`BINANCE_H5_ALERT_ENABLED` is exactly `true` on the container, use the existing
+ops Discord channel, and never change what the runner does.
