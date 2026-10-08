@@ -114,7 +114,7 @@ Paste the whole line into the start record either way.
 
 | check | passes when | on FAIL |
 | --- | --- | --- |
-| `account_isolated_1x` | account trades, single-asset margin, no foreign asset, BTCUSDT/ETHUSDT/SOLUSDT isolated 1x BOTH | set margin and leverage in the Binance demo UI; this lane never changes them |
+| `account_isolated_1x` | account trades, single-asset margin (`multiAssetsMargin` exactly false), BTCUSDT/ETHUSDT/SOLUSDT isolated 1x BOTH; a positive non-USDT balance (the demo's USDC/BTC grants) passes only under that verified single-asset margin with NAV equal to the USDT balance, and `detail` then ends `margin_mode=single_asset non_usdt_assets=BTC,USDC` (#1272) | set margin and leverage in the Binance demo UI and keep the account in single-asset mode; this lane never changes them |
 | `one_way_position_mode` | one-way mode | switch to one-way in the demo UI |
 | `positions_flat` | every position is zero | something else holds a position (the scalping bot or a manual trade); the lane needs a flat account for attribution |
 | `no_open_orders` | no open order | cancel it by hand in the demo UI after finding its owner |

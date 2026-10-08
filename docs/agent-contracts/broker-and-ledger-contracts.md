@@ -152,6 +152,13 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   공유 env 파일(`.env.api`) 편집·`--restart`·`-d`·cron/systemd 등록 금지.
   시작 전 `scripts/binance_h5_truth_gate.py --confirm-demo`(서명 GET + SELECT 만,
   주문·쓰기 도달 불가를 AST 테스트로 고정)가 PASS 해야 한다.
+- **비USDT 잔고 (#1272, hk 1271 = B)**: Futures Demo 기본 지급분(USDC·BTC)은 같은 서명 GET
+  `/fapi/v2/account` 응답의 `multiAssetsMargin` 이 정확히 JSON `false` 일 때만 허용된다(`read_account`).
+  true·누락·null·문자열·숫자·읽기 실패는 FAIL. 비USDT 잔고는 양의 유한값·이름 `[A-Z0-9]{1,20}` 이어야 하고,
+  있으면 NAV(`totalMarginBalance`)가 USDT `marginBalance` 와 같아야 한다. 트루스 게이트
+  `account_isolated_1x` 는 모드를 다시 확인하고 통과 detail 에 `margin_mode=single_asset non_usdt_assets=…`
+  를 붙인다(비USDT 잔고 없으면 detail 불변). 읽기 경로·다른 체크·종료 코드 불변. 기록:
+  `docs/contracts/h5-deviation-20261008-single-asset-margin-foreign-balances.md`.
 - **장애 알림 (default off, `BINANCE_H5_ALERT_ENABLED` 정확히 `true` 일 때만)**:
   `h5/alerting.py`. `stopped`(SIGINT 외의 종료)·`error`(`blocked`/`entry_uncertain`/
   `close_uncertain` 틱)는 러너 안에서, `heartbeat_missed`는 별도 읽기 전용
