@@ -188,6 +188,98 @@ async def test_lots_provisional_listing_drops_the_quarantined_phantom(
     ]
 
 
+async def test_us_lots_drop_the_quarantined_row(db_session, seed, monkeypatch) -> None:
+    """#1173: the KIS live US loader excludes a quarantined row from every view.
+
+    The quarantine CLI refuses non-KR rows, so the US row is marked through the
+    repository writer (the DB permits any KIS websocket row). Before quarantine
+    the phantom buy is listed and blocks same-day buy evidence; after it, the
+    block is as if it never existed; the "filter dropped" mutant sees it again.
+    """
+    tag = uuid.uuid4().hex[:5].upper()
+    symbol = f"Q{tag}"
+    seed.symbols.add(symbol)
+    run = ExecutionLedgerReconcileRun(
+        run_id=uuid.uuid4(),
+        broker="kis",
+        window_start=NOW - timedelta(days=2),
+        window_end=NOW - timedelta(minutes=11),
+        started_at=NOW - timedelta(minutes=11),
+        finished_at=NOW - timedelta(minutes=10),
+        dry_run=False,
+    )
+    seed.run_ids.append(run.run_id)
+    us = {
+        "venue": "NASD",
+        "instrument_type": "equity_us",
+        "currency": "USD",
+        "filled_price": "400",
+        "filled_notional": "4000",
+    }
+    real = ExecutionLedger(
+        **ExecutionLedgerUpsert(
+            **row_kwargs(
+                symbol=symbol,
+                order_no=f"R{tag}0001",
+                source="reconciler",
+                raw_payload_json=None,
+                fill_seq=0,
+                filled_qty="10",
+                filled_at=(NOW - timedelta(days=5)).isoformat(),
+                **us,
+            )
+        ).model_dump()
+    )
+    phantom_order_no = f"P{tag}0001"
+    phantom = ExecutionLedger(
+        **ExecutionLedgerUpsert(
+            **row_kwargs(
+                symbol=symbol,
+                order_no=phantom_order_no,
+                raw_payload_json={"tr": "H0GSCNI0", "cntg_yn": "1"},
+                filled_at=(NOW - timedelta(minutes=30)).isoformat(),
+                **us,
+            )
+        ).model_dump()
+    )
+    db_session.add_all([run, real, phantom])
+    await db_session.commit()
+    phantom_id = int(phantom.id)
+
+    async def us_lots() -> dict[str, Any]:
+        [block] = await kis_lots.load_kis_live_us_lot_blocks(
+            db_session, [PositionRef(symbol, Decimal("10"), Decimal("410"))], now=NOW
+        )
+        await db_session.rollback()
+        return block
+
+    before = await us_lots()
+    assert [r["broker_order_id"] for r in before["provisional_rows_excluded"]] == [
+        phantom_order_no
+    ]
+    assert before["same_day_buy_evidence"]["blocking"] is True
+
+    touched = await ExecutionLedgerRepository(db_session).mark_quarantined(
+        [phantom_id], at=NOW, reason=REASON, actor=ACTOR
+    )
+    await db_session.commit()
+    assert touched == 1
+
+    after = await us_lots()
+    assert after["ledger_state"] == "known", after["unknown_reasons"]
+    assert after["provisional_rows_excluded"] == []
+    assert after["same_day_buy_evidence"]["blocking"] is False
+    assert [lot["quantity"] for lot in after["lots"]] == ["10"]
+    assert after["sellable_by_ledger"] == "10"
+
+    _drop_filter(monkeypatch, kis_lots)
+    mutant = await us_lots()
+    assert [r["broker_order_id"] for r in mutant["provisional_rows_excluded"]] == [
+        phantom_order_no
+    ]
+    assert mutant["same_day_buy_evidence"]["blocking"] is True
+
+
 async def _reseed(db, scenario: Scenario, cutover: datetime) -> str:
     """Run the opening-seed plan for the scenario's symbol and commit it."""
     candidate = OpeningLotCandidate(
