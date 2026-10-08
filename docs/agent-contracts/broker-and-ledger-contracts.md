@@ -14,6 +14,7 @@
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
+- kis_mock 4행 Q-46 expired[inference] (#1250)
 - KIS Live Order Fill-Evidence Gate (ROB-395)
 - KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 - 7-D stale blocker night sweep + KIS expired[inference] (#1112)
@@ -378,6 +379,43 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
 일반 lifecycle 쓰기는 행 잠금과 fresh 재조회로 동시 만료를 확인하며, 만료된
 행에서는 전이를 거부한다. 조정 작업은 해당 충돌을 이벤트 없는 행별 skip으로
 기록한다.
+
+### kis_mock 4행 Q-46 expired[inference] (#1250)
+
+운영자 결정(hk #706 comment 1092, 10-05)으로 kis_mock 원장 80·66·64·63 **정확히
+4행**에만 #1112 `expired[inference]` 규칙을 적용하는 일회성 레버다.
+
+- **CLI**: `scripts/expire_kis_mock_rows_by_inference.py` — preview 기본, `--commit`,
+  `--ids` 는 정확히 그 4개(부분집합·그 밖 id·중복·범위 거부, DB 연결 전), `--decision-ref`
+  는 정확히 `Q-46`, `--reason`/`--actor` 필수, DB 는 `--database-url-env`(값 출력 금지)
+- **규칙/쓰기**: `app/services/kis_mock_inference_expiry.py`(순수, 조건별 `_check_*`) →
+  `kis_mock_inference_expiry_service.py`(사실 수집·FOR UPDATE 재판정) →
+  `KISMockLifecycleService.close_rows_by_q46_inference`(허용 id·open 상태로 가드된
+  UPDATE, 4행 아니면 전부 롤백). 브로커 호출·live 원장 읽기 0
+- 🔴 **생략은 정확히 2개**: strategy 대조와 reconcile coverage(#1112
+  `execution_ledger_covers_order_day` — kis_mock 에는 그 run 이 존재할 수 없음, director-1
+  option A). preview 가 행마다 `waived_conditions` 를 출력하고 닫힌 행·감사 행에 caveat 와 함께
+  기록한다. 생략은 4-id allowlist 안에서만 존재한다. 나머지 #1112 조건은
+  kis_mock 증거로 번역해 전부 판정하고, 한 행이라도 실패하면 배치 전체 무변경:
+  수락된 kis_mock KR 현금 BUY(native 응답 rt_cd 0·odno·ord_tmd 일치) · lifecycle
+  accepted/pending · DAY(00/01) · 정규장 접수 · #1112 deadline 경과 · 그 주문의 체결 증거
+  0(execution_ledger kis/mock 전 source·격리행 포함, 행 자체 체결 reason/수량, 같은
+  correlation 행) · 보유 불변(`holdings_baseline_qty` 기록 + 접수 이후일 수 있는 종목 체결 0)
+- **닫힌 행**: `expired` + `last_reconcile_detail.reason_code` = #1112 마커
+  `expired_inference:kis_regular_day_order_no_broker_original`, `expiry_caveat=no_broker_original`,
+  `operator_decision_ref=Q-46`. terminal 이라 open-order·예약·reconcile 리더에서 빠지고
+  일반 전이 API 는 거부, #881 도구는 `already_terminal`
+- **감사**: append-only `review.kis_mock_inference_expiry_events`(ledger_id UNIQUE, CHECK
+  ledger_id ∈ {63,64,66,80}·decision ref Q-46, UPDATE/DELETE/TRUNCATE 트리거 거부).
+  🔴 close↔audit 는 DB 가 결속: 같은 batch 로 닫힌 행이 아니면 감사 INSERT 거부, 마커가
+  붙은 행은 COMMIT 시 같은 batch 감사 행 필수(deferred constraint trigger — 4 id 밖·
+  accepted/pending→expired 외 전이·닫힌 행 재기록도 거부). id 는 정확히 built-in int 4개만
+  (float/numpy/bool/str 거부). 쓰기 초크포인트가 배치를 스스로 재잠금·재판정하고, UPDATE 뒤
+  모든 체결 소스를 다시 읽어 그 사이 커밋된 체결이면 전체 롤백. COMMIT 시점 deferred 트리거가 주문·종목·형제
+  행 체결과 4행 배치를 SQL 로 재확인(재확인 이후 커밋된 체결도 전체 거부). 마커가 붙은 닫힌 행은
+  UPDATE·DELETE 전부 거부(terminal — 마커를 지워 재오픈 불가)
+  마이그레이션 `20261005_t1250_kismock_inf`(CREATE TABLE 만). 두 번째 commit 은 무변경 no-op
+- **런북**: `docs/runbooks/kis-mock-expired-inference-q46.md`. 실DB 실행은 운영자 전용
 
 ### KIS Live Order Fill-Evidence Gate (ROB-395)
 
