@@ -66,7 +66,20 @@ MIXED_SAME = [
 ]
 # ... and near misses it does not (must not be merged into the position).
 MIXED_OTHER = ["T1173_X.Y", "T1173 X.Y", "T1173.XY", "T1173.X.Y.Z", "T1173XY"]
-ALL_SYMBOLS += [MIXED_KEY, *MIXED_SAME, *MIXED_OTHER]
+# r4 B1: Python upper folds these (ß -> SS, ﬀ -> FF); PostgreSQL upper does not.
+UNICODE_SAME = {"t1173ß": "T1173SS", "T1173ﬀ": "T1173FF"}
+# r4 B2: padding Python strip removes but an ASCII SQL trim would not.
+PADDED_SAME = ["\u00a0T1173.Q\u2003", "\x1cT1173.Q\x1f", "\u2028t1173/q\u3000"]
+ALL_SYMBOLS += [
+    MIXED_KEY,
+    *MIXED_SAME,
+    *MIXED_OTHER,
+    *UNICODE_SAME,
+    *UNICODE_SAME.values(),
+    "T1173.Q",
+    *PADDED_SAME,
+    *(sym.strip() for sym in PADDED_SAME),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -352,7 +365,7 @@ async def test_a2_loader_keeps_today_fills_that_reuse_old_order_numbers(
     blocks = await _load(
         db_session,
         [
-            _run(timedelta(minutes=10)),
+            _run(timedelta(minutes=10), now=LATE),
             _fill(filled_qty=Decimal("10"), broker_order_id="000123"),
             _fill(
                 side="sell",
@@ -379,6 +392,9 @@ async def test_a2_loader_keeps_today_fills_that_reuse_old_order_numbers(
         now=LATE,
     )
     block = blocks[SYM]
+    # r4 S1: a fresh run, so staleness cannot be what blocks
+    assert block["freshness"]["state"] == "fresh"
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
     assert block["diagnostics"]["superseded_websocket_duplicates"] == 0
     for key in (
         "open_buy_evidence",
@@ -502,54 +518,192 @@ async def test_a2_mixed_separator_spellings_cannot_hide_today_fills(
         assert block[key]["blocking"] is True, key
 
 
-async def test_sql_prefilter_selects_exactly_what_the_python_key_maps(
+async def test_b1_unicode_case_folding_matches_the_python_key(db_session) -> None:
+    """Tester r4 B1: ingest and the reconciler keep ß/ﬀ as written.
+
+    Python attributes t1173ß to T1173SS; the loader must see the
+    authoritative row (lots known) and today's websocket pair (all views
+    block). Round 4 dropped both in SQL.
+    """
+    blocks = await _load(
+        db_session,
+        [
+            _run(timedelta(minutes=10), now=LATE),
+            _seed(symbol="T1173SS", qty="5"),
+            _fill(symbol="t1173ß", filled_qty=Decimal("3")),
+            _fill(
+                symbol="t1173ß",
+                source="websocket",
+                filled_qty=Decimal("1"),
+                filled_at=datetime(2099, 8, 12, 14, 30, tzinfo=UTC),
+            ),
+            _fill(
+                symbol="T1173SS",
+                source="websocket",
+                side="sell",
+                filled_qty=Decimal("1"),
+                filled_at=datetime(2099, 8, 12, 15, 30, tzinfo=UTC),
+            ),
+        ],
+        [PositionRef("T1173SS", Decimal("8"))],
+        now=LATE,
+    )
+    block = blocks["T1173SS"]
+    assert block["freshness"]["state"] == "fresh"
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
+    assert block["net_quantity"] == "8"
+    assert len(block["provisional_rows_excluded"]) == 2
+    for key in (
+        "open_buy_evidence",
+        "same_day_sell_evidence",
+        "open_sell_evidence",
+        "same_day_buy_evidence",
+    ):
+        assert block[key]["blocking"] is True, key
+
+
+async def test_b2_padding_stored_by_the_live_order_writer_is_attributed(
     db_session,
 ) -> None:
-    """The SQL identity and _us_symbol_key agree on every stored spelling.
+    """Tester r4 B2 through the real writer, which stores its symbol unstripped.
 
-    Selected rows must be exactly the ones whose Python key is the position
-    key: nothing the mapping would attribute is dropped (fail-open), and no
-    near-miss spelling is merged into the position.
+    An own open sell saved as NBSP/em-space or control-separator padded
+    T1173.Q must block and reserve its quantity against the position.
     """
-    spellings = [*MIXED_SAME, *MIXED_OTHER]
-    rows = [
-        _fill(symbol=sym, broker_order_id=f"{ORDER_PREFIX}-M{i:02d}")
-        for i, sym in enumerate(spellings)
-    ]
-    db_session.add_all(rows)
+    from app.mcp_server.tooling.live_order_ledger import _save_live_order_ledger
+
+    now = datetime.now(UTC)
+    run = _run(timedelta(minutes=10), now=now)
+    run_ids = [run.run_id]
+    db_session.add_all([run, _seed(symbol="T1173.Q", qty="8")])
     await db_session.commit()
     try:
-        selected = set(
-            (
-                await db_session.execute(
-                    select(ExecutionLedger.symbol)
-                    .where(ExecutionLedger.broker_order_id.like(f"{ORDER_PREFIX}-M%"))
-                    .where(
-                        kis_lots._symbol_matches(ExecutionLedger.symbol, [MIXED_KEY])
-                    )
-                )
+        for i, sym in enumerate(PADDED_SAME[:2]):
+            await _save_live_order_ledger(
+                broker="kis",
+                account_scope="kis_live",
+                market="us",
+                symbol=sym,
+                exchange="NASD",
+                market_symbol=None,
+                side="sell",
+                order_kind="limit",
+                quantity=1.0,
+                price=430.0,
+                amount=430.0,
+                currency="USD",
+                order_no=f"{ORDER_PREFIX}B2{i}",
+                order_time=None,
+                status="accepted",
+                response_code="0",
+                response_message=None,
+                raw_response=None,
+                reason=None,
+                thesis=None,
+                strategy=None,
+                target_price=None,
+                stop_loss=None,
+                min_hold_days=None,
+                notes=None,
+                exit_reason=None,
+                indicators_snapshot=None,
             )
-            .scalars()
-            .all()
-        )
         stored = set(
             (
                 await db_session.execute(
-                    select(ExecutionLedger.symbol).where(
-                        ExecutionLedger.broker_order_id.like(f"{ORDER_PREFIX}-M%")
+                    select(LiveOrderLedger.symbol).where(
+                        LiveOrderLedger.order_no.like(f"{ORDER_PREFIX}B2%")
                     )
                 )
             )
             .scalars()
             .all()
         )
+        blocks = await load_kis_live_us_lot_blocks(
+            db_session, [PositionRef("T1173.Q", Decimal("8"))], now=now
+        )
     finally:
-        await _cleanup(db_session, [])
-    expected = {sym for sym in stored if kis_lots._us_symbol_key(sym) == MIXED_KEY}
-    # the write schema strips outer whitespace only; every spelling is stored
-    assert stored == {sym.strip() for sym in spellings}
-    assert expected == {sym.strip() for sym in MIXED_SAME}
-    assert selected == expected
+        await _cleanup(db_session, run_ids)
+    assert stored == set(PADDED_SAME[:2])  # the writer kept the padding
+    block = blocks["T1173.Q"]
+    assert block["ledger_state"] == "known", block["unknown_reasons"]
+    sell = block["open_sell_evidence"]
+    assert sell["blocking_reasons"] == ["own_nonterminal_sell_order_today"]
+    assert sell["own_open_sell_order_quantity"] == "2"
+    assert block["sellable_by_ledger"] == "6"
+
+
+async def test_loader_attribution_equals_a_pure_python_filter(db_session) -> None:
+    """Property: the loader sees exactly the rows _us_symbol_key maps.
+
+    Every spelling (mixed separators, case, Unicode case folding, Unicode and
+    control padding, near misses) is stored once as today's websocket buy and
+    once as an open own sell. For each position key, the provisional fills
+    and open sells the loader reports must equal a pure-Python filter over the
+    same stored rows -- nothing dropped, nothing merged.
+    """
+    spellings = [
+        *MIXED_SAME,
+        *MIXED_OTHER,
+        *UNICODE_SAME,
+        *PADDED_SAME,
+        "T1173.Q",
+    ]
+    rows: list[Any] = [_run(timedelta(minutes=10), now=LATE)]
+    for i, sym in enumerate(spellings):
+        rows.append(
+            _fill(
+                symbol=sym,
+                source="websocket",
+                filled_qty=Decimal("1"),
+                filled_at=SESSION,
+                broker_order_id=f"{ORDER_PREFIX}P{i:02d}",
+            )
+        )
+        rows.append(_live_order(f"{ORDER_PREFIX}P{i:02d}", symbol=sym))
+    keys = sorted({kis_lots._us_symbol_key(sym) for sym in spellings} | {"T1173.NONE"})
+    run_ids = [rows[0].run_id]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        stored_fills = (
+            await db_session.execute(
+                select(ExecutionLedger.broker_order_id, ExecutionLedger.symbol).where(
+                    ExecutionLedger.broker_order_id.like(f"{ORDER_PREFIX}P%")
+                )
+            )
+        ).all()
+        stored_orders = (
+            await db_session.execute(
+                select(LiveOrderLedger.order_no, LiveOrderLedger.symbol).where(
+                    LiveOrderLedger.order_no.like(f"{ORDER_PREFIX}P%")
+                )
+            )
+        ).all()
+        blocks = await load_kis_live_us_lot_blocks(
+            db_session, [PositionRef(k, Decimal("1")) for k in keys], now=LATE
+        )
+    finally:
+        await _cleanup(db_session, run_ids)
+    assert len(stored_fills) == len(stored_orders) == len(spellings)
+    for key in keys:
+        expected_fills = {
+            oid for oid, sym in stored_fills if kis_lots._us_symbol_key(sym) == key
+        }
+        expected_orders = {
+            no for no, sym in stored_orders if kis_lots._us_symbol_key(sym) == key
+        }
+        block = blocks[key]
+        seen_fills = {r["broker_order_id"] for r in block["provisional_rows_excluded"]}
+        seen_orders = {
+            o["order_no"]
+            for o in block["open_sell_evidence"]["kis_live_order_ledger_open_sells"]
+        }
+        assert seen_fills == expected_fills, key
+        assert seen_orders == expected_orders, key
+    assert blocks["T1173.NONE"]["provisional_rows_excluded"] == []
+    # the mixed set really exercises merging: several spellings share one key
+    assert len(keys) < len(spellings)
 
 
 # ------------------------------------------------------------------ A3

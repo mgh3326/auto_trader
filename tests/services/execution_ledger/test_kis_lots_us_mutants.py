@@ -299,3 +299,62 @@ def test_site_mutant_breaks_its_invariant(file: str, site: str) -> None:
     except (AttributeError, KeyError, IndexError, TypeError):
         outcome = False
     assert outcome is False
+
+
+# ------------------------------------------------- one symbol identity (r5)
+
+_MODELS = {"ExecutionLedger", "LiveOrderLedger", "KISLiveOrderLedger"}
+
+
+def _loader_node() -> ast.AsyncFunctionDef:
+    tree = ast.parse(FILES["kis_lots"].read_text("utf-8"))
+    [node] = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.AsyncFunctionDef)
+        and n.name == "load_kis_live_us_lot_blocks"
+    ]
+    return node
+
+
+def test_us_loader_has_no_sql_symbol_expression() -> None:
+    """r4 B1/B2: SQL must never compare, normalize or filter the symbol.
+
+    A SQL re-implementation of the identity diverged three times (r3 F3,
+    r4 B1, r4 B2); the loader references no model ``.symbol`` column at all.
+    """
+    offenders = [
+        ast.unparse(n)
+        for n in ast.walk(_loader_node())
+        if isinstance(n, ast.Attribute)
+        and n.attr == "symbol"
+        and isinstance(n.value, ast.Name)
+        and n.value.id in _MODELS
+    ]
+    assert offenders == []
+
+
+def test_every_row_symbol_goes_through_the_one_identity() -> None:
+    """Every ``<x>.symbol`` the loader reads is the argument of _us_symbol_key."""
+    node = _loader_node()
+    wrapped = {
+        id(arg)
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_us_symbol_key"
+        for arg in call.args
+    }
+    reads = [
+        n
+        for n in ast.walk(node)
+        if isinstance(n, ast.Attribute)
+        and n.attr == "symbol"
+        and isinstance(n.ctx, ast.Load)
+    ]
+    assert reads
+    for read in reads:
+        source = ast.unparse(read)
+        if source.startswith("ref."):
+            continue  # the caller's key: passed through _us_symbol_key or used as the block key
+        assert id(read) in wrapped, source

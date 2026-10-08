@@ -82,7 +82,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
@@ -1108,27 +1108,14 @@ async def load_kis_live_kr_lot_blocks(
 
 
 def _us_symbol_key(symbol: str) -> str:
-    """DB dot-format, upper-case: the key ``get_holdings`` gives a US position."""
-    return to_db_symbol(symbol.strip()).upper()
+    """DB dot-format, upper-case: the key ``get_holdings`` gives a US position.
 
-
-# ASCII whitespace ``str.strip`` removes; the writers strip before persisting,
-# so this only has to cover what could still reach a stored symbol.
-_SQL_TRIM_CHARS = " \t\n\r\x0b\x0c"
-
-
-def _symbol_matches(column: Any, keys: Sequence[str]) -> Any:
-    """SQL twin of ``_us_symbol_key``: the same canonical identity, in SQL.
-
-    ``to_db_symbol`` maps every ``/`` and ``-`` to ``.``, so the column is
-    normalized the same way (trim, translate, upper) and compared with the DB
-    keys. Enumerating spellings missed mixed forms such as ``r3pref/a-b``
-    (tester r3 F3) and exact case missed ``brk.b`` (r2 F2); a row the Python
-    mapping would attribute to a position must never be dropped before it.
+    The ONLY symbol identity of the US block: refs and every ledger/order row
+    go through this function, in Python. SQL never touches the symbol
+    (task #1173 round 5): a SQL re-implementation diverged on mixed separators
+    (r3 F3), Unicode case folding (r4 B1) and Unicode whitespace (r4 B2).
     """
-    return func.upper(
-        func.translate(func.btrim(column, _SQL_TRIM_CHARS), "/-", "..")
-    ).in_(keys)
+    return to_db_symbol(symbol.strip()).upper()
 
 
 async def load_kis_live_us_lot_blocks(
@@ -1146,6 +1133,13 @@ async def load_kis_live_us_lot_blocks(
     quarantined. Venue is checked per row by ``build_symbol_block`` (an
     unrecognized venue is unknown, never silently filtered here). Blocks are
     keyed by the caller's ``ref.symbol``.
+
+    SQL filters only on columns whose comparison cannot diverge from Python
+    (broker, mode, instrument type, currency, quarantine, and the order
+    reads' trade-date window); every row is then attributed to a position by
+    ``_us_symbol_key`` alone. Volume: the fills read is every in-effect KIS
+    live US fill (FIFO needs the full history, so it has no date window);
+    the order reads are bounded by the 7-day lookback window.
     """
     moment = now or datetime.now(UTC)
     keys = sorted({_us_symbol_key(ref.symbol) for ref in refs})
@@ -1167,7 +1161,6 @@ async def load_kis_live_us_lot_blocks(
                 .where(ExecutionLedger.account_mode == "live")
                 .where(ExecutionLedger.instrument_type == "equity_us")
                 .where(ExecutionLedger.currency == US_CURRENCY)
-                .where(_symbol_matches(ExecutionLedger.symbol, keys))
                 # #1175: a quarantined row (an accept notice recorded as a
                 # fill) is not a fill for any view of this block.
                 .where(execution_ledger_in_effect())
@@ -1206,7 +1199,6 @@ async def load_kis_live_us_lot_blocks(
                     .where(LiveOrderLedger.account_scope == "kis_live")
                     .where(LiveOrderLedger.market == "us")
                     .where(LiveOrderLedger.side.in_(("buy", "sell")))
-                    .where(_symbol_matches(LiveOrderLedger.symbol, keys))
                     .where(LiveOrderLedger.trade_date >= window_start)
                     .order_by(LiveOrderLedger.id.asc())
                 )
@@ -1224,7 +1216,6 @@ async def load_kis_live_us_lot_blocks(
                     .where(KISLiveOrderLedger.account_mode == "kis_live")
                     .where(KISLiveOrderLedger.instrument_type == "equity_us")
                     .where(KISLiveOrderLedger.side.in_(("buy", "sell")))
-                    .where(_symbol_matches(KISLiveOrderLedger.symbol, keys))
                     .where(KISLiveOrderLedger.trade_date >= window_start)
                     .order_by(KISLiveOrderLedger.id.asc())
                 )
