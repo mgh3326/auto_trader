@@ -60,6 +60,7 @@ from app.mcp_server.tooling.paper_limit_order_handler import (
 )
 from app.mcp_server.tooling.paper_portfolio_handler import is_paper_account_token
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.route_request_lanes import ROUTE_SURFACE_PAPER_SIMULATOR
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
 )
@@ -298,7 +299,11 @@ def register_h3_crypto_paper_tools(mcp: FastMCP) -> None:
     proxy = _H3CryptoPaperMCP(mcp)
     filtered = cast("FastMCP", proxy)
     register_operating_briefing_tools(filtered)
-    register_route_request_tools(filtered)
+    # #1244: crypto buy/sell report the paper-execution route contract here;
+    # this profile has no proposal tool, so proposal-led would always degrade.
+    register_route_request_tools(
+        filtered, execution_surface=ROUTE_SURFACE_PAPER_SIMULATOR
+    )
     register_trading_policy_tools(filtered)
     register_market_data_tools(filtered)
     register_fundamentals_tools(filtered)

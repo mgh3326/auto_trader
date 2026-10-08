@@ -1,6 +1,6 @@
 # NCP MCP blue/green deployment
 
-This runbook deploys the eleven NCP MCP server instances behind a private HAProxy
+This runbook deploys the twelve NCP MCP server instances behind a private HAProxy
 listener. It does not perform the client cutover: changing .mcp.json, restarting
 consumer sessions, retiring the Mac services, and changing Cloudflare routes are
 owned by the orchestrator.
@@ -23,11 +23,12 @@ bind 0.0.0.0. Its backend is the active main MCP color.
 | at-mcp-live-us | 8774 | live-us | MCP_LIVE_US_AUTH_TOKEN |
 | at-mcp-live-crypto | 8775 | live-crypto | MCP_LIVE_CRYPTO_AUTH_TOKEN |
 | at-mcp-h3-crypto-paper | 8776 | h3-crypto-paper | MCP_H3_CRYPTO_PAPER_AUTH_TOKEN |
+| at-mcp-h3-us-paper | 8777 | h3-us-paper | MCP_H3_US_PAPER_AUTH_TOKEN |
 
 The three live-* units (task 975) have their own desk runbook:
 live-mcp-servers.md (tokens, deploy, read-only smoke, session switch,
 rollback). The h3-crypto-paper unit (#1189) is in
-h3-crypto-paper-mcp.md.
+h3-crypto-paper-mcp.md, the h3-us-paper unit (#1257) in h3-us-paper-mcp.md.
 
 Every unit passes an explicit MCP_PROFILE; the server refuses a blank or
 missing one (#1189) instead of falling back to DEFAULT.
@@ -55,7 +56,7 @@ tailnet. The Kiwoom profile also requires a token for HTTP transports.
    /root/at-run/.env.api, invoke the script with
    AT_RUNTIME_ENV_FILE=/root/at-run/.env.api; the second established secret
    env file remains AT_SECRETS_ENV_FILE.
-2. Confirm all eleven token names in the table are non-empty across the two
+2. Confirm all twelve token names in the table are non-empty across the two
    --env-file inputs. Do not print their values. MCP_PAPER_001_AUTH_TOKEN
    and MCP_KIWOOM_AUTH_TOKEN are required before normal deployment.
 3. Remove the legacy default listener before HAProxy claims its port:
@@ -119,6 +120,7 @@ the orchestrator may cut over consumers.
 | live-us | http://100.122.100.56:8774/mcp |
 | live-crypto | http://100.122.100.56:8775/mcp |
 | h3-crypto-paper | http://100.122.100.56:8776/mcp |
+| h3-us-paper | http://100.122.100.56:8777/mcp |
 
 1. Update each .mcp.json entry to its table URL and
    headers.Authorization: Bearer $MCP_AUTH_TOKEN (use that profile's secret

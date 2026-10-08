@@ -247,32 +247,42 @@ async def _recent_session_context(
         limit=max(1, min(int(limit), 100)),
         include_market_wide=True,
     )
+    entries = [
+        SessionContextResponse.model_validate(row).model_dump(mode="json")
+        for row in rows
+    ]
     # Constraints are a separate, short-lived operator instruction surface.
     # Keep this query independent of the general recent-entry window so normal
     # session churn cannot evict an active constraint before the next session.
-    constraint_rows = await service.get_recent(
-        market=market,  # type: ignore[arg-type]
-        account_scope=account_scope,  # type: ignore[arg-type]
-        kst_date_from=(
-            now_kst().date() - timedelta(days=_CONSTRAINT_CONTEXT_LOOKBACK_DAYS - 1)
-        ),
-        entry_type="constraint",
-        limit=_CONSTRAINT_CONTEXT_LIMIT,
-        include_market_wide=True,
-    )
-    return {
-        "count": len(rows),
-        "entries": [
-            SessionContextResponse.model_validate(row).model_dump(mode="json")
-            for row in rows
-        ],
-        "constraints": {
+    # CancelledError is BaseException and must propagate. TimeoutError is an
+    # Exception and stays in this section as an unavailable constraints payload
+    # so the general entries already fetched are not discarded.
+    try:
+        constraint_rows = await service.get_recent(
+            market=market,  # type: ignore[arg-type]
+            account_scope=account_scope,  # type: ignore[arg-type]
+            kst_date_from=(
+                now_kst().date() - timedelta(days=_CONSTRAINT_CONTEXT_LOOKBACK_DAYS - 1)
+            ),
+            entry_type="constraint",
+            limit=_CONSTRAINT_CONTEXT_LIMIT,
+            include_market_wide=True,
+        )
+        constraints = {
             "count": len(constraint_rows),
             "entries": [
                 SessionContextResponse.model_validate(row).model_dump(mode="json")
                 for row in constraint_rows
             ],
-        },
+        }
+    except Exception as exc:  # noqa: BLE001
+        constraints = _unavailable_constraints(
+            _section_unavailable_reason("session_context_constraints", exc)
+        )
+    return {
+        "count": len(rows),
+        "entries": entries,
+        "constraints": constraints,
     }
 
 
@@ -304,6 +314,34 @@ async def _recent_analysis_artifacts(
 
 def _section_unavailable_reason(section: str, exc: Exception) -> str:
     return f"{section}_failed:{type(exc).__name__}:{exc}"
+
+
+def _unavailable_constraints(reason: str) -> dict[str, Any]:
+    return {
+        "count": 0,
+        "entries": [],
+        "unavailable_reason": reason,
+    }
+
+
+def _session_context_staleness(session_context: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the section unavailable pair when only constraints failed.
+
+    A clean read stays ``{freshness_status: db_read}``. A constraint-only
+    failure must not look like that clean read: the briefing already reports
+    a failed optional section as ``freshness_status=unavailable`` plus
+    ``unavailable_reason``. ``success`` is unchanged by the caller.
+    """
+    constraints = session_context.get("constraints")
+    reason = (
+        constraints.get("unavailable_reason") if isinstance(constraints, dict) else None
+    )
+    if isinstance(reason, str) and reason:
+        return {
+            "freshness_status": "unavailable",
+            "unavailable_reason": reason,
+        }
+    return {"freshness_status": "db_read"}
 
 
 async def get_operating_briefing_impl(
@@ -368,15 +406,14 @@ async def get_operating_briefing_impl(
                 account_scope=effective_scope,
                 limit=session_context_limit,
             )
-            session_context_staleness = {
-                "freshness_status": "db_read",
-            }
+            session_context_staleness = _session_context_staleness(session_context)
         except Exception as exc:  # noqa: BLE001
             reason = _section_unavailable_reason("session_context", exc)
             session_context = {
                 "count": 0,
                 "entries": [],
                 "unavailable_reason": reason,
+                "constraints": _unavailable_constraints(reason),
             }
             session_context_staleness = {
                 "freshness_status": "unavailable",

@@ -83,6 +83,9 @@ tests/scripts/test_at_job_runner.py
 tests/scripts/test_backfill_kr_candles_1m_toss.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
+tests/scripts/test_binance_h5_heartbeat_watch.py
+tests/scripts/test_binance_h5_ncp_playbook.py
+tests/scripts/test_binance_h5_runner_alerts.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
 tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_deploy_ncp_pull_rollback.py
@@ -141,6 +144,7 @@ tests/services/brokers/binance/test_transport_event_hooks.py
 tests/services/brokers/kis/test_live_order_expiry.py
 tests/services/brokers/paper/test_application.py
 tests/services/brokers/paper/test_production_adapter_contract.py
+tests/services/brokers/test_credential_firewall.py
 tests/services/brokers/test_edge_client.py
 tests/services/brokers/toss/test_auth_single_flight.py
 tests/services/brokers/toss/test_token_issuance_gatewayd.py

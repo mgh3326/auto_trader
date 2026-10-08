@@ -267,3 +267,70 @@ only one of them is safe to act on.
 * **A resting SELL LIMIT is not a fill.** The writer records `submitted` and
   proves the resting state; it does not wait for or assert a fill.
 * **No scheduler registration.** CLI-only, operator-driven, one shot.
+
+## 8. Reconciling the filled remediation roots (#1268)
+
+The writer stops at `submitted`; the three D2 roots were later moved to
+`filled`. `filled` is a blocking root state, so the roots keep the shared
+Binance Demo ledger's open-root count at 3 and the H5 truth gate's
+`demo_ledger_no_open_roots` check fails on them. Hand SQL is not an option, and
+nothing in sections 1–7 moves a filled remediation root on. This section is
+that step.
+
+**Tool**: `scripts/binance_spot_demo_d2_root_reconcile.py`, rules in
+`app/services/brokers/binance/spot_demo/d2_root_reconcile.py`.
+
+What it does, for an exact list of ledger ids (at most 3):
+
+1. **Row proof** (every id): a `spot` root on `demo-api.binance.com` in
+   `filled`, `writer=d2_remediation_single`, exception
+   `binance-demo-remediation-20260820`, remediation
+   `d2-binance-demo-both-remediation-v2.1-20260818`,
+   `canary_or_strategy_use=forbidden`, the sealed credential fingerprint, a
+   broker order id, and client order id, instrument, side, type, quantity and
+   price equal to one of the three frozen bound orders.
+2. **Broker proof** (every id): one read-only `GET /api/v3/order` by client
+   order id through `BinanceSpotDemoExecutionClient` (the same client and call
+   the writer uses for readback). It must return that client order id and
+   broker order id, `status=FILLED`, the bound symbol, side, type, `origQty`,
+   `executedQty` (a full fill), limit price and `timeInForce`. A recorded
+   `filled_qty` must equal the broker's. Not found, a failed read or any
+   mismatch refuses.
+3. **Apply** (`--commit` only): in one transaction, each root moves
+   `filled → closed → reconciled` through `BinanceDemoLedgerService`
+   (`record_closed`, `record_reconciled`). The `closed` transition merges one
+   audit record into `extra_metadata["d2_root_reconcile"]` (batch id, reason,
+   actor, time, broker evidence). Fill actuals are never written.
+
+One ineligible id or one bad piece of evidence refuses the whole batch and
+writes nothing. A batch whose ids were all already reconciled by this tool is a
+no-op (exit 0, no broker read). A root that is terminal for any other reason is
+refused. Nothing is deleted; no order, cancel or other signed call is
+reachable. The client must point at the Spot Demo host and carry the sealed D2
+credential, or nothing is read.
+
+Operator commands on NCP (preview first; ids from the desk's #1122 note). Set
+`image` and `env_file` exactly as in
+[binance-h5-ncp-manual-playbook.md](binance-h5-ncp-manual-playbook.md) §2. The
+Spot Demo flag goes on this one-off container only, never into the env file:
+
+```bash
+# preview: SELECTs + three broker GETs, writes nothing; exit 0 eligible, 2 refused
+docker run --rm --network host --env-file "$env_file" -e BINANCE_SPOT_DEMO_ENABLED=true "$image" /app/.venv/bin/python -m scripts.binance_spot_demo_d2_root_reconcile --database-url-env DATABASE_URL --ids 442,443,444 --reason "hk 1268: D2 remediation SELL LIMITs filled 2026-08-21, broker shows FILLED" --actor operator-desk
+
+# commit: same checks under row locks, then filled -> closed -> reconciled
+docker run --rm --network host --env-file "$env_file" -e BINANCE_SPOT_DEMO_ENABLED=true "$image" /app/.venv/bin/python -m scripts.binance_spot_demo_d2_root_reconcile --database-url-env DATABASE_URL --ids 442,443,444 --reason "hk 1268: D2 remediation SELL LIMITs filled 2026-08-21, broker shows FILLED" --actor operator-desk --commit
+```
+
+Run the commit only after the preview printed `"status": "eligible"` for all
+three ids. Running the commit a second time prints `"status": "noop"`. The
+database URL is read from the one named variable and never printed. The Spot
+Demo credentials resolve through the existing `BINANCE_SPOT_DEMO_API_*` /
+`BINANCE_DEMO_API_*` pair; if they are not the sealed D2 account the tool exits
+1 before any read. Rerun the H5 truth gate afterwards (playbook §4);
+`demo_ledger_no_open_roots` should read `open_roots=0`. The gate itself is
+unchanged and stays strict.
+
+Known limit: Binance documents a bounded order-query retention. If a root's
+order is no longer queryable, the read answers not found and the batch is
+refused; that needs a separate operator decision, not a weaker rule here.

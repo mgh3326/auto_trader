@@ -58,6 +58,15 @@
 - **선물 path**: PR 2에서 별도 `futures_demo/` backend로 추가 (아래 참고)
 - **스케줄러 활성화 없음**: TaskIQ/cron/Prefect 연결 없음. CLI에서만 호출
 - **프로덕션 cutover gate**: alembic 마이그레이션은 PR에 포함되지만 operator가 별도로 `alembic upgrade head` 실행
+- **D2 remediation root reconcile (#1268)**: `scripts/binance_spot_demo_d2_root_reconcile.py`
+  (`app/services/brokers/binance/spot_demo/d2_root_reconcile.py`) — `filled` 인
+  `d2_remediation_single` SPOT 루트만 서비스의 `record_closed` → `record_reconciled` 로
+  종결한다. preview 기본·`--commit` 적용·`--ids` 정확한 목록(최대 3)·`--reason`/`--actor` 필수.
+  모든 id 가 D2 바운드 주문과 일치하고 Spot Demo 읽기 전용 `GET /api/v3/order` 가
+  `FILLED`+심볼·사이드·타입·수량·지정가·TIF·주문번호 일치를 보여야 하며, 하나라도 부적격·증거
+  불일치·조회 실패면 배치 전체 거부·무변경. 이미 이 도구로 종결된 배치는 no-op. 감사 기록은
+  `extra_metadata["d2_root_reconcile"]`(마이그레이션 0). 🔴 직접 SQL·삭제·주문 경로 없음,
+  H5 truth gate 범위는 변경하지 않는다. 실행은 운영자 전용(런북 §8)
 
 **USD-M Futures Demo (ROB-298 PR 2)**:
 - **실행 어댑터**: `app/services/brokers/binance/futures_demo/execution_client.BinanceFuturesDemoExecutionClient` — `demo-fapi.binance.com` only; mutation은 `submit_order(..., confirm=True)`만; close 주문에는 `reduce_only=True` 필수
@@ -115,6 +124,12 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 
 - **표면**: app/services/brokers/binance/h5, scripts/binance_h5_demo.py,
   scripts/binance_h5_weekly_score.py. 수동 CLI만 있으며 scheduler 등록은 없다.
+- **배포 이미지 (task 1254)**: H5 모듈이 research.nautilus_scalping.rob974_features를
+  import하므로 `Dockerfile.api` 최종 단계는 `research/nautilus_scalping/`만 복사한다
+  (`research/`의 나머지는 이미지에 넣지 않는다). 이 COPY는 order permission이 아니다.
+  `tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py`가 최종 단계의 COPY
+  집합과 `.dockerignore`를 시뮬레이션해 `scripts/binance_h5_*.py`의 import 폐쇄(정적 +
+  이미지 파일만 둔 새 인터프리터 import)와 `research/` 범위를 고정한다.
 - **호스트/게이트**: exact https://demo-fapi.binance.com 및 H5DemoClient identity를
   HTTP/DB 전에 검사한다. BINANCE_H5_DEMO_ENABLED와
   BINANCE_FUTURES_DEMO_ENABLED는 기본 false이고, 각 runner tick과 모든 주문은
@@ -138,6 +153,35 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
   마이그레이션도 별도 운영 절차로 적용한다. 상세는
   docs/runbooks/binance-h5-demo.md를 따른다.
+- **NCP 수동 운영·알림 (task 1251)**: 정확한 복붙 절차는
+  `docs/runbooks/binance-h5-ncp-manual-playbook.md`(명령의 플래그는
+  `tests/scripts/test_binance_h5_ncp_playbook.py`가 각 스크립트의 실제 argparse로
+  검증). 데모 플래그 3종(`BINANCE_H5_DEMO_ENABLED`·`BINANCE_FUTURES_DEMO_ENABLED`·
+  `BINANCE_H5_ALERT_ENABLED`)은 해당 일회성 컨테이너의 `docker run -e` 에만 둔다 —
+  공유 env 파일(`.env.api`) 편집·`--restart`·`-d`·cron/systemd 등록 금지.
+  시작 전 `scripts/binance_h5_truth_gate.py --confirm-demo`(서명 GET + SELECT 만,
+  주문·쓰기 도달 불가를 AST 테스트로 고정)가 PASS 해야 한다.
+- **비USDT 잔고 (#1272, hk 1271 = B)**: Futures Demo 기본 지급분(USDC·BTC)은 같은 서명 GET
+  `/fapi/v2/account` 응답의 `multiAssetsMargin` 이 정확히 JSON `false` 일 때만 허용된다(`read_account`).
+  true·누락·null·문자열·숫자·읽기 실패는 FAIL. 비USDT 잔고는 양의 유한값·이름 `[A-Z0-9]{1,20}` 이어야 하고,
+  있으면 NAV(`totalMarginBalance`)가 USDT `marginBalance` 와 같아야 한다. 트루스 게이트
+  `account_isolated_1x` 는 모드를 다시 확인하고 통과 detail 에 `margin_mode=single_asset non_usdt_assets=…`
+  를 붙인다(비USDT 잔고 없으면 detail 불변). 읽기 경로·다른 체크·종료 코드 불변. 기록:
+  `docs/contracts/h5-deviation-20261008-single-asset-margin-foreign-balances.md`.
+- **장애 알림 (default off, `BINANCE_H5_ALERT_ENABLED` 정확히 `true` 일 때만)**:
+  `h5/alerting.py`. `stopped`(SIGINT 외의 종료)·`error`(`blocked`/`entry_uncertain`/
+  `close_uncertain` 틱)는 러너 안에서, `heartbeat_missed`는 별도 읽기 전용
+  `scripts/binance_h5_heartbeat_watch.py`가 `review.binance_h5_lane_state.updated_at`
+  (`record_nav` 가 틱마다 갱신)이 N분(기본 10) 이상 묵었을 때 보낸다 — SIGKILL/OOM 은
+  이 경로만 잡는다. 채널은 기존 ops 채널 `settings.discord_webhook_alerts`(Hermes 아님,
+  신규 provider 없음). 에피소드당 1회·리마인더 최대 6시간 1회·전송 실패 재시도 5분
+  간격이며 전송 실패·지연은 러너 동작을 바꾸지 못한다(타임아웃 5초, 예외 삼킴, 틱
+  알림은 백그라운드 태스크라 다음 틱을 늦추지 않고 종료 시 drain). 에피소드 키는
+  (종류, 버킷)이며 틱 오류의 버킷은 틱 event 라서 예외 클래스가 바뀌어도 같은
+  에피소드다. 감시자의 heartbeat 읽기는 15초 데드라인이며 초과는 `unreadable` 알림이다.
+  H5 에는 거래소 측 손절이 없으므로 모든 종류가 "포지션이 있으면 손절 감시 중단"을 뜻한다.
+  코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
+  core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 

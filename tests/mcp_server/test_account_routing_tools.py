@@ -65,6 +65,8 @@ _READ_PROFILES = [
         # #1171 — the H3-CRYPTO paper surface is the runner's exact 20 tools;
         # suggest_order_account is not one of them.
         McpProfile.H3_CRYPTO_PAPER,
+        # #1257 — likewise the H3-US paper surface (runner's exact 20).
+        McpProfile.H3_US_PAPER,
     )
 ]
 

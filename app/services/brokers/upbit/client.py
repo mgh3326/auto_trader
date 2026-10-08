@@ -15,6 +15,9 @@ import pandas as pd
 
 from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
+from app.services.brokers.credential_firewall import (
+    assert_broker_credentials_allowed,
+)
 from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 
 logger = logging.getLogger(__name__)
@@ -855,6 +858,8 @@ async def _request_with_auth(
     import hashlib
     from urllib.parse import unquote, urlencode, urlparse
 
+    # #1257: refused inside a broker_credentials_blocked context.
+    assert_broker_credentials_allowed("Upbit authenticated request")
     parsed_url = urlparse(url)
     api_path = parsed_url.path or "/unknown"
     api_key = f"{method.upper()} {api_path}"
