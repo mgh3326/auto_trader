@@ -116,7 +116,35 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # tables via create_all (no trigger DDL); the production additive migration is
 # 20260928_task847_h5_state. The bump forces one re-bootstrap of persistent
 # local test DBs.
-SCHEMA_BOOTSTRAP_VERSION = 51
+# v52 (#1120): review.quotes_trigger_firings / review.ladder_touch_events
+# (new ORM tables via create_all) + append-only triggers mirrored below;
+# the production additive migration is 20260930_rob1120_quotes.
+# v53 (#1175): review.execution_ledger quarantine columns + CHECKs + permanence
+# trigger (ADD COLUMN IF NOT EXISTS mirrored below so a persistent test DB whose
+# execution_ledger predates the columns is widened), plus the append-only
+# review.execution_ledger_quarantine_events audit table (create_all) and its
+# rejection triggers; the production migration is 20261001_t1175_ledger_quar.
+# v54 (#1175 r2): audit rows carry the idempotency key (create_all) and a BEFORE
+# INSERT trigger re-quarantines a KIS websocket row re-inserted with a
+# tombstoned key.
+# v55 (#1175 r3): the re-quarantine trigger also requires the new row's own
+# frame to be an H0STCNI0 accept notice (CNTG_YN=1).
+# v56 (#1175 r4): the tombstone and its audit key columns are gone; a
+# quarantined row is terminal (any UPDATE or DELETE refused, TRUNCATE refused
+# while one exists).
+# v57 (#1250): append-only review.kis_mock_inference_expiry_events audit table
+# (create_all) and its rejection triggers; the production migration is
+# 20261005_t1250_kismock_inf.
+# v58 (#1250 r2): close<->audit coupling — BEFORE INSERT audit trigger requires
+# the same-batch closed ledger row; deferred constraint trigger on
+# review.kis_mock_order_ledger requires the audit row at COMMIT.
+# v59 (#1250 r3): COMMIT-time fill gate + four-row batch check in the deferred
+# trigger (helper review.kis_mock_q46_detail_has_fill) and a BEFORE UPDATE OR
+# DELETE guard that makes a closed (marked) row terminal.
+# v60 (#1250 r4): the COMMIT-time fill gate derives the accept instant from the
+# ledger row (trade_date KST date + order_time) and refuses a detail accept_at
+# that differs; trade_date/order_time may not change in the close UPDATE.
+SCHEMA_BOOTSTRAP_VERSION = 60
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1947,6 +1975,326 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_protected_position_revisions_truncate_append_only "
     "BEFORE TRUNCATE ON review.protected_position_revisions "
     "FOR EACH STATEMENT EXECUTE FUNCTION review.reject_protected_position_revision_mutation()",
+    # ---- #1120: quotes:toss shadow consumer append-only records
+    # (tables via create_all; mirrors 20260930_rob1120_quotes).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_quotes_consumer_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.% is append-only; % rejected',
+            TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_quotes_trigger_firings_append_only "
+    "ON review.quotes_trigger_firings",
+    "CREATE TRIGGER trg_quotes_trigger_firings_append_only "
+    "BEFORE UPDATE OR DELETE ON review.quotes_trigger_firings "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_quotes_consumer_mutation()",
+    "DROP TRIGGER IF EXISTS trg_quotes_trigger_firings_truncate "
+    "ON review.quotes_trigger_firings",
+    "CREATE TRIGGER trg_quotes_trigger_firings_truncate "
+    "BEFORE TRUNCATE ON review.quotes_trigger_firings "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_quotes_consumer_mutation()",
+    "DROP TRIGGER IF EXISTS trg_ladder_touch_events_append_only "
+    "ON review.ladder_touch_events",
+    "CREATE TRIGGER trg_ladder_touch_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.ladder_touch_events "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_quotes_consumer_mutation()",
+    "DROP TRIGGER IF EXISTS trg_ladder_touch_events_truncate "
+    "ON review.ladder_touch_events",
+    "CREATE TRIGGER trg_ladder_touch_events_truncate "
+    "BEFORE TRUNCATE ON review.ladder_touch_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_quotes_consumer_mutation()",
+    # ---- #1175: execution_ledger quarantine (mirrors 20261001_t1175_ledger_quar).
+    "ALTER TABLE review.execution_ledger "
+    "ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE review.execution_ledger "
+    "ADD COLUMN IF NOT EXISTS quarantine_reason TEXT",
+    "ALTER TABLE review.execution_ledger ADD COLUMN IF NOT EXISTS quarantined_by TEXT",
+    "ALTER TABLE review.execution_ledger "
+    "DROP CONSTRAINT IF EXISTS ck_execution_ledger_quarantine_fields",
+    "ALTER TABLE review.execution_ledger "
+    "ADD CONSTRAINT ck_execution_ledger_quarantine_fields CHECK ("
+    "(quarantined_at IS NULL AND quarantine_reason IS NULL "
+    "AND quarantined_by IS NULL) OR "
+    "(quarantined_at IS NOT NULL AND quarantine_reason IS NOT NULL "
+    "AND quarantined_by IS NOT NULL AND btrim(quarantine_reason) <> '' "
+    "AND btrim(quarantined_by) <> ''))",
+    "ALTER TABLE review.execution_ledger "
+    "DROP CONSTRAINT IF EXISTS ck_execution_ledger_quarantine_scope",
+    "ALTER TABLE review.execution_ledger "
+    "ADD CONSTRAINT ck_execution_ledger_quarantine_scope CHECK ("
+    "quarantined_at IS NULL OR (source = 'websocket' AND broker = 'kis'))",
+    """
+    CREATE OR REPLACE FUNCTION review.guard_execution_ledger_quarantine()
+    RETURNS trigger AS $$
+    BEGIN
+        IF TG_OP = 'TRUNCATE' THEN
+            IF EXISTS (
+                SELECT 1 FROM review.execution_ledger WHERE quarantined_at IS NOT NULL
+            ) THEN
+                RAISE EXCEPTION 'review.execution_ledger holds quarantined rows; TRUNCATE rejected'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NULL;
+        END IF;
+        IF OLD.quarantined_at IS NOT NULL THEN
+            RAISE EXCEPTION 'review.execution_ledger row % is quarantined and terminal; % rejected',
+                OLD.id, TG_OP USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+            RETURN OLD;
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_guard "
+    "ON review.execution_ledger",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_guard "
+    "BEFORE UPDATE OR DELETE ON review.execution_ledger "
+    "FOR EACH ROW EXECUTE FUNCTION review.guard_execution_ledger_quarantine()",
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_truncate "
+    "ON review.execution_ledger",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_truncate "
+    "BEFORE TRUNCATE ON review.execution_ledger "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.guard_execution_ledger_quarantine()",
+    """
+    CREATE OR REPLACE FUNCTION
+        review.reject_execution_ledger_quarantine_event_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.% is append-only; % rejected',
+            TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_events_append_only "
+    "ON review.execution_ledger_quarantine_events",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.execution_ledger_quarantine_events "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_execution_ledger_quarantine_event_mutation()",
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_quarantine_events_truncate "
+    "ON review.execution_ledger_quarantine_events",
+    "CREATE TRIGGER trg_execution_ledger_quarantine_events_truncate "
+    "BEFORE TRUNCATE ON review.execution_ledger_quarantine_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_execution_ledger_quarantine_event_mutation()",
+    # r4 removed the tombstone; drop any copy a persistent test DB still has.
+    "DROP TRIGGER IF EXISTS trg_execution_ledger_requarantine_insert "
+    "ON review.execution_ledger",
+    "DROP FUNCTION IF EXISTS review.requarantine_execution_ledger_insert()",
+    # ---- #1250: kis_mock inference-expiry audit (mirrors 20261005_t1250_kismock_inf).
+    """
+CREATE OR REPLACE FUNCTION review.reject_kis_mock_inference_expiry_event_mutation()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'review.% is append-only; % rejected',
+        TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_append_only "
+    "ON review.kis_mock_inference_expiry_events",
+    "CREATE TRIGGER trg_kis_mock_inference_expiry_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.kis_mock_inference_expiry_events "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_kis_mock_inference_expiry_event_mutation()",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_truncate "
+    "ON review.kis_mock_inference_expiry_events",
+    "CREATE TRIGGER trg_kis_mock_inference_expiry_events_truncate "
+    "BEFORE TRUNCATE ON review.kis_mock_inference_expiry_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_kis_mock_inference_expiry_event_mutation()",
+    """
+CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_close()
+RETURNS trigger AS $$
+DECLARE
+    v_state text;
+    v_detail jsonb;
+BEGIN
+    SELECT lifecycle_state, last_reconcile_detail INTO v_state, v_detail
+      FROM review.kis_mock_order_ledger WHERE id = NEW.ledger_id;
+    IF v_state IS DISTINCT FROM 'expired'
+       OR v_detail->>'reason_code' IS DISTINCT FROM 'expired_inference:kis_regular_day_order_no_broker_original'
+       OR v_detail->>'inference_rule' IS DISTINCT FROM 'kis_mock_regular_day_leftover_expired_inference_q46'
+       OR v_detail->>'operator_decision_ref' IS DISTINCT FROM 'Q-46'
+       OR v_detail->>'batch_id' IS DISTINCT FROM NEW.batch_id::text THEN
+        RAISE EXCEPTION 'review.kis_mock_inference_expiry_events: ledger row % is not closed by batch %',
+            NEW.ledger_id, NEW.batch_id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_expiry_events_require_close "
+    "ON review.kis_mock_inference_expiry_events",
+    "CREATE TRIGGER trg_kis_mock_inference_expiry_events_require_close "
+    "BEFORE INSERT ON review.kis_mock_inference_expiry_events "
+    "FOR EACH ROW EXECUTE FUNCTION review.require_kis_mock_inference_close()",
+    """
+CREATE OR REPLACE FUNCTION review.kis_mock_q46_detail_has_fill(d jsonb)
+RETURNS boolean AS $$
+BEGIN
+    -- Mirrors kis_mock_inference_expiry._detail_has_fill_evidence: unknown is
+    -- never zero.
+    IF d IS NULL OR jsonb_typeof(d) = 'null' THEN
+        RETURN false;
+    END IF;
+    IF jsonb_typeof(d) <> 'object' THEN
+        RETURN true;
+    END IF;
+    IF d->>'reason_code' IN (
+        'fill_detected', 'partial_fill_detected', 'position_reconciled',
+        'holdings_mismatch', 'attribution_unconfirmed'
+    ) THEN
+        RETURN true;
+    END IF;
+    IF d ? 'attributed_fill_qty' THEN
+        IF jsonb_typeof(d->'attributed_fill_qty') NOT IN ('string', 'number') THEN
+            RETURN true;
+        END IF;
+        BEGIN
+            RETURN (d->>'attributed_fill_qty')::numeric <> 0;
+        EXCEPTION WHEN others THEN
+            RETURN true;
+        END;
+    END IF;
+    RETURN false;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE
+""",
+    """
+CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_audit()
+RETURNS trigger AS $$
+DECLARE
+    v_accept timestamptz;
+    v_time text;
+    v_stored timestamptz;
+BEGIN
+    IF NEW.id NOT IN (63, 64, 66, 80)
+       OR NEW.lifecycle_state IS DISTINCT FROM 'expired'
+       OR OLD.lifecycle_state NOT IN ('accepted', 'pending')
+       OR NEW.trade_date IS DISTINCT FROM OLD.trade_date
+       OR NEW.order_time IS DISTINCT FROM OLD.order_time THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close outside its contract',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM review.kis_mock_inference_expiry_events e
+         WHERE e.ledger_id = NEW.id
+           AND e.batch_id::text = NEW.last_reconcile_detail->>'batch_id'
+    ) THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close without its audit row',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    IF (
+        SELECT count(*) FROM review.kis_mock_inference_expiry_events e
+         WHERE e.batch_id::text = NEW.last_reconcile_detail->>'batch_id'
+    ) <> 4 THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close is not a four-row batch',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    -- The fill cutoff comes from the ledger row itself (send-day KST date +
+    -- broker ord_tmd, as kis_leftover_inference.resolve_accept_at), never from
+    -- the stored detail a caller writes. A detail accept_at that differs from
+    -- the row's own instant is refused.
+    v_time := NEW.order_time;
+    IF v_time ~ '^[0-9]{4}$' THEN
+        v_time := v_time || '00';
+    END IF;
+    v_accept := NULL;
+    IF v_time ~ '^[0-9]{6}$'
+       AND substr(v_time, 1, 2)::int < 24
+       AND substr(v_time, 3, 2)::int < 60
+       AND substr(v_time, 5, 2)::int < 60 THEN
+        v_accept := (
+            (NEW.trade_date AT TIME ZONE 'Asia/Seoul')::date
+            + make_time(substr(v_time, 1, 2)::int, substr(v_time, 3, 2)::int,
+                        substr(v_time, 5, 2)::int)
+        ) AT TIME ZONE 'Asia/Seoul';
+    END IF;
+    BEGIN
+        v_stored := (NEW.last_reconcile_detail->>'accept_at')::timestamptz;
+    EXCEPTION WHEN others THEN
+        v_stored := NULL;
+    END;
+    IF v_accept IS NULL OR v_stored IS DISTINCT FROM v_accept THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: Q-46 inference close accept instant does not match the ledger row',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    -- Last fill gate, evaluated at COMMIT (deferred): every statement here
+    -- sees every fill committed before it, so a fill committed after the
+    -- service's own re-check still refuses the whole close. Quarantined
+    -- execution-ledger rows count (the safe direction).
+    IF EXISTS (
+        SELECT 1 FROM review.execution_ledger x
+         WHERE x.broker = 'kis' AND x.account_mode = 'mock'
+           AND (x.broker_order_id = NEW.order_no
+                OR ltrim(x.broker_order_id, '0') = ltrim(NEW.order_no, '0'))
+    ) OR EXISTS (
+        SELECT 1 FROM review.execution_ledger x
+         WHERE x.broker = 'kis' AND x.account_mode = 'mock'
+           AND x.symbol = NEW.symbol AND x.filled_at >= v_accept
+    ) OR EXISTS (
+        SELECT 1 FROM review.kis_mock_order_ledger s
+         WHERE s.id <> NEW.id
+           AND (s.lifecycle_state IN ('fill', 'reconciled')
+                OR review.kis_mock_q46_detail_has_fill(s.last_reconcile_detail))
+           AND (
+                (NEW.correlation_id IS NOT NULL
+                 AND s.correlation_id = NEW.correlation_id)
+                OR (s.symbol = NEW.symbol
+                    AND (s.trade_date IS NULL OR s.reconciled_at IS NULL
+                         OR s.trade_date >= v_accept OR s.reconciled_at >= v_accept))
+           )
+    ) THEN
+        RAISE EXCEPTION 'review.kis_mock_order_ledger row %: fill recorded before COMMIT of the Q-46 inference close',
+            NEW.id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_requires_audit "
+    "ON review.kis_mock_order_ledger",
+    """
+CREATE CONSTRAINT TRIGGER trg_kis_mock_inference_requires_audit
+AFTER UPDATE ON review.kis_mock_order_ledger
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+WHEN (
+    NEW.last_reconcile_detail->>'reason_code' = 'expired_inference:kis_regular_day_order_no_broker_original'
+    OR NEW.last_reconcile_detail->>'inference_rule' = 'kis_mock_regular_day_leftover_expired_inference_q46'
+)
+EXECUTE FUNCTION review.require_kis_mock_inference_audit()
+""",
+    """
+CREATE OR REPLACE FUNCTION review.guard_kis_mock_inference_closed_row()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'review.kis_mock_order_ledger row % is closed by the Q-46 inference and terminal; % rejected',
+        OLD.id, TG_OP USING ERRCODE = 'restrict_violation';
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS trg_kis_mock_inference_closed_row_terminal "
+    "ON review.kis_mock_order_ledger",
+    """
+CREATE TRIGGER trg_kis_mock_inference_closed_row_terminal
+BEFORE UPDATE OR DELETE ON review.kis_mock_order_ledger
+FOR EACH ROW
+WHEN (
+    OLD.last_reconcile_detail->>'reason_code' = 'expired_inference:kis_regular_day_order_no_broker_original'
+    OR OLD.last_reconcile_detail->>'inference_rule' = 'kis_mock_regular_day_leftover_expired_inference_q46'
+)
+EXECUTE FUNCTION review.guard_kis_mock_inference_closed_row()
+""",
 )
 
 

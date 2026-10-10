@@ -966,3 +966,45 @@ KR parking sells require the XKRX **regular** session at dispatch and at the
 pre-send boundary. Pre-open, NXT, after-hours, holidays, and the close of a
 shortened session are outside it. No scheduler, migration, automatic trigger,
 or new direct-order permission is added. No live smoke is part of task 817.
+
+## 11. Toss preview without `current_price` — KIS quote fallback (#1067)
+
+Case: 09-30 09:13 Toss 035720 buy 3 @ 32,750 (98,250 KRW, inside every cap,
+mode `expanded`) became a card as `price_or_quantity_missing` /
+`missing_inputs=[current_price]` because the Toss preview's `current_price`
+was momentarily empty (#1053 stores the preview's `price_context_message`).
+
+**Scope.** Only a `toss_live` rung whose preview omitted `current_price` or
+sent it null/blank. A present value — including a malformed or non-positive
+one — is used or rejected exactly as before. Every other account mode is
+byte-identical and never reads the fallback.
+
+**Fallback input, not a relaxed gate.** The dispatch gate first classifies
+exactly as before. Only if the *sole* defect is the absent preview price does
+it read one quote through the `get_quote` path
+(`app/services/order_proposals/auto_approve_price_fallback.py`, 5 s timeout)
+and re-run the whole classifier on it. The quote is used only when it is for
+the same symbol and `instrument_type`, `source == "kis"`,
+`is_stale_price is False` (strict; absent is not fresh), `data_state ==
+"fresh"`, and the price is finite and positive. Freshness rule as implemented
+by `get_quote`: during the KRX regular session the daily candle must be dated
+today (KST) *and* the session must be trading now; during an NXT session
+(including NXT premarket 08:00-08:50 and NXT after-market) the price is the
+NXT orderbook overlay and must be at most 5 minutes old. A KRX-only premarket
+base quote, after close with no fresh NXT overlay, holidays and prior-day
+candles are rejected. Limit: for the KRX regular session the proof is
+date-level — a fresh KIS daily-chart read of today's candle is trusted to
+carry the current price; it is not an intraday timestamp-age proof (only the
+NXT path has one). US is `market_unsupported` — its `get_quote` carries no
+`is_stale_price` and can fall back to Yahoo. The decision records
+`price_source` (`toss_preview` | `kis_quote_fallback`) and, on the fallback,
+`current_price`.
+
+**Fallback failure.** If the read fails, times out or is stale, the rung is
+rejected as `price_or_quantity_missing` and goes to the ordinary approval card
+in the same dispatch, exactly as before #1067. The rejection keeps the
+preview's `price_context_message` (#1053) and adds the closed
+`price_fallback_reason` (also shown on the card). There is no delayed
+re-evaluation: operator decision #1083 (option B) removed the 30-second retry
+that earlier revisions of #1067 carried, together with its retry marker, task
+and residual limits. No scheduler, task or new broker path exists.

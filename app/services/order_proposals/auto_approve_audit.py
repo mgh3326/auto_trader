@@ -15,6 +15,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from app.services.order_proposals.auto_approve_price_fallback import (
+    PRICE_FALLBACK_FAILURE_REASONS,
+    PRICE_SOURCES,
+)
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_REJECT_REASONS,
 )
@@ -41,6 +45,11 @@ _MAX_ATTEMPTS = 8
 _MAX_RUNGS_PER_ATTEMPT = 16
 _MAX_TAG_MATCHES_PER_RUNG = 12
 _MAX_CAP_OBSERVATIONS = 16
+# #1053: the Toss preview's ``price_context_message`` is the one bounded
+# diagnostic string this projection stores -- whitespace-collapsed and
+# truncated, so a runaway broker error body cannot bloat the JSONB row or
+# smuggle a payload past this boundary.
+_MAX_PRICE_CONTEXT_MESSAGE_LEN = 200
 # This is an audit retention vocabulary, intentionally not the classifier's
 # approval-blocking set. §156차 removed ``table_disagreement`` from eligibility
 # only; retaining it here preserves safe projections of historical rows and
@@ -116,12 +125,17 @@ _ENUM_INPUT_VALUES = {
     # §S177 -- the cash-funding boundary's own closed verdict vocabulary.
     "cash_funding_reason": CASH_FUNDING_REJECT_REASONS,
     "cash_funding_cumulative_reason": frozenset({"unmeasured"}),
+    # #1067 -- which price the gates ran on, and why the KIS quote fallback
+    # could not supply one when the Toss preview came back without a price.
+    "price_source": PRICE_SOURCES,
+    "price_fallback_reason": PRICE_FALLBACK_FAILURE_REASONS | {"unrecognized"},
 }
 # Sub-reasons rendered next to the reason code on the manual approval card.
 _CARD_DETAIL_REASON_KEYS = (
     "parking_exposure_reason",
     "cash_funding_reason",
     "cash_funding_cumulative_reason",
+    "price_fallback_reason",
 )
 _BOOLEAN_INPUT_KEYS = frozenset(
     {
@@ -251,6 +265,20 @@ def _safe_missing_inputs(value: Any) -> list[str]:
     return [field for field in value if field in _MISSING_INPUT_FIELDS]
 
 
+def _safe_price_context_message(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    # Collapse whitespace, then drop remaining non-printable code points:
+    # Postgres jsonb rejects \u0000 outright, and an unfiltered broker error
+    # string must not be able to fail the rejection write itself.
+    normalized = "".join(ch for ch in " ".join(value.split()) if ch.isprintable())
+    if not normalized:
+        return None
+    if len(normalized) > _MAX_PRICE_CONTEXT_MESSAGE_LEN:
+        return normalized[: _MAX_PRICE_CONTEXT_MESSAGE_LEN - 1] + "…"
+    return normalized
+
+
 def _safe_tag_matches(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
@@ -326,6 +354,9 @@ def _safe_inputs_from_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
         inputs["tags"] = tags
     if matches:
         inputs["tag_matches"] = matches
+    message = _safe_price_context_message(decision.get("price_context_message"))
+    if message is not None:
+        inputs["price_context_message"] = message
     return inputs
 
 

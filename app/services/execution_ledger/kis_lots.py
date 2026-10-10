@@ -33,6 +33,39 @@ Two questions, both answered fail-closed:
   ``external_orders_verifiable`` is always ``False``: an order placed outside
   auto_trader (KIS app/HTS) and not yet filled is invisible here by
   construction. That residual is a recorded caveat, not a proof of absence.
+* **Own open sell evidence (task #1087, the sell-side twin).** Same-KST-day
+  non-terminal *sell* rows in the order ledger, same-day sell fills whose order
+  the order ledger has not proven complete, and ``same_day_buy_evidence`` (the
+  opposite-side view for a sell). ``sellable_by_ledger`` is the known lot net
+  minus the order quantity of own non-terminal sells today, clamped to
+  ``[0, broker quantity]``; it is ``None`` whenever any input is unknown. It is
+  a ceiling, not a permission: the gate is ``open_sell_evidence`` and
+  ``same_day_buy_evidence`` both non-blocking.
+
+Task #1173 extends the same block to KIS live **US** positions (``equity_us``,
+KIS overseas) through ``load_kis_live_us_lot_blocks``. The projection is the
+same function with ``market="us"``; only the inputs differ:
+
+* fills are ``execution_ledger`` rows with ``instrument_type='equity_us'`` and
+  ``currency='USD'``; an authoritative row whose venue is not exactly one of
+  the KIS overseas order exchange codes ``NASD``/``NYSE``/``AMEX`` (``NASDAQ``,
+  ``NAS``, ``krx`` ...) is never counted and turns the block unknown
+  (``unrecognized_us_venue_rows``) instead of being dropped silently;
+* own orders come from ``review.live_order_ledger`` (``broker='kis'``,
+  ``account_scope='kis_live'``, ``market='us'``; ROB-407) plus any
+  ``review.kis_live_order_ledger`` row with ``instrument_type='equity_us'``;
+* "today" is the US trading date, which rolls over at 20:00 America/New_York
+  (after-hours close; a KIS daytime-session order placed after it belongs to
+  the next US date), not the KST calendar day;
+* freshness is the same KIS reconcile run: one run fetches ``kr,us`` and a
+  failed US fetch fails the whole run, so a successful run covers both.
+
+Quarantined rows (#1175) never reach any view: every fills read ANDs
+``execution_ledger_in_effect()``. Accept-notice phantoms that are not (yet)
+quarantined are ``websocket`` rows, and a websocket row never reaches lots,
+net quantity, the broker-quantity reconciliation or ``sellable_by_ledger``.
+In the same-day evidence views a websocket row can only add blocking, never
+remove it, because an accept notice still names an order placed today.
 
 The #678 harness denial of ``kis_live_get_order_history`` is untouched: nothing
 here calls a KIS order read.
@@ -41,19 +74,21 @@ here calls a KIS order read.
 from __future__ import annotations
 
 import logging
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_db_symbol
 from app.core.timezone import kst_day_window
-from app.models.execution_ledger import ExecutionLedger
-from app.models.review import KISLiveOrderLedger
+from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
+from app.models.review import KISLiveOrderLedger, LiveOrderLedger
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
 
 logger = logging.getLogger(__name__)
@@ -91,19 +126,48 @@ UNKNOWN_QTY_MISMATCH = "quantity_mismatch_with_reference"
 UNKNOWN_PROVISIONAL_PENDING = "provisional_rows_pending_reconcile"
 UNKNOWN_LOAD_FAILED = "ledger_read_failed"
 UNKNOWN_ORDER_LEDGER_READ_FAILED = "order_ledger_read_failed"
+# Task #1173 B3 — two or more KIS live US positions share one symbol key.
+UNKNOWN_DUPLICATE_POSITIONS = "duplicate_positions_for_symbol"
 
 BLOCK_OWN_OPEN_BUY = "own_nonterminal_buy_order_today"
 BLOCK_SAME_DAY_FILL = "same_day_buy_fill_order_not_proven_complete"
 BLOCK_EVIDENCE_UNKNOWN = "open_buy_evidence_unknown"
 BLOCK_SAME_DAY_SELL_FILL = "same_day_sell_fill_in_ledger"
 BLOCK_SELL_EVIDENCE_UNKNOWN = "same_day_sell_evidence_unknown"
+# Task #1087 — sell-side twins.
+BLOCK_OWN_OPEN_SELL = "own_nonterminal_sell_order_today"
+BLOCK_SAME_DAY_SELL_FILL_UNPROVEN = "same_day_sell_fill_order_not_proven_complete"
+BLOCK_OPEN_SELL_EVIDENCE_UNKNOWN = "open_sell_evidence_unknown"
+BLOCK_SAME_DAY_BUY_FILL_IN_LEDGER = "same_day_buy_fill_in_ledger"
+BLOCK_BUY_EVIDENCE_UNKNOWN = "same_day_buy_evidence_unknown"
 
+SELLABLE_METHOD = "ledger_net_minus_own_open_sell_orders_today"
+SELLABLE_UNKNOWN_LEDGER_STATE = "ledger_state_unknown"
+SELLABLE_UNKNOWN_OPEN_SELL_EVIDENCE = "open_sell_evidence_unknown"
+SELLABLE_UNKNOWN_OPEN_SELL_QUANTITY = "own_open_sell_quantity_unknown"
+
+# Task #1173 — KIS live US. The KIS overseas order history (the reconciler's
+# source) and the overseas balance (the opening seed's source) both name the
+# US exchange with these exact codes. Any other spelling on an authoritative
+# row is a mapping error to surface, never a row to guess about.
+US_VENUES = frozenset({"NASD", "NYSE", "AMEX"})
+UNKNOWN_UNRECOGNIZED_VENUE = "unrecognized_us_venue_rows"
+US_CURRENCY = "USD"
+_US_EASTERN = ZoneInfo("America/New_York")
+# The US trading date rolls over at the after-hours close. KIS daytime-session
+# orders (10:00 KST = 20:00 EST / 21:00 EDT) placed after it trade on the next
+# US date, and no KIS US day order outlives the rollover of its own date.
+_US_TRADING_DATE_ROLLOVER = time(20, 0)
+US_TRADING_DAY_BASIS = "us_trading_date_rolls_over_at_20_00_america_new_york"
+US_ORDER_LEDGER_SOURCES = ("review.live_order_ledger", "review.kis_live_order_ledger")
+
+MarketCode = Literal["kr", "us"]
 FreshnessState = Literal["fresh", "stale", "missing"]
 
 
 @dataclass(frozen=True, slots=True)
 class LedgerFill:
-    """Projection of one ``review.execution_ledger`` row (KIS live KR)."""
+    """Projection of one ``review.execution_ledger`` row (KIS live KR or US)."""
 
     id: int
     source: str
@@ -112,11 +176,16 @@ class LedgerFill:
     price: Decimal
     filled_at: datetime
     broker_order_id: str
+    venue: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class OrderRow:
-    """Projection of one ``review.kis_live_order_ledger`` buy row."""
+    """Projection of one own-order ledger buy or sell row.
+
+    KR: ``review.kis_live_order_ledger``. US: ``review.live_order_ledger`` (and
+    any ``equity_us`` row of ``review.kis_live_order_ledger``).
+    """
 
     id: int
     order_no: str | None
@@ -124,11 +193,12 @@ class OrderRow:
     quantity: Decimal | None
     price: Decimal | None
     trade_date: datetime
+    side: str
 
 
 @dataclass(frozen=True, slots=True)
 class PositionRef:
-    """A broker-held KIS live KR position the caller already has in hand."""
+    """A broker-held KIS live KR or US position the caller already has in hand."""
 
     symbol: str
     reference_quantity: Decimal | None
@@ -186,34 +256,87 @@ def _aware_utc(when: datetime) -> datetime:
     return when if when.tzinfo else when.replace(tzinfo=UTC)
 
 
-def _from_today_kst(when: datetime, now: datetime) -> bool:
-    """True for the current KST day and for anything dated later than today.
+def us_trading_day_window(now: datetime) -> tuple[datetime, datetime]:
+    """[start, end) of the US trading date containing ``now``, as UTC instants.
+
+    The date rolls over at 20:00 America/New_York (DST-aware), so a regular or
+    after-hours order belongs to its own ET date and a KIS daytime-session order
+    placed in the KST morning belongs to the next one.
+    """
+    local = _aware_utc(now).astimezone(_US_EASTERN)
+    date = local.date()
+    if local.time() >= _US_TRADING_DATE_ROLLOVER:
+        date += timedelta(days=1)
+    start = datetime.combine(
+        date - timedelta(days=1), _US_TRADING_DATE_ROLLOVER, tzinfo=_US_EASTERN
+    )
+    end = datetime.combine(date, _US_TRADING_DATE_ROLLOVER, tzinfo=_US_EASTERN)
+    return start.astimezone(UTC), end.astimezone(UTC)
+
+
+def _day_start(market: MarketCode, now: datetime) -> datetime:
+    """Start of "today": the KST day for KR, the US trading date for US."""
+    if market == "us":
+        return us_trading_day_window(now)[0]
+    start, _ = kst_day_window(now)
+    return start
+
+
+def _from_today(when: datetime, day_start: datetime) -> bool:
+    """True for the current day and for anything dated later than today.
 
     A later-dated row can only come from clock skew between writers; treating it
     as "today" keeps the evidence fail-closed instead of presuming it dead.
     """
-    start, _ = kst_day_window(now)
-    return _aware_utc(when) >= start
+    return _aware_utc(when) >= day_start
+
+
+def _is_opening_seed(fill: LedgerFill) -> bool:
+    """A ``manual_import`` ``SEED-*`` row: a position snapshot, not a fill.
+
+    Same rule as the seed cutover. A ``manual_import`` row without the prefix
+    is an authoritative actual fill and counts as same-day evidence.
+    """
+    return fill.source == "manual_import" and fill.broker_order_id.startswith(
+        _SEED_ORDER_ID_PREFIX
+    )
+
+
+def _supersede_key(fill: LedgerFill, market: MarketCode) -> tuple[Any, ...]:
+    """Identity under which an authoritative row covers a websocket row.
+
+    KR keeps the pre-#1173 key (side, normalized order id). US adds the US
+    trading date: a KIS order number is reused across days, and a day order's
+    order time and fill time share one US trading date, so an old reconciled
+    order must never hide a fill of the current date that reuses its number.
+    A websocket row whose date does not match stays provisional (it can only
+    add blocking).
+    """
+    key = (fill.side, _norm_order_id(fill.broker_order_id))
+    if market == "us":
+        return (*key, us_trading_day_window(fill.filled_at)[0])
+    return key
 
 
 def _split_provisional(
-    fills: Sequence[LedgerFill],
+    fills: Sequence[LedgerFill], market: MarketCode = "kr"
 ) -> tuple[list[LedgerFill], list[LedgerFill], int]:
     """Return (authoritative, provisional-not-superseded, superseded_count).
 
     A websocket row is a duplicate once an authoritative row covers the same
     order (same rule as query_service._supersede_provisional_fills; venue and
     fill_seq are deliberately ignored because the two writers derive them
-    independently).
+    independently). For US the order must also be on the same US trading date
+    (``_supersede_key``).
     """
     authoritative = [f for f in fills if f.source in AUTHORITATIVE_SOURCES]
-    covered = {(f.side, _norm_order_id(f.broker_order_id)) for f in authoritative}
+    covered = {_supersede_key(f, market) for f in authoritative}
     provisional: list[LedgerFill] = []
     superseded = 0
     for fill in fills:
         if fill.source != _PROVISIONAL_SOURCE:
             continue
-        if (fill.side, _norm_order_id(fill.broker_order_id)) in covered:
+        if _supersede_key(fill, market) in covered:
             superseded += 1
         else:
             provisional.append(fill)
@@ -335,7 +458,8 @@ def _open_buy_evidence(
     fills: Sequence[LedgerFill],
     orders: Sequence[OrderRow] | None,
     freshness: Freshness,
-    now: datetime,
+    day_start: datetime,
+    market: MarketCode = "kr",
 ) -> dict[str, Any]:
     """S2 + S3: own non-terminal buys / same-day buy fills. Unknown => blocking."""
     unknown: list[str] = []
@@ -350,8 +474,10 @@ def _open_buy_evidence(
     prior_day_dead: list[OrderRow] = []
     resolved_order_ids: set[str] = set()
     for order in orders or ():
+        if order.side != "buy":
+            continue
         terminal = order.status in TERMINAL_ORDER_STATUSES
-        if _from_today_kst(order.trade_date, now):
+        if _from_today(order.trade_date, day_start):
             if not terminal:
                 open_buys.append(order)
             elif order.order_no:
@@ -360,15 +486,16 @@ def _open_buy_evidence(
             prior_day_dead.append(order)
 
     # Authoritative rows plus provisional rows no authoritative row covers:
-    # websocket duplicates of a reconciled order are not counted twice. Seeded
-    # opening lots (manual_import) are position snapshots, not orders.
-    authoritative, provisional, _ = _split_provisional(fills)
+    # websocket duplicates of a reconciled order are not counted twice. Opening
+    # seeds (manual_import SEED-*) are position snapshots, not orders; any other
+    # manual_import row is an actual fill (task #1087 round 1).
+    authoritative, provisional, _ = _split_provisional(fills, market)
     unproven_fills = [
         f
         for f in (*authoritative, *provisional)
-        if f.source != "manual_import"
+        if not _is_opening_seed(f)
         and f.side == "buy"
-        and _from_today_kst(f.filled_at, now)
+        and _from_today(f.filled_at, day_start)
         and _norm_order_id(f.broker_order_id) not in resolved_order_ids
     ]
 
@@ -393,7 +520,11 @@ def _open_buy_evidence(
 
 
 def _same_day_sell_evidence(
-    *, fills: Sequence[LedgerFill], freshness: Freshness, now: datetime
+    *,
+    fills: Sequence[LedgerFill],
+    freshness: Freshness,
+    day_start: datetime,
+    market: MarketCode = "kr",
 ) -> dict[str, Any]:
     """Same-KST-day sell fills for the symbol (opposite-side visibility).
 
@@ -407,13 +538,13 @@ def _same_day_sell_evidence(
         unknown.append(UNKNOWN_NO_RECONCILE_RUN)
     elif freshness.state == "stale":
         unknown.append(UNKNOWN_LEDGER_STALE)
-    authoritative, provisional, _ = _split_provisional(fills)
+    authoritative, provisional, _ = _split_provisional(fills, market)
     sells = [
         f
         for f in (*authoritative, *provisional)
-        if f.source != "manual_import"
+        if not _is_opening_seed(f)
         and f.side == "sell"
-        and _from_today_kst(f.filled_at, now)
+        and _from_today(f.filled_at, day_start)
     ]
     reasons: list[str] = []
     if unknown:
@@ -430,6 +561,171 @@ def _same_day_sell_evidence(
     }
 
 
+def _open_sell_evidence(
+    *,
+    fills: Sequence[LedgerFill],
+    orders: Sequence[OrderRow] | None,
+    freshness: Freshness,
+    day_start: datetime,
+    market: MarketCode = "kr",
+) -> dict[str, Any]:
+    """Task #1087 — own non-terminal sells / same-day sell fills. Unknown => blocking.
+
+    The sell-side twin of ``_open_buy_evidence``: a same-KST-day non-terminal
+    own sell row, a same-day sell fill whose order the order ledger has not
+    proven terminal (authoritative, or a provisional websocket row no
+    authoritative row covers), a stale/missing reconcile or an unreadable order
+    ledger each block. ``own_open_sell_order_quantity`` sums the *order*
+    quantity (not the unfilled remainder) of today's non-terminal own sells, so
+    it can only overstate what is already committed; it is ``None`` when the
+    evidence is unknown or any such order has no quantity.
+    """
+    unknown: list[str] = []
+    if freshness.state == "missing":
+        unknown.append(UNKNOWN_NO_RECONCILE_RUN)
+    elif freshness.state == "stale":
+        unknown.append(UNKNOWN_LEDGER_STALE)
+    if orders is None:
+        unknown.append(UNKNOWN_ORDER_LEDGER_READ_FAILED)
+
+    open_sells: list[OrderRow] = []
+    prior_day_dead: list[OrderRow] = []
+    resolved_order_ids: set[str] = set()
+    for order in orders or ():
+        if order.side != "sell":
+            continue
+        terminal = order.status in TERMINAL_ORDER_STATUSES
+        if _from_today(order.trade_date, day_start):
+            if not terminal:
+                open_sells.append(order)
+            elif order.order_no:
+                resolved_order_ids.add(_norm_order_id(order.order_no))
+        elif not terminal:
+            prior_day_dead.append(order)
+
+    authoritative, provisional, _ = _split_provisional(fills, market)
+    unproven_fills = [
+        f
+        for f in (*authoritative, *provisional)
+        if not _is_opening_seed(f)
+        and f.side == "sell"
+        and _from_today(f.filled_at, day_start)
+        and _norm_order_id(f.broker_order_id) not in resolved_order_ids
+    ]
+
+    open_quantity: Decimal | None = None
+    if not unknown and all(
+        o.quantity is not None and o.quantity >= 0 for o in open_sells
+    ):
+        open_quantity = sum(
+            (o.quantity for o in open_sells if o.quantity is not None), Decimal("0")
+        )
+
+    reasons: list[str] = []
+    if unknown:
+        reasons.append(BLOCK_OPEN_SELL_EVIDENCE_UNKNOWN)
+    if open_sells:
+        reasons.append(BLOCK_OWN_OPEN_SELL)
+    if unproven_fills:
+        reasons.append(BLOCK_SAME_DAY_SELL_FILL_UNPROVEN)
+    return {
+        "state": "unknown" if unknown else "known",
+        "unknown_reasons": unknown,
+        "blocking": bool(reasons),
+        "blocking_reasons": reasons,
+        "kis_live_order_ledger_open_sells": [_order_view(o) for o in open_sells],
+        "own_open_sell_order_quantity": _fmt(open_quantity),
+        "same_day_sell_fills_unproven_complete": [
+            _fill_view(f) for f in unproven_fills
+        ],
+        "presumed_dead_prior_day_sells": [_order_view(o) for o in prior_day_dead],
+        "scope": "orders_known_to_auto_trader_only",
+        "external_orders_verifiable": False,
+        "_open_quantity": open_quantity,
+    }
+
+
+def _same_day_buy_evidence(
+    *,
+    fills: Sequence[LedgerFill],
+    freshness: Freshness,
+    day_start: datetime,
+    market: MarketCode = "kr",
+) -> dict[str, Any]:
+    """Task #1087 — same-KST-day buy fills (the opposite-side view for a sell).
+
+    The twin of ``_same_day_sell_evidence``: any same-day buy fill in the ledger
+    (authoritative, or a provisional websocket row no authoritative row covers)
+    blocks, and an unverifiable ledger blocks too. Opening seeds (``SEED-*``)
+    are position snapshots, not buys; other ``manual_import`` rows are fills. Buys placed outside auto_trader are visible here only
+    once they fill.
+    """
+    unknown: list[str] = []
+    if freshness.state == "missing":
+        unknown.append(UNKNOWN_NO_RECONCILE_RUN)
+    elif freshness.state == "stale":
+        unknown.append(UNKNOWN_LEDGER_STALE)
+    authoritative, provisional, _ = _split_provisional(fills, market)
+    buys = [
+        f
+        for f in (*authoritative, *provisional)
+        if not _is_opening_seed(f)
+        and f.side == "buy"
+        and _from_today(f.filled_at, day_start)
+    ]
+    reasons: list[str] = []
+    if unknown:
+        reasons.append(BLOCK_BUY_EVIDENCE_UNKNOWN)
+    if buys:
+        reasons.append(BLOCK_SAME_DAY_BUY_FILL_IN_LEDGER)
+    return {
+        "state": "unknown" if unknown else "known",
+        "unknown_reasons": unknown,
+        "blocking": bool(reasons),
+        "blocking_reasons": reasons,
+        "fills": [_fill_view(f) for f in buys],
+        "scope": "orders_known_to_auto_trader_only",
+    }
+
+
+def _sellable_by_ledger(
+    *,
+    known: bool,
+    net: Decimal,
+    reference_quantity: Decimal | None,
+    open_sell: dict[str, Any],
+) -> tuple[Decimal | None, dict[str, Any]]:
+    """Task #1087 — known lot net minus own open sell orders, clamped to [0, broker].
+
+    ``None`` unless the lot projection is known (fresh, reconciling with the
+    broker quantity) AND the open-sell evidence is known with a quantity for
+    every own open sell. Provisional websocket rows never reach ``net``.
+    """
+    reasons: list[str] = []
+    if not known:
+        reasons.append(SELLABLE_UNKNOWN_LEDGER_STATE)
+    if open_sell["state"] != "known":
+        reasons.append(SELLABLE_UNKNOWN_OPEN_SELL_EVIDENCE)
+    elif open_sell["_open_quantity"] is None:
+        reasons.append(SELLABLE_UNKNOWN_OPEN_SELL_QUANTITY)
+    open_quantity: Decimal | None = open_sell["_open_quantity"]
+    value: Decimal | None = None
+    clamped = False
+    if not reasons and open_quantity is not None and reference_quantity is not None:
+        raw = net - open_quantity
+        value = min(max(raw, Decimal("0")), reference_quantity, net)
+        clamped = value != raw
+    return value, {
+        "state": "known" if value is not None else "unknown",
+        "unknown_reasons": reasons,
+        "method": SELLABLE_METHOD,
+        "ledger_net_quantity": _fmt(net) if known else None,
+        "own_open_sell_order_quantity": _fmt(open_quantity),
+        "reference_quantity": _fmt(reference_quantity),
+        "clamped": clamped,
+    }
+
+
 def build_symbol_block(
     *,
     symbol: str,
@@ -439,9 +735,27 @@ def build_symbol_block(
     orders: Sequence[OrderRow] | None,
     freshness: Freshness,
     now: datetime,
+    market: MarketCode = "kr",
 ) -> dict[str, Any]:
-    """Pure projection of one symbol. Deterministic given its inputs."""
-    authoritative, provisional, superseded = _split_provisional(fills)
+    """Pure projection of one symbol. Deterministic given its inputs.
+
+    ``market="us"`` (task #1173) changes only the day boundary (US trading
+    date), adds the venue check on authoritative rows and appends the US-only
+    keys; the KR block is unchanged.
+    """
+    day_start = _day_start(market, now)
+    authoritative, provisional, superseded = _split_provisional(fills, market)
+    # US: an authoritative row on an unrecognized venue is never counted. It
+    # stays visible to the evidence views below (where it can only block) and
+    # makes the block unknown, so a NASDAQ/NAS/krx mapping error is loud.
+    off_venue = (
+        [f for f in authoritative if f.venue.strip().upper() not in US_VENUES]
+        if market == "us"
+        else []
+    )
+    if off_venue:
+        off_ids = {f.id for f in off_venue}
+        authoritative = [f for f in authoritative if f.id not in off_ids]
     # Rows an opening seed already absorbed never reach lots/net; they are
     # listed under diagnostics.pre_seed_rows_superseded instead. Seedless
     # symbols pass through unchanged.
@@ -463,6 +777,8 @@ def build_symbol_block(
         )
     if oversold > 0:
         reasons.append(UNKNOWN_HISTORY_GAP)
+    if off_venue:
+        reasons.append(UNKNOWN_UNRECOGNIZED_VENUE)
 
     reconciles: bool | None
     if reference_quantity is None or reference_quantity <= 0:
@@ -502,7 +818,22 @@ def build_symbol_block(
                 (current_price - weighted_cost) / weighted_cost * Decimal("100")
             )
 
-    return {
+    open_sell = _open_sell_evidence(
+        fills=fills,
+        orders=orders,
+        freshness=freshness,
+        day_start=day_start,
+        market=market,
+    )
+    sellable, sellable_basis = _sellable_by_ledger(
+        known=known,
+        net=net,
+        reference_quantity=reference_quantity,
+        open_sell=open_sell,
+    )
+    open_sell_public = {k: v for k, v in open_sell.items() if not k.startswith("_")}
+
+    block: dict[str, Any] = {
         "source": "execution_ledger",
         "symbol": symbol,
         "ledger_state": "known" if known else "unknown",
@@ -541,17 +872,47 @@ def build_symbol_block(
         },
         "provisional_rows_excluded": [_fill_view(f) for f in provisional],
         "open_buy_evidence": _open_buy_evidence(
-            fills=fills, orders=orders, freshness=freshness, now=now
+            fills=fills,
+            orders=orders,
+            freshness=freshness,
+            day_start=day_start,
+            market=market,
         ),
         "same_day_sell_evidence": _same_day_sell_evidence(
-            fills=fills, freshness=freshness, now=now
+            fills=fills, freshness=freshness, day_start=day_start, market=market
         ),
+        "open_sell_evidence": open_sell_public,
+        "same_day_buy_evidence": _same_day_buy_evidence(
+            fills=fills, freshness=freshness, day_start=day_start, market=market
+        ),
+        "sellable_by_ledger": _fmt(sellable),
+        "sellable_by_ledger_basis": sellable_basis,
+    }
+    if market == "us":
+        block["diagnostics"]["unrecognized_venue_rows"] = [
+            {**_fill_view(f), "venue": f.venue} for f in off_venue
+        ]
+        block |= _us_block_keys(day_start)
+    return block
+
+
+def _us_block_keys(day_start: datetime | None) -> dict[str, Any]:
+    """Keys only a US block carries (task #1173); a KR block never has them."""
+    return {
+        "market": "us",
+        "currency": US_CURRENCY,
+        "accepted_venues": sorted(US_VENUES),
+        "trading_day_basis": US_TRADING_DAY_BASIS,
+        "trading_day_start": _iso(day_start),
+        "order_ledger_sources": list(US_ORDER_LEDGER_SOURCES),
     }
 
 
-def unknown_block(symbol: str, reason: str) -> dict[str, Any]:
+def unknown_block(
+    symbol: str, reason: str, *, market: MarketCode = "kr"
+) -> dict[str, Any]:
     """Block for a symbol whose ledger read failed outright (fail-closed)."""
-    return {
+    block: dict[str, Any] = {
         "source": "execution_ledger",
         "symbol": symbol,
         "ledger_state": "unknown",
@@ -592,7 +953,43 @@ def unknown_block(symbol: str, reason: str) -> dict[str, Any]:
             "fills": [],
             "scope": "orders_known_to_auto_trader_only",
         },
+        "open_sell_evidence": {
+            "state": "unknown",
+            "unknown_reasons": [reason],
+            "blocking": True,
+            "blocking_reasons": [BLOCK_OPEN_SELL_EVIDENCE_UNKNOWN],
+            "kis_live_order_ledger_open_sells": [],
+            "own_open_sell_order_quantity": None,
+            "same_day_sell_fills_unproven_complete": [],
+            "presumed_dead_prior_day_sells": [],
+            "scope": "orders_known_to_auto_trader_only",
+            "external_orders_verifiable": False,
+        },
+        "same_day_buy_evidence": {
+            "state": "unknown",
+            "unknown_reasons": [reason],
+            "blocking": True,
+            "blocking_reasons": [BLOCK_BUY_EVIDENCE_UNKNOWN],
+            "fills": [],
+            "scope": "orders_known_to_auto_trader_only",
+        },
+        "sellable_by_ledger": None,
+        "sellable_by_ledger_basis": {
+            "state": "unknown",
+            "unknown_reasons": [
+                SELLABLE_UNKNOWN_LEDGER_STATE,
+                SELLABLE_UNKNOWN_OPEN_SELL_EVIDENCE,
+            ],
+            "method": SELLABLE_METHOD,
+            "ledger_net_quantity": None,
+            "own_open_sell_order_quantity": None,
+            "reference_quantity": None,
+            "clamped": False,
+        },
     }
+    if market == "us":
+        block |= _us_block_keys(None)
+    return block
 
 
 def to_decimal(value: Any) -> Decimal | None:
@@ -616,7 +1013,8 @@ async def load_kis_live_kr_lot_blocks(
 
     Raises on a failed fills/reconcile-run read (the caller degrades every
     position to ``ledger_state="unknown"``). A failed order-ledger read only
-    degrades ``open_buy_evidence`` to unknown for all symbols.
+    degrades ``open_buy_evidence`` and ``open_sell_evidence`` (hence
+    ``sellable_by_ledger``) to unknown for all symbols.
     """
     moment = now or datetime.now(UTC)
     symbols = sorted({ref.symbol for ref in refs})
@@ -637,6 +1035,7 @@ async def load_kis_live_kr_lot_blocks(
                 .where(ExecutionLedger.instrument_type == "equity_kr")
                 .where(ExecutionLedger.currency == "KRW")
                 .where(ExecutionLedger.symbol.in_(symbols))
+                .where(execution_ledger_in_effect())
                 .order_by(ExecutionLedger.filled_at.asc(), ExecutionLedger.id.asc())
             )
         )
@@ -666,7 +1065,7 @@ async def load_kis_live_kr_lot_blocks(
                     select(KISLiveOrderLedger)
                     .where(KISLiveOrderLedger.broker == "kis")
                     .where(KISLiveOrderLedger.account_mode == "kis_live")
-                    .where(KISLiveOrderLedger.side == "buy")
+                    .where(KISLiveOrderLedger.side.in_(("buy", "sell")))
                     .where(KISLiveOrderLedger.symbol.in_(symbols))
                     .where(
                         KISLiveOrderLedger.trade_date
@@ -688,6 +1087,7 @@ async def load_kis_live_kr_lot_blocks(
                     quantity=to_decimal(row.quantity),
                     price=to_decimal(row.price),
                     trade_date=row.trade_date,
+                    side=row.side,
                 )
             )
     except Exception:  # noqa: BLE001 — read-only evidence degrades, never raises
@@ -707,3 +1107,192 @@ async def load_kis_live_kr_lot_blocks(
         )
         for ref in refs
     }
+
+
+def _us_symbol_key(symbol: str) -> str:
+    """DB dot-format, upper-case: the key ``get_holdings`` gives a US position.
+
+    The ONLY symbol identity of the US block: refs and every ledger/order row
+    go through this function, in Python. SQL never touches the symbol
+    (task #1173 round 5): a SQL re-implementation diverged on mixed separators
+    (r3 F3), Unicode case folding (r4 B1) and Unicode whitespace (r4 B2).
+    """
+    return to_db_symbol(symbol.strip()).upper()
+
+
+async def load_kis_live_us_lot_blocks(
+    db: AsyncSession,
+    refs: Sequence[PositionRef],
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Task #1173 — the ``load_kis_live_kr_lot_blocks`` twin for KIS live US.
+
+    Same contract: raises on a failed fills/reconcile-run read (the caller
+    degrades every US position to unknown); a failed own-order read degrades
+    only the open-buy/open-sell evidence (hence ``sellable_by_ledger``). Rows
+    are ``broker='kis'``, ``account_mode='live'``, ``equity_us``, ``USD``, not
+    quarantined. Venue is checked per row by ``build_symbol_block`` (an
+    unrecognized venue is unknown, never silently filtered here). Blocks are
+    returned as a list aligned with ``refs`` (one per broker position, see
+    ``us_position_blocks``), never keyed by symbol.
+
+    SQL filters only on columns whose comparison cannot diverge from Python
+    (broker, mode, instrument type, currency, quarantine, and the order
+    reads' trade-date window); every row is then attributed to a position by
+    ``_us_symbol_key`` alone. Volume: the fills read is every in-effect KIS
+    live US fill (FIFO needs the full history, so it has no date window);
+    the order reads are bounded by the 7-day lookback window.
+    """
+    moment = now or datetime.now(UTC)
+    keys = sorted({_us_symbol_key(ref.symbol) for ref in refs})
+    if not keys:
+        return []
+
+    repo = ExecutionLedgerRepository(db)
+    latest = await repo.latest_run_per_broker()
+    # One KIS reconcile run fetches markets "kr,us" and any US fetch error fails
+    # the run (error_summary set), so the latest successful KIS run covers US.
+    run = latest.get("kis")
+    freshness = compute_freshness(run.finished_at if run else None, moment)
+
+    fill_rows = (
+        (
+            await db.execute(
+                select(ExecutionLedger)
+                .where(ExecutionLedger.broker == "kis")
+                .where(ExecutionLedger.account_mode == "live")
+                .where(ExecutionLedger.instrument_type == "equity_us")
+                .where(ExecutionLedger.currency == US_CURRENCY)
+                # #1175: a quarantined row (an accept notice recorded as a
+                # fill) is not a fill for any view of this block.
+                .where(execution_ledger_in_effect())
+                .order_by(ExecutionLedger.filled_at.asc(), ExecutionLedger.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    fills_by_key: dict[str, list[LedgerFill]] = {k: [] for k in keys}
+    for row in fill_rows:
+        bucket = fills_by_key.get(_us_symbol_key(row.symbol))
+        if bucket is None:
+            continue
+        bucket.append(
+            LedgerFill(
+                id=int(row.id),
+                source=row.source,
+                side=row.side,
+                quantity=Decimal(row.filled_qty),
+                price=Decimal(row.filled_price),
+                filled_at=row.filled_at,
+                broker_order_id=row.broker_order_id,
+                venue=row.venue,
+            )
+        )
+
+    orders_by_key: dict[str, list[OrderRow]] | None
+    try:
+        window_start = us_trading_day_window(moment)[0] - _PRIOR_DAY_LOOKBACK
+        live_rows = (
+            (
+                await db.execute(
+                    select(LiveOrderLedger)
+                    .where(LiveOrderLedger.broker == "kis")
+                    .where(LiveOrderLedger.account_scope == "kis_live")
+                    .where(LiveOrderLedger.market == "us")
+                    .where(LiveOrderLedger.side.in_(("buy", "sell")))
+                    .where(LiveOrderLedger.trade_date >= window_start)
+                    .order_by(LiveOrderLedger.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # KR-only by contract (ROB-395), read anyway: an equity_us row here is
+        # still an order auto_trader knows about and must be able to block.
+        kis_rows = (
+            (
+                await db.execute(
+                    select(KISLiveOrderLedger)
+                    .where(KISLiveOrderLedger.broker == "kis")
+                    .where(KISLiveOrderLedger.account_mode == "kis_live")
+                    .where(KISLiveOrderLedger.instrument_type == "equity_us")
+                    .where(KISLiveOrderLedger.side.in_(("buy", "sell")))
+                    .where(KISLiveOrderLedger.trade_date >= window_start)
+                    .order_by(KISLiveOrderLedger.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        orders_by_key = {k: [] for k in keys}
+        for row in (*live_rows, *kis_rows):
+            bucket = orders_by_key.get(_us_symbol_key(row.symbol))
+            if bucket is None:
+                continue
+            bucket.append(
+                OrderRow(
+                    id=int(row.id),
+                    order_no=row.order_no,
+                    status=row.status,
+                    quantity=to_decimal(row.quantity),
+                    price=to_decimal(row.price),
+                    trade_date=row.trade_date,
+                    side=row.side,
+                )
+            )
+        for bucket in orders_by_key.values():
+            bucket.sort(key=lambda o: (_aware_utc(o.trade_date), o.id))
+    except Exception:  # noqa: BLE001 — read-only evidence degrades, never raises
+        logger.warning("kis live US order ledger read failed", exc_info=True)
+        await db.rollback()
+        orders_by_key = None
+
+    return us_position_blocks(
+        refs,
+        fills_by_key=fills_by_key,
+        orders_by_key=orders_by_key,
+        freshness=freshness,
+        now=moment,
+    )
+
+
+def us_position_blocks(
+    refs: Sequence[PositionRef],
+    *,
+    fills_by_key: dict[str, list[LedgerFill]],
+    orders_by_key: dict[str, list[OrderRow]] | None,
+    freshness: Freshness,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """One block per broker position, in ``refs`` order (task #1173 B3).
+
+    Blocks are never keyed by symbol: two positions whose symbols share a
+    ``_us_symbol_key`` (e.g. holdings rows BRK/B and BRK.B, both normalized to
+    BRK.B) would otherwise share one block and one position's quantity proof
+    would be shown for the other. Every position of such a key is unknown
+    (``duplicate_positions_for_symbol``) and nothing known is produced for it.
+    """
+    key_counts = Counter(_us_symbol_key(ref.symbol) for ref in refs)
+    blocks: list[dict[str, Any]] = []
+    for ref in refs:
+        key = _us_symbol_key(ref.symbol)
+        if key_counts[key] > 1:
+            blocks.append(
+                unknown_block(ref.symbol, UNKNOWN_DUPLICATE_POSITIONS, market="us")
+            )
+            continue
+        blocks.append(
+            build_symbol_block(
+                symbol=ref.symbol,
+                reference_quantity=ref.reference_quantity,
+                current_price=ref.current_price,
+                fills=fills_by_key.get(key, []),
+                orders=None if orders_by_key is None else orders_by_key.get(key, []),
+                freshness=freshness,
+                now=now,
+                market="us",
+            )
+        )
+    return blocks

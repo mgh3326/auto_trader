@@ -36,10 +36,13 @@ tests/mcp_server/test_earnings_context.py
 tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_get_holdings_ledger_lots.py
 tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
+tests/mcp_server/test_h3_crypto_paper_profile.py
+tests/mcp_server/test_h3_us_paper_profile.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
 tests/mcp_server/test_kis_mock_terminal_registration.py
+tests/mcp_server/test_mcp_profile_required.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_operating_briefing_tools.py
 tests/mcp_server/test_portfolio_helpers.py
@@ -97,6 +100,8 @@ tests/scripts/b0x/test_table_gate.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_build_policy_table_out_dir.py
+tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
+tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_lane_event_kickoff.py
@@ -130,6 +135,8 @@ tests/services/brokers/binance/futures_demo/test_execution_client_submit_cancel.
 tests/services/brokers/binance/futures_demo/test_preflight.py
 tests/services/brokers/binance/h5/test_forecast_cli.py
 tests/services/brokers/binance/h5/test_history_executor.py
+tests/services/brokers/binance/h5/test_last_tick.py
+tests/services/brokers/binance/h5/test_truth_gate.py
 tests/services/brokers/binance/spot_demo/test_close_sizing.py
 tests/services/brokers/binance/spot_demo/test_execution_client_fail_closed.py
 tests/services/brokers/binance/spot_demo/test_execution_client_submit_cancel.py
@@ -156,6 +163,8 @@ tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/execution_ledger/test_kis_lots.py
 tests/services/execution_ledger/test_kis_lots_db.py
 tests/services/execution_ledger/test_kis_lots_seed_cutover.py
+tests/services/execution_ledger/test_quarantine_db.py
+tests/services/execution_ledger/test_quarantine_readers_db.py
 tests/services/execution_ledger/test_repository.py
 tests/services/execution_outcomes/test_static_boundaries.py
 tests/services/fill_watch_context/test_consumption.py
@@ -202,6 +211,7 @@ tests/services/order_proposals/callback_inbox/test_retry_and_recovery_semantics.
 tests/services/order_proposals/callback_inbox/test_telegram_identifier_boundary.py
 tests/services/order_proposals/callback_inbox/test_worker_concurrency.py
 tests/services/order_proposals/callback_inbox/test_worker_outcomes.py
+tests/services/order_proposals/test_approval_window_toss_us_extended.py
 tests/services/order_proposals/test_auto_approve_audit_reason_vocabulary.py
 tests/services/order_proposals/test_cash_funding_exemption.py
 tests/services/order_proposals/test_no_repository_imports.py
@@ -227,6 +237,8 @@ tests/services/protected_quantity/test_acceptance.py
 tests/services/protected_quantity/test_auto_follow.py
 tests/services/protected_quantity/test_auto_follow_wiring.py
 tests/services/protected_quantity/test_service.py
+tests/services/quotes_consumer/test_stream_parsing.py
+tests/services/quotes_consumer/test_triggers.py
 tests/services/research/test_research_contracts_wheel.py
 tests/services/research/test_research_offline_gate_service.py
 tests/services/research/test_rob974_h6a_reason_taxonomy.py
@@ -247,6 +259,7 @@ tests/services/test_fill_event_handoff.py
 tests/services/test_fill_event_handoff_kick_filter.py
 tests/services/test_fill_event_handoff_watch_kick.py
 tests/services/test_fill_handoff_lookback.py
+tests/services/test_kis_mock_inference_expiry_db.py
 tests/services/test_kis_mock_terminal_expiry.py
 tests/services/test_legacy_stock_analysis_adapter.py
 tests/services/test_live_correlation.py
@@ -450,6 +463,7 @@ tests/test_symbol_analysis_contract.py
 tests/test_symbol_sectors_model.py
 tests/test_symbol_trade_settings.py
 tests/test_symbol_universe_common.py
+tests/test_t1250_kismock_inference_migration.py
 tests/test_toss_notification.py
 tests/test_toss_portfolio_service.py
 tests/test_toss_symbol_master_cli.py

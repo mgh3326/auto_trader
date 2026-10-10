@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger
@@ -313,6 +313,65 @@ class KISMockLifecycleService:
             "rule_version": RULE_VERSION,
             "operator_decision_ref": decision_ref,
         }
+
+    async def close_rows_by_q46_inference(
+        self,
+        *,
+        details: dict[int, dict[str, Any]],
+        closed_at: datetime,
+    ) -> int:
+        """#1250 write chokepoint for the Q-46 ``expired[inference]`` close.
+
+        Self-verifying, so no caller can use it to skip the rule: the keys must
+        be exactly the four allowlisted ids as built-in ints, every detail must
+        be this rule's marker (``validate_closed_detail``), and the whole batch
+        is re-locked and re-classified here
+        (``kis_mock_inference_expiry_service.verify_locked_batch``) before any
+        UPDATE. Each UPDATE is guarded on the allowlist and on the row still
+        being ``accepted``/``pending``; anything but exactly four rows raises.
+        Never commits — and a close that is committed without its audit rows is
+        refused by the DB at COMMIT (``trg_kis_mock_inference_requires_audit``).
+        """
+        from app.services.kis_mock_inference_expiry import (
+            ALLOWED_LEDGER_IDS,
+            exact_ids,
+            validate_closed_accept_at,
+            validate_closed_detail,
+        )
+        from app.services.kis_mock_inference_expiry_service import (
+            verify_locked_batch,
+        )
+
+        ids = exact_ids(details.keys())
+        for ledger_id in ids:
+            validate_closed_detail(details[ledger_id], ledger_id)
+        decisions = await verify_locked_batch(self._db, ids)
+        for decision in decisions:
+            # The stored accept instant is the locked row's own, never the
+            # caller's (the DB fill gate re-derives it from the row as well).
+            validate_closed_accept_at(details[decision.ledger_id], decision)
+        changed = 0
+        for ledger_id in sorted(ids):
+            result = await self._db.execute(
+                update(KISMockOrderLedger)
+                .where(
+                    KISMockOrderLedger.id == ledger_id,
+                    KISMockOrderLedger.id.in_(sorted(ALLOWED_LEDGER_IDS)),
+                    KISMockOrderLedger.account_mode == "kis_mock",
+                    KISMockOrderLedger.lifecycle_state.in_(("accepted", "pending")),
+                )
+                .values(
+                    lifecycle_state="expired",
+                    reconcile_attempts=KISMockOrderLedger.reconcile_attempts + 1,
+                    last_reconcile_detail=details[ledger_id],
+                    reconciled_at=closed_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            changed += int(result.rowcount or 0)
+        if changed != len(ALLOWED_LEDGER_IDS):
+            raise ValueError(f"q46_inference_partial_update:{changed}")
+        return changed
 
     async def update_order_terms(
         self,

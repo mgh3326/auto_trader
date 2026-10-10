@@ -24,6 +24,8 @@ MCP_PROFILES = (
     "at-mcp-live-kr",
     "at-mcp-live-us",
     "at-mcp-live-crypto",
+    "at-mcp-h3-crypto-paper",
+    "at-mcp-h3-us-paper",
 )
 INITIAL = (
     "at-api-blue",
@@ -60,6 +62,9 @@ def _run(
     omit_tokens: tuple[str, ...] = (),
     fail_route_url: str = "",
     extra_env: dict[str, str] | None = None,
+    active_mcp_color: str = "blue",
+    both_mcp_colors_present: bool = False,
+    deploy: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -69,6 +74,11 @@ def _run(
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     initial = {name: KIS_OLD if name == "at-kis-ws" else OLD for name in INITIAL}
+    assert active_mcp_color in {"blue", "green"}
+    if active_mcp_color == "green":
+        initial["at-mcp-green"] = initial.pop("at-mcp-blue")
+    if both_mcp_colors_present:
+        initial[f"at-mcp-{'green' if active_mcp_color == 'blue' else 'blue'}"] = OLD
     if absent_name:
         del initial[absent_name]
     for name in absent_names:
@@ -194,6 +204,8 @@ def _run(
                 "MCP_LIVE_KR_AUTH_TOKEN",
                 "MCP_LIVE_US_AUTH_TOKEN",
                 "MCP_LIVE_CRYPTO_AUTH_TOKEN",
+                "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
+                "MCP_H3_US_PAPER_AUTH_TOKEN",
             )
             if name not in omit_tokens
         )
@@ -208,9 +220,9 @@ def _run(
     if "--rollback" in args:
         (run_dir / "deployed-digest.previous").write_text(NEW + "\n")
     (run_dir / "api-active-color").write_text("blue\n")
-    (run_dir / "mcp-active-color").write_text("blue\n")
+    (run_dir / "mcp-active-color").write_text(active_mcp_color + "\n")
     result = subprocess.run(
-        [str(DEPLOY), *args],
+        [str(deploy or DEPLOY), *args],
         capture_output=True,
         text=True,
         timeout=90,

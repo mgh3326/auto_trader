@@ -197,6 +197,22 @@ class OrderProposalRepository:
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def list_auto_digest_groups(
+        self, *, chat_id: str, message_id: int
+    ) -> list[OrderProposal]:
+        """Return every proposal whose auto notice lives in one digest message."""
+        stmt = (
+            select(OrderProposal)
+            .where(
+                OrderProposal.source_asof["auto_digest"]["chat_id"].astext
+                == str(chat_id),
+                OrderProposal.source_asof["auto_digest"]["message_id"].astext
+                == str(int(message_id)),
+            )
+            .order_by(OrderProposal.id)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def list_recent_groups(
         self, *, limit: int, symbol: str | None, lifecycle_state: str | None
     ) -> list[OrderProposal]:
@@ -582,13 +598,20 @@ class OrderProposalRepository:
         {"terminal", "rejected", "expired", "voided", "superseded"}
     )
 
-    async def list_expiry_candidates(self, *, now: datetime) -> list[uuid.UUID]:
+    async def list_expiry_candidates(
+        self,
+        *,
+        now: datetime,
+        lifecycle_states: frozenset[str] | None = None,
+    ) -> list[uuid.UUID]:
         """Return proposal_ids for non-terminal groups whose valid_until passed.
 
         ROB-897 cause (1): ``expire_if_needed`` only ever ran from the Telegram
         approval callback, so a proposal nobody tapped stayed
         ``proposed``/``needs_reconfirm`` forever past its deadline. This is the
         candidate finder for the batch sweeper (``OrderProposalsService.sweep_expired``).
+        ``lifecycle_states`` (#1112 night sweep) narrows the scan further; it
+        can never widen it past the non-terminal filter.
         """
         stmt = (
             select(OrderProposal.proposal_id)
@@ -601,7 +624,68 @@ class OrderProposalRepository:
             )
             .order_by(OrderProposal.id)
         )
+        if lifecycle_states is not None:
+            stmt = stmt.where(OrderProposal.lifecycle_state.in_(lifecycle_states))
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_active_side_groups(
+        self, *, market: str, side: str, symbol: str | None
+    ) -> list[OrderProposal]:
+        """#1112 — every non-terminal group of one market/side. Unbounded.
+
+        The 7-D "one active buy per symbol" count must see every blocker; a
+        paged read would silently undercount exactly the stale rows this
+        exists to surface. A group counts when its lifecycle is non-terminal
+        OR any of its rungs is still non-terminal: supersession only retires
+        still-local rungs, so a ``superseded`` group can keep a broker-live
+        (``acked``/``resting``) buy that must keep blocking.
+        """
+        live_rung_groups = select(OrderProposalRung.proposal_pk).where(
+            OrderProposalRung.state.not_in(PROPOSAL_TERMINAL_STATES)
+        )
+        stmt = (
+            select(OrderProposal)
+            .where(
+                OrderProposal.market == market,
+                OrderProposal.side == side,
+                or_(
+                    OrderProposal.lifecycle_state.not_in(
+                        self._EXPIRY_TERMINAL_GROUP_STATES
+                    ),
+                    OrderProposal.id.in_(live_rung_groups),
+                ),
+            )
+            .order_by(OrderProposal.id)
+        )
+        if symbol:
+            stmt = stmt.where(OrderProposal.symbol == symbol)
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_rungs_by_void_reasons(
+        self,
+        *,
+        market: str,
+        side: str,
+        void_reasons: frozenset[str],
+        since: datetime,
+        symbol: str | None,
+    ) -> list[tuple[OrderProposal, OrderProposalRung]]:
+        """#1112 — rungs recently closed by the night sweep or by inference."""
+        stmt = (
+            select(OrderProposal, OrderProposalRung)
+            .join(OrderProposalRung, OrderProposalRung.proposal_pk == OrderProposal.id)
+            .where(
+                OrderProposal.market == market,
+                OrderProposalRung.side == side,
+                OrderProposalRung.void_reason.in_(void_reasons),
+                OrderProposalRung.updated_at >= since,
+            )
+            .order_by(OrderProposalRung.id)
+        )
+        if symbol:
+            stmt = stmt.where(OrderProposal.symbol == symbol)
+        rows = (await self._session.execute(stmt)).all()
+        return [(row[0], row[1]) for row in rows]
 
     # ROB-929: expired/voided defensive (loss_cut/defensive_trim) proposal
     # handoff surface. Mirrors ``_EXPIRY_TERMINAL_GROUP_STATES`` above -- once a

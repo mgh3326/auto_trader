@@ -123,6 +123,7 @@ from urllib.parse import urlsplit
 from app.core.config import settings, validate_kis_mock_config
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.brokers.kis.account import AccountClient
+from app.services.brokers.kis.account_no import parse_kis_account_parts
 from app.services.brokers.kis.base import _KIS_MOCK_REST_HOSTS, BaseKISClient
 from app.services.brokers.kis.mock_scalping_exec.adapters import KisMockBroker
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
@@ -272,12 +273,18 @@ def account_identity_summary() -> dict[str, str]:
     two-character product suffix; it never emits the account number itself.
     """
 
-    compact = str(settings.kis_mock_account_no or "").replace("-", "").strip()
-    if len(compact) < 10:
-        raise KrLaneDisabled("KIS mock account identifier is unavailable or malformed")
+    try:
+        cano, acnt_prdt_cd = parse_kis_account_parts(
+            settings.kis_mock_account_no, is_mock=True
+        )
+    except ValueError as exc:
+        raise KrLaneDisabled(
+            "KIS mock account identifier is unavailable or malformed"
+        ) from exc
+    compact = cano + acnt_prdt_cd
     return {
         "fingerprint": f"sha256:{hashlib.sha256(compact.encode()).hexdigest()[:16]}",
-        "product_suffix": compact[-2:],
+        "product_suffix": acnt_prdt_cd,
     }
 
 

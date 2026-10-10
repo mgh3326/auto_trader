@@ -349,3 +349,151 @@ uv run python -m pytest tests/test_market_events_cli.py -v
 4. **UI surface**: `/invest/calendar` already consumes
    `GET /trading/api/market-events/range`. Once `WISEFN_EARNINGS_ENABLED=true`
    in production, KR earnings will appear automatically — no UI change needed.
+
+## KR DART disclosures: zero-filings guard + backfill (#1085)
+
+### Zero-filings guard
+
+`app/services/market_events/ingestion.py::_require_legitimate_dart_zero` runs
+after row normalization, before `mark_partition_succeeded`:
+
+| XKRX session status | upserted events | partition outcome |
+| --- | --- | --- |
+| `open` (trading session, including shortened sessions like the delayed-open first trading day of a year) | 0 | `failed` — `last_error` = "DART returned zero filings on confirmed XKRX trading session …" |
+| `open` | >0 | `succeeded` |
+| `closed` (weekend / KRX holiday / substitute holiday) | 0 | `succeeded`, `event_count=0` — a legitimate empty day |
+| `unknown` (calendar cannot classify) | 0 | `failed` — `last_error` = "DART returned zero filings for …, but XKRX calendar classification is unknown; cannot distinguish a legitimate empty day from a broken DART scraper" |
+
+"Zero" is measured on **upserted** events, not raw rows: a fetch that returns
+only unparseable rows is still a zero-filings day. A `failed` partition stays
+visible and retryable — the DART per-day path re-ingests every requested date
+unconditionally, so the next run covering that date retries it automatically.
+
+### Backfill CLI (desk-owned, after merge)
+
+`scripts/backfill_dart_disclosures.py` is read-only against DART's public
+`list_date_ex` scrape and writes only through
+`ingest_kr_disclosures_for_date` (idempotent on `rcept_no` →
+`source_event_id`). It re-ingests every date in the range unconditionally —
+that is the point: it repairs partitions that were wrongly marked
+`succeeded`/`event_count=0` on trading sessions before the guard existed.
+
+Desk steps for the 2026-01-01..2026-07-21 repair (requires `OPENDART_API_KEY`
+in the runtime env, i.e. run on the ingest host — never locally):
+
+```bash
+# 1) dry-run (default): per-day session/rows/parseable/partition/prediction
+uv run python -m scripts.backfill_dart_disclosures \
+  --from-date 2026-01-01 --to-date 2026-07-21
+
+# 2) write
+uv run python -m scripts.backfill_dart_disclosures \
+  --from-date 2026-01-01 --to-date 2026-07-21 --commit
+
+# 3) verify: trading days that still return zero stay failed on purpose
+SELECT partition_date, status, event_count, last_error
+  FROM market_event_ingestion_partitions
+ WHERE source='dart' AND category='disclosure' AND market='kr'
+   AND partition_date BETWEEN '2026-01-01' AND '2026-07-21'
+   AND status='failed';
+```
+
+Exit codes: `0` = every processed day succeeded or is predicted to succeed
+(including runs truncated by `--max-days`), `2` = at least one failed or
+predicted-failed day, or the run stopped early on the call budget or the
+consecutive-failure rule, `1` = CLI crash. A failed day means "DART
+genuinely had nothing for a trading session" or "the scrape is still
+broken" — either way it must not be flipped to `succeeded` by hand.
+
+### Pacing, backoff, resume (#1097)
+
+Motivation: on 2026-09-30 the un-retried backfill walked dates
+2026-01-01..01-18 fine, then DART raised `ConnectionResetError(104)` on
+01-19 and the CLI exited with an exception; an immediate rerun failed at
+once — DART throttles rapid sequential calls, and the regular collector
+shares the same API key. The CLI now paces, retries, and resumable-stops.
+
+**Do not starve the regular collector.** Run the backfill **outside the
+collector windows** — the daily `market events` Prefect deployment runs at
+18:30 KST and 07:00 KST (Asia/Seoul); pick a quiet stretch away from those
+slots, **keep the pacing default** (`--pace-seconds 1.0`, one DART call per
+second at most), and bound each session with `--max-days` (e.g. 30) so a
+single run never monopolizes the shared API key.
+
+**Pacing and budget.** Every DART fetch — first attempt and retries alike —
+waits `--pace-seconds` (default `1.0`) after the previous call.
+`--max-calls` (default `1000`) is a hard global cap on DART fetch calls for
+the whole run; exhausting it stops the run cleanly.
+
+**Retryable faults.** Connection reset/refused/aborted, timeouts,
+DNS/TLS-level transport errors, `requests`/`urllib3` connection-retry
+errors, HTTP `429` and `5xx`, and the DART status codes OpenDartReader
+raises as `ValueError({'status': ..., 'message': ...})` on its
+official-API paths: **`'020'`** (request limit exceeded, 요청 제한 초과),
+**`'800'`** (system maintenance), **`'900'`** (undefined server error).
+These retry with bounded exponential backoff: `--retry-base-seconds`
+(default `5.0`) doubled per attempt, capped at `--retry-max-seconds`
+(default `60`), scaled by `[0.5, 1.5)` jitter, up to
+`--retry-max-attempts` total tries per day (default `5`). Non-transient
+faults — the other DART status codes (`'010'-'013'`, `'100'-'101'`), HTTP
+4xx other than 429, and scrape-contract drift
+(`DartResponseSchemaError`/`AttributeError` from an HTML error page) — are
+never retried: retries cannot repair them.
+
+No documented DART rate limit was found in this repo or in OpenDartReader's
+docs; `1.0s` pacing is a conservative desk default, not a spec value.
+
+**Failed days and clean stops.** A day that still fails after its attempts
+is recorded `failed` with the reason (commit mode also writes the partition
+row's `last_error` via the ingestion path) and the run continues — until
+`--max-consecutive-failures` (default `3`) days fail in a row, when it
+stops cleanly: a `stop:` line plus the JSON summary, no traceback, exit
+code `2`.
+
+**Per-day lines and the JSON summary.** Each day emits one line —
+dry-run: `date session=… rows=N parseable=N partition=… action=… calls=N`;
+commit: `date status=… events=N calls=N [error=…]`. The **last line is a
+single-line JSON summary**: `succeeded`, `failed`, `failed_dates`,
+`days_processed`, `days_remaining`, `consecutive_failures`, `stop_reason`
+(`completed` | `max_days` | `consecutive_failures` |
+`call_budget_exhausted`), `processed_through`, `next_from_date`,
+`dart_calls`, `dart_retries`, plus the effective pacing knobs.
+
+**Resume.** To continue exactly where a run stopped, rerun the same
+command with `--resume-from <next_from_date>` (dates before `--from-date`
+clamp; after `--to-date` is an error). Failed days are listed in
+`failed_dates` and, in commit mode, `failed` partition rows — repair them
+with a separate tight `--from-date/--to-date` run after the underlying
+cause clears.
+
+```bash
+# resume after a throttling stop, bounded to 30 days per session
+uv run python -m scripts.backfill_dart_disclosures \
+  --from-date 2026-01-01 --to-date 2026-07-21 \
+  --resume-from 2026-01-19 --max-days 30 --commit
+```
+
+### Scheduling additional DART runs (18:30 KST + next-day 07:00 KST)
+
+The schedule definition for the daily market-events ingestion does **not**
+live in this repository. The `daily market events` Prefect deployment is
+defined in `robin-prefect-automations` (`market_events_ingestion.py`; see the
+excluded-B table in `docs/runbooks/ncp-job-timers.md` — it was deliberately
+kept out of the `ops/ncp/systemd` migration because its rolling-window and
+notification behavior is not a static argv). This PR therefore adds **no**
+scheduler wiring of any kind — merging it registers nothing.
+
+Desk steps (all gated on operator decision **hk 1084** — do not run without
+that approval on record):
+
+1. In `robin-prefect-automations`, on the `daily market events` deployment
+   (`market_events_ingestion.py`), add two schedules: `30 18 * * *` and
+   `0 7 * * *`, `timezone="Asia/Seoul"` — the deployment already computes the
+   KST rolling window per run, so the 18:30 run picks up post-close filings
+   and the next-day 07:00 run re-covers the previous day plus overnight
+   filings. Re-ingestion is idempotent, so overlapping windows are safe.
+2. After redeploying, confirm the deployment's next scheduled run times show
+   both new KST slots, then confirm `market_event_ingestion_partitions` rows
+   for the covered dates reach `succeeded`/`failed` as expected — a `failed`
+   row with the zero-filings `last_error` above is the intended failure mode,
+   not a scheduling bug.

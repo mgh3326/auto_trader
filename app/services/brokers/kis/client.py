@@ -9,6 +9,9 @@ from pandas import DataFrame
 
 from app.core.async_rate_limiter import get_limiter
 from app.core.config import settings
+from app.services.brokers.credential_firewall import (
+    assert_broker_credentials_allowed,
+)
 from app.services.brokers.kis.pre_send import PreSendHook
 from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.redis_token_manager import get_kis_mock_token_manager
@@ -50,6 +53,11 @@ class _KISSettingsView:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(settings, name)
+
+    @property
+    def account_scope(self) -> str:
+        """Account binding marker read by the shared account-number parser."""
+        return "kis_mock" if self._is_mock else "kis_live"
 
     @property
     def kis_app_key(self) -> str:
@@ -104,6 +112,8 @@ class KISClient(BaseKISClient):
     """
 
     def __init__(self, *, is_mock: bool = False) -> None:
+        # #1257: refused before any credential view is built.
+        assert_broker_credentials_allowed("KIS client")
         self._is_mock_client = is_mock
         self._settings_view = _KISSettingsView(is_mock=is_mock)
         super().__init__()

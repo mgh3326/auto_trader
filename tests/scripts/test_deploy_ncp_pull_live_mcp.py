@@ -82,7 +82,9 @@ def test_live_units_are_declared_with_profile_port_and_own_token_name() -> None:
     for name, (profile, port, token) in LIVE.items():
         i = names.index(name)
         assert (profiles[i], ports[i], tokens[i]) == (profile, port, token)
-    assert _array("MCP_LIVE_ROUTE_NAMES") == list(LIVE)
+    # #1189 appends the tailnet-only h3-crypto-paper unit after the live trio,
+    # #1257 the tailnet-only h3-us-paper unit after it.
+    assert _array("MCP_LIVE_ROUTE_NAMES") == [*LIVE, "h3-crypto-paper", "h3-us-paper"]
     apps = _array("APP_CONTAINERS")
     for name in names:
         assert f"at-mcp-{name}" in apps, name

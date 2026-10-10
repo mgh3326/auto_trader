@@ -98,6 +98,23 @@ Profile → tool surface mapping
   No generic/live Kiwoom, reconcile, settings, watch mutation/activation,
   report-write, KIS mock, Alpaca, or paper simulator tools are registered.
 
+"h3-crypto-paper" (McpProfile.H3_CRYPTO_PAPER):
+  #1171 closed-world H3-CRYPTO paper pilot surface. Registers exactly the 20
+  names in h3_crypto_paper_registration.H3_CRYPTO_PAPER_TOOL_NAMES (the
+  auto_trader-operator runner's registered_tools("crypto")): read-only
+  bootstrap/research/account reads, the four ROB-703 paper simulator tools,
+  and the two record writes. Returns before the "Always" block; get_holdings
+  is pinned to DB paper accounts. No live order tool or live account read.
+
+"h3-us-paper" (McpProfile.H3_US_PAPER):
+  #1257 (#1245) closed-world H3-US paper pilot surface. Registers exactly the
+  20 names in h3_us_paper_registration.H3_US_PAPER_TOOL_NAMES (the
+  auto_trader-operator runner's registered_tools("us")): read-only
+  bootstrap/research reads pinned to market us, the three Alpaca paper reads
+  and two Alpaca paper order tools pinned to account_mode alpaca_paper, the
+  quote-snapshot builder pinned to market us, and the two record writes.
+  Returns before the "Always" block. No live order tool or live account read.
+
 "live-kr" / "live-us" / "live-crypto" (McpProfile.LIVE_KR / LIVE_US /
 LIVE_CRYPTO):
   Task 891 / operator decision Q-53 closed-world live-session subsets. The
@@ -159,6 +176,12 @@ from app.mcp_server.tooling.fill_watch_context_registration import (
 )
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
+from app.mcp_server.tooling.h3_crypto_paper_registration import (
+    register_h3_crypto_paper_tools,
+)
+from app.mcp_server.tooling.h3_us_paper_registration import (
+    register_h3_us_paper_tools,
+)
 from app.mcp_server.tooling.investment_hermes_handlers import (
     register_investment_hermes_tools,
 )
@@ -348,6 +371,22 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # broker, proposal, watch, credential, shell, or bootstrap tool can
         # leak in by registration order.
         register_fill_watch_context_tools(mcp)
+        return
+
+    if profile is McpProfile.H3_CRYPTO_PAPER:
+        # #1171 — H3-CRYPTO paper pilot. Closed world before the broad
+        # "Always" block: an exact-set proxy registers the runner's 20 tools
+        # and fails the boot unless the registered set equals that list. No
+        # bootstrap pack, no live order/account surface.
+        register_h3_crypto_paper_tools(mcp)
+        return
+
+    if profile is McpProfile.H3_US_PAPER:
+        # #1257 (#1245) — H3-US paper pilot. Closed world before the broad
+        # "Always" block: an exact-set proxy registers the runner's 20 tools
+        # and fails the boot unless the registered set equals that list. No
+        # bootstrap pack, no live order/account surface.
+        register_h3_us_paper_tools(mcp)
         return
 
     if profile is McpProfile.ANALYSIS_READONLY:

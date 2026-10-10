@@ -29,6 +29,8 @@ tests/mcp_server/test_niche_tools.py
 tests/mcp_server/test_operating_briefing_policy_version.py
 tests/mcp_server/test_profile_tool_snapshot.py
 tests/mcp_server/test_rob1311_quick_projection.py
+tests/mcp_server/test_route_request_paper_surface.py
+tests/mcp_server/test_route_request_profile_golden.py
 tests/mcp_server/test_session_bootstrap_pack_no_write.py
 tests/mcp_server/test_session_bootstrap_profile_sections.py
 tests/mcp_server/test_toss_proposal_accounts.py
@@ -77,6 +79,9 @@ tests/scripts/b0x/us/test_alpaca.py
 tests/scripts/b0x/us/test_alpaca_lab_mutation_seam.py
 tests/scripts/b0x/us/test_guards.py
 tests/scripts/test_binance_demo_strategy_loop.py
+tests/scripts/test_binance_h5_scripts_mutants.py
+tests/scripts/test_binance_spot_demo_d2_root_reconcile_cli.py
+tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_invest_perf_report.py
 tests/scripts/test_invest_reports_us_schedule_cli.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
@@ -115,6 +120,7 @@ tests/services/brokers/binance/h5/test_state_exposure.py
 tests/services/brokers/binance/h5/test_strategy.py
 tests/services/brokers/binance/spot_demo/test_audit_no_live_host.py
 tests/services/brokers/binance/spot_demo/test_d2_remediation_single.py
+tests/services/brokers/binance/spot_demo/test_d2_root_reconcile_db.py
 tests/services/brokers/binance/spot_demo/test_mock_auto_limit.py
 tests/services/brokers/binance/test_gap_detection.py
 tests/services/brokers/binance/test_ws_client.py
@@ -138,6 +144,11 @@ tests/services/daily_candles/test_migration_round_trip.py
 tests/services/daily_candles/test_repository_crypto_path.py
 tests/services/daily_candles/test_sync_service.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py
+tests/services/execution_ledger/test_kis_lots_us.py
+tests/services/execution_ledger/test_kis_lots_us_db.py
+tests/services/execution_ledger/test_kis_lots_us_mutants.py
+tests/services/execution_ledger/test_quarantine_mutants.py
+tests/services/execution_ledger/test_quarantine_unit.py
 tests/services/fill_watch_context/test_scope_contract.py
 tests/services/funding_advisory/test_external_cash.py
 tests/services/funding_advisory/test_migration.py
@@ -223,6 +234,8 @@ tests/services/test_analyst_consensus_cache.py
 tests/services/test_exchange_rate_service.py
 tests/services/test_finnhub_news.py
 tests/services/test_kis_mock_attribution_chain.py
+tests/services/test_kis_mock_inference_expiry_mutants.py
+tests/services/test_kis_mock_inference_expiry_unit.py
 tests/services/test_kis_mock_retrospective_pending.py
 tests/services/test_market_events_forexfactory_helpers.py
 tests/services/test_market_events_freshness_service.py
@@ -261,6 +274,7 @@ tests/services/watch_trigger_repricing/test_migration_roundtrip.py
 tests/services/watch_trigger_repricing/test_proposal_chain.py
 tests/tasks/test_kis_live_reconcile_tasks.py
 tests/tasks/test_live_reconcile_tasks.py
+tests/tasks/test_quotes_consumer_tasks.py
 tests/tasks/test_toss_live_reconcile_tasks.py
 tests/test_admin_router.py
 tests/test_alpaca_clean_identity_binding.py

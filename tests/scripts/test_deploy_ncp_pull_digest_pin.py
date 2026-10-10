@@ -119,6 +119,8 @@ esac
                 "MCP_LIVE_KR_AUTH_TOKEN=x",
                 "MCP_LIVE_US_AUTH_TOKEN=x",
                 "MCP_LIVE_CRYPTO_AUTH_TOKEN=x",
+                "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN=x",
+                "MCP_H3_US_PAPER_AUTH_TOKEN=x",
             ]
             if not missing_token or not token.startswith(f"{missing_token}=")
         )

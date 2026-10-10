@@ -2332,6 +2332,10 @@ class TestGetFxRateToolRegistration:
                 McpProfile.LIVE_KR,
                 McpProfile.LIVE_US,
                 McpProfile.LIVE_CRYPTO,
+                # #1171 — the H3-CRYPTO paper runner does not use get_fx_rate.
+                McpProfile.H3_CRYPTO_PAPER,
+                # #1257 — the H3-US paper runner does not use get_fx_rate.
+                McpProfile.H3_US_PAPER,
             )
         ],
     )

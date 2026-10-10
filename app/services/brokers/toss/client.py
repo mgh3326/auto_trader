@@ -1,33 +1,58 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
+from app.services.brokers.credential_firewall import (
+    assert_broker_credentials_allowed,
+)
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.dto import (
     TossAccount,
+    TossListedStock,
+    TossMarketIndicatorPrice,
+    TossMarketInvestorTradingPage,
+    TossMarketInvestorTradingRecord,
+    TossMinuteCandle,
+    TossMinuteCandlePage,
     TossOrderOperationResult,
     TossOrderPlacementResult,
+    TossRankings,
+    TossStockInvestorTradingPage,
+    TossStockInvestorTradingRecord,
     TossWarningInfo,
     parse_accounts,
     parse_buying_power,
     parse_candles,
     parse_commissions,
     parse_holdings,
+    parse_listed_stocks,
+    parse_market_indicator_prices,
+    parse_market_investor_trading_page,
+    parse_minute_candle_page,
     parse_order,
     parse_order_operation_result,
     parse_order_placement_result,
     parse_orders,
     parse_prices,
+    parse_rankings,
     parse_sellable_quantity,
+    parse_stock_investor_trading_page,
     parse_stocks,
     parse_warnings,
 )
-from app.services.brokers.toss.errors import TossApiResponseError, parse_toss_response
+from app.services.brokers.toss.errors import (
+    TossApiResponseError,
+    TossPaginationCapExceeded,
+    TossResponseContractError,
+    parse_toss_response,
+)
 from app.services.brokers.toss.health import publish_toss_api_error
 from app.services.brokers.toss.rate_limiter import (
     TossApiGroup,
@@ -55,6 +80,18 @@ def _should_retry_get_non_json_auth_error(
     )
 
 
+def _parse_offset_datetime(value: str) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
 class TossReadClient:
     def __init__(
         self,
@@ -69,6 +106,8 @@ class TossReadClient:
         response_observer: ResponseObserver | None = None,
         publish_error_signals: bool = True,
     ) -> None:
+        # #1257: refused inside a broker_credentials_blocked context.
+        assert_broker_credentials_allowed("Toss client")
         self._token_manager = token_manager
         self._account_seq = account_seq
         self._client = build_toss_client(base_url=base_url, transport=transport)
@@ -84,6 +123,8 @@ class TossReadClient:
 
     @classmethod
     def from_settings(cls, settings_obj: Any = settings) -> TossReadClient:
+        # #1257: refused before the token manager reads any credential.
+        assert_broker_credentials_allowed("Toss client")
         base_url = (
             getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
         )
@@ -146,6 +187,7 @@ class TossReadClient:
         account_required: bool = False,
         pre_send_hook: PreSendHook | None = None,
     ) -> Any:
+        assert_broker_credentials_allowed("Toss request")
         await self._rate_limiter.acquire(group)
         token = await self._token_manager.get_access_token()
         headers = {"Authorization": f"Bearer {token}"}
@@ -283,6 +325,315 @@ class TossReadClient:
             )
         )
 
+    # ------------------------------------------------------------------
+    # #1064 read-only market-data surfaces. Every call is a GET through the
+    # shared configured limiter via ``_request`` — no private limiter, no
+    # order-group calls, no account header (these endpoints need only the
+    # OAuth token). Rate-limit groups follow the official openapi.json's
+    # per-path "Rate Limits Group" labels (STOCK_TRADING_TREND 10/s,
+    # MARKET_INDICATOR 10/s, RANKING 5/s, STOCK_ALL 1/s per
+    # openapi-docs/overview.md) rather than MARKET_DATA, whose official 15/s
+    # cap would over-admit RANKING (5/s) and STOCK_ALL (1/s) traffic.
+    #
+    # Request-side patterns quote the official param schemas: KrSymbol
+    # ^[A-Za-z0-9.\-]+$, until format=date (YYYY-MM-DD), market-indicator
+    # symbols param ^[A-Za-z0-9_,]+$.
+    # ------------------------------------------------------------------
+
+    _KR_SYMBOL_RE = re.compile(r"[A-Za-z0-9.\-]+", re.ASCII)
+    _UNTIL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", re.ASCII)
+    _INDICATOR_SYMBOLS_RE = re.compile(r"[A-Za-z0-9_]+(?:,[A-Za-z0-9_]+)*", re.ASCII)
+
+    @classmethod
+    def _check_kr_symbol(cls, symbol: str) -> None:
+        # Charset allowlist (spec KrSymbol pattern) plus a dot-segment guard:
+        # all-dot/hyphen values like ".." would be normalized into the URL
+        # path by httpx. fullmatch so a trailing newline cannot smuggle past.
+        if not cls._KR_SYMBOL_RE.fullmatch(symbol) or not symbol.strip(".-"):
+            raise ValueError(f"Invalid Toss KR symbol: {symbol!r}")
+
+    @classmethod
+    def _check_count(cls, count: int) -> None:
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ValueError("Toss count must be an integer")
+        if not 1 <= count <= 100:
+            raise ValueError("Toss count must be 1..100")
+
+    @classmethod
+    def _check_until(cls, until: str | None) -> None:
+        if until is not None and not cls._UNTIL_DATE_RE.fullmatch(until):
+            raise ValueError("Toss until cursor must be YYYY-MM-DD")
+
+    async def stock_investor_trading(
+        self,
+        symbol: str,
+        *,
+        count: int = 10,
+        until: str | None = None,
+    ) -> TossStockInvestorTradingPage:
+        """GET /api/v1/stocks/{symbol}/investor-trading (group STOCK_TRADING_TREND).
+
+        Daily individual/foreigner/institution/other-corporation trading
+        volumes for one KR symbol, newest first. ``until`` is the documented
+        inclusive YYYY-MM-DD cursor; a page's ``next_until`` is passed back as
+        ``until`` to continue pagination. Same-day records are provisional and
+        may carry null sections.
+        """
+        self._check_kr_symbol(symbol)
+        self._check_count(count)
+        self._check_until(until)
+        params: dict[str, Any] = {"count": count}
+        if until is not None:
+            params["until"] = until
+        return parse_stock_investor_trading_page(
+            await self._request(
+                "GET",
+                f"/api/v1/stocks/{symbol}/investor-trading",
+                group=TossApiGroup.STOCK_TRADING_TREND,
+                params=params,
+            )
+        )
+
+    async def collect_stock_investor_trading(
+        self,
+        symbol: str,
+        *,
+        count: int = 100,
+        until: str | None = None,
+        max_pages: int = 100,
+    ) -> list[TossStockInvestorTradingRecord]:
+        """Follow ``nextUntil`` pagination and return all collected records.
+
+        Terminates when a page reports a falsy ``next_until`` or carries no
+        records. A ``next_until`` identical to the cursor just sent means the
+        server made no progress — a TossResponseContractError, not a retry.
+        ``max_pages`` bounds the walk; hitting it with a pending cursor raises
+        ValueError rather than silently truncating history.
+        """
+        records: list[TossStockInvestorTradingRecord] = []
+        cursor = until
+        for _ in range(max_pages):
+            page = await self.stock_investor_trading(symbol, count=count, until=cursor)
+            records.extend(page.records)
+            if not page.next_until or not page.records:
+                return records
+            if page.next_until == cursor:
+                raise TossResponseContractError(
+                    "stocks/{symbol}/investor-trading: non-advancing "
+                    f"nextUntil {page.next_until!r} for {symbol}"
+                )
+            cursor = page.next_until
+        raise ValueError(
+            f"Toss investor-trading pagination exceeded max_pages={max_pages} "
+            f"for {symbol}"
+        )
+
+    async def market_indicator_prices(
+        self, symbols: list[str] | tuple[str, ...]
+    ) -> list[TossMarketIndicatorPrice]:
+        """GET /api/v1/market-indicators/prices (group MARKET_INDICATOR).
+
+        ``symbols`` is the documented comma-separated catalog (KOSPI, KOSDAQ,
+        KR_BOND_*), max 200 per request.
+        """
+        symbols_param = self._symbols_param(symbols)
+        if not self._INDICATOR_SYMBOLS_RE.fullmatch(symbols_param):
+            raise ValueError(
+                f"Invalid Toss market-indicator symbols: {symbols_param!r}"
+            )
+        return parse_market_indicator_prices(
+            await self._request(
+                "GET",
+                "/api/v1/market-indicators/prices",
+                group=TossApiGroup.MARKET_INDICATOR,
+                params={"symbols": symbols_param},
+            )
+        )
+
+    _MARKET_INDICATOR_SYMBOLS = frozenset({"KOSPI", "KOSDAQ"})
+    _INVESTOR_TRADING_INTERVALS = frozenset({"1d", "1w", "1mo", "1y"})
+
+    async def market_indicator_investor_trading(
+        self,
+        symbol: str,
+        *,
+        interval: str,
+        count: int = 10,
+        until: str | None = None,
+    ) -> TossMarketInvestorTradingPage:
+        """GET /api/v1/market-indicators/{symbol}/investor-trading
+        (group MARKET_INDICATOR). KOSPI/KOSDAQ only; ``interval`` is required
+        by the spec (1d/1w/1mo/1y). Same ``until``/``nextUntil`` cursor scheme
+        as the stock endpoint.
+        """
+        if symbol not in self._MARKET_INDICATOR_SYMBOLS:
+            raise ValueError(
+                "Toss market-indicator investor-trading supports KOSPI/KOSDAQ only"
+            )
+        if interval not in self._INVESTOR_TRADING_INTERVALS:
+            raise ValueError("Toss investor-trading interval must be 1d/1w/1mo/1y")
+        self._check_count(count)
+        self._check_until(until)
+        params: dict[str, Any] = {"interval": interval, "count": count}
+        if until is not None:
+            params["until"] = until
+        return parse_market_investor_trading_page(
+            await self._request(
+                "GET",
+                f"/api/v1/market-indicators/{symbol}/investor-trading",
+                group=TossApiGroup.MARKET_INDICATOR,
+                params=params,
+            )
+        )
+
+    async def collect_market_indicator_investor_trading(
+        self,
+        symbol: str,
+        *,
+        interval: str,
+        count: int = 100,
+        until: str | None = None,
+        max_pages: int = 100,
+    ) -> list[TossMarketInvestorTradingRecord]:
+        """Follow ``nextUntil`` pagination; same termination contract as
+        ``collect_stock_investor_trading``.
+        """
+        records: list[TossMarketInvestorTradingRecord] = []
+        cursor = until
+        for _ in range(max_pages):
+            page = await self.market_indicator_investor_trading(
+                symbol, interval=interval, count=count, until=cursor
+            )
+            records.extend(page.records)
+            if not page.next_until or not page.records:
+                return records
+            if page.next_until == cursor:
+                raise TossResponseContractError(
+                    "market-indicators/{symbol}/investor-trading: "
+                    f"non-advancing nextUntil {page.next_until!r} for {symbol}"
+                )
+            cursor = page.next_until
+        raise ValueError(
+            f"Toss market-indicator investor-trading pagination exceeded "
+            f"max_pages={max_pages} for {symbol}"
+        )
+
+    _RANKING_TYPES = frozenset(
+        {
+            "MARKET_TRADING_AMOUNT",
+            "MARKET_TRADING_VOLUME",
+            "TOP_GAINERS",
+            "TOP_LOSERS",
+            "TOSS_SECURITIES_TRADING_AMOUNT",
+            "TOSS_SECURITIES_TRADING_VOLUME",
+        }
+    )
+    _RANKING_DURATIONS = frozenset({"realtime", "1d", "1w", "1mo", "3mo", "6mo", "1y"})
+    _RANKING_NO_REALTIME = frozenset({"TOP_GAINERS", "TOP_LOSERS"})
+    _MARKET_COUNTRIES = frozenset({"KR", "US"})
+
+    async def rankings(
+        self,
+        *,
+        ranking_type: str,
+        market_country: str,
+        duration: str,
+        count: int = 100,
+        exclude_investment_caution: bool = False,
+    ) -> TossRankings:
+        """GET /api/v1/rankings (group RANKING).
+
+        ``ranking_type``: MARKET_TRADING_AMOUNT, MARKET_TRADING_VOLUME,
+        TOP_GAINERS, TOP_LOSERS, TOSS_SECURITIES_TRADING_AMOUNT,
+        TOSS_SECURITIES_TRADING_VOLUME. ``market_country``: KR or US.
+        ``duration``: realtime/1d/1w/1mo/3mo/6mo/1y — TOP_GAINERS and
+        TOP_LOSERS do not support realtime (spec-mandated 400).
+        """
+        if ranking_type not in self._RANKING_TYPES:
+            raise ValueError(f"Unsupported Toss ranking type: {ranking_type}")
+        if market_country not in self._MARKET_COUNTRIES:
+            raise ValueError(f"Unsupported Toss ranking market: {market_country}")
+        if duration not in self._RANKING_DURATIONS:
+            raise ValueError(f"Unsupported Toss ranking duration: {duration}")
+        if duration == "realtime" and ranking_type in self._RANKING_NO_REALTIME:
+            raise ValueError(
+                f"Toss ranking type {ranking_type} does not support realtime"
+            )
+        self._check_count(count)
+        return parse_rankings(
+            await self._request(
+                "GET",
+                "/api/v1/rankings",
+                group=TossApiGroup.RANKING,
+                params={
+                    "type": ranking_type,
+                    "marketCountry": market_country,
+                    "duration": duration,
+                    "excludeInvestmentCaution": str(exclude_investment_caution).lower(),
+                    "count": count,
+                },
+            )
+        )
+
+    _STOCKS_ALL_MARKETS = frozenset(
+        {"KOSPI", "KOSDAQ", "NYSE", "NASDAQ", "AMEX", "KR_ETC", "US_ETC"}
+    )
+    _STOCKS_ALL_STATUSES = frozenset({"SCHEDULED", "ACTIVE", "DELISTED"})
+    _STOCKS_ALL_SECURITY_TYPES = frozenset(
+        {
+            "STOCK",
+            "FOREIGN_STOCK",
+            "DEPOSITARY_RECEIPT",
+            "INFRASTRUCTURE_FUND",
+            "REIT",
+            "ETF",
+            "FOREIGN_ETF",
+            "ETN",
+            "STOCK_WARRANTS",
+        }
+    )
+
+    async def stocks_all(
+        self,
+        *,
+        market: str,
+        status: str | None = None,
+        security_type: str | None = None,
+        common_share: bool | None = None,
+    ) -> list[TossListedStock]:
+        """GET /api/v1/stocks/all (group STOCK_ALL).
+
+        ``market`` is required (KOSPI/KOSDAQ/NYSE/NASDAQ/AMEX/KR_ETC/US_ETC).
+        ``status`` accepts DELISTED to surface delisted rows; the ListedStock
+        schema itself carries no status field.
+        """
+        if market not in self._STOCKS_ALL_MARKETS:
+            raise ValueError(f"Unsupported Toss stocks/all market: {market}")
+        if status is not None and status not in self._STOCKS_ALL_STATUSES:
+            raise ValueError(f"Unsupported Toss stocks/all status: {status}")
+        if (
+            security_type is not None
+            and security_type not in self._STOCKS_ALL_SECURITY_TYPES
+        ):
+            raise ValueError(
+                f"Unsupported Toss stocks/all securityType: {security_type}"
+            )
+        params: dict[str, Any] = {"market": market}
+        if status is not None:
+            params["status"] = status
+        if security_type is not None:
+            params["securityType"] = security_type
+        if common_share is not None:
+            params["commonShare"] = str(common_share).lower()
+        return parse_listed_stocks(
+            await self._request(
+                "GET",
+                "/api/v1/stocks/all",
+                group=TossApiGroup.STOCK_ALL,
+                params=params,
+            )
+        )
+
     async def candles(
         self,
         symbol: str,
@@ -313,6 +664,139 @@ class TossReadClient:
                 params=params,
             )
         )
+
+    # ------------------------------------------------------------------
+    # #1086 strict 1-minute candles. Same official path and rate group as
+    # ``candles`` above (GET /api/v1/candles, "Rate Limits Group":
+    # MARKET_DATA_CHART in openapi.json v1.2.19), but parsed by the strict
+    # ``parse_minute_candle_page`` so a schema drift raises
+    # TossResponseContractError instead of leaking KeyError/ValueError.
+    # ``candles`` keeps its loose contract for its existing consumers.
+    #
+    # The spec's only cursor is ``before`` (inclusive, ISO 8601); there is no
+    # ``after`` parameter. Pagination walks backwards via ``nextBefore``.
+    # ------------------------------------------------------------------
+
+    MINUTE_CANDLE_MAX_COUNT = 200
+
+    async def minute_candles(
+        self,
+        symbol: str,
+        *,
+        adjusted: bool,
+        count: int = MINUTE_CANDLE_MAX_COUNT,
+        before: str | None = None,
+    ) -> TossMinuteCandlePage:
+        """One page of GET /api/v1/candles?interval=1m (group MARKET_DATA_CHART).
+
+        ``before`` is sent verbatim (a previous page's ``nextBefore`` or an
+        offset-qualified ISO 8601 date-time); httpx percent-encodes its ``+``
+        offset as the spec requires. ``adjusted`` is mandatory so every caller
+        states which price basis it stores.
+        """
+        self._check_kr_symbol(symbol)
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ValueError("Toss candle count must be an integer")
+        if not 1 <= count <= self.MINUTE_CANDLE_MAX_COUNT:
+            raise ValueError("Toss candle count must be 1..200")
+        if not isinstance(adjusted, bool):
+            raise ValueError("Toss candle adjusted flag must be a bool")
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "interval": "1m",
+            "count": count,
+            "adjusted": "true" if adjusted else "false",
+        }
+        if before is not None:
+            parsed = _parse_offset_datetime(before)
+            if parsed is None:
+                raise ValueError(
+                    "Toss candle before cursor must be an offset-qualified "
+                    "ISO 8601 date-time"
+                )
+            params["before"] = before
+        return parse_minute_candle_page(
+            await self._request(
+                "GET",
+                "/api/v1/candles",
+                group=TossApiGroup.MARKET_DATA_CHART,
+                params=params,
+            )
+        )
+
+    async def collect_minute_candles(
+        self,
+        symbol: str,
+        *,
+        adjusted: bool,
+        before: str,
+        not_before: datetime,
+        max_pages: int = 16,
+        page_count: int = MINUTE_CANDLE_MAX_COUNT,
+        pace: Callable[[], Awaitable[None]] | None = None,
+    ) -> list[TossMinuteCandle]:
+        """Walk ``nextBefore`` backwards and return bars with
+        ``not_before <= timestamp <= before``, oldest first.
+
+        Termination: an empty page, a null ``nextBefore``, or a page whose
+        oldest bar is already older than ``not_before``. ``before`` is
+        inclusive, so consecutive pages may repeat the boundary bar; an
+        identical repeat is dropped, a repeat with different values is a
+        TossResponseContractError. A ``nextBefore`` that is not strictly
+        older than the cursor just sent is a non-advancing cursor and also a
+        TossResponseContractError. Hitting ``max_pages`` with a pending cursor
+        raises TossPaginationCapExceeded (a ValueError) instead of silently
+        truncating.
+
+        ``pace`` is an optional extra throttle awaited before every page, on
+        top of (never instead of) the shared MARKET_DATA_CHART limiter.
+        """
+        upper = _parse_offset_datetime(before)
+        if upper is None:
+            raise ValueError("before must be an offset-qualified ISO 8601 date-time")
+        if not_before.tzinfo is None:
+            raise ValueError("not_before must be timezone-aware")
+        by_timestamp: dict[datetime, TossMinuteCandle] = {}
+        cursor_raw = before
+        cursor = upper
+        for _ in range(max_pages):
+            if pace is not None:
+                await pace()
+            page = await self.minute_candles(
+                symbol, adjusted=adjusted, count=page_count, before=cursor_raw
+            )
+            for candle in page.candles:
+                if candle.timestamp > cursor:
+                    raise TossResponseContractError(
+                        "candles: bar newer than the inclusive before cursor"
+                    )
+                if candle.timestamp < not_before:
+                    continue
+                seen = by_timestamp.get(candle.timestamp)
+                if seen is None:
+                    by_timestamp[candle.timestamp] = candle
+                elif not seen.same_values(candle):
+                    raise TossResponseContractError(
+                        "candles: conflicting duplicate bar at "
+                        f"{candle.timestamp.isoformat()} for {symbol}"
+                    )
+            if not page.candles or page.next_before is None:
+                break
+            if page.candles[-1].timestamp < not_before:
+                break
+            if page.next_before >= cursor:
+                raise TossResponseContractError(
+                    "candles: non-advancing nextBefore "
+                    f"{page.next_before_raw!r} for {symbol}"
+                )
+            cursor = page.next_before
+            cursor_raw = page.next_before_raw or cursor.isoformat()
+        else:
+            raise TossPaginationCapExceeded(
+                f"Toss minute-candle pagination exceeded max_pages={max_pages} "
+                f"for {symbol}"
+            )
+        return [by_timestamp[key] for key in sorted(by_timestamp)]
 
     async def exchange_rate(
         self,

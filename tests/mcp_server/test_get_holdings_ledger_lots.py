@@ -1,9 +1,11 @@
-"""Task #963 — get_holdings(include_ledger_lots) opt-in behavior.
+"""Task #963 / #1173 — get_holdings(include_ledger_lots) opt-in behavior.
 
 * default output (flag omitted or False) is byte-identical to the pre-change
   implementation (golden JSON generated before the parameter existed);
-* the opt-in only ADDS ``ledger_lots`` keys, and only on KIS live KR positions;
-* the block makes no broker call and can never fail get_holdings.
+* the opt-in only ADDS ``ledger_lots`` keys, and only on KIS live KR and (task
+  #1173) KIS live US positions;
+* the block makes no broker call and can never fail get_holdings; a failure on
+  one market never degrades the other market's blocks.
 """
 
 from __future__ import annotations
@@ -37,21 +39,36 @@ class _FakeSession:
         return None
 
 
+LOADERS = {
+    "kr": "load_kis_live_kr_lot_blocks",
+    "us": "load_kis_live_us_lot_blocks",
+}
+
+
 def _install_fake_loader(
-    monkeypatch: pytest.MonkeyPatch, *, seen: list[Any] | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seen: list[Any] | None = None,
+    seen_us: list[Any] | None = None,
 ) -> None:
-    async def fake_loader(db: Any, refs: Any, **_kwargs: Any) -> dict[str, Any]:
-        if seen is not None:
-            seen.extend(refs)
-        return {
-            ref.symbol: {"ledger_state": "known", "marker": f"blk-{ref.symbol}"}
-            for ref in refs
-        }
+    def make(market: str, sink: list[Any] | None):
+        async def fake_loader(db: Any, refs: Any, **_kwargs: Any) -> Any:
+            if sink is not None:
+                sink.extend(refs)
+            blocks = [
+                {"ledger_state": "known", "marker": f"blk-{market}-{ref.symbol}"}
+                for ref in refs
+            ]
+            # KR: symbol-keyed dict (unchanged); US: one block per position (#1173 B3)
+            if market == "us":
+                return blocks
+            return {ref.symbol: block for ref, block in zip(refs, blocks, strict=True)}
+
+        return fake_loader
 
     monkeypatch.setattr(portfolio_ledger_lots, "AsyncSessionLocal", _FakeSession)
-    monkeypatch.setattr(
-        portfolio_ledger_lots, "load_kis_live_kr_lot_blocks", fake_loader
-    )
+    monkeypatch.setattr(portfolio_ledger_lots, LOADERS["kr"], make("kr", seen))
+    monkeypatch.setattr(portfolio_ledger_lots, LOADERS["us"], make("us", seen_us))
 
 
 def _strip_ledger_lots(payload: dict[str, Any]) -> dict[str, Any]:
@@ -119,29 +136,39 @@ async def test_opt_in_only_adds_keys_to_the_golden_payload(
 
 
 @pytest.mark.asyncio
-async def test_block_is_attached_to_kis_live_kr_positions_only(
+async def test_block_is_attached_to_kis_live_kr_and_us_positions_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[Any] = []
+    seen_us: list[Any] = []
     install_fake_collect(monkeypatch)
-    _install_fake_loader(monkeypatch, seen=seen)
+    _install_fake_loader(monkeypatch, seen=seen, seen_us=seen_us)
     result = await call_get_holdings(**CALL, include_ledger_lots=True)
 
-    # The loader received the broker quantity/price already in hand.
+    # Each loader received only its market's broker quantity/price in hand.
     assert [(ref.symbol, ref.reference_quantity) for ref in seen] == [
         ("196170", Decimal("12")),
         ("171090", Decimal("40")),
     ]
     assert seen[0].current_price == Decimal("90000")
+    assert [
+        (ref.symbol, ref.reference_quantity, ref.current_price) for ref in seen_us
+    ] == [("AAPL", Decimal("3.0"), Decimal("160.0"))]
 
     tagged = {
-        (g["broker"], p["market"], p["symbol"])
+        (g["broker"], p["market"], p["symbol"]): p["ledger_lots"]["marker"]
         for g in result["accounts"]
         for p in g["positions"]
         if "ledger_lots" in p
     }
-    assert tagged == {("kis", "kr", "196170"), ("kis", "kr", "171090")}
-    assert result["ledger_lots"]["positions_covered"] == 2
+    assert tagged == {
+        ("kis", "kr", "196170"): "blk-kr-196170",
+        ("kis", "kr", "171090"): "blk-kr-171090",
+        ("kis", "us", "AAPL"): "blk-us-AAPL",
+    }
+    assert result["ledger_lots"]["positions_covered"] == 3
+    assert result["ledger_lots"]["positions_covered_by_market"] == {"kr": 2, "us": 1}
+    assert result["ledger_lots"]["scope"] == "kis_live_kr_us_positions"
     # Toss KR position with the same symbol as a KIS one is untouched.
     toss = [
         p for g in result["accounts"] if g["broker"] == "toss" for p in g["positions"]
@@ -150,12 +177,13 @@ async def test_block_is_attached_to_kis_live_kr_positions_only(
 
 
 @pytest.mark.asyncio
-async def test_no_kis_kr_positions_means_no_query_and_zero_covered(
+async def test_a_market_without_kis_positions_is_never_queried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tests.mcp_server import get_holdings_golden_support as support
 
     seen: list[Any] = []
+    seen_us: list[Any] = []
     install_fake_collect(
         monkeypatch,
         [
@@ -163,9 +191,29 @@ async def test_no_kis_kr_positions_means_no_query_and_zero_covered(
             support.toss_api_kr_position("171090", 5.0, 26000.0),
         ],
     )
-    _install_fake_loader(monkeypatch, seen=seen)
+    _install_fake_loader(monkeypatch, seen=seen, seen_us=seen_us)
     result = await call_get_holdings(**CALL, include_ledger_lots=True)
     assert seen == []
+    assert [ref.symbol for ref in seen_us] == ["AAPL"]
+    assert result["ledger_lots"]["applied"] is True
+    assert result["ledger_lots"]["positions_covered"] == 1
+    assert result["ledger_lots"]["positions_covered_by_market"] == {"kr": 0, "us": 1}
+
+
+@pytest.mark.asyncio
+async def test_no_kis_positions_means_no_query_and_zero_covered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.mcp_server import get_holdings_golden_support as support
+
+    seen: list[Any] = []
+    seen_us: list[Any] = []
+    install_fake_collect(
+        monkeypatch, [support.toss_api_kr_position("171090", 5.0, 26000.0)]
+    )
+    _install_fake_loader(monkeypatch, seen=seen, seen_us=seen_us)
+    result = await call_get_holdings(**CALL, include_ledger_lots=True)
+    assert seen == [] and seen_us == []
     assert result["ledger_lots"]["applied"] is True
     assert result["ledger_lots"]["positions_covered"] == 0
     assert all("ledger_lots" not in p for p in _positions(result))
@@ -186,12 +234,13 @@ async def test_non_live_routing_is_not_applied(
     assert seen == []
     assert result["ledger_lots"] == {
         "requested": True,
-        "scope": "kis_live_kr_positions",
+        "scope": "kis_live_kr_us_positions",
         "cost_method": "fifo_remaining_lots_from_ledger",
         "external_orders_verifiable": False,
         "applied": False,
         "positions_covered": 0,
-        "reason": "kis_live_kr_only",
+        "positions_covered_by_market": {"kr": 0, "us": 0},
+        "reason": "kis_live_only",
     }
     assert all("ledger_lots" not in p for p in _positions(result))
 
@@ -199,19 +248,30 @@ async def test_non_live_routing_is_not_applied(
 # ---------------------------------------------------------------------------
 # the block can never fail get_holdings
 # ---------------------------------------------------------------------------
-def _assert_all_kis_kr_unknown(result: dict[str, Any]) -> None:
+def _assert_all_kis_kr_unknown(
+    result: dict[str, Any], markets: tuple[str, ...] = ("kr", "us")
+) -> None:
     tagged = [
         p
         for p in _positions(result)
-        if p.get("market") == "kr" and p["source"] == "kis_api"
+        if p.get("market") in markets and p["source"] == "kis_api"
     ]
-    assert tagged
+    assert {p["market"] for p in tagged} == set(markets)
     for position in tagged:
+        # #1173: a US unknown block names its market; a KR one stays unchanged.
+        assert position["ledger_lots"].get("market") == (
+            "us" if position["market"] == "us" else None
+        )
         block = position["ledger_lots"]
         assert block["ledger_state"] == "unknown"
         assert block["unknown_reasons"] == ["ledger_read_failed"]
         assert block["lots"] is None
         assert block["open_buy_evidence"]["blocking"] is True
+        # task #1087: the sell-side views fail closed too
+        assert block["open_sell_evidence"]["state"] == "unknown"
+        assert block["open_sell_evidence"]["blocking"] is True
+        assert block["same_day_buy_evidence"]["blocking"] is True
+        assert block["sellable_by_ledger"] is None
 
 
 @pytest.mark.asyncio
@@ -223,7 +283,8 @@ async def test_loader_failure_yields_unknown_blocks_not_an_error(
 
     install_fake_collect(monkeypatch)
     monkeypatch.setattr(portfolio_ledger_lots, "AsyncSessionLocal", _FakeSession)
-    monkeypatch.setattr(portfolio_ledger_lots, "load_kis_live_kr_lot_blocks", boom)
+    for name in LOADERS.values():
+        monkeypatch.setattr(portfolio_ledger_lots, name, boom)
     result = await call_get_holdings(**CALL, include_ledger_lots=True)
     _assert_all_kis_kr_unknown(result)
     assert result["total_positions"] == 4
@@ -269,15 +330,39 @@ async def test_missing_blocks_for_a_symbol_degrade_to_unknown(
 
     install_fake_collect(monkeypatch)
     monkeypatch.setattr(portfolio_ledger_lots, "AsyncSessionLocal", _FakeSession)
-    monkeypatch.setattr(
-        portfolio_ledger_lots, "load_kis_live_kr_lot_blocks", partial_loader
-    )
+    for name in LOADERS.values():
+        monkeypatch.setattr(portfolio_ledger_lots, name, partial_loader)
     result = await call_get_holdings(**CALL, include_ledger_lots=True)
     by_symbol = {
         p["symbol"]: p["ledger_lots"] for p in _positions(result) if "ledger_lots" in p
     }
     assert by_symbol["196170"]["marker"] == "only-one"
     assert by_symbol["171090"]["unknown_reasons"] == ["ledger_read_failed"]
+    assert by_symbol["AAPL"]["unknown_reasons"] == ["ledger_read_failed"]
+    assert by_symbol["AAPL"]["market"] == "us"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["kr", "us"])
+async def test_one_market_failing_never_degrades_the_other(
+    monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    async def boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError(f"{failing} read failed")
+
+    install_fake_collect(monkeypatch)
+    _install_fake_loader(monkeypatch)
+    monkeypatch.setattr(portfolio_ledger_lots, LOADERS[failing], boom)
+    result = await call_get_holdings(**CALL, include_ledger_lots=True)
+    for position in _positions(result):
+        if "ledger_lots" not in position:
+            continue
+        block = position["ledger_lots"]
+        if position["market"] == failing:
+            assert block["unknown_reasons"] == ["ledger_read_failed"]
+        else:
+            assert block["marker"] == f"blk-{position['market']}-{position['symbol']}"
+    assert result["ledger_lots"]["applied"] is True
 
 
 # ---------------------------------------------------------------------------

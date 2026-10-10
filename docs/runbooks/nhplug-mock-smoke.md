@@ -96,6 +96,32 @@ MCP 서버가 `NH_MOCK_MCP_ENABLED=true` 일 때 DEFAULT 프로필에만 아홉 
 3. KRX 정규장 중. 테스트 종목·가격을 정해 둔다: 예) `005930` 1주, 가격은 `get_quote` 현재가 대비 약 −20% 이면서 **하한가 이내**, 호가 단위에 맞춘 값(체결되지 않을 만큼 멀리).
 4. 멱등키 세 개를 미리 정해 기록한다(16–64자 `[A-Za-z0-9_-]`, 예: `ltref849-place-20261001a`). **재시도는 반드시 같은 키로**. 새 키로 다시 보내면 중복 주문 위험이 있으며, 대부분은 진행 중 예약(`in_flight_order_exists`)이 막는다.
 
+### B-HOST 재실측과 T14 호스트 증언
+
+desk가 배포 후 NCP 호스트에서 다음을 실행한다. DEFAULT 프로필에만 `nh_mock_*`가 등록되므로 DEFAULT MCP 색상(green·blue)에만 machine-id 읽기 전용 마운트가 있어야 한다. live MCP와 나머지 컨테이너에는 이 마운트가 없어야 한다. 출력에 계좌·키·토큰은 포함되지 않는다. 증언 스크립트는 배포 스크립트처럼 먼저 설치한다.
+
+```bash
+install -m 0750 scripts/nhplug-t14-host-witness.sh /root/at-run/nhplug-t14-host-witness.sh
+for name in $(docker ps -a --format '{{.Names}}'); do
+  docker inspect --format '{{.Name}} pid={{.HostConfig.PidMode}} {{range .Mounts}}{{if eq .Destination "/etc/machine-id"}}{{.Source}}:{{.Destination}}:{{.RW}}{{end}}{{end}}' "$name"
+done
+stat -Lc %i /proc/1/ns/pid
+/root/at-run/nhplug-t14-host-witness.sh --self-check; echo "rc=$?"
+```
+
+기대: 지금 떠 있는 DEFAULT MCP 색상(교대 중이면 두 색상 모두)만 `/etc/machine-id:/etc/machine-id:false`를 보이고, 그 밖의 컨테이너에는 이 마운트가 없으며, 모든 장기 실행 컨테이너는 `pid=`가 비어 있다. 증언 스크립트는 현재 배포된 이미지 digest로 `docker run --rm --pid=host --network none -v /etc/machine-id:/etc/machine-id:ro`를 한 번 실행하며 포트를 열지 않는다. blue/green 전환과 rollback 뒤에도 위 명령을 반복한다.
+
+self-check 판정은 fail-closed다. `host_pid_visibility_verified`(rc 0)는 증언 프로세스가 커널 초기 PID 네임스페이스(`stat` 출력 `4026531836`이자 호스트에서 잰 값과 같음) 안에서 호스트의 모든 `/proc/*/ns/pid` 링크를 직접 읽었을 때만 나온다. 링크 하나라도 못 읽거나(ptrace 거부 포함), 형제 컨테이너처럼 다른 네임스페이스에서 돌거나, 호스트 측정값과 다르면 `host_pid_visibility_unverified`(rc 1)다. 이미지 기본 사용자(비 root)·`CAP_SYS_PTRACE` 없음·Docker 기본 AppArmor에서는 다른 사용자 프로세스의 링크가 거부되므로 NCP의 예상 출력은 `host_pid_visibility_unverified`다. 그 경우 설계 §4.6 ③의 (c) 소멸 증명은 불가능하고, 컨테이너 dispatcher가 남긴 `uncertain` 행은 재부팅(a) 전까지 예약을 유지한다(§8 D-RES·B-HOST 미충족). 증언 권한(예: root·`CAP_SYS_PTRACE`·AppArmor 해제)을 넓히는 것은 운영자 결정이며 이 절차는 그렇게 하지 않는다. 출력과 rc를 그대로 기록한다.
+
+T14에서 lease 행의 다섯 불변 필드를 운영자 검토 뒤 전달하는 정확한 일회성 형식은 다음과 같다. `lease_process_gone_proven`(rc 0)만 소멸 증명이며, 이는 위 self-check와 같은 전수 읽기가 성공하고 lease의 `machine_id`가 이 호스트와 같을 때만 나온다. 다른 출력이나 rc 1은 불충분하다. 이 증언은 읽기 전용이다. 완전한 브로커 전체 조회와 운영자 승인 행을 포함한 설계 §4.6의 다른 조건을 대신하지 않으며, 증언만으로 예약을 해제하지 않는다. T14 상태 전이 CLI는 아직 없다(아래 중단·미해결 처리).
+
+```bash
+/root/at-run/nhplug-t14-host-witness.sh \
+  --machine-id LEASE_MACHINE_ID --boot-id LEASE_BOOT_ID \
+  --pid-ns LEASE_PID_NS --pid LEASE_PID \
+  --process-start LEASE_PROCESS_START; echo "rc=$?"
+```
+
 ### 절차
 
 모든 단계에서 기대와 다른 `status`·`error` 가 나오면 **즉시 멈추고** 새 주문을 내지 않는다. `uncertain` 은 실패가 아니라 "reconcile 전 미확정" 이다 — 벤더가 성공 코드를 문서화하지 않아 성공 증명 표가 비어 있으므로 모든 송신은 먼저 `uncertain` 이 된다(설계 §4.3).
@@ -130,7 +156,7 @@ dry run 은 검토 필요 행도 `would_be_needs_review_row_ids` 로 예측한�
 
 ### 중단·미해결 처리
 
-- `uncertain` 행은 같은 계좌·종목·방향의 새 주문을 **날짜와 무관하게** 막는다(설계 §5.2). reconcile 로 풀리지 않으면 T9h(후보 확인)·T14(위험 인수 종결)는 운영자 역할의 1회용 승인 행이 필요한 운영자 전용 절차이며 MCP 로는 할 수 없다(설계 §4.5–4.6). 이 절차의 운영자 CLI 는 아직 없으므로 행을 그대로 두고 보고한다.
+- `uncertain` 행은 같은 계좌·종목·방향의 새 주문을 **날짜와 무관하게** 막는다(설계 §5.2). reconcile 로 풀리지 않으면 T9h(후보 확인)·T14(위험 인수 종결)는 운영자 역할의 1회용 승인 행이 필요한 운영자 전용 절차이며 MCP 로는 할 수 없다(설계 §4.5–4.6). 호스트 소멸 증언 CLI는 위에 있지만 승인·상태 전이 CLI는 아직 없으므로 행을 그대로 두고 보고한다.
 - 정정·취소가 `order_not_bound_reconcile_first` 면 3단계 reconcile 을 먼저 한다. `order_not_owned` 는 이 레저가 보낸 주문이 아니라는 뜻이다 — HTS 에서 직접 낸 주문은 이 도구로 정정·취소하지 않는다.
 - reconcile 은 전체·미체결·체결 세 조회가 모두 완전하고 결속 행이 전부 재검증되며 **미해결 행이 하나도 없을 때만** `status=reconciled` 다. 하나라도 불완전하면 `status=unknown`, `success=false` 이며 `incomplete_scopes`·`unverified_row_ids` 에 이름이 남는다. 행이 `uncertain`/`sending` 으로 남으면 `status=partial`(일부 해결) 또는 `status=uncertain`(해결 0), `success=false` 이며 `unresolved_row_ids` 에 이름이 남는다. 미해결 행이 없어도 `anomaly`/`requires_manual_review=true` 행이 있으면 `status=needs_review`, `success=false` 이며 `needs_review_row_ids` 에 이름이 남는다. 어느 것도 정상 완료로 기록하지 않는다 — 멈추고 보고한다.
 - `listing_incomplete`/`order_not_listed` 는 브로커 조회가 그 주문을 미체결로 보여주지 못한 것이다. 없다는 증거가 아니므로 다시 보내지 말고 조회를 반복하거나 중단한다.

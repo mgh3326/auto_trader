@@ -132,6 +132,38 @@ See the full design in
   when calendar evidence is unavailable. Expired, missing, malformed, or
   timezone-naive `valid_until` still fails closed, and `exit_reason` without
   `exit_intent` does not qualify.
+- **Toss US extended sessions (#1116, default off).** The policy key
+  `order_proposals.approval_window.toss_live_us_sessions` in
+  `config/trading_policy.yaml` lists the Toss US sessions a `toss_live` /
+  `equity_us` proposal may use. The default `[regular]` is the previous
+  hardcoded regular-only window, with identical decisions and policy stamps.
+  Adding `pre` and/or `post` (the operator's flip, by policy PR) opens them
+  only for LIMIT `place` proposals; MARKET, replace and cancel stay
+  regular-only. Outside regular a rung with a `notional` (amount-based,
+  Toss `orderAmount`), a fractional or non-positive quantity, or no limit
+  price is refused as `DEFER_SESSION_CLOSED` with detail
+  `toss_us_extended_session_refused:<reason>` inside
+  `evaluate_approval_window_boundary`, which every production gate calls
+  with the proposal rungs (dispatch, batch summary, single/batch/loss-cut
+  callbacks, reconfirm, redispatch, every revalidation rung gate and the
+  transport hook; a static test fails on a call without `rungs=`), always
+  before any broker preview or submit (`toss_preview_order` passes these
+  shapes locally even though the real order would 422 outside regular
+  hours). A refused member blocks a whole batch before its nonce. Protective
+  exits (`exit_intent`) keep their validity-only exemption and do no calendar
+  I/O under the default key; once pre/post is enabled, a Toss US exit also
+  looks up the Toss session (fail-open: an unknown calendar keeps the
+  exemption), classifies it at a clock sample taken after that lookup, is
+  refused the same way during pre/post, and otherwise keeps an exemption
+  that ends with the current Toss session, so a session roll before the send
+  re-sample fails closed. KIS US, KR and
+  crypto never read the key. A pre/post decision carries
+  `session_evidence.day_expiry` and a published card stores it as
+  `source_asof.approval_window_day_expiry`: a pre submission's expected death
+  is the following Toss regular close (Toss documentation, `measured=false`);
+  a post submission's is unknown (`expected_expiry_at=null`). It is never
+  derived from the KR key `order.day_expiry_kst`. Flipping the key changes
+  the policy stamp, so a card published under the other value fails closed.
 - **Batch nonce is not proposal authorization.** ROB-870 atomically consumes a
   separate batch nonce only after every locked member passes the approval-
   window preflight and the exact ordered `(proposal_id, nonce snapshot)`
@@ -592,6 +624,8 @@ The approval settings live in `app/core/config.py`:
 | `ORDER_PROPOSALS_TELEGRAM_TOKEN` | `""` | The webhook **secret token** — a value you choose, registered with Telegram via `setWebhook`'s `secret_token` param (see "Telegram Bot Setup" below). Distinct from the bot token. Gates every request under `/trading/api/telegram/` in `AuthMiddleware` (`TELEGRAM_CALLBACK_PATH_PREFIX`). |
 | `ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER` | `X-Telegram-Bot-Api-Secret-Token` | The HTTP header Telegram sends the secret token back in. Telegram's own webhook mechanism hard-codes this header name — only override if you're proxying through something that renames headers. |
 | `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR` | `""` | Comma-separated Telegram chat IDs, parsed via `settings.order_proposals_telegram_chat_allowlist`. Does double duty: (1) `handle_callback_update` uses the full list as the approve/deny **authz allowlist** (any chat not in it gets `chat_not_allowed`); (2) `send_proposal_for_approval` (`dispatch.py`) sends the initial approval message to `allowlist[0]` only — the **first** entry. Empty means no chat is allowed to approve/deny and no message is ever dispatched (`dispatch.py` no-ops). This is a distinct setting from the pre-existing `TELEGRAM_CHAT_IDS_STR` (used by `TradeNotifier`'s other, non-approval notifications) — the two lists are not required to match. |
+| `ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID` | `""` | ROB-1052 optional second destination for **notice-class** Telegram traffic: auto-approve notices (one digest per dispatch round — the round key is the emitting batch scope in `dispatch.py::open_auto_digest_round`, i.e. one `support_reserve_net_consume` call or one `decision_table_apply` call), fill notifications, and expiry notices (the approval card itself is still edited in place; the notice is a same-text copy). Human approval cards — manual, reconfirm, batch, loss-cut confirmation — are unaffected and keep `allowlist[0]`. A separate notices chat must also appear in `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR` or auto-veto taps from it get `chat_not_allowed`. When this and `…_THREAD_ID` are both unset, every class uses its pre-split destination exactly. |
+| `ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID` | unset | ROB-1052 `message_thread_id` (forum topic) applied to every notices-destination send. With no notices chat id the thread targets `allowlist[0]`, splitting by topic inside the approvals chat — callbacks then arrive from the same chat id, so no allowlist change is needed. |
 | `ORDER_PROPOSALS_SUBMIT_AGENT_ID` | `""` | Caller identity temporarily bound only during Telegram approval revalidation/submission. There is no default submit identity. The operator must set a non-blank value and add the exact same trimmed identity to `LOSS_CUT_ALLOWED_AGENT_IDS`. Missing or whitespace-only input becomes no identity and keeps `loss_cut` fail-closed. Never solve this with a hardcoded UUID. |
 
 ### Resting-class automatic submission (ROB-871)

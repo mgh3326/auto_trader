@@ -79,3 +79,58 @@
 .trader-unavailable { color: #b42318; margin: 8px 0 0; }
 .trader-error { color: #b42318; }
 .trader-dim { color: var(--fg-3, #6b7280); font-size: 12px; }
+
+.trader-approval-row {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--divider, #f1f3f5);
+  border-radius: 10px;
+}
+.trader-approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.trader-approval-row p { margin: 6px 0; }
+.trader-approval-rungs { margin: 6px 0; padding-left: 18px; font-size: 13px; }
+.trader-approval-actions { display: flex; gap: 8px; margin-top: 8px; }
+.trader-approval-actions button,
+.trader-approval-state-refresh {
+  padding: 6px 12px;
+  border: 1px solid var(--border-subtle, #dce2eb);
+  border-radius: 8px;
+  background: var(--surface-2, #f2f4f6);
+  color: inherit;
+  cursor: pointer;
+}
+.trader-approval-actions button:disabled { opacity: 0.5; cursor: default; }
+.trader-approval-state-refresh { margin-top: 6px; font-size: 12px; }
+
+.trader-pq-form { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.trader-pq-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.trader-pq-form input,
+.trader-pq-form select,
+.trader-pq-preview input {
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle, #dce2eb);
+  border-radius: 8px;
+}
+.trader-pq-current { margin: 8px 0; font-variant-numeric: tabular-nums; }
+.trader-pq-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-subtle, #dce2eb);
+  border-radius: 10px;
+}
+.trader-pq-preview label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin-bottom: 8px; }
+.trader-panel button[data-testid="pq-submit"],
+.trader-pq-preview button {
+  padding: 6px 12px;
+  border: 1px solid var(--border-subtle, #dce2eb);
+  border-radius: 8px;
+  background: var(--surface-2, #f2f4f6);
+  color: inherit;
+  cursor: pointer;
+}
+.trader-panel button:disabled { opacity: 0.5; cursor: default; }

@@ -71,6 +71,7 @@ tests/routers/test_order_previews.py
 tests/routers/test_research_pipeline_router.py
 tests/routers/test_strategy_events_router.py
 tests/routers/test_telegram_callback_route.py
+tests/routers/test_trader_approval_routes.py
 tests/routers/test_trader_page_router.py
 tests/schemas/test_pagination.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_coordination_wiring.py
@@ -79,8 +80,12 @@ tests/scripts/b0x/kr/test_attribution_gate.py
 tests/scripts/b0x/test_portability_contract.py
 tests/scripts/b0x/test_sidecar.py
 tests/scripts/test_at_job_runner.py
+tests/scripts/test_backfill_kr_candles_1m_toss.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
+tests/scripts/test_binance_h5_heartbeat_watch.py
+tests/scripts/test_binance_h5_ncp_playbook.py
+tests/scripts/test_binance_h5_runner_alerts.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
 tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_deploy_ncp_pull_rollback.py
@@ -88,6 +93,7 @@ tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_forecast_legacy_rule_migration.py
 tests/scripts/test_list_recent_fill_events_cli.py
 tests/scripts/test_ncp_job_timers_check.py
+tests/scripts/test_nhplug_bhost_deploy.py
 tests/scripts/test_nhplug_collect_period.py
 tests/scripts/test_policy_table_halt_suspect.py
 tests/scripts/test_policy_table_us.py
@@ -138,6 +144,7 @@ tests/services/brokers/binance/test_transport_event_hooks.py
 tests/services/brokers/kis/test_live_order_expiry.py
 tests/services/brokers/paper/test_application.py
 tests/services/brokers/paper/test_production_adapter_contract.py
+tests/services/brokers/test_credential_firewall.py
 tests/services/brokers/test_edge_client.py
 tests/services/brokers/toss/test_auth_single_flight.py
 tests/services/brokers/toss/test_token_issuance_gatewayd.py
@@ -193,13 +200,21 @@ tests/services/order_proposals/callback_inbox/test_retry_contract_surfaces.py
 tests/services/order_proposals/callback_inbox/test_runtime_surface.py
 tests/services/order_proposals/callback_inbox/test_seam_equivalence.py
 tests/services/order_proposals/test_auto_approve_parking_allowlist.py
+tests/services/order_proposals/test_auto_approve_price_fallback.py
+tests/services/order_proposals/test_auto_approve_price_fallback_dispatch.py
+tests/services/order_proposals/test_auto_digest.py
 tests/services/order_proposals/test_broker_gateway.py
 tests/services/order_proposals/test_cash_funding_service.py
+tests/services/order_proposals/test_kis_leftover_inference.py
+tests/services/order_proposals/test_kis_leftover_inference_mutants.py
 tests/services/order_proposals/test_loss_cut_approval.py
 tests/services/order_proposals/test_models_smoke.py
+tests/services/order_proposals/test_night_sweep_db.py
+tests/services/order_proposals/test_night_sweep_unit.py
 tests/services/order_proposals/test_parking_sell_exemption.py
 tests/services/order_proposals/test_projection_evidence_resolution.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py
+tests/services/order_proposals/test_trader_page_loss_cut_two_click.py
 tests/services/order_proposals/test_void_authorization.py
 tests/services/order_proposals/test_web_approvals.py
 tests/services/paper_cohort/test_kill_switch.py
@@ -211,6 +226,8 @@ tests/services/paper_cohort/test_signals.py
 tests/services/paper_evaluation/test_gate.py
 tests/services/paper_validation/test_contracts.py
 tests/services/protected_quantity/test_db.py
+tests/services/quotes_consumer/test_consumer_redelivery.py
+tests/services/quotes_consumer/test_migration.py
 tests/services/research/test_honest_trial_evidence.py
 tests/services/research/test_research_campaign_bridge_trials.py
 tests/services/research/test_rob1025_funding_and_observability.py
@@ -218,6 +235,7 @@ tests/services/research/test_rob944_campaign_controller.py
 tests/services/research/test_rob984_cp8_actual_integration.py
 tests/services/research/test_rob984_fix_r1.py
 tests/services/research/test_strategy_learning_event_migration.py
+tests/services/research_candles/test_toss_minute_collector.py
 tests/services/screener_pick_log/test_a_record.py
 tests/services/screener_pick_log/test_recorder.py
 tests/services/shadow_replay/test_scoring.py
@@ -344,6 +362,7 @@ tests/test_kis_base_rate_limit.py
 tests/test_kis_circuit_breaker_dispatch.py
 tests/test_kis_domestic_orders_nxt.py
 tests/test_kis_domestic_pending_mock.py
+tests/test_kis_mock_account_parse.py
 tests/test_kis_mock_cancel_modify.py
 tests/test_kis_mock_holdings_delta_fill.py
 tests/test_kis_mock_scalping_adapters.py

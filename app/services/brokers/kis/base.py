@@ -18,6 +18,9 @@ import httpx
 from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
 from app.core.exceptions import describe_exception
+from app.services.brokers.credential_firewall import (
+    assert_broker_credentials_allowed,
+)
 from app.services.brokers.kis.circuit_breaker import (
     get_kis_circuit_breaker,
     is_kis_connect_failure,
@@ -61,6 +64,41 @@ def _safe_status_code(response: object, *, default: int = 200) -> int:
     """Extract status code from response object safely."""
     value = getattr(response, "status_code", None)
     return value if isinstance(value, int) else default
+
+
+def mask_account_identifier(value: str | None) -> str:
+    """Return a non-reversible display value for a KIS account identifier.
+
+    A fixed placeholder (not a suffix reveal) so no part of the configured
+    account number or product code can leak into exceptions, logs, or MCP tool
+    errors — regardless of whether the stored value is hyphenated or
+    concatenated.
+    """
+    if not value:
+        return ""
+    return "[MASKED]"
+
+
+def _raise_sanitized_http_status(response: httpx.Response, api_name: str) -> None:
+    """``raise_for_status`` equivalent that never leaks the request URL or body.
+
+    httpx's default ``HTTPStatusError`` message embeds the full request URL —
+    which carries ``CANO``/``ACNT_PRDT_CD`` query params on KIS GET calls — plus
+    a response-body snippet, and that text propagates into logs and MCP tool
+    errors. Re-raise the same exception type (with ``request``/``response``
+    attached for status-code retry handling) but restrict the message to the
+    status code and API name. ``from None`` is required: the original message
+    must not survive via ``__cause__``/``__context__`` into traceback
+    rendering, ``logging.exception``, or Sentry's exception-chain walk.
+    """
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise httpx.HTTPStatusError(
+            f"KIS API HTTP {_safe_status_code(exc.response)} error: {api_name}",
+            request=exc.request,
+            response=exc.response,
+        ) from None
 
 
 def _log_kis_api_failure(
@@ -110,6 +148,8 @@ class BaseKISClient:
 
     def __init__(self) -> None:
         """Initialize base client with headers and token manager."""
+        # #1257: refused inside a broker_credentials_blocked context.
+        assert_broker_credentials_allowed("KIS client")
         self._hdr_base = {
             "appkey": self._settings.kis_app_key,
             "appsecret": self._settings.kis_app_secret,
@@ -455,6 +495,8 @@ class BaseKISClient:
         Uses Redis-backed token manager for caching and distributed lock
         to prevent thundering herd on token refresh.
         """
+        # #1257: covers the import-time module client too (no token read).
+        assert_broker_credentials_allowed("KIS token")
         token = await self._token_manager.get_token()
         if token:
             self._settings.kis_access_token = token
@@ -527,16 +569,16 @@ class BaseKISClient:
             data = response.json()
         except ValueError as exc:
             if status_code >= 400:
-                response.raise_for_status()
+                _raise_sanitized_http_status(response, api_name)
             raise RuntimeError(f"KIS API non-JSON response: {api_name}") from exc
 
         if not isinstance(data, dict):
             if status_code >= 400:
-                response.raise_for_status()
+                _raise_sanitized_http_status(response, api_name)
             raise RuntimeError(f"KIS API non-JSON response: {api_name}")
 
         if status_code >= 400 and status_code != 500:
-            response.raise_for_status()
+            _raise_sanitized_http_status(response, api_name)
 
         rt_cd = data.get("rt_cd")
         msg_cd = str(data.get("msg_cd", ""))
@@ -629,6 +671,8 @@ class BaseKISClient:
         any rate-limit wait or HTTP call, so /invest KIS→Toss fallbacks fire in
         ~0ms. Closed = pure passthrough. See ``circuit_breaker.py``.
         """
+        # #1257: refused before any breaker lease, rate-limit wait or send.
+        assert_broker_credentials_allowed("KIS request")
         breaker = get_kis_circuit_breaker()
         # before_request returns an opaque lease token identifying THIS request.
         # On a pre-dispatch abort we release ONLY this request's lease, so an

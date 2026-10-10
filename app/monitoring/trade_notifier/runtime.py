@@ -44,6 +44,20 @@ def configure_trade_notifier_from_settings(
         trade_notifier = get_trade_notifier()
         bot_token = getattr(settings_obj, "telegram_token", None) or ""
         chat_ids = settings_obj.telegram_chat_ids if has_telegram else []
+        notices_destination = getattr(
+            settings_obj, "order_proposals_telegram_notices_destination", None
+        )
+        # Forward notices kwargs only when configured so an unconfigured
+        # deployment produces the exact pre-split configure() call.
+        notices_kwargs = (
+            {
+                "notices_chat_id": notices_destination.chat_id,
+                "notices_thread_id": notices_destination.message_thread_id,
+                "notices_configured": True,
+            }
+            if notices_destination is not None and notices_destination.configured
+            else {}
+        )
 
         trade_notifier.configure(
             bot_token=bot_token,
@@ -57,6 +71,7 @@ def configure_trade_notifier_from_settings(
             discord_webhook_alerts=getattr(
                 settings_obj, "discord_webhook_alerts", None
             ),
+            **notices_kwargs,
         )
 
         configured_systems: list[str] = []

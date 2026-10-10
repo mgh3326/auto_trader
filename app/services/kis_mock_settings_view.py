@@ -55,6 +55,9 @@ class KISMockSettingsView:
     def __init__(self, real_settings: Any) -> None:
         self._real = real_settings
 
+    #: Account binding marker read by the shared account-number parser.
+    account_scope = "kis_mock"
+
     # -- account-bound fields: mock only, never a live fallback -------------
 
     @property

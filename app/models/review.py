@@ -389,6 +389,50 @@ class KISMockSignalLedger(Base):
     )
 
 
+#: #1250 — the four kis_mock ledger rows named by operator decision Q-46.
+KIS_MOCK_INFERENCE_EXPIRY_LEDGER_IDS_SQL = "ledger_id IN (63, 64, 66, 80)"
+
+
+class KISMockInferenceExpiryEvent(Base):
+    """#1250 — append-only audit of the Q-46 ``expired[inference]`` close.
+
+    One row per closed ``review.kis_mock_order_ledger`` row (``ledger_id``
+    UNIQUE, so a row is closed once), grouped by ``batch_id``. The DB rejects
+    UPDATE/DELETE/TRUNCATE on this table, and a CHECK confines it to the four
+    ledger ids of the decision. No foreign key, so the audit survives any later
+    ledger maintenance.
+    """
+
+    __tablename__ = "kis_mock_inference_expiry_events"
+    __table_args__ = (
+        UniqueConstraint("ledger_id", name="uq_kis_mock_inference_expiry_ledger"),
+        CheckConstraint(KIS_MOCK_INFERENCE_EXPIRY_LEDGER_IDS_SQL, name="ledger_id"),
+        CheckConstraint("action = 'expire_inference'", name="action"),
+        CheckConstraint("operator_decision_ref = 'Q-46'", name="decision_ref"),
+        CheckConstraint("after_state = 'expired'", name="after_state"),
+        CheckConstraint("before_state IN ('accepted', 'pending')", name="before_state"),
+        CheckConstraint("btrim(reason) <> ''", name="reason_nonblank"),
+        CheckConstraint("btrim(actor) <> ''", name="actor_nonblank"),
+        Index("ix_kis_mock_inference_expiry_events_batch", "batch_id"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    ledger_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    operator_decision_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    rule_version: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    before_state: Mapped[str] = mapped_column(Text, nullable=False)
+    after_state: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class KISLiveOrderLedger(Base):
     """ROB-395 — KIS live (real-money) order lifecycle ledger.
 

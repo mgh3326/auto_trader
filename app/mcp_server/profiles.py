@@ -1,7 +1,9 @@
 """MCP server profile definitions.
 
 Profiles gate which tool subsets are registered at startup.
-Profile selection is driven by the MCP_PROFILE env var (default: "default").
+Profile selection is driven by the MCP_PROFILE env var. The server entrypoint
+requires it (#1189): a blank or missing value refuses to start instead of
+falling back to the full DEFAULT surface. Use MCP_PROFILE=default for DEFAULT.
 
 ROB-1239: for what `route_request`'s `blocked_actions` does and does not mean
 relative to this file's registration, see the canonical statement in
@@ -48,6 +50,16 @@ class McpProfile(StrEnum):
     LIVE_KR = "live-kr"
     LIVE_US = "live-us"
     LIVE_CRYPTO = "live-crypto"
+    # #1171 (operator hk 1135 = A) — closed-world H3-CRYPTO paper pilot
+    # surface: the runner's 20 tools exactly (crypto paper simulator orders +
+    # the prompt's reads + record writes). No live order tool, no live
+    # account read; get_holdings is pinned to DB paper accounts.
+    H3_CRYPTO_PAPER = "h3-crypto-paper"
+    # #1257 (#1245) — closed-world H3-US paper pilot surface: the runner's 20
+    # tools exactly (Alpaca paper orders on account_mode alpaca_paper + the
+    # prompt's US reads + record writes). No live order tool; every listed
+    # tool is pinned to market us / account_mode alpaca_paper.
+    H3_US_PAPER = "h3-us-paper"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:
@@ -67,4 +79,29 @@ def resolve_mcp_profile(env: str | None) -> McpProfile:
         )
 
 
-__all__ = ["McpProfile", "resolve_mcp_profile"]
+class McpProfileRequiredError(ValueError):
+    """MCP_PROFILE is blank, missing or whitespace-only at server start."""
+
+
+def require_mcp_profile(env: str | None) -> McpProfile:
+    """Resolve MCP_PROFILE for a server process, refusing a blank value (#1189).
+
+    Unlike :func:`resolve_mcp_profile`, a missing, empty or whitespace-only
+    value is an error, never DEFAULT: a unit whose profile was lost would
+    otherwise boot every DEFAULT tool, live order tools included.
+    """
+    if not (env or "").strip():
+        raise McpProfileRequiredError(
+            "MCP_PROFILE is required: set it explicitly for every MCP server "
+            "(MCP_PROFILE=default for the DEFAULT surface); a blank, missing or "
+            "whitespace-only value refuses to start"
+        )
+    return resolve_mcp_profile(env)
+
+
+__all__ = [
+    "McpProfile",
+    "McpProfileRequiredError",
+    "require_mcp_profile",
+    "resolve_mcp_profile",
+]

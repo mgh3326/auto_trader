@@ -9,12 +9,15 @@
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - Execution Ledger HTTP Ingest (fillwire P0)
+- Execution Ledger Quarantine (#1175)
 - 보호 수량 P 규칙 추종 (#943)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
+- kis_mock 4행 Q-46 expired[inference] (#1250)
 - KIS Live Order Fill-Evidence Gate (ROB-395)
 - KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
+- 7-D stale blocker night sweep + KIS expired[inference] (#1112)
 - US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 - Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 - Kiwoom Live Read-Only Market Data (Stage 1)
@@ -56,6 +59,15 @@
 - **선물 path**: PR 2에서 별도 `futures_demo/` backend로 추가 (아래 참고)
 - **스케줄러 활성화 없음**: TaskIQ/cron/Prefect 연결 없음. CLI에서만 호출
 - **프로덕션 cutover gate**: alembic 마이그레이션은 PR에 포함되지만 operator가 별도로 `alembic upgrade head` 실행
+- **D2 remediation root reconcile (#1268)**: `scripts/binance_spot_demo_d2_root_reconcile.py`
+  (`app/services/brokers/binance/spot_demo/d2_root_reconcile.py`) — `filled` 인
+  `d2_remediation_single` SPOT 루트만 서비스의 `record_closed` → `record_reconciled` 로
+  종결한다. preview 기본·`--commit` 적용·`--ids` 정확한 목록(최대 3)·`--reason`/`--actor` 필수.
+  모든 id 가 D2 바운드 주문과 일치하고 Spot Demo 읽기 전용 `GET /api/v3/order` 가
+  `FILLED`+심볼·사이드·타입·수량·지정가·TIF·주문번호 일치를 보여야 하며, 하나라도 부적격·증거
+  불일치·조회 실패면 배치 전체 거부·무변경. 이미 이 도구로 종결된 배치는 no-op. 감사 기록은
+  `extra_metadata["d2_root_reconcile"]`(마이그레이션 0). 🔴 직접 SQL·삭제·주문 경로 없음,
+  H5 truth gate 범위는 변경하지 않는다. 실행은 운영자 전용(런북 §8)
 
 **USD-M Futures Demo (ROB-298 PR 2)**:
 - **실행 어댑터**: `app/services/brokers/binance/futures_demo/execution_client.BinanceFuturesDemoExecutionClient` — `demo-fapi.binance.com` only; mutation은 `submit_order(..., confirm=True)`만; close 주문에는 `reduce_only=True` 필수
@@ -113,6 +125,12 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 
 - **표면**: app/services/brokers/binance/h5, scripts/binance_h5_demo.py,
   scripts/binance_h5_weekly_score.py. 수동 CLI만 있으며 scheduler 등록은 없다.
+- **배포 이미지 (task 1254)**: H5 모듈이 research.nautilus_scalping.rob974_features를
+  import하므로 `Dockerfile.api` 최종 단계는 `research/nautilus_scalping/`만 복사한다
+  (`research/`의 나머지는 이미지에 넣지 않는다). 이 COPY는 order permission이 아니다.
+  `tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py`가 최종 단계의 COPY
+  집합과 `.dockerignore`를 시뮬레이션해 `scripts/binance_h5_*.py`의 import 폐쇄(정적 +
+  이미지 파일만 둔 새 인터프리터 import)와 `research/` 범위를 고정한다.
 - **호스트/게이트**: exact https://demo-fapi.binance.com 및 H5DemoClient identity를
   HTTP/DB 전에 검사한다. BINANCE_H5_DEMO_ENABLED와
   BINANCE_FUTURES_DEMO_ENABLED는 기본 false이고, 각 runner tick과 모든 주문은
@@ -136,6 +154,35 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
   마이그레이션도 별도 운영 절차로 적용한다. 상세는
   docs/runbooks/binance-h5-demo.md를 따른다.
+- **NCP 수동 운영·알림 (task 1251)**: 정확한 복붙 절차는
+  `docs/runbooks/binance-h5-ncp-manual-playbook.md`(명령의 플래그는
+  `tests/scripts/test_binance_h5_ncp_playbook.py`가 각 스크립트의 실제 argparse로
+  검증). 데모 플래그 3종(`BINANCE_H5_DEMO_ENABLED`·`BINANCE_FUTURES_DEMO_ENABLED`·
+  `BINANCE_H5_ALERT_ENABLED`)은 해당 일회성 컨테이너의 `docker run -e` 에만 둔다 —
+  공유 env 파일(`.env.api`) 편집·`--restart`·`-d`·cron/systemd 등록 금지.
+  시작 전 `scripts/binance_h5_truth_gate.py --confirm-demo`(서명 GET + SELECT 만,
+  주문·쓰기 도달 불가를 AST 테스트로 고정)가 PASS 해야 한다.
+- **비USDT 잔고 (#1272, hk 1271 = B)**: Futures Demo 기본 지급분(USDC·BTC)은 같은 서명 GET
+  `/fapi/v2/account` 응답의 `multiAssetsMargin` 이 정확히 JSON `false` 일 때만 허용된다(`read_account`).
+  true·누락·null·문자열·숫자·읽기 실패는 FAIL. 비USDT 잔고는 양의 유한값·이름 `[A-Z0-9]{1,20}` 이어야 하고,
+  있으면 NAV(`totalMarginBalance`)가 USDT `marginBalance` 와 같아야 한다. 트루스 게이트
+  `account_isolated_1x` 는 모드를 다시 확인하고 통과 detail 에 `margin_mode=single_asset non_usdt_assets=…`
+  를 붙인다(비USDT 잔고 없으면 detail 불변). 읽기 경로·다른 체크·종료 코드 불변. 기록:
+  `docs/contracts/h5-deviation-20261008-single-asset-margin-foreign-balances.md`.
+- **장애 알림 (default off, `BINANCE_H5_ALERT_ENABLED` 정확히 `true` 일 때만)**:
+  `h5/alerting.py`. `stopped`(SIGINT 외의 종료)·`error`(`blocked`/`entry_uncertain`/
+  `close_uncertain` 틱)는 러너 안에서, `heartbeat_missed`는 별도 읽기 전용
+  `scripts/binance_h5_heartbeat_watch.py`가 `review.binance_h5_lane_state.updated_at`
+  (`record_nav` 가 틱마다 갱신)이 N분(기본 10) 이상 묵었을 때 보낸다 — SIGKILL/OOM 은
+  이 경로만 잡는다. 채널은 기존 ops 채널 `settings.discord_webhook_alerts`(Hermes 아님,
+  신규 provider 없음). 에피소드당 1회·리마인더 최대 6시간 1회·전송 실패 재시도 5분
+  간격이며 전송 실패·지연은 러너 동작을 바꾸지 못한다(타임아웃 5초, 예외 삼킴, 틱
+  알림은 백그라운드 태스크라 다음 틱을 늦추지 않고 종료 시 drain). 에피소드 키는
+  (종류, 버킷)이며 틱 오류의 버킷은 틱 event 라서 예외 클래스가 바뀌어도 같은
+  에피소드다. 감시자의 heartbeat 읽기는 15초 데드라인이며 초과는 `unreadable` 알림이다.
+  H5 에는 거래소 측 손절이 없으므로 모든 종류가 "포지션이 있으면 손절 감시 중단"을 뜻한다.
+  코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
+  core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 
@@ -186,6 +233,40 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   **생성 시와 전송 직전 두 번** 검증하고 `follow_redirects=False` 를 명시 고정한다. 거부된
   URL 은 **소켓을 열기 전에** DB 로 fail-open 하며 로그에 토큰·URL 을 남기지 않는다.
 
+### Execution Ledger Quarantine (#1175)
+
+websocket 탭이 KIS H0STCNI0 **접수** 통지(`CNTG_YN=1`)를 체결로 기록한 phantom 행을
+삭제·수동 UPDATE 없이 **격리**한다. fillwire 디코더 수정은 별건(#1172).
+
+- **CLI**: `scripts/quarantine_execution_ledger_rows.py` — preview 기본, `--commit` 적용,
+  `--ids` 정확한 10진 id 만(범위·패턴·부호·공백·중복 거부), `--reason`/`--actor` 필수,
+  DB 는 `--database-url-env NAME`(권장) 또는 `--database-url` 로 명시(값 출력 금지)
+- **서비스/쓰기**: `app/services/execution_ledger/quarantine.py`(순수 판정 + 트랜잭션) →
+  `ExecutionLedgerRepository.rows_by_ids`/`mark_quarantined`/`append_quarantine_events`
+  (레포지토리가 유일한 쓰기 표면)
+- **적격(전부 통과해야 배치 전체 진행)**: 존재 · 미격리 · `source=websocket` · `broker=kis` ·
+  `account_mode=live` · `equity_kr` · 저장된 `raw_payload_json` 이 `tr=H0STCNI0` 프레임이고
+  `fields[13]`(CNTG_YN) 이 정확히 `1` · 프레임 주문번호/종목이 행과 일치. 하나라도 부적격이면
+  **배치 전체 거부·무변경**, 전부 이미 격리면 no-op. `CNTG_YN=2`(실체결)는 항상 거부
+- **스키마**: `execution_ledger.quarantined_at/quarantine_reason/quarantined_by`(nullable) +
+  CHECK 2종(all-or-nothing · `source='websocket' AND broker='kis'` 만) + append-only
+  `review.execution_ledger_quarantine_events`(ledger_id UNIQUE, FK 없음). 마이그레이션
+  `20261001_t1175_ledger_quar`, downgrade 는 격리를 잃는다
+- 🔴 **격리 행은 terminal**: 트리거가 격리된 행의 모든 UPDATE·DELETE 와(격리 행이 있는 동안)
+  TRUNCATE 를 `restrict_violation` 으로 거부한다. 같은 키로 들어오는 변경된 쓰기(바뀐 phantom
+  재생, 우연히 키가 같은 실체결·reconciler 행)는 덮어쓰거나 숨기지 않고 **거부되어 운영자 검토로
+  드러난다**(HTTP ingest 항목 `rejected` + 경고 로그, reconcile run 실패·`error_summary`).
+  동일 재생은 `unchanged`. ingest 경로(repository upsert·commit_fill·router)는 이 기능으로
+  바뀌지 않았다. tombstone/재격리 로직은 r4(hk 1224=A)에서 제거
+- 🔴 **리더 계약**: fill/lot/evidence/리포트로 원장을 읽는 모든 함수는
+  `execution_ledger_in_effect()`(`quarantined_at IS NULL`)를 AND 한다. 업서트 식별 읽기
+  (`get_by_key`)·id 워터마크·격리 도구 자신만 예외이며,
+  `tests/services/execution_ledger/test_quarantine_mutants.py` 가 디스크에서 리더를 세어
+  필터 또는 예외 선언이 없는 새 리더를 red 로 만든다
+- **시드 주의**: 격리 전 phantom 이 있는 상태로 깎인 opening seed 는 격리로 고쳐지지 않는다
+  (seed 스크립트 preview 재실행 필요)
+- **런북**: `docs/runbooks/execution-ledger-quarantine.md`. 실DB 실행은 운영자 전용
+
 ### 보호 수량 P 규칙 추종 (#943)
 
 운영자 결정(hk doc 8274 §7): P 는 계산값이며 첫 선언 뒤에는 규칙으로만 바뀌고 알림만 간다. 임시 규칙 = P 는 보유 전량.
@@ -195,13 +276,14 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 - **훅 위치**: 원장 커밋 **이후**만 — `ExecutionLedgerReconciler` 커밋(task·script `--commit`), Toss reconcile 부킹 세션 종료 후. dry-run 에서는 호출 안 함. `source=reconciler`·`account_mode=live` 행만(websocket 은 provisional 이라 무시)
 - **레버**: `scripts/protected_positions.py auto-reconcile`(기본 preview, `--commit` 필요) + TaskIQ `protected_positions.auto_follow_reconcile` — 🔴 **코드에 스케줄 없음**. desk 가 NCP systemd timer 로 KR/US 정규장 30분 간격 one-shot CLI 실행(운영자 Q-75, #944 option A). 🔴 timer 는 `--database-url-env NAME` 필수 — `--database-url` 은 수동용(argv 에 비밀 노출). URL 값은 출력·로그 금지, 오류는 변수 이름만
 - 🔴 **금지**: 미선언 키 자동 선언, P=0(해제) 재상향, 보유 초과 P, 읽기 경로·send-time guard 에서의 쓰기(`test_auto_follow_writer_is_unreachable_from_read_and_guard_paths` import allowlist 가 강제)
+- 🔴 **unobserved (#1061)**: 브로커가 응답했지만 그 키의 보유/매도가능 수량이 판독 불가(Toss `sellable_quantity=None` 등)면 그 키만 `unobserved`(reason `FIELD_unavailable:SYMBOL`) — P·revision 불변, 알림 없음, 레버 exit 1. **held 0 으로 취급 금지**(P 하향·해제 = 위험 방향). 락 안 재조회도 동일(save 롤백). 같은 응답의 다른 Toss 키·미선언 종목은 영향 없음. KIS 리더는 불변(시장 단위 실패)
 - **알려진 공백**: Toss 앱 수동 매도는 원장에 안 들어온다 — 레버 실행 전까지 P 가 보유보다 높게 남는다
 - **런북**: `docs/runbooks/longterm-lot-protection.md` §Rule-executed P follow · §Desk write CLI
 
 ### KIS live KR ledger lots — get_holdings opt-in (#963)
 
 `get_holdings(include_ledger_lots=True)` (default `False`, default output byte-identical — golden test) attaches a read-only `ledger_lots`
-block to KIS live KR positions so a live session can use KIS lots and KIS own-open-buy evidence **without** a KIS broker order read.
+block to KIS live KR positions so a live session can use KIS lots and KIS own-open-buy / own-open-sell evidence **without** a KIS broker order read.
 The #678 harness denial of `kis_live_get_order_history` is unchanged and is asserted by test; no live.yaml, lane allowlist or robin
 allowlist change exists because `get_holdings` is already live-kr core.
 
@@ -220,11 +302,46 @@ allowlist change exists because `get_holdings` is already live-kr core.
 - **same_day_sell_evidence**: 당일(KST) 매도 체결(authoritative + authoritative 가 덮지 않는 provisional websocket 행, `provisional` 플래그)이 있거나 reconcile 이 stale/없으면 `blocking=true`.
   strategy-lab 판정(hk #963 comment 796/798): 보이는 반대방향 신호가 하나라도 있으면 그날 미배치, 없으면 caveat `kis_same_day_sell_chain_unverified` 부착. 오늘 이후 날짜로 찍힌 행(writer 시계 skew)은
   fail-closed 로 '오늘'로 취급한다(`open_buy_evidence`·`same_day_sell_evidence` 공통).
+- **매도측 증거 (task #1087, #1044 운영자 Q-107=A)** — 같은 블록에 DB-only 로 추가되며 KIS 호출·circuit breaker 접촉·신규 도구·LIVE_ALLOWED_TOOLS 변경이 없다.
+  - **open_sell_evidence**: `open_buy_evidence` 의 매도 쌍둥이. 당일(KST) `review.kis_live_order_ledger` 비터미널 **sell** 행이면 `own_nonterminal_sell_order_today`,
+    당일 매도 체결(authoritative + authoritative 가 덮지 않는 provisional websocket 행) 중 주문 완료가 원장으로 증명되지 않은 것이면 `same_day_sell_fill_order_not_proven_complete`,
+    reconcile 없음·90분 초과 stale·주문원장 읽기 실패면 `open_sell_evidence_unknown` — 모두 `blocking=true`. `state` 는 `known|unknown`, `scope="orders_known_to_auto_trader_only"`,
+    `external_orders_verifiable=false`. 전일 이전 비터미널 매도는 `presumed_dead_prior_day_sells` 로 보고만 한다. `own_open_sell_order_quantity` 는 당일 비터미널 자기 매도의
+    **주문 수량**(미체결 잔량이 아님 — 보수적) 합이며 unknown 이면 `null`.
+  - **same_day_buy_evidence**: `same_day_sell_evidence` 의 매수 쌍둥이. 당일(KST) 매수 체결(opening seed=`manual_import` 이면서 `SEED-*` 주문번호인 행만 제외 — 그 밖의 `manual_import` 는 실제 체결로 센다, provisional 포함·`provisional` 플래그)이 있으면
+    `same_day_buy_fill_in_ledger`, reconcile stale/없음이면 `same_day_buy_evidence_unknown` — 매도의 same-day chain / wash 판정용 반대방향 시야.
+  - **sellable_by_ledger** (+ `sellable_by_ledger_basis`): `ledger_state=known`(fresh·브로커 수량과 순수량 일치) **AND** `open_sell_evidence.state=known` **AND** 모든 당일 자기
+    비터미널 매도에 수량이 있을 때만 `원장 순수량 − own_open_sell_order_quantity` 를 `[0, 브로커 수량]` 으로 clamp 한 값, 그 외는 `null` + `unknown_reasons`
+    (`ledger_state_unknown`/`open_sell_evidence_unknown`/`own_open_sell_quantity_unknown`). provisional websocket 행은 절대 이 수량에 들어가지 않는다.
+    🔴 이 값은 **상한이지 허가가 아니다** — 게이트는 `open_sell_evidence`·`same_day_buy_evidence` 둘 다 non-blocking.
+  - 당일 증거 4종(`open_buy_evidence` S3·`same_day_sell_evidence`·`open_sell_evidence`·`same_day_buy_evidence`) 모두 `SEED-*` 가 아닌 `manual_import` 행을
+    실제 체결로 센다(#1087 에서 #963 두 뷰도 함께 교정 — blocking 을 더할 뿐 줄이지 않는다).
+  - 후속 운영자 프롬프트 PR 이 쓸 caveat 이름: `kis_external_open_orders_unverified`(auto_trader 밖 미체결 매도 불가시), `kis_same_day_buy_chain_unverified`
+    (auto_trader 밖 당일 매수는 체결 전까지 불가시). 이 PR 은 프롬프트·`live/CLAUDE.md` 를 바꾸지 않는다.
 - 🔴 **`external_orders_verifiable` 는 항상 `false`**: KIS 앱/HTS 등 auto_trader 밖에서 낸 **미체결** 주문은 어떤 DB 읽기로도 보이지 않는다. 이 블록의 통과는
   "부재 증명"이 아니라 "auto_trader 가 아는 범위에 미체결 없음"이다. 운영자 승인 Q-81(#964)=A: 그 잔여는 caveat `kis_external_open_orders_unverified` 로 기록한다.
 - **실패 격리**: 블록의 어떤 실패도 `get_holdings` 를 실패시키지 않는다 — 포지션마다 `ledger_state="unknown"`, `unknown_reasons=["ledger_read_failed"]`.
 - **테스트**: `tests/services/execution_ledger/test_kis_lots.py`(순수), `test_kis_lots_db.py`(테스트 DB), `tests/mcp_server/test_get_holdings_ledger_lots.py`(golden·opt-in·격리),
-  `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678).
+  `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678), #1087 매도측: `test_kis_lots_sell_evidence.py`(순수·90분 경계·KST 자정·clamp),
+  `test_kis_lots_sell_evidence_db.py`(테스트 DB·KIS client/HTTP 트랩으로 무호출 단언·get_holdings end-to-end).
+- **KIS live US 확장 (task #1173, 운영자 10-01)**: 같은 블록을 KIS live **US** 포지션(`market="us"`, `equity_us`)에도 붙인다 — `load_kis_live_us_lot_blocks` +
+  `build_symbol_block(market="us")`. KR 블록은 바이트 동일(`test_kis_lots_us.py` 의 pre-change golden `kis_lots_kr_blocks_golden.json`), 기본 출력도 불변.
+  - fill: `broker=kis`·`account_mode=live`·`instrument_type=equity_us`·`currency=USD`. authoritative 행의 venue 가 정확히 `NASD`/`NYSE`/`AMEX`(KIS 해외 주문 거래소 코드, 대소문자·공백만 정규화)가
+    아니면(`NASDAQ`·`NAS`·`krx`·빈값 …) 세지 않고 블록을 `unknown`(`unrecognized_us_venue_rows`)으로 만든다 — 조용히 거르지 않는다. 심볼은 holdings 의 DB dot-format 키로
+    `app/core/symbol.py` 변환(`BRK/B`·`BRK-B` → `BRK.B`)을 거쳐 맞춘다.
+  - 자기 주문: `review.live_order_ledger`(`broker=kis`·`account_scope=kis_live`·`market=us`, ROB-407) + `review.kis_live_order_ledger` 의 `equity_us` 행(계약상 없어야 하지만 있으면 차단에 쓴다).
+    증거 키 이름(`kis_live_order_ledger_open_*`)은 KR 과 동일하게 유지하고 출처는 `order_ledger_sources` 로 밝힌다.
+  - 🔴 "당일" = **US 거래일**: 20:00 America/New_York(애프터 마감, DST 반영)에 넘어간다 — KST 자정 이후에도 그 US 거래일의 주문·체결은 차단한다. KIS 주간거래(10:00 KST = 전일 20:00/21:00 ET) 주문은 다음 US 거래일 소속.
+  - freshness 는 같은 KIS reconcile run(한 run 이 `kr,us` 를 읽고 US fetch 오류는 run 전체를 실패시킴)을 쓴다. 브로커 수량 불일치는 항상 `unknown`. `external_orders_verifiable=false`·`scope` 문구 동일.
+  - 격리 행(#1175)은 어느 뷰에도 안 들어간다(`execution_ledger_in_effect()`, `test_quarantine_readers_db::test_us_lots_drop_the_quarantined_row` 가 filter-dropped 뮤턴트까지 증명).
+    아직 격리 안 된 접수통지 팬텀은 `websocket` 행이라 lot·순수량·수량대조·`sellable_by_ledger` 에 절대 안 들어가고, 당일 증거에서는 차단을 더할 뿐 줄이지 않는다.
+  - 🔴 websocket 행의 supersede(authoritative 행이 같은 주문을 덮음)는 US 에서 **같은 US 거래일**일 때만 성립한다 — KIS 주문번호는 날짜를 넘어 재사용되므로
+    과거 주문이 오늘 체결을 증거 뷰에서 지우지 못한다(tester r1 F1). 🔴 심볼 귀속은 **Python `_us_symbol_key`(`to_db_symbol(s.strip()).upper()`) 하나**로만 한다 — SQL 은 심볼을 비교·정규화·필터하지 않고(broker·mode·instrument_type·currency·격리·주문 원장 7일 창만), 읽은 행을 Python 에서 귀속한다. SQL 재구현이 혼합 구분자(r3 F3)·유니코드 대소문자(`ß`→`SS`, r4 B1)·유니코드 공백 패딩(r4 B2)에서 세 번 갈라졌기 때문이며, 정적 가드(`test_kis_lots_us_mutants.py`)가 로더의 SQL 심볼 표현을 금지한다. 체결 읽기는 FIFO 상 날짜 창이 없어 in-effect KIS live US 체결 전량을 읽는다. KR 키는 변경 전 그대로(golden 고정)이며 같은 잠재 문제는 별건 후속이다.
+  - 🔴 US 블록은 **브로커 포지션마다 하나**다 — 로더가 포지션 순서의 리스트를 돌려주고 attach 가 인덱스로 붙인다(심볼 키 조회 금지). 정규화 키가 같은 포지션이 2개 이상이면(`BRK/B`·`BRK.B`) **전부** `unknown`(`duplicate_positions_for_symbol`)이고 known 은 붙지 않는다(tester r5 B3, 마지막 쓰기 승리 금지). KR 의 같은 패턴은 hk 1295 별건.
+  - KR·US 는 별도 세션으로 읽어 한 시장 실패가 다른 시장 블록을 깎지 않는다. summary 는 `scope="kis_live_kr_us_positions"`·`positions_covered_by_market`, 비-live 라우팅은 `reason="kis_live_only"`.
+  - 🔴 #678 `kis_live_get_order_history` 차단·harness deny 불변. us-open-trade 프롬프트 문장은 운영자 PR 별건.
+  - **테스트**: `test_kis_lots_us.py`(순수·US 거래일·venue·팬텀·KR golden), `test_kis_lots_us_db.py`(테스트 DB·KIS/HTTP 트랩·get_holdings KR+US end-to-end),
+    `test_kis_lots_us_mutants.py`(디스크에서 센 US 가드 12곳의 assertion-RED 뮤턴트).
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 
@@ -263,6 +380,43 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
 행에서는 전이를 거부한다. 조정 작업은 해당 충돌을 이벤트 없는 행별 skip으로
 기록한다.
 
+### kis_mock 4행 Q-46 expired[inference] (#1250)
+
+운영자 결정(hk #706 comment 1092, 10-05)으로 kis_mock 원장 80·66·64·63 **정확히
+4행**에만 #1112 `expired[inference]` 규칙을 적용하는 일회성 레버다.
+
+- **CLI**: `scripts/expire_kis_mock_rows_by_inference.py` — preview 기본, `--commit`,
+  `--ids` 는 정확히 그 4개(부분집합·그 밖 id·중복·범위 거부, DB 연결 전), `--decision-ref`
+  는 정확히 `Q-46`, `--reason`/`--actor` 필수, DB 는 `--database-url-env`(값 출력 금지)
+- **규칙/쓰기**: `app/services/kis_mock_inference_expiry.py`(순수, 조건별 `_check_*`) →
+  `kis_mock_inference_expiry_service.py`(사실 수집·FOR UPDATE 재판정) →
+  `KISMockLifecycleService.close_rows_by_q46_inference`(허용 id·open 상태로 가드된
+  UPDATE, 4행 아니면 전부 롤백). 브로커 호출·live 원장 읽기 0
+- 🔴 **생략은 정확히 2개**: strategy 대조와 reconcile coverage(#1112
+  `execution_ledger_covers_order_day` — kis_mock 에는 그 run 이 존재할 수 없음, director-1
+  option A). preview 가 행마다 `waived_conditions` 를 출력하고 닫힌 행·감사 행에 caveat 와 함께
+  기록한다. 생략은 4-id allowlist 안에서만 존재한다. 나머지 #1112 조건은
+  kis_mock 증거로 번역해 전부 판정하고, 한 행이라도 실패하면 배치 전체 무변경:
+  수락된 kis_mock KR 현금 BUY(native 응답 rt_cd 0·odno·ord_tmd 일치) · lifecycle
+  accepted/pending · DAY(00/01) · 정규장 접수 · #1112 deadline 경과 · 그 주문의 체결 증거
+  0(execution_ledger kis/mock 전 source·격리행 포함, 행 자체 체결 reason/수량, 같은
+  correlation 행) · 보유 불변(`holdings_baseline_qty` 기록 + 접수 이후일 수 있는 종목 체결 0)
+- **닫힌 행**: `expired` + `last_reconcile_detail.reason_code` = #1112 마커
+  `expired_inference:kis_regular_day_order_no_broker_original`, `expiry_caveat=no_broker_original`,
+  `operator_decision_ref=Q-46`. terminal 이라 open-order·예약·reconcile 리더에서 빠지고
+  일반 전이 API 는 거부, #881 도구는 `already_terminal`
+- **감사**: append-only `review.kis_mock_inference_expiry_events`(ledger_id UNIQUE, CHECK
+  ledger_id ∈ {63,64,66,80}·decision ref Q-46, UPDATE/DELETE/TRUNCATE 트리거 거부).
+  🔴 close↔audit 는 DB 가 결속: 같은 batch 로 닫힌 행이 아니면 감사 INSERT 거부, 마커가
+  붙은 행은 COMMIT 시 같은 batch 감사 행 필수(deferred constraint trigger — 4 id 밖·
+  accepted/pending→expired 외 전이·닫힌 행 재기록도 거부). id 는 정확히 built-in int 4개만
+  (float/numpy/bool/str 거부). 쓰기 초크포인트가 배치를 스스로 재잠금·재판정하고, UPDATE 뒤
+  모든 체결 소스를 다시 읽어 그 사이 커밋된 체결이면 전체 롤백. COMMIT 시점 deferred 트리거가 주문·종목·형제
+  행 체결과 4행 배치를 SQL 로 재확인(재확인 이후 커밋된 체결도 전체 거부). 마커가 붙은 닫힌 행은
+  UPDATE·DELETE 전부 거부(terminal — 마커를 지워 재오픈 불가)
+  마이그레이션 `20261005_t1250_kismock_inf`(CREATE TABLE 만). 두 번째 commit 은 무변경 no-op
+- **런북**: `docs/runbooks/kis-mock-expired-inference-q46.md`. 실DB 실행은 운영자 전용
+
 ### KIS Live Order Fill-Evidence Gate (ROB-395)
 
 `kis_live_place_order(dry_run=False)` (KR domestic) records **accepted-only** to
@@ -299,6 +453,21 @@ stdlib only, 브로커/DB/네트워크/캘린더 import 없음, 주문 hot path 
 reconcile 종료 분류(`classify_day_order_expiry`)는 변경 없음 — 여전히
 evidence-first / fail-closed.
 
+
+### 7-D stale blocker night sweep + KIS expired[inference] (#1112)
+
+7-D(종목당 활성 매수 1건)를 영구 차단하던 stale 행을 **기록만으로** 닫는다. 주문 생성·정정·취소·브로커 호출 0.
+
+- **야간 스윕**: `order_proposal.night_sweep` (`app/tasks/order_proposal_expiry_tasks.py`) → `order_proposal_tools.run_order_proposal_night_sweep`.
+  ① ROB-897 `sweep_expired` 를 **좁힌 범위**로 재사용 — group `proposed` 이고 모든 rung 이 `draft`/`pending_approval`/`needs_reconfirm` 인 `valid_until` 경과 제안만 `expired`, rung `void_reason=expired_valid_until_night_sweep`. `revalidating`/`approved`/제출 이후 rung 이 하나라도 있으면 skip. 범위 인자는 좁히기만 한다(voidable 집합과 교집합).
+  ② KIS 잔존 rung 추론 종결(아래).
+- 🔴 **스케줄 선언만, 등록 0**: cron `30 16 * * 1-5`·`0 7 * * 1-5`(Asia/Seoul)는 `ORDER_PROPOSAL_NIGHT_SWEEP_SCHEDULE_ENABLED`(기본 false)일 때만 import 시점에 라벨로 붙고, 본문은 `ORDER_PROPOSAL_NIGHT_SWEEP_ENABLED`(기본 false) 뒤. 활성화(플래그 + 스케줄러 재시작)는 desk 결정.
+- **expired[inference]** (`app/services/order_proposals/kis_leftover_inference.py` 순수 규칙 + `kis_leftover_inference_service.py` I/O): `kis_live`/`equity_kr` BUY `resting` rung 을 브로커 원본 없이 `expired` 로 닫는 조건은 **전부**: 소유권 검증된 단일 open(`accepted`/`pending`) KIS 주문원장 행 · proposal·원장 모두 `limit`/`market`(DAY) · 송신·브로커 `ord_tmd` 가 XKRX 달력 정규장 안 + ROB-671 창 `regular` + 보고 venue 가 KRX/SOR(또는 미보고) · `now` 가 **max(접수일 15:30 KST, 달력 마감, ROB-671 기대만료)** 초과(기본 SOR 매수 = 20:00 → 16:30 스윕은 추론 안 함, 07:00 스윕이 닫음) · 성공·커밋된 KIS execution-ledger reconcile run 이 접수~deadline 을 덮고 deadline 이후 종료 · 그 주문의 fill(웹소켓 포함)·부분체결 없음 · 종목 원장 행 존재 + 접수 이후 종목 fill 0(순증감 0 이어도 차단). 하나라도 불만족/판독불가면 **차단 유지**. 적용은 group row lock 후 사실을 재조회·재판정해서만 쓴다.
+- 🔴 **마커**: rung `void_reason=expired_inference:kis_regular_day_order_no_broker_original`(group `cancelled_or_expired`). `order_proposal_get/list` rung 투영에 `expiry_basis="inference"`·`expiry_caveat="no_broker_original"` 가 이 마커일 때만 붙는다. `review.kis_live_order_ledger`·`execution_ledger` 는 **쓰지 않는다**(브로커 증거 원장 불변). 추론 후 실체결이 오면 원장은 정상 기록되고 rung 은 terminal 이라 투영되지 않는다 — 마커로 감사.
+- **7-D 차단 사유**: `order_proposal_list(include_kr_buy_blocking=true)`(기본 false·기본 출력 불변) → `kr_buy_blocking`: 비터미널 KR buy 제안 rung 마다 `proposal_id`·`rung_id`·`rule`(`nonterminal_buy_proposal`/`stale_proposal_past_valid_until`/`kis_resting_rung_inference_conditions_not_met`/`kis_resting_rung_inference_eligible_pending_sweep`/`broker_live_rung_awaiting_broker_evidence`) + KIS resting 은 조건별 판정, 그리고 최근 7일 스윕/추론으로 닫힌 행(`basis`·`cleared_at`·`caveat`). 읽기 시점 제외 없음 — DB 에 terminal 로 써진 행만 빠진다. 범위는 제안 행뿐(Toss 원본·KIS `open_buy_evidence` 는 별도 입력, 부재 증명 아님). 판독 실패는 `state="unknown"`.
+- **알려진 한계**: 라이브러리 XKRX 달력은 수능일 16:30 마감을 모델링하지 않는다 — 기본 SOR 매수는 20:00 deadline 이라 무관. deadline 이 15:30 으로 내려가는 두 경우(브로커 venue 가 `KRX` 로 보고된 주문, 또는 `KIS_REGULAR_BUY_UNSETTLED_EXPIRY_1530` 플래그가 켜진 SOR 매수)에만 수능일 15:30–16:30 잔여가 남는다. 적용은 07:00 스윕이면 무관, 16:30 스윕에서 그 날 마감 직후 한 차례만 해당.
+- **7-D 카운트 범위**: lifecycle 비터미널 group **또는** 비터미널 rung 을 하나라도 가진 group(예: `superseded` 뒤에도 남은 `acked`/`resting` 매수)을 센다.
+- **테스트**: `tests/services/order_proposals/test_kis_leftover_inference.py`(조건별 단독 실패), `test_kis_leftover_inference_mutants.py`(디스크 카운트 mutant + 주문경로 import 가드), `test_night_sweep_unit.py`, `test_night_sweep_db.py`(A1 브로커 트랩·A5 멱등).
 
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 ...
@@ -378,6 +547,7 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 - **One send per claim**: an operator or caller supplies a stable idempotency key. T1 records the immutable intent and date-independent in-flight reservation; T3 claims it conditionally; T5 commits a sending fence before the first possible application write. The body is rebuilt solely from the claimed row and compared against its database digest. A missing fence or pre-send refusal cannot send. Once fenced, every ambiguous result, exception, timeout, or process death remains sending until manual recovery makes it uncertain. A result-recording failure leaves exactly sending immediately; it never permits a second send.
 - **No unsupported acceptance or rejection**: success-proof and no-order-proof code tables start empty. A response with an order number but no documented success code records uncertain and preserves the number. The sending-to-rejected transition requires a DB-listed no-order proof code, so it is unreachable while the table is empty. An uncertain row retains its reservation across trading days. The DB refuses uncertain-to-anomaly without its own number and a positive conflicting listing row; it refuses arbitrary reservation release.
 - **Manual evidence and authority**: a complete all-orders listing containing the same acknowledged number and matching order attributes may promote uncertain to accepted. Other similar orders are candidates only. Filled needs a second filled-scope confirmation; cancelled and modified need our own acknowledged request and positive original-order evidence. Operator candidate binding and unresolved-risk abandonment consume a matching, one-use authorization row. The application role has SELECT only on authorization, code, and key-version tables. T14 also requires the lease-host process-death witness, elapsed grace, a complete listing, and explicit operator risk acceptance. Unknown or partial listings never prove absence.
+- **B-HOST deployment (#1046)**: only the DEFAULT MCP blue/green pair mounts the host `/etc/machine-id` read-only. A lease-identity failure after T1 withdraws only the unclaimed intent; no broker send occurs, and the same-key replay rule remains intact. A read-only, one-shot T14 witness runs from the deployed image digest with `--pid=host` and no network. Different-namespace death proof fails closed: it needs the scanner in the kernel initial PID namespace, equal to the inode measured on the host, and an exact read of every `/proc/*/ns/pid` link; a sibling container, a different namespace, or one unreadable link is neither verified nor proven. Under default container security other users' links are unreadable, so that proof stays unavailable until the operator decides witness privileges. No T14 transition CLI exists, and the witness alone never releases an uncertain reservation. See `docs/runbooks/nhplug-mock-smoke.md`.
 - **Identity and uniqueness**: all retained key versions are checked before account binding writes. The account reference stays stable across rotation. The order-number UNIQUE premise is exactly account reference plus trading day plus broker order number; this vendor premise remains B-VENDOR until confirmed. Intent, claim, fence, and evidence columns are protected by DB constraints and transition triggers. Service code is the only normal ledger writer.
 - **MCP surface (#849)**: `app/mcp_server/tooling/orders_nh_mock_variants.py` declares nine `nh_mock_*` tools (preview/place/modify/cancel, order history/detail, positions, orderable cash, reconcile). They register only in the DEFAULT profile when `NH_MOCK_MCP_ENABLED=true` (default false); no live profile, lane allowlist, or TradingCodex profile lists them. Every check lives in `app/services/nhplug_mock/operations.py` (design actor O): limit-only grammar (the exact string "limit" plus a positive integer price) before any network or DB access, exact `dry_run`/`confirm`, a required idempotency key, all Stage 2 gates, credentials by key name, the retained key registry, and a fresh `/n2/acctinfo` acct_type=03 check before T1. Modify and cancel need a same-day place/modify row this ledger dispatched whose broker number is bound, plus a complete all-scope listing that still shows the order open; `amend_scope` comes from that listing. The one send site is `_dispatch_new_intent` calling the #711 dispatcher, and the caller answer is read back from the durable row. History, detail, and reconcile report empty or incomplete listings as unknown. `nh_mock_reconcile_orders` defaults to a read-only dry run; its confirmed run does V recovery, T9b, candidate recording, and T11/T12 through the ledger service and never sends. Reconcile answers `reconciled` only when every targeted row (sending/uncertain plus bound rows) is resolved; an incomplete scope or unverified bound row is `unknown`, otherwise any row left sending/uncertain is `partial` (some resolved) or `uncertain` (none); with none unresolved, an `anomaly` or `requires_manual_review` row is `needs_review` and is never counted as resolved; all with `success=false` and the rows named (#942). The dry run predicts the same words in `would_be_status` and says `verification_pending`, never `reconciled`, while bound or listed rows still need the confirmed ledger checks. Order detail on an incomplete all-scope listing is `success=false`, `status=unknown`, `reason=order_listing_incomplete`. Static guard and mutant tests: `tests/services/brokers/nhplug/test_static_guard.py`, `tests/services/nhplug_mock/test_nh_mock_mutants.py`, `tests/services/nhplug_mock/test_nh_mock_status_honesty.py`.
 - **Existing Stage 1 boundary**: the vendor nhplug SDK and NHPLUG_BASE_URL/NHPLUG_AUTH_URL overrides remain forbidden. The old read smoke is still limited to its operator-created three-key file, and the live same-key risk remains. No real order smoke is run by builders or testers; operator-desk performs it after merge.

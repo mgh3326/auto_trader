@@ -6,7 +6,11 @@
 
 - Telegram 승인 콜백 durable inbox (W5)
 - 매수 게이트 A/B shadow (ROB-1301)
+- /trader 승인 대기함 (task 890 PR A)
+- 자동승인 가격 폴백 (#1067)
 - 주차자산 proposal-bound 자동 매도 (task 817)
+- Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
+- Toss US 확장세션 승인 창 (#1116)
 
 ## 기준 원문 계약
 
@@ -180,6 +184,104 @@ dispatch와 send가 가능하다. 계좌 누락·불일치 또는 계측 실패�
 사람 승인 카드로 간다. 직접 주문 API, 기존 `cash_funding` 증거 계약,
 default-disabled 게이트, 스케줄러는 바뀌지 않는다. 자세한 운영 경계는
 `docs/runbooks/order-proposal-auto-approve-expand.md` §10을 따른다.
+
+### /trader 승인 대기함 (task 890 PR A)
+
+trader.robinco.dev `/trader` 페이지의 승인/기각/손절 2클릭 버튼은 **새 승인 경로가
+아니다** — 기존 `/invest/api/approvals/{id}/{approve|deny|loss-cut-confirm}`
+(`handle_web_approval`)만 호출하며, 그 함수는 Telegram 콜백과 같은
+`_handle_approve`/`_handle_deny`/`_handle_loss_cut_first_click` 을 부른다
+(`tests/services/order_proposals/test_trader_page_same_approval_path.py`).
+🔴 `/trading/` 은 CSRF 면제 경로이므로 이 페이지용 상태 변경 라우트를 `/trading/api/trader/`
+에 추가하지 마라. 목록 포함 규칙의 단일 정본은
+`app/services/trader_page/approval_inbox.py::inbox_block_reason` 이다(자동승인·만료·
+nonce 소비·미게시·알림 카드 제외). `INVEST_APPROVALS_ENABLED`/
+`INVEST_LOSS_CUT_APPROVAL_ENABLED` 기본 false 유지. 런북: `docs/runbooks/trader-page.md`.
+
+### 자동승인 가격 폴백 (#1067)
+
+`toss_live` preview 의 `current_price` 가 없거나 null/blank 일 때만 자동승인
+게이트가 `get_quote` 경로로 KIS 시세 1회를 읽어 **입력만** 대체한다 — 모든
+게이트(캡·거리·tier·loss guard)는 그 값으로 그대로 돈다. 채택 조건: 같은
+심볼·`instrument_type`, `source == "kis"`, `is_stale_price is False`(부재는
+fresh 아님), `data_state == "fresh"`, 유한 양수 가격. US 는 `market_unsupported`.
+결정에 `price_source`(`toss_preview`/`kis_quote_fallback`) 기록.
+
+- **모듈**: `app/services/order_proposals/auto_approve_price_fallback.py`,
+  `auto_approve.evaluate_auto_approve_eligibility(price_fallback=...)`,
+  `dispatch.dispatch_proposal(price_fallback_fn=...)`
+- 🔴 폴백 실패/stale 이면 같은 dispatch 에서 즉시 기존 카드(`price_or_quantity_missing`) —
+  `price_context_message`(#1053) + 닫힌 `price_fallback_reason` 보존. **지연 재평가·재시도
+  없음**(운영자 결정 #1083 B). 스케줄러/TaskIQ/detached task 추가 금지.
+- **런북**: `docs/runbooks/order-proposal-auto-approve-expand.md` §11
+
+### Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
+
+승인 카드(사람 판단 필요: manual/reconfirm/loss-cut/batch)는 항상
+승인 allowlist 첫 chat으로 간다. 자동승인 카드는 `vc` veto 버튼을
+달고 notices 목적지로 가므로, `ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID`가
+설정되면 그 chat도 `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR`에
+들어 있어야 한다 — 빠져 있으면 notices chat에서 온 모든 veto tap이
+chat_not_allowed로 거부된다. 자동승인·체결·만료 알림은
+`ORDER_PROPOSALS_TELEGRAM_NOTICES_CHAT_ID` /
+`ORDER_PROPOSALS_TELEGRAM_NOTICES_THREAD_ID`가 설정됐을 때만 그 목적지로
+가며, 미설정이면 종전 팬아웃과 바이트 동일하게 동작한다. thread id는
+양의 정수만 유효하고, notices chat 없이 malformed/zero/negative면
+전체가 미설정으로 간주된다(notices chat이 있으면 chat-only로
+degrade). thread만 설정되면 chat은 allowlist 첫 항목으로 fallback한다.
+
+자동승인 알림의 라운드 키는 `open_auto_digest_round()` 스코프 하나다 —
+현재 `support_reserve_net_consume`의 post-commit dispatch 루프와
+`apply_decision_table`의 행 루프만 감싼다. 라운드 안의
+`dispatch_proposal`은 카드 발송 대신 item을 버퍼하고
+`ApprovalDispatchState.PENDING`을 반환하며, 스코프 종료 flush가
+Telegram UTF-16 4096 한계 안쪽으로 chunk를 만들어 한 메시지(필요시
+연속 chunk)로 보낸다. item 0개면 아무것도 보내지 않고, 라운드 밖
+standalone dispatch는 즉시 발송으로 유지된다. flush 실패는 item마다
+standalone과 동일한 durable 최종 처리(attempt fence, 브로커 cancel
+보상, `record_auto_notification_failure`) + Discord operator alert +
+`collector.outcomes` 기록이며, 호출자의 `pending` 결과는 scope 종료 후
+실제 outcome으로 reconcile된다. 공유 digest의 veto tap은
+`source_asof["auto_digest"]` 멤버를 재조회해 digest를 재렌더하므로
+형제 item의 살아있는 `vc` 버튼이 유지된다(standalone 카드는 종전
+wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, notices가
+설정됐을 때만 동일 본문을 별사본으로 보낸다(best-effort, 예외 삼킴).
+콜백 인가·nonce 단일소비·loss-cut 2클릭 규칙은 변경되지 않는다.
+
+### Toss US 확장세션 승인 창 (#1116)
+
+정책 키 `order_proposals.approval_window.toss_live_us_sessions`
+(`config/trading_policy.yaml`, 스키마 `OrderProposalApprovalWindowPolicy`)가
+`toss_live`/`equity_us` 제안이 쓸 수 있는 토스 US 세션을 정한다. 🔴 기본값
+`[regular]` 은 기존 하드코딩(정규장 전용)과 결정·policy stamp 가 바이트 동일하다.
+운영자가 정책 PR 로 `pre`/`post` 를 더할 때만 LIMIT `place` 제안에 그 세션이 열린다
+(`regular` 필수, 토스 데이마켓은 어휘에 없음, MARKET·replace·cancel 은 정규장 전용).
+
+- **모듈**: `app/services/order_proposals/approval_window.py`
+  (`_resolve_toss_us_session`, `apply_toss_us_extended_order_shape`),
+  읽기 `trading_policy_service.toss_live_us_approval_sessions` — 읽기 실패는
+  정규장 전용으로 fail-closed
+- 🔴 **정규장 밖은 정수 수량 LIMIT 만**: rung `notional`(금액 주문 = 토스
+  `orderAmount`)·소수/비양수 수량·지정가 부재는 `DEFER_SESSION_CLOSED` +
+  `toss_us_extended_session_refused:<사유>` 로 거부된다. 판정은
+  `evaluate_approval_window_boundary(rungs=...)` 안에 있고 모든 운영 게이트(카드·
+  일괄 요약·단건/일괄/손절 콜백·reconfirm·redispatch·revalidation rung 게이트·
+  transport hook)가 rungs 를 넘긴다(누락 시 정적 테스트 실패). **모두 브로커
+  preview/submit 이전**이며, 거부 멤버 하나가 일괄 승인 전체를 nonce 소비 전에 막는다.
+  보호 청산(`exit_intent`)은 기본 키에서 기존 validity-only 면제 그대로(캘린더 I/O
+  없음)이고, pre/post 를 켜면 토스 세션을 조회해(fail-open) 조회 뒤의 시각으로
+  세션을 판정하고 pre/post 중에는 같은 형태 규칙을 적용하며, 통과한 면제도 현재
+  토스 세션 종료 시각까지만 유효해 전송 직전 재표본에서 세션 전환이 fail-closed 된다. `toss_preview_order` 는 이 형태들을 로컬에서
+  통과시키지만 실주문은 정규장 밖 422 — **preview 통과 ≠ 접수 가능**
+- 🔴 KIS US·KR·crypto 는 이 키를 읽지 않는다. 키 값이 바뀌면 stamp 가 바뀌어 이전
+  값으로 발송된 카드는 승인 시 fail-closed
+- **DAY 만료 기록**: pre/post 결정의 `session_evidence.day_expiry` 와 발송 카드의
+  `source_asof.approval_window_day_expiry`. pre 접수는 다음 토스 정규장 종료(토스
+  문서 근거, `measured=false`), post 접수는 `expected_expiry_at=null`(미측정).
+  KR 키 `order.day_expiry_kst` 에서 유도하지 않는다. 실측 카드(#908/#1032)가
+  채운다
+- **금지**: 이 PR 은 키를 켜지 않는다. 스케줄러·자동 플립 없음
+- **런북**: `docs/runbooks/order-proposals.md` §Approval-window defense in depth
 
 ## 유지 규약
 

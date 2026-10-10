@@ -314,6 +314,32 @@ class BinanceDemoLedgerRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def rows_with_instruments_by_ids(
+        self, ids: list[int], *, for_update: bool = False
+    ) -> dict[int, tuple[BinanceDemoOrderLedger, CryptoInstrument | None]]:
+        """Rows keyed by primary key, each with its instrument identity (#1268).
+
+        ``for_update`` locks the ledger rows only (never the shared instrument
+        rows) and repopulates them from the database, for the same stale
+        identity-map reason as :meth:`get_by_client_order_id`.
+        """
+        if not ids:
+            return {}
+        stmt = (
+            select(BinanceDemoOrderLedger, CryptoInstrument)
+            .outerjoin(
+                CryptoInstrument,
+                CryptoInstrument.id == BinanceDemoOrderLedger.instrument_id,
+            )
+            .where(BinanceDemoOrderLedger.id.in_(ids))
+        )
+        if for_update:
+            stmt = stmt.with_for_update(of=BinanceDemoOrderLedger).execution_options(
+                populate_existing=True
+            )
+        result = await self._session.execute(stmt)
+        return {int(row.id): (row, instrument) for row, instrument in result.all()}
+
     # ------------------------------------------------------------------
     # Read-only queries (ROB-307 ledger-backed durable scalping state §4).
     # ------------------------------------------------------------------

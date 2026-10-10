@@ -411,6 +411,266 @@ async def test_ingest_kr_disclosures_records_scraper_schema_failure(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_ingest_kr_disclosures_retries_failed_day_on_next_run(db_session):
+    """A zero-filings failure stays retryable: the next run re-fetches the day.
+
+    Regression anchor for #1085 — failed partitions must never become a
+    permanent skip; the DART path re-ingests every requested date, so a run
+    that later returns filings repairs the partition in place.
+    """
+    from app.models.market_events import (
+        MarketEvent,
+        MarketEventIngestionPartition,
+    )
+    from app.services.market_events import ingestion
+
+    trading_day = date(2026, 5, 7)
+
+    first = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        trading_day,
+        fetch_rows=AsyncMock(return_value=[]),
+    )
+    await db_session.commit()
+    assert first.status == "failed"
+    assert "confirmed XKRX trading session" in (first.error or "")
+
+    async def recovered_fetch(d):
+        assert d == trading_day
+        return [DART_ROW]
+
+    second = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        trading_day,
+        fetch_rows=recovered_fetch,
+    )
+    await db_session.commit()
+    assert second.status == "succeeded"
+    assert second.event_count == 1
+
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=trading_day,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "succeeded"
+    assert parts[0].event_count == 1
+    assert parts[0].last_error is None
+
+    events = await _load_events(
+        db_session,
+        MarketEvent,
+        source="dart",
+        category="earnings",
+        market="kr",
+        event_date=trading_day,
+        source_event_id=DART_ROW["rcept_no"],
+    )
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_is_idempotent_by_rcept_no(db_session):
+    """Re-ingesting the same rcept_no upserts instead of duplicating (#1085)."""
+    from app.models.market_events import MarketEvent, MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    trading_day = date(2026, 5, 7)
+
+    async def fake_fetch(d):
+        assert d == trading_day
+        return [dict(DART_ROW)]
+
+    for _ in range(2):
+        result = await ingestion.ingest_kr_disclosures_for_date(
+            db_session, trading_day, fetch_rows=fake_fetch
+        )
+        await db_session.commit()
+        assert result.status == "succeeded"
+        assert result.event_count == 1
+
+    events = await _load_events(
+        db_session,
+        MarketEvent,
+        source="dart",
+        category="earnings",
+        market="kr",
+        event_date=trading_day,
+        source_event_id=DART_ROW["rcept_no"],
+    )
+    assert len(events) == 1
+
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=trading_day,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "succeeded"
+    assert parts[0].event_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_fails_zero_when_all_rows_unparseable(
+    db_session,
+):
+    """Fetched-but-unusable rows still count as zero on a trading day (#1085).
+
+    The guard keys on the number of events actually upserted, not the raw row
+    count — a scraper that returns malformed rows must not mark the day
+    succeeded.
+    """
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    trading_day = date(2026, 5, 7)
+    unparseable = [
+        {"rcept_dt": "20260507", "corp_name": "가상상사", "report_nm": "보고서"},
+        {"rcept_no": "", "rcept_dt": "20260507", "corp_name": "가상상사"},
+    ]
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        trading_day,
+        fetch_rows=AsyncMock(return_value=unparseable),
+    )
+    await db_session.commit()
+
+    assert result.status == "failed"
+    assert result.event_count == 0
+    assert "confirmed XKRX trading session" in (result.error or "")
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=trading_day,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "failed"
+    assert "confirmed XKRX trading session" in (parts[0].last_error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_accepts_zero_on_weekend(db_session):
+    """A weekend is a confirmed XKRX non-session: zero filings is legitimate."""
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    saturday = date(2026, 5, 9)
+    assert saturday.weekday() == 5
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        saturday,
+        fetch_rows=AsyncMock(return_value=[]),
+    )
+    await db_session.commit()
+
+    assert result.status == "succeeded"
+    assert result.event_count == 0
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=saturday,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "succeeded"
+    assert parts[0].event_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_accepts_zero_on_xkrx_substitute_holiday(
+    db_session,
+):
+    """2026-08-17 is a substitute holiday (Liberation Day 08-15 fell on a
+    Saturday): XKRX is closed, so zero filings is legitimate."""
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+    from app.services.market_events.session_calendar import trading_session_status
+
+    substitute_holiday = date(2026, 8, 17)
+    assert trading_session_status("kr", substitute_holiday) == "closed"
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        substitute_holiday,
+        fetch_rows=AsyncMock(return_value=[]),
+    )
+    await db_session.commit()
+
+    assert result.status == "succeeded"
+    assert result.event_count == 0
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=substitute_holiday,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "succeeded"
+    assert parts[0].event_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_fails_zero_on_shortened_xkrx_session(
+    db_session,
+):
+    """A shortened session is still a trading session (#1085).
+
+    2026-01-02 is the XKRX new-year session with a delayed 10:00 KST open
+    (confirmed via exchange_calendars): it is an "open" day for the zero-row
+    guard, so a zero-filings response is recorded failed, not succeeded.
+    """
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+    from app.services.market_events.session_calendar import trading_session_status
+
+    shortened_session = date(2026, 1, 2)
+    assert trading_session_status("kr", shortened_session) == "open"
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        shortened_session,
+        fetch_rows=AsyncMock(return_value=[]),
+    )
+    await db_session.commit()
+
+    assert result.status == "failed"
+    assert "confirmed XKRX trading session" in (result.error or "")
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=shortened_session,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "failed"
+    assert "confirmed XKRX trading session" in (parts[0].last_error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_ingest_us_earnings_records_failure_when_upsert_fails(
     db_session, monkeypatch
 ):

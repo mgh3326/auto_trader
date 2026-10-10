@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -15,6 +15,35 @@ TargetFetchFn = Callable[..., Any]
 TossVetoReconcileFn = Callable[..., Any]
 
 _CANCELLABLE_STATES = frozenset({"acked", "resting", "partially_filled", "unverified"})
+
+
+def classify_veto_outcome(outcome: Mapping[str, Any]) -> str:
+    """Map one ``cancel_auto_submitted_rungs`` outcome to a display bucket.
+
+    ``result: "cancel_failed"`` covers two evidentially distinct cases (see
+    ``cancel_auto_submitted_rungs``): (1) the fresh broker fetch already
+    reports the target ``cancelled`` but the Toss-only second-stage ledger
+    reconcile hasn't confirmed yet (``broker_status == "cancelled"``), and
+    (2) the fetch itself never produced a status (broker read failure ->
+    ``broker_status is None``). Neither is proof the cancel did NOT take
+    effect -- ROB-1246: the real Acceptance A run hit case (1) and the
+    operator saw a false "취소 실패" for a cancel that had already succeeded
+    at the broker and converged moments later via a follow-up reconcile.
+    Only a fetched, non-cancelled broker status is a confirmed failure.
+    """
+    result = outcome.get("result")
+    if result in {"filled", "cancelled"}:
+        return result
+    if result == "cancel_failed":
+        broker_status = outcome.get("broker_status")
+        if broker_status == "cancelled" or broker_status is None:
+            return "unconfirmed"
+        return "failed"
+    # "not_cancellable": the rung was never in a broker-cancellable state
+    # (already resolved via another path, or missing a broker_order_id) --
+    # there is no pending broker evidence to wait on, so this is a definite
+    # failure bucket rather than "unconfirmed".
+    return "failed"
 
 
 async def reconcile_toss_auto_veto_terminal(

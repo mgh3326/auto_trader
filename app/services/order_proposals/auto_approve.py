@@ -133,6 +133,13 @@ from app.services.order_proposals.approval_message import (
 from app.services.order_proposals.auto_approve_audit import (
     AUTO_APPROVE_REJECTIONS_KEY,
 )
+from app.services.order_proposals.auto_approve_price_fallback import (
+    PRICE_FALLBACK_FAILURE_REASONS,
+    PRICE_SOURCE_KIS_QUOTE_FALLBACK,
+    PRICE_SOURCE_TOSS_PREVIEW,
+    PriceFallback,
+    preview_current_price_absent,
+)
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_EXIT_INTENT,
     parse_funding_target,
@@ -645,6 +652,7 @@ def evaluate_auto_approve_eligibility(
     cash_funding_shortfall: Decimal | None = None,
     cash_funding_cumulative_notional: Decimal | None = None,
     now: datetime | None = None,
+    price_fallback: PriceFallback | None = None,
 ) -> AutoApproveDecision:
     """Classify a rung using the fresh submit-time preview, failing closed.
 
@@ -659,11 +667,30 @@ def evaluate_auto_approve_eligibility(
     stateful readings owned by dispatch.  They intentionally default to
     ``None``: a caller that cannot measure either is demoted to the human
     approval card rather than inheriting the exception.
+
+    ``price_fallback`` (#1067) is consulted only for a ``toss_live`` rung whose
+    preview omitted ``current_price`` or sent it null/blank. It substitutes the
+    *input*; every gate below runs unchanged on it, so it can never produce a
+    looser decision than the same price arriving in the preview. It is
+    ignored whenever the preview carries a price, and for every other
+    account mode.
     """
 
     base = {"policy_version": limits.policy_version}
+    # #1053: the Toss preview's own diagnostic for *why* a field came back
+    # empty (e.g. a transient client.prices failure that emptied
+    # current_price). It is evidence, never a gate input: reject() copies the
+    # string into decision details so the bounded audit projector can store it
+    # next to the rung record. Non-string/malformed values are dropped here.
+    price_context_message = (
+        preview.get("price_context_message") if isinstance(preview, dict) else None
+    )
+    if not isinstance(price_context_message, str) or not price_context_message.strip():
+        price_context_message = None
 
     def reject(reason: str, **details: Any) -> AutoApproveDecision:
+        if price_context_message is not None:
+            details["price_context_message"] = price_context_message
         return AutoApproveDecision(False, reason, {**base, **details})
 
     mode = limits.mode
@@ -807,6 +834,28 @@ def evaluate_auto_approve_eligibility(
         return reject("parking_sell_preview_binding_missing")
 
     current_price = _decimal(preview.get("current_price"))
+    price_fallback_details: dict[str, str] = {}
+    if account_mode == "toss_live":
+        # #1067: record which price every gate below ran on. The fallback is
+        # read only when the preview has no price at all; a present value --
+        # even a malformed one -- is used (or rejected) exactly as before.
+        if not preview_current_price_absent(preview):
+            base["price_source"] = PRICE_SOURCE_TOSS_PREVIEW
+        elif price_fallback is not None:
+            fallback_price = price_fallback.price
+            if (
+                price_fallback.failure_reason is None
+                and isinstance(fallback_price, Decimal)
+                and fallback_price.is_finite()
+                and fallback_price > 0
+            ):
+                current_price = fallback_price
+                base["price_source"] = PRICE_SOURCE_KIS_QUOTE_FALLBACK
+                base["current_price"] = _text(current_price)
+            else:
+                price_fallback_details["price_fallback_reason"] = _known_value(
+                    price_fallback.failure_reason, PRICE_FALLBACK_FAILURE_REASONS
+                )
     limit_price = _decimal(getattr(rung, "limit_price", None))
     quantity = _decimal(getattr(rung, "quantity", None))
     missing_inputs = [
@@ -819,7 +868,11 @@ def evaluate_auto_approve_eligibility(
         if value is None or value <= 0
     ]
     if missing_inputs:
-        return reject("price_or_quantity_missing", missing_inputs=missing_inputs)
+        return reject(
+            "price_or_quantity_missing",
+            missing_inputs=missing_inputs,
+            **price_fallback_details,
+        )
 
     cash_funding_active = False
     cash_funding_details: dict[str, str] = {}

@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo.errors import (
     BinanceDemoInvalidProduct,
     BinanceDemoInvalidStateTransition,
@@ -148,6 +149,19 @@ class BinanceDemoLedgerService:
         self, client_order_id: str
     ) -> BinanceDemoOrderLedger | None:
         return await self._repo.get_by_client_order_id(client_order_id)
+
+    async def rows_with_instruments_by_ids(
+        self, ids: list[int], *, for_update: bool = False
+    ) -> dict[int, tuple[BinanceDemoOrderLedger, CryptoInstrument | None]]:
+        """Read exact rows by primary key with their instrument (#1268).
+
+        Read-only. ``for_update`` row-locks the ledger rows inside the caller's
+        transaction so an operator lever can re-verify them before it moves
+        them through the ``record_*`` transitions below.
+        """
+        return await self._repo.rows_with_instruments_by_ids(
+            list(ids), for_update=for_update
+        )
 
     # ------------------------------------------------------------------
     # Read-only surface (ROB-307 ledger-backed durable scalping state §4).

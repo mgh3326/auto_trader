@@ -24,6 +24,7 @@ import hashlib
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -51,12 +52,48 @@ from app.services.order_proposals.approval_window_contract import (
     valid_until_block,
 )
 from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
+from app.services.trading_policy_service import toss_live_us_approval_sessions
 
 POLICY_VERSION = "order-proposal-approval-window-v1"
 
 _KST = ZoneInfo("Asia/Seoul")
 _NEW_YORK = ZoneInfo("America/New_York")
 _NXT_SESSIONS = frozenset({"nxt_premarket", "nxt_after"})
+# #1116: Toss US sessions that order_proposals.approval_window.
+# toss_live_us_sessions may open on top of regular.
+_TOSS_US_EXTENDED_SESSIONS = frozenset({"pre", "post"})
+_TOSS_US_REGULAR_ONLY: tuple[str, ...] = ("regular",)
+TOSS_US_EXTENDED_REFUSAL_PREFIX = "toss_us_extended_session_refused"
+
+
+@dataclass(frozen=True)
+class DayExpiryExpectation:
+    """#1116: what a DAY order sent in a Toss US extended session means.
+
+    Toss decides the session from the submit time and exposes no session
+    field, and extended-session DAY expiry is unmeasured. ``measured`` stays
+    False until the measurement card records the real death time;
+    ``expected_expiry_at`` is None where not even documentation says.
+    """
+
+    time_in_force: str
+    submission_session: str
+    expected_expiry_at: datetime | None
+    basis: str
+    measured: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "time_in_force": self.time_in_force,
+            "submission_session": self.submission_session,
+            "expected_expiry_at": (
+                self.expected_expiry_at.isoformat()
+                if self.expected_expiry_at is not None
+                else None
+            ),
+            "basis": self.basis,
+            "measured": self.measured,
+        }
 
 
 @dataclass(frozen=True)
@@ -71,6 +108,7 @@ class SubmissionSessionEvidence:
     allowed_until: datetime | None = None
     next_allowed_at: datetime | None = None
     detail: str | None = None
+    day_expiry: DayExpiryExpectation | None = None
 
     def __post_init__(self) -> None:
         for field_name, value in (
@@ -132,6 +170,13 @@ class ApprovalWindowDecision:
                         else None
                     ),
                     "detail": evidence.detail,
+                    # #1116: present only for a Toss US extended session, so
+                    # every pre-#1116 decision serializes byte-identically.
+                    **(
+                        {"day_expiry": evidence.day_expiry.to_dict()}
+                        if evidence.day_expiry is not None
+                        else {}
+                    ),
                 }
                 if evidence is not None
                 else None
@@ -316,9 +361,8 @@ async def resolve_krx_after_capability(
     return capability.krx_after_tradable, capability.reason
 
 
-async def _resolve_toss_us_session(
-    group: Any, now: datetime
-) -> SubmissionSessionEvidence:
+async def _resolve_toss_us_regular_session(now: datetime) -> SubmissionSessionEvidence:
+    """Regular-only Toss US window: the pre-#1116 behaviour, unchanged."""
     local = now.astimezone(_KST)
     calendar = await get_toss_market_calendar("us", local.date())
     if calendar is None:
@@ -356,6 +400,382 @@ async def _resolve_toss_us_session(
         if session == "regular" and current is not None
         else None,
         next_allowed_at=next_open,
+    )
+
+
+def _toss_us_policy_sessions() -> tuple[str, ...]:
+    """Allowed Toss US sessions from order_proposals.approval_window.
+
+    A policy that cannot be read is not a capability: it falls back to the
+    regular-only window, which is exactly the pre-#1116 behaviour.
+    """
+    try:
+        return toss_live_us_approval_sessions()
+    except Exception:  # noqa: BLE001 - unreadable policy never opens a session
+        return _TOSS_US_REGULAR_ONLY
+
+
+def _toss_us_group_extended_refusal(group: Any) -> str | None:
+    """Group-level reason a proposal may not use a Toss US extended session.
+
+    Only a LIMIT place qualifies. Replace and cancel stay regular-only: their
+    extended-session broker behaviour is unmeasured.
+    """
+    _market, _account_mode, action, order_type = _contract_fields(group)
+    if order_type != "limit":
+        return "market_order" if order_type == "market" else "order_type_not_limit"
+    if action != "place":
+        return f"action_not_place:{action}"
+    return None
+
+
+def _positive_finite_decimal(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not parsed.is_finite() or parsed <= 0:
+        return None
+    return parsed
+
+
+def toss_us_extended_order_refusal(group: Any, rungs: Sequence[Any]) -> str | None:
+    """Reason an order may not be sent in a Toss US pre/post session.
+
+    Outside regular only integer-quantity LIMIT orders pass. Toss rejects
+    amount-based (orderAmount) and fractional orders outside regular hours
+    with 422 on the real order only; toss_preview_order passes them locally,
+    so a passing preview is no evidence of acceptance and this check must run
+    before any broker call. A rung ``notional`` is how a proposal expresses an
+    amount-based order, so any rung notional is refused here.
+    """
+    group_refusal = _toss_us_group_extended_refusal(group)
+    if group_refusal is not None:
+        return group_refusal
+    if not rungs:
+        return "rungs_missing"
+    for rung in rungs:
+        if getattr(rung, "notional", None) is not None:
+            return "amount_based_order"
+        quantity = _positive_finite_decimal(getattr(rung, "quantity", None))
+        if quantity is None:
+            return "quantity_invalid"
+        if quantity != quantity.to_integral_value():
+            return "fractional_quantity"
+        if _positive_finite_decimal(getattr(rung, "limit_price", None)) is None:
+            return "limit_price_missing"
+    return None
+
+
+def apply_toss_us_extended_order_shape(
+    decision: ApprovalWindowDecision,
+    *,
+    group: Any,
+    rungs: Sequence[Any],
+) -> ApprovalWindowDecision:
+    """Refuse a non-integer-LIMIT order an extended-session window allowed.
+
+    The session resolver only sees the proposal group, so the rung shape is
+    checked here, from evaluate_approval_window_boundary, with the rungs that
+    every production gate passes to it. A decision
+    that is not an allowed Toss US pre/post decision is returned unchanged,
+    so the default regular-only key never reaches this refusal.
+    """
+    evidence = decision.evidence
+    if (
+        not decision.allowed
+        or evidence is None
+        or not evidence.known
+        or decision.market != "equity_us"
+        or decision.account_mode != "toss_live"
+        or evidence.current_session not in _TOSS_US_EXTENDED_SESSIONS
+    ):
+        return decision
+    refusal = toss_us_extended_order_refusal(group, rungs)
+    if refusal is None:
+        return decision
+    reason = f"{TOSS_US_EXTENDED_REFUSAL_PREFIX}:{refusal}"
+    refused = replace(
+        evidence,
+        allowed_now=False,
+        allowed_until=None,
+        detail=reason,
+        day_expiry=None,
+    )
+    code = (
+        ApprovalWindowCode.NO_EXECUTABLE_WINDOW
+        if refused.next_allowed_at is not None
+        and decision.valid_until is not None
+        and refused.next_allowed_at >= decision.valid_until
+        else ApprovalWindowCode.DEFER_SESSION_CLOSED
+    )
+    return replace(decision, code=code, evidence=refused, detail=reason)
+
+
+def toss_us_extended_order_shape_applies(group: Any) -> bool:
+    """Whether the pre/post order-shape rule can apply to this proposal.
+
+    True only for a toss_live / equity_us proposal while the policy key
+    enables pre or post. Callers use it to skip a rung read that the default
+    regular-only key never needs.
+    """
+    market, account_mode, _action, _order_type = _contract_fields(group)
+    return (
+        market == "equity_us"
+        and account_mode == "toss_live"
+        and bool(set(_toss_us_policy_sessions()) & _TOSS_US_EXTENDED_SESSIONS)
+    )
+
+
+def _toss_us_session_window(
+    local: datetime, calendar: Any
+) -> tuple[str, datetime | None]:
+    """(session, end of that session) for one Toss US instant.
+
+    Every calendar window (day/pre/regular/post) is considered. Outside all
+    of them the session is ``closed`` and it ends at the next window start;
+    None when the calendar shows no later window.
+    """
+    windows: list[tuple[str, TossSessionWindow]] = []
+    for day in calendar.days:
+        if not isinstance(day, TossUsMarketDay):
+            continue
+        for label, window in (
+            ("day", day.day_market),
+            ("pre", day.pre_market),
+            ("regular", day.regular_market),
+            ("post", day.after_market),
+        ):
+            if window is not None:
+                windows.append((label, window))
+    session = us_toss_session_for(local, calendar=calendar) or "closed"
+    containing = next(
+        (
+            window
+            for label, window in windows
+            if label == session and window.contains(local)
+        ),
+        None,
+    )
+    if containing is not None:
+        return session, containing.end
+    return session, _next_window_start(
+        [window for _label, window in windows], after=local
+    )
+
+
+async def _toss_us_exit_extended_order_shape(
+    decision: ApprovalWindowDecision,
+    *,
+    group: Any,
+    rungs: Sequence[Any],
+    now_fn: Callable[[], datetime],
+) -> ApprovalWindowDecision:
+    """Apply the pre/post order-shape rule to a protective-exit exemption.
+
+    Under the default regular-only key this returns the exemption untouched
+    without any I/O, exactly as before #1116. Once the operator enables an
+    extended session, a Toss US exit sent during pre/post must also be an
+    integer-quantity LIMIT: Toss refuses the other shapes outside regular on
+    the real order only. The session is classified at a clock sample taken
+    after the calendar await, and the exemption's allowed interval is cut at
+    the end of that session, so a session roll before the completion
+    re-sample fails closed instead of carrying an old classification. The
+    calendar lookup fails open: an unavailable calendar never blocks a
+    protective exit.
+    """
+    if not decision.allowed or not toss_us_extended_order_shape_applies(group):
+        return decision
+    try:
+        calendar = await get_toss_market_calendar(
+            "us", decision.observed_at.astimezone(_KST).date()
+        )
+    except Exception:  # noqa: BLE001 - unknown session keeps the exit exemption
+        calendar = None
+    if calendar is None:
+        return decision
+    sampled = now_fn()
+    session, session_end = _toss_us_session_window(sampled.astimezone(_KST), calendar)
+    evidence = decision.evidence
+    assert evidence is not None
+    refusal = (
+        toss_us_extended_order_refusal(group, rungs)
+        if session in _TOSS_US_EXTENDED_SESSIONS
+        else None
+    )
+    if refusal is not None:
+        reason = f"{TOSS_US_EXTENDED_REFUSAL_PREFIX}:{refusal}"
+        return replace(
+            decision,
+            code=ApprovalWindowCode.DEFER_SESSION_CLOSED,
+            observed_at=sampled,
+            evidence=replace(
+                evidence,
+                current_session=session,
+                allowed_now=False,
+                allowed_until=None,
+                detail=reason,
+            ),
+            detail=reason,
+        )
+    if session_end is None:
+        return decision
+    bounded_until = (
+        min(evidence.allowed_until, session_end)
+        if evidence.allowed_until is not None
+        else session_end
+    )
+    return replace(decision, evidence=replace(evidence, allowed_until=bounded_until))
+
+
+def _toss_us_windows(
+    calendar: Any, allowed_sessions: tuple[str, ...]
+) -> list[tuple[str, TossSessionWindow]]:
+    windows: list[tuple[str, TossSessionWindow]] = []
+    for day in calendar.days:
+        if not isinstance(day, TossUsMarketDay):
+            continue
+        if "pre" in allowed_sessions and day.pre_market is not None:
+            windows.append(("pre", day.pre_market))
+        if day.regular_market is not None:
+            windows.append(("regular", day.regular_market))
+        if "post" in allowed_sessions and day.after_market is not None:
+            windows.append(("post", day.after_market))
+    return sorted(windows, key=lambda item: item[1].start)
+
+
+def _toss_us_day_expiry(
+    session: str,
+    current: TossSessionWindow,
+    regular_windows: Sequence[TossSessionWindow],
+) -> DayExpiryExpectation:
+    """Expected death of a DAY order sent now, flagged unmeasured.
+
+    Toss documents DAY as "unfilled orders are cancelled at the regular
+    close", so a pre submission is expected to die at the close of the
+    regular session that follows it. What DAY means after that close (a post
+    submission) is not documented and not measured, so no time is guessed.
+    Nothing here reads order.day_expiry_kst, which is the KR key.
+    """
+    if session == "pre":
+        following = next(
+            (window for window in regular_windows if window.start >= current.end),
+            None,
+        )
+        if following is not None:
+            return DayExpiryExpectation(
+                time_in_force="DAY",
+                submission_session=session,
+                expected_expiry_at=following.end,
+                basis="toss_openapi_doc:day_cancels_unfilled_at_regular_close",
+            )
+        return DayExpiryExpectation(
+            time_in_force="DAY",
+            submission_session=session,
+            expected_expiry_at=None,
+            basis="unknown:following_regular_window_unavailable",
+        )
+    return DayExpiryExpectation(
+        time_in_force="DAY",
+        submission_session=session,
+        expected_expiry_at=None,
+        basis="unmeasured:toss_day_order_submitted_after_regular_close",
+    )
+
+
+async def _resolve_toss_us_extended_session(
+    now: datetime, *, allowed_sessions: tuple[str, ...]
+) -> SubmissionSessionEvidence:
+    local = now.astimezone(_KST)
+    source = "toss_market_calendar:us+order_proposals.approval_window"
+    calendar = await get_toss_market_calendar("us", local.date())
+    if calendar is None:
+        return SubmissionSessionEvidence(
+            known=False,
+            source=source,
+            current_session="unknown",
+            allowed_sessions=allowed_sessions,
+            allowed_now=False,
+            detail="calendar_unavailable",
+        )
+    regular_windows = _toss_us_regular_windows(calendar)
+    windows = _toss_us_windows(calendar, allowed_sessions)
+    session = us_toss_session_for(local, calendar=calendar) or "closed"
+    allowed_now = session in allowed_sessions
+    current = (
+        next(
+            (
+                window
+                for label, window in windows
+                if label == session and window.contains(local)
+            ),
+            None,
+        )
+        if allowed_now
+        else None
+    )
+    next_open = _next_window_start(
+        [window for _label, window in windows],
+        after=current.end if current is not None else local,
+    )
+    if not regular_windows or (allowed_now and current is None):
+        return SubmissionSessionEvidence(
+            known=False,
+            source=source,
+            current_session=session,
+            allowed_sessions=allowed_sessions,
+            allowed_now=False,
+            detail="allowed_window_unavailable",
+        )
+    if not allowed_now and next_open is None:
+        return SubmissionSessionEvidence(
+            known=False,
+            source=source,
+            current_session=session,
+            allowed_sessions=allowed_sessions,
+            allowed_now=False,
+            detail="next_allowed_window_unavailable",
+        )
+    return SubmissionSessionEvidence(
+        known=True,
+        source=source,
+        current_session=session,
+        allowed_sessions=allowed_sessions,
+        allowed_now=allowed_now,
+        allowed_until=current.end if current is not None else None,
+        next_allowed_at=next_open,
+        day_expiry=(
+            _toss_us_day_expiry(session, current, regular_windows)
+            if current is not None and session in _TOSS_US_EXTENDED_SESSIONS
+            else None
+        ),
+    )
+
+
+async def _resolve_toss_us_session(
+    group: Any, now: datetime
+) -> SubmissionSessionEvidence:
+    policy_sessions = _toss_us_policy_sessions()
+    if policy_sessions == _TOSS_US_REGULAR_ONLY:
+        return await _resolve_toss_us_regular_session(now)
+    refusal = _toss_us_group_extended_refusal(group)
+    if refusal is not None:
+        # The key does not open pre/post for this proposal: regular only,
+        # with the refusal named while an opened session is running.
+        evidence = await _resolve_toss_us_regular_session(now)
+        if (
+            evidence.known
+            and not evidence.allowed_now
+            and evidence.current_session in policy_sessions
+        ):
+            return replace(
+                evidence, detail=f"{TOSS_US_EXTENDED_REFUSAL_PREFIX}:{refusal}"
+            )
+        return evidence
+    return await _resolve_toss_us_extended_session(
+        now, allowed_sessions=policy_sessions
     )
 
 
@@ -571,7 +991,10 @@ async def resolve_submission_session(
     """Resolve broker/market-aware submission capability.
 
     Proposal orders have DAY semantics and no persisted extended-hours
-    capability bit. US live proposals are therefore regular-session only.
+    capability bit. US live proposals are regular-session only, except that
+    order_proposals.approval_window.toss_live_us_sessions may add the Toss
+    pre/post sessions for toss_live LIMIT place proposals (#1116; default
+    regular only). KIS US never reads that key.
     KR retains KRX regular plus NXT carry only when the existing symbol
     universe positively proves current NXT tradability; failing that, the KRX
     after-market 16:00-20:00 window opens only when the imported KRX list
@@ -809,6 +1232,7 @@ async def evaluate_approval_window_boundary(
     now_fn: Callable[[], datetime],
     expected_policy_stamp: str | None = None,
     require_policy_stamp: bool = True,
+    rungs: Sequence[Any] | None = None,
 ) -> ApprovalWindowDecision:
     """Evaluate and then re-sample at the exact caller boundary.
 
@@ -816,10 +1240,22 @@ async def evaluate_approval_window_boundary(
     revalidation. It applies the exit-intent exemption before invoking even an
     injected evaluator, so protective exits cannot touch calendar/session I/O
     or degrade into ``CALENDAR_UNKNOWN`` through policy-stamp binding.
+
+    #1116: every production caller passes the proposal ``rungs``; they are
+    what the Toss US pre/post order-shape rule (integer LIMIT only) checks.
+    That rule is inert under the default regular-only key. Only when the
+    operator has enabled pre/post does a protective exit look up the Toss US
+    session, fail-open (an unknown calendar keeps the exemption); its allowed
+    interval then ends with that session, so the completion re-sample below
+    catches a session roll.
     """
     evaluation_now = now_fn()
     exit_exemption = _exit_intent_window_exemption(group, now=evaluation_now)
     if exit_exemption is not None:
+        if rungs is not None:
+            exit_exemption = await _toss_us_exit_extended_order_shape(
+                exit_exemption, group=group, rungs=rungs, now_fn=now_fn
+            )
         return recheck_approval_window_decision(
             group,
             exit_exemption,
@@ -829,6 +1265,10 @@ async def evaluate_approval_window_boundary(
     decision = await window_evaluator(group, now=evaluation_now)
     if require_policy_stamp:
         decision = bind_approval_window_policy(decision, expected_policy_stamp)
+    if rungs is not None:
+        decision = apply_toss_us_extended_order_shape(
+            decision, group=group, rungs=rungs
+        )
     return recheck_approval_window_decision(group, decision, now=now_fn())
 
 

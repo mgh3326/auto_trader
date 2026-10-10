@@ -36,6 +36,9 @@ from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_not_evaluated,
     project_auto_approve_rejections,
 )
+from app.services.order_proposals.auto_digest import (
+    send_order_proposal_expiry_notice,
+)
 from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
     fetch_target_order,
@@ -61,6 +64,21 @@ from app.services.order_proposals.errors import (
     OrderProposalNotFound,
     OrderProposalUnsupportedTargetAction,
     OrderProposalVoidNotAuthorized,
+)
+from app.services.order_proposals.kis_leftover_inference import (
+    EXPIRED_INFERENCE_CAVEAT,
+    is_expired_inference_reason,
+)
+from app.services.order_proposals.kis_leftover_inference_service import (
+    KisLeftoverInferenceService,
+)
+from app.services.order_proposals.kr_buy_blocking import (
+    build_kr_buy_blocking_report,
+)
+from app.services.order_proposals.night_sweep import (
+    NIGHT_SWEEP_GROUP_STATES,
+    NIGHT_SWEEP_RUNG_STATES,
+    NIGHT_SWEEP_VOID_REASON,
 )
 from app.services.order_proposals.redispatch import validate_proposal_redispatch
 from app.services.order_proposals.rung_reason import project_rung_void_reason_group
@@ -146,6 +164,13 @@ def _group_dict(g: Any) -> dict[str, Any]:
 
 def _rung_dict(r: Any) -> dict[str, Any]:
     void_reason = getattr(r, "void_reason", None)
+    extra: dict[str, Any] = {}
+    if is_expired_inference_reason(void_reason):
+        # #1112: an inferred expiry must never read like broker-confirmed one.
+        extra = {
+            "expiry_basis": "inference",
+            "expiry_caveat": EXPIRED_INFERENCE_CAVEAT,
+        }
     return {
         "rung_index": r.rung_index,
         "side": r.side,
@@ -160,6 +185,7 @@ def _rung_dict(r: Any) -> dict[str, Any]:
         ),
         "broker_order_id": r.broker_order_id,
         "correlation_id": r.correlation_id,
+        **extra,
     }
 
 
@@ -382,7 +408,13 @@ async def _complete_committed_proposal_create(
             }
         else:
             dispatch_payload = dispatch_result.as_dict()
-            if not dispatch_result.ok:
+            # PENDING is not a failure: the proposal's auto-approve notice was
+            # buffered into the active digest round (ROB-1052) and will be
+            # finalized by that scope's flush, so no operator alert fires.
+            if (
+                not dispatch_result.ok
+                and dispatch_result.state is not ApprovalDispatchState.PENDING
+            ):
                 operator_alert = await _alert_non_sent_dispatch(
                     proposal_id,
                     dispatch_state=dispatch_result.state.value,
@@ -477,6 +509,24 @@ async def _edit_expired_approval_message(
             "message_id=%s",
             message_id,
         )
+
+
+async def _send_expiry_notice(*, symbol: str) -> None:
+    """Send the same expiry text to the notices destination (ROB-1052).
+
+    The approval card edit stays at its original destination; this is the
+    standalone notice copy.  Best-effort exactly like the card edit: the
+    sweep's durable expiry is already committed.
+    """
+    try:
+        notifier = _get_trade_notifier()
+    except Exception:  # noqa: BLE001 - notices never fail the sweep
+        logger.debug("order_proposal_expire_sweep: notifier unavailable")
+        return
+    await send_order_proposal_expiry_notice(
+        notifier=notifier,
+        text=f"⏰ 제안 만료됨\n종목: {_escape_telegram_markdown(symbol)}",
+    )
 
 
 async def _edit_superseded_approval_message(
@@ -868,15 +918,24 @@ async def order_proposal_list(
     limit: int = 50,
     symbol: str | None = None,
     lifecycle_state: str | None = None,
+    include_kr_buy_blocking: bool = False,
 ) -> dict[str, Any]:
-    """List recent proposals (read-only). limit is clamped to 1..200."""
+    """List recent proposals (read-only). limit is clamped to 1..200.
+
+    ``include_kr_buy_blocking=True`` (#1112, default False; default output
+    unchanged) adds ``kr_buy_blocking``: every non-terminal KR buy proposal
+    row that counts against the 7-D one-active-buy-per-symbol rule, each with
+    its row id and blocking rule, plus rows the night sweep or the
+    expired[inference] rule cleared in the last 7 days. Unbounded by
+    ``limit``. A failed read is ``state="unknown"``, never an empty list.
+    """
     limit = max(1, min(int(limit), 200))
     async with AsyncSessionLocal() as session:
         svc = OrderProposalsService(session)
         rows = await svc.list_recent(
             limit=limit, symbol=symbol, lifecycle_state=lifecycle_state
         )
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "count": len(rows),
             "proposals": [
@@ -884,6 +943,25 @@ async def order_proposal_list(
                 for g, rs in rows
             ],
         }
+    if include_kr_buy_blocking:
+        result["kr_buy_blocking"] = await _kr_buy_blocking(symbol=symbol)
+    return result
+
+
+async def _kr_buy_blocking(*, symbol: str | None) -> dict[str, Any]:
+    try:
+        async with AsyncSessionLocal() as session:
+            return await build_kr_buy_blocking_report(
+                session,
+                now=now_kst(),
+                symbol=symbol,
+                unsettled_regular_buy_downgrade=(
+                    settings.kis_regular_buy_unsettled_expiry_1530
+                ),
+            )
+    except Exception:  # noqa: BLE001 - unknown, never "nothing blocks"
+        logger.warning("kr_buy_blocking read failed", exc_info=True)
+        return {"state": "unknown", "error": "kr_buy_blocking_read_failed"}
 
 
 async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
@@ -948,17 +1026,31 @@ async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
-async def run_order_proposal_expire_sweep(*, now: datetime) -> dict[str, Any]:
+async def run_order_proposal_expire_sweep(
+    *,
+    now: datetime,
+    lifecycle_states: frozenset[str] | None = None,
+    rung_states: frozenset[str] | None = None,
+    void_reason: str | None = None,
+) -> dict[str, Any]:
     """Execute the DB expiry sweep and clean up its Telegram messages.
 
     Shared by ``order_proposal_expire_sweep(dry_run=False)`` and the TaskIQ
     task (``app/tasks/order_proposal_expiry_tasks.py``) -- mirrors the
     toss_manual_activity pattern of a single non-MCP entry point both call.
+    The scope keywords (#1112 night sweep) only narrow the sweep.
     """
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
-        candidates_before = await service.list_expiry_candidates(now=now)
-        swept = await service.sweep_expired(now=now)
+        candidates_before = await service.list_expiry_candidates(
+            now=now, lifecycle_states=lifecycle_states
+        )
+        swept = await service.sweep_expired(
+            now=now,
+            lifecycle_states=lifecycle_states,
+            rung_states=rung_states,
+            void_reason=void_reason,
+        )
         await session.commit()
     for result in swept:
         await _edit_expired_approval_message(
@@ -966,12 +1058,42 @@ async def run_order_proposal_expire_sweep(*, now: datetime) -> dict[str, Any]:
             message_id=result.message_id,
             symbol=result.symbol,
         )
+        await _send_expiry_notice(symbol=result.symbol)
     return {
         "success": True,
         "swept_count": len(swept),
         "swept_proposal_ids": [str(result.proposal_id) for result in swept],
         "skipped_count": len(candidates_before) - len(swept),
     }
+
+
+async def run_order_proposal_night_sweep(*, now: datetime) -> dict[str, Any]:
+    """#1112 — the 16:30 / 07:00 KST night sweep. Records only.
+
+    1. Stale ``proposed`` groups past ``valid_until`` whose rungs still await a
+       human -> ``expired`` (the ROB-897 path, narrowed, rungs stamped with
+       ``NIGHT_SWEEP_VOID_REASON``).
+    2. KIS leftover ``resting`` regular-session DAY buy rungs that meet every
+       #1112 condition -> ``expired[inference]``; everything else is reported
+       and left blocking.
+
+    No broker read, no order creation, modification or cancellation.
+    """
+    expiry = await run_order_proposal_expire_sweep(
+        now=now,
+        lifecycle_states=NIGHT_SWEEP_GROUP_STATES,
+        rung_states=NIGHT_SWEEP_RUNG_STATES,
+        void_reason=NIGHT_SWEEP_VOID_REASON,
+    )
+    async with AsyncSessionLocal() as session:
+        inference = await KisLeftoverInferenceService(
+            session,
+            unsettled_regular_buy_downgrade=(
+                settings.kis_regular_buy_unsettled_expiry_1530
+            ),
+        ).apply(now=now)
+        await session.commit()
+    return {"success": True, "expiry": expiry, "inference": inference}
 
 
 async def order_proposal_expire_sweep(dry_run: bool = True) -> dict[str, Any]:
@@ -1241,7 +1363,9 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
         name="order_proposal_list",
         description=(
             "Read-only list of recent order proposals, optionally filtered by "
-            "symbol and/or lifecycle_state."
+            "symbol and/or lifecycle_state. include_kr_buy_blocking=True adds "
+            "the KR one-active-buy-per-symbol blocking rows (row id + rule) and "
+            "rows the night sweep / expired[inference] rule cleared."
         ),
     )(order_proposal_list)
     _ = mcp.tool(

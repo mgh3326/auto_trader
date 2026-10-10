@@ -32,10 +32,20 @@ class DartResponseSchemaError(RuntimeError):
     """The DART scraping response no longer matches the expected table shape."""
 
 
-async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]:
+async def fetch_dart_filings_for_date(
+    target_date: date,
+    *,
+    use_cache: bool = True,
+) -> list[dict[str, Any]]:
     """Return validated DART filings for one day.
 
     The OpenDartReader client is loaded lazily and reused across calls.
+
+    ``use_cache=True`` (default) preserves OpenDartReader's on-disk
+    ``docs_cache`` behavior — the scheduled daily path relies on it.
+    Backfill-style callers pass ``use_cache=False`` so every attempt is a
+    real network call: a cached error page would otherwise be re-served to
+    every retry of the same date.
     """
     client = await _get_client()
     if client is None:
@@ -45,7 +55,7 @@ async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]
     iso = target_date.isoformat()
 
     def fetch_sync() -> list[dict[str, Any]]:
-        df = client.list_date_ex(iso)
+        df = client.list_date_ex(iso, cache=use_cache)
         columns = getattr(df, "columns", None)
         if columns is None:
             raise DartResponseSchemaError(

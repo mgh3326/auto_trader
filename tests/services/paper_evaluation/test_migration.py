@@ -298,6 +298,29 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE public.krx_after_market_eligibility")
             )
+            # #1120 quotes consumer tables are later than this reconstructed
+            # boundary and already in Base.metadata; drop them so the
+            # migration creates them (their append-only triggers arrive only
+            # via alembic, not create_all).
+            for table in (
+                "quotes_trigger_firings",
+                "ladder_touch_events",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
+            # #1175 execution_ledger quarantine is later than this
+            # reconstructed boundary: drop the audit table and the three
+            # columns (their CHECKs go with them) so the migration adds them.
+            await connection.execute(
+                text("DROP TABLE review.execution_ledger_quarantine_events")
+            )
+            # #1250 kis_mock inference-expiry audit table is later too.
+            await connection.execute(
+                text("DROP TABLE review.kis_mock_inference_expiry_events")
+            )
+            for column in ("quarantined_by", "quarantine_reason", "quarantined_at"):
+                await connection.execute(
+                    text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")
+                )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 
