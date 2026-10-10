@@ -101,6 +101,7 @@ tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_build_policy_table_out_dir.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
+tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_lane_event_kickoff.py
@@ -258,6 +259,7 @@ tests/services/test_fill_event_handoff.py
 tests/services/test_fill_event_handoff_kick_filter.py
 tests/services/test_fill_event_handoff_watch_kick.py
 tests/services/test_fill_handoff_lookback.py
+tests/services/test_kis_mock_inference_expiry_db.py
 tests/services/test_kis_mock_terminal_expiry.py
 tests/services/test_legacy_stock_analysis_adapter.py
 tests/services/test_live_correlation.py
@@ -461,6 +463,7 @@ tests/test_symbol_analysis_contract.py
 tests/test_symbol_sectors_model.py
 tests/test_symbol_trade_settings.py
 tests/test_symbol_universe_common.py
+tests/test_t1250_kismock_inference_migration.py
 tests/test_toss_notification.py
 tests/test_toss_portfolio_service.py
 tests/test_toss_symbol_master_cli.py

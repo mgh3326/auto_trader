@@ -14,6 +14,7 @@
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
+- kis_mock 4행 Q-46 expired[inference] (#1250)
 - KIS Live Order Fill-Evidence Gate (ROB-395)
 - KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 - 7-D stale blocker night sweep + KIS expired[inference] (#1112)
@@ -323,6 +324,24 @@ allowlist change exists because `get_holdings` is already live-kr core.
 - **테스트**: `tests/services/execution_ledger/test_kis_lots.py`(순수), `test_kis_lots_db.py`(테스트 DB), `tests/mcp_server/test_get_holdings_ledger_lots.py`(golden·opt-in·격리),
   `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678), #1087 매도측: `test_kis_lots_sell_evidence.py`(순수·90분 경계·KST 자정·clamp),
   `test_kis_lots_sell_evidence_db.py`(테스트 DB·KIS client/HTTP 트랩으로 무호출 단언·get_holdings end-to-end).
+- **KIS live US 확장 (task #1173, 운영자 10-01)**: 같은 블록을 KIS live **US** 포지션(`market="us"`, `equity_us`)에도 붙인다 — `load_kis_live_us_lot_blocks` +
+  `build_symbol_block(market="us")`. KR 블록은 바이트 동일(`test_kis_lots_us.py` 의 pre-change golden `kis_lots_kr_blocks_golden.json`), 기본 출력도 불변.
+  - fill: `broker=kis`·`account_mode=live`·`instrument_type=equity_us`·`currency=USD`. authoritative 행의 venue 가 정확히 `NASD`/`NYSE`/`AMEX`(KIS 해외 주문 거래소 코드, 대소문자·공백만 정규화)가
+    아니면(`NASDAQ`·`NAS`·`krx`·빈값 …) 세지 않고 블록을 `unknown`(`unrecognized_us_venue_rows`)으로 만든다 — 조용히 거르지 않는다. 심볼은 holdings 의 DB dot-format 키로
+    `app/core/symbol.py` 변환(`BRK/B`·`BRK-B` → `BRK.B`)을 거쳐 맞춘다.
+  - 자기 주문: `review.live_order_ledger`(`broker=kis`·`account_scope=kis_live`·`market=us`, ROB-407) + `review.kis_live_order_ledger` 의 `equity_us` 행(계약상 없어야 하지만 있으면 차단에 쓴다).
+    증거 키 이름(`kis_live_order_ledger_open_*`)은 KR 과 동일하게 유지하고 출처는 `order_ledger_sources` 로 밝힌다.
+  - 🔴 "당일" = **US 거래일**: 20:00 America/New_York(애프터 마감, DST 반영)에 넘어간다 — KST 자정 이후에도 그 US 거래일의 주문·체결은 차단한다. KIS 주간거래(10:00 KST = 전일 20:00/21:00 ET) 주문은 다음 US 거래일 소속.
+  - freshness 는 같은 KIS reconcile run(한 run 이 `kr,us` 를 읽고 US fetch 오류는 run 전체를 실패시킴)을 쓴다. 브로커 수량 불일치는 항상 `unknown`. `external_orders_verifiable=false`·`scope` 문구 동일.
+  - 격리 행(#1175)은 어느 뷰에도 안 들어간다(`execution_ledger_in_effect()`, `test_quarantine_readers_db::test_us_lots_drop_the_quarantined_row` 가 filter-dropped 뮤턴트까지 증명).
+    아직 격리 안 된 접수통지 팬텀은 `websocket` 행이라 lot·순수량·수량대조·`sellable_by_ledger` 에 절대 안 들어가고, 당일 증거에서는 차단을 더할 뿐 줄이지 않는다.
+  - 🔴 websocket 행의 supersede(authoritative 행이 같은 주문을 덮음)는 US 에서 **같은 US 거래일**일 때만 성립한다 — KIS 주문번호는 날짜를 넘어 재사용되므로
+    과거 주문이 오늘 체결을 증거 뷰에서 지우지 못한다(tester r1 F1). 🔴 심볼 귀속은 **Python `_us_symbol_key`(`to_db_symbol(s.strip()).upper()`) 하나**로만 한다 — SQL 은 심볼을 비교·정규화·필터하지 않고(broker·mode·instrument_type·currency·격리·주문 원장 7일 창만), 읽은 행을 Python 에서 귀속한다. SQL 재구현이 혼합 구분자(r3 F3)·유니코드 대소문자(`ß`→`SS`, r4 B1)·유니코드 공백 패딩(r4 B2)에서 세 번 갈라졌기 때문이며, 정적 가드(`test_kis_lots_us_mutants.py`)가 로더의 SQL 심볼 표현을 금지한다. 체결 읽기는 FIFO 상 날짜 창이 없어 in-effect KIS live US 체결 전량을 읽는다. KR 키는 변경 전 그대로(golden 고정)이며 같은 잠재 문제는 별건 후속이다.
+  - 🔴 US 블록은 **브로커 포지션마다 하나**다 — 로더가 포지션 순서의 리스트를 돌려주고 attach 가 인덱스로 붙인다(심볼 키 조회 금지). 정규화 키가 같은 포지션이 2개 이상이면(`BRK/B`·`BRK.B`) **전부** `unknown`(`duplicate_positions_for_symbol`)이고 known 은 붙지 않는다(tester r5 B3, 마지막 쓰기 승리 금지). KR 의 같은 패턴은 hk 1295 별건.
+  - KR·US 는 별도 세션으로 읽어 한 시장 실패가 다른 시장 블록을 깎지 않는다. summary 는 `scope="kis_live_kr_us_positions"`·`positions_covered_by_market`, 비-live 라우팅은 `reason="kis_live_only"`.
+  - 🔴 #678 `kis_live_get_order_history` 차단·harness deny 불변. us-open-trade 프롬프트 문장은 운영자 PR 별건.
+  - **테스트**: `test_kis_lots_us.py`(순수·US 거래일·venue·팬텀·KR golden), `test_kis_lots_us_db.py`(테스트 DB·KIS/HTTP 트랩·get_holdings KR+US end-to-end),
+    `test_kis_lots_us_mutants.py`(디스크에서 센 US 가드 12곳의 assertion-RED 뮤턴트).
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 
@@ -360,6 +379,43 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
 일반 lifecycle 쓰기는 행 잠금과 fresh 재조회로 동시 만료를 확인하며, 만료된
 행에서는 전이를 거부한다. 조정 작업은 해당 충돌을 이벤트 없는 행별 skip으로
 기록한다.
+
+### kis_mock 4행 Q-46 expired[inference] (#1250)
+
+운영자 결정(hk #706 comment 1092, 10-05)으로 kis_mock 원장 80·66·64·63 **정확히
+4행**에만 #1112 `expired[inference]` 규칙을 적용하는 일회성 레버다.
+
+- **CLI**: `scripts/expire_kis_mock_rows_by_inference.py` — preview 기본, `--commit`,
+  `--ids` 는 정확히 그 4개(부분집합·그 밖 id·중복·범위 거부, DB 연결 전), `--decision-ref`
+  는 정확히 `Q-46`, `--reason`/`--actor` 필수, DB 는 `--database-url-env`(값 출력 금지)
+- **규칙/쓰기**: `app/services/kis_mock_inference_expiry.py`(순수, 조건별 `_check_*`) →
+  `kis_mock_inference_expiry_service.py`(사실 수집·FOR UPDATE 재판정) →
+  `KISMockLifecycleService.close_rows_by_q46_inference`(허용 id·open 상태로 가드된
+  UPDATE, 4행 아니면 전부 롤백). 브로커 호출·live 원장 읽기 0
+- 🔴 **생략은 정확히 2개**: strategy 대조와 reconcile coverage(#1112
+  `execution_ledger_covers_order_day` — kis_mock 에는 그 run 이 존재할 수 없음, director-1
+  option A). preview 가 행마다 `waived_conditions` 를 출력하고 닫힌 행·감사 행에 caveat 와 함께
+  기록한다. 생략은 4-id allowlist 안에서만 존재한다. 나머지 #1112 조건은
+  kis_mock 증거로 번역해 전부 판정하고, 한 행이라도 실패하면 배치 전체 무변경:
+  수락된 kis_mock KR 현금 BUY(native 응답 rt_cd 0·odno·ord_tmd 일치) · lifecycle
+  accepted/pending · DAY(00/01) · 정규장 접수 · #1112 deadline 경과 · 그 주문의 체결 증거
+  0(execution_ledger kis/mock 전 source·격리행 포함, 행 자체 체결 reason/수량, 같은
+  correlation 행) · 보유 불변(`holdings_baseline_qty` 기록 + 접수 이후일 수 있는 종목 체결 0)
+- **닫힌 행**: `expired` + `last_reconcile_detail.reason_code` = #1112 마커
+  `expired_inference:kis_regular_day_order_no_broker_original`, `expiry_caveat=no_broker_original`,
+  `operator_decision_ref=Q-46`. terminal 이라 open-order·예약·reconcile 리더에서 빠지고
+  일반 전이 API 는 거부, #881 도구는 `already_terminal`
+- **감사**: append-only `review.kis_mock_inference_expiry_events`(ledger_id UNIQUE, CHECK
+  ledger_id ∈ {63,64,66,80}·decision ref Q-46, UPDATE/DELETE/TRUNCATE 트리거 거부).
+  🔴 close↔audit 는 DB 가 결속: 같은 batch 로 닫힌 행이 아니면 감사 INSERT 거부, 마커가
+  붙은 행은 COMMIT 시 같은 batch 감사 행 필수(deferred constraint trigger — 4 id 밖·
+  accepted/pending→expired 외 전이·닫힌 행 재기록도 거부). id 는 정확히 built-in int 4개만
+  (float/numpy/bool/str 거부). 쓰기 초크포인트가 배치를 스스로 재잠금·재판정하고, UPDATE 뒤
+  모든 체결 소스를 다시 읽어 그 사이 커밋된 체결이면 전체 롤백. COMMIT 시점 deferred 트리거가 주문·종목·형제
+  행 체결과 4행 배치를 SQL 로 재확인(재확인 이후 커밋된 체결도 전체 거부). 마커가 붙은 닫힌 행은
+  UPDATE·DELETE 전부 거부(terminal — 마커를 지워 재오픈 불가)
+  마이그레이션 `20261005_t1250_kismock_inf`(CREATE TABLE 만). 두 번째 commit 은 무변경 no-op
+- **런북**: `docs/runbooks/kis-mock-expired-inference-q46.md`. 실DB 실행은 운영자 전용
 
 ### KIS Live Order Fill-Evidence Gate (ROB-395)
 

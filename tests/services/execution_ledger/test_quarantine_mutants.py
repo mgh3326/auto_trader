@@ -228,6 +228,9 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
     ("app/services/execution_ledger/kis_lots.py", "load_kis_live_kr_lot_blocks"): (
         "test_quarantine_readers_db::test_lots_provisional_listing_drops_the_quarantined_phantom"
     ),
+    ("app/services/execution_ledger/kis_lots.py", "load_kis_live_us_lot_blocks"): (
+        "test_quarantine_readers_db::test_us_lots_drop_the_quarantined_row"
+    ),
     ("app/services/execution_ledger/query_service.py", "list_recent"): (
         "test_quarantine_readers_db::READERS[query_service.list_recent]"
     ),
@@ -301,6 +304,20 @@ EXEMPT_READERS: dict[tuple[str, str], str] = {
     ("app/services/kis_mock_lifecycle_service.py", "_has_local_fill_row"): (
         "mock-only; the service refuses account_mode != live, and counting a row "
         "here only makes a mock cancel refuse (the safe direction)"
+    ),
+    (
+        "app/services/kis_mock_inference_expiry_service.py",
+        "_mock_exec_rows_for_order",
+    ): (
+        "#1250 refusal evidence: any kis/mock row for the order, quarantined "
+        "included, refuses the Q-46 close (the safe direction)"
+    ),
+    (
+        "app/services/kis_mock_inference_expiry_service.py",
+        "_mock_exec_rows_for_symbol",
+    ): (
+        "#1250 refusal evidence: any kis/mock row of the symbol after accept, "
+        "quarantined included, refuses the Q-46 close (the safe direction)"
     ),
     ("app/services/protected_position_auto_follow.py", "_follow_ledger_row"): (
         "acts only on source=reconciler rows; a quarantined row is websocket by "

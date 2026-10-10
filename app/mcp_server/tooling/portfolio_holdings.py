@@ -1888,7 +1888,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "for compatibility. Live order tools still perform their own fresh "
             "broker preflight. "
             "include_ledger_lots=True (default False, output unchanged) adds a "
-            "read-only ledger_lots block to KIS live KR positions: FIFO lots from "
+            "read-only ledger_lots block to KIS live KR and US positions: FIFO lots from "
             "authoritative execution_ledger rows (not the broker avg cost), "
             "freshness, a quantity cross-check against the broker quantity, and "
             "own-open-buy evidence; ledger_state='unknown' whenever it cannot be "

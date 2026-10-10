@@ -144,6 +144,9 @@ tests/services/daily_candles/test_migration_round_trip.py
 tests/services/daily_candles/test_repository_crypto_path.py
 tests/services/daily_candles/test_sync_service.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py
+tests/services/execution_ledger/test_kis_lots_us.py
+tests/services/execution_ledger/test_kis_lots_us_db.py
+tests/services/execution_ledger/test_kis_lots_us_mutants.py
 tests/services/execution_ledger/test_quarantine_mutants.py
 tests/services/execution_ledger/test_quarantine_unit.py
 tests/services/fill_watch_context/test_scope_contract.py
@@ -231,6 +234,8 @@ tests/services/test_analyst_consensus_cache.py
 tests/services/test_exchange_rate_service.py
 tests/services/test_finnhub_news.py
 tests/services/test_kis_mock_attribution_chain.py
+tests/services/test_kis_mock_inference_expiry_mutants.py
+tests/services/test_kis_mock_inference_expiry_unit.py
 tests/services/test_kis_mock_retrospective_pending.py
 tests/services/test_market_events_forexfactory_helpers.py
 tests/services/test_market_events_freshness_service.py
