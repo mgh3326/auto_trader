@@ -456,12 +456,18 @@ def _calculate_ema(
     return result
 
 
-def _calculate_rsi(
+def _calculate_rsi_series(
     close: pd.Series, period: int = DEFAULT_RSI_PERIOD
-) -> dict[str, float | None]:
-    if len(close) < period + 1:
-        return {str(period): None}
+) -> pd.Series:
+    """Wilder-smoothed RSI series (ewm alpha=1/period over all ``period``
+    deltas, ``adjust=False``).
 
+    ROB-1382: this is the single RSI implementation for every MCP surface.
+    ``analyze_stock_batch(quick)`` reaches it via ``_compute_indicators`` →
+    ``_calculate_rsi``; ``get_ohlcv(include_indicators=True)`` enriches rows
+    through ``market_data_quotes._enrich_ohlcv_with_indicators``, which calls
+    this same function.
+    """
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = (-delta).where(delta < 0, 0.0)
@@ -470,7 +476,16 @@ def _calculate_rsi(
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + rs))
+
+
+def _calculate_rsi(
+    close: pd.Series, period: int = DEFAULT_RSI_PERIOD
+) -> dict[str, float | None]:
+    if len(close) < period + 1:
+        return {str(period): None}
+
+    rsi = _calculate_rsi_series(close, period)
     rsi_value = rsi.iloc[-1]
     return {str(period): round(float(rsi_value), 2) if pd.notna(rsi_value) else None}
 
