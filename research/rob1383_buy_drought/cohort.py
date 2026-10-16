@@ -105,6 +105,8 @@ def build(
                 ),
                 "other_keywords": "|".join(verdict.other_keywords),
                 "support_only_fail": verdict.support_only_fail,
+                "support_only_unverified": verdict.support_only_basis
+                == "recomputed_text_silent",
                 "support_only_basis": verdict.support_only_basis,
                 "rsi_value": verdict.rsi_value,
                 "rsi_source": verdict.rsi_source,

@@ -269,6 +269,9 @@ def expected_bench_return_pct(log_returns: Sequence[float], sessions: int) -> fl
 # ------------------------------------------------------------ excess hit (Q4)
 
 
+EXCESS_EPS_PCT = 1e-9
+
+
 def required_move_pct(base: float, target: float) -> float:
     if base <= 0:
         raise ValueError("base must be positive")
@@ -305,18 +308,21 @@ def excess_hit(
     if not (len(highs) == len(lows) == n == len(bench_closes)) or n == 0:
         raise ValueError("window series must be non-empty and aligned")
     r = required_move_pct(base, target)
+    # Percent-space tolerance: (high/base - 1) - (bench/bench_base - 1) can
+    # miss an exact threshold by one ulp (tester r1: 20% - 10% vs 10%).
+    eps = EXCESS_EPS_PCT
     bench = [(float(c) / bench_base - 1.0) * 100.0 for c in bench_closes]
     if mode == "end":
         excess = (float(closes[-1]) / base - 1.0) * 100.0 - bench[-1]
-        return excess >= r if direction == "at_or_above" else excess <= r
+        return excess >= r - eps if direction == "at_or_above" else excess <= r + eps
     if mode != "touch":
         raise ValueError(f"unknown mode {mode!r}")
     path = highs if direction == "at_or_above" else lows
     for p, b in zip(path, bench, strict=True):
         excess = (float(p) / base - 1.0) * 100.0 - b
-        if direction == "at_or_above" and excess >= r:
+        if direction == "at_or_above" and excess >= r - eps:
             return True
-        if direction == "at_or_below" and excess <= r:
+        if direction == "at_or_below" and excess <= r + eps:
             return True
     return False
 

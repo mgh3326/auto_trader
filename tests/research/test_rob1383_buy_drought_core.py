@@ -613,10 +613,10 @@ def test_compose_support_only_fail_bases():
         frozenset({"support_within_pct"}),
         30.0,
     )
-    assert (
-        silent.support_only_fail
-        and silent.support_only_basis == "recomputed_text_silent"
-    )
+    # tester r1 B1: upside/data gates are unverified when the text names no
+    # gate, so the row is never a primary support-only failure.
+    assert not silent.support_only_fail
+    assert silent.support_only_basis == "recomputed_text_silent"
     assert not compose(
         "free text", frozenset({"support_within_pct"}), 60.0
     ).support_only_fail
@@ -672,3 +672,82 @@ def test_episodes_crypto_72h_and_missing_bars_fallback():
     assert (
         ep[4] == ep[5]
     )  # no bars -> <= 7 calendar days; no anchors -> anchor check skipped
+
+
+# ---------------------------------------------- Q3 keeps NXT-only originals
+
+from dataclasses import dataclass as _dataclass  # noqa: E402
+from dataclasses import field as _field  # noqa: E402
+
+from research.rob1383_buy_drought.inputs import TossOrder  # noqa: E402
+from research.rob1383_buy_drought.q2_q3_orders import run as q23_run  # noqa: E402
+
+
+@_dataclass
+class _Store:
+    bars_frame: pd.DataFrame
+    missing: dict = _field(default_factory=dict)
+    split_events: dict = _field(default_factory=dict)
+
+    def bars(self, market, symbol):
+        return self.bars_frame
+
+    def hourly(self, market, symbol):
+        return None
+
+
+def test_q3_keeps_order_with_no_krx_regular_overlap():
+    # tester r1 B3: placed 16:09 KST, expired 20:04 KST (NXT only) -> Q2 has
+    # no lifetime prices, but the next KRX sessions are observable for Q3.
+    days = [date(2026, 10, 12) + timedelta(days=i) for i in range(5)]
+    bars = _bars("kr", days, lows=[100.0, 100.0, 100.0, 86.0, 100.0])
+    order = TossOrder(
+        order_id="x",
+        market="kr",
+        symbol="000000",
+        side="BUY",
+        status="REJECTED",
+        order_type="LIMIT",
+        price=87_000.0,
+        quantity=1.0,
+        ordered_at=datetime(2026, 10, 13, 7, 9, tzinfo=UTC),  # 16:09 KST
+        canceled_at=datetime(2026, 10, 13, 11, 4, tzinfo=UTC),  # 20:04 KST
+        filled_qty=0.0,
+        avg_fill=None,
+        filled_at=None,
+    )
+    # Scale prices into the order's range: lows 100 -> 100,000 etc.
+    bars[["open", "high", "low", "close"]] *= 1000.0
+    out = q23_run([order], _Store(bars)).iloc[0]
+    assert out["missing"] is None
+    assert out["q2_missing"] == "no_regular_session_overlap"
+    assert out["q3__optimistic__status"] == "filled"
+    assert out["q3__optimistic__sessions_to_fill"] == 2  # 10-14 no, 10-15 low 86,000
+
+
+def test_upside_pass_then_other_gate_failure_is_not_upside():
+    # tester r1 B2: "upside 46.98 통과 ... 거리만 미달" is an upside pass.
+    text = "RSI 39.73·upside 46.98 통과, strong 3패밀리 — 거리만 미달."
+    gates, _ = parse_text_gates(text)
+    assert "upside_min" not in gates
+    assert "support_distance" in gates
+    v = compose(text, None, None)
+    assert v.support_only_fail and v.support_only_basis == "text"
+    # A real upside failure after another gate's pass still counts.
+    gates, _ = parse_text_gates("RSI 41.0 통과, upside 31.2% < 40 미달")
+    assert "upside_min" in gates
+
+
+def test_excess_hit_exact_threshold_with_non_flat_benchmark():
+    # tester r1: +20% stock - +10% bench == +10% required -> hit.
+    assert excess_hit(
+        direction="at_or_above",
+        base=100.0,
+        target=110.0,
+        highs=[120.0],
+        lows=[99.0],
+        closes=[119.0],
+        bench_base=100.0,
+        bench_closes=[110.0],
+        mode="touch",
+    )

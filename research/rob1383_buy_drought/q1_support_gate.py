@@ -48,7 +48,9 @@ SR_WINDOW = 60
 
 POPULATIONS = {
     "support_only_fail": lambda e: e["support_only_fail"],
-    "support_only_fail_text_basis": lambda e: e["support_only_basis"] == "text",
+    # Reported separately, never merged into the primary population: the text
+    # names no gate, so upside/data gates are unverified.
+    "support_only_unverified_text_silent": lambda e: e["support_only_unverified"],
     "deep_limit_shallow_text": lambda e: (
         e["support_only_fail"]
         & e["failed_gates_text"].fillna("").str.contains("deep_limit_band")

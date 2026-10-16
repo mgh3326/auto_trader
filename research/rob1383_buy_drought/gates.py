@@ -24,7 +24,13 @@ from research.rob1383_buy_drought.core import classify_deep_limit_out, parse_rea
 RSI_MAX = 45.0  # screen.rsi_max (2026-09-30.1)
 
 SUPPORT_TEXT_GATES = frozenset(
-    {"support_strength", "independent_sources", "support_within_pct", "deep_limit_band"}
+    {
+        "support_strength",
+        "independent_sources",
+        "support_within_pct",
+        "deep_limit_band",
+        "support_distance",  # text says the distance failed without naming which band
+    }
 )
 SUPPORT_RECOMPUTED_GATES = frozenset(
     {
@@ -87,8 +93,14 @@ _TEXT_PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"명명(된)? 지지(가)? 없",
         r"지지 없음",
     ),
+    "support_distance": _rx(
+        r"거리(?:만)?\s*(?:게이트\s*)?(미달|실패|탈락|밖)",
+        r"distance (only )?(fails?|failed|not met)",
+    ),
     "upside_min": _rx(
-        r"(upside|업사이드)[^.;\n]{0,80}?(<|미달|below|short of|fails?\b|탈락)",
+        # The gap may not cross a pass token: "upside 46.98 통과 ... 거리만 미달"
+        # is an upside *pass* followed by another gate's failure.
+        r"(upside|업사이드)(?:(?!통과|pass|✓|≥)[^.;\n]){0,80}?(<|미달|below|short of|fails?\b|탈락)",
         r"upside_min_pct[^.;\n]{0,30}(미달|fail|<)",
         r"\+\d+(\.\d+)?%\s*<\s*40",
     ),
@@ -162,11 +174,12 @@ def compose(
     RSI authority: the session's own stated RSI when present (it is what the
     session gated on), else the reconstructed RSI.
 
-    ``support_only_fail`` is true when a support sub-gate failed (either
-    source), RSI <= 45, and the text states no non-support failure
-    (upside/data/other). Basis ``text`` = the text itself names a support
-    failure; ``recomputed_text_silent`` = text names *no* gate at all and only
-    the reconstruction shows the support failure (upside then unverified).
+    ``support_only_fail`` is true only when the text itself names a support
+    sub-gate failure, names no non-support failure (upside/data/other), and
+    RSI <= 45 (basis ``text``). A row whose text names *no* gate while the
+    reconstruction shows a support failure has unverified upside/data gates,
+    so it is **not** a support-only failure: it is reported separately as
+    ``support_only_unverified`` (basis ``recomputed_text_silent``).
     """
 
     text, others = parse_text_gates(reason)
@@ -195,7 +208,7 @@ def compose(
         if recomputed_support is not None
         else None,
         other_keywords=others,
-        support_only_fail=basis != "none",
+        support_only_fail=basis == "text",
         support_only_basis=basis,
         rsi_value=rsi_value,
         rsi_source=rsi_source,

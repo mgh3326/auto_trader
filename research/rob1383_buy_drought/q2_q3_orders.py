@@ -153,6 +153,52 @@ def _actual_rebuy(
     )
 
 
+def _q2_record(
+    o: TossOrder,
+    bars: pd.DataFrame,
+    hourly: pd.DataFrame | None,
+    pos: list[int],
+    closes: Any,
+) -> dict[str, Any]:
+    """Lifetime lows, reference price and the two Q2 schemes x scenarios."""
+
+    low, low_basis = lifetime_low(bars, hourly, pos, o, inclusive=False)
+    low_incl, _ = lifetime_low(bars, hourly, pos, o, inclusive=True)
+    reference, ref_basis = reference_price(bars, hourly, pos[0], o.ordered_at)
+    day0 = pos[-1]
+    rec: dict[str, Any] = {
+        "session_date": str(bars["session_date"].iloc[pos[0]]),
+        "n_order_sessions": len(pos),
+        "lifetime_low": low,
+        "lifetime_low_incl_order_hour": low_incl,
+        "low_basis": low_basis,
+        "reference_price": reference,
+        "reference_basis": ref_basis,
+        "anchor_vs_reference_pct": (o.price / reference - 1.0) * 100.0,
+        "low_vs_anchor_pct": (low / o.price - 1.0) * 100.0 if low is not None else None,
+        "low_incl_vs_anchor_pct": (
+            (low_incl / o.price - 1.0) * 100.0 if low_incl is not None else None
+        ),
+    }
+    for scheme in SCHEMES:
+        legs = scheme_legs(o, reference, scheme)
+        rec[f"{scheme}__near_limit"] = legs[0][0] if len(legs) > 1 else None
+        for scenario, (inclusive, rule) in SCENARIOS.items():
+            window_low = low_incl if inclusive else low
+            fill = fill_legs(o.market, window_low, legs, rule)
+            key = f"{scheme}__{scenario}"
+            rec[f"{key}__any_fill"] = fill.any_fill
+            rec[f"{key}__filled_weight"] = fill.filled_weight
+            for h in RETURN_HORIZONS:
+                pos_h = day0 + h
+                rec[f"{key}__ret{h}"] = (
+                    legs_return(float(closes[pos_h]), legs, fill.filled)
+                    if fill.any_fill and pos_h < len(closes)
+                    else None
+                )
+    return rec
+
+
 def run(orders: Iterable[TossOrder], store: PriceStore) -> pd.DataFrame:
     records: list[dict[str, Any]] = []
     all_orders = list(orders)
@@ -188,52 +234,19 @@ def run(orders: Iterable[TossOrder], store: PriceStore) -> pd.DataFrame:
             records.append({**base, "missing": "split_after_order"})
             continue
         pos = order_session_positions(bars, o)
-        if not pos:
-            records.append({**base, "missing": "no_regular_session_overlap"})
-            continue
-        hourly = store.hourly(o.market, o.symbol)
         closes = bars["close"].to_numpy()
         opens = bars["open"].to_numpy()
         lows = bars["low"].to_numpy()
-        low, low_basis = lifetime_low(bars, hourly, pos, o, inclusive=False)
-        low_incl, _ = lifetime_low(bars, hourly, pos, o, inclusive=True)
-        reference, ref_basis = reference_price(bars, hourly, pos[0], o.ordered_at)
-        day0 = pos[-1]
-        rec: dict[str, Any] = {
-            **base,
-            "missing": None,
-            "session_date": str(bars["session_date"].iloc[pos[0]]),
-            "n_order_sessions": len(pos),
-            "lifetime_low": low,
-            "lifetime_low_incl_order_hour": low_incl,
-            "low_basis": low_basis,
-            "reference_price": reference,
-            "reference_basis": ref_basis,
-            "anchor_vs_reference_pct": (o.price / reference - 1.0) * 100.0,
-            "low_vs_anchor_pct": (low / o.price - 1.0) * 100.0
-            if low is not None
-            else None,
-            "low_incl_vs_anchor_pct": (low_incl / o.price - 1.0) * 100.0
-            if low_incl is not None
-            else None,
-        }
-        # ---------------------------------------------------------------- Q2
-        for scheme in SCHEMES:
-            legs = scheme_legs(o, reference, scheme)
-            rec[f"{scheme}__near_limit"] = legs[0][0] if len(legs) > 1 else None
-            for scenario, (inclusive, rule) in SCENARIOS.items():
-                window_low = low_incl if inclusive else low
-                fill = fill_legs(o.market, window_low, legs, rule)
-                key = f"{scheme}__{scenario}"
-                rec[f"{key}__any_fill"] = fill.any_fill
-                rec[f"{key}__filled_weight"] = fill.filled_weight
-                for h in RETURN_HORIZONS:
-                    pos_h = day0 + h
-                    rec[f"{key}__ret{h}"] = (
-                        legs_return(float(closes[pos_h]), legs, fill.filled)
-                        if fill.any_fill and pos_h < len(closes)
-                        else None
-                    )
+        rec: dict[str, Any] = {**base, "missing": None, "q2_missing": None}
+        if not pos:
+            # No KRX regular session overlapped the original (NXT-only) order:
+            # Q2 has no lifetime prices, but Q3's later KRX sessions are
+            # still observable, so the row stays in Q3 (tester r1 B3).
+            rec["q2_missing"] = "no_regular_session_overlap"
+        else:
+            rec.update(
+                _q2_record(o, bars, store.hourly(o.market, o.symbol), pos, closes)
+            )
         # ---------------------------------------------------------------- Q3
         if group == "unfilled":
             after = pd.Timestamp(o.canceled_at)
@@ -294,12 +307,16 @@ def _col(frame: pd.DataFrame, name: str, dtype: str = "float") -> pd.Series:
     return frame[name] if name in frame else pd.Series(dtype=dtype, index=frame.index)
 
 
+def _q2_scorable(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame[frame["missing"].isna() & frame["q2_missing"].isna()]
+
+
 def summarise_q2(detail: pd.DataFrame, market: str) -> pd.DataFrame:
     m = detail[detail["market"] == market]
     rows = []
     for group in ("unfilled", "filled_comparison"):
         g_all = m[m["group"] == group]
-        g = g_all[g_all["missing"].isna()]
+        g = _q2_scorable(g_all)
         for scheme in SCHEMES:
             for rule in SCENARIOS:
                 key = f"{scheme}__{rule}"
@@ -343,7 +360,7 @@ def summarise_q2(detail: pd.DataFrame, market: str) -> pd.DataFrame:
 
 
 def q2_distribution(detail: pd.DataFrame, market: str) -> pd.DataFrame:
-    g = detail[(detail["market"] == market) & detail["missing"].isna()]
+    g = _q2_scorable(detail[detail["market"] == market])
     rows = []
     for group in ("unfilled", "filled_comparison"):
         x = g[g["group"] == group]
@@ -431,9 +448,17 @@ def coverage(detail: pd.DataFrame) -> pd.DataFrame:
     """Disposition of every in-scope order (no silent drops)."""
 
     d = detail.copy()
-    d["disposition"] = d["missing"].fillna("scored")
+    d["disposition"] = (
+        d["missing"]
+        .fillna(
+            d["q2_missing"].map(
+                lambda v: f"q3_only:q2_{v}" if isinstance(v, str) else None
+            )
+        )
+        .fillna("scored")
+    )
     out = d.groupby(["market", "group", "disposition"]).size().reset_index(name="n")
-    s = d[d["missing"].isna()]
+    s = _q2_scorable(d)
     extra = []
     for col in ("low_basis", "reference_basis"):
         x = s.groupby(["market", "group", col]).size().reset_index(name="n")

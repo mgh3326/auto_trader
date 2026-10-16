@@ -41,7 +41,11 @@ from research.rob1383_buy_drought.core import (
 )
 from research.rob1383_buy_drought.inputs import Rejection
 from research.rob1383_buy_drought.prices import KST, PriceStore
-from research.rob1383_buy_drought.stats import bootstrap_mean_ci, proportion_row
+from research.rob1383_buy_drought.stats import (
+    bootstrap_mean_ci,
+    cluster_bootstrap_ci,
+    proportion_row,
+)
 
 BASELINE_LOOKBACK = 60
 MEASURES = ("recorded", "raw_touch", "excess_touch", "excess_end")
@@ -188,12 +192,19 @@ def episode_table(scored: pd.DataFrame) -> pd.DataFrame:
 def _gap_stats(ep: pd.DataFrame, measure: str) -> dict[str, float]:
     hit = ep[measure].to_numpy(float)
     prob = ep["probability"].to_numpy(float)
+    symbols = ep["symbol"].tolist()
     lo, hi = bootstrap_mean_ci(hit)
     glo, ghi = bootstrap_mean_ci(hit - prob)
+    clo, chi = cluster_bootstrap_ci(hit.tolist(), symbols)
+    gclo, gchi = cluster_bootstrap_ci((hit - prob).tolist(), symbols)
     return {
         "hit_rate": float(hit.mean()),
         "hit_lo": lo,
         "hit_hi": hi,
+        "cluster_lo": clo,
+        "cluster_hi": chi,
+        "gap_cluster_lo": gclo,
+        "gap_cluster_hi": gchi,
         "mean_probability": float(prob.mean()),
         "gap_hit_minus_prob": float((hit - prob).mean()),
         "gap_lo": glo,
@@ -253,7 +264,11 @@ def summarise(detail: pd.DataFrame, market: str) -> pd.DataFrame:
                     "measure": measure,
                     "n": len(ep),
                     "n_symbols": ep["symbol"].nunique(),
-                    "ci_method": "percentile bootstrap over episodes",
+                    "ci_method": (
+                        "hit_lo/hi, gap_lo/hi: bootstrap over episodes; "
+                        "cluster_lo/hi, gap_cluster_lo/hi: symbol-cluster bootstrap "
+                        "of the same episode-weighted statistic"
+                    ),
                     **_gap_stats(ep, measure),
                 }
             )
