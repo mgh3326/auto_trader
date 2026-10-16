@@ -205,6 +205,25 @@ def test_flag_without_a_path_is_a_usage_error(tmp_path: Path):
         assert [c for c in calls if c[0] in MUTATING] == []
 
 
+def test_flag_never_takes_the_next_option_as_its_path(tmp_path: Path):
+    """A missing value must not swallow --dry-run/--rollback/--skip-kis-ws.
+
+    Swallowed, --dry-run is lost: with a file of that name in the working
+    directory the run would resolve it as the template and deploy.
+    """
+    for option in ("--dry-run", "--rollback", "--skip-kis-ws"):
+        for args in (
+            ("--haproxy-template", option),
+            (f"--haproxy-template={option}",),
+        ):
+            case = tmp_path / f"{option.strip('-')}-{len(args)}"
+            case.mkdir()
+            result, calls, state, run_dir = _run(case, args=args)
+            assert result.returncode == 64, args
+            assert "--haproxy-template PATH" in result.stderr, args
+            _assert_untouched(calls, state, run_dir)
+
+
 def test_render_names_the_template_if_it_disappears_after_preflight() -> None:
     body = DEPLOY.read_text()
     (render,) = re.findall(r"^render_haproxy\(\) \{\n(.*?)^\}", body, re.M | re.S)

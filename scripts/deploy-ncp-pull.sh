@@ -35,12 +35,14 @@ while (($#)); do
     --skip-kis-ws) SKIP_KIS_WS=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --rollback) DEPLOY_MODE=rollback ;;
+    # A value starting with '-' is the next option, not a path: refusing it
+    # keeps --dry-run/--rollback from being swallowed. Write such a path as ./-x.
     --haproxy-template)
-      (($# >= 2)) && [[ -n "$2" ]] || usage
+      (($# >= 2)) && [[ -n "$2" && "$2" != -* ]] || usage
       HAPROXY_TEMPLATE_ARG="$2"; shift ;;
     --haproxy-template=*)
       HAPROXY_TEMPLATE_ARG="${1#--haproxy-template=}"
-      [[ -n "$HAPROXY_TEMPLATE_ARG" ]] || usage ;;
+      [[ -n "$HAPROXY_TEMPLATE_ARG" && "$HAPROXY_TEMPLATE_ARG" != -* ]] || usage ;;
     -*) usage ;;
     *)
       if ((TAG_SET)); then usage; fi

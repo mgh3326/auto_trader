@@ -87,7 +87,7 @@ AT_SECRETS_ENV_FILE=/root/at-run/.env.scheduler \
 | `AT_SECRETS_ENV_FILE=/root/at-run/.env.scheduler` | Second `--env-file` for every unit; its value wins for a key in both files. Equal to the default. |
 | `/root/at-run/deploy-ncp-pull.sh` | The installed copy from "One-time host preparation". |
 | `sha-abcdef0` | Image tag to pull: the `sha-<short7>` of the merged `main` commit (or `main`). The run resolves and pins it to `repo@sha256:...`. Omit the tag and pass `--rollback` instead to return to `deployed-digest.previous`. |
-| `--haproxy-template /root/at-run/haproxy.cfg.tmpl` | The template installed next to the script. Optional while only that copy exists; explicit so a stray tree elsewhere can never be picked. `--haproxy-template=PATH` is accepted too. |
+| `--haproxy-template /root/at-run/haproxy.cfg.tmpl` | The template installed next to the script. Optional while only that copy exists; explicit so a stray tree elsewhere can never be picked. `--haproxy-template=PATH` is accepted too. A missing value, or one starting with `-`, exits 64 instead of consuming the next option; write such a path as `./-name`. |
 | `--dry-run` | Read-only plan; drop it for the real run. |
 
 Optional additions, each described below: `--skip-kis-ws` while fillwire holds
