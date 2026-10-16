@@ -1734,3 +1734,86 @@ async def test_rob1378_lock_mutant_closes_despite_the_in_flight_fill(
         result, waited = await _close_racing_open_fill(world, lambda w: write(world, w))
     assert not waited
     assert result.status == "committed" and result.changed == 4
+
+
+async def test_rob1378_ordinary_writes_need_no_function_grant(world) -> None:
+    # #789 Stage 4: functions created by at_migration_owner carry no PUBLIC
+    # EXECUTE, and at_app holds only table/sequence rights. An ordinary
+    # kis_mock lifecycle write (insert, then fill update) and a kis/mock
+    # execution-ledger insert by such a role must still succeed — the fill-gate
+    # writer triggers may not call a review.* function the role cannot run.
+    # Everything happens in one transaction that is rolled back (the probe
+    # role, the revoke and the rows included).
+    db = world.db
+    await db.rollback()
+    failures: list[str] = []
+    try:
+        for statement in (
+            "CREATE ROLE rob1378_stage4_probe NOLOGIN",
+            "REVOKE EXECUTE ON FUNCTION "
+            "review.kis_mock_q46_detail_has_fill(jsonb) FROM PUBLIC",
+            "GRANT USAGE ON SCHEMA review TO rob1378_stage4_probe",
+            "GRANT SELECT, INSERT, UPDATE ON review.kis_mock_order_ledger, "
+            "review.execution_ledger TO rob1378_stage4_probe",
+            "GRANT USAGE ON ALL SEQUENCES IN SCHEMA review TO rob1378_stage4_probe",
+        ):
+            await db.execute(sa.text(statement))
+        probe_can_execute = (
+            await db.execute(
+                sa.text(
+                    "SELECT has_function_privilege('rob1378_stage4_probe', "
+                    "'review.kis_mock_q46_detail_has_fill(jsonb)', 'EXECUTE')"
+                )
+            )
+        ).scalar()
+        assert probe_can_execute is False
+        await db.execute(sa.text("SET LOCAL ROLE rob1378_stage4_probe"))
+        row = mock_row(80, lifecycle_state="pending", status="accepted")
+        row.id = 950_378
+        values = {
+            attr.key: getattr(row, attr.key)
+            for attr in sa.inspect(KISMockOrderLedger).column_attrs
+            if getattr(row, attr.key) is not None
+        }
+        writes = [
+            lambda: db.execute(sa.insert(KISMockOrderLedger).values(**values)),
+            lambda: db.execute(
+                sa.update(KISMockOrderLedger)
+                .where(KISMockOrderLedger.id == 950_378)
+                .values(
+                    lifecycle_state="fill",
+                    last_reconcile_detail={
+                        "reason_code": "fill_detected",
+                        "attributed_fill_qty": "1",
+                    },
+                )
+            ),
+            lambda: db.execute(
+                sa.insert(ExecutionLedger).values(
+                    broker="kis",
+                    account_mode="mock",
+                    venue="krx",
+                    instrument_type="equity_kr",
+                    symbol="990063",
+                    raw_symbol="990063",
+                    side="buy",
+                    broker_order_id="0000137899",
+                    fill_seq=1,
+                    filled_qty=Decimal("1"),
+                    filled_price=Decimal("234500"),
+                    filled_notional=Decimal("234500"),
+                    filled_at=NOW,
+                    currency="KRW",
+                    source="reconciler",
+                )
+            ),
+        ]
+        for write in writes:
+            try:
+                async with db.begin_nested():
+                    await write()
+            except DBAPIError as exc:
+                failures.append(str(exc.orig).splitlines()[0])
+    finally:
+        await db.rollback()
+    assert failures == []

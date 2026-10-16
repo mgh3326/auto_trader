@@ -165,16 +165,21 @@ new operator decision.
   (`hashtextextended('auto_trader:kis_mock_q46_fill_gate', 0)`):
   - writers take it **shared** in a BEFORE INSERT OR UPDATE row trigger
     (`review.kis_mock_q46_fill_writer_lock()`) on `review.execution_ledger`
-    for every `broker='kis' AND account_mode='mock'` row and on
-    `review.kis_mock_order_ledger` for every new row image carrying fill
-    evidence (the gate's own sibling predicate). Writers never wait for each
-    other and nothing is refused or rewritten;
+    for every `broker='kis' AND account_mode='mock'` row and on every row
+    write of `review.kis_mock_order_ledger` (no predicate to drift from the
+    gate's). Writers never wait for each other and nothing is refused or
+    rewritten. Neither trigger's WHEN calls a `review.*` function: under the
+    #789 Stage 4 split new functions carry no PUBLIC EXECUTE, so such a call
+    would fail every ordinary kis_mock ledger write by `at_app`;
   - the COMMIT-time gate takes it **exclusively** right before its fill
     checks. An in-flight fill transaction finishes first and the checks (a
     fresh READ COMMITTED snapshot each) see it if it committed — the close is
     refused. A fill writer that arrives later waits until the close has
     committed or rolled back and is then recorded after it, like any later
     fill (the marker keeps the inference auditable, as #1112 accepts).
+  - The gate calls `review.kis_mock_q46_detail_has_fill` (#1250, never granted
+    there); the ROB-1378 migration grants `at_app` EXECUTE on that pure helper
+    (conditional on the role existing), so the close also runs under Stage 4.
   - A close under any isolation level other than READ COMMITTED is refused
     (`requires READ COMMITTED`): a fixed snapshot would make the wait useless.
     The CLI uses the default READ COMMITTED.

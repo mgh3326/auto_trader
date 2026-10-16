@@ -11,11 +11,14 @@ This revision closes the window with one transaction-scoped advisory lock key
 shared by both sides:
 
 * ``review.kis_mock_q46_fill_writer_lock()`` — a BEFORE INSERT OR UPDATE row
-  trigger on ``review.execution_ledger`` (kis/mock rows only) and on
-  ``review.kis_mock_order_ledger`` (rows whose new image carries fill evidence,
-  the same predicate the gate reads) takes the key SHARED and keeps it to the
-  writer's transaction end. Writers never wait for each other; nothing is
-  refused or rewritten.
+  trigger on ``review.execution_ledger`` (kis/mock rows only) and on every row
+  write of ``review.kis_mock_order_ledger`` takes the key SHARED and keeps it
+  to the writer's transaction end. Writers never wait for each other; nothing
+  is refused or rewritten. Neither WHEN calls a user-defined function: under
+  the #789 Stage 4 split new functions carry no PUBLIC EXECUTE, and a WHEN that
+  called ``review.kis_mock_q46_detail_has_fill`` would make every ordinary
+  kis_mock ledger write by ``at_app`` fail (a trigger function itself needs no
+  EXECUTE at fire time, and its body calls only built-ins).
 * ``review.require_kis_mock_inference_audit()`` (replaced) takes the key
   EXCLUSIVE right before the fill checks. An in-flight fill transaction ends
   first and the checks (fresh READ COMMITTED snapshot per statement) see it if
@@ -23,6 +26,10 @@ shared by both sides:
   committed or rolled back, so it is recorded after the close, exactly like
   any later fill. A close running under any isolation level other than READ
   COMMITTED is refused (a fixed snapshot would make the wait useless).
+* The gate calls ``review.kis_mock_q46_detail_has_fill`` (#1250), which #1250
+  never granted; ``at_app`` gets EXECUTE on that pure helper (conditional on
+  the role existing, as #789 requires), so the operator close runs under the
+  Stage 4 split.
 
 No table, column or row is touched; the kis_mock rows are still closed only by
 the operator's CLI. Locking: CREATE TRIGGER on review.execution_ledger and
@@ -180,12 +187,20 @@ MOCK_LEDGER_LOCK_TRIGGER_DDL = """
 CREATE TRIGGER trg_kis_mock_order_ledger_q46_fill_lock
 BEFORE INSERT OR UPDATE ON review.kis_mock_order_ledger
 FOR EACH ROW
-WHEN (
-    NEW.lifecycle_state IN ('fill', 'reconciled')
-    OR review.kis_mock_q46_detail_has_fill(NEW.last_reconcile_detail)
-)
 EXECUTE FUNCTION review.kis_mock_q46_fill_writer_lock()
 """
+
+#: Stage-4 role may not exist in dev/CI databases — conditional GRANT (#789).
+HELPER_GRANT_DDL = (
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') "
+    "THEN GRANT EXECUTE ON FUNCTION review.kis_mock_q46_detail_has_fill(jsonb) "
+    "TO at_app; END IF; END $$"
+)
+HELPER_REVOKE_DDL = (
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') "
+    "THEN REVOKE EXECUTE ON FUNCTION review.kis_mock_q46_detail_has_fill(jsonb) "
+    "FROM at_app; END IF; END $$"
+)
 
 
 def _t1250_require_audit_ddl() -> str:
@@ -203,9 +218,11 @@ def upgrade() -> None:
     op.execute(FILL_WRITER_LOCK_FUNCTION_DDL)
     op.execute(EXECUTION_LEDGER_LOCK_TRIGGER_DDL)
     op.execute(MOCK_LEDGER_LOCK_TRIGGER_DDL)
+    op.execute(HELPER_GRANT_DDL)
 
 
 def downgrade() -> None:
+    op.execute(HELPER_REVOKE_DDL)
     op.execute(
         "DROP TRIGGER IF EXISTS trg_kis_mock_order_ledger_q46_fill_lock "
         "ON review.kis_mock_order_ledger"

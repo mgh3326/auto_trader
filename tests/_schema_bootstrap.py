@@ -149,7 +149,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # writers on review.execution_ledger / review.kis_mock_order_ledger take it
 # shared via review.kis_mock_q46_fill_writer_lock(). The production migration is
 # 20261016_rob1378_q46_lock.
-SCHEMA_BOOTSTRAP_VERSION = 61
+# v62 (ROB-1378 r1): the kis_mock_order_ledger writer lock trigger has no WHEN
+# (no user-defined function on the ordinary write path under the #789 Stage 4
+# function ACLs); it fires on every INSERT/UPDATE.
+SCHEMA_BOOTSTRAP_VERSION = 62
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2344,10 +2347,6 @@ EXECUTE FUNCTION review.kis_mock_q46_fill_writer_lock()
 CREATE TRIGGER trg_kis_mock_order_ledger_q46_fill_lock
 BEFORE INSERT OR UPDATE ON review.kis_mock_order_ledger
 FOR EACH ROW
-WHEN (
-    NEW.lifecycle_state IN ('fill', 'reconciled')
-    OR review.kis_mock_q46_detail_has_fill(NEW.last_reconcile_detail)
-)
 EXECUTE FUNCTION review.kis_mock_q46_fill_writer_lock()
 """,
 )

@@ -97,20 +97,47 @@ def test_writer_triggers_cover_what_the_gate_reads(migration) -> None:
     assert "x.broker = 'kis' AND x.account_mode = 'mock'" in gate
     assert "WHEN (NEW.broker = 'kis' AND NEW.account_mode = 'mock')" in exec_trigger
     assert "BEFORE INSERT OR UPDATE ON review.execution_ledger" in exec_trigger
-    # kis_mock_order_ledger: the gate reads siblings with a fill state or fill
-    # detail; the trigger fires for any new row image carrying either.
-    assert (
-        "s.lifecycle_state IN ('fill', 'reconciled') OR "
-        "review.kis_mock_q46_detail_has_fill(s.last_reconcile_detail)"
-    ) in gate
-    assert (
-        "NEW.lifecycle_state IN ('fill', 'reconciled') OR "
-        "review.kis_mock_q46_detail_has_fill(NEW.last_reconcile_detail)"
-    ) in mock_trigger
+    # kis_mock_order_ledger: the gate reads siblings by fill state / fill detail
+    # and by symbol, correlation and dates; the trigger fires for every row
+    # write, so no predicate can drift from the gate's.
+    assert "review.kis_mock_q46_detail_has_fill(s.last_reconcile_detail)" in gate
     assert "BEFORE INSERT OR UPDATE ON review.kis_mock_order_ledger" in mock_trigger
+    assert "WHEN" not in mock_trigger
     for trigger in (exec_trigger, mock_trigger):
         assert "FOR EACH ROW" in trigger
         assert "EXECUTE FUNCTION review.kis_mock_q46_fill_writer_lock()" in trigger
+
+
+def test_no_user_defined_function_on_the_ordinary_write_path(migration) -> None:
+    # #789 Stage 4: functions created by at_migration_owner carry no PUBLIC
+    # EXECUTE. A WHEN is evaluated with the writer's privileges, so it must not
+    # call a review.* function; the trigger function body only calls built-ins.
+    for trigger in (
+        migration.EXECUTION_LEDGER_LOCK_TRIGGER_DDL,
+        migration.MOCK_LEDGER_LOCK_TRIGGER_DDL,
+    ):
+        when = trigger.split("EXECUTE FUNCTION", 1)[0]
+        assert "review." not in when.split(" ON review.", 1)[1].split("\n", 1)[1]
+    body = migration.FILL_WRITER_LOCK_FUNCTION_DDL.split("$$")[1]
+    assert re.findall(r"review\.\w+\(", body) == []
+
+
+def test_the_close_helper_is_granted_to_at_app(migration) -> None:
+    grant = _norm(migration.HELPER_GRANT_DDL)
+    assert "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')" in grant
+    assert (
+        "GRANT EXECUTE ON FUNCTION review.kis_mock_q46_detail_has_fill(jsonb) "
+        "TO at_app"
+    ) in grant
+    text = MIGRATION.read_text("utf-8")
+    up = text[text.index("def upgrade") : text.index("def downgrade")]
+    down = text[text.index("def downgrade") :]
+    assert "op.execute(HELPER_GRANT_DDL)" in up
+    assert "op.execute(HELPER_REVOKE_DDL)" in down
+    assert "FROM at_app" in migration.HELPER_REVOKE_DDL
+    # The grant is EXECUTE on one pure helper only — nothing on the trigger
+    # functions, tables or other roles.
+    assert re.findall(r"GRANT (\w+)", text) == ["EXECUTE"]
 
 
 def test_bootstrap_mirrors_the_head_bodies(migration, t1250) -> None:
