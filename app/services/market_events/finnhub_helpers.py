@@ -117,20 +117,6 @@ async def fetch_earnings_calendar_finnhub(
     ``FINNHUB_EARNINGS_MAX_ATTEMPTS`` attempts. Quota (429) and
     non-retryable errors still fail immediately.
     """
-    client = _get_finnhub_client()
-
-    if not from_date:
-        from_date = datetime.date.today().isoformat()
-    if not to_date:
-        to_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
-
-    def fetch_sync() -> dict[str, Any]:
-        return client.earnings_calendar(
-            symbol=symbol.upper() if symbol else "",
-            _from=from_date,
-            to=to_date,
-        )
-
     per_attempt_timeout = (
         timeout_s
         if timeout_s is not None
@@ -148,6 +134,30 @@ async def fetch_earnings_calendar_finnhub(
         )
     )
 
+    client = _get_finnhub_client()
+    # Align the SDK's own request timeout with the per-attempt bound so the
+    # worker thread's lifetime is bounded too — ``asyncio.wait_for`` cannot
+    # kill a running thread (ROB-1384 B2). ``DEFAULT_TIMEOUT`` is a plain
+    # attribute on the finnhub client (default 10s); setting it on this
+    # instance does not affect other users of the class.
+    if per_attempt_timeout > 0:
+        try:
+            client.DEFAULT_TIMEOUT = per_attempt_timeout
+        except Exception:  # noqa: BLE001 — duck-typed clients may forbid it
+            pass
+
+    if not from_date:
+        from_date = datetime.date.today().isoformat()
+    if not to_date:
+        to_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+
+    def fetch_sync() -> dict[str, Any]:
+        return client.earnings_calendar(
+            symbol=symbol.upper() if symbol else "",
+            _from=from_date,
+            to=to_date,
+        )
+
     result: dict[str, Any] | None = None
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(max(1, attempts)),
@@ -156,10 +166,27 @@ async def fetch_earnings_calendar_finnhub(
         reraise=True,
     ):
         with attempt:
+            # Shield keeps the worker task itself alive through wait_for's
+            # cancellation so it can be drained below — a cancelled task's
+            # awaitable ends immediately while the thread keeps running.
+            worker = asyncio.ensure_future(asyncio.to_thread(fetch_sync))
             try:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(fetch_sync), timeout=per_attempt_timeout
+                    asyncio.shield(worker), timeout=per_attempt_timeout
                 )
+            except TimeoutError:
+                # wait_for cancels only the awaiter — the underlying provider
+                # thread keeps running. Await the worker's real completion so
+                # the next attempt never overlaps a live call on the same
+                # client and nothing outlives this attempt (ROB-1384 B2).
+                # Real calls are bounded by the SDK timeout aligned above.
+                try:
+                    await worker
+                except asyncio.CancelledError:
+                    raise  # caller cancellation wins over the drain
+                except Exception:
+                    pass  # worker failed while draining; the timeout stands
+                raise
             except Exception as exc:
                 status_code = getattr(exc, "status_code", None)
                 if status_code == 429:

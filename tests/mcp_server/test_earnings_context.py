@@ -291,6 +291,51 @@ async def test_build_earnings_context_us_degraded_fallback_freshness(
 
 
 @pytest.mark.asyncio
+async def test_build_earnings_context_error_code_only_is_never_live(monkeypatch):
+    """ROB-1384 B1 — a payload carrying only the closed vocabulary (no/empty
+    error string) must still be read as a lookup failure, never 'live'."""
+
+    async def _fake_handler(symbol, from_date, to_date, market):
+        return {
+            "symbol": "BA",
+            "source": "finnhub",
+            "error": "",  # real wait_for TimeoutError has an empty str()
+            "error_code": "earnings_lookup_failed",
+            "error_class": "TimeoutError",
+            "data_state": "missing",
+        }
+
+    monkeypatch.setattr(ec, "handle_get_earnings_calendar", _fake_handler)
+    ctx = await ec.build_earnings_context("BA", "us", today=TODAY)
+    assert ctx.get("freshness") == "unknown"
+    assert ctx.get("error_code") == "earnings_lookup_failed"
+    assert ctx.get("error_class") == "TimeoutError"
+    assert ctx["has_upcoming"] is False
+    assert "no scheduled earnings" not in ctx["note"]
+
+
+@pytest.mark.asyncio
+async def test_build_earnings_context_stale_only_is_not_live(monkeypatch):
+    """ROB-1384 S2 — a bare stale flag (no degraded marker) must not read
+    as live freshness."""
+
+    async def _fake_handler(symbol, from_date, to_date, market):
+        return {
+            "symbol": "AAPL",
+            "source": "finnhub",
+            "stale": True,
+            "data_as_of": "2026-06-01",
+            "earnings": [],
+        }
+
+    monkeypatch.setattr(ec, "handle_get_earnings_calendar", _fake_handler)
+    ctx = await ec.build_earnings_context("AAPL", "us", today=TODAY)
+    assert ctx.get("freshness") == "stale"
+    assert ctx.get("data_as_of") == "2026-06-01"
+    assert ctx.get("stale") is True
+
+
+@pytest.mark.asyncio
 async def test_build_earnings_context_kr_uses_passed_freshness(monkeypatch):
     async def _fake_handler(symbol, from_date, to_date, market):
         return {

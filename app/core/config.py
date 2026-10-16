@@ -869,8 +869,11 @@ class Settings(BaseSettings):
 
     # ROB-1384 — Finnhub earnings calendar fetch reliability
     # (per-attempt timeout + bounded retry, same shape as ROB-510 news)
-    FINNHUB_EARNINGS_TIMEOUT_S: float = 8.0
-    FINNHUB_EARNINGS_MAX_ATTEMPTS: int = 3
+    # gt=0 / ge=1 surface degenerate values at settings build time (S3).
+    FINNHUB_EARNINGS_TIMEOUT_S: Annotated[float, Field(gt=0.0, allow_inf_nan=False)] = (
+        8.0
+    )
+    FINNHUB_EARNINGS_MAX_ATTEMPTS: Annotated[int, Field(ge=1)] = 3
 
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False

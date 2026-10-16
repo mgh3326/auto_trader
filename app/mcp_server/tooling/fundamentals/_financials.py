@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
+from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.fundamentals._helpers import (
     normalize_equity_market,
     normalize_market_with_crypto,
@@ -316,17 +317,24 @@ async def _fetch_earnings_calendar_market_events_kr(
 
 async def _us_earnings_ingestion_freshness(
     db: AsyncSession,
+    start: datetime.date,
+    end: datetime.date,
 ) -> tuple[str | None, bool]:
     """Newest succeeded US earnings ingestion → (data_as_of ISO|None, stale).
 
+    Restricted to partitions whose ``partition_date`` falls inside the
+    requested window — a partition is keyed by the event date it ingests, so
+    an out-of-window success proves nothing about these rows (ROB-1384 S1).
     Mirrors ``earnings_context._kr_ingestion_freshness`` — reuses the
-    market_events STALE_AFTER_HOURS threshold. No succeeded partition at all
-    is reported as stale.
+    market_events STALE_AFTER_HOURS threshold. No succeeded partition in the
+    window is reported as stale.
     """
     stmt = select(func.max(MarketEventIngestionPartition.finished_at)).where(
         MarketEventIngestionPartition.market == "us",
         MarketEventIngestionPartition.category == "earnings",
         MarketEventIngestionPartition.status == "succeeded",
+        MarketEventIngestionPartition.partition_date >= start,
+        MarketEventIngestionPartition.partition_date <= end,
     )
     finished_at = (await db.execute(stmt)).scalar_one_or_none()
     if finished_at is None:
@@ -349,7 +357,7 @@ async def _fetch_earnings_calendar_market_events_us(
     Never raises — returns ``None`` when the store read itself fails, so the
     caller can still emit the closed error payload.
     """
-    normalized_symbol = symbol.strip().upper() if symbol else None
+    normalized_symbol = to_db_symbol(symbol.strip()).upper() if symbol else None
     try:
         async with AsyncSessionLocal() as db:
             svc = MarketEventsQueryService(db)
@@ -360,7 +368,7 @@ async def _fetch_earnings_calendar_market_events_us(
                 market="us",
                 symbol=normalized_symbol,
             )
-            data_as_of, stale = await _us_earnings_ingestion_freshness(db)
+            data_as_of, stale = await _us_earnings_ingestion_freshness(db, start, end)
     except Exception:
         logger.warning("us earnings market_events fallback read failed", exc_info=True)
         return None
@@ -476,7 +484,10 @@ async def handle_get_earnings_calendar(
             return _mark_us_earnings_fallback(fallback, exc)
         payload = _error_payload(
             source="finnhub",
-            message=str(exc),
+            # asyncio.wait_for timeouts produce TimeoutError with an empty
+            # str() — an empty message would be falsy downstream, so fall
+            # back to the exception class name (ROB-1384 B1).
+            message=str(exc) or type(exc).__name__,
             symbol=symbol,
             instrument_type="equity_us",
             suggestion=(

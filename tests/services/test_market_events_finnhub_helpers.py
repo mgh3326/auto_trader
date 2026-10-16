@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -162,6 +163,65 @@ async def test_earnings_fetch_non_retryable_error_fails_once(monkeypatch):
             "AAPL", "2026-05-11", "2026-05-11", max_attempts=3
         )
     assert client.earnings_calendar.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_timeout_drains_worker_before_next_attempt(monkeypatch):
+    """ROB-1384 B2 — wait_for cancels only the awaiter; the worker thread must
+    be drained to completion so retries never overlap a live provider call."""
+    import threading
+
+    active: set[int] = set()
+    lock = threading.Lock()
+    calls = {"n": 0}
+
+    def blocking(**_kwargs):
+        tid = threading.get_ident()
+        with lock:
+            active.add(tid)
+            calls["n"] += 1
+        try:
+            time.sleep(0.15)  # outlives the 0.05s per-attempt timeout
+            return _EARNINGS_ROW
+        finally:
+            with lock:
+                active.discard(tid)
+
+    client = MagicMock()
+    client.earnings_calendar = MagicMock(side_effect=blocking)
+    monkeypatch.setattr(finnhub_helpers, "_get_finnhub_client", lambda: client)
+
+    with pytest.raises(TimeoutError):
+        await finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL", "2026-05-11", "2026-05-11", timeout_s=0.05, max_attempts=2
+        )
+
+    assert calls["n"] == 2
+    with lock:
+        assert not active, "provider workers must not outlive the call"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_fetch_aligns_sdk_timeout_with_attempt_budget(monkeypatch):
+    """ROB-1384 B2 — the SDK's own request timeout is bound to the per-attempt
+    budget so the worker thread cannot outlive it."""
+    seen: dict[str, Any] = {}
+
+    class FakeClient:
+        def earnings_calendar(self, **_kwargs):
+            seen["timeout"] = getattr(self, "DEFAULT_TIMEOUT", None)
+            return _EARNINGS_ROW
+
+    monkeypatch.setattr(finnhub_helpers, "_get_finnhub_client", FakeClient)
+
+    result = await finnhub_helpers.fetch_earnings_calendar_finnhub(
+        "AAPL", "2026-05-11", "2026-05-11", timeout_s=0.5
+    )
+
+    assert result["count"] == 1
+    assert seen["timeout"] == 0.5
 
 
 @pytest.mark.unit

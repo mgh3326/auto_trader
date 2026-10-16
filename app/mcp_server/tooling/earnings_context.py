@@ -60,10 +60,17 @@ def _compact_earnings(
     if data_as_of is not None:
         ctx["data_as_of"] = data_as_of
 
-    if tool_result.get("error"):
+    # ROB-1384 B1 — failure detection keys on the closed vocabulary, not the
+    # error string's truthiness: real wait_for timeouts carry an empty str().
+    if tool_result.get("error") or tool_result.get("error_code"):
         ctx["has_upcoming"] = False
         ctx["next_earnings"] = None
-        ctx["note"] = f"earnings lookup degraded: {tool_result.get('error')}"
+        detail = (
+            tool_result.get("error")
+            or tool_result.get("error_class")
+            or "unknown error"
+        )
+        ctx["note"] = f"earnings lookup degraded: {detail}"
         # ROB-1384 — carry the closed failure vocabulary so downstream
         # consumers can distinguish a lookup failure from "no earnings".
         if tool_result.get("error_code"):
@@ -73,12 +80,15 @@ def _compact_earnings(
         return ctx
 
     # ROB-1384 — a degraded stored-rows fallback must stay labelled as such;
-    # it is not proof the live provider had no data.
+    # it is not proof the live provider had no data. A bare ``stale`` flag
+    # (without ``degraded``) is also carried through (S2).
     if tool_result.get("degraded"):
         ctx["degraded"] = True
         ctx["fallback_source"] = tool_result.get("fallback_source")
         if tool_result.get("fetch_error"):
             ctx["fetch_error"] = tool_result["fetch_error"]
+    if tool_result.get("stale"):
+        ctx["stale"] = True
 
     upcoming: list[tuple[datetime.date, dict[str, Any]]] = []
     for item in tool_result.get("earnings") or []:
@@ -181,11 +191,14 @@ async def build_earnings_context(
 
     if market_norm == "kr":
         freshness, data_as_of = kr_freshness or ("unknown", None)
-    elif tool_result.get("error"):
-        # ROB-1384 — a failed live lookup is "unknown", never "live".
+    elif tool_result.get("error") or tool_result.get("error_code"):
+        # ROB-1384 — a failed live lookup is "unknown", never "live". The
+        # closed vocabulary (error_code) is the authoritative failure signal:
+        # wait_for timeouts carry an empty error string (B1).
         freshness, data_as_of = "unknown", None
-    elif tool_result.get("degraded"):
-        # Stored-rows fallback: freshness follows the stored data age.
+    elif tool_result.get("degraded") or tool_result.get("stale"):
+        # Stored-rows fallback: freshness follows the stored data age. A bare
+        # stale flag must not read as "live" either (S2).
         freshness = "stale" if tool_result.get("stale") else "degraded"
         data_as_of = tool_result.get("data_as_of")
     else:
