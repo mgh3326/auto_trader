@@ -163,6 +163,7 @@ tests/services/execution_ledger/test_kis_lots_us_db.py
 tests/services/execution_ledger/test_quarantine_unit.py
 tests/services/execution_ledger/test_reconciler.py
 tests/services/execution_ledger/test_repository.py
+tests/services/execution_ledger/test_supersede.py
 tests/services/fill_watch_context/test_migration_roundtrip.py
 tests/services/funding_advisory/test_containment.py
 tests/services/funding_advisory/test_external_cash.py
