@@ -43,11 +43,64 @@ class FinnhubQuotaExceededError(Exception):
         self.status_code = status_code
 
 
+class ProviderWorkerStillRunningError(TimeoutError):
+    """The provider worker outlived its attempt timeout plus the bounded
+    drain grace and is still running (ROB-1384 R2-F2).
+
+    Subclasses ``TimeoutError`` because the observable outcome for the
+    caller is still "the attempt timed out" — but it is classified
+    non-retryable: a new attempt would overlap a live provider call.
+    """
+
+
 DEFAULT_EARNINGS_TIMEOUT_S = 8.0
 DEFAULT_EARNINGS_MAX_ATTEMPTS = 3
 
+# ROB-1384 R2-F2: the drain after an attempt timeout is bounded — an
+# unbounded wait would let a slow-drip response (read gaps shorter than
+# the SDK read timeout) extend the deadline indefinitely. The bound is
+# the call's own configured budget: each attempt may wait for its
+# already-running worker until ``attempts * (per_attempt_timeout +
+# EARNINGS_DRAIN_GRACE_S)`` measured from call start. A single-attempt
+# call therefore returns within one grace of its deadline, while a
+# multi-attempt call gets proportionally more room to harvest a worker
+# that is about to finish — and a retry is never started while a
+# provider worker is still live.
+EARNINGS_DRAIN_GRACE_S = 0.15
+
+# Workers that outlive the drain grace stay referenced here until their
+# thread finishes — explicit ownership so nothing escapes untracked and
+# no 'exception was never retrieved' noise is left behind.
+_PENDING_PROVIDER_WORKERS: set[asyncio.Task] = set()
+
 # ROB-1384: module-level wait so tests can replace it with wait_none().
 FINNHUB_EARNINGS_RETRY_WAIT = wait_exponential_jitter(initial=0.5, max=2.0)
+
+
+def _track_provider_worker(worker: asyncio.Task) -> None:
+    """Own a still-running provider worker until its thread ends."""
+
+    def _reap(done: asyncio.Task) -> None:
+        _PENDING_PROVIDER_WORKERS.discard(done)
+        if not done.cancelled():
+            done.exception()  # consume — never leave 'never retrieved'
+
+    _PENDING_PROVIDER_WORKERS.add(worker)
+    worker.add_done_callback(_reap)
+
+
+async def _drain_provider_worker(worker: asyncio.Task) -> None:
+    """Await a provider worker thread to real completion, surviving
+    repeated caller cancellation — ``asyncio.to_thread`` threads cannot
+    be killed, so returning early would orphan a live SDK call.
+    ``asyncio.wait`` never cancels the worker, unlike ``wait_for``."""
+    while not worker.done():
+        try:
+            await asyncio.wait({worker})
+        except asyncio.CancelledError:
+            continue  # repeated cancels keep draining — never abandon
+    if worker.done() and not worker.cancelled():
+        worker.exception()  # consume — never leave 'never retrieved'
 
 
 def _earnings_setting(name: str, default: Any) -> Any:
@@ -68,6 +121,10 @@ def _earnings_setting(name: str, default: Any) -> Any:
 def _is_retryable_earnings_error(exc: BaseException) -> bool:
     """타임아웃/네트워크/5xx만 재시도. 429·4xx·설정오류는 즉시 실패."""
     if isinstance(exc, FinnhubQuotaExceededError):
+        return False
+    if isinstance(exc, ProviderWorkerStillRunningError):
+        # A live provider worker still holds the client — retrying would
+        # overlap a second call on it, so this timeout fails closed.
         return False
     if isinstance(exc, TimeoutError):
         return True
@@ -158,6 +215,16 @@ async def fetch_earnings_calendar_finnhub(
             to=to_date,
         )
 
+    # The whole call — including every drain after a timed-out attempt —
+    # never outlives its own configured budget: attempts * (timeout +
+    # grace). Loop-clock deadlines are immune to thread scheduling
+    # overshoot; a still-running worker past the budget is tracked and
+    # the call ends non-retryably instead of waiting on provider EOF.
+    loop = asyncio.get_running_loop()
+    call_deadline = loop.time() + max(1, attempts) * (
+        per_attempt_timeout + EARNINGS_DRAIN_GRACE_S
+    )
+
     result: dict[str, Any] | None = None
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(max(1, attempts)),
@@ -169,6 +236,12 @@ async def fetch_earnings_calendar_finnhub(
             # Shield keeps the worker task itself alive through wait_for's
             # cancellation so it can be drained below — a cancelled task's
             # awaitable ends immediately while the thread keeps running.
+            # A non-positive budget means the provider is never invoked —
+            # the attempt is already out of time before it starts.
+            if per_attempt_timeout <= 0:
+                raise TimeoutError(
+                    f"non-positive attempt timeout ({per_attempt_timeout}s)"
+                )
             worker = asyncio.ensure_future(asyncio.to_thread(fetch_sync))
             try:
                 result = await asyncio.wait_for(
@@ -176,16 +249,50 @@ async def fetch_earnings_calendar_finnhub(
                 )
             except TimeoutError:
                 # wait_for cancels only the awaiter — the underlying provider
-                # thread keeps running. Await the worker's real completion so
-                # the next attempt never overlaps a live call on the same
-                # client and nothing outlives this attempt (ROB-1384 B2).
-                # Real calls are bounded by the SDK timeout aligned above.
+                # thread keeps running. Drain it via asyncio.wait (which
+                # never cancels the worker) bounded by the call's own
+                # budget — an unbounded wait would let a slow-drip response
+                # (read gaps below the SDK timeout) extend the deadline
+                # indefinitely (ROB-1384 B2, R2-F2).
                 try:
-                    await worker
+                    done, _pending = await asyncio.wait(
+                        {worker},
+                        timeout=max(0.0, call_deadline - loop.time()),
+                    )
                 except asyncio.CancelledError:
-                    raise  # caller cancellation wins over the drain
-                except Exception:
-                    pass  # worker failed while draining; the timeout stands
+                    await _drain_provider_worker(worker)
+                    raise
+                if worker not in done:
+                    # Still alive past the grace — keep explicit ownership so
+                    # the thread is reaped when it ends, and fail this call
+                    # non-retryably: a retry would overlap a live worker.
+                    _track_provider_worker(worker)
+                    raise ProviderWorkerStillRunningError(
+                        f"finnhub earnings_calendar worker for {symbol!r} "
+                        f"outlived the call budget "
+                        f"({max(1, attempts)} attempts x {per_attempt_timeout}s "
+                        f"+ {EARNINGS_DRAIN_GRACE_S}s grace)"
+                    )
+                if worker.cancelled():
+                    raise asyncio.CancelledError
+                # The worker's real outcome arrived during the drain — a
+                # late exception keeps its own classification (a 429 must
+                # not be discarded and retried as a bare timeout; R2-F1).
+                exc = worker.exception()
+                if exc is not None:
+                    if getattr(exc, "status_code", None) == 429:
+                        raise FinnhubQuotaExceededError(
+                            str(exc), status_code=429
+                        ) from exc
+                    raise exc
+                # Worker finished cleanly just past the deadline — discard
+                # the late result; this attempt already timed out.
+                raise
+            except asyncio.CancelledError:
+                # Threads cannot be killed — drain the worker to real
+                # completion before propagating so cancellation never
+                # orphans a live provider call (ROB-1384 R2-F2).
+                await _drain_provider_worker(worker)
                 raise
             except Exception as exc:
                 status_code = getattr(exc, "status_code", None)
