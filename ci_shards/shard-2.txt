@@ -52,6 +52,7 @@ tests/research/test_event_coverage_artifact_paths.py
 tests/research/test_kr_backfill_build_clients.py
 tests/research/test_kr_backfill_collector_exit_codes.py
 tests/research/test_kr_backfill_no_public_dml.py
+tests/research/test_rob1383_buy_drought_core.py
 tests/research/test_screener_bakeoff_parity.py
 tests/research/toss_phase2/test_collect.py
 tests/research/toss_phase2/test_load.py
