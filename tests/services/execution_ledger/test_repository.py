@@ -372,7 +372,7 @@ async def test_list_recent_fills_for_triage_after_id_and_default_source(
         repo = ExecutionLedgerRepository(db_session)
         all_ids = {r.id for r in rows}
 
-        websocket_only = await repo.list_recent_fills_for_triage()
+        websocket_only = await repo.list_recent_fills_for_triage(after_id=ws_a.id - 1)
         returned_ids = {r.id for r in websocket_only}
         assert ws_a.id in returned_ids
         assert ws_b.id in returned_ids
@@ -462,28 +462,38 @@ async def test_list_recent_fills_for_triage_filters_by_market_side_broker_accoun
     try:
         repo = ExecutionLedgerRepository(db_session)
 
-        crypto_results = await repo.list_recent_fills_for_triage(market="crypto")
+        first_seeded_id = rows[0].id
+
+        crypto_results = await repo.list_recent_fills_for_triage(
+            market="crypto", after_id=first_seeded_id - 1
+        )
         crypto_ids = {r.id for r in crypto_results}
         assert crypto_buy_kis_live.id in crypto_ids
         assert crypto_sell_kis_live.id in crypto_ids
         assert kr_buy_kis_live.id not in crypto_ids
         assert us_sell_upbit_mock.id not in crypto_ids
 
-        sell_results = await repo.list_recent_fills_for_triage(side="sell")
+        sell_results = await repo.list_recent_fills_for_triage(
+            side="sell", after_id=first_seeded_id - 1
+        )
         sell_ids = {r.id for r in sell_results}
         assert crypto_sell_kis_live.id in sell_ids
         assert us_sell_upbit_mock.id in sell_ids
         assert crypto_buy_kis_live.id not in sell_ids
         assert kr_buy_kis_live.id not in sell_ids
 
-        kis_results = await repo.list_recent_fills_for_triage(broker="kis")
+        kis_results = await repo.list_recent_fills_for_triage(
+            broker="kis", after_id=first_seeded_id - 1
+        )
         kis_ids = {r.id for r in kis_results}
         assert crypto_buy_kis_live.id in kis_ids
         assert crypto_sell_kis_live.id in kis_ids
         assert kr_buy_kis_live.id in kis_ids
         assert us_sell_upbit_mock.id not in kis_ids
 
-        mock_results = await repo.list_recent_fills_for_triage(account_mode="mock")
+        mock_results = await repo.list_recent_fills_for_triage(
+            account_mode="mock", after_id=first_seeded_id - 1
+        )
         mock_ids = {r.id for r in mock_results}
         assert us_sell_upbit_mock.id in mock_ids
         assert crypto_buy_kis_live.id not in mock_ids
@@ -504,6 +514,10 @@ async def test_list_recent_fills_for_triage_orders_by_id_asc_and_clamps_limit(
     db_session,
 ) -> None:
     """Results are returned in id ASC order and limit clamps to the [1, 500] range."""
+    pre_existing = _triage_row(broker_order_id="ROB755-C-PRE")
+    db_session.add(pre_existing)
+    await db_session.commit()
+
     seeded_rows = [
         _triage_row(broker_order_id=f"ROB755-C{i:03d}", fill_seq=i) for i in range(7)
     ]
@@ -513,26 +527,24 @@ async def test_list_recent_fills_for_triage_orders_by_id_asc_and_clamps_limit(
     try:
         repo = ExecutionLedgerRepository(db_session)
         seeded_ids = [r.id for r in seeded_rows]
-        seeded_id_set = set(seeded_ids)
+        assert pre_existing.id < seeded_ids[0]
 
         all_results = await repo.list_recent_fills_for_triage(limit=500)
-        our_results = [r for r in all_results if r.id in seeded_id_set]
-        assert our_results == sorted(our_results, key=lambda r: r.id)
-        assert [r.id for r in our_results] == seeded_ids
+        all_ids = [r.id for r in all_results]
+        assert all_ids == sorted(all_ids)
+
+        bounded = await repo.list_recent_fills_for_triage(after_id=seeded_ids[0] - 1)
+        assert [r.id for r in bounded] == seeded_ids
 
         clamped_high = await repo.list_recent_fills_for_triage(limit=10000)
-        our_clamped_high = [r for r in clamped_high if r.id in seeded_id_set]
-        assert len(our_clamped_high) == len(seeded_ids)
+        assert [r.id for r in clamped_high] == all_ids
 
         clamped_low = await repo.list_recent_fills_for_triage(limit=0)
-        our_clamped_low = [r for r in clamped_low if r.id in seeded_id_set]
-        assert len(our_clamped_low) == 1
-        assert our_clamped_low[0].id == seeded_ids[0]
+        assert len(clamped_low) == 1
+        assert clamped_low[0].id == all_ids[0]
 
         limited = await repo.list_recent_fills_for_triage(limit=3)
-        our_limited = [r for r in limited if r.id in seeded_id_set]
-        assert len(our_limited) == 3
-        assert [r.id for r in our_limited] == seeded_ids[:3]
+        assert [r.id for r in limited] == all_ids[:3]
     finally:
         await db_session.execute(
             delete(ExecutionLedger).where(
@@ -560,7 +572,9 @@ async def test_list_recent_fills_for_triage_explicit_source_none_returns_all_sou
 
     try:
         repo = ExecutionLedgerRepository(db_session)
-        all_sources = await repo.list_recent_fills_for_triage(source=None)
+        all_sources = await repo.list_recent_fills_for_triage(
+            source=None, after_id=ws_row.id - 1
+        )
         returned_ids = {r.id for r in all_sources}
         assert ws_row.id in returned_ids
         assert rec_row.id in returned_ids
