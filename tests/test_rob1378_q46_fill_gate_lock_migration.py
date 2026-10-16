@@ -126,8 +126,7 @@ def test_the_close_helper_is_granted_to_at_app(migration) -> None:
     grant = _norm(migration.HELPER_GRANT_DDL)
     assert "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')" in grant
     assert (
-        "GRANT EXECUTE ON FUNCTION review.kis_mock_q46_detail_has_fill(jsonb) "
-        "TO at_app"
+        "GRANT EXECUTE ON FUNCTION review.kis_mock_q46_detail_has_fill(jsonb) TO at_app"
     ) in grant
     text = MIGRATION.read_text("utf-8")
     up = text[text.index("def upgrade") : text.index("def downgrade")]
