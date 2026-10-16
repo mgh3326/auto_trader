@@ -61,6 +61,12 @@ USD/KRW 는 open.er-api 로 기존 폴백). 이 방화벽 검사를 KIS/Toss/Upb
 같은 규칙으로 배포된다. buy_analysis/profit_taking(us) route 는 #1244 r3 부터 Alpaca paper-execution 계약으로 degraded 가 아니다
 (`docs/runbooks/h3-us-paper-mcp.md`). 계약 테스트: `tests/mcp_server/test_h3_us_paper_profile.py`,
 `tests/scripts/test_deploy_ncp_pull_h3_us_paper.py`, `tests/services/brokers/test_credential_firewall.py`.
+**route_request kr/us 시장 보충 허용 (hk 1040, 운영자 10-16 dr-1040-1 A)**: `route_request_lanes.MARKET_EXTRA_ALLOWED`
+= kr·us 에 `toss_get_orderable_cash` 하나. robin-prefect 가 KR/US live rep argv 에만 이 도구를 싣는다(`LIVE_KR_US_ONLY_TOOLS`).
+그래서 kr/us route 는 모든 lane 에서 이 도구를 `allowed_tools` 에 두고 `blocked_actions` 에서 뺀다(시퀀스 step 아님, 레지스트리 교집합 유지).
+crypto route 는 계속 차단한다. 레지스트리 분할(`STATUS_HELPER_TOOLS`·`MUTATION_TOOLS`)은 그대로이고, 브로커 호출은 Toss `GET /api/v1/buying-power`(+`/accounts`)뿐이다.
+`test_route_request_profile_golden.py` 는 이 한 도구 이동을 되돌린 바이트가 main golden 과 같음을 검증한다
+(default·tradingcodex_execution 의 kr/us 케이스만 이동, live-kr/live-us 는 미등록이라 불변).
 **MCP_PROFILE 필수 (#1189)**: 서버 진입점은 `require_mcp_profile` 로 프로필을 해석하며 비었거나·없거나·공백뿐인
 `MCP_PROFILE` 은 DEFAULT 로 폴백하지 않고 기동을 거부한다(DEFAULT 는 `MCP_PROFILE=default` 로 명시). deploy 스크립트도
 배포 전 모든 유닛의 프로필이 비어 있지 않음을 검사한다. 레포 안 모든 서버 정의의 명시 프로필은

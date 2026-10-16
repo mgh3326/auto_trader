@@ -9,6 +9,12 @@ running this module as a script. The test then pins every profile except
 buy/sell routes may move (to the paper-execution contract) and every other
 h3 case stays byte-identical too.
 
+hk 1040 (operator 10-16 dr-1040-1 A) moves exactly one tool on kr/us routes:
+``toss_get_orderable_cash`` leaves ``blocked_actions`` for ``allowed_tools``
+(route_request_lanes.MARKET_EXTRA_ALLOWED).  The golden is not regenerated for
+it: the test undoes that single move (``_undo_1040``) and still requires the
+main bytes, and pins which cases moved.
+
 Regenerate only for an intentional, reviewed route change:
 ``ROUTE_REQUEST_GOLDEN_WRITE=1 uv run pytest tests/mcp_server/test_route_request_profile_golden.py -k regenerate``.
 """
@@ -16,6 +22,7 @@ Regenerate only for an intentional, reviewed route change:
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -109,6 +116,35 @@ def collect_route_responses(
         return responses
 
 
+_1040_TOOL = "toss_get_orderable_cash"
+_1040_MARKETS = ("kr", "us")
+
+
+def _undo_1040(
+    responses: dict[str, dict[str, dict[str, Any]]],
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, set[str]]]:
+    """Move toss_get_orderable_cash back from allowed_tools to blocked_actions
+    on kr/us cases; return the undone responses and the moved cases."""
+    undone: dict[str, dict[str, dict[str, Any]]] = {}
+    moved: dict[str, set[str]] = {}
+    for profile, cases in responses.items():
+        undone[profile] = {}
+        moved[profile] = set()
+        for case, response in cases.items():
+            market = case.split("|")[1]
+            if market in _1040_MARKETS and _1040_TOOL in response.get(
+                "allowed_tools", []
+            ):
+                response = copy.deepcopy(response)
+                response["allowed_tools"].remove(_1040_TOOL)
+                response["blocked_actions"] = sorted(
+                    [*response["blocked_actions"], _1040_TOOL]
+                )
+                moved[profile].add(case)
+            undone[profile][case] = response
+    return undone, moved
+
+
 def _digests(responses: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
     return {
         profile: {
@@ -130,7 +166,20 @@ def test_route_request_is_byte_identical_to_main_off_the_h3_routes(
 ) -> None:
     key = "gates_enabled" if gates_enabled else "gates_disabled"
     expected = _golden()[key]
-    actual = _digests(collect_route_responses(monkeypatch, gates_enabled=gates_enabled))
+    responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
+    undone, moved = _undo_1040(responses)
+    # hk 1040: no kr/us route on any profile still blocks the tool, and at
+    # least one moved; with the move undone every byte (crypto included) must
+    # still be main's.
+    for profile, cases in responses.items():
+        for case, response in cases.items():
+            if case.split("|")[1] in _1040_MARKETS:
+                assert _1040_TOOL not in response.get("blocked_actions", []), (
+                    profile,
+                    case,
+                )
+    assert any(moved.values()), "hk 1040 moved no route; the supplement is dead"
+    actual = _digests(undone)
     assert set(actual) == set(expected), "profiles registering route_request changed"
     assert set(H3_MOVED_CASES) <= set(actual), "h3 profiles must register route_request"
     for profile, cases in expected.items():

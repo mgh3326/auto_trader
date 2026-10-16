@@ -223,8 +223,12 @@ def test_route_semantic_contract_matrix(
         assert contract["reconcile_requirement"] == "not_applicable"
         assert contract["required_tools"] == []
         assert contract["missing_required_tools"] == []
-        # Market relief (Q-58) un-blocks the re-admitted tool on crypto.
-        relieved = L.HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
+        # Market relief (Q-58) un-blocks the re-admitted tool on crypto, and
+        # the hk 1040 market supplement un-blocks toss_get_orderable_cash on
+        # kr/us.
+        relieved = L.HARNESS_DENIED_MARKET_RELIEF.get(
+            market, frozenset()
+        ) | L.MARKET_EXTRA_ALLOWED.get(market, frozenset())
         assert set(plan["blocked_actions"]) == (L.MUTATION_TOOLS & _ALL) - (
             relieved & set(plan["allowed_tools"])
         )
@@ -580,3 +584,82 @@ def test_lifecycle_allowance_expands_only_through_expire_sweep():
     for intent in ("discovery", "market_brief"):
         plan = _plan(intent, "kr")
         assert (L.PROPOSAL_LIFECYCLE_TOOLS & _ALL).isdisjoint(plan["allowed_tools"])
+
+
+# --- hk 1040 (operator 10-16 dr-1040-1 A): toss_get_orderable_cash on kr/us ---
+
+_ORDERABLE_CASH = "toss_get_orderable_cash"
+_ALL_INTENTS = tuple(L.INTENT_TO_LANE)
+
+
+@pytest.mark.parametrize("intent", _ALL_INTENTS)
+@pytest.mark.parametrize("market", ["kr", "us"])
+def test_1040_kr_us_routes_allow_toss_get_orderable_cash(intent, market):
+    """The KR/US live harness carries the tool (robin-prefect
+    LIVE_KR_US_ONLY_TOOLS), so every kr/us lane advertises it as allowed and
+    no longer lists it in blocked_actions — a compliant session may call it.
+    It is a helper, not a workflow step."""
+    plan = _plan(intent, market)
+    assert _ORDERABLE_CASH in plan["allowed_tools"]
+    assert _ORDERABLE_CASH not in plan["blocked_actions"]
+    assert _ORDERABLE_CASH not in _step_tools(plan)
+    assert _ORDERABLE_CASH not in plan["harness_denied_tools"]
+
+
+@pytest.mark.parametrize("intent", _ALL_INTENTS)
+def test_1040_crypto_routes_keep_blocking_toss_get_orderable_cash(intent):
+    plan = _plan(intent, "crypto")
+    assert _ORDERABLE_CASH not in plan["allowed_tools"]
+    assert _ORDERABLE_CASH in plan["blocked_actions"]
+
+
+@pytest.mark.parametrize("market", ["kr", "us"])
+def test_1040_supplement_is_intersected_with_the_registry(market):
+    # A surface that does not register the tool (live-kr/live-us dedicated
+    # profiles) must not advertise it.
+    plan = _plan("market_brief", market, registered=_ALL - {_ORDERABLE_CASH})
+    assert _ORDERABLE_CASH not in plan["allowed_tools"]
+    assert _ORDERABLE_CASH not in plan["blocked_actions"]
+
+
+def test_1040_us_account_cleanup_route_allows_toss_get_orderable_cash():
+    us = _plan("profit_taking", "us", purpose=L.ACCOUNT_CLEANUP_PURPOSE)
+    assert _ORDERABLE_CASH in us["allowed_tools"]
+    assert _ORDERABLE_CASH not in us["blocked_actions"]
+    crypto = _plan("profit_taking", "crypto", purpose=L.ACCOUNT_CLEANUP_PURPOSE)
+    assert _ORDERABLE_CASH not in crypto["allowed_tools"]
+    assert _ORDERABLE_CASH in crypto["blocked_actions"]
+
+
+@pytest.mark.parametrize("intent", _ALL_INTENTS)
+@pytest.mark.parametrize("market", ["kr", "us", "crypto"])
+def test_1040_moves_exactly_one_tool_and_nothing_else(intent, market):
+    """Against the same plan built without the supplement, the only change is
+    toss_get_orderable_cash moving from blocked_actions to allowed_tools on
+    kr/us; every other field is identical and crypto is unchanged."""
+    import copy
+
+    after = _plan(intent, market)
+    saved = copy.deepcopy(L.MARKET_EXTRA_ALLOWED)
+    try:
+        L.MARKET_EXTRA_ALLOWED.clear()
+        before = _plan(intent, market)
+    finally:
+        L.MARKET_EXTRA_ALLOWED.update(saved)
+    if market == "crypto":
+        assert after == before
+        return
+    assert _ORDERABLE_CASH in before["blocked_actions"]
+    assert _ORDERABLE_CASH not in before["allowed_tools"]
+    assert set(after["allowed_tools"]) - set(before["allowed_tools"]) == {
+        _ORDERABLE_CASH
+    }
+    assert set(before["allowed_tools"]) <= set(after["allowed_tools"])
+    assert set(before["blocked_actions"]) - set(after["blocked_actions"]) == {
+        _ORDERABLE_CASH
+    }
+    assert set(after["blocked_actions"]) <= set(before["blocked_actions"])
+    rest = ("allowed_tools", "blocked_actions")
+    assert {k: v for k, v in after.items() if k not in rest} == {
+        k: v for k, v in before.items() if k not in rest
+    }

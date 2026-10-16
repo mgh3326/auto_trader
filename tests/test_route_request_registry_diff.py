@@ -43,6 +43,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     HARNESS_DENIED_MARKET_RELIEF,
     HARNESS_DENIED_TOOLS,
     LANE_SEQUENCES,
+    MARKET_EXTRA_ALLOWED,
     MUTATION_TOOLS,
     ORDER_PROPOSAL_READ_TOOLS,
     PERSISTENCE_TOOLS,
@@ -296,6 +297,25 @@ def test_harness_denied_market_relief_is_exact_and_crypto_only():
     relieved = frozenset().union(*HARNESS_DENIED_MARKET_RELIEF.values())
     assert relieved <= HARNESS_DENIED_TOOLS
     assert set(HARNESS_DENIED_MARKET_RELIEF) <= VALID_MARKETS
+
+
+def test_market_extra_allowed_is_exact_and_kr_us_only():
+    # hk 1040 (operator 10-16 dr-1040-1 A): only the Toss buying-power read is
+    # supplemented, only on kr/us.  It keeps its MUTATION_TOOLS partition seat
+    # as a STATUS_HELPER read and is none of the broker-mutating, preview,
+    # reconcile or harness-denied classes.
+    assert MARKET_EXTRA_ALLOWED == {
+        "kr": frozenset({"toss_get_orderable_cash"}),
+        "us": frozenset({"toss_get_orderable_cash"}),
+    }
+    supplemented = frozenset().union(*MARKET_EXTRA_ALLOWED.values())
+    assert supplemented <= STATUS_HELPER_TOOLS
+    assert supplemented <= MUTATION_TOOLS
+    assert supplemented.isdisjoint(DIRECT_BROKER_MUTATION_TOOLS)
+    assert supplemented.isdisjoint(PREVIEW_REVALIDATION_TOOLS)
+    assert supplemented.isdisjoint(RECONCILE_TOOLS)
+    assert supplemented.isdisjoint(HARNESS_DENIED_TOOLS)
+    assert set(MARKET_EXTRA_ALLOWED) <= VALID_MARKETS - {"crypto"}
 
 
 def test_lane_sequences_match_playbook_in_exact_order():
