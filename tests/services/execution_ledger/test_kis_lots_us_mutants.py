@@ -1,8 +1,9 @@
-"""#1173 — assertion-RED mutants for the KIS live US guards, counted from disk.
+"""#1173 / hk 1295 — assertion-RED mutants for the KIS live lots guards, counted from disk.
 
 Guard sites are counted ON DISK in ``kis_lots.py`` and
 ``portfolio_ledger_lots.py``: every ``if``/conditional expression whose test is
-``market == "us"``, ``off_venue`` or the US-date rollover comparison. Each
+``market == "us"``, ``off_venue``, the US-date rollover comparison or the
+per-position key-count collision check (US site #1173 B3, KR site hk 1295). Each
 mutant compiles a copy of the module with ONE site's test forced false and runs
 the scenario only that site should decide; the real module passes it, the
 mutant must not (wrong answer or crash). A new site without a declared
@@ -30,9 +31,10 @@ Invariant sentences (one per mutant):
 - SUPERSEDE_DATE: an authoritative row covers a websocket row only on the
   same US trading date, so a reused KIS order number of an older date never
   hides a fill of today.
-- DUPLICATE_POSITIONS: when two or more US positions share a symbol key,
-  every one of them is unknown; no position gets a block proven against
-  another position's quantity (last-write-wins is impossible).
+- DUPLICATE_POSITIONS: when two or more positions share a normalized symbol
+  key, every one of them is unknown; no position gets a block proven against
+  another position's quantity (last-write-wins is impossible — US site in
+  ``us_position_blocks``, KR twin site in ``kr_position_blocks``, hk 1295).
 - ATTACH_PER_POSITION: US blocks are attached by position, never looked up
   by symbol, so positions with one symbol cannot share a block.
 - ATTACH_LOADER: US positions go to the US loader, never the KR loader.
@@ -181,6 +183,23 @@ def scenario_duplicate_positions(m: types.ModuleType) -> bool:
     return all(b["unknown_reasons"] == [m.UNKNOWN_DUPLICATE_POSITIONS] for b in blocks)
 
 
+def scenario_kr_duplicate_positions(m: types.ModuleType) -> bool:
+    refs = [
+        m.PositionRef("T1295K", Decimal("1")),
+        m.PositionRef("t1295k", Decimal("8")),
+    ]
+    blocks = m.kr_position_blocks(
+        refs,
+        fills_by_symbol={"T1295K": _history(m), "t1295k": []},
+        orders_by_symbol={},
+        freshness=m.Freshness("fresh", NOW - timedelta(minutes=5), 5.0),
+        now=NOW,
+    )
+    return all(
+        b["unknown_reasons"] == [m.UNKNOWN_DUPLICATE_POSITIONS] for b in blocks.values()
+    )
+
+
 def scenario_attach_per_position(m: types.ModuleType) -> bool:
     refs = [
         kis_lots.PositionRef("MSFT", Decimal("1")),
@@ -226,6 +245,10 @@ DECLARED: dict[tuple[str, str], tuple[str, Callable[[types.ModuleType], bool]]] 
     ("kis_lots", "us_position_blocks:key_counts[key] > 1#0"): (
         "DUPLICATE_POSITIONS",
         scenario_duplicate_positions,
+    ),
+    ("kis_lots", "kr_position_blocks:key_counts[key] > 1#0"): (
+        "DUPLICATE_POSITIONS",
+        scenario_kr_duplicate_positions,
     ),
     ("portfolio_ledger_lots", "_per_position:market == 'us'#0"): (
         "ATTACH_PER_POSITION",

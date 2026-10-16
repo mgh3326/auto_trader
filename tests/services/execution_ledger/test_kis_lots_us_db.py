@@ -40,20 +40,6 @@ LATE = datetime(2099, 8, 12, 16, 0, tzinfo=UTC)  # 01:00 KST, same US date
 SYM = "T1173A"
 DOT = "T1173.B"  # DB dot-format; the reconciler stores KIS pdno "T1173/B"
 ORDER_PREFIX = "T1173"
-ALL_SYMBOLS = [
-    "T1173A",
-    "T1173C",
-    "T1173D",
-    "T1173E",
-    "T1173.B",
-    "T1173/B",
-    "T1173-B",
-    "T1173.C",
-    "T1173/C",
-    "t1173a",
-    " T1173A ",
-    "t1173/b",
-]
 MIXED_KEY = "T1173.X.Y"
 # r3 F3 / round 4: spellings _us_symbol_key maps to MIXED_KEY ...
 MIXED_SAME = [
@@ -70,16 +56,27 @@ MIXED_OTHER = ["T1173_X.Y", "T1173 X.Y", "T1173.XY", "T1173.X.Y.Z", "T1173XY"]
 UNICODE_SAME = {"t1173ß": "T1173SS", "T1173ﬀ": "T1173FF"}
 # r4 B2: padding Python strip removes but an ASCII SQL trim would not.
 PADDED_SAME = ["\u00a0T1173.Q\u2003", "\x1cT1173.Q\x1f", "\u2028t1173/q\u3000"]
-ALL_SYMBOLS += [
-    MIXED_KEY,
-    *MIXED_SAME,
-    *MIXED_OTHER,
-    *UNICODE_SAME,
-    *UNICODE_SAME.values(),
-    "T1173.Q",
-    *PADDED_SAME,
-    *(sym.strip() for sym in PADDED_SAME),
-]
+
+
+async def _t1173_stored_symbols(db_session) -> list[str]:
+    """hk 1299: every stored symbol whose normalized key is in the T1173 set.
+
+    The upsert only strips the written symbol — it never normalizes it — so a
+    stored row can carry a spelling that no exact ``symbol IN (...)`` cleanup
+    list names (e.g. ``t1173.x.y``, the stored strip of ``\\tt1173.x.y ``).
+    Such a row leaks into the next run on the same database and re-inserts a
+    deterministic ``T1173P*`` order id: ``uq_execution_ledger_fill`` conflict,
+    or a silently inflated net quantity. Cleanup and the leave-no-rows count
+    must therefore match the normalized T1173 key prefix, not spellings.
+    """
+    stored = (
+        (await db_session.execute(select(ExecutionLedger.symbol).distinct()))
+        .scalars()
+        .all()
+    )
+    return [
+        s for s in stored if s and kis_lots._us_symbol_key(s).startswith(ORDER_PREFIX)
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -196,9 +193,11 @@ def _run(finished_ago: timedelta, *, now: datetime = NOW):
 
 async def _cleanup(db_session, run_ids: list[uuid.UUID]) -> None:
     await db_session.rollback()
-    await db_session.execute(
-        delete(ExecutionLedger).where(ExecutionLedger.symbol.in_(ALL_SYMBOLS))
-    )
+    t1173_symbols = await _t1173_stored_symbols(db_session)
+    if t1173_symbols:
+        await db_session.execute(
+            delete(ExecutionLedger).where(ExecutionLedger.symbol.in_(t1173_symbols))
+        )
     await db_session.execute(
         delete(LiveOrderLedger).where(LiveOrderLedger.order_no.like(f"{ORDER_PREFIX}%"))
     )
@@ -1040,17 +1039,17 @@ async def test_the_kis_and_http_trap_is_live(no_kis_or_http: list[str]) -> None:
 
 async def test_zz_this_file_leaves_no_rows_behind(db_session) -> None:
     await db_session.rollback()
-    counts = []
+    # hk 1299: count by the same normalized T1173 key prefix cleanup uses —
+    # an exact symbol list cannot see a leaked normalized spelling.
+    counts = [len(await _t1173_stored_symbols(db_session))]
     for model, column, pattern in (
-        (ExecutionLedger, ExecutionLedger.symbol, None),
         (LiveOrderLedger, LiveOrderLedger.order_no, f"{ORDER_PREFIX}%"),
         (KISLiveOrderLedger, KISLiveOrderLedger.order_no, f"{ORDER_PREFIX}%"),
     ):
-        where = column.in_(ALL_SYMBOLS) if pattern is None else column.like(pattern)
         counts.append(
             (
                 await db_session.execute(
-                    select(func.count()).select_from(model).where(where)
+                    select(func.count()).select_from(model).where(column.like(pattern))
                 )
             ).scalar_one()
         )

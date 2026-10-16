@@ -54,6 +54,7 @@ _SENSITIVE_KEYWORDS = (
     "cookie",
     "set-cookie",
     "x-api-key",
+    "api-key",
     "token",
     "secret",
     "password",
@@ -69,6 +70,47 @@ _SENSITIVE_KEYWORDS = (
     "webhook",
     "credential",
     "signature",
+    # #1103: broker account identifiers and order-approval capability
+    # tokens. Substring-safe spellings only — see _SENSITIVE_KEY_TOKENS for
+    # the tokens that need boundary matching.
+    "acnt_prdt_cd",
+    "account_no",
+    "accountno",
+    "account_number",
+    "accountnumber",
+    "account_id",
+    "accountid",
+    "accountidentifier",
+    "account_seq",
+    "accountseq",
+    "acct_no",
+    "acctno",
+    "acctnumber",
+    "acctid",
+    "acctidentifier",
+    "acntno",
+    "acntnumber",
+    "acntid",
+    "acntidentifier",
+    "approval_key",
+    "approval_hash",
+    "approvalhash",
+)
+
+# #1103: account-identifier tokens that are too short for bare substring
+# matching — ``cano`` is a substring of ``canonical_*``/``volcano`` and
+# ``act_no`` is a substring of ``exact_*``/``artifact_not_*``, so they match
+# only as a whole key or as the final separator-delimited segment
+# (``kis_cano``/``verified_act_no``/``X-Tossinvest-Account`` yes;
+# ``canonical_id``/``exact_nonempty``/``contact_no`` no). ``account`` is a
+# trailing token for the same reason — ``account_mode``/``account_scope``/
+# ``account_type`` are lane enums, not secrets.
+_SENSITIVE_KEY_TOKENS = ("account", "act_no", "cano")
+_SENSITIVE_KEY_TOKEN_ALT_RE = "|".join(
+    re.escape(token) for token in _SENSITIVE_KEY_TOKENS
+)
+_SENSITIVE_KEY_TOKEN_END_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:" + _SENSITIVE_KEY_TOKEN_ALT_RE + r")$"
 )
 
 # ROB-1305: value-shape scrubbing for secrets embedded inside strings (URLs,
@@ -100,18 +142,30 @@ _URL_BASIC_AUTH_RE = re.compile(
 _SENSITIVE_KEY_SUBSTRING_RE = "|".join(
     re.escape(keyword) for keyword in _SENSITIVE_KEYWORDS
 )
-_SECRET_QUERY_PARAM_RE = re.compile(
-    r"(?P<prefix>(?:^|[?&])[A-Za-z0-9_-]*(?:"
+# #1103: a serialized parameter/field name is sensitive when it *contains* a
+# keyword (existing semantics) or when it *is / ends-in* a bounded account
+# token — ``?CANO=`` and ``?verified_act_no=`` must be scrubbed while
+# ``?canonical_id=`` must not.
+_SENSITIVE_NAME_RE = (
+    "[A-Za-z0-9_-]*(?:"
     + _SENSITIVE_KEY_SUBSTRING_RE
-    + r")[A-Za-z0-9_-]*=)[^&\s\"']+",
+    + ")[A-Za-z0-9_-]*"
+    + "|(?:[A-Za-z0-9_-]*[_-])?(?:"
+    + _SENSITIVE_KEY_TOKEN_ALT_RE
+    + ")"
+)
+_SECRET_QUERY_PARAM_RE = re.compile(
+    r"(?P<prefix>(?:^|[?&\s])(?:" + _SENSITIVE_NAME_RE + r")=)[^&\s\"']+",
     flags=re.IGNORECASE,
 )
 # Matches a secret-named field inside a serialized JSON string, e.g. the JSON
-# text captured in an MCP span's `mcp.tool.result.content` data.
+# text captured in an MCP span's `mcp.tool.result.content` data. Single-quoted
+# shapes are covered too because loggers that f-string a Python dict emit the
+# ``'CANO': '…'`` repr form rather than JSON.
 _JSON_SECRET_FIELD_RE = re.compile(
-    r'(?P<prefix>"[A-Za-z0-9_-]*(?:'
-    + _SENSITIVE_KEY_SUBSTRING_RE
-    + r')[A-Za-z0-9_-]*"\s*:\s*")[^"]*(?P<suffix>")',
+    r"(?P<prefix>[\"'](?:"
+    + _SENSITIVE_NAME_RE
+    + r")[\"']\s*:\s*[\"'])[^\"']*(?P<suffix>[\"'])",
     flags=re.IGNORECASE,
 )
 
@@ -318,6 +372,8 @@ def _extract_sentry_log_context(
 
 def _is_sensitive_key(key: str) -> bool:
     key_lower = key.lower()
+    if _SENSITIVE_KEY_TOKEN_END_RE.search(key_lower):
+        return True
     return any(keyword in key_lower for keyword in _SENSITIVE_KEYWORDS)
 
 

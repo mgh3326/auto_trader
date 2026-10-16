@@ -72,8 +72,13 @@ def _order(order_no: str, **overrides: Any) -> KISLiveOrderLedger:
     return KISLiveOrderLedger(**data)
 
 
-def _run(*, finished_minutes_ago: int | None, dry_run: bool = False):
-    started = NOW - timedelta(minutes=(finished_minutes_ago or 0) + 1)
+def _run(
+    *,
+    finished_minutes_ago: int | None,
+    dry_run: bool = False,
+    at: datetime = NOW,
+):
+    started = at - timedelta(minutes=(finished_minutes_ago or 0) + 1)
     return ExecutionLedgerReconcileRun(
         run_id=uuid.uuid4(),
         broker="kis",
@@ -83,7 +88,7 @@ def _run(*, finished_minutes_ago: int | None, dry_run: bool = False):
         finished_at=(
             None
             if finished_minutes_ago is None
-            else NOW - timedelta(minutes=finished_minutes_ago)
+            else at - timedelta(minutes=finished_minutes_ago)
         ),
         dry_run=dry_run,
     )
@@ -582,6 +587,136 @@ async def test_973_pre_seed_reconciler_rows_are_superseded(db_session) -> None:
     assert seedless_block["net_quantity"] == "5"
     assert seedless_block["diagnostics"]["seed_cutover"] is None
     assert seedless_block["diagnostics"]["pre_seed_rows_superseded"] == []
+
+
+# ---------------------------------------------------------------------------
+# hk 1295 — colliding normalized KR position keys are all unknown
+# ---------------------------------------------------------------------------
+async def test_1295_colliding_kr_position_keys_are_all_unknown(
+    db_session,
+) -> None:
+    """Two KR holdings normalizing to the same key never share a known block.
+
+    The qty-1 position must never be shown the qty-8 known proof: the loader
+    resolves the shared key to ``duplicate_positions_for_symbol`` under the
+    raw-symbol slot the symbol-keyed attach lookup reads, while an unrelated
+    position keeps its own known block.
+    """
+    run = _run(finished_minutes_ago=10)
+    run_ids = [run.run_id]
+    db_session.add_all(
+        [
+            run,
+            # authoritative qty-8 proof for the collided symbol: with the
+            # collision guard it must not reach either position
+            _fill(
+                filled_qty=Decimal("8"),
+                source="manual_import",
+                broker_order_id=f"{ORDER_PREFIX}-1295",
+                filled_at=NOW - timedelta(days=20),
+            ),
+            _fill(
+                symbol=OTHER_SYM,
+                raw_symbol=OTHER_SYM,
+                filled_qty=Decimal("5"),
+                source="manual_import",
+                broker_order_id=f"{ORDER_PREFIX}-{OTHER_SYM}",
+                filled_at=NOW - timedelta(days=20),
+            ),
+        ]
+    )
+    await db_session.commit()
+    try:
+        blocks = await load_kis_live_kr_lot_blocks(
+            db_session,
+            [
+                PositionRef(SYM, Decimal("1")),
+                PositionRef(SYM, Decimal("8")),
+                PositionRef(OTHER_SYM, Decimal("5")),
+            ],
+            now=NOW,
+        )
+    finally:
+        await _cleanup(db_session, run_ids, [])
+
+    dup = blocks[SYM]
+    assert dup["ledger_state"] == "unknown"
+    assert dup["unknown_reasons"] == ["duplicate_positions_for_symbol"]
+    assert dup["lots"] is None
+    assert "market" not in dup
+    other = blocks[OTHER_SYM]
+    assert other["ledger_state"] == "known", other["unknown_reasons"]
+
+
+async def test_1295_duplicate_normalized_holdings_share_only_the_unknown_block(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hk 1295 end to end through get_holdings: two KIS 잔고 rows pdno
+    ``T96301`` qty 1 and ``T96301`` qty 8 (identical after ``equity_kr``
+    normalization — strip/upper only).
+
+    Both positions read ``duplicate_positions_for_symbol`` unknown with
+    ``lots=None`` — never the other's quantity proof — while the unrelated
+    position keeps its own known block.
+    """
+    from tests.mcp_server import get_holdings_golden_support as support
+
+    support.install_fake_collect(
+        monkeypatch,
+        [
+            support.kis_kr_position(SYM, 1.0, 1000.0),
+            support.kis_kr_position(SYM, 8.0, 1000.0),
+            support.kis_kr_position(OTHER_SYM, 5.0, 2000.0),
+        ],
+    )
+    now = datetime.now(UTC)
+    run = _run(finished_minutes_ago=10, at=now)
+    db_session.add_all(
+        [
+            run,
+            _fill(
+                filled_qty=Decimal("8"),
+                source="manual_import",
+                broker_order_id=f"{ORDER_PREFIX}-1295H",
+                filled_at=now - timedelta(days=20),
+            ),
+            _fill(
+                symbol=OTHER_SYM,
+                raw_symbol=OTHER_SYM,
+                filled_qty=Decimal("5"),
+                source="manual_import",
+                broker_order_id=f"{ORDER_PREFIX}-{OTHER_SYM}-H",
+                filled_at=now - timedelta(days=20),
+            ),
+        ]
+    )
+    await db_session.commit()
+    try:
+        result = await support.call_get_holdings(
+            include_current_price=False, minimum_value=0, include_ledger_lots=True
+        )
+    finally:
+        await _cleanup(db_session, [run.run_id], [])
+
+    kr = [
+        p
+        for g in result["accounts"]
+        for p in g["positions"]
+        if p.get("market") == "kr" and p["source"] == "kis_api"
+    ]
+    assert sorted(p["quantity"] for p in kr) == [1.0, 5.0, 8.0]
+    by_quantity = {p["quantity"]: p["ledger_lots"] for p in kr}
+    for qty in (1.0, 8.0):
+        block = by_quantity[qty]
+        assert block["ledger_state"] == "unknown"
+        assert block["unknown_reasons"] == ["duplicate_positions_for_symbol"]
+        assert block["lots"] is None
+        # A KR block never carries the US keys.
+        assert "market" not in block
+    assert by_quantity[5.0]["ledger_state"] == "known", by_quantity[5.0][
+        "unknown_reasons"
+    ]
+    assert result["ledger_lots"]["positions_covered_by_market"]["kr"] == 3
 
 
 async def test_zz_this_file_leaves_no_rows_behind(db_session) -> None:

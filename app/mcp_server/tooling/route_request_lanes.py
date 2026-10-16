@@ -546,6 +546,21 @@ HARNESS_DENIED_MARKET_RELIEF: dict[str, frozenset[str]] = {
 }
 
 
+# hk 1040 (operator 10-16 dr-1040-1 A): the Toss buying-power read is admitted
+# on the KR and US live session harness — robin-prefect kr_live_sessions.py
+# appends it to the KR/US rep argv only (LIVE_KR_US_ONLY_TOOLS) for the
+# parking-sweep step ③ buying-power check.  It stays in the legacy
+# MUTATION_TOOLS bucket (STATUS_HELPER_TOOLS) for the registry partition, the
+# same supplementary-allowance shape as LANE_EXTRA_ALLOWED, so it is allowed —
+# and out of blocked_actions — on every kr/us lane while crypto routes keep
+# blocking it.  The handler only GETs Toss /api/v1/buying-power (and
+# /api/v1/accounts to resolve the account): no order, no ledger write.
+MARKET_EXTRA_ALLOWED: dict[str, frozenset[str]] = {
+    "kr": frozenset({"toss_get_orderable_cash"}),
+    "us": frozenset({"toss_get_orderable_cash"}),
+}
+
+
 def _harness_denied_tools(market: str) -> frozenset[str]:
     """The #678 denied set as the market's live harness enforces it."""
     return HARNESS_DENIED_TOOLS - HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
@@ -1103,6 +1118,7 @@ def build_route_plan(
                 set(READ_ONLY_ADVISORY_TOOLS)
                 | set(ACCOUNT_CLEANUP_REQUIRED_TOOLS)
                 | HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
+                | MARKET_EXTRA_ALLOWED.get(market, frozenset())
             )
             - denied
         ) & registered_tools
@@ -1192,6 +1208,7 @@ def build_route_plan(
         | lane_lifecycle
         | lane_reserve_net
         | HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
+        | MARKET_EXTRA_ALLOWED.get(market, frozenset())
         | set(READ_ONLY_ADVISORY_TOOLS)
     )
     route_contract = (
@@ -1287,6 +1304,7 @@ __all__ = [
     "MARKET_EXECUTION_TOOLS",
     "PREVIEW_TOOLS",
     "LANE_EXTRA_ALLOWED",
+    "MARKET_EXTRA_ALLOWED",
     "LANE_RECONCILE_ALLOWED",
     "HARNESS_DENIED_TOOL_BASIS",
     "HARNESS_DENIED_TOOLS",
