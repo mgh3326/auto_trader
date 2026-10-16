@@ -60,6 +60,14 @@ same function with ``market="us"``; only the inputs differ:
 * freshness is the same KIS reconcile run: one run fetches ``kr,us`` and a
   failed US fetch fails the whole run, so a successful run covers both.
 
+hk 1295 closes the same normalized-key collision on the KR side: two or more
+KR positions sharing a ``_kr_symbol_key`` (strip+upper, the ``equity_kr``
+position identity — KR symbols carry no ``-``/``/`` separators so
+``to_db_symbol`` is deliberately not applied) are each
+``duplicate_positions_for_symbol`` unknown via the shared
+``_position_key_counts`` count; the KR result stays a symbol-keyed dict for
+the unchanged attach lookup.
+
 Quarantined rows (#1175) never reach any view: every fills read ANDs
 ``execution_ledger_in_effect()``. Accept-notice phantoms that are not (yet)
 quarantined are ``websocket`` rows, and a websocket row never reaches lots,
@@ -75,7 +83,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -126,7 +134,8 @@ UNKNOWN_QTY_MISMATCH = "quantity_mismatch_with_reference"
 UNKNOWN_PROVISIONAL_PENDING = "provisional_rows_pending_reconcile"
 UNKNOWN_LOAD_FAILED = "ledger_read_failed"
 UNKNOWN_ORDER_LEDGER_READ_FAILED = "order_ledger_read_failed"
-# Task #1173 B3 — two or more KIS live US positions share one symbol key.
+# Task #1173 B3 (US) / hk 1295 (KR): two or more KIS live positions share one
+# normalized position key, so no position may be shown another's quantity proof.
 UNKNOWN_DUPLICATE_POSITIONS = "duplicate_positions_for_symbol"
 
 BLOCK_OWN_OPEN_BUY = "own_nonterminal_buy_order_today"
@@ -1015,6 +1024,10 @@ async def load_kis_live_kr_lot_blocks(
     position to ``ledger_state="unknown"``). A failed order-ledger read only
     degrades ``open_buy_evidence`` and ``open_sell_evidence`` (hence
     ``sellable_by_ledger``) to unknown for all symbols.
+
+    hk 1295: positions sharing a ``_kr_symbol_key`` are all projected
+    ``duplicate_positions_for_symbol`` by ``kr_position_blocks`` — one
+    position's quantity proof is never shown for another.
     """
     moment = now or datetime.now(UTC)
     symbols = sorted({ref.symbol for ref in refs})
@@ -1095,18 +1108,77 @@ async def load_kis_live_kr_lot_blocks(
         await db.rollback()
         orders_by_symbol = None
 
-    return {
-        ref.symbol: build_symbol_block(
+    return kr_position_blocks(
+        refs,
+        fills_by_symbol=fills_by_symbol,
+        orders_by_symbol=orders_by_symbol,
+        freshness=freshness,
+        now=moment,
+    )
+
+
+def _kr_symbol_key(symbol: str) -> str:
+    """The collision key of one KIS live KR position (hk 1295).
+
+    What ``normalize_position_symbol`` produces for ``equity_kr`` — strip +
+    upper only. Unlike ``_us_symbol_key`` it does NOT run ``to_db_symbol``:
+    the KR position pipeline never separator-normalizes KR symbols, so a
+    ``-``/``/`` inside one names a genuinely different KR symbol, and folding
+    it would merge two different positions' quantity proofs.
+    """
+    return symbol.strip().upper()
+
+
+def _position_key_counts(
+    refs: Sequence[PositionRef], key: Callable[[str], str]
+) -> Counter[str]:
+    """Normalized position key -> number of broker positions carrying it.
+
+    The one collision count shared by ``kr_position_blocks`` (hk 1295) and
+    ``us_position_blocks`` (#1173 B3): a key carried by more than one broker
+    position means the ledger cannot prove which position's quantity a fill
+    or order belongs to, so every position under it fails closed as
+    ``duplicate_positions_for_symbol`` instead of one position inheriting
+    another's quantity proof.
+    """
+    return Counter(key(ref.symbol) for ref in refs)
+
+
+def kr_position_blocks(
+    refs: Sequence[PositionRef],
+    *,
+    fills_by_symbol: dict[str, list[LedgerFill]],
+    orders_by_symbol: dict[str, list[OrderRow]] | None,
+    freshness: Freshness,
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    """The ``us_position_blocks`` twin for KR (hk 1295): ``{ref.symbol: block}``.
+
+    The KR attach layer keeps its pre-#1173 symbol-keyed lookup, so the dict
+    is keyed by each position's own symbol string. The collision judgment is
+    the same one US makes: when two or more positions share a
+    ``_kr_symbol_key``, every position under it is
+    ``duplicate_positions_for_symbol`` unknown — the raw-symbol dict would
+    otherwise let the last write stand and show one position's quantity
+    proof for another.
+    """
+    key_counts = _position_key_counts(refs, _kr_symbol_key)
+    blocks: dict[str, dict[str, Any]] = {}
+    for ref in refs:
+        key = _kr_symbol_key(ref.symbol)
+        if key_counts[key] > 1:
+            blocks[ref.symbol] = unknown_block(ref.symbol, UNKNOWN_DUPLICATE_POSITIONS)
+            continue
+        blocks[ref.symbol] = build_symbol_block(
             symbol=ref.symbol,
             reference_quantity=ref.reference_quantity,
             current_price=ref.current_price,
             fills=fills_by_symbol[ref.symbol],
-            orders=None if orders_by_symbol is None else orders_by_symbol[ref.symbol],
+            orders=(None if orders_by_symbol is None else orders_by_symbol[ref.symbol]),
             freshness=freshness,
-            now=moment,
+            now=now,
         )
-        for ref in refs
-    }
+    return blocks
 
 
 def _us_symbol_key(symbol: str) -> str:
@@ -1274,7 +1346,7 @@ def us_position_blocks(
     would be shown for the other. Every position of such a key is unknown
     (``duplicate_positions_for_symbol``) and nothing known is produced for it.
     """
-    key_counts = Counter(_us_symbol_key(ref.symbol) for ref in refs)
+    key_counts = _position_key_counts(refs, _us_symbol_key)
     blocks: list[dict[str, Any]] = []
     for ref in refs:
         key = _us_symbol_key(ref.symbol)
