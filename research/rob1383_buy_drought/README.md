@@ -4,7 +4,7 @@
 
 ```bash
 uv run python -m research.rob1383_buy_drought.run --inputs <inputs dir>            # 최초: 가격 다운로드 (~15분, 네트워크)
-uv run python -m research.rob1383_buy_drought.run --inputs <inputs dir> --offline  # 캐시만 (~50초)
+uv run python -m research.rob1383_buy_drought.run --inputs <inputs dir> --offline  # 캐시만 (관측 43–76초, 장비 부하에 따라)
 ```
 
 가격 캐시: `research/rob1383_buy_drought/.cache/`(기존 `.cache` gitignore 규칙, 커밋 안 됨).
@@ -17,7 +17,7 @@ uv run python -m research.rob1383_buy_drought.run --inputs <inputs dir> --offlin
 - US: 제안 77 → 승인 69 → 전송 68 → 접수 63(전송 대비 92.6%; 원장 미매칭 5) → **체결 4 (6.3%, 2.5–15.2)**. 금액 비율 30.5%(7.0–54.0).
 - crypto: 제안 3 → 체결 0. 후보(forecast) 대비 제안 비율은 KR 0.29·US 0.37·crypto 0.009(부분집합 아님).
 
-**Q1 지지선 게이트 완화** (대상 = 원문이 지지선 실패만 말하고 RSI ≤ 45 인 후보 — KR 86·US 66·crypto 13; 원문이 아무 게이트도 말하지 않아 upside 미검증인 후보 KR 145·US 21·crypto 8 은 별도 모집단. 재구성 재현율: 원문이 지지 실패라고 한 행 중 재구성도 실패 KR 80.9% (72.7–87.0, n=115) · US 79.1% (69.7–86.2, n=91) · crypto 77.2% (69.1–83.8, n=123))
+**Q1 지지선 게이트 완화** (대상 = 원문이 지지선 실패만 말하고 RSI ≤ 45 인 후보 — KR 86·US 66·crypto 13; 원문이 아무 게이트도 말하지 않아 upside 미검증인 후보 KR 145·US 21·crypto 8 은 별도 모집단. 재구성 재현율: 원문이 지지 실패라고 한 행 중 재구성도 실패 KR 80.9% (72.7–87.0, n=115) · US 79.3% (70.0–86.4, n=92) · crypto 77.4% (69.3–83.9, n=124))
 - V1(계열 2→1)·V2(강도 moderate→weak) 단독은 **통과 0건 추가**(구조적: 강도 = 출처 수라 weak 는 계열 ≤ 1). V3(8→12%) 단독은 KR 12→15, US 11→13.
 - **V4(deep_limit −3%→0) 단독이 지배적**: KR 통과 12→40/86 (46.5%, 36.3–57.0), US 11→37/66 (56.1%, 44.1–67.4). 5세션 내 앵커 터치 KR 65.0% (49.5–77.9, n=40), US 66.7% (50.3–79.8, n=36).
 - 터치 후 수익은 시장별로 갈린다: KR 20일 −0.21% (−3.35–+3.18, n=21), US 20일 +7.09% (+1.65–+13.30, n=14; 5일 +4.89%, 1.83–8.07, n=20). 별도 모집단(upside 미검증)의 KR V4 20일은 −5.50% (−9.95–−1.52, n=18)다. 사유 원문 기준 'deep_limit 밴드 밖' 기각: KR 22(4.8%)·US 33(19.1%)·crypto 7(2.1%). crypto 는 대상이 13건(재구성 7)뿐이다.
@@ -64,7 +64,7 @@ uv run python -m research.rob1383_buy_drought.run --inputs <inputs dir> --offlin
 4. **KR NXT/애프터 미포함**: 공개 일봉·시간봉에 없다. NXT 전용 원 주문 16건은 Q2 에서만 제외(수명 가격 없음)하고, Q3 는 다음 KRX 세션으로 평가한다.
 5. **분할**: yfinance 분할 조정가. 결정·주문일 이후 분할이 있는 행은 원 가격과 비교하는 Q2–Q4 에서 제외(`split_after_*`)했다.
 6. **20/80 분할의 정수 주 제약**: 수량 < 5 인 주문(KR 37/63, US 56/58)은 정수 주로 분할할 수 없다(소수 주 이상화).
-7. **crypto 주문 없음**: 입력에 Upbit 주문이 없어 Q2/Q3 crypto 는 계산 불가로 표기했다. Q1 crypto 는 n=21 로 작다.
+7. **crypto 주문 없음**: 입력에 Upbit 주문이 없어 Q2/Q3 crypto 는 계산 불가로 표기했다. Q1 crypto 주 모집단은 n=13(재구성 7)으로 작다(upside 미검증 별도 8 포함 시 21).
 8. **원문 파싱은 정규식**: 원문 그대로의 픽스처 테스트와 재현율 표로만 검증했다.
 
 ## 시사점 (해석일 뿐, 정책 제안·변경 아님)

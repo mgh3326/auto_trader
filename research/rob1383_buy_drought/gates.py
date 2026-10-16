@@ -101,6 +101,11 @@ _TEXT_PATTERNS: dict[str, list[re.Pattern[str]]] = {
         # The gap may not cross a pass token: "upside 46.98 통과 ... 거리만 미달"
         # is an upside *pass* followed by another gate's failure.
         r"(upside|업사이드)(?:(?!통과|pass|✓|≥)[^.;\n]){0,80}?(<|미달|below|short of|fails?\b|탈락)",
+        # Value-anchored: the comparator follows the upside value itself,
+        # optionally after one parenthetical ("31.2% (RSI pass) below 40").
+        r"(upside|업사이드)[^\d.;\n]{0,25}?\+?\d+(?:\.\d+)?%?\s*(?:\([^)]{0,30}\)\s*)?(<|미달|below|short of)",
+        # Negated pass: "upside 통과하지 못함" / "upside did not pass".
+        r"(upside|업사이드)[^.;\n]{0,20}?(통과하지 못|통과 못|did not pass|failed to pass)",
         r"upside_min_pct[^.;\n]{0,30}(미달|fail|<)",
         r"\+\d+(\.\d+)?%\s*<\s*40",
     ),

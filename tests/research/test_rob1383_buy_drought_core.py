@@ -751,3 +751,91 @@ def test_excess_hit_exact_threshold_with_non_flat_benchmark():
         bench_closes=[110.0],
         mode="touch",
     )
+
+
+def test_coverage_survives_a_batch_of_only_q3_only_orders():
+    # tester r2 B5: no Q2-scorable row -> no low_basis/reference_basis columns.
+    from research.rob1383_buy_drought.q2_q3_orders import coverage
+
+    days = [date(2026, 10, 12) + timedelta(days=i) for i in range(5)]
+    bars = _bars("kr", days, lows=[100.0, 100.0, 100.0, 86.0, 100.0])
+    bars[["open", "high", "low", "close"]] *= 1000.0
+    order = TossOrder(
+        order_id="x",
+        market="kr",
+        symbol="000000",
+        side="BUY",
+        status="REJECTED",
+        order_type="LIMIT",
+        price=87_000.0,
+        quantity=1.0,
+        ordered_at=datetime(2026, 10, 13, 7, 9, tzinfo=UTC),
+        canceled_at=datetime(2026, 10, 13, 11, 4, tzinfo=UTC),
+        filled_qty=0.0,
+        avg_fill=None,
+        filled_at=None,
+    )
+    cov = coverage(q23_run([order], _Store(bars)))
+    assert cov["disposition"].tolist() == ["q3_only:q2_no_regular_session_overlap"]
+    assert cov["n"].tolist() == [1]
+
+
+def test_upside_failure_after_unrelated_or_negated_pass_token():
+    # tester r2 SHOULD: the pass-token lookahead must not hide these failures.
+    for text in (
+        "moderate 지지 없음. upside 31.2% (RSI pass) below 40. RSI 41",
+        "moderate 지지 없음. upside 통과하지 못함: 31.2% below 40. RSI 41",
+    ):
+        gates, _ = parse_text_gates(text)
+        assert "upside_min" in gates, text
+        assert not compose(text, None, None).support_only_fail, text
+
+
+def test_agreement_denominator_counts_every_support_text_gate():
+    # tester r2 B4. Runs in a subprocess: q1_support_gate imports the ROB-1301
+    # shim, whose env defaults / US-quote monkeypatch must not leak into the
+    # shared CI test process.
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent(
+        """
+        from datetime import UTC, datetime
+        import pandas as pd
+        from research.rob1383_buy_drought.core import Reconstruction, SupportLevel
+        from research.rob1383_buy_drought.gates import SUPPORT_TEXT_GATES
+        from research.rob1383_buy_drought.inputs import Rejection
+        from research.rob1383_buy_drought.q1_support_gate import agreement
+
+        rows = []
+        rejections = []
+        recon = {}
+        for i, code in enumerate(sorted(SUPPORT_TEXT_GATES)):
+            rows.append({
+                "row": i, "market": "us", "symbol": f"S{i}",
+                "recon_missing": None, "failed_gates_text": code,
+                "failed_gates_recomputed": "support_within_pct",
+                "recon_price_basis": "prior_close", "recon_rsi": 40.0,
+                "rsi_source": "recomputed", "rsi_value": 40.0,
+            })
+            rejections.append(Rejection(
+                row=i, forecast_id=str(i), market="us", symbol=f"S{i}",
+                created_at=datetime(2026, 10, 1, tzinfo=UTC), session_label=None,
+                policy_version=None, primary="", labels=frozenset(), reason="x",
+                target_kind=None, direction=None, target_price=None,
+                probability=None, forecast_start=None, review_date=None,
+                window_start=None, window_end=None, status="open", outcome=None,
+            ))
+            recon[i] = Reconstruction(100.0, 40.0, (SupportLevel(90.0, "moderate", 2, ("a", "b")),), "prior_close")
+        out = agreement(pd.DataFrame(rows), rejections, recon)
+        us = out[(out["market"] == "us") & (out["price_mode"] == "point_in_time")].iloc[0]
+        assert us["text_states_support_fail_n"] == len(SUPPORT_TEXT_GATES), us["text_states_support_fail_n"]
+        print("OK", int(us["text_states_support_fail_n"]))
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=240
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK 5" in proc.stdout

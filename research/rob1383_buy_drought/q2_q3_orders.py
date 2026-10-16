@@ -461,6 +461,9 @@ def coverage(detail: pd.DataFrame) -> pd.DataFrame:
     s = _q2_scorable(d)
     extra = []
     for col in ("low_basis", "reference_basis"):
+        if col not in s or s.empty:
+            # A batch of Q3-only (NXT) originals never builds Q2 columns (tester r2 B5).
+            continue
         x = s.groupby(["market", "group", col]).size().reset_index(name="n")
         x["disposition"] = col + ":" + x.pop(col).astype(str)
         extra.append(x)

@@ -34,7 +34,11 @@ from research.rob1383_buy_drought.core import (
     low_after,
     point_in_time,
 )
-from research.rob1383_buy_drought.gates import RSI_MAX, text_states_support_pass
+from research.rob1383_buy_drought.gates import (
+    RSI_MAX,
+    SUPPORT_TEXT_GATES,
+    text_states_support_pass,
+)
 from research.rob1383_buy_drought.inputs import Rejection
 from research.rob1383_buy_drought.prices import PriceStore
 from research.rob1383_buy_drought.stats import mean_row, proportion_row
@@ -331,12 +335,12 @@ def agreement(
     markets = {r.row: r.market for r in rejections}
     baseline = build_variant("baseline")
     e = enriched[enriched["recon_missing"].isna()].copy()
+    # Same definition as the cohort (SUPPORT_TEXT_GATES), never a hand list:
+    # a code added there must enter this denominator too (tester r2 B4).
     e["text_support_fail"] = (
         e["failed_gates_text"]
         .fillna("")
-        .str.contains(
-            "support_strength|independent_sources|support_within_pct|deep_limit_band"
-        )
+        .map(lambda g: bool(set(filter(None, g.split("|"))) & SUPPORT_TEXT_GATES))
     )
     e["text_support_pass"] = e["row"].map(
         lambda r: text_states_support_pass(reasons[r])
