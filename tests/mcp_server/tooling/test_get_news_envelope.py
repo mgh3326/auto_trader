@@ -303,6 +303,32 @@ async def test_get_news_error_status_returns_error_payload(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_get_news_error_payload_carries_closed_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1384 — terminal failures carry a closed error_code so sessions can
+    distinguish 'lookup failed' from 'no news'."""
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(
+            return_value=SymbolNewsFetchResult(
+                "TMUS", "us", "finnhub", "error", 10, 0, [], "TimeoutError"
+            )
+        ),
+    )
+
+    out = await _news.handle_get_news("TMUS", market="us", limit=10)
+
+    assert out.get("error_code") == "news_lookup_failed"
+    assert out.get("error_class") == "TimeoutError"
+    assert out.get("data_state") == "missing"
+    assert "suggestion" in out
+    assert "news" not in out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_get_news_authoritative_empty_is_fresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

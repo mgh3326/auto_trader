@@ -161,7 +161,22 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 - **ROB-510**: US/crypto(Finnhub)도 동일 DB 파이프라인 합류 (feed_source
   `finnhub_company_news`/`finnhub_general_news`). Finnhub fetch는
   `FINNHUB_NEWS_TIMEOUT_S`×`FINNHUB_NEWS_MAX_ATTEMPTS` 재시도, 전 실패 시
-  degraded + DB stale 폴백.
+  degraded + DB stale 폴백. `get_news` 최종 에러 응답은 닫힌 사유
+  `error_code="news_lookup_failed"`+`error_class`+`suggestion`를 가진다
+  (ROB-1384) — '뉴스 없음'과 '조회 실패'를 구분하기 위함.
+- **ROB-1384**: `get_earnings_calendar` US도 동일 신뢰도 계약에 합류한다.
+  Finnhub fetch는 `FINNHUB_EARNINGS_TIMEOUT_S`×`FINNHUB_EARNINGS_MAX_ATTEMPTS`
+  (per-attempt timeout + bounded retry, 재시도 대상은 timeout/network/5xx만;
+  429→`FinnhubQuotaExceededError`·무재시도 유지). 전 실패 시 저장된
+  market_events US 적재분을 `degraded=true`+`served_by`/`fallback_source`/
+  `data_state`/`stale`/`data_as_of`/`provider_provenance`/`warning`으로
+  내려주고, 저장분조차 없으면 `error_code="earnings_lookup_failed"`+
+  `error_class`+`data_state="missing"`+`fallback_status`의 닫힌 사유로
+  응답한다 — 조회 실패를 '실적 없음(count=0)'으로 오인하지 못하게 하는
+  fail-closed 계약이다. `earnings_context` compact ctx는
+  `error_code`/`error_class`/`degraded`/`fallback_source`/`fetch_error`를
+  전파하고 US 실패/폴백 시 freshness를 `unknown`/`degraded`/`stale`로 표시한다
+  (실패를 `live`로 표시 금지). 매수 게이트 판정 로직은 이 계약의 범위 밖이다.
 
 
 ## 유지 규약

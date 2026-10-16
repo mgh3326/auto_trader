@@ -145,8 +145,17 @@ async def handle_get_news(
             message=result.error_code or "news_unavailable",
             symbol=symbol,
             instrument_type=instrument_type,
+            suggestion=(
+                "news lookup failed — retry get_news; a failed lookup is not "
+                "evidence that no relevant news exists"
+            ),
         )
         payload.update(_news_freshness_fields(result))
+        # ROB-1384 — closed failure vocabulary so sessions can distinguish a
+        # lookup failure from "no news". error_class carries the raw
+        # provider/service detail (e.g. TimeoutError).
+        payload["error_code"] = "news_lookup_failed"
+        payload["error_class"] = result.error_code
         return payload
 
     news = []

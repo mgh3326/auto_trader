@@ -867,6 +867,11 @@ class Settings(BaseSettings):
     FINNHUB_NEWS_TIMEOUT_S: float = 8.0
     FINNHUB_NEWS_MAX_ATTEMPTS: int = 3
 
+    # ROB-1384 — Finnhub earnings calendar fetch reliability
+    # (per-attempt timeout + bounded retry, same shape as ROB-510 news)
+    FINNHUB_EARNINGS_TIMEOUT_S: float = 8.0
+    FINNHUB_EARNINGS_MAX_ATTEMPTS: int = 3
+
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
 

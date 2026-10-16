@@ -227,3 +227,239 @@ def test_registers_earnings_calendar_market_parameter() -> None:
     assert signature.parameters["to_date"].default is None
     assert signature.parameters["market"].default is None
     assert "Korean" in mcp.descriptions["get_earnings_calendar"]
+
+
+# ---------------------------------------------------------------------------
+# ROB-1384 — US Finnhub failure path: degraded market_events fallback +
+# closed-reason error payload (never "no earnings" on a failed lookup).
+# ---------------------------------------------------------------------------
+
+
+def _us_fallback_payload(count: int = 0) -> dict[str, Any]:
+    row = {
+        "symbol": "TMUS",
+        "company_name": "T-Mobile US",
+        "date": "2026-05-14",
+        "hour": "bmo",
+        "time_hint": "bmo",
+        "eps_estimate": 2.4,
+        "eps_actual": None,
+        "revenue_estimate": None,
+        "revenue_actual": None,
+        "quarter": 2,
+        "year": 2026,
+        "status": "scheduled",
+        "source": "finnhub",
+        "source_event_id": "finnhub::TMUS::2026-05-14::2026::2",
+        "source_url": None,
+        "title": "T-Mobile US Q2 2026 earnings",
+    }
+    return {
+        "symbol": "TMUS",
+        "instrument_type": "equity_us",
+        "market": "us",
+        "source": "finnhub",
+        "served_by": "market_events",
+        "sources": ["finnhub"],
+        "from_date": "2026-05-01",
+        "to_date": "2026-05-31",
+        "count": count,
+        "earnings": [row] if count else [],
+        "data_state": "degraded",
+        "stale": False,
+        "data_as_of": "2026-05-01",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_us_earnings_finnhub_failure_serves_degraded_fallback(monkeypatch):
+    """Live fetch fails but stored market_events rows exist → degraded payload."""
+    from app.mcp_server.tooling.fundamentals import _financials as financials
+
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_finnhub",
+        AsyncMock(side_effect=TimeoutError("finnhub stall")),
+    )
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_market_events_us",
+        AsyncMock(return_value=_us_fallback_payload(count=1)),
+    )
+
+    result = await financials.handle_get_earnings_calendar(
+        "TMUS", "2026-05-01", "2026-05-31"
+    )
+
+    assert "error" not in result
+    assert result["count"] == 1
+    assert result.get("degraded") is True
+    assert result.get("fetch_error") == "TimeoutError"
+    assert result.get("fallback_source") == "market_events"
+    assert result.get("served_by") == "market_events"
+    assert result.get("data_state") == "degraded"
+    assert result["stale"] is False
+    assert result.get("provider_provenance") == [
+        {
+            "provider": "finnhub",
+            "served_by": "market_events",
+            "mode": "fallback",
+            "status": "error",
+            "error_code": "TimeoutError",
+        }
+    ]
+    assert result["earnings"][0]["symbol"] == "TMUS"
+    assert "not proof" in result["warning"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_us_earnings_finnhub_failure_empty_store_is_closed_error(
+    monkeypatch,
+):
+    """Live fetch fails + no stored rows → closed error, never count=0."""
+    from app.mcp_server.tooling.fundamentals import _financials as financials
+
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_finnhub",
+        AsyncMock(side_effect=TimeoutError("finnhub stall")),
+    )
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_market_events_us",
+        AsyncMock(return_value=_us_fallback_payload(count=0)),
+    )
+
+    result = await financials.handle_get_earnings_calendar(
+        "TMUS", "2026-05-01", "2026-05-31"
+    )
+
+    assert result.get("error_code") == "earnings_lookup_failed"
+    assert result.get("error_class") == "TimeoutError"
+    assert result.get("data_state") == "missing"
+    assert result["market"] == "us"
+    assert result.get("fallback_source") == "market_events"
+    assert result.get("fallback_status") == "empty"
+    assert "earnings" not in result
+    assert "count" not in result
+    assert "not evidence" in result.get("suggestion")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_us_earnings_finnhub_failure_store_unavailable(monkeypatch):
+    """Live fetch fails + fallback read itself fails → still a closed error."""
+    from app.mcp_server.tooling.fundamentals import _financials as financials
+
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_finnhub",
+        AsyncMock(side_effect=TimeoutError("finnhub stall")),
+    )
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_market_events_us",
+        AsyncMock(return_value=None),
+    )
+
+    result = await financials.handle_get_earnings_calendar(
+        "TMUS", "2026-05-01", "2026-05-31"
+    )
+
+    assert result.get("error_code") == "earnings_lookup_failed"
+    assert result.get("error_class") == "TimeoutError"
+    assert result.get("data_state") == "missing"
+    assert result.get("fallback_status") == "unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_us_earnings_fallback_loader_raise_still_fail_soft(monkeypatch):
+    """A fallback loader that raises must not escape the handler."""
+    from app.mcp_server.tooling.fundamentals import _financials as financials
+
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_finnhub",
+        AsyncMock(side_effect=TimeoutError("finnhub stall")),
+    )
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_market_events_us",
+        AsyncMock(side_effect=RuntimeError("db gone")),
+    )
+
+    result = await financials.handle_get_earnings_calendar(
+        "TMUS", "2026-05-01", "2026-05-31"
+    )
+
+    assert result.get("error_code") == "earnings_lookup_failed"
+    assert result.get("fallback_status") == "unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_us_earnings_finnhub_failure_reads_real_market_events(
+    db_session, monkeypatch
+):
+    """End-to-end: stored US row + failed live fetch → degraded payload."""
+    from app.mcp_server.tooling.fundamentals import _financials as financials
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    partition = await repo.get_or_create_partition(
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=financials.datetime.date(2026, 5, 14),
+    )
+    await repo.mark_partition_running(partition)
+    await repo.mark_partition_succeeded(partition, event_count=1)
+    await repo.upsert_event_with_values(
+        {
+            "category": "earnings",
+            "market": "us",
+            "symbol": "TMUS",
+            "company_name": "T-Mobile US",
+            "title": "T-Mobile US Q2 2026 earnings",
+            "event_date": financials.datetime.date(2026, 5, 14),
+            "time_hint": "bmo",
+            "status": "scheduled",
+            "source": "finnhub",
+            "source_event_id": "finnhub::TMUS::2026-05-14::2026::2",
+            "source_url": None,
+            "fiscal_year": 2026,
+            "fiscal_quarter": 2,
+        },
+        [],
+    )
+    await db_session.flush()
+
+    monkeypatch.setattr(
+        financials,
+        "AsyncSessionLocal",
+        lambda: DummySessionManager(db_session),
+    )
+    monkeypatch.setattr(
+        financials,
+        "_fetch_earnings_calendar_finnhub",
+        AsyncMock(side_effect=TimeoutError("finnhub stall")),
+    )
+
+    result = await financials.handle_get_earnings_calendar(
+        symbol="tmus",  # lowercase — fallback filter must normalize
+        from_date="2026-05-01",
+        to_date="2026-05-31",
+    )
+
+    assert "error" not in result
+    assert result["count"] == 1
+    assert result.get("degraded") is True
+    assert result.get("served_by") == "market_events"
+    assert result["earnings"][0]["symbol"] == "TMUS"
+    assert result["earnings"][0]["source"] == "finnhub"
+    assert result.get("data_state") == "degraded"  # fresh partition, not stale
+    assert result["stale"] is False
+    assert result["data_as_of"] == partition.finished_at.date().isoformat()

@@ -64,7 +64,21 @@ def _compact_earnings(
         ctx["has_upcoming"] = False
         ctx["next_earnings"] = None
         ctx["note"] = f"earnings lookup degraded: {tool_result.get('error')}"
+        # ROB-1384 — carry the closed failure vocabulary so downstream
+        # consumers can distinguish a lookup failure from "no earnings".
+        if tool_result.get("error_code"):
+            ctx["error_code"] = tool_result["error_code"]
+        if tool_result.get("error_class"):
+            ctx["error_class"] = tool_result["error_class"]
         return ctx
+
+    # ROB-1384 — a degraded stored-rows fallback must stay labelled as such;
+    # it is not proof the live provider had no data.
+    if tool_result.get("degraded"):
+        ctx["degraded"] = True
+        ctx["fallback_source"] = tool_result.get("fallback_source")
+        if tool_result.get("fetch_error"):
+            ctx["fetch_error"] = tool_result["fetch_error"]
 
     upcoming: list[tuple[datetime.date, dict[str, Any]]] = []
     for item in tool_result.get("earnings") or []:
@@ -167,6 +181,13 @@ async def build_earnings_context(
 
     if market_norm == "kr":
         freshness, data_as_of = kr_freshness or ("unknown", None)
+    elif tool_result.get("error"):
+        # ROB-1384 — a failed live lookup is "unknown", never "live".
+        freshness, data_as_of = "unknown", None
+    elif tool_result.get("degraded"):
+        # Stored-rows fallback: freshness follows the stored data age.
+        freshness = "stale" if tool_result.get("stale") else "degraded"
+        data_as_of = tool_result.get("data_as_of")
     else:
         freshness, data_as_of = "live", None
 

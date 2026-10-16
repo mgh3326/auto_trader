@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from decimal import Decimal
 from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.fundamentals._helpers import (
@@ -31,7 +35,15 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
 )
+from app.models.market_events import MarketEventIngestionPartition
+from app.services.market_events.freshness_service import _ensure_aware, _is_stale
 from app.services.market_events.query_service import MarketEventsQueryService
+
+logger = logging.getLogger(__name__)
+
+# ROB-1384 — closed failure vocabulary for the earnings lookup path. Sessions
+# must be able to distinguish "lookup failed" from "no earnings scheduled".
+EARNINGS_LOOKUP_FAILED = "earnings_lookup_failed"
 
 
 def _has_financial_values(payload: dict[str, Any]) -> bool:
@@ -302,6 +314,125 @@ async def _fetch_earnings_calendar_market_events_kr(
     }
 
 
+async def _us_earnings_ingestion_freshness(
+    db: AsyncSession,
+) -> tuple[str | None, bool]:
+    """Newest succeeded US earnings ingestion → (data_as_of ISO|None, stale).
+
+    Mirrors ``earnings_context._kr_ingestion_freshness`` — reuses the
+    market_events STALE_AFTER_HOURS threshold. No succeeded partition at all
+    is reported as stale.
+    """
+    stmt = select(func.max(MarketEventIngestionPartition.finished_at)).where(
+        MarketEventIngestionPartition.market == "us",
+        MarketEventIngestionPartition.category == "earnings",
+        MarketEventIngestionPartition.status == "succeeded",
+    )
+    finished_at = (await db.execute(stmt)).scalar_one_or_none()
+    if finished_at is None:
+        return (None, True)
+    aware = _ensure_aware(finished_at)
+    return (
+        aware.date().isoformat(),
+        _is_stale(aware, now=datetime.datetime.now(datetime.UTC)),
+    )
+
+
+async def _fetch_earnings_calendar_market_events_us(
+    symbol: str | None,
+    start: datetime.date,
+    end: datetime.date,
+) -> dict[str, Any] | None:
+    """Read stored US earnings rows as the degraded fallback for a failed
+    live Finnhub fetch (ROB-1384).
+
+    Never raises — returns ``None`` when the store read itself fails, so the
+    caller can still emit the closed error payload.
+    """
+    normalized_symbol = symbol.strip().upper() if symbol else None
+    try:
+        async with AsyncSessionLocal() as db:
+            svc = MarketEventsQueryService(db)
+            response = await svc.list_for_range(
+                start,
+                end,
+                category="earnings",
+                market="us",
+                symbol=normalized_symbol,
+            )
+            data_as_of, stale = await _us_earnings_ingestion_freshness(db)
+    except Exception:
+        logger.warning("us earnings market_events fallback read failed", exc_info=True)
+        return None
+
+    earnings: list[dict[str, Any]] = []
+    for event in response.events:
+        earnings.append(
+            {
+                "symbol": event.symbol,
+                "company_name": event.company_name,
+                "date": event.event_date.isoformat(),
+                "hour": event.time_hint or "unknown",
+                "time_hint": event.time_hint or "unknown",
+                "eps_estimate": _metric_value(event, "eps", "forecast"),
+                "eps_actual": _metric_value(event, "eps", "actual"),
+                "revenue_estimate": _metric_value(event, "revenue", "forecast"),
+                "revenue_actual": _metric_value(event, "revenue", "actual"),
+                "quarter": event.fiscal_quarter,
+                "year": event.fiscal_year,
+                "status": event.status,
+                "source": event.source,
+                "source_event_id": event.source_event_id,
+                "source_url": event.source_url,
+                "title": event.title,
+            }
+        )
+
+    return {
+        "symbol": normalized_symbol,
+        "instrument_type": "equity_us",
+        "market": "us",
+        # The stored rows were ingested from Finnhub; "finnhub" names the data
+        # provider. served_by/fallback_source name the store that answered.
+        "source": "finnhub",
+        "served_by": "market_events",
+        "sources": sorted({item["source"] for item in earnings}),
+        "from_date": start.isoformat(),
+        "to_date": end.isoformat(),
+        "count": len(earnings),
+        "earnings": earnings,
+        "data_state": "stale" if stale else "degraded",
+        "stale": stale,
+        "data_as_of": data_as_of,
+    }
+
+
+def _mark_us_earnings_fallback(
+    fallback: dict[str, Any],
+    exc: Exception,
+) -> dict[str, Any]:
+    """Overlay explicit degradation/provenance on the stored-row payload."""
+    out = dict(fallback)
+    out["degraded"] = True
+    out["fetch_error"] = type(exc).__name__
+    out["fallback_source"] = "market_events"
+    out["provider_provenance"] = [
+        {
+            "provider": "finnhub",
+            "served_by": "market_events",
+            "mode": "fallback",
+            "status": "error",
+            "error_code": type(exc).__name__,
+        }
+    ]
+    out["warning"] = (
+        "Live Finnhub earnings fetch failed; serving stored market_events "
+        "rows that may be stale. Absence of an event here is not proof that "
+        "no earnings are scheduled."
+    )
+    return out
+
+
 async def handle_get_earnings_calendar(
     symbol: str | None = None,
     from_date: str | None = None,
@@ -330,9 +461,33 @@ async def handle_get_earnings_calendar(
             end.isoformat(),
         )
     except Exception as exc:
-        return _error_payload(
+        # ROB-1384 — never let a lookup failure masquerade as "no earnings".
+        # Serve stored market_events rows as an explicitly degraded fallback
+        # when they exist; otherwise return a closed-reason error payload.
+        # The seam stays fail-soft: a fallback read error must never escape.
+        try:
+            fallback = await _fetch_earnings_calendar_market_events_us(
+                symbol, start, end
+            )
+        except Exception:
+            logger.warning("us earnings fallback loader raised", exc_info=True)
+            fallback = None
+        if fallback is not None and fallback["count"]:
+            return _mark_us_earnings_fallback(fallback, exc)
+        payload = _error_payload(
             source="finnhub",
             message=str(exc),
             symbol=symbol,
             instrument_type="equity_us",
+            suggestion=(
+                "earnings lookup failed — retry get_earnings_calendar; a "
+                "failed lookup is not evidence that no earnings are scheduled"
+            ),
         )
+        payload["market"] = "us"
+        payload["error_code"] = EARNINGS_LOOKUP_FAILED
+        payload["error_class"] = type(exc).__name__
+        payload["data_state"] = "missing"
+        payload["fallback_source"] = "market_events"
+        payload["fallback_status"] = "unavailable" if fallback is None else "empty"
+        return payload
