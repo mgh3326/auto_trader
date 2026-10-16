@@ -65,7 +65,9 @@ class LedgerFillLike(Protocol):
 def normalize_order_id(order_id: object) -> str:
     """Leading-zero-normalized order id (same rule as query_service/kis_lots)."""
     raw = str(order_id or "").strip()
-    return raw.lstrip("0") or raw
+    # An all-zero id normalizes to "0" so it matches the SQL ``ltrim(.., '0')``
+    # prefilter's equivalence class instead of splitting "000" from "0".
+    return raw.lstrip("0") or ("0" if raw else raw)
 
 
 def _instrument(value: Any) -> str:
@@ -201,9 +203,20 @@ def terminal_cover(fill: LedgerFillLike, candidates: Iterable[Any]) -> Any | Non
     """The authoritative row that already books websocket ``fill``, or ``None``.
 
     ``candidates`` are in-effect authoritative rows the caller pre-filtered by
-    order id. A candidate covers the fill only when it has the same order
-    identity, proves its order terminal, and that final quantity can contain
-    the fill. The lowest id wins so a replay always answers the same row.
+    order id. The fill is covered only when the ledger already holds the
+    order's *complete* broker-booked fill set:
+
+    * some reconciler row of the same order identity proves the order terminal
+      (``terminal_final_quantity``) and the fill fits inside that final total;
+    * the reconciler rows of that identity sum to exactly that final total.
+
+    Terminal is not complete: the Upbit reconciler books one row per trade but
+    keeps only trades inside its time window, so a terminal order can have
+    trades that are on no row yet (ROB-1379 r1 B1). Any other sum — a missing
+    trade, an aggregate row next to per-trade rows, a KIS aggregate stored
+    twice under drifting ``fill_seq`` — is not proof, and the fill is inserted.
+    The lowest id among the terminal witnesses wins so a replay always answers
+    the same row.
     """
     if fill.source != PROVISIONAL_SOURCE:
         return None
@@ -211,13 +224,22 @@ def terminal_cover(fill: LedgerFillLike, candidates: Iterable[Any]) -> Any | Non
     if qty is None or qty <= 0:
         return None
     identity = order_identity(fill)
-    covering = []
-    for candidate in candidates:
-        if not is_authoritative(candidate) or order_identity(candidate) != identity:
-            continue
+    same_order = [
+        candidate
+        for candidate in candidates
+        if candidate.source == "reconciler" and order_identity(candidate) == identity
+    ]
+    booked = Decimal("0")
+    for candidate in same_order:
+        row_qty = _decimal(getattr(candidate, "filled_qty", None))
+        if row_qty is None or row_qty <= 0:
+            return None
+        booked += row_qty
+    witnesses = []
+    for candidate in same_order:
         final = terminal_final_quantity(candidate)
-        if final is not None and qty <= final:
-            covering.append(candidate)
-    if not covering:
+        if final is not None and qty <= final and booked == final:
+            witnesses.append(candidate)
+    if not witnesses:
         return None
-    return min(covering, key=lambda row: int(row.id))
+    return min(witnesses, key=lambda row: int(row.id))

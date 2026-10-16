@@ -750,6 +750,65 @@ async def test_upbit_both_orders_count_once(ledger) -> None:
         assert after - before == Decimal("0.0003")
 
 
+def upbit_two_trade_detail(*, uuid_: str, first: str, second: str) -> dict:
+    """A limit buy filled by two trades on different days, now ``done``."""
+    detail = upbit_order_detail(uuid_=uuid_, trade_uuid=first)
+    detail.update(
+        volume="0.0003",
+        executed_volume="0.0003",
+        trades_count=2,
+        created_at="2099-11-10T09:30:00+09:00",
+    )
+    detail["trades"] = [
+        dict(
+            detail["trades"][0],
+            uuid=first,
+            volume="0.0001",
+            funds="9280",
+            created_at="2099-11-10T09:30:01+09:00",
+        ),
+        dict(
+            detail["trades"][0],
+            uuid=second,
+            volume="0.0002",
+            funds="18560",
+            created_at="2099-11-12T09:30:01+09:00",
+        ),
+    ]
+    return detail
+
+
+async def test_upbit_terminal_order_missing_a_trade_keeps_the_new_trade(
+    ledger,
+) -> None:
+    """r1 B1: terminal is not complete — an unbooked trade is never absorbed.
+
+    The reconciler books one row per trade and keeps only trades inside its
+    window (``filled_orders_service`` filters by trade time), so a run over
+    11/10 books the first trade of an order that is already ``done``.
+    """
+    order_uuid = str(uuid.uuid4())
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    ledger.order_ids.add(order_uuid)
+    detail = upbit_two_trade_detail(uuid_=order_uuid, first=first, second=second)
+    trade_rows = normalize_upbit_order(detail)
+    assert [r["quantity"] for r in trade_rows] == [0.0001, 0.0002]
+    await reconcile(ledger, "upbit", trade_rows[:1])  # window held trade 1 only
+
+    event = upbit_my_order_trade(uuid_=order_uuid, trade_uuid=second)
+    event.update(volume=0.0002, executed_volume=0.0003)
+    assert await _monitor_upbit(event) == "inserted"
+    sources = [r.source for r in await ledger.rows_for(order_uuid)]
+    assert sources == ["reconciler", "websocket"]
+
+    # Once a run books every trade, a late frame of trade 1 is covered.
+    await reconcile(ledger, "upbit", trade_rows)
+    late = upbit_my_order_trade(uuid_=order_uuid, trade_uuid=first)
+    late.update(volume=0.0001, executed_volume=0.0001)
+    assert await _monitor_upbit(late) == "unchanged"
+    assert len(await ledger.rows_for(order_uuid)) == 3
+
+
 # ------------------------------------------------------------------ mutants
 
 

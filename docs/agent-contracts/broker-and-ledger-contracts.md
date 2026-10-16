@@ -284,10 +284,12 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
 - **쓰기 측 (`ExecutionLedgerRepository.upsert_fill`)**: 자기 키 행이 **없는** 새 websocket
   체결이고, 같은 identity 의 in-effect `reconciler` 행이 브로커 증거로 **주문 종결**을 증명하며
   (KIS KR `rmn_qty==0` + `tot_ccld_qty==booked`, KIS US `nccs_qty==0` + `ft_ccld_qty==booked`,
-  Upbit `state∈{done,cancel}` + `executed_volume`), 체결 수량 ≤ 최종 체결수량일 때만 insert 하지
-  않고 `unchanged` + 그 reconciler 행 id 를 답한다(복수면 최저 id — 재전송 결정적). 그 외 전부
-  (살아있는 주문·필드 부재/판독 불가·per-fill 행·manual_import·수량 초과·다른 날짜)는 기존대로
-  insert. 🔴 살아있는 주문을 cover 로 쓰면 이후 새 부분체결이 유실되므로 종결 증명 없이는 절대
+  Upbit `state∈{done,cancel}` + `executed_volume`), **그 identity 의 reconciler 행 수량 합이 최종
+  체결수량과 정확히 같고**(종결 ≠ 완결: Upbit reconciler 는 trade 시각 창 안의 trade 만 행으로
+  남기므로 종결 주문이라도 trade 가 빠질 수 있다 — r1 B1), 체결 수량 ≤ 최종 체결수량일 때만
+  insert 하지 않고 `unchanged` + 그 reconciler 행 id 를 답한다(복수면 최저 id — 재전송 결정적).
+  그 외 전부(살아있는 주문·필드 부재/판독 불가·per-fill 행·합계 불일치·manual_import·수량 초과·
+  다른 날짜)는 기존대로 insert. 🔴 살아있는 주문을 cover 로 쓰면 이후 새 부분체결이 유실되므로 종결 증명 없이는 절대
   건너뛰지 않는다. 기존 키 재전송은 자기 행 그대로(`unchanged`/`updated`). fillwire 는 미지의
   status 를 거부하므로 새 status 값을 만들지 않는다.
 - **읽기 측**: `net_quantity_by_match_key_since`(opening seed) 와 `position_before_fill`(kick

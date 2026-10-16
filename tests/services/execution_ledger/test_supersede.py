@@ -223,6 +223,51 @@ def test_terminal_cover_requires_identity_terminal_and_containment() -> None:
     assert s.terminal_cover(row(source="reconciler", id=9), [reconciler]) is None
 
 
-def test_terminal_cover_answers_the_lowest_id() -> None:
-    a, b = row(id=7), row(id=5)
-    assert s.terminal_cover(ws(), [a, b]) is b
+def _upbit_trade_row(row_id: int, qty: str) -> SimpleNamespace:
+    """One reconciler row per Upbit trade; each carries the whole order detail."""
+    return row(
+        id=row_id,
+        broker="upbit",
+        instrument_type="crypto",
+        symbol="BTC",
+        broker_order_id="9d2c0f9e-order",
+        filled_qty=Decimal(qty),
+        raw_payload_json={"state": "done", "executed_volume": "3"},
+    )
+
+
+def _upbit_ws(qty: str) -> SimpleNamespace:
+    return ws(
+        broker="upbit",
+        instrument_type="crypto",
+        symbol="BTC",
+        broker_order_id="9d2c0f9e-order",
+        filled_qty=Decimal(qty),
+    )
+
+
+def test_terminal_is_not_complete_a_missing_trade_is_not_covered() -> None:
+    """r1 B1: the order is done (3) but only the trade of 1 is on a row."""
+    assert s.terminal_cover(_upbit_ws("2"), [_upbit_trade_row(1, "1")]) is None
+
+
+def test_complete_trade_set_covers_and_answers_the_lowest_id() -> None:
+    rows = [_upbit_trade_row(7, "2"), _upbit_trade_row(5, "1")]
+    assert s.terminal_cover(_upbit_ws("2"), rows) is rows[1]
+
+
+def test_over_booked_order_is_not_proof() -> None:
+    """An aggregate row stored twice (drifting fill_seq) sums past the total."""
+    assert s.terminal_cover(ws(), [row(id=7), row(id=5)]) is None
+
+
+def test_manual_import_rows_neither_witness_nor_count() -> None:
+    manual = row(id=3, source="manual_import", raw_payload_json=None)
+    assert s.terminal_cover(ws(), [row(), manual]) is not None
+    assert s.terminal_cover(ws(), [manual]) is None
+
+
+@pytest.mark.parametrize("raw", ["0000000000", "000", "0"])
+def test_all_zero_order_ids_share_one_identity(raw: str) -> None:
+    assert s.normalize_order_id(raw) == "0"
+    assert s.normalize_order_id("") == ""
