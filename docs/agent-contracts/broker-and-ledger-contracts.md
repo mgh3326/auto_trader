@@ -416,6 +416,13 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
   행 체결과 4행 배치를 SQL 로 재확인(재확인 이후 커밋된 체결도 전체 거부). 마커가 붙은 닫힌 행은
   UPDATE·DELETE 전부 거부(terminal — 마커를 지워 재오픈 불가)
   마이그레이션 `20261005_t1250_kismock_inf`(CREATE TABLE 만). 두 번째 commit 은 무변경 no-op
+- 🔴 **체결 writer 직렬화 (ROB-1378)**: COMMIT 시점 체결 게이트는 advisory 키
+  `hashtextextended('auto_trader:kis_mock_q46_fill_gate', 0)` 를 **배타**로 잡은 뒤 재확인하고,
+  kis/mock 체결 writer(`execution_ledger` broker=kis·account_mode=mock 행, 체결 증거를 담는
+  `kis_mock_order_ledger` 행)는 BEFORE 트리거 `review.kis_mock_q46_fill_writer_lock()` 로 같은 키를
+  **공유**로 트랜잭션 끝까지 잡는다 — 진행 중 체결은 close 가 기다렸다 보고 거부, 늦게 온 체결은 close
+  뒤에 기록된다. READ COMMITTED 가 아닌 close 는 거부. writer 트리거는 거부·변경 0. 이 잠금·트리거를
+  제거·약화하지 마라. 마이그레이션 `20261016_rob1378_q46_lock`
 - **런북**: `docs/runbooks/kis-mock-expired-inference-q46.md`. 실DB 실행은 운영자 전용
 
 ### KIS Live Order Fill-Evidence Gate (ROB-395)

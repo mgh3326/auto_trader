@@ -1393,3 +1393,344 @@ async def test_execution_ledger_is_never_written(world) -> None:
 async def test_decimal_baseline_zero_is_a_known_holding(world) -> None:
     await world.seed(r63={"holdings_baseline_qty": Decimal("0")})
     assert (await _preview(world.db)).status == "eligible"
+
+
+# ------------------------------------------- ROB-1378: fill gate vs fill writer
+# The COMMIT-time fill gate re-reads every fill source, but #1250 did not order
+# it against a fill writer: a fill whose transaction was still in flight when
+# the gate's statements ran was invisible to them, and both then committed. A
+# fill writer now takes the Q-46 fill-gate key shared (BEFORE trigger) and the
+# gate takes it exclusively, so the close waits for the in-flight fill and then
+# sees it. Each race below is driven deterministically: the fill writer's
+# transaction stays open until the close is observed waiting on the key (or has
+# already finished, which is the pre-fix outcome the assertions reject).
+
+_KEY_SQL = "hashtextextended('auto_trader:kis_mock_q46_fill_gate', 0)"
+
+
+def _mock_fill_upsert(**changes: Any):
+    from app.schemas.execution_ledger import ExecutionLedgerUpsert
+
+    values: dict[str, Any] = {
+        "broker": "kis",
+        "account_mode": "mock",
+        "venue": "krx",
+        "instrument_type": "equity_kr",
+        "symbol": "990063",
+        "raw_symbol": "990063",
+        "side": "buy",
+        "broker_order_id": "0000026063",
+        "fill_seq": 1,
+        "filled_qty": Decimal("2"),
+        "filled_price": Decimal("234500"),
+        "filled_at": datetime.datetime(2026, 7, 21, 13, 20, tzinfo=KST),
+        "currency": "KRW",
+        "source": "websocket",
+    }
+    values.update(changes)
+    return ExecutionLedgerUpsert(**values)
+
+
+async def _backend_pid(session: AsyncSession) -> int:
+    return int((await session.execute(sa.text("SELECT pg_backend_pid()"))).scalar())
+
+
+async def _waiting_on_advisory_lock(bind, pid: int) -> bool:
+    async with AsyncSession(bind=bind) as probe:
+        waiting = (
+            await probe.execute(
+                sa.text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = :pid "
+                    "AND locktype = 'advisory' AND NOT granted)"
+                ),
+                {"pid": pid},
+            )
+        ).scalar()
+        await probe.rollback()
+    return bool(waiting)
+
+
+async def _until_waiting_or_done(task, bind, pid: int, *, timeout: float = 120.0):
+    """True once ``pid`` waits on an advisory lock, False if ``task`` finished
+    first (the close did not wait — the pre-fix behaviour)."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if task.done():
+            return False
+        if await _waiting_on_advisory_lock(bind, pid):
+            return True
+        await asyncio.sleep(0.05)
+    raise AssertionError("close neither finished nor waited on the fill-gate lock")
+
+
+def _warm_session_calendar() -> None:
+    """The first XKRX calendar build is synchronous and slow; done inside the
+    racing close it would stall the event loop past the poll deadline."""
+    from app.services.market_events.session_calendar import regular_session_bounds
+
+    regular_session_bounds("kr", datetime.date(2026, 7, 21))
+
+
+async def _close_racing_open_fill(world, write_fill) -> tuple[Any, bool]:
+    """Open a fill writer transaction via ``write_fill`` (not committed), run
+    the real close concurrently, commit the fill once the close waits on the
+    fill-gate key (or has finished), and return the close result plus whether
+    it waited."""
+    import asyncio
+
+    _warm_session_calendar()
+    async with AsyncSession(bind=world.db.bind, expire_on_commit=False) as writer:
+        await write_fill(writer)
+        pid = await _backend_pid(world.db)  # the close's own connection
+        close = asyncio.create_task(_commit(world.db))
+        try:
+            waited = await _until_waiting_or_done(close, world.db.bind, pid)
+        except BaseException:
+            await writer.rollback()
+            await close
+            raise
+        await writer.commit()
+        return await close, waited
+
+
+async def _open_order_fill(world, writer: AsyncSession) -> None:
+    from app.services.execution_ledger.repository import ExecutionLedgerRepository
+
+    status, row_id = await ExecutionLedgerRepository(writer).upsert_fill(
+        _mock_fill_upsert()
+    )
+    assert status == "inserted"
+    world.exec_ids.add(row_id)
+
+
+async def _open_symbol_fill(world, writer: AsyncSession) -> None:
+    from app.services.execution_ledger.repository import ExecutionLedgerRepository
+
+    _status, row_id = await ExecutionLedgerRepository(writer).upsert_fill(
+        _mock_fill_upsert(
+            broker_order_id="0000077701", side="sell", filled_at=NOW, fill_seq=1
+        )
+    )
+    world.exec_ids.add(row_id)
+
+
+async def _seed_sibling(world) -> None:
+    sibling = mock_row(66, order_no="0000066601", correlation_id="kis-mock-66-t1250")
+    sibling.symbol = "999998"
+    sibling.raw_response = {**sibling.raw_response, "odno": "0000066601"}
+    await world.add_mock(950_066, sibling)
+
+
+async def _open_sibling_fill(world, writer: AsyncSession) -> None:
+    """The kis_mock holdings reconciler's real write path, held uncommitted."""
+    service_commit = writer.commit
+    writer.commit = writer.flush  # type: ignore[method-assign]
+    try:
+        out = await KISMockLifecycleService(writer).apply_lifecycle_transition(
+            ledger_id=950_066,
+            next_state="fill",
+            reason_code="fill_detected",
+            detail={"attributed_fill_qty": "1"},
+            dry_run=False,
+        )
+    finally:
+        writer.commit = service_commit  # type: ignore[method-assign]
+    assert out["applied"] is True
+
+
+async def _closed_ids(world) -> list[int]:
+    await world.db.rollback()
+    rows = (
+        (
+            await world.db.execute(
+                sa.select(KISMockOrderLedger.id).where(
+                    KISMockOrderLedger.id.in_(IDS),
+                    KISMockOrderLedger.lifecycle_state == "expired",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    await world.db.rollback()
+    return sorted(rows)
+
+
+async def test_rob1378_in_flight_order_fill_refuses_the_close(world) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+    result, waited = await _close_racing_open_fill(
+        world, lambda w: _open_order_fill(world, w)
+    )
+    # The close must not miss the fill: it waits for the fill transaction and
+    # then refuses, with nothing written.
+    assert result.status == "refused" and result.changed == 0
+    assert 63 in result.refused_ids
+    assert await _closed_ids(world) == []
+    assert await _snapshot(world.db) == before
+    assert waited
+
+
+async def test_rob1378_in_flight_symbol_fill_refuses_the_close(world) -> None:
+    await world.seed()
+    before = await _snapshot(world.db)
+    result, waited = await _close_racing_open_fill(
+        world, lambda w: _open_symbol_fill(world, w)
+    )
+    assert result.status == "refused" and result.changed == 0
+    assert 63 in result.refused_ids
+    assert await _snapshot(world.db) == before
+    assert waited
+
+
+async def test_rob1378_in_flight_sibling_fill_refuses_the_close(world) -> None:
+    await world.seed()
+    await _seed_sibling(world)
+    before = await _snapshot(world.db)
+    result, waited = await _close_racing_open_fill(
+        world, lambda w: _open_sibling_fill(world, w)
+    )
+    assert result.status == "refused" and result.changed == 0
+    assert 66 in result.refused_ids
+    assert await _snapshot(world.db) == before
+    assert waited
+
+
+async def test_rob1378_rolled_back_fill_lets_the_close_commit(world) -> None:
+    # The wait is not a refusal by itself: a writer that rolls back leaves no
+    # fill, and the close commits after it.
+    import asyncio
+
+    await world.seed()
+    async with AsyncSession(bind=world.db.bind, expire_on_commit=False) as writer:
+        from app.services.execution_ledger.repository import (
+            ExecutionLedgerRepository,
+        )
+
+        await ExecutionLedgerRepository(writer).upsert_fill(_mock_fill_upsert())
+        _warm_session_calendar()
+        pid = await _backend_pid(world.db)
+        close = asyncio.create_task(_commit(world.db))
+        assert await _until_waiting_or_done(close, world.db.bind, pid)
+        await writer.rollback()
+        result = await close
+    assert result.status == "committed" and result.changed == 4
+    assert await _closed_ids(world) == sorted(IDS)
+
+
+async def test_rob1378_a_fill_writer_waits_while_the_gate_key_is_held(world) -> None:
+    # The other ordering: while a close holds the key (here a stand-in
+    # transaction holding it exclusively, as the COMMIT-time gate does), a
+    # kis/mock fill writer waits and lands only after it ends. A kis/live fill
+    # writer is not affected.
+    import asyncio
+
+    from app.services.execution_ledger.repository import ExecutionLedgerRepository
+
+    async with (
+        AsyncSession(bind=world.db.bind) as holder,
+        AsyncSession(bind=world.db.bind, expire_on_commit=False) as live,
+        AsyncSession(bind=world.db.bind, expire_on_commit=False) as writer,
+    ):
+        await holder.execute(sa.text(f"SELECT pg_advisory_xact_lock({_KEY_SQL})"))
+
+        _status, live_id = await ExecutionLedgerRepository(live).upsert_fill(
+            _mock_fill_upsert(account_mode="live", broker_order_id="0000137801")
+        )
+        world.exec_ids.add(live_id)
+        await live.commit()
+
+        pid = await _backend_pid(writer)
+
+        async def write() -> int:
+            _s, row_id = await ExecutionLedgerRepository(writer).upsert_fill(
+                _mock_fill_upsert()
+            )
+            await writer.commit()
+            return row_id
+
+        task = asyncio.create_task(write())
+        try:
+            assert await _until_waiting_or_done(task, world.db.bind, pid)
+        finally:
+            await holder.rollback()
+        world.exec_ids.add(await task)
+
+
+async def test_rob1378_a_non_read_committed_close_is_refused(world) -> None:
+    # The wait only helps if the gate's statements take fresh snapshots.
+    await world.seed()
+    before = await _snapshot(world.db)
+    await world.db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+    with pytest.raises(IntegrityError, match="requires READ COMMITTED"):
+        await _commit(world.db)
+    assert await _snapshot(world.db) == before
+
+
+class _Rob1378LockOff:
+    """Test-only mutants on the worker-owned throwaway DB, always restored.
+
+    ``close``: the COMMIT-time gate without its exclusive lock (exactly the
+    #1250 body). ``writer``: both writer-side triggers disabled."""
+
+    def __init__(self, world, side: str) -> None:
+        self.world = world
+        self.side = side
+        [self.real] = [
+            ddl
+            for ddl in bootstrap._DDL_STATEMENTS
+            if "CREATE OR REPLACE FUNCTION review.require_kis_mock_inference_audit()"
+            in ddl
+        ]
+        lock = f"    PERFORM pg_advisory_xact_lock({_KEY_SQL});\n"
+        assert self.real.count(lock) == 1
+        self.mutant = self.real.replace(lock, "")
+
+    async def _run(self, *statements: str) -> None:
+        async with AsyncSession(bind=self.world.db.bind) as other:
+            for statement in statements:
+                await other.execute(sa.text(statement))
+            await other.commit()
+
+    def _writer(self, state: str) -> tuple[str, ...]:
+        return (
+            f"ALTER TABLE review.execution_ledger {state} TRIGGER "
+            "trg_execution_ledger_kis_mock_q46_fill_lock",
+            f"ALTER TABLE review.kis_mock_order_ledger {state} TRIGGER "
+            "trg_kis_mock_order_ledger_q46_fill_lock",
+        )
+
+    async def __aenter__(self):
+        if self.side == "close":
+            await self._run(self.mutant)
+        else:
+            await self._run(*self._writer("DISABLE"))
+        return self
+
+    async def __aexit__(self, *exc):
+        if self.side == "close":
+            await self._run(self.real)
+        else:
+            await self._run(*self._writer("ENABLE"))
+
+
+@pytest.mark.parametrize("side", ["close", "writer"])
+@pytest.mark.parametrize("fill", ["order", "sibling"])
+async def test_rob1378_lock_mutant_closes_despite_the_in_flight_fill(
+    world, side, fill
+) -> None:
+    # Mutant: either half of the lock removed. The race above then commits the
+    # close next to a committed fill — proving the refusal depends on both.
+    await world.seed()
+    if fill == "sibling":
+        await _seed_sibling(world)
+        write = _open_sibling_fill
+    else:
+        write = _open_order_fill
+    async with _Rob1378LockOff(world, side):
+        result, waited = await _close_racing_open_fill(world, lambda w: write(world, w))
+    assert not waited
+    assert result.status == "committed" and result.changed == 4

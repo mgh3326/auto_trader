@@ -423,6 +423,7 @@ tests/test_retail_sentiment_tool.py
 tests/test_rob1296_provider_boundaries.py
 tests/test_rob1310_portfolio_snapshot.py
 tests/test_rob1314_stock_detail_holding.py
+tests/test_rob1378_q46_fill_gate_lock_migration.py
 tests/test_rob538_toss_live_ledger_schema.py
 tests/test_rob554_linked_orders.py
 tests/test_rob571_kr_display_name.py
