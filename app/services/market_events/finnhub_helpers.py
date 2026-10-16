@@ -89,14 +89,22 @@ def _track_provider_worker(worker: asyncio.Task) -> None:
     worker.add_done_callback(_reap)
 
 
-async def _drain_provider_worker(worker: asyncio.Task) -> None:
+async def _drain_provider_worker(worker: asyncio.Task, deadline: float) -> None:
     """Await a provider worker thread to real completion, surviving
-    repeated caller cancellation — ``asyncio.to_thread`` threads cannot
-    be killed, so returning early would orphan a live SDK call.
+    repeated caller cancellation — but never past the call's own
+    deadline. A worker still running at the deadline is handed to
+    ``_PENDING_PROVIDER_WORKERS`` (explicit ownership, reaped when its
+    thread ends) so cancellation neither holds the caller past budget
+    nor orphans a live provider call (ROB-1384 R2-F2, R3-F2).
     ``asyncio.wait`` never cancels the worker, unlike ``wait_for``."""
+    loop = asyncio.get_running_loop()
     while not worker.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            _track_provider_worker(worker)
+            return
         try:
-            await asyncio.wait({worker})
+            await asyncio.wait({worker}, timeout=remaining)
         except asyncio.CancelledError:
             continue  # repeated cancels keep draining — never abandon
     if worker.done() and not worker.cancelled():
@@ -225,10 +233,22 @@ async def fetch_earnings_calendar_finnhub(
         per_attempt_timeout + EARNINGS_DRAIN_GRACE_S
     )
 
+    def _bounded_retry_wait(retry_state: Any) -> float:
+        # R3-F1: a backoff that would overshoot the call budget is
+        # clipped to what remains — a new attempt can never be
+        # dispatched past the deadline.
+        return max(
+            0.0,
+            min(
+                FINNHUB_EARNINGS_RETRY_WAIT(retry_state),
+                call_deadline - loop.time(),
+            ),
+        )
+
     result: dict[str, Any] | None = None
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(max(1, attempts)),
-        wait=FINNHUB_EARNINGS_RETRY_WAIT,
+        wait=_bounded_retry_wait,
         retry=retry_if_exception(_is_retryable_earnings_error),
         reraise=True,
     ):
@@ -241,6 +261,17 @@ async def fetch_earnings_calendar_finnhub(
             if per_attempt_timeout <= 0:
                 raise TimeoutError(
                     f"non-positive attempt timeout ({per_attempt_timeout}s)"
+                )
+            if loop.time() >= call_deadline:
+                # R3-F1: the call's own budget is spent — no new provider
+                # work may start. This bounded TimeoutError fails closed
+                # (the retryable classifier would re-enter here, but the
+                # clipped wait above keeps any such spin to the remaining
+                # attempt count at ~zero cost each).
+                raise TimeoutError(
+                    f"finnhub earnings_calendar call budget exhausted "
+                    f"before attempt "
+                    f"{attempt.retry_state.attempt_number} for {symbol!r}"
                 )
             worker = asyncio.ensure_future(asyncio.to_thread(fetch_sync))
             try:
@@ -260,7 +291,7 @@ async def fetch_earnings_calendar_finnhub(
                         timeout=max(0.0, call_deadline - loop.time()),
                     )
                 except asyncio.CancelledError:
-                    await _drain_provider_worker(worker)
+                    await _drain_provider_worker(worker, call_deadline)
                     raise
                 if worker not in done:
                     # Still alive past the grace — keep explicit ownership so
@@ -290,9 +321,10 @@ async def fetch_earnings_calendar_finnhub(
                 raise
             except asyncio.CancelledError:
                 # Threads cannot be killed — drain the worker to real
-                # completion before propagating so cancellation never
-                # orphans a live provider call (ROB-1384 R2-F2).
-                await _drain_provider_worker(worker)
+                # completion before propagating, but never past the call
+                # deadline: a survivor is handed to tracked ownership
+                # instead of holding the caller (ROB-1384 R2-F2, R3-F2).
+                await _drain_provider_worker(worker, call_deadline)
                 raise
             except Exception as exc:
                 status_code = getattr(exc, "status_code", None)
