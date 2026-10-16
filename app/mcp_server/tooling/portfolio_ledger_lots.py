@@ -66,7 +66,9 @@ def _per_position(
     taken by index, never looked up by symbol, so two positions with the same
     symbol can never share a block. A result that is not a list of exactly one
     entry per position is unusable and every US position degrades to unknown.
-    KR keeps its pre-#1173 symbol-keyed lookup (byte-identical; hk 1295).
+    KR keeps its pre-#1173 symbol-keyed lookup: under hk 1295 a collided key
+    resolves to the ``duplicate_positions_for_symbol`` unknown the loader
+    stored under that symbol, never to one position's known block.
     """
     if market == "us":
         if isinstance(result, list) and len(result) == len(refs):
