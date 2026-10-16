@@ -380,6 +380,7 @@ class Env:
                 **base,
                 "PATH": f"{self.bindir}:{os.environ['PATH']}",
                 "AT_RUN_DIRECTORY": str(self.run_dir),
+                "AT_SECRETS_DIRECTORY": str(self.run_dir),
                 "MCP_HAPROXY_TEMPLATE": str(REPO / "ops/ncp/haproxy/haproxy.cfg.tmpl"),
                 "FAKE_DOCKER_STATE": str(self.state_path),
                 "FAKE_DOCKER_LOG": str(self.log),

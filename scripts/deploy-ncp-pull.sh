@@ -63,12 +63,15 @@ readonly MCP_ACTIVE_COLOR_FILE="${RUN_DIRECTORY}/mcp-active-color"
 readonly HAPROXY_CONFIG="${RUN_DIRECTORY}/haproxy.cfg"
 readonly HAPROXY_CONFIG_PREVIOUS="${RUN_DIRECTORY}/haproxy.cfg.previous"
 # ROB-1380: the template is resolved by resolve_haproxy_template before any
-# mutation, never guessed at render time. The operator copy is installed next
-# to this script (/root/at-run/haproxy.cfg.tmpl); a repository checkout finds
-# ops/ncp/haproxy/haproxy.cfg.tmpl beside scripts/.
+# mutation, never guessed at render time. Discovery looks at the copy next to
+# this script (/root/at-run/haproxy.cfg.tmpl), the ops tree in the run
+# directory (/root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl, where the NCP host
+# keeps it), and a repository checkout's ops/ncp/haproxy/haproxy.cfg.tmpl
+# beside scripts/.
 SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIRECTORY
 readonly HAPROXY_TEMPLATE_INSTALLED="${SCRIPT_DIRECTORY}/haproxy.cfg.tmpl"
+readonly HAPROXY_TEMPLATE_RUN_OPS="${RUN_DIRECTORY}/ops/ncp/haproxy/haproxy.cfg.tmpl"
 readonly HAPROXY_TEMPLATE_CHECKOUT="${SCRIPT_DIRECTORY%/*}/ops/ncp/haproxy/haproxy.cfg.tmpl"
 HAPROXY_TEMPLATE="" HAPROXY_TEMPLATE_SOURCE=""
 readonly HAPROXY_CONTAINER=at-haproxy
@@ -82,10 +85,12 @@ readonly HAPROXY_READY_INTERVAL="${HAPROXY_READY_INTERVAL:-0.5}"
 readonly MCP_UNITS_SKIP="${MCP_UNITS_SKIP:-}"
 readonly HEALTHZ_ATTEMPTS="${AT_HEALTHZ_ATTEMPTS:-30}"
 readonly HEALTHZ_SLEEP_SECONDS="${AT_HEALTHZ_SLEEP_SECONDS:-2}"
-# ROB-1380: defaults are the NCP host's established names. Docker reads the
-# two files in this order, so a key present in both takes the second value.
-readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${RUN_DIRECTORY}/.env.api}"
-readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${RUN_DIRECTORY}/.env.scheduler}"
+# ROB-1380: defaults are the NCP host's established files, which live in
+# /root/at-secrets, not in the run directory. Docker reads the two files in
+# this order, so a key present in both takes the second value.
+readonly SECRETS_DIRECTORY="${AT_SECRETS_DIRECTORY:-/root/at-secrets}"
+readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${SECRETS_DIRECTORY}/.env.api}"
+readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${SECRETS_DIRECTORY}/.env.scheduler}"
 readonly DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previous"
 # Unset means on; an explicitly empty or any other value is invalid and skips.
@@ -124,25 +129,39 @@ DIGEST_RECORD_MUTATED=false
 require_command() { command -v "$1" >/dev/null 2>&1 || { printf 'required command is unavailable: %s\n' "$1" >&2; exit 127; }; }
 require_file() { [[ -f "$1" ]] || { printf 'required env file is unavailable: %s (set %s to the host file)\n' "$1" "$2" >&2; exit 78; }; }
 # Explicit sources win in order: --haproxy-template, then MCP_HAPROXY_TEMPLATE.
-# Without either, exactly one of the installed copy and the checkout copy must
-# exist; none or both refuses with every path it looked at.
+# Without either, exactly one of the installed copy, the run directory's ops
+# tree and the checkout copy must exist (the same file reached twice counts
+# once); none or several refuses with every path it looked at.
 resolve_haproxy_template() {
-  local candidate
+  local candidate path kind found_paths="" found_count=0
+  local -a discovered=()
   HAPROXY_TEMPLATE="" HAPROXY_TEMPLATE_SOURCE=""
   if [[ -n "$HAPROXY_TEMPLATE_ARG" ]]; then
     candidate="$HAPROXY_TEMPLATE_ARG" HAPROXY_TEMPLATE_SOURCE=--haproxy-template
   elif [[ -n "${MCP_HAPROXY_TEMPLATE:-}" ]]; then
     candidate="$MCP_HAPROXY_TEMPLATE" HAPROXY_TEMPLATE_SOURCE=MCP_HAPROXY_TEMPLATE
-  elif [[ -f "$HAPROXY_TEMPLATE_INSTALLED" && -f "$HAPROXY_TEMPLATE_CHECKOUT" ]]; then
-    printf 'HAProxy template is ambiguous: both %s and %s exist; pass --haproxy-template PATH\n' "$HAPROXY_TEMPLATE_INSTALLED" "$HAPROXY_TEMPLATE_CHECKOUT" >&2
-    return 78
-  elif [[ -f "$HAPROXY_TEMPLATE_INSTALLED" ]]; then
-    candidate="$HAPROXY_TEMPLATE_INSTALLED" HAPROXY_TEMPLATE_SOURCE=installed
-  elif [[ -f "$HAPROXY_TEMPLATE_CHECKOUT" ]]; then
-    candidate="$HAPROXY_TEMPLATE_CHECKOUT" HAPROXY_TEMPLATE_SOURCE=checkout
   else
-    printf 'HAProxy template is unavailable: looked for %s and %s; install ops/ncp/haproxy/haproxy.cfg.tmpl next to this script or pass --haproxy-template PATH\n' "$HAPROXY_TEMPLATE_INSTALLED" "$HAPROXY_TEMPLATE_CHECKOUT" >&2
-    return 78
+    for kind in installed run-ops checkout; do
+      case "$kind" in
+        installed) path="$HAPROXY_TEMPLATE_INSTALLED" ;;
+        run-ops) path="$HAPROXY_TEMPLATE_RUN_OPS" ;;
+        checkout) path="$HAPROXY_TEMPLATE_CHECKOUT" ;;
+      esac
+      [[ -f "$path" ]] || continue
+      for candidate in "${discovered[@]}"; do [[ "$path" -ef "${candidate#*:}" ]] && continue 2; done
+      discovered+=("${kind}:${path}")
+    done
+    found_count="${#discovered[@]}"
+    if (( found_count > 1 )); then
+      for candidate in "${discovered[@]}"; do found_paths+="${found_paths:+ and }${candidate#*:}"; done
+      printf 'HAProxy template is ambiguous: %s exist; pass --haproxy-template PATH\n' "$found_paths" >&2
+      return 78
+    elif (( found_count == 1 )); then
+      candidate="${discovered[0]#*:}" HAPROXY_TEMPLATE_SOURCE="${discovered[0]%%:*}"
+    else
+      printf 'HAProxy template is unavailable: looked for %s, %s and %s; install ops/ncp/haproxy/haproxy.cfg.tmpl at one of them or pass --haproxy-template PATH\n' "$HAPROXY_TEMPLATE_INSTALLED" "$HAPROXY_TEMPLATE_RUN_OPS" "$HAPROXY_TEMPLATE_CHECKOUT" >&2
+      return 78
+    fi
   fi
   if [[ ! -f "$candidate" || ! -r "$candidate" ]]; then
     printf 'HAProxy template is unavailable: %s (from %s) is not a readable file\n' "$candidate" "$HAPROXY_TEMPLATE_SOURCE" >&2

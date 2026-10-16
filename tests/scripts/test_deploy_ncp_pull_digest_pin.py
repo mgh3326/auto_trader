@@ -142,6 +142,7 @@ esac
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
             "AT_RUN_DIRECTORY": str(run_dir),
+            "AT_SECRETS_DIRECTORY": str(run_dir),
             "MCP_HAPROXY_TEMPLATE": str(REPO / "ops/ncp/haproxy/haproxy.cfg.tmpl"),
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",

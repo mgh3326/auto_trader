@@ -5,6 +5,11 @@ The HAProxy template was derived from ``$(dirname $0)/..`` and so pointed at
 /root/ops/..., which does not exist; render_haproxy returned 78 with no message
 after the API color had already been replaced. These tests run the script
 from a copy outside the repository, as the host does, with fake docker/curl.
+
+Deploy #4 on 2026-10-17 (operator-desk, hk 1605) measured the host layout:
+the env files are /root/at-secrets/.env.api and /root/at-secrets/.env.scheduler,
+and the template is /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl. The
+``_ncp_root`` cases rebuild that tree under a fake root.
 """
 
 from __future__ import annotations
@@ -102,6 +107,7 @@ def test_installed_copy_without_template_fails_loudly_before_any_mutation(
     assert result.returncode == 78
     assert "HAProxy template is unavailable" in result.stderr
     assert str(script.parent / "haproxy.cfg.tmpl") in result.stderr
+    assert str(run_dir / "ops/ncp/haproxy/haproxy.cfg.tmpl") in result.stderr
     assert str(tmp_path / "ops/ncp/haproxy/haproxy.cfg.tmpl") in result.stderr
     assert "--haproxy-template" in result.stderr
     _assert_untouched(calls, state, run_dir)
@@ -249,13 +255,13 @@ def test_default_env_files_are_the_ncp_host_names_in_order(tmp_path: Path):
 def test_old_default_names_alone_fail_before_mutation_naming_the_override(
     tmp_path: Path,
 ):
-    """A run directory holding only .env.runtime/.env.secrets is refused."""
-    legacy = tmp_path / "legacy-run"
+    """A secrets directory holding only .env.runtime/.env.secrets is refused."""
+    legacy = tmp_path / "legacy-secrets"
     legacy.mkdir()
     (legacy / ".env.runtime").write_text("x=y\n")
     (legacy / ".env.secrets").write_text(_token_lines())
     result, calls, state, run_dir = _run(
-        tmp_path, extra_env={"AT_RUN_DIRECTORY": str(legacy)}
+        tmp_path, extra_env={"AT_SECRETS_DIRECTORY": str(legacy)}
     )
     assert result.returncode == 78
     assert (
@@ -272,7 +278,9 @@ def test_missing_second_default_names_its_override(tmp_path: Path):
     case_run = tmp_path / "only-api"
     case_run.mkdir()
     (case_run / ".env.api").write_text("x=y\n")
-    result, calls, _, _ = _run(tmp_path, extra_env={"AT_RUN_DIRECTORY": str(case_run)})
+    result, calls, _, _ = _run(
+        tmp_path, extra_env={"AT_SECRETS_DIRECTORY": str(case_run)}
+    )
     assert result.returncode == 78
     assert (
         f"required env file is unavailable: {case_run / '.env.scheduler'} "
@@ -305,14 +313,57 @@ def test_explicit_env_file_overrides_are_still_honoured(tmp_path: Path):
 def test_script_defaults_are_literally_the_ncp_names() -> None:
     body = DEPLOY.read_text()
     assert (
-        'readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${RUN_DIRECTORY}/.env.api}"'
+        'readonly SECRETS_DIRECTORY="${AT_SECRETS_DIRECTORY:-/root/at-secrets}"' in body
+    )
+    assert (
+        'readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${SECRETS_DIRECTORY}/.env.api}"'
         in body
     )
     assert (
-        'readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${RUN_DIRECTORY}/.env.scheduler}"'
+        'readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${SECRETS_DIRECTORY}/.env.scheduler}"'
+        in body
+    )
+    assert (
+        'readonly HAPROXY_TEMPLATE_RUN_OPS="${RUN_DIRECTORY}/ops/ncp/haproxy/haproxy.cfg.tmpl"'
         in body
     )
     assert ".env.runtime" not in body and ".env.secrets" not in body
+    # The #2219 defaults pointed into the run directory; the host keeps no
+    # env files there.
+    assert "${RUN_DIRECTORY}/.env." not in body
+
+
+def test_unset_secrets_directory_defaults_to_root_at_secrets(tmp_path: Path):
+    """Empty means unset (``:-``): the plan names /root/at-secrets."""
+    result, calls, _, _ = _run(
+        tmp_path, args=("--dry-run",), extra_env={"AT_SECRETS_DIRECTORY": ""}
+    )
+    assert result.returncode == 0, result.stderr
+    assert "env file (AT_RUNTIME_ENV_FILE): /root/at-secrets/.env.api" in result.stdout
+    assert (
+        "env file (AT_SECRETS_ENV_FILE): /root/at-secrets/.env.scheduler"
+        in result.stdout
+    )
+    assert [c for c in calls if c[0] in MUTATING] == []
+
+
+def test_env_files_in_the_run_directory_alone_are_refused(tmp_path: Path):
+    """The #2219 default (${RUN_DIRECTORY}/.env.*) is no longer consulted."""
+    empty = tmp_path / "empty-secrets"
+    empty.mkdir()
+    result, calls, state, run_dir = _run(
+        tmp_path, extra_env={"AT_SECRETS_DIRECTORY": str(empty)}
+    )
+    # The harness still writes both files into the run directory.
+    assert (run_dir / ".env.api").is_file() and (run_dir / ".env.scheduler").is_file()
+    assert result.returncode == 78
+    assert (
+        f"required env file is unavailable: {empty / '.env.api'} "
+        "(set AT_RUNTIME_ENV_FILE to the host file)"
+    ) in result.stderr
+    assert [c for c in calls if c[0] in MUTATING] == []
+    for unit in INITIAL:
+        assert state[unit] == _expected(unit), unit
 
 
 # --- dry-run shows the inputs a real run would refuse ------------------------
@@ -322,20 +373,18 @@ def test_dry_run_reports_inputs_and_flags_missing_ones_without_mutation(
     tmp_path: Path,
 ):
     script = _install(tmp_path, with_template=False)
-    empty_run = tmp_path / "empty-run"
-    empty_run.mkdir()
+    empty = tmp_path / "empty-secrets"
+    empty.mkdir()
     result, calls, _, _ = _run(
         tmp_path,
         args=("--dry-run",),
         deploy=script,
-        extra_env={**NO_ENV_TEMPLATE, "AT_RUN_DIRECTORY": str(empty_run)},
+        extra_env={**NO_ENV_TEMPLATE, "AT_SECRETS_DIRECTORY": str(empty)},
     )
     assert result.returncode == 0, result.stderr
     out = result.stdout
-    assert f"env file (AT_RUNTIME_ENV_FILE): {empty_run / '.env.api'} MISSING" in out
-    assert (
-        f"env file (AT_SECRETS_ENV_FILE): {empty_run / '.env.scheduler'} MISSING" in out
-    )
+    assert f"env file (AT_RUNTIME_ENV_FILE): {empty / '.env.api'} MISSING" in out
+    assert f"env file (AT_SECRETS_ENV_FILE): {empty / '.env.scheduler'} MISSING" in out
     assert "haproxy template: MISSING or ambiguous; a real run exits 78" in out
     assert str(script.parent / "haproxy.cfg.tmpl") in out
     assert [c for c in calls if c[0] in MUTATING] == []
@@ -376,6 +425,160 @@ def test_runbook_canonical_invocation_uses_only_real_inputs() -> None:
         assert f"${{{var}" in body, f"runbook sets {var}, the script never reads it"
     for flag in re.findall(r"(?<![\w-])(--[a-z][a-z-]*)", block):
         assert re.search(rf"^\s+{re.escape(flag)}[)=]", body, re.M), flag
-    assert "AT_RUNTIME_ENV_FILE=/root/at-run/.env.api" in block
-    assert "AT_SECRETS_ENV_FILE=/root/at-run/.env.scheduler" in block
-    assert "--haproxy-template /root/at-run/haproxy.cfg.tmpl" in block
+    # Deploy #4 (2026-10-17) measured paths; nothing under /root/at-run/.env*.
+    assert "/root/at-run/.env" not in block
+    assert "/root/at-run/haproxy.cfg.tmpl" not in block
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    # The default form: no env override and no template flag at all.
+    assert "/root/at-run/deploy-ncp-pull.sh sha-abcdef0 --dry-run" in lines
+    assert "/root/at-run/deploy-ncp-pull.sh sha-abcdef0" in lines
+    # One fully explicit form spelling out every measured path.
+    assert "AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api \\" in lines
+    assert "AT_SECRETS_ENV_FILE=/root/at-secrets/.env.scheduler \\" in lines
+    assert (
+        "--haproxy-template /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl --dry-run"
+        in lines
+    )
+
+
+# --- (d) the measured NCP layout under a fake root (deploy #4, 2026-10-17) ----
+
+
+def _ncp_root(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Rebuild the measured host tree: <root>/at-run is the run directory.
+
+    /root/at-run/deploy-ncp-pull.sh            installed script
+    /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl  template (no sibling copy)
+    /root/at-secrets/.env.api, .env.scheduler   env files
+    The harness's run directory is ``tmp_path/run``, so it stands in for
+    /root/at-run and ``tmp_path`` for /root.
+    """
+    run_dir = tmp_path / "run"
+    template = run_dir / "ops/ncp/haproxy/haproxy.cfg.tmpl"
+    template.parent.mkdir(parents=True)
+    shutil.copy2(TEMPLATE, template)
+    script = run_dir / "deploy-ncp-pull.sh"
+    shutil.copy2(DEPLOY, script)
+    script.chmod(0o750)
+    secrets = tmp_path / "at-secrets"
+    secrets.mkdir()
+    (secrets / ".env.api").write_text("x=y\n")
+    (secrets / ".env.scheduler").write_text(_token_lines())
+    return script, template, secrets
+
+
+def test_measured_ncp_layout_deploys_with_defaults_only(tmp_path: Path):
+    script, template, secrets = _ncp_root(tmp_path)
+    result, calls, state, run_dir = _run(
+        tmp_path,
+        deploy=script,
+        extra_env={**NO_ENV_TEMPLATE, "AT_SECRETS_DIRECTORY": str(secrets)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (run_dir / "haproxy.cfg.tmpl").exists()
+    assert f"haproxy template (run-ops): {template}\n" in result.stdout
+    want = [str(secrets / ".env.api"), str(secrets / ".env.scheduler")]
+    assert f"env file 1 (AT_RUNTIME_ENV_FILE): {want[0]}\n" in result.stdout
+    assert f"env file 2 (AT_SECRETS_ENV_FILE): {want[1]}\n" in result.stdout
+    app_runs = [c for c in calls if c[0] == "run" and any(a.startswith(NEW) for a in c)]
+    assert len(app_runs) >= len(INITIAL)
+    for call in app_runs:
+        assert _env_files(call) == want, call
+    _rendered_matches_template(run_dir, template)
+    assert state["at-api-green"] == NEW
+    assert (run_dir / "deployed-digest").read_text() == NEW + "\n"
+
+
+def test_measured_ncp_layout_dry_run_resolves_every_input(tmp_path: Path):
+    script, template, secrets = _ncp_root(tmp_path)
+    result, calls, _, _ = _run(
+        tmp_path,
+        args=("--dry-run",),
+        deploy=script,
+        extra_env={**NO_ENV_TEMPLATE, "AT_SECRETS_DIRECTORY": str(secrets)},
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert f"env file (AT_RUNTIME_ENV_FILE): {secrets / '.env.api'}\n" in out
+    assert f"env file (AT_SECRETS_ENV_FILE): {secrets / '.env.scheduler'}\n" in out
+    assert f"haproxy template (run-ops): {template}\n" in out
+    assert "MISSING" not in out
+    assert [c for c in calls if c[0] in MUTATING] == []
+
+
+def test_measured_ncp_layout_explicit_overrides_still_win(tmp_path: Path):
+    """Explicit env files and template beat the measured defaults."""
+    script, _, _ = _ncp_root(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    api, scheduler = other / "a.env", other / "b.env"
+    api.write_text("x=y\n")
+    scheduler.write_text(_token_lines())
+    chosen = other / "chosen.tmpl"
+    shutil.copy2(TEMPLATE, chosen)
+    result, calls, _, _ = _run(
+        tmp_path,
+        args=("--haproxy-template", str(chosen)),
+        deploy=script,
+        extra_env={
+            "MCP_HAPROXY_TEMPLATE": str(tmp_path / "absent.tmpl"),
+            "AT_RUNTIME_ENV_FILE": str(api),
+            "AT_SECRETS_ENV_FILE": str(scheduler),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"haproxy template (--haproxy-template): {chosen}\n" in result.stdout
+    app_runs = [c for c in calls if c[0] == "run" and any(a.startswith(NEW) for a in c)]
+    assert app_runs
+    for call in app_runs:
+        assert _env_files(call) == [str(api), str(scheduler)], call
+
+
+def test_run_ops_and_installed_templates_together_are_refused(tmp_path: Path):
+    script, template, secrets = _ncp_root(tmp_path)
+    sibling = script.parent / "haproxy.cfg.tmpl"
+    shutil.copy2(TEMPLATE, sibling)
+    result, calls, state, run_dir = _run(
+        tmp_path,
+        deploy=script,
+        extra_env={**NO_ENV_TEMPLATE, "AT_SECRETS_DIRECTORY": str(secrets)},
+    )
+    assert result.returncode == 78
+    assert "HAProxy template is ambiguous" in result.stderr
+    assert str(sibling) in result.stderr and str(template) in result.stderr
+    _assert_untouched(calls, state, run_dir)
+
+
+def test_checkout_reaching_the_run_ops_template_counts_once(tmp_path: Path):
+    """Script at <run>/scripts/: the checkout and run-ops paths are one file."""
+    _, template, secrets = _ncp_root(tmp_path)
+    script = tmp_path / "run" / "scripts" / "deploy-ncp-pull.sh"
+    script.parent.mkdir()
+    shutil.copy2(DEPLOY, script)
+    result, _, _, run_dir = _run(
+        tmp_path,
+        deploy=script,
+        extra_env={**NO_ENV_TEMPLATE, "AT_SECRETS_DIRECTORY": str(secrets)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"haproxy template (run-ops): {template}\n" in result.stdout
+    _rendered_matches_template(run_dir, template)
+
+
+def test_measured_layout_without_template_names_every_candidate(tmp_path: Path):
+    script, template, secrets = _ncp_root(tmp_path)
+    template.unlink()
+    result, calls, state, run_dir = _run(
+        tmp_path,
+        deploy=script,
+        extra_env={**NO_ENV_TEMPLATE, "AT_SECRETS_DIRECTORY": str(secrets)},
+    )
+    assert result.returncode == 78
+    assert "HAProxy template is unavailable" in result.stderr
+    for path in (
+        run_dir / "haproxy.cfg.tmpl",
+        run_dir / "ops/ncp/haproxy/haproxy.cfg.tmpl",
+        tmp_path / "ops/ncp/haproxy/haproxy.cfg.tmpl",
+    ):
+        assert str(path) in result.stderr, path
+    _assert_untouched(calls, state, run_dir)
