@@ -105,8 +105,8 @@ esac
         configured_image + "\n"
     )
     (state / "at-haproxy").write_text("haproxy:3.1-alpine\n")
-    (run_dir / ".env.runtime").write_text("x=y\n")
-    (run_dir / ".env.secrets").write_text(
+    (run_dir / ".env.api").write_text("x=y\n")
+    (run_dir / ".env.scheduler").write_text(
         "\n".join(
             token
             for token in [

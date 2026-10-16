@@ -190,8 +190,8 @@ def _run(
         )
     for path in bindir.iterdir():
         path.chmod(0o755)
-    (run_dir / ".env.runtime").write_text("x=y\n")
-    (run_dir / ".env.secrets").write_text(
+    (run_dir / ".env.api").write_text("x=y\n")
+    (run_dir / ".env.scheduler").write_text(
         "\n".join(
             f"{name}=tok-{name}"
             for name in (

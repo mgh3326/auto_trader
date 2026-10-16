@@ -51,11 +51,12 @@ tailnet. The Kiwoom profile also requires a token for HTTP transports.
 
 ## First deployment
 
-1. On NCP, install this branch's deploy script and HAProxy/systemd files. Keep
-   both Docker env files outside git. If the host calls its runtime file
-   /root/at-run/.env.api, invoke the script with
-   AT_RUNTIME_ENV_FILE=/root/at-run/.env.api; the second established secret
-   env file remains AT_SECRETS_ENV_FILE.
+1. On NCP, install this branch's deploy script, its HAProxy template (next to
+   the script as /root/at-run/haproxy.cfg.tmpl) and the systemd files. Keep
+   both Docker env files outside git. The script defaults to
+   /root/at-run/.env.api (AT_RUNTIME_ENV_FILE) and /root/at-run/.env.scheduler
+   (AT_SECRETS_ENV_FILE); the exact invocation is in ncp-pull-deploy.md
+   §Canonical NCP invocation.
 2. Confirm all twelve token names in the table are non-empty across the two
    --env-file inputs. Do not print their values. MCP_PAPER_001_AUTH_TOKEN
    and MCP_KIWOOM_AUTH_TOKEN are required before normal deployment.
