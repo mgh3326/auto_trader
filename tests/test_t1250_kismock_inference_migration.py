@@ -80,10 +80,12 @@ def test_marker_strings_match_the_rule() -> None:
 def test_bootstrap_mirrors_the_migration_triggers() -> None:
     migration = _load_migration()
     ddl = [_norm(s) for s in bootstrap._DDL_STATEMENTS]
+    # REQUIRE_AUDIT_FUNCTION_DDL is superseded by ROB-1378
+    # (20261016_rob1378_q46_lock); tests/test_rob1378_q46_fill_gate_lock_migration.py
+    # pins the bootstrap to that body instead.
     for function_ddl in (
         migration.AUDIT_REJECT_FUNCTION_DDL,
         migration.REQUIRE_CLOSE_FUNCTION_DDL,
-        migration.REQUIRE_AUDIT_FUNCTION_DDL,
         migration.REQUIRE_AUDIT_TRIGGER_DDL,
         migration.FILL_DETAIL_FUNCTION_DDL,
         migration.TERMINAL_GUARD_FUNCTION_DDL,
