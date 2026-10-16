@@ -15,6 +15,7 @@ from app.services.execution_ledger.kis_lots import (
     BLOCK_SAME_DAY_SELL_FILL,
     BLOCK_SELL_EVIDENCE_UNKNOWN,
     FRESH_MAX_MINUTES,
+    UNKNOWN_DUPLICATE_POSITIONS,
     UNKNOWN_HISTORY_GAP,
     UNKNOWN_LEDGER_STALE,
     UNKNOWN_NO_LEDGER_ROWS,
@@ -27,8 +28,10 @@ from app.services.execution_ledger.kis_lots import (
     Freshness,
     LedgerFill,
     OrderRow,
+    PositionRef,
     build_symbol_block,
     compute_freshness,
+    kr_position_blocks,
     to_decimal,
     unknown_block,
 )
@@ -753,3 +756,96 @@ def test_unknown_block_carries_blocking_sell_evidence() -> None:
     assert evidence["state"] == "unknown"
     assert evidence["blocking"] is True
     assert evidence["fills"] == []
+
+
+# ---------------------------------------------------------------------------
+# hk 1295 — KR positions sharing a normalized key are ALL unknown, never
+# last-write-wins (one position must never show another's quantity proof)
+# ---------------------------------------------------------------------------
+def _kr_blocks(refs: list[PositionRef], **kwargs):
+    defaults = {
+        "fills_by_symbol": {ref.symbol: [] for ref in refs},
+        "orders_by_symbol": {ref.symbol: [] for ref in refs},
+        "freshness": FRESH,
+        "now": NOW,
+    }
+    defaults.update(kwargs)
+    return kr_position_blocks(refs, **defaults)
+
+
+def test_1295_kr_colliding_position_keys_are_all_unknown() -> None:
+    """Two KIS 잔고 rows whose keys normalize equal (``T1295K`` / ``t1295k``).
+
+    Each position keeps its own block and both read
+    ``duplicate_positions_for_symbol`` with ``lots=None`` — the last write
+    cannot stand, so the qty-1 position never shows the qty-8 known proof.
+    """
+    blocks = _kr_blocks(
+        [
+            PositionRef("T1295K", D("1")),
+            PositionRef("t1295k", D("8")),
+            PositionRef("T1295Z", D("8")),
+        ],
+        fills_by_symbol={
+            "T1295K": [fill(1, "buy", "8", "1000", SEED_AT, source="manual_import")],
+            "t1295k": [],
+            "T1295Z": [fill(2, "buy", "8", "900", SEED_AT, source="manual_import")],
+        },
+    )
+    for symbol in ("T1295K", "t1295k"):
+        assert blocks[symbol]["ledger_state"] == "unknown"
+        assert blocks[symbol]["unknown_reasons"] == [UNKNOWN_DUPLICATE_POSITIONS]
+        assert blocks[symbol]["lots"] is None
+        # A KR block never carries the US keys.
+        assert "market" not in blocks[symbol]
+    # The collision does not reach an unrelated position.
+    assert blocks["T1295Z"]["ledger_state"] == "known", blocks["T1295Z"][
+        "unknown_reasons"
+    ]
+
+
+def test_1295_kr_identical_symbol_positions_collapse_to_one_unknown() -> None:
+    """Identical symbol strings share one dict slot — still the unknown block."""
+    blocks = _kr_blocks([PositionRef("T1295K", D("1")), PositionRef("T1295K", D("8"))])
+    assert list(blocks) == ["T1295K"]
+    assert blocks["T1295K"]["unknown_reasons"] == [UNKNOWN_DUPLICATE_POSITIONS]
+    assert blocks["T1295K"]["lots"] is None
+
+
+def test_1295_kr_separator_spellings_stay_distinct_positions() -> None:
+    """``_kr_symbol_key`` is strip+upper only: no ``to_db_symbol`` folding.
+
+    KR position symbols are never separator-normalized upstream, so
+    ``T1295-K`` and ``T1295.K`` are two genuinely different positions — they
+    must NOT collide (folding them would merge different proofs).
+    """
+    blocks = _kr_blocks(
+        [PositionRef("T1295-K", D("5")), PositionRef("T1295.K", D("5"))]
+    )
+    assert set(blocks) == {"T1295-K", "T1295.K"}
+    for symbol in blocks:
+        assert UNKNOWN_DUPLICATE_POSITIONS not in blocks[symbol]["unknown_reasons"]
+
+
+def test_1295_kr_unique_key_output_equals_build_symbol_block() -> None:
+    """No collision -> byte-identical to the pre-change per-symbol build."""
+    fills = [
+        fill(1, "buy", "10", "100000", SEED_AT, source="manual_import"),
+        fill(2, "buy", "2", "99000", EARLIER),
+    ]
+    orders = [order(1, "filled", TODAY_MORNING)]
+    out = _kr_blocks(
+        [PositionRef("196170", D("12"), D("90000"))],
+        fills_by_symbol={"196170": fills},
+        orders_by_symbol={"196170": orders},
+    )
+    assert out["196170"] == build_symbol_block(
+        symbol="196170",
+        reference_quantity=D("12"),
+        current_price=D("90000"),
+        fills=fills,
+        orders=orders,
+        freshness=FRESH,
+        now=NOW,
+    )
+    assert out["196170"]["ledger_state"] == "known"
