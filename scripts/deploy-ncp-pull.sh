@@ -27,25 +27,32 @@ fi
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
 readonly HAPROXY_IMAGE="haproxy:3.1-alpine"
-usage() { printf 'usage: %s [tag|--rollback] [--skip-kis-ws] [--dry-run]\n' "$0" >&2; exit 64; }
+usage() { printf 'usage: %s [tag|--rollback] [--skip-kis-ws] [--dry-run] [--haproxy-template PATH]\n' "$0" >&2; exit 64; }
 
-SKIP_KIS_WS=0 DRY_RUN=0 DEPLOY_MODE=deploy IMAGE_TAG=main TAG_SET=0
-for arg in "$@"; do
-  case "$arg" in
+SKIP_KIS_WS=0 DRY_RUN=0 DEPLOY_MODE=deploy IMAGE_TAG=main TAG_SET=0 HAPROXY_TEMPLATE_ARG=""
+while (($#)); do
+  case "$1" in
     --skip-kis-ws) SKIP_KIS_WS=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --rollback) DEPLOY_MODE=rollback ;;
+    --haproxy-template)
+      (($# >= 2)) && [[ -n "$2" ]] || usage
+      HAPROXY_TEMPLATE_ARG="$2"; shift ;;
+    --haproxy-template=*)
+      HAPROXY_TEMPLATE_ARG="${1#--haproxy-template=}"
+      [[ -n "$HAPROXY_TEMPLATE_ARG" ]] || usage ;;
     -*) usage ;;
     *)
       if ((TAG_SET)); then usage; fi
-      TAG_SET=1 IMAGE_TAG="$arg" ;;
+      TAG_SET=1 IMAGE_TAG="$1" ;;
   esac
+  shift
 done
 if [[ "$DEPLOY_MODE" == rollback ]]; then
   if ((TAG_SET)); then usage; fi
   IMAGE_TAG=""
 fi
-readonly SKIP_KIS_WS DRY_RUN DEPLOY_MODE IMAGE_TAG
+readonly SKIP_KIS_WS DRY_RUN DEPLOY_MODE IMAGE_TAG HAPROXY_TEMPLATE_ARG
 
 readonly IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 readonly RUN_DIRECTORY="${AT_RUN_DIRECTORY:-/root/at-run}"
@@ -53,7 +60,15 @@ readonly API_ACTIVE_COLOR_FILE="${RUN_DIRECTORY}/api-active-color"
 readonly MCP_ACTIVE_COLOR_FILE="${RUN_DIRECTORY}/mcp-active-color"
 readonly HAPROXY_CONFIG="${RUN_DIRECTORY}/haproxy.cfg"
 readonly HAPROXY_CONFIG_PREVIOUS="${RUN_DIRECTORY}/haproxy.cfg.previous"
-readonly HAPROXY_TEMPLATE="${MCP_HAPROXY_TEMPLATE:-$(cd "$(dirname "$0")/.." && pwd)/ops/ncp/haproxy/haproxy.cfg.tmpl}"
+# ROB-1380: the template is resolved by resolve_haproxy_template before any
+# mutation, never guessed at render time. The operator copy is installed next
+# to this script (/root/at-run/haproxy.cfg.tmpl); a repository checkout finds
+# ops/ncp/haproxy/haproxy.cfg.tmpl beside scripts/.
+SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIRECTORY
+readonly HAPROXY_TEMPLATE_INSTALLED="${SCRIPT_DIRECTORY}/haproxy.cfg.tmpl"
+readonly HAPROXY_TEMPLATE_CHECKOUT="${SCRIPT_DIRECTORY%/*}/ops/ncp/haproxy/haproxy.cfg.tmpl"
+HAPROXY_TEMPLATE="" HAPROXY_TEMPLATE_SOURCE=""
 readonly HAPROXY_CONTAINER=at-haproxy
 readonly API_DRAIN_SECONDS="${API_DRAIN_SECONDS:-120}"
 readonly MCP_DRAIN_SECONDS="${MCP_DRAIN_SECONDS:-3600}"
@@ -65,8 +80,10 @@ readonly HAPROXY_READY_INTERVAL="${HAPROXY_READY_INTERVAL:-0.5}"
 readonly MCP_UNITS_SKIP="${MCP_UNITS_SKIP:-}"
 readonly HEALTHZ_ATTEMPTS="${AT_HEALTHZ_ATTEMPTS:-30}"
 readonly HEALTHZ_SLEEP_SECONDS="${AT_HEALTHZ_SLEEP_SECONDS:-2}"
-readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${RUN_DIRECTORY}/.env.runtime}"
-readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${RUN_DIRECTORY}/.env.secrets}"
+# ROB-1380: defaults are the NCP host's established names. Docker reads the
+# two files in this order, so a key present in both takes the second value.
+readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${RUN_DIRECTORY}/.env.api}"
+readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${RUN_DIRECTORY}/.env.scheduler}"
 readonly DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previous"
 # Unset means on; an explicitly empty or any other value is invalid and skips.
@@ -103,7 +120,35 @@ ORIGINAL_DEPLOYED_DIGEST_EXISTS=false ORIGINAL_PREVIOUS_DIGEST_EXISTS=false
 DIGEST_RECORD_MUTATED=false
 
 require_command() { command -v "$1" >/dev/null 2>&1 || { printf 'required command is unavailable: %s\n' "$1" >&2; exit 127; }; }
-require_file() { [[ -f "$1" ]] || { printf 'required env file is unavailable: %s\n' "$1" >&2; exit 78; }; }
+require_file() { [[ -f "$1" ]] || { printf 'required env file is unavailable: %s (set %s to the host file)\n' "$1" "$2" >&2; exit 78; }; }
+# Explicit sources win in order: --haproxy-template, then MCP_HAPROXY_TEMPLATE.
+# Without either, exactly one of the installed copy and the checkout copy must
+# exist; none or both refuses with every path it looked at.
+resolve_haproxy_template() {
+  local candidate
+  HAPROXY_TEMPLATE="" HAPROXY_TEMPLATE_SOURCE=""
+  if [[ -n "$HAPROXY_TEMPLATE_ARG" ]]; then
+    candidate="$HAPROXY_TEMPLATE_ARG" HAPROXY_TEMPLATE_SOURCE=--haproxy-template
+  elif [[ -n "${MCP_HAPROXY_TEMPLATE:-}" ]]; then
+    candidate="$MCP_HAPROXY_TEMPLATE" HAPROXY_TEMPLATE_SOURCE=MCP_HAPROXY_TEMPLATE
+  elif [[ -f "$HAPROXY_TEMPLATE_INSTALLED" && -f "$HAPROXY_TEMPLATE_CHECKOUT" ]]; then
+    printf 'HAProxy template is ambiguous: both %s and %s exist; pass --haproxy-template PATH\n' "$HAPROXY_TEMPLATE_INSTALLED" "$HAPROXY_TEMPLATE_CHECKOUT" >&2
+    return 78
+  elif [[ -f "$HAPROXY_TEMPLATE_INSTALLED" ]]; then
+    candidate="$HAPROXY_TEMPLATE_INSTALLED" HAPROXY_TEMPLATE_SOURCE=installed
+  elif [[ -f "$HAPROXY_TEMPLATE_CHECKOUT" ]]; then
+    candidate="$HAPROXY_TEMPLATE_CHECKOUT" HAPROXY_TEMPLATE_SOURCE=checkout
+  else
+    printf 'HAProxy template is unavailable: looked for %s and %s; install ops/ncp/haproxy/haproxy.cfg.tmpl next to this script or pass --haproxy-template PATH\n' "$HAPROXY_TEMPLATE_INSTALLED" "$HAPROXY_TEMPLATE_CHECKOUT" >&2
+    return 78
+  fi
+  if [[ ! -f "$candidate" || ! -r "$candidate" ]]; then
+    printf 'HAProxy template is unavailable: %s (from %s) is not a readable file\n' "$candidate" "$HAPROXY_TEMPLATE_SOURCE" >&2
+    HAPROXY_TEMPLATE_SOURCE=""
+    return 78
+  fi
+  HAPROXY_TEMPLATE="$candidate"
+}
 is_digest() { [[ "$1" =~ ^${IMAGE_REPOSITORY}@sha256:[[:xdigit:]]{64}$ ]]; }
 configured_image() { docker inspect --format '{{.Config.Image}}' "$1"; }
 container_presence() {
@@ -332,7 +377,8 @@ haproxy_shape_is_closed() { awk '/^[[:space:]]*(#|$)/ { next } /^[^[:space:]]/ {
 render_haproxy() {
   local api mcp tmp
   api="$(api_port "$1")"; mcp="$(mcp_port "$2")"; tmp="${HAPROXY_CONFIG}.tmp"
-  [[ -f "$HAPROXY_TEMPLATE" ]] || return 78; mkdir -p "$RUN_DIRECTORY"
+  [[ -n "$HAPROXY_TEMPLATE" && -f "$HAPROXY_TEMPLATE" ]] || { printf 'HAProxy template is unavailable at render: %s\n' "${HAPROXY_TEMPLATE:-unresolved}" >&2; return 78; }
+  mkdir -p "$RUN_DIRECTORY"
   sed -e "s/__API_ACTIVE_PORT__/${api}/g" -e "s/__MCP_ACTIVE_PORT__/${mcp}/g" "$HAPROXY_TEMPLATE" >"$tmp"
   if grep -q '0.0.0.0' "$tmp" || ! grep -q 'bind 127.0.0.1:8000' "$tmp" || ! grep -q 'bind 100.122.100.56:8000' "$tmp" || ! haproxy_binds_are_private "$tmp" || ! haproxy_shape_is_closed "$tmp"; then rm -f "$tmp"; printf 'HAProxy binds must be loopback and tailnet only (closed config shape)\n' >&2; return 78; fi
   chmod 0644 "$tmp"
@@ -503,7 +549,19 @@ promote_digest() {
   fi
   printf 'deployment completed: %s\n' "$digest"
 }
-prepare() { require_command docker; require_command curl; require_command awk; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"; validate_mcp_units || return $?; validate_mcp_tokens; }
+prepare() {
+  require_command docker; require_command curl; require_command awk
+  require_file "$RUNTIME_ENV_FILE" AT_RUNTIME_ENV_FILE; require_file "$SECRETS_ENV_FILE" AT_SECRETS_ENV_FILE
+  resolve_haproxy_template || return $?
+  print_deploy_inputs
+  # Keep this line verbatim: the h3 mutant tests strip the pre-check by this text.
+  validate_mcp_units || return $?; validate_mcp_tokens; }
+# Paths only, never contents: the operator compares these with the host layout.
+print_deploy_inputs() {
+  printf 'env file 1 (AT_RUNTIME_ENV_FILE): %s\n' "$RUNTIME_ENV_FILE"
+  printf 'env file 2 (AT_SECRETS_ENV_FILE): %s\n' "$SECRETS_ENV_FILE"
+  printf 'haproxy template (%s): %s\n' "$HAPROXY_TEMPLATE_SOURCE" "$HAPROXY_TEMPLATE"
+}
 
 # Image prune (task 934; contract docs/contracts/task-934-image-prune.md).
 # Only the successful deploy path runs it; rollback, failure and dry-run never
@@ -658,6 +716,21 @@ dry_run_image_prune() {
 main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; run_image_prune "$digest"; }
 manual_rollback() { local previous; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; current_api_rollback_digest >/dev/null || return 78; capture_initial_state || return 78; docker pull "$previous"; promote_digest "$previous"; }
 
+# A real run refuses before any mutation when one of these is MISSING; the
+# plan shows the same verdicts without stopping.
+dry_run_inputs() {
+  local file label
+  for label in AT_RUNTIME_ENV_FILE AT_SECRETS_ENV_FILE; do
+    if [[ "$label" == AT_RUNTIME_ENV_FILE ]]; then file="$RUNTIME_ENV_FILE"; else file="$SECRETS_ENV_FILE"; fi
+    if [[ -f "$file" ]]; then printf 'env file (%s): %s\n' "$label" "$file"; else printf 'env file (%s): %s MISSING; a real run exits 78\n' "$label" "$file"; fi
+  done
+  if resolve_haproxy_template 2>/dev/null; then
+    printf 'haproxy template (%s): %s\n' "$HAPROXY_TEMPLATE_SOURCE" "$HAPROXY_TEMPLATE"
+  else
+    printf 'haproxy template: MISSING or ambiguous; a real run exits 78: %s\n' "$(resolve_haproxy_template 2>&1 >/dev/null)"
+  fi
+}
+
 # Read-only plan. Inspect calls only: no pull/run/rm/stop/rename/kill and no
 # route or color file writes. When no immutable reference is available the
 # plan says unresolved rather than claiming a digest.
@@ -665,6 +738,7 @@ dry_run() {
   local target="" planned verb old_api old_mcp new_api new_mcp i name
   require_command docker
   printf 'dry-run: read-only plan; no image pull, no container mutation, no route or file writes\n'
+  dry_run_inputs
   if [[ "$DEPLOY_MODE" == rollback ]]; then
     printf 'mode: rollback\n'
     if target="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")"; then

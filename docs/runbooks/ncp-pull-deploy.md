@@ -35,15 +35,64 @@ printf '%s' "$GHCR_PAT" | docker login ghcr.io -u mgh3326 --password-stdin
 ```
 
 Keep the two existing runtime env files outside the repository. By default the
-script uses `/root/at-run/.env.runtime` and `/root/at-run/.env.secrets`; hosts
-using different established filenames can set `AT_RUNTIME_ENV_FILE` and
-`AT_SECRETS_ENV_FILE`. No env contents are copied into the image or script.
+script uses the NCP host's names `/root/at-run/.env.api` and
+`/root/at-run/.env.scheduler` (ROB-1380; before that the defaults were
+`.env.runtime`/`.env.secrets`, which did not match the host). Hosts using other
+established paths set `AT_RUNTIME_ENV_FILE` and `AT_SECRETS_ENV_FILE`. Every
+unit receives both files in that order, so a key present in both takes the
+value from the second file. A missing file stops the run before any pull or
+container change with `required env file is unavailable: <path> (set <VAR> to
+the host file)`. No env contents are copied into the image or script.
 
-Install the versioned operator script with restricted permissions:
+Install the versioned operator script and its HAProxy template, from the same
+merged commit, with restricted permissions:
 
 ```bash
 install -m 0750 scripts/deploy-ncp-pull.sh /root/at-run/deploy-ncp-pull.sh
+install -m 0644 ops/ncp/haproxy/haproxy.cfg.tmpl /root/at-run/haproxy.cfg.tmpl
 ```
+
+The installed copy has no repository around it. The script picks the HAProxy
+template in this order: `--haproxy-template PATH`, then `MCP_HAPROXY_TEMPLATE`,
+then whichever one of `haproxy.cfg.tmpl` next to the script (the installed
+copy) or `../ops/ncp/haproxy/haproxy.cfg.tmpl` (a repository checkout) exists.
+If neither exists, if both exist, or if an explicit path is not a readable
+file, it exits 78 before any pull or container change and names every path it
+looked at. An explicit path that is missing never falls back to a discovered
+one. (Deploy #1 on 2026-10-16 hit the old behaviour: the installed copy looked
+for `/root/ops/...`, failed silently with 78 after the API color was replaced,
+and rolled back.) Rendering still refuses any non-loopback, non-tailnet bind.
+
+## Canonical NCP invocation
+
+This is the invocation the desk runs on the NCP host. Run the dry-run first;
+it prints the resolved env files and template (or `MISSING`) without changing
+anything, then the real run prints the same three lines before it pulls.
+
+```bash
+AT_RUNTIME_ENV_FILE=/root/at-run/.env.api \
+AT_SECRETS_ENV_FILE=/root/at-run/.env.scheduler \
+  /root/at-run/deploy-ncp-pull.sh sha-abcdef0 \
+  --haproxy-template /root/at-run/haproxy.cfg.tmpl --dry-run
+
+AT_RUNTIME_ENV_FILE=/root/at-run/.env.api \
+AT_SECRETS_ENV_FILE=/root/at-run/.env.scheduler \
+  /root/at-run/deploy-ncp-pull.sh sha-abcdef0 \
+  --haproxy-template /root/at-run/haproxy.cfg.tmpl
+```
+
+| Input | Meaning |
+| --- | --- |
+| `AT_RUNTIME_ENV_FILE=/root/at-run/.env.api` | First `--env-file` for every unit. Equal to the default; written out so the run does not depend on it. |
+| `AT_SECRETS_ENV_FILE=/root/at-run/.env.scheduler` | Second `--env-file` for every unit; its value wins for a key in both files. Equal to the default. |
+| `/root/at-run/deploy-ncp-pull.sh` | The installed copy from "One-time host preparation". |
+| `sha-abcdef0` | Image tag to pull: the `sha-<short7>` of the merged `main` commit (or `main`). The run resolves and pins it to `repo@sha256:...`. Omit the tag and pass `--rollback` instead to return to `deployed-digest.previous`. |
+| `--haproxy-template /root/at-run/haproxy.cfg.tmpl` | The template installed next to the script. Optional while only that copy exists; explicit so a stray tree elsewhere can never be picked. `--haproxy-template=PATH` is accepted too. |
+| `--dry-run` | Read-only plan; drop it for the real run. |
+
+Optional additions, each described below: `--skip-kis-ws` while fillwire holds
+the KIS fill stream, `MCP_UNITS_SKIP=<unit,...>` to hold fixed MCP units back,
+and `AT_IMAGE_PRUNE_ENABLED=0` to skip the old-image prune for one run.
 
 Before pulling, the script requires an existing active API and checks every
 present app container is running and has its own resolvable immutable GHCR
