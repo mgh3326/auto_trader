@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import logging
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -17,8 +18,45 @@ from app.models.execution_ledger import (
     execution_ledger_in_effect,
 )
 from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
+from app.services.execution_ledger.supersede import (
+    AUTHORITATIVE_SOURCES,
+    PROVISIONAL_SOURCE,
+    normalize_order_id,
+    supersede_provisional,
+    terminal_cover,
+)
+
+logger = logging.getLogger(__name__)
 
 UpsertStatus = Literal["inserted", "updated", "unchanged"]
+
+#: ROB-1379: the widest gap between a KIS order's stamp (the reconciler books
+#: ``ord_dt``/``ord_tmd``) and a fill of it. A day order lives inside one KST
+#: date / one US trading date, and the order identity carries that date, so two
+#: days of look-back always reaches the authoritative row of an in-window fill.
+SUPERSEDE_LOOKBACK = timedelta(days=2)
+
+#: Columns a quantity reader needs to sum rows and apply the ROB-1379
+#: supersede rule (``supersede.order_identity`` reads these attributes).
+_QUANTITY_COLUMNS = (
+    ExecutionLedger.id,
+    ExecutionLedger.broker,
+    ExecutionLedger.account_mode,
+    ExecutionLedger.venue,
+    ExecutionLedger.instrument_type,
+    ExecutionLedger.symbol,
+    ExecutionLedger.currency,
+    ExecutionLedger.side,
+    ExecutionLedger.broker_order_id,
+    ExecutionLedger.filled_at,
+    ExecutionLedger.filled_qty,
+    ExecutionLedger.source,
+)
+
+
+def _aware_utc(when: datetime) -> datetime:
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
 
 COMPARE_COLUMNS = (
     "account_mode",
@@ -128,11 +166,56 @@ class ExecutionLedgerRepository:
             return "inserted"
         return "updated" if _values_differ(existing, fill) else "unchanged"
 
+    async def terminal_authoritative_cover(
+        self, fill: ExecutionLedgerUpsert
+    ) -> ExecutionLedger | None:
+        """ROB-1379: the reconciler row that already books a websocket fill.
+
+        Candidates share the fill's broker, account mode, instrument, side and
+        leading-zero-normalized order id; ``supersede.terminal_cover`` then
+        demands the same full order identity (symbol, currency, trading day)
+        and broker proof that the order can fill no further.
+        """
+        if fill.source != PROVISIONAL_SOURCE:
+            return None
+        order_id = normalize_order_id(fill.broker_order_id)
+        result = await self.db.execute(
+            select(ExecutionLedger).where(
+                ExecutionLedger.broker == fill.broker,
+                ExecutionLedger.account_mode == fill.account_mode,
+                ExecutionLedger.instrument_type == str(fill.instrument_type),
+                ExecutionLedger.side == fill.side,
+                func.ltrim(ExecutionLedger.broker_order_id, "0")
+                == order_id.lstrip("0"),
+                ExecutionLedger.source.in_(sorted(AUTHORITATIVE_SOURCES)),
+                execution_ledger_in_effect(),
+            )
+        )
+        return terminal_cover(fill, result.scalars().all())
+
     async def upsert_fill(
         self, fill: ExecutionLedgerUpsert
     ) -> tuple[UpsertStatus, int]:
-        """Insert or update one fill by the broker idempotency key."""
+        """Insert or update one fill by the broker idempotency key.
+
+        ROB-1379: a *new* websocket fill (no row under its own key) whose order
+        the reconciler already booked as terminal is not inserted a second
+        time under a different ``fill_seq``; it answers ``unchanged`` with the
+        authoritative row id. A replay of an existing key keeps its own row.
+        """
         status = await self.classify_fill(fill)
+        if status == "inserted" and fill.source == PROVISIONAL_SOURCE:
+            cover = await self.terminal_authoritative_cover(fill)
+            if cover is not None:
+                logger.info(
+                    "Websocket fill already booked by a terminal reconciler row; "
+                    "not inserted: broker=%s order_id=%s fill_seq=%s row_id=%s",
+                    fill.broker,
+                    fill.broker_order_id,
+                    fill.fill_seq,
+                    cover.id,
+                )
+                return "unchanged", int(cover.id)
         if status == "unchanged":
             existing = await self.get_by_key(
                 fill.broker,
@@ -291,45 +374,41 @@ class ExecutionLedgerRepository:
     async def net_quantity_by_match_key_since(
         self, *, cutover: datetime
     ) -> dict[tuple[str, str, str, str, str, str], Decimal]:
-        from sqlalchemy import case
+        """Signed net quantity per match key over non-seed rows since ``cutover``.
 
-        signed_qty = case(
-            (ExecutionLedger.side == "buy", ExecutionLedger.filled_qty),
-            else_=-ExecutionLedger.filled_qty,
-        )
-        rows = await self.db.execute(
-            select(
-                ExecutionLedger.broker,
-                ExecutionLedger.account_mode,
-                ExecutionLedger.venue,
-                ExecutionLedger.instrument_type,
-                ExecutionLedger.symbol,
-                ExecutionLedger.currency,
-                func.coalesce(func.sum(signed_qty), 0),
+        ROB-1379: a websocket row whose order an authoritative row books is a
+        duplicate of that row and is not added (``supersede``). Authority is
+        read from ``SUPERSEDE_LOOKBACK`` before the cutover so a reconciler row
+        stamped at order time still covers a websocket fill stamped later.
+        """
+        rows = (
+            await self.db.execute(
+                select(*_QUANTITY_COLUMNS).where(
+                    ExecutionLedger.filled_at >= cutover - SUPERSEDE_LOOKBACK,
+                    execution_ledger_in_effect(),
+                )
             )
-            .where(ExecutionLedger.filled_at >= cutover)
-            .where(ExecutionLedger.source != "manual_import")
-            .where(execution_ledger_in_effect())
-            .group_by(
-                ExecutionLedger.broker,
-                ExecutionLedger.account_mode,
-                ExecutionLedger.venue,
-                ExecutionLedger.instrument_type,
-                ExecutionLedger.symbol,
-                ExecutionLedger.currency,
+        ).all()
+        since = _aware_utc(cutover)
+        in_window = [
+            row
+            for row in rows
+            if _aware_utc(row.filled_at) >= since and row.source != "manual_import"
+        ]
+        counted, _superseded = supersede_provisional(in_window, authority=rows)
+        net: dict[tuple[str, str, str, str, str, str], Decimal] = {}
+        for row in counted:
+            key = (
+                row.broker,
+                row.account_mode,
+                row.venue,
+                str(row.instrument_type),
+                row.symbol,
+                row.currency,
             )
-        )
-        return {
-            (
-                broker,
-                account_mode,
-                venue,
-                str(instrument_type),
-                symbol,
-                currency,
-            ): Decimal(str(net_qty))
-            for broker, account_mode, venue, instrument_type, symbol, currency, net_qty in rows.all()
-        }
+            qty = Decimal(str(row.filled_qty))
+            net[key] = net.get(key, Decimal("0")) + (qty if row.side == "buy" else -qty)
+        return net
 
     async def position_before_fill(
         self,
@@ -355,13 +434,11 @@ class ExecutionLedgerRepository:
         the coverage witness: zero rows means the ledger has never seen the
         key, so the caller must treat the pre-fill position as unproven rather
         than flat.
-        """
-        from sqlalchemy import case
 
-        signed_qty = case(
-            (ExecutionLedger.side == "buy", ExecutionLedger.filled_qty),
-            else_=-ExecutionLedger.filled_qty,
-        )
+        ROB-1379: a websocket row whose order an authoritative row before the
+        boundary books is the same execution and is not added to
+        ``qty_before`` (it still counts in ``rows_before``: the key was seen).
+        """
         before_boundary = or_(
             ExecutionLedger.filled_at < filled_at,
             and_(
@@ -369,20 +446,23 @@ class ExecutionLedgerRepository:
                 ExecutionLedger.id < ledger_id,
             ),
         )
-        result = await self.db.execute(
-            select(
-                func.coalesce(func.sum(signed_qty), 0),
-                func.count(ExecutionLedger.id),
-            ).where(
-                ExecutionLedger.broker == broker,
-                ExecutionLedger.account_mode == account_mode,
-                ExecutionLedger.venue == venue,
-                ExecutionLedger.instrument_type == instrument_type,
-                ExecutionLedger.symbol == symbol,
-                ExecutionLedger.currency == currency,
-                before_boundary,
-                execution_ledger_in_effect(),
+        rows = (
+            await self.db.execute(
+                select(*_QUANTITY_COLUMNS).where(
+                    ExecutionLedger.broker == broker,
+                    ExecutionLedger.account_mode == account_mode,
+                    ExecutionLedger.venue == venue,
+                    ExecutionLedger.instrument_type == instrument_type,
+                    ExecutionLedger.symbol == symbol,
+                    ExecutionLedger.currency == currency,
+                    before_boundary,
+                    execution_ledger_in_effect(),
+                )
             )
-        )
-        qty_before, rows_before = result.one()
-        return Decimal(str(qty_before)), int(rows_before)
+        ).all()
+        counted, _superseded = supersede_provisional(rows)
+        qty_before = Decimal("0")
+        for row in counted:
+            qty = Decimal(str(row.filled_qty))
+            qty_before += qty if row.side == "buy" else -qty
+        return qty_before, len(rows)

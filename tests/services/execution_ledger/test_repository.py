@@ -14,6 +14,7 @@ from app.models.execution_ledger import ExecutionLedger
 from app.models.trading import InstrumentType
 from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
 from app.services.execution_ledger.repository import (
+    SUPERSEDE_LOOKBACK,
     ExecutionLedgerRepository,
     _values_differ,
 )
@@ -59,58 +60,45 @@ def test_reconcile_run_record_rejects_toss_broker() -> None:
         )
 
 
-class _AggregateResult:
-    def __init__(
-        self, rows: list[tuple[str, str, str, InstrumentType, str, str, Decimal]]
-    ):
+class _RowsResult:
+    def __init__(self, rows: list[SimpleNamespace]):
         self._rows = rows
 
-    def all(self) -> list[tuple[str, str, str, InstrumentType, str, str, Decimal]]:
+    def all(self) -> list[SimpleNamespace]:
         return self._rows
 
 
-class _AggregateSession:
+class _LedgerRowsSession:
+    """Fake session for the ROB-1379 row read behind the net-quantity sum.
+
+    The reader fetches in-effect rows from ``SUPERSEDE_LOOKBACK`` before the
+    cutover and sums in Python (so it can drop superseded websocket rows); the
+    cutover and ``manual_import`` exclusions are applied after the read.
+    """
+
     def __init__(self, ledger_rows: list[SimpleNamespace], cutover: datetime):
         self.ledger_rows = ledger_rows
         self.cutover = cutover
         self.executed = False
 
-    async def execute(self, statement: Any) -> _AggregateResult:
+    async def execute(self, statement: Any) -> _RowsResult:
         self.executed = True
         compiled = statement.compile(compile_kwargs={"render_postcompile": True})
         sql = " ".join(str(compiled).split())
 
-        assert "CASE WHEN" in sql
-        assert "review.execution_ledger.side = :side_1" in sql
-        assert "ELSE -review.execution_ledger.filled_qty" in sql
         assert "review.execution_ledger.filled_at >= :filled_at_1" in sql
-        assert "review.execution_ledger.source != :source_1" in sql
-        assert (
-            "GROUP BY review.execution_ledger.broker, "
-            "review.execution_ledger.account_mode, review.execution_ledger.venue, "
-            "review.execution_ledger.instrument_type, review.execution_ledger.symbol, "
-            "review.execution_ledger.currency"
-        ) in sql
-        assert compiled.params["side_1"] == "buy"
-        assert compiled.params["filled_at_1"] == self.cutover
-        assert compiled.params["source_1"] == "manual_import"
+        assert "review.execution_ledger.quarantined_at IS NULL" in sql
+        assert compiled.params["filled_at_1"] == self.cutover - SUPERSEDE_LOOKBACK
+        for column in ("broker_order_id", "side", "filled_qty", "source"):
+            assert f"review.execution_ledger.{column}" in sql
 
-        grouped: dict[tuple[str, str, str, InstrumentType, str, str], Decimal] = {}
-        for row in self.ledger_rows:
-            if row.filled_at < self.cutover or row.source == "manual_import":
-                continue
-            key = (
-                row.broker,
-                row.account_mode,
-                row.venue,
-                row.instrument_type,
-                row.symbol,
-                row.currency,
-            )
-            signed_qty = row.filled_qty if row.side == "buy" else -row.filled_qty
-            grouped[key] = grouped.get(key, Decimal("0")) + signed_qty
-
-        return _AggregateResult([(*key, net_qty) for key, net_qty in grouped.items()])
+        return _RowsResult(
+            [
+                row
+                for row in self.ledger_rows
+                if row.filled_at >= compiled.params["filled_at_1"]
+            ]
+        )
 
 
 def test_values_differ_treats_decimal_scale_and_timezone_equivalent() -> None:
@@ -216,10 +204,11 @@ async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows()
         "symbol": "BTC",
         "currency": "KRW",
     }
-    session = _AggregateSession(
+    session = _LedgerRowsSession(
         [
             SimpleNamespace(
                 **key_fields,
+                broker_order_id="order-1",
                 side="buy",
                 filled_qty=Decimal("0.10"),
                 filled_at=cutover,
@@ -227,6 +216,7 @@ async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows()
             ),
             SimpleNamespace(
                 **key_fields,
+                broker_order_id="order-2",
                 side="sell",
                 filled_qty=Decimal("0.04"),
                 filled_at=datetime(2026, 5, 13, 1, 0, tzinfo=UTC),
@@ -234,6 +224,7 @@ async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows()
             ),
             SimpleNamespace(
                 **key_fields,
+                broker_order_id="order-3",
                 side="sell",
                 filled_qty=Decimal("99"),
                 filled_at=datetime(2026, 5, 12, 23, 59, tzinfo=UTC),
@@ -241,10 +232,21 @@ async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows()
             ),
             SimpleNamespace(
                 **key_fields,
+                broker_order_id="order-4",
                 side="buy",
                 filled_qty=Decimal("10"),
                 filled_at=cutover,
                 source="manual_import",
+            ),
+            # ROB-1379: the websocket twin of order-1's reconciler row (its own
+            # fill_seq) is the same execution and is not added again.
+            SimpleNamespace(
+                **key_fields,
+                broker_order_id="order-1",
+                side="buy",
+                filled_qty=Decimal("0.10"),
+                filled_at=datetime(2026, 5, 13, 0, 0, 1, tzinfo=UTC),
+                source="websocket",
             ),
         ],
         cutover,

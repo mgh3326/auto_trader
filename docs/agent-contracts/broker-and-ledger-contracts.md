@@ -10,6 +10,7 @@
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
+- Execution Ledger 교차 소스 중복 체결 (ROB-1379)
 - 보호 수량 P 규칙 추종 (#943)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
@@ -266,6 +267,43 @@ websocket 탭이 KIS H0STCNI0 **접수** 통지(`CNTG_YN=1`)를 체결로 기록
 - **시드 주의**: 격리 전 phantom 이 있는 상태로 깎인 opening seed 는 격리로 고쳐지지 않는다
   (seed 스크립트 preview 재실행 필요)
 - **런북**: `docs/runbooks/execution-ledger-quarantine.md`. 실DB 실행은 운영자 전용
+
+### Execution Ledger 교차 소스 중복 체결 (ROB-1379)
+
+fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·reconciler(`ord_dt|ord_tmd|…`
+해시)가 같은 체결에 서로 다른 `fill_seq` 를 만들어 `uq_execution_ledger_fill` 을 통과하던
+물리 중복을 막는다. 🔴 **멱등키는 그대로**다 — 키 축소·`venue`/`account_mode` 제거 없음,
+외부 ingest `source=websocket` 강제·항목별 savepoint·원장 커밋 권한자 불변, 마이그레이션 0.
+
+- **정본 모듈**: `app/services/execution_ledger/supersede.py` — 주문 identity
+  `(broker, account_mode, instrument_type, symbol 키, side, currency, 선행0 정규화 주문번호,
+  KIS 거래일)`. `fill_seq`·`venue`·정확한 시각은 의도적으로 제외(KIS US websocket 은 거래소
+  코드가 없어 `krx`, reconciler 는 `NASD`). KIS 주문번호는 날짜를 넘어 재사용되므로 KR=KST
+  날짜, US=US 거래일(20:00 ET 롤오버, `kis_lots.us_trading_day_window`). Upbit(UUID)는 날짜 없음.
+  US 심볼 키는 `app/core/symbol.py` `to_db_symbol` 만 쓴다.
+- **쓰기 측 (`ExecutionLedgerRepository.upsert_fill`)**: 자기 키 행이 **없는** 새 websocket
+  체결이고, 같은 identity 의 in-effect `reconciler` 행이 브로커 증거로 **주문 종결**을 증명하며
+  (KIS KR `rmn_qty==0` + `tot_ccld_qty==booked`, KIS US `nccs_qty==0` + `ft_ccld_qty==booked`,
+  Upbit `state∈{done,cancel}` + `executed_volume`), **그 identity 의 reconciler 행 수량 합이 최종
+  체결수량과 정확히 같고**(종결 ≠ 완결: Upbit reconciler 는 trade 시각 창 안의 trade 만 행으로
+  남기므로 종결 주문이라도 trade 가 빠질 수 있다 — r1 B1), 체결 수량 ≤ 최종 체결수량일 때만
+  insert 하지 않고 `unchanged` + 그 reconciler 행 id 를 답한다(복수면 최저 id — 재전송 결정적).
+  그 외 전부(살아있는 주문·필드 부재/판독 불가·per-fill 행·합계 불일치·manual_import·수량 초과·
+  다른 날짜)는 기존대로 insert. 🔴 살아있는 주문을 cover 로 쓰면 이후 새 부분체결이 유실되므로 종결 증명 없이는 절대
+  건너뛰지 않는다. 기존 키 재전송은 자기 행 그대로(`unchanged`/`updated`). fillwire 는 미지의
+  status 를 거부하므로 새 status 값을 만들지 않는다.
+- **읽기 측**: `net_quantity_by_match_key_since`(opening seed) 와 `position_before_fill`(kick
+  filter) 은 authoritative(`reconciler`/`manual_import`) 행이 같은 identity 를 덮는 websocket
+  행을 합산하지 않는다(`supersede_provisional`; 행은 디스크에 남는다). seed 리더는 cutover
+  2일 전부터 authority 를 읽어 주문 시각에 찍힌 reconciler 행도 cover 로 본다.
+  `position_before_fill` 의 `rows_before` 는 superseded 행도 센다(키 관측 증거). `kis_lots`·
+  `query_service` 의 기존 supersede 규칙·골든은 변경 없음.
+- **알려진 트레이드오프**: 종결 reconcile 이후 처음 도착한 websocket 체결(예: fillwire 백로그
+  flush)은 `unchanged` 라 알림·fill-handoff 행이 생기지 않는다. websocket↔websocket 중복
+  (fillwire 와 모니터 동시 가동)은 공유 체결 식별자가 없어 범위 밖이며 reconcile 후 supersede 된다.
+- **테스트**: `tests/services/execution_ledger/test_supersede.py`(순수),
+  `test_cross_source_dedupe_db.py`(실제 ingest 라우트·모니터 DB sink·reconciler 경로, 양방향·재전송·
+  날짜 재사용·뮤턴트).
 
 ### 보호 수량 P 규칙 추종 (#943)
 
