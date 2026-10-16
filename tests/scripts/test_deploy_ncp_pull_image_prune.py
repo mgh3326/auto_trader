@@ -318,8 +318,8 @@ class Env:
         (self.bindir / "nohup").write_text("#!/usr/bin/env bash\nexit 0\n")
         for path in self.bindir.iterdir():
             path.chmod(0o755)
-        (self.run_dir / ".env.runtime").write_text("x=y\n")
-        (self.run_dir / ".env.secrets").write_text(
+        (self.run_dir / ".env.api").write_text("x=y\n")
+        (self.run_dir / ".env.scheduler").write_text(
             "".join(
                 f"{name}=x\n"
                 for name in (

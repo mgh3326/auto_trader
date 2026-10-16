@@ -68,7 +68,7 @@ Never print a token value. Where a command needs one, it reads it into a
 shell variable and unsets it afterwards.
 
 1. **Create three tokens and add them by name** to the deploy secrets file
-   (`/root/at-run/.env.secrets`, or whatever `AT_SECRETS_ENV_FILE` points to)
+   (`/root/at-run/.env.scheduler`, or whatever `AT_SECRETS_ENV_FILE` points to)
    and to the operator session env (`/root/at-secrets/.env.operator-session`),
    same value in both files per name:
 
@@ -80,7 +80,7 @@ shell variable and unsets it afterwards.
    written straight into the file). Check presence without printing:
 
        for n in MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN MCP_LIVE_CRYPTO_AUTH_TOKEN; do
-         grep -c "^${n}=." /root/at-run/.env.secrets /root/at-secrets/.env.operator-session
+         grep -c "^${n}=." /root/at-run/.env.scheduler /root/at-secrets/.env.operator-session
        done
 
    From the first deploy of this change on, `deploy-ncp-pull.sh` exits 78
@@ -94,9 +94,11 @@ shell variable and unsets it afterwards.
 
 3. **Install the versioned script and template** from the merged commit, as in
    `ncp-pull-deploy.md` (the script renders
-   `ops/ncp/haproxy/haproxy.cfg.tmpl` from its own checkout):
+   `ops/ncp/haproxy/haproxy.cfg.tmpl`, installed next to it; see
+   `ncp-pull-deploy.md` §Canonical NCP invocation):
 
        install -m 0750 scripts/deploy-ncp-pull.sh /root/at-run/deploy-ncp-pull.sh
+       install -m 0644 ops/ncp/haproxy/haproxy.cfg.tmpl /root/at-run/haproxy.cfg.tmpl
 
 4. **Dry run**, then deploy. The dry run lists `at-mcp-live-kr/-us/-crypto`
    with `current: absent` on the first rollout:
@@ -117,7 +119,7 @@ shell variable and unsets it afterwards.
 
        image="$(cat /root/at-run/deployed-digest)"
        docker run --rm --network host \
-         --env-file /root/at-run/.env.runtime --env-file /root/at-run/.env.secrets \
+         --env-file /root/at-run/.env.api --env-file /root/at-run/.env.scheduler \
          "$image" /app/.venv/bin/python -m scripts.live_mcp_tools_list
 
    Expect one line per profile with `MATCH` (or `MATCH_GATES_OFF` when that
