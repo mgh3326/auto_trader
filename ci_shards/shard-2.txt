@@ -51,6 +51,7 @@ tests/mcp_server/tooling/test_toss_reconcile_resilience.py
 tests/mcp_server/tooling/test_trade_retrospective_registration_docs.py
 tests/models/test_operator_session_context_model.py
 tests/models/test_trading_decision_service.py
+tests/monitoring/test_sentry_account_scrub.py
 tests/monitoring/test_trade_notifier_reply_markup.py
 tests/research/dfc_v22_research_min/test_a2_golden.py
 tests/research/kr_corpus/test_kr_a0_exact_binding.py
