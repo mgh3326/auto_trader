@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20261005_t1250_kismock_inf"
+HEAD_REVISION = "20261016_rob1378_q46_lock"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
