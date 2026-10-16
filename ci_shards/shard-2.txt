@@ -148,6 +148,7 @@ tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_repository_crypto_path.py
+tests/services/execution_ledger/test_cross_source_dedupe_db.py
 tests/services/execution_ledger/test_fill_event_sanitizer.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py
 tests/services/execution_ledger/test_kis_lots_us_mutants.py

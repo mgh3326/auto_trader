@@ -292,6 +292,13 @@ EXEMPT_READERS: dict[tuple[str, str], str] = {
     ("app/services/execution_ledger/repository.py", "upsert_fill"): (
         "the writer; it never touches the quarantine columns"
     ),
+    (
+        "app/services/execution_ledger/repository.py",
+        "terminal_authoritative_cover",
+    ): (
+        "ROB-1379 writer-side identity read of reconciler/manual_import rows "
+        "only, which the quarantine_scope CHECK can never quarantine"
+    ),
     ("app/services/execution_ledger/repository.py", "apply_market_filter"): (
         "adds market predicates to a caller's statement that already carries the filter"
     ),
