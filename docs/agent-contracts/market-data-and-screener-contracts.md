@@ -211,11 +211,24 @@ KR/US는 시장별 window query 1회씩, crypto는 instrument identity 1회와 c
 12회로 고정한다. 외부 HTTP는 0회다.
 
 Quick allowlist는 `symbol`, `market_type`, `source`, `current_price`, 최신 `ohlcv`,
-`rsi_14`, `supports`, `resistances`, `decision_history`, `earnings`,
+`rsi_14`, `rsi_source`, `bars_used`, `supports`, `resistances`,
+`decision_history`, `earnings`,
 ROB-1048 freshness envelope 및 `halt_suspect`다. 뉴스/profile/consensus/
 recommendation/holdings와 provider 기반 earnings는 quick에서 실행하지 않는다.
 `quick=False` 는 기존 `analysis_screening._analyze_stock_impl`
 → `analysis_analyze.analyze_stock_impl` 호출과 full output을 유지한다.
+
+ROB-1382 — RSI-14 단일 원천·단일 산식: 모든 MCP 표면의 RSI-14는
+`market_data_indicators._calculate_rsi_series`(Wilder ewm `alpha=1/14`,
+`min_periods=14`, `adjust=False`) 하나만 사용한다. quick는 `daily_candles`
+최신 250봉(`QUICK_CANDLE_COUNT`) 위에서 계산하고 `rsi_source="daily_candles_db"`,
+`bars_used=<사용 봉 수>`를 담는다. `get_ohlcv(period="day", include_indicators=True)`는
+같은 `daily_candles` 창(`fetch_recent_batch`, 같은 market/partition/count)을 읽어
+행 `date`로 매핑하며 canonical 행이 없는 날(형성 중 봉)은 `null`을 보고한다.
+canonical을 읽지 못하면 provider 프레임 위에서 같은 Wilder 산식으로 계산하고
+`rsi_source`는 provider 이름(`yahoo`/`kis`/`toss`/`upbit`)을, `bars_used`는 그
+프레임 행 수를 담는다. `end_date` 지정 또는 `day` 외 period는 canonical을 건드리지
+않는다. zero-loss 구간(avg_loss=0)은 quick과 마찬가지로 `null`이다.
 
 🔴 **`current_price`는 라이브 시세가 아니다.** quick의 `current_price`는
 `daily_candles`의 가장 최근 **마감된** 일봉 종가이며 `data_state="stale"`,

@@ -52,6 +52,7 @@ tests/research/test_event_coverage_artifact_paths.py
 tests/research/test_kr_backfill_build_clients.py
 tests/research/test_kr_backfill_collector_exit_codes.py
 tests/research/test_kr_backfill_no_public_dml.py
+tests/research/test_rob1383_buy_drought_core.py
 tests/research/test_screener_bakeoff_parity.py
 tests/research/toss_phase2/test_collect.py
 tests/research/toss_phase2/test_load.py
@@ -148,6 +149,7 @@ tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_repository_crypto_path.py
+tests/services/execution_ledger/test_cross_source_dedupe_db.py
 tests/services/execution_ledger/test_fill_event_sanitizer.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py
 tests/services/execution_ledger/test_kis_lots_us_mutants.py
@@ -423,6 +425,7 @@ tests/test_retail_sentiment_tool.py
 tests/test_rob1296_provider_boundaries.py
 tests/test_rob1310_portfolio_snapshot.py
 tests/test_rob1314_stock_detail_holding.py
+tests/test_rob1378_q46_fill_gate_lock_migration.py
 tests/test_rob538_toss_live_ledger_schema.py
 tests/test_rob554_linked_orders.py
 tests/test_rob571_kr_display_name.py

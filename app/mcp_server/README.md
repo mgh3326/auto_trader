@@ -172,6 +172,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
+  - `include_indicators=True` also adds `rsi_source` and `bars_used` at the payload top level (ROB-1382): for `period="day"` without `end_date`, `rsi_14` is the shared Wilder RSI computed over the canonical `daily_candles` store (`rsi_source="daily_candles_db"`, `bars_used`=store window length) — the same series `analyze_stock_batch(quick)` reports; otherwise it is computed over the returned frame and `rsi_source` names that provider
   - `vwap` is populated for intraday periods and `null` for `day/week/month`
   - `1m` / `5m` / `15m` / `30m`: KR/US equity + crypto
   - `4h`: crypto only
@@ -301,8 +302,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     RSI/support/resistance or full `quick=False` analysis on individual symbols,
     call `analyze_stock_batch`.
   - Quick returns only the allowlisted projection: symbol, market_type, source,
-    current_price, latest OHLCV, rsi_14, supports (top 3), resistances (top 3),
-    and the freshness envelope. It also preserves compact `decision_history`
+    current_price, latest OHLCV, rsi_14, rsi_source, bars_used,
+    supports (top 3), resistances (top 3),
+    and the freshness envelope. rsi_14 is the Wilder RSI-14 over the latest 250
+    `daily_candles` bars — identical to `get_ohlcv(period="day", include_indicators=True)`
+    for the same symbol (ROB-1382). It also preserves compact `decision_history`
     and `earnings` meaning through set-based DB read models. It makes zero HTTP
     requests and reads all requested data in at most 12 DB executions per batch.
     The quick path does not run news, profile, provider earnings, consensus,
@@ -1435,6 +1439,8 @@ Parameters:
 
 Behavior:
 - US requests keep the existing Finnhub path and response shape: `symbol`, `instrument_type`, `source`, `from_date`, `to_date`, `count`, `earnings`.
+- ROB-1384: the US live Finnhub fetch uses a per-attempt timeout and bounded retry (`FINNHUB_EARNINGS_TIMEOUT_S` × `FINNHUB_EARNINGS_MAX_ATTEMPTS`); a Finnhub 429 still maps to a dedicated quota error and is never retried.
+- ROB-1384: on a total US fetch failure, stored `market_events` US earnings rows are served as an explicitly degraded fallback (`degraded: true`, `served_by`/`fallback_source: "market_events"`, `data_state`, `stale`, `data_as_of`, `provider_provenance`, `warning`). When no stored rows exist, the tool returns a closed error (`error_code: "earnings_lookup_failed"`, `error_class`, `data_state: "missing"`, `fallback_status`) — a failed lookup is never presented as `count: 0`.
 - KR requests read existing `market_events` rows where `category="earnings"` and `market="kr"`.
 - KR rows are read-only and may come from `source="wisefn"` scheduled earnings or `source="dart"` filings classified as earnings.
 - KR response top-level includes `source="market_events"`, `sources`, `market="kr"`, `warning`, and the existing `earnings` list.

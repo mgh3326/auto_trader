@@ -35,15 +35,82 @@ printf '%s' "$GHCR_PAT" | docker login ghcr.io -u mgh3326 --password-stdin
 ```
 
 Keep the two existing runtime env files outside the repository. By default the
-script uses `/root/at-run/.env.runtime` and `/root/at-run/.env.secrets`; hosts
-using different established filenames can set `AT_RUNTIME_ENV_FILE` and
-`AT_SECRETS_ENV_FILE`. No env contents are copied into the image or script.
+script uses the NCP host's files `/root/at-secrets/.env.api` and
+`/root/at-secrets/.env.scheduler`, i.e. `${AT_SECRETS_DIRECTORY}/.env.api` and
+`${AT_SECRETS_DIRECTORY}/.env.scheduler` with `AT_SECRETS_DIRECTORY` defaulting
+to `/root/at-secrets` (ROB-1380, measured by operator-desk on deploy #4,
+2026-10-17; the earlier defaults `.env.runtime`/`.env.secrets` and then
+`/root/at-run/.env.*` did not match the host). Hosts using other established
+paths set `AT_SECRETS_DIRECTORY`, or name each file with `AT_RUNTIME_ENV_FILE`
+and `AT_SECRETS_ENV_FILE`, which win over the directory. Every
+unit receives both files in that order, so a key present in both takes the
+value from the second file. A missing file stops the run before any pull or
+container change with `required env file is unavailable: <path> (set <VAR> to
+the host file)`. No env contents are copied into the image or script.
 
-Install the versioned operator script with restricted permissions:
+Install the versioned operator script and its HAProxy template, from the same
+merged commit, with restricted permissions. The NCP host keeps the template in
+the run directory's ops tree:
 
 ```bash
 install -m 0750 scripts/deploy-ncp-pull.sh /root/at-run/deploy-ncp-pull.sh
+install -D -m 0644 ops/ncp/haproxy/haproxy.cfg.tmpl /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl
 ```
+
+The installed copy has no repository around it. The script picks the HAProxy
+template in this order: `--haproxy-template PATH`, then `MCP_HAPROXY_TEMPLATE`,
+then whichever one of these exists: `haproxy.cfg.tmpl` next to the script (an
+installed sibling copy), `${AT_RUN_DIRECTORY}/ops/ncp/haproxy/haproxy.cfg.tmpl`
+(`/root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl`, the NCP layout), or
+`../ops/ncp/haproxy/haproxy.cfg.tmpl` (a repository checkout). Two of those
+paths that reach the same file count once. If none exists, if more than one
+exists, or if an explicit path is not a readable file, it exits 78 before any
+pull or container change and names every path it looked at, so do not keep a
+sibling `/root/at-run/haproxy.cfg.tmpl` next to the ops-tree copy. An
+explicit path that is missing never falls back to a discovered one. (Deploy #1 on 2026-10-16 hit the old behaviour: the installed copy looked
+for `/root/ops/...`, failed silently with 78 after the API color was replaced,
+and rolled back.) Rendering still refuses any non-loopback, non-tailnet bind.
+
+## Canonical NCP invocation
+
+This is the invocation the desk runs on the NCP host, whose layout (measured on
+deploy #4, 2026-10-17) is the script's default: env files in `/root/at-secrets`,
+template at `/root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl`. No env override
+and no template flag are needed. Run the dry-run first; it prints the resolved
+env files and template (or `MISSING`) without changing anything, then the real
+run prints the same three lines before it pulls.
+
+```bash
+/root/at-run/deploy-ncp-pull.sh sha-abcdef0 --dry-run
+/root/at-run/deploy-ncp-pull.sh sha-abcdef0
+
+# The same run with every input spelled out (equal to the defaults above):
+AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api \
+AT_SECRETS_ENV_FILE=/root/at-secrets/.env.scheduler \
+  /root/at-run/deploy-ncp-pull.sh sha-abcdef0 \
+  --haproxy-template /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl --dry-run
+```
+
+The dry-run should show:
+
+```text
+env file (AT_RUNTIME_ENV_FILE): /root/at-secrets/.env.api
+env file (AT_SECRETS_ENV_FILE): /root/at-secrets/.env.scheduler
+haproxy template (run-ops): /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl
+```
+
+| Input | Meaning |
+| --- | --- |
+| `AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api` | First `--env-file` for every unit. Equal to the default (`${AT_SECRETS_DIRECTORY:-/root/at-secrets}/.env.api`); an explicit value wins over the directory. |
+| `AT_SECRETS_ENV_FILE=/root/at-secrets/.env.scheduler` | Second `--env-file` for every unit; its value wins for a key in both files. Equal to the default (`${AT_SECRETS_DIRECTORY:-/root/at-secrets}/.env.scheduler`). |
+| `/root/at-run/deploy-ncp-pull.sh` | The installed copy from "One-time host preparation". |
+| `sha-abcdef0` | Image tag to pull: the `sha-<short7>` of the merged `main` commit (or `main`). The run resolves and pins it to `repo@sha256:...`. Omit the tag and pass `--rollback` instead to return to `deployed-digest.previous`. |
+| `--haproxy-template /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl` | The template in the run directory's ops tree; found without the flag (source `run-ops`) while it is the only candidate. Explicit, it can never be confused with a stray copy elsewhere. `MCP_HAPROXY_TEMPLATE=PATH` works the same, after the flag. `--haproxy-template=PATH` is accepted too. A missing value, or one starting with `-`, exits 64 instead of consuming the next option; write such a path as `./-name`. |
+| `--dry-run` | Read-only plan; drop it for the real run. |
+
+Optional additions, each described below: `--skip-kis-ws` while fillwire holds
+the KIS fill stream, `MCP_UNITS_SKIP=<unit,...>` to hold fixed MCP units back,
+and `AT_IMAGE_PRUNE_ENABLED=0` to skip the old-image prune for one run.
 
 Before pulling, the script requires an existing active API and checks every
 present app container is running and has its own resolvable immutable GHCR
