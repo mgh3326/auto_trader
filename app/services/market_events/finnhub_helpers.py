@@ -13,6 +13,18 @@ the ROB-510 news contract: a per-attempt timeout
 (``FINNHUB_EARNINGS_MAX_ATTEMPTS``) with a retryable-only classifier.
 The 429 -> ``FinnhubQuotaExceededError`` contract is preserved exactly
 and is never retried.
+
+Scope decision (ROB-1384 r4): Python threads cannot be killed, so a
+provider thread that outlives ``asyncio.wait_for`` is abandoned — not
+drained, not tracked. Each attempt builds its own Finnhub client whose
+``DEFAULT_TIMEOUT`` equals the per-attempt bound, so the abandoned
+thread's remaining socket operations are capped by the SDK timeout and
+it can never share a session with the next attempt; its late result —
+including a late 429 — is discarded unobserved, and the next attempt
+judges on its own response. Worst-case total time of one call is
+``max_attempts * per_attempt_timeout + (max_attempts - 1) * retry-wait
+upper bound`` (default ``wait_exponential_jitter(max=2.0)`` → +2s per
+gap). Caller cancellation propagates immediately without draining.
 """
 
 from __future__ import annotations
@@ -43,72 +55,11 @@ class FinnhubQuotaExceededError(Exception):
         self.status_code = status_code
 
 
-class ProviderWorkerStillRunningError(TimeoutError):
-    """The provider worker outlived its attempt timeout plus the bounded
-    drain grace and is still running (ROB-1384 R2-F2).
-
-    Subclasses ``TimeoutError`` because the observable outcome for the
-    caller is still "the attempt timed out" — but it is classified
-    non-retryable: a new attempt would overlap a live provider call.
-    """
-
-
 DEFAULT_EARNINGS_TIMEOUT_S = 8.0
 DEFAULT_EARNINGS_MAX_ATTEMPTS = 3
 
-# ROB-1384 R2-F2: the drain after an attempt timeout is bounded — an
-# unbounded wait would let a slow-drip response (read gaps shorter than
-# the SDK read timeout) extend the deadline indefinitely. The bound is
-# the call's own configured budget: each attempt may wait for its
-# already-running worker until ``attempts * (per_attempt_timeout +
-# EARNINGS_DRAIN_GRACE_S)`` measured from call start. A single-attempt
-# call therefore returns within one grace of its deadline, while a
-# multi-attempt call gets proportionally more room to harvest a worker
-# that is about to finish — and a retry is never started while a
-# provider worker is still live.
-EARNINGS_DRAIN_GRACE_S = 0.15
-
-# Workers that outlive the drain grace stay referenced here until their
-# thread finishes — explicit ownership so nothing escapes untracked and
-# no 'exception was never retrieved' noise is left behind.
-_PENDING_PROVIDER_WORKERS: set[asyncio.Task] = set()
-
 # ROB-1384: module-level wait so tests can replace it with wait_none().
 FINNHUB_EARNINGS_RETRY_WAIT = wait_exponential_jitter(initial=0.5, max=2.0)
-
-
-def _track_provider_worker(worker: asyncio.Task) -> None:
-    """Own a still-running provider worker until its thread ends."""
-
-    def _reap(done: asyncio.Task) -> None:
-        _PENDING_PROVIDER_WORKERS.discard(done)
-        if not done.cancelled():
-            done.exception()  # consume — never leave 'never retrieved'
-
-    _PENDING_PROVIDER_WORKERS.add(worker)
-    worker.add_done_callback(_reap)
-
-
-async def _drain_provider_worker(worker: asyncio.Task, deadline: float) -> None:
-    """Await a provider worker thread to real completion, surviving
-    repeated caller cancellation — but never past the call's own
-    deadline. A worker still running at the deadline is handed to
-    ``_PENDING_PROVIDER_WORKERS`` (explicit ownership, reaped when its
-    thread ends) so cancellation neither holds the caller past budget
-    nor orphans a live provider call (ROB-1384 R2-F2, R3-F2).
-    ``asyncio.wait`` never cancels the worker, unlike ``wait_for``."""
-    loop = asyncio.get_running_loop()
-    while not worker.done():
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            _track_provider_worker(worker)
-            return
-        try:
-            await asyncio.wait({worker}, timeout=remaining)
-        except asyncio.CancelledError:
-            continue  # repeated cancels keep draining — never abandon
-    if worker.done() and not worker.cancelled():
-        worker.exception()  # consume — never leave 'never retrieved'
 
 
 def _earnings_setting(name: str, default: Any) -> Any:
@@ -129,10 +80,6 @@ def _earnings_setting(name: str, default: Any) -> Any:
 def _is_retryable_earnings_error(exc: BaseException) -> bool:
     """타임아웃/네트워크/5xx만 재시도. 429·4xx·설정오류는 즉시 실패."""
     if isinstance(exc, FinnhubQuotaExceededError):
-        return False
-    if isinstance(exc, ProviderWorkerStillRunningError):
-        # A live provider worker still holds the client — retrying would
-        # overlap a second call on it, so this timeout fails closed.
         return False
     if isinstance(exc, TimeoutError):
         return True
@@ -181,6 +128,15 @@ async def fetch_earnings_calendar_finnhub(
     (per-attempt, not total) and transient errors are retried up to
     ``FINNHUB_EARNINGS_MAX_ATTEMPTS`` attempts. Quota (429) and
     non-retryable errors still fail immediately.
+
+    ROB-1384 r4 scope decision: Python threads cannot be killed, so a
+    provider thread that outlives the attempt timeout is abandoned, not
+    drained — every attempt builds its own client, the abandoned
+    thread's socket lifetime is capped by that client's
+    ``DEFAULT_TIMEOUT``, and its late result (a late 429 included) is
+    discarded unobserved. Worst-case total time is
+    ``max_attempts * per_attempt_timeout + (max_attempts - 1) * retry
+    wait upper bound``. Caller cancellation propagates immediately.
     """
     per_attempt_timeout = (
         timeout_s
@@ -199,133 +155,59 @@ async def fetch_earnings_calendar_finnhub(
         )
     )
 
-    client = _get_finnhub_client()
-    # Align the SDK's own request timeout with the per-attempt bound so the
-    # worker thread's lifetime is bounded too — ``asyncio.wait_for`` cannot
-    # kill a running thread (ROB-1384 B2). ``DEFAULT_TIMEOUT`` is a plain
-    # attribute on the finnhub client (default 10s); setting it on this
-    # instance does not affect other users of the class.
-    if per_attempt_timeout > 0:
-        try:
-            client.DEFAULT_TIMEOUT = per_attempt_timeout
-        except Exception:  # noqa: BLE001 — duck-typed clients may forbid it
-            pass
-
     if not from_date:
         from_date = datetime.date.today().isoformat()
     if not to_date:
         to_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
 
-    def fetch_sync() -> dict[str, Any]:
-        return client.earnings_calendar(
-            symbol=symbol.upper() if symbol else "",
-            _from=from_date,
-            to=to_date,
-        )
-
-    # The whole call — including every drain after a timed-out attempt —
-    # never outlives its own configured budget: attempts * (timeout +
-    # grace). Loop-clock deadlines are immune to thread scheduling
-    # overshoot; a still-running worker past the budget is tracked and
-    # the call ends non-retryably instead of waiting on provider EOF.
-    loop = asyncio.get_running_loop()
-    call_deadline = loop.time() + max(1, attempts) * (
-        per_attempt_timeout + EARNINGS_DRAIN_GRACE_S
-    )
-
-    def _bounded_retry_wait(retry_state: Any) -> float:
-        # R3-F1: a backoff that would overshoot the call budget is
-        # clipped to what remains — a new attempt can never be
-        # dispatched past the deadline.
-        return max(
-            0.0,
-            min(
-                FINNHUB_EARNINGS_RETRY_WAIT(retry_state),
-                call_deadline - loop.time(),
-            ),
-        )
-
     result: dict[str, Any] | None = None
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(max(1, attempts)),
-        wait=_bounded_retry_wait,
+        wait=FINNHUB_EARNINGS_RETRY_WAIT,
         retry=retry_if_exception(_is_retryable_earnings_error),
         reraise=True,
     ):
         with attempt:
-            # Shield keeps the worker task itself alive through wait_for's
-            # cancellation so it can be drained below — a cancelled task's
-            # awaitable ends immediately while the thread keeps running.
             # A non-positive budget means the provider is never invoked —
             # the attempt is already out of time before it starts.
             if per_attempt_timeout <= 0:
                 raise TimeoutError(
                     f"non-positive attempt timeout ({per_attempt_timeout}s)"
                 )
-            if loop.time() >= call_deadline:
-                # R3-F1: the call's own budget is spent — no new provider
-                # work may start. This bounded TimeoutError fails closed
-                # (the retryable classifier would re-enter here, but the
-                # clipped wait above keeps any such spin to the remaining
-                # attempt count at ~zero cost each).
-                raise TimeoutError(
-                    f"finnhub earnings_calendar call budget exhausted "
-                    f"before attempt "
-                    f"{attempt.retry_state.attempt_number} for {symbol!r}"
+            # ROB-1384 r4: a fresh client per attempt — an abandoned
+            # thread (asyncio.wait_for cannot kill a thread) keeps
+            # running only on its own session, bounded by this
+            # instance's DEFAULT_TIMEOUT, and never shares a session
+            # with the next attempt. ``DEFAULT_TIMEOUT`` is a plain
+            # attribute on the finnhub client (default 10s).
+            client = _get_finnhub_client()
+            try:
+                client.DEFAULT_TIMEOUT = per_attempt_timeout
+            except Exception:  # noqa: BLE001 — duck-typed clients may forbid it
+                pass
+
+            def fetch_sync(attempt_client: Any = client) -> dict[str, Any]:
+                return attempt_client.earnings_calendar(
+                    symbol=symbol.upper() if symbol else "",
+                    _from=from_date,
+                    to=to_date,
                 )
-            worker = asyncio.ensure_future(asyncio.to_thread(fetch_sync))
+
             try:
                 result = await asyncio.wait_for(
-                    asyncio.shield(worker), timeout=per_attempt_timeout
+                    asyncio.to_thread(fetch_sync), timeout=per_attempt_timeout
                 )
-            except TimeoutError:
-                # wait_for cancels only the awaiter — the underlying provider
-                # thread keeps running. Drain it via asyncio.wait (which
-                # never cancels the worker) bounded by the call's own
-                # budget — an unbounded wait would let a slow-drip response
-                # (read gaps below the SDK timeout) extend the deadline
-                # indefinitely (ROB-1384 B2, R2-F2).
-                try:
-                    done, _pending = await asyncio.wait(
-                        {worker},
-                        timeout=max(0.0, call_deadline - loop.time()),
-                    )
-                except asyncio.CancelledError:
-                    await _drain_provider_worker(worker, call_deadline)
-                    raise
-                if worker not in done:
-                    # Still alive past the grace — keep explicit ownership so
-                    # the thread is reaped when it ends, and fail this call
-                    # non-retryably: a retry would overlap a live worker.
-                    _track_provider_worker(worker)
-                    raise ProviderWorkerStillRunningError(
-                        f"finnhub earnings_calendar worker for {symbol!r} "
-                        f"outlived the call budget "
-                        f"({max(1, attempts)} attempts x {per_attempt_timeout}s "
-                        f"+ {EARNINGS_DRAIN_GRACE_S}s grace)"
-                    )
-                if worker.cancelled():
-                    raise asyncio.CancelledError
-                # The worker's real outcome arrived during the drain — a
-                # late exception keeps its own classification (a 429 must
-                # not be discarded and retried as a bare timeout; R2-F1).
-                exc = worker.exception()
-                if exc is not None:
-                    if getattr(exc, "status_code", None) == 429:
-                        raise FinnhubQuotaExceededError(
-                            str(exc), status_code=429
-                        ) from exc
-                    raise exc
-                # Worker finished cleanly just past the deadline — discard
-                # the late result; this attempt already timed out.
-                raise
-            except asyncio.CancelledError:
-                # Threads cannot be killed — drain the worker to real
-                # completion before propagating, but never past the call
-                # deadline: a survivor is handed to tracked ownership
-                # instead of holding the caller (ROB-1384 R2-F2, R3-F2).
-                await _drain_provider_worker(worker, call_deadline)
-                raise
+            except TimeoutError as exc:
+                # Re-raise with a non-empty, diagnosable message — a bare
+                # builtin TimeoutError stringifies to "" (ROB-1384 B1).
+                # The abandoned thread's late result is discarded
+                # unobserved; the next attempt judges on its own
+                # response.
+                raise TimeoutError(
+                    f"finnhub earnings_calendar attempt "
+                    f"{attempt.retry_state.attempt_number} timed out "
+                    f"after {per_attempt_timeout}s for {symbol!r}"
+                ) from exc
             except Exception as exc:
                 status_code = getattr(exc, "status_code", None)
                 if status_code == 429:
