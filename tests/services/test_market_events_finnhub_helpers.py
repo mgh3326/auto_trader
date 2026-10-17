@@ -17,6 +17,10 @@ from tenacity import wait_none
 
 from app.services.market_events import finnhub_helpers
 
+# The autouse fixture below replaces this seam — keep a reference to the
+# real reader so key-validation tests can exercise the actual code path.
+_REAL_KEY_READER = finnhub_helpers._finnhub_api_key
+
 _TEST_API_KEY = "TEST-FINNHUB-KEY-0d1e2f3a4b5c"  # noqa: S105 — sentinel, not a secret
 
 _EARNINGS_ROW = {
@@ -180,7 +184,11 @@ async def test_earnings_fetch_non_retryable_error_fails_once(monkeypatch):
 
     async def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(200, content=b"this is not json")
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b"this is not json",
+        )
 
     _install_transport(monkeypatch, handler)
 
@@ -199,7 +207,11 @@ async def test_earnings_fetch_non_dict_json_fails_once(monkeypatch, bad_body):
 
     async def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(200, content=bad_body.encode())
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=bad_body.encode(),
+        )
 
     _install_transport(monkeypatch, handler)
 
@@ -428,6 +440,342 @@ async def test_earnings_request_params_match_sdk_semantics(monkeypatch):
         None, "2026-05-11", "2026-05-14"
     )
     assert seen[0].url.params["symbol"] == ""
+
+
+# ── ROB-1384 r6: R5-F1 secret hygiene ────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "TEST-FINNHUB-KEY-0d1e2f3a4b5c\nrest",
+        "key with space",
+        "k\ty",
+        "k\ney",
+        "키-nonascii",
+        "k\x01ey",
+    ],
+    ids=["embedded-newline", "space", "tab", "interior-newline", "nonascii", "control"],
+)
+async def test_earnings_header_unsafe_key_fails_before_http_without_leak(
+    monkeypatch, bad_key
+):
+    """R5-F1 — a key h11 would echo inside LocalProtocolError must never
+    reach the transport: zero HTTP calls, and no exception chain carries
+    the value."""
+    import traceback
+
+    import app.core.config
+
+    calls = {"n": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_EARNINGS_ROW)
+
+    _install_transport(monkeypatch, handler)
+    # Exercise the REAL key reader against real settings — the autouse
+    # fixture replaced it for the other tests.
+    monkeypatch.setattr(finnhub_helpers, "_finnhub_api_key", _REAL_KEY_READER)
+    monkeypatch.setattr(app.core.config.settings, "finnhub_api_key", bad_key)
+
+    with pytest.raises(ValueError) as exc_info:
+        await finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL", "2026-05-11", "2026-05-11", max_attempts=1
+        )
+
+    assert calls["n"] == 0
+    assert bad_key not in str(exc_info.value)
+    assert bad_key not in repr(exc_info.value)
+    rendered = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert bad_key not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_trailing_whitespace_key_is_stripped(monkeypatch):
+    """R5-F1 — surrounding whitespace (the observed trailing-newline case)
+    is stripped, so the key sent is a clean header value."""
+    import app.core.config
+
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_EARNINGS_ROW)
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setattr(finnhub_helpers, "_finnhub_api_key", _REAL_KEY_READER)
+    monkeypatch.setattr(
+        app.core.config.settings, "finnhub_api_key", _TEST_API_KEY + "\n "
+    )
+
+    result = await finnhub_helpers.fetch_earnings_calendar_finnhub(
+        "AAPL", "2026-05-11", "2026-05-11"
+    )
+
+    assert result["count"] == 1
+    assert seen[0].headers.get("x-finnhub-token") == _TEST_API_KEY
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_bad_key_financials_warning_log_has_no_key(monkeypatch, caplog):
+    """R5-F1 — the _financials fallback WARNING renders exc_info; the
+    sanitized chain must not leak the key there either."""
+    import logging
+
+    import app.core.config
+    from app.mcp_server.tooling.fundamentals import _financials
+
+    bad_key = "TEST-FINNHUB-KEY with space"
+    monkeypatch.setattr(finnhub_helpers, "_finnhub_api_key", _REAL_KEY_READER)
+    monkeypatch.setattr(app.core.config.settings, "finnhub_api_key", bad_key)
+
+    async def fallback_boom(*_args, **_kwargs):
+        raise RuntimeError("fallback store down")
+
+    monkeypatch.setattr(
+        _financials, "_fetch_earnings_calendar_market_events_us", fallback_boom
+    )
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="app.mcp_server.tooling.fundamentals._financials",
+    ):
+        payload = await _financials.handle_get_earnings_calendar(
+            "AAPL", "2026-05-11", "2026-05-11", market="us"
+        )
+
+    assert payload["error_code"] == "earnings_lookup_failed"
+    assert bad_key not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_transport_error_chain_is_suppressed(monkeypatch):
+    """R5-F1 — converted httpx errors carry no __cause__ chain: the raw
+    exception text (request URL etc.) is dropped, only the type name is
+    kept in our message."""
+    import traceback
+
+    async def boom(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _install_transport(monkeypatch, boom)
+
+    with pytest.raises(finnhub_helpers.FinnhubEarningsTransportError) as exc_info:
+        await finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL", "2026-05-11", "2026-05-11", max_attempts=1
+        )
+
+    exc = exc_info.value
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+    assert "ConnectError" in str(exc)
+    assert _TEST_API_KEY not in str(exc)
+    rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert _TEST_API_KEY not in rendered
+    # the raw httpx exception text never reaches the rendered chain
+    assert "connection refused" not in rendered
+
+
+# ── ROB-1384 r6: R5-F2 closed 2xx contract ───────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "response_kwargs,case_id",
+    [
+        (
+            {
+                "headers": {"content-type": "text/html"},
+                "json": {"error": "upstream temporarily unavailable"},
+            },
+            "html-error-body",
+        ),
+        (
+            {"json": {"error": "upstream temporarily unavailable"}},
+            "json-error-key",
+        ),
+        ({"json": {"earningsCalendar": {"not": "a list"}}}, "calendar-not-list"),
+        ({"json": {"something": "else"}}, "missing-calendar-key"),
+    ],
+    ids=lambda v: v if isinstance(v, str) else "resp",
+)
+async def test_earnings_invalid_2xx_body_fails_closed_once(
+    monkeypatch, response_kwargs, case_id
+):
+    """R5-F2 — a 2xx is success only when it is a real earningsCalendar
+    payload (SDK parity); anything else is a non-retryable failure whose
+    message carries path+status only."""
+    del case_id
+    calls = {"n": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, **response_kwargs)
+
+    _install_transport(monkeypatch, handler)
+
+    with pytest.raises(ValueError) as exc_info:
+        await finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL", "2026-05-11", "2026-05-11", max_attempts=3
+        )
+
+    assert calls["n"] == 1  # non-retryable
+    msg = str(exc_info.value)
+    assert "/api/v1/calendar/earnings" in msg
+    assert "upstream temporarily unavailable" not in msg
+    assert _TEST_API_KEY not in msg
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_empty_calendar_list_is_success(monkeypatch):
+    """R5-F2 — the legitimate empty schedule still counts as success."""
+    calls = {"n": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"earningsCalendar": []})
+
+    _install_transport(monkeypatch, handler)
+
+    result = await finnhub_helpers.fetch_earnings_calendar_finnhub(
+        "AAPL", "2026-05-11", "2026-05-11"
+    )
+
+    assert calls["n"] == 1
+    assert result["count"] == 0
+    assert result.get("error_code") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_html_error_body_fails_closed_through_callers(
+    monkeypatch,
+):
+    """R5-F2 caller level — the provider error page surfaces as a closed
+    failure (error_code, freshness never 'live'), not count=0/live."""
+    import datetime
+
+    from app.mcp_server.tooling import earnings_context as ec
+    from app.mcp_server.tooling.fundamentals import _financials
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            json={"error": "upstream temporarily unavailable"},
+        )
+
+    _install_transport(monkeypatch, handler)
+
+    async def empty_fallback(*_args, **_kwargs):
+        return {"count": 0}
+
+    monkeypatch.setattr(
+        _financials, "_fetch_earnings_calendar_market_events_us", empty_fallback
+    )
+
+    tool_result = await _financials.handle_get_earnings_calendar(
+        "AAPL", "2026-05-11", "2026-05-11", market="us"
+    )
+    assert tool_result["error_code"] == "earnings_lookup_failed"
+    assert tool_result.get("count", 0) == 0
+
+    ctx = await ec.build_earnings_context(
+        "AAPL", "us", today=datetime.date(2026, 5, 11)
+    )
+    assert ctx is not None
+    assert ctx["freshness"] != "live"
+    assert ctx["freshness"] == "unknown"
+    assert ctx["has_upcoming"] is False
+
+
+# ── ROB-1384 r6: R5-S1 close inside the attempt budget ───────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_attempt_budget_includes_client_close(monkeypatch):
+    """R5-S1 — ``async with`` exit runs inside the wait_for budget: a
+    stuck transport aclose cannot hold the caller past the timeout."""
+    close_entered = asyncio.Event()
+
+    class _HangingCloseTransport(_ScriptedTransport):
+        async def aclose(self) -> None:
+            close_entered.set()
+            await asyncio.sleep(60)
+
+    async def quick(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_EARNINGS_ROW)
+
+    def factory(timeout_s: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=_HangingCloseTransport(quick),
+            timeout=httpx.Timeout(timeout_s),
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(finnhub_helpers, "_new_earnings_http_client", factory)
+
+    begin = asyncio.get_running_loop().time()
+    with pytest.raises(TimeoutError):
+        await finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL", "2026-05-11", "2026-05-11", timeout_s=0.05, max_attempts=1
+        )
+    elapsed = asyncio.get_running_loop().time() - begin
+
+    assert close_entered.is_set()  # the hang was inside __aexit__
+    assert elapsed <= 0.05 + 1.0  # budget + small margin, not the 60s hang
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_caller_cancel_during_client_close_propagates(
+    monkeypatch,
+):
+    """R5-S1 — cancellation during a stuck client close still surfaces
+    as CancelledError, not a swallowed/delayed timeout."""
+    close_entered = asyncio.Event()
+
+    class _HangingCloseTransport(_ScriptedTransport):
+        async def aclose(self) -> None:
+            close_entered.set()
+            await asyncio.sleep(60)
+
+    async def quick(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_EARNINGS_ROW)
+
+    def factory(timeout_s: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=_HangingCloseTransport(quick),
+            timeout=httpx.Timeout(timeout_s),
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(finnhub_helpers, "_new_earnings_http_client", factory)
+
+    task = asyncio.ensure_future(
+        finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL", "2026-05-11", "2026-05-11", timeout_s=30.0, max_attempts=1
+        )
+    )
+    assert await asyncio.wait_for(close_entered.wait(), timeout=2.0)
+    begin = asyncio.get_running_loop().time()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert asyncio.get_running_loop().time() - begin < 1.0
 
 
 @pytest.mark.unit

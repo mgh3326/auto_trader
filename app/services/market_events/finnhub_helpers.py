@@ -98,11 +98,27 @@ def _new_earnings_http_client(timeout_s: float) -> httpx.AsyncClient:
 
 
 def _finnhub_api_key() -> str:
+    """Return the stripped Finnhub API key, failing before any HTTP request
+    when the value could not be sent safely.
+
+    ROB-1384 r5 (R5-F1): a key carrying whitespace/control/non-ASCII
+    characters makes h11 raise LocalProtocolError whose message echoes the
+    header value — i.e. the key. Validate first so the value never reaches
+    the transport layer, and never include it in the error message.
+    """
     from app.core.config import settings
 
-    api_key = settings.finnhub_api_key
+    api_key = (settings.finnhub_api_key or "").strip()
     if not api_key:
         raise ValueError("FINNHUB_API_KEY environment variable is not set")
+    if (
+        not api_key.isascii()
+        or not api_key.isprintable()
+        or any(ch.isspace() for ch in api_key)
+    ):
+        raise ValueError(
+            "FINNHUB_API_KEY contains characters that are not legal in an HTTP header"
+        )
     return api_key
 
 
@@ -200,13 +216,13 @@ async def fetch_earnings_calendar_finnhub(
                 )
             try:
                 # ROB-1384 r5: a fresh async client per attempt — no
-                # threads. wait_for cancels the request coroutine and
-                # closes the connection, so neither timeout nor caller
-                # cancellation leaves work behind. The API key goes in
-                # the X-Finnhub-Token header only, never in the query.
-                async with _new_earnings_http_client(per_attempt_timeout) as client:
-                    response = await asyncio.wait_for(
-                        client.get(
+                # threads. wait_for bounds the whole attempt INCLUDING
+                # client close (R5-S1): on timeout or caller cancellation
+                # the coroutine is cancelled and the connection closes.
+                # The API key goes in the X-Finnhub-Token header only.
+                async def _attempt_request() -> httpx.Response:
+                    async with _new_earnings_http_client(per_attempt_timeout) as client:
+                        return await client.get(
                             _FINNHUB_EARNINGS_URL,
                             params={
                                 "from": from_date,
@@ -215,9 +231,11 @@ async def fetch_earnings_calendar_finnhub(
                                 "international": "false",
                             },
                             headers={"X-Finnhub-Token": api_key},
-                        ),
-                        timeout=per_attempt_timeout,
-                    )
+                        )
+
+                response = await asyncio.wait_for(
+                    _attempt_request(), timeout=per_attempt_timeout
+                )
             except TimeoutError as exc:
                 # Re-raise with a non-empty, diagnosable message — a bare
                 # builtin TimeoutError stringifies to "" (ROB-1384 B1).
@@ -226,25 +244,25 @@ async def fetch_earnings_calendar_finnhub(
                     f"{attempt.retry_state.attempt_number} timed out "
                     f"after {per_attempt_timeout}s for {symbol!r}"
                 ) from exc
-            except httpx.TimeoutException as exc:
+            except httpx.TimeoutException:
                 raise TimeoutError(
                     f"finnhub earnings_calendar attempt "
                     f"{attempt.retry_state.attempt_number} hit the httpx "
                     f"timeout ({per_attempt_timeout}s) for {symbol!r}"
-                ) from exc
+                ) from None
             except httpx.TransportError as exc:
                 raise FinnhubEarningsTransportError(
                     f"finnhub earnings_calendar transport error "
                     f"{type(exc).__name__} for {symbol!r} "
                     f"(path {_FINNHUB_EARNINGS_PATH})"
-                ) from exc
+                ) from None
             except httpx.HTTPError as exc:
                 raise FinnhubEarningsHTTPError(
                     f"finnhub earnings_calendar request error "
                     f"{type(exc).__name__} for {symbol!r} "
                     f"(path {_FINNHUB_EARNINGS_PATH})",
                     status_code=0,
-                ) from exc
+                ) from None
 
             status = response.status_code
             if status == 429:
@@ -259,17 +277,42 @@ async def fetch_earnings_calendar_finnhub(
                     f"{symbol!r} (path {_FINNHUB_EARNINGS_PATH})",
                     status_code=status,
                 )
+            # ROB-1384 r6 (R5-F2): a 2xx only counts as success when it is
+            # really an earnings calendar payload — same bar the SDK
+            # applies. Provider error pages (e.g. text/html) and
+            # ``{"error": …}`` bodies must fail closed, never read as
+            # "no earnings". Messages carry path+status only — no body,
+            # no key material.
+            content_type = response.headers.get("content-type", "")
+            if "application/json" not in content_type.lower():
+                raise ValueError(
+                    f"finnhub earnings_calendar non-JSON content-type "
+                    f"(HTTP {status}) for {symbol!r} "
+                    f"(path {_FINNHUB_EARNINGS_PATH})"
+                )
             try:
                 payload = response.json()
-            except Exception as exc:
+            except Exception:
                 raise ValueError(
                     f"finnhub earnings_calendar returned non-JSON body "
                     f"for {symbol!r} (path {_FINNHUB_EARNINGS_PATH})"
-                ) from exc
+                ) from None
             if not isinstance(payload, dict):
                 raise ValueError(
                     f"finnhub earnings_calendar returned non-object JSON "
                     f"for {symbol!r} (path {_FINNHUB_EARNINGS_PATH})"
+                )
+            if "error" in payload:
+                raise ValueError(
+                    f"finnhub earnings_calendar returned an error object "
+                    f"(HTTP {status}) for {symbol!r} "
+                    f"(path {_FINNHUB_EARNINGS_PATH})"
+                )
+            if not isinstance(payload.get("earningsCalendar"), list):
+                raise ValueError(
+                    f"finnhub earnings_calendar missing earningsCalendar "
+                    f"list (HTTP {status}) for {symbol!r} "
+                    f"(path {_FINNHUB_EARNINGS_PATH})"
                 )
             result = payload
 
