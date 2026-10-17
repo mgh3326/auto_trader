@@ -161,7 +161,43 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 - **ROB-510**: US/crypto(Finnhub)도 동일 DB 파이프라인 합류 (feed_source
   `finnhub_company_news`/`finnhub_general_news`). Finnhub fetch는
   `FINNHUB_NEWS_TIMEOUT_S`×`FINNHUB_NEWS_MAX_ATTEMPTS` 재시도, 전 실패 시
-  degraded + DB stale 폴백.
+  degraded + DB stale 폴백. `get_news` 최종 에러 응답은 닫힌 사유
+  `error_code="news_lookup_failed"`+`error_class`+`suggestion`를 가진다
+  (ROB-1384) — '뉴스 없음'과 '조회 실패'를 구분하기 위함.
+- **ROB-1384**: `get_earnings_calendar` US도 동일 신뢰도 계약에 합류한다.
+  Finnhub fetch는 `FINNHUB_EARNINGS_TIMEOUT_S`×`FINNHUB_EARNINGS_MAX_ATTEMPTS`
+  (per-attempt timeout + bounded retry, 재시도 대상은 timeout/network/5xx만;
+  429→`FinnhubQuotaExceededError`·무재시도 유지). 전 실패 시 저장된
+  market_events US 적재분을 `degraded=true`+`served_by`/`fallback_source`/
+  `data_state`/`stale`/`data_as_of`/`provider_provenance`/`warning`으로
+  내려주고, 저장분조차 없으면 `error_code="earnings_lookup_failed"`+
+  `error_class`+`data_state="missing"`+`fallback_status`의 닫힌 사유로
+  응답한다 — 조회 실패를 '실적 없음(count=0)'으로 오인하지 못하게 하는
+  fail-closed 계약이다. `earnings_context` compact ctx는
+  `error_code`/`error_class`/`degraded`/`fallback_source`/`fetch_error`를
+  전파하고 US 실패/폴백 시 freshness를 `unknown`/`degraded`/`stale`로 표시한다
+  (실패를 `live`로 표시 금지). 매수 게이트 판정 로직은 이 계약의 범위 밖이다.
+  ROB-1384 r5 범위 결정: 실적 조회는 스레드를 쓰지 않는다. attempt마다
+  `httpx.AsyncClient`로 비동기 HTTP 요청을 보내고(`X-Finnhub-Token` 헤더,
+  쿼리에 키 없음, `follow_redirects=False`), `wait_for` timeout이나 호출자
+  취소 시 요청 코루틴이 취소되어 연결이 닫힌다 — 남는 작업이 없다.
+  한 호출의 최악 총시간은 `max_attempts × FINNHUB_EARNINGS_TIMEOUT_S +
+  (max_attempts−1) × 재시도 wait 상한`(기본 wait_exponential_jitter max=2s →
+  간격당 +2s)이며 정상 응답 뒤의 client close(`async with` exit)도 그 예산
+  안에 포함된다. 요청 timeout·취소가 먼저 일어난 뒤 close 단계가 멈추면
+  반환이 예산을 넘을 수 있다 — 수용한 위험이다(근거: httpcore의 TLS
+  close는 peer를 기다리지 않으며, 고장 주입에서만 재현됐고 FD·소켓 누수는
+  없다).
+  API 키는 `_finnhub_api_key()`에서 strip + 헤더 불가 문자(제어문자·공백·
+  비ASCII) 검증을 거치고, 위반 시 HTTP 요청 없이 키 값 없는 ValueError로
+  실패한다 — 변환된 예외는 except 블록 밖에서 던져져 원시 예외 체인에
+  원인 예외가 남지 않으므로(`__cause__`·`__context__` 모두 비움) 키가
+  남지 않는다. 2xx 응답은 Content-Type이 application/json이고 본문이
+  `"error"` 키 없는 dict이며 `earningsCalendar` list를 포함할 때만
+  성공이다 — 모든 행은 유효한 `YYYY-MM-DD` date가 필요하고 하나라도
+  불량이면 실패다. provider 오류 페이지·오류 객체는 재시도 없는 오류로
+  fail-closed. 같은 `to_thread`+slow-drip 위험이 있는 `finnhub_news`
+  (ROB-510) 경로는 이 PR의 범위 밖이다.
 
 
 ## 유지 규약

@@ -19,10 +19,12 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 import app.services.market_data as market_data_service
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
+    _calculate_rsi_series,
     _compute_crypto_realtime_rsi_from_frame,
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
@@ -59,6 +61,8 @@ from app.mcp_server.tooling.shared import (
 from app.services import kis_ohlcv_cache, krx_after_market
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.toss.market_calendar import get_kr_nxt_session_from_toss
+from app.services.daily_candles.read_service import rows_to_frame
+from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
 from app.services.execution_strength.query_service import compute_execution_strength
 from app.services.kr_hourly_candles_read_service import (
     read_kr_hourly_candles_1h,
@@ -127,14 +131,6 @@ _OHLCV_INDICATOR_ROW_KEYS = (
     "vwap",
 )
 
-_NON_INTRADAY_PERIODS = {"day", "week", "month"}
-
-
-def _numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
-    if column not in df.columns:
-        return pd.Series(index=df.index, dtype="float64")
-    return pd.to_numeric(df[column], errors="coerce")
-
 
 def _kis_end_date(end_date: datetime.datetime | None) -> pd.Timestamp | None:
     if end_date is None:
@@ -142,51 +138,128 @@ def _kis_end_date(end_date: datetime.datetime | None) -> pd.Timestamp | None:
     return pd.Timestamp(end_date.date())
 
 
-def _build_rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, float("nan"))
-    return 100 - (100 / (1 + rs))
+# ---------------------------------------------------------------------------
+# Canonical daily RSI (ROB-1382)
+#
+# ``analyze_stock_batch(quick)`` projects rsi_14 from the ``daily_candles``
+# store (latest QUICK_CANDLE_COUNT closed bars) via the shared Wilder series
+# ``market_data_indicators._calculate_rsi_series``.  For ``period="day"`` the
+# ``get_ohlcv(include_indicators=True)`` enrichment must read that same window
+# and map the series onto returned rows by date, so both surfaces report the
+# identical value for the same symbol+session — regardless of which provider
+# served the OHLCV rows themselves.
+# ---------------------------------------------------------------------------
+
+_CANONICAL_DAILY_SOURCE = "daily_candles_db"
+# Pinned to analysis_quick.QUICK_CANDLE_COUNT — a test asserts parity so the
+# two windows can never drift apart again.
+_CANONICAL_DAILY_COUNT = 250
+_CANONICAL_MARKET_KEY = {
+    "equity_kr": MarketKey.KR,
+    "equity_us": MarketKey.US,
+    "crypto": MarketKey.CRYPTO,
+}
+# Mirrors analysis_quick's partition selection exactly: KRX for KR, the
+# upbit_krw venue lookup for crypto, and no partition filter for US.
+_CANONICAL_PARTITION = {"equity_kr": "KRX", "crypto": "upbit_krw"}
 
 
-def _build_indicator_rows(df: pd.DataFrame, period: str) -> list[dict[str, Any]]:
-    close = _numeric_series(df, "close")
-    high = _numeric_series(df, "high")
-    low = _numeric_series(df, "low")
-    volume = _numeric_series(df, "volume")
+async def _canonical_daily_frame(symbol: str, market_type: str) -> pd.DataFrame | None:
+    """Read the same daily_candles window that ``analyze_stock_batch(quick)``
+    projects (``fetch_recent_batch``, same market/partition/count).
 
-    ema_20 = close.ewm(span=20, adjust=False).mean()
-    rsi_14 = _build_rsi_series(close).round(2)
-    bb_mid = close.rolling(window=20).mean()
-    bb_std = close.rolling(window=20).std()
-    bb_upper = bb_mid + (bb_std * 2.0)
-    bb_lower = bb_mid - (bb_std * 2.0)
+    Fail-open: any DB problem returns ``None`` so the caller computes the RSI
+    over the provider frame instead — ``rsi_source`` then names that provider.
+    """
+    market_key = _CANONICAL_MARKET_KEY.get(market_type)
+    if market_key is None:
+        return None
+    try:
+        async with AsyncSessionLocal() as session:
+            repo = DailyCandlesRepository(session=session)
+            frames = await repo.fetch_recent_batch(
+                market=market_key,
+                symbols=[symbol],
+                partition=_CANONICAL_PARTITION.get(market_type),
+                count=_CANONICAL_DAILY_COUNT,
+            )
+        rows = frames.get(str(symbol).strip().upper(), [])
+        if not rows:
+            return None
+        return rows_to_frame(rows)
+    except Exception:
+        logger.warning(
+            "canonical daily_candles read failed symbol=%s market_type=%s; "
+            "falling back to provider frame for rsi_14",
+            symbol,
+            market_type,
+            exc_info=True,
+        )
+        return None
 
-    indicator_frame = pd.DataFrame(
-        {
-            "rsi_14": rsi_14,
-            "ema_20": ema_20,
-            "bb_upper": bb_upper,
-            "bb_mid": bb_mid,
-            "bb_lower": bb_lower,
-        },
-        index=df.index,
+
+def _canonical_daily_usable(
+    canonical_daily: pd.DataFrame | None, df: pd.DataFrame
+) -> bool:
+    return (
+        canonical_daily is not None
+        and not canonical_daily.empty
+        and {"date", "close"} <= set(canonical_daily.columns)
+        and "date" in df.columns
     )
 
-    if period in _NON_INTRADAY_PERIODS:
-        indicator_frame["vwap"] = None
-    else:
-        typical_price = (high + low + close) / 3.0
-        cumulative_volume = volume.cumsum()
-        weighted_total = (typical_price * volume).cumsum()
-        indicator_frame["vwap"] = weighted_total / cumulative_volume.where(
-            cumulative_volume != 0
-        )
 
-    return _normalize_rows(indicator_frame.loc[:, list(_OHLCV_INDICATOR_ROW_KEYS)])
+def _canonical_daily_rsi(
+    frame: pd.DataFrame, canonical_daily: pd.DataFrame
+) -> pd.Series:
+    """RSI-14 per row computed on the canonical daily_candles series and
+    mapped onto ``frame`` rows by date.
+
+    A returned row whose date is absent from the canonical store (e.g. the
+    still-forming session bar that a live provider includes but the store
+    never carries) gets ``None`` — the canonical series does not report an
+    RSI for a bar it does not carry.
+    """
+    canonical_close = pd.to_numeric(canonical_daily["close"], errors="coerce")
+    rsi = _calculate_rsi_series(canonical_close).round(2)
+    canonical_dates = pd.to_datetime(canonical_daily["date"], errors="coerce").dt.date
+    rsi_by_date = {
+        d: v for d, v in zip(canonical_dates, rsi, strict=False) if pd.notna(d)
+    }
+    row_dates = pd.to_datetime(frame["date"], errors="coerce").dt.date
+    return pd.Series(
+        [rsi_by_date.get(d) if pd.notna(d) else None for d in row_dates],
+        index=frame.index,
+        dtype="object",
+    )
+
+
+def _rsi_provenance(
+    source: str, df: pd.DataFrame, canonical_daily: pd.DataFrame | None
+) -> tuple[str, int]:
+    """``(rsi_source, bars_used)`` describing the series that fed rsi_14."""
+    if _canonical_daily_usable(canonical_daily, df):
+        return _CANONICAL_DAILY_SOURCE, len(canonical_daily)
+    return source, len(df)
+
+
+async def _canonical_daily_for(
+    symbol: str,
+    market_type: str,
+    period: str,
+    end_date: datetime.datetime | None,
+    *,
+    include_indicators: bool,
+) -> pd.DataFrame | None:
+    """Resolve the canonical daily frame when this call should use it.
+
+    Canonical applies only to ``period="day"`` without an ``end_date``: the
+    latest-N store cannot answer historical windows, and non-day periods are
+    not stored in ``daily_candles``.
+    """
+    if not include_indicators or period != "day" or end_date is not None:
+        return None
+    return await _canonical_daily_frame(symbol, market_type)
 
 
 def _normalize_ohlcv_rows(
@@ -194,10 +267,13 @@ def _normalize_ohlcv_rows(
     *,
     period: str,
     include_indicators: bool,
+    canonical_daily: pd.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     frame = df
     if include_indicators and not df.empty:
-        frame = _enrich_ohlcv_with_indicators(df, period)
+        frame = _enrich_ohlcv_with_indicators(
+            df, period, canonical_daily=canonical_daily
+        )
     return _normalize_rows(frame)
 
 
@@ -228,6 +304,7 @@ def _build_ohlcv_payload(
     df: pd.DataFrame,
     include_indicators: bool,
     message: str | None = None,
+    canonical_daily: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     normalized_df = df
     if instrument_type == "equity_kr" and period in KR_INTRADAY_OHLCV_PERIODS:
@@ -243,10 +320,14 @@ def _build_ohlcv_payload(
             normalized_df,
             period=period,
             include_indicators=include_indicators,
+            canonical_daily=canonical_daily,
         ),
     }
     if include_indicators:
         payload["indicators_included"] = True
+        rsi_source, bars_used = _rsi_provenance(source, normalized_df, canonical_daily)
+        payload["rsi_source"] = rsi_source
+        payload["bars_used"] = bars_used
     if message is not None:
         payload["message"] = message
     return payload
@@ -1118,19 +1199,6 @@ def _validate_crypto_minute_source_columns(df: pd.DataFrame) -> None:
         )
 
 
-def _calculate_rsi_14(close: pd.Series) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=14, min_periods=14).mean()
-    avg_loss = loss.rolling(window=14, min_periods=14).mean()
-    rs = avg_gain / avg_loss.replace(0, pd.NA)
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.mask(avg_loss == 0, 100.0)
-    rsi = rsi.mask((avg_gain == 0) & (avg_loss == 0), 50.0)
-    return rsi.round(2)
-
-
 def _calculate_ema_20(close: pd.Series) -> pd.Series:
     ema = close.ewm(span=20, adjust=False).mean()
     return ema.where(close.expanding().count() >= 20)
@@ -1156,10 +1224,22 @@ def _calculate_vwap(df: pd.DataFrame, period: str) -> pd.Series:
     return vwap
 
 
-def _enrich_ohlcv_with_indicators(df: pd.DataFrame, period: str) -> pd.DataFrame:
+def _enrich_ohlcv_with_indicators(
+    df: pd.DataFrame,
+    period: str,
+    *,
+    canonical_daily: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     frame = df.copy()
     close = frame["close"].astype(float)
-    frame["rsi_14"] = _calculate_rsi_14(close)
+    # ROB-1382: one RSI implementation (shared Wilder series). For daily rows
+    # the values come from the canonical daily_candles store — the same bars
+    # analyze_stock_batch(quick) reads — mapped onto this frame by date.
+    frame["rsi_14"] = (
+        _canonical_daily_rsi(frame, canonical_daily)
+        if _canonical_daily_usable(canonical_daily, frame)
+        else _calculate_rsi_series(close).round(2)
+    )
     frame["ema_20"] = _calculate_ema_20(close)
     bb_upper, bb_mid, bb_lower = _calculate_bollinger_bands(close)
     frame["bb_upper"] = bb_upper
@@ -1207,7 +1287,7 @@ async def _fetch_ohlcv_crypto(
     )
 
     if df.empty:
-        return {
+        payload = {
             "symbol": symbol,
             "instrument_type": "crypto",
             "source": "upbit",
@@ -1217,14 +1297,21 @@ async def _fetch_ohlcv_crypto(
             "indicators_included": include_indicators,
             "message": f"No candle data available for {symbol}",
         }
+        if include_indicators:
+            payload["rsi_source"] = "upbit"
+            payload["bars_used"] = 0
+        return payload
 
     if period in CRYPTO_MINUTE_OHLCV_PERIODS:
         _validate_crypto_minute_source_columns(df)
 
+    canonical_daily = await _canonical_daily_for(
+        symbol, "crypto", period, end_date, include_indicators=include_indicators
+    )
     if include_indicators:
-        df = _enrich_ohlcv_with_indicators(df, period)
+        df = _enrich_ohlcv_with_indicators(df, period, canonical_daily=canonical_daily)
 
-    return {
+    payload: dict[str, Any] = {
         "symbol": symbol,
         "instrument_type": "crypto",
         "source": "upbit",
@@ -1239,6 +1326,11 @@ async def _fetch_ohlcv_crypto(
             else _normalize_rows(df)
         ),
     }
+    if include_indicators:
+        rsi_source, bars_used = _rsi_provenance("upbit", df, canonical_daily)
+        payload["rsi_source"] = rsi_source
+        payload["bars_used"] = bars_used
+    return payload
 
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -1323,6 +1415,9 @@ async def _fetch_ohlcv_equity_kr(
             end_date=_kis_end_date(end_date),
         )
 
+    canonical_daily = await _canonical_daily_for(
+        symbol, "equity_kr", period, end_date, include_indicators=include_indicators
+    )
     return _build_ohlcv_payload(
         symbol=symbol,
         instrument_type="equity_kr",
@@ -1331,6 +1426,7 @@ async def _fetch_ohlcv_equity_kr(
         count=capped_count,
         df=df,
         include_indicators=include_indicators,
+        canonical_daily=canonical_daily,
     )
 
 
@@ -1380,6 +1476,9 @@ async def _fetch_ohlcv_equity_us(
             end_date=end_date,
         )
         source = "toss"
+    canonical_daily = await _canonical_daily_for(
+        symbol, "equity_us", period, end_date, include_indicators=include_indicators
+    )
     return _build_ohlcv_payload(
         symbol=symbol,
         instrument_type="equity_us",
@@ -1388,6 +1487,7 @@ async def _fetch_ohlcv_equity_us(
         count=capped_count,
         df=df,
         include_indicators=include_indicators,
+        canonical_daily=canonical_daily,
     )
 
 
