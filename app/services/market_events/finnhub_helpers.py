@@ -181,8 +181,12 @@ async def fetch_earnings_calendar_finnhub(
     cancellation cancels the request coroutine and closes the
     connection; nothing is left behind. Worst-case total time is
     ``max_attempts * per_attempt_timeout + (max_attempts - 1) * retry
-    wait upper bound``. The API key travels only in the
-    ``X-Finnhub-Token`` header, never in the query string.
+    wait upper bound`` — client enter+request+close run inside the
+    wait_for budget, but a close that stalls after the request already
+    timed out or was cancelled can still push the return past that
+    budget (the accepted R6-F3 risk; see the module docstring). The API
+    key travels only in the ``X-Finnhub-Token`` header, never in the
+    query string.
     """
     per_attempt_timeout = (
         timeout_s

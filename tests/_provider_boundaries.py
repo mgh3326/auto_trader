@@ -212,7 +212,11 @@ ASYNC_METHOD_SEAMS: Final = (
     ("app.services.brokers.binance.rest_client", "BinancePublicRestClient", "_send"),
 )
 
-# Finnhub ships a synchronous ``requests``-backed client.
+# Finnhub ships a synchronous ``requests``-backed client. The news fetch no
+# longer goes through it — ROB-1388 converted ``fetch_news_finnhub`` to a
+# plain ``httpx.AsyncClient`` GET covered by the transport backstop — but
+# the SDK factory still serves profile/financials and the market-valuation
+# fallback, so the seam stays.
 FINNHUB_CLIENT_FACTORIES: Final = (
     ("app.services.finnhub_news", "_get_finnhub_client"),
     ("app.mcp_server.tooling.fundamentals_sources_finnhub", "_get_finnhub_client"),

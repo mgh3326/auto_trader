@@ -164,6 +164,37 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   degraded + DB stale 폴백. `get_news` 최종 에러 응답은 닫힌 사유
   `error_code="news_lookup_failed"`+`error_class`+`suggestion`를 가진다
   (ROB-1384) — '뉴스 없음'과 '조회 실패'를 구분하기 위함.
+- **ROB-1388**: Finnhub 뉴스 fetch(company-news·crypto general)도 스레드를
+  쓰지 않는다 — attempt마다 `httpx.AsyncClient` GET(`follow_redirects=False`)
+  으로 전환해 `wait_for` timeout·호출자 취소 시 요청 코루틴이 취소되고 연결이
+  닫히며 기본 executor에 잔여 작업이 남지 않는다(ROB-1384 r5와 같은 패턴,
+  공용 `_finnhub_api_key()` 재사용). 엔드포인트는 SDK와 동일
+  (`/api/v1/company-news`, `/api/v1/news?category=crypto&minId=0`). API 키는
+  `X-Finnhub-Token` 헤더로만 보내고 쿼리에는 넣지 않는다 — strip + 헤더 불가
+  문자 검증을 통과하지 못하면 HTTP 요청 전 키 값 없는 ValueError로 실패한다.
+  httpx 예외는 정제된 `FinnhubNewsTransportError`/`FinnhubNewsHTTPError`로
+  변환하고 raise는 except 블록 밖에서 한다 — `__cause__`·`__context__`가 비어
+  원시 예외 체인(키 반영 가능)이 남지 않는다. 추가로 httpcore DEBUG/TRACE
+  진단이 원시 프로토콜 오류를 그대로 렌더해 악의 peer가 자격 증명 헤더 값을
+  반영한 로그를 만들 수 있으므로, `app.core.logging_config`와 모듈 import
+  양쪽에서 `httpcore` 로거를 WARNING으로 제한한다(키를 싣는 요청의 원시
+  transport 진단은 어떤 로그 레벨에서도 남지 않는다). 2xx 성공 조건은 닫혀
+  있다: 미디어 타입이 정확히 `application/json`이고(부분 문자열 비교 금지 —
+  `application/jsonp`·`profile=` 파라미터 우회 불가) 본문이 JSON list이며
+  모든 항목이 dict이고 어떤 행도 `error` 키를 갖지 않을 때만 성공 —
+  dict(`{"error": …}` 포함)·비JSON·비dict 행·error 행은 재시도
+  없는 오류로 fail-closed이고, 행 검증은 limit 슬라이스 전 전체 목록에
+  적용된다. 정상 `[]`는 뉴스 0건 성공이다. 재시도 대상은
+  timeout·transport·5xx·**429**로 ROB-510 방침을 유지하고(earnings의
+  429-무재시도와 다름), 그 밖의 4xx·설정 오류·계약 오류는 즉시 실패한다.
+  한 호출의 최악 총시간은 `max_attempts × FINNHUB_NEWS_TIMEOUT_S +
+  (max_attempts−1) × 재시도 wait 상한`이며, 요청 timeout·취소 뒤 close가
+  멈추면 반환이 예산을 넘을 수 있다 — ROB-1384 R6-F3와 같은 수용 위험이다
+  (TLS close는 peer를 기다리지 않고 FD·소켓 누수는 관측되지 않았다). 호출자
+  계약(전 실패 시 degraded + DB stale 폴백, 실패를 live로 표시 금지)은
+  ROB-510 그대로다. profile/financials 등 여전히 동기 SDK
+  (`_get_finnhub_client`)를 쓰는 소비자는 같은 잔여 스레드 위험을 안고
+  있으며 범위 밖이다.
 - **ROB-1384**: `get_earnings_calendar` US도 동일 신뢰도 계약에 합류한다.
   Finnhub fetch는 `FINNHUB_EARNINGS_TIMEOUT_S`×`FINNHUB_EARNINGS_MAX_ATTEMPTS`
   (per-attempt timeout + bounded retry, 재시도 대상은 timeout/network/5xx만;
@@ -196,8 +227,8 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   `"error"` 키 없는 dict이며 `earningsCalendar` list를 포함할 때만
   성공이다 — 모든 행은 유효한 `YYYY-MM-DD` date가 필요하고 하나라도
   불량이면 실패다. provider 오류 페이지·오류 객체는 재시도 없는 오류로
-  fail-closed. 같은 `to_thread`+slow-drip 위험이 있는 `finnhub_news`
-  (ROB-510) 경로는 이 PR의 범위 밖이다.
+  fail-closed. 같은 `to_thread`+slow-drip 위험이 있던 `finnhub_news`
+  (ROB-510) 경로는 ROB-1388에서 같은 비동기 HTTP 패턴으로 전환됐다.
 
 
 ## 유지 규약
