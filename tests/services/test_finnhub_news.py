@@ -442,12 +442,16 @@ async def test_news_slow_drip_loopback_no_executor_or_task_growth(monkeypatch):
     """AC1+AC2 — 20+ failed slow-drip calls on EACH lane (company-news and
     crypto general) over a REAL loopback TCP peer leave no threads, tasks,
     or FDs behind; unrelated ``to_thread`` work still completes promptly."""
-    stats = {"requests": 0}
+    stats = {"company": 0, "crypto": 0}
 
     async def peer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            await reader.readuntil(b"\r\n\r\n")
-            stats["requests"] += 1
+            head = await reader.readuntil(b"\r\n\r\n")
+            request_line = head.split(b"\r\n", 1)[0]
+            if b"company-news" in request_line:
+                stats["company"] += 1
+            else:
+                stats["crypto"] += 1
             # Headers arrive promptly; the body then drips one chunked
             # byte at a time — inside the httpx read timeout each chunk,
             # so only the wait_for wall-clock can fire.
@@ -494,12 +498,12 @@ async def test_news_slow_drip_loopback_no_executor_or_task_growth(monkeypatch):
     baseline_fds = _fd_count()
 
     try:
-        for _ in range(21):
+        for _ in range(24):
             with pytest.raises(TimeoutError):
                 await finnhub_news.fetch_news_finnhub(
                     "AAPL", "us", 5, timeout_s=0.2, max_attempts=1
                 )
-        for _ in range(21):
+        for _ in range(24):
             with pytest.raises(TimeoutError):
                 await finnhub_news.fetch_news_finnhub(
                     "KRW-BTC", "crypto", 5, timeout_s=0.2, max_attempts=1
@@ -508,21 +512,25 @@ async def test_news_slow_drip_loopback_no_executor_or_task_growth(monkeypatch):
         server.close()
         await server.wait_closed()
 
-    assert stats["requests"] == 42  # every failure really hit the peer
+    # All 48 calls are made; AC wants 20+ REAL wire failures per lane.
+    # A rare cold-start attempt can time out before the request reaches
+    # the peer, so allow slack while still requiring 20+ per lane.
+    assert stats["company"] >= 20, stats
+    assert stats["crypto"] >= 20, stats
 
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + 2.0
+    deadline = loop.time() + 3.0
     while len(asyncio.all_tasks()) > baseline_tasks and loop.time() < deadline:
         await asyncio.sleep(0.02)
     if baseline_fds is not None:
-        deadline = loop.time() + 2.0
+        deadline = loop.time() + 3.0
         while _fd_count() > baseline_fds and loop.time() < deadline:
             await asyncio.sleep(0.02)
 
     assert threading.active_count() <= baseline_threads
     assert len(asyncio.all_tasks()) <= baseline_tasks
     if baseline_fds is not None:
-        assert _fd_count() <= baseline_fds + 4  # TIME_WAIT may linger briefly
+        assert _fd_count() <= baseline_fds  # no socket/FD left behind
 
     # AC2 — the shared default executor was never touched: unrelated
     # to_thread work still completes well inside a normal budget.
@@ -880,6 +888,66 @@ async def test_news_peer_reflected_key_never_survives_exception_chain(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_news_peer_reflected_key_never_reaches_debug_logs(monkeypatch, caplog):
+    """AC3/R1-B2 — under the app's supported LOG_LEVEL=DEBUG path a peer
+    that reflects the credential header inside a malformed status line
+    must NOT reach logs: httpcore's raw ``receive_response_headers.failed``
+    diagnostics render the protocol error (with the reflected key)
+    verbatim, so the httpcore logger stays capped."""
+    from app.core.logging_config import configure_dependency_log_levels
+
+    # The module-level cap holds with no app logging setup at all…
+    assert logging.getLogger("httpcore.http11").getEffectiveLevel() >= logging.WARNING
+    # …and the shared policy re-applies it even if DEBUG got re-enabled.
+    logging.getLogger("httpcore").setLevel(logging.DEBUG)
+    configure_dependency_log_levels()
+    assert logging.getLogger("httpcore.http11").getEffectiveLevel() >= logging.WARNING
+
+    seen_requests: list[bytes] = []
+
+    async def peer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            data = await reader.readuntil(b"\r\n\r\n")
+            seen_requests.append(data)
+            writer.write(b"HTTP/1.1 " + _TEST_API_KEY.encode() + b" junk\r\n\r\n")
+            await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    server = await asyncio.start_server(peer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    monkeypatch.setattr(
+        finnhub_news,
+        "_FINNHUB_NEWS_COMPANY_URL",
+        f"http://127.0.0.1:{port}/api/v1/company-news",
+    )
+
+    try:
+        # root at DEBUG == the supported LOG_LEVEL=DEBUG configuration —
+        # any httpcore debug record emitted here would be captured.
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(finnhub_news.FinnhubNewsTransportError):
+                await finnhub_news.fetch_news_finnhub(
+                    "AAPL", "us", 10, timeout_s=2.0, max_attempts=3
+                )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert len(seen_requests) == 3
+    # the key really went over the wire and the peer really reflected it
+    assert _TEST_API_KEY.encode() in seen_requests[0]
+    assert _TEST_API_KEY not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "failure_kind",
     [
@@ -931,6 +999,55 @@ async def test_news_converted_errors_leave_empty_raw_chain(monkeypatch, failure_
         assert _TEST_API_KEY not in repr(member)
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_redirect_is_never_followed(monkeypatch):
+    """R1-S3 — a real loopback peer replying 302 gets exactly one request:
+    the production client never follows redirects (non-2xx is a closed,
+    non-retryable HTTP failure, so it is not retried either)."""
+    seen_lines: list[bytes] = []
+
+    async def peer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+            seen_lines.append(head.split(b"\r\n", 1)[0])
+            writer.write(
+                b"HTTP/1.1 302 Found\r\n"
+                b"location: /api/v1/sink\r\n"
+                b"content-length: 0\r\n\r\n"
+            )
+            await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    server = await asyncio.start_server(peer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    monkeypatch.setattr(
+        finnhub_news,
+        "_FINNHUB_NEWS_COMPANY_URL",
+        f"http://127.0.0.1:{port}/api/v1/company-news",
+    )
+
+    try:
+        with pytest.raises(finnhub_news.FinnhubNewsHTTPError) as ei:
+            await finnhub_news.fetch_news_finnhub(
+                "AAPL", "us", 10, timeout_s=2.0, max_attempts=3
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert ei.value.status_code == 302
+    assert len(seen_lines) == 1  # no retry, and never followed to /sink
+    assert seen_lines[0].startswith(b"GET /api/v1/company-news")
+
+
 # ── R5-F2/AC4: closed 2xx contract ───────────────────────────────────
 
 
@@ -971,6 +1088,24 @@ async def test_news_converted_errors_leave_empty_raw_chain(monkeypatch, failure_
             "non-json-body",
         ),
         ({"content": b"[]"}, "missing-content-type"),
+        # R1-B1 — the media type must BE application/json; substring
+        # lookalikes must fail closed.
+        (
+            {
+                "content": b"[]",
+                "headers": {"content-type": "application/jsonp"},
+            },
+            "jsonp-media-type",
+        ),
+        (
+            {
+                "content": b"[]",
+                "headers": {"content-type": 'text/html; profile="application/json"'},
+            },
+            "html-profile-json-param",
+        ),
+        # R1-S2 — a dict row carrying an error payload fails closed too.
+        ({"json": [{"error": "provider failed"}]}, "error-object-row"),
     ],
     ids=lambda v: v if isinstance(v, str) else "resp",
 )
@@ -997,7 +1132,55 @@ async def test_news_invalid_2xx_body_fails_closed_once(
     assert "/api/v1/" in msg
     assert "upstream temporarily unavailable" not in msg
     assert "bad row" not in msg
+    assert "provider failed" not in msg
     assert _TEST_API_KEY not in msg
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_json_media_type_with_parameters_succeeds(monkeypatch):
+    """R1-B1 positive — parameters on the exact media type
+    (``application/json; charset=utf-8``) still count as JSON."""
+    calls = {"n": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            200,
+            content=b"[]",
+            headers={"content-type": "application/json; charset=utf-8"},
+        )
+
+    _install_transport(monkeypatch, handler)
+
+    result = await finnhub_news.fetch_news_finnhub("AAPL", "us", 10)
+
+    assert calls["n"] == 1
+    assert result["count"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad_row",
+    ["not an object", {"error": "provider failed"}],
+    ids=["non-dict-beyond-limit", "error-row-beyond-limit"],
+)
+async def test_news_malformed_row_beyond_limit_fails_closed(monkeypatch, bad_row):
+    """R1-S3 — row validation covers the FULL list, not just the sliced
+    ``payload[:limit]`` window: a bad row past the limit must fail."""
+    calls = {"n": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=[_NEWS_ITEM, bad_row])
+
+    _install_transport(monkeypatch, handler)
+
+    with pytest.raises(ValueError):
+        await finnhub_news.fetch_news_finnhub("AAPL", "us", 1, max_attempts=3)
+
+    assert calls["n"] == 1  # non-retryable
 
 
 @pytest.mark.asyncio

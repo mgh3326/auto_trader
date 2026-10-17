@@ -28,6 +28,14 @@ consumers outside this PR's scope — the profile/financials path in
 ``app.mcp_server.tooling.fundamentals_sources_finnhub`` and the market
 valuation fallback — which keep the same abandoned-thread exposure until
 they are converted.
+
+R1-B2: httpcore DEBUG/TRACE diagnostics render raw protocol errors
+verbatim, so an erroring/hostile peer can reflect credential header
+values into log lines (e.g. a key echoed inside a malformed status
+line). Raw transport diagnostics for this module's credential-bearing
+traffic must never reach logs — the ``httpcore`` logger is capped at
+import below, and the shared policy in ``app.core.logging_config``
+applies the same cap process-wide.
 """
 
 from __future__ import annotations
@@ -88,6 +96,15 @@ _FINNHUB_NEWS_COMPANY_URL = "https://api.finnhub.io/api/v1/company-news"
 _FINNHUB_NEWS_COMPANY_PATH = "/api/v1/company-news"
 _FINNHUB_NEWS_GENERAL_URL = "https://api.finnhub.io/api/v1/news"
 _FINNHUB_NEWS_GENERAL_PATH = "/api/v1/news"
+
+# R1-B2: raw httpcore DEBUG/TRACE lines render protocol errors and wire
+# details verbatim — a peer can reflect the credential header value into
+# them. This module's requests must never emit them, even where the app
+# logging policy was never applied (tests, scripts); children
+# (httpcore.http11/http2/...) inherit the cap. Trade-off: httpcore debug
+# output is silenced process-wide once this module is imported — the
+# same trade-off the shared logging policy already makes for httpx.
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DEFAULT_NEWS_TIMEOUT_S = 8.0
 DEFAULT_NEWS_MAX_ATTEMPTS = 3
@@ -288,8 +305,12 @@ async def fetch_news_finnhub(
             # ``{"error": …}`` bodies must fail closed, never read as
             # "no news". Messages carry path+status only — no body, no
             # key material.
+            # R1-B1: the media type must BE application/json — a
+            # substring check would also pass application/jsonp or a
+            # parameter like profile="application/json" on text/html.
             content_type = response.headers.get("content-type", "")
-            if "application/json" not in content_type.lower():
+            media_type = content_type.split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
                 raise ValueError(
                     f"finnhub news non-JSON content-type (HTTP {status}) "
                     f"for {symbol!r} market={market!r} (path {path})"
@@ -310,15 +331,23 @@ async def fetch_news_finnhub(
                     f"finnhub news returned non-list JSON for {symbol!r} "
                     f"market={market!r} (path {path})"
                 )
-            # Every row must be a dict — a single malformed row fails the
-            # whole response (never partial success, which downstream
-            # would read as "no relevant news").
+            # Every row must be a dict without an ``error`` payload —
+            # a single malformed row fails the whole response (never
+            # partial success, which downstream would read as "no
+            # relevant news"). Rows are validated over the FULL list,
+            # before the limit slice is applied.
             for row_index, row in enumerate(payload):
                 if not isinstance(row, dict):
                     raise ValueError(
                         f"finnhub news row {row_index} is not an object "
                         f"(HTTP {status}) for {symbol!r} market={market!r} "
                         f"(path {path})"
+                    )
+                if "error" in row:
+                    raise ValueError(
+                        f"finnhub news row {row_index} carries an error "
+                        f"payload (HTTP {status}) for {symbol!r} "
+                        f"market={market!r} (path {path})"
                     )
             news_items = payload[:limit]
 

@@ -174,10 +174,17 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   문자 검증을 통과하지 못하면 HTTP 요청 전 키 값 없는 ValueError로 실패한다.
   httpx 예외는 정제된 `FinnhubNewsTransportError`/`FinnhubNewsHTTPError`로
   변환하고 raise는 except 블록 밖에서 한다 — `__cause__`·`__context__`가 비어
-  원시 예외 체인(키 반영 가능)이 남지 않는다. 2xx 성공 조건은 닫혀 있다:
-  Content-Type이 application/json이고 본문이 JSON list이며 모든 항목이
-  dict일 때만 성공 — dict(`{"error": …}` 포함)·비JSON·비dict 행은 재시도
-  없는 오류로 fail-closed, 정상 `[]`는 뉴스 0건 성공이다. 재시도 대상은
+  원시 예외 체인(키 반영 가능)이 남지 않는다. 추가로 httpcore DEBUG/TRACE
+  진단이 원시 프로토콜 오류를 그대로 렌더해 악의 peer가 자격 증명 헤더 값을
+  반영한 로그를 만들 수 있으므로, `app.core.logging_config`와 모듈 import
+  양쪽에서 `httpcore` 로거를 WARNING으로 제한한다(키를 싣는 요청의 원시
+  transport 진단은 어떤 로그 레벨에서도 남지 않는다). 2xx 성공 조건은 닫혀
+  있다: 미디어 타입이 정확히 `application/json`이고(부분 문자열 비교 금지 —
+  `application/jsonp`·`profile=` 파라미터 우회 불가) 본문이 JSON list이며
+  모든 항목이 dict이고 어떤 행도 `error` 키를 갖지 않을 때만 성공 —
+  dict(`{"error": …}` 포함)·비JSON·비dict 행·error 행은 재시도
+  없는 오류로 fail-closed이고, 행 검증은 limit 슬라이스 전 전체 목록에
+  적용된다. 정상 `[]`는 뉴스 0건 성공이다. 재시도 대상은
   timeout·transport·5xx·**429**로 ROB-510 방침을 유지하고(earnings의
   429-무재시도와 다름), 그 밖의 4xx·설정 오류·계약 오류는 즉시 실패한다.
   한 호출의 최악 총시간은 `max_attempts × FINNHUB_NEWS_TIMEOUT_S +
