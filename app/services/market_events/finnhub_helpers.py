@@ -14,17 +14,16 @@ the ROB-510 news contract: a per-attempt timeout
 The 429 -> ``FinnhubQuotaExceededError`` contract is preserved exactly
 and is never retried.
 
-Scope decision (ROB-1384 r4): Python threads cannot be killed, so a
-provider thread that outlives ``asyncio.wait_for`` is abandoned — not
-drained, not tracked. Each attempt builds its own Finnhub client whose
-``DEFAULT_TIMEOUT`` equals the per-attempt bound, so the abandoned
-thread's remaining socket operations are capped by the SDK timeout and
-it can never share a session with the next attempt; its late result —
-including a late 429 — is discarded unobserved, and the next attempt
-judges on its own response. Worst-case total time of one call is
+Scope decision (ROB-1384 r5): the earnings lookup uses no threads at
+all — ``asyncio.to_thread`` workers abandoned after a timeout pile up
+on the loop's shared default executor (R4-F1) and can starve unrelated
+work. Each attempt issues a plain ``httpx.AsyncClient`` GET instead:
+on ``wait_for`` timeout or caller cancellation the request coroutine
+is cancelled and the connection is actually closed — nothing is left
+behind. Worst-case total time of one call is
 ``max_attempts * per_attempt_timeout + (max_attempts - 1) * retry-wait
 upper bound`` (default ``wait_exponential_jitter(max=2.0)`` → +2s per
-gap). Caller cancellation propagates immediately without draining.
+gap). Caller cancellation propagates immediately.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ import datetime
 import os
 from typing import Any
 
-import requests
+import httpx
 from tenacity import (
     AsyncRetrying,
     retry_if_exception,
@@ -55,11 +54,56 @@ class FinnhubQuotaExceededError(Exception):
         self.status_code = status_code
 
 
+class FinnhubEarningsHTTPError(Exception):
+    """Non-2xx HTTP status from the Finnhub earnings endpoint (r5).
+
+    Carries ``status_code`` so the retryable classifier applies the same
+    5xx-vs-4xx rule the SDK path used. The message deliberately contains
+    only the status and the API path — never request URLs or header
+    values, so no API-key material can leak via exception text.
+    """
+
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class FinnhubEarningsTransportError(Exception):
+    """Sanitized network-layer failure from the earnings endpoint (r5).
+
+    Retryable, like the transport exceptions it replaces — the message
+    carries only the httpx exception class name and the API path, never
+    the request URL or header values.
+    """
+
+
 DEFAULT_EARNINGS_TIMEOUT_S = 8.0
 DEFAULT_EARNINGS_MAX_ATTEMPTS = 3
 
+# ROB-1384 r5: the earnings fetch calls Finnhub over plain HTTP — the
+# SDK's base URL and endpoint, with the API key carried in the
+# X-Finnhub-Token header (never in the query, where exception text and
+# logs would expose it).
+_FINNHUB_EARNINGS_URL = "https://api.finnhub.io/api/v1/calendar/earnings"
+_FINNHUB_EARNINGS_PATH = "/api/v1/calendar/earnings"
+
 # ROB-1384: module-level wait so tests can replace it with wait_none().
 FINNHUB_EARNINGS_RETRY_WAIT = wait_exponential_jitter(initial=0.5, max=2.0)
+
+
+def _new_earnings_http_client(timeout_s: float) -> httpx.AsyncClient:
+    """Fresh async client per attempt — module-level seam so tests can
+    inject a transport. Redirects are never followed."""
+    return httpx.AsyncClient(timeout=httpx.Timeout(timeout_s), follow_redirects=False)
+
+
+def _finnhub_api_key() -> str:
+    from app.core.config import settings
+
+    api_key = settings.finnhub_api_key
+    if not api_key:
+        raise ValueError("FINNHUB_API_KEY environment variable is not set")
+    return api_key
 
 
 def _earnings_setting(name: str, default: Any) -> Any:
@@ -78,37 +122,16 @@ def _earnings_setting(name: str, default: Any) -> Any:
 
 
 def _is_retryable_earnings_error(exc: BaseException) -> bool:
-    """타임아웃/네트워크/5xx만 재시도. 429·4xx·설정오류는 즉시 실패."""
+    """타임아웃/전송 오류/5xx만 재시도. 429·4xx·설정오류는 즉시 실패 (r5)."""
     if isinstance(exc, FinnhubQuotaExceededError):
         return False
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException, httpx.TransportError)):
         return True
-    if isinstance(exc, requests.RequestException):
+    if isinstance(exc, FinnhubEarningsTransportError):
         return True
-    try:
-        import finnhub
-    except ImportError:  # pragma: no cover - dependency guard
-        return False
-    if isinstance(exc, finnhub.FinnhubAPIException):
-        status_code = getattr(exc, "status_code", None)
-        return isinstance(status_code, int) and status_code >= 500
+    if isinstance(exc, FinnhubEarningsHTTPError):
+        return exc.status_code >= 500
     return False
-
-
-def _get_finnhub_client() -> Any:
-    try:
-        import finnhub
-    except ImportError as exc:  # pragma: no cover - dependency guard
-        raise ImportError(
-            "finnhub-python is required to use Finnhub providers"
-        ) from exc
-
-    from app.core.config import settings
-
-    api_key = settings.finnhub_api_key
-    if not api_key:
-        raise ValueError("FINNHUB_API_KEY environment variable is not set")
-    return finnhub.Client(api_key=api_key)
 
 
 async def fetch_earnings_calendar_finnhub(
@@ -121,22 +144,21 @@ async def fetch_earnings_calendar_finnhub(
 ) -> dict[str, Any]:
     """Fetch and normalize Finnhub earningsCalendar rows for ingestion.
 
-    Raises FinnhubQuotaExceededError on HTTP 429; all other SDK exceptions
-    propagate unchanged.
+    Raises FinnhubQuotaExceededError on HTTP 429; other HTTP status and
+    transport failures surface as sanitized internal errors (r5).
 
     ROB-1384: each attempt is bounded by ``FINNHUB_EARNINGS_TIMEOUT_S``
     (per-attempt, not total) and transient errors are retried up to
     ``FINNHUB_EARNINGS_MAX_ATTEMPTS`` attempts. Quota (429) and
     non-retryable errors still fail immediately.
 
-    ROB-1384 r4 scope decision: Python threads cannot be killed, so a
-    provider thread that outlives the attempt timeout is abandoned, not
-    drained — every attempt builds its own client, the abandoned
-    thread's socket lifetime is capped by that client's
-    ``DEFAULT_TIMEOUT``, and its late result (a late 429 included) is
-    discarded unobserved. Worst-case total time is
+    ROB-1384 r5 scope decision: no threads — each attempt is a direct
+    ``httpx.AsyncClient`` GET, so a wait_for timeout or caller
+    cancellation cancels the request coroutine and closes the
+    connection; nothing is left behind. Worst-case total time is
     ``max_attempts * per_attempt_timeout + (max_attempts - 1) * retry
-    wait upper bound``. Caller cancellation propagates immediately.
+    wait upper bound``. The API key travels only in the
+    ``X-Finnhub-Token`` header, never in the query string.
     """
     per_attempt_timeout = (
         timeout_s
@@ -160,6 +182,8 @@ async def fetch_earnings_calendar_finnhub(
     if not to_date:
         to_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
 
+    api_key = _finnhub_api_key()  # ValueError if unset — fails once, closed
+
     result: dict[str, Any] | None = None
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(max(1, attempts)),
@@ -174,45 +198,80 @@ async def fetch_earnings_calendar_finnhub(
                 raise TimeoutError(
                     f"non-positive attempt timeout ({per_attempt_timeout}s)"
                 )
-            # ROB-1384 r4: a fresh client per attempt — an abandoned
-            # thread (asyncio.wait_for cannot kill a thread) keeps
-            # running only on its own session, bounded by this
-            # instance's DEFAULT_TIMEOUT, and never shares a session
-            # with the next attempt. ``DEFAULT_TIMEOUT`` is a plain
-            # attribute on the finnhub client (default 10s).
-            client = _get_finnhub_client()
             try:
-                client.DEFAULT_TIMEOUT = per_attempt_timeout
-            except Exception:  # noqa: BLE001 — duck-typed clients may forbid it
-                pass
-
-            def fetch_sync(attempt_client: Any = client) -> dict[str, Any]:
-                return attempt_client.earnings_calendar(
-                    symbol=symbol.upper() if symbol else "",
-                    _from=from_date,
-                    to=to_date,
-                )
-
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(fetch_sync), timeout=per_attempt_timeout
-                )
+                # ROB-1384 r5: a fresh async client per attempt — no
+                # threads. wait_for cancels the request coroutine and
+                # closes the connection, so neither timeout nor caller
+                # cancellation leaves work behind. The API key goes in
+                # the X-Finnhub-Token header only, never in the query.
+                async with _new_earnings_http_client(per_attempt_timeout) as client:
+                    response = await asyncio.wait_for(
+                        client.get(
+                            _FINNHUB_EARNINGS_URL,
+                            params={
+                                "from": from_date,
+                                "to": to_date,
+                                "symbol": symbol.upper() if symbol else "",
+                                "international": "false",
+                            },
+                            headers={"X-Finnhub-Token": api_key},
+                        ),
+                        timeout=per_attempt_timeout,
+                    )
             except TimeoutError as exc:
                 # Re-raise with a non-empty, diagnosable message — a bare
                 # builtin TimeoutError stringifies to "" (ROB-1384 B1).
-                # The abandoned thread's late result is discarded
-                # unobserved; the next attempt judges on its own
-                # response.
                 raise TimeoutError(
                     f"finnhub earnings_calendar attempt "
                     f"{attempt.retry_state.attempt_number} timed out "
                     f"after {per_attempt_timeout}s for {symbol!r}"
                 ) from exc
+            except httpx.TimeoutException as exc:
+                raise TimeoutError(
+                    f"finnhub earnings_calendar attempt "
+                    f"{attempt.retry_state.attempt_number} hit the httpx "
+                    f"timeout ({per_attempt_timeout}s) for {symbol!r}"
+                ) from exc
+            except httpx.TransportError as exc:
+                raise FinnhubEarningsTransportError(
+                    f"finnhub earnings_calendar transport error "
+                    f"{type(exc).__name__} for {symbol!r} "
+                    f"(path {_FINNHUB_EARNINGS_PATH})"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise FinnhubEarningsHTTPError(
+                    f"finnhub earnings_calendar request error "
+                    f"{type(exc).__name__} for {symbol!r} "
+                    f"(path {_FINNHUB_EARNINGS_PATH})",
+                    status_code=0,
+                ) from exc
+
+            status = response.status_code
+            if status == 429:
+                raise FinnhubQuotaExceededError(
+                    f"finnhub earnings_calendar quota exceeded (HTTP 429) "
+                    f"for {symbol!r}",
+                    status_code=429,
+                )
+            if status >= 300:
+                raise FinnhubEarningsHTTPError(
+                    f"finnhub earnings_calendar HTTP {status} for "
+                    f"{symbol!r} (path {_FINNHUB_EARNINGS_PATH})",
+                    status_code=status,
+                )
+            try:
+                payload = response.json()
             except Exception as exc:
-                status_code = getattr(exc, "status_code", None)
-                if status_code == 429:
-                    raise FinnhubQuotaExceededError(str(exc), status_code=429) from exc
-                raise
+                raise ValueError(
+                    f"finnhub earnings_calendar returned non-JSON body "
+                    f"for {symbol!r} (path {_FINNHUB_EARNINGS_PATH})"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    f"finnhub earnings_calendar returned non-object JSON "
+                    f"for {symbol!r} (path {_FINNHUB_EARNINGS_PATH})"
+                )
+            result = payload
 
     if not result or not result.get("earningsCalendar"):
         return {

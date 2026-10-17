@@ -177,13 +177,14 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   `error_code`/`error_class`/`degraded`/`fallback_source`/`fetch_error`를
   전파하고 US 실패/폴백 시 freshness를 `unknown`/`degraded`/`stale`로 표시한다
   (실패를 `live`로 표시 금지). 매수 게이트 판정 로직은 이 계약의 범위 밖이다.
-  ROB-1384 r4 범위 결정: Python 스레드는 취소할 수 없다. timeout·취소 뒤 남는
-  provider 스레드는 자기 전용 client를 쓰고, 수명은 SDK 소켓 timeout이 상한을
-  두며, 결과는 버린다. 늦게 온 429도 관측하지 않는다(다음 attempt가 자기
-  응답으로 다시 판정한다). 호출 취소는 drain 없이 즉시 전파되고, 한 호출의
-  최악 총시간은 `max_attempts × FINNHUB_EARNINGS_TIMEOUT_S +
+  ROB-1384 r5 범위 결정: 실적 조회는 스레드를 쓰지 않는다. attempt마다
+  `httpx.AsyncClient`로 비동기 HTTP 요청을 보내고(`X-Finnhub-Token` 헤더,
+  쿼리에 키 없음, `follow_redirects=False`), `wait_for` timeout이나 호출자
+  취소 시 요청 코루틴이 취소되어 연결이 닫힌다 — 남는 작업이 없다.
+  한 호출의 최악 총시간은 `max_attempts × FINNHUB_EARNINGS_TIMEOUT_S +
   (max_attempts−1) × 재시도 wait 상한`(기본 wait_exponential_jitter max=2s →
-  간격당 +2s)이다.
+  간격당 +2s)이다. 같은 `to_thread`+slow-drip 위험이 있는 `finnhub_news`
+  (ROB-510) 경로는 이 PR의 범위 밖이다.
 
 
 ## 유지 규약
