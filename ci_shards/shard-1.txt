@@ -108,6 +108,7 @@ tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_binance_spot_demo_d2_root_reconcile_cli.py
 tests/scripts/test_binance_spot_demo_smoke.py
 tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
+tests/scripts/test_deploy_ncp_pull_install_paths.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_native_retirement.py

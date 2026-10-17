@@ -307,3 +307,6 @@ frontend/**/.vite/
 
 # ROB-371 US earnings coverage probe artifacts (counts-only, never committed).
 research/event_coverage/results/
+
+# ROB-1383: row-level results hold order ids / session reasons; public repo -> local + Drive only
+research/rob1383_buy_drought/results/*.csv

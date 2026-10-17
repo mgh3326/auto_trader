@@ -354,7 +354,10 @@ async def _recheck_after_update(
     committed before it starts. A fill committed after these reads (before
     the audit insert or COMMIT) is caught by the deferred COMMIT-time trigger
     ``trg_kis_mock_inference_requires_audit``, which re-runs the order,
-    symbol and sibling fill checks in SQL while COMMIT is processed.
+    symbol and sibling fill checks in SQL while COMMIT is processed — after
+    taking the Q-46 fill-gate advisory key exclusively, which every kis/mock
+    fill writer holds shared to its transaction end (ROB-1378), so a fill
+    still in flight at COMMIT is waited for and then seen.
     Classification reuses the PRE-update row facts (the rows are ``expired`` in
     this transaction by now).
     """

@@ -1439,6 +1439,8 @@ Parameters:
 
 Behavior:
 - US requests keep the existing Finnhub path and response shape: `symbol`, `instrument_type`, `source`, `from_date`, `to_date`, `count`, `earnings`.
+- ROB-1384: the US live Finnhub fetch uses a per-attempt timeout and bounded retry (`FINNHUB_EARNINGS_TIMEOUT_S` × `FINNHUB_EARNINGS_MAX_ATTEMPTS`); a Finnhub 429 still maps to a dedicated quota error and is never retried.
+- ROB-1384: on a total US fetch failure, stored `market_events` US earnings rows are served as an explicitly degraded fallback (`degraded: true`, `served_by`/`fallback_source: "market_events"`, `data_state`, `stale`, `data_as_of`, `provider_provenance`, `warning`). When no stored rows exist, the tool returns a closed error (`error_code: "earnings_lookup_failed"`, `error_class`, `data_state: "missing"`, `fallback_status`) — a failed lookup is never presented as `count: 0`.
 - KR requests read existing `market_events` rows where `category="earnings"` and `market="kr"`.
 - KR rows are read-only and may come from `source="wisefn"` scheduled earnings or `source="dart"` filings classified as earnings.
 - KR response top-level includes `source="market_events"`, `sources`, `market="kr"`, `warning`, and the existing `earnings` list.

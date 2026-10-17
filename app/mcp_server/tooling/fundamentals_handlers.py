@@ -228,8 +228,12 @@ def _register_fundamentals_tools_impl(
         description=(
             "Get earnings calendar for a US or Korean stock/date range. "
             "US uses Finnhub and includes EPS/revenue estimates when available. "
-            "Korean equities read existing market_events rows from WiseFn/DART; "
-            "KR shareholder meetings, ex-dividend dates, IR, and conferences are "
+            "On a US live-fetch failure, stored market_events rows may be "
+            "served with degraded=true + fallback_source='market_events'; a "
+            "total failure returns error_code='earnings_lookup_failed' and "
+            "must NOT be read as 'no earnings scheduled'. Korean equities read "
+            "existing market_events rows from WiseFn/DART; KR shareholder "
+            "meetings, ex-dividend dates, IR, and conferences are "
             "not included yet."
         ),
     )
