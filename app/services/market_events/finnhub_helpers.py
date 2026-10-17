@@ -24,6 +24,13 @@ behind. Worst-case total time of one call is
 ``max_attempts * per_attempt_timeout + (max_attempts - 1) * retry-wait
 upper bound`` (default ``wait_exponential_jitter(max=2.0)`` → +2s per
 gap). Caller cancellation propagates immediately.
+
+R6-F3 accepted risk: a client close that stalls AFTER the request
+already timed out or was cancelled can still hold the caller past that
+budget — reproduced only under injected transport-close hangs; httpcore
+closes TLS without waiting for the peer, and no FD/socket leak was
+observed. All exception conversions raise outside the except block so
+the raw httpx/h11 exception never survives in ``__context__`` (R6-F1).
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
+import re
 from typing import Any
 
 import httpx
@@ -214,11 +222,20 @@ async def fetch_earnings_calendar_finnhub(
                 raise TimeoutError(
                     f"non-positive attempt timeout ({per_attempt_timeout}s)"
                 )
+            # ROB-1384 r7 (R6-F1): converted exceptions are RAISED outside
+            # the except block so neither __cause__ nor __context__ keeps
+            # the raw httpx/h11 exception (which can echo key material,
+            # e.g. a peer-reflected header value in a bad status line).
+            # The except block only captures the sanitized exception.
+            failure: BaseException | None = None
+            response: httpx.Response | None = None
             try:
                 # ROB-1384 r5: a fresh async client per attempt — no
-                # threads. wait_for bounds the whole attempt INCLUDING
-                # client close (R5-S1): on timeout or caller cancellation
-                # the coroutine is cancelled and the connection closes.
+                # threads. wait_for bounds enter+request+client close as
+                # one coroutine (R5-S1) — a close stalled AFTER the
+                # request already timed out/cancelled can still run past
+                # the budget; that residual is the accepted R6-F3 risk
+                # (httpcore closes TLS without waiting for the peer).
                 # The API key goes in the X-Finnhub-Token header only.
                 async def _attempt_request() -> httpx.Response:
                     async with _new_earnings_http_client(per_attempt_timeout) as client:
@@ -236,33 +253,38 @@ async def fetch_earnings_calendar_finnhub(
                 response = await asyncio.wait_for(
                     _attempt_request(), timeout=per_attempt_timeout
                 )
-            except TimeoutError as exc:
-                # Re-raise with a non-empty, diagnosable message — a bare
-                # builtin TimeoutError stringifies to "" (ROB-1384 B1).
-                raise TimeoutError(
+            except TimeoutError:
+                # Raise a fresh, non-empty TimeoutError AFTER the except
+                # block — a bare builtin one stringifies to "" (ROB-1384
+                # B1) and the original (plus any CancelledError chain
+                # behind it) must not survive in the chain (R6-F1).
+                failure = TimeoutError(
                     f"finnhub earnings_calendar attempt "
                     f"{attempt.retry_state.attempt_number} timed out "
                     f"after {per_attempt_timeout}s for {symbol!r}"
-                ) from exc
+                )
             except httpx.TimeoutException:
-                raise TimeoutError(
+                failure = TimeoutError(
                     f"finnhub earnings_calendar attempt "
                     f"{attempt.retry_state.attempt_number} hit the httpx "
                     f"timeout ({per_attempt_timeout}s) for {symbol!r}"
-                ) from None
+                )
             except httpx.TransportError as exc:
-                raise FinnhubEarningsTransportError(
+                failure = FinnhubEarningsTransportError(
                     f"finnhub earnings_calendar transport error "
                     f"{type(exc).__name__} for {symbol!r} "
                     f"(path {_FINNHUB_EARNINGS_PATH})"
-                ) from None
+                )
             except httpx.HTTPError as exc:
-                raise FinnhubEarningsHTTPError(
+                failure = FinnhubEarningsHTTPError(
                     f"finnhub earnings_calendar request error "
                     f"{type(exc).__name__} for {symbol!r} "
                     f"(path {_FINNHUB_EARNINGS_PATH})",
                     status_code=0,
-                ) from None
+                )
+            if failure is not None:
+                raise failure
+            assert response is not None  # failure would have raised above
 
             status = response.status_code
             if status == 429:
@@ -290,13 +312,17 @@ async def fetch_earnings_calendar_finnhub(
                     f"(HTTP {status}) for {symbol!r} "
                     f"(path {_FINNHUB_EARNINGS_PATH})"
                 )
+            payload: Any = None
+            json_failed = False
             try:
                 payload = response.json()
             except Exception:
+                json_failed = True
+            if json_failed:
                 raise ValueError(
                     f"finnhub earnings_calendar returned non-JSON body "
                     f"for {symbol!r} (path {_FINNHUB_EARNINGS_PATH})"
-                ) from None
+                )
             if not isinstance(payload, dict):
                 raise ValueError(
                     f"finnhub earnings_calendar returned non-object JSON "
@@ -308,12 +334,34 @@ async def fetch_earnings_calendar_finnhub(
                     f"(HTTP {status}) for {symbol!r} "
                     f"(path {_FINNHUB_EARNINGS_PATH})"
                 )
-            if not isinstance(payload.get("earningsCalendar"), list):
+            calendar = payload.get("earningsCalendar")
+            if not isinstance(calendar, list):
                 raise ValueError(
                     f"finnhub earnings_calendar missing earningsCalendar "
                     f"list (HTTP {status}) for {symbol!r} "
                     f"(path {_FINNHUB_EARNINGS_PATH})"
                 )
+            # ROB-1384 r7 (R6-F2): every row must be a dict with a valid
+            # YYYY-MM-DD ``date``. A single malformed row fails the whole
+            # response (never partial success — a silently skipped row
+            # read as "no scheduled earnings" downstream). Messages carry
+            # path, status and the row index only — never row content.
+            for row_index, row in enumerate(calendar):
+                row_date = row.get("date") if isinstance(row, dict) else None
+                date_ok = isinstance(row_date, str) and re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}", row_date
+                )
+                if date_ok:
+                    try:
+                        datetime.date.fromisoformat(row_date)
+                    except ValueError:
+                        date_ok = False
+                if not date_ok:
+                    raise ValueError(
+                        f"finnhub earnings_calendar row {row_index} has "
+                        f"invalid date (HTTP {status}) for {symbol!r} "
+                        f"(path {_FINNHUB_EARNINGS_PATH})"
+                    )
             result = payload
 
     if not result or not result.get("earningsCalendar"):

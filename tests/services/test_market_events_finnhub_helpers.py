@@ -80,6 +80,18 @@ class _DripStream(httpx.AsyncByteStream):
         self._closed = True
 
 
+def _exception_chain(exc: BaseException):
+    """Every object reachable via __cause__/__context__ (R6-F1 walk)."""
+    seen, stack = set(), [exc]
+    while stack:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        yield e
+        stack.extend((e.__cause__, e.__context__))
+
+
 def _install_transport(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     def factory(timeout_s: float) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -577,13 +589,16 @@ async def test_earnings_transport_error_chain_is_suppressed(monkeypatch):
 
     exc = exc_info.value
     assert exc.__cause__ is None
-    assert exc.__suppress_context__ is True
+    assert exc.__context__ is None
     assert "ConnectError" in str(exc)
     assert _TEST_API_KEY not in str(exc)
     rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     assert _TEST_API_KEY not in rendered
     # the raw httpx exception text never reaches the rendered chain
     assert "connection refused" not in rendered
+    for member in _exception_chain(exc):
+        assert _TEST_API_KEY not in str(member)
+        assert _TEST_API_KEY not in repr(member)
 
 
 # ── ROB-1384 r6: R5-F2 closed 2xx contract ───────────────────────────
@@ -800,3 +815,233 @@ def test_earnings_retryable_classifier():
     assert h._is_retryable_earnings_error(h.FinnhubQuotaExceededError("q")) is False
     assert h._is_retryable_earnings_error(ValueError("x")) is False
     assert h._is_retryable_earnings_error(ImportError("x")) is False
+
+
+# ── ROB-1384 r7: R6-F1 raw chain hygiene ─────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_peer_reflected_key_never_survives_exception_chain(
+    monkeypatch,
+):
+    """R6-F1 — a real loopback peer echoes the sent X-Finnhub-Token back
+    inside a malformed status line; the raw httpx/h11 exception carries
+    the key, so the converted exception must keep NO raw chain at all
+    (retries exhausted → the tenacity-reraised final exception)."""
+    import traceback
+
+    requests_seen: list[bytes] = []
+
+    async def peer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            data = await reader.readuntil(b"\r\n\r\n")
+            requests_seen.append(data)
+            writer.write(b"HTTP/1.1 " + _TEST_API_KEY.encode() + b" junk\r\n\r\n")
+            await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    server = await asyncio.start_server(peer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    monkeypatch.setattr(
+        finnhub_helpers,
+        "_FINNHUB_EARNINGS_URL",
+        f"http://127.0.0.1:{port}/api/v1/calendar/earnings",
+    )
+
+    try:
+        with pytest.raises(finnhub_helpers.FinnhubEarningsTransportError) as ei:
+            await finnhub_helpers.fetch_earnings_calendar_finnhub(
+                "AAPL",
+                "2026-05-11",
+                "2026-05-11",
+                timeout_s=2.0,
+                max_attempts=3,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert len(requests_seen) == 3  # retried, then gave up
+    # the key really went over the wire — the peer echoed it in a bad
+    # status line, so the raw httpx exception did contain it
+    assert _TEST_API_KEY.encode() in requests_seen[0]
+    exc = ei.value
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+    for member in _exception_chain(exc):
+        assert _TEST_API_KEY not in str(member)
+        assert _TEST_API_KEY not in repr(member)
+    rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert _TEST_API_KEY not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "handler_body",
+    [
+        pytest.param("timeout", id="timeout"),
+        pytest.param("transport", id="transport"),
+        pytest.param("generic", id="generic-httperror"),
+    ],
+)
+async def test_earnings_converted_errors_leave_empty_raw_chain(
+    monkeypatch, handler_body
+):
+    """R6-F1 — timeout / transport / generic-HTTPError conversions all
+    raise the sanitized exception with both __cause__ and __context__
+    empty, after retries are exhausted."""
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if handler_body == "timeout":
+            await asyncio.sleep(60)
+            return httpx.Response(200, json=_EARNINGS_ROW)
+        if handler_body == "transport":
+            raise httpx.ConnectError("connection refused")
+        raise httpx.DecodingError("bad encoding")
+
+    _install_transport(monkeypatch, handler)
+
+    expected = (
+        TimeoutError
+        if handler_body == "timeout"
+        else (
+            finnhub_helpers.FinnhubEarningsTransportError
+            if handler_body == "transport"
+            else finnhub_helpers.FinnhubEarningsHTTPError
+        )
+    )
+    with pytest.raises(expected) as exc_info:
+        await finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL",
+            "2026-05-11",
+            "2026-05-11",
+            timeout_s=0.02 if handler_body == "timeout" else 2.0,
+            max_attempts=3,
+        )
+
+    exc = exc_info.value
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+    chain = list(_exception_chain(exc))
+    assert chain == [exc]  # nothing reachable at all
+    for member in chain:
+        assert _TEST_API_KEY not in str(member)
+        assert _TEST_API_KEY not in repr(member)
+
+
+# ── ROB-1384 r7: R6-F2 row-level date validation ─────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "calendar,bad_index",
+    [
+        ([{}], 0),
+        ([{"symbol": "BA", "date": "not-a-date"}], 0),
+        ([{"date": "2026-13-45"}], 0),
+        ([{"date": 20260514}], 0),
+        (["a string row"], 0),
+        ([{"date": "2026-05-14"}, {"date": "garbage"}], 1),
+        ([{"date": "2026-05-14"}, {}], 1),
+    ],
+    ids=[
+        "empty-dict",
+        "bad-format",
+        "impossible-date",
+        "non-str-date",
+        "non-dict-row",
+        "second-row-bad-format",
+        "second-row-missing",
+    ],
+)
+async def test_earnings_bad_calendar_row_fails_closed_once(
+    monkeypatch, calendar, bad_index
+):
+    """R6-F2 — every earningsCalendar row must be a dict with a valid
+    YYYY-MM-DD date; one bad row fails the WHOLE response, non-retryable,
+    with only the row index in the message."""
+    calls = {"n": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"earningsCalendar": calendar})
+
+    _install_transport(monkeypatch, handler)
+
+    with pytest.raises(ValueError) as exc_info:
+        await finnhub_helpers.fetch_earnings_calendar_finnhub(
+            "AAPL", "2026-05-11", "2026-05-11", max_attempts=3
+        )
+
+    assert calls["n"] == 1
+    msg = str(exc_info.value)
+    assert f"row {bad_index}" in msg
+    assert "/api/v1/calendar/earnings" in msg
+    assert "HTTP 200" in msg
+    assert "not-a-date" not in msg
+    assert "garbage" not in msg
+    assert _TEST_API_KEY not in msg
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_bad_row_fails_closed_through_callers(monkeypatch):
+    """R6-F2 caller level — a malformed row is a closed lookup failure,
+    never live "no scheduled earnings"."""
+    import datetime
+
+    from app.mcp_server.tooling import earnings_context as ec
+    from app.mcp_server.tooling.fundamentals import _financials
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"earningsCalendar": [{"symbol": "BA", "date": "not-a-date"}]},
+        )
+
+    _install_transport(monkeypatch, handler)
+
+    async def empty_fallback(*_args, **_kwargs):
+        return {"count": 0}
+
+    monkeypatch.setattr(
+        _financials, "_fetch_earnings_calendar_market_events_us", empty_fallback
+    )
+
+    tool_result = await _financials.handle_get_earnings_calendar(
+        "BA", "2026-05-11", "2026-05-11", market="us"
+    )
+    assert tool_result["error_code"] == "earnings_lookup_failed"
+
+    ctx = await ec.build_earnings_context("BA", "us", today=datetime.date(2026, 5, 11))
+    assert ctx is not None
+    assert ctx["freshness"] == "unknown"
+    assert "no scheduled earnings" not in ctx.get("note", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_earnings_mixed_optional_fields_still_success(monkeypatch):
+    """R6-F2 — rows missing optional fields (eps/hour/revenue) are not
+    a failure; only the date is validated."""
+    row = {"symbol": "AAPL", "date": "2026-05-14"}  # minimal valid row
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"earningsCalendar": [row]})
+
+    _install_transport(monkeypatch, handler)
+
+    result = await finnhub_helpers.fetch_earnings_calendar_finnhub(
+        "AAPL", "2026-05-11", "2026-05-11"
+    )
+    assert result["count"] == 1
