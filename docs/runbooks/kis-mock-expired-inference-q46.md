@@ -154,13 +154,43 @@ new operator decision.
   is caught by the deferred COMMIT-time trigger, which re-runs the order,
   symbol (at/after accept) and same-correlation / same-symbol kis_mock fill
   checks in SQL while COMMIT is processed and refuses the whole close (the CLI
-  then reports `refused`). What remains is a fill that commits during this
-  transaction's own COMMIT processing, after the trigger's statements — two
-  transactions committing at the same instant. The row then stays expired with
-  the inference marker and the fill is still recorded in `execution_ledger`;
-  the marker makes the inference auditable (#1112 accepts the same). The SQL
-  fill helper `review.kis_mock_q46_detail_has_fill` mirrors the Python rule
-  (fill reason codes pinned by a test).
+  then reports `refused`). The SQL fill helper
+  `review.kis_mock_q46_detail_has_fill` mirrors the Python rule (fill reason
+  codes pinned by a test).
+- Fill writer serialization (ROB-1378, migration `20261016_rob1378_q46_lock`):
+  #1250 left one window — a fill whose transaction was written but not yet
+  committed while the trigger's checks ran was invisible to them, and both
+  transactions then committed. The trigger and every kis/mock fill writer now
+  share one transaction-scoped advisory key
+  (`hashtextextended('auto_trader:kis_mock_q46_fill_gate', 0)`):
+  - writers take it **shared** in a BEFORE INSERT OR UPDATE row trigger
+    (`review.kis_mock_q46_fill_writer_lock()`) on `review.execution_ledger`
+    for every `broker='kis' AND account_mode='mock'` row and on every row
+    write of `review.kis_mock_order_ledger` (no predicate to drift from the
+    gate's). Writers never wait for each other and nothing is refused or
+    rewritten. Neither trigger's WHEN calls a `review.*` function: under the
+    #789 Stage 4 split new functions carry no PUBLIC EXECUTE, so such a call
+    would fail every ordinary kis_mock ledger write by `at_app`;
+  - the COMMIT-time gate takes it **exclusively** right before its fill
+    checks. An in-flight fill transaction finishes first and the checks (a
+    fresh READ COMMITTED snapshot each) see it if it committed — the close is
+    refused. A fill writer that arrives later waits until the close has
+    committed or rolled back and is then recorded after it, like any later
+    fill (the marker keeps the inference auditable, as #1112 accepts).
+  - The gate calls `review.kis_mock_q46_detail_has_fill` (#1250, never granted
+    there); the ROB-1378 migration grants `at_app` EXECUTE on that pure helper
+    (conditional on the role existing), so the close also runs under Stage 4.
+  - A close under any isolation level other than READ COMMITTED is refused
+    (`requires READ COMMITTED`): a fixed snapshot would make the wait useless.
+    The CLI uses the default READ COMMITTED.
+  - Operational effect: while the operator's `--commit` is in its COMMIT, kis/mock
+    fill writes (only those) wait for it; the close itself waits for any
+    kis/mock fill transaction already open, with no timeout. A writer that
+    holds the shared key and then needs one of the four row locks the close
+    holds is a deadlock PostgreSQL resolves by aborting one side: an aborted
+    close exits 1 (database error, nothing written, rerun the preview); an
+    aborted writer retries on its own schedule and its fill lands after the
+    close. Neither outcome closes a row next to a fill the close missed.
 
 - No broker read is made: a fill KIS mock recorded but this repository never
   ledgered would not be seen. That is exactly the `no_broker_original` caveat

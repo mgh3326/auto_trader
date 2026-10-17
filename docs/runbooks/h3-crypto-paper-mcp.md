@@ -110,10 +110,10 @@ unit is skipped). The server itself refuses a blank or missing `MCP_PROFILE`
 2. Confirm 8776 is free on the host listener table (desk: confirmed free).
 3. Create `MCP_H3_CRYPTO_PAPER_AUTH_TOKEN` in one of the two deploy env files
    (for example the runtime file the host passes as
-   `AT_RUNTIME_ENV_FILE=/root/at-run/.env.api`) and in the operator session
+   `AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api`) and in the operator session
    env, same value, never printed. Check presence by name only:
 
-       grep -c '^MCP_H3_CRYPTO_PAPER_AUTH_TOKEN=.' /root/at-run/.env.api
+       grep -c '^MCP_H3_CRYPTO_PAPER_AUTH_TOKEN=.' /root/at-secrets/.env.api
 
 4. Deploy with the normal pull script after this PR is merged and its image
    is built; a `--dry-run` first lists `at-mcp-h3-crypto-paper` as planned.

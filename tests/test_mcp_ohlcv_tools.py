@@ -284,6 +284,13 @@ async def test_get_ohlcv_include_indicators_daily_sets_vwap_to_none(monkeypatch)
     df = _multi_row_daily_df()
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+    # Keep this test DB-free: canonical daily_candles seam misses → the RSI
+    # falls back to the provider frame (rsi_source="upbit").
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_canonical_daily_frame",
+        AsyncMock(return_value=None),
+    )
 
     result = await tools["get_ohlcv"]("KRW-BTC", count=25, include_indicators=True)
 
@@ -313,6 +320,8 @@ async def test_get_ohlcv_empty_crypto_result_preserves_indicators_flag(monkeypat
         "count": 0,
         "rows": [],
         "indicators_included": True,
+        "rsi_source": "upbit",
+        "bars_used": 0,
         "message": "No candle data available for KRW-BTC",
     }
 
@@ -537,6 +546,13 @@ async def test_get_ohlcv_day_include_indicators_sets_vwap_none(monkeypatch):
     df = _multi_row_daily_df()
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
+    # Keep this test DB-free: canonical daily_candles seam misses → the RSI
+    # falls back to the provider frame (rsi_source="yahoo").
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_canonical_daily_frame",
+        AsyncMock(return_value=None),
+    )
 
     result = await tools["get_ohlcv"](
         "AAPL",
@@ -546,6 +562,8 @@ async def test_get_ohlcv_day_include_indicators_sets_vwap_none(monkeypatch):
     )
 
     assert result["indicators_included"] is True
+    assert result["rsi_source"] == "yahoo"
+    assert result["bars_used"] == len(df)
     assert result["rows"][-1]["vwap"] is None
 
 
@@ -766,7 +784,13 @@ async def test_get_ohlcv_kr_intraday_include_indicators_preserves_fields(monkeyp
             }
             for index in range(25)
             for current, close in [
-                (base + pd.Timedelta(minutes=index), 100.0 + (index * 0.4))
+                (
+                    base + pd.Timedelta(minutes=index),
+                    # ROB-1382: the shared Wilder RSI reports None on a
+                    # zero-loss window (same as analyze_stock_batch(quick)) —
+                    # keep mixed moves so the series is defined.
+                    100.0 + (index * 0.4) - (3.0 if index in (9, 18) else 0.0),
+                )
             ]
         ]
     )

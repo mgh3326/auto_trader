@@ -72,7 +72,8 @@ def _run(
     log_path.touch()
     state_path = tmp_path / "state.json"
     run_dir = tmp_path / "run"
-    run_dir.mkdir()
+    # exist_ok: a test may pre-install the script in the run directory, as on NCP.
+    run_dir.mkdir(exist_ok=True)
     initial = {name: KIS_OLD if name == "at-kis-ws" else OLD for name in INITIAL}
     assert active_mcp_color in {"blue", "green"}
     if active_mcp_color == "green":
@@ -190,8 +191,8 @@ def _run(
         )
     for path in bindir.iterdir():
         path.chmod(0o755)
-    (run_dir / ".env.runtime").write_text("x=y\n")
-    (run_dir / ".env.secrets").write_text(
+    (run_dir / ".env.api").write_text("x=y\n")
+    (run_dir / ".env.scheduler").write_text(
         "\n".join(
             f"{name}=tok-{name}"
             for name in (
@@ -230,6 +231,7 @@ def _run(
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
             "AT_RUN_DIRECTORY": str(run_dir),
+            "AT_SECRETS_DIRECTORY": str(run_dir),
             "MCP_HAPROXY_TEMPLATE": str(REPO / "ops/ncp/haproxy/haproxy.cfg.tmpl"),
             "FAKE_DOCKER_STATE": str(state_path),
             "FAKE_DOCKER_LOG": str(log_path),

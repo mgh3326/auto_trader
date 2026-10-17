@@ -215,7 +215,6 @@ ASYNC_METHOD_SEAMS: Final = (
 # Finnhub ships a synchronous ``requests``-backed client.
 FINNHUB_CLIENT_FACTORIES: Final = (
     ("app.services.finnhub_news", "_get_finnhub_client"),
-    ("app.services.market_events.finnhub_helpers", "_get_finnhub_client"),
     ("app.mcp_server.tooling.fundamentals_sources_finnhub", "_get_finnhub_client"),
 )
 
