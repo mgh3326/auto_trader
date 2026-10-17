@@ -318,8 +318,8 @@ class Env:
         (self.bindir / "nohup").write_text("#!/usr/bin/env bash\nexit 0\n")
         for path in self.bindir.iterdir():
             path.chmod(0o755)
-        (self.run_dir / ".env.runtime").write_text("x=y\n")
-        (self.run_dir / ".env.secrets").write_text(
+        (self.run_dir / ".env.api").write_text("x=y\n")
+        (self.run_dir / ".env.scheduler").write_text(
             "".join(
                 f"{name}=x\n"
                 for name in (
@@ -380,6 +380,7 @@ class Env:
                 **base,
                 "PATH": f"{self.bindir}:{os.environ['PATH']}",
                 "AT_RUN_DIRECTORY": str(self.run_dir),
+                "AT_SECRETS_DIRECTORY": str(self.run_dir),
                 "MCP_HAPROXY_TEMPLATE": str(REPO / "ops/ncp/haproxy/haproxy.cfg.tmpl"),
                 "FAKE_DOCKER_STATE": str(self.state_path),
                 "FAKE_DOCKER_LOG": str(self.log),
