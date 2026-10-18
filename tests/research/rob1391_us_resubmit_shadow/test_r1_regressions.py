@@ -104,6 +104,7 @@ class _Session:
 
     def get(self, url, params=None, timeout=None, **kw):
         self.kwargs.append(kw)
+        self.params = getattr(self, "params", []) + [dict(params or {})]
         return self.responses.pop(0)
 
 
@@ -150,20 +151,20 @@ def test_f2_empty_quote_stream_is_unknown_not_skip():
     assert c.first_valid_quote("SYMA", T0, T1).status == UNKNOWN
     c, _ = _client([_Resp(200, {"quotes": {"SYMA": []}, "next_page_token": None})])
     ev = c.ask_at_or_below("SYMA", T0, T0 + timedelta(minutes=1), Decimal("99.50"))
-    assert ev.status == UNKNOWN and ev.reason == "no_quote_evidence"
+    assert ev.status == UNKNOWN and ev.reason == "no_valid_quote_in_window"
 
 
-def test_f2_prevailing_quote_counts_as_ask_in_force():
+def test_f2_d7_pre_window_quote_is_never_evidence():
+    """D7 (operator Q-1018-4 = A): a quote before the window is not carried
+    forward, even when its ask is at/below the limit."""
+
+    end = T0 + timedelta(minutes=1)
     rows = [quote_json(T0 - timedelta(seconds=30), bid=99.49, ask=99.50)]
-    ev = market_data.ask_evidence_from_quotes(
-        rows, T0, T0 + timedelta(minutes=1), Decimal("99.50"), True
-    )
-    assert ev.status == OK and ev.found
-    rows = [quote_json(T0 - timedelta(seconds=30), bid=99.50, ask=99.60)]
-    ev = market_data.ask_evidence_from_quotes(
-        rows, T0, T0 + timedelta(minutes=1), Decimal("99.50"), True
-    )
-    assert ev.status == OK and not ev.found  # quotes cover the window, none <= P
+    ev = market_data.ask_evidence_from_quotes(rows, T0, end, Decimal("99.50"), True)
+    assert ev.status == UNKNOWN and ev.reason == "no_valid_quote_in_window"
+    rows.append(quote_json(T0 + timedelta(seconds=5), bid=99.50, ask=99.60))
+    ev = market_data.ask_evidence_from_quotes(rows, T0, end, Decimal("99.50"), True)
+    assert ev.status == OK and not ev.found  # valid in-window quote, above P
 
 
 @pytest.mark.parametrize(
@@ -403,20 +404,23 @@ def test_f9_seal_refuses_unapproved_mandatory_deviations(tmp_path):
     }
     with pytest.raises(ManifestError, match="D1_exit_hold_to_d20"):
         build_manifest(**kwargs)
-    with pytest.raises(ManifestError, match="deviation-ref"):
+    with pytest.raises(ManifestError, match="D7_in_window_quote_evidence"):
         build_manifest(
             **kwargs,
             approved_deviations={"D1_exit_hold_to_d20", "D2_resubmit_gate_subset"},
+            deviation_ref="hk:doc x",
         )
-    m = build_manifest(
-        **kwargs,
-        approved_deviations={"D1_exit_hold_to_d20", "D2_resubmit_gate_subset"},
-        deviation_ref="hk:doc x",
-    )
-    assert m["deviations"]["approved"] == [
+    mandatory = {
         "D1_exit_hold_to_d20",
         "D2_resubmit_gate_subset",
-    ]
+        "D7_in_window_quote_evidence",
+    }
+    with pytest.raises(ManifestError, match="deviation-ref"):
+        build_manifest(**kwargs, approved_deviations=mandatory)
+    m = build_manifest(
+        **kwargs, approved_deviations=mandatory, deviation_ref="hk:doc x"
+    )
+    assert m["deviations"]["approved"] == sorted(mandatory)
     assert (
         m["deviations"]["catalog"]["D3_budget_fill_notional_only"]["mandatory"] is False
     )
@@ -435,14 +439,12 @@ def test_r2_n1_truncated_prefix_never_proves_a_prevailing_quote():
     end = T0 + timedelta(minutes=1)
     ev = market_data.ask_evidence_from_quotes(pre, T0, end, Decimal("99.50"), False)
     assert ev.status == UNKNOWN and ev.reason == "pagination_cap"
-    # the same prefix is proof once a row at/after the window start was reached
+    # D7: pre-window quotes are never evidence, complete stream or not
     reached = [*pre, quote_json(T0 + timedelta(seconds=10), bid=99.60, ask=99.70)]
     ev = market_data.ask_evidence_from_quotes(reached, T0, end, Decimal("99.50"), False)
-    assert ev.status == OK and ev.found
-    # and a complete stream proves it too
-    assert market_data.ask_evidence_from_quotes(
-        pre, T0, end, Decimal("99.50"), True
-    ).found
+    assert ev.status == UNKNOWN and ev.reason == "pagination_cap"
+    ev = market_data.ask_evidence_from_quotes(pre, T0, end, Decimal("99.50"), True)
+    assert ev.status == UNKNOWN and ev.reason == "no_valid_quote_in_window"
 
 
 def test_r2_n1_client_page_cap_with_only_old_quotes_is_unknown():
@@ -550,7 +552,7 @@ def test_r3_n3_invalid_update_before_window_clears_the_earlier_quote():
         },  # crossed update
     ]
     ev = market_data.ask_evidence_from_quotes(rows, T0, end, Decimal("99.50"), True)
-    assert ev.status == UNKNOWN and ev.reason == "no_quote_evidence"
+    assert ev.status == UNKNOWN and ev.reason == "no_valid_quote_in_window"
 
 
 def z_(ts):
@@ -610,3 +612,168 @@ def test_r3_n2_assign_stops_after_the_first_duplicate(tmp_path):
         ["stopped_after_duplicate_parent"],
     ]
     assert {a["symbol"], b["symbol"]} == {"SYMA", "SYMB"}
+
+
+# ---------------------------------------------------------------- round 4 (verdict-r4, head 080d811) + D7
+
+
+def _window_case(rows, *, complete=True, low=99.49, volume=100):
+    """Evidence and conservative fill for the minute [T0, T0+1m), P=99.50."""
+
+    end = T0 + timedelta(minutes=1)
+    ev = market_data.ask_evidence_from_quotes(rows, T0, end, Decimal("99.50"), complete)
+    bar = parse_bar(bar_json(T0, o=99.9, h=100.1, low=low, c=100.0, v=volume))
+    out = simulate_conservative(
+        bars=(bar,),
+        submit_at=T0,
+        close_utc=T1,
+        limit=Decimal("99.50"),
+        remaining=1,
+        affordable=lambda _f: 1,
+        ask_lookup=lambda a, b: market_data.ask_evidence_from_quotes(
+            rows, a, b, Decimal("99.50"), complete
+        ),
+    )
+    return ev, out
+
+
+def _q(ts_text, *, bid, ask, size=1):
+    return {"t": ts_text, "ap": ask, "as": size, "bp": bid, "bs": size}
+
+
+START = "2025-11-18T14:30:00"
+END = "2025-11-18T14:31:00"
+
+
+def test_r4_b1_nanosecond_timestamps_are_exact():
+    assert market_data.parse_ts_ns(START + "Z") == market_data.dt_to_ns(T0)
+    assert (
+        market_data.parse_ts_ns(START + ".000000001Z") == market_data.dt_to_ns(T0) + 1
+    )
+    assert (
+        market_data.parse_ts_ns(START + ".999999999Z")
+        == market_data.dt_to_ns(T0) + 999_999_999
+    )
+    assert market_data.parse_ts_ns(START + ".1234567891Z") is None  # >9 digits: refused
+    assert market_data.parse_ts_ns("2025-11-18 15:00:00Z") is None
+    assert market_data.parse_ts_ns(START) is None  # no zone
+    assert market_data.ns_to_iso(market_data.dt_to_ns(T0) + 1) == START + ".000000001Z"
+
+
+@pytest.mark.parametrize("frac", ["000000001", "000000999", "000001000"])
+def test_r4_b1_quote_just_after_start_is_in_window_evidence(frac):
+    ev, out = _window_case([_q(f"{START}.{frac}Z", bid=99.49, ask=99.50)])
+    assert ev.status == OK and ev.found and out.qty == 1
+
+
+def test_r4_b1_submission_one_ns_after_minute_start_excludes_that_minute():
+    from research.rob1391_us_resubmit_shadow.fills import eligible_bars
+
+    bar = parse_bar(bar_json(T0, o=99.9, h=100.1, low=99.0, c=100.0, v=100))
+    submit = market_data.dt_to_ns(T0) + 1
+    assert eligible_bars((bar,), submit, T1) == []
+    assert eligible_bars((bar,), market_data.dt_to_ns(T0), T1) == [bar]
+
+
+def test_r4_b2_invalid_quote_at_start_is_unknown_not_zero():
+    rows = [
+        _q("2025-11-18T14:29:59Z", bid=99.49, ask=99.50),
+        _q(START + "Z", bid=99.45, ask=99.40),  # crossed
+    ]
+    ev, out = _window_case(rows)
+    assert ev.status == UNKNOWN and ev.reason == "no_valid_quote_in_window"
+    assert out.status == UNKNOWN and out.fills == []
+
+
+def test_d7_window_is_start_inclusive_end_exclusive_at_ns_precision():
+    # at start: in
+    assert _window_case([_q(START + "Z", bid=99.49, ask=99.50)])[1].qty == 1
+    # 1 ns before start: out (pre-window, never carried) -> UNKNOWN
+    ev, out = _window_case([_q("2025-11-18T14:29:59.999999999Z", bid=99.49, ask=99.50)])
+    assert ev.status == UNKNOWN and out.status == UNKNOWN
+    # 1 ns before end: in
+    assert (
+        _window_case([_q("2025-11-18T14:30:59.999999999Z", bid=99.49, ask=99.50)])[
+            1
+        ].qty
+        == 1
+    )
+    # exactly at end: out -> UNKNOWN
+    ev, out = _window_case([_q(END + "Z", bid=99.49, ask=99.50)])
+    assert ev.status == UNKNOWN and out.status == UNKNOWN
+
+
+def test_d7_valid_quotes_all_above_limit_complete_vs_truncated():
+    rows = [_q(START + ".5Z", bid=99.60, ask=99.70)]
+    ev, out = _window_case(rows, complete=True)
+    assert ev.status == OK and not ev.found and out.status == OK and out.qty == 0
+    ev, out = _window_case(rows, complete=False)
+    assert (
+        ev.status == UNKNOWN and ev.reason == "pagination_cap" and out.status == UNKNOWN
+    )
+
+
+def test_d7_only_invalid_quotes_in_window_is_unknown():
+    rows = [_q(START + ".1Z", bid=99.0, ask=0), _q(START + ".2Z", bid=99.6, ask=99.5)]
+    ev, out = _window_case(rows)
+    assert ev.status == UNKNOWN and out.status == UNKNOWN
+
+
+def test_d7_client_requests_only_the_window():
+    c, sess = _client([_Resp(200, {"quotes": {"SYMA": []}, "next_page_token": None})])
+    c.ask_at_or_below("SYMA", T0, T0 + timedelta(minutes=1), Decimal("99.50"))
+    # the client sends exact ns bounds and no look-back
+    assert sess.kwargs == [{"allow_redirects": False}]
+    assert sess.params[0]["start"] == "2025-11-18T14:30:00.000000000Z"
+    assert sess.params[0]["end"] == "2025-11-18T14:31:00.000000000Z"
+
+
+def test_d7_is_a_mandatory_sealed_deviation():
+    from research.rob1391_us_resubmit_shadow.manifest import (
+        DEVIATIONS,
+        MANDATORY_DEVIATIONS,
+    )
+
+    assert "D7_in_window_quote_evidence" in MANDATORY_DEVIATIONS
+    assert DEVIATIONS["D7_in_window_quote_evidence"][0] is True
+
+
+def _submit_instant(quote):
+    """The submission instant the engine uses (exact ns since D7/round 5)."""
+
+    return getattr(quote, "at_ns", None) or quote.at_utc
+
+
+def test_r4_b1_sub_microsecond_submission_excludes_the_minute_it_started_in():
+    """First quote (= virtual submission) 500 ns after the minute starts: that
+    minute's bar began before submission and must not be used. Microsecond
+    truncation used to put the submission exactly on the bar start."""
+
+    q = market_data.parse_valid_quote(_q(START + ".000000500Z", bid=99.49, ask=99.50))
+    bar = parse_bar(bar_json(T0, o=99.9, h=100.1, low=99.40, c=100.0, v=1_000))
+    rows = [_q(START + ".000000600Z", bid=99.49, ask=99.50)]
+    out = simulate_conservative(
+        bars=(bar,),
+        submit_at=_submit_instant(q),
+        close_utc=T1,
+        limit=Decimal("99.50"),
+        remaining=1,
+        affordable=lambda _f: 1,
+        ask_lookup=lambda a, b: market_data.ask_evidence_from_quotes(
+            rows, a, b, Decimal("99.50"), True
+        ),
+    )
+    assert out.qty == 0 and out.candidate_minutes == 0
+
+
+def test_r4_b1_tester_data_under_d7_is_zero_by_rule():
+    """verdict-r4 R4-B1 data: prior 99.50 ask, replaced by 100.00 at start+1ns.
+    Under D7 the pre-window quote is not carried, so the only in-window valid
+    ask is 100.00 > P: no fill (the operator-approved narrower rule)."""
+
+    rows = [
+        _q("2025-11-18T14:29:59Z", bid=99.49, ask=99.50),
+        _q(START + ".000000001Z", bid=99.99, ask=100.00),
+    ]
+    ev, out = _window_case(rows)
+    assert ev.status == OK and not ev.found and out.qty == 0

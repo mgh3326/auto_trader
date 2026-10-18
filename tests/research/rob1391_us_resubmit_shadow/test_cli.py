@@ -59,6 +59,8 @@ def seal_args(tmp, prereg, fees, *, version=POLICY["version"]):
         "D1_exit_hold_to_d20",
         "--approve-deviation",
         "D2_resubmit_gate_subset",
+        "--approve-deviation",
+        "D7_in_window_quote_evidence",
         "--deviation-ref",
         "fixture-deviation-ref",
     ]

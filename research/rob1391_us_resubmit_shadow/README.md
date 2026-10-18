@@ -16,7 +16,7 @@ ROB-1383 사전등록안 v1_review(운영자 승인 Q-1018-1 = A)의 실험 장�
 | 부모 | 승인 이후 새로 생긴 US 상장 보통주/ETF 의 실제 매수 지정가 DAY 주문 중, 정규 세션 만료와 정수 잔량이 원장으로 증명된 것. D0 = 그 만료 세션 |
 | C | 추가 재제출 0회. D0 까지의 실제 체결만 |
 | T | D1–D3 에 같은 절대가 P_i·남은 정수 잔량만 가상 재제출(가격 추격·예산 추가 금지) |
-| 체결(주) | 보수 모형: 제출 이후 1분봉 `low ≤ P−1틱` **그리고** 그 분의 유효 ask ≤ P, 수량 ≤ ⌊그 분 거래량의 1%⌋, 정수주, 잔량·예산 이내, 가격 = P |
+| 체결(주) | 보수 모형: 제출 이후 1분봉 `low ≤ P−1틱` **그리고** 그 분의 창 [start, end) 안에서 관측된 유효 ask ≤ P(D7), 수량 ≤ ⌊그 분 거래량의 1%⌋, 정수주, 잔량·예산 이내, 가격 = P. 시각은 정수 나노초로 비교(µs 절삭 없음) |
 | 체결(민감도) | 낙관 모형 `low ≤ P` (별도 열 T_opt) |
 | M1 / M2 | M1 = Σ체결액/ΣB_i, M2 = Σ(D+20 순자산 − B_i)/ΣB_i (D0 후 20번째 세션 종가, 현금이자 0, 청산비용 차감) |
 | 통계 | symbol 군집 bootstrap 10,000 (seed 1383), 귀무중심 단측 p 2개에 Holm(0.025/0.05), 날짜 블록 민감도 |
@@ -66,6 +66,7 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   --fee-schedule "$PRIVATE/rob1391/fee_schedule.json" \
   --approve-deviation D1_exit_hold_to_d20 \
   --approve-deviation D2_resubmit_gate_subset \
+  --approve-deviation D7_in_window_quote_evidence \
   --approve-deviation D3_budget_fill_notional_only \
   --approve-deviation D4_policy_epoch_invariant_basis \
   --approve-deviation D5_accept_outside_regular_session \
@@ -73,7 +74,7 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   --deviation-ref "hk:doc decision/2026-10-18/rob1391-deviations"
 ```
 
-- 운영자 결정 Q-1018-2 = A(D1–D6 전부 승인, at-integrator 릴레이 10-18). 🔴 seal 전에
+- 운영자 결정 Q-1018-2 = A(D1–D6 전부 승인), Q-1018-4 = A(D7 필수 추가; `hk:doc decision/2026-10-18/rob1391-d7-round5`). 🔴 seal 전에
   `handoffkeep doc get decision/2026-10-18/rob1391-deviations` 로 그 기록이 실재하고 D1–D6 을 담는지
   desk 가 대조한다 — 기록이 없거나 내용이 다르면 seal 하지 않는다(태그 없는 승인 문구는 증거가 아니다).
 
@@ -82,7 +83,9 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   보류된다(봉인 뒤 추가 불가). 형식은 `costs.py` docstring(닫힌 키, 문자열 소수, `fx=none_usd_ledger`).
 - 🔴 **사전등록 문언과 다른 규칙은 전부 이름 붙은 deviation 이고, seal 은 승인 없이 거부한다.**
   필수(구현상 이미 적용 — 승인 없으면 seal 불가): `D1_exit_hold_to_d20`(라이브 exit 재생 불가 → D+20 보유),
-  `D2_resubmit_gate_subset`(D1–D3 게이트 재검증 범위). 선택(기본은 원문 그대로의 엄격 규칙, 승인 시에만 완화):
+  `D2_resubmit_gate_subset`(D1–D3 게이트 재검증 범위), `D7_in_window_quote_evidence`(체결 후보의 ask 증거는
+  그 분의 창 [start, end) 안에서 관측된 유효 호가만 — 창 이전 호가 승계 없음, 창 안 유효 호가 0 이면 UNKNOWN;
+  운영자 Q-1018-4 = A, `hk:doc decision/2026-10-18/rob1391-d7-round5`). 선택(기본은 원문 그대로의 엄격 규칙, 승인 시에만 완화):
   `D3_budget_fill_notional_only`(예산 캡에서 비용 제외), `D4_policy_epoch_invariant_basis`(주문 시점 정책 스탬프 없는
   부모 허용), `D5_accept_outside_regular_session`(정규장 밖 접수 DAY 주문 허용), `D6_ledger_budget_basis`(승인 rung
   없을 때 P×Q 를 B_i 로). 목록·문구는 manifest `deviations.catalog` 에 봉인된다.

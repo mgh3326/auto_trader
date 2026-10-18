@@ -45,6 +45,13 @@ DEVIATIONS: dict[str, tuple[bool, str]] = {
         "split/merge review + first-quote spread <= 30bp + remaining/duplicate/"
         "virtual cash; screening/support/deep-band gates are not re-run",
     ),
+    "D7_in_window_quote_evidence": (
+        True,
+        "fill-candidate ask evidence = valid quotes observed inside the minute "
+        "window [start, end) only (integer ns, start in, end out); no quote "
+        "before the window is carried forward; no valid in-window quote -> "
+        "UNKNOWN (operator Q-1018-4 = A, hk:doc decision/2026-10-18/rob1391-d7-round5)",
+    ),
     "D3_budget_fill_notional_only": (
         False,
         "budget cap counts fill notional only (prereg: fill + cost <= B_i); "

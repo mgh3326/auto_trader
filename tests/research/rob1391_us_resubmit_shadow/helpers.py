@@ -27,12 +27,13 @@ from research.rob1391_us_resubmit_shadow.ledger import Ledger
 from research.rob1391_us_resubmit_shadow.manifest import build_manifest
 from research.rob1391_us_resubmit_shadow.market_data import (
     OK,
-    PREVAILING_LOOKBACK,
     UNKNOWN,
     AskEvidence,
     BarsResult,
     QuoteResult,
+    as_ns,
     ask_evidence_from_quotes,
+    ns_to_dt,
     parse_bar,
     parse_valid_quote,
 )
@@ -204,7 +205,9 @@ def rung_row(
     }
 
 
-MANDATORY_DEVIATIONS = frozenset({"D1_exit_hold_to_d20", "D2_resubmit_gate_subset"})
+MANDATORY_DEVIATIONS = frozenset(
+    {"D1_exit_hold_to_d20", "D2_resubmit_gate_subset", "D7_in_window_quote_evidence"}
+)
 
 
 def rung_for(
@@ -389,36 +392,31 @@ class FakeMarket:
             t += timedelta(minutes=1)
         return out
 
-    def first_valid_quote(
-        self, symbol: str, start_utc: datetime, end_utc: datetime
-    ) -> QuoteResult:
-        day = start_utc.astimezone(ET).date()
+    def first_valid_quote(self, symbol: str, start, end) -> QuoteResult:
+        s_ns, e_ns = as_ns(start), as_ns(end)
+        day = ns_to_dt(s_ns).astimezone(ET).date()
         self.calls.append(("quote", symbol))
         if ("quote", symbol, day) in self.unknown:
             return QuoteResult(UNKNOWN, reason="http_503")
         rows = list(self._session_quotes(symbol, day))
         for raw in rows:
             q = parse_valid_quote(raw)
-            if q is not None and start_utc <= q.at_utc < end_utc:
+            if q is not None and s_ns <= q.at_ns < e_ns:
                 return QuoteResult(OK, quote=q, digests=(f"q-{symbol}-{day}",))
         return QuoteResult(
             UNKNOWN, reason="no_quote_data" if not rows else "no_valid_quote"
         )
 
-    def ask_at_or_below(
-        self, symbol: str, start_utc: datetime, end_utc: datetime, limit: Decimal
-    ) -> AskEvidence:
-        day = start_utc.astimezone(ET).date()
+    def ask_at_or_below(self, symbol: str, start, end, limit: Decimal) -> AskEvidence:
+        """Same D7 rule as the real client (only in-window quotes)."""
+
+        s_ns, e_ns = as_ns(start), as_ns(end)
+        day = ns_to_dt(s_ns).astimezone(ET).date()
         self.calls.append(("ask", symbol))
         if ("ask", symbol, day) in self.unknown:
             return AskEvidence(UNKNOWN, reason="pagination_cap")
-        lo = start_utc - PREVAILING_LOOKBACK
-        rows = [
-            r
-            for r in self._session_quotes(symbol, day)
-            if (q := parse_valid_quote(r)) is None or lo <= q.at_utc < end_utc
-        ]
-        return ask_evidence_from_quotes(rows, start_utc, end_utc, limit, True, ("a",))
+        rows = list(self._session_quotes(symbol, day))
+        return ask_evidence_from_quotes(rows, s_ns, e_ns, limit, True, ("a",))
 
 
 def seal(

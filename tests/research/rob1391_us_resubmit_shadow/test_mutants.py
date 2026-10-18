@@ -585,6 +585,18 @@ EVASIONS = [
         "def _x(http_lib):\n    method_ref = getattr(http_lib, 'post')\n",
         "import",
     ),
+    # r4 S1: aliased imports of guarded modules (the old branch was unreachable)
+    ("fills.py", "import sys as runtime\n", "import"),
+    ("fills.py", "import os as platform\n", "import"),
+    ("market_data.py", "import requests as http_lib\n", "import"),
+    ("db_source.py", "import sqlalchemy as sql_lib\n", "import"),
+    (
+        "market_data.py",
+        "import requests as http_lib\n\ndef _probe(url):\n    return http_lib.get(url)\n",
+        "import",
+    ),
+    ("fills.py", "from os import system\n", "import"),
+    ("fills.py", "from sys import modules as table\n", "import"),
 ]
 
 

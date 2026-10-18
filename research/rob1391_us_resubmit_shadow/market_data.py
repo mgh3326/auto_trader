@@ -17,6 +17,7 @@ volume cap. SIP is the sealed default.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -35,16 +36,64 @@ QUOTES_URL = f"https://{DATA_HOST}/v2/stocks/quotes"
 FEEDS = ("sip", "iex")
 MAX_PAGES_PER_WINDOW = 5
 PAGE_LIMIT = 10_000
-# A quote prevails until replaced: the ask in force when a minute opens is the
-# last valid quote before it. Looked up this far back; older -> UNKNOWN.
-PREVAILING_LOOKBACK = timedelta(minutes=5)
+NS = 1_000_000_000
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+# RFC 3339 as Alpaca sends it: up to nanosecond fractions. Never truncated to
+# microseconds (datetime precision) -- every comparison is on integer ns.
+_RFC3339 = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$"
+)
 
 OK = "ok"
 UNKNOWN = "unknown"
 
 
+def parse_ts_ns(value: Any) -> int | None:
+    """Exact integer nanoseconds since the epoch; None if not RFC 3339 with a
+    zone or with more than 9 fraction digits."""
+
+    if not isinstance(value, str):
+        return None
+    m = _RFC3339.match(value)
+    if m is None:
+        return None
+    zone = "+00:00" if m.group(3) == "Z" else m.group(3)
+    try:
+        whole = datetime.fromisoformat(m.group(1) + zone)
+    except ValueError:
+        return None
+    frac = int((m.group(2) or "").ljust(9, "0"))
+    return dt_to_ns(whole) + frac
+
+
+def dt_to_ns(value: datetime) -> int:
+    if value.tzinfo is None:
+        raise ValueError("naive datetime")
+    delta = value - EPOCH
+    return (delta.days * 86_400 + delta.seconds) * NS + delta.microseconds * 1_000
+
+
+def as_ns(value: datetime | int) -> int:
+    if isinstance(value, bool):
+        raise TypeError("bool is not a time")
+    return value if isinstance(value, int) else dt_to_ns(value)
+
+
+def ns_to_iso(ns: int) -> str:
+    secs, rem = divmod(ns, NS)
+    base = EPOCH + timedelta(seconds=secs)
+    return f"{base.strftime('%Y-%m-%dT%H:%M:%S')}.{rem:09d}Z"
+
+
+def ns_to_dt(ns: int) -> datetime:
+    """Display/ledger datetime (microsecond floor). Never used to compare."""
+
+    return EPOCH + timedelta(microseconds=ns // 1_000)
+
+
 @dataclass(frozen=True, slots=True)
 class Bar:
+    start_ns: int
     start_utc: datetime
     open: Decimal | None
     high: Decimal | None
@@ -56,7 +105,8 @@ class Bar:
 
 @dataclass(frozen=True, slots=True)
 class Quote:
-    at_utc: datetime
+    at_ns: int
+    at_utc: datetime  # display only
     bid: Decimal
     ask: Decimal
     bid_size: Decimal
@@ -94,7 +144,7 @@ class AskEvidence:
 
     status: str
     found: bool = False
-    at_utc: datetime | None = None
+    at_ns: int | None = None
     ask: Decimal | None = None
     reason: str | None = None
     digests: tuple[str, ...] = ()
@@ -112,11 +162,11 @@ class MarketData(Protocol):
     ) -> BarsResult: ...
 
     def first_valid_quote(
-        self, symbol: str, start_utc: datetime, end_utc: datetime
+        self, symbol: str, start: datetime | int, end: datetime | int
     ) -> QuoteResult: ...
 
     def ask_at_or_below(
-        self, symbol: str, start_utc: datetime, end_utc: datetime, limit: Decimal
+        self, symbol: str, start: datetime | int, end: datetime | int, limit: Decimal
     ) -> AskEvidence: ...
 
 
@@ -130,22 +180,13 @@ def _d(value: Any) -> Decimal | None:
     return out if out.is_finite() else None
 
 
-def _parse_ts(value: Any) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        out = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return out.astimezone(UTC) if out.tzinfo else None
-
-
 def parse_bar(raw: dict[str, Any]) -> Bar | None:
-    start = _parse_ts(raw.get("t"))
+    start = parse_ts_ns(raw.get("t"))
     if start is None:
         return None
     return Bar(
-        start_utc=start,
+        start_ns=start,
+        start_utc=ns_to_dt(start),
         open=_d(raw.get("o")),
         high=_d(raw.get("h")),
         low=_d(raw.get("l")),
@@ -158,14 +199,21 @@ def parse_bar(raw: dict[str, Any]) -> Bar | None:
 def parse_valid_quote(raw: dict[str, Any]) -> Quote | None:
     """A quote is valid iff timestamped, both sides positive and not crossed."""
 
-    at = _parse_ts(raw.get("t"))
+    at = parse_ts_ns(raw.get("t"))
     bid, ask = _d(raw.get("bp")), _d(raw.get("ap"))
     bid_size, ask_size = _d(raw.get("bs")), _d(raw.get("as"))
     if at is None or bid is None or ask is None or bid_size is None or ask_size is None:
         return None
     if bid <= 0 or ask <= 0 or bid_size <= 0 or ask_size <= 0 or bid > ask:
         return None
-    return Quote(at_utc=at, bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size)
+    return Quote(
+        at_ns=at,
+        at_utc=ns_to_dt(at),
+        bid=bid,
+        ask=ask,
+        bid_size=bid_size,
+        ask_size=ask_size,
+    )
 
 
 ResponseSink = Callable[[str, dict[str, Any], dict[str, Any]], str]
@@ -312,7 +360,7 @@ class AlpacaMarketData:
         bars = [b for b in (parse_bar(r) for r in rows) if b is not None]
         if len(bars) != len(rows):
             return BarsResult(UNKNOWN, reason="unparseable_bar", digests=digests)
-        if len({b.start_utc for b in bars}) != len(bars):
+        if len({b.start_ns for b in bars}) != len(bars):
             # two rows for one interval: volume/low are ambiguous, never summed
             return BarsResult(
                 UNKNOWN, reason="duplicate_bar_timestamp", digests=digests
@@ -336,12 +384,12 @@ class AlpacaMarketData:
         return self._bars(symbol, "1Min", _iso(start_utc), _iso(end_utc), "raw")
 
     def _quotes(
-        self, symbol: str, start_utc: datetime, end_utc: datetime
+        self, symbol: str, start_ns: int, end_ns: int
     ) -> tuple[list[dict[str, Any]] | None, tuple[str, ...], str | None, bool]:
         params = {
             "symbols": symbol,
-            "start": _iso(start_utc),
-            "end": _iso(end_utc),
+            "start": ns_to_iso(start_ns),
+            "end": ns_to_iso(end_ns),
             "limit": PAGE_LIMIT,
             "feed": self.feed,
             "sort": "asc",
@@ -349,17 +397,18 @@ class AlpacaMarketData:
         return self._pages(QUOTES_URL, params, "quotes", symbol)
 
     def first_valid_quote(
-        self, symbol: str, start_utc: datetime, end_utc: datetime
+        self, symbol: str, start: datetime | int, end: datetime | int
     ) -> QuoteResult:
-        """First valid quote in the window. An empty stream or a stream with
+        """First valid quote in [start, end). An empty stream or a stream with
         no valid quote is UNKNOWN (missing/abnormal data), never "no quote"."""
 
-        rows, digests, error, complete = self._quotes(symbol, start_utc, end_utc)
+        s, e = as_ns(start), as_ns(end)
+        rows, digests, error, complete = self._quotes(symbol, s, e)
         if error or rows is None:
             return QuoteResult(UNKNOWN, reason=error or "no_rows", digests=digests)
         for raw in rows:
             quote = parse_valid_quote(raw)
-            if quote is not None and start_utc <= quote.at_utc < end_utc:
+            if quote is not None and s <= quote.at_ns < e:
                 return QuoteResult(OK, quote=quote, digests=digests)
         if not complete:
             return QuoteResult(UNKNOWN, reason="pagination_cap", digests=digests)
@@ -367,77 +416,50 @@ class AlpacaMarketData:
         return QuoteResult(UNKNOWN, reason=reason, digests=digests)
 
     def ask_at_or_below(
-        self, symbol: str, start_utc: datetime, end_utc: datetime, limit: Decimal
+        self, symbol: str, start: datetime | int, end: datetime | int, limit: Decimal
     ) -> AskEvidence:
-        """Was a valid ask <= limit in force during [start, end)?
+        """D7: only quotes observed inside [start, end) are evidence."""
 
-        In force = the prevailing quote when the window opens (last valid quote
-        within ``PREVAILING_LOOKBACK`` before ``start``) or any valid quote
-        inside the window. No quote evidence at all -> UNKNOWN; ``found=False``
-        is returned only when quotes covered the window and none was <= limit.
-        """
-
-        rows, digests, error, complete = self._quotes(
-            symbol, start_utc - PREVAILING_LOOKBACK, end_utc
-        )
+        s, e = as_ns(start), as_ns(end)
+        rows, digests, error, complete = self._quotes(symbol, s, e)
         if error or rows is None:
             return AskEvidence(UNKNOWN, reason=error or "no_rows", digests=digests)
-        return ask_evidence_from_quotes(
-            rows, start_utc, end_utc, limit, complete, digests
-        )
+        return ask_evidence_from_quotes(rows, s, e, limit, complete, digests)
 
 
 def ask_evidence_from_quotes(
     rows: list[dict[str, Any]],
-    start_utc: datetime,
-    end_utc: datetime,
+    start: datetime | int,
+    end: datetime | int,
     limit: Decimal,
     complete: bool,
     digests: tuple[str, ...] = (),
 ) -> AskEvidence:
-    prevailing: Quote | None = None
-    seen_in_window = False
-    # Rows are ascending, so the prefix before ``start`` is complete iff the
-    # whole stream was read OR some row at/after ``start`` was reached. Only
-    # then is the last pre-window quote proven to still prevail at ``start``.
-    reached_window = any(
-        (ts := _parse_ts(r.get("t"))) is not None and ts >= start_utc for r in rows
-    )
-    first_update: datetime | None = (
-        None  # first quote row (valid or not) at/after start
-    )
+    """Fill-candidate ask evidence under deviation D7 (operator Q-1018-4 = A).
+
+    Only valid quotes observed inside ``[start, end)`` (integer ns, start
+    included, end excluded) count. No quote before the window is carried
+    forward. A valid in-window ask <= limit -> found. No valid in-window quote
+    at all (none, or only invalid ones) -> UNKNOWN. Valid in-window quotes all
+    above limit -> ``found=False`` only when the stream is complete, else
+    UNKNOWN (pagination cap).
+    """
+
+    s, e = as_ns(start), as_ns(end)
+    seen_valid = False
     for raw in rows:
-        ts = _parse_ts(raw.get("t"))
         quote = parse_valid_quote(raw)
-        if ts is not None and ts < start_utc:
-            # every update replaces the book; an invalid one leaves no valid ask
-            prevailing = quote
+        if quote is None or not (s <= quote.at_ns < e):
             continue
-        if ts is not None and ts < end_utc and first_update is None:
-            first_update = ts
-        if quote is None or quote.at_utc >= end_utc:
-            continue
-        seen_in_window = True
+        seen_valid = True
         if quote.ask <= limit:
             return AskEvidence(
-                OK, found=True, at_utc=quote.at_utc, ask=quote.ask, digests=digests
+                OK, found=True, at_ns=quote.at_ns, ask=quote.ask, digests=digests
             )
-    # The pre-window quote is in force only on [start, first update at/after
-    # start): replaced exactly at ``start`` it never prevailed in the window.
-    prevailed = first_update is None or first_update > start_utc
-    if (
-        prevailing is not None
-        and prevailing.ask <= limit
-        and prevailed
-        and (complete or reached_window)
-    ):
-        return AskEvidence(
-            OK, found=True, at_utc=start_utc, ask=prevailing.ask, digests=digests
-        )
     if not complete:
         return AskEvidence(UNKNOWN, reason="pagination_cap", digests=digests)
-    if prevailing is None and not seen_in_window:
-        return AskEvidence(UNKNOWN, reason="no_quote_evidence", digests=digests)
+    if not seen_valid:
+        return AskEvidence(UNKNOWN, reason="no_valid_quote_in_window", digests=digests)
     return AskEvidence(OK, found=False, digests=digests)
 
 

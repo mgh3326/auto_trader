@@ -27,16 +27,20 @@ from decimal import ROUND_FLOOR, Decimal
 
 from research.rob1391_us_resubmit_shadow import constants as K
 from research.rob1391_us_resubmit_shadow.market_data import (
+    NS,
     OK,
     UNKNOWN,
     AskEvidence,
     Bar,
+    as_ns,
 )
 from research.rob1391_us_resubmit_shadow.parents import tick_size
 
 MINUTE = timedelta(minutes=1)
+MINUTE_NS = 60 * NS
 
-AskLookup = Callable[[datetime, datetime], AskEvidence]
+# (window start ns, window end ns) -> evidence; all instants are integer ns
+AskLookup = Callable[[int, int], AskEvidence]
 Affordable = Callable[[int], int]  # filled-so-far-this-session -> max more shares
 
 
@@ -75,17 +79,16 @@ def volume_cap(volume: Decimal) -> int:
 
 
 def eligible_bars(
-    bars: tuple[Bar, ...], submit_at: datetime, close_utc: datetime
+    bars: tuple[Bar, ...], submit_at: datetime | int, close_utc: datetime | int
 ) -> list[Bar]:
-    """Bars fully after submission and fully inside the regular session."""
+    """Bars fully after submission and fully inside the regular session
+    (compared on integer ns: a submission 1 ns after a minute starts excludes
+    that minute)."""
 
+    submit, close = as_ns(submit_at), as_ns(close_utc)
     return sorted(
-        (
-            b
-            for b in bars
-            if b.start_utc >= submit_at and b.start_utc + MINUTE <= close_utc
-        ),
-        key=lambda b: b.start_utc,
+        (b for b in bars if b.start_ns >= submit and b.start_ns + MINUTE_NS <= close),
+        key=lambda b: b.start_ns,
     )
 
 
@@ -93,7 +96,7 @@ def _duplicate_minutes(bars: tuple[Bar, ...], out: SessionFills) -> bool:
     """Two bars for one minute make that minute's volume ambiguous: the 1 %
     cap would be applied twice. Refuse (UNKNOWN) rather than sum or pick."""
 
-    starts = [b.start_utc for b in bars]
+    starts = [b.start_ns for b in bars]
     if len(set(starts)) == len(starts):
         return False
     out.status, out.unknown_reason = UNKNOWN, "duplicate_bar_timestamp"
@@ -103,8 +106,8 @@ def _duplicate_minutes(bars: tuple[Bar, ...], out: SessionFills) -> bool:
 def simulate_conservative(
     *,
     bars: tuple[Bar, ...],
-    submit_at: datetime,
-    close_utc: datetime,
+    submit_at: datetime | int,
+    close_utc: datetime | int,
     limit: Decimal,
     remaining: int,
     affordable: Affordable,
@@ -128,8 +131,8 @@ def simulate_conservative(
         if not candidate:
             continue
         out.candidate_minutes += 1
-        window_start = max(bar.start_utc, submit_at)
-        evidence = ask_lookup(window_start, bar.start_utc + MINUTE)
+        window_start = max(bar.start_ns, as_ns(submit_at))
+        evidence = ask_lookup(window_start, bar.start_ns + MINUTE_NS)
         out.ask_digests.extend(evidence.digests)
         if evidence.status != OK:
             out.status = UNKNOWN
@@ -151,8 +154,8 @@ def simulate_conservative(
 def simulate_optimistic(
     *,
     bars: tuple[Bar, ...],
-    submit_at: datetime,
-    close_utc: datetime,
+    submit_at: datetime | int,
+    close_utc: datetime | int,
     limit: Decimal,
     remaining: int,
     affordable: Affordable,
@@ -160,7 +163,8 @@ def simulate_optimistic(
     out = SessionFills()
     if _duplicate_minutes(bars, out):
         return out
-    submit_minute = submit_at.replace(second=0, microsecond=0)
+    submit_ns = as_ns(submit_at)
+    submit_minute = submit_ns - submit_ns % MINUTE_NS
     for bar in eligible_bars(bars, submit_minute, close_utc):
         if bar.low is None:
             out.status, out.unknown_reason, out.unknown_at = (

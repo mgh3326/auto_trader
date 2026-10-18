@@ -45,7 +45,12 @@ from research.rob1391_us_resubmit_shadow.fills import (
 )
 from research.rob1391_us_resubmit_shadow.ledger import Ledger
 from research.rob1391_us_resubmit_shadow.manifest import verify_against_runtime
-from research.rob1391_us_resubmit_shadow.market_data import OK, Bar, MarketData
+from research.rob1391_us_resubmit_shadow.market_data import (
+    OK,
+    Bar,
+    MarketData,
+    ns_to_iso,
+)
 from research.rob1391_us_resubmit_shadow.parents import (
     Candidate,
     SourceOrder,
@@ -466,7 +471,7 @@ def _liquidity_and_spread(
         reasons.append("no_valid_quote_d0")
     else:
         info["spread_bp_at_submission"] = str(quote.quote.spread_bp)
-        info["submission_quote_at"] = quote.quote.at_utc.isoformat()
+        info["submission_quote_at"] = ns_to_iso(quote.quote.at_ns)
         if quote.quote.spread_bp > K.MAX_SPREAD_BP:
             reasons.append("spread_gate_at_submission")
     return reasons, info
@@ -813,7 +818,7 @@ def _resubmit(
     if quote.status != OK or quote.quote is None:
         return skip(f"first_quote_unavailable:{quote.reason}", "unknown")
     q = quote.quote
-    result["submit_at"] = q.at_utc.isoformat()
+    result["submit_at"] = ns_to_iso(q.at_ns)  # exact ns, never truncated
     result["first_quote"] = {
         "bid": str(q.bid),
         "ask": str(q.ask),
@@ -857,7 +862,7 @@ def _resubmit(
                 "fills": [],
             }
             continue
-        if not eligible_bars(minute.bars, q.at_utc, sess.close_utc):
+        if not eligible_bars(minute.bars, q.at_ns, sess.close_utc):
             # the day traded (volume > 0) yet no minute bar after submission:
             # missing data, not proof of no fill
             result[arm] = {
@@ -869,7 +874,7 @@ def _resubmit(
         if arm == "T":
             sim = simulate_conservative(
                 bars=minute.bars,
-                submit_at=q.at_utc,
+                submit_at=q.at_ns,
                 close_utc=sess.close_utc,
                 limit=price,
                 remaining=remaining,
@@ -880,7 +885,7 @@ def _resubmit(
         else:
             sim = simulate_optimistic(
                 bars=minute.bars,
-                submit_at=q.at_utc,
+                submit_at=q.at_ns,
                 close_utc=sess.close_utc,
                 limit=price,
                 remaining=remaining,

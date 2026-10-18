@@ -192,7 +192,27 @@ def import_violations(pkg: Path) -> list[str]:
             names: list[str] = []
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
+                for a in node.names:
+                    if a.asname and a.name.split(".")[0] in ALIAS_FORBIDDEN:
+                        bad.append(
+                            f"{path.name}:{node.lineno}: aliased import of a guarded module"
+                        )
             elif isinstance(node, ast.ImportFrom):
+                if (node.module or "").split(".")[0] in ALIAS_FORBIDDEN and any(
+                    a.asname
+                    or (
+                        a.name in _forbidden_attr_literals()
+                        and not (
+                            path.name == "db_source.py"
+                            and node.module == "sqlalchemy"
+                            and a.name == "text"
+                        )
+                    )
+                    for a in node.names
+                ):
+                    bad.append(
+                        f"{path.name}:{node.lineno}: aliased import from a guarded module"
+                    )
                 if node.level:
                     bad.append(f"{path.name}: relative import")
                     continue
@@ -215,13 +235,6 @@ def import_violations(pkg: Path) -> list[str]:
             ):
                 bad.append(
                     f"{path.name}:{node.lineno}: getattr of {_fold(node.args[1])!r}"
-                )
-                continue
-            elif isinstance(node, ast.Import) and any(
-                a.asname and a.name.split(".")[0] in ALIAS_FORBIDDEN for a in node.names
-            ):
-                bad.append(
-                    f"{path.name}:{node.lineno}: aliased import of a guarded module"
                 )
                 continue
             elif (
@@ -708,7 +721,7 @@ def test_crossed_or_zero_quotes_are_not_valid_ask_evidence():
     assert (
         ev.status == "unknown"
         and ev.found is False
-        and ev.reason == "no_quote_evidence"
+        and ev.reason == "no_valid_quote_in_window"
     )
 
 
