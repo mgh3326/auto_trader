@@ -42,6 +42,9 @@ _TOP_KEYS = {
     "fx",
 }
 _SOURCE_KEYS = {"commission_rate", "min_commission_usd"}
+# Every ledger that can supply a parent must carry its own fees; a schedule
+# for some other source would silently price real trades at zero commission.
+REQUIRED_SOURCES = frozenset({"toss_live_order_ledger", "live_order_ledger"})
 _MAX_RATE = Decimal("0.05")
 
 
@@ -87,8 +90,13 @@ class FeeSchedule:
             if not isinstance(raw[key], str) or not raw[key].strip():
                 raise FeeScheduleError(f"{key} must be a non-empty string")
         by_source_raw = raw["by_source"]
-        if not isinstance(by_source_raw, dict) or not by_source_raw:
-            raise FeeScheduleError("by_source must be a non-empty object")
+        if (
+            not isinstance(by_source_raw, dict)
+            or set(by_source_raw) != REQUIRED_SOURCES
+        ):
+            raise FeeScheduleError(
+                f"by_source keys must be exactly {sorted(REQUIRED_SOURCES)}"
+            )
         by_source: dict[str, SourceFees] = {}
         for source, fees in by_source_raw.items():
             if not isinstance(fees, dict) or set(fees) != _SOURCE_KEYS:
@@ -122,9 +130,15 @@ class CostModel:
     source: str
     slippage_bp: Decimal
 
+    def __post_init__(self) -> None:
+        if self.schedule is not None and self.source not in self.schedule.by_source:
+            raise FeeScheduleError(
+                f"sealed fee schedule has no entry for {self.source}"
+            )
+
     @property
     def fees_known(self) -> bool:
-        return self.schedule is not None and self.source in self.schedule.by_source
+        return self.schedule is not None
 
     def _commission(self, notional: Decimal) -> Decimal:
         if not self.fees_known:

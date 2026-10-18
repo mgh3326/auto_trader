@@ -37,6 +37,7 @@ from tests.research.rob1391_us_resubmit_shadow.helpers import (
     context,
     et,
     quote_json,
+    rung_for,
     seal,
     toss_row,
     universe_row,
@@ -140,7 +141,7 @@ def check_volume_cap(f) -> None:
 def check_dedupe_boundaries(p) -> None:
     def eps(*specs):
         rows = [
-            toss_row(100 + i, "SYMA", ordered_at=et(d, 8, 5), price=px, qty=2)
+            toss_row(100 + i, "SYMA", ordered_at=et(d, 10, 5), price=px, qty=2)
             for i, (d, px) in enumerate(specs)
         ]
         return len(
@@ -164,6 +165,7 @@ def _flow(tmp_path, eng, rows):
     ledger = seal(tmp_path)
     src, mkt = FakeSource(), FakeMarket()
     src.order_rows.extend(rows)
+    src.rung_rows.extend(rung_for(r) for r in rows)
     src.universe_rows.extend(universe_row(s) for s in {r["symbol"] for r in rows})
     ctx = context(ledger, src, mkt, eng=eng)
     return ctx, src, mkt, ledger
@@ -171,9 +173,9 @@ def _flow(tmp_path, eng, rows):
 
 def check_budget_counted_once(tmp_path, eng) -> None:
     rows = [
-        toss_row(1, "SYMA", ordered_at=et(D0, 8, 5), price="99.50", qty=2),
+        toss_row(1, "SYMA", ordered_at=et(D0, 10, 5), price="99.50", qty=2),
         toss_row(
-            2, "SYMA", ordered_at=et(CAL.offset(D0, 2), 8, 5), price="98.00", qty=2
+            2, "SYMA", ordered_at=et(CAL.offset(D0, 2), 10, 5), price="98.00", qty=2
         ),
     ]
     ctx, *_ = _flow(tmp_path, eng, rows)
@@ -183,7 +185,7 @@ def check_budget_counted_once(tmp_path, eng) -> None:
 
 
 def check_latch_persists(tmp_path, eng) -> None:
-    rows = [toss_row(1, "SYMA", ordered_at=et(D0, 8, 5), price="99.50", qty=2)]
+    rows = [toss_row(1, "SYMA", ordered_at=et(D0, 10, 5), price="99.50", qty=2)]
     ctx, src, mkt, ledger = _flow(tmp_path, eng, rows)
     eng.advance(ctx, D0)
     changed = context(
@@ -193,9 +195,10 @@ def check_latch_persists(tmp_path, eng) -> None:
     again = context(ledger, src, mkt, eng=eng)
     src.order_rows.append(
         toss_row(
-            2, "SYMB", ordered_at=et(CAL.offset(D0, 1), 8, 5), price="20.00", qty=2
+            2, "SYMB", ordered_at=et(CAL.offset(D0, 1), 10, 5), price="20.00", qty=2
         )
     )
+    src.rung_rows.append(rung_for(src.order_rows[-1]))
     src.universe_rows.append(universe_row("SYMB"))
     eng.register(again, CAL.offset(D0, 1))
     assert again.state.registered[CAL.offset(D0, 1).isoformat()]["assigned"] == []
@@ -209,7 +212,7 @@ def check_latch_persists(tmp_path, eng) -> None:
 def check_session_offsets(tmp_path, eng) -> None:
     rows = [
         toss_row(
-            1, "SYMA", ordered_at=et(date(2025, 11, 25), 8, 5), price="99.50", qty=2
+            1, "SYMA", ordered_at=et(date(2025, 11, 25), 10, 5), price="99.50", qty=2
         )
     ]
     ctx, *_ = _flow(tmp_path, eng, rows)
@@ -222,7 +225,7 @@ def check_session_offsets(tmp_path, eng) -> None:
 def check_budget_never_exceeded(tmp_path, eng) -> None:
     # B_i = 2 x 99.50 = 199.00; costs > 0, so the prereg rule leaves room for
     # at most 1 virtual share (99.50 + costs) after nothing was filled.
-    rows = [toss_row(1, "SYMA", ordered_at=et(D0, 8, 5), price="99.50", qty=2)]
+    rows = [toss_row(1, "SYMA", ordered_at=et(D0, 10, 5), price="99.50", qty=2)]
     ctx, src, mkt, _ = _flow(tmp_path, eng, rows)
     d1 = CAL.offset(D0, 1)
     sess = CAL.session(d1)
@@ -325,7 +328,7 @@ def test_holm_order_mutant_is_red(monkeypatch):
 
 def check_cash_reservation(tmp_path, eng) -> None:
     rows = [
-        toss_row(i, f"SYM{i}", ordered_at=et(D0, 8, i), price="400.00", qty=10)
+        toss_row(i, f"SYM{i}", ordered_at=et(D0, 10, i), price="400.00", qty=10)
         for i in range(1, 4)
     ]
     ctx, *_ = _flow(tmp_path, eng, rows)
@@ -518,3 +521,54 @@ def test_foreign_host_mutant_is_red(tmp_path):
     )
     with pytest.raises(AssertionError):
         assert iso.host_violations(pkg) == []
+
+
+# r1 S2: evasions the first checkers missed -- each must now be RED.
+EVASIONS = [
+    (
+        "fills.py",
+        "import builtins\nf = getattr(builtins, '__im' + 'port__')\n",
+        "import",
+    ),
+    ("fills.py", "f = __builtins__['__import__']\n", "import"),
+    ("fills.py", "import importlib\n", "import"),
+    ("fills.py", "import socket\n", "import"),
+    ("fills.py", "import requests\n", "import"),
+    (
+        "db_source.py",
+        "Q = 'UP' + 'DATE review.toss_live_order_ledger SET status = 1'\n",
+        "sql",
+    ),
+    ("db_source.py", "Q = 'SELECT 1 INTO TEMP rob1391_probe'\n", "sql"),
+    ("engine.py", "def _x(conn):\n    conn.execute('SELECT 1')\n", "sql"),
+    ("db_source.py", "def _x(conn):\n    conn.exec_driver_sql('SELECT 1')\n", "sql"),
+    (
+        "market_data.py",
+        "def _x(host):\n    return 'https://' + host + '/probe'\n",
+        "host",
+    ),
+    (
+        "market_data.py",
+        "def _x(requests):\n    requests.request('POST', BARS_URL)\n",
+        "host",
+    ),
+    ("market_data.py", "def _x(self):\n    self._session.post(BARS_URL)\n", "host"),
+]
+
+
+@pytest.mark.parametrize(
+    ("target", "code", "kind"),
+    EVASIONS,
+    ids=[f"{k}-{i}" for i, (_, _, k) in enumerate(EVASIONS)],
+)
+def test_r1_evasion_probes_are_red(tmp_path, target, code, kind):
+    pkg = _pkg_copy(tmp_path)
+    path = pkg / target
+    path.write_text(path.read_text() + "\n\n" + code)
+    checker = {
+        "import": iso.import_violations,
+        "sql": iso.sql_violations,
+        "host": iso.host_violations,
+    }[kind]
+    with pytest.raises(AssertionError):
+        assert checker(pkg) == []

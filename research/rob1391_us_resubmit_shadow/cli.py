@@ -29,7 +29,7 @@ from research.rob1391_us_resubmit_shadow.ledger import (
     canonical_json,
 )
 from research.rob1391_us_resubmit_shadow.manifest import (
-    BUDGET_RULES,
+    DEVIATIONS,
     ManifestError,
     build_manifest,
 )
@@ -64,11 +64,18 @@ def _parser() -> argparse.ArgumentParser:
     seal.add_argument("--feed", choices=("sip", "iex"), default="sip")
     seal.add_argument("--fee-schedule", type=Path, default=None)
     seal.add_argument(
-        "--budget-rule",
-        choices=sorted(BUDGET_RULES),
-        default="prereg_fill_plus_cost_le_budget",
+        "--approve-deviation",
+        action="append",
+        default=[],
+        choices=sorted(DEVIATIONS),
+        help="operator-approved departure from the prereg text (repeatable); "
+        "D1/D2 are mandatory -- seal refuses without them",
     )
-    seal.add_argument("--deviation-ref", default=None)
+    seal.add_argument(
+        "--deviation-ref",
+        default=None,
+        help="operator-desk tag or hk:doc that approved the listed deviations",
+    )
     seal.add_argument("--seal-at", default=None, help="ISO instant (default: now)")
 
     for name in ("step", "register", "advance"):
@@ -139,7 +146,7 @@ def _seal(args: argparse.Namespace) -> int:
             },
             feed=args.feed,
             fee_schedule_path=args.fee_schedule,
-            budget_rule=args.budget_rule,
+            approved_deviations=frozenset(args.approve_deviation),
             deviation_ref=args.deviation_ref,
         )
         digest = ledger.write_manifest(manifest)

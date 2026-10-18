@@ -325,9 +325,22 @@ def _expiry(
     return None, "", [f"unclear_status_{status}"]
 
 
-def normalise(o: SourceOrder, cal: USCalendar) -> tuple[Candidate | None, list[str]]:
+# Deviation ids (manifest.DEVIATIONS) that relax a strict prereg default here.
+DEV_POLICY_EPOCH = "D4_policy_epoch_invariant_basis"
+DEV_OUTSIDE_SESSION = "D5_accept_outside_regular_session"
+DEV_LEDGER_BUDGET = "D6_ledger_budget_basis"
+
+
+def normalise(
+    o: SourceOrder, cal: USCalendar, *, deviations: frozenset[str] = frozenset()
+) -> tuple[Candidate | None, list[str]]:
     """Apply every row-level rule. Returns (candidate, reasons); reasons empty
-    iff a candidate is returned."""
+    iff a candidate is returned.
+
+    Strict by default (prereg §1): the order must be accepted inside a
+    regular session, carry DAY evidence, an approved proposal rung (B_i) and
+    an order-time policy stamp. Each relaxation needs an approved deviation.
+    """
 
     reasons: list[str] = []
     if o.source == SOURCE_KIS_KR_TABLE:
@@ -344,6 +357,10 @@ def normalise(o: SourceOrder, cal: USCalendar) -> tuple[Candidate | None, list[s
         reasons.append("not_place")
     if o.time_in_force and o.time_in_force.lower() != "day":
         reasons.append("not_day_tif")
+    elif o.source == SOURCE_TOSS and not o.time_in_force:
+        # Toss records the TIF it sent (DAY|CLS); absence is not DAY evidence.
+        # KIS overseas limit orders (ORD_DVSN 00) are DAY-only by the API.
+        reasons.append("day_tif_unproven")
     if o.price is None or o.quantity is None or o.ordered_at is None or not o.symbol:
         reasons.append("incomplete_ledger_row")
     if o.requires_manual_review or (o.status or "").lower() == "anomaly":
@@ -366,6 +383,11 @@ def normalise(o: SourceOrder, cal: USCalendar) -> tuple[Candidate | None, list[s
         cal.offset(d0, 1)
     except CalendarError:
         return None, ["calendar_unmappable"]
+    session = cal.session(d0)
+    if not (session.open_utc <= o.ordered_at < session.close_utc) and (
+        DEV_OUTSIDE_SESSION not in deviations
+    ):
+        return None, ["accepted_outside_regular_session"]
     expiry_at, basis, expiry_reasons = _expiry(o, d0, cal)
     if expiry_reasons:
         return None, expiry_reasons
@@ -387,6 +409,8 @@ def normalise(o: SourceOrder, cal: USCalendar) -> tuple[Candidate | None, list[s
     budget = o.price * o.quantity
     rung = o.rung
     policy_version = None
+    if rung is None and DEV_LEDGER_BUDGET not in deviations:
+        return None, ["approved_budget_unavailable"]
     if rung is not None:
         policy_version = rung.order_policy_version
         if rung.limit_price is not None and rung.limit_price != o.price:
@@ -402,6 +426,8 @@ def normalise(o: SourceOrder, cal: USCalendar) -> tuple[Candidate | None, list[s
             )
     if budget < o.price * o.quantity:
         return None, ["budget_below_order_notional"]
+    if not policy_version and DEV_POLICY_EPOCH not in deviations:
+        return None, ["order_policy_stamp_missing"]
     return (
         Candidate(
             order=o,

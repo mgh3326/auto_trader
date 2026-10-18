@@ -22,7 +22,10 @@ ROB-1383 사전등록안 v1_review(운영자 승인 Q-1018-1 = A)의 실험 장�
 | 통계 | symbol 군집 bootstrap 10,000 (seed 1383), 귀무중심 단측 p 2개에 Holm(0.025/0.05), 날짜 블록 민감도 |
 | 중단 | operational / policy_change / loss latch — 파일 원장에 영속, 자동 재개 없음 |
 
-UNKNOWN(ask·거래량·시각 자료 부재, 페이지 상한 초과)은 0 이나 미체결로 바꾸지 않는다. 한 번 UNKNOWN 이 된
+UNKNOWN(ask·거래량·시각 자료 부재, 빈/깨진 응답, 중복 분봉, redirect, 페이지 상한 초과)은 0 이나 미체결로
+바꾸지 않는다. UNKNOWN 이 하나라도 있으면 주 지표는 `UNDETERMINED` 이고(분모 ΣB 는 배정 부모 전체로 고정),
+complete-case 수치는 민감도로만 나온다. 수수료표가 봉인되지 않으면 M2·순성과 검정·Holm 은 출력하지 않는다.
+latch 는 해당 `step`/`register` 이벤트 안에 함께 기록된다(한 줄 fsync — 중간 사망으로 stop 이 사라지지 않는다). 한 번 UNKNOWN 이 된
 T 팔은 이후 세션을 시뮬레이션하지 않고(`prior_unknown`) 집계에 UNKNOWN 으로 남는다.
 
 ## 입력
@@ -60,14 +63,23 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   --deployed-policy-version "<get_trading_policy 응답 version>" \
   --deployed-policy-hash "<get_trading_policy 응답 content_hash>" \
   --feed sip \
-  --fee-schedule "$PRIVATE/rob1391/fee_schedule.json"
+  --fee-schedule "$PRIVATE/rob1391/fee_schedule.json" \
+  --approve-deviation D1_exit_hold_to_d20 \
+  --approve-deviation D2_resubmit_gate_subset \
+  --deviation-ref "<운영자가 아래 deviation 을 승인한 operator-desk 태그 또는 hk:doc>"
 ```
 
 - 시작 세션 = 봉인 시각 **다음에 개장하는** XNYS 세션, 그로부터 연속 20 세션이 등록 창(사후 연장 불가).
 - `--fee-schedule` 을 빼면 `net_metrics_status=PENDING_FEE_SCHEDULE` 로 봉인되어 순성과(M2) 검정은 끝까지
   보류된다(봉인 뒤 추가 불가). 형식은 `costs.py` docstring(닫힌 키, 문자열 소수, `fx=none_usd_ledger`).
-- `--budget-rule` 기본값은 사전등록 문언 그대로(`체결액+비용 ≤ B_i`). 대안
-  `deviation_fill_notional_le_budget` 는 `--deviation-ref`(운영자 승인 근거) 없이는 거부된다.
+- 🔴 **사전등록 문언과 다른 규칙은 전부 이름 붙은 deviation 이고, seal 은 승인 없이 거부한다.**
+  필수(구현상 이미 적용 — 승인 없으면 seal 불가): `D1_exit_hold_to_d20`(라이브 exit 재생 불가 → D+20 보유),
+  `D2_resubmit_gate_subset`(D1–D3 게이트 재검증 범위). 선택(기본은 원문 그대로의 엄격 규칙, 승인 시에만 완화):
+  `D3_budget_fill_notional_only`(예산 캡에서 비용 제외), `D4_policy_epoch_invariant_basis`(주문 시점 정책 스탬프 없는
+  부모 허용), `D5_accept_outside_regular_session`(정규장 밖 접수 DAY 주문 허용), `D6_ledger_budget_basis`(승인 rung
+  없을 때 P×Q 를 B_i 로). 목록·문구는 manifest `deviations.catalog` 에 봉인된다.
+- 기본(엄격) 등록 조건: 정규장 안 접수 · Toss 는 `time_in_force=DAY` 기록 · 승인 proposal rung(B_i) 존재 ·
+  rung 의 주문 시점 정책 스탬프(`source_asof.auto_approved.policy_version`) 존재. 빠지면 제외 사유로 기록된다.
 
 ### 1) 매 US 세션 마감 뒤 — 하루 1회
 
@@ -115,7 +127,7 @@ uv run python -m research.rob1391_us_resubmit_shadow report   --ledger-dir "$PRI
 
 | latch | 원인 |
 |---|---|
-| `operational` | 쓰기 경로/브로커 모듈 로드(`write_path_reachable`), 원장 reconciliation 불일치, 중복 parent, B_i 초과, 수량 불일치, 창 밖·마감 후 체결(미래참조), 상수·달력 drift |
+| `operational` | 쓰기 경로/브로커 모듈 로드(`write_path_reachable`), 원장 reconciliation 불일치(그 세션 재제출 전체 중단), 중복 parent, B_i 초과, 수량 불일치, 창 밖·마감 후 체결(미래참조), 상수·달력 drift |
 | `policy_change` | 배포 정책 `{version, content_hash}` 가 봉인과 다름 → `STOPPED_BY_POLICY_CHANGE` |
 | `loss` | T 가상 자산 ≤ E0×0.95(가상 USD 500 손실) 또는 단일 부모 순손실 ≤ −5%×B_i |
 

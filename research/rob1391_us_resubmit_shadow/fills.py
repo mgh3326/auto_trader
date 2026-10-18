@@ -89,6 +89,17 @@ def eligible_bars(
     )
 
 
+def _duplicate_minutes(bars: tuple[Bar, ...], out: SessionFills) -> bool:
+    """Two bars for one minute make that minute's volume ambiguous: the 1 %
+    cap would be applied twice. Refuse (UNKNOWN) rather than sum or pick."""
+
+    starts = [b.start_utc for b in bars]
+    if len(set(starts)) == len(starts):
+        return False
+    out.status, out.unknown_reason = UNKNOWN, "duplicate_bar_timestamp"
+    return True
+
+
 def simulate_conservative(
     *,
     bars: tuple[Bar, ...],
@@ -101,6 +112,8 @@ def simulate_conservative(
 ) -> SessionFills:
     out = SessionFills()
     left = remaining
+    if _duplicate_minutes(bars, out):
+        return out
     for bar in eligible_bars(bars, submit_at, close_utc):
         if left <= 0:
             break
@@ -145,6 +158,8 @@ def simulate_optimistic(
     affordable: Affordable,
 ) -> SessionFills:
     out = SessionFills()
+    if _duplicate_minutes(bars, out):
+        return out
     submit_minute = submit_at.replace(second=0, microsecond=0)
     for bar in eligible_bars(bars, submit_minute, close_utc):
         if bar.low is None:

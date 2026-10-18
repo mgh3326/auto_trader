@@ -153,7 +153,7 @@ def build_report(state: State) -> dict[str, Any]:
         "experiment_id": state.manifest["experiment_id"],
         "epoch_id": state.manifest["epoch_id"],
         "net_metrics_status": state.manifest["net_metrics_status"],
-        "budget_rule": state.manifest["budget_rule"],
+        "deviations_approved": state.manifest["deviations"]["approved"],
         "latches": latches,
         "counts": counts,
     }
@@ -161,88 +161,147 @@ def build_report(state: State) -> dict[str, Any]:
         report["verdict"] = INTERIM
         return report
 
-    known = [r for r in rows if r["d20_close"] is not None and not r["unknown"]["T"]]
-    unknown_close = [r["episode_id"] for r in rows if r["d20_close"] is None]
     main = K.SLIPPAGE_BP_MAIN
+    fees_sealed = state.manifest["net_metrics_status"] == "SEALED"
+    known = [r for r in rows if r["d20_close"] is not None and not r["unknown"]["T"]]
+    unknown_ids = [r["episode_id"] for r in rows if r not in known]
+    # Fixed denominator: every assigned parent, B_i once (prereg §3).
     metrics: dict[str, Any] = {
-        "denominator_budget": sum(float(D(r["budget"])) for r in known),
-        "n_parents": len(known),
-        "n_symbols": len({r["symbol"] for r in known}),
-        "unknown_total": counts["unknown_T"] + len(unknown_close),
-        "M1_C": _arm_ratio(known, "fill_C"),
-        "M1_T": _arm_ratio(known, "fill_T"),
-        "M2_C": _arm_ratio(known, f"net_C_slip{main}") if known else float("nan"),
-        "M2_T": _arm_ratio(known, f"net_T_slip{main}") if known else float("nan"),
+        "denominator_budget": sum(float(D(r["budget"])) for r in rows),
+        "n_parents": len(rows),
+        "n_symbols": len({r["symbol"] for r in rows}),
+        "unknown_total": len(unknown_ids),
+        "unknown_episodes": unknown_ids,
+        "net_tests": "RUN" if fees_sealed else "WITHHELD_PENDING_FEE_SCHEDULE",
     }
-    primary = paired_bootstrap(
-        {
-            "delta_M1": _paired(known, "m1", "T", slip=main, cluster="symbol"),
-            "delta_M2": _paired(known, "m2", "T", slip=main, cluster="symbol"),
-        }
+    if unknown_ids:
+        # UNKNOWN is never dropped from the primary set: the primary estimand is
+        # undetermined, and the complete-case numbers are a labelled sensitivity.
+        metrics["primary_status"] = "UNDETERMINED_UNKNOWN_PRESENT"
+        metrics["primary"] = None
+        metrics["holm"] = None
+    else:
+        metrics["primary_status"] = "DETERMINED"
+        metrics.update(_arm_block(rows, fees_sealed, main))
+        primary_in = {"delta_M1": _paired(rows, "m1", "T", slip=main, cluster="symbol")}
+        if fees_sealed:
+            primary_in["delta_M2"] = _paired(
+                rows, "m2", "T", slip=main, cluster="symbol"
+            )
+        primary = paired_bootstrap(primary_in)
+        metrics["primary"] = {k: _asdict(v) for k, v in primary.items()}
+        metrics["holm"] = (
+            holm({k: v.p_one_sided for k, v in primary.items()})
+            if fees_sealed
+            else None
+        )
+    metrics["sensitivity"] = _sensitivity(
+        rows, known, bool(unknown_ids), fees_sealed, main
     )
-    metrics["primary"] = {k: _asdict(v) for k, v in primary.items()}
-    pvals = {k: v.p_one_sided for k, v in primary.items()}
-    metrics["holm"] = holm(pvals)
+    report["metrics"] = metrics
+    report["verdict"], report["verdict_reasons"] = verdict(state, metrics)
+    return report
+
+
+def _arm_block(
+    rows: list[dict[str, Any]], fees_sealed: bool, main: Decimal
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "M1_C": _arm_ratio(rows, "fill_C"),
+        "M1_T": _arm_ratio(rows, "fill_T"),
+    }
+    if fees_sealed and rows:
+        out["M2_C"] = _arm_ratio(rows, f"net_C_slip{main}")
+        out["M2_T"] = _arm_ratio(rows, f"net_T_slip{main}")
+    return out
+
+
+def _sensitivity(
+    rows: list[dict[str, Any]],
+    known: list[dict[str, Any]],
+    unknown_present: bool,
+    fees_sealed: bool,
+    main: Decimal,
+) -> dict[str, Any]:
+    """Not confirmatory. Every block runs on complete cases only (``known``)."""
+
+    kinds = [("delta_M1", "m1")] + ([("delta_M2", "m2")] if fees_sealed else [])
     sens: dict[str, Any] = {}
+    if unknown_present:
+        sens["complete_case"] = {
+            "n_parents": len(known),
+            "denominator_budget": sum(float(D(r["budget"])) for r in known),
+            **_arm_block(known, fees_sealed, main),
+            **{
+                k: _asdict(
+                    cluster_bootstrap(
+                        _paired(known, kind, "T", slip=main, cluster="symbol")
+                    )
+                )
+                for k, kind in kinds
+            },
+        }
     sens["date_block"] = {
         k: _asdict(
             cluster_bootstrap(_paired(known, kind, "T", slip=main, cluster="d0"))
         )
-        for k, kind in (("delta_M1", "m1"), ("delta_M2", "m2"))
+        for k, kind in kinds
     }
-    for slip in K.SLIPPAGE_BP_SENSITIVITY:
-        sens[f"delta_M2_slip{slip}"] = _asdict(
-            cluster_bootstrap(_paired(known, "m2", "T", slip=slip, cluster="symbol"))
-        )
+    if fees_sealed:
+        for slip in K.SLIPPAGE_BP_SENSITIVITY:
+            sens[f"delta_M2_slip{slip}"] = _asdict(
+                cluster_bootstrap(
+                    _paired(known, "m2", "T", slip=slip, cluster="symbol")
+                )
+            )
     known_opt = [
         r for r in rows if r["d20_close"] is not None and not r["unknown"]["T_opt"]
     ]
-    sens["optimistic_delta_M1"] = _asdict(
-        cluster_bootstrap(
-            _paired(known_opt, "m1", "T_opt", slip=main, cluster="symbol")
+    for k, kind in kinds:
+        sens[f"optimistic_{k}"] = _asdict(
+            cluster_bootstrap(
+                _paired(known_opt, kind, "T_opt", slip=main, cluster="symbol")
+            )
         )
-    )
-    sens["optimistic_delta_M2"] = _asdict(
-        cluster_bootstrap(
-            _paired(known_opt, "m2", "T_opt", slip=main, cluster="symbol")
-        )
-    )
     no_follow = [r for r in known if r["real_followups"] == 0]
-    sens["exclude_real_followups_delta_M1"] = _asdict(
-        cluster_bootstrap(_paired(no_follow, "m1", "T", slip=main, cluster="symbol"))
-    )
-    sens["exclude_real_followups_delta_M2"] = _asdict(
-        cluster_bootstrap(_paired(no_follow, "m2", "T", slip=main, cluster="symbol"))
-    )
-    metrics["sensitivity"] = sens
-    report["metrics"] = metrics
-    report["verdict"], report["verdict_reasons"] = verdict(state, metrics)
-    return report
+    for k, kind in kinds:
+        sens[f"exclude_real_followups_{k}"] = _asdict(
+            cluster_bootstrap(
+                _paired(no_follow, kind, "T", slip=main, cluster="symbol")
+            )
+        )
+    return sens
 
 
 def verdict(state: State, m: dict[str, Any]) -> tuple[str, list[str]]:
     if state.latches:
         return RISK, [f"stop:{x['latch_type']}:{x['reason']}" for x in state.latches]
     reasons: list[str] = []
-    fees_sealed = state.manifest["net_metrics_status"] == "SEALED"
-    if fees_sealed and m["M2_T"] == m["M2_T"] and m["M2_T"] < 0:
+    m2_t = m.get("M2_T")
+    if m2_t is not None and m2_t == m2_t and m2_t < 0:
         return RISK, ["net_loss_M2_T_below_zero"]
-    if not fees_sealed:
+    if m.get("net_tests") != "RUN":
         reasons.append("net_tests_withheld_pending_fee_schedule")
+    if m.get("unknown_total", 0) != 0 or m.get("primary") is None:
+        reasons.append("unknown_nonzero")
     if m["n_parents"] < K.MIN_PARENTS_FOR_CANDIDATE:
         reasons.append("parents_below_30")
     if m["n_symbols"] < K.MIN_SYMBOLS_FOR_CANDIDATE:
         reasons.append("symbols_below_10")
-    if not all(m["holm"].values()):
+    holm_result = m.get("holm")
+    if (
+        not holm_result
+        or set(holm_result) != {"delta_M1", "delta_M2"}
+        or not all(holm_result.values())
+    ):
         reasons.append("holm_not_passed")
-    if not m["primary"]["delta_M1"]["estimate"] > 0:
+    primary = m.get("primary") or {}
+    if not (primary.get("delta_M1", {}).get("estimate", float("nan")) > 0):
         reasons.append("delta_M1_not_positive")
-    if not m["primary"]["delta_M2"]["estimate"] > 0:
+    if not (primary.get("delta_M2", {}).get("estimate", float("nan")) > 0):
         reasons.append("delta_M2_not_positive")
-    if not m["M2_T"] > 0:
+    if not (m2_t is not None and m2_t > 0):
         reasons.append("M2_T_not_positive")
-    if m["unknown_total"] != 0:
-        reasons.append("unknown_nonzero")
     return (RESERVED, reasons) if reasons else (CANDIDATE, [])
 
 
@@ -271,39 +330,51 @@ def _max_utilisation(state: State) -> float:
     return best
 
 
+def _fmt(value: Any) -> str:
+    return f"{value:.5f}" if isinstance(value, float) else str(value)
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
         f"# {report['experiment_id']} — {report['epoch_id']}",
         "",
         f"- verdict: **{report['verdict']}**",
-        f"- net metrics: {report['net_metrics_status']} · budget rule: {report['budget_rule']}",
+        f"- net metrics: {report['net_metrics_status']} · deviations: {report['deviations_approved']}",
         f"- latches: {report['latches'] or 'none'}",
         f"- counts: {report['counts']}",
     ]
-    if "metrics" in report:
-        m = report["metrics"]
+    m = report.get("metrics")
+    if m:
         lines += [
             "",
             "## Primary (conservative fill, 10bp/side)",
-            f"- parents {m['n_parents']} · symbols {m['n_symbols']} · denominator ΣB {m['denominator_budget']:.2f} · UNKNOWN {m['unknown_total']}",
-            f"- M1_C {m['M1_C']:.4f} · M1_T {m['M1_T']:.4f} · M2_C {m['M2_C']:.4f} · M2_T {m['M2_T']:.4f}",
+            f"- status {m['primary_status']} · net tests {m['net_tests']}",
+            f"- parents {m['n_parents']} · symbols {m['n_symbols']} · fixed denominator ΣB "
+            f"{m['denominator_budget']:.2f} · UNKNOWN {m['unknown_total']}",
         ]
-        for name, res in m["primary"].items():
+        arms = {k: m[k] for k in ("M1_C", "M1_T", "M2_C", "M2_T") if k in m}
+        if arms:
+            lines.append("- " + " · ".join(f"{k} {_fmt(v)}" for k, v in arms.items()))
+        for name, res in (m.get("primary") or {}).items():
+            holm_pass = (m.get("holm") or {}).get(name, "withheld")
             lines.append(
-                f"- {name}: {res['estimate']:.5f} (95% CI {res['ci_low']:.5f}–{res['ci_high']:.5f}), "
-                f"one-sided p {res['p_one_sided']:.4f}, Holm pass {m['holm'][name]}, clusters {res['n_clusters']}"
+                f"- {name}: {_fmt(res['estimate'])} (95% CI {_fmt(res['ci_low'])}–{_fmt(res['ci_high'])}), "
+                f"one-sided p {_fmt(res['p_one_sided'])}, Holm pass {holm_pass}, clusters {res['n_clusters']}"
             )
-        lines += ["", "## Sensitivity (not confirmatory)"]
+        lines += ["", "## Sensitivity (not confirmatory; complete cases only)"]
         for name, res in m["sensitivity"].items():
-            if isinstance(res, dict) and "estimate" in res:
+            if "estimate" in res:
                 lines.append(
-                    f"- {name}: {res['estimate']:.5f} (CI {res['ci_low']:.5f}–{res['ci_high']:.5f})"
+                    f"- {name}: {_fmt(res['estimate'])} (CI {_fmt(res['ci_low'])}–{_fmt(res['ci_high'])})"
                 )
             else:
                 for sub, r in res.items():
-                    lines.append(
-                        f"- {name}/{sub}: {r['estimate']:.5f} (CI {r['ci_low']:.5f}–{r['ci_high']:.5f})"
-                    )
+                    if isinstance(r, dict) and "estimate" in r:
+                        lines.append(
+                            f"- {name}/{sub}: {_fmt(r['estimate'])} (CI {_fmt(r['ci_low'])}–{_fmt(r['ci_high'])})"
+                        )
+                    else:
+                        lines.append(f"- {name}/{sub}: {_fmt(r)}")
         lines.append("")
         lines.append(f"- verdict reasons: {report.get('verdict_reasons')}")
         lines.append(

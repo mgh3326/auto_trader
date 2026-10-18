@@ -26,12 +26,48 @@ from research.rob1391_us_resubmit_shadow.us_calendar import (
     exchange_calendars_version,
 )
 
-BUDGET_RULES = {
-    # prereg §2 literal: "체결액+비용 ≤ B_i"
-    "prereg_fill_plus_cost_le_budget": True,
-    # DEVIATION_PROPOSED alternative; needs an operator deviation reference.
-    "deviation_fill_notional_le_budget": False,
+# Every rule that departs from the pre-registration text is a named
+# deviation. The prereg itself says such changes are the operator's decision,
+# so nothing here is applied silently:
+#   * MANDATORY ones are in effect by construction (no prereg-literal
+#     implementation exists) -> ``seal`` refuses until each is approved;
+#   * OPTIONAL ones relax a strict prereg-literal default -> off unless
+#     approved at seal.
+DEVIATIONS: dict[str, tuple[bool, str]] = {
+    "D1_exit_hold_to_d20": (
+        True,
+        "the live exit policy is session judgment and cannot be replayed; both "
+        "arms hold to D+20 and are marked net of liquidation cost",
+    ),
+    "D2_resubmit_gate_subset": (
+        True,
+        "D1-D3 gate re-validation = sealed policy hash unchanged + halt/stale + "
+        "split/merge review + first-quote spread <= 30bp + remaining/duplicate/"
+        "virtual cash; screening/support/deep-band gates are not re-run",
+    ),
+    "D3_budget_fill_notional_only": (
+        False,
+        "budget cap counts fill notional only (prereg: fill + cost <= B_i); "
+        "costs are still charged in net results",
+    ),
+    "D4_policy_epoch_invariant_basis": (
+        False,
+        "accept parents without an order-time policy stamp, relying on the "
+        "per-run sealed-policy re-check (prereg: policy hash complete per parent)",
+    ),
+    "D5_accept_outside_regular_session": (
+        False,
+        "accept DAY orders accepted outside regular hours that work in the next "
+        "regular session (prereg: regular-session DAY acceptance)",
+    ),
+    "D6_ledger_budget_basis": (
+        False,
+        "B_i = ledger price x quantity when no approved proposal rung exists "
+        "(prereg: approved budget B_i)",
+    ),
 }
+MANDATORY_DEVIATIONS = frozenset(k for k, (m, _) in DEVIATIONS.items() if m)
+
 # Sessions tracked after the window: D0 of the last window session + 23
 # (D3 fill + 20 for the auxiliary metric).
 HORIZON_AFTER_WINDOW = K.RESUBMIT_SESSIONS + K.AUX_FILL_OFFSET
@@ -67,8 +103,8 @@ def build_manifest(
     deployed_policy: dict[str, str],
     feed: str,
     fee_schedule_path: Path | None,
-    budget_rule: str,
-    deviation_ref: str | None,
+    approved_deviations: frozenset[str] | set[str] = frozenset(),
+    deviation_ref: str | None = None,
 ) -> dict[str, Any]:
     if seal_at.tzinfo is None:
         raise ManifestError("seal time must be timezone-aware")
@@ -76,11 +112,20 @@ def build_manifest(
         raise ManifestError("--approval-ref is required (operator approval evidence)")
     if feed not in FEEDS:
         raise ManifestError(f"feed must be one of {FEEDS}")
-    if budget_rule not in BUDGET_RULES:
-        raise ManifestError(f"budget rule must be one of {sorted(BUDGET_RULES)}")
-    if not BUDGET_RULES[budget_rule] and not (deviation_ref or "").strip():
+    approved = frozenset(approved_deviations)
+    unknown = approved - set(DEVIATIONS)
+    if unknown:
+        raise ManifestError(f"unknown deviation id(s): {sorted(unknown)}")
+    missing = MANDATORY_DEVIATIONS - approved
+    if missing:
         raise ManifestError(
-            "a deviation budget rule needs --deviation-ref (operator approval)"
+            "seal refused: prereg-incompatible rule(s) in effect without operator "
+            f"approval: {sorted(missing)} -- pass --approve-deviation for each and "
+            "--deviation-ref <operator-desk tag or hk:doc>"
+        )
+    if approved and not (deviation_ref or "").strip():
+        raise ManifestError(
+            "approved deviations need --deviation-ref (operator approval)"
         )
     if deployed_policy != policy_stamp:
         raise ManifestError(
@@ -109,8 +154,13 @@ def build_manifest(
         "deployed_policy_echo": dict(deployed_policy),
         "fee_schedule": fee_block,
         "net_metrics_status": "SEALED" if fee_block else "PENDING_FEE_SCHEDULE",
-        "budget_rule": budget_rule,
-        "deviation_ref": (deviation_ref or "").strip() or None,
+        "deviations": {
+            "approved": sorted(approved),
+            "ref": (deviation_ref or "").strip() or None,
+            "catalog": {
+                k: {"mandatory": m, "rule": t} for k, (m, t) in DEVIATIONS.items()
+            },
+        },
         "market_data": {
             "provider": "alpaca_market_data",
             "host": DATA_HOST,

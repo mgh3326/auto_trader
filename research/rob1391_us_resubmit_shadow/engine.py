@@ -24,6 +24,8 @@ keep running read-only, so stopped books are still observed to the end.
 
 from __future__ import annotations
 
+import copy
+import json
 import statistics
 import sys
 from collections.abc import Callable
@@ -37,14 +39,12 @@ from research.rob1391_us_resubmit_shadow import guards
 from research.rob1391_us_resubmit_shadow.costs import CostModel, FeeSchedule
 from research.rob1391_us_resubmit_shadow.db_source import ParentSource
 from research.rob1391_us_resubmit_shadow.fills import (
+    eligible_bars,
     simulate_conservative,
     simulate_optimistic,
 )
 from research.rob1391_us_resubmit_shadow.ledger import Ledger
-from research.rob1391_us_resubmit_shadow.manifest import (
-    BUDGET_RULES,
-    verify_against_runtime,
-)
+from research.rob1391_us_resubmit_shadow.manifest import verify_against_runtime
 from research.rob1391_us_resubmit_shadow.market_data import OK, Bar, MarketData
 from research.rob1391_us_resubmit_shadow.parents import (
     Candidate,
@@ -61,6 +61,7 @@ from research.rob1391_us_resubmit_shadow.valuation import (
     session_affordable,
 )
 
+DEV_BUDGET_FILL_ONLY = "D3_budget_fill_notional_only"
 # A session's data is read only after its close plus this settle delay.
 SETTLE_DELAY = timedelta(minutes=30)
 # Snapshot fields that must not change after registration (reconciliation).
@@ -120,8 +121,12 @@ class Context:
             schedule=self.fee_schedule(), source=source, slippage_bp=slippage_bp
         )
 
+    @property
+    def deviations(self) -> frozenset[str]:
+        return frozenset(self.manifest["deviations"]["approved"])
+
     def include_cost_in_budget(self) -> bool:
-        return BUDGET_RULES[self.manifest["budget_rule"]]
+        return DEV_BUDGET_FILL_ONLY not in self.deviations
 
 
 # ----------------------------------------------------------------------------
@@ -342,7 +347,7 @@ def register(ctx: Context, session: date) -> dict[str, Any] | None:
         if o.ordered_at < seal_at:
             exclusions.append({**base, "reasons": ["pre_seal_order"]})
             continue
-        cand, reasons = normalise(o, cal)
+        cand, reasons = normalise(o, cal, deviations=ctx.deviations)
         if reasons == ["unreconciled"]:
             if ctx.now() < deadline:
                 pending.append(o.source_ref)
@@ -392,11 +397,14 @@ def register(ctx: Context, session: date) -> dict[str, Any] | None:
         ),
         "data_digests": sorted(set(data_digests)),
     }
+    duplicates = [e for e in assignment_log if e.get("reasons") == ["duplicate_parent"]]
+    payload["latches"] = (
+        [_latch_record("operational", "duplicate_parent", s, duplicates[:10])]
+        if duplicates and "duplicate_parent" not in _latch_reasons(state)
+        else []
+    )
     event = ctx.ledger.append("register", payload, now=ctx.now())
     state.apply(event)
-    duplicates = [e for e in assignment_log if e.get("reasons") == ["duplicate_parent"]]
-    if duplicates and "duplicate_parent" not in _latch_reasons(state):
-        latch(ctx, "operational", "duplicate_parent", session=s, detail=duplicates[:10])
     return payload
 
 
@@ -529,7 +537,7 @@ def _assign(
             "policy_version_at_order": cand.policy_version_at_order,
             "policy_basis": "order_stamp"
             if cand.policy_version_at_order
-            else "epoch_invariant",
+            else "epoch_invariant(D4)",
             "linked_refs": [
                 m.source_ref
                 for m in ep.members
@@ -562,46 +570,98 @@ def step(ctx: Context, session: date) -> dict[str, Any] | None:
     _require_closed(ctx, session)
     preflight(ctx, s)
 
-    tracked = [p for p in state.parents.values() if p.d0 < session <= p.last_tracked]
+    tracked = sorted(
+        (p for p in state.parents.values() if p.d0 < session <= p.last_tracked),
+        key=lambda p: p.rec["assignment_seq"],
+    )
     orders = {o.source_ref: o for o in _orders(ctx)} if tracked else {}
-    entries: dict[str, dict[str, Any]] = {}
+    # Reconciliation for every tracked parent BEFORE any virtual activity: a
+    # mismatch anywhere is an operational stop, so no parent resubmits.
     operational: list[tuple[str, Any]] = []
-    for parent in sorted(tracked, key=lambda p: p.rec["assignment_seq"]):
-        entry, problems = _step_parent(ctx, parent, session, orders)
-        entries[parent.episode_id] = entry
-        operational.extend(problems)
+    reconciled: dict[str, bool] = {}
+    for parent in tracked:
+        row = orders.get(parent.rec["source_ref"])
+        ok = row is not None and _same_snapshot(
+            _snapshot(row), parent.rec["source_snapshot"]
+        )
+        reconciled[parent.episode_id] = ok
+        if not ok:
+            operational.append(
+                ("reconciliation_mismatch", {"episode_id": parent.episode_id})
+            )
+    entries: dict[str, dict[str, Any]] = {}
+    for parent in tracked:
+        entries[parent.episode_id] = _step_parent(
+            ctx,
+            parent,
+            session,
+            orders,
+            reconciled=reconciled[parent.episode_id],
+            allow_resubmit=not operational,
+        )
 
     payload: dict[str, Any] = {"session": s, "parents": entries}
+    # Latches are decided on a provisional fold and written INSIDE the step
+    # event: one fsync'd line, so a crash can never keep the step and lose the
+    # stop it implies.
+    probe = copy.deepcopy(state)
+    probe.apply(_provisional_event("step", payload))
+    latches: list[dict[str, Any]] = []
+    known = _latch_reasons(state)
+    for reason, detail in [*operational, *_invariant_problems(ctx, probe)]:
+        if reason not in known:
+            known.add(reason)
+            latches.append(_latch_record("operational", reason, s, detail))
+    loss = loss_check(ctx, session, state=probe)
+    payload["loss_check"] = loss
+    if loss["triggered"] and "loss" not in state.latch_types():
+        latches.append(_latch_record("loss", loss["triggered"][0], s, loss))
+    payload["latches"] = latches
     event = ctx.ledger.append("step", payload, now=ctx.now())
     state.apply(event)
-
-    for reason, detail in operational:
-        if reason not in _latch_reasons(state):
-            latch(ctx, "operational", reason, session=s, detail=detail)
-    _invariants(ctx, s)
-    loss = loss_check(ctx, session)
-    if loss["triggered"] and "loss" not in state.latch_types():
-        latch(ctx, "loss", loss["triggered"][0], session=s, detail=loss)
     return payload
 
 
+def _latch_record(
+    latch_type: str, reason: str, session: str | None, detail: Any
+) -> dict[str, Any]:
+    return {
+        "latch_type": latch_type,
+        "reason": reason,
+        "session": session,
+        "detail": detail,
+    }
+
+
+def _provisional_event(kind: str, payload: dict[str, Any]):
+    from research.rob1391_us_resubmit_shadow.ledger import Event, canonical_json
+
+    return Event(
+        seq=0,
+        kind=kind,
+        recorded_at="",
+        payload=json.loads(canonical_json(payload)),
+        prev="",
+        sha256="",
+    )
+
+
 def _step_parent(
-    ctx: Context, parent: ParentState, session: date, orders: dict[str, SourceOrder]
-) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
+    ctx: Context,
+    parent: ParentState,
+    session: date,
+    orders: dict[str, SourceOrder],
+    *,
+    reconciled: bool,
+    allow_resubmit: bool,
+) -> dict[str, Any]:
     cal, state = ctx.cal, ctx.state
     assert cal is not None and state is not None
     s = session.isoformat()
     sym = parent.rec["symbol"]
-    problems: list[tuple[str, Any]] = []
     entry: dict[str, Any] = {"symbol": sym}
-
-    # --- reconciliation against the source row (prereg §4 원장 reconciliation)
-    row = orders.get(parent.rec["source_ref"])
-    if row is None or not _same_snapshot(_snapshot(row), parent.rec["source_snapshot"]):
-        entry["reconciliation"] = "mismatch"
-        problems.append(("reconciliation_mismatch", {"episode_id": parent.episode_id}))
-    else:
-        entry["reconciliation"] = "ok"
+    # reconciliation against the source row (prereg §4 원장 reconciliation)
+    entry["reconciliation"] = "ok" if reconciled else "mismatch"
     expiry = datetime.fromisoformat(parent.rec["expiry_at"])
     followups = sorted(
         ref
@@ -641,14 +701,26 @@ def _step_parent(
         entry["review_block"] = "corporate_action"
 
     if s in parent.resubmit_sessions:
-        entry["resubmission"] = _resubmit(
-            ctx,
-            parent,
-            session,
-            raw_bars if status == OK and factor is not None else None,
-            entry,
-        )
-    return entry, problems
+        if not allow_resubmit:
+            entry["resubmission"] = _skip_both("operational_stop_this_step")
+        else:
+            entry["resubmission"] = _resubmit(
+                ctx,
+                parent,
+                session,
+                raw_bars if status == OK and factor is not None else None,
+                entry,
+            )
+    return entry
+
+
+def _skip_both(reason: str, status: str = "skipped") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for arm in ("T", "T_opt"):
+        out[arm] = {"status": status, "reason": reason, "fills": []}
+        if status == "unknown":
+            out[arm]["unknown_reason"] = reason
+    return out
 
 
 def split_factor(
@@ -701,17 +773,20 @@ def _resubmit(
     if entry.get("review_block"):
         return skip(f"{entry['review_block']}_review")
     bar = raw_bars.get(session)
-    if bar is None or not bar.volume:
+    if bar is None:
+        return skip("daily_bar_missing", "unknown")
+    if bar.volume is None:
+        return skip("daily_volume_missing", "unknown")
+    if bar.volume == 0:
+        # explicit zero volume: halted/stale -> review state, no submission
         entry["review_block"] = "halt_or_stale"
         return skip("halt_or_stale_review")
 
     sess = cal.session(session)
     quote = ctx.market.first_valid_quote(sym, sess.open_utc, sess.close_utc)
     entry["data_digests"].extend(quote.digests)
-    if quote.status != OK:
+    if quote.status != OK or quote.quote is None:
         return skip(f"first_quote_unavailable:{quote.reason}", "unknown")
-    if quote.quote is None:
-        return skip("no_valid_quote")
     q = quote.quote
     result["submit_at"] = q.at_utc.isoformat()
     result["first_quote"] = {
@@ -754,6 +829,15 @@ def _resubmit(
             result[arm] = {
                 "status": "unknown",
                 "unknown_reason": f"minute_bars_unavailable:{minute.reason}",
+                "fills": [],
+            }
+            continue
+        if not eligible_bars(minute.bars, q.at_utc, sess.close_utc):
+            # the day traded (volume > 0) yet no minute bar after submission:
+            # missing data, not proof of no fill
+            result[arm] = {
+                "status": "unknown",
+                "unknown_reason": "minute_bars_empty_after_submission",
                 "fills": [],
             }
             continue
@@ -801,11 +885,9 @@ def _resubmit(
 # ----------------------------------------------------------------------------
 
 
-def _invariants(ctx: Context, s: str) -> None:
+def _invariant_problems(ctx: Context, state: State) -> list[tuple[str, Any]]:
     """Operational stops computed from the folded books (prereg §4)."""
 
-    state = ctx.state
-    assert state is not None
     problems: list[tuple[str, Any]] = []
     seen_refs: dict[str, str] = {}
     for parent in state.parents.values():
@@ -858,9 +940,7 @@ def _invariants(ctx: Context, s: str) -> None:
             problems.append(
                 ("control_arm_virtual_fill", {"episode_id": parent.episode_id})
             )
-    for reason, detail in problems:
-        if reason not in _latch_reasons(state):
-            latch(ctx, "operational", reason, session=s, detail=detail)
+    return problems
 
 
 def latest_mark(parent: ParentState, upto: date) -> tuple[str | None, Decimal | None]:
@@ -871,8 +951,10 @@ def latest_mark(parent: ParentState, upto: date) -> tuple[str | None, Decimal | 
     return target, (D(close) if close is not None else None)
 
 
-def loss_check(ctx: Context, session: date) -> dict[str, Any]:
-    state = ctx.state
+def loss_check(
+    ctx: Context, session: date, *, state: State | None = None
+) -> dict[str, Any]:
+    state = state if state is not None else ctx.state
     assert state is not None
     equity = K.E0_USD
     unknown: list[str] = []

@@ -55,6 +55,12 @@ def seal_args(tmp, prereg, fees, *, version=POLICY["version"]):
         str(fees),
         "--seal-at",
         SEAL_AT.isoformat(),
+        "--approve-deviation",
+        "D1_exit_hold_to_d20",
+        "--approve-deviation",
+        "D2_resubmit_gate_subset",
+        "--deviation-ref",
+        "fixture-deviation-ref",
     ]
 
 
@@ -138,3 +144,11 @@ def test_policy_change_exits_latched(env, monkeypatch):
         "2025-11-14",
     ]
     assert cli.main(args) == cli.EXIT_LATCHED
+
+
+def test_seal_without_mandatory_deviation_approval_is_refused(env):
+    tmp, prereg, fees = env
+    args = seal_args(tmp, prereg, fees)
+    cut = args.index("--approve-deviation")
+    assert cli.main(args[:cut]) == cli.EXIT_REFUSED
+    assert not (tmp / "ledger" / "manifest.json").exists()

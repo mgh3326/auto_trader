@@ -14,7 +14,12 @@ from research.rob1391_us_resubmit_shadow.manifest import (
     build_manifest,
     verify_against_runtime,
 )
-from tests.research.rob1391_us_resubmit_shadow.helpers import POLICY, SEAL_AT, seal
+from tests.research.rob1391_us_resubmit_shadow.helpers import (
+    MANDATORY_DEVIATIONS,
+    POLICY,
+    SEAL_AT,
+    seal,
+)
 
 pytestmark = pytest.mark.unit
 NOW = datetime(2025, 11, 20, tzinfo=UTC)
@@ -105,8 +110,8 @@ def test_seal_refuses_policy_mismatch_and_missing_approval(tmp_path):
         "deployed_policy": dict(POLICY),
         "feed": "sip",
         "fee_schedule_path": None,
-        "budget_rule": "prereg_fill_plus_cost_le_budget",
-        "deviation_ref": None,
+        "approved_deviations": MANDATORY_DEVIATIONS,
+        "deviation_ref": "fixture-ref",
     }
     assert build_manifest(**kwargs)["net_metrics_status"] == "PENDING_FEE_SCHEDULE"
     with pytest.raises(ManifestError):
@@ -116,14 +121,9 @@ def test_seal_refuses_policy_mismatch_and_missing_approval(tmp_path):
     with pytest.raises(ManifestError):
         build_manifest(**{**kwargs, "approval_ref": " "})
     with pytest.raises(ManifestError):
-        build_manifest(**{**kwargs, "budget_rule": "deviation_fill_notional_le_budget"})
-    assert build_manifest(
-        **{
-            **kwargs,
-            "budget_rule": "deviation_fill_notional_le_budget",
-            "deviation_ref": "hk-x",
-        }
-    )
+        build_manifest(**{**kwargs, "deviation_ref": None})
+    optional = MANDATORY_DEVIATIONS | {"D3_budget_fill_notional_only"}
+    assert build_manifest(**{**kwargs, "approved_deviations": optional})
 
 
 def test_runtime_constant_or_calendar_drift_is_reported(tmp_path, monkeypatch):

@@ -128,6 +128,7 @@ class State:
             if session in self.registered:
                 raise ValueError(f"duplicate register event for {session}")
             self.registered[session] = p
+            self.latches.extend(p.get("latches", []))
             for rec in p["assigned"]:
                 if rec["episode_id"] in self.parents:
                     raise ValueError(f"episode {rec['episode_id']} registered twice")
@@ -149,6 +150,7 @@ class State:
             if session in self.stepped:
                 raise ValueError(f"duplicate step event for {session}")
             self.stepped[session] = p
+            self.latches.extend(p.get("latches", []))
             for episode_id, entry in p["parents"].items():
                 parent = self.parents[episode_id]
                 parent.session_log[session] = entry

@@ -35,6 +35,9 @@ QUOTES_URL = f"https://{DATA_HOST}/v2/stocks/quotes"
 FEEDS = ("sip", "iex")
 MAX_PAGES_PER_WINDOW = 5
 PAGE_LIMIT = 10_000
+# A quote prevails until replaced: the ask in force when a minute opens is the
+# last valid quote before it. Looked up this far back; older -> UNKNOWN.
+PREVAILING_LOOKBACK = timedelta(minutes=5)
 
 OK = "ok"
 UNKNOWN = "unknown"
@@ -215,11 +218,24 @@ class AlpacaMarketData:
                 time.sleep(wait)
             self._last = time.monotonic()
             try:
-                response = self._session.get(url, params=params, timeout=30)
+                # Redirects are never followed: a 3xx could carry the
+                # credential headers to a host the gate never checked.
+                response = self._session.get(
+                    url, params=params, timeout=30, allow_redirects=False
+                )
             except ForbiddenHostError:
                 raise
             except Exception as exc:  # network error -> unknown, never empty
                 return None, None, f"transport_error:{type(exc).__name__}"
+            final = getattr(response, "url", None)
+            if isinstance(final, str) and final:
+                try:
+                    if assert_data_host(final) != host:
+                        return None, None, "redirect_refused"
+                except ForbiddenHostError:
+                    return None, None, "redirect_refused"
+            if 300 <= response.status_code < 400:
+                return None, None, "redirect_refused"
             if response.status_code == 429:
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
@@ -254,13 +270,21 @@ class AlpacaMarketData:
                 return None, tuple(digests), error, False
             assert payload is not None and digest is not None
             digests.append(digest)
-            block = payload.get(key) or {}
+            if key not in payload:
+                return None, tuple(digests), f"missing_key_{key}", False
+            block = payload[key]
+            if block is None:
+                block = {}  # the API's "no rows" form; emptiness judged by caller
             if not isinstance(block, dict):
                 return None, tuple(digests), "unexpected_payload_shape", False
-            got = block.get(symbol) or []
+            got = block.get(symbol)
+            if got is None:
+                got = []
             if not isinstance(got, list):
                 return None, tuple(digests), "unexpected_payload_shape", False
-            rows.extend(r for r in got if isinstance(r, dict))
+            if any(not isinstance(r, dict) for r in got):
+                return None, tuple(digests), "unexpected_row_shape", False
+            rows.extend(got)
             token = payload.get("next_page_token")
             if not token:
                 return rows, tuple(digests), None, True
@@ -288,6 +312,11 @@ class AlpacaMarketData:
         bars = [b for b in (parse_bar(r) for r in rows) if b is not None]
         if len(bars) != len(rows):
             return BarsResult(UNKNOWN, reason="unparseable_bar", digests=digests)
+        if len({b.start_utc for b in bars}) != len(bars):
+            # two rows for one interval: volume/low are ambiguous, never summed
+            return BarsResult(
+                UNKNOWN, reason="duplicate_bar_timestamp", digests=digests
+            )
         return BarsResult(OK, bars=tuple(bars), digests=digests)
 
     def daily_bars(
@@ -322,6 +351,9 @@ class AlpacaMarketData:
     def first_valid_quote(
         self, symbol: str, start_utc: datetime, end_utc: datetime
     ) -> QuoteResult:
+        """First valid quote in the window. An empty stream or a stream with
+        no valid quote is UNKNOWN (missing/abnormal data), never "no quote"."""
+
         rows, digests, error, complete = self._quotes(symbol, start_utc, end_utc)
         if error or rows is None:
             return QuoteResult(UNKNOWN, reason=error or "no_rows", digests=digests)
@@ -331,25 +363,63 @@ class AlpacaMarketData:
                 return QuoteResult(OK, quote=quote, digests=digests)
         if not complete:
             return QuoteResult(UNKNOWN, reason="pagination_cap", digests=digests)
-        return QuoteResult(OK, quote=None, reason="no_valid_quote", digests=digests)
+        reason = "no_quote_data" if not rows else "no_valid_quote"
+        return QuoteResult(UNKNOWN, reason=reason, digests=digests)
 
     def ask_at_or_below(
         self, symbol: str, start_utc: datetime, end_utc: datetime, limit: Decimal
     ) -> AskEvidence:
-        rows, digests, error, complete = self._quotes(symbol, start_utc, end_utc)
+        """Was a valid ask <= limit in force during [start, end)?
+
+        In force = the prevailing quote when the window opens (last valid quote
+        within ``PREVAILING_LOOKBACK`` before ``start``) or any valid quote
+        inside the window. No quote evidence at all -> UNKNOWN; ``found=False``
+        is returned only when quotes covered the window and none was <= limit.
+        """
+
+        rows, digests, error, complete = self._quotes(
+            symbol, start_utc - PREVAILING_LOOKBACK, end_utc
+        )
         if error or rows is None:
             return AskEvidence(UNKNOWN, reason=error or "no_rows", digests=digests)
-        for raw in rows:
-            quote = parse_valid_quote(raw)
-            if quote is None or not (start_utc <= quote.at_utc < end_utc):
-                continue
-            if quote.ask <= limit:
-                return AskEvidence(
-                    OK, found=True, at_utc=quote.at_utc, ask=quote.ask, digests=digests
-                )
-        if not complete:
-            return AskEvidence(UNKNOWN, reason="pagination_cap", digests=digests)
-        return AskEvidence(OK, found=False, digests=digests)
+        return ask_evidence_from_quotes(
+            rows, start_utc, end_utc, limit, complete, digests
+        )
+
+
+def ask_evidence_from_quotes(
+    rows: list[dict[str, Any]],
+    start_utc: datetime,
+    end_utc: datetime,
+    limit: Decimal,
+    complete: bool,
+    digests: tuple[str, ...] = (),
+) -> AskEvidence:
+    prevailing: Quote | None = None
+    seen_in_window = False
+    for raw in rows:
+        quote = parse_valid_quote(raw)
+        if quote is None:
+            continue
+        if quote.at_utc < start_utc:
+            prevailing = quote  # rows are ascending: keep the latest
+            continue
+        if quote.at_utc >= end_utc:
+            continue
+        seen_in_window = True
+        if quote.ask <= limit:
+            return AskEvidence(
+                OK, found=True, at_utc=quote.at_utc, ask=quote.ask, digests=digests
+            )
+    if prevailing is not None and prevailing.ask <= limit:
+        return AskEvidence(
+            OK, found=True, at_utc=start_utc, ask=prevailing.ask, digests=digests
+        )
+    if not complete:
+        return AskEvidence(UNKNOWN, reason="pagination_cap", digests=digests)
+    if prevailing is None and not seen_in_window:
+        return AskEvidence(UNKNOWN, reason="no_quote_evidence", digests=digests)
+    return AskEvidence(OK, found=False, digests=digests)
 
 
 def _iso(ts: datetime) -> str:

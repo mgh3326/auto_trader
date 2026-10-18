@@ -16,6 +16,7 @@ from tests.research.rob1391_us_resubmit_shadow.helpers import (
     CAL,
     et,
     kis_row,
+    rung_for,
     rung_row,
     toss_row,
     universe_row,
@@ -26,11 +27,12 @@ pytestmark = pytest.mark.unit
 D0 = date(2025, 11, 17)
 
 
-def one(row, *, rungs=(), universe=None):
-    orders = assemble_orders(
-        [row], list(rungs), [universe or universe_row(row["symbol"])]
-    )
-    return normalise(orders[0], CAL)
+def one(row, *, rungs=None, universe=None, deviations=frozenset()):
+    """Default: the order carries its approved, policy-stamped rung."""
+
+    rungs = [rung_for(row)] if rungs is None else list(rungs)
+    orders = assemble_orders([row], rungs, [universe or universe_row(row["symbol"])])
+    return normalise(orders[0], CAL, deviations=deviations)
 
 
 def test_toss_expired_partial_fill_becomes_candidate_with_residual():
@@ -38,7 +40,7 @@ def test_toss_expired_partial_fill_becomes_candidate_with_residual():
         toss_row(
             1,
             "SYMA",
-            ordered_at=et(D0, 8, 5),
+            ordered_at=et(D0, 10, 5),
             price="99.50",
             qty=3,
             filled=1,
@@ -53,7 +55,13 @@ def test_toss_expired_partial_fill_becomes_candidate_with_residual():
 
 
 def test_ledger_budget_basis_without_rung():
-    cand, _ = one(toss_row(2, "SYMA", ordered_at=et(D0, 8, 5), price="50.25", qty=2))
+    cand, _ = one(
+        toss_row(2, "SYMA", ordered_at=et(D0, 10, 5), price="50.25", qty=2),
+        rungs=[],
+        deviations=frozenset(
+            {"D6_ledger_budget_basis", "D4_policy_epoch_invariant_basis"}
+        ),
+    )
     assert (
         cand.budget == Decimal("100.50")
         and cand.budget_basis == "ledger_price_x_quantity"
@@ -133,7 +141,7 @@ def test_kis_unfilled_expiry_inferred_at_d0_close_and_partial_is_unproven():
     ],
 )
 def test_exclusion_reasons_are_recorded(over, universe_over, reason):
-    row = toss_row(5, "SYMC", ordered_at=et(D0, 8, 5), price="20.00", qty=5)
+    row = toss_row(5, "SYMC", ordered_at=et(D0, 10, 5), price="20.00", qty=5)
     row.update(over)
     cand, reasons = one(row, universe=universe_row("SYMC", **universe_over))
     assert cand is None and reason in reasons
@@ -141,7 +149,7 @@ def test_exclusion_reasons_are_recorded(over, universe_over, reason):
 
 def test_option_symbol_and_missing_universe_row():
     row = toss_row(
-        6, "SYMD251219C00100000", ordered_at=et(D0, 8, 5), price="1.00", qty=1
+        6, "SYMD251219C00100000", ordered_at=et(D0, 10, 5), price="1.00", qty=1
     )
     _, reasons = normalise(assemble_orders([row], [], [])[0], CAL)
     assert "option" in reasons and "instrument_unverified_no_universe_row" in reasons
@@ -149,7 +157,7 @@ def test_option_symbol_and_missing_universe_row():
 
 def test_plain_etf_is_allowed():
     cand, reasons = one(
-        toss_row(7, "SYME", ordered_at=et(D0, 8, 5), price="20.00", qty=5),
+        toss_row(7, "SYME", ordered_at=et(D0, 10, 5), price="20.00", qty=5),
         universe=universe_row(
             "SYME",
             security_type="ETF",
@@ -176,7 +184,7 @@ def test_non_expiry_statuses(status, reason):
         toss_row(
             8,
             "SYMA",
-            ordered_at=et(D0, 8, 5),
+            ordered_at=et(D0, 10, 5),
             price="10.00",
             qty=2,
             status=status,
@@ -190,14 +198,14 @@ def test_expiry_must_fall_between_d0_close_and_next_open():
     late = CAL.session(CAL.offset(D0, 1)).open_utc
     _, reasons = one(
         toss_row(
-            9, "SYMA", ordered_at=et(D0, 8, 5), price="10.00", qty=2, expired_at=late
+            9, "SYMA", ordered_at=et(D0, 10, 5), price="10.00", qty=2, expired_at=late
         )
     )
     assert reasons == ["expiry_outside_d0_window"]
     early = CAL.session(D0).close_utc.replace(minute=0, hour=19)
     _, reasons = one(
         toss_row(
-            10, "SYMA", ordered_at=et(D0, 8, 5), price="10.00", qty=2, expired_at=early
+            10, "SYMA", ordered_at=et(D0, 10, 5), price="10.00", qty=2, expired_at=early
         )
     )
     assert reasons == ["expiry_outside_d0_window"]
@@ -208,7 +216,7 @@ def test_quantity_and_budget_mismatches():
         toss_row(
             11,
             "SYMA",
-            ordered_at=et(D0, 8, 5),
+            ordered_at=et(D0, 10, 5),
             price="10.00",
             qty=2,
             filled=3,
@@ -217,26 +225,26 @@ def test_quantity_and_budget_mismatches():
     )
     assert reasons == ["quantity_mismatch_filled_gt_ordered"]
     _, reasons = one(
-        toss_row(12, "SYMA", ordered_at=et(D0, 8, 5), price="10.00", qty=2),
+        toss_row(12, "SYMA", ordered_at=et(D0, 10, 5), price="10.00", qty=2),
         rungs=[rung_row("TOSSORD00000012", qty=2, price="10.00", notional="15")],
     )
     assert reasons == ["budget_below_order_notional"]
     _, reasons = one(
-        toss_row(13, "SYMA", ordered_at=et(D0, 8, 5), price="10.00", qty=2),
+        toss_row(13, "SYMA", ordered_at=et(D0, 10, 5), price="10.00", qty=2),
         rungs=[rung_row("TOSSORD00000013", qty=2, price="10.01")],
     )
     assert reasons == ["rung_price_mismatch"]
 
 
 def test_duplicate_ledger_rows_are_unclear():
-    a = toss_row(14, "SYMA", ordered_at=et(D0, 8, 5), price="10.00", qty=2)
+    a = toss_row(14, "SYMA", ordered_at=et(D0, 10, 5), price="10.00", qty=2)
     b = dict(a, source_id="15")
     orders = assemble_orders([a, b], [], [universe_row("SYMA")])
     assert all("duplicate_ledger_or_rung" in normalise(o, CAL)[1] for o in orders)
 
 
 def test_rung_from_other_account_mode_never_joins():
-    row = toss_row(16, "SYMA", ordered_at=et(D0, 8, 5), price="10.00", qty=2)
+    row = toss_row(16, "SYMA", ordered_at=et(D0, 10, 5), price="10.00", qty=2)
     orders = assemble_orders(
         [row],
         [
@@ -257,7 +265,7 @@ def test_kis_kr_table_us_row_is_surfaced_as_unexpected():
     row = kis_row(
         17,
         "SYMA",
-        ordered_at=et(D0, 8, 5),
+        ordered_at=et(D0, 10, 5),
         price="10.00",
         qty=1,
         source="kis_live_order_ledger",
@@ -320,8 +328,8 @@ def test_different_symbols_never_merge():
 
 def test_ladder_children_share_episode_regardless_of_price():
     rows = [
-        toss_row(200, "SYMA", ordered_at=et(D0, 8, 5), price="100.00", qty=1),
-        toss_row(201, "SYMA", ordered_at=et(D0, 8, 6), price="90.00", qty=1),
+        toss_row(200, "SYMA", ordered_at=et(D0, 10, 5), price="100.00", qty=1),
+        toss_row(201, "SYMA", ordered_at=et(D0, 10, 6), price="90.00", qty=1),
     ]
     rungs = [
         rung_row("TOSSORD00000200", qty=1, price="100.00", root="root-1"),
@@ -334,7 +342,7 @@ def test_ladder_children_share_episode_regardless_of_price():
 
 
 def test_missing_anchor_price_is_quarantined_not_a_new_parent():
-    rows = [toss_row(300, "SYMA", ordered_at=et(D0, 8, 5), price=None, qty=1)]
+    rows = [toss_row(300, "SYMA", ordered_at=et(D0, 10, 5), price=None, qty=1)]
     ep = build_episodes(assemble_orders(rows, [], []), CAL)
     assert ep.episodes == {} and ep.quarantined == {
         "toss_live_order_ledger:300": "anchor_price_missing"

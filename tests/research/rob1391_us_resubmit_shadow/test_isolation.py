@@ -7,7 +7,6 @@ same function on a mutated copy and prove it goes RED.
 from __future__ import annotations
 
 import ast
-import os
 import re
 import subprocess
 import sys
@@ -28,16 +27,110 @@ pytestmark = pytest.mark.unit
 
 PKG = Path(__file__).resolve().parents[3] / "research" / "rob1391_us_resubmit_shadow"
 
-THIRD_PARTY = {"numpy", "pandas", "exchange_calendars", "requests"}
+THIRD_PARTY = {"numpy", "pandas", "exchange_calendars"}
 # Exact allowlist of non-stdlib, non-package imports, per module. Everything
 # else -- order/proposal/watch/ledger writers, every broker client -- is out.
 PER_MODULE = {
     "db_source.py": {"sqlalchemy", "sqlalchemy.engine", "sqlalchemy.ext.asyncio"},
-    "market_data.py": {"research.us_intraday_corpus.alpaca_data"},
+    "market_data.py": {"research.us_intraday_corpus.alpaca_data", "requests"},
     "parents.py": {"app.core.symbol"},
-    "guards.py": {"app.services.trading_policy_service"},
+    "guards.py": {"app.services.trading_policy_service", "subprocess"},
+}
+# stdlib modules that open sockets, spawn processes or import dynamically are
+# not "stdlib = fine": only the per-module exceptions above may use them.
+STDLIB_FORBIDDEN = {
+    "importlib",
+    "builtins",
+    "ctypes",
+    "socket",
+    "ssl",
+    "http",
+    "urllib",
+    "ftplib",
+    "smtplib",
+    "xmlrpc",
+    "subprocess",
+    "multiprocessing",
+    "runpy",
+    "pkgutil",
+    "code",
+}
+FORBIDDEN_NAMES = {
+    "__import__",
+    "__builtins__",
+    "eval",
+    "exec",
+    "compile",
+    "globals",
+    "breakpoint",
 }
 OWN = "research.rob1391_us_resubmit_shadow"
+HTTP_VERBS = {
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "head",
+    "options",
+    "request",
+    "send",
+    "urlopen",
+}
+
+
+def _fold(node: ast.AST) -> str | None:
+    """Constant-fold ``"a" + "b"`` chains (and parenthesised constants)."""
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _fold(node.left), _fold(node.right)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for v in node.values:
+            if isinstance(v, ast.Constant):
+                parts.append(str(v.value))
+            elif (
+                isinstance(v, ast.FormattedValue)
+                and getattr(v.value, "id", None) == "DATA_HOST"
+            ):
+                parts.append("data.alpaca.markets")
+            else:
+                parts.append("\x00")  # unknown at analysis time
+        return "".join(parts)
+    return None
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+            ):
+                out.add(id(body[0].value))
+    return out
+
+
+def _strings(tree: ast.AST, *, docstrings: bool = True) -> list[tuple[int, str]]:
+    skip = set() if docstrings else _docstring_nodes(tree)
+    # f-string pieces are judged as the whole folded f-string, not alone
+    skip |= {
+        id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for v in n.values
+    }
+    return [
+        (n.lineno, v)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.expr) and id(n) not in skip and (v := _fold(n)) is not None
+    ]
 
 
 def import_violations(pkg: Path) -> list[str]:
@@ -54,22 +147,35 @@ def import_violations(pkg: Path) -> list[str]:
                     bad.append(f"{path.name}: relative import")
                     continue
                 names = [node.module or ""]
-            elif isinstance(node, ast.Call):
-                fn = node.func
-                if (isinstance(fn, ast.Name) and fn.id == "__import__") or (
-                    isinstance(fn, ast.Attribute) and fn.attr == "import_module"
-                ):
-                    bad.append(f"{path.name}: dynamic import")
+            elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
+                bad.append(f"{path.name}:{node.lineno}: forbidden name {node.id}")
+                continue
+            elif isinstance(node, ast.Attribute) and node.attr in {
+                "import_module",
+                "__import__",
+                "__builtins__",
+            }:
+                bad.append(f"{path.name}:{node.lineno}: dynamic import")
+                continue
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id in {"builtins", "importlib", "sys", "__builtins__"}
+            ):
+                bad.append(f"{path.name}:{node.lineno}: getattr on {node.args[0].id}")
                 continue
             for name in names:
                 top = name.split(".")[0]
                 if name == OWN or name.startswith(OWN + "."):
                     continue
-                if (
-                    top in sys.stdlib_module_names
-                    or top in THIRD_PARTY
-                    or name in allowed
-                ):
+                if name in allowed or top in allowed:
+                    continue
+                if top in sys.stdlib_module_names and top not in STDLIB_FORBIDDEN:
+                    continue
+                if top in THIRD_PARTY:
                     continue
                 bad.append(f"{path.name}: {name}")
     return bad
@@ -77,22 +183,58 @@ def import_violations(pkg: Path) -> list[str]:
 
 _STATEMENT = re.compile(
     r"\b(INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM|TRUNCATE\s|ALTER\s+TABLE|DROP\s+TABLE|"
-    r"CREATE\s+(TEMP\s+)?TABLE|MERGE\s+INTO|COPY\s+\S+\s+FROM|SELECT\s+.*\bFOR\s+UPDATE)",
+    r"CREATE\s+(TEMP\s+)?TABLE|MERGE\s+INTO|COPY\s+\S+\s+FROM|SELECT\s+.*\bFOR\s+UPDATE|SELECT\s+.*\bINTO\b)",
     re.IGNORECASE | re.DOTALL,
 )
+_EXECUTORS = {
+    "execute",
+    "exec_driver_sql",
+    "executemany",
+    "fetchrow",
+    "fetchval",
+    "copy_records_to_table",
+}
 
 
 def sql_violations(pkg: Path) -> list[str]:
     bad: list[str] = []
     for path in sorted(pkg.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        for lineno, value in _strings(tree, docstrings=False):
+            if _STATEMENT.search(value):
+                bad.append(f"{path.name}:{lineno}: write SQL")
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and _STATEMENT.search(node.value)
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if path.name != "db_source.py":
+                if name in _EXECUTORS or name == "text":
+                    bad.append(
+                        f"{path.name}:{node.lineno}: SQL execution outside db_source"
+                    )
+                continue
+            # db_source: every executed statement goes through the runtime guard
+            if name == "text" and not (
+                node.args
+                and isinstance(node.args[0], ast.Call)
+                and getattr(node.args[0].func, "id", None) == "_assert_select"
             ):
-                bad.append(f"{path.name}:{node.lineno}: write SQL")
+                bad.append(f"db_source.py:{node.lineno}: text() without _assert_select")
+            if name == "exec_driver_sql" and not (
+                node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "READ_ONLY_BEGIN"
+            ):
+                bad.append(f"db_source.py:{node.lineno}: raw exec_driver_sql")
+            if name == "execute" and not (
+                node.args
+                and isinstance(node.args[0], ast.Call)
+                and getattr(node.args[0].func, "id", None) == "text"
+            ):
+                bad.append(
+                    f"db_source.py:{node.lineno}: execute() of a non-text() statement"
+                )
         if path.name == "db_source.py":
             for node in tree.body:
                 if isinstance(node, ast.Assign) and any(
@@ -110,18 +252,64 @@ def host_violations(pkg: Path) -> list[str]:
     bad: list[str] = []
     for path in sorted(pkg.glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        for host in re.findall(r"https?://([A-Za-z0-9.-]+)", text):
-            if host != "data.alpaca.markets":
-                bad.append(f"{path.name}: {host}")
         tree = ast.parse(text)
+        for lineno, value in _strings(tree):
+            for host in re.findall(r"(?:https?|wss?)://([A-Za-z0-9.-]*)", value):
+                if host != "data.alpaca.markets":
+                    bad.append(f"{path.name}:{lineno}: host {host!r}")
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr in {"post", "put", "patch", "delete"}
-                and isinstance(node.ctx, ast.Load)
-            ):
-                if isinstance(node.value, ast.Attribute | ast.Name):
-                    bad.append(f"{path.name}:{node.lineno}: .{node.attr}(")
+            # "https://" + <expression>: a host assembled at run time
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                left = _fold(node.left)
+                if (
+                    left is not None
+                    and left.endswith("://")
+                    and _fold(node.right) is None
+                ):
+                    bad.append(f"{path.name}:{node.lineno}: dynamic host")
+        gated_get_seen = False
+        for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            for node in ast.walk(func):
+                if not (
+                    isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                ):
+                    continue
+                verb, recv = node.func.attr, node.func.value
+                recv_name = (
+                    recv.attr
+                    if isinstance(recv, ast.Attribute)
+                    else getattr(recv, "id", "")
+                )
+                if verb not in HTTP_VERBS:
+                    continue
+                if recv_name in {"requests", "urllib", "httpx", "urllib3"}:
+                    bad.append(
+                        f"{path.name}:{node.lineno}: module-level HTTP {recv_name}.{verb}("
+                    )
+                elif "session" in recv_name.lower() or recv_name in {
+                    "http",
+                    "client",
+                    "conn",
+                }:
+                    if (
+                        path.name == "market_data.py"
+                        and func.name == "_get"
+                        and verb == "get"
+                    ):
+                        gate = [
+                            c.lineno
+                            for c in ast.walk(func)
+                            if isinstance(c, ast.Call)
+                            and getattr(c.func, "id", None) == "assert_data_host"
+                        ]
+                        if gate and min(gate) < node.lineno:
+                            gated_get_seen = True
+                            continue
+                    bad.append(
+                        f"{path.name}:{node.lineno}: ungated {recv_name}.{verb}("
+                    )
+        if path.name == "market_data.py" and not gated_get_seen:
+            bad.append("market_data.py: no host-gated session.get found")
     return bad
 
 
@@ -223,41 +411,42 @@ def test_selected_columns_exist_on_the_orm_models():
     assert USSymbolUniverse.__table__.schema is None
 
 
-def _disposable_pg_url() -> str | None:
-    url = os.environ.get("AUTO_TRADER_TEST_DATABASE_URL")
-    if not url and os.environ.get("GITHUB_ACTIONS") == "true":
-        url = os.environ.get("DATABASE_URL")  # CI's dedicated service container
-    return url or None
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_schema_selects_inside_read_only_transaction(db_session):
+    """On the conftest-managed run-owned test database (real migrated schema):
+    every SELECT runs, and PostgreSQL itself rejects a write in that txn.
 
+    No row is written; the URL is validated as run-owned before connecting
+    (never the local :5432 copy -- the conftest refuses unowned databases).
+    """
 
-@pytest.mark.skipif(
-    _disposable_pg_url() is None,
-    reason="needs a disposable PostgreSQL (never localhost:5432 locally)",
-)
-def test_postgres_rejects_writes_inside_the_read_only_transaction():
-    import asyncio
+    from datetime import UTC, datetime
 
+    from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    url = _disposable_pg_url().replace("postgresql://", "postgresql+asyncpg://", 1)
+    from tests._run_owned_database import validate_run_owned_database_url
 
-    async def go():
-        engine = create_async_engine(url)
-        try:
-            async with engine.connect() as conn:
-                trans = await conn.begin()
-                await conn.exec_driver_sql(READ_ONLY_BEGIN)
-                assert (await conn.exec_driver_sql("SELECT 1")).scalar() == 1
-                with pytest.raises(DBAPIError, match="read-only transaction"):
-                    await conn.exec_driver_sql(
-                        "CREATE TEMP TABLE rob1391_probe (x int)"
-                    )
-                await trans.rollback()
-        finally:
-            await engine.dispose()
-
-    asyncio.run(go())
+    bind = db_session.bind
+    url = validate_run_owned_database_url(getattr(bind, "url", None) or bind.engine.url)
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            trans = await conn.begin()
+            snap = await conn.run_sync(run_read_only, datetime(2100, 1, 1, tzinfo=UTC))
+            assert snap.order_rows == [] and snap.rung_rows == []
+            rows = await conn.execute(
+                text(_assert_select(db_source.SQL_US_UNIVERSE)),
+                {"symbols": ["ROB1391NONE"]},
+            )
+            assert rows.all() == []
+            with pytest.raises(DBAPIError, match="read-only transaction"):
+                await conn.exec_driver_sql("CREATE TEMP TABLE rob1391_probe (x int)")
+            await trans.rollback()
+    finally:
+        await engine.dispose()
 
 
 def test_runtime_closure_loads_no_write_path_module():
@@ -294,7 +483,8 @@ class Session:
         self.responses = list(responses)
         self.calls: list[tuple[str, dict]] = []
 
-    def get(self, url, params, timeout):
+    def get(self, url, params, timeout, allow_redirects=True):
+        assert allow_redirects is False  # the client must never follow redirects
         self.calls.append((url, dict(params)))
         return self.responses.pop(0)
 
@@ -375,7 +565,7 @@ def test_http_error_and_pagination_cap_are_unknown_not_empty():
     assert ev.status == "unknown" and ev.reason == "pagination_cap"
 
 
-def test_crossed_or_zero_quotes_are_not_valid_asks():
+def test_crossed_or_zero_quotes_are_not_valid_ask_evidence():
     from datetime import UTC, datetime
 
     quotes = [
@@ -408,7 +598,12 @@ def test_crossed_or_zero_quotes_are_not_valid_asks():
         datetime(2025, 11, 18, 15, 1, tzinfo=UTC),
         Decimal("99.50"),
     )
-    assert ev.status == "ok" and ev.found is False
+    # invalid quotes are not evidence: no valid quote at all -> UNKNOWN, never "not found"
+    assert (
+        ev.status == "unknown"
+        and ev.found is False
+        and ev.reason == "no_quote_evidence"
+    )
 
 
 def test_host_pin_rejects_trading_host_before_any_request(monkeypatch):

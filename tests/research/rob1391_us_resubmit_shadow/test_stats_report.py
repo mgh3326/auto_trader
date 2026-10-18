@@ -88,6 +88,7 @@ def test_empty_is_nan_not_zero():
 
 def _metrics(**over):
     m = {
+        "net_tests": "RUN",
         "n_parents": 40,
         "n_symbols": 12,
         "unknown_total": 0,
@@ -139,10 +140,13 @@ def test_stop_or_net_loss_is_risk_signal(tmp_path):
 
 def test_pending_fee_schedule_withholds_net_tests(tmp_path):
     state = _state(tmp_path, fee=False)
-    verdict, reasons = R.verdict(state, _metrics())
+    verdict, reasons = R.verdict(
+        state, _metrics(net_tests="WITHHELD_PENDING_FEE_SCHEDULE", holm=None)
+    )
     assert (
         verdict == R.RESERVED and "net_tests_withheld_pending_fee_schedule" in reasons
     )
+    assert "holm_not_passed" in reasons
 
 
 def test_interim_report_has_no_metrics_or_p_values(tmp_path):

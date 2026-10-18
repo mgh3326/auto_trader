@@ -18,7 +18,7 @@ from tests.research.rob1391_us_resubmit_shadow.helpers import (
     context,
     et,
     quote_json,
-    rung_row,
+    rung_for,
     seal,
     toss_row,
     universe_row,
@@ -47,9 +47,10 @@ def add_parent(
     filled=0,
     avg=None,
     notional=None,
-    hh=8,
+    hh=10,
     mm=5,
     status="expired",
+    rung=True,
 ):
     row = toss_row(
         sid,
@@ -62,16 +63,8 @@ def add_parent(
         status=status,
     )
     src.order_rows.append(row)
-    if notional is not None:
-        src.rung_rows.append(
-            rung_row(
-                row["broker_order_id"],
-                qty=qty,
-                price=price,
-                notional=notional,
-                root=f"root-{sid}",
-            )
-        )
+    if rung:  # the approved, policy-stamped proposal rung (strict default)
+        src.rung_rows.append(rung_for(row, notional=notional))
     if not any(u["symbol"] == sym for u in src.universe_rows):
         src.universe_rows.append(universe_row(sym))
     mkt.price.setdefault(sym, 100.0)
@@ -213,7 +206,7 @@ def test_total_cap_sixty(tmp_path, existing, expected):
             normalise,
         )
 
-        o = assemble_orders([row], [], [universe_row(f"NEW{i}")])[0]
+        o = assemble_orders([row], [rung_for(row)], [universe_row(f"NEW{i}")])[0]
         cands.append((normalise(o, CAL)[0], o))
     episodes = build_episodes([o for _, o in cands], CAL)
     eligible = [(c, episodes.episode_of[o.source_ref]) for c, o in cands]
@@ -226,7 +219,7 @@ def test_total_cap_sixty(tmp_path, existing, expected):
 def test_virtual_cash_reservation(tmp_path):
     ledger, src, mkt = setup(tmp_path)
     for i in range(1, 4):
-        add_parent(src, mkt, i, f"SYM{i}", qty=10, price="400.00", hh=8, mm=i)
+        add_parent(src, mkt, i, f"SYM{i}", qty=10, price="400.00", hh=10, mm=i)
     ctx = context(ledger, src, mkt)
     engine.advance(ctx, D0)
     payload = ctx.state.registered[D0.isoformat()]
@@ -302,9 +295,8 @@ def test_liquidity_filter_excludes_from_both_arms(tmp_path):
 def test_spread_gate_at_original_submission(tmp_path):
     ledger, src, mkt = setup(tmp_path)
     add_parent(src, mkt, 1, "WIDE")
-    sess = CAL.session(D0)
     mkt.quotes[("WIDE", D0)] = [
-        quote_json(sess.open_utc + timedelta(seconds=2), bid=99.60, ask=100.00)
+        quote_json(et(D0, 10, 6), bid=99.60, ask=100.00)  # first quote after 10:05
     ]
     ctx = context(ledger, src, mkt)
     engine.advance(ctx, D0)

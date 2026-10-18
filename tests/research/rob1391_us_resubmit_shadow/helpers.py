@@ -26,10 +26,12 @@ from research.rob1391_us_resubmit_shadow.ledger import Ledger
 from research.rob1391_us_resubmit_shadow.manifest import build_manifest
 from research.rob1391_us_resubmit_shadow.market_data import (
     OK,
+    PREVAILING_LOOKBACK,
     UNKNOWN,
     AskEvidence,
     BarsResult,
     QuoteResult,
+    ask_evidence_from_quotes,
     parse_bar,
     parse_valid_quote,
 )
@@ -93,7 +95,7 @@ def toss_row(
         "side": "buy",
         "order_type": "limit",
         "operation_kind": "place",
-        "time_in_force": None,
+        "time_in_force": "DAY",
         "quantity": d8(qty),
         "price": d8(price),
         "currency": "USD",
@@ -170,7 +172,7 @@ def rung_row(
     root: str = "00000000-0000-4000-8000-000000000001",
     account_mode: str = "toss_live",
     rung_index: int = 0,
-    policy_version: str | None = None,
+    policy_version: str | None = POLICY["version"],
 ) -> dict[str, Any]:
     return {
         "broker_order_id": broker_order_id,
@@ -182,6 +184,30 @@ def rung_row(
         "account_mode": account_mode,
         "order_policy_version": policy_version,
     }
+
+
+MANDATORY_DEVIATIONS = frozenset({"D1_exit_hold_to_d20", "D2_resubmit_gate_subset"})
+
+
+def rung_for(
+    row: dict[str, Any],
+    *,
+    notional: Any = None,
+    root: str | None = None,
+    policy_version: str | None = POLICY["version"],
+) -> dict[str, Any]:
+    """The approved proposal rung that a real auto-approved order carries."""
+
+    mode = "toss_live" if row["source"] == "toss_live_order_ledger" else "kis_live"
+    return rung_row(
+        row["broker_order_id"],
+        qty=Decimal(row["quantity"]),
+        price=Decimal(row["price"]),
+        notional=notional,
+        root=root or f"root-{row['source_id']}",
+        account_mode=mode,
+        policy_version=policy_version,
+    )
 
 
 def et(day: date, hh: int, mm: int, ss: int = 0) -> datetime:
@@ -337,13 +363,11 @@ class FakeMarket:
             return self.quotes[(symbol, day)]
         p = self.price.get(symbol, 100.0)
         sess = CAL.session(day)
-        return [
-            quote_json(
-                sess.open_utc + timedelta(seconds=1),
-                bid=round(p - 0.01, 2),
-                ask=round(p + 0.01, 2),
-            )
-        ]
+        out, t = [], sess.open_utc + timedelta(seconds=1)
+        while t < sess.close_utc:
+            out.append(quote_json(t, bid=round(p - 0.01, 2), ask=round(p + 0.01, 2)))
+            t += timedelta(minutes=1)
+        return out
 
     def first_valid_quote(
         self, symbol: str, start_utc: datetime, end_utc: datetime
@@ -352,11 +376,14 @@ class FakeMarket:
         self.calls.append(("quote", symbol))
         if ("quote", symbol, day) in self.unknown:
             return QuoteResult(UNKNOWN, reason="http_503")
-        for raw in self._session_quotes(symbol, day):
+        rows = list(self._session_quotes(symbol, day))
+        for raw in rows:
             q = parse_valid_quote(raw)
             if q is not None and start_utc <= q.at_utc < end_utc:
                 return QuoteResult(OK, quote=q, digests=(f"q-{symbol}-{day}",))
-        return QuoteResult(OK, quote=None, reason="no_valid_quote")
+        return QuoteResult(
+            UNKNOWN, reason="no_quote_data" if not rows else "no_valid_quote"
+        )
 
     def ask_at_or_below(
         self, symbol: str, start_utc: datetime, end_utc: datetime, limit: Decimal
@@ -365,23 +392,21 @@ class FakeMarket:
         self.calls.append(("ask", symbol))
         if ("ask", symbol, day) in self.unknown:
             return AskEvidence(UNKNOWN, reason="pagination_cap")
-        for raw in self._session_quotes(symbol, day):
-            q = parse_valid_quote(raw)
-            if q is None or not (start_utc <= q.at_utc < end_utc):
-                continue
-            if q.ask <= limit:
-                return AskEvidence(
-                    OK, found=True, at_utc=q.at_utc, ask=q.ask, digests=("a",)
-                )
-        return AskEvidence(OK, found=False, digests=("a",))
+        lo = start_utc - PREVAILING_LOOKBACK
+        rows = [
+            r
+            for r in self._session_quotes(symbol, day)
+            if (q := parse_valid_quote(r)) is None or lo <= q.at_utc < end_utc
+        ]
+        return ask_evidence_from_quotes(rows, start_utc, end_utc, limit, True, ("a",))
 
 
 def seal(
     tmp_path: Path,
     *,
     fee: bool = True,
-    budget_rule: str = "prereg_fill_plus_cost_le_budget",
-    deviation_ref: str | None = None,
+    deviations: frozenset[str] = MANDATORY_DEVIATIONS,
+    deviation_ref: str | None = "fixture-deviation-ref",
 ) -> Ledger:
     import json
 
@@ -400,7 +425,7 @@ def seal(
         deployed_policy=dict(POLICY),
         feed="sip",
         fee_schedule_path=fee_path,
-        budget_rule=budget_rule,
+        approved_deviations=deviations,
         deviation_ref=deviation_ref,
     )
     ledger = Ledger(tmp_path / "ledger")

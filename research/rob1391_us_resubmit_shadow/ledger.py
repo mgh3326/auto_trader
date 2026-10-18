@@ -188,10 +188,15 @@ class Ledger:
                 kind = obj.get("kind")
                 if kind not in EVENT_KINDS:
                     raise LedgerIntegrityError(f"line {lineno} unknown kind {kind!r}")
+                embedded = (
+                    obj["payload"].get("latches", [])
+                    if kind in {"register", "step"}
+                    else []
+                )
                 if (
                     kind == "latch"
                     and obj["payload"].get("latch_type") not in LATCH_TYPES
-                ):
+                ) or any(x.get("latch_type") not in LATCH_TYPES for x in embedded):
                     raise LedgerIntegrityError(f"line {lineno} unknown latch type")
                 events.append(
                     Event(
