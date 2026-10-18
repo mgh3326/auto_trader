@@ -52,6 +52,9 @@ tests/models/test_analyst_consensus_snapshot_model.py
 tests/models/test_research_run_models.py
 tests/research/kr_corpus/d3_engine/test_d3_calibration_guard.py
 tests/research/kr_corpus/d3_engine/test_d3_engine_core.py
+tests/research/rob1391_us_resubmit_shadow/test_mutants.py
+tests/research/rob1391_us_resubmit_shadow/test_parents.py
+tests/research/rob1391_us_resubmit_shadow/test_stats_report.py
 tests/research/test_adjacent_window_predicate.py
 tests/research/test_kr_backfill_count_witness_removal.py
 tests/research/test_kr_backfill_surface_runtime.py

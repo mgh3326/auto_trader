@@ -52,6 +52,9 @@ tests/monitoring/test_trade_notifier_reply_markup.py
 tests/research/dfc_v22_research_min/test_a2_contract_transcription.py
 tests/research/dfc_v22_research_min/test_a2_golden.py
 tests/research/kr_corpus/d3_engine/test_d3_engine_acceptance.py
+tests/research/rob1391_us_resubmit_shadow/test_fills.py
+tests/research/rob1391_us_resubmit_shadow/test_isolation.py
+tests/research/rob1391_us_resubmit_shadow/test_ledger_manifest.py
 tests/research/test_kr_backfill_cursor_overlap.py
 tests/research/test_kr_backfill_fetch_window.py
 tests/research/test_kr_backfill_hard_ratio_guards.py
