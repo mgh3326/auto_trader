@@ -69,6 +69,7 @@ tests/research/kr_corpus/d3_engine/test_d3_primary.py
 tests/research/kr_corpus/test_kr_a0_exact_binding.py
 tests/research/rob1391_us_resubmit_shadow/test_calendar_and_costs.py
 tests/research/rob1391_us_resubmit_shadow/test_engine.py
+tests/research/test_rob1404_kr_entry.py
 tests/research/test_screener_bakeoff_contract.py
 tests/research/test_screener_bakeoff_withdrawal.py
 tests/research/us_stage_b/test_cli.py
