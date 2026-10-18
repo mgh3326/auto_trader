@@ -48,6 +48,8 @@ tests/mcp_server/tooling/test_toss_sellable_need_flag.py
 tests/models/test_investment_symbol_intermediate_reports_model.py
 tests/models/test_trading_decision_models.py
 tests/monitoring/test_sentry_account_scrub.py
+tests/research/rob1391_us_resubmit_shadow/test_cli.py
+tests/research/rob1391_us_resubmit_shadow/test_r1_regressions.py
 tests/research/test_event_coverage_artifact_paths.py
 tests/research/test_kr_backfill_build_clients.py
 tests/research/test_kr_backfill_collector_exit_codes.py
