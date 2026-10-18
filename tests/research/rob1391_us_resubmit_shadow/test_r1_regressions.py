@@ -509,3 +509,104 @@ def test_r2_f7_order_hash_differing_from_seal_stops_the_epoch(tmp_path):
     assert ctx.state.registered[D0.isoformat()]["exclusions"][0]["reasons"] == [
         "policy_differs_at_order"
     ]
+
+
+# ---------------------------------------------------------------- round 3 (verdict-r3, head 3558a9e)
+
+
+def test_r3_n3_quote_replaced_exactly_at_window_start_never_prevailed():
+    end = T0 + timedelta(minutes=1)
+    rows = [
+        quote_json(T0 - timedelta(seconds=1), bid=99.49, ask=99.50, nanos=""),
+        quote_json(T0, bid=99.99, ask=100.00, nanos=""),
+    ]
+    ev = market_data.ask_evidence_from_quotes(rows, T0, end, Decimal("99.50"), True)
+    assert ev.status == OK and not ev.found
+    bar = parse_bar(bar_json(T0, o=99.9, h=100.1, low=99.49, c=100.0, v=100))
+    out = simulate_conservative(
+        bars=(bar,),
+        submit_at=T0,
+        close_utc=T1,
+        limit=Decimal("99.50"),
+        remaining=1,
+        affordable=lambda _f: 1,
+        ask_lookup=lambda a, b: market_data.ask_evidence_from_quotes(
+            rows, a, b, Decimal("99.50"), True
+        ),
+    )
+    assert out.qty == 0
+
+
+def test_r3_n3_invalid_update_before_window_clears_the_earlier_quote():
+    end = T0 + timedelta(minutes=1)
+    rows = [
+        quote_json(T0 - timedelta(seconds=5), bid=99.49, ask=99.50, nanos=""),
+        {
+            "t": z_(T0 - timedelta(seconds=2)),
+            "ap": 99.40,
+            "as": 1,
+            "bp": 99.45,
+            "bs": 1,
+        },  # crossed update
+    ]
+    ev = market_data.ask_evidence_from_quotes(rows, T0, end, Decimal("99.50"), True)
+    assert ev.status == UNKNOWN and ev.reason == "no_quote_evidence"
+
+
+def z_(ts):
+    return ts.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_r3_n2_duplicate_parent_stops_the_rest_of_the_batch_and_timing_drift_fails_reconciliation(
+    tmp_path,
+):
+    ledger = seal(tmp_path)
+    src, mkt = FakeSource(), FakeMarket()
+    row = _parent(src, mkt, qty=3)
+    ctx = context(ledger, src, mkt)
+    engine.advance(ctx, D0)
+    # same source row re-dated to D1 (timing drift; every other field unchanged)
+    row["ordered_at"] = et(D1, 10, 5)
+    row["expired_at"] = CAL.session(D1).close_utc + timedelta(minutes=1)
+    _parent(src, mkt, sid=2, sym="SYMB", day=D1)
+    engine.step(ctx, D1)
+    assert "reconciliation_mismatch" in {x["reason"] for x in ctx.state.latches}
+    engine.register(ctx, D1)
+    assert ctx.state.registered[D1.isoformat()]["assigned"] == []
+
+
+def test_r3_n2_assign_stops_after_the_first_duplicate(tmp_path):
+    from research.rob1391_us_resubmit_shadow.parents import build_episodes
+
+    ledger = seal(tmp_path)
+    src, mkt = FakeSource(), FakeMarket()
+    ctx = context(ledger, src, mkt)
+    a = _parent(src, mkt, sid=1, sym="SYMA")
+    b = _parent(src, mkt, sid=2, sym="SYMB")
+    orders = assemble_orders(src.order_rows, src.rung_rows, src.universe_rows)
+    cands = [(normalise(o, CAL)[0], o) for o in orders]
+    episodes = build_episodes(orders, CAL)
+    eligible = [(c, episodes.episode_of[o.source_ref]) for c, o in cands]
+    # the candidate _assign handles first (sorted by expiry, then episode_id)
+    first = min(eligible, key=lambda item: (item[0].expiry_at, item[1]))
+    # the first candidate is already a registered parent -> duplicate
+    from research.rob1391_us_resubmit_shadow.state import ArmBook, ParentState
+
+    ctx.state.parents[first[1]] = ParentState(
+        rec={
+            "episode_id": first[1],
+            "source_ref": first[0].order.source_ref,
+            "symbol": "OLD",
+            "d0": "2025-10-01",
+            "d20": "2025-10-29",
+            "budget": "1",
+        },
+        arms={k: ArmBook() for k in ("C", "T", "T_opt")},
+    )
+    assigned, log = engine._assign(ctx, D0, eligible, episodes, {})
+    assert assigned == []
+    assert [e["reasons"] for e in log] == [
+        ["duplicate_parent"],
+        ["stopped_after_duplicate_parent"],
+    ]
+    assert {a["symbol"], b["symbol"]} == {"SYMA", "SYMB"}

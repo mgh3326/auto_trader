@@ -403,23 +403,32 @@ def ask_evidence_from_quotes(
     reached_window = any(
         (ts := _parse_ts(r.get("t"))) is not None and ts >= start_utc for r in rows
     )
+    first_update: datetime | None = (
+        None  # first quote row (valid or not) at/after start
+    )
     for raw in rows:
+        ts = _parse_ts(raw.get("t"))
         quote = parse_valid_quote(raw)
-        if quote is None:
+        if ts is not None and ts < start_utc:
+            # every update replaces the book; an invalid one leaves no valid ask
+            prevailing = quote
             continue
-        if quote.at_utc < start_utc:
-            prevailing = quote  # rows are ascending: keep the latest
-            continue
-        if quote.at_utc >= end_utc:
+        if ts is not None and ts < end_utc and first_update is None:
+            first_update = ts
+        if quote is None or quote.at_utc >= end_utc:
             continue
         seen_in_window = True
         if quote.ask <= limit:
             return AskEvidence(
                 OK, found=True, at_utc=quote.at_utc, ask=quote.ask, digests=digests
             )
+    # The pre-window quote is in force only on [start, first update at/after
+    # start): replaced exactly at ``start`` it never prevailed in the window.
+    prevailed = first_update is None or first_update > start_utc
     if (
         prevailing is not None
         and prevailing.ask <= limit
+        and prevailed
         and (complete or reached_window)
     ):
         return AskEvidence(

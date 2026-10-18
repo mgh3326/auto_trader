@@ -88,6 +88,15 @@ PROCESS_ATTRS = {
     "getoutput",
     "getstatusoutput",
 }
+ALIAS_FORBIDDEN = {
+    "sys",
+    "os",
+    "builtins",
+    "subprocess",
+    "importlib",
+    "requests",
+    "sqlalchemy",
+}
 OWN = "research.rob1391_us_resubmit_shadow"
 HTTP_VERBS = {
     "get",
@@ -157,6 +166,15 @@ def _strings(tree: ast.AST, *, docstrings: bool = True) -> list[tuple[int, str]]
     ]
 
 
+def _forbidden_attr_literals() -> set[str]:
+    return (
+        PROCESS_ATTRS
+        | (HTTP_VERBS - {"get"})
+        | _EXECUTORS
+        | {"modules", "__import__", "__builtins__", "__dict__", "text", "import_module"}
+    )
+
+
 def _dotted(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -179,6 +197,33 @@ def import_violations(pkg: Path) -> list[str]:
                     bad.append(f"{path.name}: relative import")
                     continue
                 names = [node.module or ""]
+            elif (
+                isinstance(node, ast.Attribute)
+                and node.attr == "modules"
+                and not (
+                    _dotted(node) == "sys.modules"
+                    and path.name in {"guards.py", "engine.py"}
+                )
+            ):
+                bad.append(f"{path.name}:{node.lineno}: .modules access")
+                continue
+            elif (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "getattr"
+                and len(node.args) >= 2
+                and _fold(node.args[1]) in _forbidden_attr_literals()
+            ):
+                bad.append(
+                    f"{path.name}:{node.lineno}: getattr of {_fold(node.args[1])!r}"
+                )
+                continue
+            elif isinstance(node, ast.Import) and any(
+                a.asname and a.name.split(".")[0] in ALIAS_FORBIDDEN for a in node.names
+            ):
+                bad.append(
+                    f"{path.name}:{node.lineno}: aliased import of a guarded module"
+                )
+                continue
             elif (
                 isinstance(node, ast.Subscript) and _dotted(node.value) == "sys.modules"
             ):

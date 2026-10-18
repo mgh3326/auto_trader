@@ -568,6 +568,23 @@ EVASIONS = [
         "def _x(http_lib):\n    send = http_lib.post\n    send(BARS_URL)\n",
         "host",
     ),
+    # r3 S2: module aliases and getattr with a literal attribute name
+    (
+        "fills.py",
+        "import sys as runtime\nmodule_table = runtime.modules.get('builtins')\n",
+        "import",
+    ),
+    ("fills.py", "import os\nprocess_entry = getattr(os, 'system')\n", "import"),
+    (
+        "db_source.py",
+        "def _x(conn):\n    statement_runner = getattr(conn, 'execute')\n",
+        "import",
+    ),
+    (
+        "market_data.py",
+        "def _x(http_lib):\n    method_ref = getattr(http_lib, 'post')\n",
+        "import",
+    ),
 ]
 
 

@@ -65,7 +65,16 @@ DEV_BUDGET_FILL_ONLY = "D3_budget_fill_notional_only"
 # A session's data is read only after its close plus this settle delay.
 SETTLE_DELAY = timedelta(minutes=30)
 # Snapshot fields that must not change after registration (reconciliation).
-RECONCILED_FIELDS = ("status", "quantity", "price", "filled_qty", "avg_fill_price")
+RECONCILED_FIELDS = (
+    "status",
+    "quantity",
+    "price",
+    "filled_qty",
+    "avg_fill_price",
+    "ordered_at",
+    "expired_at",
+)
+_TIMESTAMP_FIELDS = frozenset({"ordered_at", "expired_at"})
 
 
 class OrderingError(RuntimeError):
@@ -281,6 +290,8 @@ def _snapshot(o: SourceOrder) -> dict[str, str | None]:
         "avg_fill_price": str(o.avg_fill_price)
         if o.avg_fill_price is not None
         else None,
+        "ordered_at": o.ordered_at.isoformat() if o.ordered_at else None,
+        "expired_at": o.expired_at.isoformat() if o.expired_at else None,
     }
 
 
@@ -292,6 +303,9 @@ def _same_snapshot(a: dict[str, Any], b: dict[str, Any]) -> bool:
                 return False
         elif key == "status":
             if x != y:
+                return False
+        elif key in _TIMESTAMP_FIELDS:
+            if datetime.fromisoformat(str(x)) != datetime.fromisoformat(str(y)):
                 return False
         elif Decimal(str(x)) != Decimal(str(y)):
             return False
@@ -478,6 +492,7 @@ def _assign(
     open_symbols = {p.rec["symbol"] for p in open_now}
     reserved = sum((p.budget for p in open_now), Decimal("0"))
     total = len(state.parents)
+    duplicate_seen = False
     taken_ids = set(state.parents)
     taken_refs = {p.rec["source_ref"] for p in state.parents.values()}
     for cand, ep_id in ordered:
@@ -490,10 +505,16 @@ def _assign(
         if state.latched:
             log.append({**entry, "reasons": ["latched"]})
             continue
+        if duplicate_seen:
+            # an operational stop applies from the first incident: nothing
+            # later in the same batch is assigned either
+            log.append({**entry, "reasons": ["stopped_after_duplicate_parent"]})
+            continue
         if ep_id in taken_ids or cand.order.source_ref in taken_refs:
             # B_i is counted once per episode: a second parent is an
             # operational stop (prereg §4 중복 parent), never a new row.
             log.append({**entry, "reasons": ["duplicate_parent"]})
+            duplicate_seen = True
             continue
         if sym in open_symbols:
             log.append({**entry, "reasons": ["symbol_has_open_parent"]})
