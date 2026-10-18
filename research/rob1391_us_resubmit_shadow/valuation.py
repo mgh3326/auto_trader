@@ -45,7 +45,13 @@ def session_affordable(
 ) -> Callable[[int], int]:
     """``filled_so_far -> extra shares`` keeping total spend within ``budget``."""
 
-    before = arm_spent(book, model, exclude_session=session)
+    # D3_budget_fill_notional_only: prior sessions count fill notional only;
+    # their buy costs stay in net results (arm_spent/arm_net), not headroom.
+    before = (
+        arm_spent(book, model, exclude_session=session)
+        if include_cost
+        else book.fill_notional - book.session_notional(session)
+    )
     headroom = budget - before
 
     def affordable(filled_so_far: int) -> int:
