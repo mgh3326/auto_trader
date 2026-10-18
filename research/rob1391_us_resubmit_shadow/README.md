@@ -66,8 +66,16 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   --fee-schedule "$PRIVATE/rob1391/fee_schedule.json" \
   --approve-deviation D1_exit_hold_to_d20 \
   --approve-deviation D2_resubmit_gate_subset \
-  --deviation-ref "<운영자가 아래 deviation 을 승인한 operator-desk 태그 또는 hk:doc>"
+  --approve-deviation D3_budget_fill_notional_only \
+  --approve-deviation D4_policy_epoch_invariant_basis \
+  --approve-deviation D5_accept_outside_regular_session \
+  --approve-deviation D6_ledger_budget_basis \
+  --deviation-ref "hk:doc decision/2026-10-18/rob1391-deviations"
 ```
+
+- 운영자 결정 Q-1018-2 = A(D1–D6 전부 승인, at-integrator 릴레이 10-18). 🔴 seal 전에
+  `handoffkeep doc get decision/2026-10-18/rob1391-deviations` 로 그 기록이 실재하고 D1–D6 을 담는지
+  desk 가 대조한다 — 기록이 없거나 내용이 다르면 seal 하지 않는다(태그 없는 승인 문구는 증거가 아니다).
 
 - 시작 세션 = 봉인 시각 **다음에 개장하는** XNYS 세션, 그로부터 연속 20 세션이 등록 창(사후 연장 불가).
 - `--fee-schedule` 을 빼면 `net_metrics_status=PENDING_FEE_SCHEDULE` 로 봉인되어 순성과(M2) 검정은 끝까지
