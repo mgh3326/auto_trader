@@ -14,6 +14,7 @@ Tickers are placeholders (SYMA...), ids synthetic, amounts invented.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -173,7 +174,24 @@ def rung_row(
     account_mode: str = "toss_live",
     rung_index: int = 0,
     policy_version: str | None = POLICY["version"],
+    content_hash: str | None = POLICY["content_hash"],
+    cap_observations_as_text: bool = True,
 ) -> dict[str, Any]:
+    """Row shape of SQL_US_BUY_RUNGS. ``cap_observations`` is the JSONB
+    ``source_asof.auto_approved.cap_observations`` (asyncpg returns text)."""
+
+    observations = None
+    if policy_version is not None or content_hash is not None:
+        observations = [
+            {
+                "rung_index": rung_index,
+                "policy_version": policy_version,
+                "content_hash": content_hash,
+                "evaluated_at": "2025-11-17T15:05:00+00:00",
+            }
+        ]
+        if cap_observations_as_text:
+            observations = json.dumps(observations)
     return {
         "broker_order_id": broker_order_id,
         "rung_index": rung_index,
@@ -182,7 +200,7 @@ def rung_row(
         "rung_notional": None if notional is None else f"{Decimal(str(notional)):.12f}",
         "proposal_root": root,
         "account_mode": account_mode,
-        "order_policy_version": policy_version,
+        "cap_observations": observations,
     }
 
 
@@ -195,6 +213,7 @@ def rung_for(
     notional: Any = None,
     root: str | None = None,
     policy_version: str | None = POLICY["version"],
+    content_hash: str | None = POLICY["content_hash"],
 ) -> dict[str, Any]:
     """The approved proposal rung that a real auto-approved order carries."""
 
@@ -207,6 +226,7 @@ def rung_for(
         root=root or f"root-{row['source_id']}",
         account_mode=mode,
         policy_version=policy_version,
+        content_hash=content_hash if policy_version is not None else None,
     )
 
 

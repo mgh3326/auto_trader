@@ -79,7 +79,7 @@ SQL_US_BUY_RUNGS = """
 SELECT r.broker_order_id, r.rung_index, r.quantity AS rung_quantity,
        r.limit_price AS rung_limit_price, r.notional AS rung_notional,
        p.root_proposal_id::text AS proposal_root, p.account_mode,
-       p.source_asof -> 'auto_approved' ->> 'policy_version' AS order_policy_version
+       p.source_asof -> 'auto_approved' -> 'cap_observations' AS cap_observations
 FROM review.order_proposal_rungs AS r
 JOIN review.order_proposals AS p ON p.id = r.proposal_pk
 WHERE p.market = 'equity_us' AND r.side = 'buy'

@@ -64,6 +64,30 @@ FORBIDDEN_NAMES = {
     "globals",
     "breakpoint",
 }
+PROCESS_ATTRS = {
+    "system",
+    "popen",
+    "spawnl",
+    "spawnlp",
+    "spawnv",
+    "spawnvp",
+    "execv",
+    "execve",
+    "execl",
+    "execlp",
+    "execvp",
+    "fork",
+    "forkpty",
+    "posix_spawn",
+    "posix_spawnp",
+    "startfile",
+    "Popen",
+    "check_output",
+    "call",
+    "check_call",
+    "getoutput",
+    "getstatusoutput",
+}
 OWN = "research.rob1391_us_resubmit_shadow"
 HTTP_VERBS = {
     "get",
@@ -133,6 +157,14 @@ def _strings(tree: ast.AST, *, docstrings: bool = True) -> list[tuple[int, str]]
     ]
 
 
+def _dotted(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_dotted(node.value)}.{node.attr}"
+    return ""
+
+
 def import_violations(pkg: Path) -> list[str]:
     bad: list[str] = []
     for path in sorted(pkg.glob("*.py")):
@@ -147,6 +179,14 @@ def import_violations(pkg: Path) -> list[str]:
                     bad.append(f"{path.name}: relative import")
                     continue
                 names = [node.module or ""]
+            elif (
+                isinstance(node, ast.Subscript) and _dotted(node.value) == "sys.modules"
+            ):
+                bad.append(f"{path.name}:{node.lineno}: sys.modules lookup")
+                continue
+            elif isinstance(node, ast.Attribute) and node.attr in PROCESS_ATTRS:
+                bad.append(f"{path.name}:{node.lineno}: process API .{node.attr}")
+                continue
             elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
                 bad.append(f"{path.name}:{node.lineno}: forbidden name {node.id}")
                 continue
@@ -203,6 +243,22 @@ def sql_violations(pkg: Path) -> list[str]:
         for lineno, value in _strings(tree, docstrings=False):
             if _STATEMENT.search(value):
                 bad.append(f"{path.name}:{lineno}: write SQL")
+        callees = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        # an executor (or, in db_source, sqlalchemy ``text``) may only appear as
+        # a direct callee: binding it to an alias would bypass the checks below
+        watched = _EXECUTORS | ({"text"} if path.name == "db_source.py" else set())
+        for node in ast.walk(tree):
+            ident = (
+                node.id
+                if isinstance(node, ast.Name)
+                else node.attr
+                if isinstance(node, ast.Attribute)
+                else None
+            )
+            if ident in watched and id(node) not in callees:
+                bad.append(
+                    f"{path.name}:{node.lineno}: SQL executor referenced, not called"
+                )
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -267,6 +323,11 @@ def host_violations(pkg: Path) -> list[str]:
                     and _fold(node.right) is None
                 ):
                     bad.append(f"{path.name}:{node.lineno}: dynamic host")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in HTTP_VERBS - {"get"}:
+                bad.append(
+                    f"{path.name}:{node.lineno}: HTTP verb .{node.attr} referenced"
+                )
         gated_get_seen = False
         for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
             for node in ast.walk(func):

@@ -397,6 +397,12 @@ def ask_evidence_from_quotes(
 ) -> AskEvidence:
     prevailing: Quote | None = None
     seen_in_window = False
+    # Rows are ascending, so the prefix before ``start`` is complete iff the
+    # whole stream was read OR some row at/after ``start`` was reached. Only
+    # then is the last pre-window quote proven to still prevail at ``start``.
+    reached_window = any(
+        (ts := _parse_ts(r.get("t"))) is not None and ts >= start_utc for r in rows
+    )
     for raw in rows:
         quote = parse_valid_quote(raw)
         if quote is None:
@@ -411,7 +417,11 @@ def ask_evidence_from_quotes(
             return AskEvidence(
                 OK, found=True, at_utc=quote.at_utc, ask=quote.ask, digests=digests
             )
-    if prevailing is not None and prevailing.ask <= limit:
+    if (
+        prevailing is not None
+        and prevailing.ask <= limit
+        and (complete or reached_window)
+    ):
         return AskEvidence(
             OK, found=True, at_utc=start_utc, ask=prevailing.ask, digests=digests
         )

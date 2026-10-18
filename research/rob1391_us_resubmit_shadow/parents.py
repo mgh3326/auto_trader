@@ -12,6 +12,7 @@ carries one or more reason codes that end up in the ``register`` event.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
@@ -100,6 +101,7 @@ class Rung:
     limit_price: Decimal | None
     notional: Decimal | None
     order_policy_version: str | None
+    order_policy_content_hash: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +174,34 @@ def universe_from_row(row: dict[str, Any]) -> Universe:
     )
 
 
+def _order_policy_stamp(
+    raw: Any, rung_index: int | None
+) -> tuple[str | None, str | None]:
+    """(version, content_hash) the auto-approver recorded for this rung.
+
+    Source: ``order_proposals.source_asof.auto_approved.cap_observations[]``
+    (auto_approve_audit, one entry per eligible rung with policy_version and
+    content_hash). Anything malformed or ambiguous -> (None, None).
+    """
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None, None
+    if not isinstance(raw, list) or rung_index is None:
+        return None, None
+    hits = [o for o in raw if isinstance(o, dict) and o.get("rung_index") == rung_index]
+    if len(hits) != 1:
+        return None, None
+    version, digest = hits[0].get("policy_version"), hits[0].get("content_hash")
+    if not (
+        isinstance(version, str) and version and isinstance(digest, str) and digest
+    ):
+        return None, None
+    return version, digest
+
+
 def rung_from_row(row: dict[str, Any]) -> Rung:
     idx = row.get("rung_index")
     return Rung(
@@ -182,7 +212,15 @@ def rung_from_row(row: dict[str, Any]) -> Rung:
         quantity=_dec(row.get("rung_quantity")),
         limit_price=_dec(row.get("rung_limit_price")),
         notional=_dec(row.get("rung_notional")),
-        order_policy_version=row.get("order_policy_version"),
+        **dict(
+            zip(
+                ("order_policy_version", "order_policy_content_hash"),
+                _order_policy_stamp(
+                    row.get("cap_observations"), int(idx) if idx is not None else None
+                ),
+                strict=True,
+            )
+        ),
     )
 
 
@@ -251,6 +289,7 @@ class Candidate:
     budget: Decimal
     budget_basis: str
     policy_version_at_order: str | None
+    policy_hash_at_order: str | None
 
 
 def _instrument_reasons(o: SourceOrder) -> list[str]:
@@ -408,11 +447,12 @@ def normalise(
     budget_basis = "ledger_price_x_quantity"
     budget = o.price * o.quantity
     rung = o.rung
-    policy_version = None
+    policy_version = policy_hash = None
     if rung is None and DEV_LEDGER_BUDGET not in deviations:
         return None, ["approved_budget_unavailable"]
     if rung is not None:
         policy_version = rung.order_policy_version
+        policy_hash = rung.order_policy_content_hash
         if rung.limit_price is not None and rung.limit_price != o.price:
             return None, ["rung_price_mismatch"]
         if rung.quantity is not None and rung.quantity != o.quantity:
@@ -426,7 +466,7 @@ def normalise(
             )
     if budget < o.price * o.quantity:
         return None, ["budget_below_order_notional"]
-    if not policy_version and DEV_POLICY_EPOCH not in deviations:
+    if not (policy_version and policy_hash) and DEV_POLICY_EPOCH not in deviations:
         return None, ["order_policy_stamp_missing"]
     return (
         Candidate(
@@ -442,6 +482,7 @@ def normalise(
             budget=budget,
             budget_basis=budget_basis,
             policy_version_at_order=policy_version,
+            policy_hash_at_order=policy_hash,
         ),
         [],
     )

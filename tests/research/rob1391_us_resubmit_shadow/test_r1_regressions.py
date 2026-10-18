@@ -422,3 +422,90 @@ def test_f9_seal_refuses_unapproved_mandatory_deviations(tmp_path):
     )
     with pytest.raises(ManifestError, match="unknown deviation"):
         build_manifest(**kwargs, approved_deviations={"D9_made_up"}, deviation_ref="x")
+
+
+# ---------------------------------------------------------------- round 2 (verdict-r2, head d0d8ac5)
+
+
+def test_r2_n1_truncated_prefix_never_proves_a_prevailing_quote():
+    lo = T0 - timedelta(minutes=5)
+    pre = [
+        quote_json(lo + timedelta(seconds=i), bid=99.49, ask=99.50) for i in range(5)
+    ]
+    end = T0 + timedelta(minutes=1)
+    ev = market_data.ask_evidence_from_quotes(pre, T0, end, Decimal("99.50"), False)
+    assert ev.status == UNKNOWN and ev.reason == "pagination_cap"
+    # the same prefix is proof once a row at/after the window start was reached
+    reached = [*pre, quote_json(T0 + timedelta(seconds=10), bid=99.60, ask=99.70)]
+    ev = market_data.ask_evidence_from_quotes(reached, T0, end, Decimal("99.50"), False)
+    assert ev.status == OK and ev.found
+    # and a complete stream proves it too
+    assert market_data.ask_evidence_from_quotes(
+        pre, T0, end, Decimal("99.50"), True
+    ).found
+
+
+def test_r2_n1_client_page_cap_with_only_old_quotes_is_unknown():
+    lo = T0 - timedelta(minutes=5)
+    pages = [
+        _Resp(
+            200,
+            {
+                "quotes": {
+                    "SYMA": [
+                        quote_json(lo + timedelta(seconds=i), bid=99.49, ask=99.50)
+                    ]
+                },
+                "next_page_token": f"t{i}",
+            },
+        )
+        for i in range(market_data.MAX_PAGES_PER_WINDOW)
+    ]
+    c, _ = _client(pages)
+    ev = c.ask_at_or_below("SYMA", T0, T0 + timedelta(minutes=1), Decimal("99.50"))
+    assert ev.status == UNKNOWN
+
+
+def test_r2_f7_order_time_policy_hash_is_required():
+    row = toss_row(1, "SYMA", ordered_at=et(D0, 10, 5), price="99.50", qty=2)
+    assert _norm(row, rungs=[rung_for(row, content_hash=None)])[1] == [
+        "order_policy_stamp_missing"
+    ]
+    cand, reasons = _norm(row)
+    assert reasons == [] and cand.policy_hash_at_order == POLICY["content_hash"]
+    cand, reasons = _norm(
+        row,
+        rungs=[rung_for(row, content_hash=None)],
+        deviations=frozenset({"D4_policy_epoch_invariant_basis"}),
+    )
+    assert reasons == [] and cand.policy_hash_at_order is None
+
+
+def test_r2_f7_cap_observations_shape_is_strict():
+    from research.rob1391_us_resubmit_shadow.parents import _order_policy_stamp
+
+    ok = [{"rung_index": 0, "policy_version": "v", "content_hash": "h"}]
+    assert _order_policy_stamp(ok, 0) == ("v", "h")
+    assert _order_policy_stamp(json.dumps(ok), 0) == ("v", "h")
+    assert _order_policy_stamp(ok, 1) == (None, None)
+    assert _order_policy_stamp(ok + ok, 0) == (None, None)  # ambiguous
+    assert _order_policy_stamp([{"rung_index": 0, "policy_version": "v"}], 0) == (
+        None,
+        None,
+    )
+    assert _order_policy_stamp("not json", 0) == (None, None)
+
+
+def test_r2_f7_order_hash_differing_from_seal_stops_the_epoch(tmp_path):
+    ledger = seal(tmp_path)
+    src, mkt = FakeSource(), FakeMarket()
+    row = toss_row(1, "SYMA", ordered_at=et(D0, 10, 5), price="99.50", qty=2)
+    src.order_rows.append(row)
+    src.rung_rows.append(rung_for(row, content_hash="ffffffffffff"))
+    src.universe_rows.append(universe_row("SYMA"))
+    ctx = context(ledger, src, mkt)
+    engine.advance(ctx, D0)
+    assert ctx.state.latch_types() == {"policy_change"}
+    assert ctx.state.registered[D0.isoformat()]["exclusions"][0]["reasons"] == [
+        "policy_differs_at_order"
+    ]

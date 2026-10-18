@@ -356,19 +356,22 @@ def register(ctx: Context, session: date) -> dict[str, Any] | None:
         if cand is None:
             exclusions.append({**base, "reasons": reasons})
             continue
-        if (
-            cand.policy_version_at_order
-            and cand.policy_version_at_order != ctx.manifest["policy"]["version"]
-        ):
+        sealed = ctx.manifest["policy"]
+        stamp = (cand.policy_version_at_order, cand.policy_hash_at_order)
+        if any(stamp) and stamp != (sealed["version"], sealed["content_hash"]):
+            # the order was approved under a different policy: the epoch ends
             if "policy_change" not in state.latch_types():
                 latch(
                     ctx,
                     "policy_change",
                     "STOPPED_BY_POLICY_CHANGE",
                     session=s,
-                    detail={"order_policy_version": cand.policy_version_at_order},
+                    detail={
+                        "order_policy_version": stamp[0],
+                        "order_policy_hash": stamp[1],
+                    },
                 )
-            exclusions.append({**base, "reasons": ["policy_version_differs_at_order"]})
+            exclusions.append({**base, "reasons": ["policy_differs_at_order"]})
             continue
         reasons, liquidity = _liquidity_and_spread(ctx, cand, data_digests)
         if reasons:
@@ -535,8 +538,9 @@ def _assign(
             "budget": str(cand.budget),
             "budget_basis": cand.budget_basis,
             "policy_version_at_order": cand.policy_version_at_order,
+            "policy_hash_at_order": cand.policy_hash_at_order,
             "policy_basis": "order_stamp"
-            if cand.policy_version_at_order
+            if cand.policy_version_at_order and cand.policy_hash_at_order
             else "epoch_invariant(D4)",
             "linked_refs": [
                 m.source_ref

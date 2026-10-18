@@ -553,6 +553,21 @@ EVASIONS = [
         "host",
     ),
     ("market_data.py", "def _x(self):\n    self._session.post(BARS_URL)\n", "host"),
+    # r2 S2: aliases and indirect references
+    ("fills.py", "import sys\nf = sys.modules['builtins'].__dict__\n", "import"),
+    ("fills.py", "import os\nos.system('true')\n", "import"),
+    ("fills.py", "import os\nrun = os.popen\n", "import"),
+    (
+        "db_source.py",
+        "def _x(conn):\n    run = conn.execute\n    a = 'UP'\n    run(a)\n",
+        "sql",
+    ),
+    ("db_source.py", "t = text\n", "sql"),
+    (
+        "market_data.py",
+        "def _x(http_lib):\n    send = http_lib.post\n    send(BARS_URL)\n",
+        "host",
+    ),
 ]
 
 
