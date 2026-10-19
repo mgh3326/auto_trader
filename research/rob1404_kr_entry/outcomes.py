@@ -92,7 +92,7 @@ class Bench:
         p1 = close_on(self.bars, exit_date)
         if p0 is None or p1 is None or not (math.isfinite(p0) and math.isfinite(p1)):
             return None
-        if p0 <= 0:
+        if p0 <= 0 or p1 <= 0:
             return None
         return p1 / p0 - 1.0
 
@@ -187,7 +187,7 @@ def evaluate(
             out["missing_reason"] = f"{what}_{state}"
             return out
     exit_price = float(bars["close"].iloc[exit_pos])
-    if not math.isfinite(exit_price):
+    if not (math.isfinite(exit_price) and exit_price > 0):
         out["status"] = "data_missing"
         out["missing_reason"] = "exit_nonfinite_close"
         return out
@@ -285,7 +285,7 @@ def markouts(
                 )
                 continue
             close = float(bars["close"].iloc[pos])
-            if not math.isfinite(close):
+            if not (math.isfinite(close) and close > 0):
                 row[f"markout{k}_status"] = "data_missing"  # tester r2 S1
                 continue
             row[f"markout{k}_status"] = "ok"

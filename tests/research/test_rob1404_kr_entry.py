@@ -709,3 +709,56 @@ def test_explore_nonfinite_atr_is_unavailable_not_nonpositive():
     bars.loc[10, "high"] = float("nan")
     out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 90.0)
     assert out["atr_available"] is False and "atr_limit_nonpositive" not in out
+
+
+# ------------------------------------------- tester r3 regressions
+
+
+def test_r3_b1_truncated_hourly_tail_is_not_full_coverage():
+    full = make_hourly(SESSIONS[0], [(100.0, 100.5, 100.0, 100.0)] * 6)
+    assert methods.hourly_covers_session(full, D, 0)
+    tail = full.copy()
+    tail.loc[tail.index[-1], "end_ts"] = pd.Timestamp(kst(SESSIONS[0], 15)).tz_convert(
+        UTC
+    )
+    assert not methods.hourly_covers_session(tail, D, 0)
+    bars = make_daily([(100.0, 101.0, 98.0, 100.0)] + [FLAT] * 24)
+    c = _cand(kst(SESSIONS[0], 14, 10), kst(SESSIONS[0], 15, 34), 50.0, 5)
+    leg, detail = methods._near_leg(c, _order(c), bars, tail, 1, CAL)
+    assert leg.state != "unfilled", (leg, detail)  # 98 at 15:15 is possible
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), 0.0, -1.0])
+def test_r3_b2_invalid_reference_is_data_missing_in_build_methods(bad):
+    bars = make_daily([FLAT] * 25)
+    bars.loc[0, "open"] = bad
+    c = _cand(kst(SESSIONS[0], 8, 5), kst(SESSIONS[0], 15, 34), 90.0, 5)
+    m = methods.build_methods(c, _order(c), bars, None, CAL)  # must not raise
+    assert m["split_int"].missing == "data_missing:reference_invalid"
+    assert m["split_frac"].missing == "data_missing:reference_invalid"
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0])
+def test_r3_b3_nonpositive_entry_price_is_data_missing(bad):
+    h = H0.copy()
+    h.loc[h["start_ts"] == pd.Timestamp(kst(SESSIONS[0], 12)), "open"] = bad
+    c = _cand(kst(SESSIONS[0], 11, 37), kst(SESSIONS[0], 15, 34), 90.0, 5)
+    m = methods.build_methods(c, _order(c), D, h, CAL)
+    assert m["nep"].missing == "data_missing:entry_bar_missing"
+    assert methods.valid_price(1.0) and not methods.valid_price(bad)
+
+
+def test_r3_s1_uncomputable_envelope_member_gives_no_verdict(monkeypatch):
+    real = inference.block_replicates
+
+    def broken(values, days, calendar, *, block=10, **kw):
+        r = real(values, days, calendar, block=block, **kw)
+        return np.full_like(r, np.nan) if block == 20 else r
+
+    monkeypatch.setattr(inference, "block_replicates", broken)
+    cal = [date(2026, 8, 1) + timedelta(days=i) for i in range(10)]
+    out = inference.summarise(
+        [1.0, 2.0, 3.0], symbols=["a", "b", "c"], days=cal[:3], calendar=cal
+    )
+    assert out["headline_ci"].startswith("envelope_incomplete(")
+    assert inference.verdict(out["ci_lo"], out["ci_hi"]).startswith("판별 불가")

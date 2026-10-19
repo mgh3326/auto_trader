@@ -97,15 +97,22 @@ def _finite(x: float | None) -> bool:
     return x is not None and math.isfinite(x)
 
 
+def valid_price(x: float | None) -> bool:
+    """A cached price is usable only when finite and > 0 (tester r3: a cache
+    read re-validates nothing, so 0 / negative / inf / NaN must stop here)."""
+
+    return _finite(x) and x > 0
+
+
 def classify_limit(
     low_strict: float | None, low_incl: float | None, limit: float
 ) -> tuple[str, str]:
     """Three-state fill. A missing *or non-finite* low is never evidence that
     price stayed above the limit (tester r1 B2: NaN must not become cash)."""
 
-    if _finite(low_strict) and leg_filled("kr", low_strict, limit, "trade_through"):
+    if valid_price(low_strict) and leg_filled("kr", low_strict, limit, "trade_through"):
         return FILLED, "trade_through"
-    if not _finite(low_incl):
+    if not valid_price(low_incl):
         return UNKNOWN, "no_bars_in_window"
     if not leg_filled("kr", low_incl, limit, "touch"):
         return UNFILLED, "low_above_limit"
@@ -135,8 +142,13 @@ def hourly_covers_session(
     n = int((close_ts - open_ts) // pd.Timedelta(hours=1))
     want = [open_ts + pd.Timedelta(hours=k) for k in range(n)]
     have = [pd.Timestamp(x) for x in day["start_ts"]]
-    lows = day["low"].to_numpy(float)
-    return have == want and bool(len(lows)) and bool(np.isfinite(lows).all())
+    ends = [pd.Timestamp(x) for x in day["end_ts"]]
+    # every bar ends where the next starts and the last ends at the close
+    # (tester r3 B1: a truncated tail end_ts passed a start-only check)
+    if have != want or ends != [*want[1:], close_ts]:
+        return False
+    ohlc = day[["open", "high", "low", "close"]].to_numpy(float)
+    return bool(len(ohlc)) and bool(np.isfinite(ohlc).all() and (ohlc > 0).all())
 
 
 def lifetime_evidence(
@@ -175,12 +187,12 @@ def lifetime_evidence(
     incl: list[float] = []
     for p in life:
         low, basis = low_after(bars, hourly, p, o.ordered_at, end, inclusive=False)
-        if basis in EXACT_BASES and _finite(low):
+        if basis in EXACT_BASES and valid_price(low):
             strict.append((p, float(low)))
         low_i, basis_i = low_after(bars, hourly, p, o.ordered_at, end, inclusive=True)
         if basis_i == "hourly" and not hourly_covers_session(hourly, bars, p):
             low_i, basis_i = float(bars["low"].iloc[p]), "daily_bound"
-        if _finite(low_i) and basis_i != "hourly_empty":
+        if valid_price(low_i) and basis_i != "hourly_empty":
             incl.append(float(low_i))
         else:
             complete = False
@@ -201,6 +213,8 @@ def _near_leg(
         if d0 is None:
             return None, {}
         ref, basis = reference_price(bars, hourly, d0, o.ordered_at)
+        if not valid_price(ref):
+            return None, {"missing": "data_missing:reference_invalid"}
         near = tick_floor("kr", ref * (1 - NEAR_LEG_PCT / 100.0))
         reason = "nxt_only_no_venue_prices" if c.nxt_only else "no_regular_bars_cached"
         return (
@@ -208,6 +222,8 @@ def _near_leg(
             {"near_limit": near, "reference": ref, "reference_basis": basis},
         )
     ref, basis = reference_price(bars, hourly, life[0], o.ordered_at)
+    if not valid_price(ref):  # tester r3 B2: before tick_floor, not after
+        return None, {"missing": "data_missing:reference_invalid"}
     near = tick_floor("kr", ref * (1 - NEAR_LEG_PCT / 100.0))
     strict, low_incl = lifetime_evidence(bars, hourly, life, o, cal)
     low_strict = min((low for _, low in strict), default=None)
@@ -258,7 +274,7 @@ def _resubmit_leg(
                 None,
             )
         low = float(bars["low"].iloc[p])
-        if not _finite(low):
+        if not valid_price(low):
             return (
                 Leg(c.anchor, c.quantity, UNKNOWN, reason="nonfinite_low"),
                 None,
@@ -273,6 +289,11 @@ def _resubmit_leg(
                 None,
             )
         opening = float(bars["open"].iloc[p])
+        if not valid_price(opening):
+            return (
+                Leg(c.anchor, c.quantity, UNKNOWN, reason="invalid_open"),
+                None,
+            )
         if opening <= c.anchor:
             return (
                 Leg(
@@ -333,7 +354,7 @@ def build_methods(
         if want is None:
             out[name] = MethodLegs(name, (), missing="immature:no_session_after_signal")
             continue
-        if e is not None and not _finite(e.price):
+        if e is not None and not valid_price(e.price):  # tester r3 B3
             out[name] = MethodLegs(name, (), missing="data_missing:entry_nonfinite")
             continue
         if e is None or bars["session_date"].iloc[e.pos] != want:
@@ -362,7 +383,11 @@ def build_methods(
         leg, detail = _near_leg(c, o, bars, hourly, k, cal)
         rest = Leg(c.anchor, c.quantity - k, UNFILLED, reason="broker_status_unfilled")
         out["split_int"] = (
-            MethodLegs("split_int", (), missing="immature:no_session_after_signal")
+            MethodLegs(
+                "split_int",
+                (),
+                missing=detail.get("missing", "immature:no_session_after_signal"),
+            )
             if leg is None
             else MethodLegs(
                 "split_int", (leg, rest), detail={**detail, "near_shares": k}
@@ -371,7 +396,9 @@ def build_methods(
     leg, detail = _near_leg(c, o, bars, hourly, 1.0, cal)
     if leg is None:
         out["split_frac"] = MethodLegs(
-            "split_frac", (), missing="immature:no_session_after_signal"
+            "split_frac",
+            (),
+            missing=detail.get("missing", "immature:no_session_after_signal"),
         )
     else:
         frac_shares = NEAR_LEG_WEIGHT * c.anchor * c.quantity

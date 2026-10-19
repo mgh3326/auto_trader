@@ -144,17 +144,26 @@ def summarise(
             )
     if parents is not None:
         reps["parent"] = cluster_replicates(v, list(parents))
-    los, his, ses, members = [], [], [], []
+    los, his, ses, members, failed = [], [], [], [], []
     for name, r in reps.items():
         lo, hi = _percentile(r)
         out[f"{name}_lo"], out[f"{name}_hi"] = lo, hi
-        se = float(np.nanstd(r, ddof=1))
+        se = float(np.nanstd(r, ddof=1)) if np.isfinite(r).sum() > 1 else math.nan
         out[f"{name}_se"] = se
         if math.isfinite(lo) and math.isfinite(hi):
             los.append(lo)
             his.append(hi)
-            ses.append(se)
+            ses.append(se if math.isfinite(se) else 0.0)
             members.append(name)
+        else:
+            failed.append(name)
+    out["envelope_missing"] = "|".join(failed)
+    if failed:
+        # A dependence assumption that cannot be computed is not "survived":
+        # no headline interval, so the verdict is 판별 불가 (tester r3 S1).
+        out["headline_ci"] = "envelope_incomplete(" + ",".join(failed) + ")"
+        out["ci_lo"] = out["ci_hi"] = math.nan
+        return out
     if members:
         out["headline_ci"] = "envelope(" + ",".join(members) + ")"
         out["ci_lo"], out["ci_hi"] = min(los), max(his)

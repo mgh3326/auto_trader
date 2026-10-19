@@ -109,6 +109,10 @@ def _session_hours(hourly: pd.DataFrame | None, session_date) -> pd.DataFrame:
     return hourly[hourly["session_date"] == session_date]
 
 
+def _valid(x: float) -> bool:
+    return bool(np.isfinite(x)) and x > 0
+
+
 def _session_open(bars: pd.DataFrame, hourly: pd.DataFrame | None, pos: int) -> Entry:
     day = _session_hours(hourly, bars["session_date"].iloc[pos])
     open_ts = pd.Timestamp(bars["open_ts"].iloc[pos])
@@ -135,7 +139,7 @@ def next_executable_price(
     if k < n_bars:
         expected = open_ts + k * hour
         hit = day[day["start_ts"] == expected]
-        if len(hit) and np.isfinite(float(hit["open"].iloc[0])):
+        if len(hit) and _valid(float(hit["open"].iloc[0])):
             return Entry(float(hit["open"].iloc[0]), expected, d0, "next_hourly_open")
         # The next hour is not in the cache: no NEP. Never substitute a later
         # hour (that would silently delay the entry) -- tester r2 class.
