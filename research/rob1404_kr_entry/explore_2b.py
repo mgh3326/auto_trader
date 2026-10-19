@@ -21,13 +21,18 @@ import pandas as pd
 
 from research.rob1383_buy_drought.core import decision_index, tick_floor
 from research.rob1383_buy_drought.prices import KST
-from research.rob1404_kr_entry.clock import d0_index, next_executable_price
+from research.rob1404_kr_entry.clock import (
+    SessionCalendar,
+    bar_state,
+    next_executable_price,
+)
 
 ATR_PERIOD = 14
 ATR_MULT = 0.5
 REBOUND_CAP_ATR = 0.1
 REBOUND_LAST_BAR_END = time(14, 0)
 DEEP_LIMIT_PCT = (3.0, 12.0)  # buy.deep_limit_pct_range [-12, -3]
+MATURITY_HORIZONS = (5, 20)
 
 
 def wilder_atr(
@@ -48,13 +53,56 @@ def wilder_atr(
     return atr
 
 
-def candidate_row(
-    bars: pd.DataFrame, hourly: pd.DataFrame | None, signal_at: Any, anchor: float
+def maturity(
+    bars: pd.DataFrame, signal_at: Any, cal: SessionCalendar
 ) -> dict[str, Any]:
+    """``D0 + k`` maturity on the common calendar, the rule of
+    ``outcomes.evaluate``: ``D0`` and the target are calendar positions, and a
+    stock row missing on either date is ``data_missing`` (not the next row);
+    a date past the calendar or past the stock's last cached bar is
+    ``immature``; a target close that is not finite and > 0 is ``data_missing``."""
+
+    i0 = cal.d0(signal_at)
+    out: dict[str, Any] = {"d0_session": None if i0 is None else str(cal.dates[i0])}
+    d0_state = None if i0 is None else bar_state(bars, cal.dates[i0])[1]
+    for k in MATURITY_HORIZONS:
+        if i0 is None or i0 + k >= len(cal.dates):
+            status, why = "immature", "beyond_calendar"
+        elif d0_state != "ok":
+            status = "immature" if d0_state == "beyond_data_end" else "data_missing"
+            why = f"d0_{d0_state}"
+        else:
+            pos, state = bar_state(bars, cal.dates[i0 + k])
+            if pos is None:
+                status = "immature" if state == "beyond_data_end" else "data_missing"
+                why = f"target_{state}"
+            elif not (math.isfinite(c := float(bars["close"].iloc[pos])) and c > 0):
+                status, why = "data_missing", "target_nonfinite_close"
+            else:
+                status, why = "ok", ""
+        out[f"maturity_d{k}"] = status
+        out[f"maturity_d{k}_reason"] = why
+        out[f"matured_d{k}"] = status == "ok"
+    return out
+
+
+def candidate_row(
+    bars: pd.DataFrame,
+    hourly: pd.DataFrame | None,
+    signal_at: Any,
+    anchor: float,
+    *,
+    cal: SessionCalendar,
+) -> dict[str, Any]:
+    # Maturity first: every row carries it, including rows that stop early
+    # (no pre-signal bar, no D0 bar, no ATR, non-positive limit).
+    out: dict[str, Any] = maturity(bars, signal_at, cal)
     t = decision_index(bars, signal_at)  # last completed session at the signal
-    d0 = d0_index(bars, signal_at)
-    out: dict[str, Any] = {"t_pos_ok": t is not None and d0 is not None}
-    if t is None or d0 is None:
+    i0 = cal.d0(signal_at)
+    d0_date = None if i0 is None else cal.dates[i0]
+    d0_ok = d0_date is not None and bar_state(bars, d0_date)[1] == "ok"
+    out["t_pos_ok"] = t is not None and d0_ok
+    if not out["t_pos_ok"]:
         return out
     h = bars["high"].to_numpy(float)[: t + 1]
     lo = bars["low"].to_numpy(float)[: t + 1]
@@ -86,7 +134,7 @@ def candidate_row(
     )
     trigger = None
     if hourly is not None:
-        day = hourly[hourly["session_date"] == bars["session_date"].iloc[d0]]
+        day = hourly[hourly["session_date"] == d0_date]
         sig = pd.Timestamp(signal_at)
         for _, bar in day.iterrows():
             end_kst = pd.Timestamp(bar["end_ts"]).tz_convert(KST).time()
@@ -112,6 +160,4 @@ def candidate_row(
         cap = float(trigger["close"]) + REBOUND_CAP_ATR * atr
         out["rebound_cap_vs_close_t_pct"] = (cap / close_t - 1.0) * 100.0
         out["rebound_cap_vs_anchor_pct"] = (cap / anchor - 1.0) * 100.0
-    out["matured_d5"] = d0 + 5 < len(bars)
-    out["matured_d20"] = d0 + 20 < len(bars)
     return out

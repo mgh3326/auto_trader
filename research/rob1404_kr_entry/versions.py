@@ -107,7 +107,7 @@ def cache_summary(cache_dir: Path) -> dict[str, object]:
     }
 
 
-def git_info(repo: Path) -> dict[str, str]:
+def git_info(repo: Path) -> dict[str, str | bool]:
     def run(*args: str) -> str:
         return subprocess.run(
             ["git", *args], cwd=repo, capture_output=True, text=True, check=False
@@ -117,4 +117,6 @@ def git_info(repo: Path) -> dict[str, str]:
         "head": run("rev-parse", "HEAD"),
         "v1_last_commit": run("log", "-1", "--format=%H %s", "--", V1_PACKAGE),
         "v1_tree": run("rev-parse", f"HEAD:{V1_PACKAGE}"),
+        # tracked + untracked changes outside ignored paths (results/, .cache/)
+        "worktree_clean": run("status", "--porcelain") == "",
     }

@@ -374,6 +374,10 @@ def block_sensitivity(detail: pd.DataFrame, calendar: list) -> pd.DataFrame:
 
 
 def markout_summary(marks: pd.DataFrame, calendar: list) -> pd.DataFrame:
+    """Post-fill markouts. Day 0 and the date-block unit are the **fill
+    session** (``fill_session``), unlike ``summarise``/``paired`` whose common
+    clock blocks on ``d0_session``. Order level also clusters by parent."""
+
     out = []
     if marks.empty:
         return pd.DataFrame()
@@ -408,6 +412,9 @@ def markout_summary(marks: pd.DataFrame, calendar: list) -> pd.DataFrame:
                                 for d in pd.to_datetime(g.loc[v.index, "fill_session"])
                             ],
                             calendar=calendar,
+                            parents=g.loc[v.index, "parent_id"].tolist()
+                            if level == "order"
+                            else None,
                         )
                         row.update(
                             {
@@ -608,8 +615,16 @@ def explore_summary(ex: pd.DataFrame) -> pd.DataFrame:
                 "rebound_cap_vs_close_t_pct_median": quant(
                     v, "rebound_cap_vs_close_t_pct", 0.5
                 ),
-                "n_matured_d5": count(g, "matured_d5"),
-                "n_matured_d20": count(g, "matured_d20"),
+                # maturity on the common calendar (explore_2b.maturity), every row
+                **{
+                    f"n_{label}_d{k}": int((col(g, f"maturity_d{k}") == state).sum())
+                    for k in explore_2b.MATURITY_HORIZONS
+                    for label, state in (
+                        ("matured", "ok"),
+                        ("immature", "immature"),
+                        ("data_missing", "data_missing"),
+                    )
+                },
             }
         )
     return pd.DataFrame(rows)
@@ -664,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 2B feasibility (exploratory counts only)
     ex = []
+    cal = master_calendar(store)
     for c in cands:
         bars = store.bars("kr", c.symbol)
         if bars is None:
@@ -674,9 +690,8 @@ def main(argv: list[str] | None = None) -> int:
                 "symbol": c.symbol,
                 "parent_rank": c.parent_rank,
                 "nxt_only": c.nxt_only,
-                "d0": None,
                 **explore_2b.candidate_row(
-                    bars, store.hourly("kr", c.symbol), c.signal_at, c.anchor
+                    bars, store.hourly("kr", c.symbol), c.signal_at, c.anchor, cal=cal
                 ),
             }
         )

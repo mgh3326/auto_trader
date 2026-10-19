@@ -54,11 +54,11 @@ v1 Q2/Q3 의 KR 모집단 = Toss KR 지정가 매수 중 미체결로 끝난 **7
 
 ## 불확실성
 
-평균의 95% 구간을 iid·종목 군집·부모 군집(주문 단위)·**날짜 블록**(D0 세션 달력의 10세션 이동 블록, 빈 날 포함 — 같은 날 공통 충격과 보유기간 겹침 일부 보존)으로 계산하고, 블록 5·10·20 세션까지 포함한 **모든 의존 보존 구간의 합집합(가장 낮은 하한 ~ 가장 높은 상한)** 을 대표 구간으로 쓴다(판정이 어느 의존 가정에서도 버텨야 한다). 블록별 값은 `block_sensitivity.csv`. 최소 검출 효과(단측 5%, 검정력 80%) = 2.486 × 그중 가장 큰 SE, 설계효과 = SE²/SE_iid². 구간이 0 을 포함하면 문구는 항상 “판별 불가”다(`inference.verdict`). 어느 의존 구간이든 계산되지 않으면(모든 재표본이 NaN) 대표 구간을 만들지 않고 판별 불가로 둔다(`envelope_missing`).
+평균의 95% 구간을 iid·종목 군집·부모 군집(주문 단위)·**날짜 블록**(D0 세션 달력의 10세션 이동 블록, 빈 날 포함 — 같은 날 공통 충격과 보유기간 겹침 일부 보존)으로 계산하고, 블록 5·10·20 세션까지 포함한 **모든 의존 보존 구간의 합집합(가장 낮은 하한 ~ 가장 높은 상한)** 을 대표 구간으로 쓴다(판정이 어느 의존 가정에서도 버텨야 한다). 블록별 값은 `block_sensitivity.csv`. 날짜 블록의 날짜는 표마다 그 표의 day 0 이다 — 공통 시계 표(`summary`·`paired`·`mde`·`cost_sensitivity`·`block_sensitivity`)는 `d0_session`, 마크아웃(`markouts_summary`)은 체결 세션 `fill_session`(주문 수준은 두 표 모두 부모 군집 포함). 최소 검출 효과(단측 5%, 검정력 80%) = 2.486 × 그중 가장 큰 SE, 설계효과 = SE²/SE_iid². 구간이 0 을 포함하면 문구는 항상 “판별 불가”다(`inference.verdict`). 어느 의존 구간이든 계산되지 않으면(모든 재표본이 NaN) 대표 구간을 만들지 않고 판별 불가로 둔다(`envelope_missing`).
 
 ## 표
 
-`summary.csv`(방식×시계×범위×측정) · `paired.csv`(같은 후보의 방식 차이) · `mde.csv` · `cost_sensitivity.csv` · `block_sensitivity.csv` · `markouts_summary.csv`(체결 후 +5/+20, day 0 = 체결 세션) · `policy_epochs.csv` · `parents.csv` · `v1_reproduction.csv`(v1 Q2/Q3 상세 재실행 ↔ 저장본 셀 대조) · `canonical_reconcile.csv`(정본 수치 재계산) · `explore_2b_*.csv`(2B 초안 실행 가능성 계수 — **탐색**, 수익 아님).
+`summary.csv`(방식×시계×범위×측정) · `paired.csv`(같은 후보의 방식 차이) · `mde.csv` · `cost_sensitivity.csv` · `block_sensitivity.csv` · `markouts_summary.csv`(체결 후 +5/+20, day 0 = 체결 세션) · `policy_epochs.csv` · `parents.csv` · `v1_reproduction.csv`(v1 Q2/Q3 상세 재실행 ↔ 저장본 셀 대조) · `canonical_reconcile.csv`(정본 수치 재계산) · `explore_2b_*.csv`(2B 초안 실행 가능성 계수 — **탐색**, 수익 아님; 성숙은 공통 ^KS11 달력의 `D0+k` 로 `outcomes.evaluate` 와 같은 규칙 — 달력 밖·캐시 끝 이후는 `immature`, 캐시 안에서 D0·목표일 봉이 없거나 목표 종가가 무효면 `data_missing`, 모든 행에 기록하고 요약에서 둘을 따로 센다).
 
 ## 한계
 

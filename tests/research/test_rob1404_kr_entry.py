@@ -563,7 +563,7 @@ def test_r1_markout_counts_calendar_sessions():
 def test_explore_atr_limit_nonpositive_is_flagged_not_raised():
     rows = [(10.0, 30.0, 1.0, 2.0)] * 25
     bars = make_daily(rows)
-    out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 2.0)
+    out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 2.0, cal=CAL)
     assert out["atr_limit_nonpositive"] is True
 
 
@@ -687,7 +687,11 @@ def test_r2_s3_explore_summary_with_no_valid_atr_row():
     import research.rob1404_kr_entry.run as run_mod
 
     row = explore_2b.candidate_row(
-        make_daily([(10.0, 30.0, 1.0, 2.0)] * 25), None, kst(SESSIONS[19], 16, 0), 2.0
+        make_daily([(10.0, 30.0, 1.0, 2.0)] * 25),
+        None,
+        kst(SESSIONS[19], 16, 0),
+        2.0,
+        cal=CAL,
     )
     ex = pd.DataFrame([{"parent_rank": 0, **row}])
     out = run_mod.explore_summary(ex).set_index("level")
@@ -707,7 +711,7 @@ def test_bench_return_is_none_on_nonfinite_prices():
 def test_explore_nonfinite_atr_is_unavailable_not_nonpositive():
     bars = make_daily([FLAT] * 25)
     bars.loc[10, "high"] = float("nan")
-    out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 90.0)
+    out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 90.0, cal=CAL)
     assert out["atr_available"] is False and "atr_limit_nonpositive" not in out
 
 
@@ -762,3 +766,199 @@ def test_r3_s1_uncomputable_envelope_member_gives_no_verdict(monkeypatch):
     )
     assert out["headline_ci"].startswith("envelope_incomplete(")
     assert inference.verdict(out["ci_lo"], out["ci_hi"]).startswith("판별 불가")
+
+
+# ------------------------------------------- round 4: 2B maturity, markouts
+
+# Signal after the S14 close: D0 = S15, D0+5 = S20, D0+20 past the calendar.
+SIG_R4 = kst(SESSIONS[14], 16, 0)
+
+
+def _explore(bars: pd.DataFrame, signal: datetime = SIG_R4, anchor: float = 90.0):
+    return explore_2b.candidate_row(bars, None, signal, anchor, cal=CAL)
+
+
+def _drop(*days: date, upto: int = 25) -> pd.DataFrame:
+    b = make_daily([FLAT] * upto)
+    return b[~b["session_date"].isin(days)].reset_index(drop=True)
+
+
+def test_r4_explore_middle_gap_does_not_shift_the_target_row():
+    # S17 missing and the stock ends at S20: 20 rows, so a row count
+    # (d0_row + 5 < len) says immature, but the calendar target S20 is there.
+    out = _explore(_drop(SESSIONS[17], upto=21))
+    assert out["d0_session"] == str(SESSIONS[15])
+    assert out["maturity_d5"] == "ok" and out["matured_d5"] is True
+    assert out["maturity_d20"] == "immature"
+    assert out["maturity_d20_reason"] == "beyond_calendar"
+
+
+def test_r4_explore_missing_target_bar_is_data_missing_not_next_row():
+    out = _explore(_drop(SESSIONS[20]))  # 24 rows: a row count says matured
+    assert out["maturity_d5"] == "data_missing"
+    assert out["maturity_d5_reason"] == "target_bar_missing"
+    assert out["matured_d5"] is False
+
+
+def test_r4_explore_target_after_stock_end_is_immature():
+    out = _explore(_drop(upto=20))  # S0..S19; calendar has S20
+    assert out["maturity_d5"] == "immature"
+    assert out["maturity_d5_reason"] == "target_beyond_data_end"
+
+
+def test_r4_explore_nonfinite_target_close_is_data_missing():
+    bars = make_daily([FLAT] * 25)
+    bars.loc[20, "close"] = float("nan")
+    out = _explore(bars)
+    assert out["maturity_d5"] == "data_missing"
+    assert out["maturity_d5_reason"] == "target_nonfinite_close"
+
+
+def test_r4_explore_rows_that_stop_early_still_carry_maturity():
+    nan_atr = make_daily([FLAT] * 25)
+    nan_atr.loc[10, "high"] = float("nan")
+    out = _explore(nan_atr)
+    assert out["atr_available"] is False and out["maturity_d5"] == "ok"
+    nonpos = _explore(make_daily([(10.0, 30.0, 1.0, 2.0)] * 25), anchor=2.0)
+    assert nonpos["atr_limit_nonpositive"] is True and nonpos["maturity_d5"] == "ok"
+    no_t = _explore(make_daily([FLAT] * 25), signal=kst(SESSIONS[0], 8, 0))
+    assert no_t["t_pos_ok"] is False and no_t["maturity_d5"] == "ok"
+
+
+def test_r4_explore_missing_d0_bar_inside_vs_after_the_cache():
+    inside = _explore(_drop(SESSIONS[15]))
+    assert inside["t_pos_ok"] is False
+    assert inside["maturity_d5"] == "data_missing"
+    assert inside["maturity_d5_reason"] == "d0_bar_missing"
+    after = _explore(_drop(upto=15))  # stock ends at S14, D0 = S15
+    assert after["t_pos_ok"] is False
+    assert after["maturity_d5"] == "immature"
+    assert after["maturity_d5_reason"] == "d0_beyond_data_end"
+    past_cal = _explore(make_daily([FLAT] * 25), signal=kst(SESSIONS[24], 16, 0))
+    assert past_cal["d0_session"] is None
+    assert past_cal["maturity_d5"] == past_cal["maturity_d20"] == "immature"
+
+
+def test_r4_explore_summary_separates_immature_and_missing():
+    import research.rob1404_kr_entry.run as run_mod
+
+    rows = [
+        _explore(make_daily([FLAT] * 25)),  # ok
+        _explore(_drop(SESSIONS[20])),  # data_missing (target)
+        _explore(_drop(SESSIONS[15])),  # data_missing (D0)
+        _explore(_drop(upto=20)),  # immature
+    ]
+    ex = pd.DataFrame([{"parent_rank": 0, **r} for r in rows])
+    out = run_mod.explore_summary(ex).set_index("level").loc["parent"]
+    assert (out["n_matured_d5"], out["n_immature_d5"], out["n_data_missing_d5"]) == (
+        1,
+        1,
+        2,
+    )
+    assert (out["n_matured_d20"], out["n_immature_d20"]) == (0, 4)
+
+
+def _with_meta(rows: list[dict], symbol: str, parent: str, rank: int = 0):
+    return [
+        {"symbol": symbol, "parent_id": parent, "parent_rank": rank, **r} for r in rows
+    ]
+
+
+def test_r4_markout_summary_blocks_on_fill_session_with_mixed_edge_rows(
+    monkeypatch,
+):
+    import research.rob1404_kr_entry.run as run_mod
+
+    # Calendar holiday on S10 (the stock still has a bar there).
+    cal = clock.SessionCalendar(tuple(d for d in SESSIONS if d != SESSIONS[10]))
+    bench = outcomes.Bench(make_daily([FLAT] * 25), None)
+    marks: list[dict] = []
+    # Weekend signal (Sat after S3) and an NXT-hours evening signal.
+    for i, sig in enumerate((kst(date(2026, 9, 5), 10, 0), kst(SESSIONS[2], 17, 30))):
+        c = _cand(sig, sig + timedelta(hours=6), 90.0, 5)
+        m = methods.build_methods(c, _order(c), D, None, cal)
+        assert m["nep"].legs and m["nep"].legs[0].state == "filled"
+        marks += _with_meta(outcomes.markouts(m["nep"], D, bench, cal), f"s{i}", "p1")
+
+    def leg_at(pos: int) -> methods.MethodLegs:
+        return _legs(methods.Leg(100.0, 1, "filled", True, D["open_ts"].iloc[pos], pos))
+
+    # Fill after every D0 (S12), a fill near the end (S23), a holiday fill (S10).
+    marks += _with_meta(outcomes.markouts(leg_at(12), D, bench, cal), "s2", "p2")
+    marks += _with_meta(outcomes.markouts(leg_at(23), D, bench, cal), "s3", "p3")
+    marks += _with_meta(outcomes.markouts(leg_at(10), D, bench, cal), "s4", "p4")
+    frame = pd.DataFrame(marks)
+    status5 = dict(zip(frame["fill_session"], frame["markout5_status"], strict=True))
+    assert status5[str(SESSIONS[10])] == "fill_not_on_calendar"
+    assert status5[str(SESSIONS[23])] == "immature"
+    assert status5[str(SESSIONS[12])] == "ok"
+
+    calls: list[dict] = []
+    real = run_mod.inference.summarise
+
+    def spy(values, **kw):
+        calls.append(kw)
+        return real(values, **kw)
+
+    monkeypatch.setattr(run_mod.inference, "summarise", spy)
+    out = run_mod.markout_summary(frame, list(cal.dates))  # must not raise
+    ok_days = {
+        date.fromisoformat(d)
+        for d, s in zip(frame["fill_session"], frame["markout5_status"], strict=True)
+        if s == "ok"
+    }
+    assert calls and all(set(kw["days"]) <= ok_days for kw in calls)
+    assert any(SESSIONS[12] in kw["days"] for kw in calls)  # not a D0 date
+    order_calls = [kw for kw in calls if kw.get("parents") is not None]
+    assert order_calls
+    assert all(len(kw["parents"]) == len(kw["days"]) for kw in order_calls)
+    # per method rows; add them up across methods (nep + the direct legs)
+    tot = out[(out["level"] == "order") & (out["measure"] == "markout5")].sum(
+        numeric_only=True
+    )
+    assert tot["n_fills"] == 5 and tot["n_matured"] == 3
+    assert tot["n_immature"] == 1 and tot["n_data_missing"] == 1
+
+
+def test_r4_common_clock_summary_blocks_on_d0_session(monkeypatch):
+    import research.rob1404_kr_entry.run as run_mod
+
+    rows = []
+    for i, start in enumerate((0, 3)):
+        leg = methods.Leg(100.0, 1, "filled", True, D["open_ts"].iloc[start], start)
+        r = outcomes.evaluate(
+            _legs(leg),
+            D,
+            None,
+            kst(SESSIONS[start], 8, 5),
+            1,
+            5,
+            cal=CAL,
+            is_etf=False,
+            market_bench=None,
+            sector_peers=None,
+            costs=(outcomes.BASE_COST,),
+        )
+        assert r["status"] == "ok"
+        rows.append(
+            {
+                "order_id": f"o{i}",
+                "symbol": f"s{i}",
+                "parent_id": f"p{i}",
+                "parent_rank": 0,
+                "nxt_only": False,
+                **r,
+                "method": "anchor_actual",  # _legs() names its method otherwise
+            }
+        )
+    calls: list[dict] = []
+    real = run_mod.inference.summarise
+
+    def spy(values, **kw):
+        calls.append(kw)
+        return real(values, **kw)
+
+    monkeypatch.setattr(run_mod.inference, "summarise", spy)
+    run_mod.summarise(pd.DataFrame(rows), list(CAL.dates))
+    assert calls
+    assert all(sorted(kw["days"]) == [SESSIONS[0], SESSIONS[3]] for kw in calls)
