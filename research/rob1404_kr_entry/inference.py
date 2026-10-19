@@ -159,6 +159,8 @@ def verdict(lo: float, hi: float) -> str:
 
     if not (math.isfinite(lo) and math.isfinite(hi)):
         return "판별 불가(구간 없음)"
+    if lo == 0.0 and hi == 0.0:
+        return "0(체결 없음 — 현금과 동일)"
     if hi < 0:
         return "음(구간 전체 < 0)"
     if lo > 0:

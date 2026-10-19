@@ -360,6 +360,7 @@ def test_verdict_never_claims_no_edge_when_ci_spans_zero():
     assert inference.verdict(-1.0, 2.0).startswith("판별 불가")
     assert inference.verdict(-3.0, -0.1).startswith("음")
     assert inference.verdict(0.1, 3.0).startswith("양")
+    assert inference.verdict(0.0, 0.0).startswith("0(")
 
 
 def test_required_n_scales_with_design_effect():
