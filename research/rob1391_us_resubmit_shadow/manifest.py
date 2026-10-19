@@ -55,13 +55,16 @@ DEVIATIONS: dict[str, tuple[bool, str]] = {
     "D8_toss_preday_cancel_sweep": (
         True,
         "research parent expiry only: a Toss cancelled row counts as DAY-expiry "
-        "when its broker status is CANCELED, filled_qty == 0, the raw canceledAt "
-        "is offset-bearing ISO inside [working-session regular close, next "
-        "regular open) and within +-2min (both ends inclusive) of 08:50 KST or "
-        "19:50 ET wall clock, and no same-ledger cancel row references its "
-        "broker order id; then expired_at := canceledAt with basis "
-        "toss_preday_sweep_inferred. The live ledger classifier is unchanged "
-        "(operator Q-1019-6 = A, hk:doc decision/2026-10-19/rob1391-d8)",
+        "when its broker status is CANCELED, it is unfilled (filled_qty NULL "
+        "or 0 -- the ledger leaves it NULL on unfilled cancels -- AND the raw "
+        "payload has no positive or unparseable filledQuantity), the raw "
+        "canceledAt is offset-bearing ISO inside [working-session regular "
+        "close, next regular open) and within +-2min (both ends inclusive) of "
+        "08:50 KST or 19:50 ET wall clock, and no same-ledger cancel row "
+        "references its broker order id; then expired_at := canceledAt with "
+        "basis toss_preday_sweep_inferred. The live ledger classifier is "
+        "unchanged (operator Q-1019-6 = A, hk:doc decision/2026-10-19/rob1391-d8; "
+        "unfilled = NULL-or-0 + clean raw fill evidence per b1391d8-t1 review)",
     ),
     "D3_budget_fill_notional_only": (
         False,

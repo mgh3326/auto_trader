@@ -75,44 +75,80 @@ def _ts(value: Any) -> datetime | None:
     return out.astimezone(UTC)
 
 
-def _canceled_at_from_raw(raw: Any) -> datetime | None:
-    """The broker ``canceledAt`` instant inside a stored Toss ``raw_response``.
+def _raw_values(raw: Any, key: str) -> list[Any]:
+    """All non-null values stored under ``key`` anywhere inside ``raw``.
 
-    The desk aggregate that enumerated these rows selected
-    ``$.**.canceledAt``, so the same recursive search is applied here (the key
-    may sit at the top level or inside nested order/cancel objects). The value
-    must be offset-bearing ISO and all occurrences must agree on one instant:
-    absent, naive, unparseable or disagreeing values are all ``None`` -- no
-    inferred or guessed timestamps.
+    The desk aggregate enumerated these payloads with recursive descent
+    (``$.**``), so the same recursive search is applied here: the key may sit
+    at the top level or inside nested order/cancel objects, and raw may be a
+    JSON text column or an already-decoded mapping/list. Null occurrences are
+    skipped; everything else is returned in traversal order.
     """
 
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except ValueError:
-            return None
-    instants: set[datetime] = set()
-    bad = False
+            return []
+    out: list[Any] = []
     stack = [raw]
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "canceledAt":
-                    if value is None:
-                        continue
-                    parsed = _ts(value)
-                    if parsed is None:
-                        bad = True
-                    else:
-                        instants.add(parsed)
+            for k, value in node.items():
+                if k == key:
+                    if value is not None:
+                        out.append(value)
                 else:
                     stack.append(value)
         elif isinstance(node, list):
             stack.extend(node)
+    return out
+
+
+def _canceled_at_from_raw(raw: Any) -> datetime | None:
+    """The broker ``canceledAt`` instant inside a stored Toss ``raw_response``.
+
+    The value must be offset-bearing ISO and all occurrences must agree on one
+    instant: absent, naive, unparseable or disagreeing values are all ``None``
+    -- no inferred or guessed timestamps.
+    """
+
+    instants: set[datetime] = set()
+    bad = False
+    for value in _raw_values(raw, "canceledAt"):
+        parsed = _ts(value)
+        if parsed is None:
+            bad = True
+        else:
+            instants.add(parsed)
     if bad or len(instants) != 1:
         return None
     return next(iter(instants))
+
+
+def _fill_evidence_from_raw(raw: Any) -> str:
+    """Fill evidence inside a stored Toss ``raw_response``.
+
+    The ledger leaves ``filled_qty`` NULL on broker-cancelled unfilled rows,
+    so "unfilled" cannot be proven from the column alone. The Toss payload
+    carries ``execution.filledQuantity`` (string decimal); a positive value
+    anywhere, or a non-null value that does not parse, means the fill state is
+    not clean. Returns ``"none"`` (absent/null/zero everywhere), ``"filled"``
+    or ``"bad"`` -- anything but ``"none"`` fails the unfilled guard.
+    """
+
+    bad = False
+    filled = False
+    for value in _raw_values(raw, "filledQuantity"):
+        parsed = _dec(value)
+        if parsed is None:
+            bad = True
+        elif parsed != 0:
+            filled = True
+    if bad:
+        return "bad"
+    return "filled" if filled else "none"
 
 
 def _is_integral(value: Decimal) -> bool:
@@ -171,15 +207,19 @@ class SourceOrder:
     filled_qty: Decimal | None
     avg_fill_price: Decimal | None
     exchange: str | None
-    # Toss broker evidence (D8): the ledger's broker-reported status and the
+    # Toss broker evidence (D8): the ledger's broker-reported status, the
     # ``canceledAt`` instant extracted from the stored ``raw_response``
-    # (offset-bearing ISO only; unparseable/ambiguous -> None).
+    # (offset-bearing ISO only; unparseable/ambiguous -> None), and the raw
+    # ``filledQuantity`` evidence -- the ledger leaves filled_qty NULL on
+    # broker-cancelled unfilled rows, so "unfilled" is proven by no positive
+    # or unparseable fill evidence in the payload, not by the column.
     # ``our_cancel_row_exists`` records whether the same ledger holds an
-    # operation_kind='cancel' row targeting this order, so a broker-side
-    # sweep is distinguishable from a cancel we initiated.
+    # operation_kind='cancel' row targeting this order; None means the probe
+    # column was absent (hand-built file replay) and fails closed.
     broker_status: str | None = None
     broker_canceled_at: datetime | None = None
-    our_cancel_row_exists: bool = False
+    broker_fill_evidence: str = "none"
+    our_cancel_row_exists: bool | None = None
     universe: Universe | None = None
     rung: Rung | None = None
     duplicate_rows: int = 1
@@ -215,7 +255,12 @@ class SourceOrder:
             exchange=(row.get("exchange") or None),
             broker_status=(row.get("broker_status") or None),
             broker_canceled_at=_canceled_at_from_raw(row.get("raw_response")),
-            our_cancel_row_exists=bool(row.get("our_cancel_row_exists")),
+            broker_fill_evidence=_fill_evidence_from_raw(row.get("raw_response")),
+            our_cancel_row_exists=(
+                None
+                if row.get("our_cancel_row_exists") is None
+                else bool(row.get("our_cancel_row_exists"))
+            ),
         )
 
 
@@ -411,7 +456,12 @@ def _toss_sweep_expiry(
     reasons: list[str] = []
     if o.broker_status != "CANCELED":
         reasons.append("not_day_expiry_cancelled_broker_status")
-    if (o.filled_qty or Decimal("0")) != 0:
+    # "filled_qty == 0" of the decision is the *semantic* unfilled check: the
+    # ledger leaves filled_qty NULL on broker-cancelled unfilled rows, so NULL
+    # is admissible only when the raw payload carries no positive and no
+    # unparseable filledQuantity evidence (Q: b1391d8-t1 -- ledger NULL plus
+    # raw filledQuantity>0 must not slip through).
+    if (o.filled_qty or Decimal("0")) != 0 or o.broker_fill_evidence != "none":
         reasons.append("not_day_expiry_cancelled_partial_fill")
     if o.broker_canceled_at is None:
         reasons.append("toss_cancel_timestamp_missing")
@@ -419,8 +469,10 @@ def _toss_sweep_expiry(
         reasons.append("not_day_expiry_cancelled_outside_window")
     elif not _toss_sweep_signature(o.broker_canceled_at):
         reasons.append("not_day_expiry_cancelled_signature")
-    if o.our_cancel_row_exists:
+    if o.our_cancel_row_exists is True:
         reasons.append("not_day_expiry_cancelled_own_cancel_row")
+    elif o.our_cancel_row_exists is None:
+        reasons.append("toss_cancel_row_probe_missing")
     if reasons:
         return None, "", reasons
     assert o.broker_canceled_at is not None

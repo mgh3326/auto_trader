@@ -88,9 +88,11 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   `D2_resubmit_gate_subset`(D1–D3 게이트 재검증 범위), `D7_in_window_quote_evidence`(체결 후보의 ask 증거는
   그 분의 창 [start, end) 안에서 관측된 유효 호가만 — 창 이전 호가 승계 없음, 창 안 유효 호가 0 이면 UNKNOWN;
   운영자 Q-1018-4 = A, `hk:doc decision/2026-10-18/rob1391-d7-round5`), `D8_toss_preday_cancel_sweep`(Toss
-  `status=cancelled`+broker `CANCELED`+체결 0+원시 `canceledAt` 이 [마감, 다음 개장) 안이면서 08:50 KST 또는
+  `status=cancelled`+broker `CANCELED`+무체결+원시 `canceledAt` 이 [마감, 다음 개장) 안이면서 08:50 KST 또는
   19:50 ET ±2분(양끝 포함)이고 같은 원장에 우리 cancel 행이 없을 때만 브로커 DAY-sweep 만료로 인정 — 연구
   부모 판정 한정, 라이브 원장 분류 불변; 운영자 Q-1019-6 = A, `hk:doc decision/2026-10-19/rob1391-d8`).
+  "무체결" 은 의미 조건이다 — 무체결 cancelled 행은 원장 `filled_qty` 가 NULL 로 남으므로 `filled_qty`
+  NULL 또는 0 이고 `raw_response` 어디에도 양수·파싱불가 `filledQuantity` 증거가 없어야 한다.
   선택(기본은 원문 그대로의 엄격 규칙, 승인 시에만 완화):
   `D3_budget_fill_notional_only`(예산 캡에서 비용 제외), `D4_policy_epoch_invariant_basis`(주문 시점 정책 스탬프 없는
   부모 허용), `D5_accept_outside_regular_session`(정규장 밖 접수 DAY 주문 허용), `D6_ledger_budget_basis`(승인 rung
@@ -100,8 +102,9 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
 - 부모 만료 증거: Toss 는 `status=expired`+`expired_at`(`toss_expired_at`), KIS 는 무체결 `expired` 를
   D0 마감으로 추론(`kis_day_close_inferred`). D8 아래 Toss `cancelled` 행도 위 서명 조건을 전부 만족하면
   `expired_at := raw_response.canceledAt`, `expiry_basis=toss_preday_sweep_inferred` 로 인정된다 —
-  `canceledAt` 결측은 `toss_cancel_timestamp_missing`, 서명/창/우리 cancel 행/부분체결 불만족은
-  `not_day_expiry_cancelled_*` 로 제외(unknown 성격은 항상 제외). 라이브 원장의 status 분류는 바꾸지 않는다.
+  `canceledAt` 결측은 `toss_cancel_timestamp_missing`, 우리-cancel 프로브 컬럼 자체가 없는 행은
+  `toss_cancel_row_probe_missing`, 서명/창/우리 cancel 행/체결 증거 불만족은 `not_day_expiry_cancelled_*`
+  로 제외(unknown 성격은 항상 제외). 라이브 원장의 status 분류는 바꾸지 않는다.
 
 ### 1) 매 US 세션 마감 뒤 — 하루 1회
 

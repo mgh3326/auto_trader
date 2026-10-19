@@ -3,10 +3,13 @@
 Operator decision Q-1019-6 = A (hk:doc decision/2026-10-19/rob1391-d8). A Toss
 US buy row with ``status='cancelled'`` counts as regular-session DAY expiry
 iff every element of the pre-registered sweep signature holds: broker status
-``CANCELED``, zero fills, a raw ``canceledAt`` inside [working-session regular
-close, next regular open) and within +-2min (both ends inclusive) of
-08:50 KST or 19:50 ET wall clock, and no same-ledger cancel row targeting its
-broker order id. The live ledger classifier is unchanged.
+``CANCELED``, no fill evidence (ledger ``filled_qty`` NULL/0 -- the ledger
+leaves it NULL on unfilled cancels -- **and** no positive or unparseable
+``filledQuantity`` anywhere in ``raw_response``), a raw ``canceledAt`` inside
+[working-session regular close, next regular open) and within +-2min (both
+ends inclusive) of 08:50 KST or 19:50 ET wall clock, and no same-ledger
+cancel row targeting its broker order id. The live ledger classifier is
+unchanged.
 
 Fixtures use the production raw shape the desk aggregate enumerated
 (hk:doc deploy/2026-10-19/desk-req14-cancel-semantics): ``raw_response`` is
@@ -68,7 +71,7 @@ def canceled_row(
     day: date,
     canceled_at: Any,
     broker_status: str | None = "CANCELED",
-    filled: Any = 0,
+    filled: Any = None,  # the ledger leaves filled_qty NULL on unfilled cancels
     avg: Any = None,
     our_cancel: bool = False,
     raw: Any = _DEFAULT_RAW,
@@ -316,6 +319,102 @@ def test_partial_fill_is_not_a_clean_sweep():
         )
     )
     assert cand is None and reasons == ["not_day_expiry_cancelled_partial_fill"]
+
+
+def test_ledger_null_filled_needs_clean_raw_fill_evidence():
+    # The desk's 38 rows are filled_qty IS NULL (record_send never writes it,
+    # the CANCELED/no-fill reconcile path leaves it NULL). "체결수량 0" is
+    # semantic: NULL counts as unfilled only when the raw payload carries no
+    # positive and no unparseable filledQuantity evidence.
+    for execution in (
+        {},  # the unfilled production shape
+        {"filledQuantity": "0"},
+        {"filledQuantity": "0.00000000"},
+        {"filledQuantity": 0},
+        {"filledQuantity": None},  # null occurrence == absent
+    ):
+        raw = {
+            "orderId": "TOSSORD00000060",
+            "canceledAt": "2025-11-18T08:50:00.000+09:00",
+            "execution": execution,
+        }
+        cand, reasons = norm(
+            canceled_row(60, "SYMA", day=D0, canceled_at=None, raw=raw)
+        )
+        assert cand is not None and reasons == [], execution
+        assert cand.expiry_at == datetime(2025, 11, 17, 23, 50, tzinfo=UTC)
+
+
+def test_raw_fill_evidence_rejects_even_when_ledger_filled_is_null_or_zero():
+    # b1391d8-t1 counterexample: ledger filled_qty NULL while the payload
+    # reports fills (filledQuantity>0 with empty averageFilledPrice -> the
+    # reconcile branch never writes the column). Must not infer expiry; a
+    # non-null unparseable value is fail-closed the same way.
+    for filled in (None, 0):
+        for fq in ("1", "0.5", 2, "abc"):
+            raw = {
+                "canceledAt": "2025-11-18T08:50:00.000+09:00",
+                "execution": {"filledQuantity": fq},
+            }
+            cand, reasons = norm(
+                canceled_row(
+                    61, "SYMA", day=D0, canceled_at=None, raw=raw, filled=filled
+                )
+            )
+            assert cand is None, (filled, fq)
+            assert "not_day_expiry_cancelled_partial_fill" in reasons
+    # nested occurrences count as well (same recursive descent as canceledAt)
+    raw = {
+        "canceledAt": "2025-11-18T08:50:00.000+09:00",
+        "result": {"legs": [{"filledQuantity": "1"}]},
+    }
+    cand, _ = norm(canceled_row(62, "SYMA", day=D0, canceled_at=None, raw=raw))
+    assert cand is None
+
+
+def test_mixed_canceledat_occurrences_fail_closed():
+    # one parseable + one garbage/naive occurrence anywhere -> the whole row is
+    # unknown (the M3 mutant -- dropping the bad flag -- must not survive)
+    for junk in ("garbage", "2025-11-18T08:50:00.000", ""):
+        raw = {
+            "canceledAt": "2025-11-18T08:50:00.000+09:00",
+            "cancelResult": {"canceledAt": junk},
+        }
+        cand, reasons = norm(
+            canceled_row(63, "SYMA", day=D0, canceled_at=None, raw=raw)
+        )
+        assert cand is None and reasons == ["toss_cancel_timestamp_missing"], junk
+    # a null occurrence is skipped (null == absent), valid + null qualifies
+    raw = {
+        "canceledAt": "2025-11-18T08:50:00.000+09:00",
+        "cancelResult": {"canceledAt": None},
+    }
+    cand, reasons = norm(canceled_row(64, "SYMA", day=D0, canceled_at=None, raw=raw))
+    assert cand is not None and reasons == []
+
+
+def test_missing_cancel_probe_column_fails_closed():
+    # FileParentSource/hand-built rows lacking the EXISTS probe column are
+    # unknown, never "no cancel row" (b1391d8-t1 SHOULD-4).
+    row = canceled_row(65, "SYMA", day=D0, canceled_at="2025-11-18T08:50:00.000+09:00")
+    del row["our_cancel_row_exists"]
+    cand, reasons = norm(row)
+    assert cand is None and reasons == ["toss_cancel_row_probe_missing"]
+    row["our_cancel_row_exists"] = None
+    cand, reasons = norm(row)
+    assert cand is None and reasons == ["toss_cancel_row_probe_missing"]
+
+
+def test_own_cancel_probe_shape_is_pinned_in_sql_text():
+    # b1391d8-t1 S1-S3: no local test exercised the EXISTS predicate against a
+    # real schema, so pin its shape in text -- a probe that forgot the
+    # operation_kind or matched the wrong column must not pass review.
+    from research.rob1391_us_resubmit_shadow import db_source
+
+    probe = db_source.SQL_TOSS_US_BUYS
+    assert "toss_live_order_ledger AS c" in probe
+    assert "c.operation_kind = 'cancel'" in probe
+    assert "c.original_order_id = t.broker_order_id" in probe
 
 
 def test_wrong_broker_status_rejects_and_multiple_failures_list_all():
@@ -572,16 +671,46 @@ def check_window_guard(p) -> None:
     assert reasons == ["not_day_expiry_cancelled_outside_window"]
 
 
+def check_fill_evidence_guard(p) -> None:
+    # ledger NULL + broker-reported fill must still reject
+    cand, reasons = _sweep_or_reject(
+        p,
+        canceled_row(
+            53,
+            "SYMA",
+            day=D0,
+            canceled_at=None,
+            filled=None,
+            raw={
+                "canceledAt": "2025-11-18T08:50:00.000+09:00",
+                "execution": {"filledQuantity": "1"},
+            },
+        ),
+    )
+    assert cand is None
+    assert reasons == ["not_day_expiry_cancelled_partial_fill"]
+
+
+def check_probe_missing_guard(p) -> None:
+    row = canceled_row(54, "SYMA", day=D0, canceled_at="2025-11-18T08:50:00.000+09:00")
+    del row["our_cancel_row_exists"]
+    cand, reasons = _sweep_or_reject(p, row)
+    assert cand is None
+    assert reasons == ["toss_cancel_row_probe_missing"]
+
+
 def test_sweep_guard_checks_pass_on_real_module():
     check_own_cancel_guard(parents_mod)
     check_signature_guard(parents_mod)
     check_window_guard(parents_mod)
+    check_fill_evidence_guard(parents_mod)
+    check_probe_missing_guard(parents_mod)
 
 
 D8_MUTANTS = [
     (
         "own_cancel_row_check_removed",
-        "    if o.our_cancel_row_exists:\n",
+        "    if o.our_cancel_row_exists is True:\n",
         "    if False:\n",
         check_own_cancel_guard,
     ),
@@ -596,6 +725,18 @@ D8_MUTANTS = [
         "    elif not (session.close_utc <= o.broker_canceled_at < nxt.open_utc):\n",
         "    elif False:\n",
         check_window_guard,
+    ),
+    (
+        "fill_evidence_check_removed",
+        ' or o.broker_fill_evidence != "none"',
+        "",
+        check_fill_evidence_guard,
+    ),
+    (
+        "probe_missing_check_removed",
+        '    elif o.our_cancel_row_exists is None:\n        reasons.append("toss_cancel_row_probe_missing")\n',
+        "",
+        check_probe_missing_guard,
     ),
 ]
 
