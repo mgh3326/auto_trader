@@ -25,6 +25,144 @@ from research.rob1404_kr_entry.population import (
     version_at,
 )
 
+
+# R5 malformed prices enter through the actual offline cache-read boundary,
+# after the production finalisers (which do not revalidate cached prices).
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+@pytest.mark.parametrize(
+    "path",
+    ["d0_open", "next_session_open", "auction_close", "hourly_open", "rebound_close"],
+)
+def test_r5_invalid_exploration_price_cache_paths(tmp_path, bad, path):
+    from types import SimpleNamespace
+
+    from research.rob1383_buy_drought.prices import PriceStore
+    from research.rob1404_kr_entry.run import explore_candidates, explore_summary
+
+    day = SESSIONS[15]
+    bars = make_daily([FLAT] * 25)
+    hourly = None
+    signal = kst(day, 8, 5)
+    if path == "d0_open":
+        bars.loc[15, "open"] = bad
+    elif path == "next_session_open":
+        signal = kst(day, 15, 20)
+        bars.loc[16, "open"] = bad
+    elif path == "auction_close":
+        signal = kst(day, 14, 39)
+        bars.loc[15, "close"] = bad
+    else:
+        hourly = make_hourly(day, [FLAT] * 6)
+        if path == "hourly_open":
+            signal = kst(day, 11, 37)
+            hourly.loc[3, "open"] = bad
+        else:
+            hourly.loc[0, "close"] = bad
+            # A later valid trigger must not conceal an unknown first trigger.
+            hourly.loc[1, "close"] = 102.0
+
+    for symbol, frame in (("000001", bars), ("000002", D)):
+        frame.to_parquet(tmp_path / f"kr__{symbol}.parquet", index=False)
+        (tmp_path / f"kr__{symbol}.json").write_text('{"status":"ok"}')
+    (tmp_path / "hourly").mkdir()
+    make_hourly(day, [FLAT] * 6).to_parquet(
+        tmp_path / "hourly/kr__000002.parquet", index=False
+    )
+    if hourly is not None:
+        hourly.to_parquet(tmp_path / "hourly/kr__000001.parquet", index=False)
+    store = PriceStore(cache_dir=tmp_path, offline=True)
+    cands = [
+        SimpleNamespace(
+            order_id=f"synthetic-{i}",
+            symbol=s,
+            parent_rank=0,
+            nxt_only=False,
+            signal_at=signal,
+            anchor=90.0,
+        )
+        for i, s in enumerate(("000001", "000002"))
+    ]
+    # This is the same candidate loop called by run.main; a malformed candidate
+    # must not prevent the following healthy candidate from being evaluated.
+    frame = explore_candidates(cands, store, CAL)
+    assert len(frame) == 2
+    row, healthy = frame.iloc[0], frame.iloc[1]
+    assert row["maturity_d5"] == healthy["maturity_d5"] == "ok"
+    assert row["maturity_d20"] == healthy["maturity_d20"] == "immature"
+    assert row["atr_pct_of_close"] == healthy["atr_pct_of_close"] == 2.0
+    assert row["atr_limit_vs_anchor_pct"] == healthy["atr_limit_vs_anchor_pct"]
+    status = "rebound_price_status" if path == "rebound_close" else "nep_price_status"
+    assert row[status] == "data_missing" and healthy[status] == "ok"
+    if path == "rebound_close":
+        assert pd.isna(row["rebound_triggered"])
+        assert pd.isna(row.get("rebound_cap_vs_close_t_pct"))
+        assert row["nep_price_status"] == "ok"
+        assert row["rebound_hours_observable"] == 4  # excludes invalid close + 14h bar
+    else:
+        assert pd.isna(row["atr_limit_vs_nep_pct"])
+    summary = explore_summary(frame)
+    assert (summary[f"n_{status}_data_missing"] == 1).all()
+    assert (summary["n_matured_d5"] == 2).all()
+    assert (summary["n_data_missing_d5"] == 0).all()
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+@pytest.mark.parametrize("field", ["high", "low", "close", "anchor"])
+def test_r5_other_consumed_prices_are_validated_before_arithmetic(bad, field):
+    bars = D.copy()
+    anchor = bad if field == "anchor" else 90.0
+    if field != "anchor":
+        bars.loc[14, field] = bad
+    hourly = make_hourly(SESSIONS[15], [(100.0, 103.0, 99.0, 102.0)] * 6)
+    row = explore_2b.candidate_row(bars, hourly, kst(SESSIONS[15], 8), anchor, cal=CAL)
+    assert row["maturity_d5"] == "ok"
+    if field == "anchor":
+        assert row["anchor_price_status"] == "data_missing"
+        assert row["atr_limit_vs_anchor_pct"] is None
+        assert row["anchor_dist_below_close_pct"] is None
+        assert row["rebound_cap_vs_anchor_pct"] is None
+        assert row["rebound_triggered"] is True
+        assert row["nep_price_status"] == "ok"
+    else:
+        assert row["atr_available"] is False
+        assert row["atr_status"] == "data_missing"
+        assert row.get("atr_limit_vs_nep_pct") is None
+
+
+@pytest.mark.parametrize("failure", ["returncode", "os_error", "process_error"])
+def test_r5_git_failure_is_unknown_never_clean(monkeypatch, tmp_path, failure):
+    import subprocess
+
+    from research.rob1404_kr_entry import versions
+
+    def fail(*args, **kwargs):
+        if failure == "os_error":
+            raise OSError("synthetic failure")
+        if failure == "process_error":
+            raise subprocess.SubprocessError("synthetic failure")
+        return subprocess.CompletedProcess(args[0], 128, stdout="", stderr="failed")
+
+    monkeypatch.setattr(versions.subprocess, "run", fail)
+    got = versions.git_info(tmp_path)
+    assert got["head"] == "unknown"
+    assert got["worktree_clean"] is None
+
+    monkeypatch.setattr(
+        versions.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a[0], 0, stdout="", stderr=""),
+    )
+    assert versions.git_info(tmp_path)["worktree_clean"] is True
+    monkeypatch.setattr(
+        versions.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            a[0], 0, stdout=" M file", stderr=""
+        ),
+    )
+    assert versions.git_info(tmp_path)["worktree_clean"] is False
+
+
 NOW = datetime(2026, 12, 31, tzinfo=UTC)
 SESSIONS = [date(2026, 9, 1) + timedelta(days=i) for i in range(40)]
 SESSIONS = [d for d in SESSIONS if d.weekday() < 5][:25]

@@ -26,6 +26,7 @@ from research.rob1404_kr_entry.clock import (
     bar_state,
     next_executable_price,
 )
+from research.rob1404_kr_entry.methods import valid_price
 
 ATR_PERIOD = 14
 ATR_MULT = 0.5
@@ -76,7 +77,7 @@ def maturity(
             if pos is None:
                 status = "immature" if state == "beyond_data_end" else "data_missing"
                 why = f"target_{state}"
-            elif not (math.isfinite(c := float(bars["close"].iloc[pos])) and c > 0):
+            elif not valid_price(float(bars["close"].iloc[pos])):
                 status, why = "data_missing", "target_nonfinite_close"
             else:
                 status, why = "ok", ""
@@ -107,57 +108,78 @@ def candidate_row(
     h = bars["high"].to_numpy(float)[: t + 1]
     lo = bars["low"].to_numpy(float)[: t + 1]
     c = bars["close"].to_numpy(float)[: t + 1]
+    # A cache read does not validate prices. Check every consumed daily price
+    # before ATR, tick rounding or division; this never changes maturity.
+    if not all(valid_price(float(p)) for values in (h, lo, c) for p in values):
+        out.update(atr_available=False, atr_status="data_missing")
+        return out
     atr = wilder_atr(h, lo, c)
-    out["atr_available"] = (
-        atr is not None and math.isfinite(atr) and math.isfinite(c[-1])
-    )
+    out["atr_available"] = atr is not None and math.isfinite(atr) and atr >= 0
+    out["atr_status"] = "ok" if out["atr_available"] else "unavailable"
     if not out["atr_available"]:
         return out
     close_t, high_t = float(c[-1]), float(h[-1])
     raw_limit = close_t - ATR_MULT * atr
-    out["atr_limit_nonpositive"] = not raw_limit > 0
-    if not raw_limit > 0:
+    out["atr_limit_nonpositive"] = not valid_price(raw_limit)
+    if not valid_price(raw_limit):
         return out  # 0.5 ATR >= the close: no valid limit (counted, not raised)
     limit = tick_floor("kr", raw_limit)
+    if not valid_price(limit):
+        out["atr_limit_nonpositive"] = True
+        return out
     nep = next_executable_price(bars, hourly, signal_at)
+    anchor_ok = valid_price(anchor)
+    nep_ok = nep is not None and valid_price(nep.price)
     dist_close = (close_t - limit) / close_t * 100.0
     out.update(
         {
             "atr_pct_of_close": atr / close_t * 100.0,
             "atr_limit_dist_below_close_pct": dist_close,
-            "atr_limit_vs_anchor_pct": (limit / anchor - 1.0) * 100.0,
-            "atr_limit_vs_nep_pct": (limit / nep.price - 1.0) * 100.0 if nep else None,
-            "anchor_dist_below_close_pct": (close_t - anchor) / close_t * 100.0,
+            "anchor_price_status": "ok" if anchor_ok else "data_missing",
+            "nep_price_status": "ok" if nep_ok else "data_missing",
+            "atr_limit_vs_anchor_pct": (limit / anchor - 1.0) * 100.0
+            if anchor_ok
+            else None,
+            "atr_limit_vs_nep_pct": (limit / nep.price - 1.0) * 100.0
+            if nep_ok
+            else None,
+            "anchor_dist_below_close_pct": (close_t - anchor) / close_t * 100.0
+            if anchor_ok
+            else None,
             "atr_limit_shallower_than_deep_min": dist_close < DEEP_LIMIT_PCT[0],
             "atr_limit_deeper_than_deep_max": dist_close > DEEP_LIMIT_PCT[1],
         }
     )
     trigger = None
+    out["rebound_price_status"] = "ok"
     if hourly is not None:
         day = hourly[hourly["session_date"] == d0_date]
         sig = pd.Timestamp(signal_at)
+        day = day[
+            (day["start_ts"] >= sig)
+            & day["end_ts"].map(
+                lambda e: pd.Timestamp(e).tz_convert(KST).time() <= REBOUND_LAST_BAR_END
+            )
+        ]
+        usable = day["close"].map(lambda p: valid_price(float(p)))
+        out["rebound_hours_observable"] = int(usable.sum())
+        if not usable.all():
+            # An invalid close cannot prove absence, or let a later bar become
+            # the first trigger. Only rebound statistics are unavailable.
+            out.update(rebound_price_status="data_missing", rebound_triggered=None)
+            return out
         for _, bar in day.iterrows():
-            end_kst = pd.Timestamp(bar["end_ts"]).tz_convert(KST).time()
-            if end_kst > REBOUND_LAST_BAR_END:
-                break
-            if pd.Timestamp(bar["start_ts"]) < sig:
-                continue  # a bar that began before the signal is not observable in full
             if float(bar["close"]) > high_t:
                 trigger = bar
                 break
-        out["rebound_hours_observable"] = int(
-            (
-                (day["start_ts"] >= sig)
-                & day["end_ts"].map(
-                    lambda e: (
-                        pd.Timestamp(e).tz_convert(KST).time() <= REBOUND_LAST_BAR_END
-                    )
-                )
-            ).sum()
-        )
     out["rebound_triggered"] = trigger is not None
     if trigger is not None:
         cap = float(trigger["close"]) + REBOUND_CAP_ATR * atr
+        if not valid_price(cap):
+            out["rebound_price_status"] = "data_missing"
+            return out
         out["rebound_cap_vs_close_t_pct"] = (cap / close_t - 1.0) * 100.0
-        out["rebound_cap_vs_anchor_pct"] = (cap / anchor - 1.0) * 100.0
+        out["rebound_cap_vs_anchor_pct"] = (
+            (cap / anchor - 1.0) * 100.0 if anchor_ok else None
+        )
     return out

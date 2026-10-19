@@ -52,6 +52,8 @@ v1 Q2/Q3 의 KR 모집단 = Toss KR 지정가 매수 중 미체결로 끝난 **7
 
 `y − Σ(다리 금액/B × 같은 구간의 벤치 수익)`. 시장 = `.KS` 는 KOSPI(^KS11), `.KQ` 는 KOSDAQ(^KQ11). 업종 = yfinance `sector` 가 같은 KR 캐시 종목(자기 제외)의 동일가중 평균, 가격 있는 동종 3개 미만이면 결측(0 아님). 업종 라벨 커버리지: 후보 30/33 종목, 유니버스 114/142.
 
+2B 가격 소비도 2A의 `methods.valid_price`(유한·양수)를 재사용한다. 무효 일봉 high/low/close는 ATR 통계, 무효 NEP는 NEP 비교, 무효 앵커는 앵커 비교만 `data_missing`으로 남긴다. 반등 관측 창에 무효 close가 있으면 첫 트리거를 확정할 수 없으므로 반등 판정은 null이며, 유효 시간봉 수와 결측 상태를 따로 기록한다. 상태별 결측 수는 `explore_2b_summary.csv`에 있고, 달력 성숙은 이 탐색 가격 상태와 독립이다. git 조회 실패 시 `run_meta.head="unknown"`, `worktree_clean=null`이며 빈 stdout만으로 clean을 주장하지 않는다.
+
 ## 불확실성
 
 평균의 95% 구간을 iid·종목 군집·부모 군집(주문 단위)·**날짜 블록**(D0 세션 달력의 10세션 이동 블록, 빈 날 포함 — 같은 날 공통 충격과 보유기간 겹침 일부 보존)으로 계산하고, 블록 5·10·20 세션까지 포함한 **모든 의존 보존 구간의 합집합(가장 낮은 하한 ~ 가장 높은 상한)** 을 대표 구간으로 쓴다(판정이 어느 의존 가정에서도 버텨야 한다). 블록별 값은 `block_sensitivity.csv`. 날짜 블록의 날짜는 표마다 그 표의 day 0 이다 — 공통 시계 표(`summary`·`paired`·`mde`·`cost_sensitivity`·`block_sensitivity`)는 `d0_session`, 마크아웃(`markouts_summary`)은 체결 세션 `fill_session`(주문 수준은 두 표 모두 부모 군집 포함). 최소 검출 효과(단측 5%, 검정력 80%) = 2.486 × 그중 가장 큰 SE, 설계효과 = SE²/SE_iid². 구간이 0 을 포함하면 문구는 항상 “판별 불가”다(`inference.verdict`). 어느 의존 구간이든 계산되지 않으면(모든 재표본이 NaN) 대표 구간을 만들지 않고 판별 불가로 둔다(`envelope_missing`).

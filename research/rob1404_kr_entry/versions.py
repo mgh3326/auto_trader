@@ -107,16 +107,22 @@ def cache_summary(cache_dir: Path) -> dict[str, object]:
     }
 
 
-def git_info(repo: Path) -> dict[str, str | bool]:
-    def run(*args: str) -> str:
-        return subprocess.run(
-            ["git", *args], cwd=repo, capture_output=True, text=True, check=False
-        ).stdout.strip()
+def git_info(repo: Path) -> dict[str, str | bool | None]:
+    def run(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=repo, capture_output=True, text=True, check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
 
+    status = run("status", "--porcelain")
     return {
-        "head": run("rev-parse", "HEAD"),
-        "v1_last_commit": run("log", "-1", "--format=%H %s", "--", V1_PACKAGE),
-        "v1_tree": run("rev-parse", f"HEAD:{V1_PACKAGE}"),
+        "head": run("rev-parse", "HEAD") or "unknown",
+        "v1_last_commit": run("log", "-1", "--format=%H %s", "--", V1_PACKAGE)
+        or "unknown",
+        "v1_tree": run("rev-parse", f"HEAD:{V1_PACKAGE}") or "unknown",
         # tracked + untracked changes outside ignored paths (results/, .cache/)
-        "worktree_clean": run("status", "--porcelain") == "",
+        "worktree_clean": None if status is None else status == "",
     }

@@ -612,6 +612,17 @@ def explore_summary(ex: pd.DataFrame) -> pd.DataFrame:
                     ).sum()
                 ),
                 "n_rebound_triggered": count(v, "rebound_triggered"),
+                **{
+                    f"n_{field}_data_missing": int(
+                        (col(g, field) == "data_missing").sum()
+                    )
+                    for field in (
+                        "atr_status",
+                        "anchor_price_status",
+                        "nep_price_status",
+                        "rebound_price_status",
+                    )
+                },
                 "rebound_cap_vs_close_t_pct_median": quant(
                     v, "rebound_cap_vs_close_t_pct", 0.5
                 ),
@@ -628,6 +639,27 @@ def explore_summary(ex: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def explore_candidates(cands, store: PriceStore, cal: SessionCalendar) -> pd.DataFrame:
+    """Keep each candidate's unavailable statistics local to its exploration row."""
+    ex = []
+    for c in cands:
+        bars = store.bars("kr", c.symbol)
+        if bars is None:
+            continue
+        ex.append(
+            {
+                "order_id": c.order_id,
+                "symbol": c.symbol,
+                "parent_rank": c.parent_rank,
+                "nxt_only": c.nxt_only,
+                **explore_2b.candidate_row(
+                    bars, store.hourly("kr", c.symbol), c.signal_at, c.anchor, cal=cal
+                ),
+            }
+        )
+    return pd.DataFrame(ex)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -678,24 +710,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # ---- 2B feasibility (exploratory counts only)
-    ex = []
-    cal = master_calendar(store)
-    for c in cands:
-        bars = store.bars("kr", c.symbol)
-        if bars is None:
-            continue
-        ex.append(
-            {
-                "order_id": c.order_id,
-                "symbol": c.symbol,
-                "parent_rank": c.parent_rank,
-                "nxt_only": c.nxt_only,
-                **explore_2b.candidate_row(
-                    bars, store.hourly("kr", c.symbol), c.signal_at, c.anchor, cal=cal
-                ),
-            }
-        )
-    ex_df = pd.DataFrame(ex)
+    ex_df = explore_candidates(cands, store, master_calendar(store))
     _write(ex_df, "explore_2b_detail.csv", args.out)
     _write(explore_summary(ex_df), "explore_2b_summary.csv", args.out)
 
