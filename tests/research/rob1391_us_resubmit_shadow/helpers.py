@@ -108,6 +108,9 @@ def toss_row(
         "filled_qty": d8(filled),
         "avg_fill_price": d8(avg),
         "exchange": None,
+        "broker_status": None,
+        "raw_response": None,
+        "our_cancel_row_exists": False,
     }
     row.update(over)
     return row
@@ -144,6 +147,9 @@ def kis_row(
         "filled_qty": d8(filled),
         "avg_fill_price": None,
         "exchange": "NASD",
+        "broker_status": None,
+        "raw_response": None,
+        "our_cancel_row_exists": False,
     }
     row.update(over)
     return row
@@ -206,7 +212,12 @@ def rung_row(
 
 
 MANDATORY_DEVIATIONS = frozenset(
-    {"D1_exit_hold_to_d20", "D2_resubmit_gate_subset", "D7_in_window_quote_evidence"}
+    {
+        "D1_exit_hold_to_d20",
+        "D2_resubmit_gate_subset",
+        "D7_in_window_quote_evidence",
+        "D8_toss_preday_cancel_sweep",
+    }
 )
 
 

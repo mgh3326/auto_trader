@@ -418,11 +418,7 @@ def test_f9_seal_refuses_unapproved_mandatory_deviations(tmp_path):
             approved_deviations={"D1_exit_hold_to_d20", "D2_resubmit_gate_subset"},
             deviation_ref="hk:doc x",
         )
-    mandatory = {
-        "D1_exit_hold_to_d20",
-        "D2_resubmit_gate_subset",
-        "D7_in_window_quote_evidence",
-    }
+    mandatory = set(MANDATORY_DEVIATIONS)
     with pytest.raises(ManifestError, match="deviation-ref"):
         build_manifest(**kwargs, approved_deviations=mandatory)
     m = build_manifest(

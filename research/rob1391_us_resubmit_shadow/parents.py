@@ -16,13 +16,19 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.symbol import to_db_symbol
 from research.rob1391_us_resubmit_shadow import constants as K
-from research.rob1391_us_resubmit_shadow.us_calendar import CalendarError, USCalendar
+from research.rob1391_us_resubmit_shadow.us_calendar import (
+    ET,
+    CalendarError,
+    Session,
+    USCalendar,
+)
 
 SOURCE_TOSS = "toss_live_order_ledger"
 SOURCE_KIS_US = "live_order_ledger"
@@ -67,6 +73,46 @@ def _ts(value: Any) -> datetime | None:
     if out.tzinfo is None:
         return None  # naive timestamps have no defined session -> incomplete
     return out.astimezone(UTC)
+
+
+def _canceled_at_from_raw(raw: Any) -> datetime | None:
+    """The broker ``canceledAt`` instant inside a stored Toss ``raw_response``.
+
+    The desk aggregate that enumerated these rows selected
+    ``$.**.canceledAt``, so the same recursive search is applied here (the key
+    may sit at the top level or inside nested order/cancel objects). The value
+    must be offset-bearing ISO and all occurrences must agree on one instant:
+    absent, naive, unparseable or disagreeing values are all ``None`` -- no
+    inferred or guessed timestamps.
+    """
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    instants: set[datetime] = set()
+    bad = False
+    stack = [raw]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "canceledAt":
+                    if value is None:
+                        continue
+                    parsed = _ts(value)
+                    if parsed is None:
+                        bad = True
+                    else:
+                        instants.add(parsed)
+                else:
+                    stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+    if bad or len(instants) != 1:
+        return None
+    return next(iter(instants))
 
 
 def _is_integral(value: Decimal) -> bool:
@@ -125,6 +171,15 @@ class SourceOrder:
     filled_qty: Decimal | None
     avg_fill_price: Decimal | None
     exchange: str | None
+    # Toss broker evidence (D8): the ledger's broker-reported status and the
+    # ``canceledAt`` instant extracted from the stored ``raw_response``
+    # (offset-bearing ISO only; unparseable/ambiguous -> None).
+    # ``our_cancel_row_exists`` records whether the same ledger holds an
+    # operation_kind='cancel' row targeting this order, so a broker-side
+    # sweep is distinguishable from a cancel we initiated.
+    broker_status: str | None = None
+    broker_canceled_at: datetime | None = None
+    our_cancel_row_exists: bool = False
     universe: Universe | None = None
     rung: Rung | None = None
     duplicate_rows: int = 1
@@ -158,6 +213,9 @@ class SourceOrder:
             filled_qty=_dec(row.get("filled_qty")),
             avg_fill_price=_dec(row.get("avg_fill_price")),
             exchange=(row.get("exchange") or None),
+            broker_status=(row.get("broker_status") or None),
+            broker_canceled_at=_canceled_at_from_raw(row.get("raw_response")),
+            our_cancel_row_exists=bool(row.get("our_cancel_row_exists")),
         )
 
 
@@ -323,6 +381,52 @@ def _instrument_reasons(o: SourceOrder) -> list[str]:
     return reasons
 
 
+# ROB-1391 D8 (operator Q-1019-6 = A, hk:doc decision/2026-10-19/rob1391-d8):
+# Toss sweeps live US DAY orders broker-side inside the post-close gap; the
+# ledger then shows status='cancelled' with broker status CANCELED and a raw
+# canceledAt, never status='expired'. Such a row counts as DAY-expiry evidence
+# only on the pre-registered signature below. This is research parent
+# eligibility only -- the live ledger classifier is unchanged.
+KST = ZoneInfo("Asia/Seoul")
+TOSS_SWEEP_TARGETS: tuple[tuple[ZoneInfo, int, int], ...] = (
+    (KST, 8, 50),  # 08:50 KST (the signature the desk observed)
+    (ET, 19, 50),  # 19:50 ET (the same instant during EDT)
+)
+# |canceledAt - target wall clock| <= this, both bounds inclusive.
+TOSS_SWEEP_TOLERANCE = timedelta(minutes=2)
+
+
+def _toss_sweep_signature(canceled_at: datetime) -> bool:
+    for zone, hour, minute in TOSS_SWEEP_TARGETS:
+        local = canceled_at.astimezone(zone)
+        target = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if abs(local - target) <= TOSS_SWEEP_TOLERANCE:
+            return True
+    return False
+
+
+def _toss_sweep_expiry(
+    o: SourceOrder, session: Session, nxt: Session
+) -> tuple[datetime | None, str, list[str]]:
+    reasons: list[str] = []
+    if o.broker_status != "CANCELED":
+        reasons.append("not_day_expiry_cancelled_broker_status")
+    if (o.filled_qty or Decimal("0")) != 0:
+        reasons.append("not_day_expiry_cancelled_partial_fill")
+    if o.broker_canceled_at is None:
+        reasons.append("toss_cancel_timestamp_missing")
+    elif not (session.close_utc <= o.broker_canceled_at < nxt.open_utc):
+        reasons.append("not_day_expiry_cancelled_outside_window")
+    elif not _toss_sweep_signature(o.broker_canceled_at):
+        reasons.append("not_day_expiry_cancelled_signature")
+    if o.our_cancel_row_exists:
+        reasons.append("not_day_expiry_cancelled_own_cancel_row")
+    if reasons:
+        return None, "", reasons
+    assert o.broker_canceled_at is not None
+    return o.broker_canceled_at, "toss_preday_sweep_inferred", []
+
+
 def _expiry(
     o: SourceOrder, d0: date, cal: USCalendar
 ) -> tuple[datetime | None, str, list[str]]:
@@ -339,6 +443,9 @@ def _expiry(
             return o.expired_at, "toss_expired_at", []
         if status == "expired":
             return None, "", ["expiry_timestamp_missing"]
+        if status == "cancelled":
+            nxt = cal.session(cal.offset(d0, 1))
+            return _toss_sweep_expiry(o, session, nxt)
     elif o.source == SOURCE_KIS_US:
         # KIS overseas ledger keeps no expiry instant. Only an unfilled expiry
         # is broker-proven (live_order_evidence: filled==0 and remaining==0);

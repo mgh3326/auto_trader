@@ -67,6 +67,7 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   --approve-deviation D1_exit_hold_to_d20 \
   --approve-deviation D2_resubmit_gate_subset \
   --approve-deviation D7_in_window_quote_evidence \
+  --approve-deviation D8_toss_preday_cancel_sweep \
   --approve-deviation D3_budget_fill_notional_only \
   --approve-deviation D4_policy_epoch_invariant_basis \
   --approve-deviation D5_accept_outside_regular_session \
@@ -74,7 +75,8 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   --deviation-ref "hk:doc decision/2026-10-18/rob1391-deviations"
 ```
 
-- 운영자 결정 Q-1018-2 = A(D1–D6 전부 승인), Q-1018-4 = A(D7 필수 추가; `hk:doc decision/2026-10-18/rob1391-d7-round5`). 🔴 seal 전에
+- 운영자 결정 Q-1018-2 = A(D1–D6 전부 승인), Q-1018-4 = A(D7 필수 추가; `hk:doc decision/2026-10-18/rob1391-d7-round5`),
+  Q-1019-6 = A(D8 필수 추가; `hk:doc decision/2026-10-19/rob1391-d8`). 🔴 seal 전에
   `handoffkeep doc get decision/2026-10-18/rob1391-deviations` 로 그 기록이 실재하고 D1–D6 을 담는지
   desk 가 대조한다 — 기록이 없거나 내용이 다르면 seal 하지 않는다(태그 없는 승인 문구는 증거가 아니다).
 
@@ -85,12 +87,21 @@ uv run python -m research.rob1391_us_resubmit_shadow seal \
   필수(구현상 이미 적용 — 승인 없으면 seal 불가): `D1_exit_hold_to_d20`(라이브 exit 재생 불가 → D+20 보유),
   `D2_resubmit_gate_subset`(D1–D3 게이트 재검증 범위), `D7_in_window_quote_evidence`(체결 후보의 ask 증거는
   그 분의 창 [start, end) 안에서 관측된 유효 호가만 — 창 이전 호가 승계 없음, 창 안 유효 호가 0 이면 UNKNOWN;
-  운영자 Q-1018-4 = A, `hk:doc decision/2026-10-18/rob1391-d7-round5`). 선택(기본은 원문 그대로의 엄격 규칙, 승인 시에만 완화):
+  운영자 Q-1018-4 = A, `hk:doc decision/2026-10-18/rob1391-d7-round5`), `D8_toss_preday_cancel_sweep`(Toss
+  `status=cancelled`+broker `CANCELED`+체결 0+원시 `canceledAt` 이 [마감, 다음 개장) 안이면서 08:50 KST 또는
+  19:50 ET ±2분(양끝 포함)이고 같은 원장에 우리 cancel 행이 없을 때만 브로커 DAY-sweep 만료로 인정 — 연구
+  부모 판정 한정, 라이브 원장 분류 불변; 운영자 Q-1019-6 = A, `hk:doc decision/2026-10-19/rob1391-d8`).
+  선택(기본은 원문 그대로의 엄격 규칙, 승인 시에만 완화):
   `D3_budget_fill_notional_only`(예산 캡에서 비용 제외), `D4_policy_epoch_invariant_basis`(주문 시점 정책 스탬프 없는
   부모 허용), `D5_accept_outside_regular_session`(정규장 밖 접수 DAY 주문 허용), `D6_ledger_budget_basis`(승인 rung
   없을 때 P×Q 를 B_i 로). 목록·문구는 manifest `deviations.catalog` 에 봉인된다.
 - 기본(엄격) 등록 조건: 정규장 안 접수 · Toss 는 `time_in_force=DAY` 기록 · 승인 proposal rung(B_i) 존재 ·
   rung 의 주문 시점 정책 스탬프(`source_asof.auto_approved.policy_version`) 존재. 빠지면 제외 사유로 기록된다.
+- 부모 만료 증거: Toss 는 `status=expired`+`expired_at`(`toss_expired_at`), KIS 는 무체결 `expired` 를
+  D0 마감으로 추론(`kis_day_close_inferred`). D8 아래 Toss `cancelled` 행도 위 서명 조건을 전부 만족하면
+  `expired_at := raw_response.canceledAt`, `expiry_basis=toss_preday_sweep_inferred` 로 인정된다 —
+  `canceledAt` 결측은 `toss_cancel_timestamp_missing`, 서명/창/우리 cancel 행/부분체결 불만족은
+  `not_day_expiry_cancelled_*` 로 제외(unknown 성격은 항상 제외). 라이브 원장의 status 분류는 바꾸지 않는다.
 
 ### 1) 매 US 세션 마감 뒤 — 하루 1회
 
