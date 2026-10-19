@@ -173,10 +173,15 @@ def test_plain_etf_is_allowed():
 @pytest.mark.parametrize(
     ("status", "reason"),
     [
-        ("filled", "no_residual_filled"),
-        ("cancelled", "not_day_expiry_cancelled"),
-        ("accepted", "unreconciled"),
-        ("replaced", "not_day_expiry_replaced"),
+        ("filled", ["no_residual_filled"]),
+        # D8: a bare Toss cancelled row carries no sweep evidence, so the
+        # broker-status guard and the canceledAt guard both fail closed.
+        (
+            "cancelled",
+            ["not_day_expiry_cancelled_broker_status", "toss_cancel_timestamp_missing"],
+        ),
+        ("accepted", ["unreconciled"]),
+        ("replaced", ["not_day_expiry_replaced"]),
     ],
 )
 def test_non_expiry_statuses(status, reason):
@@ -191,7 +196,7 @@ def test_non_expiry_statuses(status, reason):
             expired_at=None,
         )
     )
-    assert reasons == [reason]
+    assert reasons == reason
 
 
 def test_expiry_must_fall_between_d0_close_and_next_open():

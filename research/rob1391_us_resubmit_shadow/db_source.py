@@ -42,12 +42,22 @@ _WRITE_KEYWORDS = re.compile(
 
 READ_ONLY_BEGIN = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
 
+# The Toss select also carries the D8 evidence columns: the broker-reported
+# status, the stored broker payload (raw_response holds canceledAt), and a
+# same-ledger EXISTS probe for a cancel row we issued against this order's
+# broker_order_id (operation_kind='cancel', original_order_id match -- exact).
 SQL_TOSS_US_BUYS = """
 SELECT 'toss_live_order_ledger' AS source, t.id::text AS source_id,
        t.broker_order_id, t.symbol, t.market, t.side, t.order_type,
        t.operation_kind, t.time_in_force, t.quantity, t.price, t.currency,
        t.status, t.requires_manual_review, t.trade_date AS ordered_at,
-       t.expired_at, t.filled_qty, t.avg_fill_price, NULL::text AS exchange
+       t.expired_at, t.filled_qty, t.avg_fill_price, NULL::text AS exchange,
+       t.broker_status, t.raw_response,
+       EXISTS (
+           SELECT 1 FROM review.toss_live_order_ledger AS c
+           WHERE c.operation_kind = 'cancel'
+             AND c.original_order_id = t.broker_order_id
+       ) AS our_cancel_row_exists
 FROM review.toss_live_order_ledger AS t
 WHERE t.market = 'us' AND t.side = 'buy' AND t.trade_date >= :since
 """
@@ -58,7 +68,9 @@ SELECT 'live_order_ledger' AS source, l.id::text AS source_id,
        l.order_kind AS order_type, 'place' AS operation_kind,
        NULL::text AS time_in_force, l.quantity, l.price, l.currency, l.status,
        false AS requires_manual_review, l.trade_date AS ordered_at,
-       NULL::timestamptz AS expired_at, l.filled_qty, l.avg_fill_price, l.exchange
+       NULL::timestamptz AS expired_at, l.filled_qty, l.avg_fill_price, l.exchange,
+       NULL::text AS broker_status, NULL::jsonb AS raw_response,
+       false AS our_cancel_row_exists
 FROM review.live_order_ledger AS l
 WHERE l.broker = 'kis' AND l.account_scope = 'kis_live' AND l.market = 'us'
   AND l.side = 'buy' AND l.trade_date >= :since
@@ -70,7 +82,9 @@ SELECT 'kis_live_order_ledger' AS source, k.id::text AS source_id,
        k.order_type, 'place' AS operation_kind, NULL::text AS time_in_force,
        k.quantity, k.price, k.currency, k.status, false AS requires_manual_review,
        k.trade_date AS ordered_at, NULL::timestamptz AS expired_at,
-       k.filled_qty, k.avg_fill_price, NULL::text AS exchange
+       k.filled_qty, k.avg_fill_price, NULL::text AS exchange,
+       NULL::text AS broker_status, NULL::jsonb AS raw_response,
+       false AS our_cancel_row_exists
 FROM review.kis_live_order_ledger AS k
 WHERE k.instrument_type = 'equity_us' AND k.side = 'buy' AND k.trade_date >= :since
 """
