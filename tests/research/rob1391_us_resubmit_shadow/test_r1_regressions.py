@@ -11,9 +11,14 @@ from decimal import Decimal
 
 import pytest
 
+from research.rob1391_us_resubmit_shadow import constants as K
 from research.rob1391_us_resubmit_shadow import engine, market_data
 from research.rob1391_us_resubmit_shadow import report as R
-from research.rob1391_us_resubmit_shadow.costs import FeeSchedule, FeeScheduleError
+from research.rob1391_us_resubmit_shadow.costs import (
+    CostModel,
+    FeeSchedule,
+    FeeScheduleError,
+)
 from research.rob1391_us_resubmit_shadow.fills import simulate_conservative
 from research.rob1391_us_resubmit_shadow.ledger import Ledger
 from research.rob1391_us_resubmit_shadow.manifest import ManifestError, build_manifest
@@ -24,9 +29,12 @@ from research.rob1391_us_resubmit_shadow.market_data import (
     parse_bar,
 )
 from research.rob1391_us_resubmit_shadow.parents import assemble_orders, normalise
+from research.rob1391_us_resubmit_shadow.state import ArmBook
+from research.rob1391_us_resubmit_shadow.valuation import session_affordable
 from tests.research.rob1391_us_resubmit_shadow.helpers import (
     CAL,
     FEE_SCHEDULE,
+    MANDATORY_DEVIATIONS,
     POLICY,
     SEAL_AT,
     FakeMarket,
@@ -777,3 +785,122 @@ def test_r4_b1_tester_data_under_d7_is_zero_by_rule():
     ]
     ev, out = _window_case(rows)
     assert ev.status == OK and not ev.found and out.qty == 0
+
+
+# ---------------------------------------------------------------- operator 10-19 defect:
+# D3 budget basis -- session_affordable must match the budget_exceeded invariant
+
+
+def _real_d0_book(qty, *, price="100.00", d0="2025-11-17"):
+    """ArmBook in the exact fill shape ``state.apply`` writes for a real D0 fill."""
+
+    return ArmBook(
+        fills=[
+            {
+                "session": d0,
+                "qty": qty,
+                "price": price,
+                "kind": "real_d0",
+                "at": f"{d0}T23:50:12+00:00",
+            }
+        ]
+    )
+
+
+def _fee_model():
+    return CostModel(
+        schedule=FeeSchedule.parse(json.loads(json.dumps(FEE_SCHEDULE))),
+        source="toss_live_order_ledger",
+        slippage_bp=K.SLIPPAGE_BP_MAIN,
+    )
+
+
+def _affordable(book, price, *, include_cost, budget="200", session="2025-11-18"):
+    return session_affordable(
+        book=book,
+        session=session,
+        price=Decimal(price),
+        budget=Decimal(budget),
+        model=_fee_model(),
+        include_cost=include_cost,
+    )
+
+
+def test_d3_prior_sessions_deduct_fill_notional_only():
+    """Operator 10-19 reproduction: B=200, P=100, D0 1x100 filled with a
+    positive fee. Under D3 the prior session deducts fill notional only, so
+    the last share fits exactly; the prereg basis (notional + cost) leaves
+    headroom < 100 and buys nothing."""
+
+    book = _real_d0_book(1)
+    assert _affordable(book, "100.00", include_cost=False)(0) == 1
+    assert _affordable(book, "100.00", include_cost=True)(0) == 0
+
+
+def test_d3_boundary_cumulative_notional_at_budget_allowed_and_over_denied():
+    book = _real_d0_book(1)
+    # cumulative notional lands exactly on B (100 + 100 = 200): allowed
+    assert _affordable(book, "100.00", include_cost=False)(0) == 1
+    # one more share would take cumulative notional to B + 1 tick: denied
+    assert _affordable(book, "100.01", include_cost=False)(0) == 0
+    # cumulative notional is already exactly B: zero headroom
+    assert _affordable(_real_d0_book(2), "100.00", include_cost=False)(0) == 0
+
+
+def test_d3_exclude_session_still_excludes_the_current_session():
+    """The session being simulated is still excluded from ``before`` (it is
+    counted through ``filled_so_far``); only the prior-session basis changes."""
+
+    book = _real_d0_book(1)
+    book.fills.append(
+        {
+            "session": "2025-11-18",
+            "qty": 1,
+            "price": "100.00",
+            "kind": "virtual",
+            "at": "2025-11-18T14:31:00+00:00",
+        }
+    )
+    afford = _affordable(book, "100.00", include_cost=False)
+    assert afford(0) == 1  # headroom = 200 - 100 (D0 only)
+    assert afford(1) == 0  # the in-session fill already consumes that share
+
+
+def test_d3_sealed_resubmits_past_prior_costs_and_stays_inside_budget(tmp_path):
+    """Engine path: with D3 sealed, the D1 resubmission of a 1/2-filled parent
+    (B=200, P=100, fee>0) simulates instead of skipping on
+    ``insufficient_parent_budget``; the 1-share fill takes cumulative notional
+    to exactly B and trips no ``budget_exceeded`` invariant."""
+
+    ledger = seal(
+        tmp_path,
+        deviations=MANDATORY_DEVIATIONS | {"D3_budget_fill_notional_only"},
+    )
+    src, mkt = FakeSource(), FakeMarket()
+    _parent(src, mkt, qty=2, filled=1, avg="100.00", price="100.00", notional="200")
+    _trade_through(mkt, "SYMA", D1)
+    ctx = context(ledger, src, mkt)
+    engine.advance(ctx, D1)
+    (parent,) = ctx.state.parents.values()
+    entry = parent.session_log[D1.isoformat()]["resubmission"]["T"]
+    assert entry["status"] == "ok" and [f["qty"] for f in entry["fills"]] == [1]
+    assert parent.arms["T"].shares == 2
+    assert parent.arms["T"].fill_notional == Decimal("200")
+    assert ctx.state.latches == []
+
+
+def test_prereg_basis_still_skips_insufficient_parent_budget(tmp_path):
+    """Same book without D3: prior spend = 100 + cost, headroom < 100 -> the
+    resubmission skips (pre-D3 behaviour unchanged)."""
+
+    ledger = seal(tmp_path)  # mandatory deviations only, D3 not approved
+    src, mkt = FakeSource(), FakeMarket()
+    _parent(src, mkt, qty=2, filled=1, avg="100.00", price="100.00", notional="200")
+    _trade_through(mkt, "SYMA", D1)
+    ctx = context(ledger, src, mkt)
+    engine.advance(ctx, D1)
+    (parent,) = ctx.state.parents.values()
+    entry = parent.session_log[D1.isoformat()]["resubmission"]["T"]
+    assert entry["status"] == "skipped"
+    assert entry["reason"] == "insufficient_parent_budget"
+    assert parent.arms["T"].shares == 1  # real D0 fill only
