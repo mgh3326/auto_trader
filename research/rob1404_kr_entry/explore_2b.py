@@ -12,6 +12,7 @@ KST, rebound limit cap ``+ 0.1 ATR``.
 
 from __future__ import annotations
 
+import math
 from datetime import time
 from typing import Any
 
@@ -59,8 +60,10 @@ def candidate_row(
     lo = bars["low"].to_numpy(float)[: t + 1]
     c = bars["close"].to_numpy(float)[: t + 1]
     atr = wilder_atr(h, lo, c)
-    out["atr_available"] = atr is not None
-    if atr is None:
+    out["atr_available"] = (
+        atr is not None and math.isfinite(atr) and math.isfinite(c[-1])
+    )
+    if not out["atr_available"]:
         return out
     close_t, high_t = float(c[-1]), float(h[-1])
     raw_limit = close_t - ATR_MULT * atr

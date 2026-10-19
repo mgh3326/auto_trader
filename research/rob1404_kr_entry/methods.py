@@ -32,6 +32,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 from research.rob1383_buy_drought.core import leg_filled, low_after, tick_floor
@@ -45,6 +46,7 @@ from research.rob1383_buy_drought.q2_q3_orders import (
     reference_price,
 )
 from research.rob1404_kr_entry.clock import (
+    CLOSING_AUCTION_CUTOFF,
     SessionCalendar,
     bar_state,
     d0_index,
@@ -114,30 +116,70 @@ def classify_limit(
 EXACT_BASES = frozenset({"daily", "hourly"})
 
 
+def hourly_covers_session(
+    hourly: pd.DataFrame | None, bars: pd.DataFrame, pos: int
+) -> bool:
+    """Does the hourly cache hold *every* bar of session ``pos``?
+
+    ``finalise_hourly`` stretches each bar's ``end_ts`` to the next bar's start,
+    so a dropped middle hour is invisible in ``end_ts``; coverage is checked on
+    the start times instead: exactly ``open + k h`` for every whole hour of the
+    session (KRX: 09:00..14:00, the last bar folded to 15:30), all lows finite.
+    """
+
+    if hourly is None:
+        return False
+    day = hourly[hourly["session_date"] == bars["session_date"].iloc[pos]]
+    open_ts = pd.Timestamp(bars["open_ts"].iloc[pos])
+    close_ts = pd.Timestamp(bars["close_ts"].iloc[pos])
+    n = int((close_ts - open_ts) // pd.Timedelta(hours=1))
+    want = [open_ts + pd.Timedelta(hours=k) for k in range(n)]
+    have = [pd.Timestamp(x) for x in day["start_ts"]]
+    lows = day["low"].to_numpy(float)
+    return have == want and bool(len(lows)) and bool(np.isfinite(lows).all())
+
+
 def lifetime_evidence(
-    bars: pd.DataFrame, hourly: pd.DataFrame | None, life: list[int], o: TossOrder
+    bars: pd.DataFrame,
+    hourly: pd.DataFrame | None,
+    life: list[int],
+    o: TossOrder,
+    cal: SessionCalendar,
 ) -> tuple[list[tuple[int, float]], float | None]:
     """Per-session strict lows that are exact, and a complete optimistic low.
 
-    * strict: only sessions whose post-order low is measured exactly (whole
-      session inside the lifetime -> daily low; else hourly bars that start
-      after the order). A partial session without hourly bars
+    * strict (fill evidence): only sessions whose post-order low is measured
+      exactly (whole session inside the lifetime -> daily low; else hourly bars
+      that start after the order). A partial session without hourly bars
       (``daily_fallback``) may hold a low printed *before* the order, so it is
-      no fill evidence (tester r1 B1).
-    * optimistic: the minimum over every lifetime session; a daily fallback is
-      fine here (the daily low is <= any window low, so "never touched" stays
-      proven), but an empty or non-finite session makes it ``None``.
+      no fill evidence (tester r1 B1). Observed hours are real evidence even if
+      other hours are missing.
+    * optimistic (proof that price never reached the limit): needs *every*
+      calendar session the lifetime overlaps to have a stock bar (tester r2
+      B1); per session it uses the hourly window low only when the hourly
+      cache covers the whole session, else the daily low, which is <= any
+      window low and so still a valid bound (tester r2 B2). Any gap or
+      non-finite low -> ``None`` (no "never touched" proof).
     """
 
     end = o.canceled_at or o.filled_at
+    start_ts, end_ts = pd.Timestamp(o.ordered_at), pd.Timestamp(end)
+    overlap_dates = [
+        d
+        for d in cal.dates
+        if pd.Timestamp(session_bounds("kr", d)[0]) < end_ts
+        and pd.Timestamp(session_bounds("kr", d)[1]) > start_ts
+    ]
+    complete = overlap_dates == [bars["session_date"].iloc[p] for p in life]
     strict: list[tuple[int, float]] = []
     incl: list[float] = []
-    complete = True
     for p in life:
         low, basis = low_after(bars, hourly, p, o.ordered_at, end, inclusive=False)
         if basis in EXACT_BASES and _finite(low):
             strict.append((p, float(low)))
         low_i, basis_i = low_after(bars, hourly, p, o.ordered_at, end, inclusive=True)
+        if basis_i == "hourly" and not hourly_covers_session(hourly, bars, p):
+            low_i, basis_i = float(bars["low"].iloc[p]), "daily_bound"
         if _finite(low_i) and basis_i != "hourly_empty":
             incl.append(float(low_i))
         else:
@@ -151,6 +193,7 @@ def _near_leg(
     bars: pd.DataFrame,
     hourly: pd.DataFrame | None,
     shares: float,
+    cal: SessionCalendar,
 ) -> tuple[Leg | None, dict]:
     life = order_session_positions(bars, o)
     if not life:
@@ -166,7 +209,7 @@ def _near_leg(
         )
     ref, basis = reference_price(bars, hourly, life[0], o.ordered_at)
     near = tick_floor("kr", ref * (1 - NEAR_LEG_PCT / 100.0))
-    strict, low_incl = lifetime_evidence(bars, hourly, life, o)
+    strict, low_incl = lifetime_evidence(bars, hourly, life, o, cal)
     low_strict = min((low for _, low in strict), default=None)
     state, reason = classify_limit(low_strict, low_incl, near)
     detail = {
@@ -252,24 +295,23 @@ def _resubmit_leg(
     return Leg(c.anchor, c.quantity, UNFILLED, reason="low_above_limit"), None
 
 
-def _expected_entry_date(
-    name: str, e, bars: pd.DataFrame, cal: SessionCalendar, signal_at
-) -> date | None:
-    """The calendar session the entry must print on (``None``: no session yet)."""
+def _expected_entry_date(name: str, cal: SessionCalendar, signal_at) -> date | None:
+    """The calendar session the entry must print on (``None``: no session yet).
 
+    Derived from the signal time alone -- never from where the entry function
+    happened to land (tester r2 S2: a missing D0 bar must not be read as a
+    roll to the next session)."""
+
+    t = pd.Timestamp(signal_at)
     if name == "next_day_open":
-        i = cal.first_after_date(pd.Timestamp(signal_at).tz_convert(KST).date())
+        i = cal.first_after_date(t.tz_convert(KST).date())
         return None if i is None else cal.dates[i]
     i = cal.d0(signal_at)
     if i is None:
         return None
-    if (
-        e is not None
-        and e.basis.startswith("session_open")
-        and bars["open_ts"].iloc[e.pos]
-        > pd.Timestamp(session_bounds("kr", cal.dates[i])[0])
-    ):
-        i += 1  # rolled to the next open after the closing-auction cutoff
+    d0_open = pd.Timestamp(session_bounds("kr", cal.dates[i])[0])
+    if t >= d0_open and t.tz_convert(KST).time() >= CLOSING_AUCTION_CUTOFF:
+        i += 1  # after the closing-auction cutoff: the next session's open
         if i >= len(cal.dates):
             return None
     return cal.dates[i]
@@ -287,9 +329,12 @@ def build_methods(
     out["anchor_actual"] = MethodLegs("anchor_actual", (anchor_leg,))
     for name, fn in (("nep", next_executable_price), ("next_day_open", next_day_open)):
         e = fn(bars, hourly, c.signal_at)
-        want = _expected_entry_date(name, e, bars, cal, c.signal_at)
+        want = _expected_entry_date(name, cal, c.signal_at)
         if want is None:
             out[name] = MethodLegs(name, (), missing="immature:no_session_after_signal")
+            continue
+        if e is not None and not _finite(e.price):
+            out[name] = MethodLegs(name, (), missing="data_missing:entry_nonfinite")
             continue
         if e is None or bars["session_date"].iloc[e.pos] != want:
             _, state = bar_state(bars, want)
@@ -314,7 +359,7 @@ def build_methods(
             "split_int", (anchor_leg,), detail={"near_shares": 0}
         )
     else:
-        leg, detail = _near_leg(c, o, bars, hourly, k)
+        leg, detail = _near_leg(c, o, bars, hourly, k, cal)
         rest = Leg(c.anchor, c.quantity - k, UNFILLED, reason="broker_status_unfilled")
         out["split_int"] = (
             MethodLegs("split_int", (), missing="immature:no_session_after_signal")
@@ -323,7 +368,7 @@ def build_methods(
                 "split_int", (leg, rest), detail={**detail, "near_shares": k}
             )
         )
-    leg, detail = _near_leg(c, o, bars, hourly, 1.0)
+    leg, detail = _near_leg(c, o, bars, hourly, 1.0, cal)
     if leg is None:
         out["split_frac"] = MethodLegs(
             "split_frac", (), missing="immature:no_session_after_signal"

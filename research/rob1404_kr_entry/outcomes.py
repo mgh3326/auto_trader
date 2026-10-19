@@ -90,7 +90,9 @@ class Bench:
     def ret(self, at: pd.Timestamp, exit_date) -> float | None:
         p0 = price_at(self.bars, self.hourly, at)
         p1 = close_on(self.bars, exit_date)
-        if p0 is None or p1 is None or p0 <= 0:
+        if p0 is None or p1 is None or not (math.isfinite(p0) and math.isfinite(p1)):
+            return None
+        if p0 <= 0:
             return None
         return p1 / p0 - 1.0
 
@@ -190,6 +192,10 @@ def evaluate(
         out["missing_reason"] = "exit_nonfinite_close"
         return out
     p_ref, ref_basis = reference_price(bars, hourly, d0, signal_at)
+    if not (math.isfinite(p_ref) and p_ref > 0):  # tester r2 B3
+        out["status"] = "data_missing"
+        out["missing_reason"] = "reference_nonfinite"
+        return out
     budget = quantity * p_ref
     exit_date = bars["session_date"].iloc[exit_pos]
     states = tuple(leg.state for leg in m.legs)
@@ -278,8 +284,12 @@ def markouts(
                     "immature" if state == "beyond_data_end" else "data_missing"
                 )
                 continue
+            close = float(bars["close"].iloc[pos])
+            if not math.isfinite(close):
+                row[f"markout{k}_status"] = "data_missing"  # tester r2 S1
+                continue
             row[f"markout{k}_status"] = "ok"
-            r = float(bars["close"].iloc[pos]) / leg.price - 1.0
+            r = close / leg.price - 1.0
             row[f"markout{k}"] = r
             b = (
                 market_bench.ret(leg.at, bars["session_date"].iloc[pos])

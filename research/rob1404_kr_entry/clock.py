@@ -7,7 +7,9 @@ Definitions (KRX regular session only -- public bars hold no NXT/after-market):
   Every method of one candidate is evaluated at the close of ``D0 + h``.
 * **Next executable price (NEP)** -- the first KRX price an order sent at
   ``signal_at`` could trade at, using only bars that *start after* it:
-  1. open of the first hourly bar of ``D0`` with ``start_ts > signal_at``;
+  1. open of the first hourly bar of ``D0`` with ``start_ts > signal_at`` --
+     exactly the next whole hour; if the cache lacks that hour there is no
+     NEP (missing), never a later hour;
   2. else, if ``signal_at`` is before the 15:20 KST closing-auction cutoff of
      ``D0`` (inside the last hourly bar), the ``D0`` closing-auction price
      (= the daily close, not yet printed at ``signal_at``);
@@ -125,14 +127,19 @@ def next_executable_price(
     if t < pd.Timestamp(bars["open_ts"].iloc[d0]):
         return _session_open(bars, hourly, d0)
     day = _session_hours(hourly, bars["session_date"].iloc[d0])
-    later = day[day["start_ts"] > t]
-    if len(later):
-        return Entry(
-            float(later["open"].iloc[0]),
-            pd.Timestamp(later["start_ts"].iloc[0]),
-            d0,
-            "next_hourly_open",
-        )
+    open_ts = pd.Timestamp(bars["open_ts"].iloc[d0])
+    close_ts = pd.Timestamp(bars["close_ts"].iloc[d0])
+    hour = pd.Timedelta(hours=1)
+    n_bars = int((close_ts - open_ts) // hour)  # KRX: 09:00..14:00 starts
+    k = int((t - open_ts) // hour) + 1  # first bar starting strictly after t
+    if k < n_bars:
+        expected = open_ts + k * hour
+        hit = day[day["start_ts"] == expected]
+        if len(hit) and np.isfinite(float(hit["open"].iloc[0])):
+            return Entry(float(hit["open"].iloc[0]), expected, d0, "next_hourly_open")
+        # The next hour is not in the cache: no NEP. Never substitute a later
+        # hour (that would silently delay the entry) -- tester r2 class.
+        return None
     if t.tz_convert(KST).time() < CLOSING_AUCTION_CUTOFF:
         return Entry(
             float(bars["close"].iloc[d0]),

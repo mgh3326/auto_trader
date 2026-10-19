@@ -13,10 +13,13 @@ mean keeps the dependence inside a unit:
   on a drawn session come along, preserving same-day common shocks and part
   of the overlap of 5/20-session holding windows.
 
-The headline interval is the widest of the dependence-preserving ones. The
-minimum detectable effect (one-sided alpha 5%, power 80%) is
-``(z_0.95 + z_0.80) x SE`` with ``SE`` the standard deviation of that
-bootstrap's replicate means; the design effect is ``SE^2 / SE_iid^2``.
+The headline interval is the **envelope** of the dependence-preserving ones
+(lowest lower bound, highest upper bound over symbol · parent · date blocks of
+5/10/20 sessions): a verdict must survive every dependence assumption, not
+just the single widest one (round-2 review: a "< 0" call that held only for
+the 10-session block). The minimum detectable effect (one-sided alpha 5%,
+power 80%) is ``(z_0.95 + z_0.80) x SE`` with ``SE`` the largest replicate-
+mean standard deviation among them; the design effect is ``SE^2 / SE_iid^2``.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ Z95_ONE_SIDED = 1.6448536269514722
 Z80 = 0.8416212335729143
 MDE_FACTOR = Z95_ONE_SIDED + Z80
 DEFAULT_BLOCK = 10
+ENVELOPE_BLOCKS = (5, 10, 20)
 
 
 def _percentile(stats: np.ndarray) -> tuple[float, float]:
@@ -133,23 +137,33 @@ def summarise(
         "symbol": cluster_replicates(v, list(symbols)),
         "date_block": block_replicates(v, list(days), calendar, block=block),
     }
+    for extra in ENVELOPE_BLOCKS:
+        if extra != block:
+            reps[f"date_block{extra}"] = block_replicates(
+                v, list(days), calendar, block=extra
+            )
     if parents is not None:
         reps["parent"] = cluster_replicates(v, list(parents))
-    widest, width = "", -1.0
+    los, his, ses, members = [], [], [], []
     for name, r in reps.items():
         lo, hi = _percentile(r)
         out[f"{name}_lo"], out[f"{name}_hi"] = lo, hi
         se = float(np.nanstd(r, ddof=1))
         out[f"{name}_se"] = se
-        if math.isfinite(hi - lo) and hi - lo > width:
-            widest, width = name, hi - lo
-    out["headline_ci"] = widest
-    if widest:
-        out["ci_lo"], out["ci_hi"] = out[f"{widest}_lo"], out[f"{widest}_hi"]
-        se = out[f"{widest}_se"]
-        out["mde_one_sided_80"] = MDE_FACTOR * float(se)
+        if math.isfinite(lo) and math.isfinite(hi):
+            los.append(lo)
+            his.append(hi)
+            ses.append(se)
+            members.append(name)
+    if members:
+        out["headline_ci"] = "envelope(" + ",".join(members) + ")"
+        out["ci_lo"], out["ci_hi"] = min(los), max(his)
+        out["ci_lo_from"] = members[los.index(min(los))]
+        out["ci_hi_from"] = members[his.index(max(his))]
+        se = max(ses)
+        out["mde_one_sided_80"] = MDE_FACTOR * se
         out["design_effect"] = (
-            float(se) ** 2 / se_iid**2 if se_iid and math.isfinite(se_iid) else math.nan
+            se**2 / se_iid**2 if se_iid and math.isfinite(se_iid) else math.nan
         )
     return out
 

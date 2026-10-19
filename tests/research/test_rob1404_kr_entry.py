@@ -439,7 +439,7 @@ def test_r1_b1_partial_session_daily_low_without_hourly_is_not_a_fill():
     # bars nothing proves a post-order trade-through -> UNKNOWN, not FILLED.
     bars = make_daily([(100.0, 101.0, 98.0, 100.0)] + [FLAT] * 24)
     c = _cand(kst(SESSIONS[0], 11, 37), kst(SESSIONS[0], 15, 34), 120.0, 5)
-    leg, _ = methods._near_leg(c, _order(c), bars, None, 1)
+    leg, _ = methods._near_leg(c, _order(c), bars, None, 1, CAL)
     assert leg.state == "unknown"
     r = outcomes.evaluate(
         methods.MethodLegs("split_int", (leg,)),
@@ -458,14 +458,18 @@ def test_r1_b1_partial_session_daily_low_without_hourly_is_not_a_fill():
 
 def test_r1_b1_whole_session_daily_low_is_exact_evidence():
     # An order alive for the whole next session: its daily low is post-order.
-    bars = make_daily([FLAT, (100.0, 101.0, 90.0, 100.0)] + [FLAT] * 23)
+    bars = make_daily(
+        [(100.0, 101.0, 97.0, 100.0), (100.0, 101.0, 90.0, 100.0)] + [FLAT] * 23
+    )
     c = _cand(kst(SESSIONS[0], 16, 4), kst(SESSIONS[1], 20, 3), 120.0, 5)
-    leg, _ = methods._near_leg(c, _order(c), bars, None, 1)
+    leg, _ = methods._near_leg(c, _order(c), bars, None, 1, CAL)
     assert (leg.state, leg.pos) == ("filled", 1)  # day 1 is wholly post-order
     # Partial day 0 (no hourly) is skipped as evidence; day 1 still proves it.
     c2 = _cand(kst(SESSIONS[0], 15, 0), kst(SESSIONS[1], 20, 3), 120.0, 5)
-    leg2, _ = methods._near_leg(c2, _order(c2), bars, None, 1)
-    assert leg2.state == "filled" and leg2.pos == 1
+    leg2, _ = methods._near_leg(c2, _order(c2), bars, None, 1, CAL)
+    # day 0's low 97 (possibly pre-order, no hourly) trades through the 99
+    # limit but is no evidence; the fill must come from day 1, not be masked
+    assert (leg2.state, leg2.pos) == ("filled", 1)
     assert leg2.at >= pd.Timestamp(c2.signal_at)
 
 
@@ -543,7 +547,7 @@ def test_r1_b3_resubmit_counts_calendar_sessions_and_flags_gaps():
 def test_r1_next_day_open_requires_the_calendar_next_session():
     gap = D[D["session_date"] != SESSIONS[1]].reset_index(drop=True)
     c = _cand(kst(SESSIONS[0], 11, 37), kst(SESSIONS[0], 15, 34), 90.0, 4)
-    m = methods.build_methods(c, _order(c), gap, None, CAL)
+    m = methods.build_methods(c, _order(c), gap, H0, CAL)
     assert m["next_day_open"].missing == "data_missing:entry_bar_missing"
     assert m["nep"].missing is None  # D0 bar exists; NEP prints on D0
 
@@ -561,3 +565,147 @@ def test_explore_atr_limit_nonpositive_is_flagged_not_raised():
     bars = make_daily(rows)
     out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 2.0)
     assert out["atr_limit_nonpositive"] is True
+
+
+# ------------------------------------------- tester r2 regressions
+
+
+def test_r2_b1_calendar_gap_inside_lifetime_is_unknown_not_cash():
+    # Order lives SESSIONS[0] 09:30 .. SESSIONS[2] 20:00; the stock has no bar
+    # on SESSIONS[1] -> price there is unobserved -> no "never touched" proof.
+    high_lows = make_daily([(100.0, 101.0, 99.8, 100.0)] * 25)  # near = 99
+    c = _cand(kst(SESSIONS[0], 9, 30), kst(SESSIONS[2], 20, 3), 50.0, 5)
+    leg, _ = methods._near_leg(c, _order(c), high_lows, None, 1, CAL)
+    assert leg.state == "unfilled"  # control: every session seen, lows > 99
+    gap = high_lows[high_lows["session_date"] != SESSIONS[1]].reset_index(drop=True)
+    leg, _ = methods._near_leg(c, _order(c), gap, None, 1, CAL)
+    assert leg.state == "unknown", leg
+
+
+def test_r2_b2_partial_hourly_cache_is_not_a_complete_window():
+    # Hourly bars 09:00, 10:00, 12:00..14:00 (11:00 dropped); the dropped hour
+    # could hold the touch -> fall back to the daily low as the bound.
+    hours = [(100.0, 101.0, 99.5, 100.0)] * 6
+    full = make_hourly(SESSIONS[0], hours)
+    part = full[full["start_ts"] != pd.Timestamp(kst(SESSIONS[0], 11))].reset_index(
+        drop=True
+    )
+    assert methods.hourly_covers_session(full, D, 0)
+    assert not methods.hourly_covers_session(part, D, 0)
+    bars = make_daily([(100.0, 101.0, 98.0, 100.0)] + [FLAT] * 24)
+    c = _cand(kst(SESSIONS[0], 9, 30), kst(SESSIONS[0], 15, 34), 50.0, 5)
+    # near = tick_floor(ref * 0.995); daily low 98 touches it, the partial
+    # hourly lows (99.5) do not: the leg must not be proven unfilled.
+    leg, detail = methods._near_leg(c, _order(c), bars, part, 1, CAL)
+    assert detail["near_limit"] >= 98.0
+    assert leg.state != "unfilled", (leg, detail)
+    leg_full, _ = methods._near_leg(c, _order(c), bars, full, 1, CAL)
+    assert leg_full.state == "unfilled"  # complete cache: the 99.5 lows prove it
+
+
+def test_r2_s1_nonfinite_markout_close_is_missing():
+    bars = make_daily([FLAT] * 25)
+    bars.loc[5, "close"] = float("nan")
+    leg = methods.Leg(100.0, 1, "filled", True, bars["open_ts"].iloc[0], 0)
+    rows = outcomes.markouts(_legs(leg), bars, None, CAL)
+    assert rows[0]["markout5"] is None and rows[0]["markout5_status"] == "data_missing"
+
+
+def test_nep_missing_next_hour_is_missing_not_a_later_hour():
+    no_noon = H0[H0["start_ts"] != pd.Timestamp(kst(SESSIONS[0], 12))].reset_index(
+        drop=True
+    )
+    assert clock.next_executable_price(D, no_noon, kst(SESSIONS[0], 11, 37)) is None
+    assert clock.next_executable_price(D, None, kst(SESSIONS[0], 11, 37)) is None
+    # a later signal whose next hour exists is unaffected
+    e = clock.next_executable_price(D, no_noon, kst(SESSIONS[0], 12, 10))
+    assert (e.price, e.basis) == (140.0, "next_hourly_open")
+    c = _cand(kst(SESSIONS[0], 11, 37), kst(SESSIONS[0], 15, 34), 90.0, 4)
+    m = methods.build_methods(c, _order(c), D, no_noon, CAL)
+    assert m["nep"].missing == "data_missing:entry_bar_missing"
+
+
+def test_headline_interval_is_the_envelope_of_dependence_bootstraps():
+    rng = np.random.default_rng(3)
+    cal = [date(2026, 8, 1) + timedelta(days=i) for i in range(40)]
+    v = rng.normal(-1.0, 3.0, size=30).tolist()
+    days = [cal[i] for i in rng.integers(0, 40, size=30)]
+    syms = [f"s{i % 7}" for i in range(30)]
+    out = inference.summarise(v, symbols=syms, days=days, calendar=cal)
+    names = ("symbol", "date_block", "date_block5", "date_block20")
+    assert out["ci_lo"] == min(out[f"{n}_lo"] for n in names)
+    assert out["ci_hi"] == max(out[f"{n}_hi"] for n in names)
+    assert out["headline_ci"].startswith("envelope(")
+    assert out["mde_one_sided_80"] == pytest.approx(
+        inference.MDE_FACTOR * max(out[f"{n}_se"] for n in names)
+    )
+
+
+def test_nep_signal_exactly_on_an_hour_excludes_the_bar_starting_then():
+    e = clock.next_executable_price(D, H0, kst(SESSIONS[0], 12, 0))
+    assert e.at == pd.Timestamp(kst(SESSIONS[0], 13)).tz_convert(UTC)
+    assert e.price == 140.0
+    # an order placed exactly at a bar start may fill in that bar (it is after)
+    at = clock.first_touch_hour(
+        H0, SESSIONS[0], 135.0, start=pd.Timestamp(kst(SESSIONS[0], 12))
+    )
+    assert at == pd.Timestamp(kst(SESSIONS[0], 12)).tz_convert(UTC)
+
+
+def test_r2_s2_missing_d0_bar_before_cutoff_is_not_read_as_a_roll():
+    gap = D[D["session_date"] != SESSIONS[0]].reset_index(drop=True)
+    c = _cand(kst(SESSIONS[0], 15, 19), kst(SESSIONS[0], 15, 34), 90.0, 4)
+    m = methods.build_methods(c, _order(c), gap, H0, CAL)
+    assert m["nep"].missing == "data_missing:entry_bar_missing"
+    c_late = _cand(kst(SESSIONS[0], 15, 21), kst(SESSIONS[0], 15, 34), 90.0, 4)
+    m = methods.build_methods(c_late, _order(c_late), D, H0, CAL)
+    assert m["nep"].missing is None and m["nep"].legs[0].pos == 1  # genuine roll
+
+
+def test_r2_b3_nonfinite_reference_is_data_missing():
+    bars = make_daily([FLAT] * 25)
+    bars.loc[0, "open"] = float("inf")
+    leg = methods.Leg(100.0, 5, "filled", True, bars["open_ts"].iloc[0], 0)
+    r = outcomes.evaluate(
+        _legs(leg),
+        bars,
+        None,
+        kst(SESSIONS[0], 8, 5),
+        5,
+        5,
+        cal=CAL,
+        is_etf=False,
+        market_bench=None,
+        sector_peers=None,
+    )
+    assert (
+        r["status"] == "data_missing" and r["missing_reason"] == "reference_nonfinite"
+    )
+
+
+def test_r2_s3_explore_summary_with_no_valid_atr_row():
+    import research.rob1404_kr_entry.run as run_mod
+
+    row = explore_2b.candidate_row(
+        make_daily([(10.0, 30.0, 1.0, 2.0)] * 25), None, kst(SESSIONS[19], 16, 0), 2.0
+    )
+    ex = pd.DataFrame([{"parent_rank": 0, **row}])
+    out = run_mod.explore_summary(ex).set_index("level")
+    assert out.loc["parent", "n_atr_limit_nonpositive"] == 1
+    assert out.loc["parent", "n_atr_limit_valid"] == 0
+    assert out.loc["parent", "n_atr_limit_shallower_than_deep_min_3pct"] == 0
+
+
+def test_bench_return_is_none_on_nonfinite_prices():
+    bars = make_daily([FLAT] * 25)
+    bars.loc[5, "close"] = float("nan")
+    b = outcomes.Bench(bars, None)
+    assert b.ret(bars["open_ts"].iloc[0], SESSIONS[5]) is None
+    assert b.ret(bars["open_ts"].iloc[0], SESSIONS[6]) == pytest.approx(0.0)
+
+
+def test_explore_nonfinite_atr_is_unavailable_not_nonpositive():
+    bars = make_daily([FLAT] * 25)
+    bars.loc[10, "high"] = float("nan")
+    out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 90.0)
+    assert out["atr_available"] is False and "atr_limit_nonpositive" not in out

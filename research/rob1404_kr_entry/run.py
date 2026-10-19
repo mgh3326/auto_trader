@@ -532,88 +532,84 @@ def mde_table(pairs: pd.DataFrame, cands: list[Candidate]) -> pd.DataFrame:
 
 
 def explore_summary(ex: pd.DataFrame) -> pd.DataFrame:
-    """2B feasibility counts (탐색): collisions with policy, trigger rate, n."""
+    """2B feasibility counts (탐색): collisions with policy, trigger rate, n.
+
+    Every column is read through ``col`` so a subset without a given field
+    (e.g. no row with a valid ATR limit) yields counts of 0 and NaN stats,
+    never a KeyError (tester r2 S3)."""
+
+    def col(frame: pd.DataFrame, name: str) -> pd.Series:
+        return (
+            frame[name] if name in frame else pd.Series(dtype=object, index=frame.index)
+        )
+
+    def flag(frame: pd.DataFrame, name: str) -> pd.Series:
+        return col(frame, name).fillna(False).astype(bool)
+
+    def count(frame: pd.DataFrame, name: str) -> int:
+        return int(flag(frame, name).sum())
+
+    def quant(frame: pd.DataFrame, name: str, q: float) -> float:
+        v = pd.to_numeric(col(frame, name), errors="coerce").dropna()
+        return float(v.quantile(q)) if len(v) else math.nan
 
     rows = []
     for level in ("parent", "order"):
-        g = ex if level == "order" else ex[ex["parent_rank"] == 0]
-        a = (
-            g[g.get("atr_available", False).fillna(False).astype(bool)]
-            if "atr_available" in g
-            else g.iloc[0:0]
-        )
-
-        def q(col: str, p: float, a: pd.DataFrame = a) -> float:
-            return float(a[col].quantile(p)) if len(a) else math.nan
-
+        g = ex if level == "order" else ex[col(ex, "parent_rank") == 0]
+        a = g[flag(g, "atr_available")]  # ATR computable
+        v = a[~flag(a, "atr_limit_nonpositive")]  # ... and a positive limit
         rows.append(
             {
                 "label": "탐색(exploratory)",
                 "level": level,
                 "n_candidates": len(g),
                 "n_atr_available": len(a),
-                "n_atr_limit_nonpositive": int(
-                    a["atr_limit_nonpositive"].fillna(False).astype(bool).sum()
-                )
-                if "atr_limit_nonpositive" in a
-                else 0,
-                "atr_pct_of_close_median": q("atr_pct_of_close", 0.5),
-                "atr_limit_dist_below_close_pct_p10": q(
-                    "atr_limit_dist_below_close_pct", 0.1
+                "n_atr_limit_nonpositive": count(a, "atr_limit_nonpositive"),
+                "n_atr_limit_valid": len(v),
+                "atr_pct_of_close_median": quant(v, "atr_pct_of_close", 0.5),
+                "atr_limit_dist_below_close_pct_p10": quant(
+                    v, "atr_limit_dist_below_close_pct", 0.1
                 ),
-                "atr_limit_dist_below_close_pct_median": q(
-                    "atr_limit_dist_below_close_pct", 0.5
+                "atr_limit_dist_below_close_pct_median": quant(
+                    v, "atr_limit_dist_below_close_pct", 0.5
                 ),
-                "atr_limit_dist_below_close_pct_p90": q(
-                    "atr_limit_dist_below_close_pct", 0.9
+                "atr_limit_dist_below_close_pct_p90": quant(
+                    v, "atr_limit_dist_below_close_pct", 0.9
                 ),
-                "n_atr_limit_shallower_than_deep_min_3pct": int(
-                    a["atr_limit_shallower_than_deep_min"]
-                    .fillna(False)
-                    .astype(bool)
-                    .sum()
-                )
-                if len(a)
-                else 0,
-                "n_atr_limit_deeper_than_deep_max_12pct": int(
-                    a["atr_limit_deeper_than_deep_max"].fillna(False).astype(bool).sum()
-                )
-                if len(a)
-                else 0,
+                "n_atr_limit_shallower_than_deep_min_3pct": count(
+                    v, "atr_limit_shallower_than_deep_min"
+                ),
+                "n_atr_limit_deeper_than_deep_max_12pct": count(
+                    v, "atr_limit_deeper_than_deep_max"
+                ),
                 "n_atr_limit_above_actual_anchor": int(
-                    (a["atr_limit_vs_anchor_pct"] > 0).sum()
-                )
-                if len(a)
-                else 0,
-                "atr_limit_vs_anchor_pct_median": q("atr_limit_vs_anchor_pct", 0.5),
-                "anchor_dist_below_close_pct_median": q(
-                    "anchor_dist_below_close_pct", 0.5
+                    (
+                        pd.to_numeric(
+                            col(v, "atr_limit_vs_anchor_pct"), errors="coerce"
+                        )
+                        > 0
+                    ).sum()
+                ),
+                "atr_limit_vs_anchor_pct_median": quant(
+                    v, "atr_limit_vs_anchor_pct", 0.5
+                ),
+                "anchor_dist_below_close_pct_median": quant(
+                    v, "anchor_dist_below_close_pct", 0.5
                 ),
                 "n_rebound_observable_hours_ge1": int(
                     (
-                        a.get("rebound_hours_observable", pd.Series(dtype=float)) >= 1
+                        pd.to_numeric(
+                            col(v, "rebound_hours_observable"), errors="coerce"
+                        )
+                        >= 1
                     ).sum()
-                )
-                if len(a)
-                else 0,
-                "n_rebound_triggered": int(
-                    a["rebound_triggered"].fillna(False).astype(bool).sum()
-                )
-                if len(a)
-                else 0,
-                "rebound_cap_vs_close_t_pct_median": float(
-                    a["rebound_cap_vs_close_t_pct"].median()
-                )
-                if len(a)
-                and "rebound_cap_vs_close_t_pct" in a
-                and a["rebound_cap_vs_close_t_pct"].notna().any()
-                else math.nan,
-                "n_matured_d5": int(g["matured_d5"].fillna(False).astype(bool).sum())
-                if "matured_d5" in g
-                else 0,
-                "n_matured_d20": int(g["matured_d20"].fillna(False).astype(bool).sum())
-                if "matured_d20" in g
-                else 0,
+                ),
+                "n_rebound_triggered": count(v, "rebound_triggered"),
+                "rebound_cap_vs_close_t_pct_median": quant(
+                    v, "rebound_cap_vs_close_t_pct", 0.5
+                ),
+                "n_matured_d5": count(g, "matured_d5"),
+                "n_matured_d20": count(g, "matured_d20"),
             }
         )
     return pd.DataFrame(rows)
