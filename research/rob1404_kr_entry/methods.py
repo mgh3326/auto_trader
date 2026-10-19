@@ -30,20 +30,23 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import date
 
 import pandas as pd
 
-from research.rob1383_buy_drought.core import leg_filled, tick_floor
+from research.rob1383_buy_drought.core import leg_filled, low_after, tick_floor
 from research.rob1383_buy_drought.inputs import TossOrder
+from research.rob1383_buy_drought.prices import KST, session_bounds
 from research.rob1383_buy_drought.q2_q3_orders import (
     NEAR_LEG_PCT,
     NEAR_LEG_WEIGHT,
     RESUBMIT_SESSIONS,
-    lifetime_low,
     order_session_positions,
     reference_price,
 )
 from research.rob1404_kr_entry.clock import (
+    SessionCalendar,
+    bar_state,
     d0_index,
     first_touch_hour,
     next_day_open,
@@ -88,16 +91,58 @@ def near_shares(quantity: int) -> int:
     return math.floor(NEAR_LEG_WEIGHT * quantity + 1e-9)
 
 
+def _finite(x: float | None) -> bool:
+    return x is not None and math.isfinite(x)
+
+
 def classify_limit(
     low_strict: float | None, low_incl: float | None, limit: float
 ) -> tuple[str, str]:
-    if low_strict is not None and leg_filled("kr", low_strict, limit, "trade_through"):
+    """Three-state fill. A missing *or non-finite* low is never evidence that
+    price stayed above the limit (tester r1 B2: NaN must not become cash)."""
+
+    if _finite(low_strict) and leg_filled("kr", low_strict, limit, "trade_through"):
         return FILLED, "trade_through"
-    if low_incl is None:
+    if not _finite(low_incl):
         return UNKNOWN, "no_bars_in_window"
     if not leg_filled("kr", low_incl, limit, "touch"):
         return UNFILLED, "low_above_limit"
     return UNKNOWN, "touch_without_trade_through"
+
+
+# ``core.low_after`` bases that measure exactly the requested window.
+EXACT_BASES = frozenset({"daily", "hourly"})
+
+
+def lifetime_evidence(
+    bars: pd.DataFrame, hourly: pd.DataFrame | None, life: list[int], o: TossOrder
+) -> tuple[list[tuple[int, float]], float | None]:
+    """Per-session strict lows that are exact, and a complete optimistic low.
+
+    * strict: only sessions whose post-order low is measured exactly (whole
+      session inside the lifetime -> daily low; else hourly bars that start
+      after the order). A partial session without hourly bars
+      (``daily_fallback``) may hold a low printed *before* the order, so it is
+      no fill evidence (tester r1 B1).
+    * optimistic: the minimum over every lifetime session; a daily fallback is
+      fine here (the daily low is <= any window low, so "never touched" stays
+      proven), but an empty or non-finite session makes it ``None``.
+    """
+
+    end = o.canceled_at or o.filled_at
+    strict: list[tuple[int, float]] = []
+    incl: list[float] = []
+    complete = True
+    for p in life:
+        low, basis = low_after(bars, hourly, p, o.ordered_at, end, inclusive=False)
+        if basis in EXACT_BASES and _finite(low):
+            strict.append((p, float(low)))
+        low_i, basis_i = low_after(bars, hourly, p, o.ordered_at, end, inclusive=True)
+        if _finite(low_i) and basis_i != "hourly_empty":
+            incl.append(float(low_i))
+        else:
+            complete = False
+    return strict, (min(incl) if complete and incl else None)
 
 
 def _near_leg(
@@ -121,8 +166,8 @@ def _near_leg(
         )
     ref, basis = reference_price(bars, hourly, life[0], o.ordered_at)
     near = tick_floor("kr", ref * (1 - NEAR_LEG_PCT / 100.0))
-    low_strict, _ = lifetime_low(bars, hourly, life, o, inclusive=False)
-    low_incl, _ = lifetime_low(bars, hourly, life, o, inclusive=True)
+    strict, low_incl = lifetime_evidence(bars, hourly, life, o)
+    low_strict = min((low for _, low in strict), default=None)
     state, reason = classify_limit(low_strict, low_incl, near)
     detail = {
         "near_limit": near,
@@ -135,37 +180,46 @@ def _near_leg(
         return Leg(near, shares, state, reason=reason), detail
     start = pd.Timestamp(o.ordered_at)
     end = pd.Timestamp(o.canceled_at)
-    for p in life:
-        at = first_touch_hour(
-            hourly, bars["session_date"].iloc[p], near, start=start, end=end
-        )
-        if at is not None:
-            return Leg(near, shares, FILLED, at=at, pos=p, reason=reason), detail
-    # Filled by the daily low but no hourly bar shows the hour: session open.
-    p = life[0]
-    return (
-        Leg(
-            near,
-            shares,
-            FILLED,
-            at=pd.Timestamp(bars["open_ts"].iloc[p]),
-            pos=p,
-            reason=reason + ":fill_hour_unknown",
-        ),
-        detail,
+    p = next(p for p, low in strict if leg_filled("kr", low, near, "trade_through"))
+    at = first_touch_hour(
+        hourly, bars["session_date"].iloc[p], near, start=start, end=end
     )
+    if at is None:
+        # Exact daily evidence (session wholly inside the lifetime) but no
+        # hourly bar shows the hour: the session open, which is after the order.
+        at, reason = (
+            pd.Timestamp(bars["open_ts"].iloc[p]),
+            reason + ":fill_hour_unknown",
+        )
+    if at < start:
+        return Leg(near, shares, UNKNOWN, reason="fill_time_before_order"), detail
+    return Leg(near, shares, FILLED, at=at, pos=p, reason=reason), detail
 
 
 def _resubmit_leg(
-    c: Candidate, bars: pd.DataFrame, hourly: pd.DataFrame | None
+    c: Candidate,
+    bars: pd.DataFrame,
+    hourly: pd.DataFrame | None,
+    cal: SessionCalendar,
 ) -> tuple[Leg | None, str | None]:
-    after = pd.Timestamp(c.expired_at)
-    nxt = [
-        i for i in range(len(bars)) if pd.Timestamp(bars["open_ts"].iloc[i]) >= after
-    ]
-    nxt = nxt[:RESUBMIT_SESSIONS]
-    for p in nxt:
+    """Original anchor for the next three *calendar* sessions after expiry."""
+
+    sessions = cal.opening_at_or_after(c.expired_at)[:RESUBMIT_SESSIONS]
+    for i in sessions:
+        p, state = bar_state(bars, cal.dates[i])
+        if p is None:
+            if state == "beyond_data_end":
+                return None, "immature:resubmit_window_censored"
+            return (
+                Leg(c.anchor, c.quantity, UNKNOWN, reason="resubmit_bar_missing"),
+                None,
+            )
         low = float(bars["low"].iloc[p])
+        if not _finite(low):
+            return (
+                Leg(c.anchor, c.quantity, UNKNOWN, reason="nonfinite_low"),
+                None,
+            )
         if not leg_filled("kr", low, c.anchor, "touch"):
             continue
         if not leg_filled("kr", low, c.anchor, "trade_through"):
@@ -193,27 +247,66 @@ def _resubmit_leg(
         if at is None:
             at, reason = pd.Timestamp(bars["open_ts"].iloc[p]), "fill_hour_unknown"
         return Leg(c.anchor, c.quantity, FILLED, at=at, pos=p, reason=reason), None
-    if len(nxt) < RESUBMIT_SESSIONS:
-        return None, "resubmit_window_censored"
+    if len(sessions) < RESUBMIT_SESSIONS:
+        return None, "immature:resubmit_window_censored"
     return Leg(c.anchor, c.quantity, UNFILLED, reason="low_above_limit"), None
 
 
+def _expected_entry_date(
+    name: str, e, bars: pd.DataFrame, cal: SessionCalendar, signal_at
+) -> date | None:
+    """The calendar session the entry must print on (``None``: no session yet)."""
+
+    if name == "next_day_open":
+        i = cal.first_after_date(pd.Timestamp(signal_at).tz_convert(KST).date())
+        return None if i is None else cal.dates[i]
+    i = cal.d0(signal_at)
+    if i is None:
+        return None
+    if (
+        e is not None
+        and e.basis.startswith("session_open")
+        and bars["open_ts"].iloc[e.pos]
+        > pd.Timestamp(session_bounds("kr", cal.dates[i])[0])
+    ):
+        i += 1  # rolled to the next open after the closing-auction cutoff
+        if i >= len(cal.dates):
+            return None
+    return cal.dates[i]
+
+
 def build_methods(
-    c: Candidate, o: TossOrder, bars: pd.DataFrame, hourly: pd.DataFrame | None
+    c: Candidate,
+    o: TossOrder,
+    bars: pd.DataFrame,
+    hourly: pd.DataFrame | None,
+    cal: SessionCalendar,
 ) -> dict[str, MethodLegs]:
     out: dict[str, MethodLegs] = {"cash": MethodLegs("cash", ())}
     anchor_leg = Leg(c.anchor, c.quantity, UNFILLED, reason="broker_status_unfilled")
     out["anchor_actual"] = MethodLegs("anchor_actual", (anchor_leg,))
     for name, fn in (("nep", next_executable_price), ("next_day_open", next_day_open)):
         e = fn(bars, hourly, c.signal_at)
-        out[name] = (
-            MethodLegs(name, (), missing="no_bar_after_signal")
-            if e is None
-            else MethodLegs(
+        want = _expected_entry_date(name, e, bars, cal, c.signal_at)
+        if want is None:
+            out[name] = MethodLegs(name, (), missing="immature:no_session_after_signal")
+            continue
+        if e is None or bars["session_date"].iloc[e.pos] != want:
+            _, state = bar_state(bars, want)
+            out[name] = MethodLegs(
                 name,
-                (Leg(e.price, c.quantity, FILLED, True, e.at, e.pos, e.basis),),
-                detail={"entry_basis": e.basis},
+                (),
+                missing=(
+                    "immature:entry_beyond_data_end"
+                    if state == "beyond_data_end"
+                    else "data_missing:entry_bar_missing"
+                ),
             )
+            continue
+        out[name] = MethodLegs(
+            name,
+            (Leg(e.price, c.quantity, FILLED, True, e.at, e.pos, e.basis),),
+            detail={"entry_basis": e.basis},
         )
     k = near_shares(c.quantity)
     if k == 0:
@@ -224,38 +317,36 @@ def build_methods(
         leg, detail = _near_leg(c, o, bars, hourly, k)
         rest = Leg(c.anchor, c.quantity - k, UNFILLED, reason="broker_status_unfilled")
         out["split_int"] = (
-            MethodLegs("split_int", (), missing="no_bar_after_signal")
+            MethodLegs("split_int", (), missing="immature:no_session_after_signal")
             if leg is None
             else MethodLegs(
                 "split_int", (leg, rest), detail={**detail, "near_shares": k}
             )
         )
-    frac_shares = NEAR_LEG_WEIGHT * c.anchor * c.quantity
     leg, detail = _near_leg(c, o, bars, hourly, 1.0)
     if leg is None:
-        out["split_frac"] = MethodLegs("split_frac", (), missing="no_bar_after_signal")
-        rleg, missing = _resubmit_leg(c, bars, hourly)
-        out["resubmit3"] = MethodLegs(
-            "resubmit3", (rleg,) if rleg is not None else (), missing=missing
+        out["split_frac"] = MethodLegs(
+            "split_frac", (), missing="immature:no_session_after_signal"
         )
-        return out
-    leg = Leg(
-        leg.price,
-        frac_shares / leg.price,
-        leg.state,
-        leg.marketable,
-        leg.at,
-        leg.pos,
-        leg.reason,
-    )
-    rest = Leg(
-        c.anchor,
-        (1 - NEAR_LEG_WEIGHT) * c.quantity,
-        UNFILLED,
-        reason="broker_status_unfilled",
-    )
-    out["split_frac"] = MethodLegs("split_frac", (leg, rest), detail=detail)
-    rleg, missing = _resubmit_leg(c, bars, hourly)
+    else:
+        frac_shares = NEAR_LEG_WEIGHT * c.anchor * c.quantity
+        leg = Leg(
+            leg.price,
+            frac_shares / leg.price,
+            leg.state,
+            leg.marketable,
+            leg.at,
+            leg.pos,
+            leg.reason,
+        )
+        rest = Leg(
+            c.anchor,
+            (1 - NEAR_LEG_WEIGHT) * c.quantity,
+            UNFILLED,
+            reason="broker_status_unfilled",
+        )
+        out["split_frac"] = MethodLegs("split_frac", (leg, rest), detail=detail)
+    rleg, missing = _resubmit_leg(c, bars, hourly, cal)
     out["resubmit3"] = MethodLegs(
         "resubmit3", (rleg,) if rleg is not None else (), missing=missing
     )

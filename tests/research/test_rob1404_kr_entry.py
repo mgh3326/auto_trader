@@ -67,6 +67,7 @@ def make_hourly(
 
 FLAT = (100.0, 101.0, 99.0, 100.0)
 D = make_daily([FLAT] * 25)
+CAL = clock.SessionCalendar(tuple(SESSIONS))
 H0 = make_hourly(
     SESSIONS[0],
     [
@@ -200,7 +201,7 @@ def test_resubmit_gap_down_fills_at_the_open():
     rows = [FLAT, (100.0, 101.0, 99.0, 100.0), (95.0, 96.0, 94.0, 95.0)] + [FLAT] * 22
     bars = make_daily(rows)
     c = _cand(kst(SESSIONS[0], 9, 30), kst(SESSIONS[0], 15, 34), 96.0, 3)
-    leg, missing = methods._resubmit_leg(c, bars, None)
+    leg, missing = methods._resubmit_leg(c, bars, None, CAL)
     assert missing is None
     assert (leg.state, leg.price, leg.pos, leg.reason) == (
         "filled",
@@ -214,20 +215,20 @@ def test_resubmit_touch_only_is_unknown_not_cash():
     rows = [FLAT, (100.0, 101.0, 96.0, 100.0)] + [FLAT] * 23
     bars = make_daily(rows)
     c = _cand(kst(SESSIONS[0], 9, 30), kst(SESSIONS[0], 15, 34), 96.0, 3)
-    leg, _ = methods._resubmit_leg(c, bars, None)
+    leg, _ = methods._resubmit_leg(c, bars, None, CAL)
     assert leg.state == "unknown"
 
 
 def test_resubmit_censored_when_three_sessions_not_seen():
     bars = make_daily([FLAT] * 3)
     c = _cand(kst(SESSIONS[1], 9, 30), kst(SESSIONS[1], 15, 34), 50.0, 3)
-    leg, missing = methods._resubmit_leg(c, bars, None)
-    assert leg is None and missing == "resubmit_window_censored"
+    leg, missing = methods._resubmit_leg(c, bars, None, CAL)
+    assert leg is None and missing == "immature:resubmit_window_censored"
 
 
 def test_split_int_has_no_near_leg_below_five_shares():
     c = _cand(kst(SESSIONS[0], 11, 37), kst(SESSIONS[0], 15, 34), 90.0, 4)
-    m = methods.build_methods(c, _order(c), D, H0)
+    m = methods.build_methods(c, _order(c), D, H0, CAL)
     assert [leg.state for leg in m["split_int"].legs] == ["unfilled"]
     assert m["split_int"].detail["near_shares"] == 0
     assert len(m["split_frac"].legs) == 2  # v1 fractional idealisation keeps it
@@ -249,6 +250,7 @@ def test_unknown_leg_never_becomes_zero_return():
         kst(SESSIONS[0], 8, 5),
         2,
         5,
+        cal=CAL,
         is_etf=False,
         market_bench=None,
         sector_peers=None,
@@ -270,6 +272,7 @@ def test_immature_horizon_has_no_value():
         kst(SESSIONS[0], 8, 5),
         1,
         5,
+        cal=CAL,
         is_etf=False,
         market_bench=None,
         sector_peers=None,
@@ -301,6 +304,7 @@ def test_market_adjustment_uses_each_legs_own_interval():
         kst(SESSIONS[0], 8, 5),
         1,
         5,
+        cal=CAL,
         is_etf=True,
         market_bench=idx,
         sector_peers=None,
@@ -321,6 +325,7 @@ def test_sector_adjustment_missing_below_min_peers_not_zero():
         kst(SESSIONS[0], 8, 5),
         1,
         5,
+        cal=CAL,
         is_etf=False,
         market_bench=None,
         sector_peers=[peer, peer],
@@ -424,3 +429,135 @@ def test_wilder_atr_matches_hand_computation():
     expected = (expected * 13 + tr[14]) / 14
     assert explore_2b.wilder_atr(high, low, close) == pytest.approx(expected)
     assert explore_2b.wilder_atr(high[:10], low[:10], close[:10]) is None
+
+
+# ------------------------------------------- tester r1 regressions (B1-B3)
+
+
+def test_r1_b1_partial_session_daily_low_without_hourly_is_not_a_fill():
+    # Low 98 may have printed at 09:00, before the 11:37 order; with no hourly
+    # bars nothing proves a post-order trade-through -> UNKNOWN, not FILLED.
+    bars = make_daily([(100.0, 101.0, 98.0, 100.0)] + [FLAT] * 24)
+    c = _cand(kst(SESSIONS[0], 11, 37), kst(SESSIONS[0], 15, 34), 120.0, 5)
+    leg, _ = methods._near_leg(c, _order(c), bars, None, 1)
+    assert leg.state == "unknown"
+    r = outcomes.evaluate(
+        methods.MethodLegs("split_int", (leg,)),
+        bars,
+        None,
+        c.signal_at,
+        5,
+        5,
+        cal=CAL,
+        is_etf=False,
+        market_bench=None,
+        sector_peers=None,
+    )
+    assert r["status"] == "unknown" and r[f"y__{outcomes.BASE_COST.name}"] is None
+
+
+def test_r1_b1_whole_session_daily_low_is_exact_evidence():
+    # An order alive for the whole next session: its daily low is post-order.
+    bars = make_daily([FLAT, (100.0, 101.0, 90.0, 100.0)] + [FLAT] * 23)
+    c = _cand(kst(SESSIONS[0], 16, 4), kst(SESSIONS[1], 20, 3), 120.0, 5)
+    leg, _ = methods._near_leg(c, _order(c), bars, None, 1)
+    assert (leg.state, leg.pos) == ("filled", 1)  # day 1 is wholly post-order
+    # Partial day 0 (no hourly) is skipped as evidence; day 1 still proves it.
+    c2 = _cand(kst(SESSIONS[0], 15, 0), kst(SESSIONS[1], 20, 3), 120.0, 5)
+    leg2, _ = methods._near_leg(c2, _order(c2), bars, None, 1)
+    assert leg2.state == "filled" and leg2.pos == 1
+    assert leg2.at >= pd.Timestamp(c2.signal_at)
+
+
+def test_r1_b2_nan_low_is_unknown_not_cash():
+    nan = float("nan")
+    assert methods.classify_limit(nan, nan, 99.0)[0] == "unknown"
+    assert methods.classify_limit(None, nan, 99.0)[0] == "unknown"
+    bars = make_daily([FLAT] * 25)
+    bars.loc[1, "low"] = nan  # _finalise drops NaN rows; a cache read does not
+    c = _cand(kst(SESSIONS[0], 9, 30), kst(SESSIONS[0], 15, 34), 96.0, 3)
+    leg, _ = methods._resubmit_leg(c, bars, None, CAL)
+    assert leg.state == "unknown" and leg.reason == "nonfinite_low"
+
+
+def test_r1_b3_missing_exit_bar_is_data_missing_not_next_row():
+    bars = make_daily([FLAT] * 25)
+    bars = bars[bars["session_date"] != SESSIONS[5]].reset_index(drop=True)
+    leg = methods.Leg(100.0, 1, "filled", True, D["open_ts"].iloc[0], 0)
+    r = outcomes.evaluate(
+        _legs(leg),
+        bars,
+        None,
+        kst(SESSIONS[0], 8, 5),
+        1,
+        5,
+        cal=CAL,
+        is_etf=False,
+        market_bench=None,
+        sector_peers=None,
+    )
+    assert r["status"] == "data_missing" and r["missing_reason"] == "exit_bar_missing"
+    assert not any(k.startswith("y__") for k in r)
+
+
+def test_r1_b3_exit_after_last_bar_is_immature_and_d0_gap_is_missing():
+    short = make_daily([FLAT] * 4)
+    leg = methods.Leg(100.0, 1, "filled", True, D["open_ts"].iloc[0], 0)
+    r = outcomes.evaluate(
+        _legs(leg),
+        short,
+        None,
+        kst(SESSIONS[0], 8, 5),
+        1,
+        5,
+        cal=CAL,
+        is_etf=False,
+        market_bench=None,
+        sector_peers=None,
+    )
+    assert r["status"] == "immature"
+    gap = D[D["session_date"] != SESSIONS[0]].reset_index(drop=True)
+    r = outcomes.evaluate(
+        _legs(leg),
+        gap,
+        None,
+        kst(SESSIONS[0], 8, 5),
+        1,
+        5,
+        cal=CAL,
+        is_etf=False,
+        market_bench=None,
+        sector_peers=None,
+    )
+    assert r["status"] == "data_missing" and r["missing_reason"] == "d0_bar_missing"
+
+
+def test_r1_b3_resubmit_counts_calendar_sessions_and_flags_gaps():
+    bars = make_daily([FLAT] * 25)
+    bars = bars[bars["session_date"] != SESSIONS[2]].reset_index(drop=True)
+    c = _cand(kst(SESSIONS[0], 9, 30), kst(SESSIONS[0], 15, 34), 50.0, 3)
+    leg, _ = methods._resubmit_leg(c, bars, None, CAL)
+    assert leg.state == "unknown" and leg.reason == "resubmit_bar_missing"
+
+
+def test_r1_next_day_open_requires_the_calendar_next_session():
+    gap = D[D["session_date"] != SESSIONS[1]].reset_index(drop=True)
+    c = _cand(kst(SESSIONS[0], 11, 37), kst(SESSIONS[0], 15, 34), 90.0, 4)
+    m = methods.build_methods(c, _order(c), gap, None, CAL)
+    assert m["next_day_open"].missing == "data_missing:entry_bar_missing"
+    assert m["nep"].missing is None  # D0 bar exists; NEP prints on D0
+
+
+def test_r1_markout_counts_calendar_sessions():
+    gap = D[D["session_date"] != SESSIONS[5]].reset_index(drop=True)
+    leg = methods.Leg(100.0, 1, "filled", True, gap["open_ts"].iloc[0], 0)
+    rows = outcomes.markouts(_legs(leg), gap, None, CAL)
+    assert rows[0]["markout5"] is None and rows[0]["markout5_status"] == "data_missing"
+    assert rows[0]["fill_session"] == str(SESSIONS[0])
+
+
+def test_explore_atr_limit_nonpositive_is_flagged_not_raised():
+    rows = [(10.0, 30.0, 1.0, 2.0)] * 25
+    bars = make_daily(rows)
+    out = explore_2b.candidate_row(bars, None, kst(SESSIONS[19], 16, 0), 2.0)
+    assert out["atr_limit_nonpositive"] is True

@@ -33,7 +33,12 @@ import pandas as pd
 
 from research.rob1383_buy_drought.core import tick_size
 from research.rob1383_buy_drought.q2_q3_orders import reference_price
-from research.rob1404_kr_entry.clock import close_on, d0_index, price_at
+from research.rob1404_kr_entry.clock import (
+    SessionCalendar,
+    bar_state,
+    close_on,
+    price_at,
+)
 from research.rob1404_kr_entry.methods import FILLED, UNKNOWN, Leg, MethodLegs
 
 HORIZONS = (5, 20)
@@ -150,26 +155,42 @@ def evaluate(
     quantity: int,
     horizon: int,
     *,
+    cal: SessionCalendar,
     is_etf: bool,
     market_bench: Bench | None,
     sector_peers: list[Bench] | None,
     costs: tuple[CostModel, ...] = (BASE_COST, GROSS),
 ) -> dict[str, Any]:
-    d0 = d0_index(bars, signal_at)
+    """``D0`` and ``D0 + h`` are calendar sessions; the stock must have a bar on
+    exactly those dates. A date past the last cached bar is ``immature``; a
+    date inside the data with no bar is ``data_missing`` -- never shifted to
+    the next row, never 0 (tester r1 B3)."""
+
     out: dict[str, Any] = {"method": m.method, "horizon": horizon}
-    if d0 is None or m.missing:
-        # Every method-level gap is the end of the cached bars (no session
-        # after the signal yet / fewer than 3 resubmission sessions): immature.
-        out["status"] = "immature"
-        out["missing_reason"] = m.missing or "no_session_after_signal_in_cache"
+    if m.missing:
+        kind, _, reason = m.missing.partition(":")
+        out["status"] = kind if kind in ("immature", "data_missing") else "data_missing"
+        out["missing_reason"] = reason or m.missing
         return out
-    exit_pos = d0 + horizon
-    if exit_pos >= len(bars):
+    i0 = cal.d0(signal_at)
+    if i0 is None or i0 + horizon >= len(cal.dates):
         out["status"] = "immature"
+        out["missing_reason"] = "calendar_end"
+        return out
+    d0, d0_state = bar_state(bars, cal.dates[i0])
+    exit_pos, exit_state = bar_state(bars, cal.dates[i0 + horizon])
+    for pos, state, what in ((d0, d0_state, "d0"), (exit_pos, exit_state, "exit")):
+        if pos is None:
+            out["status"] = "immature" if state == "beyond_data_end" else "data_missing"
+            out["missing_reason"] = f"{what}_{state}"
+            return out
+    exit_price = float(bars["close"].iloc[exit_pos])
+    if not math.isfinite(exit_price):
+        out["status"] = "data_missing"
+        out["missing_reason"] = "exit_nonfinite_close"
         return out
     p_ref, ref_basis = reference_price(bars, hourly, d0, signal_at)
     budget = quantity * p_ref
-    exit_price = float(bars["close"].iloc[exit_pos])
     exit_date = bars["session_date"].iloc[exit_pos]
     states = tuple(leg.state for leg in m.legs)
     if any(
@@ -225,20 +246,39 @@ def markouts(
     m: MethodLegs,
     bars: pd.DataFrame,
     market_bench: Bench | None,
+    cal: SessionCalendar,
 ) -> list[dict[str, Any]]:
-    """Post-fill price change: day 0 = fill session, close at +k vs entry (gross)."""
+    """Post-fill price change: day 0 = fill session, close ``k`` *calendar*
+    sessions later vs entry (gross). Missing/immature stay ``None`` with a status."""
 
     rows = []
     for i, leg in enumerate(m.legs):
         if leg.state != FILLED or leg.pos is None:
             continue
-        row: dict[str, Any] = {"method": m.method, "leg": i, "entry": leg.price}
+        fill_date = bars["session_date"].iloc[leg.pos]
+        row: dict[str, Any] = {
+            "method": m.method,
+            "leg": i,
+            "entry": leg.price,
+            "fill_session": str(fill_date),
+        }
+        ci = next((j for j, d in enumerate(cal.dates) if d == fill_date), None)
         for k in MARKOUT_HORIZONS:
-            pos = leg.pos + k
-            if pos >= len(bars):
-                row[f"markout{k}"] = None
-                row[f"markout{k}_mktadj"] = None
+            row[f"markout{k}"] = None
+            row[f"markout{k}_mktadj"] = None
+            if ci is None:
+                row[f"markout{k}_status"] = "fill_not_on_calendar"
                 continue
+            if ci + k >= len(cal.dates):
+                row[f"markout{k}_status"] = "immature"
+                continue
+            pos, state = bar_state(bars, cal.dates[ci + k])
+            if pos is None:
+                row[f"markout{k}_status"] = (
+                    "immature" if state == "beyond_data_end" else "data_missing"
+                )
+                continue
+            row[f"markout{k}_status"] = "ok"
             r = float(bars["close"].iloc[pos]) / leg.price - 1.0
             row[f"markout{k}"] = r
             b = (

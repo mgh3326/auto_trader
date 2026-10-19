@@ -28,6 +28,7 @@ from research.rob1404_kr_entry import (
     sectors,
     versions,
 )
+from research.rob1404_kr_entry.clock import SessionCalendar
 from research.rob1404_kr_entry.methods import METHODS, build_methods
 from research.rob1404_kr_entry.outcomes import (
     BASE_COST,
@@ -108,6 +109,7 @@ def evaluate_all(
     universe: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     index, peers, sector_of = _benches(store, table, universe)
+    cal = master_calendar(store)
     rows, marks, legs = [], [], []
     for c in cands:
         meta = {
@@ -145,7 +147,7 @@ def evaluate_all(
         mkt = index.get(idx_name) if idx_name else None
         info = table.get(c.symbol) or {}
         is_etf = info.get("quote_type") == "ETF"
-        methods = build_methods(c, orders_by_id[c.order_id], bars, hourly)
+        methods = build_methods(c, orders_by_id[c.order_id], bars, hourly, cal)
         for name, m in methods.items():
             for i, leg in enumerate(m.legs):
                 legs.append(
@@ -170,21 +172,33 @@ def evaluate_all(
                     c.signal_at,
                     c.quantity,
                     h,
+                    cal=cal,
                     is_etf=is_etf,
                     market_bench=mkt,
                     sector_peers=peers.get(c.symbol),
                     costs=(BASE_COST, GROSS, *COST_GRID),
                 )
                 rows.append({**meta, "market_index": idx_name, "is_etf": is_etf, **r})
-            for mk in markouts(m, bars, mkt):
+            for mk in markouts(m, bars, mkt, cal):
                 marks.append({**meta, **mk})
     return pd.DataFrame(rows), pd.DataFrame(marks), pd.DataFrame(legs)
 
 
-def _calendar(store: PriceStore, days: pd.Series) -> list:
+def master_calendar(store: PriceStore) -> SessionCalendar:
+    """Common KRX session list: the KOSPI index's daily bars (every candidate
+    counts D0 and D0+h on it, not on its own rows)."""
+
     ks = store.bars("kr", "^KS11")
-    d = sorted(x for x in ks["session_date"] if days.min() <= x <= days.max())
-    return d
+    if ks is None:
+        raise SystemExit("^KS11 daily bars are required for the session calendar")
+    return SessionCalendar(tuple(ks["session_date"]))
+
+
+def _calendar(store: PriceStore) -> list:
+    """Full session list for the block bootstrap; ``inference.summarise``
+    slices it to each subset's first..last day."""
+
+    return list(master_calendar(store).dates)
 
 
 def _scopes(frame: pd.DataFrame):
@@ -376,6 +390,14 @@ def markout_summary(marks: pd.DataFrame, calendar: list) -> pd.DataFrame:
                         "measure": col,
                         "n_fills": len(g),
                         "n_matured": len(v),
+                        "n_immature": int(
+                            (g[f"markout{k}_status"] == "immature").sum()
+                        ),
+                        "n_data_missing": int(
+                            g[f"markout{k}_status"]
+                            .isin(["data_missing", "fill_not_on_calendar"])
+                            .sum()
+                        ),
                     }
                     if len(v):
                         s = inference.summarise(
@@ -383,7 +405,7 @@ def markout_summary(marks: pd.DataFrame, calendar: list) -> pd.DataFrame:
                             symbols=g.loc[v.index, "symbol"].tolist(),
                             days=[
                                 d.date()
-                                for d in pd.to_datetime(g.loc[v.index, "signal_at_kst"])
+                                for d in pd.to_datetime(g.loc[v.index, "fill_session"])
                             ],
                             calendar=calendar,
                         )
@@ -530,6 +552,11 @@ def explore_summary(ex: pd.DataFrame) -> pd.DataFrame:
                 "level": level,
                 "n_candidates": len(g),
                 "n_atr_available": len(a),
+                "n_atr_limit_nonpositive": int(
+                    a["atr_limit_nonpositive"].fillna(False).astype(bool).sum()
+                )
+                if "atr_limit_nonpositive" in a
+                else 0,
                 "atr_pct_of_close_median": q("atr_pct_of_close", 0.5),
                 "atr_limit_dist_below_close_pct_p10": q(
                     "atr_limit_dist_below_close_pct", 0.1
@@ -541,12 +568,15 @@ def explore_summary(ex: pd.DataFrame) -> pd.DataFrame:
                     "atr_limit_dist_below_close_pct", 0.9
                 ),
                 "n_atr_limit_shallower_than_deep_min_3pct": int(
-                    a["atr_limit_shallower_than_deep_min"].sum()
+                    a["atr_limit_shallower_than_deep_min"]
+                    .fillna(False)
+                    .astype(bool)
+                    .sum()
                 )
                 if len(a)
                 else 0,
                 "n_atr_limit_deeper_than_deep_max_12pct": int(
-                    a["atr_limit_deeper_than_deep_max"].sum()
+                    a["atr_limit_deeper_than_deep_max"].fillna(False).astype(bool).sum()
                 )
                 if len(a)
                 else 0,
@@ -566,7 +596,9 @@ def explore_summary(ex: pd.DataFrame) -> pd.DataFrame:
                 )
                 if len(a)
                 else 0,
-                "n_rebound_triggered": int(a["rebound_triggered"].sum())
+                "n_rebound_triggered": int(
+                    a["rebound_triggered"].fillna(False).astype(bool).sum()
+                )
                 if len(a)
                 else 0,
                 "rebound_cap_vs_close_t_pct_median": float(
@@ -609,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
 
     detail, marks, legs = evaluate_all(cands, orders_by_id, store, table, universe)
     d0 = pd.to_datetime(detail["d0_session"].dropna()).dt.date
-    calendar = _calendar(store, d0)
+    calendar = _calendar(store)
     _write(pd.DataFrame(ledger.rows), "population_ledger.csv", args.out)
     _write(detail, "outcomes_detail.csv", args.out)
     _write(legs, "legs_detail.csv", args.out)

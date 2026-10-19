@@ -19,18 +19,22 @@ Definitions (KRX regular session only -- public bars hold no NXT/after-market):
 * ``price_at(ts)`` -- an *executable* price stamped at ``ts``: open of an hourly
   bar starting exactly at ``ts``, the daily open when ``ts`` is the session
   open, the daily close when ``ts`` is the session close; otherwise ``None``.
+* ``SessionCalendar`` -- the **common** KRX session list (^KS11 daily dates).
+  ``D0`` and every ``D0 + h`` are counted on it, never on one stock's rows: a
+  stock row missing on a calendar date is a missing price for that date, not a
+  reason to read the next row (tester r1 B3).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 import numpy as np
 import pandas as pd
 
 from research.rob1383_buy_drought.core import forward_positions
-from research.rob1383_buy_drought.prices import KST
+from research.rob1383_buy_drought.prices import KST, session_bounds
 
 CLOSING_AUCTION_CUTOFF = time(15, 20)
 
@@ -41,6 +45,55 @@ class Entry:
     at: pd.Timestamp  # when the price prints (UTC)
     pos: int  # daily bar position of the entry session
     basis: str
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCalendar:
+    """Ordered KRX regular sessions shared by every candidate."""
+
+    dates: tuple[date, ...]
+
+    def __post_init__(self) -> None:
+        if list(self.dates) != sorted(set(self.dates)):
+            raise ValueError("calendar dates must be strictly increasing")
+
+    def d0(self, signal_at: datetime) -> int | None:
+        """First session whose regular close is after ``signal_at``."""
+
+        t = pd.Timestamp(signal_at)
+        for i, d in enumerate(self.dates):
+            if pd.Timestamp(session_bounds("kr", d)[1]) > t:
+                return i
+        return None
+
+    def opening_at_or_after(self, ts: datetime) -> list[int]:
+        t = pd.Timestamp(ts)
+        return [
+            i
+            for i, d in enumerate(self.dates)
+            if pd.Timestamp(session_bounds("kr", d)[0]) >= t
+        ]
+
+    def first_after_date(self, day: date) -> int | None:
+        return next((i for i, d in enumerate(self.dates) if d > day), None)
+
+
+def bar_pos(bars: pd.DataFrame, session_date: date) -> int | None:
+    """Row of ``bars`` for exactly ``session_date`` (``None`` when absent)."""
+
+    hit = np.flatnonzero((bars["session_date"] == session_date).to_numpy())
+    return int(hit[0]) if len(hit) else None
+
+
+def bar_state(bars: pd.DataFrame, session_date: date) -> tuple[int | None, str]:
+    """``(pos, "ok")``, ``(None, "beyond_data_end")`` or ``(None, "bar_missing")``."""
+
+    pos = bar_pos(bars, session_date)
+    if pos is not None:
+        return pos, "ok"
+    if len(bars) == 0 or session_date > bars["session_date"].iloc[-1]:
+        return None, "beyond_data_end"
+    return None, "bar_missing"
 
 
 def d0_index(bars: pd.DataFrame, signal_at: datetime) -> int | None:

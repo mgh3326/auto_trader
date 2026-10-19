@@ -63,7 +63,11 @@ def candidate_row(
     if atr is None:
         return out
     close_t, high_t = float(c[-1]), float(h[-1])
-    limit = tick_floor("kr", close_t - ATR_MULT * atr)
+    raw_limit = close_t - ATR_MULT * atr
+    out["atr_limit_nonpositive"] = not raw_limit > 0
+    if not raw_limit > 0:
+        return out  # 0.5 ATR >= the close: no valid limit (counted, not raised)
+    limit = tick_floor("kr", raw_limit)
     nep = next_executable_price(bars, hourly, signal_at)
     dist_close = (close_t - limit) / close_t * 100.0
     out.update(
