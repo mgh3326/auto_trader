@@ -50,12 +50,16 @@ def _first_present(*values: object) -> object:
     return None
 
 
-def _fanout_evidence(candidate: Mapping[str, Any]) -> dict[str, Any]:
+def _fanout_evidence(
+    candidate: Mapping[str, Any], *, call_market: object
+) -> dict[str, Any]:
     """Project the returned fanout funnel into the v2 evaluator's input.
 
     The intentionally absent ``other_gate_bits`` field is not an omission in
     this adapter: fanout has no authority to supply liquid-midcap,
-    concentration, or overhang review evidence.
+    concentration, or overhang review evidence.  ``market`` is taken from the
+    candidate's own stamp first and then the call-level result stamp; a value
+    outside the v2 registration's markets is rejected downstream.
     """
 
     funnel = _mapping(candidate.get("funnel"))
@@ -65,7 +69,7 @@ def _fanout_evidence(candidate: Mapping[str, Any]) -> dict[str, Any]:
     upside = _mapping(funnel.get("upside"))
     return {
         "symbol": candidate.get("symbol"),
-        "market": "kr",
+        "market": _first_present(candidate.get("market"), call_market),
         "current_price": _first_present(
             base.get("current_price"),
             upside.get("current_price"),
@@ -120,6 +124,7 @@ async def maybe_record_buy_gate_ab_shadow(
         evaluated_at = now or datetime.now(UTC)
         if evaluated_at.tzinfo is None:
             evaluated_at = evaluated_at.replace(tzinfo=UTC)
+        call_market = result.get("market")
         writer = save or forecast_save
         for candidate in raw_candidates[:MAX_FANOUT_WITNESS_CANDIDATES]:
             if not isinstance(candidate, Mapping):
@@ -127,7 +132,9 @@ async def maybe_record_buy_gate_ab_shadow(
                 continue
             try:
                 evaluation = evaluate_candidate(
-                    CandidateEvidence.from_mapping(_fanout_evidence(candidate)),
+                    CandidateEvidence.from_mapping(
+                        _fanout_evidence(candidate, call_market=call_market)
+                    ),
                     evaluation_as_of=evaluated_at,
                 )
             except (EvaluationError, ValueError):
