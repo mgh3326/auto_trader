@@ -155,7 +155,7 @@
 **결론**: 어떤 기존 지점도 (a)–(f) 전부를 최초 게이트 판정 시점에 담지 못한다. crypto는 fanout 경로 자체가 없다.
 가장 큰 공백은 두 가지다. 앱 어디에서도 deep_limit 밴드 안의 후보 위치와 수준별 지지 목록을 기록하지 않는다. V4 A/B 판정도 계산하지 않는다(V4는 연구 코드 `research/rob1383_buy_drought/core.py`에만 있다).
 
-**부수 발견(이 PR에서 고치지 않음)**: `buy_gate_ab_shadow_recorder.py`는 `"market": "kr"`를 하드코딩한다. 플래그가 켜져 있으면 US fanout 후보가 KR로 기록된다. 이 실험과의 오염 가능성이 있어 desk 확인 항목에 넣었다.
+**부수 발견(이 PR에서 고치지 않음)**: `app/services/buy_gate_ab_shadow_recorder.py`의 `_fanout_evidence`는 `"market": "kr"`를 하드코딩하고 시장 확인이 없다. 플래그가 켜져 있으면 US fanout 후보가 KR로 기록된다. 이 실험과의 오염 가능성이 있어 desk 확인 항목에 넣었다.
 
 **시장별 데이터 원천(평가용)**:
 
