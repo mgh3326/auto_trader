@@ -34,6 +34,7 @@ from app.services.buy_gate_ab_shadow.evaluate_v2 import (
     evaluate_candidate,
 )
 from app.services.buy_gate_ab_shadow.forecast_tag_v2 import (
+    assumed_notional,
     build_shadow_buy_forecasts,
 )
 from app.services.buy_gate_ab_shadow.spec import (
@@ -460,6 +461,231 @@ async def test_merged_fanout_result_still_records_witness_rows() -> None:
     assert target["evaluated_cohort"] == "neither"
     assert target["experiment_sample"] is False
     assert target["shared_gate_bits"] == "unavailable_at_this_call_site"
+
+
+@pytest.mark.asyncio
+async def test_fanout_witness_records_kr_result_under_kr_market() -> None:
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    await maybe_record_buy_gate_ab_shadow(
+        _fanout_result(),
+        enabled=True,
+        save=save,
+        now=_AS_OF,
+    )
+
+    assert len(saved) == 2
+    for payload in saved:
+        assert payload["instrument_type"] == "equity_kr"
+        assert payload["forecast_target"]["input_snapshot"]["market"] == "kr"
+        assert payload["forecast_target"]["assumed_notional"] == str(
+            assumed_notional("kr")
+        )
+        assert ":kr:000001:" in payload["correlation_id"]
+
+
+@pytest.mark.asyncio
+async def test_fanout_witness_records_us_result_under_us_market() -> None:
+    """US fanout output must be evaluated and recorded as ``us``, not ``kr``."""
+    result = _fanout_result()
+    result["market"] = "us"
+    result["candidates"] = [{**_fanout_candidate("AAPL"), "market": "us"}]
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    await maybe_record_buy_gate_ab_shadow(
+        result,
+        enabled=True,
+        save=save,
+        now=_AS_OF,
+    )
+
+    assert len(saved) == 2
+    for payload in saved:
+        assert payload["instrument_type"] == "equity_us"
+        assert payload["forecast_target"]["input_snapshot"]["market"] == "us"
+        assert payload["forecast_target"]["assumed_notional"] == str(
+            assumed_notional("us")
+        )
+        assert ":us:AAPL:" in payload["correlation_id"]
+
+
+@pytest.mark.asyncio
+async def test_fanout_witness_falls_back_to_call_level_market() -> None:
+    """A candidate without its own market stamp inherits the call's market."""
+    result = _fanout_result()
+    result["market"] = "us"
+    result["candidates"] = [_fanout_candidate("AAPL")]
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    await maybe_record_buy_gate_ab_shadow(
+        result,
+        enabled=True,
+        save=save,
+        now=_AS_OF,
+    )
+
+    assert len(saved) == 2
+    for payload in saved:
+        assert payload["instrument_type"] == "equity_us"
+        assert payload["forecast_target"]["input_snapshot"]["market"] == "us"
+
+
+@pytest.mark.asyncio
+async def test_fanout_witness_candidate_market_stamp_wins_over_call_level() -> None:
+    """The per-candidate stamp describes the row's own fanout market."""
+    result = _fanout_result()
+    result["market"] = "kr"
+    result["candidates"] = [{**_fanout_candidate("AAPL"), "market": "us"}]
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    await maybe_record_buy_gate_ab_shadow(
+        result,
+        enabled=True,
+        save=save,
+        now=_AS_OF,
+    )
+
+    assert len(saved) == 2
+    for payload in saved:
+        assert payload["instrument_type"] == "equity_us"
+        assert payload["forecast_target"]["input_snapshot"]["market"] == "us"
+
+
+@pytest.mark.asyncio
+async def test_fanout_witness_normalizes_market_like_the_fanout_impl() -> None:
+    """Whitespace/case padding normalizes exactly like the impl's own parse."""
+    result = _fanout_result()
+    result["market"] = " US "
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    await maybe_record_buy_gate_ab_shadow(
+        result,
+        enabled=True,
+        save=save,
+        now=_AS_OF,
+    )
+
+    assert len(saved) == 2
+    for payload in saved:
+        assert payload["instrument_type"] == "equity_us"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_market", [None, "", "xx", "crypto", "kospi", 123, ["us"]])
+async def test_fanout_witness_skips_undetermined_market(
+    bad_market: object,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A market outside the v2 registration skips the candidate fail-closed."""
+    result = _fanout_result()
+    result["market"] = bad_market
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="app.services.buy_gate_ab_shadow_recorder",
+    ):
+        await maybe_record_buy_gate_ab_shadow(
+            result,
+            enabled=True,
+            save=save,
+            now=_AS_OF,
+        )
+
+    assert saved == []
+    completed = [
+        record
+        for record in caplog.records
+        if record.message == "buy-gate A/B v2 witness recorder completed"
+    ]
+    assert len(completed) == 1
+    assert completed[0].candidates_seen == 1
+    assert completed[0].evaluated == 0
+    assert completed[0].skipped == 1
+    assert completed[0].rows_saved == 0
+
+
+@pytest.mark.asyncio
+async def test_merged_us_fanout_result_records_us_witness_rows() -> None:
+    """The real ``market="us"`` impl result records US witness rows."""
+
+    async def top_stocks_reader(source: Any, market: str, top_n: int) -> dict[str, Any]:
+        return {
+            "source": source.source,
+            "family": source.family,
+            "kind": "live",
+            "rows": [{"symbol": "AAPL", "name": "witness-apple", "rank": 1}],
+            "metadata": {
+                "request": {
+                    "market": market,
+                    "ranking_type": source.ranking_type,
+                    "limit": top_n,
+                }
+            },
+        }
+
+    async def fresh_revalidator(
+        symbols: list[str], _market: str
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            symbol: {
+                "data_state": "fresh",
+                "current_price": 100,
+                "rsi_14": 35,
+                "consensus": {"avg_target_price": 145},
+                "supports": [
+                    {
+                        "price": 95,
+                        "strength": _A_MIN,
+                        "sources": ["fib_50", "bb_lower"],
+                    }
+                ],
+            }
+            for symbol in symbols
+        }
+
+    result = await discover_buy_candidates_fanout_impl(
+        market="us",
+        _top_stocks_reader=top_stocks_reader,
+        _fresh_revalidator=fresh_revalidator,
+    )
+    assert result["market"] == "us"
+    assert result["candidates"][0]["market"] == "us"
+
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    await maybe_record_buy_gate_ab_shadow(
+        result,
+        enabled=True,
+        save=save,
+        now=_AS_OF,
+    )
+
+    assert len(saved) >= 1
+    for payload in saved:
+        assert payload["instrument_type"] == "equity_us"
+        assert payload["forecast_target"]["input_snapshot"]["market"] == "us"
 
 
 def test_v2_mcp_tool_returns_witness_kwargs_without_writing(
