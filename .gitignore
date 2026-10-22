@@ -310,3 +310,5 @@ research/event_coverage/results/
 
 # ROB-1383: row-level results hold order ids / session reasons; public repo -> local + Drive only
 research/rob1383_buy_drought/results/*.csv
+# ROB-1404: row-level 2A results hold order ids / budgets; public repo -> local + Drive only
+research/rob1404_kr_entry/results/
