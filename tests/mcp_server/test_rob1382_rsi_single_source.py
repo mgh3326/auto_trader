@@ -12,6 +12,7 @@ Regression suite for the RSI provenance unification:
 
 import datetime
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -21,11 +22,12 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.mcp_server.tooling import (
     analysis_quick,
+    analysis_tool_handlers,
     market_data_indicators,
     market_data_quotes,
 )
 from app.services.daily_candles.read_service import rows_to_frame
-from app.services.daily_candles.repository import DailyCandleRow
+from app.services.daily_candles.repository import DailyCandleRow, MarketKey
 from tests._mcp_tooling_support import build_tools
 
 # Realistic daily return stream (ETF-shaped: mixed ±0.1-1.2% sessions, a
@@ -86,14 +88,14 @@ _DAILY_RETURNS_PCT = [
 _FIXTURE_START = date(2024, 5, 6)
 
 
-def _daily_frame(extra_days: int = 0) -> pd.DataFrame:
+def _daily_frame(extra_days: int = 0, *, return_cycles: int = 1) -> pd.DataFrame:
     """Provider-shaped daily OHLCV frame (date/open/high/low/close/volume/value).
 
     ``extra_days`` appends bars *past* the canonical window — the shape a live
     provider returns when it carries a still-forming session the store lacks.
     """
     closes = [205.0]
-    for pct in _DAILY_RETURNS_PCT:
+    for pct in _DAILY_RETURNS_PCT * return_cycles:
         closes.append(closes[-1] * (1 + pct / 100.0))
     closes.extend(closes[-1] * (1 + pct / 100.0) for pct in (0.51, -0.33)[:extra_days])
 
@@ -167,6 +169,116 @@ def _cutler_rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = loss.rolling(window=period, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0, float("nan"))
     return 100 - (100 / (1 + rs))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_symbol", "market", "canonical", "market_key", "partition"),
+    [
+        ("A005930", "kr", "005930", MarketKey.KR, "KRX"),
+        ("005930", "kr", "005930", MarketKey.KR, "KRX"),
+        ("BRK.B", "us", "BRK.B", MarketKey.US, None),
+        ("brk.b", None, "BRK.B", MarketKey.US, None),
+        ("QQQM", "us", "QQQM", MarketKey.US, None),
+        ("KRW-BTC", "crypto", "KRW-BTC", MarketKey.CRYPTO, "upbit_krw"),
+        ("krw-btc", None, "KRW-BTC", MarketKey.CRYPTO, "upbit_krw"),
+        ("USDT-BTC", "crypto", "USDT-BTC", MarketKey.CRYPTO, "upbit_krw"),
+    ],
+)
+async def test_real_entrypoints_share_canonical_repository_boundary(
+    monkeypatch, raw_symbol, market, canonical, market_key, partition
+):
+    """ROB-1396: observe real canonical/quick wiring without replacing either.
+
+    This fake repository proves call arguments and RSI provenance, not SQL cost;
+    ROB-1311 separately counts execute calls with the real repository in place.
+    """
+    tools = build_tools()
+    canonical_frame = _daily_frame(return_cycles=5).tail(250).reset_index(drop=True)
+    canonical_rows = _daily_rows(canonical_frame, canonical, partition or "NASD")
+    provider_frame = canonical_frame.tail(25).reset_index(drop=True)
+    provider = AsyncMock(side_effect=lambda **kwargs: provider_frame.copy())
+    calls = []
+
+    class EmptyResult:
+        def scalars(self):
+            return self
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return []
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def execute(self, statement, params=None):
+            return EmptyResult()
+
+    async def fetch_recent_batch(self, *, market, symbols, partition=None, count):
+        calls.append(
+            {
+                "market": market,
+                "symbols": list(symbols),
+                "partition": partition,
+                "count": count,
+            }
+        )
+        # Match the real repository's uppercase output keys, even when callers
+        # pass lowercase US symbols. Do not manufacture a lowercase alias.
+        return {
+            str(symbol).strip().upper(): canonical_rows[-count:] for symbol in symbols
+        }
+
+    def forbid_http(*args, **kwargs):
+        raise AssertionError("entrypoint test must not construct an HTTP client")
+
+    monkeypatch.setattr(market_data_quotes, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(analysis_quick, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(
+        market_data_quotes.DailyCandlesRepository,
+        "fetch_recent_batch",
+        fetch_recent_batch,
+    )
+    monkeypatch.setattr(yahoo_service, "fetch_ohlcv", provider)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", provider)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "KISClient",
+        lambda: SimpleNamespace(inquire_daily_itemchartprice=provider),
+    )
+    monkeypatch.setattr(market_data_quotes.settings, "kis_ohlcv_cache_enabled", False)
+    monkeypatch.setattr(analysis_tool_handlers.httpx, "AsyncClient", forbid_http)
+
+    ohlcv = await tools["get_ohlcv"](
+        raw_symbol, count=25, period="day", include_indicators=True, market=market
+    )
+    assert len(calls) == 1
+    batch = await analysis_tool_handlers.analyze_stock_batch_impl(
+        [raw_symbol], market=market, quick=True, include_position=False
+    )
+    assert len(calls) == 2
+    for call in calls:
+        assert call["market"] == market_key
+        assert call["partition"] == partition
+        assert call["count"] == 250
+        assert [symbol.strip().upper() for symbol in call["symbols"]] == [canonical]
+
+    assert set(batch["results"]) == {canonical}
+    quick = batch["results"][canonical]
+    for payload in (ohlcv, quick):
+        assert payload["rsi_source"] == "daily_candles_db"
+        assert payload["bars_used"] == 250
+    assert len(ohlcv["rows"]) == 25
+    assert ohlcv["rows"][-1]["date"] == canonical_frame.iloc[-1]["date"].isoformat()
+    assert quick["rsi_14"] is not None
+    assert ohlcv["rows"][-1]["rsi_14"] == quick["rsi_14"]
+    provider.assert_awaited_once()
 
 
 @pytest.mark.asyncio
