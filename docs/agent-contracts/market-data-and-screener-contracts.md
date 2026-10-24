@@ -230,6 +230,11 @@ canonical을 읽지 못하면 provider 프레임 위에서 같은 Wilder 산식�
 프레임 행 수를 담는다. `end_date` 지정 또는 `day` 외 period는 canonical을 건드리지
 않는다. zero-loss 구간(avg_loss=0)은 quick과 마찬가지로 `null`이다.
 
+ROB-1397 — warm-up은 `period + 1`개 종가를 요구한다(RSI-14는 15개).
+첫 `period`개 출력은 NaN/직렬화 null이며 첫 산출 가능 위치는 0-based
+`iloc[period]`다. 초기 0 pseudo-delta는 기존 EWMA seed로만 유지하며
+warm-up 이후 산식·값과 zero-loss null 계약은 바꾸지 않는다.
+
 🔴 **`current_price`는 라이브 시세가 아니다.** quick의 `current_price`는
 `daily_candles`의 가장 최근 **마감된** 일봉 종가이며 `data_state="stale"`,
 `data_state_reason="db_only_projection"`로 항상 스탬프된다. 라이브 가격·세션

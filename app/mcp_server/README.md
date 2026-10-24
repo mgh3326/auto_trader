@@ -173,6 +173,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
   - `include_indicators=True` also adds `rsi_source` and `bars_used` at the payload top level (ROB-1382): for `period="day"` without `end_date`, `rsi_14` is the shared Wilder RSI computed over the canonical `daily_candles` store (`rsi_source="daily_candles_db"`, `bars_used`=store window length) — the same series `analyze_stock_batch(quick)` reports; otherwise it is computed over the returned frame and `rsi_source` names that provider
+  - RSI-14 needs at least 15 closes in its calculation history (14 real price changes); earlier values are `null`, which alone does not indicate provider failure. `count` limits returned rows, not RSI history: a 14-row response can contain RSI when its dates map to a longer canonical window. If canonical history is unavailable, eligibility follows the provider frame used for calculation. Zero average loss still yields `null`.
   - `vwap` is populated for intraday periods and `null` for `day/week/month`
   - `1m` / `5m` / `15m` / `30m`: KR/US equity + crypto
   - `4h`: crypto only
@@ -203,6 +204,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR intraday degrades to DB-backed partial data when recent KIS minute overlay calls fail
   - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
+  - RSI-14 is `null` until its calculation history has 15 closes (14 real changes); zero average loss also yields `null`.
 - `get_market_index(symbol=None, period="day", count=20)`
   - KR indices (`KOSPI`/`KOSDAQ`) are tagged with `data_state` from the KRX
     session clock. If the clock is live but the Naver payload is self-inconsistent
@@ -305,7 +307,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     current_price, latest OHLCV, rsi_14, rsi_source, bars_used,
     supports (top 3), resistances (top 3),
     and the freshness envelope. rsi_14 is the Wilder RSI-14 over the latest 250
-    `daily_candles` bars — identical to `get_ohlcv(period="day", include_indicators=True)`
+    `daily_candles` bars; fewer than 15 closes yield `null` (as does zero average loss) — identical to `get_ohlcv(period="day", include_indicators=True)`
     for the same symbol (ROB-1382). It also preserves compact `decision_history`
     and `earnings` meaning through set-based DB read models. It makes zero HTTP
     requests and reads all requested data in at most 12 DB executions per batch.

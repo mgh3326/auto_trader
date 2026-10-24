@@ -462,6 +462,9 @@ def _calculate_rsi_series(
     """Wilder-smoothed RSI series (ewm alpha=1/period over all ``period``
     deltas, ``adjust=False``).
 
+    The first ``period`` outputs are unavailable: ``period + 1`` closes are
+    required. The initial zero pseudo-delta remains only as the EWMA seed.
+
     ROB-1382: this is the single RSI implementation for every MCP surface.
     ``analyze_stock_batch(quick)`` reaches it via ``_compute_indicators`` →
     ``_calculate_rsi``; ``get_ohlcv(include_indicators=True)`` enriches rows
@@ -476,7 +479,10 @@ def _calculate_rsi_series(
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    # Require period + 1 closes without changing the EWMA seed.
+    rsi.iloc[:period] = np.nan
+    return rsi
 
 
 def _calculate_rsi(
