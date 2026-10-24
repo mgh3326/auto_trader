@@ -27,7 +27,11 @@ from app.mcp_server.tooling import (
     market_data_quotes,
 )
 from app.services.daily_candles.read_service import rows_to_frame
-from app.services.daily_candles.repository import DailyCandleRow, MarketKey
+from app.services.daily_candles.repository import (
+    DailyCandleRow,
+    DailyCandlesRepository,
+    MarketKey,
+)
 from tests._mcp_tooling_support import build_tools
 
 # Realistic daily return stream (ETF-shaped: mixed ±0.1-1.2% sessions, a
@@ -267,7 +271,13 @@ async def test_real_entrypoints_share_canonical_repository_boundary(
         assert call["market"] == market_key
         assert call["partition"] == partition
         assert call["count"] == 250
-        assert [symbol.strip().upper() for symbol in call["symbols"]] == [canonical]
+    # Auto-detected US OHLCV preserves input case at this boundary; the real
+    # repository owns normalization. Quick resolves its canonical key first.
+    ohlcv_symbol = (
+        raw_symbol if market_key == MarketKey.US and market is None else canonical
+    )
+    assert calls[0]["symbols"] == [ohlcv_symbol]
+    assert calls[1]["symbols"] == [canonical]
 
     assert set(batch["results"]) == {canonical}
     quick = batch["results"][canonical]
@@ -279,6 +289,49 @@ async def test_real_entrypoints_share_canonical_repository_boundary(
     assert quick["rsi_14"] is not None
     assert ohlcv["rows"][-1]["rsi_14"] == quick["rsi_14"]
     provider.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_real_repository_normalizes_us_input_and_returns_uppercase_keys():
+    """Exercise normalization in the real repository, below the entrypoint fake."""
+    row = _daily_rows(_daily_frame().tail(1), "BRK.B", "NASD")[0]
+    calls = []
+
+    class Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [
+                {
+                    "time": row.time_utc,
+                    "symbol": row.symbol,
+                    "partition": row.partition,
+                    "open": row.open,
+                    "high": row.high,
+                    "low": row.low,
+                    "close": row.close,
+                    "adj_close": None,
+                    "volume": row.volume,
+                    "value": row.value,
+                    "source": row.source,
+                }
+            ]
+
+    class Session:
+        async def execute(self, statement, params):
+            calls.append(params)
+            return Result()
+
+    result = await DailyCandlesRepository(session=Session()).fetch_recent_batch(
+        market=MarketKey.US, symbols=["brk.b", " BRK.B "], partition=None, count=250
+    )
+    assert len(calls) == 1
+    assert calls[0]["symbols"] == ["BRK.B"]
+    assert calls[0]["count"] == 250
+    assert "partition" not in calls[0]
+    assert set(result) == {"BRK.B"}
+    assert result["BRK.B"] == [row]
 
 
 @pytest.mark.asyncio
