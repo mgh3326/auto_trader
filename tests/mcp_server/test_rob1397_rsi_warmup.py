@@ -311,3 +311,35 @@ def test_canonical_warmup_uses_history_position_not_returned_row_count():
         "daily_candles_db",
         64,
     )
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_fourteen_returned_rows_can_use_longer_history(monkeypatch):
+    """count limits returned rows; canonical history determines RSI eligibility."""
+    canonical = _frame(64)
+    provider = canonical.tail(14).copy()
+    fetch = AsyncMock(return_value={"QQQM": _rows(canonical)})
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    monkeypatch.setattr(quotes, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(quotes.DailyCandlesRepository, "fetch_recent_batch", fetch)
+    monkeypatch.setattr(
+        quotes.yahoo_service, "fetch_ohlcv", AsyncMock(return_value=provider)
+    )
+    result = await quotes._get_ohlcv_impl(
+        "QQQM", market="us", count=14, period="day", include_indicators=True
+    )
+    assert len(result["rows"]) == 14
+    assert result["bars_used"] == 64
+    assert result["rsi_source"] == "daily_candles_db"
+    assert all(row["rsi_14"] is not None for row in result["rows"])
+    assert result["rows"][-1]["rsi_14"] == _LAST[64]
+    fetch.assert_awaited_once_with(
+        market=MarketKey.US, symbols=["QQQM"], partition=None, count=250
+    )
