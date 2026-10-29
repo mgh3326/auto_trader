@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import functools
+import re
+import shlex
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -14,6 +17,45 @@ from tests.scripts.test_deploy_ncp_pull_rollback import OLD, _run
 
 MOUNT = "/etc/machine-id:/etc/machine-id:ro"
 DEFAULT_COLORS = {"at-mcp-blue", "at-mcp-green"}
+
+
+def _pid_modes(argv: Sequence[str]) -> list[str]:
+    """Every docker PidMode in ``argv``, in either spelling.
+
+    Docker accepts ``--pid=host``, ``--pid host`` and quoted forms such as
+    ``--pid="host"``; an exact ``"--pid=host"`` token match misses all but the
+    first. Surrounding quotes are stripped so a raw (unparsed) token is read the
+    same as its shell-parsed value.
+    """
+
+    modes: list[str] = []
+    for index, token in enumerate(argv):
+        if token == "--pid" and index + 1 < len(argv):
+            modes.append(argv[index + 1].strip("\"'"))
+        elif token.startswith("--pid="):
+            modes.append(token.removeprefix("--pid=").strip("\"'"))
+    return modes
+
+
+def _uses_host_pid(argv: Sequence[str]) -> bool:
+    return "host" in _pid_modes(argv)
+
+
+def _assert_no_host_pid(calls: Sequence[Sequence[str]]) -> None:
+    assert calls and not any(_uses_host_pid(call) for call in calls)
+
+
+def _docker_run_options(command: str) -> list[str]:
+    """Docker options of the first ``docker run`` in ``command`` (before the image)."""
+
+    joined = command.replace("\\\n", " ")
+    words = shlex.split(joined.split("docker run", 1)[1], comments=True)
+    options: list[str] = []
+    for word in words:
+        if word == "$image" or word.startswith("ghcr.io/"):
+            break
+        options.append(word)
+    return options
 
 
 def _runs(calls: list[list[str]]) -> list[list[str]]:
@@ -39,7 +81,7 @@ def test_only_default_mcp_color_gets_machine_id_on_promotion(
     call = next(call for call in runs if _name(call) == color)
     assert call.count(MOUNT) == 1
     # Every long-running container keeps its own PID namespace.
-    assert runs and all("--pid=host" not in call for call in runs)
+    _assert_no_host_pid(runs)
 
 
 @pytest.mark.parametrize("active_color", ["blue", "green"])
@@ -60,14 +102,17 @@ def test_switch_and_failure_rollback_keeps_mount(
     assert any(_name(call) == target and OLD in call for call in runs)
     assert sum(_name(call) == target and MOUNT in call for call in runs) == 2
     assert all(MOUNT not in call for call in runs if _name(call) not in DEFAULT_COLORS)
-    assert all("--pid=host" not in call for call in runs)
+    _assert_no_host_pid(runs)
 
 
 def test_host_witness_command_is_ephemeral_host_pid_only() -> None:
     wrapper = (
         Path(__file__).resolve().parents[2] / "scripts/nhplug-t14-host-witness.sh"
     ).read_text()
-    assert "docker run --rm --pid=host --network none" in wrapper
+    options = _docker_run_options(wrapper)
+    assert _pid_modes(options) == ["host"]
+    assert "--rm" in options
+    assert options[options.index("--network") + 1] == "none"
     assert "-v /etc/machine-id:/etc/machine-id:ro" in wrapper
     assert "-p " not in wrapper and "--publish" not in wrapper
     assert "python -m scripts.nhplug_t14_host_witness" in wrapper
@@ -83,7 +128,67 @@ def test_runbook_does_not_promise_host_visibility() -> None:
     assert "install -m 0750 scripts/nhplug-t14-host-witness.sh" in runbook
     assert "예상 출력은 `host_pid_visibility_unverified`" in runbook
     assert "출력은 `host_pid_visibility_verified`다" not in runbook
-    assert "--pid=host --network none" in runbook
+    witness_runs = [
+        _docker_run_options(span)
+        for span in re.findall(r"`([^`]*docker run[^`]*)`", runbook)
+    ]
+    assert witness_runs
+    assert all(_pid_modes(options) == ["host"] for options in witness_runs)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--pid=host", "--name", "x"],
+        ["run", "--pid", "host", "--name", "x"],
+        ["run", '--pid="host"', "--name", "x"],
+        ["run", "--pid='host'", "--name", "x"],
+        ["run", "--pid", '"host"', "--name", "x"],
+    ],
+    ids=["equals", "two-arg", "equals-dquoted", "equals-squoted", "two-arg-dquoted"],
+)
+def test_host_pid_in_a_forbidden_place_is_red_in_every_spelling(
+    argv: list[str],
+) -> None:
+    """The negative-test guard must fail (assertion) for each spelling."""
+
+    assert _uses_host_pid(argv)
+    with pytest.raises(AssertionError):
+        _assert_no_host_pid([["run", "--name", "clean"], argv])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "docker run --rm --pid host --network none img",
+        'docker run --rm --pid="host" --network none img',
+        "docker run --rm \\\n  --pid 'host' --network none img",
+    ],
+)
+def test_text_scanner_reads_every_pid_spelling(command: str) -> None:
+    assert _pid_modes(_docker_run_options(command)) == ["host"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--name", "x"],
+        ["run", "--pid=container:abc", "--name", "x"],
+        ["run", "--pid", "container:abc"],
+        ["run", "--pid-ns", "host"],
+        ["run", "--pid"],
+    ],
+)
+def test_non_host_pid_modes_are_not_host(argv: list[str]) -> None:
+    assert not _uses_host_pid(argv)
+    _assert_no_host_pid([argv])
+
+
+def test_witness_args_after_the_image_are_not_docker_pid_options() -> None:
+    options = _docker_run_options(
+        'docker run --rm --pid=host "$image" python -m x --pid 1'
+    )
+    assert _pid_modes(options) == ["host"]
 
 
 # ---------------------------------------------------------------------------
