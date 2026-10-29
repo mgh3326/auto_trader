@@ -1,0 +1,73 @@
+version: 1
+# Shadow only: mergewake classifies and reviews but never merges (ROB-1417).
+enabled: false
+required_checks:
+  - lint
+  - taskiq-smoke
+  - 'test (3.13, 1)'
+  - 'test (3.13, 2)'
+  - 'test (3.13, 3)'
+  - 'test (3.13, 4)'
+watch_checks:
+  - lint
+  - taskiq-smoke
+  - 'test (3.13, 1)'
+  - 'test (3.13, 2)'
+  - 'test (3.13, 3)'
+  - 'test (3.13, 4)'
+blocking:
+  - paths:
+      - 'app/services/brokers/**'
+      - 'app/mcp_server/tooling/orders_kis_variants.py'
+      - 'app/mcp_server/tooling/orders_kiwoom_*.py'
+      - 'app/mcp_server/tooling/orders_modify_cancel.py'
+      - 'app/mcp_server/tooling/orders_nh_mock_variants.py'
+      - 'app/mcp_server/tooling/orders_registration.py'
+      - 'app/mcp_server/tooling/orders_toss_variants.py'
+      - 'app/mcp_server/tooling/order_*.py'
+      - 'app/services/order_proposals/**'
+      - 'app/services/order_send_intent_service.py'
+      - 'app/services/kis_trading_service.py'
+      - 'app/services/nhplug_mock/**'
+    reason: Broker, order and approval code can send or alter real orders before a revert.
+  - paths:
+      - 'app/services/execution_ledger/**'
+      - 'app/services/*ledger*.py'
+      - 'app/mcp_server/tooling/kis_live_ledger.py'
+      - 'app/mcp_server/tooling/kis_mock_ledger.py'
+      - 'app/mcp_server/tooling/live_order_ledger.py'
+      - 'app/mcp_server/tooling/toss_live_ledger.py'
+      - 'app/services/protected_quantity_service.py'
+      - 'app/services/protected_position*.py'
+      - 'scripts/quarantine_execution_ledger_rows.py'
+    reason: Ledger and protection writers persist fills, order state and protected quantities that a code revert does not undo.
+  - paths: ['alembic/versions/**', 'alembic/env.py', 'app/models/**/*.py', 'scripts/db_roles/**', 'scripts/**/*.sql']
+    reason: Schema, role and data-migration changes alter persistent data before a revert.
+  - paths:
+      - 'config/trading_policy.yaml'
+      - 'config/mcp_lane_allowlists/**'
+      - 'config/mcp_profiles/**'
+      - 'app/core/config.py'
+      - 'app/middleware/auth.py'
+    reason: Trading policy, broker mutation gates, MCP surfaces and ingest auth change live authority.
+  - paths:
+      - 'app/tasks/**/*.py'
+      - 'app/core/taskiq*.py'
+      - 'app/core/scheduler.py'
+      - 'app/jobs/*reconcil*.py'
+      - 'app/jobs/pending_order_sync.py'
+      - 'app/jobs/*order*.py'
+    reason: Task and schedule registration can start automatic runs before a revert (host timers are under ops/**).
+  - paths: ['scripts/deploy*.sh', 'Dockerfile*', 'docker-compose*.yml', 'docker-compose*.yaml', '.dockerignore', 'ops/**']
+    reason: Deploy, image and host-unit changes reach production directly.
+  - paths:
+      - '.github/workflows/**'
+      - '.circleci/**'
+      - '.mergewake/**'
+      - 'scripts/ci/**'
+      - 'ci_shards/**'
+      - 'scripts/setup-test-env.sh'
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+    reason: Verification, dependency and policy changes can bypass recovery controls.
