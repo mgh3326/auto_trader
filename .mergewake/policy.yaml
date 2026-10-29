@@ -19,20 +19,41 @@ blocking:
   - paths:
       - 'app/services/brokers/**'
       - 'app/mcp_server/tooling/orders_*.py'
+      - 'app/mcp_server/tooling/order_*.py'
       - 'app/services/order_proposals/**'
+      - 'app/services/order_send_intent_service.py'
+      - 'app/services/kis_trading_service.py'
+      - 'app/services/nhplug_mock/**'
     reason: Broker, order and approval code can send or alter real orders before a revert.
   - paths:
       - 'app/services/execution_ledger/**'
       - 'app/services/*ledger*.py'
+      - 'app/mcp_server/tooling/*ledger*.py'
+      - 'app/services/protected_quantity_service.py'
+      - 'app/services/protected_position*.py'
       - 'scripts/quarantine_execution_ledger_rows.py'
-    reason: Ledger writers persist fills and order state that a code revert does not undo.
-  - paths: ['alembic/**', 'app/models/**']
-    reason: Schema migrations change persistent data before a revert.
-  - paths: ['config/trading_policy.yaml', 'config/mcp_lane_allowlists/**']
-    reason: Trading policy and MCP lane surfaces change live session authority.
-  - paths: ['app/tasks/**', 'app/core/taskiq*.py', 'app/flows/**']
-    reason: Scheduled tasks can run automatically before a revert.
-  - paths: ['scripts/deploy*.sh', 'Dockerfile*', 'docker-compose*.yml']
-    reason: Deploy and image changes reach production directly.
-  - paths: ['.github/workflows/**', '.mergewake/**', 'scripts/ci/**']
-    reason: Verification and policy changes can bypass recovery controls.
+    reason: Ledger and protection writers persist fills, order state and protected quantities that a code revert does not undo.
+  - paths: ['alembic/**', 'app/models/**', 'scripts/db_roles/**', 'scripts/**/*.sql', 'scripts/*.sql']
+    reason: Schema, role and data-migration changes alter persistent data before a revert.
+  - paths:
+      - 'config/trading_policy.yaml'
+      - 'config/mcp_lane_allowlists/**'
+      - 'config/mcp_profiles/**'
+      - 'app/core/config.py'
+      - 'app/middleware/auth.py'
+    reason: Trading policy, broker mutation gates, MCP surfaces and ingest auth change live authority.
+  - paths: ['app/tasks/**', 'app/core/taskiq*.py', 'app/core/scheduler.py', 'app/jobs/**', 'app/flows/**']
+    reason: Scheduled and background jobs can run automatically before a revert.
+  - paths: ['scripts/deploy*.sh', 'Dockerfile*', 'docker-compose*.yml', '.dockerignore', 'ops/**']
+    reason: Deploy, image and host-unit changes reach production directly.
+  - paths:
+      - '.github/workflows/**'
+      - '.circleci/**'
+      - '.mergewake/**'
+      - 'scripts/ci/**'
+      - 'ci_shards/**'
+      - 'scripts/setup-test-env.sh'
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+    reason: Verification, dependency and policy changes can bypass recovery controls.
