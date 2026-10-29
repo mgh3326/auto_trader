@@ -1,0 +1,38 @@
+version: 1
+# Shadow only: mergewake classifies and reviews but never merges (ROB-1417).
+enabled: false
+required_checks:
+  - lint
+  - taskiq-smoke
+  - 'test (3.13, 1)'
+  - 'test (3.13, 2)'
+  - 'test (3.13, 3)'
+  - 'test (3.13, 4)'
+watch_checks:
+  - lint
+  - taskiq-smoke
+  - 'test (3.13, 1)'
+  - 'test (3.13, 2)'
+  - 'test (3.13, 3)'
+  - 'test (3.13, 4)'
+blocking:
+  - paths:
+      - 'app/services/brokers/**'
+      - 'app/mcp_server/tooling/orders_*.py'
+      - 'app/services/order_proposals/**'
+    reason: Broker, order and approval code can send or alter real orders before a revert.
+  - paths:
+      - 'app/services/execution_ledger/**'
+      - 'app/services/*ledger*.py'
+      - 'scripts/quarantine_execution_ledger_rows.py'
+    reason: Ledger writers persist fills and order state that a code revert does not undo.
+  - paths: ['alembic/**', 'app/models/**']
+    reason: Schema migrations change persistent data before a revert.
+  - paths: ['config/trading_policy.yaml', 'config/mcp_lane_allowlists/**']
+    reason: Trading policy and MCP lane surfaces change live session authority.
+  - paths: ['app/tasks/**', 'app/core/taskiq*.py', 'app/flows/**']
+    reason: Scheduled tasks can run automatically before a revert.
+  - paths: ['scripts/deploy*.sh', 'Dockerfile*', 'docker-compose*.yml']
+    reason: Deploy and image changes reach production directly.
+  - paths: ['.github/workflows/**', '.mergewake/**', 'scripts/ci/**']
+    reason: Verification and policy changes can bypass recovery controls.
