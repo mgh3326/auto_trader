@@ -274,19 +274,27 @@ async def test_stale_when_partition_is_not_todays_trading_date(db_session):
 
 
 # ROB-1418: freeze the clock behind the default ``today_market_date`` path.
+# The SAME snapshot must be FRESH for one frozen instant and STALE for another —
+# a 2099-dated snapshot is stale under every clock, so it cannot catch a
+# regression where the loader ignores the clock and reads the real date.
 # 2026-09-28T10:20Z is the instant the flake was observed (19:20 KST, Monday);
-# the other instants cover an ordinary weekday and a weekend (rolls back to Fri).
+# the other instants are the next trading date and a weekend (rolls back to Fri).
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "frozen_now",
+    ("frozen_now", "expected_state"),
     [
-        dt.datetime(2026, 9, 28, 10, 20, tzinfo=dt.UTC),
-        dt.datetime(2026, 9, 29, 1, 0, tzinfo=dt.UTC),
-        dt.datetime(2026, 10, 3, 3, 0, tzinfo=dt.UTC),  # Saturday KST
+        (dt.datetime(2026, 9, 28, 10, 20, tzinfo=dt.UTC), "fresh"),
+        (dt.datetime(2026, 9, 29, 1, 0, tzinfo=dt.UTC), "stale"),
+        (dt.datetime(2026, 10, 3, 3, 0, tzinfo=dt.UTC), "stale"),  # Saturday KST
     ],
 )
-async def test_stale_with_frozen_default_clock(db_session, monkeypatch, frozen_now):
-    from app.services.invest_screener_snapshots import freshness
+async def test_snapshot_state_follows_default_clock(
+    db_session, monkeypatch, frozen_now, expected_state
+):
+    from app.services.invest_screener_snapshots import freshness, partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+    )
 
     orig_today = freshness.today_trading_date
     monkeypatch.setattr(
@@ -294,6 +302,20 @@ async def test_stale_with_frozen_default_clock(db_session, monkeypatch, frozen_n
         "today_trading_date",
         lambda market, *, now=None: orig_today(market, now=frozen_now),
     )
+    # This case is about the clock, not partition selection: pin the served
+    # partition so rows leaked by sibling files cannot shift ``val_date``.
+    snapshot_date = dt.date(2026, 9, 28)
+
+    async def _fixed_partition(*_args, **_kwargs):
+        return HealthyPartition(
+            partition_date=snapshot_date,
+            row_count=1,
+            coverage_ratio=1.0,
+            is_fallback=False,
+            healthy=True,
+        )
+
+    monkeypatch.setattr(partition_health, "resolve_healthy_partition", _fixed_partition)
     db_session.add(
         KRSymbolUniverse(
             symbol="921000", name="구밸류에이션", exchange="KOSPI", is_active=True
@@ -303,7 +325,7 @@ async def test_stale_with_frozen_default_clock(db_session, monkeypatch, frozen_n
         MarketValuationSnapshot(
             market="kr",
             symbol="921000",
-            snapshot_date=dt.date(2099, 12, 31),
+            snapshot_date=snapshot_date,
             source="naver_finance",
             per=decimal.Decimal("7.0"),
             roe=decimal.Decimal("16.0"),
@@ -316,7 +338,7 @@ async def test_stale_with_frozen_default_clock(db_session, monkeypatch, frozen_n
     assert rows is not None
     target = next((r for r in rows if r["symbol"] == "921000"), None)
     assert target is not None
-    assert target["_screener_snapshot_state"] == "stale"
+    assert target["_screener_snapshot_state"] == expected_state
 
 
 @pytest.mark.asyncio
