@@ -18,7 +18,12 @@ watch_checks:
 blocking:
   - paths:
       - 'app/services/brokers/**'
-      - 'app/mcp_server/tooling/orders_*.py'
+      - 'app/mcp_server/tooling/orders_kis_variants.py'
+      - 'app/mcp_server/tooling/orders_kiwoom_*.py'
+      - 'app/mcp_server/tooling/orders_modify_cancel.py'
+      - 'app/mcp_server/tooling/orders_nh_mock_variants.py'
+      - 'app/mcp_server/tooling/orders_registration.py'
+      - 'app/mcp_server/tooling/orders_toss_variants.py'
       - 'app/mcp_server/tooling/order_*.py'
       - 'app/services/order_proposals/**'
       - 'app/services/order_send_intent_service.py'
@@ -28,12 +33,15 @@ blocking:
   - paths:
       - 'app/services/execution_ledger/**'
       - 'app/services/*ledger*.py'
-      - 'app/mcp_server/tooling/*ledger*.py'
+      - 'app/mcp_server/tooling/kis_live_ledger.py'
+      - 'app/mcp_server/tooling/kis_mock_ledger.py'
+      - 'app/mcp_server/tooling/live_order_ledger.py'
+      - 'app/mcp_server/tooling/toss_live_ledger.py'
       - 'app/services/protected_quantity_service.py'
       - 'app/services/protected_position*.py'
       - 'scripts/quarantine_execution_ledger_rows.py'
     reason: Ledger and protection writers persist fills, order state and protected quantities that a code revert does not undo.
-  - paths: ['alembic/**', 'app/models/**', 'scripts/db_roles/**', 'scripts/**/*.sql', 'scripts/*.sql']
+  - paths: ['alembic/versions/**', 'alembic/env.py', 'app/models/**/*.py', 'scripts/db_roles/**', 'scripts/**/*.sql']
     reason: Schema, role and data-migration changes alter persistent data before a revert.
   - paths:
       - 'config/trading_policy.yaml'
@@ -42,9 +50,15 @@ blocking:
       - 'app/core/config.py'
       - 'app/middleware/auth.py'
     reason: Trading policy, broker mutation gates, MCP surfaces and ingest auth change live authority.
-  - paths: ['app/tasks/**', 'app/core/taskiq*.py', 'app/core/scheduler.py', 'app/jobs/**', 'app/flows/**']
-    reason: Scheduled and background jobs can run automatically before a revert.
-  - paths: ['scripts/deploy*.sh', 'Dockerfile*', 'docker-compose*.yml', '.dockerignore', 'ops/**']
+  - paths:
+      - 'app/tasks/**/*.py'
+      - 'app/core/taskiq*.py'
+      - 'app/core/scheduler.py'
+      - 'app/jobs/*reconcil*.py'
+      - 'app/jobs/pending_order_sync.py'
+      - 'app/jobs/*order*.py'
+    reason: Task and schedule registration can start automatic runs before a revert (host timers are under ops/**).
+  - paths: ['scripts/deploy*.sh', 'Dockerfile*', 'docker-compose*.yml', 'docker-compose*.yaml', '.dockerignore', 'ops/**']
     reason: Deploy, image and host-unit changes reach production directly.
   - paths:
       - '.github/workflows/**'
