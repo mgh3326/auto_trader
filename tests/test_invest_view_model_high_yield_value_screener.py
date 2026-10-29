@@ -30,6 +30,11 @@ def mock_partition_health_always_healthy(monkeypatch):
     orig_resolve = resolve_healthy_partition
 
     async def _fake_resolve(*args, **kwargs):
+        # ROB-1418: pin the coverage denominator. Left to default, the floor is
+        # ceil(0.5 * active KR universe of the xdist worker's DB), so rows leaked
+        # by sibling files (--dist=loadfile) can make a 1-row 2099-12-31 partition
+        # "thin" and shift the served partition to an older one.
+        kwargs.setdefault("universe_count", 1)
         hp = await orig_resolve(*args, **kwargs)
         if hp:
             return HealthyPartition(
@@ -266,6 +271,74 @@ async def test_stale_when_partition_is_not_todays_trading_date(db_session):
     target = next((r for r in rows if r["symbol"] == "921000"), None)
     assert target is not None
     assert target["_screener_snapshot_state"] == "stale"
+
+
+# ROB-1418: freeze the clock behind the default ``today_market_date`` path.
+# The SAME snapshot must be FRESH for one frozen instant and STALE for another —
+# a 2099-dated snapshot is stale under every clock, so it cannot catch a
+# regression where the loader ignores the clock and reads the real date.
+# 2026-09-28T10:20Z is the instant the flake was observed (19:20 KST, Monday);
+# the other instants are the next trading date and a weekend (rolls back to Fri).
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frozen_now", "expected_state"),
+    [
+        (dt.datetime(2026, 9, 28, 10, 20, tzinfo=dt.UTC), "fresh"),
+        (dt.datetime(2026, 9, 29, 1, 0, tzinfo=dt.UTC), "stale"),
+        (dt.datetime(2026, 10, 3, 3, 0, tzinfo=dt.UTC), "stale"),  # Saturday KST
+    ],
+)
+async def test_snapshot_state_follows_default_clock(
+    db_session, monkeypatch, frozen_now, expected_state
+):
+    from app.services.invest_screener_snapshots import freshness, partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+    )
+
+    orig_today = freshness.today_trading_date
+    monkeypatch.setattr(
+        freshness,
+        "today_trading_date",
+        lambda market, *, now=None: orig_today(market, now=frozen_now),
+    )
+    # This case is about the clock, not partition selection: pin the served
+    # partition so rows leaked by sibling files cannot shift ``val_date``.
+    snapshot_date = dt.date(2026, 9, 28)
+
+    async def _fixed_partition(*_args, **_kwargs):
+        return HealthyPartition(
+            partition_date=snapshot_date,
+            row_count=1,
+            coverage_ratio=1.0,
+            is_fallback=False,
+            healthy=True,
+        )
+
+    monkeypatch.setattr(partition_health, "resolve_healthy_partition", _fixed_partition)
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="921000", name="구밸류에이션", exchange="KOSPI", is_active=True
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="921000",
+            snapshot_date=snapshot_date,
+            source="naver_finance",
+            per=decimal.Decimal("7.0"),
+            roe=decimal.Decimal("16.0"),
+        )
+    )
+    await db_session.commit()
+
+    # No today_market_date -> the loader derives it from the (frozen) clock.
+    rows = await load_high_yield_value_from_snapshots(db_session, market="kr", limit=20)
+    assert rows is not None
+    target = next((r for r in rows if r["symbol"] == "921000"), None)
+    assert target is not None
+    assert target["_screener_snapshot_state"] == expected_state
 
 
 @pytest.mark.asyncio
