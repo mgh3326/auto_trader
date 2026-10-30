@@ -523,7 +523,9 @@ async def test_sellable_failure_warning_includes_toss_code_and_status(
     fake_secret_marker = "FAKE_SECRET_envelope_do_not_leak"
     envelope = TossErrorEnvelope(
         request_id=None,
-        code="too-many-requests",
+        # Broker-controlled code text carrying a newline: it must be logged
+        # escaped so it cannot forge an additional log line.
+        code="too-many\nrequests",
         message=f"message must not be logged {fake_secret_marker}",
     )
 
@@ -545,5 +547,6 @@ async def test_sellable_failure_warning_includes_toss_code_and_status(
     assert "BRK.B" in message
     assert "TossRateLimitError" in message
     assert "429" in message
-    assert "too-many-requests" in message
+    assert "too-many\\nrequests" in message
+    assert "\n" not in message
     assert fake_secret_marker not in message

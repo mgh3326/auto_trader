@@ -180,7 +180,9 @@ def _sellable_failure_log_detail(exc: BaseException) -> str:
         detail += f" status={status_code}"
     code = getattr(getattr(exc, "envelope", None), "code", None)
     if isinstance(code, str) and code.strip():
-        detail += f" code={code[:64]}"
+        # ``code`` is broker-controlled text; repr escapes control characters
+        # so a CR/LF in the code cannot forge additional log lines.
+        detail += f" code={code[:64]!r}"
     return detail
 
 
