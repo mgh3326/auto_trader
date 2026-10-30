@@ -166,6 +166,26 @@ async def fetch_toss_cash_snapshot(
             await active_client.aclose()
 
 
+def _sellable_failure_log_detail(exc: BaseException) -> str:
+    """Bounded, non-secret detail for a per-symbol sellable failure.
+
+    Only the exception class name and, when the typed Toss error carries
+    them, the broker error code and HTTP status. The exception message is
+    never formatted: upstream messages may embed credentials, tokens, or
+    account numbers.
+    """
+    detail = type(exc).__name__
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        detail += f" status={status_code}"
+    code = getattr(getattr(exc, "envelope", None), "code", None)
+    if isinstance(code, str) and code.strip():
+        # ``code`` is broker-controlled text; repr escapes control characters
+        # so a CR/LF in the code cannot forge additional log lines.
+        detail += f" code={code[:64]!r}"
+    return detail
+
+
 async def _fetch_toss_portfolio_snapshot_uncached(
     *,
     active_client: TossPortfolioClient,
@@ -277,6 +297,11 @@ async def _fetch_toss_portfolio_snapshot_uncached(
         for item, sellable_result in paired:
             sellable_quantity: Decimal | None = None
             if isinstance(sellable_result, BaseException):
+                logger.warning(
+                    "Toss sellable_quantity fetch failed for %s (%s)",
+                    item.symbol,
+                    _sellable_failure_log_detail(sellable_result),
+                )
                 errors.append(
                     {
                         "source": "toss_api",

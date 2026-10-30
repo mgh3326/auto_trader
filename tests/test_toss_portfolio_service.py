@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from decimal import Decimal
 
 import fakeredis.aioredis
@@ -12,6 +13,10 @@ from app.services.brokers.toss.dto import (
     TossHoldingItem,
     TossHoldings,
     TossSellableQuantity,
+)
+from app.services.brokers.toss.errors import (
+    TossErrorEnvelope,
+    TossRateLimitError,
 )
 from app.services.toss_portfolio_service import (
     fetch_toss_cash_snapshot,
@@ -469,3 +474,79 @@ async def test_shared_snapshot_cache_does_not_persist_or_replay_raw_cash_error_t
         use_shared_snapshot=True,
     )
     assert fake_secret_marker not in json.dumps(replay.errors)
+
+
+# ---------------------------------------------------------------------------
+# ROB-1425 — a failed per-holding sellable fetch must leave exactly one
+# sanitized WARNING per symbol: symbol + exception class + Toss code/status,
+# never the exception message body (it may carry credentials or account
+# numbers).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sellable_failure_logs_one_sanitized_warning_per_symbol(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake_secret_marker = "FAKE_SECRET_sellable_do_not_leak"
+
+    class Client(_FakeTossClient):
+        async def sellable_quantity(self, *, symbol: str) -> TossSellableQuantity:
+            raise RuntimeError(f"broker exploded: {fake_secret_marker}")
+
+    with caplog.at_level(logging.WARNING):
+        snapshot = await fetch_toss_portfolio_snapshot(
+            client=Client(), need_sellable=True
+        )
+
+    assert snapshot.positions[0].sellable_quantity is None
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "sellable_quantity" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "BRK.B" in message
+    assert "RuntimeError" in message
+    for record in caplog.records:
+        assert fake_secret_marker not in record.getMessage()
+        if record.exc_text:
+            assert fake_secret_marker not in record.exc_text
+
+
+@pytest.mark.asyncio
+async def test_sellable_failure_warning_includes_toss_code_and_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake_secret_marker = "FAKE_SECRET_envelope_do_not_leak"
+    envelope = TossErrorEnvelope(
+        request_id=None,
+        # Broker-controlled code text carrying a newline: it must be logged
+        # escaped so it cannot forge an additional log line.
+        code="too-many\nrequests",
+        message=f"message must not be logged {fake_secret_marker}",
+    )
+
+    class Client(_FakeTossClient):
+        async def sellable_quantity(self, *, symbol: str) -> TossSellableQuantity:
+            raise TossRateLimitError(envelope, status_code=429)
+
+    with caplog.at_level(logging.WARNING):
+        await fetch_toss_portfolio_snapshot(client=Client(), need_sellable=True)
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "sellable_quantity" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "BRK.B" in message
+    assert "TossRateLimitError" in message
+    assert "429" in message
+    assert "too-many\\nrequests" in message
+    assert "\n" not in message
+    assert fake_secret_marker not in message
