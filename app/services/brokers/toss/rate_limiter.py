@@ -336,14 +336,26 @@ def _warn_redis_fallback_once(exc: BaseException) -> None:
     )
 
 
+# ROB-1425: bound on how long an eval waits when every pooled connection is
+# in use. The previous non-blocking pool raised MaxConnectionsError the
+# instant a fan-out (e.g. ~35 per-holding sellable reads) exceeded
+# ``redis_max_connections`` and the limiter turned that transient into a
+# permanent local fallback. A BlockingConnectionPool waits instead; only a
+# pool still exhausted past this bound raises ConnectionError, which stays
+# on the genuine-unavailability fail-closed path.
+_REDIS_POOL_WAIT_TIMEOUT_SECONDS: Final[float] = 5.0
+
+
 def _build_redis_client() -> redis.Redis:
-    return redis.from_url(
+    pool = redis.BlockingConnectionPool.from_url(
         settings.get_redis_url(),
         max_connections=settings.redis_max_connections,
+        timeout=_REDIS_POOL_WAIT_TIMEOUT_SECONDS,
         socket_timeout=settings.redis_socket_timeout,
         socket_connect_timeout=settings.redis_socket_connect_timeout,
         decode_responses=True,
     )
+    return redis.Redis.from_pool(pool)
 
 
 async def _drain_redis_close(awaitable: Any) -> None:

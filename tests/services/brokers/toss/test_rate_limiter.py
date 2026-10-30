@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import logging
 import os
 import socket
@@ -302,6 +303,211 @@ async def test_redis_order_peak_window_enforces_three_tps(
     finally:
         await redis_client.delete(key)
         await redis_client.aclose()
+
+
+class _EmulatedSlidingWindow:
+    """Python mirror of ``_REDIS_SLIDING_WINDOW_LUA`` for stub connections."""
+
+    def __init__(self) -> None:
+        self.eval_calls = 0
+        self.admissions: list[float] = []
+        self._members: dict[str, list[float]] = {}
+
+    def eval(self, keys_and_args: tuple[Any, ...]) -> list[float]:
+        self.eval_calls += 1
+        key = str(keys_and_args[0])
+        application_limit = int(keys_and_args[1])
+        window_ms = int(keys_and_args[5])
+        now_ms = time.monotonic() * 1_000
+        members = [
+            member
+            for member in self._members.get(key, [])
+            if now_ms - member < window_ms
+        ]
+        if len(members) < application_limit:
+            members.append(now_ms)
+            self._members[key] = members
+            self.admissions.append(now_ms)
+            return [1, 0]
+        self._members[key] = members
+        wait_ms = max(int(members[0] + window_ms - now_ms), 1)
+        return [0, wait_ms]
+
+
+class _StubRetry:
+    async def call_with_retry(
+        self, do: Any, fail: Any, *, with_failure_count: bool = False
+    ) -> Any:
+        try:
+            return await do()
+        except Exception as exc:
+            result = fail(exc, 1) if with_failure_count else fail(exc)
+            if inspect.isawaitable(result):
+                await result
+            raise
+
+
+class _ScriptedConnection:
+    """In-memory stand-in for redis.asyncio AbstractConnection -- no socket.
+
+    The pool calls ``connect``/``can_read_destructive``/``disconnect``/
+    ``should_reconnect``; the client calls ``retry.call_with_retry`` around
+    ``send_command`` + ``read_response``. ``re_auth`` exists because the
+    release event listener awaits it.
+    """
+
+    def __init__(
+        self,
+        *,
+        window: _EmulatedSlidingWindow,
+        delay_seconds: float = 0.0,
+        **kwargs: Any,
+    ) -> None:
+        self.host = kwargs.get("host", "stub")
+        self.port = kwargs.get("port", 0)
+        self.db = kwargs.get("db", 0)
+        self.retry = _StubRetry()
+        self._window = window
+        self._delay_seconds = delay_seconds
+        self._pending: tuple[Any, ...] = ()
+
+    async def connect(self) -> None:
+        return None
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def re_auth(self) -> None:
+        return None
+
+    async def can_read_destructive(self) -> bool:
+        return False
+
+    def should_reconnect(self) -> bool:
+        return False
+
+    async def send_command(self, *args: Any) -> None:
+        self._pending = args
+
+    async def read_response(self, *args: Any, **kwargs: Any) -> Any:
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
+        if self._pending and self._pending[0] == "EVAL":
+            return self._window.eval(self._pending[3:])
+        raise RuntimeError("scripted connection only answers EVAL")
+
+    def repr_pieces(self) -> list[Any]:
+        return [(self.host, self.port), (self.db,)]
+
+
+def _scripted_connection_class(
+    window: _EmulatedSlidingWindow, *, delay_seconds: float = 0.0
+) -> type[_ScriptedConnection]:
+    class _Connection(_ScriptedConnection):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(window=window, delay_seconds=delay_seconds, **kwargs)
+
+    return _Connection
+
+
+class _RedisClientShim:
+    def __init__(self, connection_class: type) -> None:
+        self._connection_class = connection_class
+
+    def from_url(self, url: str, **kwargs: Any) -> redis.Redis:
+        return redis.Redis.from_url(
+            url, connection_class=self._connection_class, **kwargs
+        )
+
+    def from_pool(self, pool: Any) -> redis.Redis:
+        return redis.Redis.from_pool(pool)
+
+
+class _BlockingPoolShim:
+    def __init__(self, connection_class: type) -> None:
+        self._connection_class = connection_class
+
+    def from_url(self, url: str, **kwargs: Any) -> redis.BlockingConnectionPool:
+        return redis.BlockingConnectionPool.from_url(
+            url, connection_class=self._connection_class, **kwargs
+        )
+
+
+class _RedisAsyncioShim:
+    """The ``redis.asyncio`` surface ``_build_redis_client`` uses.
+
+    Whichever pool class the factory picks, it is built on stub connections
+    so the real redis-py pool code drives the test without a server.
+    """
+
+    def __init__(self, connection_class: type) -> None:
+        self.Redis = _RedisClientShim(connection_class)
+        self.BlockingConnectionPool = _BlockingPoolShim(connection_class)
+
+    def from_url(self, url: str, **kwargs: Any) -> redis.Redis:
+        return self.Redis.from_url(url, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_acquires_beyond_pool_size_wait_without_degrading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1425: N > max_connections concurrent acquires wait for a pooled
+    connection instead of degrading to the process-local limiter."""
+    window = _EmulatedSlidingWindow()
+    connection_class = _scripted_connection_class(window, delay_seconds=0.02)
+    monkeypatch.setattr(
+        rate_limiter_module, "redis", _RedisAsyncioShim(connection_class)
+    )
+    monkeypatch.setattr(rate_limiter_module.settings, "redis_max_connections", 2)
+
+    client = rate_limiter_module._build_redis_client()
+    limiter = RedisTossRateLimiter(
+        client_id="pool-exhaustion-client",
+        redis_client=client,
+        fallback_limiter=TossRateLimiter(),
+    )
+    try:
+        limit = TossRateLimiter.limit_for(TossApiGroup.AUTH)
+        total = limit + 2  # beyond the TPS window AND far above pool size
+        await asyncio.gather(
+            *(limiter.acquire(TossApiGroup.AUTH) for _ in range(total))
+        )
+
+        assert limiter._redis_degraded is False
+        assert len(window.admissions) == total
+        for admitted_at in window.admissions:
+            within_one_second = sum(
+                1 for other in window.admissions if 0.0 <= other - admitted_at < 1_000.0
+            )
+            assert within_one_second <= limit
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_wedged_pool_wait_timeout_still_degrades_to_local() -> None:
+    """A pool that stays exhausted past its bounded wait is a genuine Redis
+    unavailability and keeps the fail-closed local fallback."""
+    pool = redis.BlockingConnectionPool(
+        connection_class=_scripted_connection_class(_EmulatedSlidingWindow()),
+        max_connections=1,
+        timeout=0.1,
+    )
+    client = redis.Redis.from_pool(pool)
+    held = await pool.get_connection()
+    limiter = RedisTossRateLimiter(
+        client_id="wedged-pool-client",
+        redis_client=client,
+        fallback_limiter=TossRateLimiter(),
+    )
+    try:
+        await limiter.acquire(TossApiGroup.ACCOUNT)
+
+        assert limiter._redis_degraded is True
+    finally:
+        await pool.release(held)
+        await client.aclose()
 
 
 @pytest.mark.asyncio
