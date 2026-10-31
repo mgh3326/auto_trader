@@ -64,6 +64,15 @@ python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 
 필독 파일 중 하나라도 없거나 읽을 수 없으면 작업을 중단하라. 찾아보기 표는 탐색 보조일 뿐 필독 면제가 아니다. 문서 속 예시 명령은 실행 승인이나 운영 권한을 부여하지 않는다.
 
+## 작업 방식 (robin-mode)
+
+비자명한 작업은 rstack의 `robin-mode` 스킬로 한다: 목표 재진술 → 데이터 형태 → 닫힌 Acceptance 목록 → 플레이북 하나 → 실물로 검증. 이 절은 위 필독 계약과 최소 하드룰을 대체하지 않으며, 충돌하면 하드룰이 우선한다.
+
+- 탐색·근거 수집·검증은 세션 안 서브에이전트에 맡긴다. 모델·effort는 `robin-mode/roles.md` 표를 따르고, 검증 모델은 고정한다.
+- `runtug spawn` 워커는 독립적으로 머지 가능한 큰 단위(자기 PR·자기 Acceptance)만 띄운다. 리뷰 지적은 작성자가 직접 고치고 fix 워커를 띄우지 않는다.
+- 머지: mergewake 리뷰 완료 + 필수 CI 초록 + critical/high 0 + 모든 medium/low에 처분이 있을 때 integrator가 head 고정으로 머지한다(`wake` 스킬의 머지 게이트).
+- PR 본문·커밋에는 `Mergewake-Author-Family`, `Mergewake-Author-Profile`, `Mergewake-Task: <숫자 hk task id>` 트레일러를 단다. 숫자가 아닌 값은 알림 경로를 잃는다.
+
 ## 아키텍처
 
 아키텍처의 분야별 기능 계약은 위의 필독 파일에 lossless-first로 분리되어 있다. 아래 최소 하드룰과 명시적 필독 목록은 어떤 진입점에서도 선택 사항이 아니다.
