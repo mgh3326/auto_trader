@@ -27,9 +27,12 @@ import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy import delete
 
+from app.core.db import AsyncSessionLocal
 from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
 from app.services import protected_quantity_service as pq
+from app.services.dots_history_export import reader as dots_reader
+from app.services.dots_history_export.projection import Window as DotsWindow
 from app.services.execution_ledger import kis_lots
 from app.services.execution_ledger import quarantine as q
 from app.services.execution_ledger import query_service as query_service_module
@@ -278,6 +281,31 @@ async def test_us_lots_drop_the_quarantined_row(db_session, seed, monkeypatch) -
         phantom_order_no
     ]
     assert mutant["same_day_buy_evidence"]["blocking"] is True
+
+
+async def test_dots_history_export_drops_the_quarantined_phantom(
+    db_session, seed, monkeypatch
+) -> None:
+    """ROB-1438: the export reads in-effect rows only; the mutant sees the phantom."""
+    scenario = await seed.scenario()
+    window = DotsWindow(since=NOW - timedelta(days=10), until=NOW + timedelta(days=1))
+
+    async def exported_ids() -> set[int]:
+        async with AsyncSessionLocal() as session:
+            try:
+                sources = await dots_reader.read_sources(session, window)
+            finally:
+                await session.rollback()
+        return {int(row["id"]) for row in sources.execution_ledger}
+
+    assert {scenario.real_id, scenario.phantom_id} <= await exported_ids()
+    await _quarantine(db_session, scenario)
+    await db_session.rollback()
+    after = await exported_ids()
+    assert scenario.real_id in after
+    assert scenario.phantom_id not in after
+    _drop_filter(monkeypatch, dots_reader)
+    assert scenario.phantom_id in await exported_ids()
 
 
 async def _reseed(db, scenario: Scenario, cutover: datetime) -> str:

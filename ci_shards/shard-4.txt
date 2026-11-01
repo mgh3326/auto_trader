@@ -162,6 +162,10 @@ tests/services/brokers/toss/test_smoke_script.py
 tests/services/buy_gate_ab_shadow/test_no_live_path_impact.py
 tests/services/daily_candles/test_crypto_venue_resolution.py
 tests/services/daily_candles/test_sync_service.py
+tests/services/dots_history_export/test_export_contract.py
+tests/services/dots_history_export/test_export_db.py
+tests/services/dots_history_export/test_leak_check.py
+tests/services/dots_history_export/test_read_only.py
 tests/services/execution_intent_gateway/test_migration_and_boundaries.py
 tests/services/execution_ledger/test_kis_lots.py
 tests/services/execution_ledger/test_kis_lots_us_db.py
