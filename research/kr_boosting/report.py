@@ -254,6 +254,10 @@ def write_report(
         f"export manifest sha256 `{identity.manifest_sha256}`",
         f"- configuration grid sha256: `{results['grid_sha256']}`; seeds {results['seeds']}",
         f"- frozen bundle sha256: `{results['frozen_bundle_sha256']}`",
+        "- run history: manifest v2's run stopped before any fit, on a last-session bug. Manifest v3's "
+        "stopped in the H-admit simulation with a contract error, on a bug where an entry skipped for cash "
+        "outlived its intent. Neither wrote a result. Before v4, a throwaway three-configuration grid "
+        "ran on sessions through 2022 to test the post-fit path; its output was deleted unread.",
         "",
         "## Exposure audit of 2023-2024",
         "",
