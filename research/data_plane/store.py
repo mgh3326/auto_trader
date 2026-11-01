@@ -155,6 +155,11 @@ def publish_partition(
     if path.exists():
         raw = path.read_bytes()
         if day.isoformat() in records:
+            if sha256_hex(raw) != records[day.isoformat()].get("sha256"):
+                raise ManifestMismatchError(
+                    f"{dataset}/{market} {day}: published file differs from its "
+                    f"manifest sha256 (corrupted or replaced); not reported as present"
+                )
             return PublishResult(
                 dataset,
                 market,

@@ -460,3 +460,40 @@ class _FrozenDatetime:
         return cls.frozen
 
     fromisoformat = _dt.fromisoformat
+
+
+@pytest.mark.unit
+def test_outage_longer_than_the_lookback_still_records_missed_actions(tmp_path):
+    before, after = (
+        date(2026, 8, 3),
+        date(2026, 12, 21),
+    )  # KO ex-date 10-15 is 67 days before `after`
+    _run(tmp_path, "us", before, FakeSources(), ["AAPL", "KO"])
+    _run(tmp_path, "us", after, FakeSources(), ["AAPL", "KO"])
+    divs = [
+        r
+        for r in read_partition(tmp_path, DATASET_ACTIONS, "us", after)
+        if r["action_type"] == "cash_dividend"
+    ]
+    assert [(r["instrument"], r["ex_date"]) for r in divs] == [("KO", "2026-10-15")]
+    record = json.loads(
+        manifest_path(tmp_path, DATASET_ACTIONS, "us").read_text().splitlines()[-1]
+    )
+    assert record["lookback_days"] == (after - before).days + 7
+
+
+@pytest.mark.unit
+def test_corrupted_partition_is_not_reported_as_present(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    path = partition_path(tmp_path, DATASET_BARS, "crypto", day)
+    path.unlink()
+    path.write_bytes(b"replaced")
+    src = FakeSources()
+    with pytest.raises(CollectError, match="differs from its manifest") as info:
+        _run(tmp_path, "crypto", day, src)
+    assert [(r.dataset, r.action) for r in info.value.results] == [
+        ("universe", "already_present"),
+        ("corporate_actions", "already_present"),
+    ]
+    assert src.total_calls == 0

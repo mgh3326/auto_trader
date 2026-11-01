@@ -50,7 +50,8 @@ such as `346.7200012207031`; they are kept, not rounded).
   from, `instruments_requested`/`instruments_missing`/`coverage`, and the
   missing instruments with a reason (capped at 500).
 * A partition is written once. A rerun of the same day fetches nothing and
-  writes nothing. One dataset failing does not stop the others (corporate
+  writes nothing — after checking the published file still matches its
+  manifest sha256 (a corrupted or replaced file fails the run). One dataset failing does not stop the others (corporate
   actions can only be observed on their own day). A crash between publish and manifest append is repaired by the
   next run from the on-disk bytes.
 * A partition with an empty row list is valid (for example no new corporate
@@ -100,8 +101,10 @@ source's `adj_close`, when building a training series.
 
 * KR/US Yahoo events: `action_type` `cash_dividend` (`cash_amount`, `currency`)
   or `split` (`numerator`, `denominator`), `ex_date`, `event_time` = ex-date
-  open. Requested with a 60-day lookback; events with `ex_date > P` are not
-  recorded.
+  open. Requested with a 60-day lookback, extended back to 7 days before the
+  last recorded actions partition after an outage (so a missed period is
+  recovered, first observed on the day it is finally read); events with
+  `ex_date > P` are not recorded.
 * Listing changes (all markets), from the universe diff of `P` against the
   previous universe partition: `listing_added`, `listing_removed`,
   `listing_status_changed` with `status_before`/`status_after`. The first

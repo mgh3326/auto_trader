@@ -236,10 +236,16 @@ def yahoo_symbol(market: str, instrument: str, venue: str) -> str:
     raise ValueError(market)
 
 
-def yahoo_chart_url(market: str, instrument: str, venue: str, day: date) -> str:
+def yahoo_chart_url(
+    market: str,
+    instrument: str,
+    venue: str,
+    day: date,
+    lookback_days: int = YAHOO_LOOKBACK_DAYS,
+) -> str:
     tz = market_spec(market).tz
     start = datetime.combine(
-        day - timedelta(days=YAHOO_LOOKBACK_DAYS), datetime.min.time(), tz
+        day - timedelta(days=lookback_days), datetime.min.time(), tz
     )
     end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tz)
     query = urllib.parse.urlencode(

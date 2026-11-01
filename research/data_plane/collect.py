@@ -35,6 +35,7 @@ from .contract import (
 )
 from .public_http import Fetch
 from .store import (
+    ManifestMismatchError,
     PublishResult,
     dataset_lock,
     manifest_records,
@@ -63,6 +64,7 @@ class _Run:
     symbols: frozenset[str] | None
     min_coverage: float
     commit: str
+    lookback_days: int = sources.YAHOO_LOOKBACK_DAYS
     yahoo_cache: dict[tuple[str, str], sources.YahooChart | str] = field(
         default_factory=dict
     )
@@ -96,6 +98,7 @@ def collect(
         min_coverage=min_coverage,
         commit=commit or code_commit(REPO_ROOT),
     )
+    run.lookback_days = _actions_lookback_days(root, market, day)
     results: list[PublishResult] = []
     errors: list[CollectError | RefusedRowError] = []
     for dataset in DATASETS:  # fixed order: universe, bars, actions
@@ -107,6 +110,8 @@ def collect(
             results.append(_collect_one(run, dataset))
         except (CollectError, RefusedRowError) as exc:
             errors.append(exc)
+        except ManifestMismatchError as exc:
+            errors.append(CollectError(str(exc)))
     if errors:
         # Refusals outrank collection failures; every error is attached.
         errors.sort(key=lambda e: 0 if isinstance(e, RefusedRowError) else 1)
@@ -116,6 +121,21 @@ def collect(
         first.results = results  # type: ignore[attr-defined]
         raise first
     return results
+
+
+# Extra days requested before the last recorded actions partition, so an
+# outage of any length is recovered (events are recorded as first observed on
+# the day they are finally read). Capped at ~20 years.
+ACTIONS_RECOVERY_MARGIN_DAYS = 7
+ACTIONS_MAX_LOOKBACK_DAYS = 7300
+
+
+def _actions_lookback_days(root: Path, market: str, day: date) -> int:
+    earlier = [d for d in recorded_dates(root, DATASET_ACTIONS, market) if d < day]
+    if not earlier:
+        return sources.YAHOO_LOOKBACK_DAYS
+    gap = (day - earlier[-1]).days + ACTIONS_RECOVERY_MARGIN_DAYS
+    return min(max(sources.YAHOO_LOOKBACK_DAYS, gap), ACTIONS_MAX_LOOKBACK_DAYS)
 
 
 def _collect_one(run: _Run, dataset: str) -> PublishResult:
@@ -232,7 +252,9 @@ def _instruments(run: _Run) -> tuple[list[tuple[str, str]], list[dict[str, str]]
 def _yahoo(run: _Run, instrument: str, venue: str) -> sources.YahooChart | str:
     key = (instrument, venue)
     if key not in run.yahoo_cache:
-        url = sources.yahoo_chart_url(run.market, instrument, venue, run.day)
+        url = sources.yahoo_chart_url(
+            run.market, instrument, venue, run.day, run.lookback_days
+        )
         try:
             run.yahoo_cache[key] = sources.parse_yahoo_chart(run.market, _get(run, url))
         except (
@@ -594,7 +616,7 @@ def _build_actions(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 "instruments_missing": len(missing),
                 "coverage": round(coverage, 6),
                 "missing": missing[:MISSING_LIST_CAP],
-                "lookback_days": sources.YAHOO_LOOKBACK_DAYS,
+                "lookback_days": run.lookback_days,
             }
         )
     meta["semantics"] = (
