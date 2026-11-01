@@ -53,6 +53,11 @@ BINANCE_SOURCE = "binance_spot_archive_1d_monthly"
 UPBIT_SOURCE = "upbit_quotation_candles_days"
 # The previous corpus enumerated only pairs listed today. Stated in ROB-1432.
 CURRENT_CORPUS_DELISTED_SHARE = 0.0
+PIT_RULE = (
+    "in the universe on day t (UTC, inclusive) iff t lies inside one of the "
+    "pair's listing episodes, or the pair is live and t is on/after the start "
+    "of its last episode; t after coverage_end raises"
+)
 
 CANDLE_SCHEMA = pa.schema(
     [
@@ -531,10 +536,7 @@ def write_outputs(
         "survivorship_label": SURVIVORSHIP_LABEL,
         "holdout_start": HOLDOUT_START_DAY.isoformat(),
         "inputs": inputs,
-        "pit_rule": (
-            "live pair: first_trade_date <= t; other pairs: first_trade_date <= t "
-            "<= last_trade_date; t after coverage_end raises"
-        ),
+        "pit_rule": PIT_RULE,
         "tables": tables,
         "candle_files": {
             "path": candle_index.relative_to(out_root).as_posix(),
