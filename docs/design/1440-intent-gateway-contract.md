@@ -89,7 +89,7 @@ Other fields are `child_id`, `broker_order_id`, `result`, `replayed` and `outcom
 3. **Kill state (submit and amend only):** the gateway reads the existing `review.kis_mock_runner_control`. Only `ACTIVE` allows them, and a failed read counts as `GLOBAL_FREEZE`.
 4. **Reserve:** under the intent's row lock, a known key replays its first answer. A new key is decided, and the row commits as `sending` or `refused`. This commit is the write-ahead record, and it happens before any broker call.
 5. **Forward:** the matching forwarder runs once. `KisMockForwarder` calls `_place_order_impl`, `modify_order_impl` or `cancel_order_impl` with `is_mock=True`.
-6. **Record:** the row moves from `sending` to `accepted` or `uncertain`, once only. A DB trigger refuses any other state change, any change to the request fields, and any delete. The app role can update only the outcome columns.
+6. **Record:** the row moves from `sending` to `accepted` or `uncertain`, once only. A DB trigger refuses any other state change, any change to the request fields, a new row that already carries an outcome, and any delete. The app role can update only the outcome columns.
 
 A refusal from step 4 is stored, so the same key gets the same answer later. A delayed retry cannot send a stale decision after a kill is lifted. Refusals from steps 1 and 2 leave no row, because nothing was decided.
 

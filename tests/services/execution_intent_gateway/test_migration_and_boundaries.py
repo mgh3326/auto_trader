@@ -81,14 +81,12 @@ def test_journal_guard_covers_every_column_except_the_outcome_columns() -> None:
         assert compared is (column.name not in outcome_columns), column.name
 
 
-def test_guards_refuse_update_and_delete_on_both_tables() -> None:
+def test_guards_cover_the_write_operations_of_both_tables() -> None:
     sql = _render_upgrade()
-    for table, trigger in (
-        ("execution_intents", "trg_execution_intents_immutable"),
-        ("execution_child_requests", "trg_execution_child_requests_guard"),
-    ):
-        assert f"CREATE TRIGGER {trigger}" in sql
-        assert f"BEFORE UPDATE OR DELETE ON review.{table}" in sql
+    assert "CREATE TRIGGER trg_execution_intents_immutable" in sql
+    assert "BEFORE UPDATE OR DELETE ON review.execution_intents" in sql
+    assert "CREATE TRIGGER trg_execution_child_requests_guard" in sql
+    assert "BEFORE INSERT OR UPDATE OR DELETE ON review.execution_child_requests" in sql
 
 
 @pytest.mark.parametrize("model", [ExecutionIntent, ExecutionChildRequest])

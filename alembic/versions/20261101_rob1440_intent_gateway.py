@@ -8,8 +8,10 @@ alone, because the gateway's SELECT ... FOR UPDATE needs UPDATE on at least one
 column; the trigger still refuses any real update. Triggers hold
 the same rules for any role, including before the #789 Stage 4 role split: intents
 are immutable, journal request fields are immutable, a journal row moves only from
-``sending`` to ``accepted`` or ``uncertain``, and no row is deleted. Rewriting a
-``sending`` row's key would let a retry look new and send twice.
+``sending`` to ``accepted`` or ``uncertain``, a new journal row starts as
+``sending`` or ``refused`` with no outcome, and no row is deleted. Rewriting a
+``sending`` row's key would let a retry look new and send twice, and inserting an
+``accepted`` row would hand a later cancel a forged broker order id.
 
 Revision ID: 20261101_rob1440_intent_gw
 Revises: 20261016_rob1378_q46_lock
@@ -56,6 +58,15 @@ GUARD_DDL: tuple[str, ...] = (
             RAISE EXCEPTION 'review.execution_child_requests rows cannot be deleted'
                 USING ERRCODE = 'restrict_violation';
         END IF;
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.state NOT IN ('sending', 'refused')
+               OR NEW.broker_order_id IS NOT NULL
+               OR NEW.result IS NOT NULL THEN
+                RAISE EXCEPTION 'review.execution_child_requests new rows cannot carry an outcome'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NEW;
+        END IF;
         IF OLD.state <> 'sending' OR NEW.state NOT IN ('accepted', 'uncertain') THEN
             RAISE EXCEPTION 'review.execution_child_requests state change % to % refused',
                 OLD.state, NEW.state USING ERRCODE = 'restrict_violation';
@@ -81,7 +92,7 @@ GUARD_DDL: tuple[str, ...] = (
     "ON review.execution_child_requests",
     """
     CREATE TRIGGER trg_execution_child_requests_guard
-    BEFORE UPDATE OR DELETE ON review.execution_child_requests
+    BEFORE INSERT OR UPDATE OR DELETE ON review.execution_child_requests
     FOR EACH ROW EXECUTE FUNCTION review.execution_child_requests_guard()
     """,
 )

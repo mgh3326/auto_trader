@@ -426,6 +426,88 @@ async def test_db_allows_only_the_one_way_outcome_transition(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"state": "accepted", "broker_order_id": "forged", "finished_at": "now"},
+        {"state": "uncertain", "finished_at": "now"},
+        {"state": "sending", "broker_order_id": "forged"},
+        {"state": "sending", "result": {"success": True}},
+        {
+            "state": "refused",
+            "refusal_reason": "x",
+            "broker_order_id": "forged",
+            "finished_at": "now",
+        },
+        {
+            "state": "refused",
+            "refusal_reason": "x",
+            "result": {"success": True},
+            "finished_at": "now",
+        },
+    ],
+)
+async def test_db_refuses_a_new_row_that_carries_an_outcome(
+    store: SqlAlchemyGatewayStore, values: dict[str, Any]
+) -> None:
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
+    if values.get("finished_at") == "now":
+        values = {**values, "finished_at": _now()}
+    async with AsyncSessionLocal() as session:
+        session.add(
+            ExecutionChildRequest(
+                intent_id=intent.intent_id,
+                idempotency_key="child-forged",
+                request_digest="d",
+                action="submit",
+                quantity=1,
+                limit_price_krw=70_000,
+                **values,
+            )
+        )
+        with pytest.raises(DBAPIError):
+            await session.commit()
+    assert await _rows(intent) == []
+
+
+@pytest.mark.asyncio
+async def test_forged_insert_cannot_feed_a_cancel(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
+    async with AsyncSessionLocal() as session:
+        session.add(
+            ExecutionChildRequest(
+                intent_id=intent.intent_id,
+                idempotency_key="child-forged",
+                request_digest="d",
+                action="submit",
+                quantity=1,
+                limit_price_krw=70_000,
+                state="accepted",
+                broker_order_id="forged-order",
+                finished_at=_now(),
+            )
+        )
+        with pytest.raises(DBAPIError):
+            await session.commit()
+    broker = FakeBroker()
+    outcome = await _gateway(store, broker).handle(
+        CancelChild(
+            action="cancel",
+            intent_id=intent.intent_id,
+            idempotency_key="child-0002",
+            target_idempotency_key="child-forged",
+        ),
+        confirm=True,
+    )
+    assert outcome.reason == "target_not_found"
+    assert broker.calls == []
+
+
+@pytest.mark.asyncio
 async def test_db_refuses_deleting_a_journal_row_or_an_intent(
     store: SqlAlchemyGatewayStore,
 ) -> None:
