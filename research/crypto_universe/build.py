@@ -214,12 +214,19 @@ def build_binance(
     listings: list[PairListing] = []
     files: list[dict[str, Any]] = []
     failed = {e["symbol"] for e in errors}
+    identical_dropped = 0
     for sym in archive_symbols:
         status, base, quote = states.get(sym, ("ABSENT", sym[: -len("USDT")], "USDT"))
-        bars = sorted(bars_by_symbol[sym], key=lambda b: b.day)
+        # The archive repeats some rows verbatim; identical copies collapse,
+        # a day with two different bars is an error.
+        unique = set(bars_by_symbol[sym])
+        identical_dropped += len(bars_by_symbol[sym]) - len(unique)
+        bars = sorted(unique, key=lambda b: b.day)
         days = [b.day for b in bars]
         if len(days) != len(set(days)):
-            errors.append({"symbol": sym, "month": "*", "error": "duplicate day"})
+            errors.append(
+                {"symbol": sym, "month": "*", "error": "conflicting bars for one day"}
+            )
             continue
         if sym in failed:
             continue  # incomplete history: excluded rather than truncated
@@ -263,6 +270,7 @@ def build_binance(
         errors=tuple(errors),
         extra={
             "full_archive_run": full_run,
+            "identical_duplicate_rows_dropped": identical_dropped,
             "archive_symbol_count": len(archive_symbols),
             "symbol_month_count": len(tasks),
             "exchange_info_usdt_pairs_without_archive": not_in_archive,
@@ -444,6 +452,11 @@ def render_coverage_md(coverage: dict[str, Any]) -> str:
             f"reused): {len(multi)} {multi}"
         )
         lines.append(f"- fetch errors (pairs excluded): {len(cov['fetch_errors'])}")
+        if "identical_duplicate_rows_dropped" in cov:
+            lines.append(
+                f"- identical duplicate archive rows collapsed: "
+                f"{cov['identical_duplicate_rows_dropped']}"
+            )
         if cov.get("full_archive_run"):
             missing = cov["exchange_info_usdt_pairs_without_archive"]
             lines.append(

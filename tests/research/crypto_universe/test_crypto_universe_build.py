@@ -497,3 +497,21 @@ def test_pit_cli_refuses_a_table_that_does_not_match_the_manifest(
     table.write_text(table.read_text().replace("2024-12-14", "2024-12-20"))
     assert cli.main([*args, "--date", "2024-12-14"]) == 2
     assert "does not match manifest" in capsys.readouterr().err
+
+
+def test_identical_duplicate_rows_collapse_but_conflicts_exclude(
+    tmp_path: Path,
+) -> None:
+    fx = ArchiveFixture()
+    rows = _kline_rows(date(2024, 11, 1), date(2024, 11, 3), micro=False)
+    first = rows.splitlines()[0]
+    fx.add_month("BTCUSDT", "2024-11", rows + first + "\n")  # verbatim repeat
+    conflict = first.replace(",1.5,", ",1.6,", 1)
+    fx.add_month("BADUSDT", "2024-11", rows + conflict + "\n")
+    result = b.build_binance(
+        fx, tmp_path, _exchange_info(), snapshot_date=SNAP, cache_dir=None
+    )
+    (btc,) = result.listings
+    assert (btc.symbol, btc.trading_days) == ("BTCUSDT", 3)
+    assert result.extra["identical_duplicate_rows_dropped"] == 1
+    assert result.errors == ({"symbol": "BADUSDT", "month": "*", "error": "conflicting bars for one day"},)  # fmt: skip
