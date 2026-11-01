@@ -11,6 +11,7 @@
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
 - Execution Ledger 교차 소스 중복 체결 (ROB-1379)
+- dots 이력 익명화 export (ROB-1438)
 - 보호 수량 P 규칙 추종 (#943)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
@@ -304,6 +305,23 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
 - **테스트**: `tests/services/execution_ledger/test_supersede.py`(순수),
   `test_cross_source_dedupe_db.py`(실제 ingest 라우트·모니터 DB sink·reconciler 경로, 양방향·재전송·
   날짜 재사용·뮤턴트).
+
+### dots 이력 익명화 export (ROB-1438)
+
+외부 리서치 세션 dots 용 주문·체결 이력 export. desk 가 손으로 실행해 Drive `auto_trader/dots/` 에 올린다. 🔴 스케줄러·쓰기 경로·브로커 호출 없음.
+
+- **CLI**: `scripts/export_dots_history.py` — `--database-url-env` 필수, 솔트는 `--salt-file`(repo 밖·owner 전용) 또는 `--salt-env`, 기본 창은 최근 6개월
+- **패키지**: `app/services/dots_history_export/` — `spec`(닫힌 컬럼·값 형태) · `reader`(명시 컬럼 SELECT, `REPEATABLE READ READ ONLY`) · `projection`(순수 변환, HMAC 해시) · `leak_check` · `publish`(staging 후 재검증·원자적 게시, manifest)
+- **런북**: `docs/runbooks/dots-history-export.md` (read-only MCP 옵션 설명 포함 — 문서만, 활성화 아님)
+
+**계약**:
+- 🔴 **출력 컬럼은 `spec.py` allowlist 뿐**이다. 계좌번호·브로커 주문번호·브로커 계좌 식별자·자격증명은 내보내지 않고, id 는 솔트 해시(`order_ref` 등)로 바꿔 테이블 간 join 을 유지한다. raw 응답·thesis·notes·reason 등 payload/산문 컬럼은 SELECT 자체를 하지 않는다. 라벨은 짧은 ASCII·공백 없음·식별자 모양 아님일 때만 복사하고 나머지는 `oth_` 해시이며, `void_reason` 은 코드만 남긴다(뒤는 raw 예외 문자열일 수 있음)
+- 🔴 **leak check 는 fail-closed**: 행 단계와 staging 파일 재독 단계 둘 다 통과해야 게시된다. 실패 출력은 위치와 규칙 이름만이며 값을 반복하지 않는다. 실패를 넘기려고 패턴을 완화하거나 컬럼을 빼지 마라
+- 🔴 **`execution_ledger` 는 `execution_ledger_in_effect()` 만** 읽는다(#1175). 교차 소스 중복은 지우지 않고 `superseded_duplicate` 로 표시한다(ROB-1379 `supersede`)
+- 🔴 솔트는 repo 와 출력에 들어가지 않는다. 출력 디렉터리도 repo 밖만 허용한다
+- KIS·Upbit·Toss 주문 행의 `filled_at` 은 같은 거래일의 in-effect `execution_ledger` 행에서만 온다(evidence-first). 근거 없으면 비운다. DB paper 표의 `filled_at` 은 시뮬레이터 자기 행의 값이며 `execution_ledger` 증거가 아니다. `terminal_outcome=open` 은 "아직 살아 있음"의 증거가 아니라 "종료 기록 없음"이다
+- Kiwoom mock 은 주문 원장 테이블이 없어 대상이 아니다(`manifest.sources_without_ledger`)
+- **테스트**: `tests/services/dots_history_export/`, `test_quarantine_readers_db.py::test_dots_history_export_drops_the_quarantined_phantom`
 
 ### 보호 수량 P 규칙 추종 (#943)
 
