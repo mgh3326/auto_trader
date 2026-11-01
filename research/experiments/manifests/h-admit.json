@@ -1,69 +1,221 @@
 {
   "manifest_format": "experiment-manifest/v1",
   "hypothesis_id": "H-admit",
-  "version": 1,
+  "version": 2,
   "title": "Admit or skip an eligible entry from the 10/50/90 quantiles of the t+1 open to t+5 close return",
   "status": "draft",
   "question": "For an entry the current gate already allows, does admitting or skipping it by predicted 10/50/90 quantiles of the t+1 open to t+5 close return beat admit-all and cash on net return at equal capital, after costs, on identical splits? A tuned gradient-boosting baseline runs first; TFT is a challenger only if the baseline passes its gate.",
-  "markets": ["kr", "us", "crypto"],
-  "hashes": {
-    "dataset_manifest_sha256": {"pending": "per-market point-in-time dataset from U2 (KR), U3 (US), U4 (crypto)"},
-    "evaluation_contract_sha256": {"pending": "evaluation contract v1 from U5"},
-    "code_sha": {"pending": "baseline code at U7 freeze"},
-    "policy_version": {"pending": "trading policy version the controls reproduce"}
-  },
-  "features": {"pending": "point-in-time feature list (every row carries available_at <= t) fixed with the U5 contract and the U2/U3/U4 datasets before any fit"},
-  "labels": [
-    {"name": "ret_open1_close5", "definition": "return from the open of session t+1 to the close of session t+5; predicted as the 10/50/90 quantiles; UNKNOWN_OUTCOME when either price is missing", "horizon_sessions": 5}
+  "markets": [
+    "kr",
+    "us",
+    "crypto"
   ],
-  "calendar": {"kr": "XKRX", "us": "XNYS", "crypto": "24/7"},
+  "hashes": {
+    "dataset_manifest_sha256_kr": "b92840df072bb947ef678b07a5f3c2ee82851e746639aa92f34d063dd8cfffea",
+    "dataset_parquet_sha256_kr": "8c52275fa01f4e0540aeb4959bd217efd5d184cf135731748753b282c3e74859",
+    "dataset_manifest_sha256_us": {
+      "pending": "U3 dataset, fixed by the US U7 unit"
+    },
+    "dataset_manifest_sha256_crypto": {
+      "pending": "U4 dataset, fixed by the crypto U7 unit"
+    },
+    "evaluation_contract_sha256": "113731041ffc767eb5d34eecda503f44b71ca52c6321f65562249e39299fce02",
+    "code_sha_kr": "c82cdcdc4382a1533e118896fa351f07d5770251",
+    "code_sha_us": {
+      "pending": "US U7 unit"
+    },
+    "code_sha_crypto": {
+      "pending": "crypto U7 unit"
+    },
+    "policy_version_kr": "D3 operator-style-baseline-v1 sha256 f659486a6c06a9fcf266eadf6cffd548ca623904b873f07a3d3d1da581bb233f, bar-reproducible subset",
+    "policy_version_us": {
+      "pending": "US U7 unit"
+    },
+    "policy_version_crypto": {
+      "pending": "crypto U7 unit"
+    }
+  },
+  "features": [
+    {
+      "name": "ret_lag_1..60",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "U2 valid closes; NaN when either bar is not valid"
+    },
+    {
+      "name": "logtv_lag_1..60",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "log1p(close x volume)"
+    },
+    {
+      "name": "ret_5,ret_20,ret_60",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "U2 closes"
+    },
+    {
+      "name": "rv_5,rv_20,rv_60,range_20,drawdown_60",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "U2 OHLC"
+    },
+    {
+      "name": "tv_mean_5,tv_mean_20,tv_mean_60,tv_ratio_5_60,valid_share_60",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "U2 close, volume, state"
+    },
+    {
+      "name": "is_kosdaq",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "U2 market"
+    },
+    {
+      "name": "mkt_ret_1,mkt_ret_5,mkt_ret_20,mkt_ret_60,mkt_rv_20,mkt_breadth_1,mkt_dispersion_1",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "equal-weight cross-section of the listing's market, delisted included"
+    },
+    {
+      "name": "ctx_rsi,ctx_l2_distance",
+      "available_at": "session t 16:00 KST (U2 available_at); decided 08:30 KST of t+1",
+      "source": "D3 signal"
+    }
+  ],
+  "labels": [
+    {
+      "name": "ret_open1_close5",
+      "definition": "return from the open of session t+1 to the close of session t+5; predicted as the 10/50/90 quantiles; UNKNOWN_OUTCOME when either price is missing. A listing ending inside the window exits at its last membership close if the event was known by the window's end; unknown otherwise. Write-off of residual_after_liquidation_trading and ambiguous is a reported stress.",
+      "horizon_sessions": 5
+    }
+  ],
+  "calendar": {
+    "kr": "XKRX",
+    "us": "XNYS",
+    "crypto": "24/7"
+  },
   "splits": {
-    "scheme": "expanding walk-forward on common dates per market: train 2015-2018 / validate 2019, adding one year per fold through validate 2022",
+    "scheme": "expanding walk-forward on common dates per market: train 2015-2018 / validate 2019, adding one year per fold through validate 2022; KR: purge and gap add up in front of every boundary",
     "rules_doc": "docs/research/experiment-split-leakage-rules.md",
     "purge_sessions": 5,
     "gap_sessions": 5,
     "folds": [
-      {"train": ["2015-01-01", "2018-12-31"], "validate": ["2019-01-01", "2019-12-31"]},
-      {"train": ["2015-01-01", "2019-12-31"], "validate": ["2020-01-01", "2020-12-31"]},
-      {"train": ["2015-01-01", "2020-12-31"], "validate": ["2021-01-01", "2021-12-31"]},
-      {"train": ["2015-01-01", "2021-12-31"], "validate": ["2022-01-01", "2022-12-31"]}
+      {
+        "train": [
+          "2015-01-01",
+          "2018-12-31"
+        ],
+        "validate": [
+          "2019-01-01",
+          "2019-12-31"
+        ]
+      },
+      {
+        "train": [
+          "2015-01-01",
+          "2019-12-31"
+        ],
+        "validate": [
+          "2020-01-01",
+          "2020-12-31"
+        ]
+      },
+      {
+        "train": [
+          "2015-01-01",
+          "2020-12-31"
+        ],
+        "validate": [
+          "2021-01-01",
+          "2021-12-31"
+        ]
+      },
+      {
+        "train": [
+          "2015-01-01",
+          "2021-12-31"
+        ],
+        "validate": [
+          "2022-01-01",
+          "2022-12-31"
+        ]
+      }
     ],
     "test": {
-      "kind": "sealed_period",
-      "period": ["2023-01-01", "2024-12-31"],
-      "exposure_audit": {"pending": "audit that no earlier experiment, report or tuning run read 2023-2024 for this market; if exposed, a new manifest version switches to prospective_seal"},
-      "seal_rule": "opened once after the model is frozen; each opening is a registry test look"
+      "kind": "prospective_seal",
+      "period": {
+        "pending": "fixed at the freeze of the model that passes its gate; no prospective look in ROB-1441"
+      },
+      "exposure_audit": "KR: exposed, not provably untouched (research/kr_boosting/exposure_audit.py: kr-corpus-v1 validation window, underwater spike trim study, D3 primary and calibration). 2023-2024 is diagnostics only and is counted as a look. US and crypto: their own U7 units repeat the audit; the underwater spike trim study already read both through 2024.",
+      "seal_rule": "decisions after the freeze only; window fixed at the freeze and never extended"
     }
   },
   "candidate_policies": [
-    {"id": "control-admit-all", "description": "current gate: every eligible entry is admitted"},
-    {"id": "control-cash", "description": "no entry, 0% cash return"},
-    {"id": "gbm-baseline", "description": "tuned gradient-boosting quantile model on identical inputs and splits; admit rule on the predicted quantiles fixed before the first fit (U7)"},
-    {"id": "tft-challenger", "description": "TFT quantile model on identical inputs and splits; runs only if gbm-baseline passes its gate (U8)"}
+    {
+      "id": "control-admit-all",
+      "description": "unchanged policy: every eligible entry in D3 rank order, subject to the shared capacity"
+    },
+    {
+      "id": "control-momentum",
+      "description": "frozen: highest 60-session return in the liquid universe: median 20-session traded value >= 100,000,000 KRW"
+    },
+    {
+      "id": "control-mean-reversion",
+      "description": "frozen: lowest 5-session return in the liquid universe: median 20-session traded value >= 100,000,000 KRW"
+    },
+    {
+      "id": "control-cash",
+      "description": "no entry, 0% cash return"
+    },
+    {
+      "id": "gbm-baseline",
+      "description": "LightGBM 10/50/90 quantiles; admit when q50 > round trip and q10 > -10%; rank by q50 (U7)"
+    },
+    {
+      "id": "tft-challenger",
+      "description": "TFT quantile model on identical inputs and splits; runs only if gbm-baseline passes its gate (U8)"
+    }
   ],
   "costs_fills": {
-    "cost_table": {"pending": "per-market cost table from the U5 evaluation contract"},
+    "cost_table": "KR: 0.215% per side (D3 FEE_RATE, tax folded in); stress 0.415% per side; cash 0%",
     "fill_models": [
-      "optimistic touch: low <= P",
-      "conservative through: low <= P - 1 tick",
-      "volume share: quantity capped by a share of bar volume",
-      "empirical: fill rate calibrated on own order evidence"
+      "optimistic touch: low <= P, gap at the open",
+      "conservative through: low <= P - 1 tick, gap at the open",
+      "volume share: optimistic gate, 10% of session volume",
+      "empirical: unavailable, no fitted model in contract v1"
     ]
   },
-  "tuning_budget": {"pending": "maximum configurations and search method fixed with U7 before the first fit; every configuration tried counts"},
-  "seeds": {"pending": "fixed with U7 before the first fit"},
+  "tuning_budget": {
+    "max_configurations": 12,
+    "search": "fixed sampled grid per family, sha256 e112e9e51cd48cf6c10f5b9577696a3977d46a1741dcd015e214dcaf4054ae76",
+    "notes": "KR: configuration for year Y chosen on year Y-1 by model loss; top 3 refit with 3 seeds; top one's seed mean trades. Fit in-fold: label winsor limits, nothing else is fitted."
+  },
+  "seeds": [
+    1441,
+    1442,
+    1443
+  ],
   "metrics": {
     "primary": "net return vs cash at equal capital, after costs, under the conservative fill model",
-    "secondary": ["quantile coverage and pinball loss (diagnostic only)", "admit rate", "results under each of the four fill models"],
-    "family": ["gbm-baseline vs control-admit-all", "gbm-baseline vs control-cash"],
-    "alpha": {"pending": "fixed with U7"},
-    "delta_min": {"pending": "fixed with U7"}
+    "secondary": [
+      "quantile coverage and pinball loss (diagnostic only)",
+      "admit rate",
+      "results under each of the four fill models"
+    ],
+    "family": [
+      "gbm-baseline vs control-admit-all",
+      "gbm-baseline vs control-momentum",
+      "gbm-baseline vs control-mean-reversion",
+      "gbm-baseline vs control-cash"
+    ],
+    "alpha": "0.10",
+    "delta_min": "0.02"
   },
   "stopping_rules": [
+    "KR gate on the 2019-2022 walk-forward path, conservative end (research/kr_boosting/gate.py): G1 annual net vs cash > 2%; G2 every control beaten by > 2% a year at Holm p <= 0.10, circular block bootstrap, 20-session blocks; G3 ahead of cash and the unchanged policy in >= 3 of 4 years; G4 positive at the optimistic end",
+    "2023-2024 never changes the KR verdict",
     "if gbm-baseline fails its gate the ML track for this hypothesis stops; tft-challenger does not run",
     "any leakage finding (available_at > t, preprocessing fitted outside the fold, test rows read before freeze) voids the run",
     "the sealed test period is never reopened for this hypothesis after a look",
     "no market-wide claim on a survivor-only universe"
   ],
-  "cumulative_k": {"prior_k": 0, "source": "registry"}
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  }
 }
