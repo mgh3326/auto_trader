@@ -40,6 +40,10 @@ Known gaps, stated in the output rather than papered over:
   can widen with `listed_after`.
 - **Left censoring.** `listed_from_censored=true` marks intervals that start at
   the first capture of their series. The symbol may have listed earlier.
+- **One capture is unusable at the source.** The archive's copy of
+  `nasdaqlisted` from 2008-11-20 is truncated (`IncompleteRead` on every
+  fetch), so it is not in the cache. The cache holds 86 `nasdaqlisted` and 45
+  `otherlisted` captures, plus today's snapshot.
 - **Short-lived listings are missed.** A symbol that listed and delisted
   between two captures never appears.
 - **Ticker reuse.** Each run of consecutive captures is a separate interval,
