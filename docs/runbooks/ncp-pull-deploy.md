@@ -11,6 +11,10 @@ an inactive blue/green default MCP color, three fixed profiles
 (kiwoom, h3-crypto-paper, h3-us-paper; ROB-1436 retired the others, see mcp-unit-retirement-rob1436.md), and its loopback/tailnet-only
 HAProxy front end.
 
+A forward deploy exits 78 before any mutation while a ROB-1436 retired unit is
+running or can restart (`RETIRED_CONTAINERS`). Stop and disable those units
+first: [mcp-unit-retirement-rob1436.md](mcp-unit-retirement-rob1436.md) §3.
+
 ## Tag policy
 
 - `main` is the latest image built from a verified `main` push. It is suitable

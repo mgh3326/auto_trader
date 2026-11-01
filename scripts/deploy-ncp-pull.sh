@@ -104,6 +104,12 @@ declare -a ENV_FILE_ARGS=(--env-file "$RUNTIME_ENV_FILE" --env-file "$SECRETS_EN
 # tradingcodex-execution (8770), paper-001 (8771) and live-kr/live-us/live-crypto
 # (8773-8775); see docs/runbooks/mcp-unit-retirement-rob1436.md. Their ports stay
 # unassigned.
+# A forward deploy refuses to run while any of these can still serve: removing
+# their routes does not close their loopback listeners or stop a restart after a
+# host reboot. The desk stops and disables them first; absent or stopped with
+# restart policy "no" passes. Deploy never stops them itself, because consumers
+# move first (mcp-unit-retirement-rob1436.md section 3). --rollback does not check.
+declare -a RETIRED_CONTAINERS=(at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto)
 declare -a MCP_NAMES=(kiwoom h3-crypto-paper h3-us-paper)
 declare -a MCP_PROFILES=(kiwoom h3-crypto-paper h3-us-paper)
 declare -a MCP_PORTS=(8772 8776 8777)
@@ -216,6 +222,30 @@ unit_rollback_image() {
 # Capture every app container before the first mutation. The replacement log
 # records intent immediately before removing an instance, including failed
 # starts; rollback visits that log backwards and restores only logged units.
+retired_unit_status() {
+  local name="$1" presence=0 state
+  container_presence "$name" 2>/dev/null || presence=$?
+  ((presence == 1)) && { printf 'absent\n'; return 0; }
+  ((presence == 0)) || { printf 'unknown\n'; return 0; }
+  state="$(docker inspect --format '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' "$name" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  case "$state" in
+    'false no') printf 'disabled\n' ;;
+    *) printf 'active (running, restart policy: %s)\n' "$state" ;;
+  esac
+}
+refuse_active_retired_units() {
+  local name status refused=0
+  for name in "${RETIRED_CONTAINERS[@]}"; do
+    status="$(retired_unit_status "$name")"
+    case "$status" in
+      absent|disabled) ;;
+      *) printf 'retired MCP unit is not disabled: %s: %s\n' "$name" "$status" >&2; refused=1 ;;
+    esac
+  done
+  ((refused == 0)) && return 0
+  printf 'deploy refused: run docker update --restart=no and docker stop on the units above (docs/runbooks/mcp-unit-retirement-rob1436.md section 3)\n' >&2
+  return 78
+}
 capture_initial_state() {
   local name presence state
   for name in "${APP_CONTAINERS[@]}"; do
@@ -736,7 +766,7 @@ dry_run_image_prune() {
 
 # promote_digest returns nonzero on any failure, which ends main under errexit,
 # so the prune below is reached only after a fully successful deploy.
-main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; run_image_prune "$digest"; }
+main() { local digest; prepare || exit $?; refuse_active_retired_units || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; run_image_prune "$digest"; }
 manual_rollback() { local previous; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; current_api_rollback_digest >/dev/null || return 78; capture_initial_state || return 78; docker pull "$previous"; promote_digest "$previous"; }
 
 # A real run refuses before any mutation when one of these is MISSING; the
@@ -815,6 +845,9 @@ dry_run() {
     fi
   done
   printf '  at-haproxy: render config and reload via SIGHUP (start if absent); deferred in dry-run\n'
+  if [[ "$DEPLOY_MODE" != rollback ]]; then
+    for name in "${RETIRED_CONTAINERS[@]}"; do printf '  retired %s: %s\n' "$name" "$(retired_unit_status "$name")"; done
+  fi
   if [[ "$DEPLOY_MODE" == rollback ]]; then
     printf 'image prune: not run on rollback\n'
   else

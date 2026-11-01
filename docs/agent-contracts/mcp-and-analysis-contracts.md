@@ -26,14 +26,14 @@ live 프롬프트↔서빙 표면 계약(#1003, ROB-1436 이후 DEFAULT): `tests
 제거했다. 남은 고정 유닛은 kiwoom·h3-crypto-paper·h3-us-paper 뿐이다(근거·소비자 표·정지 순서·롤백은
 `docs/runbooks/mcp-unit-retirement-rob1436.md`). 프로필 `analysis_readonly`·`account_read`·`tradingcodex_execution`·
 `live-kr`·`live-us`·`live-crypto` 와 그 registrar·`config/mcp_profiles/live.yaml`·fable-workbench 레인 allowlist 는 삭제됐고
-이 이름의 `MCP_PROFILE` 은 미지 프로필로 기동 거부된다. 🔴 이제 레포에 **물리적 읽기 전용 MCP 표면이 없다** — 외부 읽기 세션이
+이 이름의 `MCP_PROFILE` 은 미지 프로필로 기동 거부된다. 🔴 forward deploy 는 은퇴 컨테이너(`RETIRED_CONTAINERS`)가 없거나 정지+restart `no` 가 아니면 변경 전에 exit 78 로 거부한다(라우트 제거만으로는 루프백 리스너와 재시작 정책이 남고 일부는 주문 가능). 스크립트가 직접 정지하지 않으며 `--rollback` 은 검사하지 않는다. 이 검사를 제거·완화하지 마라. 🔴 이제 레포에 **물리적 읽기 전용 MCP 표면이 없다** — 외부 읽기 세션이
 필요해지면 새 리뷰로 추가한다(운영자 결정). DEFAULT 는 주문 도구를 등록하므로 읽기 전용 대체물이 아니다.
 live 세션은 prefect `KR_LIVE_MCP_MODE=shared`(기본)로 DEFAULT 를 쓴다 — 🔴 `dedicated` 로 바꾸면 사라진 8773-8775 에 붙으려다
 실패하므로 prefect 쪽 dedicated 분기 제거는 별도 후속이다. `hermes-paper-kis` 프로필은 유닛만 은퇴하고 코드는 남는다(레인
 claude-mock/orch-mock 계약, 운영자 H3-KR 선언, Task 881 도구). 은퇴한 포트는 새 리뷰 없이 재사용 금지.
 **저트래픽 프로필 지연 import (ROB-1436)**: `app/mcp_server/lazy_imports.py` — `kiwoom`·`kiwoom_kr`·`h3-crypto-paper`·
 `h3-us-paper` 프로세스는 `main.py` 가 tooling import 전에 pandas·numpy·yfinance·exchange_calendars·
-pandas_market_calendars·finnhub 를 placeholder 모듈로 등록해 첫 속성 접근(첫 사용 도구 호출) 때 실제 import 한다.
+finnhub 를 placeholder 모듈로 등록해 첫 속성 접근(첫 사용 도구 호출) 때 실제 import 한다.
 DEFAULT·그 밖 프로필은 eager 그대로다. 도구 출력 불변. 🔴 모듈 최상위에서 이 패키지들의 속성에 접근하지 마라
 (`from pandas import X`, `from __future__ import annotations` 없는 `pd.DataFrame` 어노테이션, `pd.Timestamp(...)` 상수) —
 `tests/mcp_server/test_lazy_imports.py` 가 지연 프로필 등록 후 실행된 패키지가 0개인지 검증한다. 측정:

@@ -89,11 +89,17 @@ def test_submodule_import_and_from_import_load_the_real_package(
 
 
 def test_already_imported_or_missing_packages_are_left_alone(
-    probe_package: str,
+    probe_package: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     importlib.import_module(probe_package)
-    assert lazy_imports._install_one(probe_package) is False
-    assert lazy_imports._install_one("rob1436_no_such_package") is False
+    with caplog.at_level("WARNING", logger=lazy_imports.__name__):
+        assert lazy_imports._install_one(probe_package) is False
+    assert f"already imported: {probe_package}" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=lazy_imports.__name__):
+        assert lazy_imports._install_one("rob1436_no_such_package") is False
+    assert caplog.text == ""
     assert "rob1436_no_such_package" not in sys.modules
 
 
@@ -153,7 +159,7 @@ _BOOT_CHILD = textwrap.dedent(
 )
 
 
-def test_registering_every_lazy_profile_leaves_heavy_packages_unexecuted() -> None:
+def _child_env() -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -175,10 +181,51 @@ def test_registering_every_lazy_profile_leaves_heavy_packages_unexecuted() -> No
         }
     }
     env["SENTRY_DSN"] = ""
+    return env
+
+
+_MAIN_CHILD = textwrap.dedent(
+    """
+    import json
+    import sys
+
+    import app.mcp_server.main  # noqa: F401
+    from app.mcp_server.lazy_imports import LAZY_MODULES, is_deferred
+
+    print(json.dumps({
+        name: is_deferred(name) for name in LAZY_MODULES if name in sys.modules
+    }))
+    """
+)
+
+
+def test_importing_the_real_server_module_keeps_heavy_packages_deferred() -> None:
+    """main.py's own imports before the switch must not load a heavy package."""
+    completed = subprocess.run(
+        [sys.executable, "-c", _MAIN_CHILD],
+        cwd=REPO_ROOT,
+        env={
+            **_child_env(),
+            "MCP_PROFILE": "h3-us-paper",
+            "MCP_AUTH_TOKEN": "rob1436-placeholder",
+        },
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    assert "lazy import skipped" not in completed.stderr
+    deferred = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert set(deferred) == set(lazy_imports.LAZY_MODULES)
+    assert all(deferred.values()), deferred
+
+
+def test_registering_every_lazy_profile_leaves_heavy_packages_unexecuted() -> None:
     completed = subprocess.run(
         [sys.executable, "-c", _BOOT_CHILD],
         cwd=REPO_ROOT,
-        env=env,
+        env=_child_env(),
         capture_output=True,
         text=True,
         timeout=900,

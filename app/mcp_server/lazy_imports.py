@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import logging
 import sys
 import threading
 import types
 from typing import Any
 
 from app.mcp_server.profiles import McpProfile
+
+logger = logging.getLogger(__name__)
 
 # Top-level packages only. A submodule import (``import pandas.api.types``)
 # reads the placeholder's ``__path__``, which loads the real package first.
@@ -41,7 +44,6 @@ LAZY_MODULES: tuple[str, ...] = (
     "numpy",
     "yfinance",
     "exchange_calendars",
-    "pandas_market_calendars",
     "finnhub",
 )
 
@@ -90,7 +92,10 @@ def _load(placeholder: _DeferredModule) -> types.ModuleType:
 
 
 def _install_one(name: str) -> bool:
-    if name in sys.modules:
+    existing = sys.modules.get(name)
+    if existing is not None:
+        if not isinstance(existing, _DeferredModule):
+            logger.warning("lazy import skipped, already imported: %s", name)
         return False
     spec = importlib.util.find_spec(name)
     if spec is None:

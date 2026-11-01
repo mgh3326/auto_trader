@@ -36,7 +36,6 @@ HEAVY_MODULES = (
     "yfinance",
     "scipy",
     "finnhub",
-    "pandas_market_calendars",
     "exchange_calendars",
 )
 
@@ -186,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repeat", type=int, default=1, help="runs per mode")
     args = parser.parse_args(argv)
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
     modes = [True, False] if args.compare else [args.eager]
     for profile in args.profiles:
         for eager in modes:

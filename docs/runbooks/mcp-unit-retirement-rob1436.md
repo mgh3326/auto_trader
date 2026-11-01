@@ -153,7 +153,27 @@ merged image tag:
     /root/at-run/deploy-ncp-pull.sh sha-<short7>
 
 The script no longer starts, replaces, captures or rolls back the retired
-units, and the rendered HAProxy has no frontend on their ports. Verify:
+units, and the rendered HAProxy has no frontend on their ports.
+
+**The merged script refuses to deploy until stage 1 is done.** Removing a unit
+from the deploy inventory and HAProxy closes neither its loopback listener nor
+its restart policy, and `at-mcp-tradingcodex-execution` and the live units can
+place orders. So a forward deploy checks every retired container before its
+first mutation and exits 78 unless each one is absent, or stopped with restart
+policy `no`. It also exits 78 when the daemon cannot answer. The refusal names
+each unit and changes nothing. The check starts when the merged script is
+installed on the host, and it then blocks every deploy, including unrelated
+ones, so run stage 1 before installing the script. `--dry-run` prints each
+unit's status without refusing:
+
+    /root/at-run/deploy-ncp-pull.sh sha-<short7> --dry-run | grep '  retired '
+
+The script never stops a unit itself, because consumers move first (§3.0
+step 2). `--rollback` does not run the check, so an emergency rollback is never
+blocked by it. If a stage 1 rollback restarts a unit, the next forward deploy
+refuses until that unit is stopped and disabled again.
+
+Verify:
 
     grep -c -E 'bind 100\.122\.100\.56:(8768|8769|8770|8771|8773|8774|8775)$' /root/at-run/haproxy.cfg   # 0
     for p in 8765 8772 8776 8777; do
@@ -202,7 +222,7 @@ To restore one:
 ## 4. Memory: lazy imports on the low-traffic units
 
 `app/mcp_server/lazy_imports.py` makes pandas, numpy, yfinance,
-exchange_calendars, pandas_market_calendars and finnhub lazy in the `kiwoom`,
+exchange_calendars and finnhub lazy in the `kiwoom`,
 `kiwoom_kr`, `h3-crypto-paper` and `h3-us-paper` processes. `main.py` installs
 a placeholder module for each package before the tooling import. The real
 package runs on its first attribute access, which is the first tool call that
