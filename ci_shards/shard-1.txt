@@ -65,6 +65,9 @@ tests/models/test_trading_decision_service.py
 tests/models/test_user_settings.py
 tests/research/crypto_corpus/test_builder.py
 tests/research/crypto_corpus/test_policy_loader.py
+tests/research/crypto_universe/test_crypto_universe_build.py
+tests/research/crypto_universe/test_crypto_universe_pit.py
+tests/research/crypto_universe/test_crypto_universe_snapshot.py
 tests/research/kr_corpus/d3_engine/test_d3_primary.py
 tests/research/kr_corpus/test_kr_a0_exact_binding.py
 tests/research/rob1391_us_resubmit_shadow/test_calendar_and_costs.py

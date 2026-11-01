@@ -16,6 +16,7 @@
 - KR 1분봉 이벤트 수집기 — Toss → research.kr_candles_1m_toss (#1086)
 - KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
+- crypto-universe-v1 — 상폐 포함 PIT 유니버스·일봉 재구축 (ROB-1432)
 
 ## 기준 원문 계약
 
@@ -341,6 +342,33 @@ Toss 무응답은 gap 기록(JSONL, 침묵 skip 금지).
 KST 시각 라벨(venue 아님). 가격은 `adjusted=false`. 쓰기는 `ON CONFLICT DO NOTHING`(기존 행 우선,
 불일치는 `existing_conflict` 로 보고만).
 🔴 **스케줄 등록 없음.** 배선(hk 1084 Q-122=A)은 머지 후 desk 가 등록한다(런북 §5).
+
+### crypto-universe-v1 — 상폐 포함 PIT 유니버스·일봉 재구축 (ROB-1432)
+
+survivor-only 였던 crypto-corpus-v1(상폐 비중 0%)을 대체하는 연구 전용 패키지
+`research/crypto_universe/`. 공개 무인증 데이터만 쓰며 `app/`·DB·브로커·자격증명·
+스케줄러 import 가 없다(AST 테스트). `public_http.check_url` 이 허용 목록
+(data.binance.vision spot 아카이브·S3 목록, data-api.binance.vision exchangeInfo,
+api.upbit.com market/all·candles/days) 밖의 URL 을 소켓 전에 거부한다.
+
+- **CLI(수동)**: `uv run python -m research.crypto_universe.cli snapshot|build|pit --root DIR`
+- **소스**: Binance 일봉 = 월별 1d zip(공개 `.CHECKSUM` SHA-256 검증, 2025+ µs 타임스탬프 정규화).
+  Upbit 은 공개 아카이브가 없고 상폐 마켓에 404 를 주므로 상폐 쌍은 probe 가 캔들을
+  돌려줄 때만 확보(그 경우 delisted 로 적재) — probe 결과(상태·본문 해시)를 coverage 에 기록한다.
+  exchangeInfo 스냅샷 날짜가 `coverage_end` 이후가 아니면 build 를 거부한다(신규 상장을
+  상폐로 오분류하는 것 방지).
+- 🔴 **PIT 규칙**: live 쌍은 첫 거래일부터, 그 외는 listing episode(7일 초과 무거래 공백에서
+  분할 — 재상장·심볼 재사용 구분) 안에서만 포함. `coverage_end` 이후 질의는
+  `OutsideCoverageError` 로 거부(fail-closed). 상태는 exchangeInfo 스냅샷으로만 정한다
+  (`TRADING`=live, `BREAK`/부재=delisted, 그 외=`not_trading_other`).
+- 🔴 **스냅샷**: `snapshots/<UTC 날짜>/<source>.json.gz` 는 임시 파일 fsync 후 `os.link` 로
+  게시(부분 파일·덮어쓰기 불가)하고 읽기 전용이다. `manifest.jsonl` 은 append-only, 실행은 `flock`
+  으로 직렬화. 같은 UTC 날짜 재실행은 네트워크 0·쓰기 0, 파일만 있고 manifest 줄이 없으면 검증을
+  통과한 디스크 바이트로 줄을 보수한다. UTC 자정을 넘긴 fetch 는 쓰지 않는다. 스케줄러 등록 금지.
+- **산출물**: 원자료(캔들·스냅샷)는 git 밖 artifact root, 커밋되는 것은
+  `research/crypto_universe/data/`(PIT 표·coverage·manifest)뿐. 캔들은 crypto-corpus-v1 holdout
+  경계(2025-01-01)로 exploration/holdout 분리.
+- **테스트**: `tests/research/crypto_universe/`. 런북 대신 `research/crypto_universe/README.md`.
 
 ## 유지 규약
 
