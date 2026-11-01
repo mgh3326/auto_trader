@@ -9,7 +9,7 @@
       "status": "draft",
       "registered_at": "2026-11-01",
       "manifest": "research/experiments/manifests/rob-1411.json",
-      "manifest_sha256": "e82c5da5d58690ef534a5b46923399adb5e6633580eca550d5ce8c48f552c9c1",
+      "manifest_sha256": "71d51217091d21e4c91e0eea2a62795b97219f4bc069bc001ba44bd714988521",
       "previous_manifest_sha256": [],
       "k": 0,
       "test_looks": []
@@ -22,7 +22,7 @@
       "status": "draft",
       "registered_at": "2026-11-01",
       "manifest": "research/experiments/manifests/h-entry-price.json",
-      "manifest_sha256": "3930aa25c5e988d738ee581e40a6cb4ae39cadc94ff3aed9261d9bb86c69f372",
+      "manifest_sha256": "4ca30ddeb4b1c42162aac24a4f2de08c2db0ca31b1715c17853a2a9661d5c153",
       "previous_manifest_sha256": [],
       "k": 0,
       "test_looks": []

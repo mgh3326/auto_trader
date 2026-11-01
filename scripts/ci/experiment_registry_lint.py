@@ -25,6 +25,7 @@ Any error exits 1 with one line per violation. There is no warning level.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import re
@@ -146,6 +147,18 @@ class Errors:
 
     def add(self, where: str, message: str) -> None:
         self.items.append(f"{where}: {message}")
+
+
+def _is_date(value: Any) -> bool:
+    """A real calendar date written as YYYY-MM-DD (2026-02-30 is rejected)."""
+
+    if not (isinstance(value, str) and DATE_RE.match(value)):
+        return False
+    try:
+        dt.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _member(value: Any, allowed: frozenset[str] | dict[str, Any]) -> bool:
@@ -305,6 +318,13 @@ def validate_manifest(manifest: Any, where: str, errors: Errors) -> None:
             errors.add(
                 f"{where}.splits",
                 f"purge_sessions {purge} is below the longest label horizon {max(horizons)}",
+            )
+        gap = splits.get("gap_sessions")
+        if horizons and _is_int(gap) and gap < max(MIN_GAP_SESSIONS, *horizons):
+            errors.add(
+                f"{where}.splits",
+                f"gap_sessions {gap} is below max({MIN_GAP_SESSIONS}, longest label "
+                f"horizon {max(horizons)}) (split rules section 4)",
             )
 
 
@@ -472,7 +492,7 @@ def _date_range(value: Any) -> bool:
     return (
         isinstance(value, list)
         and len(value) == 2
-        and all(isinstance(d, str) and DATE_RE.match(d) for d in value)
+        and all(_is_date(d) for d in value)
         and value[0] <= value[1]
     )
 
@@ -520,11 +540,8 @@ def _validate_hypothesis(
     _markets(hyp.get("markets"), f"{w}.markets", errors)
     if not _member(hyp.get("status"), HYPOTHESIS_STATUSES):
         errors.add(w, f"status must be one of {sorted(HYPOTHESIS_STATUSES)}")
-    if not (
-        isinstance(hyp.get("registered_at"), str)
-        and DATE_RE.match(hyp["registered_at"])
-    ):
-        errors.add(w, "registered_at must be YYYY-MM-DD")
+    if not _is_date(hyp.get("registered_at")):
+        errors.add(w, "registered_at must be a real date YYYY-MM-DD")
     sha = hyp.get("manifest_sha256")
     if not (isinstance(sha, str) and SHA_RE.match(sha)):
         errors.add(w, "manifest_sha256 must be 64 lowercase hex characters")
@@ -557,8 +574,8 @@ def _validate_hypothesis(
             continue
         if look.get("seq") != j:
             errors.add(lw, f"seq must be {j}")
-        if not (isinstance(look.get("at"), str) and DATE_RE.match(look["at"])):
-            errors.add(lw, "at must be YYYY-MM-DD")
+        if not _is_date(look.get("at")):
+            errors.add(lw, "at must be a real date YYYY-MM-DD")
         if not _member(look.get("manifest_sha256"), known):
             errors.add(
                 lw, "manifest_sha256 is not a hash registered for this hypothesis"
@@ -611,6 +628,23 @@ def _validate_hypothesis(
             f"manifest version {version} must be {len(previous) + 1} "
             "(1 + number of previous_manifest_sha256)",
         )
+    prior_k = (
+        manifest.get("cumulative_k", {}).get("prior_k")
+        if isinstance(manifest, dict) and isinstance(manifest.get("cumulative_k"), dict)
+        else None
+    )
+    earlier = sum(
+        1
+        for look in looks
+        if isinstance(look, dict)
+        and _member(look.get("manifest_sha256"), frozenset(previous))
+    )
+    if _is_int(prior_k) and prior_k != earlier:
+        errors.add(
+            w,
+            f"cumulative_k.prior_k is {prior_k} but {earlier} test look(s) were "
+            "recorded under previous manifest hashes",
+        )
     actual = canonical_sha256(manifest)
     if actual != sha:
         errors.add(
@@ -630,6 +664,7 @@ def _validate_hypothesis(
 class Markers:
     cites: frozenset[str]
     look: str | None
+    look_count: int
     problems: tuple[str, ...]
 
 
@@ -654,7 +689,7 @@ def _report_markers(text: str) -> Markers:
     look = looks[0] if len(looks) == 1 and looks[0] in {"yes", "no"} else None
     if len(looks) > 1 and "yes" in looks:
         look = "yes"
-    return Markers(frozenset(cites), look, tuple(problems))
+    return Markers(frozenset(cites), look, len(looks), tuple(problems))
 
 
 def iter_report_files(root: Path) -> Iterable[Path]:
@@ -705,6 +740,12 @@ def validate_reports(
         for sha in sorted(cites):
             if sha not in registered:
                 errors.add(rel, f"cites unregistered manifest hash {sha}")
+        if cites and markers.look_count == 0:
+            errors.add(
+                rel,
+                "a report that cites a manifest hash must declare "
+                "Experiment-Test-Look yes or no",
+            )
         if look_flag == "yes":
             if not cites:
                 errors.add(

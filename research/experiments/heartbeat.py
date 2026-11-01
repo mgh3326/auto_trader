@@ -12,7 +12,8 @@ config leaves them null; pass them with ``--path ID=PATH`` (or point
 ``--config`` at a private copy).
 
 Exit codes: 0 every epoch OK, 1 at least one RED, 2 no RED but at least one
-UNKNOWN (missing path, unreadable source, no advance found).
+UNKNOWN (missing path, unreadable source, no advance found), 3 usage or config
+error (unreadable or malformed ``--config``, bad ``--path``/``--now``).
 
 Usage::
 
@@ -35,6 +36,60 @@ from typing import Any
 DEFAULT_CONFIG = Path(__file__).with_name("heartbeat.json")
 EVENTS_FILE = "events.jsonl"
 SEAL_KIND = "sealed"
+
+
+EXIT_USAGE = 3
+CALENDARS = frozenset({"XKRX", "XNYS", "24/7"})
+SOURCE_LISTS = {"hash_chained_ledger": "advance_kinds", "json_timestamps": "select"}
+
+
+class ConfigError(Exception):
+    """The heartbeat config cannot be read or has the wrong shape."""
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str):  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_USAGE, f"{self.prog}: error: {message}\n")
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    """Read and shape-check the config; every failure is a ConfigError."""
+
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ConfigError(f"cannot read {path} ({exc.__class__.__name__})") from exc
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path} is not JSON (line {exc.lineno})") from exc
+    if not isinstance(config, dict):
+        raise ConfigError("config must be an object")
+    red = config.get("idle_red_after_sessions")
+    if type(red) is not int or red < 1:
+        raise ConfigError("idle_red_after_sessions must be an integer >= 1")
+    epochs = config.get("epochs")
+    if not isinstance(epochs, list) or not epochs:
+        raise ConfigError("epochs must be a non-empty list")
+    for i, epoch in enumerate(epochs):
+        where = f"epochs[{i}]"
+        if not isinstance(epoch, dict) or not isinstance(epoch.get("id"), str):
+            raise ConfigError(f"{where} must be an object with a string id")
+        if epoch.get("calendar") not in CALENDARS:
+            raise ConfigError(f"{where}.calendar must be one of {sorted(CALENDARS)}")
+        source = epoch.get("source")
+        kind = source.get("kind") if isinstance(source, dict) else None
+        if kind not in SOURCE_LISTS:
+            raise ConfigError(
+                f"{where}.source.kind must be one of {sorted(SOURCE_LISTS)}"
+            )
+        listed = source.get(SOURCE_LISTS[kind])
+        if not isinstance(listed, list) or not all(isinstance(x, str) for x in listed):
+            raise ConfigError(
+                f"{where}.source.{SOURCE_LISTS[kind]} must be a list of strings"
+            )
+        if source.get("path") is not None and not isinstance(source.get("path"), str):
+            raise ConfigError(f"{where}.source.path must be a string or null")
+    return config
 
 
 class AdvanceUnavailable(Exception):
@@ -246,7 +301,7 @@ def _path_arg(raw: str) -> tuple[str, Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Read-only experiment heartbeat")
+    parser = _Parser(description="Read-only experiment heartbeat")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument(
         "--path",
@@ -260,7 +315,10 @@ def main(argv: list[str] | None = None) -> int:
         "--now", default=None, help="ISO-8601 with timezone (default: now, UTC)"
     )
     args = parser.parse_args(argv)
-    config = json.loads(args.config.read_text(encoding="utf-8"))
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        parser.error(f"config: {exc}")
     known = {e["id"] for e in config["epochs"]}
     paths = dict(args.path)
     unknown = sorted(set(paths) - known)

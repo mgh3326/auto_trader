@@ -416,3 +416,45 @@ def test_list_valued_heartbeat_field_fails_cleanly(repo: Path, field: str) -> No
     config["epochs"][0][field] = ["x"]
     path.write_text(json.dumps(config))
     assert lint.run(repo)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "needle"),
+    [
+        (
+            lambda m: m["splits"]["folds"][0].update(
+                validate=["2019-01-01", "2019-02-31"]
+            ),
+            "validate must be",
+        ),
+        (lambda m: m["splits"].update(gap_sessions=5), "gap_sessions 5 is below"),
+        (lambda m: m["cumulative_k"].update(prior_k=1), "cumulative_k.prior_k is 1"),
+    ],
+)
+def test_review_round_manifest_rules(repo: Path, mutate, needle: str) -> None:
+    _rewrite_manifest(repo, "H-entry-price", mutate)
+    problems = lint.run(repo)
+    assert any(needle in p for p in problems), problems
+
+
+def test_impossible_registered_at_fails(repo: Path) -> None:
+    registry = _registry(repo)
+    registry["hypotheses"][0]["registered_at"] = "2026-02-30"
+    _write_registry(repo, registry)
+    assert any("registered_at must be a real date" in p for p in lint.run(repo))
+
+
+def test_prior_k_must_count_looks_under_previous_hashes(repo: Path) -> None:
+    registry = _with_one_look(repo)
+    _write_registry(repo, registry)
+    # New manifest version that forgets the look made under the old hash.
+    _rewrite_manifest(repo, "H-admit", lambda m: None)
+    assert any("cumulative_k.prior_k is 0" in p for p in lint.run(repo))
+    _rewrite_manifest(repo, "H-admit", lambda m: m["cumulative_k"].update(prior_k=1))
+    assert lint.run(repo) == []
+
+
+def test_cited_report_without_look_marker_fails(repo: Path) -> None:
+    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    _write_report(repo, "docs/research/h-admit-note.md", sha=sha)
+    assert any("must declare" in p for p in lint.run(repo))

@@ -10,18 +10,25 @@
       "source": {
         "kind": "hash_chained_ledger",
         "path": null,
-        "advance_kinds": ["register", "step"]
+        "advance_kinds": [
+          "register",
+          "step"
+        ]
       }
     },
     {
       "id": "H5",
       "hypothesis": null,
-      "description": "H5-LS-ENV-v1 futures demo runner; record_nav stamps a NAV sample every tick",
+      "description": "H5-LS-ENV-v1 futures demo runner; record_nav stamps a NAV sample every tick. Read from an operator-exported weekly-score snapshot, so RED can also mean the snapshot was not re-exported",
       "calendar": "24/7",
       "source": {
         "kind": "json_timestamps",
         "path": null,
-        "select": ["nav_samples", "*", "observed_at"]
+        "select": [
+          "nav_samples",
+          "*",
+          "observed_at"
+        ]
       }
     }
   ]

@@ -34,7 +34,7 @@
     "scheme": "prospective forward shadow; no historical fitting. Feasibility window per market, then a newly sealed confirmation epoch that excludes feasibility data (PREREG section 10).",
     "rules_doc": "docs/research/experiment-split-leakage-rules.md",
     "purge_sessions": 20,
-    "gap_sessions": 5,
+    "gap_sessions": 20,
     "folds": [],
     "test": {
       "kind": "prospective_seal",

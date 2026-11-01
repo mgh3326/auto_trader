@@ -226,3 +226,31 @@ def test_heartbeat_imports_no_app_broker_or_db_module() -> None:
         "exchange_calendars",
     }
     assert modules <= allowed, modules - allowed
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,
+        "{not json",
+        "[]",
+        json.dumps({"idle_red_after_sessions": 3}),
+        json.dumps(_config({**ROB1391, "calendar": "LSE"})),
+    ],
+)
+def test_bad_config_exits_3_without_traceback(tmp_path: Path, content, capsys) -> None:
+    path = tmp_path / "heartbeat.json"
+    if content is not None:
+        path.write_text(content)
+    with pytest.raises(SystemExit) as exc:
+        hb.main(["--config", str(path)])
+    assert exc.value.code == hb.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "config:" in err
+    assert "Traceback" not in err
+
+
+def test_unknown_path_epoch_exits_3(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        hb.main(["--path", "NOPE=/tmp/x"])
+    assert exc.value.code == hb.EXIT_USAGE

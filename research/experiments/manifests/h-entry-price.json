@@ -22,7 +22,7 @@
     "scheme": "expanding walk-forward on common dates per market: train 2015-2018 / validate 2019, adding one year per fold through validate 2022",
     "rules_doc": "docs/research/experiment-split-leakage-rules.md",
     "purge_sessions": 25,
-    "gap_sessions": 5,
+    "gap_sessions": 25,
     "folds": [
       {"train": ["2015-01-01", "2018-12-31"], "validate": ["2019-01-01", "2019-12-31"]},
       {"train": ["2015-01-01", "2019-12-31"], "validate": ["2020-01-01", "2020-12-31"]},

@@ -112,8 +112,13 @@ since.
 
 ### hk 885 — screener snapshot freshness — retire
 
-- Evidence: part ① (silent investor-flow failure) is covered by PR #2128,
-  which fails loudly when a KRX trading-day commit yields zero rows. Part ②
+- Evidence: PR #2128 covers part ① (silent investor-flow failure) only for
+  a commit that writes zero rows on a KRX trading day (or on a date the
+  calendar cannot classify). A partial loss still succeeds: per-symbol fetch
+  failures become warnings, and the screener reader serves the newest
+  partition whose row count meets the 50% floor of the active universe
+  without marking it degraded. Partial losses above that floor stay silent;
+  that gap is retired with this task and is not claimed as covered. Part ②
   (support_proximity builder cadence) needs a new schedule, which needs
   approval (hard rule 6), and nobody is pursuing it.
 - Why retire: candidate supply is now measured through the ROB-1411 record

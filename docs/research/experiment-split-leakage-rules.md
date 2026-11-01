@@ -69,7 +69,8 @@ test:
    a rolling statistic that spans the boundary is computed from training-side
    rows only.
 4. The manifest records `purge_sessions` and `gap_sessions`; the lint rejects
-   a gap below 5.
+   a purge below the longest label horizon and a gap below
+   max(5, longest label horizon).
 
 ## 5. Preprocessing fitted in-fold
 
@@ -115,13 +116,14 @@ test:
    the manifest (`metrics.family`), and the report states `k` so a reader can
    discount repeated looks.
 3. A look that is not in the registry does not exist as evidence. The CI lint
-   (`tests/research/test_experiment_registry_repo.py`) fails a report that
+   (`scripts/ci/experiment_registry_lint.py`, run in the CI `lint` job; tests in
+   `tests/ci/test_experiment_registry_lint.py`) fails a report that
    cites an unregistered hash or claims a look the registry does not count.
 
 ## 8. Checklist before registering a manifest
 
 - [ ] calendar and boundary dates fixed; common dates for all symbols
-- [ ] `purge_sessions ≥ max label horizon`, `gap_sessions ≥ 5`
+- [ ] `purge_sessions ≥ max label horizon`, `gap_sessions ≥ max(5, max label horizon)`
 - [ ] every feature has an `available_at` rule
 - [ ] universe source includes delisted symbols (or the claim is limited)
 - [ ] preprocessing list states "fit in-fold"

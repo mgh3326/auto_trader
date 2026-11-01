@@ -35,7 +35,7 @@ Write decimals as strings so the hash is stable.
 | `features` | list of `{name, available_at, source?}`; `available_at` states when the value becomes known (point in time, `available_at ≤ t`) |
 | `labels` | list of `{name, definition, horizon_sessions}`; the horizon is counted in sessions of the market calendar |
 | `calendar` | market → `XKRX`, `XNYS` or `24/7` |
-| `splits` | `{scheme, rules_doc, purge_sessions, gap_sessions, folds, test}`; `rules_doc` is the split rules doc; `purge_sessions` ≥ the longest label horizon; `gap_sessions` ≥ 5; `folds` is a list of `{train, validate}` date ranges (empty only for a prospective test); `test` is `{kind: sealed_period | prospective_seal, period, exposure_audit, seal_rule}` and starts after every validation period |
+| `splits` | `{scheme, rules_doc, purge_sessions, gap_sessions, folds, test}`; `rules_doc` is the split rules doc; `purge_sessions` ≥ the longest label horizon; `gap_sessions` ≥ max(5, longest label horizon); `folds` is a list of `{train, validate}` date ranges (empty only for a prospective test); `test` is `{kind: sealed_period \| prospective_seal, period, exposure_audit, seal_rule}` and starts after every validation period |
 | `candidate_policies` | list of `{id, description}`: controls (current rule, cash) and candidates |
 | `costs_fills` | `{cost_table, fill_models}`; the fill model is a bracket (optimistic touch, conservative through, volume share, empirical) |
 | `tuning_budget` | `{max_configurations, search, notes?}`; every configuration tried counts |
@@ -103,7 +103,8 @@ OK      H5               last_advance=2026-11-04T21:00:00+00:00 idle_sessions=0 
 ```
 
 Exit code 0 = all OK, 1 = any RED, 2 = no RED but some UNKNOWN (no path,
-unreadable source, a timestamp after now).
+unreadable source, a timestamp after now), 3 = usage or config error
+(unreadable or malformed `--config`, bad `--path` or `--now`).
 
 | Source kind | Reads | Last advance |
 |---|---|---|
@@ -111,7 +112,7 @@ unreadable source, a timestamp after now).
 | `json_timestamps` | one JSON file | latest timestamp at the `select` path (`*` walks a list) |
 
 - **ROB-1391**: the private `--ledger-dir` of `research/rob1391_us_resubmit_shadow`; advances are `register` / `step` events written by `advance`.
-- **H5**: the authoritative stamp is `review.binance_h5_lane_state.updated_at` (database). The heartbeat does not read any database; it reads a snapshot file in the `scripts/binance_h5_weekly_score.py --snapshot-json` format, where `record_nav` writes one `nav_samples[].observed_at` per tick. Producing that snapshot is the operator's step.
+- **H5**: the authoritative stamp is `review.binance_h5_lane_state.updated_at` (database). The heartbeat does not read any database; it reads a snapshot file in the `scripts/binance_h5_weekly_score.py --snapshot-json` format, where `record_nav` writes one `nav_samples[].observed_at` per tick. Producing that snapshot is the operator's step. 🔴 For H5, the heartbeat measures the snapshot, not the runner: RED means either the runner stopped recording NAV **or** the snapshot was not re-exported for more than 3 UTC days. Re-export the snapshot before reading an H5 RED as a runner stall.
 
 Ledger paths are private and stay out of the repository: the committed config
 leaves `path` null and the operator passes `--path` (or a private copy of the
