@@ -67,6 +67,14 @@ def cmd_build(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown venues {sorted(unknown)}")
     cache = Path(args.cache_dir) if args.cache_dir else root / "cache"
     outputs = ("candles", "universe")
+    partial = set(venues) != set(VENUES) or bool(args.symbols or args.upbit_markets)
+    if partial and args.replace:
+        # promotion replaces candles/ and universe/ whole; a partial build would
+        # delete the other venue's outputs and shrink the tables
+        raise SystemExit(
+            "--replace needs a full build (all venues, no --symbols or "
+            "--upbit-markets); run partial builds into a new --root"
+        )
     root.mkdir(parents=True, exist_ok=True)
     with _build_lock(root):
         return _build_locked(args, root, fetch, venues, cache, outputs)

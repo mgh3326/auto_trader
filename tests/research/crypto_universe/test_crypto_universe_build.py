@@ -659,3 +659,24 @@ def test_second_build_on_the_same_root_is_refused(tmp_path: Path) -> None:
         "candles": ["inflight.txt"],
         "universe": ["inflight.txt"],
     }
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--venues", "binance_usdt_spot"],
+        ["--venues", "upbit_krw", "--upbit-coverage-end", "2026-09-30"],
+        ["--symbols", "BTCUSDT"],
+        ["--upbit-markets", "KRW-BTC"],
+    ],
+)
+def test_partial_build_with_replace_is_refused(
+    tmp_path: Path, extra: list[str]
+) -> None:
+    from research.crypto_universe import cli
+
+    _outputs(tmp_path, "full")
+    with pytest.raises(SystemExit, match="needs a full build"):
+        cli.main(["build", "--root", str(tmp_path), "--replace", *extra])
+    assert _labels(tmp_path) == {"candles": ["full.txt"], "universe": ["full.txt"]}
+    assert not (tmp_path / ".build-staging").exists()

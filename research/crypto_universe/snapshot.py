@@ -25,9 +25,12 @@ Crash safety:
   append and skipped by readers; the file it described then gets a fresh line.
 * Every missing source is fetched and validated before any is published, and
   the clock is read after the last fetch: a run that crosses UTC midnight
-  writes nothing, so a day is never left partial by the clock. (A crash while
-  publishing can still leave a day partial; a same-day rerun fills it, a later
-  day cannot fetch a past snapshot.)
+  writes nothing, so a day is never left partial by the clock.
+* ``<day>/COMPLETE.json`` is published only after every source of that day is
+  published and recorded; readers ignore a day without it. A crash between
+  sources leaves the day incomplete: a same-day rerun fetches only the missing
+  sources and then marks it complete, while a later run cannot fetch a past
+  snapshot, so that day stays visibly incomplete instead of being used.
 
 There is no scheduler; an operator runs the command. Responses come only from
 the public endpoints allowlisted in :mod:`public_http`.
@@ -55,6 +58,9 @@ SNAPSHOT_SOURCES: Mapping[str, str] = {
     "upbit_market_all": "https://api.upbit.com/v1/market/all?isDetails=true",
 }
 MANIFEST_NAME = "manifest.jsonl"
+# Published in a day's folder only after every SNAPSHOT_SOURCES file of that
+# day is published and recorded. Readers ignore a day without it.
+COMPLETE_NAME = "COMPLETE.json"
 LOCK_NAME = ".lock"
 SCHEMA_VERSION = 1
 
@@ -215,6 +221,30 @@ def _reconcile_existing(
     return SnapshotOutcome(source, path, "manifest_repaired", digest)
 
 
+def _mark_complete_if_ready(day_dir: Path, recorded: set[tuple[Any, Any, Any]]) -> None:
+    """Publish the day's completion marker once every source is recorded."""
+    marker = day_dir / COMPLETE_NAME
+    if marker.exists():
+        return
+    shas: dict[str, str] = {}
+    for source in SNAPSHOT_SOURCES:
+        path = day_dir / f"{source}.json.gz"
+        if not path.exists():
+            return
+        digest = hashlib.sha256(_read_raw(path)).hexdigest()
+        if (day_dir.name, source, digest) not in recorded:
+            return
+        shas[source] = digest
+    body = json.dumps(
+        {"snapshot_date": day_dir.name, "sources": shas}, indent=1, sort_keys=True
+    )
+    _publish(marker, (body + "\n").encode())
+
+
+def is_complete(root: Path, snapshot_date: str) -> bool:
+    return (snapshot_dir(root) / snapshot_date / COMPLETE_NAME).is_file()
+
+
 def _earlier_day_dirs(base: Path, today: date) -> list[Path]:
     days = []
     for child in base.iterdir():
@@ -261,6 +291,9 @@ def take_snapshot(
                 )
                 if outcome.action != "already_present":
                     outcomes.append(outcome)
+            # a crash after the last publish but before the marker; a day
+            # that misses a source stays incomplete (it cannot be refetched)
+            _mark_complete_if_ready(day_dir, recorded)
         # Fetch and validate every missing source before publishing any, and
         # check the clock after the last fetch: a run that crosses UTC
         # midnight writes nothing for the new day's sources.
@@ -304,14 +337,17 @@ def take_snapshot(
             )
             recorded.add((day.isoformat(), source, digest))
             outcomes.append(SnapshotOutcome(source, path, "written", digest))
+        today_dir = base / day.isoformat()
+        if today_dir.is_dir():
+            _mark_complete_if_ready(today_dir, recorded)
         return outcomes
 
 
 def latest_snapshot(root: Path, source: str) -> tuple[date, bytes, str]:
     """Most recent recorded snapshot of ``source`` (raw bytes, sha256).
 
-    The bytes on disk must match a manifest line for that day; otherwise the
-    snapshot is refused.
+    Only days with a ``COMPLETE.json`` marker count. The bytes on disk must
+    match a manifest line for that day; otherwise the snapshot is refused.
     """
     base = snapshot_dir(root)
     entries = [
@@ -321,10 +357,11 @@ def latest_snapshot(root: Path, source: str) -> tuple[date, bytes, str]:
         and isinstance(e.get("snapshot_date"), str)
         and isinstance(e.get("path"), str)
         and isinstance(e.get("sha256"), str)
+        and is_complete(root, e["snapshot_date"])
     ]
     if not entries:
         raise SnapshotError(
-            f"no {source} snapshot under {base}; run the snapshot command"
+            f"no complete {source} snapshot under {base}; run the snapshot command"
         )
     newest = max(e["snapshot_date"] for e in entries)
     candidates = [e for e in entries if e["snapshot_date"] == newest]

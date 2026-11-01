@@ -12,6 +12,7 @@ import pytest
 
 from research.crypto_universe.public_http import FetchResponse
 from research.crypto_universe.snapshot import (
+    COMPLETE_NAME,
     MANIFEST_NAME,
     SNAPSHOT_SOURCES,
     SnapshotError,
@@ -181,7 +182,11 @@ def test_partial_final_file_is_never_recorded(tmp_path: Path) -> None:
 def test_publish_leaves_no_temp_files(tmp_path: Path) -> None:
     take_snapshot(tmp_path, FakeFetch(), now=_clock(1))
     names = sorted(p.name for p in (tmp_path / "snapshots" / "2026-11-01").iterdir())
-    assert names == ["binance_spot_exchange_info.json.gz", "upbit_market_all.json.gz"]
+    assert names == [
+        "COMPLETE.json",
+        "binance_spot_exchange_info.json.gz",
+        "upbit_market_all.json.gz",
+    ]
 
 
 def test_torn_manifest_line_is_closed_and_skipped(tmp_path: Path) -> None:
@@ -299,5 +304,80 @@ def test_manifest_line_missing_keys_is_not_a_candidate(tmp_path: Path) -> None:
     manifest = tmp_path / "snapshots" / MANIFEST_NAME
     manifest.parent.mkdir(parents=True)
     manifest.write_text('{"source":"upbit_market_all"}\n')
-    with pytest.raises(SnapshotError, match="no upbit_market_all snapshot"):
+    with pytest.raises(SnapshotError, match="no complete upbit_market_all snapshot"):
         latest_snapshot(tmp_path, "upbit_market_all")
+
+
+def _crash_on_second_publish(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research.crypto_universe import snapshot as snap
+
+    real_publish = snap._publish
+    calls = {"n": 0}
+
+    def publish(path: Path, body: bytes) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt("simulated crash between sources")
+        real_publish(path, body)
+
+    monkeypatch.setattr(snap, "_publish", publish)
+
+
+def test_crash_between_sources_leaves_day_incomplete_until_filled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research.crypto_universe import snapshot as snap
+
+    real_publish = snap._publish
+    _crash_on_second_publish(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        take_snapshot(tmp_path, FakeFetch(), now=_clock(1))
+    monkeypatch.setattr(snap, "_publish", real_publish)
+    day_dir = tmp_path / "snapshots" / "2026-11-01"
+    assert (day_dir / "binance_spot_exchange_info.json.gz").exists()
+    assert not (day_dir / "upbit_market_all.json.gz").exists()
+    assert not (day_dir / COMPLETE_NAME).exists()
+    with pytest.raises(SnapshotError, match="no complete"):
+        latest_snapshot(tmp_path, "binance_spot_exchange_info")  # not used
+
+    fetch = FakeFetch()
+    outcomes = take_snapshot(tmp_path, fetch, now=_clock(1, 9))
+    assert fetch.calls == [UPBIT_URL]  # only the missing source is fetched
+    assert [o.action for o in outcomes] == ["already_present", "written"]
+    assert (day_dir / COMPLETE_NAME).exists()
+    marker = json.loads((day_dir / COMPLETE_NAME).read_text())
+    assert set(marker["sources"]) == set(SNAPSHOT_SOURCES)
+    assert latest_snapshot(tmp_path, "binance_spot_exchange_info")[0].isoformat() == (
+        "2026-11-01"
+    )
+
+
+def test_day_left_partial_is_never_used_after_the_day_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research.crypto_universe import snapshot as snap
+
+    take_snapshot(tmp_path, FakeFetch(), now=_clock(1))  # 11-01 complete
+    real_publish = snap._publish
+    _crash_on_second_publish(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        take_snapshot(tmp_path, FakeFetch(), now=_clock(2))  # 11-02 partial
+    monkeypatch.setattr(snap, "_publish", real_publish)
+    # the partial day is skipped: readers fall back to the last complete day
+    assert latest_snapshot(tmp_path, "binance_spot_exchange_info")[0].isoformat() == (
+        "2026-11-01"
+    )
+    take_snapshot(tmp_path, FakeFetch(), now=_clock(3))
+    assert not (tmp_path / "snapshots" / "2026-11-02" / COMPLETE_NAME).exists()
+    assert latest_snapshot(tmp_path, "upbit_market_all")[0].isoformat() == "2026-11-03"
+
+
+def test_crash_after_last_source_before_marker_is_marked_by_next_run(
+    tmp_path: Path,
+) -> None:
+    take_snapshot(tmp_path, FakeFetch(), now=_clock(1))
+    marker = tmp_path / "snapshots" / "2026-11-01" / COMPLETE_NAME
+    marker.chmod(0o644)
+    marker.unlink()  # as if the run died right before publishing it
+    take_snapshot(tmp_path, FakeFetch(), now=_clock(2))
+    assert marker.exists()

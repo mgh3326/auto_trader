@@ -17,7 +17,8 @@ ROOT=~/work/herdr-artifacts/crypto-universe-v1   # raw data stays outside git
 uv run python -m research.crypto_universe.cli snapshot --root "$ROOT"
 
 # Rebuild candles + PIT universe from the archives (reads the latest snapshot,
-# which must be dated after coverage_end). The build runs in .build-staging/;
+# which must be dated after coverage_end). --replace needs a full build (all
+# venues, no --symbols/--upbit-markets). The build runs in .build-staging/;
 # with --replace the old candles/ and universe/ are swapped out only after it
 # succeeds; a crash during that swap is finished or rolled back at the next
 # build start, so the previous outputs are never lost. cache/ and snapshots/
@@ -92,3 +93,6 @@ never replaced) and `snapshots/manifest.jsonl` (one appended line per file;
 next run (on any later day) after its bytes pass validation; a line torn by a crash is closed and
 skipped. All missing sources are fetched and validated before any is
 published; a run that crosses UTC midnight writes nothing.
+`<day>/COMPLETE.json` is published only after every source of that day is
+published and recorded, and readers use only complete days: a same-day rerun
+fetches just the missing sources, a day left partial is skipped.
