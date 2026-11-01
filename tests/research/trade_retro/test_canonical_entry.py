@@ -496,6 +496,55 @@ def test_a_websocket_row_that_differs_from_the_reconciler_row_stays(
     assert len(canon.fills) == 2
 
 
+def test_a_row_recorded_on_time_is_a_real_fill_even_if_it_matches(tmp_path):
+    stamp = "2026-08-03T23:03:51Z"
+    canon = _canon(
+        tmp_path,
+        {
+            "execution_ledger": [
+                _ws("AAA", 7, 300, stamp, "ref", "2026-08-03T23:03:52Z"),
+                fill_row(
+                    "kis_live",
+                    "kr",
+                    "AAA",
+                    "sell",
+                    7,
+                    300,
+                    "2026-08-04T23:02:40Z",
+                    "ref",
+                    day="2026-08-05",
+                ),
+            ]
+        },
+    )
+    assert len(canon.fills) == 2
+
+
+def test_a_reused_reference_on_another_symbol_is_not_a_repeat(tmp_path):
+    canon = _canon(
+        tmp_path,
+        {
+            "execution_ledger": [
+                _ws(
+                    "AAA", 7, 300, "2026-08-03T23:03:51Z", "ref", "2026-08-04T23:03:51Z"
+                ),
+                fill_row(
+                    "kis_live",
+                    "kr",
+                    "BBB",
+                    "sell",
+                    7,
+                    300,
+                    "2026-08-04T23:02:40Z",
+                    "ref",
+                    day="2026-08-05",
+                ),
+            ]
+        },
+    )
+    assert len(canon.fills) == 2
+
+
 def test_a_seed_recorded_after_a_repeated_sell_is_reduced_and_an_earlier_one_is_not(
     tmp_path,
 ):

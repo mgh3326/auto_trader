@@ -50,6 +50,9 @@ _CLOSE = {"kr": time(15, 30), "us": time(16, 0)}
 _OPEN = {"kr": time(9, 0), "us": time(9, 30)}
 #: How far apart a websocket row and its identical reconciler row can be stamped.
 TWIN_MAX_GAP = timedelta(days=2)
+#: A repeat was recorded about a day after the time it claims. A live websocket row is
+#: recorded within seconds, so this keeps a real fill from being read as a repeat.
+TWIN_MIN_RECORDING_LAG = timedelta(hours=23)
 
 
 def normalize_symbol(market: str, symbol: str) -> str:
@@ -213,7 +216,7 @@ def drop_cross_day_twins(fills: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     Returns the fills, the rows dropped and the seed rows corrected.
     """
     reconciler: dict[tuple, list[datetime]] = {}
-    identity = ["alias", "order_ref", "side", "qty", "price"]
+    identity = ["alias", "market", "symbol", "order_ref", "side", "qty", "price"]
     for row in fills[fills["source"] == "reconciler"].to_dict("records"):
         reconciler.setdefault(tuple(row[c] for c in identity), []).append(row["ts"])
 
@@ -225,6 +228,8 @@ def drop_cross_day_twins(fills: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
         websocket.index, websocket.to_dict("records"), strict=True
     ):
         stamps = reconciler.get(tuple(row[c] for c in identity), ())
+        if row["recorded"] - row["ts"] < TWIN_MIN_RECORDING_LAG:
+            continue
         if not any(abs(stamp - row["ts"]) <= TWIN_MAX_GAP for stamp in stamps):
             continue
         drop.append(position)
@@ -421,12 +426,13 @@ def build_canon(export: Export, cleaning: Cleaning | None = None) -> Canon:
     fills, totals_dropped, overfills_unresolved = (
         drop_running_totals(fills, order_qty) if cleaning.totals else (fills, 0, 0)
     )
+    stages["after_totals"] = _market_counts(fills)
     fills, partials_dropped = (
         drop_inventory_proven_partials(fills, keys)
         if cleaning.proven_partials
         else (fills, 0)
     )
-    stages["after_totals"] = _market_counts(fills)
+    stages["after_partials"] = _market_counts(fills)
 
     real = fills[~fills["seed"]]
     ledger_qty = real.groupby("key")["qty"].sum()

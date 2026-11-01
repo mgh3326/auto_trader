@@ -7,6 +7,7 @@ import pytest
 from research.trade_retro.audit import (
     economic_duplicates,
     external_refs_on_other_rows,
+    join_coverage,
     non_session_stamps,
     order_waterfall,
     quantity_mismatches,
@@ -155,6 +156,20 @@ def test_weekend_stamps_use_the_markets_local_day(tmp_path):
     by_market = stamps.set_index("market")
     assert (by_market.loc["kr", "rows"], by_market.loc["kr", "weekend"]) == (2, 1)
     assert (by_market.loc["us", "rows"], by_market.loc["us", "weekend"]) == (1, 1)
+
+
+def test_an_account_with_fills_and_no_order_rows_does_not_break_the_join_table(
+    tmp_path,
+):
+    book = load_snapshot(sample_prices(tmp_path / "prices"))
+    export = load_export(sample_export(tmp_path / "export"))
+    canon = build_canon(export)
+    fills, _ = apply_splits(canon.fills, book)
+    orders = classify_orders(canon.orders, book)
+    executions = build_executions(fills, orders, book)
+    table = join_coverage(executions, orders[orders["alias"] != "toss_live"])
+    row = table[table["alias"] == "toss_live"].iloc[0]
+    assert row["before_first_order_row"] == row["executed_orders"]
 
 
 def test_order_waterfall_adds_up(tmp_path):

@@ -250,7 +250,10 @@ def fetch_snapshot(
             else:
                 fetch_equity(key, rel, _yahoo_candidates(market, symbol))
     btc = _fetch_upbit("KRW-BTC", start, end_exclusive)
-    record("benchmark/crypto", "benchmark/crypto.csv", btc, "upbit:KRW-BTC")
+    if btc:
+        record("benchmark/crypto", "benchmark/crypto.csv", btc, "upbit:KRW-BTC")
+    else:
+        missing["benchmark/crypto"] = "no bars from upbit"
 
     manifest = {
         "schema": "trade-retro-prices/v1",
@@ -296,6 +299,9 @@ def load_snapshot(root: Path) -> PriceBook:
             benchmarks[name] = _read_bars(file_path)
         else:
             bars[(group, name)] = _read_bars(file_path)
+    absent = sorted(set(BENCHMARKS) - set(benchmarks))
+    if absent:
+        raise ExportIntegrityError(f"price snapshot has no benchmark for: {absent}")
     missing = {tuple(k.split("/", 1)): v for k, v in manifest["missing"].items()}
     return PriceBook(
         bars=bars,

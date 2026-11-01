@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import pytest
 
-from research.trade_retro.report import MARKETS, account_labels
-from research.trade_retro.run import main
+from research.trade_retro.report import MARKETS, Renderer, account_labels
+from research.trade_retro.run import compute, main
 from tests.research.trade_retro.retro_fixtures import (
     PRIVATE_ALIASES,
     PRIVATE_SYMBOLS,
+    START,
+    fill_row,
+    order_row,
     sample_export,
     sample_prices,
+    weekdays,
+    write_export,
+    write_prices,
 )
 
 pytestmark = pytest.mark.unit
@@ -164,8 +171,12 @@ def test_committed_fill_denominators_add_up():
     ]
     assert [row[0] for row in rows] == ["KR", "US", "Crypto"]
     for row in rows:
-        ledger, flagged, seeds, repeats, totals, moved, added, used = map(int, row[1:])
-        assert ledger - flagged - seeds - repeats - totals - moved + added == used
+        ledger, flagged, seeds, repeats, totals, proven, moved, added, used = map(
+            int, row[1:]
+        )
+        assert (
+            ledger - flagged - seeds - repeats - totals - proven - moved + added == used
+        )
 
 
 def test_committed_report_answers_each_data_check():
@@ -178,3 +189,107 @@ def test_committed_report_answers_each_data_check():
         assert heading in text
     assert "Naive: count opening lots as buys" in text
     assert "`fill_seq`" in text
+
+
+def test_headline_lists_accounts_in_label_order_when_it_differs_from_alias_order(
+    tmp_path,
+):
+    """Pick a salt that sorts the labels against the aliases, so a raw sort would swap them."""
+    salt = next(
+        str(i)
+        for i in range(100)
+        if account_labels(["kis_live", "toss_live"], str(i))["toss_live"] == "Account A"
+    )
+    rows = {
+        "execution_ledger": [
+            fill_row(
+                "kis_live",
+                "kr",
+                "AAA",
+                "buy",
+                1,
+                100,
+                "2026-05-04T01:00:00Z",
+                "k1",
+                day="2026-05-04",
+            ),
+            fill_row(
+                "kis_live",
+                "kr",
+                "AAA",
+                "sell",
+                1,
+                100,
+                "2026-05-05T01:00:00Z",
+                "k2",
+                day="2026-05-05",
+            ),
+            fill_row(
+                "toss_live", "kr", "AAA", "buy", 1, 100, "2026-05-04T01:00:00Z", "t1"
+            ),
+            fill_row(
+                "kis_live",
+                "kr",
+                "BBB",
+                "buy",
+                1,
+                40000,
+                "2026-05-10T00:00:00Z",
+                "seed",
+                day="2026-05-10",
+                source="manual_import",
+            ),
+        ]
+    }
+    rows["toss_live_order_ledger"] = [
+        order_row(
+            "toss_live",
+            "kr",
+            "AAA",
+            "buy",
+            1,
+            100,
+            "2026-05-04T00:50:00Z",
+            "t1",
+            "filled",
+            filled_qty="1",
+            fill_price="100",
+        )
+    ]
+    export = write_export(tmp_path / "export", rows)
+    path = export / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["salt_fingerprint"] = salt
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    days = weekdays(START, 40)
+    flat = lambda value: [(d, value) for d in days]  # noqa: E731
+    prices = write_prices(
+        tmp_path / "prices",
+        {
+            "benchmark/kr": flat(1000.0),
+            "benchmark/us": flat(1000.0),
+            "benchmark/crypto": flat(1000.0),
+            "kr/AAA": flat(100.0),
+            "kr/BBB": flat(40000.0),
+        },
+    )
+    results = compute(export, prices)
+    renderer = Renderer(results, public=True)
+    assert renderer.acct("toss_live") == "Account A"
+
+    idle = renderer.section_idle("kr", "KRW")
+    idle_rows = [
+        line.split("|")
+        for line in idle.splitlines()
+        if re.match(r"\| Account [A-Z] \|", line)
+    ]
+    assert [row[1].strip() for row in idle_rows] == ["Account A", "Account B"]
+    in_label_order = " / ".join(row[5].strip() for row in idle_rows)
+    assert idle_rows[0][5] != idle_rows[1][5]
+
+    headline = next(
+        line
+        for line in renderer.section_headline().splitlines()
+        if line.startswith("| KR |")
+    )
+    assert in_label_order in headline

@@ -102,7 +102,7 @@ class Renderer:
     def __init__(self, results: Results, public: bool) -> None:
         self.r = results
         self.public = public
-        aliases = sorted(results.fills["alias"].unique())
+        aliases = sorted(set(results.fills["alias"]) | set(results.orders["alias"]))
         self.labels = account_labels(
             aliases, results.manifest.get("salt_fingerprint", "")
         )
@@ -759,7 +759,13 @@ class Renderer:
             ]
             buy_large = buy_exec[buy_exec["source"] != "external_micro"]
             cost = lots["base_cost"].sum() if len(lots) else 0.0
-            idle = [s for (_alias, m), s in sorted(r.idle.items()) if m == market]
+            idle = [
+                s
+                for (_alias, m), s in sorted(
+                    r.idle.items(), key=lambda kv: self.acct(kv[0][0])
+                )
+                if m == market
+            ]
             rows.append(
                 [
                     name,
@@ -951,18 +957,22 @@ class Renderer:
             totals = stages["after_twins"].get(market, 0) - stages["after_totals"].get(
                 market, 0
             )
+            partials = stages["after_totals"].get(market, 0) - stages[
+                "after_partials"
+            ].get(market, 0)
             added = stages["after_order_only"].get(market, 0) - stages[
-                "after_totals"
+                "after_partials"
             ].get(market, 0)
             rows.append(
                 [
-                    name, exported, exported - unflagged, seeds, twins, totals, moved, added, trades,
+                    name, exported, exported - unflagged, seeds, twins, totals, partials, moved, added,
+                    trades,
                 ]
             )  # fmt: skip
         fills_table = table(
             [
                 "Market", "Ledger rows", "Flagged superseded", "Opening seeds", "Repeats",
-                "Inside a running total", "Cannot be trades", "Added from order rows", "Fills used",
+                "Inside a running total", "Proven by inventory", "Cannot be trades", "Added from order rows", "Fills used",
             ],
             rows,
         )  # fmt: skip

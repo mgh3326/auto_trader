@@ -88,6 +88,16 @@ def test_refuses_a_changed_price_file(tmp_path):
         load_snapshot(root)
 
 
+def test_refuses_a_snapshot_with_no_benchmark(tmp_path):
+    root = sample_prices(tmp_path / "prices")
+    path = root / "prices_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    del manifest["entries"]["benchmark/crypto"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ExportIntegrityError, match="no benchmark"):
+        load_snapshot(root)
+
+
 def test_cli_exits_nonzero_and_writes_nothing_on_a_hash_mismatch(tmp_path, capsys):
     export = sample_export(tmp_path / "export")
     prices = sample_prices(tmp_path / "prices")

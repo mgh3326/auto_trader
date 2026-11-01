@@ -100,13 +100,17 @@ def quantity_mismatches(export: Export, canon: Canon) -> dict:
 
 def join_coverage(executions: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame:
     """How much of the ledger has an order row, and how much of the orders has a fill."""
-    first_order = orders.groupby("alias")["created"].min().dt.date
+    first_order = {
+        alias: group["created"].min().date() for alias, group in orders.groupby("alias")
+    }
     filled_orders = orders[orders["row_filled"] > 1e-9]
     rows = []
     for (alias, market), group in executions.groupby(["alias", "market"], sort=True):
         external = group["source"].isin(("external", "external_micro"))
         micro = group["source"] == "external_micro"
-        after = group[group["day"] >= first_order[alias]]
+        # An account with fills and no order rows has nothing after a first order row.
+        start = first_order.get(alias)
+        after = group[group["day"] >= start] if start is not None else group.iloc[0:0]
         after_external = after["source"].isin(("external", "external_micro"))
         own = filled_orders[
             (filled_orders["alias"] == alias) & (filled_orders["market"] == market)

@@ -67,11 +67,11 @@ Each check below comes from a question raised by the independent dots analysis o
 
 Fills, from every live ledger row to the fills every section uses. Each row leaves at one step, and the steps add up to the last column:
 
-| Market | Ledger rows | Flagged superseded | Opening seeds | Repeats | Inside a running total | Cannot be trades | Added from order rows | Fills used |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| KR | 295 | 63 | 20 | 5 | 0 | 1 | 9 | 215 |
-| US | 165 | 0 | 20 | 0 | 0 | 1 | 16 | 160 |
-| Crypto | 3221 | 1455 | 11 | 0 | 3 | 0 | 1 | 1753 |
+| Market | Ledger rows | Flagged superseded | Opening seeds | Repeats | Inside a running total | Proven by inventory | Cannot be trades | Added from order rows | Fills used |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| KR | 295 | 63 | 20 | 5 | 0 | 0 | 1 | 9 | 215 |
+| US | 165 | 0 | 20 | 0 | 0 | 0 | 1 | 16 | 160 |
+| Crypto | 3221 | 1455 | 11 | 0 | 2 | 1 | 0 | 1 | 1753 |
 
 Orders, from every live order row to the fill-rate denominator:
 
