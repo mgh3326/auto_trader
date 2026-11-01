@@ -41,7 +41,7 @@ _US_PRE_OPEN = _time(4, 0)
 _US_AFTER_CLOSE = _time(20, 0)
 
 # XKRX regular session opens at 09:00 KST.
-_KR_OPEN = pd.Timestamp("2000-01-01 09:00").time()
+_KR_OPEN = _time(9, 0)
 
 
 @lru_cache(maxsize=1)

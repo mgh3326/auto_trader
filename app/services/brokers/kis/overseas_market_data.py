@@ -4,11 +4,15 @@ from __future__ import annotations
 import datetime
 import logging
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from pandas import DataFrame
+
+if TYPE_CHECKING:
+    # Annotation-only; a runtime import would load pandas at boot on the
+    # ROB-1436 lazy-import MCP profiles.
+    from pandas import DataFrame
 
 from app.core.symbol import to_kis_symbol
 
@@ -320,12 +324,16 @@ class OverseasMarketDataMixin(MarketDataBase):
         n: int = 200,
         period: str = "D",
         max_iterations: int = 20,
+        adjusted: bool = True,
     ) -> pd.DataFrame:
         """Batch-ingest variant of inquire_overseas_daily_price.
 
         Allows raising the pagination iteration cap from 5 (display path)
         to a value sufficient for the batch backfill horizon. Same
         underlying KIS endpoint and exchange-code mapping.
+
+        ``adjusted`` selects KIS ``MODP`` (1 = adjusted prices, the default and
+        the display path's only value; 0 = unadjusted, as traded).
         """
         excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
         excd = excd_map.get(exchange_code, exchange_code[:3])
@@ -349,7 +357,7 @@ class OverseasMarketDataMixin(MarketDataBase):
                 "SYMB": to_kis_symbol(symbol),
                 "GUBN": {"D": "0", "W": "1", "M": "2"}.get(period.upper(), "0"),
                 "BYMD": bymd,
-                "MODP": "1",
+                "MODP": "1" if adjusted else "0",
             }
             js = await self._request_with_token_retry(
                 tr_id=constants.OVERSEAS_DAILY_CHART_TR,
@@ -439,7 +447,7 @@ class OverseasMarketDataMixin(MarketDataBase):
             next_keyb = oldest.strftime("%Y%m%d%H%M%S")
 
         return OverseasMinuteChartPage(
-            frame=cast(DataFrame, frame.copy()),
+            frame=cast("DataFrame", frame.copy()),
             has_more=has_more,
             next_keyb=next_keyb,
         )

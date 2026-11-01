@@ -12,9 +12,6 @@ from typing import Any
 import pytest
 
 import app.services.buy_gate_ab_shadow.evaluate_v2 as evaluate_v2
-from app.mcp_server.tooling.analysis_readonly_registration import (
-    ANALYSIS_READONLY_TOOL_NAMES,
-)
 from app.mcp_server.tooling.buy_candidate_fanout import (
     discover_buy_candidates_fanout_impl,
 )
@@ -744,6 +741,5 @@ def test_v2_mcp_registration_is_explicitly_read_only() -> None:
     description = mcp.descriptions["evaluate_buy_gate_ab_shadow_v2"].lower()
     assert "forecast_save kwargs" in description
     assert "never creates a proposal, order, watch, collection" in description
-    assert "evaluate_buy_gate_ab_shadow_v2" in ANALYSIS_READONLY_TOOL_NAMES
     assert "evaluate_buy_gate_ab_shadow_v2" in READ_ONLY_ADVISORY_TOOLS
     assert "evaluate_buy_gate_ab_shadow_v2" not in MUTATION_TOOLS

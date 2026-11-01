@@ -41,10 +41,6 @@ def test_account_routing_tool_names_register():
 # validity guard is that it carries ONLY the frozen-context read + policy +
 # route_request tools; see tests/mcp_server/test_shadow_replay_profile.py).
 #
-# ROB-760 — account_read is also a physical allowlist profile: it must expose
-# exactly the account-sync read surface pinned in tests/test_mcp_profiles.py,
-# without route/advisory tools.
-#
 # ROB-1782 R2 — alpaca-paper-clean is also a closed-world physical-account
 # surface; it contains only its pinned Alpaca read/preview/ledger tools.
 _READ_PROFILES = [
@@ -53,15 +49,9 @@ _READ_PROFILES = [
     if p
     not in (
         McpProfile.SHADOW_REPLAY,
-        McpProfile.ACCOUNT_READ,
         McpProfile.ALPACA_PAPER_CLEAN,
         # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
         McpProfile.FILL_WATCH_CONTEXT,
-        # #891 — live profiles are manifest-bounded closed worlds;
-        # suggest_order_account is not in the manifest.
-        McpProfile.LIVE_KR,
-        McpProfile.LIVE_US,
-        McpProfile.LIVE_CRYPTO,
         # #1171 — the H3-CRYPTO paper surface is the runner's exact 20 tools;
         # suggest_order_account is not one of them.
         McpProfile.H3_CRYPTO_PAPER,

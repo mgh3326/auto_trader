@@ -1,6 +1,6 @@
 # NCP MCP blue/green deployment
 
-This runbook deploys the twelve NCP MCP server instances behind a private HAProxy
+This runbook deploys the five NCP MCP server instances behind a private HAProxy
 listener. It does not perform the client cutover: changing .mcp.json, restarting
 consumer sessions, retiring the Mac services, and changing Cloudflare routes are
 owned by the orchestrator.
@@ -14,20 +14,15 @@ bind 0.0.0.0. Its backend is the active main MCP color.
 | --- | ---: | --- | --- |
 | at-mcp-blue | 8766 | default | MCP_AUTH_TOKEN |
 | at-mcp-green | 8767 | default | MCP_AUTH_TOKEN |
-| at-mcp-analysis-readonly | 8768 | analysis_readonly | MCP_ANALYSIS_READONLY_AUTH_TOKEN |
-| at-mcp-account-read | 8769 | account_read | MCP_ACCOUNT_READ_AUTH_TOKEN |
-| at-mcp-tradingcodex-execution | 8770 | tradingcodex_execution | MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN |
-| at-mcp-paper-001 | 8771 | hermes-paper-kis | MCP_PAPER_001_AUTH_TOKEN |
 | at-mcp-kiwoom | 8772 | kiwoom | MCP_KIWOOM_AUTH_TOKEN |
-| at-mcp-live-kr | 8773 | live-kr | MCP_LIVE_KR_AUTH_TOKEN |
-| at-mcp-live-us | 8774 | live-us | MCP_LIVE_US_AUTH_TOKEN |
-| at-mcp-live-crypto | 8775 | live-crypto | MCP_LIVE_CRYPTO_AUTH_TOKEN |
 | at-mcp-h3-crypto-paper | 8776 | h3-crypto-paper | MCP_H3_CRYPTO_PAPER_AUTH_TOKEN |
 | at-mcp-h3-us-paper | 8777 | h3-us-paper | MCP_H3_US_PAPER_AUTH_TOKEN |
 
-The three live-* units (task 975) have their own desk runbook:
-live-mcp-servers.md (tokens, deploy, read-only smoke, session switch,
-rollback). The h3-crypto-paper unit (#1189) is in
+ROB-1436 (2026-11-01) retired at-mcp-analysis-readonly (8768),
+at-mcp-account-read (8769), at-mcp-tradingcodex-execution (8770),
+at-mcp-paper-001 (8771) and the live-* trio (8773-8775); the evidence, the stop order and the rollback are in
+mcp-unit-retirement-rob1436.md. Do not reuse those ports for a new unit
+without a new review. The h3-crypto-paper unit (#1189) is in
 h3-crypto-paper-mcp.md, the h3-us-paper unit (#1257) in h3-us-paper-mcp.md.
 
 Every unit passes an explicit MCP_PROFILE; the server refuses a blank or
@@ -57,9 +52,10 @@ tailnet. The Kiwoom profile also requires a token for HTTP transports.
    /root/at-secrets/.env.api (AT_RUNTIME_ENV_FILE) and
    /root/at-secrets/.env.scheduler (AT_SECRETS_ENV_FILE); the exact invocation
    is in ncp-pull-deploy.md §Canonical NCP invocation.
-2. Confirm all twelve token names in the table are non-empty across the two
-   --env-file inputs. Do not print their values. MCP_PAPER_001_AUTH_TOKEN
-   and MCP_KIWOOM_AUTH_TOKEN are required before normal deployment.
+2. Confirm all five token names in the table are non-empty across the two
+   --env-file inputs. Do not print their values. MCP_KIWOOM_AUTH_TOKEN is
+   required before normal deployment. The retired units' token names
+   (ROB-1436) are no longer read and may be removed from the env files.
 3. Remove the legacy default listener before HAProxy claims its port:
 
        docker rm -f at-mcp-readonly
@@ -75,9 +71,9 @@ tailnet. The Kiwoom profile also requires a token for HTTP transports.
 
        /root/at-run/deploy-ncp-pull.sh
 
-For a temporary pre-token validation only, an operator may exclude precisely the
-two unavailable units with MCP_UNITS_SKIP=paper-001,kiwoom. The default has no
-skips; remove the flag for the final seven-profile promotion.
+For a temporary pre-token validation only, an operator may exclude precisely an
+unavailable unit with MCP_UNITS_SKIP=kiwoom. The default has no skips; remove
+the flag for the final promotion.
 
 ## Color promotion, drain, and rollback
 
@@ -106,20 +102,13 @@ are never restarted.
 
 ## Orchestrator cutover checklist
 
-After all seven direct health checks and per-profile tools/list checks pass,
+After all direct health checks and per-profile tools/list checks pass,
 the orchestrator may cut over consumers.
 
 | Consumer profile | URL |
 | --- | --- |
 | main | http://100.122.100.56:8765/mcp |
-| analysis readonly | http://100.122.100.56:8768/mcp |
-| account read | http://100.122.100.56:8769/mcp |
-| tradingcodex execution | http://100.122.100.56:8770/mcp |
-| paper 001 | http://100.122.100.56:8771/mcp |
 | kiwoom | http://100.122.100.56:8772/mcp |
-| live-kr | http://100.122.100.56:8773/mcp |
-| live-us | http://100.122.100.56:8774/mcp |
-| live-crypto | http://100.122.100.56:8775/mcp |
 | h3-crypto-paper | http://100.122.100.56:8776/mcp |
 | h3-us-paper | http://100.122.100.56:8777/mcp |
 

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from fastmcp import Client, FastMCP
 
 from app.core.config import Settings, settings
@@ -25,7 +24,6 @@ from tests.mcp_server._registration_recorder import (
 
 pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LIVE_PROFILES = (McpProfile.LIVE_KR, McpProfile.LIVE_US, McpProfile.LIVE_CRYPTO)
 
 EXPECTED_NAMES = {
     "nh_mock_preview_order",
@@ -95,15 +93,13 @@ def test_flag_alone_controls_default_registration(
     assert not (set(recorder.tools) & NH_MOCK_TOOL_NAMES)
 
 
-def test_live_profiles_and_live_lane_allowlists_never_list_them(
+def test_non_default_profiles_and_lane_allowlists_never_list_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profiles = collect_profile_tools(monkeypatch, gates_enabled=True)
-    for profile in LIVE_PROFILES:
-        assert not (set(profiles[profile.value]) & NH_MOCK_TOOL_NAMES), profile
-    manifest = (REPO_ROOT / "config/mcp_profiles/live.yaml").read_text("utf-8")
-    assert "nh_mock" not in manifest
-    assert yaml.safe_load(manifest)  # still a valid manifest
+    for profile, names in profiles.items():
+        if profile != McpProfile.DEFAULT.value:
+            assert not (set(names) & NH_MOCK_TOOL_NAMES), profile
     for lane in sorted((REPO_ROOT / "config/mcp_lane_allowlists").glob("*.txt")):
         assert "nh_mock" not in lane.read_text("utf-8"), lane.name
 

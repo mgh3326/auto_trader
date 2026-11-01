@@ -49,6 +49,13 @@ tests/mcp_server/tooling/test_trade_retrospective_registration_docs.py
 tests/models/test_rob734_mirror_schema.py
 tests/models/test_trade_profile.py
 tests/monitoring/test_trade_notifier_reply_markup.py
+tests/research/data_plane/test_data_plane_broker_guards.py
+tests/research/data_plane/test_data_plane_broker_sources.py
+tests/research/data_plane/test_data_plane_budget.py
+tests/research/data_plane/test_data_plane_collect.py
+tests/research/data_plane/test_data_plane_guards.py
+tests/research/data_plane/test_data_plane_health.py
+tests/research/data_plane/test_data_plane_input_guards.py
 tests/research/dfc_v22_research_min/test_a2_contract_transcription.py
 tests/research/dfc_v22_research_min/test_a2_golden.py
 tests/research/kr_corpus/d3_engine/test_d3_engine_acceptance.py
@@ -60,6 +67,12 @@ tests/research/test_kr_backfill_fetch_window.py
 tests/research/test_kr_backfill_hard_ratio_guards.py
 tests/research/test_kr_backfill_kiwoom_payload.py
 tests/research/toss_phase2/test_adaptive_pacing.py
+tests/research/trade_retro/test_audit_sensitivity.py
+tests/research/trade_retro/test_canonical_entry.py
+tests/research/trade_retro/test_export_integrity.py
+tests/research/trade_retro/test_markouts.py
+tests/research/trade_retro/test_positions.py
+tests/research/trade_retro/test_report_public.py
 tests/research/us_stage_b/test_parquet_source.py
 tests/research/us_stage_b/test_verdict.py
 tests/research/us_universe/test_us_universe_snapshot.py
@@ -139,6 +152,7 @@ tests/services/buy_gate_ab_shadow/test_evaluate.py
 tests/services/buy_gate_ab_shadow/test_spec_freeze.py
 tests/services/daily_candles/test_crypto_candles_1m.py
 tests/services/daily_candles/test_migration_round_trip.py
+tests/services/execution_intent_gateway/test_kis_mock_forwarder.py
 tests/services/execution_ledger/test_kis_lots_sell_evidence_db.py
 tests/services/execution_ledger/test_opening_lots.py
 tests/services/execution_ledger/test_quarantine_mutants.py

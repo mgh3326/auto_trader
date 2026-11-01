@@ -1,0 +1,672 @@
+"""Collectors are idempotent per day, append-only, and refuse non-PIT rows."""
+
+from __future__ import annotations
+
+import gzip
+import json
+from datetime import date, timedelta
+from pathlib import Path
+
+import pytest
+
+from research.data_plane.collect import CollectError, collect
+from research.data_plane.contract import (
+    DATASET_ACTIONS,
+    DATASET_BARS,
+    DATASET_UNIVERSE,
+    RefusedRowError,
+    make_row,
+    market_datasets,
+    validate_rows,
+)
+from research.data_plane.store import (
+    dataset_lock,
+    manifest_path,
+    partition_path,
+    publish_partition,
+    read_partition,
+)
+
+from .data_plane_fixtures import FakeSources, evening, tree_state
+
+# (market, first partition day, next partition day, symbols subset)
+CASES = [
+    ("kr", date(2026, 10, 30), date(2026, 11, 2), None),
+    ("us", date(2026, 10, 30), date(2026, 11, 2), ["AAPL", "KO"]),
+    ("crypto", date(2026, 10, 30), date(2026, 10, 31), None),
+]
+
+
+def _run(
+    root: Path,
+    market: str,
+    day: date,
+    src: FakeSources,
+    symbols=None,
+    datasets=None,
+):
+    return collect(
+        root,
+        market=market,
+        day=day,
+        datasets=datasets,
+        fetch=src,
+        now=lambda: evening(market, day),
+        symbols=symbols,
+        commit="test-commit",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("market", "day", "_next", "symbols"), CASES)
+def test_second_run_same_day_fetches_and_writes_nothing(
+    tmp_path, market, day, _next, symbols
+):
+    src = FakeSources()
+    first = _run(tmp_path, market, day, src, symbols)
+    assert [r.action for r in first] == ["written"] * len(market_datasets(market))
+    assert [r.dataset for r in first] == list(market_datasets(market))
+    assert src.total_calls > 0
+    bars = read_partition(tmp_path, DATASET_BARS, market, day)
+    assert bars and all(r["available_at"] <= r["observed_at"] for r in bars)
+    before = tree_state(tmp_path)
+
+    again = FakeSources()
+    second = _run(tmp_path, market, day, again, symbols)
+
+    assert [r.action for r in second] == ["already_present"] * len(
+        market_datasets(market)
+    )
+    assert again.total_calls == 0
+    assert [r.sha256 for r in second] == [r.sha256 for r in first]
+    assert tree_state(tmp_path) == before  # same files, same bytes, same mtimes
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("market", "day", "next_day", "symbols"), CASES)
+def test_next_day_only_appends(tmp_path, market, day, next_day, symbols):
+    _run(tmp_path, market, day, FakeSources(), symbols)
+    before = tree_state(tmp_path)
+    manifests_before = {
+        ds: manifest_path(tmp_path, ds, market).read_bytes()
+        for ds in market_datasets(market)
+    }
+
+    results = _run(tmp_path, market, next_day, FakeSources(), symbols)
+
+    assert [r.action for r in results] == ["written"] * len(market_datasets(market))
+    after = tree_state(tmp_path)
+    for name, state in before.items():
+        if name.endswith("manifest.jsonl"):
+            continue
+        assert after[name] == state, f"{name} changed"
+    for ds, old in manifests_before.items():
+        new = manifest_path(tmp_path, ds, market).read_bytes()
+        assert (
+            new.startswith(old) and len(new.splitlines()) == len(old.splitlines()) + 1
+        )
+    assert partition_path(tmp_path, DATASET_BARS, market, next_day).exists()
+
+
+@pytest.mark.unit
+def test_actions_record_a_dividend_once_and_listing_changes(tmp_path):
+    day1, day2 = date(2026, 10, 30), date(2026, 11, 2)
+    _run(tmp_path, "us", day1, FakeSources(), ["AAPL", "KO"])
+    rows1 = read_partition(tmp_path, DATASET_ACTIONS, "us", day1)
+    divs = [r for r in rows1 if r["action_type"] == "cash_dividend"]
+    assert [(r["instrument"], r["cash_amount"]) for r in divs] == [("KO", "0.53")]
+    assert divs[0]["available_at"] == divs[0]["observed_at"]  # first observation
+    assert divs[0]["ex_date"] <= day1.isoformat()
+
+    _run(tmp_path, "us", day2, FakeSources(), ["AAPL", "KO"])
+    rows2 = read_partition(tmp_path, DATASET_ACTIONS, "us", day2)
+    assert not [
+        r for r in rows2 if r["action_type"] == "cash_dividend"
+    ]  # already known
+
+    # crypto: LUNAUSDT leaves the listing between two universe snapshots
+    _run(tmp_path, "crypto", day1, FakeSources())
+    _run(
+        tmp_path,
+        "crypto",
+        day1 + timedelta(days=1),
+        FakeSources(binance_pairs={"BTCUSDT": "TRADING", "ETHUSDT": "BREAK"}),
+    )
+    changes = {
+        (r["instrument"], r["action_type"])
+        for r in read_partition(
+            tmp_path, DATASET_ACTIONS, "crypto", day1 + timedelta(days=1)
+        )
+    }
+    assert changes == {
+        ("LUNAUSDT", "listing_removed"),
+        ("ETHUSDT", "listing_status_changed"),
+    }
+
+
+@pytest.mark.unit
+def test_crypto_partition_holds_the_previous_utc_day_candle(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    rows = read_partition(tmp_path, DATASET_BARS, "crypto", day)
+    assert {r["instrument"] for r in rows} == {
+        "BTCUSDT",
+        "ETHUSDT",
+        "KRW-BTC",
+        "KRW-ETH",
+    }
+    assert {r["bar_date"] for r in rows} == {"2026-10-29"}
+    assert {r["available_at"] for r in rows} == {"2026-10-30T00:05:00+00:00"}
+
+
+# --- PIT refusals -----------------------------------------------------------
+
+
+def _bar_row(market: str, available_at: str, observed_at: str) -> dict:
+    return make_row(
+        instrument="005930",
+        venue="KOSPI",
+        event_time="2026-10-30T06:30:00+00:00",
+        available_at=available_at,
+        observed_at=observed_at,
+        source="yahoo_chart",
+        source_version="v8",
+        bar_date="2026-10-30",
+        open="1",
+        high="1",
+        low="1",
+        close="1",
+        volume=1,
+    )
+
+
+@pytest.mark.unit
+def test_row_available_after_its_partition_date_is_refused_and_nothing_written(
+    tmp_path,
+):
+    # available 2026-10-31 00:30 KST: later than partition 2026-10-30 (KST)
+    row = _bar_row("kr", "2026-10-30T15:30:00+00:00", "2026-10-30T16:00:00+00:00")
+    with pytest.raises(RefusedRowError, match="later than partition date 2026-10-30"):
+        validate_rows("kr", DATASET_BARS, date(2026, 10, 30), [row])
+    with dataset_lock(tmp_path, DATASET_BARS, "kr"):
+        with pytest.raises(RefusedRowError, match="later than partition date"):
+            publish_partition(
+                tmp_path,
+                dataset=DATASET_BARS,
+                market="kr",
+                day=date(2026, 10, 30),
+                rows=[row],
+                meta={},
+            )
+    assert not partition_path(tmp_path, DATASET_BARS, "kr", date(2026, 10, 30)).exists()
+    assert not manifest_path(tmp_path, DATASET_BARS, "kr").exists()
+
+
+@pytest.mark.unit
+def test_row_observed_before_available_or_tampered_is_refused():
+    early = _bar_row("kr", "2026-10-30T07:00:00+00:00", "2026-10-30T05:00:00+00:00")
+    with pytest.raises(RefusedRowError, match="before available_at"):
+        validate_rows("kr", DATASET_BARS, date(2026, 10, 30), [early])
+    ok = _bar_row("kr", "2026-10-30T07:00:00+00:00", "2026-10-30T09:00:00+00:00")
+    validate_rows("kr", DATASET_BARS, date(2026, 10, 30), [ok])
+    with pytest.raises(RefusedRowError, match="earlier partition"):
+        validate_rows("kr", DATASET_BARS, date(2026, 10, 31), [ok])
+    with pytest.raises(RefusedRowError, match="content_hash"):
+        validate_rows("kr", DATASET_BARS, date(2026, 10, 30), [{**ok, "close": "2"}])
+    with pytest.raises(RefusedRowError, match="no UTC offset"):
+        validate_rows(
+            "kr",
+            DATASET_BARS,
+            date(2026, 10, 30),
+            [make_row(**{**ok, "available_at": "2026-10-30T07:00:00"})],
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dataset", [DATASET_UNIVERSE, DATASET_ACTIONS])
+def test_snapshot_dated_before_today_is_refused(tmp_path, dataset):
+    """A universe/actions observation made on 10-31 cannot be filed under 10-30."""
+    day = date(2026, 10, 30)
+    if dataset == DATASET_ACTIONS:
+        _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    before = tree_state(tmp_path)
+    src = FakeSources()
+    with pytest.raises(RefusedRowError, match="later than the partition date"):
+        collect(
+            tmp_path,
+            market="kr",
+            day=day,
+            datasets=[dataset],
+            fetch=src,
+            now=lambda: evening("kr", day + timedelta(days=1)),
+            commit="t",
+        )
+    assert src.total_calls == 0
+    assert tree_state(tmp_path) == before
+
+
+@pytest.mark.unit
+def test_bars_before_session_close_are_refused(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    with pytest.raises(RefusedRowError, match="forming bar"):
+        collect(
+            tmp_path,
+            market="kr",
+            day=day,
+            datasets=[DATASET_BARS],
+            fetch=FakeSources(),
+            now=lambda: evening("kr", day) - timedelta(hours=4),  # 14:00 KST
+            commit="t",
+        )
+    assert not partition_path(tmp_path, DATASET_BARS, "kr", day).exists()
+
+
+@pytest.mark.unit
+def test_bars_never_use_a_later_universe(tmp_path):
+    _run(tmp_path, "kr", date(2026, 11, 2), FakeSources(), datasets=[DATASET_UNIVERSE])
+    with pytest.raises(CollectError, match="no universe partition"):
+        _run(tmp_path, "kr", date(2026, 10, 30), FakeSources(), datasets=[DATASET_BARS])
+
+
+@pytest.mark.unit
+def test_source_returning_only_other_days_is_missing_not_misfiled(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    with pytest.raises(
+        CollectError, match="yahoo coverage 0.667 < 0.95 after 1 instruments"
+    ):
+        _run(tmp_path, "kr", day, FakeSources(future_bar=True), datasets=[DATASET_BARS])
+    assert not partition_path(tmp_path, DATASET_BARS, "kr", day).exists()
+
+
+@pytest.mark.unit
+def test_coverage_floor_and_missing_list(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    with pytest.raises(CollectError, match="yahoo coverage 0.667"):
+        _run(
+            tmp_path,
+            "kr",
+            day,
+            FakeSources(missing=frozenset({"247540"})),
+            datasets=[DATASET_BARS],
+        )
+    results = collect(
+        tmp_path,
+        market="kr",
+        day=day,
+        datasets=[DATASET_BARS],
+        fetch=FakeSources(missing=frozenset({"247540"})),
+        now=lambda: evening("kr", day),
+        min_coverage=0.5,
+        commit="t",
+    )
+    assert results[0].rows == 2
+    record = json.loads(
+        manifest_path(tmp_path, DATASET_BARS, "kr").read_text().splitlines()[-1]
+    )
+    assert record["missing"] == [
+        {"instrument": "247540", "venue": "KOSDAQ", "reason": "source_error:HTTP 404"}
+    ]
+    assert record["coverage"] == pytest.approx(2 / 3, abs=1e-6)
+
+
+@pytest.mark.unit
+def test_unrecorded_partition_is_repaired_without_fetching(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    manifest = manifest_path(tmp_path, DATASET_BARS, "crypto")
+    manifest.unlink()  # simulate a crash between publish and manifest append
+    src = FakeSources()
+    results = _run(tmp_path, "crypto", day, src)
+    assert [r.action for r in results] == [
+        "already_present",
+        "manifest_repaired",
+        "already_present",
+    ]
+    assert src.total_calls == 0
+    assert len(manifest.read_text().splitlines()) == 1
+
+
+@pytest.mark.unit
+def test_partition_bytes_are_deterministic(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path / "a", "crypto", day, FakeSources())
+    _run(tmp_path / "b", "crypto", day, FakeSources())
+    a = gzip.decompress(
+        partition_path(tmp_path / "a", DATASET_UNIVERSE, "crypto", day).read_bytes()
+    )
+    b = gzip.decompress(
+        partition_path(tmp_path / "b", DATASET_UNIVERSE, "crypto", day).read_bytes()
+    )
+    assert a == b
+
+
+# --- review fixes -------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_failing_dataset_does_not_stop_the_others(tmp_path):
+    day1, day2 = date(2026, 10, 30), date(2026, 10, 31)
+    _run(tmp_path, "crypto", day1, FakeSources())
+    src = FakeSources(
+        binance_pairs={"BTCUSDT": "TRADING", "LUNAUSDT": "BREAK"},
+        missing=frozenset({"BTCUSDT"}),
+    )
+    with pytest.raises(CollectError, match="coverage") as info:
+        _run(tmp_path, "crypto", day2, src)
+    assert [(r.dataset, r.action) for r in info.value.results] == [
+        ("universe", "written"),
+        ("corporate_actions", "written"),
+    ]
+    changes = {
+        (r["instrument"], r["action_type"])
+        for r in read_partition(tmp_path, DATASET_ACTIONS, "crypto", day2)
+    }
+    assert ("ETHUSDT", "listing_removed") in changes
+
+
+@pytest.mark.unit
+def test_listing_change_on_a_day_whose_actions_failed_is_recorded_next_time(tmp_path):
+    day1, day2, day3 = date(2026, 10, 29), date(2026, 10, 30), date(2026, 11, 2)
+    _run(tmp_path, "kr", day1, FakeSources())
+    # day 2: 000660 leaves the listing, but every Yahoo call fails -> no actions
+    gone = {"005930": "SAMSUNG ELEC"}
+    with pytest.raises(CollectError):
+        _run(
+            tmp_path,
+            "kr",
+            day2,
+            FakeSources(kospi=gone, missing=frozenset({"005930", "247540"})),
+        )
+    assert not partition_path(tmp_path, DATASET_ACTIONS, "kr", day2).exists()
+    _run(tmp_path, "kr", day3, FakeSources(kospi=gone))
+    removed = [
+        r
+        for r in read_partition(tmp_path, DATASET_ACTIONS, "kr", day3)
+        if r["action_type"] == "listing_removed"
+    ]
+    assert [(r["instrument"], r["compared_universe"]) for r in removed] == [
+        ("000660", [day1.isoformat(), day3.isoformat()])
+    ]
+
+
+@pytest.mark.unit
+def test_malformed_source_body_is_one_missing_instrument_not_a_crash(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    results = collect(
+        tmp_path,
+        market="kr",
+        day=day,
+        datasets=[DATASET_BARS, DATASET_ACTIONS],
+        fetch=FakeSources(malformed=frozenset({"000660"})),
+        now=lambda: evening("kr", day),
+        min_coverage=0.5,
+        commit="t",
+    )
+    assert [r.action for r in results] == ["written", "written"]
+    record = json.loads(
+        manifest_path(tmp_path, DATASET_BARS, "kr").read_text().splitlines()[-1]
+    )
+    assert [m["instrument"] for m in record["missing"]] == ["000660"]
+    assert record["missing"][0]["reason"].startswith("source_error:")
+
+
+@pytest.mark.unit
+def test_csat_day_forming_bar_is_refused(tmp_path):
+    from datetime import UTC, datetime
+
+    day = date(2026, 11, 19)  # CSAT: KRX trades 10:00-16:30 KST
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    at_1610_kst = datetime(2026, 11, 19, 7, 10, tzinfo=UTC)
+    with pytest.raises(RefusedRowError, match="forming bar"):
+        collect(
+            tmp_path,
+            market="kr",
+            day=day,
+            datasets=[DATASET_BARS],
+            fetch=FakeSources(),
+            now=lambda: at_1610_kst,
+            commit="t",
+        )
+
+
+@pytest.mark.unit
+def test_cli_reports_partial_success_and_exit_code_2(tmp_path, monkeypatch, capsys):
+    from research.data_plane import cli
+    from research.data_plane import collect as collect_module
+
+    day = date(2026, 10, 30)
+    monkeypatch.setattr(
+        cli,
+        "make_public_fetch",
+        lambda **_: FakeSources(missing=frozenset({"BTCUSDT", "ETHUSDT"})),
+    )
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
+    _FrozenDatetime.frozen = evening("crypto", day)
+    code = cli.main(["collect", "--root", str(tmp_path), "--market", "crypto"])
+    out = capsys.readouterr()
+    assert code == 2
+    assert "written universe crypto 2026-10-30" in out.out
+    assert "written corporate_actions crypto 2026-10-30" in out.out
+    assert "not collected: bars_1d crypto 2026-10-30" in out.err
+
+
+class _FrozenDatetime:
+    from datetime import datetime as _dt
+
+    frozen = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.frozen
+
+    fromisoformat = _dt.fromisoformat
+
+
+@pytest.mark.unit
+def test_outage_longer_than_the_lookback_still_records_missed_actions(tmp_path):
+    before, after = (
+        date(2026, 8, 3),
+        date(2026, 12, 21),
+    )  # KO ex-date 10-15 is 67 days before `after`
+    _run(tmp_path, "us", before, FakeSources(), ["AAPL", "KO"])
+    _run(tmp_path, "us", after, FakeSources(), ["AAPL", "KO"])
+    divs = [
+        r
+        for r in read_partition(tmp_path, DATASET_ACTIONS, "us", after)
+        if r["action_type"] == "cash_dividend"
+    ]
+    assert [(r["instrument"], r["ex_date"]) for r in divs] == [("KO", "2026-10-15")]
+    record = json.loads(
+        manifest_path(tmp_path, DATASET_ACTIONS, "us").read_text().splitlines()[-1]
+    )
+    assert record["lookback_days"] == (after - before).days + 7
+
+
+@pytest.mark.unit
+def test_corrupted_partition_is_not_reported_as_present(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    path = partition_path(tmp_path, DATASET_BARS, "crypto", day)
+    path.unlink()
+    path.write_bytes(b"replaced")
+    src = FakeSources()
+    with pytest.raises(CollectError, match="differs from its manifest") as info:
+        _run(tmp_path, "crypto", day, src)
+    assert [(r.dataset, r.action) for r in info.value.results] == [
+        ("universe", "already_present"),
+        ("corporate_actions", "already_present"),
+    ]
+    assert src.total_calls == 0
+
+
+# --- second review round -------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_truncated_universe_is_refused_and_writes_nothing(tmp_path):
+    day1, day2 = date(2026, 10, 29), date(2026, 10, 30)
+    full = {f"{i:06d}": f"CO{i}" for i in range(100, 150)}
+    _run(tmp_path, "kr", day1, FakeSources(kospi=full), datasets=[DATASET_UNIVERSE])
+    truncated = dict(list(full.items())[:3])
+    before = tree_state(tmp_path)
+    with pytest.raises(CollectError, match="KOSPI has 3 instruments, 47 fewer than 50"):
+        _run(
+            tmp_path,
+            "kr",
+            day2,
+            FakeSources(kospi=truncated),
+            datasets=[DATASET_UNIVERSE],
+        )
+    assert tree_state(tmp_path) == before
+    # an operator who checked a genuine mass delisting can widen the floor
+    results = collect(
+        tmp_path,
+        market="kr",
+        day=day2,
+        datasets=[DATASET_UNIVERSE],
+        fetch=FakeSources(kospi=truncated),
+        now=lambda: evening("kr", day2),
+        max_universe_drop=1.0,
+        commit="t",
+    )
+    assert results[0].action == "written"
+
+
+@pytest.mark.unit
+def test_repair_restores_run_metadata_from_the_sidecar(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    manifest = manifest_path(tmp_path, DATASET_BARS, "crypto")
+    original = json.loads(manifest.read_text())
+    manifest.unlink()  # crash between publishing the rows and the manifest append
+    _run(tmp_path, "crypto", day, FakeSources())
+    repaired = json.loads(manifest.read_text())
+    assert repaired["repaired"] is True
+    for key in (
+        "coverage",
+        "code_commit",
+        "universe_partitions",
+        "selection_policy",
+        "sha256",
+    ):
+        assert repaired[key] == original[key]
+
+
+@pytest.mark.unit
+def test_repair_without_metadata_is_refused_not_recorded(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    manifest = manifest_path(tmp_path, DATASET_BARS, "crypto")
+    manifest.unlink()
+    for sidecar in partition_path(tmp_path, DATASET_BARS, "crypto", day).parent.glob(
+        "meta-*.json"
+    ):
+        sidecar.unlink()
+    with pytest.raises(CollectError, match="without its metadata sidecar") as info:
+        _run(tmp_path, "crypto", day, FakeSources())
+    assert not manifest.exists()
+    assert [r.action for r in info.value.results] == [
+        "already_present",
+        "already_present",
+    ]
+
+
+@pytest.mark.unit
+def test_corrupt_unrecorded_partition_fails_only_its_dataset(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    bars = partition_path(tmp_path, DATASET_BARS, "crypto", day)
+    bars.parent.mkdir(parents=True)
+    bars.write_bytes(b"\x1f\x8b truncated gzip")
+    with pytest.raises(CollectError, match="not readable") as info:
+        _run(tmp_path, "crypto", day, FakeSources())
+    assert [(r.dataset, r.action) for r in info.value.results] == [
+        ("universe", "already_present"),
+        ("corporate_actions", "written"),
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("floor", [float("nan"), float("inf"), -0.1, 1.5])
+def test_non_finite_or_out_of_range_coverage_floor_is_rejected(tmp_path, floor):
+    from research.data_plane import cli
+    from research.data_plane.health import check_health
+
+    with pytest.raises(ValueError, match="coverage floor"):
+        _run_with_floor(tmp_path, floor)
+    with pytest.raises(ValueError, match="coverage floor"):
+        check_health(
+            tmp_path,
+            market="kr",
+            dataset=DATASET_BARS,
+            now=evening("kr", date(2026, 10, 30)),
+            min_coverage=floor,
+        )
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            ["collect", "--root", "/x", "--market", "kr", "--min-coverage", str(floor)]
+        )
+
+
+def _run_with_floor(root, floor):
+    day = date(2026, 10, 30)
+    return collect(
+        root,
+        market="kr",
+        day=day,
+        fetch=FakeSources(),
+        now=lambda: evening("kr", day),
+        min_coverage=floor,
+        commit="t",
+    )
+
+
+@pytest.mark.unit
+def test_rows_are_stamped_after_the_read_that_revealed_them(tmp_path):
+    """A row may not claim to be known before its source was read."""
+    from datetime import timedelta as td
+
+    day = date(2026, 10, 30)
+    base = evening("us", day)
+    tick = {"n": 0}
+
+    def clock():
+        tick["n"] += 1
+        return base + td(seconds=tick["n"])
+
+    src = FakeSources()
+    read_at: list = []
+
+    def fetch(url):
+        read_at.append(clock())
+        return src(url)
+
+    collect(
+        tmp_path,
+        market="us",
+        day=day,
+        fetch=fetch,
+        now=clock,
+        symbols=["AAPL", "KO"],
+        commit="t",
+    )
+    last_read = max(read_at).isoformat()
+    actions = read_partition(tmp_path, DATASET_ACTIONS, "us", day)
+    assert actions and all(r["available_at"] > last_read for r in actions)
+    bars = read_partition(tmp_path, DATASET_BARS, "us", day)
+    yahoo_reads = sorted(read_at)[-2:]  # the two chart reads come last
+    assert all(r["observed_at"] > yahoo_reads[0].isoformat() for r in bars)
+
+
+@pytest.mark.unit
+def test_empty_symbols_is_an_error_not_the_full_universe(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    with pytest.raises(CollectError, match="no instruments"):
+        _run(tmp_path, "kr", day, FakeSources(), symbols=[], datasets=[DATASET_BARS])
+    assert not partition_path(tmp_path, DATASET_BARS, "kr", day).exists()

@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20261016_rob1378_q46_lock"
+HEAD_REVISION = "20261101_rob1440_intent_gw"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -132,6 +132,9 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.execution_ledger_quarantine_events",
     # #1250 kis_mock inference-expiry audit table is later than this boundary.
     "review.kis_mock_inference_expiry_events",
+    # ROB-1440 intent gateway tables are later than this boundary (child first).
+    "review.execution_child_requests",
+    "review.execution_intents",
 )
 
 

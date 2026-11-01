@@ -170,9 +170,7 @@ async def test_actual_fanout_preserves_multi_source_result_and_emits_one_warning
     monkeypatch.setattr(fanout, "discover_buy_candidates_fanout_impl", discover)
     monkeypatch.setattr(fanout, "maybe_record_fanout_picks", record)
     recorder = RegistrationRecorder()
-    registry.register_all_tools(
-        cast(Any, recorder), profile=McpProfile.ANALYSIS_READONLY
-    )
+    registry.register_all_tools(cast(Any, recorder), profile=McpProfile.DEFAULT)
     caplog.set_level(logging.WARNING)
     with (
         sentry_sdk.new_scope() as parent,
@@ -194,7 +192,7 @@ async def test_actual_fanout_preserves_multi_source_result_and_emits_one_warning
 
 def test_non_c_registration_preserves_callable_identity_and_options():
     inner = RegistrationRecorder()
-    proxy = NicheMCP(inner, profile="analysis_readonly")
+    proxy = NicheMCP(inner, profile="default")
 
     def quote(symbol: str = "005930"):
         return {"symbol": symbol}
@@ -206,7 +204,7 @@ def test_non_c_registration_preserves_callable_identity_and_options():
     assert inner.options["get_quote"]["tags"] == {"read"}
     # Same C name on a profile the audit did not assign is untouched.
     assert (
-        NicheMCP(inner, profile="account_read").tool(
+        NicheMCP(inner, profile="h3-us-paper").tool(
             name="discover_buy_candidates_fanout"
         )(quote)
         is quote
@@ -216,7 +214,7 @@ def test_non_c_registration_preserves_callable_identity_and_options():
 @pytest.mark.asyncio
 async def test_concurrent_scope_exception_cancellation_and_parent_restoration(caplog):
     inner = RegistrationRecorder()
-    proxy = NicheMCP(inner, profile="analysis_readonly")
+    proxy = NicheMCP(inner, profile="default")
     entered, release = asyncio.Event(), asyncio.Event()
     sentinel = RuntimeError("sentinel")
 
@@ -254,7 +252,7 @@ async def test_concurrent_scope_exception_cancellation_and_parent_restoration(ca
 @pytest.mark.asyncio
 async def test_sync_and_sync_awaitable_keep_results_and_warn_once(caplog, monkeypatch):
     inner = RegistrationRecorder()
-    proxy = NicheMCP(inner, profile="account_read")
+    proxy = NicheMCP(inner, profile="default")
     result = object()
 
     @proxy.tool("get_order_history")
@@ -276,7 +274,7 @@ async def test_sync_and_sync_awaitable_keep_results_and_warn_once(caplog, monkey
 
         return finish()
 
-    registered = NicheMCP(second, profile="account_read").tool(
+    registered = NicheMCP(second, profile="default").tool(
         returns_awaitable, name="get_order_history"
     )
     assert await registered() is result
@@ -365,7 +363,7 @@ async def test_actual_account_history_preserves_routing_and_multi_order_envelope
 
     monkeypatch.setattr(orders_history, "get_order_history_impl", history)
     recorder = RegistrationRecorder()
-    registry.register_all_tools(cast(Any, recorder), profile=McpProfile.ACCOUNT_READ)
+    registry.register_all_tools(cast(Any, recorder), profile=McpProfile.DEFAULT)
     caplog.set_level(logging.WARNING)
     response = await recorder.tools["get_order_history"](
         market="kr", days=3, limit=2, account_mode="kis_live"

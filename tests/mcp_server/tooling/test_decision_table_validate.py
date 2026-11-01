@@ -14,9 +14,6 @@ from typing import Any
 
 import pytest
 
-from app.mcp_server.tooling.analysis_readonly_registration import (
-    ANALYSIS_READONLY_TOOL_NAMES,
-)
 from app.mcp_server.tooling.analysis_registration import ANALYSIS_TOOL_NAMES
 from app.mcp_server.tooling.decision_table_registration import (
     DECISION_TABLE_TOOL_NAMES,
@@ -471,7 +468,6 @@ def test_registration_exposes_the_pure_tool_on_analysis_and_readonly_profiles() 
 
     assert DECISION_TABLE_TOOL_NAMES == {"decision_table_validate"}
     assert "decision_table_validate" in ANALYSIS_TOOL_NAMES
-    assert "decision_table_validate" in ANALYSIS_READONLY_TOOL_NAMES
     assert "database" in mcp.registered["decision_table_validate"].lower()
     assert "order" in mcp.registered["decision_table_validate"].lower()
 

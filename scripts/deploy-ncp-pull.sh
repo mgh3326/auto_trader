@@ -97,22 +97,29 @@ readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previou
 readonly IMAGE_PRUNE_ENABLED="${AT_IMAGE_PRUNE_ENABLED-1}"
 
 declare -a ENV_FILE_ARGS=(--env-file "$RUNTIME_ENV_FILE" --env-file "$SECRETS_ENV_FILE")
-# Fixed-profile units. The live-* trio (task 975, operator Q-87 A) serves the
-# closed-world config/mcp_profiles/live.yaml surfaces, one market each, on
-# ports 8773-8775 with their own token names. h3-crypto-paper (#1189, part C
-# of #1171) serves the closed-world H3-CRYPTO paper pilot surface on 8776.
-# h3-us-paper (#1257, #1245) serves the closed-world H3-US paper pilot surface
-# on 8777.
-declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom live-kr live-us live-crypto h3-crypto-paper h3-us-paper)
-declare -a MCP_PROFILES=(analysis_readonly account_read tradingcodex_execution hermes-paper-kis kiwoom live-kr live-us live-crypto h3-crypto-paper h3-us-paper)
-declare -a MCP_PORTS=(8768 8769 8770 8771 8772 8773 8774 8775 8776 8777)
-declare -a MCP_TOKENS=(MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN MCP_LIVE_CRYPTO_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN MCP_H3_US_PAPER_AUTH_TOKEN)
+# Fixed-profile units. h3-crypto-paper (#1189, part C of #1171) serves the
+# closed-world H3-CRYPTO paper pilot surface on 8776. h3-us-paper (#1257,
+# #1245) serves the closed-world H3-US paper pilot surface on 8777.
+# ROB-1436 retired analysis-readonly (8768), account-read (8769),
+# tradingcodex-execution (8770), paper-001 (8771) and live-kr/live-us/live-crypto
+# (8773-8775); see docs/runbooks/mcp-unit-retirement-rob1436.md. Their ports stay
+# unassigned.
+# A forward deploy refuses to run while any of these can still serve: removing
+# their routes does not close their loopback listeners or stop a restart after a
+# host reboot. The desk stops and disables them first; absent or stopped with
+# restart policy "no" passes. Deploy never stops them itself, because consumers
+# move first (mcp-unit-retirement-rob1436.md section 3). --rollback does not check.
+declare -a RETIRED_CONTAINERS=(at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto)
+declare -a MCP_NAMES=(kiwoom h3-crypto-paper h3-us-paper)
+declare -a MCP_PROFILES=(kiwoom h3-crypto-paper h3-us-paper)
+declare -a MCP_PORTS=(8772 8776 8777)
+declare -a MCP_TOKENS=(MCP_KIWOOM_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN MCP_H3_US_PAPER_AUTH_TOKEN)
 # Units whose HAProxy tailnet route is also probed after the MCP promotion:
 # their sessions reach them only through that tailnet frontend.
-declare -a MCP_LIVE_ROUTE_NAMES=(live-kr live-us live-crypto h3-crypto-paper h3-us-paper)
+declare -a MCP_LIVE_ROUTE_NAMES=(h3-crypto-paper h3-us-paper)
 API_DRAIN_PENDING_COLOR=""
 MCP_DRAIN_PENDING_COLOR=""
-declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto at-mcp-h3-crypto-paper at-mcp-h3-us-paper)
+declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-kiwoom at-mcp-h3-crypto-paper at-mcp-h3-us-paper)
 declare -a REPLACED_CONTAINERS=()
 declare -A ORIGINAL_IMAGES=() EXPECTED_IMAGES=()
 ORIGINAL_API_COLOR=""
@@ -215,6 +222,30 @@ unit_rollback_image() {
 # Capture every app container before the first mutation. The replacement log
 # records intent immediately before removing an instance, including failed
 # starts; rollback visits that log backwards and restores only logged units.
+retired_unit_status() {
+  local name="$1" presence=0 state
+  container_presence "$name" 2>/dev/null || presence=$?
+  ((presence == 1)) && { printf 'absent\n'; return 0; }
+  ((presence == 0)) || { printf 'unknown\n'; return 0; }
+  state="$(docker inspect --format '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' "$name" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  case "$state" in
+    'false no') printf 'disabled\n' ;;
+    *) printf 'active (running, restart policy: %s)\n' "$state" ;;
+  esac
+}
+refuse_active_retired_units() {
+  local name status refused=0
+  for name in "${RETIRED_CONTAINERS[@]}"; do
+    status="$(retired_unit_status "$name")"
+    case "$status" in
+      absent|disabled) ;;
+      *) printf 'retired MCP unit is not disabled: %s: %s\n' "$name" "$status" >&2; refused=1 ;;
+    esac
+  done
+  ((refused == 0)) && return 0
+  printf 'deploy refused: run docker update --restart=no and docker stop on the units above (docs/runbooks/mcp-unit-retirement-rob1436.md section 3)\n' >&2
+  return 78
+}
 capture_initial_state() {
   local name presence state
   for name in "${APP_CONTAINERS[@]}"; do
@@ -418,9 +449,10 @@ wait_haproxy_ready() {
   return 1
 }
 
-# Task 975: the live-* units are reachable only through their tailnet
-# frontends, so after the MCP switch each non-skipped one must answer its
-# /health through HAProxy, polled like wait_haproxy_ready (#2046).
+# Task 975: the units in MCP_LIVE_ROUTE_NAMES (today the h3-* paper units)
+# are reachable only through their tailnet frontends, so after the MCP switch
+# each non-skipped one must answer its /health through HAProxy, polled like
+# wait_haproxy_ready (#2046).
 wait_live_mcp_routes() {
   local name i port attempt ready
   for name in "${MCP_LIVE_ROUTE_NAMES[@]}"; do
@@ -478,7 +510,7 @@ deploy_singletons() {
 
 # Every unit names its MCP_PROFILE explicitly; the server also refuses a blank
 # one (#1189), and this check keeps a blank array entry from reaching docker.
-run_mcp() { local name="$1" port="$2" profile="$3" token_env="$4" color="$5" image="$6" token heartbeat; local -a policy_args=() lease_host_args=(); [[ -n "${profile//[[:space:]]/}" ]] || { printf 'MCP_PROFILE is required for at-mcp-%s\n' "$name" >&2; return 78; }; token="$(env_value "$token_env")" || return 78; heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"; [[ "$profile" == tradingcodex_execution ]] && policy_args=(-e ORDER_APPROVAL_HASH_MODE=required -e TOSS_APPROVAL_HASH_MODE=required); [[ "$profile" == default ]] && lease_host_args=(-v /etc/machine-id:/etc/machine-id:ro); docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" "${lease_host_args[@]}" "${policy_args[@]}" -e "MCP_AUTH_TOKEN=${token}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" python -m app.mcp_server.main; }
+run_mcp() { local name="$1" port="$2" profile="$3" token_env="$4" color="$5" image="$6" token heartbeat; local -a lease_host_args=(); [[ -n "${profile//[[:space:]]/}" ]] || { printf 'MCP_PROFILE is required for at-mcp-%s\n' "$name" >&2; return 78; }; token="$(env_value "$token_env")" || return 78; heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"; [[ "$profile" == default ]] && lease_host_args=(-v /etc/machine-id:/etc/machine-id:ro); docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" "${lease_host_args[@]}" -e "MCP_AUTH_TOKEN=${token}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" python -m app.mcp_server.main; }
 wait_mcp() { local port="$1" attempt status; for ((attempt=1; attempt<=MCP_HEALTH_ATTEMPTS; attempt++)); do status="$(curl --silent --show-error --max-time 3 --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${port}/health")" && [[ "$status" == 200 ]] && return 0; sleep "$MCP_HEALTH_SLEEP_SECONDS"; done; return 1; }
 deploy_mcp() {
   local image="$1" old new i
@@ -734,7 +766,7 @@ dry_run_image_prune() {
 
 # promote_digest returns nonzero on any failure, which ends main under errexit,
 # so the prune below is reached only after a fully successful deploy.
-main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; run_image_prune "$digest"; }
+main() { local digest; prepare || exit $?; refuse_active_retired_units || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; run_image_prune "$digest"; }
 manual_rollback() { local previous; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; current_api_rollback_digest >/dev/null || return 78; capture_initial_state || return 78; docker pull "$previous"; promote_digest "$previous"; }
 
 # A real run refuses before any mutation when one of these is MISSING; the
@@ -813,6 +845,9 @@ dry_run() {
     fi
   done
   printf '  at-haproxy: render config and reload via SIGHUP (start if absent); deferred in dry-run\n'
+  if [[ "$DEPLOY_MODE" != rollback ]]; then
+    for name in "${RETIRED_CONTAINERS[@]}"; do printf '  retired %s: %s\n' "$name" "$(retired_unit_status "$name")"; done
+  fi
   if [[ "$DEPLOY_MODE" == rollback ]]; then
     printf 'image prune: not run on rollback\n'
   else

@@ -57,7 +57,7 @@ class LaneSpec:
 
 
 # The two server mappings below are evidenced by the KR-B1 runner's NCP
-# deployment and the fable workbench's local readonly profile.  Sentry spans
+# deployment (the fable workbench lane was retired by ROB-1436).  Sentry spans
 # have no profile or lane tag, so all other lanes intentionally receive no
 # guessed server attribution until an endpoint->profile inventory is supplied.
 LANE_SPECS: tuple[LaneSpec, ...] = (
@@ -110,7 +110,6 @@ LANE_SPECS: tuple[LaneSpec, ...] = (
             "docs/watch-alert-relay.md",
         ),
     ),
-    LaneSpec("fable-workbench", ("analysis_readonly",), (), ("mbp-server",)),
 )
 
 
@@ -604,15 +603,6 @@ def build_lane_allowlists(
             and any(profile in registry[tool]["profiles"] for profile in spec.profiles)
         }
         prompt.intersection_update(eligible)
-        if spec.name == "fable-workbench":
-            # Explicit operator direction: the human workbench remains broad,
-            # but its observed-zero dead tools are not retained by breadth alone.
-            prompt.update(
-                tool
-                for tool, item in registry.items()
-                if "analysis_readonly" in item["profiles"]
-                and usage[tool].get("classification") != "D"
-            )
         result[spec.name] = {
             tool: "both"
             if tool in prompt and tool in sentry

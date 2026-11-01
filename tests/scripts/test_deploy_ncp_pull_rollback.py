@@ -16,14 +16,7 @@ OLD = "ghcr.io/mgh3326/auto_trader@sha256:" + "1" * 64
 KIS_OLD = "ghcr.io/mgh3326/auto_trader@sha256:" + "3" * 64
 NEW = "ghcr.io/mgh3326/auto_trader@sha256:" + "2" * 64
 MCP_PROFILES = (
-    "at-mcp-analysis-readonly",
-    "at-mcp-account-read",
-    "at-mcp-tradingcodex-execution",
-    "at-mcp-paper-001",
     "at-mcp-kiwoom",
-    "at-mcp-live-kr",
-    "at-mcp-live-us",
-    "at-mcp-live-crypto",
     "at-mcp-h3-crypto-paper",
     "at-mcp-h3-us-paper",
 )
@@ -197,14 +190,7 @@ def _run(
             f"{name}=tok-{name}"
             for name in (
                 "MCP_AUTH_TOKEN",
-                "MCP_ANALYSIS_READONLY_AUTH_TOKEN",
-                "MCP_ACCOUNT_READ_AUTH_TOKEN",
-                "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN",
-                "MCP_PAPER_001_AUTH_TOKEN",
                 "MCP_KIWOOM_AUTH_TOKEN",
-                "MCP_LIVE_KR_AUTH_TOKEN",
-                "MCP_LIVE_US_AUTH_TOKEN",
-                "MCP_LIVE_CRYPTO_AUTH_TOKEN",
                 "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
                 "MCP_H3_US_PAPER_AUTH_TOKEN",
             )
@@ -421,7 +407,7 @@ def test_manual_rollback_skip_also_keeps_kis_instance(tmp_path: Path) -> None:
         "at-scheduler",
         "at-upbit-ws",
         "at-kis-ws",
-        "at-mcp-account-read",
+        "at-mcp-kiwoom",
     ),
 )
 def test_each_late_phase_failure_restores_all_replaced_units(
@@ -444,7 +430,7 @@ def test_each_late_phase_failure_restores_all_replaced_units(
 
 def test_skip_is_never_touched_by_later_rollback(tmp_path: Path) -> None:
     result, calls, state, _ = _run(
-        tmp_path, args=("--skip-kis-ws",), fail_name="at-mcp-account-read"
+        tmp_path, args=("--skip-kis-ws",), fail_name="at-mcp-kiwoom"
     )
     assert result.returncode != 0
     assert state["at-kis-ws"] == KIS_OLD
@@ -479,20 +465,18 @@ def test_rollback_order_reverses_prior_replacements(tmp_path: Path) -> None:
 
 
 def test_mcp_failure_reverses_profile_then_core_replacements(tmp_path: Path) -> None:
-    result, calls, state, _ = _run(tmp_path, fail_name="at-mcp-account-read")
+    result, calls, state, _ = _run(tmp_path, fail_name="at-mcp-h3-crypto-paper")
     assert result.returncode != 0
     old_runs = [
         call[call.index("--name") + 1]
         for call in calls
         if call[0] == "run" and "--name" in call and OLD in call
     ]
-    assert old_runs.index("at-mcp-account-read") < old_runs.index(
-        "at-mcp-analysis-readonly"
-    )
-    assert old_runs.index("at-mcp-analysis-readonly") < old_runs.index("at-upbit-ws")
+    assert old_runs.index("at-mcp-h3-crypto-paper") < old_runs.index("at-mcp-kiwoom")
+    assert old_runs.index("at-mcp-kiwoom") < old_runs.index("at-upbit-ws")
     assert old_runs.index("at-upbit-ws") < old_runs.index("at-scheduler")
     assert old_runs.index("at-scheduler") < old_runs.index("at-worker")
-    assert state["at-mcp-analysis-readonly"] == OLD
+    assert state["at-mcp-kiwoom"] == OLD
 
 
 def test_rollback_digest_mismatch_is_visible_and_nonzero(tmp_path: Path) -> None:
@@ -559,7 +543,7 @@ def test_drain_activation_failure_restores_containers_and_digest_files(
 
 def test_absent_unit_is_removed_after_failed_later_phase(tmp_path: Path) -> None:
     result, _, state, _ = _run(
-        tmp_path, absent_name="at-kis-ws", fail_name="at-mcp-account-read"
+        tmp_path, absent_name="at-kis-ws", fail_name="at-mcp-kiwoom"
     )
     assert result.returncode != 0
     assert "at-kis-ws" not in state

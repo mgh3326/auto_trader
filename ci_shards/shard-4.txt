@@ -95,7 +95,6 @@ tests/scripts/test_binance_futures_demo_smoke.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
 tests/scripts/test_deploy_ncp_pull_h3_us_paper.py
-tests/scripts/test_deploy_ncp_pull_live_mcp.py
 tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py
 tests/scripts/test_invest_perf_report.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
@@ -162,6 +161,11 @@ tests/services/brokers/toss/test_smoke_script.py
 tests/services/buy_gate_ab_shadow/test_no_live_path_impact.py
 tests/services/daily_candles/test_crypto_venue_resolution.py
 tests/services/daily_candles/test_sync_service.py
+tests/services/dots_history_export/test_export_contract.py
+tests/services/dots_history_export/test_export_db.py
+tests/services/dots_history_export/test_leak_check.py
+tests/services/dots_history_export/test_read_only.py
+tests/services/execution_intent_gateway/test_migration_and_boundaries.py
 tests/services/execution_ledger/test_kis_lots.py
 tests/services/execution_ledger/test_kis_lots_us_db.py
 tests/services/execution_ledger/test_quarantine_unit.py

@@ -8,9 +8,12 @@
 - Binance Demo Order Ledger (ROB-298)
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
+- Execution Intent Gateway (ROB-1440)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
 - Execution Ledger 교차 소스 중복 체결 (ROB-1379)
+- dots 이력 익명화 export (ROB-1438)
+- 실거래 회고 (ROB-1439)
 - 보호 수량 P 규칙 추종 (#943)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
@@ -185,6 +188,24 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
   core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
 
+### Execution Intent Gateway (ROB-1440)
+
+기계식 전략용 주문 경계. Python 이 무엇을(버전·인가·상한이 있는 intent), Go 실행기가 언제·얼마에(그 안에서)를 맡는다. Go 는 브로커·DB 에 직접 닿지 않고 child request 만 보낸다. 🔴 **`app/` 어디에서도 import 하지 않는다** — 라우터·MCP·스케줄러 연결 0, 기본 비활성. 전송 경로 추가는 E2/E3 의 별도 PR 이다.
+
+- **스키마**: `app/schemas/execution_intent.py` (`ExecutionIntentV1`, submit/amend/cancel child)
+- **패키지**: `app/services/execution_intent_gateway/` — `decisions`(순수 거부 규칙) · `store`(두 테이블의 유일한 writer) · `gateway`(순서) · `kis_mock_forwarder`(기존 주문 함수 호출, `is_mock=True` 고정)
+- **테이블**: `review.execution_intents`(불변, `account IN ('kis_mock')` CHECK), `review.execution_child_requests`(write-ahead journal). 마이그레이션 `20261101_rob1440_intent_gw`. at_app 은 DELETE 없음, journal UPDATE 는 결과 컬럼 4개만, intent UPDATE 는 `FOR UPDATE` 잠금용 `id` 하나만. 🔴 트리거가 어떤 역할이든 intent 변경·삭제, journal 요청 필드 변경·삭제, `sending`→`accepted`/`uncertain` 외 전이, 결과를 미리 담은 새 행(초기 상태는 `sending`/`refused`, `broker_order_id`·`result` 는 NULL)을 거부한다. intent 는 CHECK 가 스키마 상한을 반복하고 트리거가 만기 과거·24시간 초과 INSERT 를 거부한다. 🔴 downgrade 는 행이 있으면 거부한다(journal 을 잃으면 쓴 키로 다시 전송될 수 있다). 이 트리거를 완화하지 마라(`sending` 행의 키를 바꾸면 재시도가 새 요청으로 보여 이중 전송된다)
+- **설계**: `docs/design/1440-intent-gateway-contract.md`
+
+**계약**:
+- 🔴 `EXECUTION_INTENT_GATEWAY_ENABLED` 정확히 `true` + 호출별 `confirm is True` 이중 게이트. 둘 다 DB 접근 전에 거부한다.
+- 🔴 journal 행(`sending`)이 **브로커 호출 전에 커밋**된다. 같은 키는 첫 결과를 반환하고 다시 보내지 않는다. 다른 payload 의 같은 키는 `conflict` 다. 예외·실패 결과·결과 기록 실패는 전부 `uncertain`/`sending` 으로 남고 재전송하지 않는다. 브로커 결과의 `retry_allowed` 는 권한이 아니다.
+- 🔴 상한은 intent 가 지금까지 보낸 전부를 묶는다(주문별 high-water mark, 거부 행만 제외). cancel 은 체결 증거가 없으므로 상한을 풀지 않는다. 건별 notional 은 `LOCKED_ENVELOPE.max_single_notional_krw` 도 넘지 못한다. 이 상수를 gateway 쪽에서 넓히지 마라.
+- amend/cancel 대상은 journal 의 idempotency key 로만 지정한다. Go 가 브로커 주문번호를 넘길 수 없으므로 같은 intent 가 보낸 주문에만 작용한다.
+- submit/amend 는 기존 `review.kis_mock_runner_control` 이 `ACTIVE` 일 때만 허용하고 읽기 실패는 차단이다. 🔴 cancel 은 kill·만료·상한을 보지 않는다(ROB-1440 운영자 계약). 이 예외는 gateway 경로에만 있고 runner 의 `mutation_permission` 표는 바뀌지 않았다. 단, 나중 child 가 `sending`/`uncertain` 이면 대상 주문번호를 믿을 수 없으므로 그 주문의 cancel 도 `target_superseded` 로 거부하고 reconcile 을 기다린다.
+- 체결은 여기에 기록하지 않는다. `accepted` 는 체결이 아니며, 기존 레저와 reconcile 이 그대로 권한자다.
+- 하위 가드는 우회하지 않는다. 현재 KR mock 전송은 coordinated route 와 follow-up capability 없이는 하위 계층에서 거부되므로, 실제 주문은 E3 결정 전까지 나가지 않는다.
+
 ### Execution Ledger HTTP Ingest (fillwire P0)
 
 체결 수집 Go 데몬 `fillwire` 로의 이관을 위한 **P0 계약**. Go 는 DB 에 직접 쓰지 않고
@@ -304,6 +325,35 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
 - **테스트**: `tests/services/execution_ledger/test_supersede.py`(순수),
   `test_cross_source_dedupe_db.py`(실제 ingest 라우트·모니터 DB sink·reconciler 경로, 양방향·재전송·
   날짜 재사용·뮤턴트).
+
+### dots 이력 익명화 export (ROB-1438)
+
+외부 리서치 세션 dots 용 주문·체결 이력 export. desk 가 손으로 실행해 Drive `auto_trader/dots/` 에 올린다. 🔴 스케줄러·쓰기 경로·브로커 호출 없음.
+
+- **CLI**: `scripts/export_dots_history.py` — `--database-url-env` 필수, 솔트는 `--salt-file`(repo 밖·owner 전용) 또는 `--salt-env`, 기본 창은 최근 6개월
+- **패키지**: `app/services/dots_history_export/` — `spec`(닫힌 컬럼·값 형태) · `reader`(명시 컬럼 SELECT, `REPEATABLE READ READ ONLY`) · `projection`(순수 변환, HMAC 해시) · `leak_check` · `publish`(staging 후 재검증·원자적 게시, manifest)
+- **런북**: `docs/runbooks/dots-history-export.md` (read-only MCP 옵션 설명 포함 — 문서만, 활성화 아님)
+
+**계약**:
+- 🔴 **출력 컬럼은 `spec.py` allowlist 뿐**이다. 계좌번호·브로커 주문번호·브로커 계좌 식별자·자격증명은 내보내지 않고, id 는 솔트 해시(`order_ref` 등)로 바꿔 테이블 간 join 을 유지한다. raw 응답·thesis·notes·reason 등 payload/산문 컬럼은 SELECT 자체를 하지 않는다. 라벨은 짧은 ASCII·공백 없음·식별자 모양 아님일 때만 복사하고 나머지는 `oth_` 해시이며, `void_reason` 은 코드만 남긴다(뒤는 raw 예외 문자열일 수 있음)
+- 🔴 **leak check 는 fail-closed**: 행 단계와 staging 파일 재독 단계 둘 다 통과해야 게시된다. 실패 출력은 위치와 규칙 이름만이며 값을 반복하지 않는다. 실패를 넘기려고 패턴을 완화하거나 컬럼을 빼지 마라
+- 🔴 **`execution_ledger` 는 `execution_ledger_in_effect()` 만** 읽는다(#1175). 교차 소스 중복은 지우지 않고 `superseded_duplicate` 로 표시한다(ROB-1379 `supersede`)
+- 🔴 솔트는 repo 와 출력에 들어가지 않는다. 출력 디렉터리도 repo 밖만 허용한다
+- KIS·Upbit·Toss 주문 행의 `filled_at` 은 같은 거래일의 in-effect `execution_ledger` 행에서만 온다(evidence-first). 근거 없으면 비운다. DB paper 표의 `filled_at` 은 시뮬레이터 자기 행의 값이며 `execution_ledger` 증거가 아니다. `terminal_outcome=open` 은 "아직 살아 있음"의 증거가 아니라 "종료 기록 없음"이다
+- Kiwoom mock 은 주문 원장 테이블이 없어 대상이 아니다(`manifest.sources_without_ledger`)
+- **테스트**: `tests/services/dots_history_export/`, `test_quarantine_readers_db.py::test_dots_history_export_drops_the_quarantined_phantom`
+
+### 실거래 회고 (ROB-1439)
+
+dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 유형·체결률·마크아웃·유휴 현금을 재현 가능하게 측정한다. 🔴 연구 전용 — DB·브로커·자격증명·스케줄러 없음, 프로덕션 코드 변경 없음, 정책 권고 없음.
+
+- **패키지·명령**: `research/trade_retro/`(`README.md`), `uv run python -m research.trade_retro.run report ...`(`--check` 는 바이트 비교)
+- 🔴 **이 레포는 공개이고 export 는 비공개 거래 데이터다**: 커밋되는 `docs/research/rob-1439-trade-retrospective-2026-11-01.md` 는 비율·건수·마스킹된 종목·계좌만 담는다. 종목·금액·계좌명이 있는 전체판과 행 단위 CSV·export·가격 스냅샷은 레포 밖에만 둔다(`--private-dir` 가 레포 안이면 거부). `tests/research/trade_retro/test_report_public.py` 가 커밋본을 스캔한다
+- 🔴 **manifest 불일치면 거부**: export·가격 스냅샷의 해시·크기·행 수·컬럼이 다르거나 목록 밖 파일이 있으면 아무것도 쓰지 않고 종료 코드 3
+- **체결은 합집합이다**: `execution_ledger` 와 주문 행 중 큰 수량을 쓴다. 주문 행은 양방향으로 stale 하다(`open` 인데 원장 체결 있음, `filled` 인데 원장 행 없음). 거래일 종가에서 30% 넘게 벗어난 체결은 거래로 세지 않고 opening lot 으로 처리한다
+- 🔴 **`superseded_duplicate=false` 만으로 중복이 걸러지지 않는다**: 하루 일찍 찍힌 KIS websocket 행은 다음 날의 동일한 reconciler 행과 날짜 키가 달라 flag 를 통과한다. 이 패키지는 그런 행을 지우고, 그 행을 흡수한 seed 도 같은 수량만큼 줄이며, 주문 수량을 넘는 합계 중 주문 수량과 같은 행이 있으면 그 행만 남긴다. export 의 다른 소비자도 같은 함정을 만난다. 반대로 경제 필드가 같은 행이 곧 중복은 아니다: export 에 `fill_seq` 가 없고 시각이 분 단위로 잘려 한 주문의 별개 체결이 같아 보일 수 있으므로, 합계를 주문 수량과 대조한 뒤 판단한다
+- 🔴 **나중 배치의 seed 는 증분이 아니라 전체 보유량이다**: `net_quantity_by_match_key_since` 는 seed 행을 빼고 그 실행의 cutover 이후 체결만 세므로, 2026-09-29 배치 6행은 그 시점 보유량 전체를 담는다. 이 패키지는 해당 종목 보유량을 그 값으로 재설정한다. seed 행을 합산하는 리더는 첫 배치 위에 이 행을 이중으로 더하게 된다
+- **테스트**: `tests/research/trade_retro/`
 
 ### 보호 수량 P 규칙 추종 (#943)
 

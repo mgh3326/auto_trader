@@ -1,0 +1,72 @@
+# PROPOSAL for operator approval (ROB-1443, ROB-1448) — NOT registered anywhere.
+# Copy to the Dagu DAGs directory only after the operator approves it.
+#
+# Point-in-time data plane, market: us.
+# Schedule: 23:00 UTC Mon-Fri = 19:00 EDT / 18:00 EST, after the 16:00 ET close + 30 min.
+# Times are written in UTC because the OCI Dagu scheduler runs in UTC
+# (schedule-inventory-1101). Per-DAG time zones were not verified on that
+# Dagu version, so none are used.
+#
+# Every command is research.data_plane.cli. Bars come from the broker
+# market-data APIs first (--bar-sources kis,toss,yahoo): a whole partition is
+# served by the first source that covers the floor, and the public Yahoo chart
+# is the fallback; the manifest records served_by and every attempt. Broker
+# calls are read-only daily charts through an allowlisted view of the app's
+# KIS/Toss clients (no order, account or balance method is reachable) and take
+# a research budget of at most 25% of each broker's limit (--broker-budget),
+# shared by every collector using the same DATA_PLANE_ROOT. Universe and
+# corporate actions stay on public sources (no broker client implements them).
+# collect is idempotent per day: a rerun or a retry writes nothing for
+# partitions that already exist. The health steps run even if collect fails,
+# so a failure reaches the ping URL.
+#
+# Runs on the NCP host that holds the app's broker credentials (the app env
+# the auto_trader checkout already reads); without them the broker sources are
+# recorded as unavailable and Yahoo serves the partition.
+#
+# Worker host env (set on the worker, never in this file):
+#   AUTO_TRADER_DIR       checkout of auto_trader at a reviewed commit
+#   DATA_PLANE_ROOT       artifact root outside git
+#   DATA_PLANE_PING_US_UNIVERSE / _BARS / _BARS_ADJUSTED / _ACTIONS   https ping URLs (optional)
+description: "PIT data plane (us): universe, raw and adjusted daily bars, corporate actions + health"
+schedule: "0 23 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  data-plane: "true"
+steps:
+  - name: collect
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli collect --root ${DATA_PLANE_ROOT} --market us --bar-sources kis,toss,yahoo --broker-budget kis=2/1,toss=1/1
+    timeout_sec: 21600
+    retry_policy:
+      limit: 2
+      interval_sec: 600
+    continue_on:
+      failure: true
+  - name: health-universe
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset universe --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_UNIVERSE
+    depends:
+      - collect
+    continue_on:
+      failure: true
+  - name: health-bars
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset bars_1d --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_BARS
+    depends:
+      - collect
+    continue_on:
+      failure: true
+  - name: health-bars-adjusted
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset bars_1d_adjusted --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_BARS_ADJUSTED
+    depends:
+      - collect
+    continue_on:
+      failure: true
+  - name: health-actions
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset corporate_actions --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_ACTIONS
+    depends:
+      - collect

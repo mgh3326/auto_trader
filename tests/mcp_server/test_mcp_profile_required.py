@@ -77,7 +77,10 @@ REVIEWED_LAUNCHERS = {
     "scripts/shadow_replay_mcp.json",
 }
 # Mentions the module name in a docstring only; it launches nothing.
-NON_LAUNCHERS = {"app/mcp_server/tool_call_log_middleware.py"}
+NON_LAUNCHERS = {
+    "app/mcp_server/tool_call_log_middleware.py",
+    "scripts/mcp_profile_import_rss.py",
+}
 
 
 def _tracked_files_mentioning_entrypoint() -> set[str]:
@@ -114,9 +117,6 @@ def test_compose_mcp_services_each_set_an_explicit_profile() -> None:
         launched[name] = value
     assert launched == {
         "mcp": "default",
-        "mcp-analysis-readonly": "analysis_readonly",
-        "mcp-account-read": "account_read",
-        "mcp-tradingcodex-execution": "tradingcodex_execution",
     }
     for value in launched.values():
         assert "$" not in value  # a literal, never an interpolated fallback

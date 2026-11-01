@@ -97,7 +97,6 @@ tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_forecast_legacy_rule_migration.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
-tests/scripts/test_live_mcp_tools_list.py
 tests/scripts/test_ncp_job_timers_golden.py
 tests/scripts/test_policy_table_us.py
 tests/scripts/test_probe_us_earnings_coverage_cli.py
@@ -158,6 +157,7 @@ tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_repository_crypto_path.py
+tests/services/execution_intent_gateway/test_intent_schema.py
 tests/services/execution_ledger/test_cross_source_dedupe_db.py
 tests/services/execution_ledger/test_fill_event_sanitizer.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py

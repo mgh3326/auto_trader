@@ -74,30 +74,6 @@ Profile → tool surface mapping
   watch mutation, signatures/capabilities, shell, bootstrap, and scheduler
   surfaces are physically absent.
 
-"analysis_readonly" (McpProfile.ANALYSIS_READONLY):
-  Codex/headless read/analysis allowlist only. Registers operating briefing,
-  policy/route, selected market/fundamental/analysis/holdings tools,
-  toss_get_positions, and explicitly labeled analysis persistence. No order,
-  cancel, modify, reconcile, preview, settings, watch mutation, admin, or manual
-  holdings mutation tools are registered.
-
-"account_read" (McpProfile.ACCOUNT_READ):
-  TradingCodex adapter account-read allowlist only. Registers holdings, cash,
-  read-only order-history tools, and the three typed Kiwoom mock account reads
-  needed for account synchronization. No order placement, cancel, modify,
-  preview, reconcile, persistence, settings, watch, admin, report-write, or
-  manual-holdings mutation tools are registered.
-
-"tradingcodex_execution" (McpProfile.TRADINGCODEX_EXECUTION):
-  TradingCodex broker execution allowlist only. Registers account reads,
-  policy/route advisory reads, account-routing suggestion, USD/KRW FX read,
-  watch read tools (active watches + delivered watch events), learning-loop
-  reads/writes (forecasts + trade retrospectives with explicit created_by
-  provenance), dry-run/preview, live place, cancel, ladder fill-preview, and the
-  seven mock-pinned typed Kiwoom tools required by the reviewed BrokerAdapter.
-  No generic/live Kiwoom, reconcile, settings, watch mutation/activation,
-  report-write, KIS mock, Alpaca, or paper simulator tools are registered.
-
 "h3-crypto-paper" (McpProfile.H3_CRYPTO_PAPER):
   #1171 closed-world H3-CRYPTO paper pilot surface. Registers exactly the 20
   names in h3_crypto_paper_registration.H3_CRYPTO_PAPER_TOOL_NAMES (the
@@ -115,16 +91,8 @@ Profile → tool surface mapping
   quote-snapshot builder pinned to market us, and the two record writes.
   Returns before the "Always" block. No live order tool or live account read.
 
-"live-kr" / "live-us" / "live-crypto" (McpProfile.LIVE_KR / LIVE_US /
-LIVE_CRYPTO):
-  Task 891 / operator decision Q-53 closed-world live-session subsets. The
-  tool list lives in config/mcp_profiles/live.yaml (three groups per lane:
-  core 15 / per-market extension up to 10 / emergency cancel-modify-
-  reconcile-watch-void-loss_cut exceptions, all loaded); all existing
-  registrars run through a recording exact-set proxy so the served surface
-  equals the manifest selection exactly. Proposal-lifecycle and
-  harness-denied tools are never registered; order mutations exist only as
-  the manifest's named emergency entries.
+ROB-1436 retired "analysis_readonly", "account_read", "tradingcodex_execution"
+and "live-kr" / "live-us" / "live-crypto" with their NCP units.
 
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
@@ -138,9 +106,6 @@ from typing import TYPE_CHECKING, cast
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import orders_kiwoom_variants
-from app.mcp_server.tooling.account_read_registration import (
-    register_account_read_tools,
-)
 from app.mcp_server.tooling.account_routing_registration import (
     register_account_routing_tools,
 )
@@ -156,9 +121,6 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
 )
 from app.mcp_server.tooling.analysis_artifact_registration import (
     register_analysis_artifact_tools,
-)
-from app.mcp_server.tooling.analysis_readonly_registration import (
-    register_analysis_readonly_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.dead_tools import without_dead_tools
@@ -193,11 +155,6 @@ from app.mcp_server.tooling.investment_snapshots_registration import (
 )
 from app.mcp_server.tooling.kis_mock_terminal_registration import (
     register_kis_mock_terminal_tools,
-)
-from app.mcp_server.tooling.live_profile_registration import (
-    LIVE_PROFILES,
-    LiveProfileMCP,
-    wrap_live_profile_mcp,
 )
 from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
@@ -267,9 +224,6 @@ from app.mcp_server.tooling.trading_policy_registration import (
 )
 from app.mcp_server.tooling.trading_scoreboard_registration import (
     register_trading_scoreboard_tools,
-)
-from app.mcp_server.tooling.tradingcodex_execution_registration import (
-    register_tradingcodex_execution_tools,
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
@@ -389,22 +343,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_h3_us_paper_tools(mcp)
         return
 
-    if profile is McpProfile.ANALYSIS_READONLY:
-        # ROB-745 — Codex/headless analysis surface. Allowlist-only and returns
-        # before the normal "Always" block so unlisted research, account,
-        # settings, watch, report-write, and order tools are physically absent.
-        register_analysis_readonly_tools(mcp)
-        register_bootstrap_pack()
-        return
-
-    if profile is McpProfile.ACCOUNT_READ:
-        # ROB-760 — TradingCodex account adapter surface. Allowlist-only and
-        # returns before the normal "Always" block so research, persistence,
-        # settings, watch, preview, reconcile, and mutation tools are absent.
-        register_account_read_tools(mcp)
-        register_bootstrap_pack()
-        return
-
     if profile is McpProfile.WATCH_REPRICING:
         # ROB-1286 — the spawned re-judgement session's surface. Allowlist-only
         # and returns before the broad "Always" block, so every broker order
@@ -414,14 +352,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             mcp,
             registered_tool_names=lambda: registered_tool_names_for(profile_mcp),
         )
-        return
-
-    if profile is McpProfile.TRADINGCODEX_EXECUTION:
-        # ROB-762 — TradingCodex broker execution surface. Allowlist-only and
-        # returns before the normal default block so broad research, settings,
-        # watch, modify, reconcile, and persistence tools are physically absent.
-        register_tradingcodex_execution_tools(mcp)
-        register_bootstrap_pack()
         return
 
     if profile is McpProfile.ALPACA_PAPER_CLEAN:
@@ -446,17 +376,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         )
 
         mcp = restrict_kiwoom_kr_profile_tools(mcp)
-
-    live_profile_mcp: LiveProfileMCP | None = None
-    if profile in LIVE_PROFILES:
-        # #891 / Q-53 — closed-world live surface. The manifest-selected set
-        # (config/mcp_profiles/live.yaml, all three groups) is the physical
-        # registration boundary: every shared registrar runs, but any tool it
-        # emits that is not listed for this profile is dropped before it can
-        # reach the surface, and the completeness check at the end fails the
-        # boot if a manifest name was not produced by any registrar.
-        live_profile_mcp = wrap_live_profile_mcp(mcp, profile)
-        mcp = cast("FastMCP", live_profile_mcp)
 
     # Always: side-effect-free research + read-only tools
     register_market_data_tools(mcp)
@@ -535,12 +454,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # the existing proposal dispatch path.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(mcp)
-        if profile is McpProfile.DEFAULT or profile in LIVE_PROFILES:
+        if profile is McpProfile.DEFAULT:
             register_toss_proposal_accounts(mcp)
-            # #883 — the cash sweep's typed parking_exclusion read; Q-65
-            # (#918) also admits it on the live-kr/live-us manifests, and the
-            # live profile filter drops it where the manifest does not list
-            # it (live-crypto).
+            # #883 — the cash sweep's typed parking_exclusion read.
             register_parking_exclusion_tool(mcp)
         register_proposal_revalidate()
 
@@ -660,28 +576,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # Without these a crypto session could research but never trade.
         register_order_tools(mcp)
         register_live_reconcile_tools(mcp)
-    elif profile in LIVE_PROFILES:
-        # #891 / Q-53 — the order-family registrars run through the manifest
-        # filter, so only the manifest's listed names can land (core/extension
-        # reads plus the per-lane emergency cancel/modify/reconcile set and
-        # the loss_cut planning preview). Everything else each registrar
-        # emits — every direct place tool (ROB-864 disables loss_cut on them,
-        # so none are loss_cut paths), the harness-denied
-        # kis_live_get_order_history (#678), previews, mock reconcile — is
-        # physically dropped.
-        register_order_tools(mcp)
-        if profile is McpProfile.LIVE_KR:
-            register_toss_live_order_tools(mcp)
-            register_kis_live_order_tools(mcp)
-        else:
-            register_live_reconcile_tools(mcp)
 
     register_bootstrap_pack()
-
-    if live_profile_mcp is not None:
-        # Startup/test-time completeness gate: the registered live surface
-        # must equal the manifest selection exactly.
-        live_profile_mcp.assert_complete()
 
 
 __all__ = ["register_all_tools"]

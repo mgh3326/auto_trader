@@ -7,9 +7,13 @@ HAProxy owns stable `127.0.0.1:8000` and `100.122.100.56:8000`. It health-checks
 the inactive color before an in-place HAProxy HUP, records the active color only
 after that switch, and drains the previous API for `API_DRAIN_SECONDS` (120 by
 default). The same promotion also advances the private MCP fleet:
-an inactive blue/green default MCP color, eight fixed profiles (including the
-three live-* units of task 975, see live-mcp-servers.md), and its
-loopback/tailnet-only HAProxy front end.
+an inactive blue/green default MCP color, three fixed profiles
+(kiwoom, h3-crypto-paper, h3-us-paper; ROB-1436 retired the others, see mcp-unit-retirement-rob1436.md), and its loopback/tailnet-only
+HAProxy front end.
+
+A forward deploy exits 78 before any mutation while a ROB-1436 retired unit is
+running or can restart (`RETIRED_CONTAINERS`). Stop and disable those units
+first: [mcp-unit-retirement-rob1436.md](mcp-unit-retirement-rob1436.md) §3.
 
 ## Tag policy
 
