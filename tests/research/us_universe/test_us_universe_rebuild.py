@@ -16,6 +16,7 @@ from research.us_universe.rebuild import (
     OUTPUT_BUILD_INFO,
     OUTPUT_COVERAGE,
     OUTPUT_CSV,
+    OUTPUT_INPUTS,
     OUTPUT_MANIFEST,
     StaleSeriesError,
     capture_url,
@@ -66,7 +67,7 @@ def test_offline_rebuild_is_byte_reproducible(tmp_path: Path) -> None:
     # a different generating commit only changes the build_info sidecar
     b = rebuild(tmp_path, tmp_path / "out_b", commit="def-dirty")
     assert a == b
-    for name in (OUTPUT_CSV, OUTPUT_MANIFEST, OUTPUT_COVERAGE):
+    for name in (OUTPUT_CSV, OUTPUT_INPUTS, OUTPUT_MANIFEST, OUTPUT_COVERAGE):
         assert (tmp_path / "out_a" / name).read_bytes() == (
             tmp_path / "out_b" / name
         ).read_bytes()
@@ -85,9 +86,17 @@ def test_manifest_records_inputs_coverage_and_inactive_share(tmp_path: Path) -> 
     seed(tmp_path)
     m = rebuild(tmp_path, tmp_path / "out", commit="abc")
     assert m["inputs"]["accepted"] == 6 and m["inputs"]["rejected"] == 1
-    (rejected,) = [f for f in m["inputs"]["files"] if not f["accepted"]]
+    inputs_bytes = (tmp_path / "out" / OUTPUT_INPUTS).read_bytes()
+    files = [json.loads(line) for line in inputs_bytes.splitlines()]
+    assert len(files) == 7 and all(len(f["sha256"]) == 64 for f in files)
+    assert m["inputs"][OUTPUT_INPUTS]["sha256"] == sha256_hex(inputs_bytes)
+    (rejected,) = m["inputs"]["rejected_files"]
     assert rejected["ref"] == "20190101000000"
-    assert all(len(f["sha256"]) == 64 for f in m["inputs"]["files"])
+    assert rejected in files
+    assert m["outputs"][OUTPUT_CSV]["rows"] == len(
+        rows_from_csv((tmp_path / "out" / OUTPUT_CSV).read_bytes())
+    )
+    assert "--offline" in m["generation"]["command"]
     assert m["series_coverage"]["nasdaqlisted"]["observation_days"] == 3
     assert m["as_of_latest_observation"] == "2026-10-30"
     shares = {s["scope"]: s for s in m["inactive_share"]}
@@ -118,8 +127,8 @@ def test_corrupt_gzip_capture_is_a_rejected_input(tmp_path: Path) -> None:
     path = wayback_cache_path(tmp_path, "nasdaqlisted", "20180801000000")
     path.write_bytes(bytes(bad))
     m = rebuild(tmp_path, tmp_path / "out", commit="abc")
-    (rej,) = [f for f in m["inputs"]["files"] if f["ref"] == "20180801000000"]
-    assert rej["accepted"] is False
+    (rej,) = m["inputs"]["rejected_files"][:1]
+    assert rej["ref"] == "20180801000000" and rej["accepted"] is False
 
 
 def test_stale_series_refuses_to_build(tmp_path: Path) -> None:

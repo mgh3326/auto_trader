@@ -3,5 +3,3 @@
 # an end-of-line marker in whitespace diagnostics; the registry verifies SHA-256.
 tests/fixtures/kr_a0_golden_v6/fixture_*.csv -text whitespace=cr-at-eol
 tests/fixtures/kr_a0_golden_v6/variants/**/fixture_*.csv -text whitespace=cr-at-eol
-# ROB-1431 generated PIT table: hashed in manifest.json, not hand-edited
-research/us_universe/data_manifests/us_pit_universe.csv -diff linguist-generated

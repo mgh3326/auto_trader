@@ -100,8 +100,9 @@ uv run python -m research.us_universe.snapshot --root "$ROOT"
 # Fetch any new archive captures into the write-once cache, then build.
 uv run python -m research.us_universe.rebuild --root "$ROOT" --out <new-dir>
 
-# Reproducibility check: rebuild from the cache only. us_pit_universe.csv,
-# manifest.json and coverage.md must be byte-identical to the committed ones.
+# Reproducibility check: rebuild from the cache only. manifest.json,
+# inputs.jsonl and coverage.md must be byte-identical to the committed ones,
+# and the CSV must match the sha256 and row count in manifest.json.
 # The generating commit is kept apart in build_info.json.
 uv run python -m research.us_universe.rebuild --root "$ROOT" --out <new-dir> --offline
 ```
@@ -113,6 +114,7 @@ snapshots/<YYYY-MM-DD>/nasdaqlisted.txt   raw bytes, write-once
 snapshots/<YYYY-MM-DD>/otherlisted.txt
 snapshots/manifest.jsonl                  one line per day, append-only
 sources/wayback/<series>/<capture-ts>.bin raw archive captures, write-once
+pit-v1/                                   the build data_manifests/ records
 ```
 
 Every file is written once: staged as `.partial`, fsynced, then hard-linked
@@ -122,10 +124,28 @@ header, the `File Creation Time` footer and at least 1,000 rows. A truncated
 capture or error page is listed as a rejected input. It is never read as "these
 symbols delisted".
 
-The committed `data_manifests/` holds:
+### Where the table lives
 
-- the PIT table;
-- `manifest.json`: every input with its sha256 and capture URL, per-series
-  coverage, inactive shares and the output sha256;
-- `coverage.md`;
+The PIT table is **not in git**: 5 MB and 32,235 lines would make the PR
+unreviewable. `research/us_universe/data_manifests/*.csv` is git-ignored.
+The rebuilt table is on the desktop host at:
+
+```
+~/work/herdr-artifacts/us-universe-v1/pit-v1/us_pit_universe.csv
+```
+
+The input cache it was built from is in the same artifact root. Anyone with
+the cache can regenerate the table with the `--offline` command above and
+check it against the sha256 and row count in `manifest.json`. Without the
+cache, the online command refetches the same captures. Archive captures do
+not change once taken; `inputs.jsonl` pins the sha256 of each one.
+
+The committed `data_manifests/` holds the record of that build:
+
+- `manifest.json`: the CSV's sha256, byte size, row and symbol counts, the
+  generating command, inputs summary (with the sha256 of `inputs.jsonl`),
+  per-series coverage and inactive shares;
+- `inputs.jsonl`: one line per input with its capture URL, sha256 and
+  whether it was accepted;
+- `coverage.md`: coverage and gaps, human-readable;
 - `build_info.json`: the generating commit and the manifest sha256.

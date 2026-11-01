@@ -15,13 +15,15 @@ Inputs (all public, unauthenticated):
 Outputs, written once into ``--out`` (refuses to overwrite):
 
 * ``us_pit_universe.csv`` — one row per listing interval (see ``pit.py``);
-* ``manifest.json``       — every input with its sha256 and acceptance, per-
-  series coverage, inactive shares, output digest;
+* ``inputs.jsonl``        — one line per input: source URL, sha256, acceptance;
+* ``manifest.json``       — output digest and row count, the generating
+  command, inputs summary and ``inputs.jsonl`` digest, per-series coverage,
+  inactive shares;
 * ``coverage.md``         — the same coverage and gaps, human-readable;
 * ``build_info.json``     — the generating commit and the manifest digest.
 
 The outputs are a pure function of the cached inputs and the code, so an
-``--offline`` rebuild of the same cache reproduces the first three byte for byte.
+``--offline`` rebuild of the same cache reproduces everything except ``build_info.json`` byte for byte.
 """
 
 from __future__ import annotations
@@ -62,6 +64,11 @@ OUTPUT_CSV = "us_pit_universe.csv"
 OUTPUT_MANIFEST = "manifest.json"
 OUTPUT_COVERAGE = "coverage.md"
 OUTPUT_BUILD_INFO = "build_info.json"
+OUTPUT_INPUTS = "inputs.jsonl"
+GENERATION_COMMAND = (
+    "uv run python -m research.us_universe.rebuild "
+    "--root <ARTIFACT_ROOT> --out <NEW_DIR> --offline"
+)
 # Both directory files are published together each business day. A series
 # whose newest accepted observation lags the other by more than this would
 # leave its delisted names marked active, so the build refuses instead.
@@ -219,6 +226,13 @@ def series_coverage(observations: list[Observation]) -> dict[str, dict]:
     return out
 
 
+def render_inputs(input_records: list[dict]) -> bytes:
+    return "".join(
+        json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n"
+        for r in input_records
+    ).encode("utf-8")
+
+
 def build_manifest(
     rows: list[PITRow],
     observations: list[Observation],
@@ -240,6 +254,13 @@ def build_manifest(
                 "symbols": len({r.symbol for r in rows}),
             }
         },
+        "generation": {
+            "command": GENERATION_COMMAND,
+            "inputs_cache": [
+                "<ARTIFACT_ROOT>/sources/wayback/<series>/<capture-timestamp>.bin",
+                "<ARTIFACT_ROOT>/snapshots/<YYYY-MM-DD>/<series>.txt",
+            ],
+        },
         "as_of_latest_observation": window_end.isoformat(),
         "inactive_share": [s.as_dict() for s in shares],
         "current_corpus_reference": {
@@ -250,7 +271,8 @@ def build_manifest(
         "inputs": {
             "accepted": sum(1 for r in input_records if r["accepted"]),
             "rejected": sum(1 for r in input_records if not r["accepted"]),
-            "files": input_records,
+            OUTPUT_INPUTS: {"sha256": sha256_hex(render_inputs(input_records))},
+            "rejected_files": [r for r in input_records if not r["accepted"]],
         },
     }
 
@@ -301,7 +323,7 @@ def render_coverage(manifest: dict) -> str:
                 for g in cov["gaps_over_365_days"]
             ]
         lines.append("")
-    rejected = [r for r in manifest["inputs"]["files"] if not r["accepted"]]
+    rejected = manifest["inputs"]["rejected_files"]
     if rejected:
         lines += ["## Rejected inputs", ""]
         lines += [
@@ -345,6 +367,7 @@ def rebuild(root: Path, out: Path, *, commit: str) -> dict:
         "manifest_sha256": sha256_hex(manifest_bytes),
     }
     write_once(out / OUTPUT_CSV, csv_bytes)
+    write_once(out / OUTPUT_INPUTS, render_inputs(records))
     write_once(out / OUTPUT_MANIFEST, manifest_bytes)
     write_once(out / OUTPUT_COVERAGE, render_coverage(manifest).encode())
     write_once(

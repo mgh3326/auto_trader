@@ -353,8 +353,11 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 - **패키지**: `research/us_universe/` (stdlib, `app/` 중 `app.core.symbol` 만 import — 테스트가 강제)
 - **명령(수동, 스케줄러 없음)**: `python -m research.us_universe.snapshot --root …`(일 1회 멱등,
   append-only), `python -m research.us_universe.rebuild --root … --out … [--offline]`
-- **산출물**: `research/us_universe/data_manifests/`(CSV·manifest.json·coverage.md·build_info.json).
-  CSV·manifest·coverage 는 캐시 입력의 순수 함수(`--offline` 재빌드 바이트 동일)
+- **산출물**: 레포의 `research/us_universe/data_manifests/` 는 빌드 기록만 둔다
+  (manifest.json·inputs.jsonl·coverage.md·build_info.json). PIT CSV 는 git 에 넣지 않고
+  (`.gitignore`) 데스크톱 호스트 `~/work/herdr-artifacts/us-universe-v1/pit-v1/` 에 둔다.
+  manifest 가 CSV 의 sha256·행수·생성 명령을 고정하며, `--offline` 재빌드는 build_info 를
+  제외하고 바이트 동일하다
 - 🔴 **날짜는 증거 구간이다**: 상장은 `(listed_after, listed_from]`, 상폐는
   `(listed_to, delisted_by]` 안 어딘가. `universe_as_of(t)` 기본 규칙은
   `listed_from <= t < delisted_by` — 처음 관측 전은 제외(룩어헤드 금지), 마지막 관측 뒤
