@@ -40,6 +40,7 @@ from research.kr_boosting.panel import (
     ExportIdentity,
     ExportIdentityError,
     Panel,
+    SealedPeriodRead,
     build_panel,
     read_rows,
     verify_export,
@@ -234,6 +235,11 @@ def validate(
     repo: Path | None = None,
 ) -> dict[str, Any]:
     _require_unread_root(root)
+    # With no sealed session in the panel, no window argument can reach one.
+    if panel.calendar[-1] > VALIDATE_LAST:
+        raise SealedPeriodRead(
+            f"validate reads through {VALIDATE_LAST}; panel ends {panel.calendar[-1]}"
+        )
     ticks = pol.krx_ticks()
     store = compute_features(panel)
     signals = decidable_signals(panel)

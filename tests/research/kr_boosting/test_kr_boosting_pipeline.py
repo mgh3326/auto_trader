@@ -37,6 +37,7 @@ from research.kr_boosting.panel import (
     PARQUET_NAME,
     ExportIdentity,
     ExportIdentityError,
+    SealedPeriodRead,
     build_panel,
     sha256_file,
     verify_export,
@@ -464,6 +465,51 @@ def test_an_unregistered_export_is_refused_before_any_read(
         main(stage)
     assert reads == []
     assert not (root / run.DIAGNOSTIC_CLAIM).exists()
+
+
+class _ComputedFeatures(Exception):
+    pass
+
+
+def _validate_panel_ending(
+    last: date, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **window: object
+) -> None:
+    def compute_features(_panel):
+        raise _ComputedFeatures
+
+    monkeypatch.setattr(run, "compute_features", compute_features)
+    sessions = [d for d in weekdays(date(2022, 12, 26), 10) if d <= last]
+    panel = build_panel(frame(flat_rows("000001", sessions)))
+    assert panel.calendar[-1] == last
+    run.validate(panel, root=tmp_path / "run", identity=None, **window)
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        {},
+        {
+            "years": (2023, 2024),
+            "seal_boundary": date(2025, 1, 1),
+            "frozen_year": 2025,
+        },
+    ],
+    ids=["defaults", "window-moved-over-the-seal"],
+)
+def test_validate_refuses_a_panel_with_a_sealed_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window: dict[str, object]
+) -> None:
+    with pytest.raises(SealedPeriodRead, match="panel ends 2023-01-02"):
+        _validate_panel_ending(date(2023, 1, 2), tmp_path, monkeypatch, **window)
+    assert not (tmp_path / "run").exists()
+
+
+def test_validate_accepts_a_panel_ending_on_the_last_validation_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert run.VALIDATE_LAST == date(2022, 12, 31)
+    with pytest.raises(_ComputedFeatures):
+        _validate_panel_ending(date(2022, 12, 30), tmp_path, monkeypatch)
 
 
 def _same_run() -> tuple[dict, dict, dict]:
