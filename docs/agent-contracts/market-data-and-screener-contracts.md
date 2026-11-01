@@ -489,9 +489,10 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 `app` import·DB·브로커·스케줄러 0. 판정과 수치는 `research/experiments/reports/rob-1441-kr-boosting-baseline.md`.
 
 - 🔴 **ML 의존성은 `pyproject.toml` 에 넣지 않는다**: `research/kr_boosting/requirements-ml.txt` 별도 환경. LightGBM 은 `train.py` 안에서만 지연 import 한다(테스트가 강제).
-- 🔴 **2023-2024 는 sealed test 가 아니다**: 노출 감사(`exposure_audit.py`) 결과 입증 불가라 진단 전용이고, 게이트에 쓰지 않는다. 그 읽기는 k 로 계수했다. 시험은 prospective seal 이며 미개봉이다. `read_rows` 는 2023 이후 읽기를 기본 거부하고, `diagnostic` 만 동결 번들을 확인하고 claim 을 남긴 뒤 1회 읽는다.
+- 🔴 **2023-2024 는 sealed test 가 아니다**: 노출 감사(`exposure_audit.py`) 결과 입증 불가라 진단 전용이고, 게이트에 쓰지 않는다. 그 읽기는 k 로 계수했다. 시험은 prospective seal 이며 미개봉이다. `read_rows` 는 2023 이후 읽기를 기본 거부하고, `run.diagnostic()` 만 함수 안에서 동결 번들을 확인하고 claim 을 남긴 뒤 1회 읽는다(행이 아니라 경로를 받으므로 claim 전에 호출자가 봉인 행을 쥘 수 없다). claim 을 지우고 다시 읽으려면 look 을 먼저 계수한다. `validate` 는 claim 이나 diagnostic 결과가 있는 root 를 거부한다.
 - 🔴 **`feature_join` 이 모델 피처의 유일한 입력 경로다**: `available_at` 이 결정 시각보다 늦은 행은 거부, 없는 행은 제외·계수. terminal 컬럼은 피처 입력이 아니다. 대조군 순위와 지정가는 세션 t 봉을 직접 읽어 이 가드를 타지 않는다(U2 봉은 세션 16:00 KST 가용, 결정은 t+1 08:30).
 - 🔴 **게이트가 STOP 인 가설은 U8 TFT 를 돌리지 않는다.** 게이트 수치를 사후에 바꾸지 말고 바꿀 일이 있으면 새 manifest 버전과 새 시험을 쓴다. 2026-11-02 판정은 두 가설 모두 STOP 이다(k=1).
+- 🔴 **모든 단계는 등록된 데이터셋만 받는다**: export 해시가 등록 manifest 의 `dataset_*_kr` 와 다르면 행을 읽기 전에 거부한다. `report` 는 저장 결과의 manifest·동결 번들·export 가 서로 다르면 거부한다.
 - 분할은 purge + gap 을 경계마다 **더해서** 적용한다(H-admit 5+5, H-entry-price 25+25). 설정 선택은 Y-1 년으로만 한다.
 - 🔴 **종료 지급액은 가정이다**: `delist_resolution.v1` 감사(ROB-1437)는 심볼·상폐일·사건 유형만 확인했고 지급액은 미검증이다. 베이스는 마지막 종가 청산이고, 리포트의 지급액 민감도 표(`payout_exposure.py`)가 그 가정에 걸린 금액을 보인다.
 - U5 KR 어댑터는 D3 엔진을 감싸 자체 순위만 쓰고 거래량이 없어서, `simulator.py` 가 같은 계약 타입·체결 모델로 후보 목록과 `VolumeShare` 를 돌린다.

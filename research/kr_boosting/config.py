@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import random
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -102,8 +103,8 @@ def _grid() -> tuple[dict[str, Any], ...]:
 CONFIG_GRID: tuple[dict[str, Any], ...] = _grid()
 
 
-def grid_sha256() -> str:
-    canon = [{k: str(v) for k, v in cfg.items()} for cfg in CONFIG_GRID]
+def grid_sha256(grid: Sequence[Mapping[str, Any]] = CONFIG_GRID) -> str:
+    canon = [{k: str(v) for k, v in cfg.items()} for cfg in grid]
     return sha256_canonical(canon)
 
 

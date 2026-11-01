@@ -433,7 +433,7 @@ def metrics(out: SimOutput) -> dict[str, Any]:
         "net_vs_cash_annual": annualised(returns),
         "by_year": {str(y): float(returns[axis == y].sum()) for y in years},
         "terminal_value": str(r.terminal_value),
-        "max_drawdown": max_drawdown(out.nav),
+        "max_drawdown": max_drawdown(out.nav, capital),
         "turnover_annual": float(out.traded_gross) / 2.0 / mean_nav / span,
         "deployed_mean": float(out.deployed.mean()) if len(out.deployed) else 0.0,
         "orders": len(r.orders),

@@ -355,7 +355,8 @@ def simulate(
                     break
                 if cand.li in positions or cand.li in working:
                     continue
-                if int(ORDER_NOTIONAL // cand.limit) < 1:
+                # A low price can align down to a limit of 0, which no order can carry.
+                if cand.limit <= 0 or int(ORDER_NOTIONAL // cand.limit) < 1:
                     continue
                 last = min(s + cand.rest_sessions - 1, last_session)
                 decision_id = f"entry:{session}:{panel.symbols[cand.li]}"

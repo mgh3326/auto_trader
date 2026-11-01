@@ -164,8 +164,11 @@ def decide(
     )
 
 
-def max_drawdown(nav: np.ndarray) -> float:
+def max_drawdown(nav: np.ndarray, capital: float) -> float:
+    """Deepest fall from a running peak that starts at the starting capital."""
+
     if not len(nav):
         return 0.0
-    peak = np.maximum.accumulate(nav)
-    return float((nav / peak - 1.0).min())
+    full = np.concatenate([[capital], nav])
+    peak = np.maximum.accumulate(full)
+    return float((full / peak - 1.0).min())

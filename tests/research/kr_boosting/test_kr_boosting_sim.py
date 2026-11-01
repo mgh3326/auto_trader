@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -109,7 +109,9 @@ def test_admit_label_is_unknown_when_a_price_is_missing() -> None:
     assert np.isnan(admit_label(panel, 0, 10))
 
 
-def _terminal_rows(last: int = 13):
+def _terminal_rows(
+    last: int = 13, terminal_at: datetime | None = datetime(2019, 1, 18, 15, tzinfo=UTC)
+):
     rows = flat_rows("000001", SESSIONS[: last + 1])
     rows[last] = row(
         "000001",
@@ -120,7 +122,7 @@ def _terminal_rows(last: int = 13):
         8_000,
         terminal=True,
         payout="residual_after_liquidation_trading",
-        terminal_at=datetime(2019, 1, 18, 15, 0, tzinfo=UTC),
+        terminal_at=terminal_at,
     )
     return rows + flat_rows("000002", SESSIONS)
 
@@ -150,6 +152,19 @@ def test_touch_gaps_at_the_open_and_ignores_no_trade_days() -> None:
 def test_untouched_window_ended_by_a_terminal_event_is_zero() -> None:
     panel = build_panel(frame(_terminal_rows(last=13)))
     assert touch_label(panel, 0, 10, 1_000.0).touched == 0.0
+
+
+def test_touch_zero_needs_the_ending_known_by_the_window_end() -> None:
+    window_end = datetime(2019, 1, 22, 7, 0, tzinfo=UTC)  # t + 5, 16:00 KST
+    assert SESSIONS[15] == window_end.date()
+
+    def touched(terminal_at: datetime | None) -> float:
+        panel = build_panel(frame(_terminal_rows(last=13, terminal_at=terminal_at)))
+        return touch_label(panel, 0, 10, 1_000.0).touched
+
+    assert touched(window_end) == 0.0
+    assert np.isnan(touched(window_end + timedelta(seconds=1)))
+    assert np.isnan(touched(None))
 
 
 def test_window_running_past_the_data_is_unknown() -> None:
@@ -281,6 +296,16 @@ def test_capacity_and_one_position_per_listing_hold_for_every_policy() -> None:
     out = _run(panel, plan, OptimisticTouch())
     buys = [f for f in out.result.fills if f.side is Side.BUY]
     assert len(buys) == 3
+
+
+def test_a_limit_of_zero_is_skipped_and_the_next_candidate_enters() -> None:
+    assert TICKS.align_buy(Decimal("0.97")) == 0
+    rows = flat_rows("000001", SESSIONS) + flat_rows("000002", SESSIONS)
+    panel = build_panel(frame(rows))
+    plan = {10: [_candidate(0, 10, "0"), _candidate(1, 10, "10000")]}
+    out = _run(panel, plan, OptimisticTouch())
+    buys = [f for f in out.result.fills if f.side is Side.BUY]
+    assert [f.symbol for f in buys] == ["000002"]
 
 
 def test_resting_order_is_one_day_child_per_session() -> None:
@@ -574,7 +599,19 @@ def test_bootstrap_is_deterministic_and_separates_signal_from_noise() -> None:
 
 
 def test_max_drawdown() -> None:
-    assert max_drawdown(np.array([100.0, 120.0, 90.0, 110.0])) == pytest.approx(-0.25)
+    nav = np.array([100.0, 120.0, 90.0, 110.0])
+    assert max_drawdown(nav, 100.0) == pytest.approx(-0.25)
+
+
+def test_max_drawdown_counts_a_loss_from_the_starting_capital() -> None:
+    assert max_drawdown(np.array([90.0, 90.0, 95.0]), 100.0) == pytest.approx(-0.10)
+
+
+def test_nothing_trades_on_the_first_session_so_drawdown_starts_at_capital() -> None:
+    panel = build_panel(frame(flat_rows("000001", SESSIONS)))
+    out = _run(panel, {1: [_candidate(0, 1, "10000")]}, OptimisticTouch())
+    assert out.nav[0] == 10_000_000.0
+    assert len(out.result.fills) > 0
 
 
 # -------------------------------------------------------------------- fit cache

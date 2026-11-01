@@ -22,8 +22,12 @@ VIRTUAL_ENV="$ROOT/venv" uv pip install -r research/kr_boosting/requirements-ml.
 | Stage | Reads | Writes |
 |---|---|---|
 | `validate` | sessions through 2022 | nested fits, gate verdict, frozen models |
-| `diagnostic` | sessions through 2024, frozen models only; before reading a row it checks the bundle and records a claim, and it refuses if a claim or a result exists | diagnostics, never the verdict |
+| `diagnostic` | sessions through 2024, frozen models only; `diagnostic()` itself checks the bundle and records a claim before it reads a row, and it refuses if a claim or a result exists | diagnostics, never the verdict |
 | `report` | the two stages' JSON and the registry | the report, plus one rendered contract report per policy |
+
+Every stage refuses an export whose hashes differ from the `dataset_*_kr` hashes in the
+registered manifests. `validate` refuses a root that holds a claim or a diagnostic result,
+and `report` refuses saved results from different manifests, frozen models or exports.
 
 Run output stays in `$ROOT`, outside the repository. Each fit is cached under
 `$ROOT/run/fit_cache`, keyed by its inputs, `train.py` and the LightGBM version, so

@@ -2,7 +2,8 @@
 
 ``validate`` reads through 2022 only, fits the nested walk-forward, writes the
 gate verdict and freezes the models. ``diagnostic`` is the single path that
-reads 2023-2024: it refuses to run without the frozen bundle and never refits.
+reads 2023-2024: it records a claim before its one read, refuses to run without
+the frozen bundle and never refits.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from research.kr_boosting.features import compute_features
 from research.kr_boosting.panel import (
     PARQUET_NAME,
     ExportIdentity,
+    ExportIdentityError,
     Panel,
     build_panel,
     read_rows,
@@ -63,6 +65,32 @@ def registered(repo: Path) -> dict[str, dict[str, Any]]:
     registry = json.loads((repo / "research/experiments/registry.json").read_text())
     by_id = {h["id"]: h for h in registry["hypotheses"]}
     return {h: by_id[h] for h in (cfg.HYP_ADMIT, cfg.HYP_ENTRY)}
+
+
+def require_registered_export(repo: Path, identity: ExportIdentity) -> None:
+    """Refuse an export the manifests do not pin; its own manifest is not enough."""
+
+    for hypothesis, entry in registered(repo).items():
+        hashes = json.loads((repo / entry["manifest"]).read_text())["hashes"]
+        pinned = (
+            hashes["dataset_parquet_sha256_kr"],
+            hashes["dataset_manifest_sha256_kr"],
+        )
+        if pinned != (identity.parquet_sha256, identity.manifest_sha256):
+            raise ExportIdentityError(
+                f"export {identity.parquet_sha256} / {identity.manifest_sha256} "
+                f"is not the dataset {hypothesis} registers"
+            )
+
+
+def _require_unread_root(root: Path) -> None:
+    """Validate overwrites the frozen models, which a past diagnostic read belongs to."""
+
+    for name in (DIAGNOSTIC_CLAIM, "diagnostic_results.json", "diagnostic_outputs.pkl"):
+        if (root / name).exists():
+            raise FileExistsError(
+                f"{root} holds {name}, from a 2023-2024 read; use a new --root"
+            )
 
 
 def _serial(value: Any) -> Any:
@@ -200,6 +228,7 @@ def validate(
     seeds: Sequence[int] = cfg.SEEDS,
     repo: Path | None = None,
 ) -> dict[str, Any]:
+    _require_unread_root(root)
     ticks = pol.krx_ticks()
     store = compute_features(panel)
     signals = decidable_signals(panel)
@@ -214,7 +243,7 @@ def validate(
         "export": None if identity is None else vars_of(identity),
         "last_session_read": panel.calendar[-1],
         "eligible_by_year": _eligible_by_year(panel, signals),
-        "grid_sha256": cfg.grid_sha256(),
+        "grid_sha256": cfg.grid_sha256(grid),
         "seeds": list(seeds),
     }
     frozen: dict[str, Any] = {}
@@ -478,14 +507,14 @@ def _require_diagnostic_ready(root: Path) -> str:
     return expected
 
 
-def claim_diagnostic(root: Path) -> None:
-    """Check, then durably record the look, before any sealed row is read.
+def claim_diagnostic(root: Path) -> str:
+    """Check, then durably record the look; returns the frozen bundle's hash.
 
     A crash after this leaves the claim in place, so it cannot read again unnoticed.
     A rerun needs the claim removed by hand and another look counted in the registry.
     """
 
-    _require_diagnostic_ready(root)
+    expected = _require_diagnostic_ready(root)
     try:
         fd = os.open(root / DIAGNOSTIC_CLAIM, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError as exc:
@@ -498,12 +527,26 @@ def claim_diagnostic(root: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+    directory = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return expected
 
 
-def diagnostic(panel: Panel, *, root: Path, identity: ExportIdentity) -> dict[str, Any]:
-    """Frozen models on 2023-2024, once. Metrics are diagnostics, not a sealed test."""
+def diagnostic(
+    parquet: Path, *, root: Path, identity: ExportIdentity
+) -> dict[str, Any]:
+    """Frozen models on 2023-2024, once. Metrics are diagnostics, not a sealed test.
 
-    expected = _require_diagnostic_ready(root)
+    It takes the path, not rows, so no caller can hold a sealed row before the claim.
+    """
+
+    expected = claim_diagnostic(root)
+    panel = build_panel(
+        read_rows(parquet, last_session=DIAGNOSTIC_LAST, allow_sealed=True)
+    )
     with (root / "frozen_models.pkl").open("rb") as handle:
         frozen = pickle.load(handle)
 
@@ -585,15 +628,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     identity = verify_export(args.export_dir)
+    require_registered_export(args.repo, identity)
     parquet = args.export_dir / PARQUET_NAME
     if args.stage == "validate":
+        _require_unread_root(args.root)
         rows = read_rows(parquet, last_session=VALIDATE_LAST)
         validate(build_panel(rows), root=args.root, identity=identity, repo=args.repo)
         return 0
     if args.stage == "diagnostic":
-        claim_diagnostic(args.root)
-        rows = read_rows(parquet, last_session=DIAGNOSTIC_LAST, allow_sealed=True)
-        diagnostic(build_panel(rows), root=args.root, identity=identity)
+        diagnostic(parquet, root=args.root, identity=identity)
         return 0
     from research.kr_boosting.report import write_report  # noqa: PLC0415
 

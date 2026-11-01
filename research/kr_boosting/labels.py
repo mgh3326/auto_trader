@@ -80,8 +80,15 @@ def touch_label(panel: Panel, li: int, t: int, level: float) -> Touch:
                 open_price = float(panel.open[li, i])
                 return Touch(1.0, i, min(open_price, level))
             continue
-        # Absent: the listing has ended, or never began here.
-        if int(panel.terminal_idx[li]) >= 0 and i > int(panel.terminal_idx[li]):
+        # Absent: the listing has ended, or never began here. The zero needs the
+        # ending known by the window's end, as _terminal_exit_close does.
+        known = int(panel.terminal_available_at[li])
+        if (
+            int(panel.terminal_idx[li]) >= 0
+            and i > int(panel.terminal_idx[li])
+            and known != NAT
+            and known <= kst_us(panel.calendar[t + TOUCH_WINDOW], 16, 0)
+        ):
             return Touch(0.0, -1, np.nan)
         return Touch(np.nan, -1, np.nan)
     return Touch(0.0, -1, np.nan)

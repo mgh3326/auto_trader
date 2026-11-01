@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import pickle
 from collections.abc import Mapping
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,7 @@ def _render_contract_reports(
     registry: RegistryRef,
     data_sha: str,
     code_ref: str,
+    grid_sha256: str,
     label: str,
     root: Path,
 ) -> dict[str, str]:
@@ -140,7 +142,7 @@ def _render_contract_reports(
                 code_ref=code_ref,
                 data_manifest_sha256=data_sha,
                 config_sha256=sha256_canonical(
-                    {"policy": policy, "label": label, "grid": cfg.grid_sha256()}
+                    {"policy": policy, "label": label, "grid": grid_sha256}
                 ),
                 registry=registry,
             ),
@@ -161,6 +163,23 @@ def _order(hypothesis_id: str) -> tuple[str, ...]:
     )
 
 
+def _require_same_run(
+    results: Mapping[str, Any],
+    diag: Mapping[str, Any],
+    entries: Mapping[str, Mapping[str, Any]],
+    identity: ExportIdentity,
+) -> None:
+    """One report describes one run: same manifests, frozen models and export."""
+
+    for hyp in (cfg.HYP_ADMIT, cfg.HYP_ENTRY):
+        if results["registry"][hyp] != entries[hyp]["manifest_sha256"]:
+            raise ValueError(f"{hyp} manifest changed after validate; rerun validate")
+    if diag["frozen_bundle_sha256"] != results["frozen_bundle_sha256"]:
+        raise ValueError("the diagnostic read a different frozen bundle than validate")
+    if not results["export"] == diag["export"] == asdict(identity):
+        raise ValueError("validate, diagnostic and this report use different exports")
+
+
 def write_report(
     *, root: Path, repo: Path, out: Path, identity: ExportIdentity, export_dir: Path
 ) -> None:
@@ -172,6 +191,7 @@ def write_report(
         diagnostic_outputs = pickle.load(handle)
     registry = json.loads((repo / "research/experiments/registry.json").read_text())
     entries = {h["id"]: h for h in registry["hypotheses"]}
+    _require_same_run(results, diag, entries, identity)
     hits = run_audit(repo)
     git = results["git"]
     flags = load_flags(export_dir)
@@ -186,6 +206,7 @@ def write_report(
                 registry=ref,
                 data_sha=identity.parquet_sha256,
                 code_ref=git["head"],
+                grid_sha256=results["grid_sha256"],
                 label=label,
                 root=root,
             )
