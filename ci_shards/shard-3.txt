@@ -142,6 +142,7 @@ tests/services/buy_gate_ab_shadow/test_evaluate.py
 tests/services/buy_gate_ab_shadow/test_spec_freeze.py
 tests/services/daily_candles/test_crypto_candles_1m.py
 tests/services/daily_candles/test_migration_round_trip.py
+tests/services/execution_intent_gateway/test_kis_mock_forwarder.py
 tests/services/execution_ledger/test_kis_lots_sell_evidence_db.py
 tests/services/execution_ledger/test_opening_lots.py
 tests/services/execution_ledger/test_quarantine_mutants.py
