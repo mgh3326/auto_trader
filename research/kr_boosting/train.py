@@ -10,8 +10,13 @@ primary prediction, the others are reported as robustness only.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -73,7 +78,53 @@ def winsor_limits(y: np.ndarray) -> tuple[float, float]:
     return float(np.quantile(y, 0.01)), float(np.quantile(y, 0.99))
 
 
+def _fit_key(
+    family: str, cfg: Mapping[str, Any], seed: int, x: np.ndarray, y: np.ndarray
+) -> str:
+    """Everything a booster depends on, so a changed input can never hit."""
+
+    digest = hashlib.sha256()
+    digest.update(Path(__file__).read_bytes())
+    digest.update(_lgb().__version__.encode())
+    digest.update(repr((family, sorted(cfg.items()), seed, x.shape, y.shape)).encode())
+    digest.update(x.tobytes())
+    digest.update(y.tobytes())
+    return digest.hexdigest()
+
+
 def fit(
+    family: str,
+    cfg: Mapping[str, Any],
+    seed: int,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    cache_dir: Path | None = None,
+) -> Fitted:
+    """Fit one family's heads; ``cache_dir`` lets a rerun skip identical fits."""
+
+    started = time.monotonic()
+    path = None
+    if cache_dir is not None:
+        path = cache_dir / f"{_fit_key(family, cfg, seed, x, y)}.json"
+        if path.is_file():
+            print(f"fit {family} rows={len(y)} cached", file=sys.stderr, flush=True)
+            return Fitted(tuple(json.loads(path.read_text())))
+    fitted = _fit(family, cfg, seed, x, y)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = path.with_suffix(f".{os.getpid()}.tmp")
+        partial.write_text(json.dumps(list(fitted.model_strings)))
+        partial.replace(path)
+    print(
+        f"fit {family} rows={len(y)} seed={seed} {time.monotonic() - started:.0f}s",
+        file=sys.stderr,
+        flush=True,
+    )
+    return fitted
+
+
+def _fit(
     family: str, cfg: Mapping[str, Any], seed: int, x: np.ndarray, y: np.ndarray
 ) -> Fitted:
     lgb = _lgb()
@@ -145,11 +196,19 @@ def select_config(
     y_inner: np.ndarray,
     grid: Sequence[Mapping[str, Any]] = CONFIG_GRID,
     seed: int = SEEDS[0],
+    cache_dir: Path | None = None,
 ) -> Selection:
     limits = winsor_limits(y_fit) if family in ("admit_quantile", "xret") else None
     y_eval = np.clip(y_inner, *limits) if limits else y_inner
     losses = [
-        loss(family, y_eval, predict(fit(family, cfg, seed, x_fit, y_fit), x_inner))
+        loss(
+            family,
+            y_eval,
+            predict(
+                fit(family, cfg, seed, x_fit, y_fit, cache_dir=cache_dir),
+                x_inner,
+            ),
+        )
         for cfg in grid
     ]
     ranked = tuple(int(i) for i in np.argsort(np.asarray(losses), kind="stable"))
@@ -179,6 +238,7 @@ def fit_finalists(
     predict_x: Callable[[Fitted], np.ndarray],
     grid: Sequence[Mapping[str, Any]] = CONFIG_GRID,
     seeds: Sequence[int] = SEEDS,
+    cache_dir: Path | None = None,
 ) -> FoldPrediction:
     means: list[np.ndarray] = []
     primary_per_seed: tuple[np.ndarray, ...] = ()
@@ -186,7 +246,8 @@ def fit_finalists(
     fitted_all: list[tuple[Fitted, ...]] = []
     for index in selection.finalists:
         fitted = tuple(
-            fit(family, grid[index], seed, x_train, y_train) for seed in seeds
+            fit(family, grid[index], seed, x_train, y_train, cache_dir=cache_dir)
+            for seed in seeds
         )
         per_seed = tuple(predict_x(f) for f in fitted)
         if not means:

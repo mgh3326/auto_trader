@@ -235,6 +235,7 @@ def validate(
         frozen_year=frozen_year,
         grid=grid,
         seeds=seeds,
+        cache_dir=root / "fit_cache",
     )
     frozen["admit_quantile"] = run
     first_t, last_t = pl.decision_window(
@@ -316,6 +317,7 @@ def validate(
         frozen_year=frozen_year,
         grid=grid,
         seeds=seeds,
+        cache_dir=root / "fit_cache",
     )
     xret_run = pl.run_family(
         "xret",
@@ -331,6 +333,7 @@ def validate(
         frozen_year=frozen_year,
         grid=grid,
         seeds=seeds,
+        cache_dir=root / "fit_cache",
     )
     frozen["touch"] = touch_run
     frozen["xret"] = xret_run
@@ -564,7 +567,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.report is None:
         parser.error("report needs --report PATH")
-    write_report(root=args.root, repo=args.repo, out=args.report, identity=identity)
+    write_report(
+        root=args.root,
+        repo=args.repo,
+        out=args.report,
+        identity=identity,
+        export_dir=args.export_dir,
+    )
     return 0
 
 

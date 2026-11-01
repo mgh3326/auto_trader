@@ -72,7 +72,7 @@ def test_report_citing_unregistered_hash_fails(repo: Path) -> None:
 
 
 def test_report_citing_registered_hash_passes(repo: Path) -> None:
-    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    sha = _hyp(_registry(repo), "ROB-1411")["manifest_sha256"]
     _write_report(repo, "docs/research/h-admit-note.md", sha=sha, look="no")
     assert lint.run(repo) == []
     assert lint.main(["--root", str(repo)]) == 0
@@ -86,7 +86,7 @@ def test_file_in_reports_dir_must_cite(repo: Path) -> None:
 
 
 def test_test_look_not_counted_in_registry_fails(repo: Path) -> None:
-    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    sha = _hyp(_registry(repo), "ROB-1411")["manifest_sha256"]
     _write_report(
         repo, "research/experiments/reports/h-admit-look1.md", sha=sha, look="yes"
     )
@@ -96,7 +96,7 @@ def test_test_look_not_counted_in_registry_fails(repo: Path) -> None:
 
 def test_test_look_counted_with_k_increment_passes(repo: Path) -> None:
     registry = _registry(repo)
-    hyp = _hyp(registry, "H-admit")
+    hyp = _hyp(registry, "ROB-1411")
     rel = _write_report(
         repo,
         "research/experiments/reports/h-admit-look1.md",
@@ -119,7 +119,7 @@ def test_test_look_counted_with_k_increment_passes(repo: Path) -> None:
 
 def test_look_without_k_increment_fails(repo: Path) -> None:
     registry = _registry(repo)
-    hyp = _hyp(registry, "H-admit")
+    hyp = _hyp(registry, "ROB-1411")
     rel = _write_report(
         repo,
         "research/experiments/reports/h-admit-look1.md",
@@ -211,7 +211,7 @@ def test_manifest_schema_violations_fail(repo: Path, mutate, needle: str) -> Non
 
 
 def test_reregistered_manifest_version_passes(repo: Path) -> None:
-    _rewrite_manifest(repo, "H-admit", lambda m: m.update(version=2))
+    _rewrite_manifest(repo, "ROB-1411", lambda m: m.update(version=2))
     assert lint.run(repo) == []
 
 
@@ -225,7 +225,7 @@ def test_heartbeat_schema_violation_fails(repo: Path) -> None:
 
 def test_running_hypothesis_needs_heartbeat_epoch(repo: Path) -> None:
     registry = _registry(repo)
-    _hyp(registry, "H-admit")["status"] = "running"
+    _hyp(registry, "ROB-1411")["status"] = "running"
     _write_registry(repo, registry)
     problems = lint.run(repo)
     assert any("has no heartbeat epoch" in p for p in problems)
@@ -233,7 +233,7 @@ def test_running_hypothesis_needs_heartbeat_epoch(repo: Path) -> None:
 
 def _with_one_look(repo: Path) -> dict:
     registry = _registry(repo)
-    hyp = _hyp(registry, "H-admit")
+    hyp = _hyp(registry, "ROB-1411")
     rel = _write_report(
         repo,
         "research/experiments/reports/h-admit-look1.md",
@@ -267,7 +267,9 @@ def test_base_registry_removal_fails(repo: Path, tmp_path: Path) -> None:
     base_file = tmp_path / "base.json"
     base_file.write_text((repo / lint.REGISTRY_PATH).read_text())
     registry = _registry(repo)
-    registry["hypotheses"] = [h for h in registry["hypotheses"] if h["id"] != "H-admit"]
+    registry["hypotheses"] = [
+        h for h in registry["hypotheses"] if h["id"] != "ROB-1411"
+    ]
     _write_registry(repo, registry)
     assert any("was removed" in p for p in lint.run(repo, base_file))
 
@@ -318,7 +320,7 @@ def test_malformed_citation_value_fails(repo: Path) -> None:
 
 
 def test_bold_test_look_is_still_counted(repo: Path) -> None:
-    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    sha = _hyp(_registry(repo), "ROB-1411")["manifest_sha256"]
     path = repo / "docs/research/probe.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -328,7 +330,7 @@ def test_bold_test_look_is_still_counted(repo: Path) -> None:
 
 
 def test_second_look_marker_fails(repo: Path) -> None:
-    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    sha = _hyp(_registry(repo), "ROB-1411")["manifest_sha256"]
     path = repo / "docs/research/probe.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -367,7 +369,7 @@ def test_duplicate_json_key_in_manifest_fails(repo: Path) -> None:
 
 def test_manifest_change_without_version_bump_fails(repo: Path) -> None:
     registry = _registry(repo)
-    hyp = _hyp(registry, "H-admit")
+    hyp = _hyp(registry, "ROB-1411")
     path = repo / hyp["manifest"]
     manifest = json.loads(path.read_text())
     manifest["title"] = "changed"
@@ -380,7 +382,7 @@ def test_manifest_change_without_version_bump_fails(repo: Path) -> None:
 
 def test_status_cannot_move_backwards(repo: Path, tmp_path: Path) -> None:
     base = _registry(repo)
-    _hyp(base, "H-admit")["status"] = "closed"
+    _hyp(base, "ROB-1411")["status"] = "closed"
     base_file = tmp_path / "base.json"
     base_file.write_text(json.dumps(base))
     assert any("status moved backwards" in p for p in lint.run(repo, base_file))
@@ -447,13 +449,13 @@ def test_prior_k_must_count_looks_under_previous_hashes(repo: Path) -> None:
     registry = _with_one_look(repo)
     _write_registry(repo, registry)
     # New manifest version that forgets the look made under the old hash.
-    _rewrite_manifest(repo, "H-admit", lambda m: None)
+    _rewrite_manifest(repo, "ROB-1411", lambda m: None)
     assert any("cumulative_k.prior_k is 0" in p for p in lint.run(repo))
-    _rewrite_manifest(repo, "H-admit", lambda m: m["cumulative_k"].update(prior_k=1))
+    _rewrite_manifest(repo, "ROB-1411", lambda m: m["cumulative_k"].update(prior_k=1))
     assert lint.run(repo) == []
 
 
 def test_cited_report_without_look_marker_fails(repo: Path) -> None:
-    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    sha = _hyp(_registry(repo), "ROB-1411")["manifest_sha256"]
     _write_report(repo, "docs/research/h-admit-note.md", sha=sha)
     assert any("must declare" in p for p in lint.run(repo))

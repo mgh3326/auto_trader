@@ -434,8 +434,11 @@ def simulate(
                             )
                         )
                         filled = True
-                if filled or s >= w.last_session:
+                if filled:
                     del working[li]
+            # The window ends on its last session even if cash skipped that day's child.
+            for li in [x for x, w in working.items() if s >= w.last_session]:
+                del working[li]
 
             # Closing auction: exits due, on a valid bar, oldest first.
             for li in sorted(positions):

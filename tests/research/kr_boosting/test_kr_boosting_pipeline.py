@@ -8,8 +8,10 @@ Run in the research environment:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pickle
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -18,9 +20,12 @@ import pytest
 
 from research.eval_contract.contract import BRACKET_CONSERVATIVE
 from research.kr_boosting import pipeline as pl
+from research.kr_boosting import report as report_module
 from research.kr_boosting import run
 from research.kr_boosting.config import CONFIG_GRID, HYP_ADMIT, HYP_ENTRY
-from research.kr_boosting.panel import build_panel
+from research.kr_boosting.exposure_audit import Hit
+from research.kr_boosting.panel import ExportIdentity, build_panel
+from research.kr_boosting.report import write_report
 from tests.research.kr_boosting.helpers import (
     frame,
     random_walk_rows,
@@ -124,3 +129,97 @@ def test_year_masks_keep_purge_and_gap_for_training_rows(panel) -> None:
     assert t[masks["fit"]].max() == inner_boundary - 11
     assert t[masks["inner"]].min() == inner_boundary
     assert t[masks["inner"]].max() == boundary - 11
+
+
+def _fixture_repo(path: Path) -> Path:
+    registry = path / "research/experiments/registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "hypotheses": [
+                    {
+                        "id": h,
+                        "status": "draft",
+                        "manifest_sha256": "ab" * 32,
+                        "previous_manifest_sha256": [],
+                        "k": 1,
+                    }
+                    for h in (HYP_ADMIT, HYP_ENTRY)
+                ]
+            }
+        )
+    )
+    git = [
+        "git",
+        "-C",
+        str(path),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+    ]
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
+    return path
+
+
+def _fixture_export(path: Path) -> Path:
+    path.mkdir()
+    table = path / "delist_resolution.v1.csv"
+    table.write_text("symbol,delist_reason\n000001,해산\n")
+    digest = hashlib.sha256(table.read_bytes()).hexdigest()
+    (path / "manifest.json").write_text(
+        json.dumps({"files": {"delist_resolution": {"sha256": digest}}})
+    )
+    return path
+
+
+def test_validate_diagnostic_and_report_run_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("lightgbm")
+    # The fixture repository holds no evidence; the report refuses that on purpose.
+    monkeypatch.setattr(
+        report_module,
+        "run_audit",
+        lambda _root: (Hit("fixture.md", 1, "fixture evidence"),),
+    )
+    sessions = weekdays(date(2015, 1, 1), 2600)  # through 2024
+    rows: list[dict[str, object]] = []
+    for i in range(14):
+        rows += random_walk_rows(f"0000{i:02d}", sessions, 100 + i)
+    whole = frame(rows)
+    identity = ExportIdentity("aa" * 32, "bb" * 32, len(whole))
+    repo = _fixture_repo(tmp_path / "repo")
+    root = tmp_path / "run"
+
+    run.validate(
+        build_panel(whole[whole["session"] < date(2020, 1, 1)]),
+        root=root,
+        identity=identity,
+        years=(2018,),
+        seal_boundary=date(2019, 1, 1),
+        frozen_year=2019,
+        grid=GRID,
+        seeds=SEEDS,
+        repo=repo,
+    )
+    run.diagnostic(build_panel(whole), root=root, identity=identity)
+    with pytest.raises(FileExistsError):
+        run.diagnostic(build_panel(whole), root=root, identity=identity)
+
+    out = tmp_path / "report.md"
+    write_report(
+        root=root,
+        repo=repo,
+        out=out,
+        identity=identity,
+        export_dir=_fixture_export(tmp_path / "export"),
+    )
+    text = out.read_text()
+    assert "## Verdict" in text
+    assert "## Payout sensitivity of the terminal labels" in text
+    assert text.count("Experiment-Manifest-Sha256:") == 2
+    assert text.count("Experiment-Test-Look:") == 1

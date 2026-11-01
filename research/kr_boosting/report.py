@@ -29,6 +29,7 @@ from research.kr_boosting import pipeline as pl
 from research.kr_boosting.exposure_audit import provably_untouched, run_audit
 from research.kr_boosting.gate import CONTINUE
 from research.kr_boosting.panel import ExportIdentity
+from research.kr_boosting.payout_exposure import exposure_table, load_flags
 
 FILLS = (BRACKET_OPTIMISTIC, BRACKET_CONSERVATIVE, "volume_share")
 _MARKER_HASH = "Experiment-Manifest-Sha256"
@@ -161,7 +162,7 @@ def _order(hypothesis_id: str) -> tuple[str, ...]:
 
 
 def write_report(
-    *, root: Path, repo: Path, out: Path, identity: ExportIdentity
+    *, root: Path, repo: Path, out: Path, identity: ExportIdentity, export_dir: Path
 ) -> None:
     results = json.loads((root / "validate_results.json").read_text())
     diag = json.loads((root / "diagnostic_results.json").read_text())
@@ -173,6 +174,7 @@ def write_report(
     entries = {h["id"]: h for h in registry["hypotheses"]}
     hits = run_audit(repo)
     git = results["git"]
+    flags = load_flags(export_dir)
 
     contract_shas: dict[str, dict[str, dict[str, str]]] = {}
     for hyp in (cfg.HYP_ADMIT, cfg.HYP_ENTRY):
@@ -352,6 +354,38 @@ def write_report(
             *_diagnostic_table(d, order),
             "",
             f"Calibration: `{json.dumps(d['calibration'])}`",
+            "",
+        ]
+    L += [
+        "## Payout sensitivity of the terminal labels",
+        "",
+        "The dots audit of `delist_resolution.v1` (ROB-1437) matched 100 of 100 sampled rows to KIND on "
+        "symbol, final delist date and broad event class (Wilson 95% 96.3-100%). **Payouts were not "
+        "verified.** It also names 003415 (weakly supported payout assumption), seven rows labelled 해산 "
+        "that are absorption-merger contexts, 002250 (compound reason) and same-code relistings. Its data "
+        "fix (hk 2535) is not in this run, which stays pinned to the hash above.",
+        "",
+        "Features and labels read no payout field, but the admit and `xret` labels and the simulator settle "
+        "a delisted position at its last close, so they rest on that assumption. "
+        "`payout_semantics` is read only by the write-off stress. The table gives the most a wrong payout "
+        "could take on 2019-2022 at the conservative end, before any reinvestment effect. Flags are by symbol: "
+        "all 해산 rows count, since the seven are not separated here, and a flagged symbol may have settled "
+        "in a listing the audit did not question. A control's exposure moves that control's result too, so "
+        "compare rows rather than reading one alone.",
+        "",
+    ]
+    for hyp in (cfg.HYP_ADMIT, cfg.HYP_ENTRY):
+        L += [
+            f"{hyp}:",
+            "",
+            *exposure_table(
+                validate_outputs[hyp],
+                order=_order(hyp),
+                model_id=BRACKET_CONSERVATIVE,
+                flags=flags,
+                capital=cfg.CAPITAL,
+                years=float(len(cfg.VALIDATION_YEARS)),
+            ),
             "",
         ]
     L += [

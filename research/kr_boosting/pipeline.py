@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -219,6 +220,7 @@ def run_family(
     frozen_year: int,
     grid: Sequence[Mapping[str, Any]] = CONFIG_GRID,
     seeds: Sequence[int] = tr.SEEDS,
+    cache_dir: Path | None = None,
 ) -> FamilyRun:
     """Nested walk-forward over ``years`` plus the frozen fit for ``frozen_year``.
 
@@ -250,6 +252,7 @@ def run_family(
             y_inner=y[inner_mask],
             grid=grid,
             seed=seeds[0],
+            cache_dir=cache_dir,
         )
         if year == frozen_year:
             target = np.zeros(0, dtype=bool)
@@ -264,6 +267,7 @@ def run_family(
             predict_x=lambda fitted, rows=px[target]: tr.predict(fitted, rows),
             grid=grid,
             seeds=seeds,
+            cache_dir=cache_dir,
         )
         out.records.append(
             FoldRecord(

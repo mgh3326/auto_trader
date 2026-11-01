@@ -25,7 +25,9 @@ VIRTUAL_ENV="$ROOT/venv" uv pip install -r research/kr_boosting/requirements-ml.
 | `diagnostic` | sessions through 2024, frozen models only; refuses a second run | diagnostics, never the verdict |
 | `report` | the two stages' JSON and the registry | the report, plus one rendered contract report per policy |
 
-Run output stays in `$ROOT`, outside the repository.
+Run output stays in `$ROOT`, outside the repository. Each fit is cached under
+`$ROOT/run/fit_cache`, keyed by its inputs, `train.py` and the LightGBM version, so
+a crash or a simulator-only fix does not refit. The log has one line per fit.
 
 ## Modules
 
@@ -43,6 +45,7 @@ Run output stays in `$ROOT`, outside the repository.
 | `train.py` | LightGBM, imported lazily; nested configuration selection |
 | `pipeline.py`, `run.py`, `report.py` | Rows and runs, CLI, report |
 | `exposure_audit.py` | Repository evidence that 2023-2024 was already read |
+| `payout_exposure.py` | How much of each policy's result settled at a last close, split by the ROB-1437 audit's caveats |
 
 The report and its verdict are in
 `research/experiments/reports/rob-1441-kr-boosting-baseline.md`.

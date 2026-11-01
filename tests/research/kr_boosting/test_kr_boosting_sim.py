@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -25,6 +28,7 @@ from research.eval_contract.fill_models import (
     VolumeShare,
 )
 from research.eval_contract.report import render_report
+from research.kr_boosting import train
 from research.kr_boosting.eligibility import Signal
 from research.kr_boosting.features import compute_features
 from research.kr_boosting.gate import (
@@ -37,6 +41,12 @@ from research.kr_boosting.gate import (
 )
 from research.kr_boosting.labels import admit_label, touch_label, xret_label
 from research.kr_boosting.panel import build_panel
+from research.kr_boosting.payout_exposure import (
+    FlaggedSymbols,
+    exposure,
+    exposure_table,
+    load_flags,
+)
 from research.kr_boosting.policies import (
     Candidate,
     LadderRow,
@@ -288,6 +298,40 @@ def test_resting_order_is_one_day_child_per_session() -> None:
     assert out.result.fill_rate == 0
 
 
+def test_entry_skipped_for_cash_expires_with_its_rest_window() -> None:
+    """A day with no cash uses up the window; the entry must not wake up later."""
+
+    rows: list[dict[str, object]] = []
+    for i in range(2):
+        rows += flat_rows(f"00000{i}", SESSIONS)
+    panel = build_panel(frame(rows))
+    # One order's worth of cash: listing 0 takes it and returns it at the next close.
+    plan = {10: [_candidate(0, 10, "10000", hold=1), _candidate(1, 10, "10000")]}
+    out = _run(panel, plan, OptimisticTouch(), capital=Decimal(310_000))
+    assert {o.symbol for o in out.result.orders} == {panel.symbols[0]}
+    assert out.result.intents[1].intent_id.endswith(panel.symbols[1])
+
+
+def test_entry_skipped_for_cash_can_still_fill_inside_its_window() -> None:
+    rows: list[dict[str, object]] = []
+    for i in range(2):
+        rows += flat_rows(f"00000{i}", SESSIONS)
+    panel = build_panel(frame(rows))
+    plan = {
+        10: [
+            _candidate(0, 10, "10000", hold=1),
+            _candidate(1, 10, "10000", rest=3),
+        ]
+    }
+    out = _run(panel, plan, OptimisticTouch(), capital=Decimal(310_000))
+    buys = [
+        o
+        for o in out.result.orders
+        if o.symbol == panel.symbols[1] and o.side is Side.BUY
+    ]
+    assert [o.submitted_at.date() for o in buys] == [SESSIONS[12]]
+
+
 def test_terminal_position_settles_at_last_close_on_the_next_session() -> None:
     panel = build_panel(frame(_terminal_rows(last=13)))
     plan = {10: [_candidate(0, 10, "10000", hold=20)]}
@@ -531,3 +575,109 @@ def test_bootstrap_is_deterministic_and_separates_signal_from_noise() -> None:
 
 def test_max_drawdown() -> None:
     assert max_drawdown(np.array([100.0, 120.0, 90.0, 110.0])) == pytest.approx(-0.25)
+
+
+# -------------------------------------------------------------------- fit cache
+
+
+def test_fit_cache_reuses_identical_fits_and_misses_on_changed_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    calls: list[int] = []
+
+    def fake_fit(family, cfg, seed, x, y):
+        calls.append(seed)
+        return train.Fitted((f"model-{seed}-{y.sum()}",))
+
+    monkeypatch.setattr(train, "_fit", fake_fit)
+    monkeypatch.setattr(train, "_lgb", lambda: SimpleNamespace(__version__="fixture"))
+    x = np.ones((4, 2), dtype=np.float32)
+    y = np.arange(4, dtype=np.float64)
+    cfg = {"num_leaves": 15}
+
+    first = train.fit("touch", cfg, 1, x, y, cache_dir=tmp_path)
+    again = train.fit("touch", cfg, 1, x, y, cache_dir=tmp_path)
+    assert again == first
+    assert calls == [1]
+
+    train.fit("touch", cfg, 2, x, y, cache_dir=tmp_path)
+    train.fit("touch", cfg, 1, x, y + 1, cache_dir=tmp_path)
+    train.fit("touch", {"num_leaves": 31}, 1, x, y, cache_dir=tmp_path)
+    assert len(calls) == 4
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+# -------------------------------------------------------------- payout exposure
+
+
+def _flags(*dissolved: str) -> FlaggedSymbols:
+    empty: frozenset[str] = frozenset()
+    return FlaggedSymbols(empty, empty, frozenset(dissolved), empty)
+
+
+def test_exposure_counts_terminal_settlements_and_splits_the_flagged_ones() -> None:
+    panel = build_panel(frame(_terminal_rows(last=13)))
+    plan = {10: [_candidate(0, 10, "10000", hold=20)]}
+    result = _run(panel, plan, OptimisticTouch()).result
+    symbol = panel.symbols[0]
+
+    clean = exposure(result, _flags("999999"))
+    assert clean.settlements == 1
+    assert clean.settled_value == Decimal(8000) * 30
+    assert clean.flagged_settlements == 0
+
+    flagged = exposure(result, _flags(symbol))
+    assert flagged.flagged_value == flagged.settled_value
+    assert flagged.flagged_symbols == (symbol,)
+    assert flagged.bound_annual(Decimal(240_000), 2.0) == pytest.approx(0.5)
+
+
+def test_exposure_ignores_a_planned_exit() -> None:
+    panel = build_panel(frame(flat_rows("000001", SESSIONS)))
+    plan = {10: [_candidate(0, 10, "10000", hold=2)]}
+    result = _run(panel, plan, OptimisticTouch()).result
+    assert any(f.side is Side.SELL for f in result.fills)
+    assert exposure(result, _flags()).settlements == 0
+
+
+def test_exposure_table_has_a_row_per_policy() -> None:
+    panel = build_panel(frame(_terminal_rows(last=13)))
+    plan = {10: [_candidate(0, 10, "10000", hold=20)]}
+    result = _run(panel, plan, OptimisticTouch()).result
+    lines = exposure_table(
+        {"a": {"m": result}},
+        order=("a",),
+        model_id="m",
+        flags=_flags(panel.symbols[0]),
+        capital=Decimal(240_000),
+        years=2.0,
+    )
+    assert len(lines) == 3
+    assert "-50.00%" in lines[2]
+    assert panel.symbols[0] in lines[2]
+
+
+def test_flags_read_the_audit_caveats_from_a_hash_checked_table(tmp_path) -> None:
+    table = tmp_path / "delist_resolution.v1.csv"
+    table.write_text(
+        "symbol,delist_reason\n"
+        "000010,해산 사유 발생\n"
+        "000020,감사의견 거절\n"
+        "000030,합병\n"
+        "000030,감사의견 거절\n"
+    )
+    digest = hashlib.sha256(table.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"files": {"delist_resolution": {"sha256": digest}}})
+    )
+
+    flags = load_flags(tmp_path)
+    assert flags.dissolution_label == {"000010"}
+    assert flags.same_code_relisting == {"000030"}
+    assert {"003415", "002250"} <= flags.all
+    assert "000020" not in flags.all
+
+    manifest.write_text(json.dumps({"files": {"delist_resolution": {"sha256": "00"}}}))
+    with pytest.raises(ValueError, match="sha256"):
+        load_flags(tmp_path)
