@@ -27,18 +27,18 @@ uv run python -m research.kr_delist_repair.cli build --out DIR --repo-data resea
 ```
 
 `DIR` used for v1: `/Users/mgh3326/work/herdr-artifacts/kr-delist-repair-v1`. The
-export parquet stays there (corpus prices are not redistributed in the repo);
-its hashes are in `data/export_manifest.json`.
+export parquet and the resolution table stay there (no large data in the repo);
+their sha256 and row counts are in `data/export_manifest.json`.
 
 ## Outputs
 
 | File | Content |
 |---|---|
 | `data/join_audit.md` | corpus ⋈ `kr_symbol_universe` audit |
-| `data/delist_resolution.v1.csv` | one row per target symbol: dates, reason, outcome, identity, suspension counts, source per row |
+| `DIR/export/delist_resolution.v1.csv` | one row per target listing: dates, reason, outcome, identity, suspension counts, source per row (kept out of the repo; sha256 and row count in `data/export_manifest.json`) |
 | `data/unresolved.v1.csv` | unresolved symbols with the reason |
 | `data/coverage_report.md` | coverage per frame, outcome mix, unresolved list, known limits |
-| `data/export_manifest.json` | sha256/bytes of the export and inputs, conventions, counts |
+| `data/export_manifest.json` | sha256, bytes and row counts of the export files and inputs, conventions, coverage |
 | `DIR/export/kr_daily_causal.v1.parquet` | the causal daily dataset |
 
 ## Rules the code enforces

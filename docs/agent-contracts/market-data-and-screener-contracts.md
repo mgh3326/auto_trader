@@ -351,7 +351,7 @@ KRX `상장폐지` 공시 본문에서 **정확한 단축코드로만** 해석�
 `app` import·DB·브로커·스케줄러 0, 봉인 holdout 읽기 금지(`HoldoutAccessError`).
 
 - 🔴 **`kr_symbol_universe` 로 상폐 수명주기를 조인하지 말 것** — 동기화 시작 전 상폐 심볼은 행이
-  아예 없어 inner join 이 생존편향을 되살린다. 수명주기는 `data/delist_resolution.v1.csv` 를 심볼 키로 쓴다
+  아예 없어 inner join 이 생존편향을 되살린다. 수명주기는 export 경로의 `delist_resolution.v1.csv`(해시·행수는 `data/export_manifest.json`)를 심볼 키로 쓴다
   (`data/join_audit.md`).
 - 🔴 corpus 안에서 membership 이 끝난 심볼은 상폐일 = 마지막 membership 다음 세션이어야 하며,
   어긋나면 고치지 않고 unresolved 로 남긴다.

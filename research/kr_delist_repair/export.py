@@ -11,8 +11,10 @@ terminal_available_at.
 Terminal fields are set on exactly one row per listing whose membership ended
 inside the main scope: its last membership session.  They are never
 forward-filled, and no row exists on or after a symbol's delist date.  A
-symbol whose membership ended without a resolved terminal event carries
-``terminal_outcome="unresolved"`` on that row instead of being dropped.
+listing whose membership ended without a resolved terminal event carries
+``terminal_outcome="unresolved"`` on that row instead of being dropped; its
+``terminal_available_at`` is the next session's bar time, when the absence is
+observable.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from research.kr_delist_repair.causal import bar_available_at
 from research.kr_delist_repair.model import ExportConflict
 from research.kr_delist_repair.resolve import Presence, Resolution
 
@@ -120,6 +123,7 @@ def build_panel(
     base = base.add_column(1, "listing_id", _listing_ids(base, presences))
 
     main_end = pc.max(base.column("session")).as_py()
+    calendar = sorted(pc.unique(base.column("session")).to_pylist())
     by_listing = {r.listing_id: r for r in resolutions}
 
     t_sym: list[str] = []
@@ -146,10 +150,13 @@ def build_panel(
             t_delist.append(delist)
             t_avail.append(datetime.fromisoformat(res.information_available_at))
         else:
+            # The ending itself is observable once the next session's bars are
+            # published without this listing; no delist date is asserted.
+            following = next(d for d in calendar if d > p.last_session)
             t_outcome.append(UNRESOLVED)
             t_payout.append(None)
             t_delist.append(None)
-            t_avail.append(None)
+            t_avail.append(bar_available_at(following))
 
     terminal = pa.table(
         {
@@ -237,7 +244,7 @@ def validate_panel(
             terminal_rows.setdefault(lid, []).append(ses)
             if row_values[0] is None:
                 violations.append(f"{lid} terminal row has no terminal_outcome")
-            elif row_values[0] != UNRESOLVED and row_values[3] is None:
+            elif row_values[3] is None:
                 violations.append(f"{lid} terminal row has no terminal_available_at")
         elif any(v is not None for v in row_values):
             violations.append(
@@ -283,6 +290,15 @@ def write_panel(panel: pa.Table, path: Path) -> None:
     pq.write_table(panel, path, compression="zstd")
 
 
+def _row_count(file: Path) -> int | None:
+    if file.suffix == ".parquet":
+        return pq.ParquetFile(file).metadata.num_rows
+    if file.suffix == ".csv":
+        with file.open(encoding="utf-8") as handle:
+            return max(sum(1 for _ in handle) - 1, 0)
+    return None
+
+
 def write_manifest(
     path: Path, files: dict[str, Path], extra: dict[str, object]
 ) -> dict[str, object]:
@@ -292,6 +308,7 @@ def write_manifest(
             "path": str(file),
             "bytes": file.stat().st_size,
             "sha256": sha256_file(file),
+            "rows": _row_count(file),
         }
     manifest = {"files": entries, **extra}
     path.write_text(

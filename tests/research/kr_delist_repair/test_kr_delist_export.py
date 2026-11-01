@@ -144,6 +144,30 @@ def test_unresolved_ending_is_flagged_not_dropped() -> None:
     rows = _rows(_panel(), UNRES)
     assert rows[-1]["terminal_outcome"] == UNRESOLVED
     assert rows[-1]["delist_date"] is None
+    # Observable once the next session (2020-03-04) publishes without it.
+    assert rows[-1]["terminal_available_at"] == datetime(2020, 3, 4, 7, tzinfo=UTC)
+
+
+def test_unresolved_terminal_row_is_readable_once_its_ending_is_observable() -> None:
+    table = CausalTable.for_panel(_panel())
+    key = [UNRES, date(2020, 3, 3)]
+    assert table.lookup(key, bar_available_at(date(2020, 3, 3)), ["close"]) == {
+        "close": 11
+    }
+    with pytest.raises(AvailabilityViolation):
+        table.lookup(key, bar_available_at(date(2020, 3, 3)), ["terminal_outcome"])
+    seen = table.lookup(key, bar_available_at(date(2020, 3, 4)))
+    assert seen["terminal_outcome"] == UNRESOLVED and seen["is_terminal_session"]
+
+
+def test_same_session_in_two_markets_is_not_a_gap() -> None:
+    m = _membership()
+    both = pa.table({"session": [SESSIONS[2]], "market": ["KOSPI"], "ticker": [ALIVE]})
+    pres, _ = presences(pa.concat_tables([m, both]), set())
+    alive = [p for p in pres.values() if p.symbol == ALIVE]
+    assert [(p.listing_id, p.markets) for p in alive] == [
+        ("000010#0", ("KOSDAQ", "KOSPI"))
+    ]
 
 
 def test_symbols_alive_at_scope_end_carry_no_terminal_row() -> None:

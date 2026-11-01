@@ -102,7 +102,9 @@ def presences(
         markets[(sym, index[ses])].add(mkt)
     out: dict[str, Presence] = {}
     for sym, idx in sessions.items():
-        idx.sort()
+        # One index per distinct session: a code listed in two markets on the
+        # same day must not look like a gap.
+        idx[:] = sorted(set(idx))
         start = prev = idx[0]
         segment = 0
         for i in [*idx[1:], None]:
@@ -380,7 +382,8 @@ def build(out: Path, repo_data: Path) -> dict[str, object]:
     write_panel(panel, export_path)
 
     res_rows = [r.row() for r in resolutions]
-    res_path = repo_data / "delist_resolution.v1.csv"
+    # Large tables stay with the export; the repo keeps only their hashes/row counts.
+    res_path = out / "export" / "delist_resolution.v1.csv"
     _write_csv(res_path, res_rows, list(res_rows[0]))
     unresolved = [
         {
@@ -601,7 +604,8 @@ def render_audit(a: dict[str, object]) -> str:
         "   symbol delisted before the sync began never had a row. Filling `delist_date` in the table cannot",
         f"   repair the ~{d['corpus_absent_from_universe']} corpus symbols that have no row at all; an inner join drops",
         "   them and reintroduces survivorship bias. Research must key lifecycle data by symbol from",
-        "   `delist_resolution.v1.csv`, never through `kr_symbol_universe`.",
+        "   `delist_resolution.v1.csv` (export directory; sha256 and row count in `export_manifest.json`),",
+        "   never through `kr_symbol_universe`.",
         f"2. **12/{d['kr_symbol_universe_rows']:,} is not a coverage number for the corpus.** The 12 dated rows are rows that",
         "   were once in the master; the corpus' delisted frame mostly lies outside the table.",
         "3. **KIND's company list omits preferred-share delistings.** Every corpus symbol ended inside the",
