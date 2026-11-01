@@ -20,7 +20,11 @@ from app.services.dots_history_export.projection import (
     SaltError,
 )
 from app.services.dots_history_export.publish import MANIFEST_NAME, publish
-from app.services.dots_history_export.spec import TABLE_BY_NAME, TABLES
+from app.services.dots_history_export.spec import (
+    BALANCE_UNAVAILABLE,
+    TABLE_BY_NAME,
+    TABLES,
+)
 from app.services.order_proposals.kis_leftover_inference import (
     EXPIRED_INFERENCE_VOID_REASON,
 )
@@ -83,7 +87,11 @@ def test_every_table_has_exactly_its_allowlisted_columns_in_both_formats(
             assert next(csv.reader(handle)) == list(spec.column_names)
         table = pq.read_table(out / f"{spec.name}.parquet")
         assert table.column_names == list(spec.column_names)
-        assert table.num_rows == 1
+        # One paper account in KRW and USD, plus one marker per sourceless account.
+        expected = (
+            2 + len(BALANCE_UNAVAILABLE) if spec.name == "account_balance_daily" else 1
+        )
+        assert table.num_rows == expected
 
 
 def test_files_are_exactly_two_per_table_plus_the_manifest(tmp_path: Path) -> None:
@@ -564,7 +572,11 @@ def test_manifest_records_window_counts_columns_hashes_and_commit(
     )
     on_disk = json.loads((out / MANIFEST_NAME).read_text("utf-8"))
     assert on_disk == manifest
-    assert on_disk["schema_version"] == "dots-history-export/v1"
+    assert on_disk["schema_version"] == "dots-history-export/v2"
+    assert on_disk["balance_sources"]["available"] == {
+        "db_paper": "paper.paper_daily_snapshots"
+    }
+    assert set(on_disk["balance_sources"]["unavailable"]) == set(BALANCE_UNAVAILABLE)
     assert on_disk["code_commit"] == COMMIT
     assert on_disk["code_dirty"] is False
     assert on_disk["window"]["since_utc"] == "2026-06-01T00:00:00+00:00"

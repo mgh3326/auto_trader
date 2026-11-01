@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -34,6 +34,7 @@ IDEMPOTENCY_KEY = "idem-key-55123"
 CREATED = datetime(2026, 6, 10, 1, 0, tzinfo=UTC)  # 10:00 KST
 FILLED = datetime(2026, 6, 10, 1, 30, tzinfo=UTC)
 RECONCILED = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+SNAPSHOT_AT = datetime(2026, 6, 10, 14, 50, tzinfo=UTC)  # 23:50 KST
 
 RAW_IDENTIFIERS = (
     ACCOUNT_NUMBER,
@@ -244,6 +245,7 @@ def fill_row(**overrides: Any) -> dict[str, Any]:
         "symbol": "005930",
         "side": "buy",
         "broker_order_id": KIS_ORDER_NO_IN_FILL,
+        "fill_seq": 1849201733,
         "filled_qty": Decimal("10.00000000"),
         "filled_price": Decimal("69900.00000000"),
         "filled_at": FILLED,
@@ -308,6 +310,31 @@ def rung_row(**overrides: Any) -> dict[str, Any]:
     return {**row, **overrides}
 
 
+def paper_snapshot_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "id": 12,
+        "account_id": 11,
+        "snapshot_date": date(2026, 6, 10),
+        "cash_krw": Decimal("8000000.0000"),
+        "cash_usd": Decimal("1500.2500"),
+        "created_at": SNAPSHOT_AT,
+    }
+    return {**row, **overrides}
+
+
+def paper_reservation_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "id": 13,
+        "account_id": 11,
+        "status": "pending",
+        "reserved_krw": Decimal("2001000.0000"),
+        "placed_at": CREATED,
+        "filled_at": None,
+        "cancelled_at": None,
+    }
+    return {**row, **overrides}
+
+
 def sources(**tables: list[dict[str, Any]]) -> SourceRows:
     defaults: dict[str, list[dict[str, Any]]] = {
         "kis_live_order_ledger": [kis_live_row()],
@@ -320,6 +347,8 @@ def sources(**tables: list[dict[str, Any]]) -> SourceRows:
         "execution_ledger": [fill_row()],
         "order_proposals": [proposal_row()],
         "order_proposal_rungs": [rung_row()],
+        "paper_daily_snapshots": [paper_snapshot_row()],
+        "paper_reservations": [paper_reservation_row()],
     }
     return SourceRows(**{**defaults, **tables})
 

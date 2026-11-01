@@ -1082,7 +1082,7 @@ class Renderer:
             "`entry.py` and `markouts.py`, section 4 from `idle.py`, section 5 from `rules.py`, "
             "the checks from `audit.py` and the sensitivity table from `sensitivity.py`, all rendered "
             "by `report.py`.\n\n",
-            f"- Export: `dots-history-export/v1`, window {window['since_utc'][:10]} to "
+            f"- Export: `{r.manifest['schema_version']}`, window {window['since_utc'][:10]} to "
             f"{window['until_utc'][:10]}, `manifest.json` sha256 `{r.manifest_sha256}`, "
             f"{sum(t['row_count'] for t in tables.values())} rows, not committed.\n",
             f"- Price snapshot: `prices_manifest.json` sha256 `{r.book.snapshot_sha256}`, fetched "

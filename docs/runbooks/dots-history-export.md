@@ -1,4 +1,4 @@
-# dots history export (ROB-1438)
+# dots history export (ROB-1438, v2 ROB-1450)
 
 dots is an external research and design AI session that reads Google Drive and
 Linear. This runbook gives dots real order and fill history without account
@@ -8,6 +8,10 @@ runs the export by hand and uploads the result. Nothing schedules it.
 The tool is `scripts/export_dots_history.py`, backed by
 `app/services/dots_history_export/`. It reads in one read-only, repeatable-read
 transaction, calls no broker and writes only to its output directory.
+
+The current schema is `dots-history-export/v2` (`schema_version` in
+`manifest.json`). v2 adds four fill columns, an opening-seed flag and the
+`account_balance_daily` table. See [Changes in v2](#changes-in-v2).
 
 ## Run the export
 
@@ -91,6 +95,7 @@ change with a test.
 | `execution_ledger` | Fills that are in effect | `filled_at` |
 | `order_proposals` | Order proposals | `created_at` |
 | `order_proposal_rungs` | Proposal rungs | the parent proposal's `created_at` |
+| `account_balance_daily` | Daily cash per account and currency (v2) | the snapshot's `created_at` |
 
 Each stem has a `.csv` and a `.parquet` file with the same rows. All seven order
 tables share one column list. `manifest.json` lists every table's columns, row
@@ -141,8 +146,14 @@ exports can be joined.
   latency. Websocket rows carry the execution time, so check `fill_source`.
 - **Count fills once.** One execution can have a reconciler row and a websocket
   row. Filter on `superseded_duplicate = false` before summing quantities.
-- **Exclude opening seeds.** `fill_source = manual_import` includes opening-lot
-  seeds, which are not executions from the window.
+- **Sum `incremental_qty`, not `filled_qty`.** A KIS reconciler row holds the
+  order's total at the time of the reconcile, and a later reconcile of the same
+  order can add a second row with the new total. See
+  [fill_seq and incremental_qty](#fill_seq-and-incremental_qty).
+- **Exclude opening seeds.** Filter on `is_seed = false`. A seed row is a whole
+  position on the cutover date, not an execution, and a later seed batch holds
+  the full position again, not an increment. Other `fill_source = manual_import`
+  rows have `fill_qty_basis = unknown`.
 - **Order rows hold the current state.** Statuses are as of the export, not as of
   `--until`. An order placed in the window can show a fill after the window.
   Only `execution_ledger` rows are limited to the window by fill time.
@@ -193,6 +204,116 @@ exports can be joined.
   matched against a broker statement by anyone who holds one. Treat the export as
   private trading data and keep the Drive folder restricted.
 
+## fill_seq and incremental_qty
+
+These `execution_ledger` columns are new in v2. They are derived by the export.
+The ledger's own `fill_seq` column is part of its idempotency key, holds a hash
+for most writers and is never exported.
+
+| Column | Meaning |
+| --- | --- |
+| `fill_seq` | 1-based position of the row among this export's rows of the same order, ordered by `filled_at`, then write time, then row. The order is the ROB-1379 identity: broker, account mode, instrument, symbol, side, currency, order number and, for KIS, the trading day. Numbers are distinct within an order, and every source shares one sequence. |
+| `fill_seq_null_reason` | Why `fill_seq` is empty: `position_seed` (an opening seed has no order) or `no_order_id` (the row has a blank order id). |
+| `fill_qty_basis` | What `filled_qty` is: `incremental` (one execution or one delta), `cumulative` (the order's total when the row was written), `position_seed` (a whole position) or `unknown`. |
+| `incremental_qty` | What the row adds. For an `incremental` row it equals `filled_qty`. For a `cumulative` row it is the rise over the previous cumulative row of the same order and source in this export: `0` for a repeat of the same total, and empty if the total went down. Empty for `position_seed` and `unknown`. |
+| `is_seed` | `true` for an opening seed: `fill_source = manual_import` with a `SEED-` order id. |
+
+The basis comes from the writer of each row. These are fields the ledger has
+today, and no raw payload is read:
+
+| Writer | `fill_qty_basis` | Why |
+| --- | --- | --- |
+| Any `websocket` row (KIS, Upbit) | `incremental` | One execution notice: KIS `CNTG_QTY`, Upbit `trade_volume` or `volume`. |
+| KIS `reconciler` (KR and US) | `cumulative` | The daily order row's order-level total, `tot_ccld_qty` or `ft_ccld_qty`. |
+| Toss `reconciler` | `incremental` | The delta since the previous reconcile. |
+| Upbit `reconciler`, ledger `fill_seq = 0` | `cumulative` | The order's `executed_volume`, written when the order detail had no trades. |
+| Upbit `reconciler`, any other ledger `fill_seq` | `incremental` | One trade. |
+| `manual_import` with a `SEED-` id | `position_seed` | A whole position. |
+| Other `manual_import` | `unknown` | No rule says what the quantity is. |
+
+Limits:
+
+- `fill_seq` and `incremental_qty` count only the rows in this export. A KIS
+  reconciler row carries the order time, so all reports of one order fall in or
+  out of the window together. An Upbit or Toss order that started filling before
+  `--since` starts its sequence at the first row inside the window.
+- One Upbit order can have both an aggregate row (`cumulative`) and per-trade
+  rows (`incremental`) when the trades arrived after the aggregate was written.
+  Summing both counts the order twice. Use the per-trade rows when both exist.
+- To total an order, take the non-superseded rows and sum `incremental_qty`. A
+  `cumulative` row with an empty `incremental_qty` needs a look at the order.
+
+## account_balance_daily
+
+New in v2. One row per account, currency and snapshot day where a source exists,
+and one `available = false` row for each account that has no source.
+
+| Column | Meaning |
+| --- | --- |
+| `account_alias`, `account_ref` | The account. `account_ref` is a salted hash, empty on `available = false` rows. |
+| `currency`, `balance_date` | `KRW` or `USD`, and the snapshot's KST date. |
+| `available` | `true` when a table records this account's cash per day. |
+| `unavailable_reason` | `no_balance_history_table` on `available = false` rows. |
+| `source_table` | Where the row came from. |
+| `cash` | The cash balance the source recorded. `cash_basis` says what it includes. |
+| `cash_basis` | `free_after_open_order_reservations`: cash already net of open-order reservations. |
+| `settled_cash` | Settled cash, empty when the source does not record it. |
+| `reserved_open_orders` | Cash held by open orders at `snapshot_created_at`, empty when it cannot be known. |
+| `snapshot_created_at_utc`, `_local` | When the snapshot row was first written. |
+
+Sources, from a search of every model and migration for cash, balance,
+deposit, buying power, NAV, equity and snapshot tables:
+
+- **DB paper (`db_paper`): `paper.paper_daily_snapshots`.** `cash_krw` and
+  `cash_usd` per account and KST date. A paper buy deducts `reserved_krw` from
+  `cash_krw` when it is placed and returns it on fill or cancel, so `cash` is
+  free cash and `reserved_open_orders` is the sum of `reserved_krw` over buys
+  in `paper.paper_pending_orders` that were placed and not yet filled or
+  cancelled at `snapshot_created_at`. A resolved order with no fill or cancel
+  time makes the total unknown. Paper buys reserve KRW only, so the USD row's
+  `reserved_open_orders` is empty. The simulator has no settlement, so
+  `settled_cash` is empty.
+  - The writer, `PaperTradingService.record_daily_snapshot`, has no caller in
+    the application today, so the table can be empty.
+  - A second call on the same day overwrites the cash but keeps
+    `created_at`, so the reservation time and the cash time can differ.
+- **Every broker account (`kis_live`, `kis_mock`, `toss_live`, `upbit_live`,
+  `alpaca_paper`, `alpaca_paper_lab`, `alpaca_paper_crypto`): no source.** Their
+  cash is read from the broker when a tool asks for it and is not stored per day.
+  `manifest.json` lists them under `balance_sources.unavailable`. These were
+  searched and are not usable:
+  - `paper.paper_accounts`: current DB paper cash only, no history.
+  - `user_settings.manual_cash`: the operator's declared parking total, current
+    value only.
+  - `review.external_cash_declarations`: declared off-broker cash, not broker
+    accounts.
+  - `review.investment_snapshots` with `snapshot_kind = 'portfolio'`:
+    free-form JSON written per analysis run, not per account and day.
+  - `review.funding_advisory_revisions`: required and reserved cash of one
+    funding advisory, not a balance.
+  - `review.binance_h5_nav_samples`, `review.binance_h5_lane_state`: Binance
+    demo NAV, an account outside this export.
+
+  Filling these rows needs a new table written once a day by a read-only
+  collector, per account and currency, from the same broker reads the cash
+  tools already make: KIS balance (`dnca_tot_amt`, with its D+2 settlement
+  figure for `settled_cash`), Toss buying power, Upbit `accounts` (`balance`
+  and `locked` for reserved), and the Alpaca account `cash`. That collector and its schedule are an operator
+  decision, not part of this export.
+
+## Changes in v2
+
+- `schema_version` is `dots-history-export/v2`.
+- `execution_ledger` adds `fill_seq`, `fill_seq_null_reason`, `fill_qty_basis`,
+  `incremental_qty` and `is_seed`, after `superseded_duplicate`.
+- New table `account_balance_daily`, and `balance_sources` in the manifest.
+- The leak check refuses integers with seven or more digits, and refuses a
+  decimal or integer cell equal to a digit-only identifier of six or more
+  digits that the tool read or that `--deny-values-file` lists.
+- `research/trade_retro` reads both v1 and v2. It ignores the new columns, so a
+  v1 export gives byte-identical reports, and its report names the export's
+  `schema_version`.
+
 ## How the leak check works
 
 The check runs on the rows before writing, and again on the CSV and Parquet files
@@ -204,7 +325,11 @@ both pass. A run fails on any of these:
 - A cell that does not fit its column's shape. References must be a prefix plus
   32 hex characters, enums are closed, and decimals and timestamps have fixed
   forms.
-- A bare integer longer than nine digits in a decimal column.
+- A bare integer longer than nine digits in a decimal column, or an integer
+  longer than six digits in an integer column.
+- A decimal or integer cell equal to a digit-only identifier of six or more
+  digits, such as an account number in `--deny-values-file` written without
+  its hyphen.
 - A label or symbol that matches an account-number, long-digit, UUID, JWT, token
   prefix, credential-assignment, long-hex or long-opaque pattern.
 - A label or symbol containing a raw order or account identifier the tool read

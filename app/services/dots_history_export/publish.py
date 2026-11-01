@@ -29,6 +29,8 @@ from app.services.dots_history_export.leak_check import (
 )
 from app.services.dots_history_export.projection import OutputRow, Projection, Window
 from app.services.dots_history_export.spec import (
+    BALANCE_SOURCES,
+    BALANCE_UNAVAILABLE,
     SCHEMA_VERSION,
     SOURCES_WITHOUT_LEDGER,
     TABLES,
@@ -225,6 +227,10 @@ def build_manifest(
             "forbidden_value_count": len(projection.forbidden),
         },
         "sources_without_ledger": SOURCES_WITHOUT_LEDGER,
+        "balance_sources": {
+            "available": BALANCE_SOURCES,
+            "unavailable": BALANCE_UNAVAILABLE,
+        },
         "tables": tables,
     }
 

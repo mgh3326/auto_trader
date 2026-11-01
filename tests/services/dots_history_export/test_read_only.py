@@ -23,6 +23,7 @@ from app.services.dots_history_export.publish import (
     OutputDirectoryError,
     resolve_output_directory,
 )
+from app.services.dots_history_export.spec import BALANCE_UNAVAILABLE
 from scripts import export_dots_history as cli
 from tests.services.dots_history_export._fixtures import SALT, WINDOW
 
@@ -40,6 +41,8 @@ STATEMENTS = (
     reader.execution_ledger_statement,
     reader.proposals_statement,
     reader.rungs_statement,
+    reader.paper_daily_snapshots_statement,
+    reader.paper_reservations_statement,
 )
 NEVER_READ = (
     "raw_response",
@@ -209,7 +212,10 @@ async def test_a_run_over_empty_ledgers_writes_a_manifest_with_zero_rows(
         _args(tmp_path), session_factory=lambda: session, repo_root=REPO_ROOT
     )
     assert session.rolled_back == 1
+    balances = manifest["tables"].pop("account_balance_daily")
     assert all(table["row_count"] == 0 for table in manifest["tables"].values())
+    # Accounts with no balance source are still listed, as available=false markers.
+    assert balances["row_count"] == len(BALANCE_UNAVAILABLE)
     assert manifest["code_commit"] == "c" * 40
     assert manifest["window"]["since_utc"] == "2026-06-01T00:00:00+00:00"
     on_disk = json.loads((tmp_path / "export" / MANIFEST_NAME).read_text("utf-8"))

@@ -23,7 +23,9 @@ LABEL_DIGIT_RUN = re.compile(r"\d{5,}")
 HASHED_TAG_SHAPE = re.compile(r"oth_[0-9a-f]{32}")
 SYMBOL_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./\-]{0,23}")
 DECIMAL_SHAPE = re.compile(r"-?(?:0|[1-9][0-9]*)(?P<fraction>\.[0-9]+)?")
-INTEGER_SHAPE = re.compile(r"-?(?:0|[1-9][0-9]{0,8})")
+#: An integer column holds a small count or ordinal (revision, rung index,
+#: fill_seq). Seven or more digits is shaped like an order or account number.
+INTEGER_SHAPE = re.compile(r"-?(?:0|[1-9][0-9]{0,5})")
 UTC_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 LOCAL_SHAPE = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?[+-]\d{2}:\d{2}"
@@ -158,6 +160,10 @@ class _CellScanner:
             item for item in variants if len(item) >= MIN_FORBIDDEN_VALUE_CHARS
         )
         self._whole_cells = variants - self._substrings
+        # A numeric cell is a quantity, price or amount, so only an exact match
+        # with a long all-digit identifier (an account or order number written
+        # without separators) is refused. Substrings would refuse real amounts.
+        self._numeric = frozenset(item for item in self._substrings if item.isdigit())
         self._cache: dict[tuple[Kind, str], str | None] = {}
 
     def _pattern_rule(self, kind: Kind, value: str) -> str | None:
@@ -185,6 +191,11 @@ class _CellScanner:
         shape = _shape_rule(column, value)
         if shape is not None:
             return shape
+        if column.kind in (Kind.DECIMAL, Kind.INTEGER):
+            digits = value.lstrip("-")
+            if digits in self._numeric or digits.lstrip("0") in self._numeric:
+                return "forbidden_value"
+            return None
         if column.kind not in (Kind.TAG, Kind.SYMBOL):
             return None
         key = (column.kind, value)
