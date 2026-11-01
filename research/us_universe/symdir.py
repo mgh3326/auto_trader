@@ -168,6 +168,7 @@ def parse_symbol_directory(series: str, text: str) -> Observation:
         raise SymbolDirectoryError(f"{series}: header lacks {missing}: {lines[0]!r}")
 
     rows: dict[str, ListingRow] = {}
+    seen_lines: dict[str, str] = {}
     for line in lines[1:-1]:
         parts = line.split("|")
         if len(parts) < len(header):
@@ -175,7 +176,10 @@ def parse_symbol_directory(series: str, text: str) -> Observation:
         raw_symbol = parts[col[symbol_col]].strip().upper()
         if not raw_symbol:
             continue
-        test_issue = _flag(parts[col["Test Issue"]]) is True
+        test_issue = _flag(parts[col["Test Issue"]])
+        if test_issue is None:
+            # Uncertain evidence is not guessed: reject the file, record a gap.
+            raise SymbolDirectoryError(f"{series}: Test Issue not Y/N in {line!r}")
         if test_issue:
             continue  # NASDAQ test symbols (ZVZZT, ...) are never tradable listings
         name = parts[col["Security Name"]].strip()
@@ -186,14 +190,14 @@ def parse_symbol_directory(series: str, text: str) -> Observation:
             code = parts[col["Exchange"]].strip().upper()
             exchange = OTHER_EXCHANGE_CODES.get(code, f"UNKNOWN:{code}")
         symbol = to_db_symbol(raw_symbol)
-        prev = rows.get(symbol)
-        if prev is not None:
-            if prev.raw_symbol != raw_symbol:
+        if symbol in seen_lines:
+            if seen_lines[symbol] != line:
                 raise SymbolDirectoryError(
-                    f"{series}: {prev.raw_symbol!r} and {raw_symbol!r} both "
-                    f"normalise to {symbol!r}"
+                    f"{series}: conflicting rows for {symbol!r}: "
+                    f"{seen_lines[symbol]!r} vs {line!r}"
                 )
-            continue  # exact duplicate line: first occurrence wins
+            continue  # byte-identical duplicate line carries no new evidence
+        seen_lines[symbol] = line
         rows[symbol] = ListingRow(
             symbol=symbol,
             raw_symbol=raw_symbol,

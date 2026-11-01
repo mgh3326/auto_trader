@@ -144,3 +144,12 @@ def test_same_day_captures_resolve_deterministically() -> None:
     assert "C" not in universe_as_of(rows, D4)
     # an exact tie on time and size picks one capture, never both or a crash
     assert len({"X", "Y"} & set(universe_as_of(rows, D3))) == 1
+
+
+def test_unknown_end_rule_raises_for_every_date() -> None:
+    import pytest
+
+    (row,) = by_symbol("NEW")
+    for t in (date(2000, 1, 1), D4):  # before and after listed_from
+        with pytest.raises(ValueError, match="unknown end rule"):
+            row.listed_at(t, end="bogus")

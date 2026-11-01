@@ -47,7 +47,13 @@ from .pit import (
     sha256_hex,
 )
 from .snapshot import REPO_ROOT
-from .store import Fetcher, code_commit, http_fetcher, write_once
+from .store import (
+    AlreadyExistsError,
+    Fetcher,
+    code_commit,
+    http_fetcher,
+    write_once,
+)
 from .symdir import (
     SERIES,
     SOURCE_URLS,
@@ -197,9 +203,19 @@ def refresh_wayback_cache(
                 )
                 continue
             if old is not None:
-                write_once(quarantine_path(root, series, timestamp, old), old)
+                kept = quarantine_path(root, series, timestamp, old)
+                try:
+                    write_once(kept, old)
+                except AlreadyExistsError:
+                    # An interrupted earlier run already moved these exact
+                    # bytes aside (the name carries their digest).
+                    if kept.read_bytes() != old:
+                        raise
                 path.unlink()
-            write_once(path, raw)
+            try:
+                write_once(path, raw)
+            except AlreadyExistsError:
+                pass  # a concurrent run published this capture; keep theirs
     return failures
 
 

@@ -81,13 +81,13 @@ class PITRow:
     observations: int  # observations inside the run
 
     def listed_at(self, t: date, *, end: str = "delisted_by") -> bool:
+        if end not in ("delisted_by", "listed_to"):
+            raise ValueError(f"unknown end rule {end!r}")
         if t < self.listed_from:
             return False
         if end == "delisted_by":
             return self.delisted_by is None or t < self.delisted_by
-        if end == "listed_to":
-            return self.listed_to is None or t <= self.listed_to
-        raise ValueError(f"unknown end rule {end!r}")
+        return self.listed_to is None or t <= self.listed_to
 
 
 def _rows_digest(obs: Observation) -> str:

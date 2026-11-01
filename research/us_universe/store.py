@@ -42,6 +42,12 @@ def write_once(path: Path, data: bytes) -> None:
         raise AlreadyExistsError(str(path)) from exc
     finally:
         partial.unlink(missing_ok=True)
+    # Persist the new directory entry, not just the file contents.
+    dir_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 @contextlib.contextmanager
@@ -91,7 +97,12 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def code_commit(repo_root: Path) -> str:
-    """HEAD SHA, suffixed ``-dirty`` when the working tree has changes."""
+    """HEAD SHA, suffixed ``-dirty`` when a *tracked* file has changes.
+
+    Untracked files are ignored on purpose (``-uno``): build outputs written
+    inside the repo must not mark their own generating commit dirty. Source
+    used by a build is tracked by construction.
+    """
     try:
         sha = subprocess.run(  # noqa: S603, S607
             ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
@@ -110,6 +121,17 @@ def code_commit(repo_root: Path) -> str:
     return f"{sha}-dirty" if dirty else sha
 
 
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to another https:// URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        if not newurl.startswith("https://"):
+            raise urllib.error.HTTPError(
+                newurl, code, f"refusing non-https redirect to {newurl!r}", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def http_fetcher(
     *,
     timeout: float = 60.0,
@@ -123,6 +145,9 @@ def http_fetcher(
     and refuses to exceed ``max_requests`` in one process.
     """
     ctx = ssl.create_default_context()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=ctx), _HttpsOnlyRedirects()
+    )
     state = {"count": 0, "last": 0.0}
 
     def fetch(url: str) -> bytes:
@@ -138,7 +163,7 @@ def http_fetcher(
             state["last"] = time.monotonic()
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})  # noqa: S310
             try:
-                with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
+                with opener.open(req, timeout=timeout) as resp:
                     return resp.read()
             except urllib.error.HTTPError as exc:
                 if exc.code not in (429, 500, 502, 503, 504) or attempt == retries:

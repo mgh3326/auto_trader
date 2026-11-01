@@ -186,3 +186,19 @@ def test_concurrent_runs_on_the_same_day_record_the_day_once(tmp_path: Path) -> 
     assert sorted(results) == ["already_present"] * 3 + ["written"]
     assert [r["day"] for r in manifest(tmp_path)] == ["2026-11-02"]
     assert sum(len(f.calls) for f in fetches) == 2  # one fetch per series
+
+
+def test_fetcher_refuses_redirects_to_plain_http() -> None:
+    import urllib.error
+    import urllib.request
+
+    from research.us_universe.store import _HttpsOnlyRedirects
+
+    req = urllib.request.Request("https://web.archive.org/web/x")
+    handler = _HttpsOnlyRedirects()
+    with pytest.raises(urllib.error.HTTPError, match="non-https redirect"):
+        handler.redirect_request(req, None, 302, "Found", {}, "http://example.org/x")
+    follow = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://web.archive.org/web/y"
+    )
+    assert follow is not None and follow.full_url == "https://web.archive.org/web/y"

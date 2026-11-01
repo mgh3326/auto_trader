@@ -145,9 +145,13 @@ The rebuilt table is on the desktop host at:
 
 The input cache it was built from is in the same artifact root. Anyone with
 the cache can regenerate the table with the `--offline` command above and
-check it against the sha256 and row count in `manifest.json`. Without the
-cache, the online command refetches the same captures. Archive captures do
-not change once taken; `inputs.jsonl` pins the sha256 of each one.
+check it against the sha256 and row count in `manifest.json`. The byte-for-
+byte guarantee holds only for `--offline` on the same cache. Without the
+cache, the online command rediscovers today's capture listing, which has no
+end date. It refetches every capture in `inputs.jsonl` (captures do not change
+once taken, and each sha256 is pinned there), but it also adds any capture
+the archive has indexed since. A new capture changes `inputs.jsonl` and
+`manifest.json` relative to the committed record.
 
 The committed `data_manifests/` holds the record of that build:
 

@@ -21,6 +21,7 @@ from research.us_universe.rebuild import (
     StaleSeriesError,
     capture_url,
     cdx_url,
+    quarantine_path,
     rebuild,
     refresh_wayback_cache,
     wayback_cache_path,
@@ -297,3 +298,42 @@ def test_package_reaches_no_broker_database_or_order_code() -> None:
                 assert not name.startswith(("sqlalchemy", "asyncpg", "httpx")), (
                     f"{path.name} imports {name}"
                 )
+
+
+def test_refresh_rejected_resumes_after_an_interrupted_quarantine(
+    tmp_path: Path,
+) -> None:
+    bad = b"<html>left by older code</html>"
+    path = wayback_cache_path(tmp_path, "nasdaqlisted", "20180703000000")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(bad)
+    # crash state: the old bytes were already moved aside, the unlink was not
+    kept = quarantine_path(tmp_path, "nasdaqlisted", "20180703000000", bad)
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(bad)
+
+    failures = refresh_wayback_cache(
+        tmp_path, _fetcher(VALID_2018, []), refresh_rejected=True
+    )
+
+    assert failures == []
+    assert path.read_bytes() == VALID_2018
+    assert kept.read_bytes() == bad
+
+
+def test_capture_published_by_a_concurrent_run_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import research.us_universe.rebuild as rebuild_module
+
+    path = wayback_cache_path(tmp_path, "nasdaqlisted", "20180703000000")
+    real_write_once = rebuild_module.write_once
+
+    def racing_write_once(target: Path, data: bytes) -> None:
+        if target == path:  # another process wins the race for this slot
+            real_write_once(target, VALID_2018)
+        real_write_once(target, data)
+
+    monkeypatch.setattr(rebuild_module, "write_once", racing_write_once)
+    assert refresh_wayback_cache(tmp_path, _fetcher(VALID_2018, [])) == []
+    assert path.read_bytes() == VALID_2018

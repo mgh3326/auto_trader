@@ -98,11 +98,24 @@ def test_common_stock_heuristic_matches_screener_classifier() -> None:
 
 def test_symbols_colliding_after_normalisation_are_rejected() -> None:
     body = nasdaq_body(DAY, ("ABC-A",), extra="ABC.A|ABC Class A|Q|N|N|100|N|N")
-    with pytest.raises(SymbolDirectoryError, match="both normalise"):
+    with pytest.raises(SymbolDirectoryError, match="conflicting rows for 'ABC.A'"):
         parse_symbol_directory(SERIES_NASDAQ, body)
 
 
-def test_exact_duplicate_line_keeps_first_occurrence() -> None:
+def test_identical_duplicate_line_is_harmless() -> None:
+    body = nasdaq_body(DAY, ("AAA",), extra="AAA|AAA Inc. - Common Stock|Q|N|N|100|N|N")
+    rows = list(parse_symbol_directory(SERIES_NASDAQ, body).rows)
+    assert [r.symbol for r in rows].count("AAA") == 1
+
+
+def test_conflicting_duplicate_rows_reject_the_file() -> None:
     body = nasdaq_body(DAY, ("AAA",), extra="AAA|AAA Fund ETF|Q|N|N|100|Y|N")
-    rows = {r.symbol: r for r in parse_symbol_directory(SERIES_NASDAQ, body).rows}
-    assert rows["AAA"].security_name == "AAA Inc. - Common Stock"
+    with pytest.raises(SymbolDirectoryError, match="conflicting rows"):
+        parse_symbol_directory(SERIES_NASDAQ, body)
+
+
+@pytest.mark.parametrize("value", ["", "X"])
+def test_unrecognised_test_issue_value_rejects_the_file(value: str) -> None:
+    body = nasdaq_body(DAY, ("AAA",), extra=f"BBB|BBB Corp|Q|{value}|N|100|N|N")
+    with pytest.raises(SymbolDirectoryError, match="Test Issue not Y/N"):
+        parse_symbol_directory(SERIES_NASDAQ, body)
