@@ -123,7 +123,10 @@ source's `adj_close`, when building a training series.
   a day whose actions failed is folded into the next successful diff (its
   changes become available on that later day) instead of being lost.
 * **First-observed semantics**: `available_at` is when this collector first saw
-  the fact (the sources carry no announcement time). Each row has `fact_hash`
+  the fact (the sources carry no announcement time). Rows are stamped after
+  every source read of the run has finished, never before the read that
+  revealed them; listing rows keep the universe observation time as
+  `event_time`. Each row has `fact_hash`
   (identity without observation time); a fact already present in an earlier
   partition is not written again, and a revised amount appears as a new fact.
   Collection, like the universe, is only possible on its own day.

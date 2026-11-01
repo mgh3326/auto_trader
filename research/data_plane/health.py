@@ -167,6 +167,12 @@ def _default_ping(
         resp.read(256)
 
 
+def _fail_url(parsed: urllib.parse.SplitResult) -> str:
+    """``<url>/fail`` with ``/fail`` appended to the path, query kept intact."""
+    path = parsed.path.rstrip("/") + "/fail"
+    return urllib.parse.urlunsplit(parsed._replace(path=path))
+
+
 def ping_url(env_name: str | None, healthy: bool, *, ping: Ping | None = None) -> str:
     """Ping the URL held in ``env_name``. Returns a status word, never the URL."""
     if not env_name:
@@ -177,7 +183,7 @@ def ping_url(env_name: str | None, healthy: bool, *, ping: Ping | None = None) -
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname:
         return "refused_non_https"
-    target = url if healthy else url.rstrip("/") + "/fail"
+    target = url if healthy else _fail_url(parsed)
     try:
         (ping or _default_ping)(target)
     except Exception as exc:  # noqa: BLE001 - a ping must never change the verdict

@@ -619,3 +619,49 @@ def _run_with_floor(root, floor):
         min_coverage=floor,
         commit="t",
     )
+
+
+@pytest.mark.unit
+def test_rows_are_stamped_after_the_read_that_revealed_them(tmp_path):
+    """A row may not claim to be known before its source was read."""
+    from datetime import timedelta as td
+
+    day = date(2026, 10, 30)
+    base = evening("us", day)
+    tick = {"n": 0}
+
+    def clock():
+        tick["n"] += 1
+        return base + td(seconds=tick["n"])
+
+    src = FakeSources()
+    read_at: list = []
+
+    def fetch(url):
+        read_at.append(clock())
+        return src(url)
+
+    collect(
+        tmp_path,
+        market="us",
+        day=day,
+        fetch=fetch,
+        now=clock,
+        symbols=["AAPL", "KO"],
+        commit="t",
+    )
+    last_read = max(read_at).isoformat()
+    actions = read_partition(tmp_path, DATASET_ACTIONS, "us", day)
+    assert actions and all(r["available_at"] > last_read for r in actions)
+    bars = read_partition(tmp_path, DATASET_BARS, "us", day)
+    yahoo_reads = sorted(read_at)[-2:]  # the two chart reads come last
+    assert all(r["observed_at"] > yahoo_reads[0].isoformat() for r in bars)
+
+
+@pytest.mark.unit
+def test_empty_symbols_is_an_error_not_the_full_universe(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    with pytest.raises(CollectError, match="no instruments"):
+        _run(tmp_path, "kr", day, FakeSources(), symbols=[], datasets=[DATASET_BARS])
+    assert not partition_path(tmp_path, DATASET_BARS, "kr", day).exists()

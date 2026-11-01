@@ -122,7 +122,11 @@ def main(argv: list[str] | None = None) -> int:
         now = datetime.now(UTC)
         day = args.date or local_today(args.market, now)
         datasets = [d.strip() for d in args.datasets.split(",") if d.strip()]
-        symbols = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
+        symbols = (
+            [x for x in (s.strip() for s in args.symbols.split(",")) if x]
+            if args.symbols is not None
+            else None
+        )  # an explicit but empty --symbols is an error, never "no filter"
         try:
             results = collect(
                 args.root,

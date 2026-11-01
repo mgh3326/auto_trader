@@ -109,7 +109,7 @@ def collect(
         day=day,
         fetch=fetch,
         now=now,
-        symbols=frozenset(symbols) if symbols else None,
+        symbols=frozenset(symbols) if symbols is not None else None,
         min_coverage=min_coverage,
         max_universe_drop=max_universe_drop,
         commit=commit or code_commit(REPO_ROOT),
@@ -461,14 +461,14 @@ def _build_bars(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 def _bar_row(
     run: _Run, instrument: str, venue: str, available: datetime
 ) -> dict[str, Any] | str:
-    common = {
+    common: dict[str, Any] = {
         "instrument": instrument,
         "venue": venue,
         "available_at": iso(available),
-        "observed_at": iso(run.observed()),
     }
     if run.market in ("kr", "us"):
         chart = _yahoo(run, instrument, venue)
+        common["observed_at"] = iso(run.observed())  # after the read
         if isinstance(chart, str):
             return chart
         bar = next((b for b in chart.bars if b.day == run.day), None)
@@ -502,6 +502,7 @@ def _bar_row(
         source, version = sources.UPBIT_SOURCE, sources.UPBIT_VERSION
     else:
         return f"unknown_venue:{venue}"
+    common["observed_at"] = iso(run.observed())  # after the read
     if candle is None:
         return "no_candle"
     return make_row(
@@ -546,10 +547,10 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         raise CollectError(
             f"corporate_actions {run.market} {run.day}: needs today's universe partition"
         )
-    today = {
-        (r["instrument"], r["venue"]): r
-        for r in read_partition(run.root, DATASET_UNIVERSE, run.market, run.day)
-    }
+    today_rows = read_partition(run.root, DATASET_UNIVERSE, run.market, run.day)
+    today = {(r["instrument"], r["venue"]): r for r in today_rows}
+    # when the listing state was observed (universe rows share one stamp)
+    seen_at = max(r["observed_at"] for r in today_rows)
     # Reference = the universe the latest earlier actions partition compared
     # against (an actions partition on day X always reads universe X). A day
     # whose actions failed is thereby folded into the next successful diff
@@ -564,7 +565,7 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     elif earlier_universes:
         prev_day = earlier_universes[0]
     else:
-        return [], {"listing_baseline": True}
+        return [], {"listing_baseline": True, "listing_observed_at": seen_at}
     prev = {
         (r["instrument"], r["venue"]): r
         for r in read_partition(run.root, DATASET_UNIVERSE, run.market, prev_day)
@@ -598,6 +599,7 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             }
         )
     return out, {
+        "listing_observed_at": seen_at,
         "listing_baseline": False,
         "listing_compared": [prev_day.isoformat(), run.day.isoformat()],
     }
@@ -605,9 +607,8 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 def _build_actions(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     _require_observable_today(run, DATASET_ACTIONS)
-    observed = iso(run.observed())
     known = _known_fact_hashes(run)
-    rows: list[dict[str, Any]] = []
+    pending: list[tuple[dict[str, Any], str, str, str, str]] = []
     meta: dict[str, Any] = {}
 
     def emit(
@@ -618,22 +619,13 @@ def _build_actions(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if fact in known:
             return
         known.add(fact)
-        rows.append(
-            make_row(
-                **fields,
-                event_time=event_time,
-                available_at=observed,  # first observation: the source has no announcement time
-                observed_at=observed,
-                source=source,
-                source_version=version,
-                fact_hash=fact,
-            )
-        )
+        pending.append((fields, event_time, source, version, fact))
 
     listing, listing_meta = _listing_changes(run)
+    listing_seen = listing_meta.pop("listing_observed_at")
     meta.update(listing_meta)
     for fields in listing:
-        emit(fields, observed, "universe_diff", "v1")
+        emit(fields, listing_seen, "universe_diff", "v1")
 
     if run.market in ("kr", "us"):
         pairs, refs = _instruments(run)
@@ -671,6 +663,22 @@ def _build_actions(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 "lookback_days": run.lookback_days,
             }
         )
+    # Stamp after every source read of this run has finished: a fact cannot be
+    # claimed known before the read that revealed it (bars may have read the
+    # same charts earlier; the later stamp is the conservative one).
+    observed = iso(run.observed())
+    rows = [
+        make_row(
+            **fields,
+            event_time=event_time,
+            available_at=observed,  # first observation: no announcement time exists
+            observed_at=observed,
+            source=source,
+            source_version=version,
+            fact_hash=fact,
+        )
+        for fields, event_time, source, version, fact in pending
+    ]
     meta["semantics"] = (
         "first_observed: available_at is when this collector first saw the fact"
     )

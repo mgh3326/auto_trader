@@ -239,3 +239,16 @@ def test_ping_never_follows_a_redirect():
         server.server_close()
         thread.join(timeout=5)
     assert hits == ["/ping/secret-token"]
+
+
+@pytest.mark.unit
+def test_fail_ping_appends_to_the_path_and_keeps_the_query(monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setenv("DP_PING_Q", "https://hc.example.test/ping/abc?create=1")
+    assert ping_url("DP_PING_Q", False, ping=sent.append) == "sent_fail"
+    monkeypatch.setenv("DP_PING_SLASH", "https://hc.example.test/ping/abc/")
+    ping_url("DP_PING_SLASH", False, ping=sent.append)
+    assert sent == [
+        "https://hc.example.test/ping/abc/fail?create=1",
+        "https://hc.example.test/ping/abc/fail",
+    ]
