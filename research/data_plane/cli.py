@@ -1,0 +1,132 @@
+"""Data-plane commands (manual or Dagu-run; no scheduler code lives here).
+
+    uv run python -m research.data_plane.cli collect --root DIR --market kr
+    uv run python -m research.data_plane.cli health  --root DIR --market kr --dataset bars_1d
+
+``collect`` exit codes: 0 every requested partition is written or was already
+present; 2 a dataset could not be collected (source failure, coverage below
+the floor, missing universe) — nothing was written for it; 3 the contract
+refused a row (for example an observation dated after its partition day).
+``health`` exits 0 when healthy and 1 otherwise.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+
+from .calendars import local_today
+from .collect import DEFAULT_MIN_COVERAGE, CollectError, collect
+from .contract import DATASETS, MARKETS, RefusedRowError
+from .health import DEFAULT_GRACE, DEFAULT_LOOKBACK_DAYS, check_health, ping_url
+from .public_http import make_public_fetch
+
+
+def _iso_now(value: str) -> datetime:
+    ts = datetime.fromisoformat(value)
+    if ts.tzinfo is None:
+        raise argparse.ArgumentTypeError("--now needs a UTC offset")
+    return ts
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="research.data_plane.cli", description=__doc__.split("\n\n")[0]
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    c = sub.add_parser(
+        "collect", help="write today's (or --date's) partitions; idempotent"
+    )
+    c.add_argument(
+        "--root", type=Path, required=True, help="artifact root (outside git)"
+    )
+    c.add_argument("--market", choices=sorted(MARKETS), required=True)
+    c.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        help="partition day (default: today, market-local)",
+    )
+    c.add_argument(
+        "--datasets",
+        default=",".join(DATASETS),
+        help=f"comma list from {','.join(DATASETS)} (default: all, in that order)",
+    )
+    c.add_argument(
+        "--symbols",
+        help="comma list: restrict bars/actions to these universe instruments",
+    )
+    c.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
+    c.add_argument(
+        "--min-interval", type=float, default=0.3, help="seconds between requests"
+    )
+
+    h = sub.add_parser(
+        "health", help="exit non-zero on a gap, a stale dataset or a corrupt partition"
+    )
+    h.add_argument("--root", type=Path, required=True)
+    h.add_argument("--market", choices=sorted(MARKETS), required=True)
+    h.add_argument("--dataset", choices=DATASETS, required=True)
+    h.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS)
+    h.add_argument(
+        "--grace-hours", type=float, default=DEFAULT_GRACE.total_seconds() / 3600
+    )
+    h.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
+    h.add_argument(
+        "--ping-url-env",
+        help="name of an environment variable holding a https ping URL (never printed)",
+    )
+    h.add_argument("--now", type=_iso_now, help=argparse.SUPPRESS)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "collect":
+        now = datetime.now(UTC)
+        day = args.date or local_today(args.market, now)
+        datasets = [d.strip() for d in args.datasets.split(",") if d.strip()]
+        symbols = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
+        try:
+            results = collect(
+                args.root,
+                market=args.market,
+                day=day,
+                datasets=datasets,
+                fetch=make_public_fetch(min_interval=args.min_interval),
+                symbols=symbols,
+                min_coverage=args.min_coverage,
+            )
+        except RefusedRowError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 3
+        except (CollectError, ValueError) as exc:
+            print(f"not collected: {exc}", file=sys.stderr)
+            return 2
+        for r in results:
+            print(
+                f"{r.action} {r.dataset} {r.market} {r.partition_date} rows={r.rows} sha256={r.sha256[:12]}"
+            )
+        return 0
+
+    now = args.now or datetime.now(UTC)
+    report = check_health(
+        args.root,
+        market=args.market,
+        dataset=args.dataset,
+        now=now,
+        lookback_days=args.lookback_days,
+        grace=timedelta(hours=args.grace_hours),
+        min_coverage=args.min_coverage,
+    )
+    out = report.as_dict()
+    out["ping"] = ping_url(args.ping_url_env, report.healthy)
+    print(json.dumps(out, sort_keys=True))
+    return 0 if report.healthy else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
