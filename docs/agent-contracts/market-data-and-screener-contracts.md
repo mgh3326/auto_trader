@@ -17,6 +17,7 @@
 - KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
 - 실험 레지스트리·manifest·heartbeat (ROB-1429)
+- KR 상폐·종료결과 복구 + 인과 일봉 export (ROB-1430)
 - US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
 
 ## 기준 원문 계약
@@ -365,6 +366,26 @@ KST 시각 라벨(venue 아님). 가격은 `adjusted=false`. 쓰기는 `ON CONFL
   레포에 넣지 않는다. 🔴 스케줄러·알림 연결 없음(운영자 결정).
 - 등록(2026-11-01, k=0, draft): `ROB-1411`, `H-entry-price`, `H-admit`. 정리 대상 목록:
   `docs/research/at-retirement-inventory-2026-11-01.md`(권고만, hk/Linear 상태 변경 0).
+
+### KR 상폐·종료결과 복구 + 인과 일봉 export (ROB-1430)
+
+`research/kr_delist_repair/` — kr-corpus-v1 main scope(2015–2024) 심볼 중 오늘의 KIS 마스터
+(`kr_symbol_universe` 동기화 원천)에 없는 심볼의 상폐일·사유·종료결과를 공개 KIND 상장폐지현황과
+KRX `상장폐지` 공시 본문에서 **정확한 단축코드로만** 해석한다(회사명 매칭 금지). 연구 전용:
+`app` import·DB·브로커·스케줄러 0, 봉인 holdout 읽기 금지(`HoldoutAccessError`).
+
+- 🔴 **`kr_symbol_universe` 로 상폐 수명주기를 조인하지 말 것** — 동기화 시작 전 상폐 심볼은 행이
+  아예 없어 inner join 이 생존편향을 되살린다. 수명주기는 export 경로의 `delist_resolution.v1.csv`(해시·행수는 `data/export_manifest.json`)를 심볼 키로 쓴다
+  (`data/join_audit.md`).
+- 🔴 corpus 안에서 membership 이 끝난 심볼은 상폐일 = 마지막 membership 다음 세션이어야 하며,
+  어긋나면 고치지 않고 unresolved 로 남긴다.
+- 🔴 **available_at**: 봉 = 세션 16:00 KST, 종료 이벤트 = 공시 접수시각(본문 사용 시) 또는 상폐일
+  00:00 KST. `CausalTable.lookup`/`causal_join` 은 이른 사용 시 `AvailabilityViolation` 으로 실패한다.
+- 🔴 종료 행은 심볼당 마지막 membership 세션 1행뿐, forward-fill 금지, 상폐일 이후 행 0
+  (`validate_panel` 이 `ExportConflict`). 미해결 종료는 `terminal_outcome=unresolved` 로 표시, 삭제 금지.
+- `payout_semantics` 는 라벨링 힌트이며 지급액을 주장하지 않는다.
+- 산출 export(parquet)는 레포 밖 아티팩트 경로에 두고 해시는 `data/export_manifest.json`.
+- **런북**: `research/kr_delist_repair/README.md`. 스케줄 없음(수동 `collect`/`build`).
 
 ### US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
 
