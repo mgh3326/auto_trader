@@ -186,6 +186,49 @@ async def test_kis_inquire_overseas_minute_chart_maps_exchange_codes_and_returns
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "expected_modp"),
+    [({}, "1"), ({"adjusted": True}, "1"), ({"adjusted": False}, "0")],
+)
+async def test_kis_overseas_daily_unclamped_selects_adjusted_or_raw_prices(
+    monkeypatch, kwargs, expected_modp
+):
+    """ROB-1448: MODP 1 = adjusted (the default, unchanged), 0 = as traded."""
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "xymd": "20261030",
+                    "open": "10",
+                    "high": "11",
+                    "low": "9",
+                    "clos": "10.5",
+                    "tvol": "100",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    frame = await client.inquire_overseas_daily_price_unclamped(
+        symbol="BRK.B", exchange_code="NYSE", n=1, max_iterations=1, **kwargs
+    )
+
+    assert list(frame["close"]) == [10.5]
+    request_mock.assert_awaited_once()
+    params = request_mock.await_args.kwargs["params"]
+    assert params["MODP"] == expected_modp
+    assert params["EXCD"] == "NYS"
+    assert params["SYMB"] == "BRK/B"
+    assert request_mock.await_args.kwargs["tr_id"] == "HHDFS76240000"
+
+
+@pytest.mark.asyncio
 async def test_kis_inquire_overseas_minute_chart_marks_continuation_when_keyb_given(
     monkeypatch,
 ):

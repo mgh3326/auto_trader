@@ -307,9 +307,10 @@ class KISClient(BaseKISClient):
         n: int = 200,
         period: str = "D",
         max_iterations: int = 20,
+        adjusted: bool = True,
     ) -> pd.DataFrame:
         return await self._market_data.inquire_overseas_daily_price_unclamped(
-            symbol, exchange_code, n, period, max_iterations
+            symbol, exchange_code, n, period, max_iterations, adjusted=adjusted
         )
 
     async def inquire_overseas_minute_chart(

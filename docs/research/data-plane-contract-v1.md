@@ -5,6 +5,11 @@ KR, US and crypto. This contract fixes what those inputs look like on disk, when
 each row became knowable, and how a missing or stale day is detected. Code:
 `research/data_plane/` (commands in its `README.md`). Collector inventory and
 keep/fix/rebuild/retire decisions: `data-plane-collector-inventory-2026-11-01.md`.
+Broker market-data sources, their limits and the research budget (ROB-1448):
+`data-plane-broker-sources-inventory-2026-11-01.md`.
+
+Datasets: `universe`, `bars_1d` (raw), `bars_1d_adjusted` (KR/US only),
+`corporate_actions`.
 
 ## The PIT rule
 
@@ -30,7 +35,7 @@ was unknown on day `D`. The writer refuses (exit code 3, nothing written):
 | `event_time` | when the fact happened (bar close, dividend ex-date open, listing observation) |
 | `available_at` | earliest instant a decision process could know the row (rules per dataset below) |
 | `observed_at` | when the collector read it; `observed_at − available_at` is the observation lag |
-| `source` / `source_version` | e.g. `yahoo_chart`/`v8`, `binance_klines`/`api-v3`, `upbit_candles_days`/`v1`, `kis_master`/`v1`, `nasdaqtrader_symdir`/`v1`, `exchange_listing`/`v1`, `universe_diff`/`v1` |
+| `source` / `source_version` | e.g. `kis_daily_chart`/`kr-FHKST03010100/us-HHDFS76240000`, `toss_candles_1d`/`api-v1`, `yahoo_chart`/`v8`, `binance_klines`/`api-v3`, `upbit_candles_days`/`v1`, `kis_master`/`v1`, `nasdaqtrader_symdir`/`v1`, `exchange_listing`/`v1`, `universe_diff`/`v1` |
 | `content_hash` | sha256 of the canonical JSON row without `observed_at`/`content_hash`; the same fact observed twice hashes the same |
 
 All timestamps are ISO-8601 with an explicit offset (written in UTC). Prices are
@@ -48,7 +53,11 @@ such as `346.7200012207031`; they are kept, not rounded).
 * A manifest record carries the file sha256, row count, `observed_at` range,
   code commit, the universe partitions (date + sha256) the rows were selected
   from, `instruments_requested`/`instruments_missing`/`coverage`, and the
-  missing instruments with a reason (capped at 500).
+  missing instruments with a reason (capped at 500). KR/US bar partitions also
+  carry `vintage`, `served_by` (the source that served the whole partition),
+  `source_order`, `source_attempts` (every source tried, with `served`,
+  `unavailable` + detail, or `coverage_below_floor` + coverage and reason
+  counts), `adjustment_basis` and `research_budget`.
 * Each partition directory also holds a write-once `meta-<sha256>.json`
   sidecar with the run metadata, published before the rows, so a crash between
   the rows and the manifest append is repaired with the same coverage and
@@ -72,7 +81,7 @@ such as `346.7200012207031`; they are kept, not rounded).
 | bar `event_time` | session close (15:30 KST; 16:30 on CSAT days, `calendars.KRX_LATE_CLOSE_DAYS`) | session close (16:00 ET; 13:00 on early-close days) | candle close, `P` 00:00 UTC |
 | bar `available_at` | close + 30 min | close + 30 min | `P` 00:05 UTC |
 | bar in partition `P` | session `P` | session `P` | **the candle of UTC day `P−1`** (`bar_date = P−1`) |
-| bar source | Yahoo chart v8 (`<code>.KS`/`.KQ`) | Yahoo chart v8 | Binance `api/v3/klines` (data-api.binance.vision), Upbit `candles/days` |
+| bar source | KIS daily chart → Toss `candles` 1d → Yahoo chart v8 (`<code>.KS`/`.KQ`) | KIS overseas daily → Toss `candles` 1d → Yahoo chart v8 | Binance `api/v3/klines` (data-api.binance.vision), Upbit `candles/days` |
 | universe source | KIS stock master zips (KOSPI, KOSDAQ) — the `kr_symbol_universe` source, parsed by U2 | NASDAQ Trader `nasdaqlisted`/`otherlisted` — parsed by U3 | Binance exchangeInfo (USDT pairs, every status) + Upbit market/all (KRW) — U4's snapshot sources |
 | instruments that get bars/actions | every universe row | universe rows that are likely common stock **or** ETF (preferreds, rights, warrants, units have no Yahoo chart: 7/120 random universe rows missing on 2026-11-01, all of those kinds; 150/150 eligible rows present) | `TRADING` Binance pairs + every listed Upbit KRW market |
 | corporate actions | Yahoo dividends + splits; listing changes | Yahoo dividends + splits; listing changes | listing changes (no dividends/splits) |
@@ -97,15 +106,41 @@ partitions dated `<= P`** — never a later universe (survivorship), and two so
 that an instrument dropped from today's listing still gets its last bar. A bar
 backfill for a day before the first universe partition is refused.
 
-### bars_1d
+### bars_1d (raw vintage)
 
-`bar_date`, `open`, `high`, `low`, `close`, `volume` (+ `adj_close`,
-`currency` for Yahoo; `quote_volume`, `trades` for crypto), `price_basis =
-as_observed`. A bar observed on its own day is the raw (unadjusted) bar. **A bar
-backfilled later is the source's view at observation time**: Yahoo's `close` is
-split-adjusted retroactively, so for backfilled rows check
+`bar_date`, `open`, `high`, `low`, `close`, `volume`, `currency`, `price_basis =
+raw` (crypto: `as_observed`), `adjustment_basis` (KR/US; for example `kis
+FID_ORG_ADJ_PRC=1 (unadjusted, as traded)`), plus `adj_close` when Yahoo served
+the partition and `quote_volume`, `trades` for crypto. One row per instrument:
+the bar of session `P` as traded.
+
+**Sources and fallback (KR/US).** The whole partition comes from the first
+source in `--bar-sources` (default `kis,toss,yahoo`) whose coverage reaches the
+floor; a source that is not configured, cannot build its client, fails 25
+instruments in a row before serving any, or covers too little is recorded in
+`source_attempts` and the next one is tried. A partition never mixes sources.
+Broker calls are read-only daily charts (see the broker inventory) and take a
+research budget slot each.
+
+**A bar backfilled later is the source's view at observation time**: Yahoo's
+`close` is split-adjusted retroactively, so for backfilled rows check
 `observed_at − available_at` and apply the `corporate_actions` ledger, never the
 source's `adj_close`, when building a training series.
+
+### bars_1d_adjusted (adjusted vintage, KR/US)
+
+The adjusted bars of the last `--adjusted-window` sessions (default 20) ending at
+`P`, as the source publishes them on `P`: same bar fields plus `price_basis =
+adjusted`, `adjustment_basis` and `vintage_date = P`. Every row of the
+partition has `available_at = bar_available_at(P)` whatever its `bar_date` (an
+adjusted value is known only once the adjustment is), and `event_time` = that
+bar's session close. Raw and adjusted are separate datasets with separate
+partitions and manifests, so a raw series is never overwritten by an adjusted
+one. A split or dividend shows up as changed values for the overlapping
+`bar_date`s of two consecutive vintages, which makes the adjustment history
+itself point-in-time. Basis per source: KIS `FID_ORG_ADJ_PRC=0` (KR) / `MODP=1`
+(US); Toss `adjusted=true`; Yahoo OHLC × `adjclose/close` (derived, marked
+`(derived)`). Crypto has no adjusted vintage.
 
 ### corporate_actions
 
@@ -121,7 +156,10 @@ source's `adj_close`, when building a training series.
   universe partition is a baseline (no rows, `listing_baseline: true`). The
   diff reference is the universe the latest earlier actions partition used, so
   a day whose actions failed is folded into the next successful diff (its
-  changes become available on that later day) instead of being lost.
+  changes become available on that later day) instead of being lost. If that
+  universe record is missing, the reference is the latest universe on or
+  before that actions day (never the first universe, which would re-emit
+  changes already recorded).
 * **First-observed semantics**: `available_at` is when this collector first saw
   the fact (the sources carry no announcement time). Rows are stamped after
   every source read of the run has finished, never before the read that
@@ -155,7 +193,10 @@ days are allowed. `--ping-url-env NAME` pings the https URL in that variable
 (`<url>` on success, `<url>/fail` on failure; healthchecks.io convention); the
 URL is never printed, and a redirect from the ping endpoint is never followed
 (it could forward the token to another host or over http). `--min-coverage`
-must be a finite number in [0, 1].
+must be a finite number in [0, 1]; `--grace-hours` must be finite and
+non-negative (a negative grace makes days due before their bars exist, and NaN
+would make every comparison false). `collect --datasets` must name at least one
+known dataset.
 
 `collect` refuses to publish a bars/actions partition whose coverage is below
 `--min-coverage` (default 0.95), so a partial source outage leaves the day
@@ -164,12 +205,22 @@ that a rerun could no longer fill.
 
 ## Known limits
 
+* Universe refusal: an empty source file (a KIS master, a NASDAQ Trader
+  series, the Binance USDT or Upbit KRW list) is refused on every run,
+  including the first, whose partition would otherwise become an empty
+  write-once baseline.
+* Broker bars are the default for KR/US; at the default research budget a KR
+  run takes about 70 minutes and a US run about two hours (two calls per
+  instrument). Without broker credentials on the host the brokers are recorded
+  as unavailable and Yahoo serves.
 * Yahoo is an unofficial public endpoint (no SLA); KR coverage measured 120/120
   and US eligible coverage 150/150 on random samples, 2026-11-01. Per-instrument
   rate limits are unknown; the default is 0.3 s between requests, so a full US
   run (~10,900 instruments) takes about an hour, KR (~4,000) about 20 min.
-* KR bars from Yahoo are KRX-only; NXT after-hours trading is not included (UNVERIFIED for Yahoo's KR feed).
-* Corporate actions only cover what Yahoo reports; rights issues, mergers and
+* KR bars are KRX-only: KIS is read with market code `J` (KRX); NXT after-hours
+  trading is not included (UNVERIFIED for Yahoo's and Toss's KR feeds).
+* Corporate actions only cover what Yahoo reports (no broker client implements
+  dividends or splits); rights issues, mergers and
   KR capital reductions are not covered. Delisting outcomes come from U2/U3/U4,
   not from this daily feed.
 * Bars for an earlier session can be collected with `--date P --datasets

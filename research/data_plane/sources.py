@@ -6,8 +6,9 @@ Sources (all public, unauthenticated):
   parsed by ``kr_delist_repair``); US: NASDAQ Trader symbol directory (parsed by
   ``us_universe``); crypto: Binance exchangeInfo and Upbit market/all (the
   ``crypto_universe`` snapshot sources).
-* daily bars and dividends/splits — KR/US: Yahoo chart v8; crypto: Binance
-  klines and Upbit day candles.
+* daily bars and dividends/splits — KR/US: Yahoo chart v8 (the public
+  fallback behind the broker sources of ``bar_sources``; still the only
+  dividend/split source); crypto: Binance klines and Upbit day candles.
 """
 
 from __future__ import annotations
@@ -96,6 +97,8 @@ def parse_universe(market: str, bodies: Mapping[str, bytes]) -> list[UniverseEnt
                 )
             except (ValueError, KeyError) as exc:
                 raise SourceError(f"symbol directory {series}: {exc}") from exc
+            if not obs.rows:
+                raise SourceError(f"symbol directory {series}: empty")
             out += [
                 UniverseEntry(
                     row.symbol,

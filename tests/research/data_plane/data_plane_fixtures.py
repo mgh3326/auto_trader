@@ -53,8 +53,10 @@ class FakeSources:
         kospi: dict[str, str] | None = None,
         malformed: frozenset[str] = frozenset(),
     ) -> None:
-        self.binance_pairs = dict(binance_pairs or BINANCE_PAIRS)
-        self.kospi = dict(kospi or KR_KOSPI)
+        self.binance_pairs = dict(
+            BINANCE_PAIRS if binance_pairs is None else binance_pairs
+        )
+        self.kospi = dict(KR_KOSPI if kospi is None else kospi)
         self.malformed = malformed  # Yahoo symbols answered with a broken 200 body
         self.missing = missing  # instruments answered with HTTP 404
         self.future_bar = future_bar
@@ -223,4 +225,87 @@ def evening(market: str, day: date) -> datetime:
     )
 
 
-__all__ = ["FakeSources", "evening", "partition_days", "tree_state"]
+class FakeBrokerClient:
+    """A ``BrokerDailyClient`` stand-in (KIS or Toss shaped answers).
+
+    Raw bars close at 100; adjusted bars close at 50 before the requested end
+    day and 100 on it (a 2:1 split on the end day), so the two vintages are
+    distinguishable. ``fail`` instruments raise; ``fail_all`` makes every call
+    raise (an outage).
+    """
+
+    def __init__(
+        self,
+        *,
+        fail: frozenset[str] = frozenset(),
+        fail_all: bool = False,
+    ) -> None:
+        self.fail = fail
+        self.fail_all = fail_all
+        self.calls: list[dict] = []
+
+    def daily_bars(self, *, market, instrument, venue, end, count, adjusted):
+        from research.data_plane.bar_sources import SourceBar
+
+        self.calls.append(
+            {
+                "market": market,
+                "instrument": instrument,
+                "venue": venue,
+                "end": end,
+                "count": count,
+                "adjusted": adjusted,
+            }
+        )
+        if self.fail_all or instrument in self.fail:
+            raise RuntimeError("broker said no (secret-ish detail)")
+        days = partition_days(market, end - timedelta(days=60), end)[-count:]
+        out = []
+        for d in days:
+            close = "50" if adjusted and d < end else "100"
+            out.append(SourceBar(d, close, close, close, close, 1000))
+        return out
+
+
+class FakeClock:
+    """Shared fake time for budgets: ``sleep`` advances ``now``."""
+
+    def __init__(self, start: float = 1_000.0) -> None:
+        import threading
+
+        self.t = start
+        self.slept = 0.0
+        self._lock = threading.Lock()
+
+    def now(self) -> float:
+        with self._lock:
+            return self.t
+
+    def sleep(self, seconds: float) -> None:
+        with self._lock:
+            self.t += seconds
+            self.slept += seconds
+
+
+def fake_budgets(clock: FakeClock | None = None, **specs):
+    """Default-share research budgets on a fake clock (tests never sleep)."""
+    from research.data_plane.budget import DEFAULT_BUDGETS, BudgetSpec, ResearchBudget
+
+    clock = clock or FakeClock()
+    out = {}
+    for broker, (calls, seconds) in {**DEFAULT_BUDGETS, **specs}.items():
+        out[broker] = ResearchBudget(
+            BudgetSpec(broker, calls, seconds), clock=clock.now, sleep=clock.sleep
+        )
+    return out
+
+
+__all__ = [
+    "FakeBrokerClient",
+    "FakeClock",
+    "fake_budgets",
+    "FakeSources",
+    "evening",
+    "partition_days",
+    "tree_state",
+]

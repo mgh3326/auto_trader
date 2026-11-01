@@ -26,6 +26,7 @@ code.
 
 from __future__ import annotations
 
+import math
 import os
 import ssl
 import urllib.parse
@@ -37,11 +38,21 @@ from pathlib import Path
 from typing import Any
 
 from .calendars import bar_available_at, local_today, partition_days
-from .contract import DATASETS, check_coverage_floor, market_spec
+from .contract import DATASETS, check_coverage_floor, market_datasets, market_spec
 from .store import manifest_records, partition_path, sha256_hex
 
 DEFAULT_LOOKBACK_DAYS = 14
 DEFAULT_GRACE = timedelta(hours=3)
+
+
+def check_grace(grace: timedelta) -> timedelta:
+    """A grace must be finite and non-negative: a negative grace makes days
+    due before their bars exist, and NaN compares false with everything (the
+    check would then report healthy while partitions are missing)."""
+    seconds = grace.total_seconds()
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(f"grace must be finite and non-negative, got {grace!r}")
+    return grace
 
 
 @dataclass
@@ -83,7 +94,10 @@ def check_health(
     market_spec(market)
     if dataset not in DATASETS:
         raise ValueError(f"unknown dataset {dataset!r}")
+    if dataset not in market_datasets(market):
+        raise ValueError(f"dataset {dataset!r} does not apply to {market}")
     check_coverage_floor(min_coverage)
+    check_grace(grace)
     if lookback_days < 1:
         raise ValueError("lookback_days must be positive")
     report = HealthReport(market, dataset, now.astimezone(UTC).isoformat())
