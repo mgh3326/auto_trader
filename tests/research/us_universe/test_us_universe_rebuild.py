@@ -219,8 +219,11 @@ def _fetcher(capture_body: bytes, calls: list[str]):
     [
         b"<html>502 Bad Gateway</html>",
         VALID_2018[: len(VALID_2018) // 2],  # truncated: no footer
-        gzip.compress(VALID_2018)[:-40],  # truncated gzip stream
+        # mtime=0: gzip stamps the current time into its header, which made this
+        # parameter (and its test id) differ between xdist workers.
+        gzip.compress(VALID_2018, mtime=0)[:-40],  # truncated gzip stream
     ],
+    ids=["html-error-page", "truncated-text", "truncated-gzip"],
 )
 def test_invalid_capture_is_not_cached_and_is_retried(
     tmp_path: Path, bad_body: bytes
