@@ -210,6 +210,21 @@ def test_a_later_seed_goes_through_cash_so_nav_does_not_jump():
     assert on_top["risk"].tolist() == pytest.approx([1300.0] * 3)
 
 
+def test_cash_from_a_fill_on_a_non_session_day_lands_on_the_next_session():
+    days = weekdays(date(2026, 6, 1), 7)  # Monday 06-01 to Tuesday 06-09
+    stock = Bars.from_rows([(d, 100.0, 100.0) for d in days])
+    index = Bars.from_rows([(d, 1000.0, 1000.0) for d in days])
+    book = PriceBook(bars={("us", "AAA"): stock}, benchmarks={"us": index}, missing={})
+    saturday = date(2026, 6, 6)
+    fills = _rows((days[0], "buy", 10, 100), (saturday, "sell", 10, 100))
+
+    frame, _ = daily_account(fills, book, "acct", "us", CUTOVER)
+    monday = days.index(date(2026, 6, 8))
+    assert frame["cash"].tolist()[monday - 1] == pytest.approx(0.0)
+    assert frame["cash"].tolist()[monday] == pytest.approx(1000.0)
+    assert frame["nav"].tolist() == pytest.approx([1000.0] * len(days))
+
+
 def test_each_piece_of_a_lot_keeps_the_lots_identity():
     walk = walk_symbol(
         _rows((JUN1, "buy", 10, 100), (JUN2, "sell", 4, 110), (JUN3, "sell", 2, 120)),

@@ -153,10 +153,10 @@ def daily_account(
         flow_by_day = flow_by_day.add(
             pd.Series(reset_flow), fill_value=0.0
         ).sort_index()
-    before_flow = float(flow_by_day[flow_by_day.index < grid_ts[0]].sum())
-    cumulative = (
-        before_flow + flow_by_day.reindex(grid_ts, fill_value=0.0).cumsum().to_numpy()
-    )
+    # A fill stamped on a non-session day lands on the next session, as holdings do.
+    cumulative = np.zeros(len(grid))
+    for day, amount in flow_by_day.items():
+        cumulative[int(np.searchsorted(grid_ts, day, side="left")) :] += amount
     opening_cash = max(-float(cumulative.min()), 0.0)
     cash = opening_cash + cumulative
     nav = cash + risk + parking

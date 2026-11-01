@@ -702,10 +702,9 @@ class Renderer:
                 )
         bullets.append(
             "**Index start.** A lot's stock leg starts at its fill price and its index leg at "
-            "that day's close. The fill's time of day is not reliable, so neither end of the day "
-            "is exact. The index return on lots bought in the window: "
-            + "; ".join(sensitivity)
-            + "."
+            "that day's close, and a markout's `x` uses that same close. The fill's time of day is "
+            "not reliable, so neither end of the day is exact. The index return on lots bought in "
+            "the window: " + "; ".join(sensitivity) + "."
         )
         if self.public:
             bullets.append(
@@ -1142,7 +1141,7 @@ def _method_text() -> list[str]:
         "cost. When a sell proves older holdings existed, those go first in the queue, so selling "
         "old shares does not use up a lot bought in the window.\n",
         "- **Lots bought in the window** return from the fill price. **Opening lots** (seed "
-        "rows) return from the close on the seed date, because their broker cost predates the "
+        "rows) return from the last close before the seed, because their broker cost predates the "
         "window. Each is reported separately, and only the first is a judgement of this window's "
         "buying.\n",
         "- **Against cash.** Cash is assumed to earn 0%, so the return is also the excess over "

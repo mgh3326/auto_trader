@@ -21,7 +21,7 @@ Add `--check` to compare against the files on disk without writing. Every number
 | Market | Lots bought in window | Return (realized + marked) | Index, same dates | vs index | Buy fill rate | Buy markout 20s | Buy markout 20s, without recurring micro-buys | Sell markout 20s | Avg cash share by account | Index return by account span |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | KR | 93 | -14.47% | -19.80% | +5.33% | 18.8% | -6.08% | -6.08% | +7.69% | 33.3% / 18.2% | -17.39% / -32.94% |
-| US | 27 | +15.51% | +1.10% | +14.40% | 13.6% | +4.67% | +4.67% | -0.80% | 16.8% / 12.0% | +2.92% / +0.34% |
+| US | 27 | +15.51% | +1.10% | +14.40% | 13.6% | +4.67% | +4.67% | -0.80% | 16.5% / 12.0% | +2.92% / +0.34% |
 | Crypto | 1442 | +16.62% | +9.05% | +7.58% | 40.7% | -2.39% | +3.95% | +0.45% | 34.6% | -9.89% |
 
 Returns are price return before fees. Each line's definitions are in the sections below. An idle share is a lower-bound estimate, so read the data limits first.
@@ -30,7 +30,7 @@ Returns are price return before fees. Each line's definitions are in the section
 
 - **Scope.** Real-money order tables and `execution_ledger` only, with `superseded_duplicate = false`. A fill is the union of the ledger and the order row, taking the larger quantity for each order.
 - **Position.** One account's holding in one symbol from flat to flat, matched first in, first out. An open quantity is marked at the last daily close. Returns are weighted by cost. When a sell proves older holdings existed, those go first in the queue, so selling old shares does not use up a lot bought in the window.
-- **Lots bought in the window** return from the fill price. **Opening lots** (seed rows) return from the close on the seed date, because their broker cost predates the window. Each is reported separately, and only the first is a judgement of this window's buying.
+- **Lots bought in the window** return from the fill price. **Opening lots** (seed rows) return from the last close before the seed, because their broker cost predates the window. Each is reported separately, and only the first is a judgement of this window's buying.
 - **Against cash.** Cash is assumed to earn 0%, so the return is also the excess over cash. **Against the index.** The same money in the benchmark from each lot's entry date to its exit or mark date.
 - **Entry type.** `deep_limit` is a limit at least 3% from the last complete daily close, below it for a buy and above it for a sell, matching the near edge of `buy.deep_limit_pct_range`. `near_market` is anything closer, including market orders. The suffix `/proposal` means a proposal rung links to the order, and `/session` means an order row with no rung. `external` means a fill with no order row at all: an app trade or one from before the order ledger began. `external_micro` is the crypto subset at or below the small fixed size of a recurring buy programme.
 - **Fill rate.** Accepted orders are rows that reached the broker, less rejections and cancel-operation rows. An order is filled if any quantity filled. `Open` counts as unfilled in one column and is removed in the other. An **intent** is one account, symbol, side and local ISO week, so a resubmitted order counts once.
@@ -88,14 +88,14 @@ Return on lots bought in the window, under each treatment that could be argued. 
 
 | Treatment | KR | US | Crypto | Avg cash share by account |
 | --- | --- | --- | --- | --- |
-| Base: every rule in this report | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 33.3% / 18.2% / 16.8% / 12.0% / 34.6% |
-| No duplicate removal: trust `superseded_duplicate` alone | -14.39% (+5.34% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.43% (+8.12% vs index, 1444 lots) | 43.5% / 18.2% / 16.8% / 12.0% / 35.0% |
-| Keep the fill proven a partial only by inventory | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 33.3% / 18.2% / 16.8% / 12.0% / 34.5% |
-| Drop fills found only on an order row | -15.13% (+5.65% vs index, 89 lots) | +16.74% (+16.17% vs index, 13 lots) | +17.82% (+8.37% vs index, 1441 lots) | 33.3% / 16.6% / 16.8% / 13.9% / 34.1% |
-| Keep fills that cannot be trades as trades | -14.47% (+5.33% vs index, 93 lots) | +25.65% (+24.32% vs index, 28 lots) | +16.62% (+7.58% vs index, 1442 lots) | 31.8% / 18.2% / 14.8% / 12.0% / 34.6% |
-| Naive: count opening lots as buys at their stated cost | -12.37% (+1.63% vs index, 115 lots) | +30.42% (+28.08% vs index, 48 lots) | +3.82% (+4.84% vs index, 1452 lots) | 25.3% / 18.2% / 15.6% / 12.0% / 36.3% |
-| Plain FIFO: older holdings do not go first | -13.33% (+5.77% vs index, 93 lots) | +14.61% (+13.59% vs index, 27 lots) | +15.62% (+6.90% vs index, 1442 lots) | 33.3% / 18.2% / 16.8% / 12.0% / 34.6% |
-| Later seeds added on top of the ledger, not as whole holdings | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.6% |
+| Base: every rule in this report | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 33.3% / 18.2% / 16.5% / 12.0% / 34.6% |
+| No duplicate removal: trust `superseded_duplicate` alone | -14.39% (+5.34% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.43% (+8.12% vs index, 1444 lots) | 43.5% / 18.2% / 16.5% / 12.0% / 35.0% |
+| Keep the fill proven a partial only by inventory | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 33.3% / 18.2% / 16.5% / 12.0% / 34.5% |
+| Drop fills found only on an order row | -15.13% (+5.65% vs index, 89 lots) | +16.74% (+16.17% vs index, 13 lots) | +17.82% (+8.37% vs index, 1441 lots) | 33.3% / 16.6% / 16.5% / 13.9% / 34.1% |
+| Keep fills that cannot be trades as trades | -14.47% (+5.33% vs index, 93 lots) | +25.65% (+24.32% vs index, 28 lots) | +16.62% (+7.58% vs index, 1442 lots) | 31.8% / 18.2% / 14.4% / 12.0% / 34.6% |
+| Naive: count opening lots as buys at their stated cost | -12.37% (+1.63% vs index, 115 lots) | +30.42% (+28.08% vs index, 48 lots) | +3.82% (+4.84% vs index, 1452 lots) | 26.9% / 18.2% / 14.1% / 12.0% / 36.3% |
+| Plain FIFO: older holdings do not go first | -13.33% (+5.77% vs index, 93 lots) | +14.61% (+13.59% vs index, 27 lots) | +15.62% (+6.90% vs index, 1442 lots) | 33.3% / 18.2% / 16.5% / 12.0% / 34.6% |
+| Later seeds added on top of the ledger, not as whole holdings | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 27.2% / 18.2% / 16.5% / 12.0% / 34.6% |
 | Only lots whose order has an order row | -14.06% (+5.36% vs index, 84 lots) | +18.64% (+16.75% vs index, 21 lots) | +18.09% (+9.53% vs index, 13 lots) | as base |
 | Without recurring micro-buys | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.31% (+9.00% vs index, 22 lots) | as base |
 
@@ -312,7 +312,7 @@ Markouts of executed orders, mean with the number of orders in brackets. A posit
 
 | Account | Days | From | To | Avg cash share | Avg cash + parking share | Last cash share | Last cash + parking share | Forgone, % of avg cash | Forgone, % of avg NAV | Index return, same dates | Account return, same dates |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Account A | 124 | 2026-05-06 | 2026-10-30 | 16.8% | 24.8% | 19.6% | 48.4% | +2.75% | +0.47% | +2.92% | +6.27% |
+| Account A | 124 | 2026-05-06 | 2026-10-30 | 16.5% | 24.5% | 19.1% | 48.0% | +2.75% | +0.46% | +2.92% | +5.61% |
 | Account C | 97 | 2026-06-15 | 2026-10-30 | 12.0% | 39.3% | 0.0% | 95.5% | +2.68% | +0.32% | +0.34% | +4.37% |
 
 ### US: 5. Largest winners and losers, and candidate rules
@@ -355,7 +355,7 @@ Positions ranked: 38, parking and dust excluded.
 | R4 Never open lots of type `external` | 6 lots | removes a return of +9.63% on 34.8% of in-window cost; net of index +10.01% |
 | R4 Never open lots of type `near_market/session` | 18 lots | removes a return of +17.27% on 58.4% of in-window cost; net of index +15.47% |
 | R5 Buy the index instead, for each in-window lot's money and dates | 27 lots | actual +15.51%, index +1.10% |
-| R6 Hold the lower-bound idle cash in the index: Account A | 124 days | +0.47% of average NAV |
+| R6 Hold the lower-bound idle cash in the index: Account A | 124 days | +0.46% of average NAV |
 | R6 Hold the lower-bound idle cash in the index: Account C | 97 days | +0.32% of average NAV |
 
 ## Crypto
@@ -501,7 +501,7 @@ Positions ranked: 10, parking and dust excluded.
 - **Counterfactuals are in-sample.** They ignore price impact, fees and available cash. R1 assumes a fill at the open that the real limit order did not get. They overlap, so they do not add up. They are candidates to test, not findings.
 - **Not an experiment look.** This is a descriptive retrospective of live trading, not a test-set read under `research/experiments`, and it uses no sealed data.
 - **Mock and paper excluded.** Only real-money tables are read. Kiwoom mock, NHPLUG mock and Binance demo are outside the export.
-- **Index start.** A lot's stock leg starts at its fill price and its index leg at that day's close. The fill's time of day is not reliable, so neither end of the day is exact. The index return on lots bought in the window: KR -19.80% from the close, -20.54% from the open; US +1.10% from the close, +1.11% from the open; Crypto +9.05% from the close, +8.43% from the open.
+- **Index start.** A lot's stock leg starts at its fill price and its index leg at that day's close, and a markout's `x` uses that same close. The fill's time of day is not reliable, so neither end of the day is exact. The index return on lots bought in the window: KR -19.80% from the close, -20.54% from the open; US +1.10% from the close, +1.11% from the open; Crypto +9.05% from the close, +8.43% from the open.
 - **Price coverage.** Symbols with bars: 181. Without: 1. Their orders have no distance or markout and appear as `no_reference` or `n/a`. Open positions with no price to mark: 1, left out of the returns.
 - **Splits.** Symbols with a split after a fill: 1, converted to split-adjusted units.
 
