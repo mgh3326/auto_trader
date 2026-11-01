@@ -4,11 +4,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
-from pandas import DataFrame
 
 from . import constants
 
 if TYPE_CHECKING:
+    from pandas import DataFrame
+
     from .protocols import KISClientProtocol
 
 _MINUTE_FRAME_COLUMNS = [
@@ -69,7 +70,7 @@ def _aggregate_minute_candles_frame(
     aggregated = aggregated.rename(columns={"time_group": "datetime"})
     aggregated["date"] = aggregated["datetime"].dt.date
     aggregated["time"] = aggregated["datetime"].dt.time
-    return cast(DataFrame, aggregated.loc[:, _MINUTE_FRAME_COLUMNS].copy())
+    return cast("DataFrame", aggregated.loc[:, _MINUTE_FRAME_COLUMNS].copy())
 
 
 class MarketDataBase:

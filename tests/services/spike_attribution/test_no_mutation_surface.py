@@ -92,10 +92,6 @@ def test_the_mcp_tool_never_calls_forecast_save() -> None:
 
 
 def test_the_tool_is_registered_on_the_read_only_profiles() -> None:
-    from app.mcp_server.tooling.analysis_readonly_registration import (
-        ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
-        ANALYSIS_READONLY_TOOL_NAMES,
-    )
     from app.mcp_server.tooling.analysis_registration import ANALYSIS_TOOL_NAMES
     from app.mcp_server.tooling.spike_attribution_registration import (
         SPIKE_ATTRIBUTION_TOOL_NAMES,
@@ -103,8 +99,6 @@ def test_the_tool_is_registered_on_the_read_only_profiles() -> None:
 
     assert SPIKE_ATTRIBUTION_TOOL_NAMES == {"get_spike_attribution"}
     assert SPIKE_ATTRIBUTION_TOOL_NAMES <= ANALYSIS_TOOL_NAMES
-    assert SPIKE_ATTRIBUTION_TOOL_NAMES <= ANALYSIS_READONLY_TOOL_NAMES
-    assert not SPIKE_ATTRIBUTION_TOOL_NAMES & ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES
 
 
 def test_the_package_declares_no_scheduler_registration() -> None:

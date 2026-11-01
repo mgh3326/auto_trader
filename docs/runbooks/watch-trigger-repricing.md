@@ -52,7 +52,7 @@ durable freeze resolution을 함께 확인해야 한다.
 
 | # | 선행 조건 | 위치 |
 |---|---|---|
-| P1 | `ORDER_PROPOSALS_ENABLED=true` — 아니면 도구 자체가 등록되지 않음 | `tooling/registry.py`, `tradingcodex_execution_registration.py` |
+| P1 | `ORDER_PROPOSALS_ENABLED=true` — 아니면 도구 자체가 등록되지 않음 | `tooling/registry.py` |
 | P2 | `ORDER_PROPOSALS_TELEGRAM_ENABLED=true` **그리고** chat allowlist 비어있지 않음 — dispatch 자체가 안 일어남 | `order_proposal_tools.py::_dispatch_gate` |
 | P3 | Toss 클라이언트 활성 + 자격증명 + `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` | `config.py`, `orders_toss_variants.py` |
 | P4 | 최종 전송이 `dry_run=False` **그리고** `confirm=True` | `orders_toss_variants.py` |

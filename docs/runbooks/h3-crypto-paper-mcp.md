@@ -70,7 +70,7 @@ The unit env should still carry no broker credentials it does not need
 (defense in depth, decided at enablement below), but the code pins above no
 longer depend on it.
 
-A network boot without `MCP_AUTH_TOKEN` is refused (same rule as live-*).
+A network boot without `MCP_AUTH_TOKEN` is refused (same rule as kiwoom).
 
 ## Unit
 
@@ -89,7 +89,7 @@ host listener table was not inspected.
 
 `scripts/deploy-ncp-pull.sh` lists this unit in its `MCP_NAMES` /
 `MCP_PROFILES` / `MCP_PORTS` / `MCP_TOKENS` / `APP_CONTAINERS` arrays and in
-the tailnet route probe, exactly like the live-* units: digest-pinned,
+the tailnet route probe, like the other fixed units: digest-pinned,
 replacement-logged, rolled back on any failure (an introduced unit that fails
 is removed again), restored by `--rollback`, kept by the #934 image prune
 while it runs, and skippable with `MCP_UNITS_SKIP=h3-crypto-paper`.

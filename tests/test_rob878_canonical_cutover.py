@@ -1846,7 +1846,9 @@ async def test_mcp_save_derives_actor_from_server_profile(
     )
 
     await _set_canonical_mode(db_session)
-    monkeypatch.setenv("MCP_PROFILE", "tradingcodex_execution")
+    # ROB-1436 retired tradingcodex_execution; any non-default profile proves
+    # the actor comes from the server env, not the payload label.
+    monkeypatch.setenv("MCP_PROFILE", "kiwoom")
 
     result = await save_trade_retrospective(
         symbol="005930",
@@ -1870,7 +1872,7 @@ async def test_mcp_save_derives_actor_from_server_profile(
             )
         )
     ).scalar_one()
-    assert actor == "mcp:tradingcodex_execution"
+    assert actor == "mcp:kiwoom"
 
 
 # ---------------------------------------------------------------------------

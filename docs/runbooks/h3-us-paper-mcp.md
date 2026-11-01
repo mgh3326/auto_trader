@@ -71,7 +71,7 @@ the 20 names the runner lists in `registered_tools("us")`:
 - The runner's guard hook still enforces exact runner intents per call; the
   profile does not replace it.
 
-A network boot without `MCP_AUTH_TOKEN` is refused (same rule as live-* and
+A network boot without `MCP_AUTH_TOKEN` is refused (same rule as kiwoom and
 h3-crypto-paper).
 
 ### route_request on this profile (#1244 r3)
@@ -102,7 +102,8 @@ Client URL: `http://100.122.100.56:8777/mcp` with
 auto_trader-operator renderer target for `mock/.mcp.h3-us.json` points here.
 
 Port 8777 has no other user in this repo's port map (8000 API, 8765-8767
-DEFAULT, 8768-8772 fixed units, 8773-8775 live-*, 8776 h3-crypto-paper). The
+DEFAULT, 8772 kiwoom, 8768-8771 and 8773-8775 retired by ROB-1436, 8776
+h3-crypto-paper). The
 live host listener table was not inspected.
 
 `scripts/deploy-ncp-pull.sh` lists this unit in its `MCP_NAMES` /

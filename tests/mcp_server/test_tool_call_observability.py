@@ -42,7 +42,7 @@ def _deployed_log_config(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     exercises the real call site without starting a server.
     """
     monkeypatch.setenv("MCP_TYPE", "streamable-http")
-    module, _mcp, _, _, _ = _load_main_module(monkeypatch)
+    module, _mcp, _ = _load_main_module(monkeypatch)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: calls.append(kwargs))
     module.main()

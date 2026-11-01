@@ -94,10 +94,6 @@ esac
         "at-upbit-ws",
         "at-kis-ws",
         "at-mcp-blue",
-        "at-mcp-analysis-readonly",
-        "at-mcp-account-read",
-        "at-mcp-tradingcodex-execution",
-        "at-mcp-paper-001",
         "at-mcp-kiwoom",
     ):
         (state / name).write_text(configured_image + "\n")
@@ -111,14 +107,7 @@ esac
             token
             for token in [
                 "MCP_AUTH_TOKEN=x",
-                "MCP_ANALYSIS_READONLY_AUTH_TOKEN=x",
-                "MCP_ACCOUNT_READ_AUTH_TOKEN=x",
-                "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN=x",
-                "MCP_PAPER_001_AUTH_TOKEN=x",
                 "MCP_KIWOOM_AUTH_TOKEN=x",
-                "MCP_LIVE_KR_AUTH_TOKEN=x",
-                "MCP_LIVE_US_AUTH_TOKEN=x",
-                "MCP_LIVE_CRYPTO_AUTH_TOKEN=x",
                 "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN=x",
                 "MCP_H3_US_PAPER_AUTH_TOKEN=x",
             ]
@@ -214,37 +203,43 @@ def test_unhealthy_candidate_keeps_legacy_api_and_exits_nonzero(tmp_path: Path) 
     assert not run_dir.joinpath("api-active-color").exists()
 
 
-def test_tradingcodex_only_gets_required_policy_and_heartbeat_mount(
+def test_fixed_units_get_heartbeat_mount_and_no_policy_override(
     tmp_path: Path,
 ) -> None:
+    # ROB-1436 retired tradingcodex-execution, the only unit that forced the
+    # approval-hash policy env; no remaining unit carries a policy override.
     p, log, _ = run(tmp_path)
     assert p.returncode == 0, p.stderr
-    tradingcodex = next(
+    runs = [
         line
         for line in log.splitlines()
-        if line.startswith("docker run") and "at-mcp-tradingcodex-execution" in line
-    )
-    assert "ORDER_APPROVAL_HASH_MODE=required" in tradingcodex
-    assert "TOSS_APPROVAL_HASH_MODE=required" in tradingcodex
-    assert "MCP_HEARTBEAT_PATH=" in tradingcodex
-    paper = next(
-        line
-        for line in log.splitlines()
-        if line.startswith("docker run") and "at-mcp-paper-001" in line
-    )
-    assert "ORDER_APPROVAL_HASH_MODE=required" not in paper
+        if line.startswith("docker run")
+        and any(
+            f"--name at-mcp-{name} " in line
+            for name in (
+                "kiwoom",
+                "h3-crypto-paper",
+                "h3-us-paper",
+            )
+        )
+    ]
+    assert len(runs) == 3
+    for line in runs:
+        assert "MCP_HEARTBEAT_PATH=" in line
+        assert "ORDER_APPROVAL_HASH_MODE" not in line
+        assert "TOSS_APPROVAL_HASH_MODE" not in line
 
 
 def test_mcp_profile_failure_restores_captured_profile_images(tmp_path: Path) -> None:
-    p, log, _ = run(tmp_path, fail_mcp_port=8770)
+    p, log, _ = run(tmp_path, fail_mcp_port=8772)
     assert p.returncode != 0
-    tradingcodex_runs = [
+    kiwoom_runs = [
         line
         for line in log.splitlines()
-        if line.startswith("docker run") and "at-mcp-tradingcodex-execution" in line
+        if line.startswith("docker run") and "at-mcp-kiwoom" in line
     ]
-    assert any(NEW in line for line in tradingcodex_runs)
-    assert any(OLD in line for line in tradingcodex_runs)
+    assert any(NEW in line for line in kiwoom_runs)
+    assert any(OLD in line for line in kiwoom_runs)
 
 
 def test_scheduler_failure_restores_its_previous_image(tmp_path: Path) -> None:

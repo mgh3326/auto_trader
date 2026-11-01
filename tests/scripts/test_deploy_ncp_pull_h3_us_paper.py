@@ -41,24 +41,17 @@ PROFILE = "h3-us-paper"
 PORT = "8777"
 TOKEN = "MCP_H3_US_PAPER_AUTH_TOKEN"
 
-# The arrays exactly as they were before #1257: the existing units must stay
-# byte-identical, in order, with the new unit appended after them.
+# The units declared ahead of this one (ROB-1436 retired the rest from this
+# list): they must stay byte-identical, in order, with this unit appended.
 BEFORE = {
-    "MCP_NAMES": "analysis-readonly account-read tradingcodex-execution paper-001 "
-    "kiwoom live-kr live-us live-crypto h3-crypto-paper",
-    "MCP_PROFILES": "analysis_readonly account_read tradingcodex_execution "
-    "hermes-paper-kis kiwoom live-kr live-us live-crypto h3-crypto-paper",
-    "MCP_PORTS": "8768 8769 8770 8771 8772 8773 8774 8775 8776",
-    "MCP_TOKENS": "MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN "
-    "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN "
-    "MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN "
-    "MCP_LIVE_CRYPTO_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
-    "MCP_LIVE_ROUTE_NAMES": "live-kr live-us live-crypto h3-crypto-paper",
+    "MCP_NAMES": "kiwoom h3-crypto-paper",
+    "MCP_PROFILES": "kiwoom h3-crypto-paper",
+    "MCP_PORTS": "8772 8776",
+    "MCP_TOKENS": "MCP_KIWOOM_AUTH_TOKEN MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
+    "MCP_LIVE_ROUTE_NAMES": "h3-crypto-paper",
     "APP_CONTAINERS": "at-api at-api-blue at-api-green at-worker at-worker-new "
     "at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green "
-    "at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution "
-    "at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us "
-    "at-mcp-live-crypto at-mcp-h3-crypto-paper",
+    "at-mcp-kiwoom at-mcp-h3-crypto-paper",
 }
 APPENDED = {
     "MCP_NAMES": NAME,
@@ -68,16 +61,9 @@ APPENDED = {
     "MCP_LIVE_ROUTE_NAMES": NAME,
     "APP_CONTAINERS": UNIT,
 }
-# Existing units and the environment their containers received before #1257.
+# Units ahead of this one and the environment their containers receive.
 EXISTING = {
-    "analysis-readonly": ("analysis_readonly", "8768"),
-    "account-read": ("account_read", "8769"),
-    "tradingcodex-execution": ("tradingcodex_execution", "8770"),
-    "paper-001": ("hermes-paper-kis", "8771"),
     "kiwoom": ("kiwoom", "8772"),
-    "live-kr": ("live-kr", "8773"),
-    "live-us": ("live-us", "8774"),
-    "live-crypto": ("live-crypto", "8775"),
     "h3-crypto-paper": ("h3-crypto-paper", "8776"),
 }
 
@@ -170,10 +156,9 @@ def test_haproxy_frontend_is_tailnet_only_and_shaped_like_the_others() -> None:
         f"    default_backend bk_mcp_{slug}",
     ]
     # same backend shape as an existing fixed unit, with only names/port swapped
-    reference = block("backend", "bk_mcp_live_crypto")
+    reference = block("backend", "bk_mcp_kiwoom")
     assert block("backend", f"bk_mcp_{slug}") == [
-        line.replace("live_crypto", slug).replace(":8775", f":{PORT}")
-        for line in reference
+        line.replace("kiwoom", slug).replace(":8772", f":{PORT}") for line in reference
     ]
     binds = re.findall(r"^\s*bind (\S+)\s*$", text, re.M)
     assert [b for b in binds if b.endswith(f":{PORT}")] == [f"{TAILNET}:{PORT}"]
@@ -354,7 +339,7 @@ def test_later_failure_restores_the_unit_with_its_own_profile(tmp_path: Path) ->
     # earlier one after every unit started: rollback must restart this unit
     # from OLD with its own profile, port and token.
     result, calls, state, _ = _run(
-        tmp_path, fail_route_url=f"http://{TAILNET}:8773/health"
+        tmp_path, fail_route_url=f"http://{TAILNET}:8776/health"
     )
     assert result.returncode != 0
     restored = [c for c in _unit_runs(calls, UNIT) if OLD in c]

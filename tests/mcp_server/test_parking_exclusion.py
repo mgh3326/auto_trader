@@ -355,15 +355,13 @@ class TestExposureBoundary:
             assert not (added & MUTATION_TOOLS)
             assert not (added & handler_writers)
 
-    def test_get_parking_exclusion_registers_on_exactly_three_profiles(
-        self, monkeypatch
-    ) -> None:
-        """#883 registered it on default only; Q-65 (#918) also admits it on
-        the live-kr/live-us manifests. Pin the exact three-profile set so a
-        leak onto live-crypto or any other profile turns RED."""
+    def test_get_parking_exclusion_registers_on_default_only(self, monkeypatch) -> None:
+        """#883 registered it on default only; Q-65 (#918) also admitted it on
+        the live-kr/live-us manifests, which ROB-1436 retired. Pin default as
+        the only profile so a leak onto any other profile turns RED."""
         from tests.mcp_server._registration_recorder import collect_profile_tools
 
-        expected = {"default", "live-kr", "live-us"}
+        expected = {"default"}
         profiles = collect_profile_tools(monkeypatch, gates_enabled=True)
         for profile, tools in profiles.items():
             if profile in expected:
