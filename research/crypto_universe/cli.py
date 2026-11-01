@@ -14,17 +14,20 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 from . import build as b
 from . import upbit_public as up
-from .public_http import make_urllib_fetch, with_retries
+from .public_http import Fetch, make_urllib_fetch, with_retries
 from .snapshot import take_snapshot
 from .universe import VENUES, OutsideCoverageError, PitUniverse
 
@@ -64,6 +67,33 @@ def cmd_build(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown venues {sorted(unknown)}")
     cache = Path(args.cache_dir) if args.cache_dir else root / "cache"
     outputs = ("candles", "universe")
+    root.mkdir(parents=True, exist_ok=True)
+    with _build_lock(root):
+        return _build_locked(args, root, fetch, venues, cache, outputs)
+
+
+@contextmanager
+def _build_lock(root: Path) -> Iterator[None]:
+    """One build per root: staging, recovery and promotion share fixed paths."""
+    fd = os.open(root / ".build.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit(f"another build holds {root / '.build.lock'}") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def _build_locked(
+    args: argparse.Namespace,
+    root: Path,
+    fetch: Fetch,
+    venues: list[str],
+    cache: Path,
+    outputs: tuple[str, ...],
+) -> int:
     for action in recover_interrupted_promotion(root, outputs):
         _log(f"recovery: {action}")
     if any((root / name).exists() for name in outputs) and not args.replace:

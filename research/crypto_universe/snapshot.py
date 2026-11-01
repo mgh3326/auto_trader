@@ -90,6 +90,16 @@ def _manifest_entries(manifest: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """``os.write`` until every byte is written (it may write fewer)."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("os.write wrote no bytes")
+        view = view[written:]
+
+
 def _append_line(manifest: Path, entry: Mapping[str, Any]) -> None:
     line = (json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n").encode()
     fd = os.open(manifest, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
@@ -97,7 +107,7 @@ def _append_line(manifest: Path, entry: Mapping[str, Any]) -> None:
         size = os.fstat(fd).st_size
         if size and os.pread(fd, 1, size - 1) != b"\n":
             line = b"\n" + line  # close a line torn by an earlier crash
-        os.write(fd, line)
+        _write_all(fd, line)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -109,11 +119,13 @@ def _publish(path: Path, body: bytes) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o444)
     try:
-        os.write(fd, body)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    try:
+        try:
+            _write_all(fd, body)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if tmp.read_bytes() != body:  # never publish anything but the full body
+            raise SnapshotError(f"{tmp} does not hold the bytes written to it")
         os.link(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -303,7 +315,12 @@ def latest_snapshot(root: Path, source: str) -> tuple[date, bytes, str]:
     """
     base = snapshot_dir(root)
     entries = [
-        e for e in _manifest_entries(base / MANIFEST_NAME) if e.get("source") == source
+        e
+        for e in _manifest_entries(base / MANIFEST_NAME)
+        if e.get("source") == source
+        and isinstance(e.get("snapshot_date"), str)
+        and isinstance(e.get("path"), str)
+        and isinstance(e.get("sha256"), str)
     ]
     if not entries:
         raise SnapshotError(

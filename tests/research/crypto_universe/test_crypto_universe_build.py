@@ -639,3 +639,23 @@ def test_build_start_recovers_before_anything_else(tmp_path: Path) -> None:
         cli.main(["build", "--root", str(tmp_path), "--replace"])
     assert _labels(tmp_path) == {"candles": ["old.txt"], "universe": ["old.txt"]}
     assert not previous.exists()
+
+
+def test_second_build_on_the_same_root_is_refused(tmp_path: Path) -> None:
+    import fcntl
+    import os
+
+    from research.crypto_universe import cli
+
+    _outputs(tmp_path / ".build-staging", "inflight")
+    fd = os.open(tmp_path / ".build.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # another build is running
+        with pytest.raises(SystemExit, match="another build"):
+            cli.main(["build", "--root", str(tmp_path), "--replace"])
+    finally:
+        os.close(fd)
+    assert _labels(tmp_path / ".build-staging") == {
+        "candles": ["inflight.txt"],
+        "universe": ["inflight.txt"],
+    }

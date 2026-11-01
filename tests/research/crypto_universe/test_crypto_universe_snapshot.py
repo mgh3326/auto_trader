@@ -271,3 +271,33 @@ def test_unrecorded_file_from_an_earlier_day_is_repaired_later(tmp_path: Path) -
     again = take_snapshot(tmp_path, fetch, now=_clock(3, 5))
     assert [o.action for o in again] == ["already_present", "already_present"]
     assert len(_manifest(tmp_path)) == 4
+
+
+def test_short_os_writes_still_publish_complete_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from research.crypto_universe import snapshot as snap
+
+    real_write = os.write
+
+    def short_write(fd: int, data: bytes) -> int:
+        return real_write(fd, bytes(data[:3]))  # the kernel may write less
+
+    monkeypatch.setattr(snap.os, "write", short_write)
+    take_snapshot(tmp_path, FakeFetch(), now=_clock(1))
+    monkeypatch.setattr(snap.os, "write", real_write)
+    for entry in _manifest(tmp_path):  # every manifest line complete JSON
+        stored = (tmp_path / entry["path"]).read_bytes()
+        assert hashlib.sha256(stored).hexdigest() == entry["stored_sha256"]
+        assert hashlib.sha256(gzip.decompress(stored)).hexdigest() == entry["sha256"]
+    assert len(_manifest(tmp_path)) == 2
+
+
+def test_manifest_line_missing_keys_is_not_a_candidate(tmp_path: Path) -> None:
+    manifest = tmp_path / "snapshots" / MANIFEST_NAME
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"source":"upbit_market_all"}\n')
+    with pytest.raises(SnapshotError, match="no upbit_market_all snapshot"):
+        latest_snapshot(tmp_path, "upbit_market_all")
