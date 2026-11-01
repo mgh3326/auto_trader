@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
-SCHEMA_VERSION = "dots-history-export/v1"
+#: v2 (ROB-1450) only adds columns and a table, so this loader reads both.
+SCHEMA_VERSIONS = ("dots-history-export/v1", "dots-history-export/v2")
 MANIFEST_NAME = "manifest.json"
 
 
@@ -39,9 +40,10 @@ def verify_manifest(root: Path) -> tuple[dict, str]:
     if not manifest_path.is_file():
         raise ExportIntegrityError(f"no {MANIFEST_NAME} in {root}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    if manifest.get("schema_version") not in SCHEMA_VERSIONS:
         raise ExportIntegrityError(
-            f"schema_version {manifest.get('schema_version')!r} is not {SCHEMA_VERSION}"
+            f"schema_version {manifest.get('schema_version')!r} is not one of "
+            f"{', '.join(SCHEMA_VERSIONS)}"
         )
     tables = manifest.get("tables")
     if not isinstance(tables, dict) or not tables:

@@ -293,3 +293,36 @@ def test_headline_lists_accounts_in_label_order_when_it_differs_from_alias_order
         if line.startswith("| KR |")
     )
     assert in_label_order in headline
+
+
+def _report_for(tmp_path: Path, schema_version: str) -> str:
+    export = sample_export(tmp_path / "export")
+    manifest_path = export / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = schema_version
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    prices = sample_prices(tmp_path / "prices")
+    out = tmp_path / "public.md"
+    args = [
+        "report",
+        "--export", str(export),
+        "--prices", str(prices),
+        "--public-out", str(out),
+        "--private-dir", str(tmp_path / "private"),
+    ]  # fmt: skip
+    assert main(args) == 0
+    return out.read_text(encoding="utf-8")
+
+
+def test_export_gaps_are_named_only_for_a_v1_export(tmp_path):
+    v1 = _report_for(tmp_path / "v1", "dots-history-export/v1")
+    v2 = _report_for(tmp_path / "v2", "dots-history-export/v2")
+    assert v1.count("**Export gap**") == 2
+    assert "Two columns it does not have are listed as gaps" in v1
+    assert "`dots-history-export/v1`" in v1
+    # ROB-1450: v2 has fill_seq and is_seed, so the report must not call them missing.
+    assert "**Export gap**" not in v2
+    assert "no `fill_seq` column" not in v2
+    assert "The export has `fill_seq` and `fill_qty_basis`" in v2
+    assert "The export has `is_seed`" in v2
+    assert "`dots-history-export/v2`" in v2

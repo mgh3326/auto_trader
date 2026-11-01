@@ -341,6 +341,7 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
 - 🔴 솔트는 repo 와 출력에 들어가지 않는다. 출력 디렉터리도 repo 밖만 허용한다
 - KIS·Upbit·Toss 주문 행의 `filled_at` 은 같은 거래일의 in-effect `execution_ledger` 행에서만 온다(evidence-first). 근거 없으면 비운다. DB paper 표의 `filled_at` 은 시뮬레이터 자기 행의 값이며 `execution_ledger` 증거가 아니다. `terminal_outcome=open` 은 "아직 살아 있음"의 증거가 아니라 "종료 기록 없음"이다
 - Kiwoom mock 은 주문 원장 테이블이 없어 대상이 아니다(`manifest.sources_without_ledger`)
+- **v2 (ROB-1450)**: `schema_version=dots-history-export/v2`. `execution_ledger` 에 파생 `fill_seq`(주문 identity 안의 1-based 순번 — 원장 `fill_seq` 해시 키는 내보내지 않는다)·`fill_seq_null_reason`·`fill_qty_basis`(writer 규칙: websocket·Toss reconciler·Upbit 거래별 행=`incremental`, KIS reconciler·Upbit `fill_seq=0` 집계=`cumulative`, `SEED-*`=`position_seed`)·`incremental_qty`·`is_seed` 를 더한다. 새 표 `account_balance_daily` 는 `paper.paper_daily_snapshots`(+`paper_pending_orders.reserved_krw`)만 원천이고, 🔴 브로커 계좌는 일별 잔고 테이블이 없어 `available=false` 행으로만 나간다 — 값을 만들거나 브로커를 부르지 않는다. leak check 는 정수 7자리 이상과, 읽은/deny 목록의 6자리 이상 숫자 식별자와 같은 숫자 셀을 거부한다. `research/trade_retro` 는 v1·v2 를 읽는다
 - **테스트**: `tests/services/dots_history_export/`, `test_quarantine_readers_db.py::test_dots_history_export_drops_the_quarantined_phantom`
 
 ### 실거래 회고 (ROB-1439)

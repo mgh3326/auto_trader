@@ -827,6 +827,22 @@ class Renderer:
         other = stamps[
             (stamps["source"] != "manual_import") & (stamps["market"] != "crypto")
         ]
+        # v2 (ROB-1450) has the two columns v1 lacked; this report does not read
+        # them yet, so a v2 report says so instead of calling them missing.
+        v1 = r.manifest["schema_version"] == "dots-history-export/v1"
+        repeat_gap = (
+            "**Export gap**: no `fill_seq` column, so trades cannot be told from repeats"
+            if v1
+            else "The export has `fill_seq` and `fill_qty_basis`; this report does not "
+            "use them yet"
+        )
+        seed_gap = (
+            "Ledger data, documented. **Export gap**: nothing separates a seed from another "
+            "manual import"
+            if v1
+            else "Ledger data, documented. The export has `is_seed`; this report does not "
+            "use it yet"
+        )
         rows = [
             [
                 "Rows equal on every economic field, flag already applied",
@@ -837,7 +853,7 @@ class Renderer:
                 f"{economic['orders_over_quantity']}. With no order row: "
                 f"{economic['orders_without_row']}",
                 "Kept. They are separate trades of one order, with the time cut to the minute",
-                "**Export gap**: no `fill_seq` column, so trades cannot be told from repeats",
+                repeat_gap,
             ],
             [
                 "Websocket row repeating the next day's reconciler row",
@@ -887,8 +903,7 @@ class Renderer:
                 "`opening_lots.py` stamps the cutover instant and sets quantity to holdings minus "
                 "net fills, at the broker's average cost. They are opening lots, not transfers",
                 "No markout or cash flow. Return runs from the last close before the stamp",
-                "Ledger data, documented. **Export gap**: nothing separates a seed from another "
-                "manual import",
+                seed_gap,
             ],
             [
                 "Other equity rows stamped on a weekend",
@@ -920,8 +935,12 @@ class Renderer:
         ]
         out = [
             "Each check below comes from a question raised by the independent dots analysis of "
-            "the same export. No check found a wrong value written by the export. Two columns it "
-            "does not have are listed as gaps for the desk.\n\n",
+            "the same export. No check found a wrong value written by the export. "
+            + (
+                "Two columns it does not have are listed as gaps for the desk.\n\n"
+                if v1
+                else "The two columns v1 lacked are in this export and are not used yet.\n\n"
+            ),
             table(["Check", "Count", "Evidence", "Treatment", "Source"], rows),
             "\n**Join between the ledger and the order tables.** The two tables hold different "
             "populations, so neither is a denominator for the other. The hashed key itself works: "
@@ -1082,7 +1101,7 @@ class Renderer:
             "`entry.py` and `markouts.py`, section 4 from `idle.py`, section 5 from `rules.py`, "
             "the checks from `audit.py` and the sensitivity table from `sensitivity.py`, all rendered "
             "by `report.py`.\n\n",
-            f"- Export: `dots-history-export/v1`, window {window['since_utc'][:10]} to "
+            f"- Export: `{r.manifest['schema_version']}`, window {window['since_utc'][:10]} to "
             f"{window['until_utc'][:10]}, `manifest.json` sha256 `{r.manifest_sha256}`, "
             f"{sum(t['row_count'] for t in tables.values())} rows, not committed.\n",
             f"- Price snapshot: `prices_manifest.json` sha256 `{r.book.snapshot_sha256}`, fetched "

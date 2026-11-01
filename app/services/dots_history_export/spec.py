@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-SCHEMA_VERSION = "dots-history-export/v1"
+SCHEMA_VERSION = "dots-history-export/v2"
 
 
 class Kind(StrEnum):
@@ -84,6 +84,26 @@ SOURCES_WITHOUT_LEDGER = {
 }
 
 
+#: How a fill row's ``filled_qty`` relates to its order (v2). The writer decides:
+#: KIS reconciler rows book the daily order row's order-level total, Upbit
+#: reconciler rows with ledger ``fill_seq`` 0 book the order's
+#: ``executed_volume``, and an opening seed books a whole position.
+FILL_QTY_BASES = frozenset({"incremental", "cumulative", "position_seed", "unknown"})
+FILL_SEQ_NULL_REASONS = frozenset({"position_seed", "no_order_id"})
+CURRENCIES = frozenset({"KRW", "USD"})
+
+#: Where each account's daily cash comes from (v2). Only the DB paper simulator
+#: records a per-day balance; every broker account's cash is readable only from
+#: the broker at request time, which this tool never calls.
+BALANCE_SOURCES = {"db_paper": "paper.paper_daily_snapshots"}
+BALANCE_UNAVAILABLE_REASON = "no_balance_history_table"
+BALANCE_UNAVAILABLE = dict.fromkeys(
+    sorted(ACCOUNT_ALIASES - BALANCE_SOURCES.keys()),
+    "no table stores this account's cash per day; its cash is read from the "
+    "broker at request time only",
+)
+
+
 def _ref(name: str, prefix: str) -> Column:
     return Column(name, Kind.REF, ref_prefix=prefix)
 
@@ -157,6 +177,11 @@ FILL_COLUMNS: tuple[Column, ...] = (
     _tag("currency"),
     _enum("fill_source", frozenset({"reconciler", "websocket", "manual_import"})),
     Column("superseded_duplicate", Kind.BOOLEAN),
+    Column("fill_seq", Kind.INTEGER),
+    _enum("fill_seq_null_reason", FILL_SEQ_NULL_REASONS),
+    _enum("fill_qty_basis", FILL_QTY_BASES),
+    _decimal("incremental_qty"),
+    Column("is_seed", Kind.BOOLEAN),
     _ref("order_ref", "ord"),
     _ref("correlation_ref", "cor"),
     Column("trading_day", Kind.DATE),
@@ -207,6 +232,23 @@ RUNG_COLUMNS: tuple[Column, ...] = (
     *_times("created_at", "validated_at", "updated_at"),
 )
 
+BALANCE_COLUMNS: tuple[Column, ...] = (
+    _ref("row_ref", "row"),
+    _enum("account_alias", ACCOUNT_ALIASES),
+    _ref("account_ref", "acc"),
+    _enum("currency", CURRENCIES),
+    Column("balance_date", Kind.DATE),
+    Column("available", Kind.BOOLEAN),
+    _enum("unavailable_reason", frozenset({BALANCE_UNAVAILABLE_REASON})),
+    _enum("source_table", frozenset(BALANCE_SOURCES.values())),
+    _decimal("cash"),
+    _enum("cash_basis", frozenset({"free_after_open_order_reservations"})),
+    _decimal("settled_cash"),
+    _decimal("reserved_open_orders"),
+    _LOCAL_TZ,
+    *_times("snapshot_created_at"),
+)
+
 TABLES: tuple[TableSpec, ...] = (
     TableSpec("kis_live_order_ledger", "created_at", ORDER_COLUMNS),
     TableSpec("live_order_ledger", "created_at", ORDER_COLUMNS),
@@ -218,5 +260,6 @@ TABLES: tuple[TableSpec, ...] = (
     TableSpec("execution_ledger", "filled_at", FILL_COLUMNS),
     TableSpec("order_proposals", "created_at", PROPOSAL_COLUMNS),
     TableSpec("order_proposal_rungs", "proposal.created_at", RUNG_COLUMNS),
+    TableSpec("account_balance_daily", "created_at", BALANCE_COLUMNS),
 )
 TABLE_BY_NAME = {table.name: table for table in TABLES}

@@ -165,6 +165,11 @@ async def test_export_joins_order_and_fill_and_excludes_the_quarantined_row(
     [fill] = _rows(out, "execution_ledger")
     assert order["order_ref"] == fill["order_ref"]
     assert fill["fill_source"] == "reconciler"
+    # v2: a KIS reconciler row books the order total; the phantom is not counted.
+    assert fill["fill_qty_basis"] == "cumulative"
+    assert fill["fill_seq"] == "1"
+    assert fill["incremental_qty"] == "10.00000000"
+    assert fill["is_seed"] == "false"
     assert order["terminal_outcome"] == "filled"
     assert order["filled_at_utc"] == fill["filled_at_utc"]
     assert manifest["tables"]["execution_ledger"]["row_count"] == 1

@@ -9,12 +9,17 @@ from __future__ import annotations
 from calendar import monthrange
 from datetime import datetime
 
-from sqlalchemy import Select, func, select, text
+from sqlalchemy import Select, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
-from app.models.paper_trading import PaperAccount, PaperPendingOrder, PaperTrade
+from app.models.paper_trading import (
+    PaperAccount,
+    PaperDailySnapshot,
+    PaperPendingOrder,
+    PaperTrade,
+)
 from app.models.review import (
     AlpacaPaperOrderLedger,
     KISLiveOrderLedger,
@@ -267,6 +272,9 @@ def execution_ledger_statement(window: Window) -> Select:
             m.symbol,
             m.side,
             m.broker_order_id,
+            # Read only to tell an Upbit order aggregate (0) from a per-trade
+            # row; the ledger's own key is never exported.
+            m.fill_seq,
             m.filled_qty,
             m.filled_price,
             m.filled_at,
@@ -348,6 +356,50 @@ def rungs_statement(window: Window) -> Select:
     )
 
 
+def paper_daily_snapshots_statement(window: Window) -> Select:
+    m = PaperDailySnapshot
+    return (
+        select(
+            m.id,
+            m.account_id,
+            m.snapshot_date,
+            m.cash_krw,
+            m.cash_usd,
+            m.created_at,
+        )
+        .where(m.created_at >= window.since, m.created_at < window.until)
+        .order_by(m.id)
+    )
+
+
+def paper_reservations_statement(window: Window) -> Select:
+    """Buy orders that could hold a reservation at some snapshot in the window.
+
+    A paper buy deducts ``reserved_krw`` from ``cash_krw`` when it is placed and
+    returns it on fill or cancel, so the reservation is open from ``placed_at``
+    until the first of those two times.
+    """
+    m = PaperPendingOrder
+    resolved_at = func.coalesce(m.filled_at, m.cancelled_at)
+    return (
+        select(
+            m.id,
+            m.account_id,
+            m.status,
+            m.reserved_krw,
+            m.placed_at,
+            m.filled_at,
+            m.cancelled_at,
+        )
+        .where(
+            m.side == "buy",
+            m.placed_at < window.until,
+            or_(resolved_at.is_(None), resolved_at >= window.since),
+        )
+        .order_by(m.id)
+    )
+
+
 async def _begin_read_only(session: AsyncSession) -> None:
     # One repeatable-read snapshot, so refs and row counts agree across tables.
     await session.execute(
@@ -376,6 +428,8 @@ async def read_sources(session: AsyncSession, window: Window) -> SourceRows:
         execution_ledger=await rows(execution_ledger_statement(window)),
         order_proposals=await rows(proposals_statement(window)),
         order_proposal_rungs=await rows(rungs_statement(window)),
+        paper_daily_snapshots=await rows(paper_daily_snapshots_statement(window)),
+        paper_reservations=await rows(paper_reservations_statement(window)),
     )
 
 

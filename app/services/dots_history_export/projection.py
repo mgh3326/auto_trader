@@ -22,6 +22,9 @@ from zoneinfo import ZoneInfo
 from app.core.symbol import to_db_symbol
 from app.services.dots_history_export.leak_check import is_safe_label
 from app.services.dots_history_export.spec import (
+    BALANCE_SOURCES,
+    BALANCE_UNAVAILABLE,
+    BALANCE_UNAVAILABLE_REASON,
     DEFAULT_LOCAL_TIMEZONE,
     LOCAL_TIMEZONES,
     TABLE_BY_NAME,
@@ -192,6 +195,8 @@ class SourceRows:
     execution_ledger: list[SourceRow] = field(default_factory=list)
     order_proposals: list[SourceRow] = field(default_factory=list)
     order_proposal_rungs: list[SourceRow] = field(default_factory=list)
+    paper_daily_snapshots: list[SourceRow] = field(default_factory=list)
+    paper_reservations: list[SourceRow] = field(default_factory=list)
 
 
 @dataclass
@@ -804,6 +809,129 @@ def _project_paper_trades(p: _Projector, rows: Iterable[SourceRow]) -> list[Outp
     return output
 
 
+#: Same prefix as ``kis_lots._SEED_ORDER_ID_PREFIX``: an opening seed's order id.
+SEED_ORDER_ID_PREFIX = "SEED-"
+
+
+def is_seed_row(row: SourceRow) -> bool:
+    """A ``manual_import`` ``SEED-*`` row: a whole position, not a fill."""
+    return row["source"] == "manual_import" and str(
+        row.get("broker_order_id") or ""
+    ).startswith(SEED_ORDER_ID_PREFIX)
+
+
+def fill_qty_basis(row: SourceRow) -> str:
+    """Whether ``filled_qty`` is one execution or the order's running total.
+
+    Decided by the writer of the row, from ledger fields that exist today:
+
+    * ``websocket`` rows carry one execution notice (KIS ``CNTG_QTY``, Upbit
+      ``trade_volume``/``volume``).
+    * KIS ``reconciler`` rows book the daily order row's order-level total
+      (``tot_ccld_qty`` / ``ft_ccld_qty``); a later reconcile of a still-filling
+      order reports the new total again.
+    * Toss ``reconciler`` rows book the delta since the previous reconcile.
+    * Upbit ``reconciler`` rows with ledger ``fill_seq`` 0 book the order's
+      ``executed_volume``; any other integer ``fill_seq`` is one trade, and a
+      ``fill_seq`` that is not an integer leaves the basis ``unknown``.
+    * An opening seed is a whole position; any other ``manual_import`` is unknown.
+    """
+    source = row["source"]
+    if source == "manual_import":
+        return "position_seed" if is_seed_row(row) else "unknown"
+    if source == "websocket":
+        return "incremental"
+    if source != "reconciler":
+        return "unknown"
+    broker = row["broker"]
+    if broker == "kis":
+        return "cumulative"
+    if broker == "toss":
+        return "incremental"
+    if broker == "upbit":
+        seq = _ledger_fill_seq(row.get("fill_seq"))
+        if seq is None:
+            return "unknown"
+        return "cumulative" if seq == 0 else "incremental"
+    return "unknown"
+
+
+_DECIMAL_DIGITS = re.compile(r"[0-9]+")
+
+
+def _ledger_fill_seq(value: Any) -> int | None:
+    """The ledger's ``fill_seq`` as an int, or ``None`` when it is not one.
+
+    The column is an ``Integer``: writers store a 31-bit hash or a broker
+    sequence, and Upbit stores 0 for an order aggregate. Anything else (a
+    missing value, a hex digest, a bool) cannot tell an aggregate from a trade,
+    so the basis becomes ``unknown`` instead of the export failing.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and _DECIMAL_DIGITS.fullmatch(value.strip()):
+        return int(value.strip())
+    return None
+
+
+def _fill_order(row: SourceRow) -> tuple[Any, ...]:
+    return (_aware(row["filled_at"]), _aware(row["created_at"]), int(row["id"]))
+
+
+def fill_sequences(rows: list[SourceRow]) -> dict[int, OutputRow]:
+    """The v2 per-order columns of each fill row, keyed by ledger row id.
+
+    ``fill_seq`` is the 1-based position of the row among this export's rows of
+    the same order (the ROB-1379 order identity), by fill time, then write time,
+    then id. ``incremental_qty`` is what the row adds: the row itself for an
+    incremental row. For a cumulative row it is the rise over the highest total
+    the same source reported earlier for the order: 0 for a pure re-report, and
+    empty while the total is below that high-water mark. Measuring from the
+    high-water mark, not from the previous report, keeps the sum of a source's
+    increments equal to the highest total it reported, so a stale or wrong dip
+    (5, 4, 5) adds nothing instead of counting the recovered share twice.
+    """
+    by_order: dict[Any, list[SourceRow]] = {}
+    cells: dict[int, OutputRow] = {}
+    for row in sorted(rows, key=_fill_order):
+        basis = fill_qty_basis(row)
+        cell: OutputRow = {
+            "fill_seq": None,
+            "fill_seq_null_reason": None,
+            "fill_qty_basis": basis,
+            "incremental_qty": None,
+            "is_seed": str(is_seed_row(row)).lower(),
+        }
+        cells[int(row["id"])] = cell
+        if basis == "position_seed":
+            cell["fill_seq_null_reason"] = "position_seed"
+            continue
+        if not supersede.normalize_order_id(row.get("broker_order_id")):
+            cell["fill_seq_null_reason"] = "no_order_id"
+        else:
+            identity = supersede.order_identity(SimpleNamespace(**row))
+            by_order.setdefault(identity, []).append(row)
+            cell["fill_seq"] = str(len(by_order[identity]))
+        qty = Decimal(str(row["filled_qty"]))
+        if basis == "incremental":
+            cell["incremental_qty"] = _decimal(qty)
+    for order_rows in by_order.values():
+        previous: dict[str, Decimal] = {}
+        for row in order_rows:
+            cell = cells[int(row["id"])]
+            if cell["fill_qty_basis"] != "cumulative":
+                continue
+            qty = Decimal(str(row["filled_qty"]))
+            prior = previous.get(row["source"], Decimal("0"))
+            if qty >= prior:
+                cell["incremental_qty"] = _decimal(qty - prior)
+            # The high-water mark, on purpose: see the docstring.
+            previous[row["source"]] = max(prior, qty)
+    return cells
+
+
 def _project_fills(
     p: _Projector, rows: list[SourceRow], window: Window
 ) -> list[OutputRow]:
@@ -811,6 +939,7 @@ def _project_fills(
     # Coverage counts only exported rows. A reconciler row outside the window must
     # not flag the one exported row of a fill, or filtering would lose the fill.
     covered = supersede.covered_identities(SimpleNamespace(**row) for row in in_window)
+    sequences = fill_sequences(in_window)
     output = []
     for row in in_window:
         filled_at = _aware(row["filled_at"])
@@ -835,12 +964,80 @@ def _project_fills(
             "superseded_duplicate": str(
                 supersede.is_superseded(SimpleNamespace(**row), covered)
             ).lower(),
+            **sequences[int(row["id"])],
             "order_ref": p.order_ref(alias, row["broker_order_id"]),
             "correlation_ref": p.key_ref("cor", row.get("correlation_id")),
             "trading_day": _trading_day_cell(str(row["broker"]), instrument, filled_at),
             "local_tz": tz_name,
         }
         cell.update(p.times(tz_name, filled_at=filled_at, created_at=row["created_at"]))
+        output.append(cell)
+    return output
+
+
+def _reserved_at(
+    reservations: Iterable[SourceRow], account_id: Any, when: datetime
+) -> Decimal | None:
+    """KRW held by the account's open paper buys at ``when``, or ``None``.
+
+    A resolved order with no fill or cancel time cannot be placed in time, so the
+    total is unknown rather than guessed.
+    """
+    total = Decimal("0")
+    for order in reservations:
+        if order["account_id"] != account_id or _aware(order["placed_at"]) > when:
+            continue
+        ended = [
+            _aware(moment)
+            for moment in (order.get("filled_at"), order.get("cancelled_at"))
+            if moment is not None
+        ]
+        if not ended and order["status"] != "pending":
+            return None
+        if ended and min(ended) <= when:
+            continue
+        total += Decimal(str(order["reserved_krw"]))
+    return total
+
+
+def _project_balances(
+    p: _Projector, snapshots: Iterable[SourceRow], reservations: list[SourceRow]
+) -> list[OutputRow]:
+    tz_name = _local_tz("kr")
+    output: list[OutputRow] = []
+    for row in snapshots:
+        created = _aware(row["created_at"])
+        account_ref = p.hasher.ref("acc", "db_paper", str(row["account_id"]))
+        for currency, column, reserved in (
+            ("KRW", "cash_krw", _reserved_at(reservations, row["account_id"], created)),
+            # Paper buys reserve KRW only; no table records a USD reservation.
+            ("USD", "cash_usd", None),
+        ):
+            cell: OutputRow = dict.fromkeys(TABLE_BY_NAME[p.table].column_names)
+            cell.update(
+                row_ref=p.hasher.ref("row", p.table, str(row["id"]), currency),
+                account_alias="db_paper",
+                account_ref=account_ref,
+                currency=currency,
+                balance_date=row["snapshot_date"].isoformat(),
+                available="true",
+                source_table=BALANCE_SOURCES["db_paper"],
+                cash=_decimal(row[column]),
+                cash_basis="free_after_open_order_reservations",
+                reserved_open_orders=_decimal(reserved),
+                local_tz=tz_name,
+            )
+            cell.update(p.times(tz_name, snapshot_created_at=created))
+            output.append(cell)
+    for alias in BALANCE_UNAVAILABLE:
+        cell = dict.fromkeys(TABLE_BY_NAME[p.table].column_names)
+        cell.update(
+            row_ref=p.hasher.ref("row", p.table, "unavailable", alias),
+            account_alias=alias,
+            available="false",
+            unavailable_reason=BALANCE_UNAVAILABLE_REASON,
+            local_tz=DEFAULT_LOCAL_TIMEZONE,
+        )
         output.append(cell)
     return output
 
@@ -956,6 +1153,9 @@ def project(sources: SourceRows, *, hasher: RefHasher, window: Window) -> Projec
         ),
         "order_proposal_rungs": lambda: _project_rungs(
             projector, sources.order_proposal_rungs
+        ),
+        "account_balance_daily": lambda: _project_balances(
+            projector, sources.paper_daily_snapshots, sources.paper_reservations
         ),
     }
     tables: dict[str, list[OutputRow]] = {}
