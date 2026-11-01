@@ -74,12 +74,15 @@ def test_inactive_interval_brackets_the_unknown_delisting_date() -> None:
     assert (dead.listed_to, dead.delisted_by) == (D2, D3)
     assert dead.status_source == "nasdaqlisted@2020-03-02"
     assert dead.listed_from_censored is True  # present in the first observation
+    assert dead.listed_after is None
 
 
 def test_active_symbol_has_open_interval() -> None:
     (new,) = by_symbol("NEW")
     assert new.status == "active" and new.listed_to is None and new.delisted_by is None
     assert new.listed_from == D3 and new.listed_from_censored is False
+    # listed some time in (2017-06-01, 2020-03-02]
+    assert new.listed_after == D2
     assert new.status_source == "nasdaqlisted@2026-10-30"
 
 

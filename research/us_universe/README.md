@@ -24,11 +24,20 @@ from `app/`, and a test enforces that.
 
 Known gaps, stated in the output rather than papered over:
 
+- **A stale series is refused.** `rebuild` stops if one file's newest
+  accepted observation lags the other's by more than 7 days, because every
+  name delisted from it since would read as active. Run `snapshot` first.
 - **Event dates are brackets.** `listed_from` is the first capture showing the
   symbol. For an inactive interval, `listed_to` is the last capture showing it
   and `delisted_by` is the first capture without it. The true date lies inside
   that range. Early years have one or two captures per year, so a bracket can
   span more than a year.
+- **Listing dates are brackets too.** `otherlisted` has no capture between
+  2013-10-23 and 2017-06-07. A NYSE name that listed in that gap (TWTR, for
+  example, listed 2013-11) has `listed_after=2013-10-23`,
+  `listed_from=2017-06-07`, and is absent from the universe until 2017.
+  Excluding it is the no-look-ahead choice. A consumer who prefers coverage
+  can widen with `listed_after`.
 - **Left censoring.** `listed_from_censored=true` marks intervals that start at
   the first capture of their series. The symbol may have listed earlier.
 - **Short-lived listings are missed.** A symbol that listed and delisted
@@ -57,13 +66,23 @@ One row per listing interval:
 | `status` | `active` (in the latest observation of its series) or `inactive` |
 | `status_source` | `<series>@<date>`: the observation that decides the status (the latest one for active, the first one missing the symbol for inactive) |
 | `delisted_by` | first observation without the symbol; the delisting is in `(listed_to, delisted_by]` |
+| `listed_after` | last observation before the interval; the listing is in `(listed_after, listed_from]`; empty when censored |
 | `listed_from_censored` | interval starts at the series' first observation |
 | `series`, `exchange`, `security_name`, `etf`, `likely_common_stock`, `observations` | provenance and classification |
 
 `research.us_universe.pit.universe_as_of(rows, t)` returns the symbols with
-`listed_from <= t` and (`listed_to` empty or `t <= listed_to`). A symbol first
-seen after `t` is excluded, which prevents look-ahead. A symbol that delisted
-after `t` is included, which prevents survivorship bias.
+`listed_from <= t` and (`delisted_by` empty or `t < delisted_by`):
+
+- A symbol first seen after `t` is excluded, which prevents look-ahead.
+- A symbol that delisted after `t` is included, which prevents survivorship
+  bias.
+- Inside the bracket `(listed_to, delisted_by)`, a symbol about to delist
+  looks exactly like one that survives: both were last seen listed. Dropping
+  it there would use the later capture and remove exactly the names about to
+  delist, so the default keeps it.
+
+`end="listed_to"` selects the narrower evidence-only rule, which has the bias
+just described.
 
 ## Commands (manual only, no scheduler)
 
@@ -77,8 +96,9 @@ uv run python -m research.us_universe.snapshot --root "$ROOT"
 # Fetch any new archive captures into the write-once cache, then build.
 uv run python -m research.us_universe.rebuild --root "$ROOT" --out <new-dir>
 
-# Reproducibility check: rebuild from the cache only; the outputs must be
-# byte-identical to the committed ones (same code commit).
+# Reproducibility check: rebuild from the cache only. us_pit_universe.csv,
+# manifest.json and coverage.md must be byte-identical to the committed ones.
+# The generating commit is kept apart in build_info.json.
 uv run python -m research.us_universe.rebuild --root "$ROOT" --out <new-dir> --offline
 ```
 
@@ -98,6 +118,10 @@ header, the `File Creation Time` footer and at least 1,000 rows. A truncated
 capture or error page is listed as a rejected input. It is never read as "these
 symbols delisted".
 
-The committed `data_manifests/` holds the PIT table, `manifest.json` (every
-input with its sha256 and capture URL, per-series coverage, inactive shares,
-the output sha256 and the generating commit) and `coverage.md`.
+The committed `data_manifests/` holds:
+
+- the PIT table;
+- `manifest.json`: every input with its sha256 and capture URL, per-series
+  coverage, inactive shares and the output sha256;
+- `coverage.md`;
+- `build_info.json`: the generating commit and the manifest sha256.

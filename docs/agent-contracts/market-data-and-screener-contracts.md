@@ -16,6 +16,7 @@
 - KR 1분봉 이벤트 수집기 — Toss → research.kr_candles_1m_toss (#1086)
 - KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
+- US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
 
 ## 기준 원문 계약
 
@@ -341,6 +342,29 @@ Toss 무응답은 gap 기록(JSONL, 침묵 skip 금지).
 KST 시각 라벨(venue 아님). 가격은 `adjusted=false`. 쓰기는 `ON CONFLICT DO NOTHING`(기존 행 우선,
 불일치는 `existing_conflict` 로 보고만).
 🔴 **스케줄 등록 없음.** 배선(hk 1084 Q-122=A)은 머지 후 desk 가 등록한다(런북 §5).
+
+### US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
+
+`research/us_corpus`(SURVIVORSHIP_BIASED=TRUE)의 생존 편향을 메우기 위한 연구용 US
+상장 이력. NASDAQ Trader 심볼 디렉터리(`nasdaqlisted.txt`/`otherlisted.txt`)의
+Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 표
+(`symbol, listed_from, listed_to, status, status_source, delisted_by, listed_after, …`)를 만든다.
+
+- **패키지**: `research/us_universe/` (stdlib, `app/` 중 `app.core.symbol` 만 import — 테스트가 강제)
+- **명령(수동, 스케줄러 없음)**: `python -m research.us_universe.snapshot --root …`(일 1회 멱등,
+  append-only), `python -m research.us_universe.rebuild --root … --out … [--offline]`
+- **산출물**: `research/us_universe/data_manifests/`(CSV·manifest.json·coverage.md·build_info.json).
+  CSV·manifest·coverage 는 캐시 입력의 순수 함수(`--offline` 재빌드 바이트 동일)
+- 🔴 **날짜는 증거 구간이다**: 상장은 `(listed_after, listed_from]`, 상폐는
+  `(listed_to, delisted_by]` 안 어딘가. `universe_as_of(t)` 기본 규칙은
+  `listed_from <= t < delisted_by` — 처음 관측 전은 제외(룩어헤드 금지), 마지막 관측 뒤
+  부재 관측 전까지는 포함(생존 편향 금지). 이 규칙을 `t <= listed_to` 로 좁히지 마라
+  (상폐 직전 종목만 빠지는 생존 편향).
+- 🔴 **불완전 입력은 상폐 증거가 아니다**: 헤더·`File Creation Time` 푸터·1,000행 미만
+  파일은 거부 입력으로 기록하고, 한 시리즈 최신 관측이 다른 시리즈보다 7일 넘게 뒤처지면
+  rebuild 가 거부한다. 이 가드를 완화하지 마라.
+- 브로커 API·자격증명·DB·스케줄러 없음. Alpaca paper inactive 자산 목록은 자격증명이 필요하고
+  날짜가 없어 미사용(런북 = `research/us_universe/README.md`).
 
 ## 유지 규약
 

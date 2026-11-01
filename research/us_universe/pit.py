@@ -11,6 +11,8 @@ interval* is a maximal run of consecutive observations that contain it:
   empty when the run reaches ``o_n`` (still listed: ``status=active``);
 * ``delisted_by``  — date of the first observation *after* the run, i.e. the
   delisting happened in ``(listed_to, delisted_by]``;
+* ``listed_after`` — date of the last observation *before* the run, i.e. the
+  listing happened in ``(listed_after, listed_from]``; empty when censored;
 * ``listed_from_censored`` — the run starts at ``o_1``, so the true listing
   date may be earlier than the archive reaches.
 
@@ -50,6 +52,7 @@ CSV_COLUMNS = (
     "status",
     "status_source",
     "delisted_by",
+    "listed_after",
     "listed_from_censored",
     "series",
     "exchange",
@@ -68,6 +71,7 @@ class PITRow:
     status: str  # active | inactive
     status_source: str  # "<series>@<date>" — the observation that decides status
     delisted_by: date | None
+    listed_after: date | None  # None ⇔ listed_from_censored
     listed_from_censored: bool
     series: str
     exchange: str
@@ -138,6 +142,7 @@ def build_pit_rows(observations: Iterable[Observation]) -> list[PITRow]:
                         status="active" if active else "inactive",
                         status_source=f"{series}@{status_date.isoformat()}",
                         delisted_by=delisted_by,
+                        listed_after=None if start == 0 else seq[start - 1].as_of,
                         listed_from_censored=start == 0,
                         series=series,
                         exchange=last.exchange,
@@ -203,6 +208,7 @@ def rows_from_csv(data: bytes) -> list[PITRow]:
                 status=rec["status"],
                 status_source=rec["status_source"],
                 delisted_by=_parse_date(rec["delisted_by"]),
+                listed_after=_parse_date(rec["listed_after"]),
                 listed_from_censored=bool(_parse_bool(rec["listed_from_censored"])),
                 series=rec["series"],
                 exchange=rec["exchange"],
