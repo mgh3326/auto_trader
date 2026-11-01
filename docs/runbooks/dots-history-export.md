@@ -241,7 +241,9 @@ Limits:
 - One Upbit order can have both an aggregate row (`cumulative`) and per-trade
   rows (`incremental`) when the trades arrived after the aggregate was written.
   Summing both counts the order twice. Use the per-trade rows when both exist.
-- To total an order, take the non-superseded rows and sum `incremental_qty`. For
+- To total an order, take the non-superseded rows and sum `incremental_qty`.
+  Leave out an Upbit `cumulative` row when the same order also has
+  `incremental` rows (see the bullet above). For
   one source's cumulative rows the sum equals the highest total reported, even
   when a report dips. For totals 5, 4 and 5 the increments are 5, empty and 0;
   they are not 5, empty and 1, which would sum to 6. A `cumulative` row with an
