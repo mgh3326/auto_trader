@@ -19,9 +19,17 @@ the true event date is unknown, and that uncertainty is kept in the row
 (``listed_from``/``delisted_by`` bracket it) rather than guessed.
 
 ``universe_as_of(t)`` returns symbols with ``listed_from <= t`` and
-(``listed_to`` empty or ``t <= listed_to``): a symbol first seen after ``t`` is
-excluded (no look-ahead), a symbol that delisted after ``t`` is included (no
-survivorship).
+(``delisted_by`` empty or ``t < delisted_by``):
+
+* a symbol first observed after ``t`` is excluded (no look-ahead on listing);
+* a symbol is kept until the first observation that no longer shows it. Inside
+  the bracket ``(listed_to, delisted_by)`` an observer at ``t`` has the same
+  evidence for a symbol about to delist as for one that survives ("last seen
+  listed"), so treating them differently would use the later observation —
+  look-ahead that removes exactly the names about to delist (survivorship).
+
+``end="listed_to"`` selects the narrower evidence-only rule
+(``t <= listed_to``) for callers that want it, with that bias stated.
 """
 
 from __future__ import annotations
@@ -68,28 +76,36 @@ class PITRow:
     likely_common_stock: bool
     observations: int  # observations inside the run
 
-    def listed_at(self, t: date) -> bool:
+    def listed_at(self, t: date, *, end: str = "delisted_by") -> bool:
         if t < self.listed_from:
             return False
-        return self.listed_to is None or t <= self.listed_to
+        if end == "delisted_by":
+            return self.delisted_by is None or t < self.delisted_by
+        if end == "listed_to":
+            return self.listed_to is None or t <= self.listed_to
+        raise ValueError(f"unknown end rule {end!r}")
+
+
+def _rows_digest(obs: Observation) -> str:
+    return hashlib.sha256(repr(obs.rows).encode("utf-8")).hexdigest()
 
 
 def _dedupe_by_day(observations: Iterable[Observation]) -> dict[str, list[Observation]]:
     """Group per series, one observation per ``as_of`` day.
 
-    Two captures of the same day: the later file creation time wins; equal
-    creation time with different content keeps the larger file (both are
-    complete by construction). The choice is deterministic in the inputs.
+    Two captures of the same day: the later file creation time wins; then the
+    larger file; then the larger content digest. Every key is totally ordered,
+    so the choice depends only on the set of inputs, never on their order.
     """
+
+    def rank(o: Observation) -> tuple[str, int, str]:
+        return (o.created_at, len(o.rows), _rows_digest(o))
+
     per_series: dict[str, dict[date, Observation]] = {}
     for obs in observations:
         day = per_series.setdefault(obs.series, {})
         prev = day.get(obs.as_of)
-        if prev is None or (obs.created_at, len(obs.rows), obs.rows) > (
-            prev.created_at,
-            len(prev.rows),
-            prev.rows,
-        ):
+        if prev is None or rank(obs) > rank(prev):
             day[obs.as_of] = obs
     return {s: [d[k] for k in sorted(d)] for s, d in sorted(per_series.items())}
 
@@ -136,9 +152,11 @@ def build_pit_rows(observations: Iterable[Observation]) -> list[PITRow]:
     return rows
 
 
-def universe_as_of(rows: Sequence[PITRow], t: date) -> list[str]:
+def universe_as_of(
+    rows: Sequence[PITRow], t: date, *, end: str = "delisted_by"
+) -> list[str]:
     """Symbols listed on ``t`` (sorted, unique across series)."""
-    return sorted({r.symbol for r in rows if r.listed_at(t)})
+    return sorted({r.symbol for r in rows if r.listed_at(t, end=end)})
 
 
 def _fmt(value: object) -> str:
@@ -236,9 +254,10 @@ def inactive_shares(
             inactive=sum(1 for active in by_symbol.values() if not active),
         )
 
-    def overlaps(r: PITRow) -> bool:
-        end = r.listed_to or window_end
-        return r.listed_from <= window_end and end >= window_start
+    def overlaps(r: PITRow) -> bool:  # same rule as ``listed_at``
+        return r.listed_from <= window_end and (
+            r.delisted_by is None or r.delisted_by > window_start
+        )
 
     common = [r for r in rows if r.likely_common_stock]
     tag = f"{window_start.isoformat()}..{window_end.isoformat()}"

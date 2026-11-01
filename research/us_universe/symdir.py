@@ -186,6 +186,14 @@ def parse_symbol_directory(series: str, text: str) -> Observation:
             code = parts[col["Exchange"]].strip().upper()
             exchange = OTHER_EXCHANGE_CODES.get(code, f"UNKNOWN:{code}")
         symbol = to_db_symbol(raw_symbol)
+        prev = rows.get(symbol)
+        if prev is not None:
+            if prev.raw_symbol != raw_symbol:
+                raise SymbolDirectoryError(
+                    f"{series}: {prev.raw_symbol!r} and {raw_symbol!r} both "
+                    f"normalise to {symbol!r}"
+                )
+            continue  # exact duplicate line: first occurrence wins
         rows[symbol] = ListingRow(
             symbol=symbol,
             raw_symbol=raw_symbol,

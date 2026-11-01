@@ -50,8 +50,8 @@ class SnapshotResult:
     directory: Path
 
 
-def _today_new_york() -> date:
-    return datetime.now(UTC).astimezone(NEW_YORK).date()
+def _today_new_york(now: datetime | None = None) -> date:
+    return (now or datetime.now(UTC)).astimezone(NEW_YORK).date()
 
 
 def _manifest_record(day: date, files: dict[str, bytes], commit: str) -> dict:

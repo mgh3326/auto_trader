@@ -13,9 +13,11 @@ import pytest
 import research.us_universe as pkg
 from research.us_universe.pit import rows_from_csv, sha256_hex, universe_as_of
 from research.us_universe.rebuild import (
+    OUTPUT_BUILD_INFO,
     OUTPUT_COVERAGE,
     OUTPUT_CSV,
     OUTPUT_MANIFEST,
+    StaleSeriesError,
     capture_url,
     cdx_url,
     rebuild,
@@ -61,7 +63,8 @@ def seed(root: Path) -> None:
 def test_offline_rebuild_is_byte_reproducible(tmp_path: Path) -> None:
     seed(tmp_path)
     a = rebuild(tmp_path, tmp_path / "out_a", commit="abc")
-    b = rebuild(tmp_path, tmp_path / "out_b", commit="abc")
+    # a different generating commit only changes the build_info sidecar
+    b = rebuild(tmp_path, tmp_path / "out_b", commit="def-dirty")
     assert a == b
     for name in (OUTPUT_CSV, OUTPUT_MANIFEST, OUTPUT_COVERAGE):
         assert (tmp_path / "out_a" / name).read_bytes() == (
@@ -69,6 +72,13 @@ def test_offline_rebuild_is_byte_reproducible(tmp_path: Path) -> None:
         ).read_bytes()
     csv_bytes = (tmp_path / "out_a" / OUTPUT_CSV).read_bytes()
     assert a["outputs"][OUTPUT_CSV]["sha256"] == sha256_hex(csv_bytes)
+    info = json.loads((tmp_path / "out_b" / OUTPUT_BUILD_INFO).read_text())
+    assert info == {
+        "code_commit": "def-dirty",
+        "manifest_sha256": sha256_hex(
+            (tmp_path / "out_a" / OUTPUT_MANIFEST).read_bytes()
+        ),
+    }
 
 
 def test_manifest_records_inputs_coverage_and_inactive_share(tmp_path: Path) -> None:
@@ -93,11 +103,34 @@ def test_rebuilt_table_answers_point_in_time_queries(tmp_path: Path) -> None:
     rebuild(tmp_path, tmp_path / "out", commit="abc")
     rows = rows_from_csv((tmp_path / "out" / OUTPUT_CSV).read_bytes())
     at_2015 = universe_as_of(rows, date(2015, 1, 1))
-    assert "GONE" in universe_as_of(rows, D2010)
-    assert "GONE" not in at_2015
+    # GONE: seen 2010-05-03, first absent 2018-07-02 — kept until then
+    assert "GONE" in universe_as_of(rows, D2010) and "GONE" in at_2015
+    assert "GONE" not in universe_as_of(rows, D2018)
     assert "MID" not in at_2015 and "MID" in universe_as_of(rows, D2018)
     assert "NEWCO" not in universe_as_of(rows, D2018)
     assert "NEWCO" in universe_as_of(rows, D2026)
+
+
+def test_corrupt_gzip_capture_is_a_rejected_input(tmp_path: Path) -> None:
+    seed(tmp_path)
+    bad = bytearray(gzip.compress(nasdaq_body(D2018, ("AAPL",)).encode()))
+    bad[20:30] = b"\xff" * 10
+    path = wayback_cache_path(tmp_path, "nasdaqlisted", "20180801000000")
+    path.write_bytes(bytes(bad))
+    m = rebuild(tmp_path, tmp_path / "out", commit="abc")
+    (rej,) = [f for f in m["inputs"]["files"] if f["ref"] == "20180801000000"]
+    assert rej["accepted"] is False
+
+
+def test_stale_series_refuses_to_build(tmp_path: Path) -> None:
+    # otherlisted stops in 2018 while nasdaqlisted reaches 2026: every NYSE
+    # name delisted since would read as active, so the build must refuse.
+    seed(tmp_path)
+    for p in (tmp_path / "snapshots").glob("*/otherlisted.txt"):
+        p.unlink()
+    with pytest.raises(StaleSeriesError, match="otherlisted"):
+        rebuild(tmp_path, tmp_path / "out", commit="abc")
+    assert not (tmp_path / "out").exists()
 
 
 def test_rebuild_refuses_to_overwrite_outputs(tmp_path: Path) -> None:

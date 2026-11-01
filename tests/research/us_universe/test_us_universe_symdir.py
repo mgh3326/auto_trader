@@ -94,3 +94,15 @@ def test_common_stock_heuristic_matches_screener_classifier() -> None:
         assert symdir.looks_like_common_stock(
             symbol, name, etf=etf == "Y", test_issue=test == "Y"
         ) == app_cls._looks_like_common_stock(symbol, name, etf=etf, test_issue=test)
+
+
+def test_symbols_colliding_after_normalisation_are_rejected() -> None:
+    body = nasdaq_body(DAY, ("ABC-A",), extra="ABC.A|ABC Class A|Q|N|N|100|N|N")
+    with pytest.raises(SymbolDirectoryError, match="both normalise"):
+        parse_symbol_directory(SERIES_NASDAQ, body)
+
+
+def test_exact_duplicate_line_keeps_first_occurrence() -> None:
+    body = nasdaq_body(DAY, ("AAA",), extra="AAA|AAA Fund ETF|Q|N|N|100|Y|N")
+    rows = {r.symbol: r for r in parse_symbol_directory(SERIES_NASDAQ, body).rows}
+    assert rows["AAA"].security_name == "AAA Inc. - Common Stock"

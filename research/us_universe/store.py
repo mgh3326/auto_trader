@@ -45,16 +45,31 @@ def write_once(path: Path, data: bytes) -> None:
 def append_jsonl(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(line)
+    with open(path, "ab") as fh:
+        # A crash can leave a torn last line. Terminate it (it stays in the
+        # log, ignored by ``read_jsonl``) instead of gluing our record to it.
+        if fh.tell() > 0:
+            with open(path, "rb") as rd:
+                rd.seek(-1, os.SEEK_END)
+                if rd.read(1) != b"\n":
+                    fh.write(b"\n")
+        fh.write(line.encode("utf-8"))
         fh.flush()
         os.fsync(fh.fileno())
 
 
 def read_jsonl(path: Path) -> list[dict]:
+    """Complete records only: a line is complete when it ends with a newline
+    and parses. Torn lines from a crashed append are skipped, never repaired."""
     if not path.exists():
         return []
-    return [json.loads(ln) for ln in path.read_text("utf-8").splitlines() if ln]
+    out = []
+    for line in path.read_text("utf-8").split("\n")[:-1]:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
 
 
 def code_commit(repo_root: Path) -> str:
@@ -67,7 +82,7 @@ def code_commit(repo_root: Path) -> str:
             check=True,
         ).stdout.strip()
         dirty = subprocess.run(  # noqa: S603, S607
-            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            ["git", "-C", str(repo_root), "status", "--porcelain", "-uno"],
             capture_output=True,
             text=True,
             check=True,

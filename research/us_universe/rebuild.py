@@ -16,11 +16,12 @@ Outputs, written once into ``--out`` (refuses to overwrite):
 
 * ``us_pit_universe.csv`` — one row per listing interval (see ``pit.py``);
 * ``manifest.json``       — every input with its sha256 and acceptance, per-
-  series coverage, inactive shares, output digest, generating commit;
-* ``coverage.md``         — the same coverage and gaps, human-readable.
+  series coverage, inactive shares, output digest;
+* ``coverage.md``         — the same coverage and gaps, human-readable;
+* ``build_info.json``     — the generating commit and the manifest digest.
 
 The outputs are a pure function of the cached inputs and the code, so an
-``--offline`` rebuild of the same cache reproduces them byte for byte.
+``--offline`` rebuild of the same cache reproduces the first three byte for byte.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import argparse
 import json
 import sys
 import urllib.parse
+import zlib
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -59,6 +61,15 @@ CURRENT_CORPUS_INACTIVE_SHARE = 0.006
 OUTPUT_CSV = "us_pit_universe.csv"
 OUTPUT_MANIFEST = "manifest.json"
 OUTPUT_COVERAGE = "coverage.md"
+OUTPUT_BUILD_INFO = "build_info.json"
+# Both directory files are published together each business day. A series
+# whose newest accepted observation lags the other by more than this would
+# leave its delisted names marked active, so the build refuses instead.
+MAX_SERIES_LAG_DAYS = 7
+
+
+class StaleSeriesError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -161,7 +172,13 @@ def load_observations(
         }
         try:
             obs = parse_symbol_directory(item.series, decode_body(raw))
-        except (SymbolDirectoryError, UnicodeDecodeError, OSError, EOFError) as exc:
+        except (
+            SymbolDirectoryError,
+            UnicodeDecodeError,
+            OSError,
+            EOFError,
+            zlib.error,
+        ) as exc:
             rec.update(accepted=False, reason=f"{type(exc).__name__}: {exc}"[:200])
         else:
             observations.append(obs)
@@ -207,7 +224,6 @@ def build_manifest(
     observations: list[Observation],
     input_records: list[dict],
     csv_bytes: bytes,
-    commit: str,
 ) -> dict:
     window_end = max(o.as_of for o in observations)
     shares = inactive_shares(
@@ -216,7 +232,6 @@ def build_manifest(
     return {
         "schema": "us_pit_universe_manifest.v1",
         "issue": "ROB-1431",
-        "code_commit": commit,
         "outputs": {
             OUTPUT_CSV: {
                 "sha256": sha256_hex(csv_bytes),
@@ -244,7 +259,6 @@ def render_coverage(manifest: dict) -> str:
     lines = [
         "# US PIT universe — coverage and gaps (generated)",
         "",
-        f"- code commit: `{manifest['code_commit']}`",
         f"- latest observation: {manifest['as_of_latest_observation']}",
         f"- `{OUTPUT_CSV}` sha256 `{manifest['outputs'][OUTPUT_CSV]['sha256']}`, "
         f"{manifest['outputs'][OUTPUT_CSV]['rows']} intervals, "
@@ -297,17 +311,46 @@ def render_coverage(manifest: dict) -> str:
     return "\n".join(lines)
 
 
+def check_series_fresh(observations: list[Observation]) -> None:
+    latest = {
+        s: max((o.as_of for o in observations if o.series == s), default=None)
+        for s in SERIES
+    }
+    if any(d is None for d in latest.values()):
+        raise StaleSeriesError(f"a series has no accepted observation: {latest}")
+    newest = max(d for d in latest.values() if d is not None)
+    for series, day in latest.items():
+        if day is not None and (newest - day).days > MAX_SERIES_LAG_DAYS:
+            raise StaleSeriesError(
+                f"{series} newest observation {day} lags {newest} by more than "
+                f"{MAX_SERIES_LAG_DAYS} days; its delisted names would read as "
+                "active. Run the snapshot command first."
+            )
+
+
 def rebuild(root: Path, out: Path, *, commit: str) -> dict:
+    """Build from the cache. ``manifest.json``, the CSV and ``coverage.md`` are
+    a pure function of the inputs and the code; the generating commit goes to
+    ``build_info.json`` so that it does not break the byte comparison."""
     observations, records = load_observations(discover_inputs(root))
     if not observations:
         raise SystemExit("no accepted observations under --root; nothing to build")
+    check_series_fresh(observations)
     rows = build_pit_rows(observations)
     csv_bytes = rows_to_csv(rows)
-    manifest = build_manifest(rows, observations, records, csv_bytes, commit)
+    manifest = build_manifest(rows, observations, records, csv_bytes)
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    build_info = {
+        "code_commit": commit,
+        "manifest_sha256": sha256_hex(manifest_bytes),
+    }
     write_once(out / OUTPUT_CSV, csv_bytes)
     write_once(out / OUTPUT_MANIFEST, manifest_bytes)
     write_once(out / OUTPUT_COVERAGE, render_coverage(manifest).encode())
+    write_once(
+        out / OUTPUT_BUILD_INFO,
+        (json.dumps(build_info, indent=2, sort_keys=True) + "\n").encode(),
+    )
     return manifest
 
 

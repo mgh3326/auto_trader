@@ -18,12 +18,8 @@ from research.us_universe.symdir import (
     Observation,
 )
 
-D1, D2, D3, D4 = (
-    date(2015, 1, 2),
-    date(2017, 6, 1),
-    date(2020, 3, 2),
-    date(2026, 10, 30),
-)
+D1, D1B = date(2015, 1, 2), date(2015, 6, 1)
+D2, D3, D4 = date(2017, 6, 1), date(2020, 3, 2), date(2026, 10, 30)
 
 
 def obs(series: str, day: date, *symbols: str) -> Observation:
@@ -36,6 +32,7 @@ def obs(series: str, day: date, *symbols: str) -> Observation:
 
 OBSERVATIONS = [
     obs(SERIES_NASDAQ, D1, "ANCIENT", "OLD", "DEAD", "KEEP", "GAP"),
+    obs(SERIES_NASDAQ, D1B, "OLD", "DEAD", "KEEP"),
     obs(SERIES_NASDAQ, D2, "OLD", "DEAD", "KEEP"),
     obs(SERIES_NASDAQ, D3, "KEEP", "NEW", "GAP"),
     obs(SERIES_NASDAQ, D4, "KEEP", "NEW", "GAP", "MOVE"),
@@ -56,11 +53,19 @@ def test_universe_at_t_excludes_symbols_listed_after_t() -> None:
 
 
 def test_universe_at_t_includes_symbols_delisted_after_t() -> None:
-    # DEAD was last seen 2017-06-01 and is absent from 2020 on.
+    # DEAD was last seen 2017-06-01 and is first absent on 2020-03-02.
     assert "DEAD" in universe_as_of(ROWS, date(2016, 1, 1))
-    assert "DEAD" in universe_as_of(ROWS, D2)  # listed_to is inclusive
-    assert "DEAD" not in universe_as_of(ROWS, date(2018, 1, 1))
+    assert "DEAD" in universe_as_of(ROWS, D2)
+    # Inside the bracket DEAD looks exactly like KEEP ("last seen listed"):
+    # dropping it would use the 2020 observation — look-ahead/survivorship.
+    assert {"DEAD", "KEEP"} <= set(universe_as_of(ROWS, date(2018, 1, 1)))
+    assert "DEAD" not in universe_as_of(ROWS, D3)  # delisted_by is exclusive
     assert "DEAD" not in universe_as_of(ROWS, D4)
+
+
+def test_evidence_only_rule_is_opt_in() -> None:
+    assert "DEAD" not in universe_as_of(ROWS, date(2018, 1, 1), end="listed_to")
+    assert "DEAD" in universe_as_of(ROWS, D2, end="listed_to")
 
 
 def test_inactive_interval_brackets_the_unknown_delisting_date() -> None:
@@ -113,5 +118,26 @@ def test_inactive_share_is_symbol_level() -> None:
     # 8 symbols; inactive: ANCIENT OLD DEAD (GAP relisted, MOVE transferred)
     assert (total.symbols, total.inactive) == (8, 3)
     windowed = shares["all_symbols_listed_in_2016-01-01..2026-10-30"]
-    # ANCIENT's only interval ends in 2015, before the window.
+    # ANCIENT was gone by 2015-06-01, before the window.
     assert (windowed.symbols, windowed.inactive) == (7, 2)
+
+
+def _variant(day: date, created: str, *symbols: str) -> Observation:
+    o = obs(SERIES_NASDAQ, day, *symbols)
+    return Observation(o.series, o.as_of, created, o.rows)
+
+
+def test_same_day_captures_resolve_deterministically() -> None:
+    later = _variant(D4, "2026-10-30T18:01", "A", "B")
+    earlier = _variant(D4, "2026-10-30T07:00", "A", "B", "C")
+    tie_x = _variant(D3, "2020-03-02T17:03", "A", "X")
+    tie_y = _variant(D3, "2020-03-02T17:03", "A", "Y")
+    inputs = [later, earlier, tie_x, tie_y]
+
+    forward = rows_to_csv(build_pit_rows(inputs))
+    assert forward == rows_to_csv(build_pit_rows(list(reversed(inputs))))
+    rows = rows_from_csv(forward)
+    # the later file of the day wins even though it has fewer rows
+    assert "C" not in universe_as_of(rows, D4)
+    # an exact tie on time and size picks one capture, never both or a crash
+    assert len({"X", "Y"} & set(universe_as_of(rows, D3))) == 1

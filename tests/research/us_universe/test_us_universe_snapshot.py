@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
-from research.us_universe.snapshot import take_snapshot
-from research.us_universe.store import AlreadyExistsError, write_once
+from research.us_universe.pit import sha256_hex
+from research.us_universe.snapshot import _today_new_york, take_snapshot
+from research.us_universe.store import AlreadyExistsError, read_jsonl, write_once
 from research.us_universe.symdir import SOURCE_URLS, SymbolDirectoryError
 
 from .us_universe_fixtures import nasdaq_body, other_body
@@ -116,3 +117,41 @@ def test_write_once_refuses_to_overwrite(tmp_path: Path) -> None:
         write_once(target, b"second")
     assert target.read_bytes() == b"first"
     assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]  # no stray .partial
+
+
+def test_crash_with_one_file_published_fetches_only_the_missing_one(
+    tmp_path: Path,
+) -> None:
+    day = date(2026, 11, 2)
+    pre = tmp_path / "snapshots" / "2026-11-02" / "nasdaqlisted.txt"
+    write_once(pre, nasdaq_body(day, ("FIRST",)).encode())
+    before = (pre.read_bytes(), pre.stat().st_ino)
+    fetch = FakeFetch(day, ("SECOND",))
+
+    result = take_snapshot(tmp_path, fetch=fetch, today=lambda: day, commit="c1")
+
+    assert result.action == "written"
+    assert fetch.calls == [SOURCE_URLS["otherlisted"]]
+    assert (pre.read_bytes(), pre.stat().st_ino) == before
+    (record,) = manifest(tmp_path)
+    assert record["files"]["nasdaqlisted"]["sha256"] == sha256_hex(before[0])
+
+
+def test_torn_manifest_line_does_not_block_later_days(tmp_path: Path) -> None:
+    d1, d2 = date(2026, 11, 2), date(2026, 11, 3)
+    take_snapshot(tmp_path, fetch=FakeFetch(d1), today=lambda: d1, commit="c1")
+    log = tmp_path / "snapshots" / "manifest.jsonl"
+    with open(log, "ab") as fh:
+        fh.write(b'{"day":"2026-11-0')  # crash mid-append
+    torn = log.read_bytes()
+
+    take_snapshot(tmp_path, fetch=FakeFetch(d2), today=lambda: d2, commit="c1")
+
+    assert log.read_bytes().startswith(torn)  # nothing rewritten
+    assert [r["day"] for r in read_jsonl(log)] == ["2026-11-02", "2026-11-03"]
+
+
+def test_day_key_is_the_new_york_date() -> None:
+    # 2026-11-02 03:30 UTC is still 2026-11-01 in New York
+    now = datetime(2026, 11, 2, 3, 30, tzinfo=UTC)
+    assert _today_new_york(now) == date(2026, 11, 1)
