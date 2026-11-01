@@ -8,6 +8,7 @@
 - Binance Demo Order Ledger (ROB-298)
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
+- Execution Intent Gateway (ROB-1440)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
 - Execution Ledger 교차 소스 중복 체결 (ROB-1379)
@@ -186,6 +187,24 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   H5 에는 거래소 측 손절이 없으므로 모든 종류가 "포지션이 있으면 손절 감시 중단"을 뜻한다.
   코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
   core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
+
+### Execution Intent Gateway (ROB-1440)
+
+기계식 전략용 주문 경계. Python 이 무엇을(버전·인가·상한이 있는 intent), Go 실행기가 언제·얼마에(그 안에서)를 맡는다. Go 는 브로커·DB 에 직접 닿지 않고 child request 만 보낸다. 🔴 **`app/` 어디에서도 import 하지 않는다** — 라우터·MCP·스케줄러 연결 0, 기본 비활성. 전송 경로 추가는 E2/E3 의 별도 PR 이다.
+
+- **스키마**: `app/schemas/execution_intent.py` (`ExecutionIntentV1`, submit/amend/cancel child)
+- **패키지**: `app/services/execution_intent_gateway/` — `decisions`(순수 거부 규칙) · `store`(두 테이블의 유일한 writer) · `gateway`(순서) · `kis_mock_forwarder`(기존 주문 함수 호출, `is_mock=True` 고정)
+- **테이블**: `review.execution_intents`(불변, `account IN ('kis_mock')` CHECK), `review.execution_child_requests`(write-ahead journal). 마이그레이션 `20261101_rob1440_intent_gw`. at_app 은 DELETE 없음, journal UPDATE 는 결과 컬럼 4개만, intent UPDATE 는 `FOR UPDATE` 잠금용 `id` 하나만. 🔴 트리거가 어떤 역할이든 intent 변경·삭제, journal 요청 필드 변경·삭제, `sending`→`accepted`/`uncertain` 외 전이, 결과를 미리 담은 새 행(초기 상태는 `sending`/`refused`, `broker_order_id`·`result` 는 NULL)을 거부한다. intent 는 CHECK 가 스키마 상한을 반복하고 트리거가 만기 과거·24시간 초과 INSERT 를 거부한다. 🔴 downgrade 는 행이 있으면 거부한다(journal 을 잃으면 쓴 키로 다시 전송될 수 있다). 이 트리거를 완화하지 마라(`sending` 행의 키를 바꾸면 재시도가 새 요청으로 보여 이중 전송된다)
+- **설계**: `docs/design/1440-intent-gateway-contract.md`
+
+**계약**:
+- 🔴 `EXECUTION_INTENT_GATEWAY_ENABLED` 정확히 `true` + 호출별 `confirm is True` 이중 게이트. 둘 다 DB 접근 전에 거부한다.
+- 🔴 journal 행(`sending`)이 **브로커 호출 전에 커밋**된다. 같은 키는 첫 결과를 반환하고 다시 보내지 않는다. 다른 payload 의 같은 키는 `conflict` 다. 예외·실패 결과·결과 기록 실패는 전부 `uncertain`/`sending` 으로 남고 재전송하지 않는다. 브로커 결과의 `retry_allowed` 는 권한이 아니다.
+- 🔴 상한은 intent 가 지금까지 보낸 전부를 묶는다(주문별 high-water mark, 거부 행만 제외). cancel 은 체결 증거가 없으므로 상한을 풀지 않는다. 건별 notional 은 `LOCKED_ENVELOPE.max_single_notional_krw` 도 넘지 못한다. 이 상수를 gateway 쪽에서 넓히지 마라.
+- amend/cancel 대상은 journal 의 idempotency key 로만 지정한다. Go 가 브로커 주문번호를 넘길 수 없으므로 같은 intent 가 보낸 주문에만 작용한다.
+- submit/amend 는 기존 `review.kis_mock_runner_control` 이 `ACTIVE` 일 때만 허용하고 읽기 실패는 차단이다. 🔴 cancel 은 kill·만료·상한을 보지 않는다(ROB-1440 운영자 계약). 이 예외는 gateway 경로에만 있고 runner 의 `mutation_permission` 표는 바뀌지 않았다. 단, 나중 child 가 `sending`/`uncertain` 이면 대상 주문번호를 믿을 수 없으므로 그 주문의 cancel 도 `target_superseded` 로 거부하고 reconcile 을 기다린다.
+- 체결은 여기에 기록하지 않는다. `accepted` 는 체결이 아니며, 기존 레저와 reconcile 이 그대로 권한자다.
+- 하위 가드는 우회하지 않는다. 현재 KR mock 전송은 coordinated route 와 follow-up capability 없이는 하위 계층에서 거부되므로, 실제 주문은 E3 결정 전까지 나가지 않는다.
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 

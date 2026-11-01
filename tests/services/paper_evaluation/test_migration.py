@@ -317,6 +317,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE review.kis_mock_inference_expiry_events")
             )
+            # ROB-1440 intent gateway tables are later too (child first).
+            await connection.execute(text("DROP TABLE review.execution_child_requests"))
+            await connection.execute(text("DROP TABLE review.execution_intents"))
             for column in ("quarantined_by", "quarantine_reason", "quarantined_at"):
                 await connection.execute(
                     text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")
