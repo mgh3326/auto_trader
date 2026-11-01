@@ -497,10 +497,8 @@ def _forbidden_values(sources: SourceRows) -> frozenset[str]:
     for rows in vars(sources).values():
         for row in rows:
             for name in RAW_IDENTIFIER_FIELDS:
-                value = str(row.get(name) or "")
-                # A real identifier has a digit; a placeholder word such as
-                # "pending" would match a status tag and block every export.
-                if any(character.isdigit() for character in value):
+                value = str(row.get(name) or "").strip()
+                if value:
                     found.add(value)
     return frozenset(found)
 

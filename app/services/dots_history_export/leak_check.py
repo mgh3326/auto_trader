@@ -11,8 +11,8 @@ from dataclasses import asdict, dataclass
 
 from app.services.dots_history_export.spec import Column, Kind, TableSpec
 
-#: Shortest identifier compared by substring. Anything shorter is too common to
-#: tell apart from a legitimate tag, and the digit-run rules still apply.
+#: Shortest identifier compared by substring. A shorter one would match inside
+#: legitimate labels, so it is compared against the whole cell instead.
 MIN_FORBIDDEN_VALUE_CHARS = 6
 
 #: A tag column carries a short ASCII label. Spaces and non-ASCII mean prose or a
@@ -145,9 +145,7 @@ def _forbidden_variants(values: Iterable[str]) -> frozenset[str]:
     variants: set[str] = set()
     for value in values:
         text = value.strip().casefold()
-        for candidate in (text, text.lstrip("0")):
-            if len(candidate) >= MIN_FORBIDDEN_VALUE_CHARS:
-                variants.add(candidate)
+        variants.update(item for item in (text, text.lstrip("0")) if item)
     return frozenset(variants)
 
 
@@ -155,7 +153,11 @@ class _CellScanner:
     """Memoized per distinct free-form value, since most tags repeat."""
 
     def __init__(self, forbidden: Collection[str]) -> None:
-        self._forbidden = _forbidden_variants(forbidden)
+        variants = _forbidden_variants(forbidden)
+        self._substrings = frozenset(
+            item for item in variants if len(item) >= MIN_FORBIDDEN_VALUE_CHARS
+        )
+        self._whole_cells = variants - self._substrings
         self._cache: dict[tuple[Kind, str], str | None] = {}
 
     def _pattern_rule(self, kind: Kind, value: str) -> str | None:
@@ -167,14 +169,15 @@ class _CellScanner:
         if kind is Kind.TAG and LABEL_DIGIT_RUN.search(value):
             return "long_digit_run"
         folded = value.casefold()
+
         # A KR symbol can equal a short numeric order number by coincidence, and
         # the symbol's shape already refuses a longer digit run.
-        candidates = (
-            self._forbidden
-            if kind is Kind.TAG
-            else (item for item in self._forbidden if not item.isdigit())
-        )
-        if any(item in folded for item in candidates):
+        def applies(item: str) -> bool:
+            return kind is Kind.TAG or not item.isdigit()
+
+        if folded in self._whole_cells and applies(folded):
+            return "forbidden_value"
+        if any(item in folded and applies(item) for item in self._substrings):
             return "forbidden_value"
         return None
 

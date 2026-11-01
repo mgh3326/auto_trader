@@ -30,7 +30,8 @@ Do these steps as the desk, on a host that can reach the database.
 
 3. Optional: list values that must never appear, one per line, in a file outside
    the repository. Account numbers are the usual entries. The tool refuses a file
-   with a value shorter than six characters, because the check could not use it.
+   with a value shorter than six characters, because the check could match it only
+   against a whole cell.
 
 4. Run the export. The default window is the last six months, and `--until` is
    exclusive.
@@ -193,7 +194,8 @@ The check runs on the rows before writing, and again on the CSV and Parquet file
 read back from a staging directory. The directory is moved into place only after
 both pass. A run fails on any of these:
 
-- A column outside the table's allowlist, a missing column, or an unexpected file.
+- A column outside the table's allowlist, a missing column, or a missing or
+  unexpected file.
 - A cell that does not fit its column's shape. References must be a prefix plus
   32 hex characters, enums are closed, and decimals and timestamps have fixed
   forms.
@@ -201,7 +203,11 @@ both pass. A run fails on any of these:
 - A label or symbol that matches an account-number, long-digit, UUID, JWT, token
   prefix, credential-assignment, long-hex or long-opaque pattern.
 - A label or symbol containing a raw order or account identifier the tool read
-  from any row, a value from `--deny-values-file`, or the salt.
+  from any row, a value from `--deny-values-file`, or the salt. An identifier
+  shorter than six characters must equal the whole cell to match. A digit-only
+  identifier is not compared with symbols, because a KR symbol can equal one by
+  coincidence.
+- The salt's bytes anywhere in a written CSV or Parquet file.
 
 Label columns are protected before the check as well. An identifier-shaped label
 is hashed instead of copied, so one odd row cannot block every export. A failure

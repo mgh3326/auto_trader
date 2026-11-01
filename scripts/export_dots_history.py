@@ -176,7 +176,7 @@ def load_deny_values(path: Path | None, *, repo_root: Path) -> frozenset[str]:
     )
     lines = resolved.read_text("utf-8").splitlines()
     values = frozenset(line.strip() for line in lines if line.strip())
-    # A shorter value would be ignored by the check, so it must not pass silently.
+    # A shorter value could only match a whole cell, which is too weak to promise.
     short = sum(len(value) < MIN_FORBIDDEN_VALUE_CHARS for value in values)
     if short:
         raise ValueError(

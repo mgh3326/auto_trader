@@ -6,6 +6,7 @@ import csv
 import json
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pytest
 
 from app.services.dots_history_export.leak_check import (
@@ -221,6 +222,39 @@ def test_an_unexpected_file_in_the_output_fails(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_missing_file_is_a_violation_not_a_crash(tmp_path: Path) -> None:
+    def remove_file(directory: Path) -> None:
+        (directory / "paper_trades.parquet").unlink()
+
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(
+            projected(),
+            tmp_path / "export",
+            write_files=_write_then_tamper(remove_file),
+        )
+    assert Violation("paper_trades.parquet", "", 0, "file_missing") in (
+        raised.value.violations
+    )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_salt_bytes_in_parquet_metadata_fail(tmp_path: Path) -> None:
+    def add_metadata(directory: Path) -> None:
+        path = directory / "paper_trades.parquet"
+        table = pq.read_table(path)
+        pq.write_table(table.replace_schema_metadata({b"note": SALT}), path)
+
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(
+            projected(),
+            tmp_path / "export",
+            write_files=_write_then_tamper(add_metadata),
+        )
+    assert Violation("paper_trades.parquet", "", 0, "salt_in_output") in (
+        raised.value.violations
+    )
+
+
 def test_salt_bytes_in_a_written_csv_fail(tmp_path: Path) -> None:
     directory = tmp_path / "staged"
     directory.mkdir()
@@ -254,13 +288,63 @@ def test_legitimate_labels_and_symbols_pass() -> None:
         assert scan_table(ORDERS, ORDERS.column_names, [cell]) == []
 
 
-def test_a_placeholder_word_used_as_an_order_id_does_not_block_a_status_tag(
+def test_an_alphabetic_order_id_is_refused_in_a_copied_label(tmp_path: Path) -> None:
+    # No digit and no generic pattern: only having read the id can refuse it.
+    projection = projected(
+        kis_live_order_ledger=[kis_live_row(order_no="ABCDEF", strategy="retry-ABCDEF")]
+    )
+    assert "ABCDEF" in projection.forbidden
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(projection, tmp_path / "export")
+    assert {(item.column, item.rule) for item in raised.value.violations} == {
+        ("strategy_tag", "forbidden_value")
+    }
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_alphabetic_order_id_is_refused_in_a_copied_symbol(tmp_path: Path) -> None:
+    projection = projected(
+        kis_live_order_ledger=[kis_live_row(order_no="ABCDEF", symbol="ABCDEF")]
+    )
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(projection, tmp_path / "export")
+    assert {(item.column, item.rule) for item in raised.value.violations} == {
+        ("symbol", "forbidden_value")
+    }
+
+
+def test_a_short_alphabetic_order_id_is_refused_as_a_whole_cell(tmp_path: Path) -> None:
+    projection = projected(
+        kis_live_order_ledger=[kis_live_row(order_no="ABCDE", strategy="ABCDE")]
+    )
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(projection, tmp_path / "export")
+    assert [item.rule for item in raised.value.violations] == ["forbidden_value"]
+
+
+def test_a_short_id_does_not_match_inside_a_longer_label(tmp_path: Path) -> None:
+    projection = projected(
+        kis_live_order_ledger=[kis_live_row(order_no="dip", strategy="dip-momentum")]
+    )
+    _publish(projection, tmp_path / "export")
+
+
+def test_a_word_stored_as_an_order_id_fails_closed_on_a_matching_status(
     tmp_path: Path,
 ) -> None:
+    # No writer stores a placeholder id today. If one ever does, stop and say so.
     projection = projected(
         kis_live_order_ledger=[kis_live_row(order_no="pending", status="pending")]
     )
-    assert "pending" not in projection.forbidden
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(projection, tmp_path / "export")
+    assert "status" in {item.column for item in raised.value.violations}
+
+
+def test_a_digit_only_id_is_not_compared_with_a_symbol(tmp_path: Path) -> None:
+    projection = projected(
+        kis_live_order_ledger=[kis_live_row(order_no="005930", symbol="005930")]
+    )
     _publish(projection, tmp_path / "export")
 
 

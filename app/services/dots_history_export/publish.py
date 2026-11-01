@@ -153,6 +153,9 @@ def check_written_files(
         for suffix in ("csv", "parquet"):
             path = directory / f"{spec.name}.{suffix}"
             name = f"{spec.name}.{suffix}"
+            if not path.is_file():
+                violations.append(Violation(name, "", 0, "file_missing"))
+                continue
             columns, rows = (
                 _read_csv(path) if suffix == "csv" else _read_parquet(path, spec)
             )
@@ -162,7 +165,7 @@ def check_written_files(
             )
             if len(rows) != expected_rows[spec.name]:
                 violations.append(Violation(name, "", 0, "row_count_mismatch"))
-            if suffix == "csv" and salt in path.read_bytes():
+            if salt in path.read_bytes():
                 violations.append(Violation(name, "", 0, "salt_in_output"))
     return violations
 
