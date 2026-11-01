@@ -429,7 +429,7 @@ def test_list_valued_heartbeat_field_fails_cleanly(repo: Path, field: str) -> No
             "validate must be",
         ),
         (lambda m: m["splits"].update(gap_sessions=5), "gap_sessions 5 is below"),
-        (lambda m: m["cumulative_k"].update(prior_k=1), "cumulative_k.prior_k is 1"),
+        (lambda m: m["cumulative_k"].update(prior_k=9), "cumulative_k.prior_k is 9"),
     ],
 )
 def test_review_round_manifest_rules(repo: Path, mutate, needle: str) -> None:
