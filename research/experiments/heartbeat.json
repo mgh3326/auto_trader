@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "idle_red_after_sessions": 3,
+  "epochs": [
+    {
+      "id": "ROB-1391",
+      "hypothesis": null,
+      "description": "US original-limit 3-session resubmission shadow; advances once per XNYS session with `advance`",
+      "calendar": "XNYS",
+      "source": {
+        "kind": "hash_chained_ledger",
+        "path": null,
+        "advance_kinds": ["register", "step"]
+      }
+    },
+    {
+      "id": "H5",
+      "hypothesis": null,
+      "description": "H5-LS-ENV-v1 futures demo runner; record_nav stamps a NAV sample every tick",
+      "calendar": "24/7",
+      "source": {
+        "kind": "json_timestamps",
+        "path": null,
+        "select": ["nav_samples", "*", "observed_at"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "hypotheses": [
+    {
+      "id": "ROB-1411",
+      "title": "Buy-drought same-candidate comparison (crypto V4, US V4, KR entry) - pre-registration draft",
+      "tracker": "ROB-1411",
+      "markets": ["crypto", "us", "kr"],
+      "status": "draft",
+      "registered_at": "2026-11-01",
+      "manifest": "research/experiments/manifests/rob-1411.json",
+      "manifest_sha256": "e82c5da5d58690ef534a5b46923399adb5e6633580eca550d5ce8c48f552c9c1",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
+    },
+    {
+      "id": "H-entry-price",
+      "title": "Support-ladder limit price from touch_5 and xret_20|touch",
+      "tracker": "ROB-1429",
+      "markets": ["kr", "us", "crypto"],
+      "status": "draft",
+      "registered_at": "2026-11-01",
+      "manifest": "research/experiments/manifests/h-entry-price.json",
+      "manifest_sha256": "3930aa25c5e988d738ee581e40a6cb4ae39cadc94ff3aed9261d9bb86c69f372",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
+    },
+    {
+      "id": "H-admit",
+      "title": "Admit or skip an eligible entry from t+1 open to t+5 close return quantiles",
+      "tracker": "ROB-1429",
+      "markets": ["kr", "us", "crypto"],
+      "status": "draft",
+      "registered_at": "2026-11-01",
+      "manifest": "research/experiments/manifests/h-admit.json",
+      "manifest_sha256": "01b0fa25346eba1f9a89d7fd3ef9a85b7b13e02601379030b8a9c39b78715dc6",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
+    }
+  ]
+}

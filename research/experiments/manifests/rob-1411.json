@@ -1,0 +1,92 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "ROB-1411",
+  "version": 1,
+  "title": "Buy-drought same-candidate comparison: crypto A vs V4, US A vs V4, KR ATR/rebound entry vs cash",
+  "status": "draft",
+  "question": "On the same pre-registered candidates, does the alternative rule (V4 deep_limit upper 0% for crypto and US; ATR or rebound entry for KR) beat cash at equal notional budget after costs? First window per market is feasibility only (PREREG section 10).",
+  "markets": ["crypto", "us", "kr"],
+  "hashes": {
+    "prereg_doc": "research/rob1411_buy_drought_comparison/PREREG.md",
+    "prereg_draft_sha256": "faf4eedd2b5e2f187bacec061e1de22274addb61c3c0d9cbef615b629266caa6",
+    "code_sha": {"pending": "collector and evaluator are not built; sealed per PREREG section 14"},
+    "policy_version": {"pending": "deployed get_trading_policy version at seal"},
+    "policy_content_hash": {"pending": "deployed get_trading_policy content_hash at seal"},
+    "cost_table_sha256": {"pending": "per-market cost table sealed at seal (PREREG 2.4)"}
+  },
+  "features": [
+    {"name": "support_levels", "available_at": "levels computed from daily bars closed before t", "source": "X_t frozen at gate decision"},
+    {"name": "current_price", "available_at": "quote as-of <= t, stored with its as-of; crypto: last complete Upbit 1m bar before t, stale > 15 min is UNKNOWN_INPUT", "source": "X_t"},
+    {"name": "rsi14", "available_at": "Wilder RSI on bars closed before t", "source": "X_t"},
+    {"name": "upside_pct", "available_at": "consensus (KR/US) or session forecast target (crypto) recorded at t", "source": "X_t"},
+    {"name": "support_distance_pct", "available_at": "current_price and support_levels as above", "source": "X_t"},
+    {"name": "deep_limit_band_position", "available_at": "anchor vs current_price at t", "source": "X_t"},
+    {"name": "policy_stamp", "available_at": "policy {version, content_hash} deployed at t", "source": "X_t"},
+    {"name": "atr14_kr", "available_at": "Wilder ATR14 through the last KRX daily bar closed before t (E3)", "source": "X_t"}
+  ],
+  "labels": [
+    {"name": "E1_crypto_R_t_plus_120h", "definition": "net-of-cost return of the arm vs B_m at floor_minute(t)+120h (1m close of [T_eval-1m, T_eval))", "horizon_sessions": 5},
+    {"name": "E2_us_R_D0_plus_20", "definition": "net-of-cost return of the arm vs B_m at the D0+20 XNYS regular close", "horizon_sessions": 20},
+    {"name": "E3_kr_R_D0_plus_5", "definition": "net-of-cost return of the rule vs cash at the D0+5 KRX close", "horizon_sessions": 5}
+  ],
+  "calendar": {"crypto": "24/7", "us": "XNYS", "kr": "XKRX"},
+  "splits": {
+    "scheme": "prospective forward shadow; no historical fitting. Feasibility window per market, then a newly sealed confirmation epoch that excludes feasibility data (PREREG section 10).",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 20,
+    "gap_sessions": 5,
+    "folds": [],
+    "test": {
+      "kind": "prospective_seal",
+      "period": {"pending": "fixed at seal: E1 28x24h from the next UTC hour, E2 60 XNYS sessions, E3 60 KRX sessions; never extended"},
+      "exposure_audit": "not applicable: every evaluated decision is made after the seal",
+      "seal_rule": "confirmation epoch is a new manifest version sealed after the feasibility window closes"
+    }
+  },
+  "candidate_policies": [
+    {"id": "E1-A", "description": "crypto: current regular-discovery buy gate reproduced deterministically (PREREG 2.2)"},
+    {"id": "E1-B", "description": "crypto: A with buy.deep_limit_pct_range upper bound -3% -> 0% only (V4)"},
+    {"id": "E2-A", "description": "US: current gate A; separate epoch from ROB-1391"},
+    {"id": "E2-B", "description": "US: A with the V4 upper bound change only"},
+    {"id": "E3-ATR", "description": "KR: limit DAY at tick_floor(C - 0.5*ATR14) on D0"},
+    {"id": "E3-rebound", "description": "KR: first hourly close above H by 14:00 KST, cap tick_floor(C_h + 0.1*ATR14), DAY"},
+    {"id": "E3-original", "description": "KR: A anchor limit DAY on D0 (secondary comparison only)"},
+    {"id": "cash", "description": "no entry; 0% cash return (parking-yield sensitivity separate)"}
+  ],
+  "costs_fills": {
+    "cost_table": {"pending": "per-market fee/tax/slippage table from account fill ratios, sealed at seal; no net verdict while PENDING_COST_TABLE"},
+    "fill_models": [
+      "conservative: 1m low <= P - 1 tick, qty <= floor(1% of minute volume), price = P",
+      "optimistic: 1m low <= P, no quantity cap (sensitivity)",
+      "strict (E2 sensitivity): conservative plus valid ask <= P observed inside the minute window"
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 0,
+    "search": "none: every rule is fixed by the pre-registration; no parameter is tuned on outcomes"
+  },
+  "seeds": {"pending": "bootstrap seed sealed at seal (10,000 resamples, symbol-cluster and date-block)"},
+  "metrics": {
+    "primary": "E1/E2: H_cash = mean over incremental parents I of (R_B - R_cash); E3: mu_r = mean over eligible parents of (R_r - R_cash); net of costs at the primary horizon",
+    "secondary": [
+      "H_A = mean over I of (R_B - R_A), success condition only",
+      "B_only and AB_diff_anchor cohort means",
+      "class counts per market",
+      "auxiliary horizons: crypto t+480h, US/KR D0+20 and post-fill markouts"
+    ],
+    "family": ["E1:H_cash", "E1:H_A", "E2:H_cash", "E2:H_A", "E3:mu_ATR", "E3:mu_rebound"],
+    "alpha": "0.05",
+    "delta_min": {"pending": "draft +1.0pp of candidate budget; operator fixes per market at seal (PREREG 15-3)"}
+  },
+  "stopping_rules": [
+    "stop new registrations on any look-ahead input (as-of > t) or fill/trigger judged on bars before s",
+    "stop on a duplicate parent key with different content",
+    "stop on any arm exceeding B_m including costs",
+    "stop if collection or evaluation can reach an order, proposal, watch or ledger write path",
+    "stop on a mismatch of deployed policy hash, code SHA, calendar or sealed constants",
+    "stop on evaluator invariant breach (A_only observed, observable_hours=0 with not_triggered, non-deterministic re-classification)",
+    "a merged policy change ends the epoch (STOPPED_BY_POLICY_CHANGE); no automatic resume",
+    "the feasibility window is never extended"
+  ],
+  "cumulative_k": {"prior_k": 0, "source": "registry"}
+}
