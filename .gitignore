@@ -310,3 +310,6 @@ research/event_coverage/results/
 
 # ROB-1383: row-level results hold order ids / session reasons; public repo -> local + Drive only
 research/rob1383_buy_drought/results/*.csv
+
+# ROB-1431: the US PIT table lives in ~/work/herdr-artifacts/us-universe-v1/pit-v1/ (see research/us_universe/README.md)
+research/us_universe/data_manifests/*.csv

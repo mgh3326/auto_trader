@@ -62,6 +62,8 @@ tests/research/test_kr_backfill_kiwoom_payload.py
 tests/research/toss_phase2/test_adaptive_pacing.py
 tests/research/us_stage_b/test_parquet_source.py
 tests/research/us_stage_b/test_verdict.py
+tests/research/us_universe/test_us_universe_snapshot.py
+tests/research/us_universe/test_us_universe_symdir.py
 tests/routers/test_candidate_discovery.py
 tests/routers/test_dependencies.py
 tests/routers/test_invest_buy_plan_router.py

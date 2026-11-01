@@ -71,6 +71,9 @@ tests/research/crypto_universe/test_crypto_universe_pit.py
 tests/research/crypto_universe/test_crypto_universe_snapshot.py
 tests/research/kr_corpus/d3_engine/test_d3_primary.py
 tests/research/kr_corpus/test_kr_a0_exact_binding.py
+tests/research/kr_delist_repair/test_kr_delist_causal.py
+tests/research/kr_delist_repair/test_kr_delist_export.py
+tests/research/kr_delist_repair/test_kr_delist_sources.py
 tests/research/rob1391_us_resubmit_shadow/test_calendar_and_costs.py
 tests/research/rob1391_us_resubmit_shadow/test_engine.py
 tests/research/test_experiment_heartbeat.py
@@ -78,6 +81,9 @@ tests/research/test_screener_bakeoff_contract.py
 tests/research/test_screener_bakeoff_withdrawal.py
 tests/research/us_stage_b/test_cli.py
 tests/research/us_stage_b/test_signals.py
+tests/research/us_universe/test_us_universe_committed.py
+tests/research/us_universe/test_us_universe_pit.py
+tests/research/us_universe/test_us_universe_rebuild.py
 tests/research_contracts/test_dfc_2c_4h_v22.py
 tests/routers/test_invest_artifacts_router.py
 tests/routers/test_invest_fills_router.py

@@ -18,6 +18,8 @@
 - KRX 애프터마켓 세션×거래소 적격 (#925)
 - crypto-universe-v1 — 상폐 포함 PIT 유니버스·일봉 재구축 (ROB-1432)
 - 실험 레지스트리·manifest·heartbeat (ROB-1429)
+- KR 상폐·종료결과 복구 + 인과 일봉 export (ROB-1430)
+- US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
 
 ## 기준 원문 계약
 
@@ -393,6 +395,55 @@ api.upbit.com market/all·candles/days) 밖의 URL 을 소켓 전에 거부한�
   레포에 넣지 않는다. 🔴 스케줄러·알림 연결 없음(운영자 결정).
 - 등록(2026-11-01, k=0, draft): `ROB-1411`, `H-entry-price`, `H-admit`. 정리 대상 목록:
   `docs/research/at-retirement-inventory-2026-11-01.md`(권고만, hk/Linear 상태 변경 0).
+
+### KR 상폐·종료결과 복구 + 인과 일봉 export (ROB-1430)
+
+`research/kr_delist_repair/` — kr-corpus-v1 main scope(2015–2024) 심볼 중 오늘의 KIS 마스터
+(`kr_symbol_universe` 동기화 원천)에 없는 심볼의 상폐일·사유·종료결과를 공개 KIND 상장폐지현황과
+KRX `상장폐지` 공시 본문에서 **정확한 단축코드로만** 해석한다(회사명 매칭 금지). 연구 전용:
+`app` import·DB·브로커·스케줄러 0, 봉인 holdout 읽기 금지(`HoldoutAccessError`).
+
+- 🔴 **`kr_symbol_universe` 로 상폐 수명주기를 조인하지 말 것** — 동기화 시작 전 상폐 심볼은 행이
+  아예 없어 inner join 이 생존편향을 되살린다. 수명주기는 export 경로의 `delist_resolution.v1.csv`(해시·행수는 `data/export_manifest.json`)를 심볼 키로 쓴다
+  (`data/join_audit.md`).
+- 🔴 corpus 안에서 membership 이 끝난 심볼은 상폐일 = 마지막 membership 다음 세션이어야 하며,
+  어긋나면 고치지 않고 unresolved 로 남긴다.
+- 🔴 **available_at**: 봉 = 세션 16:00 KST, 종료 이벤트 = 공시 접수시각(본문 사용 시) 또는 상폐일
+  00:00 KST. `CausalTable.lookup`/`causal_join` 은 이른 사용 시 `AvailabilityViolation` 으로 실패한다.
+- 🔴 종료 행은 심볼당 마지막 membership 세션 1행뿐, forward-fill 금지, 상폐일 이후 행 0
+  (`validate_panel` 이 `ExportConflict`). 미해결 종료는 `terminal_outcome=unresolved` 로 표시, 삭제 금지.
+- `payout_semantics` 는 라벨링 힌트이며 지급액을 주장하지 않는다.
+- 산출 export(parquet)는 레포 밖 아티팩트 경로에 두고 해시는 `data/export_manifest.json`.
+- **런북**: `research/kr_delist_repair/README.md`. 스케줄 없음(수동 `collect`/`build`).
+
+### US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
+
+`research/us_corpus`(SURVIVORSHIP_BIASED=TRUE)의 생존 편향을 메우기 위한 연구용 US
+상장 이력. NASDAQ Trader 심볼 디렉터리(`nasdaqlisted.txt`/`otherlisted.txt`)의
+Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 표
+(`symbol, listed_from, listed_to, status, status_source, delisted_by, listed_after, …`)를 만든다.
+
+- **패키지**: `research/us_universe/` (stdlib, `app/` 중 `app.core.symbol` 만 import — 테스트가 강제)
+- **명령(수동, 스케줄러 없음)**: `python -m research.us_universe.snapshot --root …`(일 1회 멱등,
+  append-only), `python -m research.us_universe.rebuild --root … --out … [--offline]`
+- **산출물**: 레포의 `research/us_universe/data_manifests/` 는 빌드 기록만 둔다
+  (manifest.json·inputs.jsonl·coverage.md·build_info.json). PIT CSV 는 git 에 넣지 않고
+  (`.gitignore`) 데스크톱 호스트 `~/work/herdr-artifacts/us-universe-v1/pit-v1/` 에 둔다.
+  manifest 가 CSV 의 sha256·행수·생성 명령을 고정하며, `--offline` 재빌드는 build_info 를
+  제외하고 바이트 동일하다
+- 🔴 **날짜는 증거 구간이다**: 상장은 `(listed_after, listed_from]`, 상폐는
+  `(listed_to, delisted_by]` 안 어딘가. `universe_as_of(t)` 기본 규칙은
+  `listed_from <= t < delisted_by` — 처음 관측 전은 제외(룩어헤드 금지), 마지막 관측 뒤
+  부재 관측 전까지는 포함(생존 편향 금지). 이 규칙을 `t <= listed_to` 로 좁히지 마라
+  (상폐 직전 종목만 빠지는 생존 편향).
+- 🔴 **불완전 입력은 상폐 증거가 아니다**: 헤더·`File Creation Time` 푸터·1,000행 미만·
+  Test Issue 가 Y/N 이 아닌 행·같은 심볼의 상충 행이 있는 파일은 관측으로 쓰지 않는다. 이미
+  캐시/스냅샷에 있는 파일이면 manifest 의 거부 입력으로 기록하고, 새로 받은 Wayback 본문이면
+  캐시에 쓰지 않고 fetch gap(stderr)으로 보고해 다음 실행에서 재시도한다(manifest 는 캐시의
+  순수 함수라 실행마다 달라지는 fetch 결과를 담지 않는다). 한 시리즈 최신 관측이 다른
+  시리즈보다 7일 넘게 뒤처지면 rebuild 가 거부한다. 이 가드를 완화하지 마라.
+- 브로커 API·자격증명·DB·스케줄러 없음. Alpaca paper inactive 자산 목록은 자격증명이 필요하고
+  날짜가 없어 미사용(런북 = `research/us_universe/README.md`).
 
 ## 유지 규약
 
