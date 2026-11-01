@@ -186,18 +186,85 @@ def test_missing_universe_record_falls_back_to_latest_universe_not_the_first(
     assert [(r["instrument"], r["action_type"]) for r in d2_rows] == [
         ("035420", "listing_added")
     ]
-    _run(tmp_path, "kr", d3, FakeSources(kospi=added), both)
+    more = {**added, "068270": "CELLTRION"}  # listed between d2 and d3
+    _run(tmp_path, "kr", d3, FakeSources(kospi=more), both)
+    d3_rows = read_partition(tmp_path, DATASET_ACTIONS, "kr", d3)
+    assert [(r["instrument"], r["action_type"]) for r in d3_rows] == [
+        ("068270", "listing_added")
+    ]
     # d3's universe record is lost while its actions record survived
     _drop_universe_record(tmp_path, "kr", d3)
     assert recorded_dates(tmp_path, DATASET_UNIVERSE, "kr") == [d1, d2]
     assert d3 in recorded_dates(tmp_path, DATASET_ACTIONS, "kr")
 
-    _run(tmp_path, "kr", d4, FakeSources(kospi=added), both)
+    _run(tmp_path, "kr", d4, FakeSources(kospi=more), both)
 
     d4_rows = read_partition(tmp_path, DATASET_ACTIONS, "kr", d4)
-    # the d1→d2 listing was already recorded; diffing against d1 again would
-    # re-emit it with a new compared_universe (a duplicate fact)
+    # d1→d2 (recorded at d2) and d2→d3 (recorded at d3) must not come back
+    # under a new compared_universe (a duplicate fact)
     assert [r for r in d4_rows if r["action_type"].startswith("listing")] == []
+    rec = _actions_record(tmp_path, d4)
+    assert rec["listing_compared"] == [d2.isoformat(), d4.isoformat()]
+    assert rec["listing_reference_fallback"] == {
+        "base": d3.isoformat(),
+        "used": d2.isoformat(),
+        "already_recorded_skipped": 1,
+        "unobserved_interval": None,
+    }
+
+
+def _actions_record(root, day):
+    import json
+
+    for line in manifest_path(root, DATASET_ACTIONS, "kr").read_text().splitlines():
+        rec = json.loads(line)
+        if rec["partition_date"] == day.isoformat():
+            return rec
+    raise AssertionError(day)
+
+
+@pytest.mark.unit
+def test_no_universe_left_before_the_base_uses_the_nearest_after_it(tmp_path):
+    """hk 2552 / #2255 review: with every universe on or before the last
+    actions base lost, the reference is the nearest universe after the base,
+    never the first one; nothing recorded is re-emitted and the unobservable
+    interval is in the manifest."""
+    d1, d2, d3, d4 = (
+        date(2026, 10, 29),
+        date(2026, 10, 30),
+        date(2026, 11, 2),
+        date(2026, 11, 3),
+    )
+    base = {"005930": "SAMSUNG ELEC", "000660": "SK HYNIX"}
+    added = {**base, "035420": "NAVER"}  # listed between d1 and d2
+    more = {**added, "068270": "CELLTRION"}  # listed between d3 and d4
+    both = [DATASET_UNIVERSE, DATASET_ACTIONS]
+    _run(tmp_path, "kr", d1, FakeSources(kospi=base), both)
+    _run(tmp_path, "kr", d2, FakeSources(kospi=added), both)  # records 035420
+    _run(tmp_path, "kr", d3, FakeSources(kospi=added), [DATASET_UNIVERSE])  # no actions
+    # every universe on or before the base d2 is lost; d3 survives
+    _drop_universe_record(tmp_path, "kr", d1)
+    _drop_universe_record(tmp_path, "kr", d2)
+    assert recorded_dates(tmp_path, DATASET_UNIVERSE, "kr") == [d3]
+    assert recorded_dates(tmp_path, DATASET_ACTIONS, "kr") == [d1, d2]
+
+    _run(tmp_path, "kr", d4, FakeSources(kospi=more), both)
+
+    d4_rows = read_partition(tmp_path, DATASET_ACTIONS, "kr", d4)
+    listings = [
+        (r["instrument"], r["action_type"], r["compared_universe"])
+        for r in d4_rows
+        if r["action_type"].startswith("listing")
+    ]
+    # only the change after the reference; 035420 (recorded at d2) is not repeated
+    assert listings == [("068270", "listing_added", [d3.isoformat(), d4.isoformat()])]
+    rec = _actions_record(tmp_path, d4)
+    assert rec["listing_reference_fallback"] == {
+        "base": d2.isoformat(),
+        "used": d3.isoformat(),
+        "already_recorded_skipped": 0,
+        "unobserved_interval": [d2.isoformat(), d3.isoformat()],
+    }
 
 
 @pytest.mark.unit

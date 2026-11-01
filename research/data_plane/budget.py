@@ -219,9 +219,11 @@ class ResearchBudget:
             return self._attempt() == 0.0
 
     def acquire(self) -> None:
-        with self._lock:
-            while True:
+        """Block until a slot is taken. The lock covers only each attempt, so
+        a sleeping caller never holds up ``try_acquire`` or other threads."""
+        while True:
+            with self._lock:
                 wait = self._attempt()
-                if wait == 0.0:
-                    return
-                self._sleep(wait)
+            if wait == 0.0:
+                return
+            self._sleep(wait)

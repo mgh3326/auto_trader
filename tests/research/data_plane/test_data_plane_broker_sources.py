@@ -419,3 +419,41 @@ def test_yahoo_lookback_covers_a_long_adjusted_window(tmp_path):
     adj = read_partition(tmp_path, DATASET_BARS_ADJUSTED, "kr", DAY)
     per = {r["instrument"] for r in adj}
     assert len(adj) == 100 * len(per)
+
+
+@pytest.mark.unit
+def test_a_past_day_rerun_builds_no_client_for_the_adjusted_vintage(
+    tmp_path, monkeypatch
+):
+    """#2255 review: an adjusted vintage is refused after its day, so a
+    backfill whose raw bars exist must not build broker clients for it."""
+    from datetime import timedelta
+
+    from research.data_plane import broker_adapters, cli
+    from research.data_plane import collect as collect_module
+
+    from .test_data_plane_collect import _FrozenDatetime
+
+    opened = []
+
+    def fake_open(names):
+        opened.append(names)
+        return broker_adapters.BrokerClients(
+            clients={n: _ClosingClient() for n in names}
+        )
+
+    monkeypatch.setattr(broker_adapters, "open_broker_clients", fake_open)
+    monkeypatch.setattr(cli, "make_public_fetch", lambda **_: FakeSources())
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
+    base = ["collect", "--root", str(tmp_path), "--market", "kr"]
+    base += ["--date", DAY.isoformat(), "--broker-budget", "kis=5/1,toss=1/1"]
+
+    _FrozenDatetime.frozen = evening("kr", DAY)
+    assert cli.main(base + ["--datasets", "universe,bars_1d,corporate_actions"]) == 0
+    assert len(opened) == 1
+
+    _FrozenDatetime.frozen = evening("kr", DAY) + timedelta(days=3)
+    assert cli.main(base) == 3  # the adjusted vintage is refused (past day)
+    assert len(opened) == 1  # and no broker client was built for it
+    assert not partition_path(tmp_path, DATASET_BARS_ADJUSTED, "kr", DAY).exists()

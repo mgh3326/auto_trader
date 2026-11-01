@@ -162,9 +162,12 @@ itself point-in-time. Basis per source: KIS `FID_ORG_ADJ_PRC=0` (KR) / `MODP=1`
   diff reference is the universe the latest earlier actions partition used, so
   a day whose actions failed is folded into the next successful diff (its
   changes become available on that later day) instead of being lost. If that
-  universe record is missing, the reference is the latest universe on or
-  before that actions day (never the first universe, which would re-emit
-  changes already recorded).
+  universe record is missing, the reference is the latest universe before it,
+  and changes already recorded by later actions partitions are skipped rather
+  than re-emitted under a new `compared_universe`; if no universe on or before
+  it survives, the reference is the nearest universe after it (nothing after it
+  was recorded) and the manifest's `listing_reference_fallback` names the
+  interval whose changes could no longer be observed.
 * **First-observed semantics**: `available_at` is when this collector first saw
   the fact (the sources carry no announcement time). Rows are stamped after
   every source read of the run has finished, never before the read that

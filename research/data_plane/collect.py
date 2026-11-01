@@ -851,9 +851,10 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         d for d in recorded_dates(run.root, DATASET_ACTIONS, run.market) if d < run.day
     ]
     earlier_universes = [d for d in days if d < run.day]
-    prev_day = _listing_reference(run, earlier_actions, earlier_universes)
-    if prev_day is None:
+    ref = _listing_reference(run, earlier_actions, earlier_universes)
+    if ref is None:
         return [], {"listing_baseline": True, "listing_observed_at": seen_at}
+    prev_day = ref.day
     prev = {
         (r["instrument"], r["venue"]): r
         for r in read_partition(run.root, DATASET_UNIVERSE, run.market, prev_day)
@@ -874,8 +875,13 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                     new["listing_status"],
                 )
             )
+    already = _listing_facts_after(run, prev_day) if ref.base_lost else set()
     out = []
+    skipped = 0
     for (instrument, venue), action_type, before, after in changes:
+        if (instrument, venue, action_type, before, after) in already:
+            skipped += 1  # recorded by an actions partition after prev_day
+            continue
         out.append(
             {
                 "instrument": instrument,
@@ -886,49 +892,100 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 "compared_universe": [prev_day.isoformat(), run.day.isoformat()],
             }
         )
-    return out, {
+    meta: dict[str, Any] = {
         "listing_observed_at": seen_at,
         "listing_baseline": False,
         "listing_compared": [prev_day.isoformat(), run.day.isoformat()],
     }
+    if ref.base is not None and ref.day != ref.base:
+        meta["listing_reference_fallback"] = {
+            "base": ref.base.isoformat(),
+            "used": prev_day.isoformat(),
+            # base universe lost: changes the base actions already recorded are
+            # skipped; a reference after the base cannot see (base, used]
+            "already_recorded_skipped": skipped,
+            "unobserved_interval": [ref.base.isoformat(), prev_day.isoformat()]
+            if prev_day > ref.base
+            else None,
+        }
+    return out, meta
+
+
+@dataclass(frozen=True)
+class _ListingRef:
+    day: date  # the universe the diff compares against
+    base: date | None  # the universe the last actions partition compared against
+    base_lost: bool  # base has no universe record any more
 
 
 def _listing_reference(
     run: _Run, earlier_actions: list[date], earlier_universes: list[date]
-) -> date | None:
+) -> _ListingRef | None:
     """The universe the next listing diff compares against.
 
-    Normally the universe the latest earlier actions partition compared
-    against (its own day). If that universe record is missing (lost to a
-    crash while the actions record survived), fall back to the latest
-    universe on or before that actions day — never to the first universe,
-    which would re-emit every change already recorded since, under a new
-    ``compared_universe`` and therefore a new fact hash.
+    * No earlier universe: ``None`` (today is the baseline).
+    * No earlier actions partition: the first universe (nothing is recorded
+      yet, so every change since the first universe is new).
+    * Otherwise the *base* is the universe the latest earlier actions partition
+      compared against (its own day). Every recorded listing fact compares
+      against a universe on or before the base.
+      - The base universe is recorded: use it (the normal case).
+      - It is lost (a crash kept the actions record but not the universe's):
+        use the latest universe before the base; the changes between it and
+        the base were recorded by actions after it, so those are skipped
+        (``_listing_facts_after``) instead of re-emitted under a new
+        ``compared_universe``.
+      - No universe on or before the base survives: use the nearest universe
+        after it. Nothing after the base has been recorded, so nothing is
+        re-emitted; the changes inside (base, reference] can no longer be
+        observed and the manifest says so.
+
+    Never the first universe once actions exist, unless it is one of those.
     """
     if not earlier_universes:
         return None
-    if earlier_actions:
-        last = earlier_actions[-1]
-        compared = (
-            manifest_records(run.root, DATASET_ACTIONS, run.market)
-            .get(last.isoformat(), {})
-            .get("listing_compared")
-        )
-        if (
-            isinstance(compared, list)
-            and len(compared) == 2
-            and isinstance(compared[1], str)
-        ):
-            try:
-                target = date.fromisoformat(compared[1])
-            except ValueError:
-                target = last
-        else:
-            target = last
-        at_or_before = [d for d in earlier_universes if d <= target]
-        if at_or_before:
-            return at_or_before[-1]
-    return earlier_universes[0]
+    if not earlier_actions:
+        return _ListingRef(earlier_universes[0], None, False)
+    last = earlier_actions[-1]
+    compared = (
+        manifest_records(run.root, DATASET_ACTIONS, run.market)
+        .get(last.isoformat(), {})
+        .get("listing_compared")
+    )
+    base = last
+    if (
+        isinstance(compared, list)
+        and len(compared) == 2
+        and isinstance(compared[1], str)
+    ):
+        try:
+            base = date.fromisoformat(compared[1])
+        except ValueError:
+            base = last
+    at_or_before = [d for d in earlier_universes if d <= base]
+    if at_or_before:
+        return _ListingRef(at_or_before[-1], base, at_or_before[-1] != base)
+    after = [d for d in earlier_universes if d > base]
+    return _ListingRef(after[0], base, True)
+
+
+def _listing_facts_after(run: _Run, day: date) -> set[tuple[Any, ...]]:
+    """Listing changes recorded by actions partitions dated after ``day``."""
+    out: set[tuple[Any, ...]] = set()
+    for d in recorded_dates(run.root, DATASET_ACTIONS, run.market):
+        if day < d < run.day:
+            for r in read_partition(run.root, DATASET_ACTIONS, run.market, d):
+                if str(r.get("action_type", "")).startswith("listing_"):
+                    out.add(
+                        (
+                            r["instrument"],
+                            r["venue"],
+                            r["action_type"],
+                            r.get("status_before"),
+                            r.get("status_after"),
+                        )
+                    )
+    return out
 
 
 def _build_actions(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:

@@ -242,11 +242,15 @@ def main(argv: list[str] | None = None) -> int:
                     for d in (datasets or market_datasets(args.market))
                     if d in BAR_DATASETS
                 ]
-                # a rerun whose bar partitions all exist builds no broker client
+                # A rerun whose bar partitions all exist builds no broker client,
+                # and neither does a past-day run for the adjusted vintage alone
+                # (collect refuses an adjusted vintage after its own day).
+                is_today = day == local_today(args.market, now)
                 bars_to_collect = [
                     d
                     for d in bar_datasets
                     if not partition_path(args.root, d, args.market, day).exists()
+                    and (d != DATASET_BARS_ADJUSTED or is_today)
                 ]
                 if wanted and bars_to_collect:
                     # lazy: the app clients load only on a broker-backed run

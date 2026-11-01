@@ -208,3 +208,36 @@ def test_a_non_finite_or_future_stamp_costs_at_most_one_window(tmp_path, stamp):
     budget.acquire()
     assert clock.slept <= 1.0  # never a stall of an hour or an OverflowError
     assert _max_in_window(list(budget.grants), 1.0) <= 2
+
+
+@pytest.mark.unit
+def test_a_sleeping_acquire_never_holds_up_try_acquire():
+    """#2255 review: the lock covers each attempt, not the wait."""
+    clock = FakeClock(start=0.0)
+    released = threading.Event()
+    sleeping = threading.Event()
+
+    def blocking_sleep(seconds):
+        sleeping.set()
+        released.wait(timeout=10)
+        clock.sleep(seconds)
+
+    budget = ResearchBudget(
+        BudgetSpec("kis", 1, 1.0), clock=clock.now, sleep=blocking_sleep
+    )
+    assert budget.try_acquire() is True  # the window is now full
+    waiter = threading.Thread(target=budget.acquire)
+    waiter.start()
+    assert sleeping.wait(timeout=5)  # the waiter is asleep
+
+    answers = []
+    probe = threading.Thread(target=lambda: answers.append(budget.try_acquire()))
+    probe.start()
+    probe.join(timeout=2)
+    alive = probe.is_alive()
+    released.set()
+    waiter.join(timeout=5)
+    probe.join(timeout=5)
+    assert not alive, "try_acquire waited for a sleeping acquire"
+    assert answers == [False]
+    assert budget.acquired == 2
