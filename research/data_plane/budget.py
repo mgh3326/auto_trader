@@ -8,21 +8,35 @@ stop a separate research process from adding its calls on top of serving's.
 
 This module therefore caps research at a fixed *share* of each broker's
 documented per-key limit: at most ``max_calls`` research calls in any sliding
-window of ``per_seconds``. Serving keeps the rest of the window whatever
-research does. The share is checked against ``BROKER_LIMITS`` and may not
-exceed ``MAX_RESEARCH_SHARE``; nothing can configure research to take the whole
-window.
+window of ``per_seconds``. The share is checked against ``BROKER_LIMITS`` and may
+not exceed ``MAX_RESEARCH_SHARE``; nothing can configure research to take the
+whole window.
+
+What this does and does not guarantee:
+
+* Research never takes more than its share, whatever serving does.
+* Serving keeps the rest of the window only while serving itself stays within
+  ``limit - share``. The app's KIS limiter lets each serving process use the
+  full 20/1 s, so at full serving load research's calls go over the key's limit
+  and KIS answers some calls with rate errors (the app retries them). A hard
+  bound for KIS needs serving to draw from a shared window as well (lower its
+  ``KIS_API_RATE_LIMITS`` entry by the share, or a Redis window); that is an
+  operator decision and not changed here. For Toss with
+  ``TOSS_RATE_LIMITER_BACKEND=redis``, research's client draws from the same
+  Redis window as serving, so the key's 5/1 s holds and research takes at most
+  its share of it.
 
 The window is shared by every research process on the host when a state file
 is given (the CLI keeps one per broker under ``<root>/.budget/``, guarded by
 ``flock``): the KR and US collectors, and a manual rerun, never add up to more
-than one share.
+than one share. An unreadable state file counts as a full window (fail closed).
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -140,31 +154,48 @@ class ResearchBudget:
         # grant instants of this instance (bounded; diagnostics and tests)
         self.grants: deque[float] = deque(maxlen=4096)
 
-    def _load(self) -> list[float]:
+    def _load(self) -> list[float] | None:
+        """The window's stamps; ``None`` when the state file is unreadable."""
         if self._state_path is None:
             return self._memory
+        if not self._state_path.exists():
+            return []
         try:
             data = json.loads(self._state_path.read_text("utf-8"))
         except (OSError, ValueError):
-            return []
+            return None
         stamps = data.get("stamps") if isinstance(data, dict) else None
-        if not isinstance(stamps, list):
-            return []
-        return [float(s) for s in stamps if isinstance(s, (int, float))]
+        if not isinstance(stamps, list) or not all(
+            isinstance(s, (int, float)) and not isinstance(s, bool) for s in stamps
+        ):
+            return None
+        return [float(s) for s in stamps]
 
     def _store(self, stamps: list[float]) -> None:
         if self._state_path is None:
             self._memory = stamps
             return
         tmp = self._state_path.with_name(self._state_path.name + ".tmp")
-        tmp.write_text(json.dumps({"stamps": stamps}), "utf-8")
-        tmp.replace(self._state_path)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"stamps": stamps}))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self._state_path)
 
     def _try(self) -> float:
         """Take a slot (returns 0) or return the seconds to wait."""
         now = self._clock()
-        stamps = [s for s in self._load() if now - s < self.spec.per_seconds]
-        # A stamp in the future (another process's skewed clock) still counts.
+        loaded = self._load()
+        if loaded is None:
+            # Fail closed: an unreadable window counts as full, now. The file
+            # is rewritten, so the budget recovers after one window.
+            stamps = [now] * self.spec.max_calls
+        else:
+            # A non-finite stamp counts as used now; a stamp in the future
+            # (another process's clock, or ours stepped back) counts as now,
+            # so a skewed clock costs at most one window, never a long stall.
+            stamps = [min(s, now) if math.isfinite(s) else now for s in loaded]
+        stamps = [s for s in stamps if now - s < self.spec.per_seconds]
         if len(stamps) < self.spec.max_calls:
             stamps.append(now)
             self._store(stamps)

@@ -273,7 +273,9 @@ def test_bars_never_use_a_later_universe(tmp_path):
 def test_source_returning_only_other_days_is_missing_not_misfiled(tmp_path):
     day = date(2026, 10, 30)
     _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
-    with pytest.raises(CollectError, match="yahoo coverage 0.000"):
+    with pytest.raises(
+        CollectError, match="yahoo coverage 0.667 < 0.95 after 1 instruments"
+    ):
         _run(tmp_path, "kr", day, FakeSources(future_bar=True), datasets=[DATASET_BARS])
     assert not partition_path(tmp_path, DATASET_BARS, "kr", day).exists()
 

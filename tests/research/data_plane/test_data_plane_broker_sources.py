@@ -104,10 +104,12 @@ def test_failing_broker_falls_back_to_the_public_source(tmp_path):
     assert rec["served_by"] == "yahoo"
     assert rec["source_attempts"] == [
         {
+            # stopped at the first error: 2/3 can no longer reach 0.95
             "source": "kis",
             "outcome": "coverage_below_floor",
-            "coverage": 0.0,
-            "missing_reasons": {"client_error": 3},
+            "coverage": 0.666667,
+            "instruments_tried": 1,
+            "missing_reasons": {"client_error": 1},
         },
         {
             "source": "toss",
@@ -116,6 +118,7 @@ def test_failing_broker_falls_back_to_the_public_source(tmp_path):
         },
         {"source": "yahoo", "outcome": "served", "coverage": 1.0},
     ]
+    assert len(kis.calls) == 2  # one per vintage: the budget is not spent further
     # the broker's error text never reaches the manifest (class name only)
     assert "secret-ish" not in manifest_path(tmp_path, DATASET_BARS, "kr").read_text()
     assert _record(tmp_path, DATASET_BARS_ADJUSTED)["served_by"] == "yahoo"
@@ -159,7 +162,9 @@ def test_unconfigured_brokers_are_recorded_and_yahoo_serves(tmp_path):
 @pytest.mark.unit
 def test_every_source_failing_writes_nothing(tmp_path):
     _universe(tmp_path)
-    with pytest.raises(CollectError, match="kis coverage 0.000.*yahoo coverage 0.000"):
+    with pytest.raises(
+        CollectError, match="kis coverage 0.667 < 0.95 after 1 .*yahoo coverage 0.667"
+    ):
         _bars(
             tmp_path,
             FakeSources(missing=frozenset({"005930", "000660", "247540"})),
@@ -176,7 +181,8 @@ def test_an_outage_stops_spending_the_budget_after_a_streak(tmp_path, monkeypatc
     monkeypatch.setattr(collect_module, "SOURCE_ABORT_STREAK", 2)
     _universe(tmp_path)
     kis = FakeBrokerClient(fail_all=True)
-    _bars(tmp_path, FakeSources(), broker_clients={"kis": kis})
+    # floor 0: only the error streak can stop the broker
+    _bars(tmp_path, FakeSources(), broker_clients={"kis": kis}, min_coverage=0.0)
     rec = _record(tmp_path, DATASET_BARS)
     assert rec["source_attempts"][0] == {
         "source": "kis",
@@ -268,7 +274,7 @@ def test_a_bar_dated_after_the_partition_is_dropped_not_misfiled(tmp_path):
     _bars(tmp_path, FakeSources(), broker_clients={"kis": Future()})
     rec = _record(tmp_path, DATASET_BARS)
     assert rec["served_by"] == "yahoo"
-    assert rec["source_attempts"][0]["missing_reasons"] == {"no_bar_for_session": 3}
+    assert rec["source_attempts"][0]["missing_reasons"] == {"no_bar_for_session": 1}
 
 
 @pytest.mark.unit
@@ -291,3 +297,125 @@ def test_crypto_refuses_bar_sources_and_the_adjusted_dataset(tmp_path):
             broker_clients={"kis": FakeBrokerClient()},
             commit="t",
         )
+
+
+@pytest.mark.unit
+def test_an_adjusted_vintage_is_refused_after_its_day_but_raw_backfills(tmp_path):
+    """Read later, the source's adjustment would carry events announced after
+    the partition day under that day's available_at."""
+    from datetime import timedelta
+
+    from research.data_plane.contract import RefusedRowError
+
+    _universe(tmp_path)
+    kis = FakeBrokerClient()
+    late = evening("kr", DAY) + timedelta(days=3)
+    with pytest.raises(RefusedRowError, match="bars_1d_adjusted .* only be observed"):
+        collect(
+            tmp_path,
+            market="kr",
+            day=DAY,
+            datasets=[DATASET_BARS_ADJUSTED],
+            fetch=FakeSources(),
+            now=lambda: late,
+            broker_clients={"kis": kis},
+            budgets=fake_budgets(),
+            commit="t",
+        )
+    assert kis.calls == []  # refused before any broker call
+    assert not partition_path(tmp_path, DATASET_BARS_ADJUSTED, "kr", DAY).exists()
+    results = collect(
+        tmp_path,
+        market="kr",
+        day=DAY,
+        datasets=[DATASET_BARS],
+        fetch=FakeSources(),
+        now=lambda: late,
+        broker_clients={"kis": kis},
+        budgets=fake_budgets(),
+        commit="t",
+    )
+    assert [r.action for r in results] == ["written"]
+
+
+@pytest.mark.unit
+def test_a_below_floor_source_never_fills_the_winners_gaps(tmp_path):
+    _universe(tmp_path)
+    # KIS covers only 005930 (1/3 < 0.6); Yahoo misses exactly that one (2/3)
+    kis = FakeBrokerClient(fail=frozenset({"000660", "247540"}))
+    _bars(
+        tmp_path,
+        FakeSources(missing=frozenset({"005930"})),
+        broker_clients={"kis": kis},
+        min_coverage=0.6,
+    )
+    rows = read_partition(tmp_path, DATASET_BARS, "kr", DAY)
+    assert {r["source"] for r in rows} == {"yahoo_chart"}
+    assert sorted(r["instrument"] for r in rows) == ["000660", "247540"]
+    rec = _record(tmp_path, DATASET_BARS)
+    assert rec["served_by"] == "yahoo"
+    assert [m["instrument"] for m in rec["missing"]] == ["005930"]
+    adj = read_partition(tmp_path, DATASET_BARS_ADJUSTED, "kr", DAY)
+    assert {r["source"] for r in adj} == {"yahoo_chart"}
+    assert "005930" not in {r["instrument"] for r in adj}
+
+
+class _ClosingClient(FakeBrokerClient):
+    def __init__(self):
+        super().__init__()
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+@pytest.mark.unit
+def test_cli_closes_broker_clients_and_a_rerun_builds_none(
+    tmp_path, monkeypatch, capsys
+):
+    from research.data_plane import broker_adapters, cli
+    from research.data_plane import collect as collect_module
+
+    from .test_data_plane_collect import _FrozenDatetime
+
+    opened = []
+
+    def fake_open(names):
+        clients = {n: _ClosingClient() for n in names}
+        opened.append(clients)
+        return broker_adapters.BrokerClients(clients=clients)
+
+    monkeypatch.setattr(broker_adapters, "open_broker_clients", fake_open)
+    monkeypatch.setattr(cli, "make_public_fetch", lambda **_: FakeSources())
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
+    _FrozenDatetime.frozen = evening("kr", DAY)
+    argv = [
+        "collect",
+        "--root",
+        str(tmp_path),
+        "--market",
+        "kr",
+        "--date",
+        DAY.isoformat(),
+    ]
+    argv += ["--broker-budget", "kis=5/1,toss=1/1"]
+
+    assert cli.main(argv) == 0
+    assert [sorted(c) for c in opened] == [["kis", "toss"]]
+    assert all(c.closed == 1 for c in opened[0].values())
+    assert _record(tmp_path, DATASET_BARS)["served_by"] == "kis"
+    assert (tmp_path / ".budget" / "kis.json").exists()
+
+    assert cli.main(argv) == 0  # every partition present: no client is built
+    assert len(opened) == 1
+    assert "already_present bars_1d kr" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_yahoo_lookback_covers_a_long_adjusted_window(tmp_path):
+    _universe(tmp_path)
+    _bars(tmp_path, FakeSources(), adjusted_window=100)
+    adj = read_partition(tmp_path, DATASET_BARS_ADJUSTED, "kr", DAY)
+    per = {r["instrument"] for r in adj}
+    assert len(adj) == 100 * len(per)

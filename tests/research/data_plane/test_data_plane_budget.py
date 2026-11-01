@@ -166,3 +166,45 @@ def test_cli_refuses_a_malformed_or_oversized_budget(value):
         build_parser().parse_args(
             ["collect", "--root", "/x", "--market", "kr", "--broker-budget", value]
         )
+
+
+def _budget_on(state, clock):
+    return ResearchBudget(
+        BudgetSpec("kis", 2, 1.0), state_path=state, clock=clock.now, sleep=clock.sleep
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "{not json",
+        '{"stamps": "x"}',
+        '{"stamps": [1, "a"]}',
+        "[]",
+        '{"stamps": [true]}',
+    ],
+)
+def test_an_unreadable_state_file_counts_as_a_full_window(tmp_path, content):
+    state = tmp_path / "kis.json"
+    state.write_text(content)
+    clock = FakeClock(start=100.0)
+    budget = _budget_on(state, clock)
+    assert budget.try_acquire() is False  # fail closed
+    clock.t += 1.0
+    assert budget.try_acquire() is True  # rewritten: recovers after one window
+    assert budget.try_acquire() is True
+    assert budget.try_acquire() is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stamp", ["Infinity", "NaN", "3700.0"])
+def test_a_non_finite_or_future_stamp_costs_at_most_one_window(tmp_path, stamp):
+    state = tmp_path / "kis.json"
+    state.write_text(f'{{"stamps": [{stamp}, {stamp}]}}')
+    clock = FakeClock(start=100.0)
+    budget = _budget_on(state, clock)
+    budget.acquire()
+    assert clock.slept <= 1.0  # never a stall of an hour or an OverflowError
+    assert _max_in_window(list(budget.grants), 1.0) <= 2

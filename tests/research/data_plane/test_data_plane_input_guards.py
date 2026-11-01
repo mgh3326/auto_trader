@@ -198,3 +198,14 @@ def test_missing_universe_record_falls_back_to_latest_universe_not_the_first(
     # the d1→d2 listing was already recorded; diffing against d1 again would
     # re-emit it with a new compared_universe (a duplicate fact)
     assert [r for r in d4_rows if r["action_type"].startswith("listing")] == []
+
+
+@pytest.mark.unit
+def test_empty_first_us_symbol_directory_is_refused(tmp_path):
+    day = date(2026, 10, 30)
+    src = FakeSources(empty_nasdaq_listed=True)
+    with pytest.raises(
+        CollectError, match="symbol directory nasdaqlisted: .*nothing written"
+    ):
+        _run(tmp_path, "us", day, src, datasets=[DATASET_UNIVERSE])
+    assert recorded_dates(tmp_path, DATASET_UNIVERSE, "us") == []

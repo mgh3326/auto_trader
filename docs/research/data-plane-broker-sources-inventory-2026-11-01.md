@@ -14,7 +14,7 @@ All app broker clients are async and live under `app/services/brokers/`.
 
 | broker | daily bars KR | daily bars US | adjusted vs raw | other read-only data | rate limit as implemented |
 |---|---|---|---|---|---|
-| KIS (`kis/client.py` `KISClient`) | `inquire_daily_itemchartprice_unclamped(code, market="J", n, adj, period, end_date)` → TR `FHKST03010100`, `/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`; pages backwards in 150-day windows | `inquire_overseas_daily_price_unclamped(symbol, exchange_code, n, period, max_iterations, adjusted)` → TR `HHDFS76240000`, `/uapi/overseas-price/v1/quotations/dailyprice`; no end-date parameter (pages back from the latest bar with `BYMD`) | KR `FID_ORG_ADJ_PRC` 0 = adjusted, 1 = raw. US `MODP` 1 = adjusted, 0 = raw — **this PR adds the `adjusted` parameter** (it was hard-coded to 1; the default is unchanged) | current price, minute charts, investor flows; no dividend/split TR is implemented anywhere in `app/` | per-process sliding window per TR (`app/core/async_rate_limiter.py`, keyed `kis|<tr>|<path>`): daily chart 20/1 s, unmapped TRs (overseas daily) fall back to 19/1 s; per-process circuit breaker. Not shared across processes |
+| KIS (`kis/client.py` `KISClient`) | `inquire_daily_itemchartprice_unclamped(code, market="J", n, adj, period, end_date, per_call_days, max_pages)` → TR `FHKST03010100`, `/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`; pages backwards in `per_call_days` windows while it has fewer than `n` rows — **this PR adds the optional `max_pages` cap** (default unbounded, unchanged) | `inquire_overseas_daily_price_unclamped(symbol, exchange_code, n, period, max_iterations, adjusted)` → TR `HHDFS76240000`, `/uapi/overseas-price/v1/quotations/dailyprice`; no end-date parameter (pages back from the latest bar with `BYMD`) | KR `FID_ORG_ADJ_PRC` 0 = adjusted, 1 = raw. US `MODP` 1 = adjusted, 0 = raw — **this PR adds the `adjusted` parameter** (it was hard-coded to 1; the default is unchanged) | current price, minute charts, investor flows; no dividend/split TR is implemented anywhere in `app/` | per-process sliding window per TR (`app/core/async_rate_limiter.py`, keyed `kis|<tr>|<path>`): daily chart 20/1 s, unmapped TRs (overseas daily) fall back to 19/1 s; per-process circuit breaker. Not shared across processes |
 | Toss (`toss/client.py` `TossReadClient`) | `candles(symbol, interval="1d", count, before, adjusted)` → `GET /api/v1/candles` | same endpoint, US symbols in DB dot format | `adjusted=true/false` | `prices(symbols)` batch current price (1–200 symbols); `stocks(...)`/`stocks_all(...)` symbol master with list/delist dates; `warnings(symbol)` | `TossRateLimiter` per group: `MARKET_DATA_CHART` 5/1 s, `MARKET_DATA` 10/1 s, `STOCK` 5/1 s, `ORDER` 6/1 s (3/1 s 09:00–09:10 KST). Process-local by default; `TOSS_RATE_LIMITER_BACKEND=redis` shares the window across processes per client id |
 | Kiwoom live (`kiwoom/live_market_data.py` `KiwoomLiveReadOnlyClient`) | `fetch_daily_chart` (ka10081), adjusted flag `upd_stkpc_tp` | — | yes | — | caller-paced (stage-2 collector: ≥ 0.5 s) |
 | NHPLUG live quotes (`nhplug/live_quotes.py`) | `fetch_kr_period` | `fetch_us_period` | no adjusted flag | index/FX periods | caller-paced (≥ 0.2 s) |
@@ -56,7 +56,11 @@ global `kis` client. `TossReadClient` has `place_order`, `modify_order` and
   is the only module that imports app broker code. It imports `KISClient` and
   `TossReadClient` lazily (only on a broker-backed run) and wraps each in a
   view that answers only `ALLOWED_METHODS` — the two KIS daily charts, Toss
-  `candles`, and close — and refuses every other attribute.
+  `candles`, and close — with plain wrapper functions (no bound method, so no
+  `__self__` path back to the client) and refuses every other attribute. This
+  guards against accidental or careless use; it is not a sandbox (Python
+  introspection of closures can reach any object), and the static tests forbid
+  such access in the package.
   `tests/research/data_plane/test_data_plane_broker_guards.py` pins the
   allowlist, the view, the single import site and the adapters' calls.
 * **Rate budget.** The app's limiters are per process, so they cannot keep a
@@ -66,9 +70,23 @@ global `kis` client. `TossReadClient` has `place_order`, `modify_order` and
   1/1 s (20% of the 5/1 s chart group), and never more than 25%
   (`--broker-budget` is refused above that). The window is kept in
   `<root>/.budget/<broker>.json` under `flock`, so the KR and US collectors and
-  a manual rerun share one share. Serving keeps the rest of the window. The
-  research calls also pass the app's own per-process limiter, and the Toss
-  calls share serving's Redis window when `TOSS_RATE_LIMITER_BACKEND=redis`.
+  a manual rerun share one share (an unreadable state file counts as a full
+  window). One slot is one HTTP request: the KIS KR chart is read with
+  `max_pages=1` (a new optional parameter, default unchanged), the US chart
+  with `max_iterations=1`, Toss `candles` is one page; only an expired-token
+  retry inside the app can add a second request.
+* **What the budget guarantees, and what it does not.** Research never exceeds
+  its share. Serving keeps the rest of the window only while serving itself
+  stays within limit − share: the app's KIS limiter allows each serving process
+  the full 20/1 s, so at full serving load research's 2/1 s goes over the key's
+  limit and KIS answers some calls with rate errors, which the app retries. A
+  hard bound for KIS needs serving to draw from a shared window too (lower
+  serving's `KIS_API_RATE_LIMITS` daily-chart entry by the research share, or
+  a Redis window) — an operator decision, not changed here. The KR DAG runs
+  after the KRX close (18:00 KST); the US DAG starts at 08:00/09:00 KST and can
+  overlap the KR morning session. For Toss with
+  `TOSS_RATE_LIMITER_BACKEND=redis`, research draws from serving's own Redis
+  window, so the key's 5/1 s holds and research takes at most its share.
 * **Tokens.** The KIS and Toss token managers are shared through Redis, so the
   collector reuses serving's token and never issues one that would replace it
   (Toss allows one valid token per client).

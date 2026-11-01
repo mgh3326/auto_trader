@@ -5,10 +5,20 @@ domestic and overseas order clients, and ``TossReadClient`` has
 ``place_order``/``modify_order``/``cancel_order``. This module never hands such
 an object to research code. Each client is wrapped at construction in a view
 that answers only the methods in ``ALLOWED_METHODS`` (daily charts and
-close) and raises ``BrokerMethodRefusedError`` for every other attribute; the
-view holds the client only in a closure. A static test pins that this is the
-only module of the package that imports app broker code, that it imports it
-lazily, and that it reaches the clients only through the view.
+close) and raises ``BrokerMethodRefusedError`` for every other attribute. An
+allowed name is answered with a plain wrapper function, not the client's bound
+method, so the view has no attribute (such as ``__self__``) that leads back to
+the client. This is a guard against accidental or careless use, not a sandbox:
+Python introspection (closures, coroutine frames) can still reach any object,
+and the static tests forbid such access anywhere in the package. A static test
+pins that this is the only module of the package that imports app broker code,
+that it imports it lazily, and that it reaches the clients only through the
+view.
+
+One research budget slot is one broker HTTP request: the KR chart is read with
+``max_pages=1`` and the US chart with ``max_iterations=1``; Toss ``candles`` is
+a single page. The app retries a request once on an expired token, which is
+the only way one slot can cost two requests.
 
 The app modules are imported only when ``open_broker_clients`` runs (the
 collector on the host that has the broker credentials). Importing the package
@@ -65,6 +75,12 @@ KIS_US_PAGE_ROWS = 100
 KR_MARKET_CODE = "J"  # KRX
 
 
+def kr_calendar_days(sessions: int) -> int:
+    """Calendar days that hold ``sessions`` KRX sessions in one chart page
+    (KIS answers at most 100 rows per request)."""
+    return max(14, math.ceil(sessions * 7 / 5) + 30)
+
+
 class BrokerMethodRefusedError(AttributeError):
     """Research tried to reach a broker method outside ``ALLOWED_METHODS``."""
 
@@ -81,7 +97,12 @@ def read_only_view(broker: str, target: Any) -> Any:
                 raise BrokerMethodRefusedError(
                     f"{broker}: {name!r} is not an allowed research method"
                 )
-            return getattr(target, name)
+
+            def call(*args: Any, **kwargs: Any) -> Any:
+                return getattr(target, name)(*args, **kwargs)
+
+            call.__name__ = call.__qualname__ = name
+            return call
 
         def __setattr__(self, name: str, value: Any) -> None:
             raise BrokerMethodRefusedError(f"{broker}: the view is read-only")
@@ -186,6 +207,8 @@ class KisDailyClient:
                     adj=adjusted,
                     period="D",
                     end_date=end,
+                    per_call_days=kr_calendar_days(count),
+                    max_pages=1,
                 )
             )
             return frame_bars(frame)

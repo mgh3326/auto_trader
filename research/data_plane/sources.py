@@ -97,8 +97,6 @@ def parse_universe(market: str, bodies: Mapping[str, bytes]) -> list[UniverseEnt
                 )
             except (ValueError, KeyError) as exc:
                 raise SourceError(f"symbol directory {series}: {exc}") from exc
-            if not obs.rows:
-                raise SourceError(f"symbol directory {series}: empty")
             out += [
                 UniverseEntry(
                     row.symbol,

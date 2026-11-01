@@ -52,7 +52,9 @@ class FakeSources:
         future_bar: bool = False,
         kospi: dict[str, str] | None = None,
         malformed: frozenset[str] = frozenset(),
+        empty_nasdaq_listed: bool = False,
     ) -> None:
+        self.empty_nasdaq_listed = empty_nasdaq_listed  # header + footer only
         self.binance_pairs = dict(
             BINANCE_PAIRS if binance_pairs is None else binance_pairs
         )
@@ -81,6 +83,9 @@ class FakeSources:
         if host == "www.nasdaqtrader.com":
             day = date(2026, 10, 30)
             if path.endswith("nasdaqlisted.txt"):
+                if self.empty_nasdaq_listed:
+                    body = nasdaq_body(day, ("AAPL",)).splitlines(keepends=True)
+                    return FetchResponse(200, (body[0] + body[-1]).encode())
                 return FetchResponse(200, nasdaq_body(day, ("AAPL",)).encode())
             return FetchResponse(200, other_body(day, ("KO",)).encode())
         if host == "data-api.binance.vision" and path == "/api/v3/exchangeInfo":

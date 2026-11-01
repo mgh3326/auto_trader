@@ -39,11 +39,13 @@ from .collect import (
     collect,
 )
 from .contract import (
+    BAR_DATASETS,
     DATASET_BARS_ADJUSTED,
     DATASETS,
     MARKETS,
     RefusedRowError,
     check_coverage_floor,
+    market_datasets,
 )
 from .health import (
     DEFAULT_GRACE,
@@ -53,6 +55,7 @@ from .health import (
     ping_url,
 )
 from .public_http import make_public_fetch
+from .store import partition_path
 
 
 def _iso_now(value: str) -> datetime:
@@ -234,10 +237,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.market in DEFAULT_SOURCE_ORDER:
                 order = args.bar_sources or list(DEFAULT_SOURCE_ORDER[args.market])
                 wanted = [n for n in order if n in BROKER_SOURCES]
-                bars_requested = datasets is None or any(
-                    d.startswith("bars_") for d in datasets
-                )
-                if wanted and bars_requested:
+                bar_datasets = [
+                    d
+                    for d in (datasets or market_datasets(args.market))
+                    if d in BAR_DATASETS
+                ]
+                # a rerun whose bar partitions all exist builds no broker client
+                bars_to_collect = [
+                    d
+                    for d in bar_datasets
+                    if not partition_path(args.root, d, args.market, day).exists()
+                ]
+                if wanted and bars_to_collect:
                     # lazy: the app clients load only on a broker-backed run
                     from .broker_adapters import open_broker_clients
 

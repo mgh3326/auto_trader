@@ -118,7 +118,9 @@ the bar of session `P` as traded.
 source in `--bar-sources` (default `kis,toss,yahoo`) whose coverage reaches the
 floor; a source that is not configured, cannot build its client, fails 25
 instruments in a row before serving any, or covers too little is recorded in
-`source_attempts` and the next one is tried. A partition never mixes sources.
+`source_attempts` and the next one is tried. A source is stopped as soon as the
+floor is out of reach (`instruments_tried` records where), so a failing source
+does not spend its budget on the rest of the universe. A partition never mixes sources.
 Broker calls are read-only daily charts (see the broker inventory) and take a
 research budget slot each.
 
@@ -131,7 +133,10 @@ source's `adj_close`, when building a training series.
 
 The adjusted bars of the last `--adjusted-window` sessions (default 20) ending at
 `P`, as the source publishes them on `P`: same bar fields plus `price_basis =
-adjusted`, `adjustment_basis` and `vintage_date = P`. Every row of the
+adjusted`, `adjustment_basis` and `vintage_date = P`. **Collectable only on its
+own day** (like the universe): read later, the source's adjustment would carry
+events announced after `P` under `P`'s `available_at`, so a run for an earlier
+`P` is refused (exit 3). Raw `bars_1d` can still be backfilled. Every row of the
 partition has `available_at = bar_available_at(P)` whatever its `bar_date` (an
 adjusted value is known only once the adjustment is), and `event_time` = that
 bar's session close. Raw and adjusted are separate datasets with separate

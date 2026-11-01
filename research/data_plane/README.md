@@ -51,6 +51,8 @@ before the session's close + 30 min).
 is refused above 25% of a broker's per-key limit; the budget window lives in
 `$ROOT/.budget/` and is shared by every collector on that root.
 `--adjusted-window N` sets the sessions kept per adjusted vintage (default 20).
+An adjusted vintage can only be collected on its own day; `--date` backfills
+raw `bars_1d` only.
 
 `--symbols A,B` restricts bars/actions to those universe instruments (recorded
 as `instrument_selection: explicit_subset`). Use it only on a scratch root: a

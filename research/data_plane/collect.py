@@ -13,6 +13,7 @@ account, a credential or a scheduler.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -348,9 +349,9 @@ def _instruments(run: _Run) -> tuple[list[tuple[str, str]], list[dict[str, str]]
 def _yahoo(run: _Run, instrument: str, venue: str) -> sources.YahooChart | str:
     key = (instrument, venue)
     if key not in run.yahoo_cache:
-        url = sources.yahoo_chart_url(
-            run.market, instrument, venue, run.day, run.lookback_days
-        )
+        # wide enough for the actions lookback and the adjusted window
+        days = max(run.lookback_days, math.ceil(run.adjusted_window * 7 / 5) + 14)
+        url = sources.yahoo_chart_url(run.market, instrument, venue, run.day, days)
         try:
             run.yahoo_cache[key] = sources.parse_yahoo_chart(run.market, _get(run, url))
         except (
@@ -561,6 +562,10 @@ def _build_bars(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 
 def _build_bars_adjusted(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    # A vintage is the source's adjustment *as of P*: read later, it would carry
+    # adjustments announced after P under P's available_at. Raw bars of P do not
+    # change, so only they can be backfilled.
+    _require_observable_today(run, DATASET_BARS_ADJUSTED)
     available = _bars_ready(run, DATASET_BARS_ADJUSTED)
     return _equity_bars(run, DATASET_BARS_ADJUSTED, VINTAGE_ADJUSTED, available)
 
@@ -592,7 +597,7 @@ def _equity_bars(
             )
             continue
         try:
-            rows, missing = _source_rows(run, source, vintage, pairs, available)
+            rows, missing, tried = _source_rows(run, source, vintage, pairs, available)
         except SourceUnavailableError as exc:
             attempts.append(
                 {"source": name, "outcome": "unavailable", "detail": str(exc)[:200]}
@@ -600,11 +605,14 @@ def _equity_bars(
             continue
         coverage = (len(pairs) - len(missing)) / len(pairs)
         if coverage < run.min_coverage:
+            # stopped as soon as the floor was out of reach: coverage is then
+            # the best the source could still have reached
             attempts.append(
                 {
                     "source": name,
                     "outcome": "coverage_below_floor",
                     "coverage": round(coverage, 6),
+                    "instruments_tried": tried,
                     "missing_reasons": _reason_counts(missing),
                 }
             )
@@ -646,6 +654,7 @@ def _attempts_text(attempts: list[dict[str, Any]], floor: float) -> str:
         else:
             parts.append(
                 f"{a['source']} coverage {a['coverage']:.3f} < {floor} "
+                f"after {a['instruments_tried']} instruments "
                 f"(reasons {a['missing_reasons']})"
             )
     return "; ".join(parts)
@@ -657,11 +666,21 @@ def _source_rows(
     vintage: str,
     pairs: list[tuple[str, str]],
     available: datetime,
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], int]:
+    """Rows and gaps of one source, and how many instruments it was asked for.
+
+    Stops as soon as the coverage floor can no longer be reached, so a failing
+    source does not spend its budget (and the run's time) on the rest of the
+    universe before the next source is tried.
+    """
     rows: list[dict[str, Any]] = []
     missing: list[dict[str, str]] = []
     streak = 0
+    tried = 0
     for instrument, venue in pairs:
+        if (len(pairs) - len(missing)) / len(pairs) < run.min_coverage:
+            break
+        tried += 1
         try:
             got = _equity_rows(run, source, vintage, instrument, venue, available)
         except SourceUnavailableError:
@@ -685,7 +704,7 @@ def _source_rows(
             continue
         streak = 0
         rows.extend(got)
-    return rows, missing
+    return rows, missing, tried
 
 
 def _equity_rows(

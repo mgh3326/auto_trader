@@ -290,6 +290,12 @@ def test_kis_kr_adapter_passes_the_adjustment_flag_and_end_date():
     assert [c[1]["adj"] for c in kis.calls] == [False, True]
     assert {c[1]["end_date"] for c in kis.calls} == {date(2026, 10, 30)}
     assert {c[1]["market"] for c in kis.calls} == {"J"}
+    # one budget slot = one chart request: a single page wide enough for count
+    assert {c[1]["max_pages"] for c in kis.calls} == {1}
+    assert {c[1]["per_call_days"] for c in kis.calls} == {
+        broker_adapters.kr_calendar_days(2)
+    }
+    assert broker_adapters.kr_calendar_days(100) * 5 / 7 >= 100
     client.close()
     assert kis.calls[-1][0] == "close"
 
@@ -385,3 +391,25 @@ def test_open_broker_clients_reports_a_failing_constructor_by_class_only(monkeyp
     finally:
         clients.close()
     assert broker_adapters.ALLOWED_METHODS is ALLOWED_METHODS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("broker", "name"), [("kis", "close"), ("toss", "candles")])
+def test_an_allowed_method_does_not_lead_back_to_the_client(broker, name):
+    class Client:
+        def close(self):
+            return "closed"
+
+        def candles(self, *a, **k):
+            return "page"
+
+        def place_order(self, **k):  # pragma: no cover
+            raise AssertionError("order sent")
+
+    target = Client()
+    method = getattr(read_only_view(broker, target), name)
+    assert getattr(method, "__self__", None) is None
+    assert not any(
+        getattr(method, attr, None) is target for attr in ("__self__", "__wrapped__")
+    )
+    assert method() in ("closed", "page")

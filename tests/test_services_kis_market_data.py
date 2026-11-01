@@ -229,6 +229,54 @@ async def test_kis_overseas_daily_unclamped_selects_adjusted_or_raw_prices(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("max_pages", "expected_calls"), [(None, 3), (1, 1), (2, 2)])
+async def test_kis_domestic_daily_unclamped_caps_pages(
+    monkeypatch, max_pages, expected_calls
+):
+    """ROB-1448: max_pages bounds chart requests; None keeps paging (default)."""
+    import datetime as _dt
+
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    pages = [
+        [
+            {
+                "stck_bsop_date": "20261030",
+                "stck_oprc": "1",
+                "stck_hgpr": "1",
+                "stck_lwpr": "1",
+                "stck_clpr": "1",
+                "acml_vol": "1",
+                "acml_tr_pbmn": "1",
+            }
+        ],
+        [
+            {
+                "stck_bsop_date": "20260530",
+                "stck_oprc": "1",
+                "stck_hgpr": "1",
+                "stck_lwpr": "1",
+                "stck_clpr": "1",
+                "acml_vol": "1",
+                "acml_tr_pbmn": "1",
+            }
+        ],
+        [],
+    ]
+    request_mock = AsyncMock(side_effect=[{"rt_cd": "0", "output2": p} for p in pages])
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    kwargs = {} if max_pages is None else {"max_pages": max_pages}
+    await client.inquire_daily_itemchartprice_unclamped(
+        "005930", n=5, end_date=_dt.date(2026, 10, 30), **kwargs
+    )
+
+    assert request_mock.await_count == expected_calls
+
+
+@pytest.mark.asyncio
 async def test_kis_inquire_overseas_minute_chart_marks_continuation_when_keyb_given(
     monkeypatch,
 ):
