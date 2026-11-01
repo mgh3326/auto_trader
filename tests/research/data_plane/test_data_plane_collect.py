@@ -14,9 +14,9 @@ from research.data_plane.contract import (
     DATASET_ACTIONS,
     DATASET_BARS,
     DATASET_UNIVERSE,
-    DATASETS,
     RefusedRowError,
     make_row,
+    market_datasets,
     validate_rows,
 )
 from research.data_plane.store import (
@@ -43,7 +43,7 @@ def _run(
     day: date,
     src: FakeSources,
     symbols=None,
-    datasets=DATASETS,
+    datasets=None,
 ):
     return collect(
         root,
@@ -64,8 +64,8 @@ def test_second_run_same_day_fetches_and_writes_nothing(
 ):
     src = FakeSources()
     first = _run(tmp_path, market, day, src, symbols)
-    assert [r.action for r in first] == ["written"] * 3
-    assert [r.dataset for r in first] == list(DATASETS)
+    assert [r.action for r in first] == ["written"] * len(market_datasets(market))
+    assert [r.dataset for r in first] == list(market_datasets(market))
     assert src.total_calls > 0
     bars = read_partition(tmp_path, DATASET_BARS, market, day)
     assert bars and all(r["available_at"] <= r["observed_at"] for r in bars)
@@ -74,7 +74,9 @@ def test_second_run_same_day_fetches_and_writes_nothing(
     again = FakeSources()
     second = _run(tmp_path, market, day, again, symbols)
 
-    assert [r.action for r in second] == ["already_present"] * 3
+    assert [r.action for r in second] == ["already_present"] * len(
+        market_datasets(market)
+    )
     assert again.total_calls == 0
     assert [r.sha256 for r in second] == [r.sha256 for r in first]
     assert tree_state(tmp_path) == before  # same files, same bytes, same mtimes
@@ -86,12 +88,13 @@ def test_next_day_only_appends(tmp_path, market, day, next_day, symbols):
     _run(tmp_path, market, day, FakeSources(), symbols)
     before = tree_state(tmp_path)
     manifests_before = {
-        ds: manifest_path(tmp_path, ds, market).read_bytes() for ds in DATASETS
+        ds: manifest_path(tmp_path, ds, market).read_bytes()
+        for ds in market_datasets(market)
     }
 
     results = _run(tmp_path, market, next_day, FakeSources(), symbols)
 
-    assert [r.action for r in results] == ["written"] * 3
+    assert [r.action for r in results] == ["written"] * len(market_datasets(market))
     after = tree_state(tmp_path)
     for name, state in before.items():
         if name.endswith("manifest.jsonl"):
@@ -270,7 +273,9 @@ def test_bars_never_use_a_later_universe(tmp_path):
 def test_source_returning_only_other_days_is_missing_not_misfiled(tmp_path):
     day = date(2026, 10, 30)
     _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
-    with pytest.raises(CollectError, match="coverage 0.000"):
+    with pytest.raises(
+        CollectError, match="yahoo coverage 0.667 < 0.95 after 1 instruments"
+    ):
         _run(tmp_path, "kr", day, FakeSources(future_bar=True), datasets=[DATASET_BARS])
     assert not partition_path(tmp_path, DATASET_BARS, "kr", day).exists()
 
@@ -279,7 +284,7 @@ def test_source_returning_only_other_days_is_missing_not_misfiled(tmp_path):
 def test_coverage_floor_and_missing_list(tmp_path):
     day = date(2026, 10, 30)
     _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
-    with pytest.raises(CollectError, match="coverage 0.667"):
+    with pytest.raises(CollectError, match="yahoo coverage 0.667"):
         _run(
             tmp_path,
             "kr",

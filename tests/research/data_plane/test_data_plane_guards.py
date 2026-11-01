@@ -61,7 +61,9 @@ def test_dag_proposal_is_valid_yaml_running_only_data_plane_commands(path):
     datasets = {
         parser.parse_args(shlex.split(s["command"])[5:]).dataset for s in steps[1:]
     }
-    assert datasets == {"universe", "bars_1d", "corporate_actions"}
+    from research.data_plane.contract import market_datasets
+
+    assert datasets == set(market_datasets(market))
 
 
 FORBIDDEN_IMPORT_PREFIXES = (
@@ -75,6 +77,15 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "httpx",
 )
 ALLOWED_APP_IMPORTS = {"app.core.symbol"}
+# The only app broker imports of the package: lazy, inside broker_adapters'
+# open_broker_clients, wrapped in the allowlisted read-only view
+# (test_data_plane_broker_guards pins the rest).
+ALLOWED_BROKER_IMPORTS = {
+    "broker_adapters.py": {
+        "app.services.brokers.kis.client",
+        "app.services.brokers.toss.client",
+    }
+}
 
 
 @pytest.mark.unit
@@ -90,6 +101,8 @@ def test_package_imports_no_db_broker_or_scheduler_code():
                 continue
             for name in names:
                 if name in ALLOWED_APP_IMPORTS:
+                    continue
+                if name in ALLOWED_BROKER_IMPORTS.get(path.name, ()):
                     continue
                 root = name.split(".")[0]
                 assert root not in FORBIDDEN_IMPORT_PREFIXES, (

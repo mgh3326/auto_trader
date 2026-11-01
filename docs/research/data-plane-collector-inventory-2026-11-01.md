@@ -103,7 +103,8 @@ job keeps feeding the live app, but research must not train on its table.
 | collector | trigger | source → destination | PIT | decision |
 |---|---|---|---|---|
 | `universe` kr/us/crypto | `research.data_plane.cli collect` (manual; Dagu proposal) | KIS master, NASDAQ Trader, Binance exchangeInfo, Upbit market/all → `universe/<market>/date=P/` | write-once, `available_at` = observation | **Build (this PR)** |
-| `bars_1d` kr/us/crypto | same | Yahoo chart v8 (KR/US), Binance klines, Upbit day candles → `bars_1d/<market>/date=P/` | write-once; refuses forming bars and rows dated after `P` | **Build (this PR)** |
+| `bars_1d` kr/us/crypto | same | KR/US: KIS daily chart → Toss candles → Yahoo chart v8 fallback (ROB-1448; `served_by` in the manifest); crypto: Binance klines, Upbit day candles → `bars_1d/<market>/date=P/` | write-once; refuses forming bars and rows dated after `P` | **Build (this PR)** |
+| `bars_1d_adjusted` kr/us | same | KIS → Toss → Yahoo (derived) adjusted bars of the last 20 sessions as published on `P` → `bars_1d_adjusted/<market>/date=P/` | write-once vintage; raw stays in `bars_1d` | **Build (ROB-1448)** |
 | `corporate_actions` kr/us/crypto | same | Yahoo dividends/splits (KR/US) + listing changes from the universe diff (all) → `corporate_actions/<market>/date=P/` | first-observed semantics | **Build (this PR)** |
 
 ### Not collectors (for completeness)

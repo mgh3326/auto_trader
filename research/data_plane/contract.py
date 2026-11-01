@@ -40,8 +40,12 @@ CONTRACT_VERSION = "data-plane-v1"
 
 DATASET_UNIVERSE = "universe"
 DATASET_BARS = "bars_1d"
+# KR/US only: the adjusted vintage (the last N adjusted bars as published on the
+# partition day), stored apart from the raw bars of ``bars_1d``.
+DATASET_BARS_ADJUSTED = "bars_1d_adjusted"
 DATASET_ACTIONS = "corporate_actions"
-DATASETS = (DATASET_UNIVERSE, DATASET_BARS, DATASET_ACTIONS)
+DATASETS = (DATASET_UNIVERSE, DATASET_BARS, DATASET_BARS_ADJUSTED, DATASET_ACTIONS)
+BAR_DATASETS = (DATASET_BARS, DATASET_BARS_ADJUSTED)
 
 COMMON_FIELDS = (
     "instrument",
@@ -59,6 +63,16 @@ COMMON_FIELDS = (
 DATASET_FIELDS: Mapping[str, tuple[str, ...]] = {
     DATASET_UNIVERSE: ("listing_status",),
     DATASET_BARS: ("bar_date", "open", "high", "low", "close", "volume"),
+    DATASET_BARS_ADJUSTED: (
+        "bar_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "price_basis",
+        "adjustment_basis",
+    ),
     DATASET_ACTIONS: ("action_type",),
 }
 
@@ -67,6 +81,7 @@ DATASET_FIELDS: Mapping[str, tuple[str, ...]] = {
 ROW_KEY: Mapping[str, tuple[str, ...]] = {
     DATASET_UNIVERSE: ("instrument", "venue"),
     DATASET_BARS: ("instrument", "venue", "bar_date"),
+    DATASET_BARS_ADJUSTED: ("instrument", "venue", "bar_date"),
     DATASET_ACTIONS: (
         "instrument",
         "venue",
@@ -111,6 +126,15 @@ def check_coverage_floor(value: float) -> float:
             f"coverage floor must be finite and within [0, 1], got {value!r}"
         )
     return float(value)
+
+
+def market_datasets(market: str) -> tuple[str, ...]:
+    """Datasets collected for a market, in collection order (crypto has no
+    adjusted vintage: there are no corporate actions to adjust for)."""
+    market_spec(market)
+    if market == "crypto":
+        return tuple(d for d in DATASETS if d != DATASET_BARS_ADJUSTED)
+    return DATASETS
 
 
 def market_spec(market: str) -> MarketSpec:

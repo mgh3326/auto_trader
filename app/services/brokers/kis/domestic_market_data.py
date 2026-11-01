@@ -652,21 +652,27 @@ class DomesticMarketDataMixin(MarketDataBase):
         period: str = "D",
         end_date: datetime.date | None = None,
         per_call_days: int = 150,
+        max_pages: int | None = None,
     ) -> pd.DataFrame:
         """Batch-ingest variant of inquire_daily_itemchartprice.
 
         Bypasses normalize_daily_chart_lookback so callers driving the
         durable daily candle store / backfill jobs can request horizons
         longer than the display safety clamp. Identical pagination loop
-        otherwise.
+        otherwise. ``max_pages`` (default: unbounded, the previous behaviour)
+        caps the number of chart requests, for callers that budget calls.
         """
         if n < 1:
             raise ValueError("n must be greater than or equal to 1")
+        if max_pages is not None and max_pages < 1:
+            raise ValueError("max_pages must be greater than or equal to 1")
 
         end = end_date or datetime.date.today()
         rows: list[dict] = []
+        pages = 0
 
-        while len(rows) < n:
+        while len(rows) < n and (max_pages is None or pages < max_pages):
+            pages += 1
             start = end - datetime.timedelta(days=per_call_days)
             params = {
                 "FID_COND_MRKT_DIV_CODE": market,

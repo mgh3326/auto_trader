@@ -450,12 +450,24 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 
 `research/data_plane/` — U7/U8(부스팅·TFT) 입력을 KR·US·crypto 별로 하루 한 번 쌓는 연구 전용
 수집기. 계약 정본: `docs/research/data-plane-contract-v1.md`, 수집기 인벤토리·keep/fix/rebuild/retire
-판정: `docs/research/data-plane-collector-inventory-2026-11-01.md`. 공개 무인증 소스만 쓰며
-(`public_http.check_url` 허용 목록 밖은 소켓 전에 거부) DB·브로커·자격증명·스케줄러 import 가 없다
+판정: `docs/research/data-plane-collector-inventory-2026-11-01.md`, 브로커 소스 인벤토리(ROB-1448):
+`docs/research/data-plane-broker-sources-inventory-2026-11-01.md`. 공개 소스 읽기는
+`public_http.check_url` 허용 목록 밖을 소켓 전에 거부하고, DB·스케줄러 import 가 없다
 (`tests/research/data_plane/test_data_plane_guards.py`).
 
+- **브로커 일봉 (ROB-1448)**: KR/US `bars_1d`(raw)·`bars_1d_adjusted`(KR/US 전용, 최근 N세션 조정 vintage)는
+  `--bar-sources`(기본 `kis,toss,yahoo`) 순서로 커버리지 하한을 넘는 첫 소스가 파티션 전체를 서빙하고
+  공개 Yahoo 가 폴백이다. manifest 가 `served_by`·`source_attempts`·`adjustment_basis` 를 기록하며 한 파티션에
+  소스를 섞지 않는다. 🔴 앱 브로커 import 는 `broker_adapters.py` 한 곳, 함수 안 지연 import 뿐이고
+  `KISClient`/`TossReadClient` 는 `ALLOWED_METHODS`(KIS 일봉 2종·Toss `candles`·close)만 답하는 읽기 전용 view 로만
+  닿는다 — 주문·계좌·잔고 메서드 도달 불가(`test_data_plane_broker_guards.py`). 이 allowlist 를 넓히지 마라.
+  🔴 연구 호출은 브로커별 키 한도의 고정 몫만 쓴다(`budget.py`, 기본 KIS 2/1s·Toss 1/1s, 25% 초과 거부,
+  `<root>/.budget/` flock 으로 같은 root 의 수집기끼리 공유, 슬롯 1개 = HTTP 요청 1개) — 상한을 올리지 마라.
+  연구 몫의 상한만 보장한다: 서빙 프로세스 limiter 는 KIS 20/1s 전부를 쓰므로 서빙 만부하 시 KIS 키 한도
+  초과가 가능하며, 하드 보장은 서빙 limiter 를 몫만큼 낮추는 운영자 결정이 필요하다(이 PR 범위 밖). 앱 변경은 KIS 해외 일봉 `adjusted`(`MODP`)·국내 일봉 `max_pages` 선택 파라미터
+  추가뿐(기본값·기존 동작 불변). `bars_1d_adjusted` 는 그 날에만 수집 가능(늦은 실행은 거부). Kiwoom(모의 전용·stage 2 별도 승인)·NHPLUG 는 소스로 쓰지 않는다.
 - **명령(수동)**: `uv run python -m research.data_plane.cli collect --root DIR --market kr|us|crypto`
-  (universe→bars_1d→corporate_actions), `... health --root DIR --market M --dataset D [--ping-url-env NAME]`
+  (universe→bars_1d→bars_1d_adjusted(KR/US)→corporate_actions), `... health --root DIR --market M --dataset D [--ping-url-env NAME]`
 - 🔴 **파티션 날짜 = 가용 날짜**: `date=P` 에는 `available_at` 이 시장 현지일 `P` 인 행만 들어간다.
   `P` 보다 늦은 `available_at`·이른 `available_at`·`observed_at < available_at`(형성 중 봉)·오프셋 없는
   시각·해시 불일치 행은 거부되고 아무것도 쓰지 않는다(exit 3). crypto 파티션 `P` 는 UTC `P−1` 일봉이다.
