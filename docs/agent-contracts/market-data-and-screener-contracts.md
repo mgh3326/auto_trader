@@ -17,6 +17,7 @@
 - KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
 - crypto-universe-v1 — 상폐 포함 PIT 유니버스·일봉 재구축 (ROB-1432)
+- 실험 레지스트리·manifest·heartbeat (ROB-1429)
 
 ## 기준 원문 계약
 
@@ -369,6 +370,28 @@ api.upbit.com market/all·candles/days) 밖의 URL 을 소켓 전에 거부한�
   `research/crypto_universe/data/`(PIT 표·coverage·manifest)뿐. 캔들은 crypto-corpus-v1 holdout
   경계(2025-01-01)로 exploration/holdout 분리.
 - **테스트**: `tests/research/crypto_universe/`. 런북 대신 `research/crypto_universe/README.md`.
+
+### 실험 레지스트리·manifest·heartbeat (ROB-1429)
+
+전략 실험(백테스트·부스팅 베이스라인·TFT 도전자·forward shadow)은 테스트 데이터를 읽기 전에
+`research/experiments/registry.json` 에 등록한다. 형식·규칙 정본: `research/experiments/README.md`,
+분할·누수 규칙: `docs/research/experiment-split-leakage-rules.md`.
+
+- **manifest** `experiment-manifest/v1`(`research/experiments/manifests/*.json`): hashes·features(`available_at`)·
+  labels(세션 지평)·calendar·splits(공통 날짜 walk-forward, purge ≥ 최장 지평, gap ≥ 5 세션, 테스트는 봉인
+  기간 또는 prospective seal)·candidate_policies·costs_fills·tuning_budget·seeds·metrics·stopping_rules·
+  cumulative_k. 정체성 = canonical JSON sha256. 바뀐 manifest 는 새 version 이고 옛 hash 는
+  `previous_manifest_sha256` 로 남긴다.
+- 🔴 **test-set look 마다 k 증가**: 테스트를 열기 전에 `test_looks` 에 추가(리포트 `report_sha256` 고정)하고 같은 커밋에서 `k = len(test_looks)`.
+  `k` 감소·이전 look 수정·가설 삭제 금지(CI 가 base 브랜치 registry 와 대조). 리포트는
+  `Experiment-Manifest-Sha256:` 줄로 등록된 hash 를 인용해야 하며, 미등록 hash·미계수 look 은 CI 실패
+  (`scripts/ci/experiment_registry_lint.py`, `lint` 잡 + `tests/ci/test_experiment_registry_lint.py`).
+- **heartbeat**: `uv run python -m research.experiments.heartbeat --path ID=PATH` — 읽기 전용(파일만, DB·네트워크·
+  app import 0). epoch 별 마지막 advance 와 그 뒤 마감된 세션 수, 3 세션 초과 idle 이면 RED(종료 코드 1).
+  ROB-1391(원장 `events.jsonl`)·H5(weekly-score snapshot `nav_samples[].observed_at`) 등록. 비공개 경로는
+  레포에 넣지 않는다. 🔴 스케줄러·알림 연결 없음(운영자 결정).
+- 등록(2026-11-01, k=0, draft): `ROB-1411`, `H-entry-price`, `H-admit`. 정리 대상 목록:
+  `docs/research/at-retirement-inventory-2026-11-01.md`(권고만, hk/Linear 상태 변경 0).
 
 ## 유지 규약
 
