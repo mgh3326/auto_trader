@@ -20,6 +20,7 @@
 - 실험 레지스트리·manifest·heartbeat (ROB-1429)
 - KR 상폐·종료결과 복구 + 인과 일봉 export (ROB-1430)
 - US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
+- KR 부스팅 베이스라인·동결 대조군 (ROB-1441)
 
 ## 기준 원문 계약
 
@@ -444,6 +445,20 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
   시리즈보다 7일 넘게 뒤처지면 rebuild 가 거부한다. 이 가드를 완화하지 마라.
 - 브로커 API·자격증명·DB·스케줄러 없음. Alpaca paper inactive 자산 목록은 자격증명이 필요하고
   날짜가 없어 미사용(런북 = `research/us_universe/README.md`).
+
+### KR 부스팅 베이스라인·동결 대조군 (ROB-1441)
+
+`research/kr_boosting/` — U7-KR. U2 인과 데이터셋으로 `H-admit`·`H-entry-price` 의 LightGBM 베이스라인을
+돌려 U5 계약으로 대조군(변경 없는 정책·모멘텀·평균회귀·현금)과 비교하고 게이트 판정을 낸다. 연구 전용:
+`app` import·DB·브로커·스케줄러 0. 판정과 수치는 `research/experiments/reports/rob-1441-kr-boosting-baseline.md`.
+
+- 🔴 **ML 의존성은 `pyproject.toml` 에 넣지 않는다**: `research/kr_boosting/requirements-ml.txt` 별도 환경. LightGBM 은 `train.py` 안에서만 지연 import 한다(테스트가 강제).
+- 🔴 **2023-2024 는 sealed test 가 아니다**: 노출 감사(`exposure_audit.py`) 결과 입증 불가라 진단 전용이고, 게이트에 쓰지 않는다. 그 읽기는 k 로 계수했다. 시험은 prospective seal 이며 미개봉이다. `read_rows` 는 2023 이후 읽기를 기본 거부하고, `diagnostic` 만 동결 번들을 확인한 뒤 1회 읽는다.
+- 🔴 **`feature_join` 이 유일한 입력 경로다**: `available_at` 이 결정 시각보다 늦은 행은 거부, 없는 행은 제외·계수. terminal 컬럼은 피처 입력이 아니다.
+- 🔴 **게이트가 STOP 인 가설은 U8 TFT 를 돌리지 않는다.** 게이트 수치를 사후에 바꾸지 말고 바꿀 일이 있으면 새 manifest 버전과 새 시험을 쓴다.
+- 분할은 purge + gap 을 경계마다 **더해서** 적용한다(H-admit 5+5, H-entry-price 25+25). 설정 선택은 Y-1 년으로만 한다.
+- U5 KR 어댑터는 D3 엔진을 감싸 자체 순위만 쓰고 거래량이 없어서, `simulator.py` 가 같은 계약 타입·체결 모델로 후보 목록과 `VolumeShare` 를 돌린다.
+- **런북**: `research/kr_boosting/README.md`. 스케줄 없음(수동 `validate`/`diagnostic`/`report`).
 
 ## 유지 규약
 

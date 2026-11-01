@@ -53,12 +53,11 @@ def test_repository_registry_passes() -> None:
     assert lint.run(REPO) == []
 
 
-def test_registry_holds_required_hypotheses_with_k_zero() -> None:
+def test_registry_holds_required_hypotheses_with_k_counting_looks() -> None:
     registry = _registry(REPO)
     by_id = {h["id"]: h for h in registry["hypotheses"]}
     for hid in REQUIRED_IDS:
-        assert by_id[hid]["k"] == 0
-        assert by_id[hid]["test_looks"] == []
+        assert by_id[hid]["k"] == len(by_id[hid]["test_looks"])
 
 
 def test_copied_registry_passes(repo: Path) -> None:
