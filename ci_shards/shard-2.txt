@@ -51,6 +51,10 @@ tests/monitoring/test_sentry_account_scrub.py
 tests/research/eval_contract/test_eval_contract_kr_d3.py
 tests/research/eval_contract/test_eval_contract_rob1383_q2.py
 tests/research/eval_contract/test_eval_contract_types.py
+tests/research/kr_boosting/test_kr_boosting_features.py
+tests/research/kr_boosting/test_kr_boosting_pipeline.py
+tests/research/kr_boosting/test_kr_boosting_sim.py
+tests/research/kr_boosting/test_kr_boosting_splits.py
 tests/research/rob1391_us_resubmit_shadow/test_cli.py
 tests/research/rob1391_us_resubmit_shadow/test_r1_regressions.py
 tests/research/test_event_coverage_artifact_paths.py

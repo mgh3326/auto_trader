@@ -5,7 +5,11 @@
       "id": "ROB-1411",
       "title": "Buy-drought same-candidate comparison (crypto V4, US V4, KR entry) - pre-registration draft",
       "tracker": "ROB-1411",
-      "markets": ["crypto", "us", "kr"],
+      "markets": [
+        "crypto",
+        "us",
+        "kr"
+      ],
       "status": "draft",
       "registered_at": "2026-11-01",
       "manifest": "research/experiments/manifests/rob-1411.json",
@@ -18,27 +22,59 @@
       "id": "H-entry-price",
       "title": "Support-ladder limit price from touch_5 and xret_20|touch",
       "tracker": "ROB-1429",
-      "markets": ["kr", "us", "crypto"],
+      "markets": [
+        "kr",
+        "us",
+        "crypto"
+      ],
       "status": "draft",
       "registered_at": "2026-11-01",
       "manifest": "research/experiments/manifests/h-entry-price.json",
-      "manifest_sha256": "4ca30ddeb4b1c42162aac24a4f2de08c2db0ca31b1715c17853a2a9661d5c153",
-      "previous_manifest_sha256": [],
-      "k": 0,
-      "test_looks": []
+      "manifest_sha256": "26c32faadd4aa9e6e851111adf944ebccf866e224ab02d062e4d08e5d9c8c73c",
+      "previous_manifest_sha256": [
+        "4ca30ddeb4b1c42162aac24a4f2de08c2db0ca31b1715c17853a2a9661d5c153",
+        "9bac4f0a4fe8c99dfbe561125dbe88c2a6ac2e715e88e867d8a8f6f97804f558",
+        "17aafc3c4497448b015c7856a11c89831281354a7e0bb256344cada86674bcef"
+      ],
+      "k": 1,
+      "test_looks": [
+        {
+          "seq": 1,
+          "at": "2026-11-02",
+          "manifest_sha256": "26c32faadd4aa9e6e851111adf944ebccf866e224ab02d062e4d08e5d9c8c73c",
+          "report": "research/experiments/reports/rob-1441-kr-boosting-baseline.md",
+          "report_sha256": "42a32095480688e214c1f296a497ad9586c85ae39c7f4806984c55d71a9007b3"
+        }
+      ]
     },
     {
       "id": "H-admit",
       "title": "Admit or skip an eligible entry from t+1 open to t+5 close return quantiles",
       "tracker": "ROB-1429",
-      "markets": ["kr", "us", "crypto"],
+      "markets": [
+        "kr",
+        "us",
+        "crypto"
+      ],
       "status": "draft",
       "registered_at": "2026-11-01",
       "manifest": "research/experiments/manifests/h-admit.json",
-      "manifest_sha256": "01b0fa25346eba1f9a89d7fd3ef9a85b7b13e02601379030b8a9c39b78715dc6",
-      "previous_manifest_sha256": [],
-      "k": 0,
-      "test_looks": []
+      "manifest_sha256": "0cb94882aecfe2f2ead9b9e6c82fb5fcbc83a881936f5e8dac917c47d30cfb16",
+      "previous_manifest_sha256": [
+        "01b0fa25346eba1f9a89d7fd3ef9a85b7b13e02601379030b8a9c39b78715dc6",
+        "4f9984b781edf32129291109266ab0fdcd0df51363f3c5b603eb3425bc10b222",
+        "e6b86794bc4fce7342020d4daeea04909b9ec0e8ac66d605d4d8ccb555a33ee7"
+      ],
+      "k": 1,
+      "test_looks": [
+        {
+          "seq": 1,
+          "at": "2026-11-02",
+          "manifest_sha256": "0cb94882aecfe2f2ead9b9e6c82fb5fcbc83a881936f5e8dac917c47d30cfb16",
+          "report": "research/experiments/reports/rob-1441-kr-boosting-baseline.md",
+          "report_sha256": "42a32095480688e214c1f296a497ad9586c85ae39c7f4806984c55d71a9007b3"
+        }
+      ]
     }
   ]
 }

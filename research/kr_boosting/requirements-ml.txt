@@ -1,0 +1,9 @@
+# Research environment for research/kr_boosting. Not part of pyproject.toml.
+#   uv venv --python 3.13 "$ROOT/venv"
+#   VIRTUAL_ENV="$ROOT/venv" uv pip install -r research/kr_boosting/requirements-ml.txt
+lightgbm==4.6.0
+numpy==2.5.4
+pandas==3.0.6
+pyarrow==26.0.0
+pyyaml==6.0.3
+scikit-learn==1.7.2
