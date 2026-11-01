@@ -634,7 +634,21 @@ def _equity_bars(
             "bar_available_at": iso(available),
         }
         if vintage == VINTAGE_ADJUSTED:
+            # Re-check after the last read: a run that crossed the market-local
+            # midnight read some vintages on the next day, and they would be
+            # published under P's available_at (outside _source_rows, whose
+            # broad except would turn the refusal into one instrument's gap).
+            _require_observable_today(run, dataset)
             meta["adjusted_window_sessions"] = run.adjusted_window
+            per_instrument: dict[tuple[str, str], int] = {}
+            for r in rows:
+                key = (r["instrument"], r["venue"])
+                per_instrument[key] = per_instrument.get(key, 0) + 1
+            # fewer sessions than the window: a recent listing, or a source
+            # that answered short; counted so neither passes unnoticed
+            meta["instruments_short_window"] = sum(
+                1 for n in per_instrument.values() if n < run.adjusted_window
+            )
         budget = getattr(source, "_budget", None)
         if isinstance(budget, ResearchBudget):
             meta["research_budget"] = {name: budget.spec.text()}

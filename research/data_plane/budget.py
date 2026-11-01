@@ -154,30 +154,47 @@ class ResearchBudget:
         # grant instants of this instance (bounded; diagnostics and tests)
         self.grants: deque[float] = deque(maxlen=4096)
 
-    def _load(self) -> list[float] | None:
-        """The window's stamps; ``None`` when the state file is unreadable."""
+    def _load(self) -> tuple[tuple[int, float] | None, list[float]] | None:
+        """``(spec, stamps)`` of the window; ``None`` when the file is unreadable.
+
+        The state file holds the spec it was written under: two collectors with
+        different specs on one window would let the looser one prune stamps the
+        stricter one still counts.
+        """
         if self._state_path is None:
-            return self._memory
+            return None, self._memory
         if not self._state_path.exists():
-            return []
+            return None, []
         try:
             data = json.loads(self._state_path.read_text("utf-8"))
         except (OSError, ValueError):
             return None
-        stamps = data.get("stamps") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        stamps, spec = data.get("stamps"), data.get("spec")
         if not isinstance(stamps, list) or not all(
             isinstance(s, (int, float)) and not isinstance(s, bool) for s in stamps
         ):
             return None
-        return [float(s) for s in stamps]
+        if (
+            not isinstance(spec, list)
+            or len(spec) != 2
+            or not all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in spec
+            )
+            or not math.isfinite(spec[1])
+        ):
+            return None
+        return (int(spec[0]), float(spec[1])), [float(s) for s in stamps]
 
     def _store(self, stamps: list[float]) -> None:
         if self._state_path is None:
             self._memory = stamps
             return
         tmp = self._state_path.with_name(self._state_path.name + ".tmp")
+        state = {"spec": [self.spec.max_calls, self.spec.per_seconds], "stamps": stamps}
         with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"stamps": stamps}))
+            fh.write(json.dumps(state))
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, self._state_path)
@@ -191,10 +208,20 @@ class ResearchBudget:
             # is rewritten, so the budget recovers after one window.
             stamps = [now] * self.spec.max_calls
         else:
+            spec, raw = loaded
             # A non-finite stamp counts as used now; a stamp in the future
             # (another process's clock, or ours stepped back) counts as now,
             # so a skewed clock costs at most one window, never a long stall.
-            stamps = [min(s, now) if math.isfinite(s) else now for s in loaded]
+            stamps = [min(s, now) if math.isfinite(s) else now for s in raw]
+            mine = (self.spec.max_calls, self.spec.per_seconds)
+            if spec is not None and spec != mine:
+                horizon = max(spec[1], self.spec.per_seconds)
+                if any(now - s < horizon for s in stamps):
+                    raise BudgetError(
+                        f"{self.spec.broker}: the shared budget window is in use under "
+                        f"{spec[0]}/{spec[1]:g}s, this collector asks "
+                        f"{self.spec.text()}; use one --broker-budget per root"
+                    )
         stamps = [s for s in stamps if now - s < self.spec.per_seconds]
         if len(stamps) < self.spec.max_calls:
             stamps.append(now)

@@ -241,3 +241,63 @@ def test_a_sleeping_acquire_never_holds_up_try_acquire():
     assert not alive, "try_acquire waited for a sleeping acquire"
     assert answers == [False]
     assert budget.acquired == 2
+
+
+@pytest.mark.unit
+def test_two_specs_on_one_live_window_are_refused(tmp_path):
+    """CodeRabbit #2255: a looser spec would prune stamps a stricter one counts."""
+    clock = FakeClock(start=0.0)
+    state = tmp_path / "kis.json"
+    strict = ResearchBudget(
+        BudgetSpec("kis", 2, 10.0), state_path=state, clock=clock.now, sleep=clock.sleep
+    )
+    loose = ResearchBudget(
+        BudgetSpec("kis", 5, 1.0), state_path=state, clock=clock.now, sleep=clock.sleep
+    )
+    assert strict.try_acquire() is True
+    clock.t = 1.5
+    with pytest.raises(BudgetError, match="in use under 2/10s"):
+        loose.try_acquire()
+    clock.t = 11.0  # the strict window has emptied: the loose spec may take over
+    assert loose.try_acquire() is True
+    with pytest.raises(BudgetError, match="in use under 5/1s"):
+        strict.try_acquire()
+
+
+@pytest.mark.unit
+def test_a_conflicting_budget_makes_the_broker_unavailable_not_a_crash(tmp_path):
+    from datetime import date
+
+    from research.data_plane.collect import collect
+    from research.data_plane.contract import DATASET_BARS, DATASET_UNIVERSE
+
+    from .data_plane_fixtures import FakeBrokerClient, FakeSources, evening
+
+    day = date(2026, 10, 30)
+    clock = FakeClock(start=0.0)
+    state = tmp_path / ".budget" / "kis.json"
+    other = ResearchBudget(
+        BudgetSpec("kis", 1, 5.0), state_path=state, clock=clock.now, sleep=clock.sleep
+    )
+    assert other.try_acquire() is True
+    mine = ResearchBudget(
+        BudgetSpec("kis", 2, 1.0), state_path=state, clock=clock.now, sleep=clock.sleep
+    )
+    kw = {"market": "kr", "day": day, "fetch": FakeSources(), "commit": "t"}
+    collect(tmp_path, datasets=[DATASET_UNIVERSE], now=lambda: evening("kr", day), **kw)
+    collect(
+        tmp_path,
+        datasets=[DATASET_BARS],
+        now=lambda: evening("kr", day),
+        broker_clients={"kis": FakeBrokerClient()},
+        budgets={"kis": mine},
+        **kw,
+    )
+    import json
+
+    rec = json.loads(
+        (tmp_path / "bars_1d" / "kr" / "manifest.jsonl").read_text().splitlines()[-1]
+    )
+    assert rec["served_by"] == "yahoo"
+    assert rec["source_attempts"][0]["outcome"] == "unavailable"
+    assert "in use under 1/5s" in rec["source_attempts"][0]["detail"]

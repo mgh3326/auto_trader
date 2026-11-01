@@ -34,7 +34,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from . import sources
-from .budget import ResearchBudget
+from .budget import BudgetError, ResearchBudget
 
 VINTAGE_RAW = "raw"
 VINTAGE_ADJUSTED = "adjusted"
@@ -181,7 +181,10 @@ class BrokerBarSource:
         vintage: str,
         window: int,
     ) -> BarAnswer | str:
-        self._budget.acquire()
+        try:
+            self._budget.acquire()
+        except BudgetError as exc:  # a conflicting budget on the shared window
+            raise SourceUnavailableError(str(exc)) from exc
         got = self._client.daily_bars(
             market=market,
             instrument=instrument,

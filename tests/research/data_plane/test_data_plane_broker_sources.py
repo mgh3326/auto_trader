@@ -457,3 +457,50 @@ def test_a_past_day_rerun_builds_no_client_for_the_adjusted_vintage(
     assert cli.main(base) == 3  # the adjusted vintage is refused (past day)
     assert len(opened) == 1  # and no broker client was built for it
     assert not partition_path(tmp_path, DATASET_BARS_ADJUSTED, "kr", DAY).exists()
+
+
+@pytest.mark.unit
+def test_an_adjusted_run_that_crosses_local_midnight_is_refused(tmp_path):
+    """CodeRabbit #2255: vintages read after midnight must not be published
+    under the partition day's available_at."""
+    from datetime import timedelta
+
+    from research.data_plane.contract import RefusedRowError
+
+    _universe(tmp_path)
+    clock = {"now": evening("kr", DAY)}
+
+    class MidnightBroker(FakeBrokerClient):
+        def daily_bars(self, **kw):
+            out = super().daily_bars(**kw)
+            # the first read already ends after the KST midnight
+            clock["now"] = evening("kr", DAY) + timedelta(hours=7)
+            return out
+
+    with pytest.raises(RefusedRowError, match="bars_1d_adjusted .* only be observed"):
+        collect(
+            tmp_path,
+            market="kr",
+            day=DAY,
+            datasets=[DATASET_BARS_ADJUSTED],
+            fetch=FakeSources(),
+            now=lambda: clock["now"],
+            broker_clients={"kis": MidnightBroker()},
+            budgets=fake_budgets(),
+            commit="t",
+        )
+    assert not partition_path(tmp_path, DATASET_BARS_ADJUSTED, "kr", DAY).exists()
+
+
+@pytest.mark.unit
+def test_short_adjusted_windows_are_counted_in_the_manifest(tmp_path):
+    class Short(FakeBrokerClient):
+        def daily_bars(self, **kw):
+            out = super().daily_bars(**kw)
+            return out[-1:] if kw["instrument"] == "247540" else out
+
+    _universe(tmp_path)
+    _bars(tmp_path, FakeSources(), broker_clients={"kis": Short()}, adjusted_window=5)
+    rec = _record(tmp_path, DATASET_BARS_ADJUSTED)
+    assert rec["served_by"] == "kis"
+    assert rec["instruments_short_window"] == 1

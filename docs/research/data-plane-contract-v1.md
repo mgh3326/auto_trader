@@ -131,12 +131,16 @@ source's `adj_close`, when building a training series.
 
 ### bars_1d_adjusted (adjusted vintage, KR/US)
 
-The adjusted bars of the last `--adjusted-window` sessions (default 20) ending at
-`P`, as the source publishes them on `P`: same bar fields plus `price_basis =
+The adjusted bars of up to the last `--adjusted-window` sessions (default 20)
+ending at `P`, as the source publishes them on `P` (fewer for an instrument
+with a shorter history or a source that answers short; the manifest counts them
+in `instruments_short_window`): same bar fields plus `price_basis =
 adjusted`, `adjustment_basis` and `vintage_date = P`. **Collectable only on its
 own day** (like the universe): read later, the source's adjustment would carry
 events announced after `P` under `P`'s `available_at`, so a run for an earlier
-`P` is refused (exit 3). Raw `bars_1d` can still be backfilled. Every row of the
+`P` is refused (exit 3), and so is a run whose reads crossed the market-local
+midnight (checked again after the last read). Raw `bars_1d` can still be
+backfilled. Every row of the
 partition has `available_at = bar_available_at(P)` whatever its `bar_date` (an
 adjusted value is known only once the adjustment is), and `event_time` = that
 bar's session close. Raw and adjusted are separate datasets with separate
