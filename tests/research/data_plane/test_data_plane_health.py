@@ -201,3 +201,41 @@ def test_lookback_must_be_positive():
                 "-1",
             ]
         )
+
+
+@pytest.mark.unit
+def test_ping_never_follows_a_redirect():
+    """A redirect could forward the secret ping URL to another host."""
+    import threading
+    import urllib.error
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            hits.append(self.path)
+            if self.path.startswith("/ping"):
+                self.send_response(302)
+                self.send_header("Location", "/leaked")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):  # noqa: ANN002
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/ping/secret-token"
+        with pytest.raises(urllib.error.HTTPError) as info:
+            health._default_ping(url)
+        assert info.value.code == 302
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert hits == ["/ping/secret-token"]

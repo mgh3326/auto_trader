@@ -30,6 +30,7 @@ from .contract import (
     DATASETS,
     RefusedRowError,
     canonical_json,
+    check_coverage_floor,
     iso,
     make_row,
 )
@@ -47,6 +48,13 @@ from .store import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MIN_COVERAGE = 0.95
+# A universe snapshot that loses more than this share of a venue's instruments
+# (and more than UNIVERSE_DROP_SLACK of them) since the previous snapshot is a
+# truncated source body, not a market event: it would turn every omitted
+# instrument into a listing_removed and back. Refused; an operator who has
+# checked a genuine mass delisting reruns with a larger --max-universe-drop.
+DEFAULT_MAX_UNIVERSE_DROP = 0.10
+UNIVERSE_DROP_SLACK = 5
 MISSING_LIST_CAP = 500
 
 
@@ -63,6 +71,7 @@ class _Run:
     now: Callable[[], datetime]
     symbols: frozenset[str] | None
     min_coverage: float
+    max_universe_drop: float
     commit: str
     lookback_days: int = sources.YAHOO_LOOKBACK_DAYS
     yahoo_cache: dict[tuple[str, str], sources.YahooChart | str] = field(
@@ -83,11 +92,17 @@ def collect(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     symbols: Iterable[str] | None = None,
     min_coverage: float = DEFAULT_MIN_COVERAGE,
+    max_universe_drop: float = DEFAULT_MAX_UNIVERSE_DROP,
     commit: str | None = None,
 ) -> list[PublishResult]:
     unknown = [d for d in datasets if d not in DATASETS]
     if unknown:
         raise ValueError(f"unknown datasets {unknown}")
+    check_coverage_floor(min_coverage)
+    if not 0.0 <= max_universe_drop <= 1.0:
+        raise ValueError(
+            f"max_universe_drop must be within [0, 1], got {max_universe_drop!r}"
+        )
     run = _Run(
         root=root,
         market=market,
@@ -96,6 +111,7 @@ def collect(
         now=now,
         symbols=frozenset(symbols) if symbols else None,
         min_coverage=min_coverage,
+        max_universe_drop=max_universe_drop,
         commit=commit or code_commit(REPO_ROOT),
     )
     run.lookback_days = _actions_lookback_days(root, market, day)
@@ -342,7 +358,43 @@ def _build_universe(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         )
         for e in entries
     ]
-    return rows, {"source_files": fetched_files, "instruments": len(rows)}
+    floor_meta = _universe_floor(run, entries)
+    return rows, {
+        "source_files": fetched_files,
+        "instruments": len(rows),
+        **floor_meta,
+    }
+
+
+def _universe_floor(run: _Run, entries: list[sources.UniverseEntry]) -> dict[str, Any]:
+    earlier = [
+        d for d in recorded_dates(run.root, DATASET_UNIVERSE, run.market) if d < run.day
+    ]
+    if not earlier:
+        return {"universe_floor": "baseline"}
+    previous: dict[str, int] = {}
+    for row in read_partition(run.root, DATASET_UNIVERSE, run.market, earlier[-1]):
+        previous[row["venue"]] = previous.get(row["venue"], 0) + 1
+    current: dict[str, int] = {}
+    for e in entries:
+        current[e.venue] = current.get(e.venue, 0) + 1
+    for venue, before in sorted(previous.items()):
+        now = current.get(venue, 0)
+        lost = before - now
+        if lost > UNIVERSE_DROP_SLACK and lost > before * run.max_universe_drop:
+            raise CollectError(
+                f"universe {run.market} {run.day}: {venue} has {now} instruments, "
+                f"{lost} fewer than {before} on {earlier[-1]} (allowed drop "
+                f"{run.max_universe_drop:.0%}); a truncated source is refused, "
+                f"nothing written"
+            )
+    return {
+        "universe_floor": {
+            "compared_to": earlier[-1].isoformat(),
+            "max_drop": run.max_universe_drop,
+            "previous": previous,
+        }
+    }
 
 
 # --------------------------------------------------------------------------

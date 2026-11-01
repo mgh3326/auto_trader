@@ -19,8 +19,13 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from .calendars import local_today
-from .collect import DEFAULT_MIN_COVERAGE, CollectError, collect
-from .contract import DATASETS, MARKETS, RefusedRowError
+from .collect import (
+    DEFAULT_MAX_UNIVERSE_DROP,
+    DEFAULT_MIN_COVERAGE,
+    CollectError,
+    collect,
+)
+from .contract import DATASETS, MARKETS, RefusedRowError, check_coverage_floor
 from .health import DEFAULT_GRACE, DEFAULT_LOOKBACK_DAYS, check_health, ping_url
 from .public_http import make_public_fetch
 
@@ -59,9 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--symbols",
         help="comma list: restrict bars/actions to these universe instruments",
     )
-    c.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
+    c.add_argument("--min-coverage", type=_coverage_floor, default=DEFAULT_MIN_COVERAGE)
     c.add_argument(
         "--min-interval", type=float, default=0.3, help="seconds between requests"
+    )
+    c.add_argument(
+        "--max-universe-drop",
+        type=float,
+        default=DEFAULT_MAX_UNIVERSE_DROP,
+        help="refuse a universe that lost more than this share of a venue (default 0.10)",
     )
 
     h = sub.add_parser(
@@ -74,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument(
         "--grace-hours", type=float, default=DEFAULT_GRACE.total_seconds() / 3600
     )
-    h.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
+    h.add_argument("--min-coverage", type=_coverage_floor, default=DEFAULT_MIN_COVERAGE)
     h.add_argument(
         "--ping-url-env",
         help="name of an environment variable holding a https ping URL (never printed)",
@@ -89,6 +100,13 @@ def _print_results(results) -> None:  # noqa: ANN001
             f"{r.action} {r.dataset} {r.market} {r.partition_date} "
             f"rows={r.rows} sha256={r.sha256[:12]}"
         )
+
+
+def _coverage_floor(value: str) -> float:
+    try:
+        return check_coverage_floor(float(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _positive_int(value: str) -> int:
@@ -114,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
                 fetch=make_public_fetch(min_interval=args.min_interval),
                 symbols=symbols,
                 min_coverage=args.min_coverage,
+                max_universe_drop=args.max_universe_drop,
             )
         except (RefusedRowError, CollectError) as exc:
             # Every dataset was attempted; print what succeeded, then the errors.

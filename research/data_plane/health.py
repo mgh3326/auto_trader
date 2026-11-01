@@ -12,8 +12,9 @@ partition) the check fails when:
 * ``low_coverage`` — a recorded partition's manifest coverage is below the floor;
 * ``subset_partition`` — a partition was written with ``--symbols`` (a subset is
                  final for that day, so it is never healthy);
-* ``repaired_unverified`` — a bars/actions record was rebuilt after a crash and
-                 lost its coverage metadata; an operator must look at it;
+* ``repaired_unverified`` — a crash-repaired record carries no run metadata
+                 (repairs now restore it from the metadata sidecar, so this only
+                 flags records written before that existed);
 * ``empty``    — the dataset has no recorded partition at all.
 
 Exit code 0 = healthy, 1 = unhealthy. With ``--ping-url-env NAME`` the URL in
@@ -36,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .calendars import bar_available_at, local_today, partition_days
-from .contract import DATASETS, market_spec
+from .contract import DATASETS, check_coverage_floor, market_spec
 from .store import manifest_records, partition_path, sha256_hex
 
 DEFAULT_LOOKBACK_DAYS = 14
@@ -82,6 +83,9 @@ def check_health(
     market_spec(market)
     if dataset not in DATASETS:
         raise ValueError(f"unknown dataset {dataset!r}")
+    check_coverage_floor(min_coverage)
+    if lookback_days < 1:
+        raise ValueError("lookback_days must be positive")
     report = HealthReport(market, dataset, now.astimezone(UTC).isoformat())
     records = manifest_records(root, dataset, market)
     recorded: dict[date, Mapping[str, Any]] = {}
@@ -131,8 +135,8 @@ def check_health(
         if rec.get("instrument_selection") == "explicit_subset":
             # coverage is relative to the subset; the full universe was not collected
             report.fail("subset_partition", partition=d.isoformat())
-        if rec.get("repaired") and dataset != "universe":
-            # a crash-repaired record lost its coverage/selection metadata
+        if rec.get("repaired") and "code_commit" not in rec:
+            # a repaired record without its run metadata (pre-sidecar format)
             report.fail("repaired_unverified", partition=d.isoformat())
     return report
 
@@ -140,11 +144,26 @@ def check_health(
 Ping = Callable[[str], None]
 
 
-def _default_ping(url: str) -> None:
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: the ping URL carries a secret token, and a
+    redirect could forward it to another host or downgrade it to http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None  # urllib then raises HTTPError for the 3xx
+
+
+def _ping_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        _RefuseRedirect(),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+    )
+
+
+def _default_ping(
+    url: str, *, opener: urllib.request.OpenerDirector | None = None
+) -> None:
     request = urllib.request.Request(url, method="GET")  # noqa: S310 - https enforced by caller
-    with urllib.request.urlopen(  # noqa: S310
-        request, timeout=10, context=ssl.create_default_context()
-    ) as resp:
+    with (opener or _ping_opener()).open(request, timeout=10) as resp:
         resp.read(256)
 
 

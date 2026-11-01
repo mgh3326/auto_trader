@@ -49,6 +49,11 @@ such as `346.7200012207031`; they are kept, not rounded).
   code commit, the universe partitions (date + sha256) the rows were selected
   from, `instruments_requested`/`instruments_missing`/`coverage`, and the
   missing instruments with a reason (capped at 500).
+* Each partition directory also holds a write-once `meta-<sha256>.json`
+  sidecar with the run metadata, published before the rows, so a crash between
+  the rows and the manifest append is repaired with the same coverage and
+  selection metadata; an unrecorded partition without its sidecar, or one that
+  is not readable, is refused rather than recorded.
 * A partition is written once. A rerun of the same day fetches nothing and
   writes nothing — after checking the published file still matches its
   manifest sha256 (a corrupted or replaced file fails the run). One dataset failing does not stop the others (corporate
@@ -80,7 +85,12 @@ event_time = observed_at` (a listing snapshot has no earlier provable time).
 Fields: `listing_status` (`listed`; Binance raw status such as `TRADING`/`BREAK`),
 `tradeable`, plus source attributes (`name`, `etf`, `likely_common_stock`,
 `source_file_created_at`, `base_asset`, `warning`). **Can only be collected on
-its own day**: a run for an earlier `P` is refused before any fetch.
+its own day**: a run for an earlier `P` is refused before any fetch. A
+snapshot in which a venue lost more than 10% (and more than 5) of its
+instruments since the previous universe partition is treated as a truncated
+source and refused (`--max-universe-drop` widens it after an operator has
+checked a genuine mass delisting); otherwise one bad body would turn every
+omitted instrument into a `listing_removed` and back.
 
 Bars and actions for day `P` select instruments from the **latest two universe
 partitions dated `<= P`** — never a later universe (survivorship), and two so
@@ -140,7 +150,9 @@ Non-session days (weekends, exchange holidays) are never gaps. The universe and
 actions datasets use the same due days as bars; extra partitions on non-session
 days are allowed. `--ping-url-env NAME` pings the https URL in that variable
 (`<url>` on success, `<url>/fail` on failure; healthchecks.io convention); the
-URL is never printed.
+URL is never printed, and a redirect from the ping endpoint is never followed
+(it could forward the token to another host or over http). `--min-coverage`
+must be a finite number in [0, 1].
 
 `collect` refuses to publish a bars/actions partition whose coverage is below
 `--min-coverage` (default 0.95), so a partial source outage leaves the day

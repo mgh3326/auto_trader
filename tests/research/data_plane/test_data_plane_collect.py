@@ -497,3 +497,125 @@ def test_corrupted_partition_is_not_reported_as_present(tmp_path):
         ("corporate_actions", "already_present"),
     ]
     assert src.total_calls == 0
+
+
+# --- second review round -------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_truncated_universe_is_refused_and_writes_nothing(tmp_path):
+    day1, day2 = date(2026, 10, 29), date(2026, 10, 30)
+    full = {f"{i:06d}": f"CO{i}" for i in range(100, 150)}
+    _run(tmp_path, "kr", day1, FakeSources(kospi=full), datasets=[DATASET_UNIVERSE])
+    truncated = dict(list(full.items())[:3])
+    before = tree_state(tmp_path)
+    with pytest.raises(CollectError, match="KOSPI has 3 instruments, 47 fewer than 50"):
+        _run(
+            tmp_path,
+            "kr",
+            day2,
+            FakeSources(kospi=truncated),
+            datasets=[DATASET_UNIVERSE],
+        )
+    assert tree_state(tmp_path) == before
+    # an operator who checked a genuine mass delisting can widen the floor
+    results = collect(
+        tmp_path,
+        market="kr",
+        day=day2,
+        datasets=[DATASET_UNIVERSE],
+        fetch=FakeSources(kospi=truncated),
+        now=lambda: evening("kr", day2),
+        max_universe_drop=1.0,
+        commit="t",
+    )
+    assert results[0].action == "written"
+
+
+@pytest.mark.unit
+def test_repair_restores_run_metadata_from_the_sidecar(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    manifest = manifest_path(tmp_path, DATASET_BARS, "crypto")
+    original = json.loads(manifest.read_text())
+    manifest.unlink()  # crash between publishing the rows and the manifest append
+    _run(tmp_path, "crypto", day, FakeSources())
+    repaired = json.loads(manifest.read_text())
+    assert repaired["repaired"] is True
+    for key in (
+        "coverage",
+        "code_commit",
+        "universe_partitions",
+        "selection_policy",
+        "sha256",
+    ):
+        assert repaired[key] == original[key]
+
+
+@pytest.mark.unit
+def test_repair_without_metadata_is_refused_not_recorded(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources())
+    manifest = manifest_path(tmp_path, DATASET_BARS, "crypto")
+    manifest.unlink()
+    for sidecar in partition_path(tmp_path, DATASET_BARS, "crypto", day).parent.glob(
+        "meta-*.json"
+    ):
+        sidecar.unlink()
+    with pytest.raises(CollectError, match="without its metadata sidecar") as info:
+        _run(tmp_path, "crypto", day, FakeSources())
+    assert not manifest.exists()
+    assert [r.action for r in info.value.results] == [
+        "already_present",
+        "already_present",
+    ]
+
+
+@pytest.mark.unit
+def test_corrupt_unrecorded_partition_fails_only_its_dataset(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "crypto", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    bars = partition_path(tmp_path, DATASET_BARS, "crypto", day)
+    bars.parent.mkdir(parents=True)
+    bars.write_bytes(b"\x1f\x8b truncated gzip")
+    with pytest.raises(CollectError, match="not readable") as info:
+        _run(tmp_path, "crypto", day, FakeSources())
+    assert [(r.dataset, r.action) for r in info.value.results] == [
+        ("universe", "already_present"),
+        ("corporate_actions", "written"),
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("floor", [float("nan"), float("inf"), -0.1, 1.5])
+def test_non_finite_or_out_of_range_coverage_floor_is_rejected(tmp_path, floor):
+    from research.data_plane import cli
+    from research.data_plane.health import check_health
+
+    with pytest.raises(ValueError, match="coverage floor"):
+        _run_with_floor(tmp_path, floor)
+    with pytest.raises(ValueError, match="coverage floor"):
+        check_health(
+            tmp_path,
+            market="kr",
+            dataset=DATASET_BARS,
+            now=evening("kr", date(2026, 10, 30)),
+            min_coverage=floor,
+        )
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            ["collect", "--root", "/x", "--market", "kr", "--min-coverage", str(floor)]
+        )
+
+
+def _run_with_floor(root, floor):
+    day = date(2026, 10, 30)
+    return collect(
+        root,
+        market="kr",
+        day=day,
+        fetch=FakeSources(),
+        now=lambda: evening("kr", day),
+        min_coverage=floor,
+        commit="t",
+    )

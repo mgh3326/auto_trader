@@ -135,6 +135,32 @@ def recorded_dates(root: Path, dataset: str, market: str) -> list[date]:
     return sorted(days)
 
 
+def meta_path(root: Path, dataset: str, market: str, day: date, sha256: str) -> Path:
+    """Write-once sidecar holding the run metadata of the rows with ``sha256``.
+
+    Published *before* the rows, so a crash between the rows and the manifest
+    append can be repaired without losing coverage or selection metadata.
+    """
+    return partition_path(root, dataset, market, day).with_name(f"meta-{sha256}.json")
+
+
+def _decode_checked(raw: bytes, label: str) -> list[dict[str, Any]]:
+    try:
+        return decode_rows(raw)
+    except (OSError, EOFError, UnicodeDecodeError, ValueError) as exc:
+        raise ManifestMismatchError(
+            f"{label}: published file is not readable ({type(exc).__name__})"
+        ) from exc
+
+
+def _read_meta(path: Path) -> dict[str, Any] | None:
+    try:
+        meta = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
 def publish_partition(
     root: Path,
     *,
@@ -146,19 +172,24 @@ def publish_partition(
 ) -> PublishResult:
     """Validate and publish one partition. Caller must hold ``dataset_lock``.
 
-    If the partition is already published and recorded, nothing is written. If
-    it is published but unrecorded (crash between link and append), the
-    on-disk rows are validated and recorded; the new ``rows`` are ignored.
+    If the partition is already published and recorded, nothing is written
+    (after checking its bytes against the manifest). If it is published but
+    unrecorded (crash between link and append), it is recorded from the
+    on-disk rows and their metadata sidecar; the new ``rows`` are ignored, and
+    a partition whose sidecar is missing is refused rather than recorded
+    without its coverage metadata.
     """
+    label = f"{dataset}/{market} {day}"
     path = partition_path(root, dataset, market, day)
     records = manifest_records(root, dataset, market)
     if path.exists():
         raw = path.read_bytes()
+        digest = sha256_hex(raw)
         if day.isoformat() in records:
-            if sha256_hex(raw) != records[day.isoformat()].get("sha256"):
+            if digest != records[day.isoformat()].get("sha256"):
                 raise ManifestMismatchError(
-                    f"{dataset}/{market} {day}: published file differs from its "
-                    f"manifest sha256 (corrupted or replaced); not reported as present"
+                    f"{label}: published file differs from its manifest sha256 "
+                    f"(corrupted or replaced); not reported as present"
                 )
             return PublishResult(
                 dataset,
@@ -167,31 +198,39 @@ def publish_partition(
                 "already_present",
                 path,
                 records[day.isoformat()].get("rows", -1),
-                sha256_hex(raw),
+                digest,
             )
-        on_disk = validate_rows(market, dataset, day, decode_rows(raw))
+        on_disk = validate_rows(market, dataset, day, _decode_checked(raw, label))
+        saved = _read_meta(meta_path(root, dataset, market, day, digest))
+        if saved is None:
+            raise ManifestMismatchError(
+                f"{label}: unrecorded partition without its metadata sidecar; "
+                f"refusing to record it without coverage/selection metadata"
+            )
         _append_record(
-            root, dataset, market, day, raw, on_disk, {**meta, "repaired": True}
+            root, dataset, market, day, raw, on_disk, {**saved, "repaired": True}
         )
         return PublishResult(
-            dataset,
-            market,
-            day,
-            "manifest_repaired",
-            path,
-            len(on_disk),
-            sha256_hex(raw),
+            dataset, market, day, "manifest_repaired", path, len(on_disk), digest
         )
     checked = validate_rows(market, dataset, day, rows)
     raw = encode_rows(dataset, checked)
+    sidecar = meta_path(root, dataset, market, day, sha256_hex(raw))
+    try:
+        write_once(sidecar, (canonical_json(meta) + "\n").encode("utf-8"))
+    except AlreadyExistsError:
+        pass  # identical rows from an attempt that died before linking them
     try:
         write_once(path, raw)
     except AlreadyExistsError:
         # Another process published between our check and link; theirs wins.
         raw = path.read_bytes()
-        checked = validate_rows(market, dataset, day, decode_rows(raw))
+        checked = validate_rows(market, dataset, day, _decode_checked(raw, label))
+        sidecar = meta_path(root, dataset, market, day, sha256_hex(raw))
     if day.isoformat() not in manifest_records(root, dataset, market):
-        _append_record(root, dataset, market, day, raw, checked, meta)
+        _append_record(
+            root, dataset, market, day, raw, checked, _read_meta(sidecar) or dict(meta)
+        )
     return PublishResult(
         dataset, market, day, "written", path, len(checked), sha256_hex(raw)
     )

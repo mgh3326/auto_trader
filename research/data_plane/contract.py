@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -98,6 +99,18 @@ MARKETS: Mapping[str, MarketSpec] = {
 
 class RefusedRowError(ValueError):
     """A row violates the contract; the partition is not written."""
+
+
+def check_coverage_floor(value: float) -> float:
+    """A coverage floor must be a finite number in [0, 1] (NaN compares false
+    with everything and would silently disable the gate)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"coverage floor must be a number, got {value!r}")
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(
+            f"coverage floor must be finite and within [0, 1], got {value!r}"
+        )
+    return float(value)
 
 
 def market_spec(market: str) -> MarketSpec:
