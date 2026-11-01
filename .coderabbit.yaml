@@ -1,0 +1,9 @@
+# Fleet setting (operator 2026-11-01): fewer nitpicks, review once per PR.
+# Re-review on demand with "@coderabbitai review"; Critical/Major findings
+# gate the merge, Minor/Nitpick never block (see agent-skills fleet-review).
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: false
