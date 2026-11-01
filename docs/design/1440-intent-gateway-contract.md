@@ -27,7 +27,7 @@ If `handle` raises, nothing was forwarded for that call, unless the row was alre
 
 ## Intent (`ExecutionIntentV1`)
 
-The schema is in `app/schemas/execution_intent.py`. Intents are immutable once stored. Storing the same contents twice is a no-op, and storing different contents under the same id raises `IntentConflict`. An intent must expire within 24 hours of being stored.
+The schema is in `app/schemas/execution_intent.py`. Intents are immutable once stored, and a DB trigger refuses any update or delete. Storing the same contents twice is a no-op, and storing different contents under the same id raises `IntentConflict`. An intent must expire within 24 hours of being stored.
 
 | Field | Rule |
 |---|---|
@@ -89,7 +89,7 @@ Other fields are `child_id`, `broker_order_id`, `result`, `replayed` and `outcom
 3. **Kill state (submit and amend only):** the gateway reads the existing `review.kis_mock_runner_control`. Only `ACTIVE` allows them, and a failed read counts as `GLOBAL_FREEZE`.
 4. **Reserve:** under the intent's row lock, a known key replays its first answer. A new key is decided, and the row commits as `sending` or `refused`. This commit is the write-ahead record, and it happens before any broker call.
 5. **Forward:** the matching forwarder runs once. `KisMockForwarder` calls `_place_order_impl`, `modify_order_impl` or `cancel_order_impl` with `is_mock=True`.
-6. **Record:** the row moves from `sending` to `accepted` or `uncertain`, once only.
+6. **Record:** the row moves from `sending` to `accepted` or `uncertain`, once only. A DB trigger refuses any other state change, any change to the request fields, and any delete. The app role can update only the outcome columns.
 
 A refusal from step 4 is stored, so the same key gets the same answer later. A delayed retry cannot send a stale decision after a kill is lifted. Refusals from steps 1 and 2 leave no row, because nothing was decided.
 
@@ -136,5 +136,4 @@ This includes `GLOBAL_FREEZE`. The runner's permission table says `GLOBAL_FREEZE
 - **Other envelope caps:** gross exposure, position count, per-session entry and exit counts, and the NLV-based order cap all need an account snapshot. The gateway enforces only the locked single-order notional. The E3 pilot must decide how the others apply.
 - **Inventory drift:** the inventory check uses the position stated at authorization, and the gateway reads no broker position. A position that moves outside the intent is not detected here.
 - **Resolving `uncertain` and `sending`:** nothing in E1 moves these rows, and there is no automatic replay. E2 needs a reconciler that reads ledger evidence.
-- **Journal protection:** the app role has no DELETE grant on the journal, but no DB trigger enforces the state transitions. `finish` guards them in code.
 - **Other accounts:** adding `kiwoom_mock` or `nh_mock` means adding a forwarder and extending the schema `Literal`, `MOCK_ACCOUNTS`, and the DB CHECK in a new migration.

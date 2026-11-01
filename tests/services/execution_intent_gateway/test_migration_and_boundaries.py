@@ -6,6 +6,7 @@ import ast
 import importlib.util
 import io
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
@@ -19,11 +20,16 @@ MIGRATION = ROOT / "alembic/versions/20261101_rob1440_intent_gateway.py"
 PACKAGE = ROOT / "app/services/execution_intent_gateway"
 
 
-def _render_upgrade() -> str:
+def _load_migration() -> Any:
     spec = importlib.util.spec_from_file_location("rob1440_migration", MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _render_upgrade() -> str:
+    module = _load_migration()
     buffer = io.StringIO()
     context = MigrationContext.configure(
         dialect_name="postgresql",
@@ -42,10 +48,41 @@ def _table_block(sql: str, table: str) -> str:
 def test_migration_is_additive_and_grants_no_delete() -> None:
     sql = _render_upgrade()
     assert "ALTER TABLE" not in sql.upper()
-    assert "DROP " not in sql.upper()
+    assert "DROP TABLE" not in sql.upper()
+    assert "DROP COLUMN" not in sql.upper()
     assert "GRANT SELECT, INSERT ON review.execution_intents" in sql
-    assert "GRANT SELECT, INSERT, UPDATE ON review.execution_child_requests" in sql
-    assert "DELETE" not in sql.split("DO $$", 1)[1]
+    grants = sql.split("DO $$", 1)[1]
+    assert "DELETE" not in grants
+    assert "GRANT SELECT, INSERT ON review.execution_child_requests" in grants
+    # SELECT ... FOR UPDATE on the intent row needs UPDATE on one column.
+    assert "GRANT UPDATE (id) ON review.execution_intents" in grants
+    assert (
+        "GRANT UPDATE (state, broker_order_id, result, finished_at) "
+        "ON review.execution_child_requests" in grants
+    )
+
+
+def test_journal_guard_covers_every_column_except_the_outcome_columns() -> None:
+    guard = next(
+        statement
+        for statement in _load_migration().GUARD_DDL
+        if "execution_child_requests_guard()" in statement
+        and "CREATE OR REPLACE" in statement
+    )
+    outcome_columns = {"state", "broker_order_id", "result", "finished_at"}
+    for column in ExecutionChildRequest.__table__.columns:
+        compared = f"NEW.{column.name} IS DISTINCT FROM OLD.{column.name}" in guard
+        assert compared is (column.name not in outcome_columns), column.name
+
+
+def test_guards_refuse_update_and_delete_on_both_tables() -> None:
+    sql = _render_upgrade()
+    for table, trigger in (
+        ("execution_intents", "trg_execution_intents_immutable"),
+        ("execution_child_requests", "trg_execution_child_requests_guard"),
+    ):
+        assert f"CREATE TRIGGER {trigger}" in sql
+        assert f"BEFORE UPDATE OR DELETE ON review.{table}" in sql
 
 
 @pytest.mark.parametrize("model", [ExecutionIntent, ExecutionChildRequest])

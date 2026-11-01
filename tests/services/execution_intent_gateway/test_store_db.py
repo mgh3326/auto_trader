@@ -8,14 +8,16 @@ key twice.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.core.db import AsyncSessionLocal, engine
 from app.models.base import Base
@@ -43,6 +45,18 @@ validate_run_owned_database_url(engine.url)
 pytestmark = pytest.mark.integration
 
 _TABLES = [ExecutionIntent.__table__, ExecutionChildRequest.__table__]
+_MIGRATION = (
+    Path(__file__).resolve().parents[3]
+    / "alembic/versions/20261101_rob1440_intent_gateway.py"
+)
+
+
+def _guard_ddl() -> tuple[str, ...]:
+    spec = importlib.util.spec_from_file_location("rob1440_migration", _MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.GUARD_DDL
 
 
 def _now() -> datetime:
@@ -88,10 +102,14 @@ def _submit(intent: ExecutionIntentV1, key: str, quantity: int = 1) -> SubmitChi
 async def _schema_and_cleanup() -> Any:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all, tables=_TABLES, checkfirst=True)
+        for statement in _guard_ddl():
+            await conn.execute(text(statement))
     yield
+    # The row guards refuse DELETE by design.
     async with AsyncSessionLocal() as session:
-        await session.execute(delete(ExecutionChildRequest))
-        await session.execute(delete(ExecutionIntent))
+        await session.execute(
+            text("TRUNCATE review.execution_child_requests, review.execution_intents")
+        )
         await session.commit()
 
 
@@ -312,20 +330,138 @@ async def test_db_refuses_a_non_mock_intent_row() -> None:
             await session.commit()
 
 
-@pytest.mark.asyncio
-async def test_db_refuses_a_finished_state_without_finished_at(
+async def _accepted_row(
     store: SqlAlchemyGatewayStore,
-) -> None:
+) -> tuple[ExecutionIntentV1, ExecutionChildRequest]:
     intent = _intent()
     await store.store_intent(intent, now=_now())
     await _gateway(store, FakeBroker()).handle(
         _submit(intent, "child-0001"), confirm=True
     )
+    return intent, (await _rows(intent))[0]
+
+
+async def _sending_row(
+    store: SqlAlchemyGatewayStore,
+) -> tuple[ExecutionIntentV1, ExecutionChildRequest]:
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
     async with AsyncSessionLocal() as session:
-        with pytest.raises(IntegrityError):
+        session.add(
+            ExecutionChildRequest(
+                intent_id=intent.intent_id,
+                idempotency_key="child-sending",
+                request_digest="d",
+                action="submit",
+                quantity=1,
+                limit_price_krw=70_000,
+                state="sending",
+            )
+        )
+        await session.commit()
+    return intent, (await _rows(intent))[0]
+
+
+async def _update_refused(row_id: int, **values: Any) -> None:
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(DBAPIError):
             await session.execute(
                 update(ExecutionChildRequest)
-                .where(ExecutionChildRequest.intent_id == intent.intent_id)
-                .values(finished_at=None)
+                .where(ExecutionChildRequest.id == row_id)
+                .values(**values)
             )
         await session.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"idempotency_key": "child-rewritten"},
+        {"request_digest": "other"},
+        {"action": "cancel"},
+        {"target_idempotency_key": "child-0000"},
+        {"quantity": 2},
+        {"limit_price_krw": 1},
+        {"refusal_reason": "x"},
+    ],
+)
+async def test_db_refuses_rewriting_request_fields_of_a_sending_row(
+    store: SqlAlchemyGatewayStore, values: dict[str, Any]
+) -> None:
+    _, row = await _sending_row(store)
+    outcome = {"state": "uncertain", "finished_at": _now()}
+    await _update_refused(row.id, **outcome, **values)
+    await _update_refused(row.id, **values)
+    assert (await _rows_by_id(row.id)).idempotency_key == "child-sending"
+
+
+@pytest.mark.asyncio
+async def test_db_refuses_moving_a_sending_row_to_another_intent(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    _, row = await _sending_row(store)
+    other = _intent()
+    await store.store_intent(other, now=_now())
+    await _update_refused(row.id, intent_id=other.intent_id)
+
+
+@pytest.mark.asyncio
+async def test_db_allows_only_the_one_way_outcome_transition(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    _, sending = await _sending_row(store)
+    await _update_refused(sending.id, state="refused", refusal_reason="x")
+    from app.services.execution_intent_gateway.decisions import ChildState
+
+    assert await store.finish(
+        sending.id,
+        state=ChildState.UNCERTAIN,
+        broker_order_id=None,
+        result={"error_class": "RuntimeError"},
+        now=_now(),
+    )
+    await _update_refused(sending.id, state="sending", finished_at=None)
+    await _update_refused(sending.id, state="accepted")
+
+
+@pytest.mark.asyncio
+async def test_db_refuses_deleting_a_journal_row_or_an_intent(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    intent, row = await _accepted_row(store)
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(DBAPIError):
+            await session.execute(
+                delete(ExecutionChildRequest).where(ExecutionChildRequest.id == row.id)
+            )
+        await session.rollback()
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(DBAPIError):
+            await session.execute(
+                delete(ExecutionIntent).where(ExecutionIntent.id == intent.intent_id)
+            )
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_db_refuses_changing_a_stored_intent(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(DBAPIError):
+            await session.execute(
+                update(ExecutionIntent)
+                .where(ExecutionIntent.id == intent.intent_id)
+                .values(max_quantity=1_000)
+            )
+        await session.rollback()
+
+
+async def _rows_by_id(row_id: int) -> ExecutionChildRequest:
+    async with AsyncSessionLocal() as session:
+        row = await session.get(ExecutionChildRequest, row_id)
+        assert row is not None
+        return row

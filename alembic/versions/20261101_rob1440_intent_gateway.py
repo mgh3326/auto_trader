@@ -1,8 +1,15 @@
 """ROB-1440: execution intents and the child request write-ahead journal.
 
-Additive: two new tables, no change to any existing table. The app role gets no
-DELETE on either table and no UPDATE on intents, so intents stay immutable and a
-journal row that blocks a resend cannot be removed by the app.
+Additive: two new tables, no change to any existing table.
+
+Two layers protect the rows. The app role gets no DELETE on either table and
+UPDATE on the journal's outcome columns only. On intents it gets UPDATE on ``id``
+alone, because the gateway's SELECT ... FOR UPDATE needs UPDATE on at least one
+column; the trigger still refuses any real update. Triggers hold
+the same rules for any role, including before the #789 Stage 4 role split: intents
+are immutable, journal request fields are immutable, a journal row moves only from
+``sending`` to ``accepted`` or ``uncertain``, and no row is deleted. Rewriting a
+``sending`` row's key would let a retry look new and send twice.
 
 Revision ID: 20261101_rob1440_intent_gw
 Revises: 20261016_rob1378_q46_lock
@@ -22,6 +29,62 @@ revision: str = "20261101_rob1440_intent_gw"
 down_revision: str | Sequence[str] | None = "20261016_rob1378_q46_lock"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+#: One statement per entry. The DB test installs these so it exercises this DDL.
+GUARD_DDL: tuple[str, ...] = (
+    """
+    CREATE OR REPLACE FUNCTION review.execution_intents_immutable()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.execution_intents rows are immutable'
+            USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_execution_intents_immutable "
+    "ON review.execution_intents",
+    """
+    CREATE TRIGGER trg_execution_intents_immutable
+    BEFORE UPDATE OR DELETE ON review.execution_intents
+    FOR EACH ROW EXECUTE FUNCTION review.execution_intents_immutable()
+    """,
+    """
+    CREATE OR REPLACE FUNCTION review.execution_child_requests_guard()
+    RETURNS trigger AS $$
+    BEGIN
+        IF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION 'review.execution_child_requests rows cannot be deleted'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF OLD.state <> 'sending' OR NEW.state NOT IN ('accepted', 'uncertain') THEN
+            RAISE EXCEPTION 'review.execution_child_requests state change % to % refused',
+                OLD.state, NEW.state USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NEW.id IS DISTINCT FROM OLD.id
+           OR NEW.intent_id IS DISTINCT FROM OLD.intent_id
+           OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+           OR NEW.request_digest IS DISTINCT FROM OLD.request_digest
+           OR NEW.action IS DISTINCT FROM OLD.action
+           OR NEW.target_idempotency_key IS DISTINCT FROM OLD.target_idempotency_key
+           OR NEW.quantity IS DISTINCT FROM OLD.quantity
+           OR NEW.limit_price_krw IS DISTINCT FROM OLD.limit_price_krw
+           OR NEW.refusal_reason IS DISTINCT FROM OLD.refusal_reason
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION 'review.execution_child_requests request fields are immutable'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_execution_child_requests_guard "
+    "ON review.execution_child_requests",
+    """
+    CREATE TRIGGER trg_execution_child_requests_guard
+    BEFORE UPDATE OR DELETE ON review.execution_child_requests
+    FOR EACH ROW EXECUTE FUNCTION review.execution_child_requests_guard()
+    """,
+)
 
 
 def upgrade() -> None:
@@ -142,12 +205,17 @@ def upgrade() -> None:
         ["intent_id", "id"],
         schema="review",
     )
+    for statement in GUARD_DDL:
+        op.execute(statement)
     # The Stage 4 role may not exist in dev and CI databases.
     op.execute(
         "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') "
         "THEN GRANT USAGE ON SCHEMA review TO at_app; "
         "GRANT SELECT, INSERT ON review.execution_intents TO at_app; "
-        "GRANT SELECT, INSERT, UPDATE ON review.execution_child_requests TO at_app; "
+        "GRANT UPDATE (id) ON review.execution_intents TO at_app; "
+        "GRANT SELECT, INSERT ON review.execution_child_requests TO at_app; "
+        "GRANT UPDATE (state, broker_order_id, result, finished_at) "
+        "ON review.execution_child_requests TO at_app; "
         "GRANT USAGE, SELECT ON SEQUENCE review.execution_child_requests_id_seq "
         "TO at_app; "
         "END IF; END $$"
@@ -162,3 +230,5 @@ def downgrade() -> None:
     )
     op.drop_table("execution_child_requests", schema="review")
     op.drop_table("execution_intents", schema="review")
+    op.execute("DROP FUNCTION IF EXISTS review.execution_child_requests_guard()")
+    op.execute("DROP FUNCTION IF EXISTS review.execution_intents_immutable()")
