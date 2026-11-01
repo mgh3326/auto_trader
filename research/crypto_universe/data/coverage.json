@@ -1,0 +1,4463 @@
+{
+  "built_at": "2026-11-01T07:56:12.715432Z",
+  "corpus_id": "crypto-universe-v1",
+  "current_corpus_delisted_share": 0.0,
+  "venues": {
+    "binance_usdt_spot": {
+      "archive_symbol_count": 757,
+      "censored_last_trade": 503,
+      "coverage_end": "2026-09-30",
+      "coverage_start": "2017-08-17",
+      "delisted_last_trade_by_year": {
+        "2018": 2,
+        "2019": 3,
+        "2020": 18,
+        "2021": 20,
+        "2022": 38,
+        "2023": 24,
+        "2024": 46,
+        "2025": 51,
+        "2026": 54
+      },
+      "delisted_missing_last_trade_date": 0,
+      "delisted_pairs": 256,
+      "delisted_share": 0.3386,
+      "delisted_share_excluding_leveraged_and_stable": 0.2855,
+      "exchange_info_states_of_unarchived": {
+        "TRADING": 19
+      },
+      "exchange_info_usdt_pairs_without_archive": [
+        "APPBUSDT",
+        "BBBUSDT",
+        "BOTBUSDT",
+        "BRKBBUSDT",
+        "BSPBUSDT",
+        "GEVBUSDT",
+        "JPMBUSDT",
+        "KSTRBUSDT",
+        "LLYBUSDT",
+        "MDBBUSDT",
+        "PENGBUSDT",
+        "RWUSDUSDT",
+        "SECZBUSDT",
+        "SKDDBUSDT",
+        "SKUUBUSDT",
+        "TMFBUSDT",
+        "USDEBUSDT",
+        "UVXYBUSDT",
+        "VSTBUSDT"
+      ],
+      "fetch_errors": [],
+      "full_archive_run": true,
+      "identical_duplicate_rows_dropped": 3,
+      "leveraged_token_pairs": 50,
+      "pairs": 757,
+      "pairs_with_internal_gaps": 8,
+      "pairs_with_multiple_episodes": [
+        "BCHDOWNUSDT",
+        "BCHUPUSDT",
+        "CVCUSDT",
+        "ETHBEARUSDT",
+        "ETHBULLUSDT",
+        "FTTUSDT",
+        "KEYUSDT",
+        "LUNAUSDT",
+        "NBTUSDT",
+        "TUSDUSDT",
+        "USDCUSDT",
+        "USDPUSDT",
+        "USDSUSDT",
+        "VENUSDT",
+        "VIDTUSDT"
+      ],
+      "pairs_with_trades": 756,
+      "stable_or_fiat_base_pairs": 23,
+      "status_counts": {
+        "delisted": 256,
+        "live": 500,
+        "no_trades": 1
+      },
+      "symbol_month_count": 28245
+    },
+    "upbit_krw": {
+      "censored_last_trade": 287,
+      "coverage_end": "2026-09-30",
+      "coverage_start": "2017-09-25",
+      "delisted_last_trade_by_year": {},
+      "delisted_missing_last_trade_date": 0,
+      "delisted_obtained": [],
+      "delisted_pairs": 0,
+      "delisted_probes": [
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-1000CAT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-1000CAT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-1000CHEEMS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-1000CHEEMS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-1000SATS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-1000SATS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-1INCHDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-1INCHDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-1INCHUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-1INCHUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-1MBABYDOGE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-1MBABYDOGE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-A2Z",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-A2Z&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AAOIB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AAOIB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AAPLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AAPLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AAVEDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AAVEDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AAVEUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AAVEUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ACA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ACA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ACE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ACE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ACH",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ACH&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ACM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ACM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ACT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ACT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ACX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ACX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ADADOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ADADOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ADAUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ADAUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ADBEB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ADBEB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ADX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ADX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AERGO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AERGO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AEUR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AEUR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AEVO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AEVO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AGIX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AGIX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AGPUB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AGPUB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AIGENSYN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AIGENSYN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AION",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AION&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AIXBT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AIXBT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AKRO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AKRO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ALABB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ALABB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ALCX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ALCX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ALICE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ALICE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ALLO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ALLO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ALPACA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ALPACA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ALPHA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ALPHA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ALPINE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ALPINE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AMATB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AMATB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AMB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AMCB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AMCB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AMDB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AMDB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AMP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AMP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AMZNB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AMZNB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ANC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ANC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ANT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ANT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ANY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ANY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-APE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-APE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ARMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ARMB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ARPA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ARPA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ASMLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ASMLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ASR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ASR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AST",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AST&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ASTER",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ASTER&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ASTSB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ASTSB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ATA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ATA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ATM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ATM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AUD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AUD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AUDIO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AUDIO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AUTO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AUTO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AVA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AVA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AVGOB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AVGOB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-AXTIB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-AXTIB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BABAB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BABAB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BADGER",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BADGER&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BAKE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BAKE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BAL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BAL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BANANA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BANANA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BANANAS31",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BANANAS31&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BAND",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BAND&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BANK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BANK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BAR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BAR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BCC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BCC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BCHABC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BCHABC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BCHDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BCHDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BCHSV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BCHSV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BCHUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BCHUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BEAMX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BEAMX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BEAR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BEAR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BEB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BEB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BEL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BEL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BETA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BETA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BETH",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BETH&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BFUSD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BFUSD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BICO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BICO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BIFI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BIFI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BKRW",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BKRW&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BLZ",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BLZ&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BMNRB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BMNRB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNBBEAR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNBBEAR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNBBULL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNBBULL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNBDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNBDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNBUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNBUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNCB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNCB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNSOL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNSOL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BNX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BNX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BOME",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BOME&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BOND",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BOND&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BONK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BONK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BROCCOLI714",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BROCCOLI714&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BSW",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BSW&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BTCDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BTCDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BTCST",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BTCST&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BTCUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BTCUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BTG",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BTG&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BTS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BTS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BTTC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BTTC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BULL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BULL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BURGER",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BURGER&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BUSD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BUSD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-BZRX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-BZRX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-C",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-C&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-C98",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-C98&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CAKE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CAKE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CATI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CATI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CBRSB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CBRSB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CELR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CELR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CETUS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CETUS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CGPT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CGPT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CHESS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CHESS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CHR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CHR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CITY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CITY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CLV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CLV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-COCOS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-COCOS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-COHRB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-COHRB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-COINB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-COINB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-COMBO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-COMBO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-COOKIE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-COOKIE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-COS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-COS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-COTI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-COTI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CRCLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CRCLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CRDOB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CRDOB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CREAM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CREAM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CRMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CRMB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CRWDB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CRWDB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CRWVB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CRWVB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CTK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CTK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CTSI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CTSI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CTXC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CTXC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CVP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CVP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CVX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CVX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-CYPHB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-CYPHB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-D",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-D&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DAI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DAI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DAR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DAR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DASH",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DASH&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DCR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DCR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DEGO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DEGO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DELLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DELLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DENT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DENT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DEXE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DEXE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DF",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DF&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DGB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DGB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DIA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DIA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DJTB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DJTB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DNT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DNT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DOCK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DOCK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DODO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DODO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DOGS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DOGS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DOLO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DOLO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DOTDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DOTDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DOTUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DOTUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DRAMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DRAMB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DREP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DREP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DUSK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DUSK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DYDX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DYDX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-DYM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-DYM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EDEN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EDEN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EDU",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EDU&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EIGEN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EIGEN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ENJ",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ENJ&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EOS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EOS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EOSBEAR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EOSBEAR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EOSBULL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EOSBULL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EOSDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EOSDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EOSUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EOSUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EPIC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EPIC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EPS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EPS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EPX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EPX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ERD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ERD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ERN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ERN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ETHBEAR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ETHBEAR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ETHBULL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ETHBULL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ETHDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ETHDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ETHUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ETHUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EUR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EUR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EURI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EURI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-EWYB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-EWYB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FARM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FARM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FDUSD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FDUSD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FET",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FET&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FIDA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FIDA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FILDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FILDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FILUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FILUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FIO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FIO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FIRO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FIRO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FIS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FIS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FLM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FLM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FLNCB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FLNCB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FLOKI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FLOKI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FLOW",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FLOW&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FLUX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FLUX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FOGO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FOGO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FOR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FOR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FORM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FORM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FORTH",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FORTH&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FRAX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FRAX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FRONT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FRONT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FTM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FTM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FTT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FTT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FUN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FUN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FWDIB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FWDIB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-FXS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-FXS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GAL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GAL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GALA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GALA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GBP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GBP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GENIUS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GENIUS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GFT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GFT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GHST",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GHST&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GIGGLE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GIGGLE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GLMR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GLMR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GLWB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GLWB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GMEB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GMEB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GMX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GMX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GNO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GNO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GNS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GNS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GOOGLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GOOGLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GPROB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GPROB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GPS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GPS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GRAM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GRAM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GSB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GSB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GTO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GTO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GUN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GUN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-GXS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-GXS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HAEDAL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HAEDAL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HARD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HARD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HEI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HEI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HEMI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HEMI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HFT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HFT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HIFI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HIFI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HIGH",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HIGH&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HIMSB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HIMSB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HMSTR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HMSTR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HNT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HNT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HOODB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HOODB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HOOK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HOOK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HOT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HOT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HPEB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HPEB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HUMA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HUMA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-HYPE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-HYPE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-IBMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-IBMB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ICX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ICX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-IDEX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-IDEX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ILV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ILV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-INIT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-INIT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-INTCB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-INTCB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-INTWB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-INTWB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-IOTX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-IOTX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-IRENB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-IRENB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-IRIS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-IRIS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-JASMY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-JASMY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-JOE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-JOE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-JUV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-JUV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KDA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KDA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KEEP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KEEP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KEY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KEY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KGST",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KGST&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KLAY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KLAY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KMD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KMD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KORUB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KORUB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KP3R",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KP3R&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-KSM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-KSM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LAZIO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LAZIO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LDO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LDO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LEND",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LEND&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LEVER",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LEVER&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LINA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LINA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LINKDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LINKDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LINKUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LINKUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LISTA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LISTA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LITEB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LITEB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LOKA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LOKA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LOOM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LOOM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LQTY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LQTY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LRC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LRC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LTC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LTC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LTCDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LTCDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LTCUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LTCUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LTO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LTO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LUMIA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LUMIA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LUNA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LUNA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-LUNC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-LUNC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MAGIC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MAGIC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MANTA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MANTA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MARSCOIN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MARSCOIN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MATIC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MATIC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MAV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MAV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MBOX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MBOX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MCO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MCO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MDT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MDT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MDX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MDX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MEME",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MEME&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MET",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MET&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-METAB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-METAB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-METIS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-METIS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MFT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MFT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MIR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MIR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MITH",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MITH&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MITO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MITO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MKR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MKR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MLN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MLN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MOB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MOB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MOVR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MOVR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MRNAB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MRNAB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MRVLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MRVLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MSFTB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MSFTB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MSTRB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MSTRB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MUB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MUB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MUBARAK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MUBARAK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MULTI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MULTI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MUUB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MUUB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-MVLLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-MVLLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NANO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NANO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NBISB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NBISB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NBS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NBS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NBT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NBT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NEBL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NEBL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NEIRO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NEIRO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NEXO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NEXO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NFLXB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NFLXB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NFP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NFP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NIGHT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NIGHT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NKN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NKN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NOKB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NOKB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NOM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NOM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NOT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NOT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NPXS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NPXS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NTRN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NTRN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NU",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NU&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NULS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NULS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-NVDAB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-NVDAB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OAX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OAX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OCEAN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OCEAN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OG",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OG&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OGN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OGN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OMG",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OMG&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OMNI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OMNI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ONE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ONE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OOKI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OOKI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OPN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OPN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ORCLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ORCLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ORDI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ORDI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ORN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ORN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OSMO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OSMO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-OXT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-OXT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PARTI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PARTI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PAX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PAX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PAXG",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PAXG&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PDA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PDA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PDDB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PDDB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PEOPLE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PEOPLE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PERL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PERL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PERP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PERP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PHA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PHA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PHB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PHB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PIVX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PIVX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PIXEL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PIXEL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PLA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PLA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PLTRB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PLTRB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PNT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PNT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PNUT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PNUT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-POLS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-POLS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-POLY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-POLY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-POND",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-POND&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PORTAL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PORTAL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PORTO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PORTO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PSG",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PSG&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PYPLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PYPLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-PYR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-PYR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-QCOMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-QCOMB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-QI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-QI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-QNT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-QNT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-QNTB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-QNTB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-QQQB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-QQQB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-QUICK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-QUICK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RAD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RAD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RAMP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RAMP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RARE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RARE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RDDTB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RDDTB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RDNT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RDNT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-REEF",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-REEF&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-REI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-REI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-REN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-REN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-REP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-REP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-REQ",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-REQ&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RESOLV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RESOLV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-REZ",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-REZ&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RGT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RGT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RIF",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RIF&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RKLBB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RKLBB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RLC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RLC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RNDR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RNDR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ROBO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ROBO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RONIN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RONIN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ROSE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ROSE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RPL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RPL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RUNE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RUNE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-RVN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-RVN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-S",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-S&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SAGA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SAGA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SANTOS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SANTOS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SAPIEN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SAPIEN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SCR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SCR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SCRT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SCRT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SFP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SFP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SHAZB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SHAZB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SHELL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SHELL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SKHYB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SKHYB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SKL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SKL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SLF",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SLF&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SLP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SLP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SMCIB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SMCIB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SMHB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SMHB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SNDKB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SNDKB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SNX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SNX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SNXXB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SNXXB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SOLV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SOLV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SOXLB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SOXLB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SOXSB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SOXSB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SPCXB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SPCXB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SPELL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SPELL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SPYB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SPYB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SQQQB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SQQQB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SRM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SRM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SSV",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SSV&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STG",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STG&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STMX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STMX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STORJ",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STORJ&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STORM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STORM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STPT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STPT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STRAT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STRAT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STRK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STRK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-STXB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-STXB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SUSD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SUSD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SUSHI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SUSHI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SUSHIDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SUSHIDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SUSHIUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SUSHIUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SXP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SXP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SXPDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SXPDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SXPUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SXPUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SXT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SXT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SYN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SYN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-SYS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-SYS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TCT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TCT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-THE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-THE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TKO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TKO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TLM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TLM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TNSR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TNSR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TOMO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TOMO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TON",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TON&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TORN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TORN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TOWNS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TOWNS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TQQQB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TQQQB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TRB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TRB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TRIBE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TRIBE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TROY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TROY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TRU",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TRU&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TRXDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TRXDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TRXUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TRXUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TSLAB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TSLAB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TSMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TSMB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TST",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TST&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TURBO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TURBO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TURTLE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TURTLE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TUSD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TUSD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TUT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TUT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TVK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TVK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-TWT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-TWT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-U",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-U&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-UFT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-UFT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-UMA",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-UMA&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-UNFI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-UNFI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-UNIDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-UNIDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-UNIUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-UNIUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-USARB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-USARB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-USDP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-USDP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-USDSB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-USDSB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-USDSOLD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-USDSOLD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-UST",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-UST&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-USTC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-USTC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-USUAL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-USUAL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-UTK",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-UTK&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VANRY",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VANRY&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VELODROME",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VELODROME&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VEN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VEN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VGX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VGX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VIB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VIB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VIC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VIC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VIDT",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VIDT&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VITE",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VITE&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-VOXEL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-VOXEL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WAN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WAN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WBETH",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WBETH&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WBTC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WBTC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WDCB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WDCB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WENB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WENB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WIN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WIN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WING",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WING&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WNXM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WNXM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WOO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WOO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WRX",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WRX&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-WTC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-WTC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XAI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XAI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XEM",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XEM&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XLMDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XLMDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XLMUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XLMUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XMR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XMR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XNO",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XNO&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XRPBEAR",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XRPBEAR&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XRPBULL",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XRPBULL&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XRPDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XRPDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XRPUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XRPUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XTZDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XTZDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XTZUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XTZUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XUSD",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XUSD&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XVG",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XVG&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XVS",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XVS&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-XZC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-XZC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-YB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-YB&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-YFI",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-YFI&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-YFIDOWN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-YFIDOWN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-YFII",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-YFII&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-YFIUP",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-YFIUP&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ZEC",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ZEC&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ZEN",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ZEN&count=1"
+        },
+        {
+          "body_sha256": "3cbc1319a9964146ca79e6eae05ac29bf12250abeba6ae8d30e0cafb7bafd6b3",
+          "candles_returned": 0,
+          "http_status": 404,
+          "market": "KRW-ZMB",
+          "obtainable": false,
+          "url": "https://api.upbit.com/v1/candles/days?market=KRW-ZMB&count=1"
+        }
+      ],
+      "delisted_share": 0.0,
+      "delisted_share_excluding_leveraged_and_stable": 0.0,
+      "fetch_errors": [],
+      "leveraged_token_pairs": 0,
+      "live_krw_markets": 299,
+      "note": "Upbit publishes no historical archive and its quotation API answers 404 for delisted markets, so delisted Upbit pairs are only obtainable when a probe returns candles.",
+      "pairs": 299,
+      "pairs_with_internal_gaps": 16,
+      "pairs_with_multiple_episodes": [
+        "KRW-ARDR"
+      ],
+      "pairs_with_trades": 287,
+      "stable_or_fiat_base_pairs": 5,
+      "status_counts": {
+        "live": 287,
+        "no_trades": 12
+      }
+    }
+  }
+}

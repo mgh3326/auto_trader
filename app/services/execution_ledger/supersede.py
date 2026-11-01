@@ -86,7 +86,7 @@ def _aware(when: datetime) -> datetime:
     return when if when.tzinfo else when.replace(tzinfo=UTC)
 
 
-def _trading_day(broker: str, instrument_type: str, filled_at: datetime) -> Any:
+def order_trading_day(broker: str, instrument_type: str, filled_at: datetime) -> Any:
     if broker != "kis":
         return None
     if instrument_type == "equity_us":
@@ -108,7 +108,7 @@ def order_identity(row: LedgerFillLike) -> OrderIdentity:
         row.side,
         str(row.currency or "").upper(),
         normalize_order_id(row.broker_order_id),
-        _trading_day(row.broker, instrument_type, row.filled_at),
+        order_trading_day(row.broker, instrument_type, row.filled_at),
     )
 
 

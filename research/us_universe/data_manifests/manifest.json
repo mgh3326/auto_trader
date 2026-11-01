@@ -1,0 +1,154 @@
+{
+  "as_of_latest_observation": "2026-10-30",
+  "current_corpus_reference": {
+    "inactive_share": 0.006,
+    "source": "ROB-1431 brief (survivor-only us-corpus-v1); not re-measured here"
+  },
+  "generation": {
+    "command": "uv run python -m research.us_universe.rebuild --root <ARTIFACT_ROOT> --out <NEW_DIR> --offline",
+    "inputs_cache": [
+      "<ARTIFACT_ROOT>/sources/wayback/<series>/<capture-timestamp>.bin",
+      "<ARTIFACT_ROOT>/snapshots/<YYYY-MM-DD>/<series>.txt"
+    ]
+  },
+  "inactive_share": [
+    {
+      "inactive": 16313,
+      "inactive_share": 0.551823,
+      "scope": "all_symbols_all_time",
+      "symbols": 29562
+    },
+    {
+      "inactive": 8248,
+      "inactive_share": 0.614651,
+      "scope": "likely_common_stock_all_time",
+      "symbols": 13419
+    },
+    {
+      "inactive": 12225,
+      "inactive_share": 0.479901,
+      "scope": "all_symbols_listed_in_2016-01-01..2026-10-30",
+      "symbols": 25474
+    },
+    {
+      "inactive": 5291,
+      "inactive_share": 0.505735,
+      "scope": "likely_common_stock_listed_in_2016-01-01..2026-10-30",
+      "symbols": 10462
+    }
+  ],
+  "inputs": {
+    "accepted": 132,
+    "inputs.jsonl": {
+      "sha256": "c1d9faf620c43b12d683b9bbd525dda1ba1b94037655fa1a4da19a927aa1ddcf"
+    },
+    "rejected": 0,
+    "rejected_files": []
+  },
+  "issue": "ROB-1431",
+  "outputs": {
+    "us_pit_universe.csv": {
+      "bytes": 5030011,
+      "rows": 32234,
+      "sha256": "e1578f21086f4ab51ee6894fdecb82d7f9a78cada970e2b2fad3a76067f7b77c",
+      "symbols": 29562
+    }
+  },
+  "schema": "us_pit_universe_manifest.v1",
+  "series_coverage": {
+    "nasdaqlisted": {
+      "first": "2008-01-04",
+      "gaps_over_365_days": [
+        {
+          "days": 681,
+          "from": "2009-02-18",
+          "to": "2010-12-31"
+        }
+      ],
+      "last": "2026-10-30",
+      "max_gap_days": 681,
+      "median_gap_days": 38,
+      "observation_days": 86,
+      "observations_per_year": {
+        "2008": 3,
+        "2009": 1,
+        "2010": 1,
+        "2011": 3,
+        "2012": 1,
+        "2013": 2,
+        "2014": 2,
+        "2015": 5,
+        "2016": 8,
+        "2017": 5,
+        "2018": 10,
+        "2019": 6,
+        "2020": 10,
+        "2021": 4,
+        "2022": 3,
+        "2023": 1,
+        "2024": 4,
+        "2025": 7,
+        "2026": 10
+      }
+    },
+    "otherlisted": {
+      "first": "2008-09-19",
+      "gaps_over_365_days": [
+        {
+          "days": 552,
+          "from": "2009-03-11",
+          "to": "2010-09-14"
+        },
+        {
+          "days": 405,
+          "from": "2010-09-14",
+          "to": "2011-10-24"
+        },
+        {
+          "days": 670,
+          "from": "2011-12-23",
+          "to": "2013-10-23"
+        },
+        {
+          "days": 1323,
+          "from": "2013-10-23",
+          "to": "2017-06-07"
+        },
+        {
+          "days": 708,
+          "from": "2020-01-30",
+          "to": "2022-01-07"
+        },
+        {
+          "days": 483,
+          "from": "2022-12-30",
+          "to": "2024-04-26"
+        },
+        {
+          "days": 480,
+          "from": "2024-06-14",
+          "to": "2025-10-07"
+        }
+      ],
+      "last": "2026-10-30",
+      "max_gap_days": 1323,
+      "median_gap_days": 36,
+      "observation_days": 45,
+      "observations_per_year": {
+        "2008": 1,
+        "2009": 2,
+        "2010": 1,
+        "2011": 3,
+        "2013": 1,
+        "2017": 5,
+        "2018": 12,
+        "2019": 8,
+        "2020": 1,
+        "2022": 2,
+        "2024": 2,
+        "2025": 1,
+        "2026": 6
+      }
+    }
+  }
+}
