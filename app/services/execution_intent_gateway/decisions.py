@@ -175,18 +175,29 @@ def _caps_refusal(
     return None
 
 
+def _order_may_have_moved(
+    target: ChildSnapshot, by_key: dict[str, ChildSnapshot]
+) -> bool:
+    """Whether a later child may have replaced or cancelled the target's order.
+
+    Any later child that was not refused counts, including ``sending`` and
+    ``uncertain`` ones: its outcome is unknown, so the target's broker order id can
+    no longer be trusted until reconciliation.
+    """
+    return any(
+        row.target_idempotency_key == target.idempotency_key
+        and row.state is not ChildState.REFUSED
+        for row in by_key.values()
+    )
+
+
 def _decide_cancel(request: CancelChild, by_key: dict[str, ChildSnapshot]) -> Decision:
     target = by_key.get(request.target_idempotency_key)
     if target is None or target.action == "cancel":
         return Decision(refusal=Refusal.TARGET_NOT_FOUND)
     if target.broker_order_id is None:
         return Decision(refusal=Refusal.TARGET_NOT_WORKING)
-    finished_by_later_child = any(
-        row.target_idempotency_key == target.idempotency_key
-        and row.state is ChildState.ACCEPTED
-        for row in by_key.values()
-    )
-    if finished_by_later_child:
+    if _order_may_have_moved(target, by_key):
         return Decision(refusal=Refusal.TARGET_SUPERSEDED)
     return Decision(target_broker_order_id=target.broker_order_id)
 
@@ -202,13 +213,7 @@ def _decide_amend(
         return Decision(refusal=Refusal.TARGET_NOT_FOUND)
     if target.state is not ChildState.ACCEPTED or target.broker_order_id is None:
         return Decision(refusal=Refusal.TARGET_NOT_WORKING)
-    # Any later child that was not refused may already have replaced or cancelled
-    # this order, so its broker order id can no longer be trusted.
-    if any(
-        row.target_idempotency_key == target.idempotency_key
-        and row.state is not ChildState.REFUSED
-        for row in by_key.values()
-    ):
+    if _order_may_have_moved(target, by_key):
         return Decision(refusal=Refusal.TARGET_SUPERSEDED)
     refusal = _caps_refusal(
         intent,

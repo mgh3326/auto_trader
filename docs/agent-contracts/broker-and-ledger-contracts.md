@@ -201,7 +201,7 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - 🔴 journal 행(`sending`)이 **브로커 호출 전에 커밋**된다. 같은 키는 첫 결과를 반환하고 다시 보내지 않는다. 다른 payload 의 같은 키는 `conflict` 다. 예외·실패 결과·결과 기록 실패는 전부 `uncertain`/`sending` 으로 남고 재전송하지 않는다. 브로커 결과의 `retry_allowed` 는 권한이 아니다.
 - 🔴 상한은 intent 가 지금까지 보낸 전부를 묶는다(주문별 high-water mark, 거부 행만 제외). cancel 은 체결 증거가 없으므로 상한을 풀지 않는다. 건별 notional 은 `LOCKED_ENVELOPE.max_single_notional_krw` 도 넘지 못한다. 이 상수를 gateway 쪽에서 넓히지 마라.
 - amend/cancel 대상은 journal 의 idempotency key 로만 지정한다. Go 가 브로커 주문번호를 넘길 수 없으므로 같은 intent 가 보낸 주문에만 작용한다.
-- submit/amend 는 기존 `review.kis_mock_runner_control` 이 `ACTIVE` 일 때만 허용하고 읽기 실패는 차단이다. 🔴 cancel 은 kill·만료·상한을 보지 않는다(ROB-1440 운영자 계약). 이 예외는 gateway 경로에만 있고 runner 의 `mutation_permission` 표는 바뀌지 않았다.
+- submit/amend 는 기존 `review.kis_mock_runner_control` 이 `ACTIVE` 일 때만 허용하고 읽기 실패는 차단이다. 🔴 cancel 은 kill·만료·상한을 보지 않는다(ROB-1440 운영자 계약). 이 예외는 gateway 경로에만 있고 runner 의 `mutation_permission` 표는 바뀌지 않았다. 단, 나중 child 가 `sending`/`uncertain` 이면 대상 주문번호를 믿을 수 없으므로 그 주문의 cancel 도 `target_superseded` 로 거부하고 reconcile 을 기다린다.
 - 체결은 여기에 기록하지 않는다. `accepted` 는 체결이 아니며, 기존 레저와 reconcile 이 그대로 권한자다.
 - 하위 가드는 우회하지 않는다. 현재 KR mock 전송은 coordinated route 와 follow-up capability 없이는 하위 계층에서 거부되므로, 실제 주문은 E3 결정 전까지 나가지 않는다.
 

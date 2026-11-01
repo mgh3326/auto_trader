@@ -39,14 +39,19 @@ MAX_INTENT_NOTIONAL_KRW: Final = 5_000_000
 MAX_INTENT_QUANTITY: Final = 1_000_000
 MAX_LIMIT_PRICE_KRW: Final = 10_000_000
 MAX_SLIPPAGE_BPS: Final = 500
+MAX_STRATEGY_LENGTH: Final = 128
 
 
 def _attributable_strategy(value: str) -> str:
     """Refuse at authorization what the kis_mock attribution gate would refuse."""
     try:
-        return validate_strategy(value)
+        normalized = validate_strategy(value)
     except InvalidStrategy as exc:
         raise ValueError("strategy is blank or a placeholder") from exc
+    # NFKC normalization can make the stored value longer than the raw input.
+    if len(normalized) > MAX_STRATEGY_LENGTH:
+        raise ValueError("strategy is too long after normalization")
+    return normalized
 
 
 _Reference = Annotated[
@@ -73,7 +78,7 @@ _KrxSymbol = Annotated[
 ]
 _Strategy = Annotated[
     str,
-    StringConstraints(strict=True, min_length=1, max_length=128),
+    StringConstraints(strict=True, min_length=1, max_length=MAX_STRATEGY_LENGTH),
     AfterValidator(_attributable_strategy),
 ]
 _Quantity = Annotated[StrictInt, Field(ge=1, le=MAX_INTENT_QUANTITY)]

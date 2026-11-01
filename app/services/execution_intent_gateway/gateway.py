@@ -155,7 +155,9 @@ class IntentGateway:
                 request,
                 intent=intent,
                 children=children,
-                now=now,
+                # Read under the intent row lock: a wait for that lock must not
+                # let an expired authorization pass on a stale time.
+                now=self._clock(),
                 kill_mode=kill_mode,
                 forwarder_accounts=frozenset(self._forwarders),
             ),

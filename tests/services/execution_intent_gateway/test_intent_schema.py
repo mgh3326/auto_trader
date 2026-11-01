@@ -123,6 +123,13 @@ def test_intent_refuses_a_placeholder_strategy(strategy: str) -> None:
         ExecutionIntentV1.model_validate(intent_payload(strategy=strategy))
 
 
+def test_intent_refuses_a_strategy_that_grows_past_the_limit_when_normalized() -> None:
+    raw = "\ufdfa" * 128
+    assert len(raw) == 128
+    with pytest.raises(ValidationError):
+        ExecutionIntentV1.model_validate(intent_payload(strategy=raw))
+
+
 def test_intent_refuses_naive_expiry_unknown_field_and_other_version() -> None:
     with pytest.raises(ValidationError):
         ExecutionIntentV1.model_validate(

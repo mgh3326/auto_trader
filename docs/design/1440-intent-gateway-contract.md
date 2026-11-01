@@ -33,7 +33,7 @@ The schema is in `app/schemas/execution_intent.py`. Intents are immutable once s
 |---|---|
 | `schema_version` | Exactly `1` |
 | `intent_id` | UUID |
-| `strategy` | At most 128 characters. Placeholders are refused, using the same check as the kis_mock attribution gate |
+| `strategy` | At most 128 characters, before and after normalization. Placeholders are refused, using the same check as the kis_mock attribution gate |
 | `account` | Exactly `kis_mock`. A DB CHECK enforces the same list |
 | `venue` | Exactly `krx` |
 | `symbol` | KRX code, six characters |
@@ -111,7 +111,7 @@ A refusal from step 4 is stored, so the same key gets the same answer later. A d
 | `inventory_constraint_exceeded` | Submit, amend | The projected position leaves the inventory range |
 | `target_not_found` | Amend, cancel | The target is not a submit or amend in this intent's journal |
 | `target_not_working` | Amend, cancel | The target has no broker order id. An amend also needs the target to be `accepted` |
-| `target_superseded` | Amend, cancel | An amend is refused if any later child that was not refused targets the order. A cancel is refused if a later child was accepted |
+| `target_superseded` | Amend, cancel | A later child that was not refused targets the order, including one still `sending` or `uncertain`. It may have replaced or cancelled the order, so the target's broker order id can no longer be trusted |
 
 ## How caps count
 
@@ -125,7 +125,9 @@ A strategy that needs more capacity gets a new intent. If E2 needs cancel-and-re
 
 ## Cancel rules
 
-A cancel does not check expiry, kill state or caps. It only needs the env gate, confirm, a mock account and a target order id in the journal. A cancel that reaches an unknown outcome may be retried with a new key, because cancelling a dead order is harmless.
+A cancel does not check expiry, kill state or caps. It needs the env gate, confirm, a mock account, and a target order id in the journal that no later child may have moved.
+
+If a later amend or cancel ends `sending` or `uncertain`, the gateway refuses further cancels of that order with `target_superseded`, because it cannot tell which broker order id is live. Those orders wait for reconciliation, and nothing in E1 performs it.
 
 This includes `GLOBAL_FREEZE`. The runner's permission table says `GLOBAL_FREEZE` blocks every automatic mutation, while this contract keeps cancels allowed whenever submissions are blocked. The gateway follows this contract for its own path and does not change the runner's table. The guards below the gateway still apply to the cancel.
 
@@ -135,5 +137,6 @@ This includes `GLOBAL_FREEZE`. The runner's permission table says `GLOBAL_FREEZE
 - **Follow-up capability:** KIS mock cancel and modify need an operation-scoped capability that this gateway does not mint. Without it, amend and cancel end as `uncertain` with zero broker calls. The owner of that capability must be decided before E3.
 - **Other envelope caps:** gross exposure, position count, per-session entry and exit counts, and the NLV-based order cap all need an account snapshot. The gateway enforces only the locked single-order notional. The E3 pilot must decide how the others apply.
 - **Inventory drift:** the inventory check uses the position stated at authorization, and the gateway reads no broker position. A position that moves outside the intent is not detected here.
-- **Resolving `uncertain` and `sending`:** nothing in E1 moves these rows, and there is no automatic replay. E2 needs a reconciler that reads ledger evidence.
+- **Resolving `uncertain` and `sending`:** nothing in E1 moves these rows, and there is no automatic replay. E2 needs a reconciler that reads ledger evidence. Until then, an order with an unknown later child cannot be cancelled through the gateway, so it must be cleared outside it.
+- **Expiry and kill at the wire:** both are judged at reservation, not at the broker call. Expiry is read under the intent row lock. The kill state is read just before that lock, so a lock wait can make it stale. A send can still cross `expires_at` or a newly engaged kill in the time between the journal commit and the wire. Closing that needs a journal state for "reserved, proven not sent" and a pre-send check on every forward path. `_place_order_impl` and `cancel_order_impl` take a `pre_send_hook`, but `modify_order_impl` does not. Decide this in E2, before the E3 pilot.
 - **Other accounts:** adding `kiwoom_mock` or `nh_mock` means adding a forwarder and extending the schema `Literal`, `MOCK_ACCOUNTS`, and the DB CHECK in a new migration.

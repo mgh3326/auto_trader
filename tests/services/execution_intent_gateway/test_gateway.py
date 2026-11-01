@@ -621,14 +621,73 @@ async def test_amend_of_a_superseded_order_is_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_may_be_retried_with_a_new_key_after_an_unknown_outcome() -> None:
+async def test_cancel_after_an_unknown_cancel_waits_for_reconciliation() -> None:
     h = Harness()
     await h.gateway.handle(h.submit("child-0001"), confirm=True)
     h.broker.raises = RuntimeError("timeout")
     first = await h.gateway.handle(h.cancel("child-0002", "child-0001"), confirm=True)
     h.broker.raises = None
     second = await h.gateway.handle(h.cancel("child-0003", "child-0001"), confirm=True)
-    assert (first.status, second.status) == ("uncertain", "accepted")
+    assert first.status == "uncertain"
+    assert second.reason == Refusal.TARGET_SUPERSEDED.value
+    assert [call for call in h.broker.calls if call[0] == "cancel"] == [
+        ("cancel", "1001")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_of_the_original_order_refused_after_an_uncertain_amend() -> None:
+    h = Harness()
+    await h.gateway.handle(h.submit("child-0001"), confirm=True)
+    h.broker.raises = RuntimeError("timeout")
+    amend = await h.gateway.handle(h.amend("child-0002", "child-0001"), confirm=True)
+    h.broker.raises = None
+    cancel = await h.gateway.handle(h.cancel("child-0003", "child-0001"), confirm=True)
+    assert amend.status == "uncertain"
+    assert cancel.reason == Refusal.TARGET_SUPERSEDED.value
+    assert ("cancel", "1001") not in h.broker.calls
+
+
+@pytest.mark.asyncio
+async def test_cancel_of_the_original_order_refused_while_an_amend_is_sending() -> None:
+    h = Harness()
+    await h.gateway.handle(h.submit("child-0001"), confirm=True)
+    h.store.finish_error = RuntimeError("db down")
+    amend = await h.gateway.handle(h.amend("child-0002", "child-0001"), confirm=True)
+    h.store.finish_error = None
+    cancel = await h.gateway.handle(h.cancel("child-0003", "child-0001"), confirm=True)
+    assert amend.status == "sending"
+    assert h.store.child("child-0002").state is ChildState.SENDING
+    assert cancel.reason == Refusal.TARGET_SUPERSEDED.value
+    assert ("cancel", "1001") not in h.broker.calls
+
+
+@pytest.mark.asyncio
+async def test_refused_amend_does_not_block_the_cancel() -> None:
+    h = Harness()
+    await h.gateway.handle(h.submit("child-0001"), confirm=True)
+    refused = await h.gateway.handle(
+        h.amend("child-0002", "child-0001", price=70_701), confirm=True
+    )
+    cancel = await h.gateway.handle(h.cancel("child-0003", "child-0001"), confirm=True)
+    assert refused.reason == Refusal.PRICE_OUTSIDE_BOUND.value
+    assert cancel.status == "accepted"
+    assert h.broker.calls[-1] == ("cancel", "1001")
+
+
+@pytest.mark.asyncio
+async def test_expiry_is_judged_at_the_time_the_row_lock_is_held() -> None:
+    h = Harness()
+    original_reserve = h.store.reserve
+
+    async def reserve_after_a_lock_wait(*args: Any, **kwargs: Any) -> Any:
+        h.now = h.intent.expires_at
+        return await original_reserve(*args, **kwargs)
+
+    h.store.reserve = reserve_after_a_lock_wait  # type: ignore[method-assign]
+    outcome = await h.gateway.handle(h.submit("child-0001"), confirm=True)
+    assert outcome.reason == Refusal.AUTHORIZATION_EXPIRED.value
+    assert h.broker.calls == []
 
 
 @pytest.mark.asyncio
