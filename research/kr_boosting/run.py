@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pickle
 import subprocess
 import sys
@@ -41,6 +42,7 @@ from research.kr_boosting.simulator import SimOutput, session_slice, simulate
 
 SEAL_BOUNDARY = cfg.TEST_START
 VALIDATE_LAST = date(2022, 12, 31)
+DIAGNOSTIC_CLAIM = "diagnostic_claim"
 DIAGNOSTIC_LAST = cfg.TEST_END
 FROZEN_YEAR = cfg.TEST_START.year
 
@@ -459,8 +461,8 @@ def _frozen_predict(frozen: dict[str, Any], family: str, x: np.ndarray) -> np.nd
     return np.mean([tr.predict(f, x) for f in fitted], axis=0)
 
 
-def diagnostic(panel: Panel, *, root: Path, identity: ExportIdentity) -> dict[str, Any]:
-    """Frozen models on 2023-2024, once. Metrics are diagnostics, not a sealed test."""
+def _require_diagnostic_ready(root: Path) -> str:
+    """Refuse a diagnostic that may not run; returns the frozen bundle's hash."""
 
     bundle = root / "frozen_models.pkl"
     validated = root / "validate_results.json"
@@ -473,7 +475,36 @@ def diagnostic(panel: Panel, *, root: Path, identity: ExportIdentity) -> dict[st
     expected = json.loads(validated.read_text())["frozen_bundle_sha256"]
     if hashlib.sha256(bundle.read_bytes()).hexdigest() != expected:
         raise ValueError("frozen bundle changed after validate")
-    with bundle.open("rb") as handle:
+    return expected
+
+
+def claim_diagnostic(root: Path) -> None:
+    """Check, then durably record the look, before any sealed row is read.
+
+    A crash after this leaves the claim in place, so it cannot read again unnoticed.
+    A rerun needs the claim removed by hand and another look counted in the registry.
+    """
+
+    _require_diagnostic_ready(root)
+    try:
+        fd = os.open(root / DIAGNOSTIC_CLAIM, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"{DIAGNOSTIC_CLAIM} exists: 2023-2024 may already have been read for "
+            "this run. Count another look before removing it."
+        ) from exc
+    try:
+        os.write(fd, datetime.now(UTC).isoformat().encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def diagnostic(panel: Panel, *, root: Path, identity: ExportIdentity) -> dict[str, Any]:
+    """Frozen models on 2023-2024, once. Metrics are diagnostics, not a sealed test."""
+
+    expected = _require_diagnostic_ready(root)
+    with (root / "frozen_models.pkl").open("rb") as handle:
         frozen = pickle.load(handle)
 
     ticks = pol.krx_ticks()
@@ -560,6 +591,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate(build_panel(rows), root=args.root, identity=identity, repo=args.repo)
         return 0
     if args.stage == "diagnostic":
+        claim_diagnostic(args.root)
         rows = read_rows(parquet, last_session=DIAGNOSTIC_LAST, allow_sealed=True)
         diagnostic(build_panel(rows), root=args.root, identity=identity)
         return 0

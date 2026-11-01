@@ -22,7 +22,7 @@ VIRTUAL_ENV="$ROOT/venv" uv pip install -r research/kr_boosting/requirements-ml.
 | Stage | Reads | Writes |
 |---|---|---|
 | `validate` | sessions through 2022 | nested fits, gate verdict, frozen models |
-| `diagnostic` | sessions through 2024, frozen models only; refuses a second run | diagnostics, never the verdict |
+| `diagnostic` | sessions through 2024, frozen models only; before reading a row it checks the bundle and records a claim, and it refuses if a claim or a result exists | diagnostics, never the verdict |
 | `report` | the two stages' JSON and the registry | the report, plus one rendered contract report per policy |
 
 Run output stays in `$ROOT`, outside the repository. Each fit is cached under

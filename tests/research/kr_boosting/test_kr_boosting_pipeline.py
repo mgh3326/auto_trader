@@ -223,3 +223,76 @@ def test_validate_diagnostic_and_report_run_end_to_end(
     assert "## Payout sensitivity of the terminal labels" in text
     assert text.count("Experiment-Manifest-Sha256:") == 2
     assert text.count("Experiment-Test-Look:") == 1
+
+
+# ------------------------------------------- the sealed read, no LightGBM needed
+
+
+class _SealedRead(Exception):
+    pass
+
+
+@pytest.fixture
+def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The diagnostic CLI with a counted row reader; prerequisites are in place."""
+
+    root = tmp_path / "run"
+    root.mkdir()
+    bundle = root / "frozen_models.pkl"
+    bundle.write_bytes(b"frozen")
+    (root / "validate_results.json").write_text(
+        json.dumps({"frozen_bundle_sha256": hashlib.sha256(b"frozen").hexdigest()})
+    )
+    reads: list[Path] = []
+
+    def read_rows(path: Path, **_kwargs):
+        reads.append(path)
+        raise _SealedRead
+
+    monkeypatch.setattr(
+        run, "verify_export", lambda _d: ExportIdentity("aa" * 32, "bb" * 32, 1)
+    )
+    monkeypatch.setattr(run, "read_rows", read_rows)
+
+    def main() -> int:
+        return run.main(
+            ["diagnostic", "--export-dir", str(tmp_path), "--root", str(root)]
+        )
+
+    return main, root, reads
+
+
+def test_no_sealed_row_is_read_without_a_frozen_bundle(cli) -> None:
+    main, root, reads = cli
+    (root / "frozen_models.pkl").unlink()
+    with pytest.raises(FileNotFoundError):
+        main()
+    assert reads == []
+    assert not (root / run.DIAGNOSTIC_CLAIM).exists()
+
+
+def test_no_sealed_row_is_read_with_a_changed_bundle(cli) -> None:
+    main, root, reads = cli
+    (root / "frozen_models.pkl").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="changed after validate"):
+        main()
+    assert reads == []
+    assert not (root / run.DIAGNOSTIC_CLAIM).exists()
+
+
+def test_no_sealed_row_is_read_after_a_finished_diagnostic(cli) -> None:
+    main, root, reads = cli
+    (root / "diagnostic_results.json").write_text("{}")
+    with pytest.raises(FileExistsError):
+        main()
+    assert reads == []
+
+
+def test_a_crashed_read_stays_recorded_and_blocks_another(cli) -> None:
+    main, root, reads = cli
+    with pytest.raises(_SealedRead):
+        main()
+    assert (root / run.DIAGNOSTIC_CLAIM).is_file()
+    with pytest.raises(FileExistsError):
+        main()
+    assert len(reads) == 1
