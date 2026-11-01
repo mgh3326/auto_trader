@@ -27,7 +27,7 @@ from research.kr_boosting import gate
 from research.kr_boosting import pipeline as pl
 from research.kr_boosting import policies as pol
 from research.kr_boosting import train as tr
-from research.kr_boosting.eligibility import d3_signals
+from research.kr_boosting.eligibility import d3_signals, decidable_signals
 from research.kr_boosting.features import compute_features
 from research.kr_boosting.panel import (
     PARQUET_NAME,
@@ -200,7 +200,7 @@ def validate(
 ) -> dict[str, Any]:
     ticks = pol.krx_ticks()
     store = compute_features(panel)
-    signals = d3_signals(panel)
+    signals = decidable_signals(panel)
     start = date(years[0], 1, 1)
     results: dict[str, Any] = {
         "stage": "validate",

@@ -178,3 +178,9 @@ def d3_signals(
             )
     out.sort(key=lambda s: (s.t, s.li))
     return out
+
+
+def decidable_signals(panel: Panel) -> list[Signal]:
+    """Signals with a next session to decide on; the last session has none."""
+
+    return d3_signals(panel, last_t=panel.shape[1] - 2)

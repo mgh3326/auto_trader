@@ -11,7 +11,11 @@ import numpy as np
 import pytest
 
 from research.kr_boosting.config import TEST_START
-from research.kr_boosting.eligibility import d3_signals, wilder_rsi
+from research.kr_boosting.eligibility import (
+    d3_signals,
+    decidable_signals,
+    wilder_rsi,
+)
 from research.kr_boosting.exposure_audit import provably_untouched, run_audit
 from research.kr_boosting.features import (
     FEATURE_NAMES,
@@ -273,6 +277,19 @@ def test_signals_equal_the_d3_engine_on_fixture_bars() -> None:
     for key, (rsi, l2) in theirs.items():
         assert ours_with_next[key].rsi == pytest.approx(float(rsi), abs=1e-4)
         assert ours_with_next[key].l2_price == l2
+
+
+def test_a_signal_on_the_last_session_is_not_a_decision() -> None:
+    sessions = weekdays(date(2017, 1, 2), 420)
+    rows = random_walk_rows("000001", sessions, 11)
+    last = d3_signals(build_panel(frame(rows)))[-1].t
+    panel = build_panel(frame(rows[: last + 1]))
+    assert d3_signals(panel)[-1].t == len(panel.calendar) - 1
+    signals = decidable_signals(panel)
+    assert signals and signals[-1].t < len(panel.calendar) - 1
+    li = np.array([s.li for s in signals])
+    t = np.array([s.t for s in signals])
+    assert len(feature_join(panel, compute_features(panel), li, t).frame) == len(t)
 
 
 def test_flat_prices_give_no_signal() -> None:
