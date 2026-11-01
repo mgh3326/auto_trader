@@ -35,7 +35,8 @@ Today's 555 is larger because KIND lists further 2026 delistings after that date
    symbol delisted before the sync began never had a row. Filling `delist_date` in the table cannot
    repair the ~491 corpus symbols that have no row at all; an inner join drops
    them and reintroduces survivorship bias. Research must key lifecycle data by symbol from
-   `delist_resolution.v1.csv`, never through `kr_symbol_universe`.
+   `delist_resolution.v1.csv` (export directory; sha256 and row count in `export_manifest.json`),
+   never through `kr_symbol_universe`.
 2. **12/4,011 is not a coverage number for the corpus.** The 12 dated rows are rows that
    were once in the master; the corpus' delisted frame mostly lies outside the table.
 3. **KIND's company list omits preferred-share delistings.** Every corpus symbol ended inside the
