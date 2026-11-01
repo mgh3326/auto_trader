@@ -886,8 +886,12 @@ def fill_sequences(rows: list[SourceRow]) -> dict[int, OutputRow]:
     ``fill_seq`` is the 1-based position of the row among this export's rows of
     the same order (the ROB-1379 order identity), by fill time, then write time,
     then id. ``incremental_qty`` is what the row adds: the row itself for an
-    incremental row, and the rise over the previous report of the same source for
-    a cumulative one (0 for a pure re-report, empty if the total went down).
+    incremental row. For a cumulative row it is the rise over the highest total
+    the same source reported earlier for the order: 0 for a pure re-report, and
+    empty while the total is below that high-water mark. Measuring from the
+    high-water mark, not from the previous report, keeps the sum of a source's
+    increments equal to the highest total it reported, so a stale or wrong dip
+    (5, 4, 5) adds nothing instead of counting the recovered share twice.
     """
     by_order: dict[Any, list[SourceRow]] = {}
     cells: dict[int, OutputRow] = {}
@@ -923,6 +927,7 @@ def fill_sequences(rows: list[SourceRow]) -> dict[int, OutputRow]:
             prior = previous.get(row["source"], Decimal("0"))
             if qty >= prior:
                 cell["incremental_qty"] = _decimal(qty - prior)
+            # The high-water mark, on purpose: see the docstring.
             previous[row["source"]] = max(prior, qty)
     return cells
 

@@ -421,3 +421,27 @@ def test_a_different_number_near_a_denied_one_passes(amount: str) -> None:
     assert (
         scan_table(BALANCES, BALANCES.column_names, rows, forbidden={"87654321"}) == []
     )
+
+
+@pytest.mark.parametrize(
+    ("totals", "increments"),
+    [
+        (["5", "4", "4"], ["5", None, None]),
+        (["5", "4", "5"], ["5", None, "0"]),
+        (["5", "4", "4.5"], ["5", None, None]),
+        (["5", "4", "6"], ["5", None, "1"]),
+        (["3", "5", "5"], ["3", "2", "0"]),
+    ],
+)
+def test_cumulative_increments_are_measured_from_the_high_water_mark(
+    totals: list[str], increments: list[str | None]
+) -> None:
+    rows = [
+        _us_fill(90 + i, qty, created_at=ORDER_TIME + timedelta(minutes=i + 1))
+        for i, qty in enumerate(totals)
+    ]
+    cells = _by_id(*rows)
+    got = [cells[90 + i]["incremental_qty"] for i in range(len(totals))]
+    assert got == increments
+    # The increments never add up past the highest total reported.
+    assert sum(Decimal(v) for v in got if v is not None) == max(map(Decimal, totals))

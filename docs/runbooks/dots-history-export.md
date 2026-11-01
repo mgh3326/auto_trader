@@ -215,7 +215,7 @@ integer, a 31-bit hash for most writers, and is never exported.
 | `fill_seq` | 1-based position of the row among this export's rows of the same order, ordered by `filled_at`, then write time, then row. The order is the ROB-1379 identity: broker, account mode, instrument, symbol, side, currency, order number and, for KIS, the trading day. Numbers are distinct within an order, and every source shares one sequence. |
 | `fill_seq_null_reason` | Why `fill_seq` is empty: `position_seed` (an opening seed has no order) or `no_order_id` (the row has a blank order id). |
 | `fill_qty_basis` | What `filled_qty` is: `incremental` (one execution or one delta), `cumulative` (the order's total when the row was written), `position_seed` (a whole position) or `unknown`. |
-| `incremental_qty` | What the row adds. For an `incremental` row it equals `filled_qty`. For a `cumulative` row it is the rise over the previous cumulative row of the same order and source in this export: `0` for a repeat of the same total, and empty if the total went down. Empty for `position_seed` and `unknown`. |
+| `incremental_qty` | What the row adds. For an `incremental` row it equals `filled_qty`. For a `cumulative` row it is the rise over the highest total that the same order and source reported earlier in this export: `0` for a repeat of that total, and empty while the total is below it. Empty for `position_seed` and `unknown`. |
 | `is_seed` | `true` for an opening seed: `fill_source = manual_import` with a `SEED-` order id. |
 
 The basis comes from the writer of each row. These are fields the ledger has
@@ -241,8 +241,12 @@ Limits:
 - One Upbit order can have both an aggregate row (`cumulative`) and per-trade
   rows (`incremental`) when the trades arrived after the aggregate was written.
   Summing both counts the order twice. Use the per-trade rows when both exist.
-- To total an order, take the non-superseded rows and sum `incremental_qty`. A
-  `cumulative` row with an empty `incremental_qty` needs a look at the order.
+- To total an order, take the non-superseded rows and sum `incremental_qty`. For
+  one source's cumulative rows the sum equals the highest total reported, even
+  when a report dips. For totals 5, 4 and 5 the increments are 5, empty and 0;
+  they are not 5, empty and 1, which would sum to 6. A `cumulative` row with an
+  empty `incremental_qty` reported less than an earlier row and needs a look at
+  the order.
 
 ## account_balance_daily
 
