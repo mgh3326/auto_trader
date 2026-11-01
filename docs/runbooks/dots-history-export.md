@@ -24,8 +24,8 @@ Do these steps as the desk, on a host that can reach the database.
    The tool refuses a salt file inside the repository, a file that other users
    can read, and a salt shorter than 32 bytes.
 
-2. Put the database URL in an environment variable. Use a role with `SELECT`
-   only, if one is available. The tool sets its transaction to read-only either
+2. Put the database URL in an environment variable. It must start with
+   `postgresql+asyncpg://`. Use a role with `SELECT` only, if one is available. The tool sets its transaction to read-only either
    way. Do not pass the URL on the command line.
 
 3. Optional: list values that must never appear, one per line, in a file outside
@@ -170,7 +170,10 @@ exports can be joined.
   - Alpaca rows have no `filled_at`, because the time sits in a raw payload this
     tool does not read.
   - `filled_at` on KIS, Upbit and Toss order rows comes only from in-effect
-    `execution_ledger` rows.
+    `execution_ledger` rows. For KIS the fill must share the order's trading day,
+    because order numbers are reused, so a fill recorded on another day leaves the
+    cell empty. DB paper `filled_at` is the simulator's own time, not ledger
+    evidence.
 - **Not exported.**
   - Kiwoom mock has no order ledger table, so its orders can only be read from
     the broker, and this tool never calls one. `manifest.json` records this
@@ -182,8 +185,10 @@ exports can be joined.
   replaced by a stable `oth_` hash. Rows still group, but the text is gone.
   `tags_hashed` in the manifest counts these, along with void reasons cut down to
   their code.
-- **`void_reason` holds the code only.** The detail after the code can be raw
+- **`void_reason` holds the code only.** The text after the first colon can be raw
   exception text, so `submit_exception:<text>` is exported as `submit_exception`.
+  The expired-inference marker is the one value kept whole. A value with a colon
+  and no recognizable code becomes an `oth_` hash.
 - **De-identified is not anonymous.** Exact symbols, quantities and times can be
   matched against a broker statement by anyone who holds one. Treat the export as
   private trading data and keep the Drive folder restricted.

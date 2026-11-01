@@ -138,8 +138,11 @@ _ALPACA_LIFECYCLE_FILLED = frozenset(
 )
 _KIS_MOCK_FILL_STATES = frozenset({"fill", "reconciled"})
 _CRYPTO_QUOTE_PREFIXES = frozenset({"KRW", "USDT", "BTC"})
-_REASON_CODE = re.compile(r"[a-z][a-z_]*(?::[a-z][a-z_]*)*")
 _REASON_HEAD = re.compile(r"[a-z][a-z_]*")
+#: The one void reason whose text after the colon is part of the code. Copied here
+#: to keep this tool's imports clear of the broker package; a test pins it to
+#: ``kis_leftover_inference.EXPIRED_INFERENCE_VOID_REASON``.
+EXPIRED_INFERENCE_MARKER = "expired_inference:kis_regular_day_order_no_broker_original"
 
 
 class SaltError(ValueError):
@@ -357,20 +360,25 @@ class _Projector:
         return self.hasher.ref("oth", text)
 
     def reason_code(self, value: Any) -> str | None:
-        """A void reason's code; its detail can be raw exception text.
+        """A void reason's code; the text after a colon can be anything.
 
-        ``submit_exception:{exc}`` keeps ``submit_exception``. A reason made only
-        of code words, such as the expired-inference marker, is kept whole.
+        ``submit_exception:{exc}`` keeps ``submit_exception``, even when the detail
+        looks like a code word. Only the expired-inference marker is kept whole.
         """
         text = _text(value)
         if text is None:
             return None
-        if _REASON_CODE.fullmatch(text):
-            return self.tag(text)
-        head = text.split(":", 1)[0]
+        if text == EXPIRED_INFERENCE_MARKER:
+            return text
+        head, separator, _detail = text.partition(":")
         if _REASON_HEAD.fullmatch(head) and is_safe_label(head):
-            self.tags_hashed[self.table] += 1
+            if separator:
+                self.tags_hashed[self.table] += 1
             return head
+        if separator:
+            # No recognizable code, so a safe-looking whole value is not safe either.
+            self.tags_hashed[self.table] += 1
+            return self.hasher.ref("oth", text)
         return self.tag(text)
 
     def order_ref(self, alias: str, order_id: Any) -> str | None:

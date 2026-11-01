@@ -6,8 +6,8 @@ rows only) and order proposals in one read-only transaction, replaces every
 identifier with a salted hash, and writes CSV, Parquet and a manifest into a new
 directory. A leak check over the rows and the written files fails the whole run.
 
-The database is named by ``--database-url-env NAME`` so the password never
-reaches the process arguments; the salt comes from ``--salt-file`` or
+The database is named by ``--database-url-env NAME``, holding a
+``postgresql+asyncpg://`` URL, so the password never reaches the process arguments; the salt comes from ``--salt-file`` or
 ``--salt-env`` and must live outside the repository. Neither is ever printed.
 
 Exit codes: 0 exported, 1 input or database error, 2 leak check failed.
@@ -67,7 +67,7 @@ def _parser() -> argparse.ArgumentParser:
         "--database-url-env",
         required=True,
         metavar="NAME",
-        help="Name of the environment variable that holds the PostgreSQL URL",
+        help="Name of the environment variable that holds the postgresql+asyncpg URL",
     )
     salt = parser.add_mutually_exclusive_group(required=True)
     salt.add_argument(
@@ -140,13 +140,18 @@ def _database_url(name: str) -> str:
     raw = _env_value(name, option="--database-url-env")
     try:
         url = make_url(raw)
-        if url.get_backend_name() != "postgresql" or not url.database:
+        if (
+            url.get_backend_name() != "postgresql"
+            or url.get_driver_name() != "asyncpg"
+            or not url.database
+        ):
             raise ValueError
         return url.render_as_string(hide_password=False)
     except Exception:
         # Parser messages can quote the URL; never chain or repeat them.
         raise ValueError(
-            f"environment variable {name} does not hold a complete PostgreSQL URL"
+            f"environment variable {name} does not hold a complete "
+            "postgresql+asyncpg URL"
         ) from None
 
 

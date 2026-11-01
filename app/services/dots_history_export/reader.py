@@ -9,7 +9,7 @@ from __future__ import annotations
 from calendar import monthrange
 from datetime import datetime
 
-from sqlalchemy import Select, select, text
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
@@ -221,12 +221,19 @@ def paper_pending_statement(window: Window) -> Select:
 
 def paper_trades_statement(window: Window) -> Select:
     m = PaperTrade
+    # A subquery, not a join: two pending orders linked to one trade must not
+    # export that trade twice.
+    pending_order_id = (
+        select(func.min(PaperPendingOrder.id))
+        .where(PaperPendingOrder.paper_trade_id == m.id)
+        .scalar_subquery()
+    )
     return (
         select(
             m.id,
             m.account_id,
             PaperAccount.strategy_name,
-            PaperPendingOrder.id.label("pending_order_id"),
+            pending_order_id.label("pending_order_id"),
             m.symbol,
             m.instrument_type,
             m.side,
@@ -238,7 +245,6 @@ def paper_trades_statement(window: Window) -> Select:
             m.executed_at,
         )
         .join(PaperAccount, PaperAccount.id == m.account_id)
-        .outerjoin(PaperPendingOrder, PaperPendingOrder.paper_trade_id == m.id)
         .where(m.executed_at >= window.since, m.executed_at < window.until)
         .order_by(m.id)
     )

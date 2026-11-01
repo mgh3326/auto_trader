@@ -319,7 +319,7 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
 - 🔴 **leak check 는 fail-closed**: 행 단계와 staging 파일 재독 단계 둘 다 통과해야 게시된다. 실패 출력은 위치와 규칙 이름만이며 값을 반복하지 않는다. 실패를 넘기려고 패턴을 완화하거나 컬럼을 빼지 마라
 - 🔴 **`execution_ledger` 는 `execution_ledger_in_effect()` 만** 읽는다(#1175). 교차 소스 중복은 지우지 않고 `superseded_duplicate` 로 표시한다(ROB-1379 `supersede`)
 - 🔴 솔트는 repo 와 출력에 들어가지 않는다. 출력 디렉터리도 repo 밖만 허용한다
-- `filled_at` 은 in-effect 체결 행에서만 온다(evidence-first). 근거 없으면 비운다. `terminal_outcome=open` 은 "아직 살아 있음"의 증거가 아니라 "종료 기록 없음"이다
+- KIS·Upbit·Toss 주문 행의 `filled_at` 은 같은 거래일의 in-effect `execution_ledger` 행에서만 온다(evidence-first). 근거 없으면 비운다. DB paper 표의 `filled_at` 은 시뮬레이터 자기 행의 값이며 `execution_ledger` 증거가 아니다. `terminal_outcome=open` 은 "아직 살아 있음"의 증거가 아니라 "종료 기록 없음"이다
 - Kiwoom mock 은 주문 원장 테이블이 없어 대상이 아니다(`manifest.sources_without_ledger`)
 - **테스트**: `tests/services/dots_history_export/`, `test_quarantine_readers_db.py::test_dots_history_export_drops_the_quarantined_phantom`
 

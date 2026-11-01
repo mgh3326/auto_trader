@@ -132,6 +132,14 @@ def test_no_statement_selects_a_payload_prose_or_private_column(statement) -> No
     assert not selected & set(NEVER_READ)
 
 
+def test_a_paper_trade_cannot_multiply_through_its_pending_orders() -> None:
+    statement = reader.paper_trades_statement(WINDOW)
+    assert "pending_order_id" in {c.name for c in statement.selected_columns}
+    sql = _sql(statement)
+    assert "JOIN paper.paper_pending_orders" not in sql
+    assert "min(paper.paper_pending_orders.id)" in sql
+
+
 def _surface_files() -> list[Path]:
     package = REPO_ROOT / "app/services/dots_history_export"
     return [*sorted(package.glob("*.py")), REPO_ROOT / "scripts/export_dots_history.py"]
@@ -254,6 +262,18 @@ def test_a_database_url_problem_never_quotes_the_url(monkeypatch) -> None:
         cli._database_url("DOTS_DB_FOR_TEST")
     assert "hunter2" not in str(raised.value)
     assert raised.value.__cause__ is None
+
+
+def test_a_url_without_the_asyncpg_driver_is_refused(monkeypatch) -> None:
+    monkeypatch.setenv("DOTS_DB_FOR_TEST", "postgresql://user:hunter2@host/db")
+    with pytest.raises(ValueError, match="postgresql\\+asyncpg") as raised:
+        cli._database_url("DOTS_DB_FOR_TEST")
+    assert "hunter2" not in str(raised.value)
+
+
+def test_an_asyncpg_url_is_accepted(monkeypatch) -> None:
+    monkeypatch.setenv("DOTS_DB_FOR_TEST", "postgresql+asyncpg://user:pw@host/db")
+    assert cli._database_url("DOTS_DB_FOR_TEST").startswith("postgresql+asyncpg://")
 
 
 def test_default_window_is_the_last_six_months() -> None:

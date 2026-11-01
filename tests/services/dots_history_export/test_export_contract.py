@@ -13,9 +13,16 @@ from typing import Any
 import pyarrow.parquet as pq
 import pytest
 
-from app.services.dots_history_export.projection import RefHasher, SaltError
+from app.services.dots_history_export.projection import (
+    EXPIRED_INFERENCE_MARKER,
+    RefHasher,
+    SaltError,
+)
 from app.services.dots_history_export.publish import MANIFEST_NAME, publish
 from app.services.dots_history_export.spec import TABLE_BY_NAME, TABLES
+from app.services.order_proposals.kis_leftover_inference import (
+    EXPIRED_INFERENCE_VOID_REASON,
+)
 from tests.services.dots_history_export._fixtures import (
     ACCOUNT_NUMBER,
     CREATED,
@@ -406,6 +413,9 @@ def test_a_reconciler_row_outside_the_window_does_not_hide_the_exported_fill() -
         ),
         ("submit_exception:account 1234567 name 문광현 rejected", "submit_exception"),
         ("cancel_unconfirmed:12345", "cancel_unconfirmed"),
+        ("submit_exception:alice", "submit_exception"),
+        ("submit_exception:alice:bob", "submit_exception"),
+        ("expired_inference:alice", "expired_inference"),
         ("submit_exception:ConnectError(host down)", "submit_exception"),
     ],
 )
@@ -418,6 +428,37 @@ def test_void_reason_keeps_the_code_and_drops_the_detail(
     )
     assert projection.tables["order_proposals"][0]["void_reason"] == expected
     assert projection.tables["order_proposal_rungs"][0]["void_reason"] == expected
+
+
+def test_the_kept_void_reason_marker_is_the_ledger_marker() -> None:
+    assert EXPIRED_INFERENCE_MARKER == EXPIRED_INFERENCE_VOID_REASON
+
+
+@pytest.mark.parametrize("raw", ["Submit_Exception:alice", "http2:alice", ":alice"])
+def test_a_colon_value_without_a_code_is_hashed_even_when_it_looks_safe(
+    raw: str,
+) -> None:
+    [row] = projected(order_proposals=[proposal_row(void_reason=raw)]).tables[
+        "order_proposals"
+    ]
+    assert row["void_reason"].startswith("oth_")
+    assert "alice" not in row["void_reason"]
+
+
+def test_an_alphabetic_void_reason_suffix_never_reaches_a_file(tmp_path: Path) -> None:
+    raw = "submit_exception:alice"
+    out, manifest = _publish(
+        tmp_path,
+        order_proposals=[proposal_row(void_reason=raw)],
+        order_proposal_rungs=[rung_row(void_reason=raw)],
+    )
+    for table in ("order_proposals", "order_proposal_rungs"):
+        assert "alice" not in (out / f"{table}.csv").read_text("utf-8")
+        cells = json.dumps(
+            pq.read_table(out / f"{table}.parquet").to_pylist(), default=str
+        )
+        assert "alice" not in cells
+        assert manifest["tables"][table]["tags_hashed"] == 1
 
 
 def test_a_void_reason_with_no_code_is_hashed_whole() -> None:
