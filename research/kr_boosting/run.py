@@ -12,7 +12,6 @@ import argparse
 import hashlib
 import json
 import os
-import pickle
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -29,6 +28,11 @@ from research.kr_boosting import gate
 from research.kr_boosting import pipeline as pl
 from research.kr_boosting import policies as pol
 from research.kr_boosting import train as tr
+from research.kr_boosting.artifacts import (
+    load_artifact,
+    verify_artifact,
+    write_artifact,
+)
 from research.kr_boosting.eligibility import d3_signals, decidable_signals
 from research.kr_boosting.features import compute_features
 from research.kr_boosting.panel import (
@@ -45,6 +49,7 @@ from research.kr_boosting.simulator import SimOutput, session_slice, simulate
 SEAL_BOUNDARY = cfg.TEST_START
 VALIDATE_LAST = date(2022, 12, 31)
 DIAGNOSTIC_CLAIM = "diagnostic_claim"
+FROZEN_BUNDLE = "frozen_models.pkl"
 DIAGNOSTIC_LAST = cfg.TEST_END
 FROZEN_YEAR = cfg.TEST_START.year
 
@@ -440,20 +445,15 @@ def validate(
     }
 
     results["frozen"] = {name: _bundle_sha(item) for name, item in frozen.items()}
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / "frozen_models.pkl").open("wb") as handle:
-        pickle.dump(
-            {
-                name: (item.frozen, item.frozen_config_indexes)
-                for name, item in frozen.items()
-            },
-            handle,
-        )
-    results["frozen_bundle_sha256"] = hashlib.sha256(
-        (root / "frozen_models.pkl").read_bytes()
-    ).hexdigest()
-    with (root / "validate_outputs.pkl").open("wb") as handle:
-        pickle.dump(_strip(outputs_all), handle)
+    results["frozen_bundle_sha256"] = write_artifact(
+        root,
+        FROZEN_BUNDLE,
+        {
+            name: (item.frozen, item.frozen_config_indexes)
+            for name, item in frozen.items()
+        },
+    )
+    write_artifact(root, "validate_outputs.pkl", _strip(outputs_all))
     _dump(root / "validate_results.json", results)
     return results
 
@@ -493,7 +493,7 @@ def _frozen_predict(frozen: dict[str, Any], family: str, x: np.ndarray) -> np.nd
 def _require_diagnostic_ready(root: Path) -> str:
     """Refuse a diagnostic that may not run; returns the frozen bundle's hash."""
 
-    bundle = root / "frozen_models.pkl"
+    bundle = root / FROZEN_BUNDLE
     validated = root / "validate_results.json"
     if not bundle.is_file() or not validated.is_file():
         raise FileNotFoundError("diagnostic needs the frozen bundle from `validate`")
@@ -504,6 +504,7 @@ def _require_diagnostic_ready(root: Path) -> str:
     expected = json.loads(validated.read_text())["frozen_bundle_sha256"]
     if hashlib.sha256(bundle.read_bytes()).hexdigest() != expected:
         raise ValueError("frozen bundle changed after validate")
+    verify_artifact(root, FROZEN_BUNDLE)
     return expected
 
 
@@ -535,20 +536,22 @@ def claim_diagnostic(root: Path) -> str:
     return expected
 
 
-def diagnostic(
-    parquet: Path, *, root: Path, identity: ExportIdentity
-) -> dict[str, Any]:
+def diagnostic(export_dir: Path, *, root: Path, repo: Path) -> dict[str, Any]:
     """Frozen models on 2023-2024, once. Metrics are diagnostics, not a sealed test.
 
-    It takes the path, not rows, so no caller can hold a sealed row before the claim.
+    It takes the export's directory, not rows, so no caller can hold a sealed row
+    before the claim, and an unregistered export is refused before it uses the look.
     """
 
+    identity = verify_export(export_dir)
+    require_registered_export(repo, identity)
     expected = claim_diagnostic(root)
     panel = build_panel(
-        read_rows(parquet, last_session=DIAGNOSTIC_LAST, allow_sealed=True)
+        read_rows(
+            export_dir / PARQUET_NAME, last_session=DIAGNOSTIC_LAST, allow_sealed=True
+        )
     )
-    with (root / "frozen_models.pkl").open("rb") as handle:
-        frozen = pickle.load(handle)
+    frozen = load_artifact(root, FROZEN_BUNDLE)
 
     ticks = pol.krx_ticks()
     store = compute_features(panel)
@@ -612,8 +615,7 @@ def diagnostic(
         "calibration": pl.reliability(entry.touched[in_window], p_touch[in_window, 0]),
         "decision_window": [panel.calendar[first_s], panel.calendar[last_t]],
     }
-    with (root / "diagnostic_outputs.pkl").open("wb") as handle:
-        pickle.dump(_strip(outputs_all), handle)
+    write_artifact(root, "diagnostic_outputs.pkl", _strip(outputs_all))
     _dump(root / "diagnostic_results.json", results)
     return results
 
@@ -627,16 +629,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
 
+    if args.stage == "diagnostic":
+        diagnostic(args.export_dir, root=args.root, repo=args.repo)
+        return 0
     identity = verify_export(args.export_dir)
     require_registered_export(args.repo, identity)
-    parquet = args.export_dir / PARQUET_NAME
     if args.stage == "validate":
         _require_unread_root(args.root)
-        rows = read_rows(parquet, last_session=VALIDATE_LAST)
+        rows = read_rows(args.export_dir / PARQUET_NAME, last_session=VALIDATE_LAST)
         validate(build_panel(rows), root=args.root, identity=identity, repo=args.repo)
-        return 0
-    if args.stage == "diagnostic":
-        diagnostic(parquet, root=args.root, identity=identity)
         return 0
     from research.kr_boosting.report import write_report  # noqa: PLC0415
 

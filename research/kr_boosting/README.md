@@ -29,6 +29,10 @@ Every stage refuses an export whose hashes differ from the `dataset_*_kr` hashes
 registered manifests. `validate` refuses a root that holds a claim or a diagnostic result,
 and `report` refuses saved results from different manifests, frozen models or exports.
 
+Pickled artifacts are loaded only if their bytes match the hash `run_manifest.json`
+recorded when they were written. This catches a changed file, not a writer who rewrites
+both, so `--root` must be a directory you own. A root without that manifest is refused.
+
 Run output stays in `$ROOT`, outside the repository. Each fit is cached under
 `$ROOT/run/fit_cache`, keyed by its inputs, `train.py` and the LightGBM version, so
 a crash or a simulator-only fix does not refit. The log has one line per fit.
@@ -48,6 +52,7 @@ a crash or a simulator-only fix does not refit. The log has one line per fit.
 | `gate.py` | Gate verdict: block bootstrap, Holm, stability, bracket |
 | `train.py` | LightGBM, imported lazily; nested configuration selection |
 | `pipeline.py`, `run.py`, `report.py` | Rows and runs, CLI, report |
+| `artifacts.py` | Pickled artifacts, checked against a hash recorded at write time |
 | `exposure_audit.py` | Repository evidence that 2023-2024 was already read |
 | `payout_exposure.py` | How much of each policy's result settled at a last close, split by the ROB-1437 audit's caveats |
 

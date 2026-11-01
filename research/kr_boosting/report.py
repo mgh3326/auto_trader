@@ -9,7 +9,6 @@ look is counted.
 from __future__ import annotations
 
 import json
-import pickle
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -27,6 +26,7 @@ from research.eval_contract.contract import (
 from research.eval_contract.report import render_report
 from research.kr_boosting import config as cfg
 from research.kr_boosting import pipeline as pl
+from research.kr_boosting.artifacts import load_artifact
 from research.kr_boosting.exposure_audit import provably_untouched, run_audit
 from research.kr_boosting.gate import CONTINUE
 from research.kr_boosting.panel import ExportIdentity
@@ -185,13 +185,11 @@ def write_report(
 ) -> None:
     results = json.loads((root / "validate_results.json").read_text())
     diag = json.loads((root / "diagnostic_results.json").read_text())
-    with (root / "validate_outputs.pkl").open("rb") as handle:
-        validate_outputs = pickle.load(handle)
-    with (root / "diagnostic_outputs.pkl").open("rb") as handle:
-        diagnostic_outputs = pickle.load(handle)
     registry = json.loads((repo / "research/experiments/registry.json").read_text())
     entries = {h["id"]: h for h in registry["hypotheses"]}
     _require_same_run(results, diag, entries, identity)
+    validate_outputs = load_artifact(root, "validate_outputs.pkl")
+    diagnostic_outputs = load_artifact(root, "diagnostic_outputs.pkl")
     hits = run_audit(repo)
     git = results["git"]
     flags = load_flags(export_dir)

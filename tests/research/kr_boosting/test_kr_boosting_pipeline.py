@@ -17,6 +17,7 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from research.eval_contract.contract import BRACKET_CONSERVATIVE, sha256_canonical
@@ -24,12 +25,21 @@ from research.kr_boosting import config as cfg
 from research.kr_boosting import pipeline as pl
 from research.kr_boosting import report as report_module
 from research.kr_boosting import run
+from research.kr_boosting.artifacts import (
+    MANIFEST_NAME,
+    ArtifactRefused,
+    load_artifact,
+    write_artifact,
+)
 from research.kr_boosting.config import CONFIG_GRID, HYP_ADMIT, HYP_ENTRY
 from research.kr_boosting.exposure_audit import Hit
 from research.kr_boosting.panel import (
+    PARQUET_NAME,
     ExportIdentity,
     ExportIdentityError,
     build_panel,
+    sha256_file,
+    verify_export,
 )
 from research.kr_boosting.report import write_report
 from tests.research.kr_boosting.helpers import (
@@ -168,8 +178,8 @@ def _fixture_registry(
     return path
 
 
-def _fixture_repo(path: Path) -> Path:
-    _fixture_registry(path)
+def _fixture_repo(path: Path, **pinned: str) -> Path:
+    _fixture_registry(path, **pinned)
     git = [
         "git",
         "-C",
@@ -185,13 +195,24 @@ def _fixture_repo(path: Path) -> Path:
     return path
 
 
-def _fixture_export(path: Path) -> Path:
+def _fixture_export(path: Path, whole: pd.DataFrame) -> Path:
     path.mkdir()
     table = path / "delist_resolution.v1.csv"
     table.write_text("symbol,delist_reason\n000001,해산\n")
-    digest = hashlib.sha256(table.read_bytes()).hexdigest()
+    parquet = path / PARQUET_NAME
+    whole.to_parquet(parquet)
     (path / "manifest.json").write_text(
-        json.dumps({"files": {"delist_resolution": {"sha256": digest}}})
+        json.dumps(
+            {
+                "files": {
+                    "delist_resolution": {"sha256": sha256_file(table)},
+                    "kr_daily_causal": {
+                        "sha256": sha256_file(parquet),
+                        "rows": len(whole),
+                    },
+                }
+            }
+        )
     )
     return path
 
@@ -211,8 +232,13 @@ def test_validate_diagnostic_and_report_run_end_to_end(
     for i in range(14):
         rows += random_walk_rows(f"0000{i:02d}", sessions, 100 + i)
     whole = frame(rows)
-    identity = ExportIdentity("aa" * 32, "bb" * 32, len(whole))
-    repo = _fixture_repo(tmp_path / "repo")
+    export = _fixture_export(tmp_path / "export", whole)
+    identity = verify_export(export)
+    repo = _fixture_repo(
+        tmp_path / "repo",
+        parquet=identity.parquet_sha256,
+        manifest=identity.manifest_sha256,
+    )
     root = tmp_path / "run"
 
     run.validate(
@@ -226,12 +252,10 @@ def test_validate_diagnostic_and_report_run_end_to_end(
         seeds=SEEDS,
         repo=repo,
     )
-    parquet = tmp_path / "export.parquet"
-    whole.to_parquet(parquet)
-    run.diagnostic(parquet, root=root, identity=identity)
+    run.diagnostic(export, root=root, repo=repo)
     assert (root / run.DIAGNOSTIC_CLAIM).is_file()
     with pytest.raises(FileExistsError):
-        run.diagnostic(parquet, root=root, identity=identity)
+        run.diagnostic(export, root=root, repo=repo)
 
     out = tmp_path / "report.md"
     write_report(
@@ -239,7 +263,7 @@ def test_validate_diagnostic_and_report_run_end_to_end(
         repo=repo,
         out=out,
         identity=identity,
-        export_dir=_fixture_export(tmp_path / "export"),
+        export_dir=export,
     )
     text = out.read_text()
     assert "## Verdict" in text
@@ -269,10 +293,9 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     root = tmp_path / "run"
     root.mkdir()
-    bundle = pickle.dumps({})
-    (root / "frozen_models.pkl").write_bytes(bundle)
+    digest = write_artifact(root, run.FROZEN_BUNDLE, {})
     (root / "validate_results.json").write_text(
-        json.dumps({"frozen_bundle_sha256": hashlib.sha256(bundle).hexdigest()})
+        json.dumps({"frozen_bundle_sha256": digest})
     )
     repo = _fixture_registry(tmp_path / "repo")
     reads: list[Path] = []
@@ -289,11 +312,11 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         args = [stage, "--export-dir", str(tmp_path), "--root", str(root)]
         return run.main([*args, "--repo", str(repo), "--report", str(tmp_path / "r")])
 
-    return main, root, reads
+    return main, root, reads, repo
 
 
 def test_no_sealed_row_is_read_without_a_frozen_bundle(cli) -> None:
-    main, root, reads = cli
+    main, root, reads, _ = cli
     (root / "frozen_models.pkl").unlink()
     with pytest.raises(FileNotFoundError):
         main()
@@ -302,7 +325,7 @@ def test_no_sealed_row_is_read_without_a_frozen_bundle(cli) -> None:
 
 
 def test_no_sealed_row_is_read_with_a_changed_bundle(cli) -> None:
-    main, root, reads = cli
+    main, root, reads, _ = cli
     (root / "frozen_models.pkl").write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed after validate"):
         main()
@@ -311,7 +334,7 @@ def test_no_sealed_row_is_read_with_a_changed_bundle(cli) -> None:
 
 
 def test_no_sealed_row_is_read_after_a_finished_diagnostic(cli) -> None:
-    main, root, reads = cli
+    main, root, reads, _ = cli
     (root / "diagnostic_results.json").write_text("{}")
     with pytest.raises(FileExistsError):
         main()
@@ -319,7 +342,7 @@ def test_no_sealed_row_is_read_after_a_finished_diagnostic(cli) -> None:
 
 
 def test_a_crashed_read_stays_recorded_and_blocks_another(cli) -> None:
-    main, root, reads = cli
+    main, root, reads, _ = cli
     with pytest.raises(_SealedRead):
         main()
     assert (root / run.DIAGNOSTIC_CLAIM).is_file()
@@ -331,22 +354,22 @@ def test_a_crashed_read_stays_recorded_and_blocks_another(cli) -> None:
 def test_a_direct_call_claims_before_it_reads_and_blocks_another(
     cli, tmp_path: Path
 ) -> None:
-    _, root, reads = cli
-    parquet = tmp_path / "export.parquet"
+    _, root, reads, repo = cli
+    parquet = tmp_path / PARQUET_NAME
     with pytest.raises(_SealedRead):  # the reader itself asserts the claim is on disk
-        run.diagnostic(parquet, root=root, identity=IDENTITY)
+        run.diagnostic(tmp_path, root=root, repo=repo)
     assert reads == [parquet]
     assert (root / run.DIAGNOSTIC_CLAIM).is_file()
     with pytest.raises(FileExistsError, match="Count another look"):
-        run.diagnostic(parquet, root=root, identity=IDENTITY)
+        run.diagnostic(tmp_path, root=root, repo=repo)
     assert reads == [parquet]
 
 
 def test_a_crash_after_the_read_leaves_the_claim_and_no_result(
     cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, root, _ = cli
-    parquet = tmp_path / "export.parquet"
+    _, root, _, repo = cli
+    parquet = tmp_path / PARQUET_NAME
     reads: list[Path] = []
 
     def read_rows(path: Path, **_kwargs):
@@ -362,12 +385,38 @@ def test_a_crash_after_the_read_leaves_the_claim_and_no_result(
     monkeypatch.setattr(run, "read_rows", read_rows)
     monkeypatch.setattr(run, "compute_features", compute_features)
     with pytest.raises(_Crash):
-        run.diagnostic(parquet, root=root, identity=IDENTITY)
+        run.diagnostic(tmp_path, root=root, repo=repo)
     assert (root / run.DIAGNOSTIC_CLAIM).is_file()
     assert not (root / "diagnostic_results.json").exists()
     with pytest.raises(FileExistsError, match="Count another look"):
-        run.diagnostic(parquet, root=root, identity=IDENTITY)
+        run.diagnostic(tmp_path, root=root, repo=repo)
     assert reads == [parquet]
+
+
+def test_a_direct_call_on_an_unregistered_export_uses_no_look(
+    cli, tmp_path: Path
+) -> None:
+    _, root, reads, repo = cli
+    _fixture_registry(repo, parquet="cc" * 32)
+    with pytest.raises(ExportIdentityError, match="is not the dataset"):
+        run.diagnostic(tmp_path, root=root, repo=repo)
+    assert reads == []
+    assert not (root / run.DIAGNOSTIC_CLAIM).exists()
+
+
+def test_a_direct_call_on_a_changed_parquet_uses_no_look(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, root, reads, repo = cli
+
+    def changed(_directory: Path):
+        raise ExportIdentityError("sha256 mismatch")
+
+    monkeypatch.setattr(run, "verify_export", changed)
+    with pytest.raises(ExportIdentityError, match="sha256 mismatch"):
+        run.diagnostic(tmp_path, root=root, repo=repo)
+    assert reads == []
+    assert not (root / run.DIAGNOSTIC_CLAIM).exists()
 
 
 def test_only_diagnostic_may_ask_for_sealed_rows() -> None:
@@ -390,7 +439,7 @@ def test_only_diagnostic_may_ask_for_sealed_rows() -> None:
     "name", [run.DIAGNOSTIC_CLAIM, "diagnostic_results.json", "diagnostic_outputs.pkl"]
 )
 def test_validate_refuses_a_root_with_a_diagnostic_read(cli, name: str) -> None:
-    main, root, reads = cli
+    main, root, reads, _ = cli
     (root / name).write_text("{}")
     bundle = (root / "frozen_models.pkl").read_bytes()
     with pytest.raises(FileExistsError, match="use a new --root"):
@@ -409,8 +458,8 @@ def test_validate_refuses_a_root_with_a_diagnostic_read(cli, name: str) -> None:
 def test_an_unregistered_export_is_refused_before_any_read(
     cli, tmp_path: Path, stage: str, pinned: dict[str, str]
 ) -> None:
-    main, root, reads = cli
-    _fixture_registry(tmp_path / "repo", **pinned)
+    main, root, reads, repo = cli
+    _fixture_registry(repo, **pinned)
     with pytest.raises(ExportIdentityError, match="is not the dataset"):
         main(stage)
     assert reads == []
@@ -448,25 +497,146 @@ def test_report_refuses_a_diagnostic_of_another_bundle() -> None:
         report_module._require_same_run(results, diag, entries, IDENTITY)
 
 
-def test_write_report_checks_the_run_before_it_renders(tmp_path: Path) -> None:
+class _Payload:
+    """Unpickling this writes a file, standing in for arbitrary code."""
+
+    def __init__(self, marker: Path) -> None:
+        self.marker = marker
+
+    def __reduce__(self):
+        return (Path.write_text, (self.marker, "executed"))
+
+
+def _plant_payload(root: Path, name: str, path: Path) -> Path:
+    marker = path / "payload-ran"
+    (root / name).write_bytes(pickle.dumps(_Payload(marker)))
+    return marker
+
+
+def _report_root(path: Path) -> Path:
     results, diag, _ = _same_run()
-    results["registry"][HYP_ADMIT] = "cd" * 32  # the fixture registry says "ab"
-    root = tmp_path / "run"
+    root = path / "run"
     root.mkdir()
     (root / "validate_results.json").write_text(json.dumps(results))
     (root / "diagnostic_results.json").write_text(json.dumps(diag))
-    for name in ("validate_outputs.pkl", "diagnostic_outputs.pkl"):
-        (root / name).write_bytes(pickle.dumps({}))
-    out = tmp_path / "report.md"
+    return root
+
+
+def _write_report(path: Path, root: Path) -> Path:
+    out = path / "report.md"
+    write_report(
+        root=root,
+        repo=_fixture_registry(path / "repo"),
+        out=out,
+        identity=IDENTITY,
+        export_dir=path,
+    )
+    return out
+
+
+def test_write_report_checks_the_run_before_it_loads_an_artifact(
+    tmp_path: Path,
+) -> None:
+    root = _report_root(tmp_path)
+    results = json.loads((root / "validate_results.json").read_text())
+    results["registry"][HYP_ADMIT] = "cd" * 32  # the fixture registry says "ab"
+    (root / "validate_results.json").write_text(json.dumps(results))
+    marker = _plant_payload(root, "validate_outputs.pkl", tmp_path)
     with pytest.raises(ValueError, match="manifest changed after validate"):
-        write_report(
-            root=root,
-            repo=_fixture_registry(tmp_path / "repo"),
-            out=out,
-            identity=IDENTITY,
-            export_dir=tmp_path,
-        )
-    assert not out.exists()
+        _write_report(tmp_path, root)
+    assert not marker.exists()
+    assert not (tmp_path / "report.md").exists()
+
+
+def test_the_payload_runs_when_nothing_checks_it(tmp_path: Path) -> None:
+    marker = _plant_payload(tmp_path, "x.pkl", tmp_path)
+    pickle.loads((tmp_path / "x.pkl").read_bytes())
+    assert marker.read_text() == "executed"
+
+
+@pytest.mark.parametrize("name", ["validate_outputs.pkl", "diagnostic_outputs.pkl"])
+def test_write_report_refuses_a_swapped_artifact_without_running_it(
+    tmp_path: Path, name: str
+) -> None:
+    root = _report_root(tmp_path)
+    for each in ("validate_outputs.pkl", "diagnostic_outputs.pkl"):
+        write_artifact(root, each, {})
+    marker = _plant_payload(root, name, tmp_path)
+    with pytest.raises(ArtifactRefused, match="!= recorded"):
+        _write_report(tmp_path, root)
+    assert not marker.exists()
+    assert not (tmp_path / "report.md").exists()
+
+
+def test_write_report_refuses_an_artifact_with_no_recorded_hash(
+    tmp_path: Path,
+) -> None:
+    root = _report_root(tmp_path)
+    marker = _plant_payload(root, "validate_outputs.pkl", tmp_path)
+    with pytest.raises(ArtifactRefused, match="no hash"):
+        _write_report(tmp_path, root)
+    assert not marker.exists()
+
+
+def test_a_swapped_bundle_is_refused_before_the_look(cli, tmp_path: Path) -> None:
+    main, root, reads, _ = cli
+    marker = _plant_payload(root, run.FROZEN_BUNDLE, tmp_path)
+    digest = hashlib.sha256((root / run.FROZEN_BUNDLE).read_bytes()).hexdigest()
+    (root / "validate_results.json").write_text(
+        json.dumps({"frozen_bundle_sha256": digest})
+    )  # results rewritten too; the manifest still disagrees
+    with pytest.raises(ArtifactRefused, match="!= recorded"):
+        main()
+    assert reads == []
+    assert not marker.exists()
+    assert not (root / run.DIAGNOSTIC_CLAIM).exists()
+
+
+def test_a_bundle_swapped_after_the_claim_is_still_not_unpickled(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, root, _, repo = cli
+    marker = tmp_path / "payload-ran"
+
+    def read_rows(_path: Path, **_kwargs):
+        _plant_payload(root, run.FROZEN_BUNDLE, tmp_path)
+        return frame(flat_rows("000001", weekdays(date(2023, 1, 2), 3)))
+
+    monkeypatch.setattr(run, "read_rows", read_rows)
+    with pytest.raises(ArtifactRefused, match="!= recorded"):
+        run.diagnostic(tmp_path, root=root, repo=repo)
+    assert not marker.exists()
+
+
+def test_an_artifact_round_trips_and_a_broken_manifest_refuses(tmp_path: Path) -> None:
+    digest = write_artifact(tmp_path, "a.pkl", {"x": 1})
+    write_artifact(tmp_path, "b.pkl", [2])
+    assert load_artifact(tmp_path, "a.pkl") == {"x": 1}
+    assert load_artifact(tmp_path, "b.pkl") == [2]
+    assert digest == hashlib.sha256((tmp_path / "a.pkl").read_bytes()).hexdigest()
+    (tmp_path / MANIFEST_NAME).write_text("not json")
+    with pytest.raises(ArtifactRefused, match="not valid JSON"):
+        load_artifact(tmp_path, "a.pkl")
+    (tmp_path / MANIFEST_NAME).write_text("[]")
+    with pytest.raises(ArtifactRefused, match="not an object"):
+        load_artifact(tmp_path, "a.pkl")
+
+
+def test_only_the_artifact_module_imports_pickle() -> None:
+    package = Path(run.__file__).parent
+    users = []
+    for source in sorted(package.glob("*.py")):
+        for node in ast.walk(ast.parse(source.read_text())):
+            names = (
+                [a.name for a in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module]
+                if isinstance(node, ast.ImportFrom)
+                else []
+            )
+            if "pickle" in names:
+                users.append(source.name)
+    assert users == ["artifacts.py"]
 
 
 @pytest.mark.parametrize("stage", ["results", "diag", "report"])
