@@ -13,6 +13,7 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
+from app.models.base import Base
 from app.models.execution_intent import ExecutionChildRequest, ExecutionIntent
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -33,7 +34,12 @@ def _render_upgrade() -> str:
     buffer = io.StringIO()
     context = MigrationContext.configure(
         dialect_name="postgresql",
-        opts={"as_sql": True, "output_buffer": buffer},
+        # Alembic applies this naming convention at upgrade time, as env.py does.
+        opts={
+            "as_sql": True,
+            "output_buffer": buffer,
+            "target_metadata": Base.metadata,
+        },
     )
     with Operations.context(context):
         module.upgrade()
@@ -95,6 +101,8 @@ def test_migration_columns_and_checks_match_the_model(model: type) -> None:
     assert checks
     for check in checks:
         assert str(check.sqltext) in block, str(check.sqltext)
+        assert f"CONSTRAINT {check.name} CHECK" in block, check.name
+    assert f"ck_{table.name}_ck_" not in block
 
 
 def test_only_mock_is_allowed_in_the_account_check() -> None:

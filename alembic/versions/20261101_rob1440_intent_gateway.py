@@ -116,29 +116,33 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "schema_version = 1", name="ck_execution_intents_schema_version"
+            "schema_version = 1", name=op.f("ck_execution_intents_schema_version")
         ),
         sa.CheckConstraint(
-            "account IN ('kis_mock')", name="ck_execution_intents_account_mock_only"
+            "account IN ('kis_mock')",
+            name=op.f("ck_execution_intents_account_mock_only"),
         ),
-        sa.CheckConstraint("venue IN ('krx')", name="ck_execution_intents_venue"),
-        sa.CheckConstraint("side IN ('buy', 'sell')", name="ck_execution_intents_side"),
+        sa.CheckConstraint("venue IN ('krx')", name=op.f("ck_execution_intents_venue")),
         sa.CheckConstraint(
-            "max_quantity > 0", name="ck_execution_intents_max_quantity"
-        ),
-        sa.CheckConstraint(
-            "max_notional_krw > 0", name="ck_execution_intents_max_notional"
+            "side IN ('buy', 'sell')", name=op.f("ck_execution_intents_side")
         ),
         sa.CheckConstraint(
-            "limit_price_krw > 0", name="ck_execution_intents_limit_price"
+            "max_quantity > 0", name=op.f("ck_execution_intents_max_quantity")
         ),
         sa.CheckConstraint(
-            "max_slippage_bps BETWEEN 0 AND 500", name="ck_execution_intents_slippage"
+            "max_notional_krw > 0", name=op.f("ck_execution_intents_max_notional")
+        ),
+        sa.CheckConstraint(
+            "limit_price_krw > 0", name=op.f("ck_execution_intents_limit_price")
+        ),
+        sa.CheckConstraint(
+            "max_slippage_bps BETWEEN 0 AND 500",
+            name=op.f("ck_execution_intents_slippage"),
         ),
         sa.CheckConstraint(
             "position_at_authorization >= 0 AND min_position_after >= 0 "
             "AND min_position_after <= max_position_after",
-            name="ck_execution_intents_inventory",
+            name=op.f("ck_execution_intents_inventory"),
         ),
         sa.PrimaryKeyConstraint("id", name="pk_execution_intents"),
         schema="review",
@@ -166,28 +170,28 @@ def upgrade() -> None:
         sa.Column("finished_at", postgresql.TIMESTAMP(timezone=True), nullable=True),
         sa.CheckConstraint(
             "action IN ('submit', 'amend', 'cancel')",
-            name="ck_execution_child_requests_action",
+            name=op.f("ck_execution_child_requests_action"),
         ),
         sa.CheckConstraint(
             "state IN ('sending', 'accepted', 'uncertain', 'refused')",
-            name="ck_execution_child_requests_state",
+            name=op.f("ck_execution_child_requests_state"),
         ),
         sa.CheckConstraint(
             "(state = 'refused') = (refusal_reason IS NOT NULL)",
-            name="ck_execution_child_requests_refusal",
+            name=op.f("ck_execution_child_requests_refusal"),
         ),
         sa.CheckConstraint(
             "(state = 'sending') = (finished_at IS NULL)",
-            name="ck_execution_child_requests_finished_at",
+            name=op.f("ck_execution_child_requests_finished_at"),
         ),
         sa.CheckConstraint(
             "(action = 'submit') = (target_idempotency_key IS NULL)",
-            name="ck_execution_child_requests_target",
+            name=op.f("ck_execution_child_requests_target"),
         ),
         sa.CheckConstraint(
             "(action = 'cancel' AND quantity IS NULL AND limit_price_krw IS NULL) "
             "OR (action <> 'cancel' AND quantity > 0 AND limit_price_krw > 0)",
-            name="ck_execution_child_requests_order_values",
+            name=op.f("ck_execution_child_requests_order_values"),
         ),
         sa.ForeignKeyConstraint(
             ["intent_id"],
