@@ -10,6 +10,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from research.trade_retro.audit import (
+    economic_duplicates,
+    external_refs_on_other_rows,
+    join_coverage,
+    non_session_stamps,
+    order_waterfall,
+    quantity_mismatches,
+)
 from research.trade_retro.canonical import (
     apply_splits,
     build_canon,
@@ -32,6 +40,7 @@ from research.trade_retro.rules import (
     time_exit_counterfactual,
     unfilled_buy_counterfactual,
 )
+from research.trade_retro.sensitivity import run_scenarios
 
 FULL_REPORT_NAME = "report-full.md"
 
@@ -79,6 +88,15 @@ def compute(export_dir: Path, prices_dir: Path) -> Results:
         split_adjusted=split_adjusted,
         implausible=implausible,
         unpriced_open=walk.unpriced_open,
+        audit={
+            "economic": economic_duplicates(export, canon),
+            "quantity": quantity_mismatches(export, canon),
+            "join": join_coverage(executions, orders),
+            "refs_elsewhere": external_refs_on_other_rows(executions, orders),
+            "stamps": non_session_stamps(export),
+            "orders": order_waterfall(orders),
+        },
+        scenarios=run_scenarios(export, book),
         cutover=cutover,
     )
 

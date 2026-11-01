@@ -150,3 +150,31 @@ def test_committed_report_has_every_section_for_every_market():
             assert f"### {name}: {section}" in text
     assert "## Data limits" in text
     assert "## Reproduce" in text
+
+
+def test_committed_fill_denominators_add_up():
+    text = COMMITTED.read_text(encoding="utf-8")
+    section = text.split("## Denominators and exclusions")[1].split(
+        "Orders, from every"
+    )[0]
+    rows = [
+        [cell.strip() for cell in line.strip("|").split("|")]
+        for line in section.splitlines()
+        if line.startswith("| ") and "Market" not in line and "---" not in line
+    ]
+    assert [row[0] for row in rows] == ["KR", "US", "Crypto"]
+    for row in rows:
+        ledger, flagged, seeds, repeats, totals, moved, added, used = map(int, row[1:])
+        assert ledger - flagged - seeds - repeats - totals - moved + added == used
+
+
+def test_committed_report_answers_each_data_check():
+    text = COMMITTED.read_text(encoding="utf-8")
+    for heading in (
+        "## Data checks",
+        "## Denominators and exclusions",
+        "## Sensitivity",
+    ):
+        assert heading in text
+    assert "Naive: count opening lots as buys" in text
+    assert "`fill_seq`" in text

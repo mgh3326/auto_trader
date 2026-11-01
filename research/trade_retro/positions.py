@@ -88,6 +88,7 @@ def walk_symbol(
     cutover: datetime,
     mark: tuple[float, date] | None,
     seed_base: dict[date, tuple[float, date]] | None = None,
+    older_first: bool = True,
 ) -> Walk:
     """Walk one account's fills in one symbol. ``rows`` needs date, ts, side, qty,
     price, seed, source and key; ties sort buys before sells so a same-time pair
@@ -113,7 +114,7 @@ def walk_symbol(
 
     lots: deque[Lot] = deque()
     next_seq = 0
-    if low < -1e-12:
+    if older_first and low < -1e-12:
         day = ordered.iloc[0]["date"]
         lots.append(
             Lot(next_seq, -low, float("nan"), day, "inferred", None, float("nan"), day)
@@ -203,6 +204,19 @@ def walk_symbol(
                 lots.popleft()
         if not lots:
             episode += 1
+        if remaining > 1e-12:
+            # Only reachable with ``older_first=False``, the plain FIFO sensitivity line.
+            unknown.append(
+                UnknownBasisSell(
+                    alias,
+                    market,
+                    symbol,
+                    remaining,
+                    row.price,
+                    row.date,
+                    row.ts < cutover,
+                )
+            )
 
     unpriced: list[tuple[str, str, str]] = []
     for lot in lots:
@@ -243,8 +257,13 @@ def cutover_time(fills: pd.DataFrame) -> datetime:
     return min(fills.loc[fills["source"] == "manual_import", "ts"])
 
 
-def reconstruct(fills: pd.DataFrame, book: PriceBook) -> Walk:
-    cutover = cutover_time(fills)
+def reconstruct(
+    fills: pd.DataFrame,
+    book: PriceBook,
+    cutover: datetime | None = None,
+    older_first: bool = True,
+) -> Walk:
+    cutover = cutover or cutover_time(fills)
     all_matches: list[Match] = []
     all_unknown: list[UnknownBasisSell] = []
     embedded = 0
@@ -261,7 +280,7 @@ def reconstruct(fills: pd.DataFrame, book: PriceBook) -> Walk:
                 i = reference_index(bars, market, row.ts)
                 if i is not None:
                     seed_base[row.date] = (float(bars.close[i]), bars.date_at(i))
-        walk = walk_symbol(rows, cutover, mark, seed_base)
+        walk = walk_symbol(rows, cutover, mark, seed_base, older_first)
         all_matches += walk.matches
         all_unknown += walk.unknown_sells
         embedded += walk.embedded_buys

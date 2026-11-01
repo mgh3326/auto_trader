@@ -100,6 +100,16 @@ def next_open_session(bars: Bars, market: str, stamp: datetime) -> int | None:
     return bars.idx_on_or_after(day)
 
 
+@dataclass(frozen=True)
+class Cleaning:
+    """Which fill rules apply. All on is the report; the rest are sensitivity lines."""
+
+    twins: bool = True
+    totals: bool = True
+    proven_partials: bool = True
+    order_only: bool = True
+
+
 @dataclass
 class Canon:
     orders: pd.DataFrame
@@ -258,6 +268,46 @@ def drop_running_totals(
     return fills.drop(index=drop).reset_index(drop=True), len(drop), unresolved
 
 
+def drop_inventory_proven_partials(
+    fills: pd.DataFrame, order_keys: set[str]
+) -> tuple[pd.DataFrame, int]:
+    """Remove a running partial from an order with no order row, when inventory proves it.
+
+    With no order quantity to test against, the proof is that the symbol's sells exceed
+    everything it ever held by exactly this row's quantity, and that a later websocket row
+    of the same order is larger. Real partial fills do not satisfy that by chance.
+    """
+    drop: list[int] = []
+    real = fills[(fills["source"] == "websocket") & ~fills["key"].isin(order_keys)]
+    for _key, group in real.groupby("key", sort=True):
+        if len(group) < 2:
+            continue
+        first = group.iloc[0]
+        held = fills[
+            (fills["alias"] == first["alias"])
+            & (fills["market"] == first["market"])
+            & (fills["symbol"] == first["symbol"])
+        ]
+        excess = float(
+            held.loc[held["side"] == "sell", "qty"].sum()
+            - held.loc[held["side"] == "buy", "qty"].sum()
+        )
+        ordered = group.sort_values("ts", kind="stable")
+        for position, (index, row) in enumerate(ordered.iterrows()):
+            later = ordered.iloc[position + 1 :]
+            if (
+                row["qty"] > 0
+                and abs(excess - row["qty"]) <= row["qty"] * 1e-6
+                and (later["qty"] > row["qty"]).any()
+            ):
+                drop.append(index)
+    return fills.drop(index=drop).reset_index(drop=True), len(drop)
+
+
+def _market_counts(fills: pd.DataFrame) -> dict[str, int]:
+    return {str(k): int(v) for k, v in fills.groupby("market").size().items()}
+
+
 def _link_rungs(export: Export, orders: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """Attach each rung to its order. For KIS, the order nearest the rung's update."""
     rungs = export.tables["order_proposal_rungs"]
@@ -299,9 +349,49 @@ def _link_rungs(export: Export, orders: pd.DataFrame) -> tuple[pd.DataFrame, int
     return orders, unlinked
 
 
-def build_canon(export: Export) -> Canon:
+def _exported_market_counts(export: Export) -> dict[str, int]:
+    frame = export.tables["execution_ledger"]
+    frame = frame[frame["account_alias"].isin(LIVE_ALIASES)]
+    return {str(k): int(v) for k, v in frame.groupby("market").size().items()}
+
+
+def _keyed_over_quantity(
+    loaded: pd.DataFrame,
+    kis_by_ref: dict[str, list[dict]],
+    order_qty: dict[str, float],
+) -> int:
+    """KIS orders whose raw fills exceed their quantity, before any cleaning.
+
+    A repeated row carries a different day, so only the one-day fallback links it.
+    """
+    totals: dict[str, float] = {}
+    for row in loaded[(loaded["alias"] == "kis_live") & ~loaded["seed"]].itertuples(
+        index=False
+    ):
+        key = _key(row.alias, row.order_ref, row.trading_day)
+        if key not in order_qty:
+            key = _nearest_kis_key(row, kis_by_ref) or key
+        totals[key] = totals.get(key, 0.0) + row.qty
+    return sum(
+        1
+        for key, total in totals.items()
+        if key in order_qty and total > order_qty[key] * (1 + 1e-6)
+    )
+
+
+def build_canon(export: Export, cleaning: Cleaning | None = None) -> Canon:
+    cleaning = cleaning or Cleaning()
     orders = _load_orders(export)
-    fills, twins_dropped, seeds_corrected = drop_cross_day_twins(_load_fills(export))
+    loaded = _load_fills(export)
+    stages = {
+        "exported_rows": _exported_market_counts(export),
+        "unflagged_rows": _market_counts(loaded),
+        "seed_rows": _market_counts(loaded[loaded["seed"]]),
+    }
+    fills, twins_dropped, seeds_corrected = (
+        drop_cross_day_twins(loaded) if cleaning.twins else (loaded, 0, 0)
+    )
+    stages["after_twins"] = _market_counts(fills)
 
     keys = set(orders["key"])
     kis_by_ref: dict[str, list[dict]] = {}
@@ -326,9 +416,17 @@ def build_canon(export: Export) -> Canon:
         fill_keys.append(key)
     fills["key"] = fill_keys
     fills["ts"] = fill_stamps
-    fills, totals_dropped, overfills_unresolved = drop_running_totals(
-        fills, dict(zip(orders["key"], orders["qty"], strict=True))
+    order_qty = dict(zip(orders["key"], orders["qty"], strict=True))
+    keyed_over = _keyed_over_quantity(loaded, kis_by_ref, order_qty)
+    fills, totals_dropped, overfills_unresolved = (
+        drop_running_totals(fills, order_qty) if cleaning.totals else (fills, 0, 0)
     )
+    fills, partials_dropped = (
+        drop_inventory_proven_partials(fills, keys)
+        if cleaning.proven_partials
+        else (fills, 0)
+    )
+    stages["after_totals"] = _market_counts(fills)
 
     real = fills[~fills["seed"]]
     ledger_qty = real.groupby("key")["qty"].sum()
@@ -358,9 +456,10 @@ def build_canon(export: Export) -> Canon:
                     "key": row.key,
                 }
             )
-    if residuals:
+    if residuals and cleaning.order_only:
         fills = pd.concat([fills, pd.DataFrame(residuals)], ignore_index=True)
 
+    stages["after_order_only"] = _market_counts(fills)
     orders["filled_qty"] = orders[["row_filled", "ledger_qty"]].max(axis=1)
     notional = orders["key"].map(ledger_notional).fillna(0.0)
     residual_notional = (orders["row_filled"] - orders["ledger_qty"]).clip(
@@ -392,6 +491,9 @@ def build_canon(export: Export) -> Canon:
         "seeds_corrected_for_twins": seeds_corrected,
         "running_total_rows_dropped": totals_dropped,
         "overfilled_orders_unresolved": overfills_unresolved,
+        "inventory_proven_partials_dropped": partials_dropped,
+        "orders_over_quantity_before_cleaning_keyed": keyed_over,
+        "stages": stages,
         "order_rows": len(orders),
         "open_rows_with_ledger_fills": int(stale.sum()),
         "kis_day_fallback_fills": day_fallback,

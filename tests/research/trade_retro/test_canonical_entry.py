@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from research.trade_retro.canonical import (
+    Cleaning,
     build_canon,
     next_open_session,
     normalize_symbol,
@@ -100,7 +101,7 @@ def test_a_filled_row_without_ledger_rows_adds_a_fill(tmp_path):
         2.0,
         95.5,
     )
-    assert row["ts"] == datetime(2026, 6, 15, 13, 51, tzinfo=UTC)
+    assert row["ts"] == datetime(2026, 8, 17, 13, 51, tzinfo=UTC)
 
 
 def test_a_partial_ledger_quantity_adds_only_the_residual(tmp_path):
@@ -219,7 +220,7 @@ def test_a_kis_fill_one_day_from_its_order_still_links(tmp_path):
                     100,
                     "2026-08-20T15:10:00Z",
                     "shift",
-                    day="2026-07-17",
+                    day="2026-08-21",
                 )
             ],
         },
@@ -416,7 +417,7 @@ def test_implausible_fill_keeps_its_quantity_but_stops_being_a_trade():
     book = PriceBook(bars={("kr", "AAA"): bars}, benchmarks={}, missing={})
     fills = pd.DataFrame(
         [
-            {"alias": "a", "market": "kr", "symbol": "AAA", "side": "buy", "qty": 10.0,
+            {"alias": "a", "market": "kr", "symbol": "AAA", "side": "buy", "qty": 4.0,
              "price": 75.0, "date": day, "seed": False, "source": "reconciler"},
             {"alias": "a", "market": "kr", "symbol": "AAA", "side": "buy", "qty": 1.0,
              "price": 295.0, "date": day, "seed": False, "source": "reconciler"},
@@ -483,7 +484,7 @@ def test_a_websocket_row_that_differs_from_the_reconciler_row_stays(
                     "kr",
                     "AAA",
                     "sell",
-                    26,
+                    7,
                     300,
                     "2026-08-04T23:02:40Z",
                     "ref",
@@ -509,7 +510,7 @@ def test_a_seed_recorded_after_a_repeated_sell_is_reduced_and_an_earlier_one_is_
             "kr",
             symbol,
             "sell",
-            26,
+            7,
             300,
             "2026-08-04T23:00:00Z",
             ref,
@@ -628,7 +629,7 @@ def test_a_fill_a_day_from_its_order_takes_the_orders_date(tmp_path):
             ],
         },
     )
-    assert canon.fills.iloc[0]["ts"] == datetime(2026, 7, 16, 15, 0, tzinfo=UTC)
+    assert canon.fills.iloc[0]["ts"] == datetime(2026, 8, 20, 15, 0, tzinfo=UTC)
 
 
 def test_next_open_session_is_never_an_open_that_already_passed():
@@ -729,3 +730,88 @@ def test_r1_uses_the_next_open_and_skips_an_intent_that_filled(tmp_path):
     assert row["r5"] == pytest.approx((110.0 + 6) / 101.0 - 1.0)
     # The index leg starts at that same open: 1000 to 1100.
     assert row["x5"] == pytest.approx((110.0 + 6) / 101.0 - 1.1)
+
+
+def test_a_partial_proven_by_inventory_is_removed_and_a_real_partial_stays(tmp_path):
+    def sell(symbol, qty, stamp, ref):
+        return fill_row(
+            "upbit_live",
+            "crypto",
+            symbol,
+            "sell",
+            qty,
+            10,
+            stamp,
+            ref,
+            source="websocket",
+        )
+
+    def buy(symbol, qty):
+        return fill_row(
+            "upbit_live",
+            "crypto",
+            symbol,
+            "buy",
+            qty,
+            9,
+            "2026-08-01T00:00:00Z",
+            f"b{symbol}",
+        )
+
+    canon = _canon(
+        tmp_path,
+        {
+            "execution_ledger": [
+                buy("AAA", 100),
+                sell("AAA", 40, "2026-08-02T00:00:00Z", "o1"),
+                sell("AAA", 100, "2026-08-02T00:00:06Z", "o1"),
+                buy("BBB", 100),
+                sell("BBB", 40, "2026-08-02T00:00:00Z", "o2"),
+                sell("BBB", 60, "2026-08-02T00:00:06Z", "o2"),
+            ]
+        },
+    )
+    sold = (
+        canon.fills[canon.fills["side"] == "sell"].groupby("symbol")["qty"].apply(list)
+    )
+    assert sold["AAA"] == [100.0]
+    assert sold["BBB"] == [40.0, 60.0]
+    assert canon.diagnostics["inventory_proven_partials_dropped"] == 1
+
+
+def test_cleaning_flags_turn_each_rule_off(tmp_path):
+    rows = {
+        "execution_ledger": [
+            _ws("AAA", 7, 300, "2026-08-03T23:03:51Z", "twin", "2026-08-04T23:03:51Z"),
+            fill_row(
+                "kis_live",
+                "kr",
+                "AAA",
+                "sell",
+                7,
+                300,
+                "2026-08-04T23:02:40Z",
+                "twin",
+                day="2026-08-05",
+            ),
+        ],
+        "toss_live_order_ledger": [
+            order_row(
+                "toss_live",
+                "us",
+                "BBB",
+                "buy",
+                2,
+                10,
+                "2026-08-17T13:51:00Z",
+                "only",
+                "filled",
+                filled_qty="2",
+                fill_price="10",
+            )
+        ],
+    }
+    export = load_export(write_export(tmp_path / "export", rows))
+    assert len(build_canon(export).fills) == 2
+    assert len(build_canon(export, Cleaning(twins=False)).fills) == 3
+    assert len(build_canon(export, Cleaning(order_only=False)).fills) == 1

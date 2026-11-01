@@ -10,7 +10,7 @@ This report states measured facts for the operator's later policy decision. It r
 uv run python -m research.trade_retro.run report --export ~/work/herdr-artifacts/dots-history-2026-11-01 --prices ~/work/herdr-artifacts/rob-1439-trade-retro/prices-2026-11-01 --public-out docs/research/rob-1439-trade-retrospective-2026-11-01.md --private-dir ~/work/herdr-artifacts/rob-1439-trade-retro
 ```
 
-Add `--check` to compare against the files on disk without writing. Every number comes from `research/trade_retro/`: section 2 from `positions.py`, section 3 from `entry.py` and `markouts.py`, section 4 from `idle.py`, section 5 from `rules.py`, all rendered by `report.py`.
+Add `--check` to compare against the files on disk without writing. Every number comes from `research/trade_retro/`: section 2 from `positions.py`, section 3 from `entry.py` and `markouts.py`, section 4 from `idle.py`, section 5 from `rules.py`, the checks from `audit.py` and the sensitivity table from `sensitivity.py`, all rendered by `report.py`.
 
 - Export: `dots-history-export/v1`, window 2026-05-01 to 2026-11-01, `manifest.json` sha256 `9de029eb656814dcf4fa9efe6279609c3586f58a283cc30fc6e94259d1f44424`, 8585 rows, not committed.
 - Price snapshot: `prices_manifest.json` sha256 `0cf9b5b9ea978c8ec3c46989590a9608fabbbf4f4f2ec0fe44ca75dfd8b26dd1`, fetched 2026-11-01, not committed. Re-fetching can pick up revised prices, so it goes to a new directory and produces a new report.
@@ -22,7 +22,7 @@ Add `--check` to compare against the files on disk without writing. Every number
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | KR | 94 | -14.55% | -19.90% | +5.34% | 18.8% | -6.08% | -6.08% | +7.69% | 27.2% / 18.2% | -17.39% / -32.94% |
 | US | 27 | +15.51% | +1.10% | +14.40% | 13.6% | +4.67% | +4.67% | -0.80% | 16.8% / 12.0% | +2.92% / +0.34% |
-| Crypto | 1442 | +16.62% | +9.04% | +7.58% | 40.7% | -2.39% | +3.95% | +0.45% | 34.5% | -9.89% |
+| Crypto | 1442 | +16.62% | +9.05% | +7.58% | 40.7% | -2.39% | +3.95% | +0.45% | 34.6% | -9.89% |
 
 Returns are price return before fees. Each line's definitions are in the sections below. An idle share is a lower-bound estimate, so read the data limits first.
 
@@ -36,6 +36,66 @@ Returns are price return before fees. Each line's definitions are in the section
 - **Fill rate.** Accepted orders are rows that reached the broker, less rejections and cancel-operation rows. An order is filled if any quantity filled. `Open` counts as unfilled in one column and is removed in the other. An **intent** is one account, symbol, side and local ISO week, so a resubmitted order counts once.
 - **Markout.** One row per executed order at its volume-weighted price, to the close 1, 5 and 20 sessions after the fill's session, signed so a positive value favours the trade.
 - **Idle cash.** Opening cash is the smallest amount keeping cash at or above zero, assuming no external flows. Opening lots count as held from the account's first day, because they have no purchase date and no cash outflow. Cash share is cash over cash plus holdings at market, averaged by day from the account's first fill. Forgone is each day's cash times the next day's index return, not compounded, so a negative value is a loss that cash avoided. Parking instruments are SGOV, BIL, 459580 and 357870.
+
+## Data checks
+
+Each check below comes from a question raised by the independent dots analysis of the same export. No check found a wrong value written by the export. Two columns it does not have are listed as gaps for the desk.
+
+| Check | Count | Evidence | Treatment | Source |
+| --- | --- | --- | --- | --- |
+| Rows equal on every economic field, flag already applied | Extra rows: 8. Groups: 2. Orders: 1 | Orders summing to no more than their quantity: 1. Over it: 0. With no order row: 0 | Kept. They are separate trades of one order, with the time cut to the minute | **Export gap**: no `fill_seq` column, so trades cannot be told from repeats |
+| Websocket row repeating the next day's reconciler row | Rows: 5 | Same order, side, quantity and price, recorded exactly 24h after its `filled_at` | Removed. Seed rows that absorbed one, reduced by the same quantity: 1 | Ledger data. The export copies `filled_at` as stored. The flag misses them because the stored day differs. Cause of the stamp: unverified |
+| Order whose fills exceed its quantity | Orders before cleaning: 5. After: 0 | The repeated rows above, plus an order with a row equal to its whole quantity | Rows removed as partials inside a running total: 2. Unresolved orders: 0 | Ledger data |
+| Partial fill of an order with no order row, proven by inventory | Rows: 1 | The symbol's sells exceed all its holdings by exactly this row's quantity, and a later row of the order is larger | Removed | Ledger data |
+| Order row behind the ledger | Orders: 76 | The row's filled quantity is below the ledger's, mostly `open` rows with no ending | The ledger's quantity counts, and the outcome is corrected | Ledger data |
+| Ledger behind the order row | Fills: 26 | The row says filled and the ledger has less | The residual is added as a fill at the row's price, on the order's date | Ledger data. The export's only row filters are the time window and quarantine, and neither can remove these |
+| `manual_import` rows, stamped on a weekend | On a weekend: 45 of 51 rows | `opening_lots.py` stamps the cutover instant and sets quantity to holdings minus net fills, at the broker's average cost. They are opening lots, not transfers | No markout or cash flow. Return runs from the last close before the stamp | Ledger data, documented. **Export gap**: nothing separates a seed from another manual import |
+| Other equity rows stamped on a weekend | On a weekend: 3 of 357 rows, before removals | One broker's rows can be stamped a day away from the session | Mapped to the next session. Twins removed as above | Ledger data |
+| Fill far from its session's close | Rows: 2 | More than 30% from the close, at prices like an old average cost | Quantity kept, treated as opening lots, with no markout or cash flow | Ledger data |
+
+**Join between the ledger and the order tables.** The two tables hold different populations, so neither is a denominator for the other. The hashed key itself works: executions with no order row whose reference is on any order row of that account: 0.
+
+| Market | Account | Executed orders | With order row | Share of orders | Share of notional | Before the first order row | Recurring micro-buys | Other, after the first order row | Filled order rows that have ledger fills |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| crypto | Account B | 1689 | 108 | 6.4% | 76.4% | 618 | 1561 | 10 | 44 of 45 |
+| kr | Account A | 87 | 62 | 71.3% | 48.5% | 24 | 0 | 1 | 60 of 60 |
+| kr | Account C | 128 | 128 | 100.0% | 100.0% | 0 | 0 | 0 | 119 of 128 |
+| us | Account A | 78 | 58 | 74.4% | 76.1% | 17 | 0 | 3 | 47 of 47 |
+| us | Account C | 82 | 82 | 100.0% | 100.0% | 0 | 0 | 0 | 66 of 82 |
+
+## Denominators and exclusions
+
+Fills, from every live ledger row to the fills every section uses. Each row leaves at one step, and the steps add up to the last column:
+
+| Market | Ledger rows | Flagged superseded | Opening seeds | Repeats | Inside a running total | Cannot be trades | Added from order rows | Fills used |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| KR | 295 | 63 | 20 | 5 | 0 | 1 | 9 | 215 |
+| US | 165 | 0 | 20 | 0 | 0 | 1 | 16 | 160 |
+| Crypto | 3221 | 1455 | 11 | 0 | 3 | 0 | 1 | 1753 |
+
+Orders, from every live order row to the fill-rate denominator:
+
+| Market | Order rows | Cancel rows | Rejected | Never accepted | Parking instruments | Accepted orders used |
+| --- | --- | --- | --- | --- | --- | --- |
+| Crypto | 156 | 0 | 0 | 0 | 0 | 156 |
+| KR | 931 | 21 | 91 | 0 | 3 | 816 |
+| US | 723 | 3 | 0 | 0 | 10 | 710 |
+
+## Sensitivity
+
+Return on lots bought in the window, under each treatment that could be argued. Only the named treatment changes on each line. Cash shares run KR, US, then crypto, in account-label order.
+
+| Treatment | KR | US | Crypto | Avg cash share by account |
+| --- | --- | --- | --- | --- |
+| Base: every rule in this report | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.6% |
+| No duplicate removal: trust `superseded_duplicate` alone | -14.47% (+5.35% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.43% (+8.12% vs index, 1444 lots) | 37.3% / 18.2% / 16.8% / 12.0% / 35.0% |
+| Keep the fill proven a partial only by inventory | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.5% |
+| Drop fills found only on an order row | -15.20% (+5.66% vs index, 90 lots) | +16.74% (+16.17% vs index, 13 lots) | +17.82% (+8.37% vs index, 1441 lots) | 27.2% / 16.6% / 16.8% / 13.9% / 34.1% |
+| Keep fills that cannot be trades as trades | -10.59% (+9.37% vs index, 95 lots) | +25.65% (+24.32% vs index, 28 lots) | +16.62% (+7.58% vs index, 1442 lots) | 25.7% / 18.2% / 14.8% / 12.0% / 34.6% |
+| Naive: count opening lots as buys at their stated cost | -12.46% (+1.75% vs index, 116 lots) | +30.42% (+28.08% vs index, 48 lots) | +3.63% (+4.84% vs index, 1598 lots) | 50.2% / 18.2% / 50.0% / 12.0% / 36.3% |
+| Plain FIFO: older holdings do not go first | -13.43% (+5.78% vs index, 94 lots) | +14.61% (+13.59% vs index, 27 lots) | +15.62% (+6.90% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.6% |
+| Only lots whose order has an order row | -14.18% (+5.31% vs index, 84 lots) | +18.64% (+16.75% vs index, 21 lots) | +18.09% (+9.53% vs index, 13 lots) | as base |
+| Without recurring micro-buys | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.31% (+9.00% vs index, 22 lots) | as base |
 
 ## KR
 
@@ -304,9 +364,9 @@ Amounts are in KRW. Index: BTC/KRW (KRW-BTC, Upbit).
 
 | Scope | Positions | Still open | Realized | Unrealized | Total | Median position | Winners | Hold days (cost-wtd) | Hold days (median) | vs cash (0%) | Index, same dates | vs index |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Account B: bought in window | 8 | 2 | +19.35% | +0.98% | +16.62% | +3.65% | 50.0% | 80 | 67 | +16.62% | +9.04% | +7.58% |
+| Account B: bought in window | 8 | 2 | +19.35% | +0.98% | +16.62% | +3.66% | 50.0% | 80 | 67 | +16.62% | +9.05% | +7.58% |
 | Account B: opening lots, from the seed-date close | 6 | 2 | -4.06% | -10.34% | -6.60% | -7.80% | 50.0% | 134 | 117 | -6.60% | -11.40% | +4.80% |
-| **All: bought in window** | 8 | 2 | +19.35% | +0.98% | +16.62% | +3.65% | 50.0% | 80 | 67 | +16.62% | +9.04% | +7.58% |
+| **All: bought in window** | 8 | 2 | +19.35% | +0.98% | +16.62% | +3.66% | 50.0% | 80 | 67 | +16.62% | +9.05% | +7.58% |
 | **All: opening lots, from the seed-date close** | 6 | 2 | -4.06% | -10.34% | -6.60% | -7.80% | 50.0% | 134 | 117 | -6.60% | -11.40% | +4.80% |
 
 Opening lots measured on the broker's average cost instead: -10.83% (n=6). That cost predates the window, so no index comparison applies to it.
@@ -315,8 +375,8 @@ Sells with no known basis, excluded from every return above:
 
 | Scope | Sell pieces | Share of sold notional |
 | --- | --- | --- |
-| Account B | 34 | 28.3% |
-| **All** | 34 | 28.3% |
+| Account B | 32 | 28.1% |
+| **All** | 32 | 28.1% |
 
 ### Crypto: 3. Entry types, fill rates and markouts
 
@@ -374,7 +434,7 @@ Markouts of executed orders, mean with the number of orders in brackets. A posit
 
 | Account | Days | From | To | Avg cash share | Avg cash + parking share | Last cash share | Last cash + parking share | Forgone, % of avg cash | Forgone, % of avg NAV | Index return, same dates | Account return, same dates |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Account B | 184 | 2026-05-01 | 2026-10-31 | 34.5% | 34.5% | 79.2% | 79.2% | -24.98% | -9.19% | -9.89% | +10.72% |
+| Account B | 184 | 2026-05-01 | 2026-10-31 | 34.6% | 34.6% | 79.2% | 79.2% | -25.07% | -9.25% | -9.89% | +10.66% |
 
 ### Crypto: 5. Largest winners and losers, and candidate rules
 
@@ -388,7 +448,7 @@ Positions ranked: 10, parking and dust excluded.
 | W2 | Account B | fill+seed | +9.53% | -0.36% | 16.1% | 78 | open | near_market/session |  | oth_2616e3e1… | deep_limit/proposal | 1 | oth_dcfdc8df… |
 | W3 | Account B | fill+seed | +19.13% | +16.70% | 15.3% | 112 | closed | seed |  |  | near_market/proposal | 1 | oth_d39f952e… |
 | W4 | Account B | seed | +8.23% | +18.32% | 6.2% | 167 | open | seed |  |  | deep_limit/proposal | 1 | oth_c7be9155… |
-| W5 | Account B | fill | +10.15% | +17.26% | 3.7% | 25 | closed | near_market/session |  | oth_d4e72b19… | deep_limit/session |  |  |
+| W5 | Account B | fill | +10.17% | +17.27% | 3.7% | 24 | closed | near_market/session |  | oth_d4e72b19… | deep_limit/session |  |  |
 
 **Largest losers**
 
@@ -407,7 +467,7 @@ Positions ranked: 10, parking and dust excluded.
 | R1 Buy the unfilled `deep_limit` orders at the next open, hold 20 sessions | 3 of 3 reach 20s (3 reach 5s) | 20s -1.13%, net of index +1.05%; 5s +1.44%, net of index -0.33% |
 | R1 Buy the unfilled `near_market` orders at the next open, hold 20 sessions | 3 of 3 reach 20s (3 reach 5s) | 20s +3.73%, net of index -0.09%; 5s +0.88%, net of index -0.08% |
 | R2 Hold instead of selling: `loss_cut` | 4 of 4 reach 20s (4 reach 5s) | 20s +13.87% of sold notional; 5s +6.34% |
-| R2 Hold instead of selling: `no_order_row` | 14 of 14 reach 20s (14 reach 5s) | 20s -8.86% of sold notional; 5s +0.19% |
+| R2 Hold instead of selling: `no_order_row` | 14 of 14 reach 20s (14 reach 5s) | 20s -8.77% of sold notional; 5s +0.46% |
 | R2 Hold instead of selling: `other_proposal` | 72 of 72 reach 20s (72 reach 5s) | 20s +1.59% of sold notional; 5s +0.89% |
 | R2 Hold instead of selling: `session` | 5 of 5 reach 20s (5 reach 5s) | 20s -10.91% of sold notional; 5s -0.54% |
 | R2 Hold instead of selling: `trim_preplace` | 4 of 16 reach 20s (16 reach 5s) | 20s -13.30% of sold notional; 5s -3.15% |
@@ -417,8 +477,8 @@ Positions ranked: 10, parking and dust excluded.
 | R4 Never open lots of type `external` | 9 lots | removes a return of -12.02% on 1.4% of in-window cost; net of index -11.08% |
 | R4 Never open lots of type `external_micro` | 1420 lots | removes a return of +15.78% on 44.8% of in-window cost; net of index +5.83% |
 | R4 Never open lots of type `near_market/session` | 10 lots | removes a return of +15.63% on 44.9% of in-window cost; net of index +8.98% |
-| R5 Buy the index instead, for each in-window lot's money and dates | 1442 lots | actual +16.62%, index +9.04% |
-| R6 Hold the lower-bound idle cash in the index: Account B | 184 days | -9.19% of average NAV |
+| R5 Buy the index instead, for each in-window lot's money and dates | 1442 lots | actual +16.62%, index +9.05% |
+| R6 Hold the lower-bound idle cash in the index: Account B | 184 days | -9.25% of average NAV |
 
 ## Data limits
 
@@ -426,7 +486,7 @@ Positions ranked: 10, parking and dust excluded.
 - **Order records start late.** The first order row is 2026-06-08, so earlier fills count as `external` with no limit price. Proposal links start at 2026-07-11, so `session` against `proposal` is also an early-against-late comparison.
 - **Hashed tags.** 875 of 1370 tagged orders carry an `oth_*` hash because Korean strategy names were not exported. They group, but their meaning is gone.
 - **Stale order rows.** 76 order rows say `open` while the execution ledger holds their fills, and 26 fills exist only on an order row. The analysis takes the larger quantity from either source. A row still `open` has no recorded ending; that does not prove it is live.
-- **Repeated fills.** Websocket rows that repeat a reconciler row from the next day: 5. They are stamped a day early, so the export's date-keyed `superseded_duplicate` flag misses them, and they are removed. Seed rows that had absorbed them and are reduced by the same quantity: 1. Rows removed from an order whose fills exceed its quantity, where another row equals that quantity: 2. Overfilled orders left unresolved: 0. Fills with no order row cannot be tested this way, and at least one crypto sell has that shape (a partial fill, then a round total), so it stays in.
+- **Repeated fills.** See Data checks. Fills with no order row can only be tested against inventory, so a repeat that inventory does not expose would stay in.
 - **Fill times.** Reconciler rows can carry the order's time, so fill latency is not measured. Fills found only on an order row use the order's date. 6 fills stamped a day away from their order take the order's day. Other fills from the same broker can also be a day early, which shifts their markouts but not their matching.
 - **Opening lots.** 51 seed rows carry a broker average cost from an unknown date, and some are plugs added months later for holdings the ledger could not explain. Holding days on them are lower bounds. 147 buys before the 2026-05-10 cutover are already inside a seed and make no lot.
 - **Fills that cannot be trades.** 2 ledger fills sit more than 30% from their session's close, at prices like an old average cost. Their quantity reconciles with later holdings, so they count as opening lots and make no markout or cash flow. They are worth a ledger check.
@@ -439,7 +499,7 @@ Positions ranked: 10, parking and dust excluded.
 - **Counterfactuals are in-sample.** They ignore price impact, fees and available cash. R1 assumes a fill at the open that the real limit order did not get. They overlap, so they do not add up. They are candidates to test, not findings.
 - **Not an experiment look.** This is a descriptive retrospective of live trading, not a test-set read under `research/experiments`, and it uses no sealed data.
 - **Mock and paper excluded.** Only real-money tables are read. Kiwoom mock, NHPLUG mock and Binance demo are outside the export.
-- **Index start.** A lot's stock leg starts at its fill price and its index leg at that day's close. The fill's time of day is not reliable, so neither end of the day is exact. The index return on lots bought in the window: KR -19.90% from the close, -20.61% from the open; US +1.10% from the close, +1.11% from the open; Crypto +9.04% from the close, +8.43% from the open.
+- **Index start.** A lot's stock leg starts at its fill price and its index leg at that day's close. The fill's time of day is not reliable, so neither end of the day is exact. The index return on lots bought in the window: KR -19.90% from the close, -20.61% from the open; US +1.10% from the close, +1.11% from the open; Crypto +9.05% from the close, +8.43% from the open.
 - **Price coverage.** Symbols with bars: 181. Without: 1. Their orders have no distance or markout and appear as `no_reference` or `n/a`. Open positions with no price to mark: 1, left out of the returns.
 - **Splits.** Symbols with a split after a fill: 1, converted to split-adjusted units.
 

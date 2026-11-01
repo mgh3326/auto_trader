@@ -108,6 +108,27 @@ def test_older_holdings_a_sell_proves_go_first_so_window_lots_stay_open():
     ]
 
 
+def test_plain_fifo_sensitivity_lets_old_sells_use_up_window_lots():
+    walk = walk_symbol(
+        _rows((JUN1, "buy", 2, 100), (JUN2, "sell", 3, 110), (JUN3, "buy", 1, 90)),
+        CUTOVER,
+        MARK,
+        older_first=False,
+    )
+    assert [(u.qty, u.price) for u in walk.unknown_sells] == [(1, 110)]
+    assert [(m.qty, m.entry_price, m.realized) for m in walk.matches] == [
+        (2, 100, True),
+        (1, 90, False),
+    ]
+    held_later = walk_symbol(
+        _rows((JUN1, "sell", 3, 110), (JUN2, "buy", 2, 100)),
+        CUTOVER,
+        MARK,
+        older_first=False,
+    )
+    assert [m.realized for m in held_later.matches] == [False]
+
+
 def test_each_piece_of_a_lot_keeps_the_lots_identity():
     walk = walk_symbol(
         _rows((JUN1, "buy", 10, 100), (JUN2, "sell", 4, 110), (JUN3, "sell", 2, 120)),

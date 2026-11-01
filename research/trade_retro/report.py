@@ -55,6 +55,8 @@ class Results:
     split_adjusted: list[tuple]
     implausible: list[dict]
     unpriced_open: list[tuple]
+    audit: dict
+    scenarios: list
     cutover: datetime
 
 
@@ -647,16 +649,8 @@ class Renderer:
             f"the execution ledger holds their fills, and {d['order_ledger_only_fills']} fills "
             f"exist only on an order row. The analysis takes the larger quantity from either "
             f"source. A row still `open` has no recorded ending; that does not prove it is live.",
-            f"**Repeated fills.** Websocket rows that repeat a reconciler row from the next day: "
-            f"{d['cross_day_twins_dropped']}. They are stamped a day early, so the export's "
-            f"date-keyed `superseded_duplicate` flag misses them, and they are removed. Seed rows "
-            f"that had absorbed them and are reduced by the same quantity: "
-            f"{d['seeds_corrected_for_twins']}. Rows removed from an order whose fills exceed its "
-            f"quantity, where another row equals that quantity: "
-            f"{d['running_total_rows_dropped']}. Overfilled orders left unresolved: "
-            f"{d['overfilled_orders_unresolved']}. Fills with no order row cannot be tested this "
-            f"way, and at least one crypto sell has that shape (a partial fill, then a round "
-            f"total), so it stays in.",
+            "**Repeated fills.** See Data checks. Fills with no order row can only be tested against "
+            "inventory, so a repeat that inventory does not expose would stay in.",
             f"**Fill times.** Reconciler rows can carry the order's time, so fill latency is not "
             f"measured. Fills found only on an order row use the order's date. "
             f"{d['kis_day_fallback_fills']} fills stamped a day away from their order take the "
@@ -808,6 +802,234 @@ class Renderer:
             rows,
         )
 
+    # ------------------------------------------------------------- data checks
+    def section_checks(self) -> str:
+        r = self.r
+        d = r.diagnostics
+        audit = r.audit
+        economic, quantity = audit["economic"], audit["quantity"]
+        stamps = audit["stamps"]
+        manual = stamps[stamps["source"] == "manual_import"]
+        other = stamps[
+            (stamps["source"] != "manual_import") & (stamps["market"] != "crypto")
+        ]
+        rows = [
+            [
+                "Rows equal on every economic field, flag already applied",
+                f"Extra rows: {economic['extra_rows']}. Groups: {economic['groups']}. Orders: "
+                f"{economic['orders']}",
+                f"Orders summing to no more than their quantity: "
+                f"{economic['orders_within_quantity']}. Over it: "
+                f"{economic['orders_over_quantity']}. With no order row: "
+                f"{economic['orders_without_row']}",
+                "Kept. They are separate trades of one order, with the time cut to the minute",
+                "**Export gap**: no `fill_seq` column, so trades cannot be told from repeats",
+            ],
+            [
+                "Websocket row repeating the next day's reconciler row",
+                f"Rows: {d['cross_day_twins_dropped']}",
+                "Same order, side, quantity and price, recorded exactly 24h after its `filled_at`",
+                f"Removed. Seed rows that absorbed one, reduced by the same quantity: "
+                f"{d['seeds_corrected_for_twins']}",
+                "Ledger data. The export copies `filled_at` as stored. The flag misses them because "
+                "the stored day differs. Cause of the stamp: unverified",
+            ],
+            [
+                "Order whose fills exceed its quantity",
+                f"Orders before cleaning: {quantity['over_quantity_before']}. After: "
+                f"{quantity['over_quantity_after']}",
+                "The repeated rows above, plus an order with a row equal to its whole quantity",
+                f"Rows removed as partials inside a running total: "
+                f"{d['running_total_rows_dropped']}. Unresolved orders: "
+                f"{d['overfilled_orders_unresolved']}",
+                "Ledger data",
+            ],
+            [
+                "Partial fill of an order with no order row, proven by inventory",
+                f"Rows: {d['inventory_proven_partials_dropped']}",
+                "The symbol's sells exceed all its holdings by exactly this row's quantity, and a "
+                "later row of the order is larger",
+                "Removed",
+                "Ledger data",
+            ],
+            [
+                "Order row behind the ledger",
+                f"Orders: {quantity['row_says_less_than_ledger']}",
+                "The row's filled quantity is below the ledger's, mostly `open` rows with no ending",
+                "The ledger's quantity counts, and the outcome is corrected",
+                "Ledger data",
+            ],
+            [
+                "Ledger behind the order row",
+                f"Fills: {quantity['row_says_more_than_ledger']}",
+                "The row says filled and the ledger has less",
+                "The residual is added as a fill at the row's price, on the order's date",
+                "Ledger data. The export's only row filters are the time window and quarantine, and "
+                "neither can remove these",
+            ],
+            [
+                "`manual_import` rows, stamped on a weekend",
+                f"On a weekend: {int(manual['weekend'].sum())} of {int(manual['rows'].sum())} rows",
+                "`opening_lots.py` stamps the cutover instant and sets quantity to holdings minus "
+                "net fills, at the broker's average cost. They are opening lots, not transfers",
+                "No markout or cash flow. Return runs from the last close before the stamp",
+                "Ledger data, documented. **Export gap**: nothing separates a seed from another "
+                "manual import",
+            ],
+            [
+                "Other equity rows stamped on a weekend",
+                f"On a weekend: {int(other['weekend'].sum())} of {int(other['rows'].sum())} rows, "
+                f"before removals",
+                "One broker's rows can be stamped a day away from the session",
+                "Mapped to the next session. Twins removed as above",
+                "Ledger data",
+            ],
+            [
+                "Fill far from its session's close",
+                f"Rows: {len(r.implausible)}",
+                f"More than {IMPLAUSIBLE_DEVIATION:.0%} from the close, at prices like an old "
+                f"average cost",
+                "Quantity kept, treated as opening lots, with no markout or cash flow",
+                "Ledger data",
+            ],
+        ]
+        out = [
+            "Each check below comes from a question raised by the independent dots analysis of "
+            "the same export. No check found a wrong value written by the export. Two columns it "
+            "does not have are listed as gaps for the desk.\n\n",
+            table(["Check", "Count", "Evidence", "Treatment", "Source"], rows),
+            "\n**Join between the ledger and the order tables.** The two tables hold different "
+            "populations, so neither is a denominator for the other. The hashed key itself works: "
+            f"executions with no order row whose reference is on any order row of that account: "
+            f"{audit['refs_elsewhere']}.\n\n",
+        ]
+        join_rows = []
+        join = audit["join"]
+        join = join.assign(label=[self.acct(a) for a in join["alias"]]).sort_values(
+            ["market", "label"]
+        )
+        for row in join.to_dict("records"):
+            join_rows.append(
+                [
+                    row["market"], row["label"], row["executed_orders"], row["with_order_row"],
+                    share(row["with_order_row_share"]), share(row["notional_share"]),
+                    row["before_first_order_row"], row["micro"], row["other_after_first_order_row"],
+                    f"{row['filled_rows_with_ledger']} of {row['filled_order_rows']}",
+                ]
+            )  # fmt: skip
+        out.append(
+            table(
+                [
+                    "Market",
+                    "Account",
+                    "Executed orders",
+                    "With order row",
+                    "Share of orders",
+                    "Share of notional",
+                    "Before the first order row",
+                    "Recurring micro-buys",
+                    "Other, after the first order row",
+                    "Filled order rows that have ledger fills",
+                ],
+                join_rows,
+            )  # fmt: skip
+        )
+        return "".join(out)
+
+    def section_denominators(self) -> str:
+        r = self.r
+        stages = r.diagnostics["stages"]
+        rows = []
+        for market, name, _currency in MARKETS:
+            final = r.fills[(r.fills["market"] == market)]
+            trades = int((~final["seed"]).sum())
+            seeds = int(stages["seed_rows"].get(market, 0))
+            moved = sum(1 for i in r.implausible if i["market"] == market)
+            exported = stages["exported_rows"].get(market, 0)
+            unflagged = stages["unflagged_rows"].get(market, 0)
+            twins = unflagged - stages["after_twins"].get(market, 0)
+            totals = stages["after_twins"].get(market, 0) - stages["after_totals"].get(
+                market, 0
+            )
+            added = stages["after_order_only"].get(market, 0) - stages[
+                "after_totals"
+            ].get(market, 0)
+            rows.append(
+                [
+                    name, exported, exported - unflagged, seeds, twins, totals, moved, added, trades,
+                ]
+            )  # fmt: skip
+        fills_table = table(
+            [
+                "Market", "Ledger rows", "Flagged superseded", "Opening seeds", "Repeats",
+                "Inside a running total", "Cannot be trades", "Added from order rows", "Fills used",
+            ],
+            rows,
+        )  # fmt: skip
+        order_rows = [
+            [
+                {m: n for m, n, _c in MARKETS}[row["market"]],
+                row["rows"],
+                row["cancel_rows"],
+                row["rejected"],
+                row["never_accepted"],
+                row["parking"],
+                row["accepted"],
+            ]  # fmt: skip
+            for row in r.audit["orders"].to_dict("records")
+            if row["market"] in {m for m, _n, _c in MARKETS}
+        ]
+        orders_table = table(
+            [
+                "Market", "Order rows", "Cancel rows", "Rejected", "Never accepted",
+                "Parking instruments", "Accepted orders used",
+            ],
+            order_rows,
+        )  # fmt: skip
+        return (
+            "Fills, from every live ledger row to the fills every section uses. Each row leaves "
+            "at one step, and the steps add up to the last column:\n\n"
+            f"{fills_table}\n"
+            "Orders, from every live order row to the fill-rate denominator:\n\n"
+            f"{orders_table}"
+        )
+
+    def section_sensitivity(self) -> str:
+        rows = []
+        for scenario in self.r.scenarios:
+            cells: list[str] = [scenario.name]
+            for market, _name, _currency in MARKETS:
+                lots = scenario.lots[scenario.lots["market"] == market]
+                cost = lots["base_cost"].sum() if len(lots) else 0.0
+                if cost:
+                    ret = lots["pnl"].sum() / cost
+                    index_ret = lots["index_pnl"].sum() / cost
+                    cells.append(
+                        f"{pct(ret)} ({pct(ret - index_ret)} vs index, {lots['lot'].nunique()} lots)"
+                    )
+                else:
+                    cells.append("n/a")
+            if scenario.cash_shares is None:
+                cells.append("as base")
+            else:
+                ordered = sorted(
+                    scenario.cash_shares.items(),
+                    key=lambda kv: (
+                        [m for m, _n, _c in MARKETS].index(kv[0][1]),
+                        self.acct(kv[0][0]),
+                    ),
+                )
+                cells.append(" / ".join(share(value) for _key, value in ordered))
+            rows.append(cells)
+        return (
+            "Return on lots bought in the window, under each treatment that could be argued. Only "
+            "the named treatment changes on each line. Cash shares run KR, US, then crypto, in "
+            "account-label order.\n\n"
+            + table(
+                ["Treatment", "KR", "US", "Crypto", "Avg cash share by account"], rows
+            )
+        )
+
     def render(self) -> str:
         r = self.r
         window = r.manifest["window"]
@@ -829,7 +1051,8 @@ class Renderer:
             "Add `--check` to compare against the files on disk without writing. Every number "
             "comes from `research/trade_retro/`: section 2 from `positions.py`, section 3 from "
             "`entry.py` and `markouts.py`, section 4 from `idle.py`, section 5 from `rules.py`, "
-            "all rendered by `report.py`.\n\n",
+            "the checks from `audit.py` and the sensitivity table from `sensitivity.py`, all rendered "
+            "by `report.py`.\n\n",
             f"- Export: `dots-history-export/v1`, window {window['since_utc'][:10]} to "
             f"{window['until_utc'][:10]}, `manifest.json` sha256 `{r.manifest_sha256}`, "
             f"{sum(t['row_count'] for t in tables.values())} rows, not committed.\n",
@@ -847,6 +1070,13 @@ class Renderer:
             "below. An idle share is a lower-bound estimate, so read the data limits first.\n\n",
             "## Method\n\n",
             *_method_text(),
+            "## Data checks\n\n",
+            self.section_checks(),
+            "\n## Denominators and exclusions\n\n",
+            self.section_denominators(),
+            "\n## Sensitivity\n\n",
+            self.section_sensitivity(),
+            "\n",
         ]
         for market, name, currency in MARKETS:
             parts += [

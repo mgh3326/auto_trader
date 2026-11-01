@@ -332,7 +332,7 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - 🔴 **이 레포는 공개이고 export 는 비공개 거래 데이터다**: 커밋되는 `docs/research/rob-1439-trade-retrospective-2026-11-01.md` 는 비율·건수·마스킹된 종목·계좌만 담는다. 종목·금액·계좌명이 있는 전체판과 행 단위 CSV·export·가격 스냅샷은 레포 밖에만 둔다(`--private-dir` 가 레포 안이면 거부). `tests/research/trade_retro/test_report_public.py` 가 커밋본을 스캔한다
 - 🔴 **manifest 불일치면 거부**: export·가격 스냅샷의 해시·크기·행 수·컬럼이 다르거나 목록 밖 파일이 있으면 아무것도 쓰지 않고 종료 코드 3
 - **체결은 합집합이다**: `execution_ledger` 와 주문 행 중 큰 수량을 쓴다. 주문 행은 양방향으로 stale 하다(`open` 인데 원장 체결 있음, `filled` 인데 원장 행 없음). 거래일 종가에서 30% 넘게 벗어난 체결은 거래로 세지 않고 opening lot 으로 처리한다
-- 🔴 **`superseded_duplicate=false` 만으로 중복이 걸러지지 않는다**: 하루 일찍 찍힌 KIS websocket 행은 다음 날의 동일한 reconciler 행과 날짜 키가 달라 flag 를 통과한다. 이 패키지는 그런 행을 지우고, 그 행을 흡수한 seed 도 같은 수량만큼 줄이며, 주문 수량을 넘는 합계 중 주문 수량과 같은 행이 있으면 그 행만 남긴다. export 의 다른 소비자도 같은 함정을 만난다
+- 🔴 **`superseded_duplicate=false` 만으로 중복이 걸러지지 않는다**: 하루 일찍 찍힌 KIS websocket 행은 다음 날의 동일한 reconciler 행과 날짜 키가 달라 flag 를 통과한다. 이 패키지는 그런 행을 지우고, 그 행을 흡수한 seed 도 같은 수량만큼 줄이며, 주문 수량을 넘는 합계 중 주문 수량과 같은 행이 있으면 그 행만 남긴다. export 의 다른 소비자도 같은 함정을 만난다. 반대로 경제 필드가 같은 행이 곧 중복은 아니다: export 에 `fill_seq` 가 없고 시각이 분 단위로 잘려 한 주문의 별개 체결이 같아 보일 수 있으므로, 합계를 주문 수량과 대조한 뒤 판단한다
 - **테스트**: `tests/research/trade_retro/`
 
 ### 보호 수량 P 규칙 추종 (#943)

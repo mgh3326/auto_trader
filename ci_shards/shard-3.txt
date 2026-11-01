@@ -60,6 +60,7 @@ tests/research/test_kr_backfill_fetch_window.py
 tests/research/test_kr_backfill_hard_ratio_guards.py
 tests/research/test_kr_backfill_kiwoom_payload.py
 tests/research/toss_phase2/test_adaptive_pacing.py
+tests/research/trade_retro/test_audit_sensitivity.py
 tests/research/trade_retro/test_canonical_entry.py
 tests/research/trade_retro/test_export_integrity.py
 tests/research/trade_retro/test_markouts.py

@@ -64,6 +64,8 @@ the committed report for account names, grouped amounts and money columns.
 | `markouts.py` | Computes markouts and bootstrap intervals (section 3). |
 | `idle.py` | Derives the idle-cash lower bound from fills (section 4). |
 | `rules.py` | Computes the candidate-rule counterfactuals (section 5). |
+| `audit.py` | Counts the data checks and the denominators. |
+| `sensitivity.py` | Reruns the headline under each arguable data treatment. |
 | `report.py` | Renders both reports. No figure is typed by hand. |
 
 The rules behind the numbers are in the report's Method and Data limits sections and in
