@@ -30,9 +30,10 @@
       "status": "draft",
       "registered_at": "2026-11-01",
       "manifest": "research/experiments/manifests/h-entry-price.json",
-      "manifest_sha256": "9bac4f0a4fe8c99dfbe561125dbe88c2a6ac2e715e88e867d8a8f6f97804f558",
+      "manifest_sha256": "17aafc3c4497448b015c7856a11c89831281354a7e0bb256344cada86674bcef",
       "previous_manifest_sha256": [
-        "4ca30ddeb4b1c42162aac24a4f2de08c2db0ca31b1715c17853a2a9661d5c153"
+        "4ca30ddeb4b1c42162aac24a4f2de08c2db0ca31b1715c17853a2a9661d5c153",
+        "9bac4f0a4fe8c99dfbe561125dbe88c2a6ac2e715e88e867d8a8f6f97804f558"
       ],
       "k": 0,
       "test_looks": []
@@ -49,9 +50,10 @@
       "status": "draft",
       "registered_at": "2026-11-01",
       "manifest": "research/experiments/manifests/h-admit.json",
-      "manifest_sha256": "4f9984b781edf32129291109266ab0fdcd0df51363f3c5b603eb3425bc10b222",
+      "manifest_sha256": "e6b86794bc4fce7342020d4daeea04909b9ec0e8ac66d605d4d8ccb555a33ee7",
       "previous_manifest_sha256": [
-        "01b0fa25346eba1f9a89d7fd3ef9a85b7b13e02601379030b8a9c39b78715dc6"
+        "01b0fa25346eba1f9a89d7fd3ef9a85b7b13e02601379030b8a9c39b78715dc6",
+        "4f9984b781edf32129291109266ab0fdcd0df51363f3c5b603eb3425bc10b222"
       ],
       "k": 0,
       "test_looks": []

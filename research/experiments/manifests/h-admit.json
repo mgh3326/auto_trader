@@ -1,7 +1,7 @@
 {
   "manifest_format": "experiment-manifest/v1",
   "hypothesis_id": "H-admit",
-  "version": 2,
+  "version": 3,
   "title": "Admit or skip an eligible entry from the 10/50/90 quantiles of the t+1 open to t+5 close return",
   "status": "draft",
   "question": "For an entry the current gate already allows, does admitting or skipping it by predicted 10/50/90 quantiles of the t+1 open to t+5 close return beat admit-all and cash on net return at equal capital, after costs, on identical splits? A tuned gradient-boosting baseline runs first; TFT is a challenger only if the baseline passes its gate.",
@@ -20,7 +20,7 @@
       "pending": "U4 dataset, fixed by the crypto U7 unit"
     },
     "evaluation_contract_sha256": "113731041ffc767eb5d34eecda503f44b71ca52c6321f65562249e39299fce02",
-    "code_sha_kr": "c82cdcdc4382a1533e118896fa351f07d5770251",
+    "code_sha_kr": "811697d7e6c7e4b46a9f620537aab49be6e7756b",
     "code_sha_us": {
       "pending": "US U7 unit"
     },
