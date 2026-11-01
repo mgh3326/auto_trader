@@ -1,0 +1,38 @@
+{
+  "built_at": "2026-11-01T07:56:12.715432Z",
+  "candle_files": {
+    "count": 1564,
+    "path": "universe/candle_files.json",
+    "sha256": "8e68532a51f30ccedb4f3889bf927455da8a1aacce76ffdaf4b90093b3b27e6a"
+  },
+  "corpus_id": "crypto-universe-v1",
+  "holdout_start": "2025-01-01",
+  "inputs": {
+    "binance_spot_exchange_info": {
+      "sha256": "6ca19da80cc1a268335c13c6143239e00b5a6a0b95f8bc16ad664df88051ae2b",
+      "snapshot_date": "2026-11-01",
+      "source": "binance_spot_exchange_info"
+    },
+    "upbit_market_all": {
+      "sha256": "35d4ad2b0e33fa01c62757b9bf09a11f5ed13b11ef8ad8a6377d5439bc20077d",
+      "snapshot_date": "2026-11-01",
+      "source": "upbit_market_all"
+    }
+  },
+  "pit_rule": "in the universe on day t (UTC, inclusive) iff t lies inside one of the pair's listing episodes, or the pair is live and t is on/after the start of its last episode; t after coverage_end raises",
+  "survivorship_label": "INCLUDES_DELISTED_WHERE_ARCHIVED",
+  "tables": {
+    "binance_usdt_spot": {
+      "coverage_end": "2026-09-30",
+      "coverage_start": "2017-08-17",
+      "path": "universe/pit_universe_binance_usdt_spot.csv",
+      "sha256": "41659e788e490799cd61cec800e1b580c653895724e58f672a77432b8e45c715"
+    },
+    "upbit_krw": {
+      "coverage_end": "2026-09-30",
+      "coverage_start": "2017-09-25",
+      "path": "universe/pit_universe_upbit_krw.csv",
+      "sha256": "caa367c0bee9159049dbe13d0f869a141da28b0e653a968b7608b536e60a48f4"
+    }
+  }
+}
