@@ -2,7 +2,7 @@
 
 r1 put ``"order_proposal_create"`` in a string field on the spawn request.
 Nothing read it. The MCP profile a live spawner would most plausibly reuse
-(``tradingcodex_execution``) registers ``place_order``,
+(``tradingcodex_execution``, since retired by ROB-1436) registered ``place_order``,
 ``kis_live_place_order``, ``toss_place_order`` and their cancel variants,
 so the session would have held a direct broker mutation surface while its
 request still *said* proposal-only.
@@ -23,13 +23,12 @@ from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
 )
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    KIWOOM_MOCK_US_TOOL_NAMES,
+)
+from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
-from app.mcp_server.tooling.tradingcodex_execution_registration import (
-    KIWOOM_MOCK_EXECUTION_TOOL_NAMES,
-    TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES,
-    TRADINGCODEX_EXECUTION_TOOL_NAMES,
-)
 from app.services.watch_trigger_repricing.capability import (
     EXECUTION_BOUNDARY,
     PROPOSAL_ONLY_PROFILE,
@@ -52,7 +51,8 @@ MUTATION_TOOL_NAMES = (
     | KIS_LIVE_ORDER_TOOL_NAMES
     | KIS_MOCK_ORDER_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
-    | KIWOOM_MOCK_EXECUTION_TOOL_NAMES
+    | KIWOOM_MOCK_TOOL_NAMES
+    | KIWOOM_MOCK_US_TOOL_NAMES
 )
 
 
@@ -63,26 +63,6 @@ def test_profile_grants_no_order_mutation_tool() -> None:
     """Checked against the live registries, not a hand-copied list."""
     overlap = PROPOSAL_ONLY_TOOLS & MUTATION_TOOL_NAMES
     assert overlap == set(), f"proposal-only profile grants order tools: {overlap}"
-
-
-def test_profile_grants_nothing_the_execution_profile_denies() -> None:
-    """Cross-checked against the repo's own privileged-profile deny set.
-
-    Not a subset assertion: the profile also grants plain market-data reads
-    (``get_quote`` and friends) that ``tradingcodex_execution`` does not
-    itself register, and requiring a subset would say something false. What
-    must hold is the deny direction -- nothing this profile grants appears
-    in the set that profile explicitly refuses.
-    """
-    denied = PROPOSAL_ONLY_TOOLS & TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES
-    assert denied == set(), f"profile grants explicitly-denied tools: {denied}"
-
-
-def test_profile_shares_only_non_mutating_tools_with_the_execution_profile() -> None:
-    """Where the two overlap, the overlap must contain no order tool."""
-    overlap = PROPOSAL_ONLY_TOOLS & TRADINGCODEX_EXECUTION_TOOL_NAMES
-    assert overlap, "the two profiles are unrelated; the cross-check is vacuous"
-    assert overlap & MUTATION_TOOL_NAMES == set()
 
 
 def test_profile_excludes_the_dangerous_proposal_tools() -> None:

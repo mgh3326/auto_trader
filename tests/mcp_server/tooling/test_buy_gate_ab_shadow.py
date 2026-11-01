@@ -3,9 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.mcp_server.tooling.analysis_readonly_registration import (
-    ANALYSIS_READONLY_TOOL_NAMES,
-)
 from app.mcp_server.tooling.buy_gate_ab_shadow import (
     evaluate_buy_gate_ab_shadow_impl,
 )
@@ -83,7 +80,6 @@ def test_registration_is_observation_only() -> None:
     assert "observation-only" in description
     assert "never creates a proposal" in description
     assert "policy change" in description
-    assert "evaluate_buy_gate_ab_shadow" in ANALYSIS_READONLY_TOOL_NAMES
     assert "evaluate_buy_gate_ab_shadow" in READ_ONLY_ADVISORY_TOOLS
     assert "evaluate_buy_gate_ab_shadow" not in MUTATION_TOOLS
 

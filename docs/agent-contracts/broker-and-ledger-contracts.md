@@ -13,6 +13,7 @@
 - Execution Ledger Quarantine (#1175)
 - Execution Ledger 교차 소스 중복 체결 (ROB-1379)
 - dots 이력 익명화 export (ROB-1438)
+- 실거래 회고 (ROB-1439)
 - 보호 수량 P 규칙 추종 (#943)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
@@ -341,6 +342,18 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
 - KIS·Upbit·Toss 주문 행의 `filled_at` 은 같은 거래일의 in-effect `execution_ledger` 행에서만 온다(evidence-first). 근거 없으면 비운다. DB paper 표의 `filled_at` 은 시뮬레이터 자기 행의 값이며 `execution_ledger` 증거가 아니다. `terminal_outcome=open` 은 "아직 살아 있음"의 증거가 아니라 "종료 기록 없음"이다
 - Kiwoom mock 은 주문 원장 테이블이 없어 대상이 아니다(`manifest.sources_without_ledger`)
 - **테스트**: `tests/services/dots_history_export/`, `test_quarantine_readers_db.py::test_dots_history_export_drops_the_quarantined_phantom`
+
+### 실거래 회고 (ROB-1439)
+
+dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 유형·체결률·마크아웃·유휴 현금을 재현 가능하게 측정한다. 🔴 연구 전용 — DB·브로커·자격증명·스케줄러 없음, 프로덕션 코드 변경 없음, 정책 권고 없음.
+
+- **패키지·명령**: `research/trade_retro/`(`README.md`), `uv run python -m research.trade_retro.run report ...`(`--check` 는 바이트 비교)
+- 🔴 **이 레포는 공개이고 export 는 비공개 거래 데이터다**: 커밋되는 `docs/research/rob-1439-trade-retrospective-2026-11-01.md` 는 비율·건수·마스킹된 종목·계좌만 담는다. 종목·금액·계좌명이 있는 전체판과 행 단위 CSV·export·가격 스냅샷은 레포 밖에만 둔다(`--private-dir` 가 레포 안이면 거부). `tests/research/trade_retro/test_report_public.py` 가 커밋본을 스캔한다
+- 🔴 **manifest 불일치면 거부**: export·가격 스냅샷의 해시·크기·행 수·컬럼이 다르거나 목록 밖 파일이 있으면 아무것도 쓰지 않고 종료 코드 3
+- **체결은 합집합이다**: `execution_ledger` 와 주문 행 중 큰 수량을 쓴다. 주문 행은 양방향으로 stale 하다(`open` 인데 원장 체결 있음, `filled` 인데 원장 행 없음). 거래일 종가에서 30% 넘게 벗어난 체결은 거래로 세지 않고 opening lot 으로 처리한다
+- 🔴 **`superseded_duplicate=false` 만으로 중복이 걸러지지 않는다**: 하루 일찍 찍힌 KIS websocket 행은 다음 날의 동일한 reconciler 행과 날짜 키가 달라 flag 를 통과한다. 이 패키지는 그런 행을 지우고, 그 행을 흡수한 seed 도 같은 수량만큼 줄이며, 주문 수량을 넘는 합계 중 주문 수량과 같은 행이 있으면 그 행만 남긴다. export 의 다른 소비자도 같은 함정을 만난다. 반대로 경제 필드가 같은 행이 곧 중복은 아니다: export 에 `fill_seq` 가 없고 시각이 분 단위로 잘려 한 주문의 별개 체결이 같아 보일 수 있으므로, 합계를 주문 수량과 대조한 뒤 판단한다
+- 🔴 **나중 배치의 seed 는 증분이 아니라 전체 보유량이다**: `net_quantity_by_match_key_since` 는 seed 행을 빼고 그 실행의 cutover 이후 체결만 세므로, 2026-09-29 배치 6행은 그 시점 보유량 전체를 담는다. 이 패키지는 해당 종목 보유량을 그 값으로 재설정한다. seed 행을 합산하는 리더는 첫 배치 위에 이 행을 이중으로 더하게 된다
+- **테스트**: `tests/research/trade_retro/`
 
 ### 보호 수량 P 규칙 추종 (#943)
 

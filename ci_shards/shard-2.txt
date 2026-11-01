@@ -93,7 +93,6 @@ tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_forecast_legacy_rule_migration.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
-tests/scripts/test_live_mcp_tools_list.py
 tests/scripts/test_ncp_job_timers_golden.py
 tests/scripts/test_policy_table_us.py
 tests/scripts/test_probe_us_earnings_coverage_cli.py

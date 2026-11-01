@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
-from pandas import DataFrame
+
+if TYPE_CHECKING:
+    # Annotation-only; a runtime ``from pandas import`` would load pandas at
+    # boot on the ROB-1436 lazy-import profiles.
+    from pandas import DataFrame
 
 from app.core.async_rate_limiter import get_limiter
 from app.core.config import settings

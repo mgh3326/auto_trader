@@ -47,46 +47,6 @@ backend bk_mcp
 # tailnet reaches them through these listeners so haproxy stays the single
 # tailnet-facing process (same port numbers as the Mac launchd services).
 
-frontend ft_mcp_analysis_readonly_tailnet
-    bind 100.122.100.56:8768
-    default_backend bk_mcp_analysis_readonly
-
-backend bk_mcp_analysis_readonly
-    option httpchk GET /health
-    http-check expect status 200
-    default-server inter 5s fall 2 rise 1
-    server mcp_analysis_readonly 127.0.0.1:8768 check
-
-frontend ft_mcp_account_read_tailnet
-    bind 100.122.100.56:8769
-    default_backend bk_mcp_account_read
-
-backend bk_mcp_account_read
-    option httpchk GET /health
-    http-check expect status 200
-    default-server inter 5s fall 2 rise 1
-    server mcp_account_read 127.0.0.1:8769 check
-
-frontend ft_mcp_tradingcodex_execution_tailnet
-    bind 100.122.100.56:8770
-    default_backend bk_mcp_tradingcodex_execution
-
-backend bk_mcp_tradingcodex_execution
-    option httpchk GET /health
-    http-check expect status 200
-    default-server inter 5s fall 2 rise 1
-    server mcp_tradingcodex_execution 127.0.0.1:8770 check
-
-frontend ft_mcp_paper_001_tailnet
-    bind 100.122.100.56:8771
-    default_backend bk_mcp_paper_001
-
-backend bk_mcp_paper_001
-    option httpchk GET /health
-    http-check expect status 200
-    default-server inter 5s fall 2 rise 1
-    server mcp_paper_001 127.0.0.1:8771 check
-
 frontend ft_mcp_kiwoom_tailnet
     bind 100.122.100.56:8772
     default_backend bk_mcp_kiwoom
@@ -96,40 +56,6 @@ backend bk_mcp_kiwoom
     http-check expect status 200
     default-server inter 5s fall 2 rise 1
     server mcp_kiwoom 127.0.0.1:8772 check
-
-# Task 975 (operator Q-87 A): dedicated live-session MCP units, one per market,
-# each serving its closed-world MCP_PROFILE from config/mcp_profiles/live.yaml.
-# Tailnet only, like the fixed units above: no loopback or public frontend.
-
-frontend ft_mcp_live_kr_tailnet
-    bind 100.122.100.56:8773
-    default_backend bk_mcp_live_kr
-
-backend bk_mcp_live_kr
-    option httpchk GET /health
-    http-check expect status 200
-    default-server inter 5s fall 2 rise 1
-    server mcp_live_kr 127.0.0.1:8773 check
-
-frontend ft_mcp_live_us_tailnet
-    bind 100.122.100.56:8774
-    default_backend bk_mcp_live_us
-
-backend bk_mcp_live_us
-    option httpchk GET /health
-    http-check expect status 200
-    default-server inter 5s fall 2 rise 1
-    server mcp_live_us 127.0.0.1:8774 check
-
-frontend ft_mcp_live_crypto_tailnet
-    bind 100.122.100.56:8775
-    default_backend bk_mcp_live_crypto
-
-backend bk_mcp_live_crypto
-    option httpchk GET /health
-    http-check expect status 200
-    default-server inter 5s fall 2 rise 1
-    server mcp_live_crypto 127.0.0.1:8775 check
 
 # #1189 (part C of #1171): the H3-CRYPTO paper pilot unit serving the
 # closed-world MCP_PROFILE=h3-crypto-paper. Tailnet only, like the units above.

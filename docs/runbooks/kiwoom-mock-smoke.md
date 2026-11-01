@@ -190,9 +190,8 @@ stays deferred). To pick a conservative buy limit well below market that will
   **명시 전송**한다(키 생략 ≠ 빈 문자열; 문서에 등가라는 기재 없음).
   - 신규 read 도구 `kiwoom_mock_get_order_detail` — `MCP_PROFILE=kiwoom` 및
     ROB-1159의 KR 전용 `MCP_PROFILE=kiwoom_kr`에만 등록된다.
-    `account_read`/`tradingcodex_execution` 제한 profile에는 **의도적으로 미노출**
-    (`ACCOUNT_READ_TOOL_NAMES`가 tradingcodex allowlist에 union되므로 전자에 넣으면
-    후자가 조용히 넓어진다).
+    그 밖의 제한 profile에는 노출하지 않는다(`account_read`/`tradingcodex_execution`은
+    ROB-1436에서 은퇴).
   - `scope` → 공식 `qry_tp`: `all`=1(주문순) · `all_reverse`=2(역순) ·
     `unfilled`=3(미체결) · `filled`=4(체결내역만).
   - `order_id`는 broker 쪽 `fr_ord_no`(**시작**주문번호 = 하한, exact match 아님)로

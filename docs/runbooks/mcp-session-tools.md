@@ -57,9 +57,6 @@ approved implementation brief takes precedence.
 All lanes can call the pack; section visibility is determined by the MCP
 profile.
 
-For `analysis_readonly`, the populated sections are `briefing`, `holdings`,
-`policy`, and `recent_context`; the other four are explicitly denied.
-
 | Outcome | Sections |
 | --- | --- |
 | Populated | `briefing`, `holdings`, `policy`, `recent_context` |

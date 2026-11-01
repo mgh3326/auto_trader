@@ -17,7 +17,6 @@ from typing import Any
 
 import exchange_calendars as xcals
 import pandas as pd
-from pandas import Timestamp
 
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
 from app.services import exchange_rate_service, market_index_service
@@ -43,7 +42,7 @@ def is_market_open(market: str) -> bool:
     if calendar is None:
         return False
 
-    now_utc = Timestamp.now("UTC").floor("min")
+    now_utc = pd.Timestamp.now("UTC").floor("min")
     if now_utc.tz is None:
         now_utc = now_utc.tz_localize("UTC")
     now_in_market_tz = now_utc.tz_convert(calendar.tz)

@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from app.mcp_server.tooling.account_routing_registration import (
     register_account_routing_tools,
 )
+from app.mcp_server.tooling.allowlist_proxy import AllowlistedMCP
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_reports_handlers import (
@@ -96,37 +97,13 @@ __all__ = [
 WATCH_REPRICING_TOOL_NAMES: frozenset[str] = PROPOSAL_ONLY_TOOLS
 
 
-class _AllowlistedMCP:
-    """Proxy so existing group registrars physically register only allowed names."""
-
-    def __init__(self, inner: Any, allowed_names: frozenset[str]) -> None:
-        self._inner = inner
-        self._allowed_names = allowed_names
-
-    def tool(self, *args: Any, **kwargs: Any) -> Callable[[_F], _F]:
-        name = kwargs.get("name")
-        if name is None and args:
-            name = args[0]
-        if str(name) in self._allowed_names:
-            return cast(Callable[[_F], _F], self._inner.tool(*args, **kwargs))
-
-        def decorator(func: _F) -> _F:
-            return func
-
-        return decorator
-
-    def list_tools(self) -> Any:
-        lister = getattr(self._inner, "list_tools", None)
-        return [] if lister is None else lister()
-
-
 def register_watch_repricing_tools(
     mcp: FastMCP,
     *,
     registered_tool_names: Callable[[], set[str] | Awaitable[set[str]]] | None = None,
 ) -> None:
     """Register exactly the proposal-only surface."""
-    filtered = cast("FastMCP", _AllowlistedMCP(mcp, WATCH_REPRICING_TOOL_NAMES))
+    filtered = cast("FastMCP", AllowlistedMCP(mcp, WATCH_REPRICING_TOOL_NAMES))
     register_market_data_tools(filtered)
     register_analysis_tools(filtered)
     register_fundamentals_tools(filtered)

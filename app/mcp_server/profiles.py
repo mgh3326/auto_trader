@@ -29,9 +29,6 @@ class McpProfile(StrEnum):
     # Task 191: exact seven-capability supplied-artifact observation/replay
     # boundary. It is physically disjoint from live/default registrars.
     SHADOW_REPLAY = "shadow-replay"
-    ANALYSIS_READONLY = "analysis_readonly"
-    ACCOUNT_READ = "account_read"
-    TRADINGCODEX_EXECUTION = "tradingcodex_execution"
     # Canonical physical-account routing surface. The name is a route label;
     # strategy/universe admission is governed by separate contracts.
     ALPACA_PAPER_CLEAN = "alpaca-paper-clean"
@@ -42,14 +39,11 @@ class McpProfile(StrEnum):
     # #137 Phase 0 — an isolated, context-only artifact consumer. This is
     # intentionally not a relaxed proposal/watch profile.
     FILL_WATCH_CONTEXT = "fill-watch-context"
-    # #891 / Q-53 (2026-09-28) — closed-world live-session surfaces. Each is a
-    # strict subset of the already-registered tools, selected by the single
-    # operator-readable manifest config/mcp_profiles/live.yaml (three groups:
-    # core / extension / emergency). Order-mutation tools exist only as the
-    # manifest's named emergency entries; proposal-led writes otherwise.
-    LIVE_KR = "live-kr"
-    LIVE_US = "live-us"
-    LIVE_CRYPTO = "live-crypto"
+    # ROB-1436 (2026-11-01, operator decision) retired analysis_readonly,
+    # account_read, tradingcodex_execution and live-kr/live-us/live-crypto with
+    # their NCP units; a surface that is needed later is added back then. Live
+    # sessions run on DEFAULT (prefect KR_LIVE_MCP_MODE=shared). Resolving
+    # one of those names now fails like any unknown profile.
     # #1171 (operator hk 1135 = A) — closed-world H3-CRYPTO paper pilot
     # surface: the runner's 20 tools exactly (crypto paper simulator orders +
     # the prompt's reads + record writes). No live order tool, no live

@@ -273,10 +273,7 @@ def test_registered_surface_without_proposal_tool_fails_closed():
     assert DIRECT_BROKER_MUTATION_TOOLS & registered <= set(out["blocked_actions"])
 
 
-@pytest.mark.parametrize(
-    "profile",
-    [McpProfile.DEFAULT, McpProfile.TRADINGCODEX_EXECUTION],
-)
+@pytest.mark.parametrize("profile", [McpProfile.DEFAULT])
 def test_proposal_enabled_execution_profiles_are_route_ready(
     monkeypatch: pytest.MonkeyPatch,
     profile: McpProfile,
@@ -300,19 +297,6 @@ def test_proposal_flag_off_default_profile_is_not_route_ready(
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", False)
     mcp = _build_profile_mcp(McpProfile.DEFAULT)
     out = asyncio.run(mcp.tools["route_request"](intent="buy_analysis", market="kr"))
-
-    assert "order_proposal_create" not in mcp.tools
-    assert out["success"] is False
-    assert out["error"] == "required_route_tool_unavailable"
-    assert out["route_contract"]["execution_ready"] is False
-
-
-def test_analysis_readonly_stays_fail_closed_when_proposal_gate_is_on(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
-    mcp = _build_profile_mcp(McpProfile.ANALYSIS_READONLY)
-    out = asyncio.run(mcp.tools["route_request"](intent="profit_taking", market="kr"))
 
     assert "order_proposal_create" not in mcp.tools
     assert out["success"] is False
@@ -363,7 +347,6 @@ class TestRouteRequestRegisteredEveryProfile:
             for profile in McpProfile
             if profile
             not in (
-                McpProfile.ACCOUNT_READ,
                 McpProfile.ALPACA_PAPER_CLEAN,
                 # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
                 McpProfile.FILL_WATCH_CONTEXT,

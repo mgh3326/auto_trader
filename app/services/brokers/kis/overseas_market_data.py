@@ -4,11 +4,15 @@ from __future__ import annotations
 import datetime
 import logging
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from pandas import DataFrame
+
+if TYPE_CHECKING:
+    # Annotation-only; a runtime import would load pandas at boot on the
+    # ROB-1436 lazy-import MCP profiles.
+    from pandas import DataFrame
 
 from app.core.symbol import to_kis_symbol
 
@@ -443,7 +447,7 @@ class OverseasMarketDataMixin(MarketDataBase):
             next_keyb = oldest.strftime("%Y%m%d%H%M%S")
 
         return OverseasMinuteChartPage(
-            frame=cast(DataFrame, frame.copy()),
+            frame=cast("DataFrame", frame.copy()),
             has_more=has_more,
             next_keyb=next_keyb,
         )

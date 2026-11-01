@@ -90,7 +90,7 @@ def test_switch_and_failure_rollback_keeps_mount(
 ) -> None:
     result, calls, _, _ = _run(
         tmp_path,
-        fail_name="at-mcp-account-read",
+        fail_name="at-mcp-kiwoom",
         active_mcp_color=active_color,
         both_mcp_colors_present=True,
     )

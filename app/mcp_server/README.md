@@ -430,7 +430,6 @@ prepared native order without POST, then performs cohort-owned cleanup. See
 Disabling `PAPER_EXECUTION_ENABLED` physically removes all three registrars;
 existing audit/fence rows remain immutable.
 
-The `analysis_readonly` profile no longer registers either analysis bundle tool.
 Their service implementations remain available to internal callers.
 
 The ROB-833 runner handoff is exactly:
@@ -779,8 +778,7 @@ ROB-755 exposes the same fill-event triage surface that powers the operator-host
 alert poller (`scripts/list_recent_fill_events.py`) over MCP. Read-only; no broker
 mutation; no order mutation; no watch mutation. Registered in the "Always" block
 of `register_all_tools` (default, crypto, hermes-paper-kis, us-paper, db-paper,
-kiwoom profiles). Not on `analysis_readonly`, which uses its own curated
-allowlist.
+kiwoom profiles).
 
 - `execution_ledger_fill_events_list_recent(after_id=None, market=None, side=None, source="websocket", broker=None, account_mode=None, limit=50)`
   - Read-only. Returns recent fills from `execution_ledger` rows newer than
@@ -877,8 +875,9 @@ endpoint, the service constructor rejects it and the tool raises
 
 ### Order proposal approval tools (ROB-816)
 
-When `ORDER_PROPOSALS_ENABLED=true`, the default and
-`tradingcodex_execution` profiles expose the proposal-ledger tools below. A
+When `ORDER_PROPOSALS_ENABLED=true`, the default profile exposes the
+proposal-ledger tools below (the `tradingcodex_execution` profile that also
+carried them was retired by ROB-1436). A
 proposal describes a possible order; creating or voiding one is not a broker
 order mutation.
 
@@ -1573,8 +1572,8 @@ rows; use the alert's immutable rationale, checklist, max-action, and condition
 snapshot. Report-activated watches continue to carry real source UUIDs.
 
 Parameters:
-- `created_by`: required provenance label. Use `tradingcodex` from the
-  `tradingcodex_execution` profile.
+- `created_by`: required provenance label (the `tradingcodex_execution`
+  profile, retired by ROB-1436, used `tradingcodex`).
 - `market`: `kr`, `us`, or `crypto`.
 - `symbol`: exact symbol. US and crypto symbols are normalized uppercase.
 - `intent`: one of the investment report item intents, for scanner/event context.
@@ -2570,9 +2569,6 @@ start instead of falling back to DEFAULT, so DEFAULT is `MCP_PROFILE=default`.
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus **both** typed Kiwoom mock namespaces (no KIS/generic order tools): the eight KR `kiwoom_mock_*` tools and — unconditionally, unlike DEFAULT's `KIWOOM_MOCK_US_ENABLED` gate — the seven US `kiwoom_mock_us_*` tools, four of which are mutations. Prefer `kiwoom_kr` for a KR-only session (ROB-1159). |
 | Kiwoom mock KR-only | `kiwoom_kr` | ROB-1159/1173 least-privilege split of `kiwoom`: default read-only/research surface plus **exactly** the eight KR `kiwoom_mock_*` tools (`kiwoom_mock_get_order_detail` included). The whole profile runs through an independent closed-world exact-set registration proxy (118 base names plus explicitly gated optional sets), and the KR registrar has a nested eight-name proxy. Thus the `kiwoom_mock_us_*` namespace, `kis_mock_mirror_execute_report`, and even a new alias missing from central mutation-name lists are physically absent. Requires `MCP_AUTH_TOKEN` on network transports, and (when `KIWOOM_MOCK_ENABLED=true`) complete mock credentials plus the exact `https://mockapi.kiwoom.com` base URL at startup. |
-| Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, the forecast/trade-journal/retrospective reads and the per-broker order-history read family (HK #657), and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
-| Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
-| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
 
 Generic `live_reconcile_orders` is evidence-first: `none` returns
 `noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.
@@ -2616,274 +2612,6 @@ Set `MCP_PROFILE=hermes-paper-kis` on paper-only deployments (e.g., where `KIS_M
 - Shared read-only research and portfolio tools remain available; split-profile-only tools such as Alpaca paper, crypto-only, and Kiwoom are absent.
 
 **Operator validation:** after deploying with `hermes-paper-kis`, check the MCP `/mcp` listing and confirm that none of `kis_live_*` or the legacy ambiguous order tools appear.
-
-### Profile: `analysis_readonly` (ROB-745)
-
-Use `MCP_PROFILE=analysis_readonly` for Codex/headless consumers that need market analysis tools but must not see the operator's full order-capable MCP surface.
-
-Allowed tools:
-- `get_operating_briefing`
-- `route_request`
-- `get_trading_policy`
-- `get_market_index`
-- `get_quote`
-- `analyze_stock_batch`
-- `get_support_resistance`
-- `get_indicators`
-- `screen_stocks`
-- `screen_stocks_snapshot`
-- `get_krx_session_health`
-- `get_top_stocks`
-- `get_news`
-- `get_fx_rate`
-- `suggest_order_account`
-- `get_holdings`
-- `toss_get_positions`
-- `get_intraday_investor_flow`
-- `analysis_artifact_save`
-- `analysis_artifact_get`
-- `forecast_save`
-- `session_context_append`
-- `session_context_get_recent`
-
-HK #657 read-only additions (no mutation capability):
-- `get_forecasts`
-- `get_forecast_calibration`
-- `get_trade_journal`
-- `get_trade_retrospectives`
-- `get_retrospective_aggregate`
-- `get_mock_loop_retrospective`
-- `get_order_history`
-- `kis_live_get_order_history`
-- `kis_mock_get_order_history`
-- `kiwoom_mock_get_order_history`
-- `kiwoom_mock_us_get_order_history`
-- `toss_get_order_history`
-- `alpaca_paper_list_orders`
-
-Forbidden by physical non-registration:
-- order placement, cancel, modify, reconcile, and preview tools
-- KIS live/mock order mutations (only the `*_get_order_history` reads register)
-- Kiwoom order mutations (same — only the two history reads register)
-- Alpaca/DB paper order surfaces (only `alpaca_paper_list_orders` registers)
-- Toss place/modify/cancel/orderable-cash/reconcile/preview
-- forecast/journal/retrospective writers (`forecast_resolve`, `save_trade_journal`, `update_trade_journal`, `modify_journal_entry`, `save_trade_retrospective`, `save_position_intake_retrospective`)
-- manual holdings mutation
-- user settings tools
-- watch/admin/report-writing surfaces
-
-Persistence tools on this profile require explicit provenance:
-- pass `created_by="codex"` for `analysis_artifact_save`
-- pass `created_by="codex"` in every `session_context_append` entry
-- pass `created_by="codex"` to `forecast_save`
-
-### Codex Config Example
-
-Here is an example Codex config file to connect to the analysis-readonly MCP server with relaxed approval:
-
-```toml
-# ~/.codex/config.toml
-# Relaxed approval is scoped to the analysis-readonly MCP server only.
-[mcp_servers.auto_trader_analysis_readonly]
-url = "http://127.0.0.1:8768/mcp"
-bearer_token_env_var = "MCP_ANALYSIS_READONLY_AUTH_TOKEN"
-default_tools_approval_mode = "auto"
-
-http_headers = { "x-paperclip-agent-id" = "codex-analysis-readonly" }
-```
-
-### Profile: `account_read` (ROB-760)
-
-Use `MCP_PROFILE=account_read` for TradingCodex or other account-sync consumers that need broker account reads without any trading or persistence surface.
-
-Allowed tools:
-- `get_holdings`
-- `toss_get_positions`
-- `get_cash_balance`
-- `toss_get_orderable_cash`
-- `get_order_history`
-- `kis_live_get_order_history`
-- `toss_get_order_history`
-- `kiwoom_mock_get_positions`
-- `kiwoom_mock_get_orderable_cash`
-- `kiwoom_mock_get_order_history`
-
-Forbidden by physical non-registration:
-- order placement, cancel, modify, preview, and reconcile tools
-- KIS mock order variants
-- Kiwoom mock preview/place/cancel/modify variants
-- Alpaca/DB paper order surfaces
-- manual holdings mutation
-- user settings tools
-- watch/admin/report-writing surfaces
-- analysis persistence and session context write/read tools
-
-Authentication is mandatory for this profile. `MCP_PROFILE=account_read` fails at startup unless `MCP_AUTH_TOKEN` is non-empty. Deployment wrappers must source that value from `MCP_ACCOUNT_READ_AUTH_TOKEN`; do not fall back to the operator `MCP_AUTH_TOKEN`.
-
-TradingCodex config example:
-
-```toml
-[mcp_servers.auto_trader_account_read]
-url = "http://127.0.0.1:8769/mcp"
-bearer_token_env_var = "MCP_ACCOUNT_READ_AUTH_TOKEN"
-default_tools_approval_mode = "auto"
-
-http_headers = { "x-paperclip-agent-id" = "tradingcodex-account-read" }
-```
-
-### Profile: `tradingcodex_execution` (ROB-768, ROB-778)
-
-Use `MCP_PROFILE=tradingcodex_execution` for the reviewed TradingCodex BrokerAdapter surface. This profile is order-capable, but still allowlist-only and narrower than `default`.
-
-Allowed read/advisory tools:
-- `get_holdings`
-- `toss_get_positions`
-- `get_cash_balance`
-- `toss_get_orderable_cash`
-- `get_order_history`
-- `kis_live_get_order_history`
-- `toss_get_order_history`
-- `kiwoom_mock_get_positions`
-- `kiwoom_mock_get_orderable_cash`
-- `kiwoom_mock_get_order_history`
-- `suggest_order_account`
-- `get_fx_rate`
-- `route_request`
-- `get_trading_policy`
-- `list_active_watches`
-- `investment_watch_events_list_recent`
-- `get_forecasts`
-- `get_trade_retrospectives`
-- `trade_retrospective_pending`
-
-Allowed write/order tools:
-- `place_order`
-- `cancel_order`
-- `kis_live_place_order`
-- `kis_live_cancel_order`
-- `toss_preview_order`
-- `toss_place_order`
-- `toss_cancel_order`
-- `sell_ladder_fill_preview`
-- `buy_ladder_fill_preview`
-- `kiwoom_mock_preview_order`
-- `kiwoom_mock_place_order`
-- `kiwoom_mock_cancel_order`
-- `kiwoom_mock_modify_order`
-- `forecast_save`
-- `save_trade_retrospective`
-- `investment_watch_create`
-
-Kiwoom safety boundaries are unchanged on both restricted profiles:
-
-- `KIWOOM_MOCK_ENABLED` remains default-off. While disabled, the typed tools
-  fail closed and name the missing configuration keys without returning values.
-- If Kiwoom mock is enabled, restricted-profile startup requires all mock
-  credentials and the exact `https://mockapi.kiwoom.com` base URL.
-- Kiwoom mock tools remain KRX-only. A broker mutation still requires both
-  `dry_run=false` and `confirm=true`.
-- Caller-supplied Kiwoom symbols are canonicalized after trimming and must be
-  exactly six ASCII digits (for example, `005930`). Provider evidence may use
-  the documented `A`/`J`/`Q` prefix, which read normalization removes; callers
-  cannot use those provider-only aliases for mutations.
-- No `kiwoom_live_*`, generic `kiwoom_*`, or live-host routing is registered.
-
-#### Kiwoom mock order preflight (ROB-893)
-
-`kiwoom_mock_preview_order` and `kiwoom_mock_place_order` share the same
-fail-closed preflight. A confirmed place builds **one** request-scoped
-`KiwoomMockClient` and reuses it across the **single** preflight (run
-immediately before the broker POST) and the POST itself, so preflight and
-dispatch share one auth client and mint at most one cold-cache token. Preview
-and dry-run paths run the preflight once and never call the order mutation
-client.
-
-The preflight requires a fresh KR quote, a KRX-valid `get_tick_size_kr` price,
-and an order price within 30% of the quote (the 30% boundary is inclusive).
-Sell orders use the kt00018 `rmnd_qty` position evidence; buys use the kt00010
-`ord_alowa` result for the requested symbol, side, and price. Account evidence
-is accepted only with canonical broker success (`0` or `"0"`); missing,
-malformed, boolean, floating-point, or nonzero return codes fail closed.
-
-Responses expose `preflight_checks`, `estimated_evidence`, and
-`preflight_warnings`. No reviewed Kiwoom cost profile is configured, so fee and
-tax are explicitly `null` with `status="unavailable"` and
-`review_required=true`; the preflight never invents a rate. Sell P&L based on
-the candidate order price is labelled `estimated_gross_pnl`, while net P&L is
-also unavailable. Successful preflights surface `estimated_costs_unavailable`;
-a gross-before-cost loss additionally emits `estimated_loss_sell` without
-universally blocking the sell. Broker payloads remain recursively redacted.
-
-A failure that provably occurs before HTTP dispatch (token resolution,
-pre-dispatch hook, request build, or host validation) raises a structured
-`KiwoomPreDispatchError` carrying redacted fields only — `stage`, `api_id`
-(the TR code), and `cause_type` (the exception class name); the chained
-`__cause__` is retained for internal tracebacks only and never surfaces in the
-response. Both the preflight account-evidence read and the order POST propagate
-this error, and the confirmed-place / preview responses render it as
-`status="not_submitted"`, `dispatch_started=false`, and
-`reconcile_required=false` (the request provably never reached the broker, so
-no order HTTP dispatch occurs and no reconciliation is needed). A generic
-post-dispatch failure (the request may already have been transmitted) is the
-distinct `status="acceptance_uncertain"`, `reconcile_required=true`,
-`retry_allowed=false` outcome.
-
-#### Kiwoom mock stable read envelopes (ROB-824)
-
-`kiwoom_mock_get_positions` adds a normalized `positions` list whose rows have
-exactly `symbol`, `quantity`, `average_price`, and `currency`. The source is the
-official kt00018 `acnt_evlt_remn_indv_tot` array; KR symbols such as `A005930`
-are returned as `005930`, numeric fields are JSON integers, and currency is
-`KRW`.
-
-`kiwoom_mock_get_order_history` adds a normalized `orders` list whose rows have
-exactly `order_id`, `symbol`, `status`, `ordered_price`, `filled_quantity`,
-`average_price`, and `remaining_quantity`. The source is the official kt00009
-`acnt_ord_cntr_prst_array` array. Status is normalized to `open`,
-`partially_filled`, `filled`, or `cancelled` from the broker cancellation marker
-and ordered/filled quantities. `ord_no` must be an all-digit broker string;
-length is not fixed because the official seven-digit contract and existing
-ten-digit broker fixtures both occur in this repository.
-
-All three account reads add fixed `provenance` for broker `kiwoom`, environment
-`mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and their expected
-API ID. Cash uses kt00010 when `symbol` is provided and kt00001 otherwise, and
-validates raw provenance before deriving broker success or returning cash.
-Only a canonical integer `0` or exact string `"0"` broker return code is
-successful. Missing, malformed, boolean, or floating-point return codes fail
-closed. Successful broker evidence without a parseable non-negative cash field
-also fails closed with `cash=null` and a stable `*_unavailable` source.
-
-The responses retain the broker payload as `broker_response`. Recursive
-redaction covers authorization/token/cookie/credential/password/approval,
-API/app key and secret, and account-identifier key aliases across case and
-separator variations. Top-level passthrough fields are copied only from this
-redacted payload. Missing/malformed fields or explicit non-mock provenance
-changes the response to `success=false`; cash becomes `null`, and positions or
-orders become `[]`. Config, transport, broker, provenance, and normalization
-failures use stable `kiwoom_mock_*` error codes while retaining canonical mock
-provenance.
-
-Write provenance requirements:
-- pass `created_by="tradingcodex"` to `forecast_save`
-- pass `created_by_profile="tradingcodex"` to `save_trade_retrospective`
-- pass `created_by="tradingcodex"` to `investment_watch_create`
-- missing or blank labels return `{"success": false, "error": "created_by_required", ...}` before any database write
-
-Forbidden by physical non-registration:
-- modify and reconcile tools
-- KIS mock order variants
-- Kiwoom live/general unscoped order variants
-- Alpaca/DB paper order surfaces
-- manual holdings mutation
-- user settings tools
-- analysis artifact and session context persistence
-- forecast resolution/calibration
-- retrospective aggregate
-- watch activation/mutation
-- report-writing and report-decision tools
-
-Authentication is mandatory for this profile. `MCP_PROFILE=tradingcodex_execution` fails at startup unless `MCP_AUTH_TOKEN` is non-empty, and the runtime also requires the TradingCodex approval-hash modes configured in `app/mcp_server/main.py`.
 
 ### Forecast resolution semantics
 

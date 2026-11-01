@@ -41,7 +41,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from app.core.config import settings
-from app.mcp_server.tooling.analysis_readonly_registration import _AllowlistedMCP
+from app.mcp_server.tooling.allowlist_proxy import AllowlistedMCP
 from app.mcp_server.tooling.investment_hermes_handlers import (
     INVESTMENT_HERMES_TOOL_NAMES,
 )
@@ -240,7 +240,7 @@ def kiwoom_kr_profile_tool_names() -> set[str]:
 
 def restrict_kiwoom_kr_profile_tools(mcp: FastMCP) -> FastMCP:
     """Drop every registration outside the active closed-world profile set."""
-    return cast("FastMCP", _AllowlistedMCP(mcp, kiwoom_kr_profile_tool_names()))
+    return cast("FastMCP", AllowlistedMCP(mcp, kiwoom_kr_profile_tool_names()))
 
 
 def register_kiwoom_kr_tools(mcp: FastMCP) -> None:
@@ -249,7 +249,7 @@ def register_kiwoom_kr_tools(mcp: FastMCP) -> None:
     The allowlist proxy is load-bearing, not decorative: it is what keeps this
     profile KR-only if the KR registrar ever grows a non-KR tool.
     """
-    filtered = cast("FastMCP", _AllowlistedMCP(mcp, KIWOOM_KR_TOOL_NAMES))
+    filtered = cast("FastMCP", AllowlistedMCP(mcp, KIWOOM_KR_TOOL_NAMES))
     register_kiwoom_mock_tools(filtered)
 
 

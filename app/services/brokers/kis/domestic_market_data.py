@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import datetime
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from pandas import DataFrame
+
+if TYPE_CHECKING:
+    # Annotation-only; a runtime import would load pandas at boot on the
+    # ROB-1436 lazy-import MCP profiles.
+    from pandas import DataFrame
 
 from . import constants
 from ._base_market_data import (
