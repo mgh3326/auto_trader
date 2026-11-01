@@ -1,0 +1,53 @@
+# PROPOSAL for operator approval (ROB-1443) — NOT registered anywhere.
+# Copy to the Dagu DAGs directory only after the operator approves it.
+#
+# Point-in-time data plane, market: us.
+# Schedule: 23:00 UTC Mon-Fri = 19:00 EDT / 18:00 EST, after the 16:00 ET close + 30 min.
+# Times are written in UTC because the OCI Dagu scheduler runs in UTC
+# (schedule-inventory-1101). Per-DAG time zones were not verified on that
+# Dagu version, so none are used.
+#
+# Every command is research.data_plane.cli (public, unauthenticated sources;
+# no database, broker, account or credential). collect is idempotent per day:
+# a rerun or a retry writes nothing for partitions that already exist.
+# The health steps run even if collect fails, so a failure reaches the ping URL.
+#
+# Worker host env (set on the worker, never in this file):
+#   AUTO_TRADER_DIR       checkout of auto_trader at a reviewed commit
+#   DATA_PLANE_ROOT       artifact root outside git
+#   DATA_PLANE_PING_US_UNIVERSE / _BARS / _ACTIONS   https ping URLs (optional)
+description: "PIT data plane (us): universe, daily bars, corporate actions + health"
+schedule: "0 23 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  data-plane: "true"
+steps:
+  - name: collect
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli collect --root ${DATA_PLANE_ROOT} --market us
+    timeout_sec: 14400
+    retry_policy:
+      limit: 2
+      interval_sec: 600
+    continue_on:
+      failure: true
+  - name: health-universe
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset universe --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_UNIVERSE
+    depends:
+      - collect
+    continue_on:
+      failure: true
+  - name: health-bars
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset bars_1d --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_BARS
+    depends:
+      - collect
+    continue_on:
+      failure: true
+  - name: health-actions
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset corporate_actions --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_ACTIONS
+    depends:
+      - collect

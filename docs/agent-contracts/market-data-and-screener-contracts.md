@@ -20,6 +20,7 @@
 - 실험 레지스트리·manifest·heartbeat (ROB-1429)
 - KR 상폐·종료결과 복구 + 인과 일봉 export (ROB-1430)
 - US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
+- PIT 데이터 플레인 — universe·일봉·기업행위 일별 파티션 (ROB-1443)
 
 ## 기준 원문 계약
 
@@ -444,6 +445,29 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
   시리즈보다 7일 넘게 뒤처지면 rebuild 가 거부한다. 이 가드를 완화하지 마라.
 - 브로커 API·자격증명·DB·스케줄러 없음. Alpaca paper inactive 자산 목록은 자격증명이 필요하고
   날짜가 없어 미사용(런북 = `research/us_universe/README.md`).
+
+### PIT 데이터 플레인 — universe·일봉·기업행위 일별 파티션 (ROB-1443)
+
+`research/data_plane/` — U7/U8(부스팅·TFT) 입력을 KR·US·crypto 별로 하루 한 번 쌓는 연구 전용
+수집기. 계약 정본: `docs/research/data-plane-contract-v1.md`, 수집기 인벤토리·keep/fix/rebuild/retire
+판정: `docs/research/data-plane-collector-inventory-2026-11-01.md`. 공개 무인증 소스만 쓰며
+(`public_http.check_url` 허용 목록 밖은 소켓 전에 거부) DB·브로커·자격증명·스케줄러 import 가 없다
+(`tests/research/data_plane/test_data_plane_guards.py`).
+
+- **명령(수동)**: `uv run python -m research.data_plane.cli collect --root DIR --market kr|us|crypto`
+  (universe→bars_1d→corporate_actions), `... health --root DIR --market M --dataset D [--ping-url-env NAME]`
+- 🔴 **파티션 날짜 = 가용 날짜**: `date=P` 에는 `available_at` 이 시장 현지일 `P` 인 행만 들어간다.
+  `P` 보다 늦은 `available_at`·이른 `available_at`·`observed_at < available_at`(형성 중 봉)·오프셋 없는
+  시각·해시 불일치 행은 거부되고 아무것도 쓰지 않는다(exit 3). crypto 파티션 `P` 는 UTC `P−1` 일봉이다.
+- 🔴 **write-once + append-only manifest**: 파티션은 `os.link` 로 한 번만 게시, 같은 날 재실행은 fetch 0·쓰기 0.
+  커버리지가 `--min-coverage`(기본 0.95) 미만이면 그 날을 쓰지 않는다(빈 날로 남겨 health 가 잡게 함).
+- 🔴 bars/actions 의 종목 집합은 `P` 이하 날짜의 최신 universe 파티션 2개에서만 고른다 — 더 늦은 universe 금지.
+  universe·corporate_actions 는 그 날에만 관측 가능(과거 날짜 실행 거부). 기업행위는 first-observed
+  (`available_at` = 처음 본 시각, `fact_hash` 로 중복 제거).
+- **health**: 기한(`봉 가용 시각 + grace`)이 지난 세션 파티션이 빠지면 `gap`/`stale`, 해시 불일치 `corrupt`,
+  커버리지 미달 `low_coverage` → exit 1. ping URL 은 출력하지 않는다.
+- **Dagu 제안**: `deploy/dagu/data-plane/*.yaml` — 🔴 **등록 안 됨**(운영자 승인 대상). 새 명령만 참조.
+- 기존 `*_candles_1d`·`*_symbol_universe`·뉴스 테이블은 서빙용으로 유지하되 덮어쓰기라 학습 입력으로 쓰지 않는다.
 
 ## 유지 규약
 
