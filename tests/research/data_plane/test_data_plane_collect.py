@@ -336,3 +336,127 @@ def test_partition_bytes_are_deterministic(tmp_path):
         partition_path(tmp_path / "b", DATASET_UNIVERSE, "crypto", day).read_bytes()
     )
     assert a == b
+
+
+# --- review fixes -------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_failing_dataset_does_not_stop_the_others(tmp_path):
+    day1, day2 = date(2026, 10, 30), date(2026, 10, 31)
+    _run(tmp_path, "crypto", day1, FakeSources())
+    src = FakeSources(
+        binance_pairs={"BTCUSDT": "TRADING", "LUNAUSDT": "BREAK"},
+        missing=frozenset({"BTCUSDT"}),
+    )
+    with pytest.raises(CollectError, match="coverage") as info:
+        _run(tmp_path, "crypto", day2, src)
+    assert [(r.dataset, r.action) for r in info.value.results] == [
+        ("universe", "written"),
+        ("corporate_actions", "written"),
+    ]
+    changes = {
+        (r["instrument"], r["action_type"])
+        for r in read_partition(tmp_path, DATASET_ACTIONS, "crypto", day2)
+    }
+    assert ("ETHUSDT", "listing_removed") in changes
+
+
+@pytest.mark.unit
+def test_listing_change_on_a_day_whose_actions_failed_is_recorded_next_time(tmp_path):
+    day1, day2, day3 = date(2026, 10, 29), date(2026, 10, 30), date(2026, 11, 2)
+    _run(tmp_path, "kr", day1, FakeSources())
+    # day 2: 000660 leaves the listing, but every Yahoo call fails -> no actions
+    gone = {"005930": "SAMSUNG ELEC"}
+    with pytest.raises(CollectError):
+        _run(
+            tmp_path,
+            "kr",
+            day2,
+            FakeSources(kospi=gone, missing=frozenset({"005930", "247540"})),
+        )
+    assert not partition_path(tmp_path, DATASET_ACTIONS, "kr", day2).exists()
+    _run(tmp_path, "kr", day3, FakeSources(kospi=gone))
+    removed = [
+        r
+        for r in read_partition(tmp_path, DATASET_ACTIONS, "kr", day3)
+        if r["action_type"] == "listing_removed"
+    ]
+    assert [(r["instrument"], r["compared_universe"]) for r in removed] == [
+        ("000660", [day1.isoformat(), day3.isoformat()])
+    ]
+
+
+@pytest.mark.unit
+def test_malformed_source_body_is_one_missing_instrument_not_a_crash(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    results = collect(
+        tmp_path,
+        market="kr",
+        day=day,
+        datasets=[DATASET_BARS, DATASET_ACTIONS],
+        fetch=FakeSources(malformed=frozenset({"000660"})),
+        now=lambda: evening("kr", day),
+        min_coverage=0.5,
+        commit="t",
+    )
+    assert [r.action for r in results] == ["written", "written"]
+    record = json.loads(
+        manifest_path(tmp_path, DATASET_BARS, "kr").read_text().splitlines()[-1]
+    )
+    assert [m["instrument"] for m in record["missing"]] == ["000660"]
+    assert record["missing"][0]["reason"].startswith("source_error:")
+
+
+@pytest.mark.unit
+def test_csat_day_forming_bar_is_refused(tmp_path):
+    from datetime import UTC, datetime
+
+    day = date(2026, 11, 19)  # CSAT: KRX trades 10:00-16:30 KST
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    at_1610_kst = datetime(2026, 11, 19, 7, 10, tzinfo=UTC)
+    with pytest.raises(RefusedRowError, match="forming bar"):
+        collect(
+            tmp_path,
+            market="kr",
+            day=day,
+            datasets=[DATASET_BARS],
+            fetch=FakeSources(),
+            now=lambda: at_1610_kst,
+            commit="t",
+        )
+
+
+@pytest.mark.unit
+def test_cli_reports_partial_success_and_exit_code_2(tmp_path, monkeypatch, capsys):
+    from research.data_plane import cli
+    from research.data_plane import collect as collect_module
+
+    day = date(2026, 10, 30)
+    monkeypatch.setattr(
+        cli,
+        "make_public_fetch",
+        lambda **_: FakeSources(missing=frozenset({"BTCUSDT", "ETHUSDT"})),
+    )
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
+    _FrozenDatetime.frozen = evening("crypto", day)
+    code = cli.main(["collect", "--root", str(tmp_path), "--market", "crypto"])
+    out = capsys.readouterr()
+    assert code == 2
+    assert "written universe crypto 2026-10-30" in out.out
+    assert "written corporate_actions crypto 2026-10-30" in out.out
+    assert "not collected: bars_1d crypto 2026-10-30" in out.err
+
+
+class _FrozenDatetime:
+    from datetime import datetime as _dt
+
+    frozen = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.frozen
+
+    fromisoformat = _dt.fromisoformat

@@ -45,13 +45,27 @@ def partition_days(market: str, start: date, end: date) -> list[date]:
     return [s.date() for s in sessions]
 
 
+# KRX opens and closes one hour late on the national college entrance exam
+# (CSAT) day; exchange_calendars' XKRX models those days as 09:00-15:30, which
+# would let a forming bar pass the availability gate between 16:00 and 16:30.
+# Add each year's date when it is announced (the rest of the repo has the same
+# gap: see the 7-D night-sweep contract).
+KRX_LATE_CLOSE_DAYS = frozenset(
+    {date(2024, 11, 14), date(2025, 11, 13), date(2026, 11, 19)}
+)
+KRX_LATE_CLOSE_SHIFT = timedelta(hours=1)
+
+
 def session_close(market: str, day: date) -> datetime:
     spec = market_spec(market)
     if spec.calendar is None:
         return datetime.combine(day, time(0, 0), tzinfo=UTC)
     if not is_partition_day(market, day):
         raise ValueError(f"{day} is not a {spec.calendar} session")
-    return _calendar(spec.calendar).session_close(day.isoformat()).to_pydatetime()
+    close = _calendar(spec.calendar).session_close(day.isoformat()).to_pydatetime()
+    if market == "kr" and day in KRX_LATE_CLOSE_DAYS:
+        close += KRX_LATE_CLOSE_SHIFT
+    return close
 
 
 def bar_available_at(market: str, day: date) -> datetime:

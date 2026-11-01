@@ -281,6 +281,30 @@ class YahooChart:
     events: tuple[YahooEvent, ...]
 
 
+def _first_object(indicators: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    group = indicators.get(key) or [{}]
+    if not isinstance(group, list) or not group or not isinstance(group[0], dict):
+        raise SourceError(f"yahoo chart: indicators.{key} is malformed")
+    return group[0]
+
+
+def _event_items(raw_events: Mapping[str, Any], kind: str) -> list[Mapping[str, Any]]:
+    group = raw_events.get(kind) or {}
+    if not isinstance(group, dict):
+        raise SourceError(f"yahoo chart: events.{kind} is not an object")
+    items = list(group.values())
+    if not all(isinstance(i, dict) for i in items):
+        raise SourceError(f"yahoo chart: malformed events.{kind} item")
+    return items
+
+
+def _event_time(item: Mapping[str, Any]) -> datetime:
+    stamp = item.get("date")
+    if not isinstance(stamp, int) or isinstance(stamp, bool):
+        raise SourceError(f"yahoo chart: event without an integer date: {item!r}")
+    return datetime.fromtimestamp(stamp, UTC)
+
+
 def parse_yahoo_chart(market: str, body: bytes) -> YahooChart:
     tz = market_spec(market).tz
     payload = _json(body, "yahoo chart")
@@ -302,9 +326,15 @@ def parse_yahoo_chart(market: str, body: bytes) -> YahooChart:
     meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
     stamps = result.get("timestamp") or []
     indicators = result.get("indicators") or {}
-    quotes = indicators.get("quote") or [{}]
-    quote = quotes[0] if quotes and isinstance(quotes[0], dict) else {}
-    adj = (indicators.get("adjclose") or [{}])[0].get("adjclose") or []
+    if not isinstance(stamps, list) or not isinstance(indicators, dict):
+        raise SourceError("yahoo chart: malformed timestamp/indicators")
+    quote = _first_object(indicators, "quote")
+    adj = _first_object(indicators, "adjclose").get("adjclose") or []
+    for name in ("open", "high", "low", "close", "volume"):
+        if not isinstance(quote.get(name) or [], list):
+            raise SourceError(f"yahoo chart: quote.{name} is not a list")
+    if not isinstance(adj, list):
+        raise SourceError("yahoo chart: adjclose is not a list")
     bars: dict[date, YahooBar] = {}
     for i, stamp in enumerate(stamps):
         if not isinstance(stamp, int) or isinstance(stamp, bool):
@@ -328,9 +358,8 @@ def parse_yahoo_chart(market: str, body: bytes) -> YahooChart:
         )
     events: list[YahooEvent] = []
     raw_events = result.get("events") if isinstance(result.get("events"), dict) else {}
-    for item in (raw_events.get("dividends") or {}).values():
-        stamp = item.get("date")
-        when = datetime.fromtimestamp(stamp, UTC)
+    for item in _event_items(raw_events, "dividends"):
+        when = _event_time(item)
         events.append(
             YahooEvent(
                 "cash_dividend",
@@ -342,9 +371,8 @@ def parse_yahoo_chart(market: str, body: bytes) -> YahooChart:
                 },
             )
         )
-    for item in (raw_events.get("splits") or {}).values():
-        stamp = item.get("date")
-        when = datetime.fromtimestamp(stamp, UTC)
+    for item in _event_items(raw_events, "splits"):
+        when = _event_time(item)
         events.append(
             YahooEvent(
                 "split",

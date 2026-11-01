@@ -50,7 +50,8 @@ such as `346.7200012207031`; they are kept, not rounded).
   from, `instruments_requested`/`instruments_missing`/`coverage`, and the
   missing instruments with a reason (capped at 500).
 * A partition is written once. A rerun of the same day fetches nothing and
-  writes nothing. A crash between publish and manifest append is repaired by the
+  writes nothing. One dataset failing does not stop the others (corporate
+  actions can only be observed on their own day). A crash between publish and manifest append is repaired by the
   next run from the on-disk bytes.
 * A partition with an empty row list is valid (for example no new corporate
   action that day) and still counts as present.
@@ -62,7 +63,7 @@ such as `346.7200012207031`; they are kept, not rounded).
 |---|---|---|---|
 | local day / time zone | Asia/Seoul | America/New_York | UTC |
 | partition days | XKRX sessions (exchange_calendars) | XNYS sessions (early closes included) | every UTC day |
-| bar `event_time` | session close (15:30 KST) | session close (16:00 ET; 13:00 on early-close days) | candle close, `P` 00:00 UTC |
+| bar `event_time` | session close (15:30 KST; 16:30 on CSAT days, `calendars.KRX_LATE_CLOSE_DAYS`) | session close (16:00 ET; 13:00 on early-close days) | candle close, `P` 00:00 UTC |
 | bar `available_at` | close + 30 min | close + 30 min | `P` 00:05 UTC |
 | bar in partition `P` | session `P` | session `P` | **the candle of UTC day `P−1`** (`bar_date = P−1`) |
 | bar source | Yahoo chart v8 (`<code>.KS`/`.KQ`) | Yahoo chart v8 | Binance `api/v3/klines` (data-api.binance.vision), Upbit `candles/days` |
@@ -104,7 +105,10 @@ source's `adj_close`, when building a training series.
 * Listing changes (all markets), from the universe diff of `P` against the
   previous universe partition: `listing_added`, `listing_removed`,
   `listing_status_changed` with `status_before`/`status_after`. The first
-  universe partition is a baseline (no rows, `listing_baseline: true`).
+  universe partition is a baseline (no rows, `listing_baseline: true`). The
+  diff reference is the universe the latest earlier actions partition used, so
+  a day whose actions failed is folded into the next successful diff (its
+  changes become available on that later day) instead of being lost.
 * **First-observed semantics**: `available_at` is when this collector first saw
   the fact (the sources carry no announcement time). Each row has `fact_hash`
   (identity without observation time); a fact already present in an earlier
@@ -115,7 +119,8 @@ source's `adj_close`, when building a training series.
 
 A partition day `d` is **due** at `bar_available_at(d) + grace` (default grace
 3 h: KR 19:00 KST, US 19:30 ET, crypto 03:05 UTC; the Dagu proposal tightens it
-to 2 h / 2 h / 15 min so the health step right after collection judges the
+to 1 h / 1 h / 6 min so the run day is already due when the DAG starts, in both
+summer and winter time, and the health step right after collection judges the
 same day). `research.data_plane.cli health` fails (exit 1) on:
 
 | kind | rule |
@@ -124,6 +129,8 @@ same day). `research.data_plane.cli health` fails (exit 1) on:
 | `stale` | the newest due day is missing — the dataset stopped advancing |
 | `corrupt` | a recorded partition's file is missing or its sha256 differs from the manifest |
 | `low_coverage` | a partition's manifest coverage is below the floor (default 0.95) |
+| `subset_partition` | a partition was written with `--symbols` (final for that day, so never healthy) |
+| `repaired_unverified` | a bars/actions manifest record rebuilt after a crash, without its coverage metadata |
 | `empty` | no recorded partition |
 
 Non-session days (weekends, exchange holidays) are never gaps. The universe and

@@ -34,20 +34,20 @@ steps:
       failure: true
   - name: health-universe
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset universe --grace-hours 2 --ping-url-env DATA_PLANE_PING_US_UNIVERSE
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset universe --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_UNIVERSE
     depends:
       - collect
     continue_on:
       failure: true
   - name: health-bars
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset bars_1d --grace-hours 2 --ping-url-env DATA_PLANE_PING_US_BARS
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset bars_1d --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_BARS
     depends:
       - collect
     continue_on:
       failure: true
   - name: health-actions
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset corporate_actions --grace-hours 2 --ping-url-env DATA_PLANE_PING_US_ACTIONS
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market us --dataset corporate_actions --grace-hours 1 --ping-url-env DATA_PLANE_PING_US_ACTIONS
     depends:
       - collect

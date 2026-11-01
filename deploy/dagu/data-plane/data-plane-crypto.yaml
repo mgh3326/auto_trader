@@ -34,20 +34,20 @@ steps:
       failure: true
   - name: health-universe
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market crypto --dataset universe --grace-hours 0.25 --ping-url-env DATA_PLANE_PING_CRYPTO_UNIVERSE
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market crypto --dataset universe --grace-hours 0.1 --ping-url-env DATA_PLANE_PING_CRYPTO_UNIVERSE
     depends:
       - collect
     continue_on:
       failure: true
   - name: health-bars
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market crypto --dataset bars_1d --grace-hours 0.25 --ping-url-env DATA_PLANE_PING_CRYPTO_BARS
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market crypto --dataset bars_1d --grace-hours 0.1 --ping-url-env DATA_PLANE_PING_CRYPTO_BARS
     depends:
       - collect
     continue_on:
       failure: true
   - name: health-actions
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market crypto --dataset corporate_actions --grace-hours 0.25 --ping-url-env DATA_PLANE_PING_CRYPTO_ACTIONS
+    command: uv run python -m research.data_plane.cli health --root ${DATA_PLANE_ROOT} --market crypto --dataset corporate_actions --grace-hours 0.1 --ping-url-env DATA_PLANE_PING_CRYPTO_ACTIONS
     depends:
       - collect

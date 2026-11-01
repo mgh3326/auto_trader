@@ -160,3 +160,44 @@ def test_ping_states(monkeypatch):
 
     assert ping_url("DP_PING_OK", False, ping=boom) == "failed:OSError"
     assert sent == ["https://hc.example.test/x/"]
+
+
+@pytest.mark.unit
+def test_subset_and_repaired_partitions_are_not_healthy(tmp_path):
+    from research.data_plane.store import manifest_path
+
+    _seed(tmp_path, WEEK)
+    manifest = manifest_path(tmp_path, DATASET_BARS, "kr")
+    lines = manifest.read_text().splitlines()
+    rec = json.loads(lines[-1])
+    rec_subset = {**json.loads(lines[-2]), "instrument_selection": "explicit_subset"}
+    rec_repaired = {k: v for k, v in rec.items() if k != "coverage"} | {
+        "repaired": True
+    }
+    manifest.write_text(
+        "\n".join([*lines[:-2], json.dumps(rec_subset), json.dumps(rec_repaired)])
+        + "\n"
+    )
+    report = check_health(tmp_path, market="kr", dataset=DATASET_BARS, now=FRI_NIGHT)
+    assert _kinds(report) == [
+        ("repaired_unverified", "2026-10-30"),
+        ("subset_partition", "2026-10-29"),
+    ]
+
+
+@pytest.mark.unit
+def test_lookback_must_be_positive():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            [
+                "health",
+                "--root",
+                "/x",
+                "--market",
+                "kr",
+                "--dataset",
+                "bars_1d",
+                "--lookback-days",
+                "-1",
+            ]
+        )

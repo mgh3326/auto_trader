@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--root", type=Path, required=True)
     h.add_argument("--market", choices=sorted(MARKETS), required=True)
     h.add_argument("--dataset", choices=DATASETS, required=True)
-    h.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS)
+    h.add_argument("--lookback-days", type=_positive_int, default=DEFAULT_LOOKBACK_DAYS)
     h.add_argument(
         "--grace-hours", type=float, default=DEFAULT_GRACE.total_seconds() / 3600
     )
@@ -81,6 +81,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     h.add_argument("--now", type=_iso_now, help=argparse.SUPPRESS)
     return parser
+
+
+def _print_results(results) -> None:  # noqa: ANN001
+    for r in results:
+        print(
+            f"{r.action} {r.dataset} {r.market} {r.partition_date} "
+            f"rows={r.rows} sha256={r.sha256[:12]}"
+        )
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,16 +115,18 @@ def main(argv: list[str] | None = None) -> int:
                 symbols=symbols,
                 min_coverage=args.min_coverage,
             )
-        except RefusedRowError as exc:
-            print(f"refused: {exc}", file=sys.stderr)
-            return 3
-        except (CollectError, ValueError) as exc:
+        except (RefusedRowError, CollectError) as exc:
+            # Every dataset was attempted; print what succeeded, then the errors.
+            _print_results(getattr(exc, "results", []))
+            kind = "refused" if isinstance(exc, RefusedRowError) else "not collected"
+            print(f"{kind}: {exc}", file=sys.stderr)
+            for note in getattr(exc, "__notes__", []):
+                print(note, file=sys.stderr)
+            return 3 if isinstance(exc, RefusedRowError) else 2
+        except ValueError as exc:
             print(f"not collected: {exc}", file=sys.stderr)
             return 2
-        for r in results:
-            print(
-                f"{r.action} {r.dataset} {r.market} {r.partition_date} rows={r.rows} sha256={r.sha256[:12]}"
-            )
+        _print_results(results)
         return 0
 
     now = args.now or datetime.now(UTC)

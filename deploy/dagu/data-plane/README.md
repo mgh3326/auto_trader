@@ -5,9 +5,14 @@ copy these files into the Dagu DAGs directory on the OCI scheduler.
 
 | file | schedule (UTC) | local meaning | health grace |
 |---|---|---|---|
-| `data-plane-kr.yaml` | `0 9 * * 1-5` | 18:00 KST Mon–Fri | 2 h |
-| `data-plane-us.yaml` | `0 23 * * 1-5` | 19:00 EDT / 18:00 EST Mon–Fri | 2 h |
-| `data-plane-crypto.yaml` | `20 0 * * *` | 00:20 UTC daily | 15 min |
+| `data-plane-kr.yaml` | `0 9 * * 1-5` | 18:00 KST Mon–Fri | 1 h |
+| `data-plane-us.yaml` | `0 23 * * 1-5` | 19:00 EDT / 18:00 EST Mon–Fri | 1 h |
+| `data-plane-crypto.yaml` | `20 0 * * *` | 00:20 UTC daily | 6 min |
+
+The grace is chosen so that the run day's partition is already due when the
+DAG starts, in summer and winter time (a test pins this): if `collect` fails
+fast, the health step right after it reports `stale` the same day instead of
+24 hours later.
 
 Each DAG runs `research.data_plane.cli collect` for its market, then three
 `health` steps (universe, bars_1d, corporate_actions). `collect` continues on

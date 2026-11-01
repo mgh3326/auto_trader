@@ -10,6 +10,10 @@ partition) the check fails when:
 * ``corrupt``  — a recorded partition's file is missing or its sha256 differs
                  from the manifest;
 * ``low_coverage`` — a recorded partition's manifest coverage is below the floor;
+* ``subset_partition`` — a partition was written with ``--symbols`` (a subset is
+                 final for that day, so it is never healthy);
+* ``repaired_unverified`` — a bars/actions record was rebuilt after a crash and
+                 lost its coverage metadata; an operator must look at it;
 * ``empty``    — the dataset has no recorded partition at all.
 
 Exit code 0 = healthy, 1 = unhealthy. With ``--ping-url-env NAME`` the URL in
@@ -124,6 +128,12 @@ def check_health(
         coverage = rec.get("coverage")
         if isinstance(coverage, (int, float)) and coverage < min_coverage:
             report.fail("low_coverage", partition=d.isoformat(), coverage=coverage)
+        if rec.get("instrument_selection") == "explicit_subset":
+            # coverage is relative to the subset; the full universe was not collected
+            report.fail("subset_partition", partition=d.isoformat())
+        if rec.get("repaired") and dataset != "universe":
+            # a crash-repaired record lost its coverage/selection metadata
+            report.fail("repaired_unverified", partition=d.isoformat())
     return report
 
 

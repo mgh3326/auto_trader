@@ -97,50 +97,61 @@ def collect(
         commit=commit or code_commit(REPO_ROOT),
     )
     results: list[PublishResult] = []
+    errors: list[CollectError | RefusedRowError] = []
     for dataset in DATASETS:  # fixed order: universe, bars, actions
         if dataset not in datasets:
             continue
-        with dataset_lock(root, dataset, market):
-            if partition_path(root, dataset, market, day).exists():
-                # recorded: already_present; unrecorded (crash): manifest repair
-                # from the on-disk bytes. Either way nothing is fetched.
-                results.append(
-                    publish_partition(
-                        root, dataset=dataset, market=market, day=day, rows=(), meta={}
-                    )
-                )
-                continue
-            if dataset == DATASET_BARS and not is_partition_day(market, day):
-                # No session, no bar: a holiday run is a no-op, not a failure.
-                results.append(
-                    PublishResult(
-                        dataset,
-                        market,
-                        day,
-                        "skipped_no_session",
-                        partition_path(root, dataset, market, day),
-                        0,
-                        "",
-                    )
-                )
-                continue
-            builder = {
-                DATASET_UNIVERSE: _build_universe,
-                DATASET_BARS: _build_bars,
-                DATASET_ACTIONS: _build_actions,
-            }[dataset]
-            rows, meta = builder(run)
-            results.append(
-                publish_partition(
-                    root,
-                    dataset=dataset,
-                    market=market,
-                    day=day,
-                    rows=rows,
-                    meta={"code_commit": run.commit, **meta},
-                )
-            )
+        # One dataset failing must not stop the others: corporate actions in
+        # particular can only be observed on their own day.
+        try:
+            results.append(_collect_one(run, dataset))
+        except (CollectError, RefusedRowError) as exc:
+            errors.append(exc)
+    if errors:
+        # Refusals outrank collection failures; every error is attached.
+        errors.sort(key=lambda e: 0 if isinstance(e, RefusedRowError) else 1)
+        first = errors[0]
+        for other in errors[1:]:
+            first.add_note(f"also: {type(other).__name__}: {other}")
+        first.results = results  # type: ignore[attr-defined]
+        raise first
     return results
+
+
+def _collect_one(run: _Run, dataset: str) -> PublishResult:
+    root, market, day = run.root, run.market, run.day
+    with dataset_lock(root, dataset, market):
+        if partition_path(root, dataset, market, day).exists():
+            # recorded: already_present; unrecorded (crash): manifest repair
+            # from the on-disk bytes. Either way nothing is fetched.
+            return publish_partition(
+                root, dataset=dataset, market=market, day=day, rows=(), meta={}
+            )
+        if dataset == DATASET_BARS and not is_partition_day(market, day):
+            # No session, no bar: a holiday run is a no-op, not a failure.
+            return PublishResult(
+                dataset,
+                market,
+                day,
+                "skipped_no_session",
+                partition_path(root, dataset, market, day),
+                0,
+                "",
+            )
+        builder = {
+            DATASET_UNIVERSE: _build_universe,
+            DATASET_BARS: _build_bars,
+            DATASET_ACTIONS: _build_actions,
+        }[dataset]
+        rows, meta = builder(run)
+        return publish_partition(
+            root,
+            dataset=dataset,
+            market=market,
+            day=day,
+            rows=rows,
+            meta={"code_commit": run.commit, **meta},
+        )
 
 
 # --------------------------------------------------------------------------
@@ -224,7 +235,13 @@ def _yahoo(run: _Run, instrument: str, venue: str) -> sources.YahooChart | str:
         url = sources.yahoo_chart_url(run.market, instrument, venue, run.day)
         try:
             run.yahoo_cache[key] = sources.parse_yahoo_chart(run.market, _get(run, url))
-        except sources.SourceError as exc:
+        except (
+            sources.SourceError,
+            TypeError,
+            AttributeError,
+            KeyError,
+            IndexError,
+        ) as exc:
             run.yahoo_cache[key] = f"source_error:{exc}"[:200]
         except OSError as exc:
             run.yahoo_cache[key] = f"fetch_error:{type(exc).__name__}"
@@ -327,7 +344,14 @@ def _build_bars(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     for instrument, venue in pairs:
         try:
             row = _bar_row(run, instrument, venue, available)
-        except sources.SourceError as exc:
+        except (
+            sources.SourceError,
+            TypeError,
+            AttributeError,
+            KeyError,
+            IndexError,
+        ) as exc:
+            # a malformed body for one instrument is that instrument's gap
             missing.append(
                 {
                     "instrument": instrument,
@@ -438,7 +462,7 @@ def _known_fact_hashes(run: _Run) -> set[str]:
 
 
 def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Diff today's universe partition against the previous one."""
+    """Diff today's universe partition against the last one already diffed."""
     days = [
         d
         for d in recorded_dates(run.root, DATASET_UNIVERSE, run.market)
@@ -452,9 +476,21 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         (r["instrument"], r["venue"]): r
         for r in read_partition(run.root, DATASET_UNIVERSE, run.market, run.day)
     }
-    if len(days) < 2:
+    # Reference = the universe the latest earlier actions partition compared
+    # against (an actions partition on day X always reads universe X). A day
+    # whose actions failed is thereby folded into the next successful diff
+    # instead of being lost; with no earlier actions partition the reference is
+    # the first universe partition. Only the very first universe is a baseline.
+    earlier_actions = [
+        d for d in recorded_dates(run.root, DATASET_ACTIONS, run.market) if d < run.day
+    ]
+    earlier_universes = [d for d in days if d < run.day]
+    if earlier_actions and earlier_actions[-1] in earlier_universes:
+        prev_day = earlier_actions[-1]
+    elif earlier_universes:
+        prev_day = earlier_universes[0]
+    else:
         return [], {"listing_baseline": True}
-    prev_day = days[-2]
     prev = {
         (r["instrument"], r["venue"]): r
         for r in read_partition(run.root, DATASET_UNIVERSE, run.market, prev_day)

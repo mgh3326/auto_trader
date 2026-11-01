@@ -50,8 +50,12 @@ class FakeSources:
         binance_pairs: dict[str, str] | None = None,
         missing: frozenset[str] = frozenset(),
         future_bar: bool = False,
+        kospi: dict[str, str] | None = None,
+        malformed: frozenset[str] = frozenset(),
     ) -> None:
         self.binance_pairs = dict(binance_pairs or BINANCE_PAIRS)
+        self.kospi = dict(kospi or KR_KOSPI)
+        self.malformed = malformed  # Yahoo symbols answered with a broken 200 body
         self.missing = missing  # instruments answered with HTTP 404
         self.future_bar = future_bar
         self.calls: Counter[str] = Counter()
@@ -69,7 +73,7 @@ class FakeSources:
         if host == "new.real.download.dws.co.kr":
             if path.endswith("kospi_code.mst.zip"):
                 return FetchResponse(
-                    200, kis_master_zip(KR_KOSPI, 228, "kospi_code.mst")
+                    200, kis_master_zip(self.kospi, 228, "kospi_code.mst")
                 )
             return FetchResponse(200, kis_master_zip(KR_KOSDAQ, 222, "kosdaq_code.mst"))
         if host == "www.nasdaqtrader.com":
@@ -141,6 +145,19 @@ class FakeSources:
     def _yahoo(self, path: str, query: dict[str, str]) -> FetchResponse:
         ysym = urllib.parse.unquote(path.rsplit("/", 1)[1])
         base = ysym.split(".")[0].split("-")[0]
+        if base in self.malformed:
+            broken = {
+                "chart": {
+                    "result": [
+                        {
+                            "timestamp": [1],
+                            "indicators": {"adjclose": [None]},
+                            "events": {"dividends": {"1": {"amount": 1}}},
+                        }
+                    ]
+                }
+            }
+            return FetchResponse(200, json.dumps(broken).encode())
         if base in self.missing or ysym in self.missing:
             body = {"chart": {"result": None, "error": {"code": "Not Found"}}}
             return FetchResponse(404, json.dumps(body).encode())

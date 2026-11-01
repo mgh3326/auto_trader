@@ -142,3 +142,53 @@ def test_importing_the_cli_loads_no_db_or_scheduler_module():
         check=True,
     )
     assert out.stdout.strip() == ""
+
+
+def _start_times(cron: str, days):
+    """UTC start instants of a ``M H * * DOW`` cron on the given days."""
+    from datetime import UTC, datetime
+
+    minute, hour, _, _, dow = cron.split()
+    allowed = None
+    if dow != "*":
+        lo, hi = (int(x) for x in dow.split("-"))
+        allowed = set(range(lo, hi + 1))
+    for d in days:
+        if allowed is None or (d.isoweekday() % 7) in allowed:
+            yield (
+                d,
+                datetime(d.year, d.month, d.day, int(hour), int(minute), tzinfo=UTC),
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path", DAG_FILES, ids=lambda p: p.name)
+def test_run_day_partition_is_due_when_the_dag_starts(path):
+    """A fast collect failure must make the health step report stale the same day."""
+    from datetime import date, timedelta
+
+    from research.data_plane.calendars import (
+        bar_available_at,
+        is_partition_day,
+        local_today,
+    )
+
+    doc = yaml.safe_load(path.read_text())
+    market = path.stem.removeprefix("data-plane-")
+    parser = build_parser()
+    graces = {
+        parser.parse_args(shlex.split(s["command"])[5:]).grace_hours
+        for s in doc["steps"][1:]
+    }
+    assert len(graces) == 1
+    grace = timedelta(hours=graces.pop())
+    summer = [date(2026, 7, 6) + timedelta(days=i) for i in range(7)]
+    winter = [date(2026, 12, 7) + timedelta(days=i) for i in range(7)]
+    checked = 0
+    for _, start in _start_times(doc["schedule"], summer + winter):
+        run_day = local_today(market, start)
+        if not is_partition_day(market, run_day):
+            continue
+        assert bar_available_at(market, run_day) + grace <= start, (market, start)
+        checked += 1
+    assert checked >= 8
