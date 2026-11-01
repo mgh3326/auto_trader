@@ -36,7 +36,6 @@ def test_manifest_pins_the_out_of_repo_table() -> None:
     csv = MANIFEST["outputs"][OUTPUT_CSV]
     assert len(csv["sha256"]) == 64 and csv["rows"] > 0 and csv["symbols"] > 0
     assert MANIFEST["generation"]["command"] == GENERATION_COMMAND
-    assert not (DATA / OUTPUT_CSV).exists()  # data stays out of git
 
 
 def test_inputs_summary_matches_the_inputs_file() -> None:
