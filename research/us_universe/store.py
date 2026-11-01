@@ -7,6 +7,8 @@ code path can overwrite a finished file. Logs are opened in append mode only.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import ssl
@@ -14,7 +16,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 USER_AGENT = "auto_trader-research/ROB-1431 (public symbol directory archive reader)"
@@ -40,6 +42,22 @@ def write_once(path: Path, data: bytes) -> None:
         raise AlreadyExistsError(str(path)) from exc
     finally:
         partial.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def exclusive_lock(path: Path) -> Iterator[None]:
+    """Block until this process holds an exclusive ``flock`` on ``path``.
+
+    The lock file is created once and never removed; the kernel releases the
+    lock when the descriptor closes, including when the process dies.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def append_jsonl(path: Path, record: dict) -> None:

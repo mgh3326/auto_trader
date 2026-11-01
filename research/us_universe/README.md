@@ -98,7 +98,14 @@ ROOT=~/work/herdr-artifacts/us-universe-v1
 uv run python -m research.us_universe.snapshot --root "$ROOT"
 
 # Fetch any new archive captures into the write-once cache, then build.
+# A capture is validated before it is cached; an error page or truncated
+# body is reported as a fetch gap and retried on the next run.
 uv run python -m research.us_universe.rebuild --root "$ROOT" --out <new-dir>
+
+# Also refetch cached captures that fail validation. The old bytes are moved
+# to sources/wayback-rejected/ (never deleted), and only after the new body
+# validates. A valid cached capture is never replaced.
+uv run python -m research.us_universe.rebuild --root "$ROOT" --out <new-dir> --refresh-rejected
 
 # Reproducibility check: rebuild from the cache only. manifest.json,
 # inputs.jsonl and coverage.md must be byte-identical to the committed ones,
@@ -114,6 +121,8 @@ snapshots/<YYYY-MM-DD>/nasdaqlisted.txt   raw bytes, write-once
 snapshots/<YYYY-MM-DD>/otherlisted.txt
 snapshots/manifest.jsonl                  one line per day, append-only
 sources/wayback/<series>/<capture-ts>.bin raw archive captures, write-once
+sources/wayback-rejected/<series>/…       replaced invalid captures, kept
+.snapshot.lock                            serialises concurrent snapshot runs
 pit-v1/                                   the build data_manifests/ records
 ```
 

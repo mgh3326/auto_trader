@@ -2,6 +2,8 @@
 
     # fetch any new Internet Archive captures into the cache, then build
     uv run python -m research.us_universe.rebuild --root <ARTIFACT_ROOT> --out <DIR>
+    # refetch cached captures that fail validation (old bytes kept aside)
+    uv run python -m research.us_universe.rebuild --root <ARTIFACT_ROOT> --out <DIR> --refresh-rejected
     # rebuild from the cache only (reproducibility check: same bytes out)
     uv run python -m research.us_universe.rebuild --root <ARTIFACT_ROOT> --out <DIR> --offline
 
@@ -75,6 +77,16 @@ GENERATION_COMMAND = (
 MAX_SERIES_LAG_DAYS = 7
 
 
+# Everything a malformed capture body can raise while being decoded or parsed.
+REJECT_ERRORS = (
+    SymbolDirectoryError,
+    UnicodeDecodeError,
+    OSError,
+    EOFError,
+    zlib.error,
+)
+
+
 class StaleSeriesError(RuntimeError):
     pass
 
@@ -119,8 +131,39 @@ def wayback_cache_path(root: Path, series: str, timestamp: str) -> Path:
     return root / "sources" / "wayback" / series / f"{timestamp}.bin"
 
 
-def refresh_wayback_cache(root: Path, fetch: Fetcher) -> list[str]:
-    """Fetch captures missing from the cache. Returns human-readable failures."""
+def quarantine_path(root: Path, series: str, timestamp: str, raw: bytes) -> Path:
+    return (
+        root
+        / "sources"
+        / "wayback-rejected"
+        / series
+        / f"{timestamp}.{sha256_hex(raw)[:12]}.bin"
+    )
+
+
+def validate_capture(series: str, raw: bytes) -> Observation:
+    """Parse a capture body; raises one of ``REJECT_ERRORS`` when unusable."""
+    return parse_symbol_directory(series, decode_body(raw))
+
+
+def _reject_reason(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"[:200]
+
+
+def refresh_wayback_cache(
+    root: Path, fetch: Fetcher, *, refresh_rejected: bool = False
+) -> list[str]:
+    """Fetch captures missing from the cache. Returns human-readable failures.
+
+    A body is validated *before* it is cached: an error page or truncated
+    body is reported as a failure and never occupies the write-once slot, so
+    the next run retries it.
+
+    ``refresh_rejected`` also retries cached captures that no longer validate
+    (left by older code, or a transient archive error). The old bytes are
+    moved — never deleted — to ``sources/wayback-rejected/`` only after a new
+    body has validated; if the refetch fails the cached file stays as it is.
+    """
     failures: list[str] = []
     for series in SERIES:
         try:
@@ -130,12 +173,33 @@ def refresh_wayback_cache(root: Path, fetch: Fetcher) -> list[str]:
             continue
         for timestamp, original in captures:
             path = wayback_cache_path(root, series, timestamp)
+            old: bytes | None = None
             if path.exists():
-                continue
+                if not refresh_rejected:
+                    continue
+                old = path.read_bytes()
+                try:
+                    validate_capture(series, old)
+                    continue  # a valid cached capture is never replaced
+                except REJECT_ERRORS:
+                    pass
             try:
-                write_once(path, fetch(capture_url(timestamp, original)))
+                raw = fetch(capture_url(timestamp, original))
             except Exception as exc:  # noqa: BLE001
                 failures.append(f"{series}@{timestamp}: {type(exc).__name__}")
+                continue
+            try:
+                validate_capture(series, raw)
+            except REJECT_ERRORS as exc:
+                failures.append(
+                    f"{series}@{timestamp}: rejected body, not cached: "
+                    f"{_reject_reason(exc)}"
+                )
+                continue
+            if old is not None:
+                write_once(quarantine_path(root, series, timestamp, old), old)
+                path.unlink()
+            write_once(path, raw)
     return failures
 
 
@@ -178,15 +242,9 @@ def load_observations(
             "bytes": len(raw),
         }
         try:
-            obs = parse_symbol_directory(item.series, decode_body(raw))
-        except (
-            SymbolDirectoryError,
-            UnicodeDecodeError,
-            OSError,
-            EOFError,
-            zlib.error,
-        ) as exc:
-            rec.update(accepted=False, reason=f"{type(exc).__name__}: {exc}"[:200])
+            obs = validate_capture(item.series, raw)
+        except REJECT_ERRORS as exc:
+            rec.update(accepted=False, reason=_reject_reason(exc))
         else:
             observations.append(obs)
             rec.update(
@@ -384,9 +442,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--offline", action="store_true", help="build from the cache only"
     )
+    parser.add_argument(
+        "--refresh-rejected",
+        action="store_true",
+        help="refetch cached captures that fail validation (old bytes are "
+        "moved to sources/wayback-rejected/, never deleted)",
+    )
     args = parser.parse_args(argv)
+    if args.offline and args.refresh_rejected:
+        parser.error("--refresh-rejected needs the network; drop --offline")
     if not args.offline:
-        for failure in refresh_wayback_cache(args.root, http_fetcher()):
+        failures = refresh_wayback_cache(
+            args.root, http_fetcher(), refresh_rejected=args.refresh_rejected
+        )
+        for failure in failures:
             print(f"fetch gap: {failure}", file=sys.stderr)
     manifest = rebuild(args.root, args.out, commit=code_commit(REPO_ROOT))
     for share in manifest["inactive_share"]:

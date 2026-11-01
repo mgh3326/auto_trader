@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
 from research.us_universe.pit import sha256_hex
-from research.us_universe.snapshot import _today_new_york, take_snapshot
+from research.us_universe.snapshot import LOCK_NAME, _today_new_york, take_snapshot
 from research.us_universe.store import AlreadyExistsError, read_jsonl, write_once
 from research.us_universe.symdir import SOURCE_URLS, SymbolDirectoryError
 
@@ -89,7 +91,7 @@ def test_invalid_body_writes_nothing(tmp_path: Path) -> None:
     fetch.bodies[SOURCE_URLS["otherlisted"]] = b"<html>maintenance</html>"
     with pytest.raises(SymbolDirectoryError):
         take_snapshot(tmp_path, fetch=fetch, today=lambda: day, commit="c1")
-    assert tree(tmp_path) == {}
+    assert set(tree(tmp_path)) == {LOCK_NAME}  # only the (empty) lock file
 
 
 def test_crash_before_manifest_line_is_repaired_without_refetch(tmp_path: Path) -> None:
@@ -155,3 +157,32 @@ def test_day_key_is_the_new_york_date() -> None:
     # 2026-11-02 03:30 UTC is still 2026-11-01 in New York
     now = datetime(2026, 11, 2, 3, 30, tzinfo=UTC)
     assert _today_new_york(now) == date(2026, 11, 1)
+
+
+def test_concurrent_runs_on_the_same_day_record_the_day_once(tmp_path: Path) -> None:
+    day = date(2026, 11, 2)
+
+    class SlowFetch(FakeFetch):
+        def __call__(self, url: str) -> bytes:
+            time.sleep(0.05)  # widen the check-then-append window
+            return super().__call__(url)
+
+    fetches = [SlowFetch(day) for _ in range(4)]
+    start = threading.Barrier(len(fetches))
+    results: list[str] = []
+
+    def run(fetch: SlowFetch) -> None:
+        start.wait()
+        results.append(
+            take_snapshot(tmp_path, fetch=fetch, today=lambda: day, commit="c1").action
+        )
+
+    threads = [threading.Thread(target=run, args=(f,)) for f in fetches]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(results) == ["already_present"] * 3 + ["written"]
+    assert [r["day"] for r in manifest(tmp_path)] == ["2026-11-02"]
+    assert sum(len(f.calls) for f in fetches) == 2  # one fetch per series

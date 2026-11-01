@@ -25,6 +25,7 @@ from research.us_universe.rebuild import (
     refresh_wayback_cache,
     wayback_cache_path,
 )
+from research.us_universe.rebuild import main as rebuild_main
 from research.us_universe.snapshot import take_snapshot
 from research.us_universe.store import AlreadyExistsError
 
@@ -169,7 +170,7 @@ def test_refresh_fetches_only_missing_captures(tmp_path: Path) -> None:
             return cdx
         if url == cdx_url("otherlisted"):
             raise TimeoutError
-        return b"body"
+        return VALID_2018
 
     failures = refresh_wayback_cache(tmp_path, fetch)
 
@@ -179,10 +180,105 @@ def test_refresh_fetches_only_missing_captures(tmp_path: Path) -> None:
         cdx_url("otherlisted"),
     ]
     assert failures == ["otherlisted: CDX listing failed: TimeoutError"]
+    # an existing entry is not refetched, even an invalid one, by default
     assert (
         wayback_cache_path(tmp_path, "nasdaqlisted", "20100504000000").read_bytes()
         == b"x"
     )
+    assert (
+        wayback_cache_path(tmp_path, "nasdaqlisted", "20180703000000").read_bytes()
+        == VALID_2018
+    )
+
+
+VALID_2018 = nasdaq_body(D2018, ("AAPL",)).encode()
+ORIGINAL = "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+
+
+def _one_capture_cdx(ts: str) -> bytes:
+    return json.dumps(
+        [["timestamp", "original", "statuscode", "digest"], [ts, ORIGINAL, "200", "A"]]
+    ).encode()
+
+
+def _fetcher(capture_body: bytes, calls: list[str]):
+    def fetch(url: str) -> bytes:
+        calls.append(url)
+        if url == cdx_url("nasdaqlisted"):
+            return _one_capture_cdx("20180703000000")
+        if url == cdx_url("otherlisted"):
+            return json.dumps([["timestamp", "original"]]).encode()
+        return capture_body
+
+    return fetch
+
+
+@pytest.mark.parametrize(
+    "bad_body",
+    [
+        b"<html>502 Bad Gateway</html>",
+        VALID_2018[: len(VALID_2018) // 2],  # truncated: no footer
+        gzip.compress(VALID_2018)[:-40],  # truncated gzip stream
+    ],
+)
+def test_invalid_capture_is_not_cached_and_is_retried(
+    tmp_path: Path, bad_body: bytes
+) -> None:
+    path = wayback_cache_path(tmp_path, "nasdaqlisted", "20180703000000")
+    failures = refresh_wayback_cache(tmp_path, _fetcher(bad_body, []))
+    assert not path.exists()
+    assert len(failures) == 1 and "rejected body, not cached" in failures[0]
+
+    calls: list[str] = []
+    assert refresh_wayback_cache(tmp_path, _fetcher(VALID_2018, calls)) == []
+    assert path.read_bytes() == VALID_2018  # the slot was free for the retry
+
+
+def test_refresh_rejected_replaces_only_invalid_entries_and_keeps_old_bytes(
+    tmp_path: Path,
+) -> None:
+    path = wayback_cache_path(tmp_path, "nasdaqlisted", "20180703000000")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"<html>left by older code</html>")
+    rejected_dir = tmp_path / "sources" / "wayback-rejected" / "nasdaqlisted"
+
+    # a refetch that is still invalid leaves the cached file untouched
+    failures = refresh_wayback_cache(
+        tmp_path, _fetcher(b"<html>still down</html>", []), refresh_rejected=True
+    )
+    assert len(failures) == 1
+    assert path.read_bytes() == b"<html>left by older code</html>"
+    assert not rejected_dir.exists()
+
+    # a valid refetch moves the old bytes aside, then publishes the new body
+    assert (
+        refresh_wayback_cache(tmp_path, _fetcher(VALID_2018, []), refresh_rejected=True)
+        == []
+    )
+    assert path.read_bytes() == VALID_2018
+    (kept,) = rejected_dir.iterdir()
+    assert kept.read_bytes() == b"<html>left by older code</html>"
+    assert kept.name.startswith("20180703000000.")
+
+    # a valid cached capture is never refetched or replaced
+    calls: list[str] = []
+    refresh_wayback_cache(tmp_path, _fetcher(b"other", calls), refresh_rejected=True)
+    assert capture_url("20180703000000", ORIGINAL) not in calls
+    assert path.read_bytes() == VALID_2018
+
+
+def test_refresh_rejected_cannot_be_combined_with_offline(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        rebuild_main(
+            [
+                "--root",
+                str(tmp_path),
+                "--out",
+                str(tmp_path / "o"),
+                "--offline",
+                "--refresh-rejected",
+            ]
+        )
 
 
 def test_package_reaches_no_broker_database_or_order_code() -> None:

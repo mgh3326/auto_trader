@@ -32,6 +32,7 @@ from .store import (
     Fetcher,
     append_jsonl,
     code_commit,
+    exclusive_lock,
     http_fetcher,
     read_jsonl,
     write_once,
@@ -41,6 +42,7 @@ from .symdir import SERIES, SOURCE_URLS, decode_body, parse_symbol_directory
 NEW_YORK = ZoneInfo("America/New_York")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_NAME = "manifest.jsonl"
+LOCK_NAME = ".snapshot.lock"
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,20 @@ def take_snapshot(
     fetch: Fetcher,
     today: Callable[[], date] = _today_new_york,
     commit: str | None = None,
+) -> SnapshotResult:
+    # One process at a time per artifact root: the existence checks, the
+    # publish and the "is this day already in the manifest" check-and-append
+    # must not interleave, or two runs on the same day append two records.
+    with exclusive_lock(root / LOCK_NAME):
+        return _take_snapshot_locked(root, fetch=fetch, today=today, commit=commit)
+
+
+def _take_snapshot_locked(
+    root: Path,
+    *,
+    fetch: Fetcher,
+    today: Callable[[], date],
+    commit: str | None,
 ) -> SnapshotResult:
     snap_root = root / "snapshots"
     day = today()
