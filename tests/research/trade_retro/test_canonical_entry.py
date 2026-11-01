@@ -583,6 +583,90 @@ def test_a_seed_recorded_after_a_repeated_sell_is_reduced_and_an_earlier_one_is_
     assert canon.diagnostics["seeds_corrected_for_twins"] == 1
 
 
+def _seed_row(symbol, qty, stamp, created):
+    return fill_row(
+        "kis_live", "kr", symbol, "buy", qty, 200, stamp, f"seed{symbol}",
+        day=stamp[:10], source="manual_import", created=created,
+    )  # fmt: skip
+
+
+def test_a_repeated_buy_raises_the_seed_it_made_too_small(tmp_path):
+    rows = [
+        _seed_row("AAA", 50, "2026-05-10T00:00:00Z", "2026-08-06T04:00:00Z"),
+        fill_row(
+            "kis_live",
+            "kr",
+            "AAA",
+            "buy",
+            5,
+            300,
+            "2026-08-03T23:00:00Z",
+            "r",
+            source="websocket",
+            created="2026-08-04T23:00:00Z",
+        ),
+        fill_row(
+            "kis_live",
+            "kr",
+            "AAA",
+            "buy",
+            5,
+            300,
+            "2026-08-04T23:00:00Z",
+            "r",
+            day="2026-08-05",
+        ),
+    ]
+    canon = _canon(tmp_path, {"execution_ledger": rows})
+    assert canon.fills[canon.fills["seed"]]["qty"].tolist() == [55.0]
+
+
+def test_a_repeat_stamped_before_a_seeds_cutover_leaves_that_seed_alone(tmp_path):
+    rows = [
+        _seed_row("AAA", 3, "2026-09-29T00:00:00Z", "2026-09-29T22:00:00Z"),
+        _ws("AAA", 2, 300, "2026-08-03T23:00:00Z", "r", "2026-08-04T23:00:00Z"),
+        fill_row(
+            "kis_live",
+            "kr",
+            "AAA",
+            "sell",
+            2,
+            300,
+            "2026-08-04T23:00:00Z",
+            "r",
+            day="2026-08-05",
+        ),
+    ]
+    canon = _canon(tmp_path, {"execution_ledger": rows})
+    assert canon.fills[canon.fills["seed"]]["qty"].tolist() == [3.0]
+    assert canon.diagnostics["seeds_corrected_for_twins"] == 0
+
+
+def test_the_inventory_rule_leaves_whole_share_markets_alone(tmp_path):
+    def sell(qty, stamp):
+        return fill_row(
+            "kis_live",
+            "kr",
+            "AAA",
+            "sell",
+            qty,
+            10,
+            stamp,
+            "o",
+            source="websocket",
+            created=stamp,
+        )
+
+    rows = [
+        fill_row("kis_live", "kr", "AAA", "buy", 5, 9, "2026-08-01T00:00:00Z", "b"),
+        sell(3, "2026-08-02T00:00:00Z"),
+        sell(5, "2026-08-02T00:00:06Z"),
+    ]
+    canon = _canon(tmp_path, {"execution_ledger": rows})
+    assert canon.diagnostics["inventory_proven_partials_dropped"] == 0
+    assert len(canon.fills) == 3
+
+
 def _upbit_order(qty, stamp="2026-08-12T16:00:00Z"):
     return order_row(
         "upbit_live", "crypto", "KRW-DDD", "buy", qty, 100, stamp, "o", "filled",

@@ -239,12 +239,14 @@ def drop_cross_day_twins(fills: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
             & (fills["market"] == row["market"])
             & (fills["symbol"] == row["symbol"])
             & (fills["recorded"] > row["recorded"])
+            # The seed's net only counts fills since its own stamp.
+            & (fills["ts"] <= row["ts"])
         ].sort_values("recorded", kind="stable")
         if len(seeds):
             first = seeds.index[0]
-            fills.at[first, "qty"] = max(
-                float(fills.at[first, "qty"]) - row["qty"], 0.0
-            )
+            # A repeated sell made the seed too large, and a repeated buy too small.
+            change = -row["qty"] if row["side"] == "sell" else row["qty"]
+            fills.at[first, "qty"] = max(float(fills.at[first, "qty"]) + change, 0.0)
             corrected += 1
     return fills.drop(index=drop).reset_index(drop=True), len(drop), corrected
 
@@ -280,10 +282,15 @@ def drop_inventory_proven_partials(
 
     With no order quantity to test against, the proof is that the symbol's sells exceed
     everything it ever held by exactly this row's quantity, and that a later websocket row
-    of the same order is larger. Real partial fills do not satisfy that by chance.
+    of the same order is larger. Crypto only: fractional quantities do not satisfy that by
+    chance, while whole-share quantities can.
     """
     drop: list[int] = []
-    real = fills[(fills["source"] == "websocket") & ~fills["key"].isin(order_keys)]
+    real = fills[
+        (fills["source"] == "websocket")
+        & (fills["market"] == "crypto")
+        & ~fills["key"].isin(order_keys)
+    ]
     for _key, group in real.groupby("key", sort=True):
         if len(group) < 2:
             continue

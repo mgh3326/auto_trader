@@ -7,13 +7,15 @@ Assumptions, all stated in the report:
   window, so measured cash is a lower bound.
 * Cash earns 0%.
 * Holdings the ledger never touched are invisible, which overstates the idle share.
-* A seed row or implausible fill counts as held from the start. It has no purchase
-  date and no cash outflow, so entering it later would read as free profit.
+* An implausible fill counts as held from the start. It has no purchase date and no
+  cash outflow, so entering it later would read as free profit.
+* A later seed is the whole holding at its date. The difference from the ledger is
+  treated as an unrecorded trade at that day's close.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
@@ -22,34 +24,63 @@ from research.trade_retro.canonical import is_parking
 from research.trade_retro.prices import PriceBook
 
 
-def opening_quantity(rows: pd.DataFrame, cutover: datetime) -> tuple[float, float]:
-    """The quantity held before the first fill, and how much of it is inferred.
+def holding_path(
+    rows: pd.DataFrame, cutover: datetime, later_seeds_reset: bool = True
+) -> tuple[float, float, list[tuple[date, float]], list[tuple[date, float]]]:
+    """One symbol's quantity through time.
 
-    A first-batch seed fixes the quantity at the cutover, and every other seed row is
-    added to it. Anything still short, a sell with nothing recorded to sell, implies a
-    holding the ledger never saw.
+    Returns the opening quantity, how much of it is inferred, the quantity after each
+    event, and each later seed's change in quantity. A first-batch seed fixes the
+    quantity at the cutover. A later seed sets the quantity to its own value, because
+    it holds the whole position (see ``positions.py``). An implausible fill counts as
+    held from the start. Anything still short implies a holding the ledger never saw.
     """
     ordered = rows.sort_values("ts", kind="stable")
-    signed = np.where(ordered["side"] == "buy", ordered["qty"], -ordered["qty"])
+    manual = (ordered["source"] == "manual_import").to_numpy()
     is_seed = ordered["seed"].to_numpy()
-    first_seed = (
-        (ordered["source"] == "manual_import") & (ordered["ts"] == cutover)
-    ).to_numpy()
-    before_cutover = ~is_seed & (ordered["ts"] < cutover).to_numpy()
+    stamps = ordered["ts"].to_numpy(dtype=object)
+    first = is_seed & manual & np.array([t == cutover for t in stamps], dtype=bool)
+    later = is_seed & manual & ~first
+    signed = np.where(ordered["side"] == "buy", ordered["qty"], -ordered["qty"])
+    before = ~is_seed & np.array([t < cutover for t in stamps], dtype=bool)
+
     opening = (
-        max(float(signed[first_seed].sum()) - float(signed[before_cutover].sum()), 0.0)
-        if first_seed.any()
+        max(float(signed[first].sum()) - float(signed[before].sum()), 0.0)
+        if first.any()
         else 0.0
     )
-    opening += float(signed[is_seed & ~first_seed].sum())
+    opening += float(signed[is_seed & ~manual].sum())
+    if not later_seeds_reset:
+        opening += float(signed[later].sum())
 
-    path = opening
-    low = opening
-    for value in signed[~is_seed]:
-        path += value
-        low = min(low, path)
+    def replay(
+        start: float,
+    ) -> tuple[float, list[tuple[date, float]], list[tuple[date, float]]]:
+        quantity = low = start
+        path: list[tuple[date, float]] = []
+        changes: list[tuple[date, float]] = []
+        for day, value, seed, reset in zip(
+            ordered["date"], signed, is_seed, later, strict=True
+        ):
+            if reset and later_seeds_reset:
+                changes.append((day, value - quantity))
+                quantity = value
+            elif not seed:
+                quantity += value
+            low = min(low, quantity)
+            path.append((day, quantity))
+        return low, path, changes
+
+    low, _, _ = replay(opening)
     inferred = max(-low, 0.0)
-    return opening + inferred, inferred
+    _, path, changes = replay(opening + inferred)
+    return opening + inferred, inferred, path, changes
+
+
+def opening_quantity(rows: pd.DataFrame, cutover: datetime) -> tuple[float, float]:
+    """The quantity held before the first fill, and how much of it is inferred."""
+    opening, inferred, _, _ = holding_path(rows, cutover)
+    return opening, inferred
 
 
 def daily_account(
@@ -58,6 +89,7 @@ def daily_account(
     alias: str,
     market: str,
     cutover: datetime,
+    later_seeds_reset: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
     """The account's daily cash, holdings and NAV, from its first fill to the last bar."""
     rows = fills[(fills["alias"] == alias) & (fills["market"] == market)]
@@ -73,21 +105,15 @@ def daily_account(
     parking = np.zeros(len(grid))
     inferred_value = 0.0
     unpriced: list[str] = []
+    reset_flow: dict[pd.Timestamp, float] = {}
     for symbol, group in rows.groupby("symbol", sort=True):
-        opening, inferred = opening_quantity(group, cutover)
-        ordered = group[~group["seed"]].sort_values("ts", kind="stable")
-        signed = np.where(ordered["side"] == "buy", ordered["qty"], -ordered["qty"])
-        delta = (
-            pd.Series(signed, index=pd.to_datetime(ordered["date"]))
-            .groupby(level=0)
-            .sum()
+        opening, inferred, path, changes = holding_path(
+            group, cutover, later_seeds_reset
         )
-        before = float(delta[delta.index < grid_ts[0]].sum())
-        held = (
-            opening
-            + before
-            + delta.reindex(grid_ts, fill_value=0.0).cumsum().to_numpy()
-        )
+        held = np.full(len(grid), opening)
+        for day, quantity in path:
+            position = int(np.searchsorted(grid_ts, pd.Timestamp(day), side="left"))
+            held[position:] = quantity
         held = np.clip(held, 0.0, None)
 
         bars = book.get(market, symbol)
@@ -109,6 +135,13 @@ def daily_account(
         else:
             risk += value
         inferred_value += float(inferred * closes[0])
+        # A reset is an unrecorded trade. It goes through cash at that day's close, so
+        # NAV neither jumps nor drops because the ledger was corrected.
+        for day, change in changes:
+            j = bars.idx_on_or_before(day)
+            price = float(bars.close[j]) if j is not None else float(bars.close[0])
+            stamp = pd.Timestamp(day)
+            reset_flow[stamp] = reset_flow.get(stamp, 0.0) - change * price
 
     flow = np.where(real["side"] == "sell", 1.0, -1.0) * real["qty"] * real["price"]
     flow_by_day = (
@@ -116,6 +149,10 @@ def daily_account(
         .groupby(level=0)
         .sum()
     )
+    if reset_flow:
+        flow_by_day = flow_by_day.add(
+            pd.Series(reset_flow), fill_value=0.0
+        ).sort_index()
     before_flow = float(flow_by_day[flow_by_day.index < grid_ts[0]].sum())
     cumulative = (
         before_flow + flow_by_day.reindex(grid_ts, fill_value=0.0).cumsum().to_numpy()

@@ -88,6 +88,7 @@ def compute(export_dir: Path, prices_dir: Path) -> Results:
         split_adjusted=split_adjusted,
         implausible=implausible,
         unpriced_open=walk.unpriced_open,
+        resets=walk.resets,
         audit={
             "economic": economic_duplicates(export, canon),
             "quantity": quantity_mismatches(export, canon),

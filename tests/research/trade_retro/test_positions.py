@@ -129,6 +129,87 @@ def test_plain_fifo_sensitivity_lets_old_sells_use_up_window_lots():
     assert [m.realized for m in held_later.matches] == [False]
 
 
+LATER = date(2026, 9, 29)
+
+
+def _later_seed(qty, price):
+    """A second seed run: its stamp is after the first batch's cutover."""
+    return (LATER, "buy", qty, price, "manual_import")
+
+
+def _stamp_later_seed(frame):
+    frame.loc[frame["date"] == LATER, "ts"] = datetime(2026, 9, 29, tzinfo=UTC)
+    return frame
+
+
+def test_a_later_seed_below_the_ledger_resets_the_holding_with_no_return_on_the_excess():
+    walk = walk_symbol(
+        _stamp_later_seed(_rows((JUN1, "buy", 10, 100), _later_seed(3, 60))),
+        CUTOVER,
+        MARK,
+        seed_base={LATER: (110.0, LATER)},
+    )
+    assert [(m.qty, m.origin, m.realized) for m in walk.matches] == [(3, "fill", False)]
+    assert walk.resets == [
+        {"alias": "acct", "market": "us", "symbol": "AAA", "ledger": 10.0, "seed": 3.0}
+    ]
+
+
+def test_a_later_seed_above_the_ledger_adds_only_the_difference_at_its_price():
+    walk = walk_symbol(
+        _stamp_later_seed(_rows((JUN1, "buy", 10, 100), _later_seed(14, 60))),
+        CUTOVER,
+        MARK,
+        seed_base={LATER: (110.0, LATER)},
+    )
+    assert sorted(
+        (m.qty, m.origin, m.entry_price, m.base_price) for m in walk.matches
+    ) == [
+        (4, "seed", 60, 110.0),
+        (10, "fill", 100, 100),
+    ]
+
+
+def test_on_top_sensitivity_adds_the_whole_later_seed():
+    walk = walk_symbol(
+        _stamp_later_seed(_rows((JUN1, "buy", 10, 100), _later_seed(3, 60))),
+        CUTOVER,
+        MARK,
+        later_seeds_reset=False,
+    )
+    assert sum(m.qty for m in walk.matches) == 13
+    assert walk.resets == []
+
+
+def test_a_buy_before_the_cutover_is_not_embedded_in_a_later_seed():
+    walk = walk_symbol(
+        _stamp_later_seed(_rows((date(2026, 5, 4), "buy", 3, 90), _later_seed(3, 60))),
+        CUTOVER,
+        MARK,
+    )
+    assert walk.embedded_buys == 0
+    assert [(m.qty, m.origin) for m in walk.matches] == [(3, "fill")]
+
+
+def test_a_later_seed_goes_through_cash_so_nav_does_not_jump():
+    days = weekdays(date(2026, 9, 28), 3)
+    assert LATER in days
+    stock = Bars.from_rows([(d, 100.0, 100.0) for d in days])
+    index = Bars.from_rows([(d, 1000.0, 1000.0) for d in days])
+    book = PriceBook(bars={("us", "AAA"): stock}, benchmarks={"us": index}, missing={})
+    fills = _stamp_later_seed(_rows((days[0], "buy", 10, 100), _later_seed(3, 60)))
+
+    frame, _ = daily_account(fills, book, "acct", "us", CUTOVER)
+    assert frame["risk"].tolist() == pytest.approx([1000.0, 300.0, 300.0])
+    assert frame["cash"].tolist() == pytest.approx([0.0, 700.0, 700.0])
+    assert frame["nav"].tolist() == pytest.approx([1000.0] * 3)
+
+    on_top, _ = daily_account(
+        fills, book, "acct", "us", CUTOVER, later_seeds_reset=False
+    )
+    assert on_top["risk"].tolist() == pytest.approx([1300.0] * 3)
+
+
 def test_each_piece_of_a_lot_keeps_the_lots_identity():
     walk = walk_symbol(
         _rows((JUN1, "buy", 10, 100), (JUN2, "sell", 4, 110), (JUN3, "sell", 2, 120)),

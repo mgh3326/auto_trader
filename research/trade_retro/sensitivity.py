@@ -34,6 +34,7 @@ def _lots_and_cash(
     naive_seeds: bool = False,
     keep_implausible: bool = False,
     older_first: bool = True,
+    later_seeds_reset: bool = True,
 ) -> tuple[pd.DataFrame, dict[tuple[str, str], float]]:
     canon = build_canon(export, cleaning or Cleaning())
     fills, _ = apply_splits(canon.fills, book)
@@ -41,16 +42,24 @@ def _lots_and_cash(
         fills, _ = reclassify_implausible(fills, book)
     cutover = cutover_time(fills)
     if naive_seeds:
+        # Only ``seed`` changes, so the embedded-buy rule still reads the seed's source.
         fills = fills.copy()
-        fills.loc[fills["seed"], "source"] = "reconciler"
         fills["seed"] = False
-    walk = reconstruct(fills, book, cutover=cutover, older_first=older_first)
+    walk = reconstruct(
+        fills,
+        book,
+        cutover=cutover,
+        older_first=older_first,
+        later_seeds_reset=later_seeds_reset,
+    )
     matches = match_frame(walk, book)
     orders = classify_orders(canon.orders, book)
     executions = build_executions(fills, orders, book)
     cash: dict[tuple[str, str], float] = {}
     for (alias, market), _group in fills.groupby(["alias", "market"], sort=True):
-        frame, _meta = daily_account(fills, book, alias, market, cutover)
+        frame, _meta = daily_account(
+            fills, book, alias, market, cutover, later_seeds_reset
+        )
         cash[(alias, market)] = summarize_idle(frame)["cash_share"]
     return lot_entry_types(matches, executions), cash
 
@@ -77,6 +86,10 @@ def run_scenarios(export: Export, book: PriceBook) -> list[Scenario]:
             {"naive_seeds": True},
         ),
         ("Plain FIFO: older holdings do not go first", {"older_first": False}),
+        (
+            "Later seeds added on top of the ledger, not as whole holdings",
+            {"later_seeds_reset": False},
+        ),
     ):
         lots, cash = _lots_and_cash(export, book, **kwargs)
         scenarios.append(Scenario(name, lots, cash))

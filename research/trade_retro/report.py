@@ -56,6 +56,7 @@ class Results:
     implausible: list[dict]
     unpriced_open: list[tuple]
     audit: dict
+    resets: list[dict]
     scenarios: list
     cutover: datetime
 
@@ -171,7 +172,7 @@ class Renderer:
         rows: list[list[str]] = []
         origin_names = (
             ("fill", "bought in window"),
-            ("seed", "opening lots, from the seed-date close"),
+            ("seed", "opening lots, from the last close before the seed"),
         )
         for alias in sorted(core["alias"].unique(), key=self.acct):
             for origin, name in origin_names:
@@ -657,8 +658,8 @@ class Renderer:
             f"order's day. Other fills from the same broker can also be a day early, which shifts "
             f"their markouts but not their matching.",
             f"**Opening lots.** {d['seed_rows']} seed rows carry a broker average cost from an "
-            f"unknown date, and some are plugs added months later for holdings the ledger could "
-            f"not explain. Holding days on them are lower bounds. {r.embedded_buys} buys before "
+            f"unknown date, and a later batch restates whole holdings (see Data checks). Holding "
+            f"days on them are lower bounds. {r.embedded_buys} buys before "
             f"the {r.cutover.date()} cutover are already inside a seed and make no lot.",
             f"**Fills that cannot be trades.** {len(r.implausible)} ledger fills sit more than "
             f"{IMPLAUSIBLE_DEVIATION:.0%} from their session's close, at prices like an old average "
@@ -724,6 +725,14 @@ class Renderer:
                 f"price to mark, left out of the returns: {r.unpriced_open or 'none'}."
             )
             bullets.append(f"**Splits.** Converted: {r.split_adjusted or 'none'}.")
+            bullets.append(
+                "**Later seeds, ledger to seed.** "
+                + ", ".join(
+                    f"{i['alias']} {i['symbol']} {i['ledger']:g} to {i['seed']:g}"
+                    for i in r.resets
+                )
+                + "."
+            )
             bullets.append(
                 "**Fills treated as opening lots.** "
                 + ", ".join(
@@ -861,7 +870,7 @@ class Renderer:
             [
                 "Order row behind the ledger",
                 f"Orders: {quantity['row_says_less_than_ledger']}",
-                "The row's filled quantity is below the ledger's, mostly `open` rows with no ending",
+                "The row's filled quantity is below the ledger's",
                 "The ledger's quantity counts, and the outcome is corrected",
                 "Ledger data",
             ],
@@ -889,6 +898,17 @@ class Renderer:
                 "One broker's rows can be stamped a day away from the session",
                 "Mapped to the next session. Twins removed as above",
                 "Ledger data",
+            ],
+            [
+                "Later seed rows, written by a second seed run",
+                f"Rows: {len(r.resets)}. Above the ledger's balance: "
+                f"{sum(1 for i in r.resets if i['seed'] > i['ledger'] + 1e-9)}. Below it: "
+                f"{sum(1 for i in r.resets if i['seed'] < i['ledger'] - 1e-9)}",
+                "`net_quantity_by_match_key_since` skips seed rows and only counts fills since the "
+                "run's own cutover, so each row holds the whole position, not a top-up",
+                "The holding resets to the seed's quantity. The difference from the ledger is an "
+                "unrecorded trade at that day's close, with no return on what left",
+                "Ledger data. Any reader that sums seed rows counts these on top of the first batch",
             ],
             [
                 "Fill far from its session's close",
@@ -1142,9 +1162,9 @@ def _method_text() -> list[str]:
         "- **Markout.** One row per executed order at its volume-weighted price, to the close 1, "
         "5 and 20 sessions after the fill's session, signed so a positive value favours the trade.\n",
         "- **Idle cash.** Opening cash is the smallest amount keeping cash at or above zero, "
-        "assuming no external flows. Opening lots count as held from the account's first day, "
-        "because they have no purchase date and no cash outflow. Cash share is cash over cash "
-        "plus holdings at market, "
+        "assuming no external flows. First-batch opening lots count as held from the account's "
+        "first day, and a later seed's difference from the ledger goes through cash at that "
+        "day's close. Cash share is cash over cash plus holdings at market, "
         "averaged by day from the account's first fill. Forgone is each day's cash times the "
         "next day's index return, not compounded, so a negative value is a loss that cash "
         "avoided. Parking instruments are SGOV, BIL, 459580 and 357870.\n\n",

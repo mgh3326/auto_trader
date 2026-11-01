@@ -18,11 +18,14 @@ from research.trade_retro.export import load_export
 from research.trade_retro.prices import load_snapshot
 from research.trade_retro.sensitivity import run_scenarios
 from tests.research.trade_retro.retro_fixtures import (
+    START,
     fill_row,
     order_row,
     sample_export,
     sample_prices,
+    weekdays,
     write_export,
+    write_prices,
 )
 
 pytestmark = pytest.mark.unit
@@ -34,7 +37,7 @@ def _load(tmp_path, rows):
 
 def _piece(qty, ref="o1"):
     return fill_row(
-        "upbit_live", "crypto", "AAA", "sell", qty, 10, "2026-08-16T21:23:00Z", ref
+        "upbit_live", "crypto", "AAA", "sell", qty, 10, "2026-08-11T10:05:00Z", ref
     )
 
 
@@ -46,7 +49,7 @@ def _order(qty, ref="o1"):
         "sell",
         qty,
         10,
-        "2026-08-16T21:00:00Z",
+        "2026-08-11T10:00:00Z",
         ref,
         "open",
     )
@@ -145,9 +148,9 @@ def test_weekend_stamps_use_the_markets_local_day(tmp_path):
         "buy",
         1,
         10,
-        "2026-09-29T00:00:00Z",
+        "2026-09-15T00:00:00Z",
         "c",
-        day="2026-09-29",
+        day="2026-09-15",
         source="manual_import",
     )
     stamps = non_session_stamps(
@@ -166,8 +169,8 @@ def test_an_account_with_fills_and_no_order_rows_does_not_break_the_join_table(
     canon = build_canon(export)
     fills, _ = apply_splits(canon.fills, book)
     orders = classify_orders(canon.orders, book)
-    executions = build_executions(fills, orders, book)
-    table = join_coverage(executions, orders[orders["alias"] != "toss_live"])
+    without = orders[orders["alias"] != "toss_live"]
+    table = join_coverage(build_executions(fills, without, book), without)
     row = table[table["alias"] == "toss_live"].iloc[0]
     assert row["before_first_order_row"] == row["executed_orders"]
 
@@ -257,3 +260,65 @@ def test_sensitivity_lines_are_labelled_and_the_naive_line_differs(tmp_path):
     # The fixture's opening lot becomes an in-window buy on the naive line.
     assert naive.lots["lot"].nunique() == base.lots["lot"].nunique() + 1
     assert base.cash_shares
+
+
+def test_the_naive_line_changes_only_the_seed_rows_not_the_embedded_buy_rule(tmp_path):
+    rows = {
+        "execution_ledger": [
+            fill_row(
+                "kis_live",
+                "kr",
+                "AAA",
+                "buy",
+                2,
+                100,
+                "2026-05-04T01:00:00Z",
+                "pre",
+                day="2026-05-04",
+            ),
+            fill_row(
+                "kis_live",
+                "kr",
+                "AAA",
+                "buy",
+                5,
+                100,
+                "2026-05-10T00:00:00Z",
+                "seed",
+                day="2026-05-10",
+                source="manual_import",
+            ),
+        ],
+        "kis_live_order_ledger": [
+            order_row(
+                "kis_live",
+                "kr",
+                "AAA",
+                "buy",
+                2,
+                100,
+                "2026-05-04T00:50:00Z",
+                "pre",
+                "filled",
+                day="2026-05-04",
+                filled_qty="2",
+                fill_price="100",
+            )
+        ],
+    }
+    export = _load(tmp_path, rows)
+    book = load_snapshot(
+        write_prices(
+            tmp_path / "prices",
+            {
+                "benchmark/kr": [(d, 1000.0) for d in weekdays(START, 30)],
+                "benchmark/us": [(d, 1000.0) for d in weekdays(START, 30)],
+                "benchmark/crypto": [(d, 1000.0) for d in weekdays(START, 30)],
+                "kr/AAA": [(d, 100.0) for d in weekdays(START, 30)],
+            },
+        )
+    )
+    scenarios = {s.name: s for s in run_scenarios(export, book)}
+    naive = scenarios["Naive: count opening lots as buys at their stated cost"]
+    # The seed becomes a buy, and the pre-cutover buy stays inside it: one lot, not two.
+    assert naive.lots["lot"].nunique() == 1

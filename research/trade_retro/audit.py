@@ -125,7 +125,12 @@ def join_coverage(executions: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFram
                 "notional_share": float(
                     group.loc[~external, "notional"].sum() / group["notional"].sum()
                 ),
-                "before_first_order_row": len(group) - len(after),
+                # Each executed order counts in one column, micro-buys first.
+                "before_first_order_row": int(
+                    (group["day"] < start).where(~micro & external, False).sum()
+                )
+                if start is not None
+                else int((~micro & external).sum()),
                 "micro": int(micro.sum()),
                 "other_after_first_order_row": int(
                     (after_external & (after["source"] == "external")).sum()

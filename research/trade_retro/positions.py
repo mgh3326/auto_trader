@@ -15,15 +15,19 @@ Three kinds of entry:
   reported in its own bucket. They go first in the queue because they are the oldest,
   which keeps a sell of old shares from using up a lot bought in the window.
 
-The seed script computed ``seed qty = holdings - net ledger fills since the
-cutover`` (``opening_lots.py``). So a buy before the cutover of a seeded symbol is
-already inside the seed and makes no lot.
+The seed script computes ``seed qty = holdings - net non-seed fills since the
+cutover`` (``opening_lots.py``, ``net_quantity_by_match_key_since``). Two things follow:
+
+* A buy before the first batch's cutover is already inside that seed and makes no lot.
+* A later batch with its own later cutover nets almost nothing, so its row is the whole
+  holding at that date, not a top-up. It resets the symbol: lots above it leave with no
+  exit and no return, and a shortfall becomes a new lot at the seed's price.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 import pandas as pd
@@ -81,6 +85,7 @@ class Walk:
     unknown_sells: list[UnknownBasisSell]
     embedded_buys: int
     unpriced_open: list[tuple[str, str, str]]
+    resets: list[dict] = field(default_factory=list)
 
 
 def walk_symbol(
@@ -89,6 +94,7 @@ def walk_symbol(
     mark: tuple[float, date] | None,
     seed_base: dict[date, tuple[float, date]] | None = None,
     older_first: bool = True,
+    later_seeds_reset: bool = True,
 ) -> Walk:
     """Walk one account's fills in one symbol. ``rows`` needs date, ts, side, qty,
     price, seed, source and key; ties sort buys before sells so a same-time pair
@@ -96,7 +102,9 @@ def walk_symbol(
     ``seed_base`` maps a seed's date to its base price and that price's bar date."""
     first = rows.iloc[0]
     alias, market, symbol = first["alias"], first["market"], first["symbol"]
-    has_seed = bool((rows["source"] == "manual_import").any())
+    has_seed = bool(
+        ((rows["source"] == "manual_import") & (rows["ts"] == cutover)).any()
+    )
     ordered = rows.assign(
         _rank=[0 if s == "buy" else 1 for s in rows["side"]]
     ).sort_values(["ts", "_rank"], kind="stable")
@@ -104,9 +112,19 @@ def walk_symbol(
     def makes_lot(row) -> bool:
         return row.seed or not (has_seed and row.ts < cutover)
 
+    def resets_holding(row) -> bool:
+        return (
+            later_seeds_reset
+            and row.seed
+            and row.source == "manual_import"
+            and row.ts > cutover
+        )
+
     balance = low = 0.0
     for row in ordered.itertuples(index=False):
-        if row.side == "sell":
+        if resets_holding(row):
+            balance = row.qty
+        elif row.side == "sell":
             balance -= row.qty
         elif makes_lot(row):
             balance += row.qty
@@ -125,8 +143,43 @@ def walk_symbol(
     unknown: list[UnknownBasisSell] = []
     embedded = 0
     episode = 0
+    resets: list[dict] = []
 
     for row in ordered.itertuples(index=False):
+        if resets_holding(row):
+            held = sum(lot.qty for lot in lots)
+            resets.append(
+                {
+                    "alias": alias,
+                    "market": market,
+                    "symbol": symbol,
+                    "ledger": held,
+                    "seed": row.qty,
+                }
+            )
+            excess = held - row.qty
+            while excess > 1e-12 and lots:
+                taken = min(lots[0].qty, excess)
+                lots[0].qty -= taken
+                excess -= taken
+                if lots[0].qty <= 1e-12:
+                    lots.popleft()
+            if excess < -1e-12:
+                base, index_day = (seed_base or {}).get(row.date, (row.price, row.date))
+                lots.append(
+                    Lot(
+                        next_seq,
+                        -excess,
+                        row.price,
+                        row.date,
+                        "seed",
+                        None,
+                        base,
+                        index_day,
+                    )
+                )
+                next_seq += 1
+            continue
         if row.side == "buy":
             if not makes_lot(row):
                 embedded += 1
@@ -245,7 +298,7 @@ def walk_symbol(
                 False,
             )  # fmt: skip
         )
-    return Walk(matches, unknown, embedded, sorted(set(unpriced)))
+    return Walk(matches, unknown, embedded, sorted(set(unpriced)), resets)
 
 
 def cutover_time(fills: pd.DataFrame) -> datetime:
@@ -262,8 +315,10 @@ def reconstruct(
     book: PriceBook,
     cutover: datetime | None = None,
     older_first: bool = True,
+    later_seeds_reset: bool = True,
 ) -> Walk:
     cutover = cutover or cutover_time(fills)
+    resets: list[dict] = []
     all_matches: list[Match] = []
     all_unknown: list[UnknownBasisSell] = []
     embedded = 0
@@ -280,12 +335,15 @@ def reconstruct(
                 i = reference_index(bars, market, row.ts)
                 if i is not None:
                     seed_base[row.date] = (float(bars.close[i]), bars.date_at(i))
-        walk = walk_symbol(rows, cutover, mark, seed_base, older_first)
+        walk = walk_symbol(
+            rows, cutover, mark, seed_base, older_first, later_seeds_reset
+        )
+        resets += walk.resets
         all_matches += walk.matches
         all_unknown += walk.unknown_sells
         embedded += walk.embedded_buys
         unpriced += walk.unpriced_open
-    return Walk(all_matches, all_unknown, embedded, unpriced)
+    return Walk(all_matches, all_unknown, embedded, unpriced, resets)
 
 
 def match_frame(walk: Walk, book: PriceBook) -> pd.DataFrame:

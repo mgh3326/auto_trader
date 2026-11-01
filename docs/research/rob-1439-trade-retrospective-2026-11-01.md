@@ -20,7 +20,7 @@ Add `--check` to compare against the files on disk without writing. Every number
 
 | Market | Lots bought in window | Return (realized + marked) | Index, same dates | vs index | Buy fill rate | Buy markout 20s | Buy markout 20s, without recurring micro-buys | Sell markout 20s | Avg cash share by account | Index return by account span |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| KR | 94 | -14.55% | -19.90% | +5.34% | 18.8% | -6.08% | -6.08% | +7.69% | 27.2% / 18.2% | -17.39% / -32.94% |
+| KR | 93 | -14.47% | -19.80% | +5.33% | 18.8% | -6.08% | -6.08% | +7.69% | 33.3% / 18.2% | -17.39% / -32.94% |
 | US | 27 | +15.51% | +1.10% | +14.40% | 13.6% | +4.67% | +4.67% | -0.80% | 16.8% / 12.0% | +2.92% / +0.34% |
 | Crypto | 1442 | +16.62% | +9.05% | +7.58% | 40.7% | -2.39% | +3.95% | +0.45% | 34.6% | -9.89% |
 
@@ -35,7 +35,7 @@ Returns are price return before fees. Each line's definitions are in the section
 - **Entry type.** `deep_limit` is a limit at least 3% from the last complete daily close, below it for a buy and above it for a sell, matching the near edge of `buy.deep_limit_pct_range`. `near_market` is anything closer, including market orders. The suffix `/proposal` means a proposal rung links to the order, and `/session` means an order row with no rung. `external` means a fill with no order row at all: an app trade or one from before the order ledger began. `external_micro` is the crypto subset at or below the small fixed size of a recurring buy programme.
 - **Fill rate.** Accepted orders are rows that reached the broker, less rejections and cancel-operation rows. An order is filled if any quantity filled. `Open` counts as unfilled in one column and is removed in the other. An **intent** is one account, symbol, side and local ISO week, so a resubmitted order counts once.
 - **Markout.** One row per executed order at its volume-weighted price, to the close 1, 5 and 20 sessions after the fill's session, signed so a positive value favours the trade.
-- **Idle cash.** Opening cash is the smallest amount keeping cash at or above zero, assuming no external flows. Opening lots count as held from the account's first day, because they have no purchase date and no cash outflow. Cash share is cash over cash plus holdings at market, averaged by day from the account's first fill. Forgone is each day's cash times the next day's index return, not compounded, so a negative value is a loss that cash avoided. Parking instruments are SGOV, BIL, 459580 and 357870.
+- **Idle cash.** Opening cash is the smallest amount keeping cash at or above zero, assuming no external flows. First-batch opening lots count as held from the account's first day, and a later seed's difference from the ledger goes through cash at that day's close. Cash share is cash over cash plus holdings at market, averaged by day from the account's first fill. Forgone is each day's cash times the next day's index return, not compounded, so a negative value is a loss that cash avoided. Parking instruments are SGOV, BIL, 459580 and 357870.
 
 ## Data checks
 
@@ -47,17 +47,18 @@ Each check below comes from a question raised by the independent dots analysis o
 | Websocket row repeating the next day's reconciler row | Rows: 5 | Same order, side, quantity and price, recorded exactly 24h after its `filled_at` | Removed. Seed rows that absorbed one, reduced by the same quantity: 1 | Ledger data. The export copies `filled_at` as stored. The flag misses them because the stored day differs. Cause of the stamp: unverified |
 | Order whose fills exceed its quantity | Orders before cleaning: 5. After: 0 | The repeated rows above, plus an order with a row equal to its whole quantity | Rows removed as partials inside a running total: 2. Unresolved orders: 0 | Ledger data |
 | Partial fill of an order with no order row, proven by inventory | Rows: 1 | The symbol's sells exceed all its holdings by exactly this row's quantity, and a later row of the order is larger | Removed | Ledger data |
-| Order row behind the ledger | Orders: 76 | The row's filled quantity is below the ledger's, mostly `open` rows with no ending | The ledger's quantity counts, and the outcome is corrected | Ledger data |
+| Order row behind the ledger | Orders: 76 | The row's filled quantity is below the ledger's | The ledger's quantity counts, and the outcome is corrected | Ledger data |
 | Ledger behind the order row | Fills: 26 | The row says filled and the ledger has less | The residual is added as a fill at the row's price, on the order's date | Ledger data. The export's only row filters are the time window and quarantine, and neither can remove these |
 | `manual_import` rows, stamped on a weekend | On a weekend: 45 of 51 rows | `opening_lots.py` stamps the cutover instant and sets quantity to holdings minus net fills, at the broker's average cost. They are opening lots, not transfers | No markout or cash flow. Return runs from the last close before the stamp | Ledger data, documented. **Export gap**: nothing separates a seed from another manual import |
 | Other equity rows stamped on a weekend | On a weekend: 3 of 357 rows, before removals | One broker's rows can be stamped a day away from the session | Mapped to the next session. Twins removed as above | Ledger data |
+| Later seed rows, written by a second seed run | Rows: 6. Above the ledger's balance: 1. Below it: 5 | `net_quantity_by_match_key_since` skips seed rows and only counts fills since the run's own cutover, so each row holds the whole position, not a top-up | The holding resets to the seed's quantity. The difference from the ledger is an unrecorded trade at that day's close, with no return on what left | Ledger data. Any reader that sums seed rows counts these on top of the first batch |
 | Fill far from its session's close | Rows: 2 | More than 30% from the close, at prices like an old average cost | Quantity kept, treated as opening lots, with no markout or cash flow | Ledger data |
 
 **Join between the ledger and the order tables.** The two tables hold different populations, so neither is a denominator for the other. The hashed key itself works: executions with no order row whose reference is on any order row of that account: 0.
 
 | Market | Account | Executed orders | With order row | Share of orders | Share of notional | Before the first order row | Recurring micro-buys | Other, after the first order row | Filled order rows that have ledger fills |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| crypto | Account B | 1689 | 108 | 6.4% | 76.4% | 618 | 1561 | 10 | 44 of 45 |
+| crypto | Account B | 1689 | 108 | 6.4% | 76.4% | 10 | 1561 | 10 | 44 of 45 |
 | kr | Account A | 87 | 62 | 71.3% | 48.5% | 24 | 0 | 1 | 60 of 60 |
 | kr | Account C | 128 | 128 | 100.0% | 100.0% | 0 | 0 | 0 | 119 of 128 |
 | us | Account A | 78 | 58 | 74.4% | 76.1% | 17 | 0 | 3 | 47 of 47 |
@@ -87,15 +88,16 @@ Return on lots bought in the window, under each treatment that could be argued. 
 
 | Treatment | KR | US | Crypto | Avg cash share by account |
 | --- | --- | --- | --- | --- |
-| Base: every rule in this report | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.6% |
-| No duplicate removal: trust `superseded_duplicate` alone | -14.47% (+5.35% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.43% (+8.12% vs index, 1444 lots) | 37.3% / 18.2% / 16.8% / 12.0% / 35.0% |
-| Keep the fill proven a partial only by inventory | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.5% |
-| Drop fills found only on an order row | -15.20% (+5.66% vs index, 90 lots) | +16.74% (+16.17% vs index, 13 lots) | +17.82% (+8.37% vs index, 1441 lots) | 27.2% / 16.6% / 16.8% / 13.9% / 34.1% |
-| Keep fills that cannot be trades as trades | -10.59% (+9.37% vs index, 95 lots) | +25.65% (+24.32% vs index, 28 lots) | +16.62% (+7.58% vs index, 1442 lots) | 25.7% / 18.2% / 14.8% / 12.0% / 34.6% |
-| Naive: count opening lots as buys at their stated cost | -12.46% (+1.75% vs index, 116 lots) | +30.42% (+28.08% vs index, 48 lots) | +3.63% (+4.84% vs index, 1598 lots) | 50.2% / 18.2% / 50.0% / 12.0% / 36.3% |
-| Plain FIFO: older holdings do not go first | -13.43% (+5.78% vs index, 94 lots) | +14.61% (+13.59% vs index, 27 lots) | +15.62% (+6.90% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.6% |
-| Only lots whose order has an order row | -14.18% (+5.31% vs index, 84 lots) | +18.64% (+16.75% vs index, 21 lots) | +18.09% (+9.53% vs index, 13 lots) | as base |
-| Without recurring micro-buys | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.31% (+9.00% vs index, 22 lots) | as base |
+| Base: every rule in this report | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 33.3% / 18.2% / 16.8% / 12.0% / 34.6% |
+| No duplicate removal: trust `superseded_duplicate` alone | -14.39% (+5.34% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.43% (+8.12% vs index, 1444 lots) | 43.5% / 18.2% / 16.8% / 12.0% / 35.0% |
+| Keep the fill proven a partial only by inventory | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 33.3% / 18.2% / 16.8% / 12.0% / 34.5% |
+| Drop fills found only on an order row | -15.13% (+5.65% vs index, 89 lots) | +16.74% (+16.17% vs index, 13 lots) | +17.82% (+8.37% vs index, 1441 lots) | 33.3% / 16.6% / 16.8% / 13.9% / 34.1% |
+| Keep fills that cannot be trades as trades | -14.47% (+5.33% vs index, 93 lots) | +25.65% (+24.32% vs index, 28 lots) | +16.62% (+7.58% vs index, 1442 lots) | 31.8% / 18.2% / 14.8% / 12.0% / 34.6% |
+| Naive: count opening lots as buys at their stated cost | -12.37% (+1.63% vs index, 115 lots) | +30.42% (+28.08% vs index, 48 lots) | +3.82% (+4.84% vs index, 1452 lots) | 25.3% / 18.2% / 15.6% / 12.0% / 36.3% |
+| Plain FIFO: older holdings do not go first | -13.33% (+5.77% vs index, 93 lots) | +14.61% (+13.59% vs index, 27 lots) | +15.62% (+6.90% vs index, 1442 lots) | 33.3% / 18.2% / 16.8% / 12.0% / 34.6% |
+| Later seeds added on top of the ledger, not as whole holdings | -14.55% (+5.34% vs index, 94 lots) | +15.51% (+14.40% vs index, 27 lots) | +16.62% (+7.58% vs index, 1442 lots) | 27.2% / 18.2% / 16.8% / 12.0% / 34.6% |
+| Only lots whose order has an order row | -14.06% (+5.36% vs index, 84 lots) | +18.64% (+16.75% vs index, 21 lots) | +18.09% (+9.53% vs index, 13 lots) | as base |
+| Without recurring micro-buys | -14.47% (+5.33% vs index, 93 lots) | +15.51% (+14.40% vs index, 27 lots) | +17.31% (+9.00% vs index, 22 lots) | as base |
 
 ## KR
 
@@ -105,14 +107,14 @@ Amounts are in KRW. Index: KOSPI (^KS11, Yahoo).
 
 | Scope | Positions | Still open | Realized | Unrealized | Total | Median position | Winners | Hold days (cost-wtd) | Hold days (median) | vs cash (0%) | Index, same dates | vs index |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Account A: bought in window | 22 | 15 | +16.20% | -25.11% | -8.58% | -12.71% | 40.9% | 95 | 126 | -8.58% | -14.64% | +6.06% |
-| Account A: opening lots, from the seed-date close | 15 | 11 | +10.11% | -29.25% | -12.22% | -14.87% | 20.0% | 89 | 98 | -12.22% | -8.61% | -3.61% |
+| Account A: bought in window | 22 | 15 | +16.20% | -25.88% | -7.98% | -12.71% | 40.9% | 91 | 116 | -7.98% | -14.04% | +6.06% |
+| Account A: opening lots, from the last close before the seed | 14 | 9 | +10.11% | -35.92% | -10.19% | -11.21% | 28.6% | 92 | 91 | -10.19% | -4.74% | -5.45% |
 | Account C: bought in window | 31 | 22 | -1.14% | -34.21% | -17.86% | +0.57% | 51.6% | 92 | 93 | -17.86% | -22.81% | +4.95% |
-| **All: bought in window** | 53 | 37 | +4.23% | -30.60% | -14.55% | -6.45% | 47.2% | 93 | 100 | -14.55% | -19.90% | +5.34% |
-| **All: opening lots, from the seed-date close** | 15 | 11 | +10.11% | -29.25% | -12.22% | -14.87% | 20.0% | 89 | 98 | -12.22% | -8.61% | -3.61% |
+| **All: bought in window** | 53 | 37 | +4.23% | -31.11% | -14.47% | -6.45% | 47.2% | 92 | 100 | -14.47% | -19.80% | +5.33% |
+| **All: opening lots, from the last close before the seed** | 14 | 9 | +10.11% | -35.92% | -10.19% | -11.21% | 28.6% | 92 | 91 | -10.19% | -4.74% | -5.45% |
 | Parking instruments (cash-like) | 2 | 2 | n/a | +0.02% | +0.02% | +0.02% | 100.0% | 38 | 35 | +0.02% | -16.49% | +16.51% |
 
-Opening lots measured on the broker's average cost instead: -10.07% (n=15). That cost predates the window, so no index comparison applies to it.
+Opening lots measured on the broker's average cost instead: -9.82% (n=14). That cost predates the window, so no index comparison applies to it.
 
 Sells with no known basis, excluded from every return above:
 
@@ -180,7 +182,7 @@ Markouts of executed orders, mean with the number of orders in brackets. A posit
 
 | Account | Days | From | To | Avg cash share | Avg cash + parking share | Last cash share | Last cash + parking share | Forgone, % of avg cash | Forgone, % of avg NAV | Index return, same dates | Account return, same dates |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Account A | 121 | 2026-05-04 | 2026-10-30 | 27.2% | 27.8% | 36.5% | 39.6% | -37.50% | -10.11% | -17.39% | -16.96% |
+| Account A | 121 | 2026-05-04 | 2026-10-30 | 33.3% | 33.9% | 49.6% | 53.2% | -39.63% | -13.09% | -17.39% | -12.98% |
 | Account C | 94 | 2026-06-15 | 2026-10-30 | 18.2% | 27.5% | 26.6% | 61.0% | -21.99% | -4.07% | -32.94% | -20.92% |
 
 ### KR: 5. Largest winners and losers, and candidate rules
@@ -191,8 +193,8 @@ Positions ranked: 62, parking and dust excluded.
 
 | Rank | Account | Origin | Return | vs index | Share of gross absolute P&L | Hold days | State | Entry type | Entry rung | Entry tag | Exit type | Exit rung | Exit tag |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| W1 | Account A | fill+seed | +21.91% | +18.58% | 12.6% | 47 | open | seed |  |  | external |  |  |
-| W2 | Account A | fill | +20.35% | +7.47% | 2.3% | 6 | closed | deep_limit/session |  | oth_06113e6e… | deep_limit/session |  |  |
+| W1 | Account A | fill+seed | +28.19% | +20.80% | 15.1% | 37 | open | seed |  |  | external |  |  |
+| W2 | Account A | fill | +20.35% | +7.47% | 2.5% | 6 | closed | deep_limit/session |  | oth_06113e6e… | deep_limit/session |  |  |
 | W3 | Account C | fill | +6.24% | +31.90% | 0.6% | 100 | open | near_market/session |  | oth_af90e99f… | deep_limit/proposal | 1 | oth_4f4202f2… |
 | W4 | Account A | fill | +23.96% | +36.96% | 0.5% | 52 | closed | near_market/session |  | oth_fdba857b… | deep_limit/session |  |  |
 | W5 | Account A | fill | +12.22% | +16.74% | 0.4% | 31 | closed | near_market/session |  | oth_7ba40b5d… | deep_limit/session |  |  |
@@ -201,11 +203,11 @@ Positions ranked: 62, parking and dust excluded.
 
 | Rank | Account | Origin | Return | vs index | Share of gross absolute P&L | Hold days | State | Entry type | Entry rung | Entry tag | Exit type | Exit rung | Exit tag |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| L1 | Account A | seed | -35.98% | -12.41% | 9.5% | 173 | open | seed |  |  | held |  |  |
-| L2 | Account A | fill+seed | -18.56% | -20.35% | 9.1% | 63 | open | seed |  |  | external |  |  |
-| L3 | Account A | fill+seed | -21.74% | -0.33% | 8.6% | 109 | open | seed |  |  | held |  |  |
-| L4 | Account A | fill+seed | -30.50% | -1.65% | 6.8% | 136 | open | seed |  |  | held |  |  |
-| L5 | Account A | seed | -45.92% | -30.72% | 5.9% | 121 | open | seed |  |  | external |  |  |
+| L1 | Account A | seed | -35.98% | -12.41% | 10.2% | 173 | open | seed |  |  | held |  |  |
+| L2 | Account A | fill+seed | -18.56% | -20.35% | 9.8% | 63 | open | seed |  |  | external |  |  |
+| L3 | Account A | fill+seed | -31.59% | -7.15% | 8.2% | 160 | open | seed |  |  | held |  |  |
+| L4 | Account A | seed | -45.92% | -30.72% | 6.3% | 121 | open | seed |  |  | external |  |  |
+| L5 | Account C | fill | -42.20% | -15.31% | 5.1% | 122 | open | deep_limit/session |  |  | held |  |  |
 
 **Candidate rules.** In-sample: each number was computed on the same six months it would have changed, so none of them predicts anything.
 
@@ -218,14 +220,14 @@ Positions ranked: 62, parking and dust excluded.
 | R2 Hold instead of selling: `other_proposal` | 51 of 53 reach 20s (53 reach 5s) | 20s -10.67% of sold notional; 5s -4.41% |
 | R2 Hold instead of selling: `session` | 43 of 43 reach 20s (43 reach 5s) | 20s -15.85% of sold notional; 5s -4.80% |
 | R2 Hold instead of selling: `trim_preplace` | 2 of 6 reach 20s (6 reach 5s) | 20s -13.92% of sold notional; 5s -2.81% |
-| R3 Exit every in-window lot 20 sessions after entry | 94 lots, 92 reach the horizon | actual -14.55% of cost, rule -8.32% |
+| R3 Exit every in-window lot 20 sessions after entry | 93 lots, 91 reach the horizon | actual -14.47% of cost, rule -8.67% |
 | R4 Never open lots of type `deep_limit/proposal` | 1 lots | removes a return of -23.45% on 0.3% of in-window cost; net of index -13.21% |
-| R4 Never open lots of type `deep_limit/session` | 35 lots | removes a return of -14.04% on 40.3% of in-window cost; net of index +2.27% |
-| R4 Never open lots of type `external` | 10 lots | removes a return of -18.51% on 8.5% of in-window cost; net of index +5.74% |
+| R4 Never open lots of type `deep_limit/session` | 35 lots | removes a return of -13.76% on 40.5% of in-window cost; net of index +2.34% |
+| R4 Never open lots of type `external` | 9 lots | removes a return of -19.79% on 7.2% of in-window cost; net of index +4.92% |
 | R4 Never open lots of type `near_market/proposal` | 2 lots | removes a return of +8.52% on 0.6% of in-window cost; net of index +11.50% |
-| R4 Never open lots of type `near_market/session` | 46 lots | removes a return of -14.52% on 50.2% of in-window cost; net of index +7.78% |
-| R5 Buy the index instead, for each in-window lot's money and dates | 94 lots | actual -14.55%, index -19.90% |
-| R6 Hold the lower-bound idle cash in the index: Account A | 121 days | -10.11% of average NAV |
+| R4 Never open lots of type `near_market/session` | 46 lots | removes a return of -14.52% on 51.3% of in-window cost; net of index +7.78% |
+| R5 Buy the index instead, for each in-window lot's money and dates | 93 lots | actual -14.47%, index -19.80% |
+| R6 Hold the lower-bound idle cash in the index: Account A | 121 days | -13.09% of average NAV |
 | R6 Hold the lower-bound idle cash in the index: Account C | 94 days | -4.07% of average NAV |
 
 ## US
@@ -237,10 +239,10 @@ Amounts are in USD. Index: S&P 500 (^GSPC, Yahoo).
 | Scope | Positions | Still open | Realized | Unrealized | Total | Median position | Winners | Hold days (cost-wtd) | Hold days (median) | vs cash (0%) | Index, same dates | vs index |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Account A: bought in window | 8 | 3 | +11.60% | +24.31% | +16.52% | +14.37% | 75.0% | 88 | 80 | +16.52% | +0.29% | +16.23% |
-| Account A: opening lots, from the seed-date close | 21 | 15 | +2.05% | +4.76% | +3.48% | +2.47% | 61.9% | 132 | 130 | +3.48% | +2.65% | +0.83% |
+| Account A: opening lots, from the last close before the seed | 21 | 15 | +2.05% | +4.76% | +3.48% | +2.47% | 61.9% | 132 | 130 | +3.48% | +2.65% | +0.83% |
 | Account C: bought in window | 11 | 4 | +13.80% | +17.88% | +14.68% | +19.94% | 90.9% | 81 | 63 | +14.68% | +1.77% | +12.91% |
 | **All: bought in window** | 19 | 7 | +12.95% | +21.71% | +15.51% | +15.60% | 84.2% | 85 | 79 | +15.51% | +1.10% | +14.40% |
-| **All: opening lots, from the seed-date close** | 21 | 15 | +2.05% | +4.76% | +3.48% | +2.47% | 61.9% | 132 | 130 | +3.48% | +2.65% | +0.83% |
+| **All: opening lots, from the last close before the seed** | 21 | 15 | +2.05% | +4.76% | +3.48% | +2.47% | 61.9% | 132 | 130 | +3.48% | +2.65% | +0.83% |
 | Parking instruments (cash-like) | 2 | 2 | n/a | +0.15% | +0.15% | +0.16% | 100.0% | 41 | 42 | +0.15% | -1.49% | +1.63% |
 
 Opening lots measured on the broker's average cost instead: +34.20% (n=21). That cost predates the window, so no index comparison applies to it.
@@ -365,9 +367,9 @@ Amounts are in KRW. Index: BTC/KRW (KRW-BTC, Upbit).
 | Scope | Positions | Still open | Realized | Unrealized | Total | Median position | Winners | Hold days (cost-wtd) | Hold days (median) | vs cash (0%) | Index, same dates | vs index |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Account B: bought in window | 8 | 2 | +19.35% | +0.98% | +16.62% | +3.66% | 50.0% | 80 | 67 | +16.62% | +9.05% | +7.58% |
-| Account B: opening lots, from the seed-date close | 6 | 2 | -4.06% | -10.34% | -6.60% | -7.80% | 50.0% | 134 | 117 | -6.60% | -11.40% | +4.80% |
+| Account B: opening lots, from the last close before the seed | 6 | 2 | -4.06% | -10.34% | -6.60% | -7.80% | 50.0% | 134 | 117 | -6.60% | -11.40% | +4.80% |
 | **All: bought in window** | 8 | 2 | +19.35% | +0.98% | +16.62% | +3.66% | 50.0% | 80 | 67 | +16.62% | +9.05% | +7.58% |
-| **All: opening lots, from the seed-date close** | 6 | 2 | -4.06% | -10.34% | -6.60% | -7.80% | 50.0% | 134 | 117 | -6.60% | -11.40% | +4.80% |
+| **All: opening lots, from the last close before the seed** | 6 | 2 | -4.06% | -10.34% | -6.60% | -7.80% | 50.0% | 134 | 117 | -6.60% | -11.40% | +4.80% |
 
 Opening lots measured on the broker's average cost instead: -10.83% (n=6). That cost predates the window, so no index comparison applies to it.
 
@@ -488,7 +490,7 @@ Positions ranked: 10, parking and dust excluded.
 - **Stale order rows.** 76 order rows say `open` while the execution ledger holds their fills, and 26 fills exist only on an order row. The analysis takes the larger quantity from either source. A row still `open` has no recorded ending; that does not prove it is live.
 - **Repeated fills.** See Data checks. Fills with no order row can only be tested against inventory, so a repeat that inventory does not expose would stay in.
 - **Fill times.** Reconciler rows can carry the order's time, so fill latency is not measured. Fills found only on an order row use the order's date. 6 fills stamped a day away from their order take the order's day. Other fills from the same broker can also be a day early, which shifts their markouts but not their matching.
-- **Opening lots.** 51 seed rows carry a broker average cost from an unknown date, and some are plugs added months later for holdings the ledger could not explain. Holding days on them are lower bounds. 147 buys before the 2026-05-10 cutover are already inside a seed and make no lot.
+- **Opening lots.** 51 seed rows carry a broker average cost from an unknown date, and a later batch restates whole holdings (see Data checks). Holding days on them are lower bounds. 147 buys before the 2026-05-10 cutover are already inside a seed and make no lot.
 - **Fills that cannot be trades.** 2 ledger fills sit more than 30% from their session's close, at prices like an old average cost. Their quantity reconciles with later holdings, so they count as opening lots and make no markout or cash flow. They are worth a ledger check.
 - **Unknown-basis sells.** One account has no seed rows, so sells of holdings older than its ledger have no cost and earn no return. That account's realized figures cover only what it bought in the window. Section 2 shows each account's share.
 - **No balances in the export.** Idle cash is a lower bound derived from fills, and deposits, withdrawals, FX conversions and holdings never traded in the window are invisible. It is not the current cash balance. Compare the forgone rate, not the share, against what the operator knows the account holds.
@@ -499,7 +501,7 @@ Positions ranked: 10, parking and dust excluded.
 - **Counterfactuals are in-sample.** They ignore price impact, fees and available cash. R1 assumes a fill at the open that the real limit order did not get. They overlap, so they do not add up. They are candidates to test, not findings.
 - **Not an experiment look.** This is a descriptive retrospective of live trading, not a test-set read under `research/experiments`, and it uses no sealed data.
 - **Mock and paper excluded.** Only real-money tables are read. Kiwoom mock, NHPLUG mock and Binance demo are outside the export.
-- **Index start.** A lot's stock leg starts at its fill price and its index leg at that day's close. The fill's time of day is not reliable, so neither end of the day is exact. The index return on lots bought in the window: KR -19.90% from the close, -20.61% from the open; US +1.10% from the close, +1.11% from the open; Crypto +9.05% from the close, +8.43% from the open.
+- **Index start.** A lot's stock leg starts at its fill price and its index leg at that day's close. The fill's time of day is not reliable, so neither end of the day is exact. The index return on lots bought in the window: KR -19.80% from the close, -20.54% from the open; US +1.10% from the close, +1.11% from the open; Crypto +9.05% from the close, +8.43% from the open.
 - **Price coverage.** Symbols with bars: 181. Without: 1. Their orders have no distance or markout and appear as `no_reference` or `n/a`. Open positions with no price to mark: 1, left out of the returns.
 - **Splits.** Symbols with a split after a fill: 1, converted to split-adjusted units.
 
