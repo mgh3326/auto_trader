@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -32,6 +33,10 @@ def _write_registry(root: Path, registry: dict) -> None:
 
 def _hyp(registry: dict, hid: str) -> dict:
     return next(h for h in registry["hypotheses"] if h["id"] == hid)
+
+
+def _file_sha(root: Path, rel: str) -> str:
+    return hashlib.sha256((root / rel).read_bytes()).hexdigest()
 
 
 def _write_report(root: Path, rel: str, *, sha: str, look: str | None = None) -> str:
@@ -105,6 +110,7 @@ def test_test_look_counted_with_k_increment_passes(repo: Path) -> None:
             "at": "2026-11-02",
             "manifest_sha256": hyp["manifest_sha256"],
             "report": rel,
+            "report_sha256": _file_sha(repo, rel),
         }
     )
     hyp["k"] = 1
@@ -127,6 +133,7 @@ def test_look_without_k_increment_fails(repo: Path) -> None:
             "at": "2026-11-02",
             "manifest_sha256": hyp["manifest_sha256"],
             "report": rel,
+            "report_sha256": _file_sha(repo, rel),
         }
     )
     _write_registry(repo, registry)
@@ -162,6 +169,7 @@ def _rewrite_manifest(repo: Path, hid: str, mutate) -> None:
     hyp = _hyp(registry, hid)
     path = repo / hyp["manifest"]
     manifest = json.loads(path.read_text())
+    manifest["version"] += 1  # a re-registered manifest is a new version
     mutate(manifest)
     path.write_text(json.dumps(manifest, indent=2))
     # Re-register the new version so only the schema rule under test can fail.
@@ -239,6 +247,7 @@ def _with_one_look(repo: Path) -> dict:
             "at": "2026-11-02",
             "manifest_sha256": hyp["manifest_sha256"],
             "report": rel,
+            "report_sha256": _file_sha(repo, rel),
         }
     ]
     hyp["k"] = 1
@@ -275,3 +284,135 @@ def test_print_hash_matches_registry(capsys) -> None:
     hyp = _hyp(_registry(REPO), "ROB-1411")
     assert lint.main(["--print-hash", str(REPO / hyp["manifest"])]) == 0
     assert capsys.readouterr().out.strip() == hyp["manifest_sha256"]
+
+
+BAD = "a" * 64
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"Experiment-Manifest-Sha256: {BAD}",
+        f"\ufeffExperiment-Manifest-Sha256: {BAD}",
+        f"Experiment-Manifest-Sha256: {BAD} (v1)",
+        f"**Experiment-Manifest-Sha256:** {BAD}",
+        f"- Experiment-Manifest-Sha256: {BAD}",
+        f"    Experiment-Manifest-Sha256: {BAD}",
+        f"experiment-manifest-sha256: {BAD}",
+        f"Experiment-Manifest-Sha256: {BAD.upper()}",
+        f"| Experiment-Manifest-Sha256 | {BAD} |",
+        f"Experiment-Manifest-Sha256: {BAD}\r",
+    ],
+)
+def test_decorated_unregistered_citation_still_fails(repo: Path, line: str) -> None:
+    path = repo / "docs/research/probe.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# probe\n{line}\n", newline="")
+    assert any("cites unregistered manifest hash" in p for p in lint.run(repo))
+
+
+def test_malformed_citation_value_fails(repo: Path) -> None:
+    path = repo / "docs/research/probe.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Experiment-Manifest-Sha256: abc123\n")
+    assert any("malformed Experiment-Manifest-Sha256" in p for p in lint.run(repo))
+
+
+def test_bold_test_look_is_still_counted(repo: Path) -> None:
+    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    path = repo / "docs/research/probe.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"Experiment-Manifest-Sha256: {sha}\n**Experiment-Test-Look:** yes\n"
+    )
+    assert any("does not count" in p for p in lint.run(repo))
+
+
+def test_second_look_marker_fails(repo: Path) -> None:
+    sha = _hyp(_registry(repo), "H-admit")["manifest_sha256"]
+    path = repo / "docs/research/probe.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"Experiment-Manifest-Sha256: {sha}\n"
+        "Experiment-Test-Look: yes\nExperiment-Test-Look: no\n"
+    )
+    problems = lint.run(repo)
+    assert any("declared more than once" in p for p in problems)
+    assert any("does not count" in p for p in problems)
+
+
+def test_non_markdown_file_in_reports_dir_fails(repo: Path) -> None:
+    path = repo / lint.REPORTS_DIR / "look1.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"Experiment-Manifest-Sha256: {BAD}\n")
+    assert any("must be .md" in p for p in lint.run(repo))
+
+
+def test_counted_report_is_frozen(repo: Path, tmp_path: Path) -> None:
+    registry = _with_one_look(repo)
+    _write_registry(repo, registry)
+    assert lint.run(repo) == []
+    report = repo / "research/experiments/reports/h-admit-look1.md"
+    report.write_text(report.read_text() + "Result: PASS, effect +2.1%\n")
+    assert any("report_sha256 does not match" in p for p in lint.run(repo))
+
+
+def test_duplicate_json_key_in_manifest_fails(repo: Path) -> None:
+    path = repo / "research/experiments/manifests/h-admit.json"
+    text = path.read_text()
+    path.write_text(
+        text.replace('"status": "draft"', '"status": "sealed", "status": "draft"', 1)
+    )
+    assert any("duplicate key 'status'" in p for p in lint.run(repo))
+
+
+def test_manifest_change_without_version_bump_fails(repo: Path) -> None:
+    registry = _registry(repo)
+    hyp = _hyp(registry, "H-admit")
+    path = repo / hyp["manifest"]
+    manifest = json.loads(path.read_text())
+    manifest["title"] = "changed"
+    path.write_text(json.dumps(manifest))
+    hyp["previous_manifest_sha256"].append(hyp["manifest_sha256"])
+    hyp["manifest_sha256"] = lint.canonical_sha256(manifest)
+    _write_registry(repo, registry)
+    assert any("manifest version 1 must be 2" in p for p in lint.run(repo))
+
+
+def test_status_cannot_move_backwards(repo: Path, tmp_path: Path) -> None:
+    base = _registry(repo)
+    _hyp(base, "H-admit")["status"] = "closed"
+    base_file = tmp_path / "base.json"
+    base_file.write_text(json.dumps(base))
+    assert any("status moved backwards" in p for p in lint.run(repo, base_file))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["hypotheses"][0].update(manifest_sha256=[]),
+        lambda r: r["hypotheses"][0].update(status=["draft"]),
+        lambda r: r["hypotheses"][0].update(previous_manifest_sha256=5),
+        lambda r: r["hypotheses"][0].update(test_looks=5),
+    ],
+)
+def test_malformed_shapes_fail_cleanly(
+    repo: Path, tmp_path: Path, mutate, capsys
+) -> None:
+    base_file = tmp_path / "base.json"
+    base_file.write_text((repo / lint.REGISTRY_PATH).read_text())
+    registry = _registry(repo)
+    mutate(registry)
+    _write_registry(repo, registry)
+    assert lint.run(repo, base_file)  # problems reported, no exception
+    assert lint.main(["--root", str(repo), "--base-registry", str(base_file)]) == 1
+    assert "Traceback" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("field", ["hypothesis", "calendar"])
+def test_list_valued_heartbeat_field_fails_cleanly(repo: Path, field: str) -> None:
+    path = repo / lint.HEARTBEAT_PATH
+    config = json.loads(path.read_text())
+    config["epochs"][0][field] = ["x"]
+    path.write_text(json.dumps(config))
+    assert lint.run(repo)

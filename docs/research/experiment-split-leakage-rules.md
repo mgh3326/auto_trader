@@ -93,8 +93,10 @@ test:
    frozen model is ready.
 2. Opening the test is a **test look**. Before the look, append an entry to
    the hypothesis's `test_looks` in the registry and increment `k` in the same
-   commit. The report of the look cites the manifest hash
-   (`Experiment-Manifest-Sha256:` line) and declares `Experiment-Test-Look: yes`.
+   commit, with the report's sha256. The report cites the manifest hash
+   (`Experiment-Manifest-Sha256` marker) and declares the look
+   (`Experiment-Test-Look` marker set to yes); marker syntax is in
+   `research/experiments/README.md`.
 3. A test period is never reopened for the same hypothesis after a failed
    look. A new idea needs a new hypothesis with a new test period, usually a
    prospective seal.

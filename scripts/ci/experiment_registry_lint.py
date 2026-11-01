@@ -30,6 +30,7 @@ import json
 import re
 import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,8 +48,14 @@ MIN_GAP_SESSIONS = 5
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-CITE_RE = re.compile(r"^Experiment-Manifest-Sha256:\s*(\S+)\s*$", re.MULTILINE)
-LOOK_RE = re.compile(r"^Experiment-Test-Look:\s*(\S+)\s*$", re.MULTILINE)
+# A marker is the key followed by ":" or a table "|" anywhere on a line, in any
+# case and under any markdown decoration (bold, list, quote, table, indent).
+# Prose that names a key without ":" or "|" after it is not a marker.
+CITE_RE = re.compile(
+    r"experiment-manifest-sha256[\s*_`]*[:|][\s*_`|]*([^\s*_`|]*)", re.I
+)
+LOOK_RE = re.compile(r"experiment-test-look[\s*_`]*[:|][\s*_`|]*([^\s*_`|]*)", re.I)
+HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 MARKETS = frozenset({"kr", "us", "crypto"})
 HYPOTHESIS_STATUSES = frozenset({"draft", "sealed", "running", "closed", "retired"})
@@ -73,7 +80,8 @@ HYPOTHESIS_KEYS = frozenset(
         "test_looks",
     }
 )
-LOOK_KEYS = frozenset({"seq", "at", "manifest_sha256", "report"})
+LOOK_KEYS = frozenset({"seq", "at", "manifest_sha256", "report", "report_sha256"})
+STATUS_ORDER = {"draft": 0, "sealed": 1, "running": 2, "closed": 3}
 
 MANIFEST_KEYS = frozenset(
     {
@@ -140,6 +148,23 @@ class Errors:
         self.items.append(f"{where}: {message}")
 
 
+def _member(value: Any, allowed: frozenset[str] | dict[str, Any]) -> bool:
+    return isinstance(value, str) and value in allowed
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"duplicate key {key!r}")
+        out[key] = value
+    return out
+
+
 def canonical_sha256(obj: Any) -> str:
     """sha256 of the canonical JSON text of a parsed manifest."""
 
@@ -162,9 +187,12 @@ def _load_json(path: Path, where: str, errors: Errors) -> Any:
         errors.add(where, f"cannot read {path} ({exc.__class__.__name__})")
         return None
     try:
-        return json.loads(text)
+        return json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except json.JSONDecodeError as exc:
         errors.add(where, f"invalid JSON at line {exc.lineno}")
+        return None
+    except ValueError as exc:
+        errors.add(where, f"invalid JSON: {exc}")
         return None
 
 
@@ -236,7 +264,7 @@ def validate_manifest(manifest: Any, where: str, errors: Errors) -> None:
         if not _is_str(manifest.get(key)):
             errors.add(where, f"{key} must be a non-empty string")
     status = manifest.get("status")
-    if status not in MANIFEST_STATUSES:
+    if not _member(status, MANIFEST_STATUSES):
         errors.add(where, f"status must be one of {sorted(MANIFEST_STATUSES)}")
     if "markets" in manifest:
         _markets(manifest["markets"], f"{where}.markets", errors)
@@ -320,7 +348,7 @@ def _validate_section(key: str, value: Any, where: str, errors: Errors) -> None:
         for market, cal in value.items():
             if market not in MARKETS:
                 errors.add(where, f"unknown market {market!r}")
-            if cal not in CALENDARS:
+            if not _member(cal, CALENDARS):
                 errors.add(
                     f"{where}.{market}", f"calendar must be one of {sorted(CALENDARS)}"
                 )
@@ -416,7 +444,7 @@ def _validate_splits(value: Any, where: str, errors: Errors) -> None:
                     if fold["train"][1] >= fold["validate"][0]:
                         errors.add(w, "train must end before validate starts")
     if _closed_keys(test, TEST_KEYS, f"{where}.test", errors):
-        if test.get("kind") not in TEST_KINDS:
+        if not _member(test.get("kind"), TEST_KINDS):
             errors.add(f"{where}.test", f"kind must be one of {sorted(TEST_KINDS)}")
         period = test.get("period")
         if not (_date_range(period) or _is_pending(period)):
@@ -490,7 +518,7 @@ def _validate_hypothesis(
     if tracker is not None and not _is_str(tracker):
         errors.add(w, "tracker must be a non-empty string or null")
     _markets(hyp.get("markets"), f"{w}.markets", errors)
-    if hyp.get("status") not in HYPOTHESIS_STATUSES:
+    if not _member(hyp.get("status"), HYPOTHESIS_STATUSES):
         errors.add(w, f"status must be one of {sorted(HYPOTHESIS_STATUSES)}")
     if not (
         isinstance(hyp.get("registered_at"), str)
@@ -506,7 +534,9 @@ def _validate_hypothesis(
     ):
         errors.add(w, "previous_manifest_sha256 must be a list of sha256 hex strings")
         previous = []
-    if sha in previous or len(set(previous)) != len(previous):
+    if (isinstance(sha, str) and sha in previous) or len(set(previous)) != len(
+        previous
+    ):
         errors.add(w, "manifest hashes must be unique across current and previous")
 
     k = hyp.get("k")
@@ -520,7 +550,7 @@ def _validate_hypothesis(
         errors.add(
             w, f"k={k} but test_looks has {len(looks)} entries (each look increments k)"
         )
-    known = {sha, *previous}
+    known = {s for s in [sha, *previous] if isinstance(s, str)}
     for j, look in enumerate(looks, start=1):
         lw = f"{w}.test_looks[{j - 1}]"
         if not _closed_keys(look, LOOK_KEYS, lw, errors):
@@ -529,7 +559,7 @@ def _validate_hypothesis(
             errors.add(lw, f"seq must be {j}")
         if not (isinstance(look.get("at"), str) and DATE_RE.match(look["at"])):
             errors.add(lw, "at must be YYYY-MM-DD")
-        if look.get("manifest_sha256") not in known:
+        if not _member(look.get("manifest_sha256"), known):
             errors.add(
                 lw, "manifest_sha256 is not a hash registered for this hypothesis"
             )
@@ -541,7 +571,15 @@ def _validate_hypothesis(
         if not report_path.is_file():
             errors.add(lw, f"report {report} does not exist")
             continue
-        cites, look_flag = _report_markers(report_path.read_text(encoding="utf-8"))
+        content = report_path.read_bytes()
+        if look.get("report_sha256") != hashlib.sha256(content).hexdigest():
+            errors.add(
+                lw,
+                f"report_sha256 does not match {report}; a look's report is frozen "
+                "once counted (write a new report and a new look instead)",
+            )
+        markers = _report_markers(content.decode("utf-8", errors="replace"))
+        cites, look_flag = markers.cites, markers.look
         if look.get("manifest_sha256") not in cites:
             errors.add(lw, f"report {report} does not cite the look's manifest hash")
         if look_flag != "yes":
@@ -566,6 +604,13 @@ def _validate_hypothesis(
     if isinstance(manifest, dict) and isinstance(manifest.get("markets"), list):
         if sorted(manifest["markets"]) != sorted(hyp.get("markets") or []):
             errors.add(w, "registry markets differ from the manifest markets")
+    version = manifest.get("version") if isinstance(manifest, dict) else None
+    if _is_int(version) and version != len(previous) + 1:
+        errors.add(
+            w,
+            f"manifest version {version} must be {len(previous) + 1} "
+            "(1 + number of previous_manifest_sha256)",
+        )
     actual = canonical_sha256(manifest)
     if actual != sha:
         errors.add(
@@ -574,26 +619,53 @@ def _validate_hypothesis(
             "A changed manifest is a new version: move the old hash to "
             "previous_manifest_sha256 and register the new one",
         )
-    if hyp.get("status") in {"sealed", "running", "closed"} and isinstance(
-        manifest, dict
-    ):
+    if _member(
+        hyp.get("status"), frozenset({"sealed", "running", "closed"})
+    ) and isinstance(manifest, dict):
         if manifest.get("status") != "sealed":
             errors.add(w, f"status {hyp.get('status')!r} requires a sealed manifest")
 
 
-def _report_markers(text: str) -> tuple[set[str], str | None]:
-    cites = {m.strip() for m in CITE_RE.findall(text)}
-    looks = LOOK_RE.findall(text)
-    return cites, (looks[-1].strip().lower() if looks else None)
+@dataclass(frozen=True)
+class Markers:
+    cites: frozenset[str]
+    look: str | None
+    problems: tuple[str, ...]
+
+
+def _report_markers(text: str) -> Markers:
+    text = text.replace("\ufeff", "")
+    problems: list[str] = []
+    cites: set[str] = set()
+    for raw in CITE_RE.findall(text):
+        if HEX64_RE.match(raw):
+            cites.add(raw.lower())
+        else:
+            problems.append(
+                f"malformed Experiment-Manifest-Sha256 value {raw[:20]!r} "
+                "(expected 64 hex characters)"
+            )
+    looks = [v.lower() for v in LOOK_RE.findall(text)]
+    for value in looks:
+        if value not in {"yes", "no"}:
+            problems.append("Experiment-Test-Look must be 'yes' or 'no'")
+    if len(looks) > 1:
+        problems.append("Experiment-Test-Look is declared more than once")
+    look = looks[0] if len(looks) == 1 and looks[0] in {"yes", "no"} else None
+    if len(looks) > 1 and "yes" in looks:
+        look = "yes"
+    return Markers(frozenset(cites), look, tuple(problems))
 
 
 def iter_report_files(root: Path) -> Iterable[Path]:
+    seen: set[Path] = set()
     for scan in REPORT_SCAN_ROOTS:
         base = root / scan
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.md")):
-            if path.is_file():
+            if path.is_file() and path not in seen:
+                seen.add(path)
                 yield path
 
 
@@ -605,18 +677,26 @@ def validate_reports(
     for hid, hyp in by_id.items():
         for sha in [
             hyp.get("manifest_sha256"),
-            *(hyp.get("previous_manifest_sha256") or []),
+            *_as_list(hyp.get("previous_manifest_sha256")),
         ]:
             if isinstance(sha, str):
                 registered[sha] = hid
-        for look in hyp.get("test_looks") or []:
+        for look in _as_list(hyp.get("test_looks")):
             if isinstance(look, dict):
                 counted.add((str(look.get("report")), str(look.get("manifest_sha256"))))
 
     reports_dir = root / REPORTS_DIR
+    if reports_dir.is_dir():
+        for path in sorted(reports_dir.rglob("*")):
+            if path.is_file() and path.suffix != ".md":
+                rel = path.relative_to(root).as_posix()
+                errors.add(rel, "experiment reports must be .md files")
     for path in iter_report_files(root):
         rel = path.relative_to(root).as_posix()
-        cites, look_flag = _report_markers(path.read_text(encoding="utf-8"))
+        markers = _report_markers(path.read_text(encoding="utf-8", errors="replace"))
+        cites, look_flag = markers.cites, markers.look
+        for problem in markers.problems:
+            errors.add(rel, problem)
         in_reports_dir = reports_dir in path.parents
         if in_reports_dir and path.name != "README.md" and not cites:
             errors.add(
@@ -625,8 +705,6 @@ def validate_reports(
         for sha in sorted(cites):
             if sha not in registered:
                 errors.add(rel, f"cites unregistered manifest hash {sha}")
-        if look_flag is not None and look_flag not in {"yes", "no"}:
-            errors.add(rel, "Experiment-Test-Look must be 'yes' or 'no'")
         if look_flag == "yes":
             if not cites:
                 errors.add(
@@ -672,20 +750,20 @@ def validate_heartbeat(
             seen.add(eid)
         hyp = epoch.get("hypothesis")
         if hyp is not None:
-            if hyp not in by_id:
+            if not _member(hyp, by_id):
                 errors.add(w, f"hypothesis {hyp!r} is not registered")
             else:
                 watched.add(hyp)
         if not _is_str(epoch.get("description")):
             errors.add(w, "description must be a non-empty string")
-        if epoch.get("calendar") not in CALENDARS:
+        if not _member(epoch.get("calendar"), CALENDARS):
             errors.add(w, f"calendar must be one of {sorted(CALENDARS)}")
         source = epoch.get("source")
         if not isinstance(source, dict):
             errors.add(f"{w}.source", "must be an object")
             continue
         kind = source.get("kind")
-        if kind not in SOURCE_KINDS:
+        if not _member(kind, SOURCE_KINDS):
             errors.add(f"{w}.source", f"kind must be one of {sorted(SOURCE_KINDS)}")
             continue
         extra = "advance_kinds" if kind == "hash_chained_ledger" else "select"
@@ -716,7 +794,7 @@ def validate_against_base(
         if not isinstance(old, dict):
             continue
         hid = old.get("id")
-        new = by_id.get(hid)
+        new = by_id.get(hid) if isinstance(hid, str) else None
         w = f"{where}[{hid}]"
         if new is None:
             errors.add(w, "hypothesis was removed; set status 'retired' instead")
@@ -724,23 +802,38 @@ def validate_against_base(
         old_k, new_k = old.get("k"), new.get("k")
         if _is_int(old_k) and _is_int(new_k) and new_k < old_k:
             errors.add(w, f"k decreased from {old_k} to {new_k}")
-        old_looks = old.get("test_looks") or []
-        new_looks = new.get("test_looks") or []
+        old_looks = _as_list(old.get("test_looks"))
+        new_looks = _as_list(new.get("test_looks"))
         if new_looks[: len(old_looks)] != old_looks:
             errors.add(w, "earlier test_looks were changed or removed (append only)")
         old_sha = old.get("manifest_sha256")
         new_known = {
-            new.get("manifest_sha256"),
-            *(new.get("previous_manifest_sha256") or []),
+            s
+            for s in [
+                new.get("manifest_sha256"),
+                *_as_list(new.get("previous_manifest_sha256")),
+            ]
+            if isinstance(s, str)
         }
-        for sha in [old_sha, *(old.get("previous_manifest_sha256") or [])]:
-            if sha not in new_known:
+        for sha in [old_sha, *_as_list(old.get("previous_manifest_sha256"))]:
+            if not _member(sha, new_known):
                 errors.add(
                     w,
                     f"registered hash {sha} disappeared (keep it in previous_manifest_sha256)",
                 )
         if old.get("registered_at") != new.get("registered_at"):
             errors.add(w, "registered_at must not change")
+        old_status, new_status = old.get("status"), new.get("status")
+        if old_status == "retired" and new_status != "retired":
+            errors.add(w, "a retired hypothesis cannot be revived; register a new id")
+        elif (
+            _member(old_status, STATUS_ORDER)
+            and _member(new_status, STATUS_ORDER)
+            and STATUS_ORDER[new_status] < STATUS_ORDER[old_status]
+        ):
+            errors.add(
+                w, f"status moved backwards from {old_status!r} to {new_status!r}"
+            )
 
 
 # --------------------------------------------------------------- entry
@@ -783,7 +876,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(canonical_sha256(manifest))
         return 0
-    problems = run(args.root, args.base_registry)
+    try:
+        problems = run(args.root, args.base_registry)
+    except Exception as exc:  # fail closed with a clean line, never a traceback
+        problems = [f"internal error {exc.__class__.__name__}: {exc}"]
     if problems:
         for line in problems:
             print(f"experiment-registry: {line}", file=sys.stderr)

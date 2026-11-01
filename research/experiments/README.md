@@ -55,22 +55,28 @@ requires a sealed manifest.
 
 - `id` is unique; entries are never removed (set `status: retired`).
 - `manifest_sha256` must equal the manifest's hash. To change a manifest,
-  bump `version`, move the old hash to `previous_manifest_sha256` and register
-  the new hash. The lint rejects an edited manifest under an old hash.
+  move the old hash to `previous_manifest_sha256`, register the new hash and
+  set the manifest `version` to 1 + the number of previous hashes. The lint
+  rejects an edited manifest under an old hash. Manifest JSON may not repeat a
+  key.
 - **Every test-set look increments `k`.** Before opening the test, append
-  `{seq, at, manifest_sha256, report}` to `test_looks` and set
-  `k = len(test_looks)` in the same commit. Earlier looks are append-only and
-  `k` never decreases (checked against the base branch in CI).
-- A report cites the manifest it ran under and says whether it looked at the
-  test set, with two lines at the start of a line:
-
-      Experiment-Manifest-Sha256: <64 hex>
-      Experiment-Test-Look: yes | no
-
+  `{seq, at, manifest_sha256, report, report_sha256}` to `test_looks` and set
+  `k = len(test_looks)` in the same commit. `report_sha256` is the sha256 of
+  the report file's bytes; a counted report is frozen. Earlier looks are
+  append-only, `k` never decreases, status never moves backwards
+  (draft → sealed → running → closed; retired is final) — checked against the
+  base branch in CI.
+- A report carries two markers, each on its own line: the key
+  `Experiment-Manifest-Sha256` followed by a colon and the 64-hex manifest
+  hash it ran under, and the key `Experiment-Test-Look` followed by a colon and
+  `yes` or `no`. Keys are matched in any case and under markdown decoration
+  (bold, list, quote, table cell, indent), so do not write a key followed by a
+  colon in prose.
   The lint scans every `*.md` under `research/` and `docs/research/`. A cited
-  hash that is not registered fails CI. A `yes` look that is not in
-  `test_looks` fails CI. Every file in `research/experiments/reports/` must
-  cite a hash.
+  hash that is not registered, a malformed hash, a look value other than
+  `yes`/`no`, or more than one look marker fails CI. A `yes` look that is not
+  in `test_looks` fails CI. Every file in `research/experiments/reports/` must
+  be `.md` and cite a hash.
 - A hypothesis with status `running` must have an epoch in `heartbeat.json`.
 
 Registered on 2026-11-01, all with `k = 0` and draft manifests:

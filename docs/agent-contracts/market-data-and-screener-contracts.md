@@ -354,7 +354,7 @@ KST 시각 라벨(venue 아님). 가격은 `adjusted=false`. 쓰기는 `ON CONFL
   기간 또는 prospective seal)·candidate_policies·costs_fills·tuning_budget·seeds·metrics·stopping_rules·
   cumulative_k. 정체성 = canonical JSON sha256. 바뀐 manifest 는 새 version 이고 옛 hash 는
   `previous_manifest_sha256` 로 남긴다.
-- 🔴 **test-set look 마다 k 증가**: 테스트를 열기 전에 `test_looks` 에 추가하고 같은 커밋에서 `k = len(test_looks)`.
+- 🔴 **test-set look 마다 k 증가**: 테스트를 열기 전에 `test_looks` 에 추가(리포트 `report_sha256` 고정)하고 같은 커밋에서 `k = len(test_looks)`.
   `k` 감소·이전 look 수정·가설 삭제 금지(CI 가 base 브랜치 registry 와 대조). 리포트는
   `Experiment-Manifest-Sha256:` 줄로 등록된 hash 를 인용해야 하며, 미등록 hash·미계수 look 은 CI 실패
   (`scripts/ci/experiment_registry_lint.py`, `lint` 잡 + `tests/ci/test_experiment_registry_lint.py`).
