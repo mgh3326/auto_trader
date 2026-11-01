@@ -67,6 +67,9 @@ tests/research/crypto_corpus/test_builder.py
 tests/research/crypto_corpus/test_policy_loader.py
 tests/research/kr_corpus/d3_engine/test_d3_primary.py
 tests/research/kr_corpus/test_kr_a0_exact_binding.py
+tests/research/kr_delist_repair/test_kr_delist_causal.py
+tests/research/kr_delist_repair/test_kr_delist_export.py
+tests/research/kr_delist_repair/test_kr_delist_sources.py
 tests/research/rob1391_us_resubmit_shadow/test_calendar_and_costs.py
 tests/research/rob1391_us_resubmit_shadow/test_engine.py
 tests/research/test_screener_bakeoff_contract.py
