@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import io
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,14 @@ from alembic.operations import Operations
 
 from app.models.base import Base
 from app.models.execution_intent import ExecutionChildRequest, ExecutionIntent
+from app.schemas.execution_intent import (
+    MAX_INTENT_NOTIONAL_KRW,
+    MAX_INTENT_QUANTITY,
+    MAX_LIMIT_PRICE_KRW,
+    MAX_SLIPPAGE_BPS,
+    MAX_STRATEGY_LENGTH,
+)
+from app.services.execution_intent_gateway.store import MAX_INTENT_LIFETIME
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "alembic/versions/20261101_rob1440_intent_gateway.py"
@@ -43,6 +52,18 @@ def _render_upgrade() -> str:
     )
     with Operations.context(context):
         module.upgrade()
+    return buffer.getvalue()
+
+
+def _render_downgrade() -> str:
+    module = _load_migration()
+    buffer = io.StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": buffer},
+    )
+    with Operations.context(context):
+        module.downgrade()
     return buffer.getvalue()
 
 
@@ -81,12 +102,35 @@ def test_journal_guard_covers_every_column_except_the_outcome_columns() -> None:
         assert compared is (column.name not in outcome_columns), column.name
 
 
-def test_guards_cover_the_write_operations_of_both_tables() -> None:
+def test_guards_cover_every_row_write_on_both_tables() -> None:
     sql = _render_upgrade()
-    assert "CREATE TRIGGER trg_execution_intents_immutable" in sql
-    assert "BEFORE UPDATE OR DELETE ON review.execution_intents" in sql
-    assert "CREATE TRIGGER trg_execution_child_requests_guard" in sql
-    assert "BEFORE INSERT OR UPDATE OR DELETE ON review.execution_child_requests" in sql
+    for table, trigger in (
+        ("execution_intents", "trg_execution_intents_guard"),
+        ("execution_child_requests", "trg_execution_child_requests_guard"),
+    ):
+        assert f"CREATE TRIGGER {trigger}" in sql
+        assert f"BEFORE INSERT OR UPDATE OR DELETE ON review.{table}" in sql
+
+
+def test_downgrade_checks_for_rows_before_it_drops_anything() -> None:
+    sql = _render_downgrade()
+    assert "LOCK TABLE review.execution_child_requests" in sql
+    assert sql.index("RAISE EXCEPTION") < sql.index("DROP INDEX")
+    assert sql.index("RAISE EXCEPTION") < sql.index("DROP TABLE")
+
+
+def test_intent_checks_repeat_the_schema_caps() -> None:
+    block = _table_block(_render_upgrade(), "execution_intents")
+    assert f"max_quantity BETWEEN 1 AND {MAX_INTENT_QUANTITY}" in block
+    assert f"max_notional_krw BETWEEN 1 AND {MAX_INTENT_NOTIONAL_KRW}" in block
+    assert f"limit_price_krw BETWEEN 1 AND {MAX_LIMIT_PRICE_KRW}" in block
+    assert f"max_slippage_bps BETWEEN 0 AND {MAX_SLIPPAGE_BPS}" in block
+    assert f"char_length(strategy) BETWEEN 1 AND {MAX_STRATEGY_LENGTH}" in block
+
+
+def test_intent_expiry_guard_matches_the_store_window() -> None:
+    assert MAX_INTENT_LIFETIME == timedelta(hours=24)
+    assert "now() + interval '24 hours'" in _render_upgrade()
 
 
 @pytest.mark.parametrize("model", [ExecutionIntent, ExecutionChildRequest])

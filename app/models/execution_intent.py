@@ -36,10 +36,16 @@ class ExecutionIntent(Base):
         CheckConstraint("account IN ('kis_mock')", name="account_mock_only"),
         CheckConstraint("venue IN ('krx')", name="venue"),
         CheckConstraint("side IN ('buy', 'sell')", name="side"),
-        CheckConstraint("max_quantity > 0", name="max_quantity"),
-        CheckConstraint("max_notional_krw > 0", name="max_notional"),
-        CheckConstraint("limit_price_krw > 0", name="limit_price"),
+        CheckConstraint("max_quantity BETWEEN 1 AND 1000000", name="max_quantity"),
+        CheckConstraint("max_notional_krw BETWEEN 1 AND 5000000", name="max_notional"),
+        CheckConstraint("limit_price_krw BETWEEN 1 AND 10000000", name="limit_price"),
         CheckConstraint("max_slippage_bps BETWEEN 0 AND 500", name="slippage"),
+        CheckConstraint(
+            "char_length(strategy) BETWEEN 1 AND 128 "
+            "AND char_length(policy_version) BETWEEN 1 AND 128 "
+            "AND char_length(authorization_ref) BETWEEN 1 AND 128",
+            name="references",
+        ),
         CheckConstraint(
             "position_at_authorization >= 0 AND min_position_after >= 0 "
             "AND min_position_after <= max_position_after",

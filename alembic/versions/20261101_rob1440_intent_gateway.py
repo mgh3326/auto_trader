@@ -9,9 +9,13 @@ column; the trigger still refuses any real update. Triggers hold
 the same rules for any role, including before the #789 Stage 4 role split: intents
 are immutable, journal request fields are immutable, a journal row moves only from
 ``sending`` to ``accepted`` or ``uncertain``, a new journal row starts as
-``sending`` or ``refused`` with no outcome, and no row is deleted. Rewriting a
+``sending`` or ``refused`` with no outcome, a new intent expires within 24 hours,
+and no row is deleted. Table CHECKs repeat the schema's caps. Rewriting a
 ``sending`` row's key would let a retry look new and send twice, and inserting an
 ``accepted`` row would hand a later cancel a forged broker order id.
+
+Downgrade refuses while either table holds rows, because losing the journal would
+let a used key send again.
 
 Revision ID: 20261101_rob1440_intent_gw
 Revises: 20261016_rob1378_q46_lock
@@ -35,20 +39,27 @@ depends_on: str | Sequence[str] | None = None
 #: One statement per entry. The DB test installs these so it exercises this DDL.
 GUARD_DDL: tuple[str, ...] = (
     """
-    CREATE OR REPLACE FUNCTION review.execution_intents_immutable()
+    CREATE OR REPLACE FUNCTION review.execution_intents_guard()
     RETURNS trigger AS $$
     BEGIN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.expires_at <= now()
+               OR NEW.expires_at > now() + interval '24 hours' THEN
+                RAISE EXCEPTION 'review.execution_intents expiry is outside the allowed window'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NEW;
+        END IF;
         RAISE EXCEPTION 'review.execution_intents rows are immutable'
             USING ERRCODE = 'restrict_violation';
     END;
     $$ LANGUAGE plpgsql
     """,
-    "DROP TRIGGER IF EXISTS trg_execution_intents_immutable "
-    "ON review.execution_intents",
+    "DROP TRIGGER IF EXISTS trg_execution_intents_guard ON review.execution_intents",
     """
-    CREATE TRIGGER trg_execution_intents_immutable
-    BEFORE UPDATE OR DELETE ON review.execution_intents
-    FOR EACH ROW EXECUTE FUNCTION review.execution_intents_immutable()
+    CREATE TRIGGER trg_execution_intents_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON review.execution_intents
+    FOR EACH ROW EXECUTE FUNCTION review.execution_intents_guard()
     """,
     """
     CREATE OR REPLACE FUNCTION review.execution_child_requests_guard()
@@ -97,6 +108,23 @@ GUARD_DDL: tuple[str, ...] = (
     """,
 )
 
+#: Dropping the journal forgets which keys were used, so a reapplied migration would
+#: accept them as new and could send again. An operator who really wants to roll
+#: back must export the rows and clear them on purpose first.
+DOWNGRADE_GUARD: str = """
+    DO $$
+    BEGIN
+        LOCK TABLE review.execution_child_requests, review.execution_intents
+            IN ACCESS EXCLUSIVE MODE;
+        IF EXISTS (SELECT 1 FROM review.execution_child_requests)
+           OR EXISTS (SELECT 1 FROM review.execution_intents) THEN
+            RAISE EXCEPTION 'execution intent tables hold rows; export and clear them before downgrading'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+    END;
+    $$
+"""
+
 
 def upgrade() -> None:
     op.create_table(
@@ -138,17 +166,26 @@ def upgrade() -> None:
             "side IN ('buy', 'sell')", name=op.f("ck_execution_intents_side")
         ),
         sa.CheckConstraint(
-            "max_quantity > 0", name=op.f("ck_execution_intents_max_quantity")
+            "max_quantity BETWEEN 1 AND 1000000",
+            name=op.f("ck_execution_intents_max_quantity"),
         ),
         sa.CheckConstraint(
-            "max_notional_krw > 0", name=op.f("ck_execution_intents_max_notional")
+            "max_notional_krw BETWEEN 1 AND 5000000",
+            name=op.f("ck_execution_intents_max_notional"),
         ),
         sa.CheckConstraint(
-            "limit_price_krw > 0", name=op.f("ck_execution_intents_limit_price")
+            "limit_price_krw BETWEEN 1 AND 10000000",
+            name=op.f("ck_execution_intents_limit_price"),
         ),
         sa.CheckConstraint(
             "max_slippage_bps BETWEEN 0 AND 500",
             name=op.f("ck_execution_intents_slippage"),
+        ),
+        sa.CheckConstraint(
+            "char_length(strategy) BETWEEN 1 AND 128 "
+            "AND char_length(policy_version) BETWEEN 1 AND 128 "
+            "AND char_length(authorization_ref) BETWEEN 1 AND 128",
+            name=op.f("ck_execution_intents_references"),
         ),
         sa.CheckConstraint(
             "position_at_authorization >= 0 AND min_position_after >= 0 "
@@ -238,6 +275,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(DOWNGRADE_GUARD)
     op.drop_index(
         "ix_execution_child_requests_intent",
         table_name="execution_child_requests",
@@ -246,4 +284,4 @@ def downgrade() -> None:
     op.drop_table("execution_child_requests", schema="review")
     op.drop_table("execution_intents", schema="review")
     op.execute("DROP FUNCTION IF EXISTS review.execution_child_requests_guard()")
-    op.execute("DROP FUNCTION IF EXISTS review.execution_intents_immutable()")
+    op.execute("DROP FUNCTION IF EXISTS review.execution_intents_guard()")

@@ -51,12 +51,12 @@ _MIGRATION = (
 )
 
 
-def _guard_ddl() -> tuple[str, ...]:
+def _load_migration() -> Any:
     spec = importlib.util.spec_from_file_location("rob1440_migration", _MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.GUARD_DDL
+    return module
 
 
 def _now() -> datetime:
@@ -102,7 +102,7 @@ def _submit(intent: ExecutionIntentV1, key: str, quantity: int = 1) -> SubmitChi
 async def _schema_and_cleanup() -> Any:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all, tables=_TABLES, checkfirst=True)
-        for statement in _guard_ddl():
+        for statement in _load_migration().GUARD_DDL:
             await conn.execute(text(statement))
     yield
     # The row guards refuse DELETE by design.
@@ -300,34 +300,95 @@ async def test_cancel_runs_through_the_real_store(
     assert broker.calls[-1] == ("cancel", "1001")
 
 
+def _intent_row(**overrides: Any) -> ExecutionIntent:
+    values: dict[str, Any] = {
+        "id": uuid4(),
+        "schema_version": 1,
+        "strategy": "s3-test",
+        "account": "kis_mock",
+        "venue": "krx",
+        "symbol": "005930",
+        "side": "buy",
+        "max_quantity": 1,
+        "max_notional_krw": 70_000,
+        "limit_price_krw": 70_000,
+        "max_slippage_bps": 0,
+        "position_at_authorization": 0,
+        "min_position_after": 0,
+        "max_position_after": 1,
+        "policy_version": "p",
+        "authorization_ref": "a",
+        "expires_at": _now() + timedelta(hours=1),
+        "intent_digest": "d",
+    }
+    return ExecutionIntent(**{**values, **overrides})
+
+
 @pytest.mark.asyncio
-async def test_db_refuses_a_non_mock_intent_row() -> None:
-    intent = _intent()
+async def test_db_accepts_a_direct_intent_row_inside_every_bound() -> None:
     async with AsyncSessionLocal() as session:
-        session.add(
-            ExecutionIntent(
-                id=intent.intent_id,
-                schema_version=1,
-                strategy="s3-test",
-                account="kis_live",
-                venue="krx",
-                symbol="005930",
-                side="buy",
-                max_quantity=1,
-                max_notional_krw=1,
-                limit_price_krw=1,
-                max_slippage_bps=0,
-                position_at_authorization=0,
-                min_position_after=0,
-                max_position_after=1,
-                policy_version="p",
-                authorization_ref="a",
-                expires_at=_now(),
-                intent_digest="d",
-            )
-        )
+        session.add(_intent_row())
+        await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"account": "kis_live"},
+        {"max_quantity": 1_000_001},
+        {"max_notional_krw": 5_000_001},
+        {"limit_price_krw": 10_000_001},
+        {"max_slippage_bps": 501},
+        {"strategy": "s" * 129},
+        {"policy_version": "p" * 129},
+        {"authorization_ref": "a" * 129},
+        {"authorization_ref": ""},
+    ],
+)
+async def test_db_refuses_an_intent_row_outside_the_schema_bounds(
+    overrides: dict[str, Any],
+) -> None:
+    async with AsyncSessionLocal() as session:
+        session.add(_intent_row(**overrides))
         with pytest.raises(IntegrityError):
             await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "expires_in", [timedelta(seconds=-1), timedelta(days=36_500), timedelta(hours=25)]
+)
+async def test_db_refuses_an_intent_row_with_a_bad_expiry(
+    expires_in: timedelta,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        session.add(_intent_row(expires_at=_now() + expires_in))
+        with pytest.raises(DBAPIError):
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_downgrade_guard_refuses_while_rows_exist(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    guard = _load_migration().DOWNGRADE_GUARD
+    async with AsyncSessionLocal() as session:
+        await session.execute(text(guard))
+        await session.rollback()
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(DBAPIError):
+            await session.execute(text(guard))
+        await session.rollback()
+    await _gateway(store, FakeBroker()).handle(
+        _submit(intent, "child-0001"), confirm=True
+    )
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(DBAPIError):
+            await session.execute(text(guard))
+        await session.rollback()
 
 
 async def _accepted_row(

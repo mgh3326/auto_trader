@@ -27,7 +27,7 @@ If `handle` raises, nothing was forwarded for that call, unless the row was alre
 
 ## Intent (`ExecutionIntentV1`)
 
-The schema is in `app/schemas/execution_intent.py`. Intents are immutable once stored, and a DB trigger refuses any update or delete. Storing the same contents twice is a no-op, and storing different contents under the same id raises `IntentConflict`. An intent must expire within 24 hours of being stored.
+The schema is in `app/schemas/execution_intent.py`. Intents are immutable once stored, and a DB trigger refuses any update or delete. Table CHECKs repeat the caps below, and the same trigger refuses a new intent whose expiry is in the past or more than 24 hours away. Storing the same contents twice is a no-op, and storing different contents under the same id raises `IntentConflict`. An intent must expire within 24 hours of being stored.
 
 | Field | Rule |
 |---|---|
@@ -131,6 +131,10 @@ If a later amend or cancel ends `sending` or `uncertain`, the gateway refuses fu
 
 This includes `GLOBAL_FREEZE`. The runner's permission table says `GLOBAL_FREEZE` blocks every automatic mutation, while this contract keeps cancels allowed whenever submissions are blocked. The gateway follows this contract for its own path and does not change the runner's table. The guards below the gateway still apply to the cancel.
 
+## Rollback
+
+The migration's downgrade refuses while either table holds rows. Dropping the journal forgets which keys were used, so after a reapply a used key would look new and could send again. To roll back, export the rows and clear the tables on purpose first, and do not re-enable the gateway until the journal is restored or every old key is retired.
+
 ## Open items for E2 and E3
 
 - **Coordination route:** `run_kis_mock_send` refuses every KR mock send until a coordinated route is installed. Until then a submit ends as `uncertain`, and no order is sent.
@@ -139,4 +143,5 @@ This includes `GLOBAL_FREEZE`. The runner's permission table says `GLOBAL_FREEZE
 - **Inventory drift:** the inventory check uses the position stated at authorization, and the gateway reads no broker position. A position that moves outside the intent is not detected here.
 - **Resolving `uncertain` and `sending`:** nothing in E1 moves these rows, and there is no automatic replay. E2 needs a reconciler that reads ledger evidence. Until then, an order with an unknown later child cannot be cancelled through the gateway, so it must be cleared outside it.
 - **Expiry and kill at the wire:** both are judged at reservation, not at the broker call. Expiry is read under the intent row lock. The kill state is read just before that lock, so a lock wait can make it stale. A send can still cross `expires_at` or a newly engaged kill in the time between the journal commit and the wire. Closing that needs a journal state for "reserved, proven not sent" and a pre-send check on every forward path. `_place_order_impl` and `cancel_order_impl` take a `pre_send_hook`, but `modify_order_impl` does not. Decide this in E2, before the E3 pilot.
+- **What the DB cannot check:** a role with INSERT on intents can still write a row inside every bound, because the database cannot verify `authorization_ref`. Placeholder strategies are not checked in the DB either; the kis_mock attribution gate refuses them before a send. Intents must enter only through `store_intent`.
 - **Other accounts:** adding `kiwoom_mock` or `nh_mock` means adding a forwarder and extending the schema `Literal`, `MOCK_ACCOUNTS`, and the DB CHECK in a new migration.

@@ -193,7 +193,7 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 
 - **스키마**: `app/schemas/execution_intent.py` (`ExecutionIntentV1`, submit/amend/cancel child)
 - **패키지**: `app/services/execution_intent_gateway/` — `decisions`(순수 거부 규칙) · `store`(두 테이블의 유일한 writer) · `gateway`(순서) · `kis_mock_forwarder`(기존 주문 함수 호출, `is_mock=True` 고정)
-- **테이블**: `review.execution_intents`(불변, `account IN ('kis_mock')` CHECK), `review.execution_child_requests`(write-ahead journal). 마이그레이션 `20261101_rob1440_intent_gw`. at_app 은 DELETE 없음, journal UPDATE 는 결과 컬럼 4개만, intent UPDATE 는 `FOR UPDATE` 잠금용 `id` 하나만. 🔴 트리거가 어떤 역할이든 intent 변경·삭제, journal 요청 필드 변경·삭제, `sending`→`accepted`/`uncertain` 외 전이, 결과를 미리 담은 새 행(초기 상태는 `sending`/`refused`, `broker_order_id`·`result` 는 NULL)을 거부한다. 이 트리거를 완화하지 마라(`sending` 행의 키를 바꾸면 재시도가 새 요청으로 보여 이중 전송된다)
+- **테이블**: `review.execution_intents`(불변, `account IN ('kis_mock')` CHECK), `review.execution_child_requests`(write-ahead journal). 마이그레이션 `20261101_rob1440_intent_gw`. at_app 은 DELETE 없음, journal UPDATE 는 결과 컬럼 4개만, intent UPDATE 는 `FOR UPDATE` 잠금용 `id` 하나만. 🔴 트리거가 어떤 역할이든 intent 변경·삭제, journal 요청 필드 변경·삭제, `sending`→`accepted`/`uncertain` 외 전이, 결과를 미리 담은 새 행(초기 상태는 `sending`/`refused`, `broker_order_id`·`result` 는 NULL)을 거부한다. intent 는 CHECK 가 스키마 상한을 반복하고 트리거가 만기 과거·24시간 초과 INSERT 를 거부한다. 🔴 downgrade 는 행이 있으면 거부한다(journal 을 잃으면 쓴 키로 다시 전송될 수 있다). 이 트리거를 완화하지 마라(`sending` 행의 키를 바꾸면 재시도가 새 요청으로 보여 이중 전송된다)
 - **설계**: `docs/design/1440-intent-gateway-contract.md`
 
 **계약**:
