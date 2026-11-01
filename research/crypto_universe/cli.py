@@ -62,15 +62,17 @@ def cmd_build(args: argparse.Namespace) -> int:
     if unknown:
         raise SystemExit(f"unknown venues {sorted(unknown)}")
     cache = Path(args.cache_dir) if args.cache_dir else root / "cache"
-    outputs = [root / "candles", root / "universe"]
-    if any(p.exists() for p in outputs):
-        if not args.replace:
-            raise SystemExit(
-                "candles/ or universe/ already exist under --root; pass --replace "
-                "to rebuild them (cache/ and snapshots/ are kept)"
-            )
-        for path in outputs:
-            shutil.rmtree(path, ignore_errors=True)
+    outputs = ("candles", "universe")
+    if any((root / name).exists() for name in outputs) and not args.replace:
+        raise SystemExit(
+            "candles/ or universe/ already exist under --root; pass --replace "
+            "to rebuild them (cache/ and snapshots/ are kept)"
+        )
+    # Build into a staging folder; the old outputs are replaced only after
+    # the whole build succeeded, so a failed rebuild keeps the last good one.
+    staging = root / ".build-staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
     results: dict[str, b.VenueResult] = {}
     inputs: dict[str, object] = {}
     if "binance_usdt_spot" in venues:
@@ -78,7 +80,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         inputs["binance_spot_exchange_info"] = ref
         results["binance_usdt_spot"] = b.build_binance(
             fetch,
-            root,
+            staging,
             info,
             snapshot_date=date.fromisoformat(ref["snapshot_date"]),
             cache_dir=cache,
@@ -100,22 +102,41 @@ def cmd_build(args: argparse.Namespace) -> int:
             raise SystemExit("--upbit-coverage-end is required without binance")
         results["upbit_krw"] = b.build_upbit(
             fetch,
-            root,
+            staging,
             markets,
             coverage_end=end,
             delisted_candidates=_upbit_probe_candidates(args, results),
             markets=args.upbit_markets.split(",") if args.upbit_markets else None,
             progress=_log,
         )
-    coverage = b.write_outputs(root, results, inputs)
+    coverage = b.write_outputs(staging, results, inputs)
+    promote_staging(root, staging, outputs)
     print(b.render_coverage_md(coverage))
     return 0
+
+
+def promote_staging(root: Path, staging: Path, names: tuple[str, ...]) -> None:
+    """Swap the staged outputs in; the previous ones are removed only after."""
+    previous = root / ".build-previous"
+    shutil.rmtree(previous, ignore_errors=True)
+    previous.mkdir()
+    for name in names:
+        if (root / name).exists():
+            (root / name).rename(previous / name)
+    for name in names:
+        if (staging / name).exists():
+            (staging / name).rename(root / name)
+    shutil.rmtree(previous)
+    shutil.rmtree(staging)
 
 
 def cmd_pit(args: argparse.Namespace) -> int:
     root = Path(args.root)
     manifest = json.loads((root / "universe" / "manifest.json").read_text())
-    table = manifest["tables"][args.venue]
+    table = manifest["tables"].get(args.venue)
+    if table is None:
+        print(f"refused: no {args.venue} table in manifest", file=sys.stderr)
+        return 2
     text = (root / table["path"]).read_text(encoding="utf-8")
     if hashlib.sha256(text.encode()).hexdigest() != table["sha256"]:
         print(

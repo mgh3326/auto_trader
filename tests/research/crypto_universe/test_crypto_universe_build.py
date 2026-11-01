@@ -515,3 +515,56 @@ def test_identical_duplicate_rows_collapse_but_conflicts_exclude(
     assert (btc.symbol, btc.trading_days) == ("BTCUSDT", 3)
     assert result.extra["identical_duplicate_rows_dropped"] == 1
     assert result.errors == ({"symbol": "BADUSDT", "month": "*", "error": "conflicting bars for one day"},)  # fmt: skip
+
+
+def test_pit_cli_refuses_a_venue_missing_from_the_manifest(
+    archive: ArchiveFixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from research.crypto_universe import cli
+
+    result = b.build_binance(
+        archive, tmp_path, _exchange_info(), snapshot_date=SNAP, cache_dir=None
+    )
+    b.write_outputs(tmp_path, {"binance_usdt_spot": result}, {})
+    args = [
+        "pit",
+        "--root",
+        str(tmp_path),
+        "--venue",
+        "upbit_krw",
+        "--date",
+        "2024-12-01",
+    ]
+    assert cli.main(args) == 2
+    assert "no upbit_krw table" in capsys.readouterr().err
+
+
+def test_failed_rebuild_keeps_the_previous_outputs(tmp_path: Path) -> None:
+    from research.crypto_universe import cli
+    from research.crypto_universe.snapshot import SnapshotError
+
+    for name in ("candles", "universe"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "keep.txt").write_text(name)
+    # no snapshot exists, so the build fails after staging, before promotion
+    with pytest.raises(SnapshotError):
+        cli.main(["build", "--root", str(tmp_path), "--replace"])
+    for name in ("candles", "universe"):
+        assert (tmp_path / name / "keep.txt").read_text() == name
+    with pytest.raises(SystemExit, match="--replace"):
+        cli.main(["build", "--root", str(tmp_path)])
+
+
+def test_promote_staging_swaps_outputs(tmp_path: Path) -> None:
+    from research.crypto_universe.cli import promote_staging
+
+    (tmp_path / "universe").mkdir()
+    (tmp_path / "universe" / "old.txt").write_text("old")
+    staging = tmp_path / ".build-staging"
+    (staging / "universe").mkdir(parents=True)
+    (staging / "universe" / "new.txt").write_text("new")
+    (staging / "candles").mkdir()
+    promote_staging(tmp_path, staging, ("candles", "universe"))
+    assert sorted(p.name for p in (tmp_path / "universe").iterdir()) == ["new.txt"]
+    assert (tmp_path / "candles").is_dir()
+    assert not staging.exists() and not (tmp_path / ".build-previous").exists()

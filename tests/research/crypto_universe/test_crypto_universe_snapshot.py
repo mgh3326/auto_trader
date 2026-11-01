@@ -236,3 +236,22 @@ def test_concurrent_runs_record_each_file_once(tmp_path: Path) -> None:
     assert errors == []
     assert len(_manifest(tmp_path)) == 2
     latest_snapshot(tmp_path, "binance_spot_exchange_info")
+
+
+def test_unrecorded_file_from_an_earlier_day_is_repaired_later(tmp_path: Path) -> None:
+    fetch = FakeFetch()
+    take_snapshot(tmp_path, fetch, now=_clock(1))
+    manifest = tmp_path / "snapshots" / MANIFEST_NAME
+    manifest.write_text(manifest.read_text().splitlines(keepends=True)[0])
+    # the crash is only noticed two days later
+    outcomes = take_snapshot(tmp_path, fetch, now=_clock(3))
+    assert [(o.action, o.source, o.path.parent.name) for o in outcomes] == [
+        ("manifest_repaired", "upbit_market_all", "2026-11-01"),
+        ("written", "binance_spot_exchange_info", "2026-11-03"),
+        ("written", "upbit_market_all", "2026-11-03"),
+    ]
+    dates = [(e["snapshot_date"], e["source"]) for e in _manifest(tmp_path)]
+    assert ("2026-11-01", "upbit_market_all") in dates
+    again = take_snapshot(tmp_path, fetch, now=_clock(3, 5))
+    assert [o.action for o in again] == ["already_present", "already_present"]
+    assert len(_manifest(tmp_path)) == 4

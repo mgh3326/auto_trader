@@ -17,8 +17,9 @@ ROOT=~/work/herdr-artifacts/crypto-universe-v1   # raw data stays outside git
 uv run python -m research.crypto_universe.cli snapshot --root "$ROOT"
 
 # Rebuild candles + PIT universe from the archives (reads the latest snapshot,
-# which must be dated after coverage_end). --replace deletes old candles/ and
-# universe/; cache/ and snapshots/ are kept.
+# which must be dated after coverage_end). The build runs in .build-staging/;
+# with --replace the old candles/ and universe/ are swapped out only after it
+# succeeds. cache/ and snapshots/ are kept.
 uv run python -m research.crypto_universe.cli build --root "$ROOT" --replace
 
 # Pairs tradeable on a UTC day (refuses days after coverage_end and a table
@@ -86,5 +87,5 @@ read-only, published by `os.link` so the name never holds a partial file and is
 never replaced) and `snapshots/manifest.jsonl` (one appended line per file;
 `sha256` of the raw body, `stored_sha256` of the `.gz`). Runs hold an exclusive
 `flock`. A file without a manifest line, left by a crash, gets its line on the
-next run after its bytes pass validation; a line torn by a crash is closed and
+next run (on any later day) after its bytes pass validation; a line torn by a crash is closed and
 skipped. A run whose fetch crosses UTC midnight writes nothing.

@@ -19,8 +19,8 @@ Crash safety:
   with ``os.link`` (fails if the name exists), so the final name only ever
   holds a complete file and an existing snapshot is never overwritten.
 * A published file without a manifest line (a crash between the two writes)
-  gets its line on the next run, after its bytes pass the same validation as
-  a fresh response.
+  gets its line on the next run, on any later day, after its bytes pass the
+  same validation as a fresh response.
 * A manifest line torn by a crash is closed with a newline before the next
   append and skipped by readers; the file it described then gets a fresh line.
 * A run whose fetch finishes on a later UTC day than it started refuses to
@@ -166,6 +166,52 @@ def _utc_iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _reconcile_existing(
+    root: Path,
+    manifest: Path,
+    recorded: set[tuple[Any, Any, Any]],
+    snapshot_date: str,
+    source: str,
+    url: str,
+    path: Path,
+) -> SnapshotOutcome:
+    """Record an existing snapshot file if the manifest lacks its line."""
+    raw = _read_raw(path)
+    _validate_payload(source, raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    if (snapshot_date, source, digest) in recorded:
+        return SnapshotOutcome(source, path, "already_present", digest)
+    _append_line(
+        manifest,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "snapshot_date": snapshot_date,
+            "source": source,
+            "url": url,
+            "path": path.relative_to(root).as_posix(),
+            "sha256": digest,
+            "bytes": len(raw),
+            "stored_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "fetched_at": None,
+            "note": "manifest line repaired from file on disk",
+        },
+    )
+    recorded.add((snapshot_date, source, digest))
+    return SnapshotOutcome(source, path, "manifest_repaired", digest)
+
+
+def _earlier_day_dirs(base: Path, today: date) -> list[Path]:
+    days = []
+    for child in base.iterdir():
+        try:
+            child_day = date.fromisoformat(child.name)
+        except ValueError:
+            continue
+        if child.is_dir() and child.name == child_day.isoformat() and child_day < today:
+            days.append(child)
+    return sorted(days)
+
+
 def take_snapshot(
     root: Path,
     fetch: Fetch,
@@ -173,7 +219,13 @@ def take_snapshot(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     sources: Mapping[str, str] = SNAPSHOT_SOURCES,
 ) -> list[SnapshotOutcome]:
-    """Write today's (UTC) snapshot of each source unless it already exists."""
+    """Write today's (UTC) snapshot of each source unless it already exists.
+
+    Files left unrecorded by a crash on any earlier day are recorded first, so
+    a crash is repaired by the next run whatever day it happens on. Only
+    files whose outcome is not ``already_present`` are reported for earlier
+    days.
+    """
     base = snapshot_dir(root)
     base.mkdir(parents=True, exist_ok=True)
     with _run_lock(base):
@@ -184,35 +236,23 @@ def take_snapshot(
             for e in _manifest_entries(manifest)
         }
         outcomes: list[SnapshotOutcome] = []
+        for day_dir in _earlier_day_dirs(base, day):
+            for source, url in sources.items():
+                path = day_dir / f"{source}.json.gz"
+                if not path.exists():
+                    continue
+                outcome = _reconcile_existing(
+                    root, manifest, recorded, day_dir.name, source, url, path
+                )
+                if outcome.action != "already_present":
+                    outcomes.append(outcome)
         for source, url in sources.items():
             path = base / day.isoformat() / f"{source}.json.gz"
-            relative = path.relative_to(root).as_posix()
             if path.exists():
-                raw = _read_raw(path)
-                _validate_payload(source, raw)
-                digest = hashlib.sha256(raw).hexdigest()
-                if (day.isoformat(), source, digest) in recorded:
-                    outcomes.append(
-                        SnapshotOutcome(source, path, "already_present", digest)
-                    )
-                    continue
-                _append_line(
-                    manifest,
-                    {
-                        "schema_version": SCHEMA_VERSION,
-                        "snapshot_date": day.isoformat(),
-                        "source": source,
-                        "url": url,
-                        "path": relative,
-                        "sha256": digest,
-                        "bytes": len(raw),
-                        "stored_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                        "fetched_at": None,
-                        "note": "manifest line repaired from file on disk",
-                    },
-                )
                 outcomes.append(
-                    SnapshotOutcome(source, path, "manifest_repaired", digest)
+                    _reconcile_existing(
+                        root, manifest, recorded, day.isoformat(), source, url, path
+                    )
                 )
                 continue
             resp = fetch(url)
@@ -235,13 +275,14 @@ def take_snapshot(
                     "snapshot_date": day.isoformat(),
                     "source": source,
                     "url": url,
-                    "path": relative,
+                    "path": path.relative_to(root).as_posix(),
                     "sha256": digest,
                     "bytes": len(resp.body),
                     "stored_sha256": hashlib.sha256(stored).hexdigest(),
                     "fetched_at": _utc_iso(fetched_at),
                 },
             )
+            recorded.add((day.isoformat(), source, digest))
             outcomes.append(SnapshotOutcome(source, path, "written", digest))
         return outcomes
 
