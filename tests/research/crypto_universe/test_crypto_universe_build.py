@@ -568,3 +568,74 @@ def test_promote_staging_swaps_outputs(tmp_path: Path) -> None:
     assert sorted(p.name for p in (tmp_path / "universe").iterdir()) == ["new.txt"]
     assert (tmp_path / "candles").is_dir()
     assert not staging.exists() and not (tmp_path / ".build-previous").exists()
+
+
+def _outputs(root: Path, label: str) -> None:
+    for name in ("candles", "universe"):
+        (root / name).mkdir(parents=True)
+        (root / name / f"{label}.txt").write_text(label)
+
+
+def _labels(root: Path) -> dict[str, list[str]]:
+    return {
+        name: sorted(p.name for p in (root / name).iterdir())
+        for name in ("candles", "universe")
+        if (root / name).exists()
+    }
+
+
+@pytest.mark.parametrize("crash_at_rename", [1, 2, 3, 4])
+def test_crash_during_promotion_never_loses_the_previous_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash_at_rename: int
+) -> None:
+    from research.crypto_universe import cli
+
+    names = ("candles", "universe")
+    _outputs(tmp_path, "old")
+    staging = tmp_path / ".build-staging"
+    _outputs(staging, "new")
+    real_rename = Path.rename
+    calls = {"n": 0}
+
+    def crashing_rename(self: Path, target: Path) -> Path:
+        calls["n"] += 1
+        if calls["n"] == crash_at_rename:
+            raise KeyboardInterrupt("simulated crash")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", crashing_rename)
+    with pytest.raises(KeyboardInterrupt):
+        cli.promote_staging(tmp_path, staging, names)
+    monkeypatch.setattr(Path, "rename", real_rename)
+
+    # a later build start runs recovery first: the old outputs come back whole
+    cli.recover_interrupted_promotion(tmp_path, names)
+    assert _labels(tmp_path) == {"candles": ["old.txt"], "universe": ["old.txt"]}
+    assert not (tmp_path / cli.PREVIOUS_DIR).exists()
+    assert cli.recover_interrupted_promotion(tmp_path, names) == []
+
+
+def test_crash_after_promotion_marker_keeps_the_new_outputs(tmp_path: Path) -> None:
+    from research.crypto_universe import cli
+
+    names = ("candles", "universe")
+    _outputs(tmp_path, "new")
+    previous = tmp_path / cli.PREVIOUS_DIR
+    _outputs(previous, "old")
+    (previous / cli.OLDS_SAVED_MARKER).touch()
+    (previous / cli.PROMOTED_MARKER).touch()
+    cli.recover_interrupted_promotion(tmp_path, names)
+    assert _labels(tmp_path) == {"candles": ["new.txt"], "universe": ["new.txt"]}
+    assert not previous.exists()
+
+
+def test_build_start_recovers_before_anything_else(tmp_path: Path) -> None:
+    from research.crypto_universe import cli
+    from research.crypto_universe.snapshot import SnapshotError
+
+    previous = tmp_path / cli.PREVIOUS_DIR
+    _outputs(previous, "old")  # crash right after saving, nothing promoted
+    with pytest.raises(SnapshotError):  # no snapshot; fails after recovery
+        cli.main(["build", "--root", str(tmp_path), "--replace"])
+    assert _labels(tmp_path) == {"candles": ["old.txt"], "universe": ["old.txt"]}
+    assert not previous.exists()

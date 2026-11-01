@@ -365,7 +365,8 @@ api.upbit.com market/all·candles/days) 밖의 URL 을 소켓 전에 거부한�
 - 🔴 **스냅샷**: `snapshots/<UTC 날짜>/<source>.json.gz` 는 임시 파일 fsync 후 `os.link` 로
   게시(부분 파일·덮어쓰기 불가)하고 읽기 전용이다. `manifest.jsonl` 은 append-only, 실행은 `flock`
   으로 직렬화. 같은 UTC 날짜 재실행은 네트워크 0·쓰기 0, 파일만 있고 manifest 줄이 없으면 검증을
-  통과한 디스크 바이트로 줄을 보수한다. UTC 자정을 넘긴 fetch 는 쓰지 않는다. 스케줄러 등록 금지.
+  통과한 디스크 바이트로 줄을 보수한다(이전 날짜 포함). 모든 소스를 먼저 받아 검증한 뒤 게시하며 UTC 자정을
+  넘긴 실행은 아무것도 쓰지 않는다. build 는 staging 후 표식 기반 교체(충돌 시 다음 build 가 복구). 스케줄러 등록 금지.
 - **산출물**: 원자료(캔들·스냅샷)는 git 밖 artifact root, 커밋되는 것은
   `research/crypto_universe/data/`(PIT 표·coverage·manifest)뿐. 캔들은 crypto-corpus-v1 holdout
   경계(2025-01-01)로 exploration/holdout 분리.

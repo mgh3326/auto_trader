@@ -203,16 +203,32 @@ def test_torn_manifest_line_is_closed_and_skipped(tmp_path: Path) -> None:
     assert day.isoformat() == "2026-11-02"
 
 
-def test_fetch_crossing_utc_midnight_writes_nothing(tmp_path: Path) -> None:
-    times = iter(
-        [
-            datetime(2026, 11, 1, 23, 59, 59, tzinfo=UTC),
-            datetime(2026, 11, 2, 0, 0, 5, tzinfo=UTC),
-        ]
-    )
-    with pytest.raises(SnapshotError, match="rerun"):
-        take_snapshot(tmp_path, FakeFetch(), now=lambda: next(times))
+def _rolling_clock(calls_before_midnight: int):
+    """23:59:59 for the first N reads of the clock, 00:00:05 next day after."""
+    count = {"n": 0}
+
+    def clock() -> datetime:
+        count["n"] += 1
+        if count["n"] <= calls_before_midnight:
+            return datetime(2026, 11, 1, 23, 59, 59, tzinfo=UTC)
+        return datetime(2026, 11, 2, 0, 0, 5, tzinfo=UTC)
+
+    return clock
+
+
+@pytest.mark.parametrize("calls_before_midnight", [1, 2, 3])
+def test_fetch_crossing_utc_midnight_writes_nothing(
+    tmp_path: Path, calls_before_midnight: int
+) -> None:
+    # 1: rolls over during the first fetch; 2: between the two sources;
+    # 3: during the second fetch. In every case no source may be published.
+    with pytest.raises(SnapshotError, match="nothing was written"):
+        take_snapshot(tmp_path, FakeFetch(), now=_rolling_clock(calls_before_midnight))
     assert not list((tmp_path / "snapshots").rglob("*.json.gz"))
+    assert not (tmp_path / "snapshots" / MANIFEST_NAME).exists()
+    # the rerun on the new day snapshots both sources
+    outcomes = take_snapshot(tmp_path, FakeFetch(), now=_clock(2))
+    assert [o.action for o in outcomes] == ["written", "written"]
 
 
 def test_concurrent_runs_record_each_file_once(tmp_path: Path) -> None:

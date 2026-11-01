@@ -23,8 +23,11 @@ Crash safety:
   same validation as a fresh response.
 * A manifest line torn by a crash is closed with a newline before the next
   append and skipped by readers; the file it described then gets a fresh line.
-* A run whose fetch finishes on a later UTC day than it started refuses to
-  write, so a file's date always matches its fetch.
+* Every missing source is fetched and validated before any is published, and
+  the clock is read after the last fetch: a run that crosses UTC midnight
+  writes nothing, so a day is never left partial by the clock. (A crash while
+  publishing can still leave a day partial; a same-day rerun fills it, a later
+  day cannot fetch a past snapshot.)
 
 There is no scheduler; an operator runs the command. Responses come only from
 the public endpoints allowlisted in :mod:`public_http`.
@@ -246,6 +249,10 @@ def take_snapshot(
                 )
                 if outcome.action != "already_present":
                     outcomes.append(outcome)
+        # Fetch and validate every missing source before publishing any, and
+        # check the clock after the last fetch: a run that crosses UTC
+        # midnight writes nothing for the new day's sources.
+        fetched: list[tuple[str, str, Path, bytes, datetime]] = []
         for source, url in sources.items():
             path = base / day.isoformat() / f"{source}.json.gz"
             if path.exists():
@@ -256,17 +263,18 @@ def take_snapshot(
                 )
                 continue
             resp = fetch(url)
-            fetched_at = now().astimezone(UTC)
-            if fetched_at.date() != day:
-                raise SnapshotError(
-                    f"{source}: run started on {day} but fetched on "
-                    f"{fetched_at.date()}; rerun to snapshot the new day"
-                )
             if resp.status != 200:
                 raise SnapshotError(f"{source}: HTTP {resp.status}")
             _validate_payload(source, resp.body)
-            digest = hashlib.sha256(resp.body).hexdigest()
-            stored = _gzip(resp.body)
+            fetched.append((source, url, path, resp.body, now().astimezone(UTC)))
+        if fetched and now().astimezone(UTC).date() != day:
+            raise SnapshotError(
+                f"run started on {day} but its fetches finished on a later UTC "
+                f"day; nothing was written, rerun to snapshot the new day"
+            )
+        for source, url, path, body, fetched_at in fetched:
+            digest = hashlib.sha256(body).hexdigest()
+            stored = _gzip(body)
             _publish(path, stored)
             _append_line(
                 manifest,
@@ -277,7 +285,7 @@ def take_snapshot(
                     "url": url,
                     "path": path.relative_to(root).as_posix(),
                     "sha256": digest,
-                    "bytes": len(resp.body),
+                    "bytes": len(body),
                     "stored_sha256": hashlib.sha256(stored).hexdigest(),
                     "fetched_at": _utc_iso(fetched_at),
                 },

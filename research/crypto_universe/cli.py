@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 from datetime import UTC, date, datetime
@@ -63,6 +64,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown venues {sorted(unknown)}")
     cache = Path(args.cache_dir) if args.cache_dir else root / "cache"
     outputs = ("candles", "universe")
+    for action in recover_interrupted_promotion(root, outputs):
+        _log(f"recovery: {action}")
     if any((root / name).exists() for name in outputs) and not args.replace:
         raise SystemExit(
             "candles/ or universe/ already exist under --root; pass --replace "
@@ -115,19 +118,72 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+PREVIOUS_DIR = ".build-previous"
+OLDS_SAVED_MARKER = ".olds-saved"
+PROMOTED_MARKER = ".promoted"
+
+
+def _touch(path: Path) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def promote_staging(root: Path, staging: Path, names: tuple[str, ...]) -> None:
-    """Swap the staged outputs in; the previous ones are removed only after."""
-    previous = root / ".build-previous"
-    shutil.rmtree(previous, ignore_errors=True)
+    """Swap the staged outputs in, in three recorded steps.
+
+    1. move every old output into ``.build-previous/``, then mark
+       ``.olds-saved``;
+    2. move every staged output into place, then mark ``.promoted``;
+    3. delete ``.build-previous/`` and the staging folder.
+
+    The markers let :func:`recover_interrupted_promotion` tell exactly how far
+    a crashed promotion got, so the old outputs are never lost.
+    """
+    previous = root / PREVIOUS_DIR
+    if previous.exists():
+        raise RuntimeError(f"{previous} exists; run recovery first")
     previous.mkdir()
     for name in names:
         if (root / name).exists():
             (root / name).rename(previous / name)
+    _touch(previous / OLDS_SAVED_MARKER)
     for name in names:
         if (staging / name).exists():
             (staging / name).rename(root / name)
+    _touch(previous / PROMOTED_MARKER)
     shutil.rmtree(previous)
     shutil.rmtree(staging)
+
+
+def recover_interrupted_promotion(root: Path, names: tuple[str, ...]) -> list[str]:
+    """Finish or roll back a promotion that a crash interrupted.
+
+    * ``.promoted`` present: the new outputs are complete; drop the backup.
+    * ``.olds-saved`` present only: every old output is in the backup and
+      ``root`` holds a partial set of new ones; remove those, restore the old.
+    * neither: the crash came while saving; move the saved ones back.
+    """
+    previous = root / PREVIOUS_DIR
+    if not previous.exists():
+        return []
+    if (previous / PROMOTED_MARKER).exists():
+        shutil.rmtree(previous)
+        return ["finished promotion; removed backup"]
+    actions: list[str] = []
+    olds_saved = (previous / OLDS_SAVED_MARKER).exists()
+    for name in names:
+        saved = previous / name
+        if olds_saved and (root / name).exists():
+            shutil.rmtree(root / name)
+            actions.append(f"removed partial new {name}")
+        if saved.exists():
+            saved.rename(root / name)
+            actions.append(f"restored previous {name}")
+    shutil.rmtree(previous)
+    return actions
 
 
 def cmd_pit(args: argparse.Namespace) -> int:
