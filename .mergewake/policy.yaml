@@ -1,6 +1,7 @@
 version: 1
-# Shadow only: mergewake classifies and reviews but never merges (ROB-1417).
-enabled: false
+# Operator 2026-11-02: auto-merge (land) on. Merging is not deploying: trading deploys,
+# migrations and schedulers still need operator approval, and blocking paths get two review passes.
+enabled: true
 required_checks:
   - lint
   - taskiq-smoke
@@ -71,3 +72,5 @@ blocking:
       - 'pyproject.toml'
       - 'uv.lock'
     reason: Verification, dependency and policy changes can bypass recovery controls.
+review_gate:
+  land: graded
