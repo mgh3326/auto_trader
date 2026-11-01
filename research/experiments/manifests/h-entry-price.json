@@ -1,0 +1,70 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "H-entry-price",
+  "version": 1,
+  "title": "Choose the limit price on the support ladder from touch_5 and xret_20|touch",
+  "status": "draft",
+  "question": "For an eligible entry, does choosing the support-ladder level by a model of touch_5 and xret_20|touch beat the current anchor rule and cash on net return at equal capital, after costs, on identical splits? A tuned gradient-boosting baseline runs first; TFT is a challenger only if the baseline passes its gate.",
+  "markets": ["kr", "us", "crypto"],
+  "hashes": {
+    "dataset_manifest_sha256": {"pending": "per-market point-in-time dataset from U2 (KR), U3 (US), U4 (crypto)"},
+    "evaluation_contract_sha256": {"pending": "evaluation contract v1 from U5"},
+    "code_sha": {"pending": "baseline code at U7 freeze"},
+    "policy_version": {"pending": "trading policy version the controls reproduce"}
+  },
+  "features": {"pending": "point-in-time feature list (every row carries available_at <= t) fixed with the U5 contract and the U2/U3/U4 datasets before any fit"},
+  "labels": [
+    {"name": "touch_5", "definition": "1 if the level price is touched (session low <= level) within 5 sessions after t, else 0; UNKNOWN when any of those sessions is unobserved", "horizon_sessions": 5},
+    {"name": "xret_20_given_touch", "definition": "excess return over the 20 sessions after the touch fill, conditional on touch_5 = 1", "horizon_sessions": 25}
+  ],
+  "calendar": {"kr": "XKRX", "us": "XNYS", "crypto": "24/7"},
+  "splits": {
+    "scheme": "expanding walk-forward on common dates per market: train 2015-2018 / validate 2019, adding one year per fold through validate 2022",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 25,
+    "gap_sessions": 25,
+    "folds": [
+      {"train": ["2015-01-01", "2018-12-31"], "validate": ["2019-01-01", "2019-12-31"]},
+      {"train": ["2015-01-01", "2019-12-31"], "validate": ["2020-01-01", "2020-12-31"]},
+      {"train": ["2015-01-01", "2020-12-31"], "validate": ["2021-01-01", "2021-12-31"]},
+      {"train": ["2015-01-01", "2021-12-31"], "validate": ["2022-01-01", "2022-12-31"]}
+    ],
+    "test": {
+      "kind": "sealed_period",
+      "period": ["2023-01-01", "2024-12-31"],
+      "exposure_audit": {"pending": "audit that no earlier experiment, report or tuning run read 2023-2024 for this market; if exposed, a new manifest version switches to prospective_seal"},
+      "seal_rule": "opened once after the model is frozen; each opening is a registry test look"
+    }
+  },
+  "candidate_policies": [
+    {"id": "control-anchor", "description": "current rule: strongest eligible support level, nearest to price on ties, tick_floor"},
+    {"id": "control-cash", "description": "no entry, 0% cash return"},
+    {"id": "gbm-baseline", "description": "tuned gradient boosting on identical inputs and splits picks the ladder level (U7)"},
+    {"id": "tft-challenger", "description": "TFT on identical inputs and splits; runs only if gbm-baseline passes its gate (U8)"}
+  ],
+  "costs_fills": {
+    "cost_table": {"pending": "per-market cost table from the U5 evaluation contract"},
+    "fill_models": [
+      "optimistic touch: low <= P",
+      "conservative through: low <= P - 1 tick",
+      "volume share: quantity capped by a share of bar volume",
+      "empirical: fill rate calibrated on own order evidence"
+    ]
+  },
+  "tuning_budget": {"pending": "maximum configurations and search method fixed with U7 before the first fit; every configuration tried counts"},
+  "seeds": {"pending": "fixed with U7 before the first fit"},
+  "metrics": {
+    "primary": "net return vs cash at equal capital, after costs, under the conservative fill model",
+    "secondary": ["fill rate (diagnostic only)", "results under each of the four fill models", "touch_5 calibration"],
+    "family": ["gbm-baseline vs control-anchor", "gbm-baseline vs control-cash"],
+    "alpha": {"pending": "fixed with U7"},
+    "delta_min": {"pending": "fixed with U7"}
+  },
+  "stopping_rules": [
+    "if gbm-baseline fails its gate the ML track for this hypothesis stops; tft-challenger does not run",
+    "any leakage finding (available_at > t, preprocessing fitted outside the fold, test rows read before freeze) voids the run",
+    "the sealed test period is never reopened for this hypothesis after a look",
+    "no market-wide claim on a survivor-only universe"
+  ],
+  "cumulative_k": {"prior_k": 0, "source": "registry"}
+}

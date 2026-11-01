@@ -56,6 +56,26 @@ jobs:
     - name: Run call-duration freshness unit tests
       run: uv run pytest scripts/call_durations_test.py -q
 
+    # ROB-1429: hypothesis registry lint (stdlib only). On a pull request the
+    # base branch's registry is fetched so k and test_looks can only grow; a
+    # failed fetch fails the step, an absent base registry skips that check.
+    - name: Experiment registry lint
+      env:
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [ -n "${BASE_REF}" ]; then
+          git fetch --no-tags --depth=1 origin "refs/heads/${BASE_REF}"
+          if git cat-file -e FETCH_HEAD:research/experiments/registry.json 2>/dev/null; then
+            git show FETCH_HEAD:research/experiments/registry.json > "${RUNNER_TEMP}/base_registry.json"
+            args=(--base-registry "${RUNNER_TEMP}/base_registry.json")
+          else
+            echo "base ${BASE_REF} has no experiment registry; append-only check skipped"
+          fi
+        fi
+        python3 scripts/ci/experiment_registry_lint.py "${args[@]}"
+
   # Exact-head source-ownership fence for the fencefix PR itself (ROB-1262
   # follow-up). Evaluates only this PR's actual base/head change set from
   # the GitHub event — never a fixed historical SHA vs. an advancing branch

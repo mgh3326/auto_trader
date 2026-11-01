@@ -17,6 +17,7 @@ tests/brokers/kis/test_client_facade.py
 tests/brokers/kis/test_vts_distributed_gate.py
 tests/ci/test_change_classifier.py
 tests/ci/test_ci_required_workflow_contract.py
+tests/ci/test_experiment_registry_lint.py
 tests/ci/test_file_shard_plan.py
 tests/core/test_exceptions.py
 tests/core/test_money.py
@@ -69,6 +70,7 @@ tests/research/kr_corpus/d3_engine/test_d3_primary.py
 tests/research/kr_corpus/test_kr_a0_exact_binding.py
 tests/research/rob1391_us_resubmit_shadow/test_calendar_and_costs.py
 tests/research/rob1391_us_resubmit_shadow/test_engine.py
+tests/research/test_experiment_heartbeat.py
 tests/research/test_screener_bakeoff_contract.py
 tests/research/test_screener_bakeoff_withdrawal.py
 tests/research/us_stage_b/test_cli.py
