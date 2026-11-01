@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,7 @@ from app.services.dots_history_export.spec import (
     SCHEMA_VERSION,
     TABLE_BY_NAME,
 )
+from app.services.execution_ledger.normalizers import _upbit_trade_fill_seq
 from tests.services.dots_history_export._fixtures import (
     ACCOUNT_NUMBER,
     CREATED,
@@ -360,3 +362,62 @@ def test_a_v2_export_with_seeds_and_balances_publishes(tmp_path: Path) -> None:
     )
     body = (tmp_path / "export" / "execution_ledger.csv").read_text("utf-8")
     assert SEED_ORDER_ID not in body
+
+
+#: A real Upbit per-trade key: the normalizer's 31-bit hash of a trade uuid.
+UPBIT_TRADE_SEQ = _upbit_trade_fill_seq("9d1c2b3a-4e5f-4a6b-8c7d-0e1f2a3b4c5d")
+
+
+@pytest.mark.parametrize(
+    ("fill_seq", "basis"),
+    [
+        (UPBIT_TRADE_SEQ, "incremental"),
+        (str(UPBIT_TRADE_SEQ), "incremental"),
+        (0, "cumulative"),
+        ("0", "cumulative"),
+        # Not an integer: the basis is unknown and the export does not fail.
+        (hashlib.sha256(b"trade").hexdigest(), "unknown"),
+        ("a3f9", "unknown"),
+        ("", "unknown"),
+        (None, "unknown"),
+        (True, "unknown"),
+    ],
+)
+def test_an_upbit_fill_seq_that_is_not_an_integer_does_not_crash(
+    fill_seq, basis, tmp_path: Path
+) -> None:
+    row = fill_row(
+        id=80,
+        broker="upbit",
+        instrument_type="crypto",
+        fill_seq=fill_seq,
+        filled_qty=Decimal("0.5"),
+    )
+    [cell] = _by_id(row).values()
+    assert cell["fill_qty_basis"] == basis
+    assert cell["fill_seq"] == "1"
+    assert cell["incremental_qty"] == ("0.5" if basis != "unknown" else None)
+    _publish(projected(execution_ledger=[row]), tmp_path / "export")
+
+
+def test_the_hash_fixture_is_shaped_like_the_ledger_value() -> None:
+    assert isinstance(UPBIT_TRADE_SEQ, int)
+    assert 0 < UPBIT_TRADE_SEQ <= 2_147_483_647
+
+
+@pytest.mark.parametrize(
+    "planted",
+    ["87654321", "87654321.0", "87654321.00000000", "-87654321.0"],
+)
+def test_a_zero_fraction_does_not_hide_a_denied_number(planted: str) -> None:
+    rows = [{**dict.fromkeys(BALANCES.column_names), "cash": planted}]
+    found = scan_table(BALANCES, BALANCES.column_names, rows, forbidden={"87654321"})
+    assert [(v.column, v.rule) for v in found] == [("cash", "forbidden_value")]
+
+
+@pytest.mark.parametrize("amount", ["87654321.5", "87654321.05", "187654321.0"])
+def test_a_different_number_near_a_denied_one_passes(amount: str) -> None:
+    rows = [{**dict.fromkeys(BALANCES.column_names), "cash": amount}]
+    assert (
+        scan_table(BALANCES, BALANCES.column_names, rows, forbidden={"87654321"}) == []
+    )

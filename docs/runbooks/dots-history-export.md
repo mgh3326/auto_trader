@@ -207,8 +207,8 @@ exports can be joined.
 ## fill_seq and incremental_qty
 
 These `execution_ledger` columns are new in v2. They are derived by the export.
-The ledger's own `fill_seq` column is part of its idempotency key, holds a hash
-for most writers and is never exported.
+The ledger's own `fill_seq` column is part of its idempotency key. It is an
+integer, a 31-bit hash for most writers, and is never exported.
 
 | Column | Meaning |
 | --- | --- |
@@ -228,6 +228,7 @@ today, and no raw payload is read:
 | Toss `reconciler` | `incremental` | The delta since the previous reconcile. |
 | Upbit `reconciler`, ledger `fill_seq = 0` | `cumulative` | The order's `executed_volume`, written when the order detail had no trades. |
 | Upbit `reconciler`, any other ledger `fill_seq` | `incremental` | One trade. |
+| Upbit `reconciler`, ledger `fill_seq` not an integer | `unknown` | It cannot tell an aggregate from a trade. The column is an integer, so this is a guard. |
 | `manual_import` with a `SEED-` id | `position_seed` | A whole position. |
 | Other `manual_import` | `unknown` | No rule says what the quantity is. |
 
@@ -329,7 +330,8 @@ both pass. A run fails on any of these:
   longer than six digits in an integer column.
 - A decimal or integer cell equal to a digit-only identifier of six or more
   digits, such as an account number in `--deny-values-file` written without
-  its hyphen.
+  its hyphen. A zero fraction does not hide it: `87654321.0000` matches
+  `87654321`.
 - A label or symbol that matches an account-number, long-digit, UUID, JWT, token
   prefix, credential-assignment, long-hex or long-opaque pattern.
 - A label or symbol containing a raw order or account identifier the tool read

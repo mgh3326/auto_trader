@@ -192,8 +192,11 @@ class _CellScanner:
         if shape is not None:
             return shape
         if column.kind in (Kind.DECIMAL, Kind.INTEGER):
-            digits = value.lstrip("-")
-            if digits in self._numeric or digits.lstrip("0") in self._numeric:
+            whole, _, fraction = value.lstrip("-").partition(".")
+            # 87654321.0 and 87654321.00000000 are the same number as 87654321.
+            if fraction.strip("0"):
+                return None
+            if whole in self._numeric or whole.lstrip("0") in self._numeric:
                 return "forbidden_value"
             return None
         if column.kind not in (Kind.TAG, Kind.SYMBOL):

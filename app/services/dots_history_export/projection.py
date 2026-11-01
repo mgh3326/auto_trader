@@ -832,7 +832,8 @@ def fill_qty_basis(row: SourceRow) -> str:
       order reports the new total again.
     * Toss ``reconciler`` rows book the delta since the previous reconcile.
     * Upbit ``reconciler`` rows with ledger ``fill_seq`` 0 book the order's
-      ``executed_volume``; any other ``fill_seq`` is one trade.
+      ``executed_volume``; any other integer ``fill_seq`` is one trade, and a
+      ``fill_seq`` that is not an integer leaves the basis ``unknown``.
     * An opening seed is a whole position; any other ``manual_import`` is unknown.
     """
     source = row["source"]
@@ -848,8 +849,31 @@ def fill_qty_basis(row: SourceRow) -> str:
     if broker == "toss":
         return "incremental"
     if broker == "upbit":
-        return "cumulative" if int(row.get("fill_seq") or 0) == 0 else "incremental"
+        seq = _ledger_fill_seq(row.get("fill_seq"))
+        if seq is None:
+            return "unknown"
+        return "cumulative" if seq == 0 else "incremental"
     return "unknown"
+
+
+_DECIMAL_DIGITS = re.compile(r"[0-9]+")
+
+
+def _ledger_fill_seq(value: Any) -> int | None:
+    """The ledger's ``fill_seq`` as an int, or ``None`` when it is not one.
+
+    The column is an ``Integer``: writers store a 31-bit hash or a broker
+    sequence, and Upbit stores 0 for an order aggregate. Anything else (a
+    missing value, a hex digest, a bool) cannot tell an aggregate from a trade,
+    so the basis becomes ``unknown`` instead of the export failing.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and _DECIMAL_DIGITS.fullmatch(value.strip()):
+        return int(value.strip())
+    return None
 
 
 def _fill_order(row: SourceRow) -> tuple[Any, ...]:
