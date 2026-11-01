@@ -172,7 +172,23 @@ class KrD3Rows:
 
 
 def _sessions(run_input: PortfolioRunInput) -> list[date]:
-    return sorted(set(run_input.market_sessions) | {b.session for b in run_input.bars})
+    """The market-session calendar R_h and data cutoffs are measured on.
+
+    ``market_sessions`` is authoritative when given; bars are only looked up
+    for closes, so a stray bar on a non-market day cannot shift horizons or
+    the data cutoff. Without a calendar the bar sessions are the calendar.
+    """
+
+    if run_input.market_sessions:
+        return sorted(set(run_input.market_sessions))
+    return sorted({b.session for b in run_input.bars})
+
+
+def _session_index(sessions: list[date], session: date) -> int:
+    pos = bisect.bisect_left(sessions, session)
+    if pos == len(sessions) or sessions[pos] != session:
+        raise ValueError(f"fill session {session} is not a market session")
+    return pos
 
 
 def _decision_id(session: date, symbol: str, side: Side) -> str:
@@ -323,7 +339,7 @@ def translate(
             buy_markouts(
                 order_id=f.order_id,
                 entry_price=f.price,
-                entry_index=sessions.index(f.session),
+                entry_index=_session_index(sessions, f.session),
                 closes=closes,
                 costs=costs,
             )

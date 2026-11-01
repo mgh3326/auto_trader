@@ -29,6 +29,7 @@ import dataclasses
 import hashlib
 import json
 import re
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -456,8 +457,11 @@ class FillModelResult:
                 raise ContractError("a fill lies outside its order's life")
             if f.side is not o.side or f.symbol != o.symbol:
                 raise ContractError("a fill differs from its order (side/symbol)")
-            if f.filled_qty > o.quantity:
-                raise ContractError("a fill exceeds its order quantity")
+        filled_qty: dict[str, Decimal] = defaultdict(Decimal)
+        for f in self.fills:
+            filled_qty[f.broker_order_id] += f.filled_qty
+        if any(qty > orders[oid].quantity for oid, qty in filled_qty.items()):
+            raise ContractError("fills exceed their order quantity")
         filled = {f.broker_order_id for f in self.fills}
         if any(out.order_id not in filled for out in self.outcomes):
             raise ContractError("an outcome references an unfilled order")
@@ -537,8 +541,11 @@ class EvaluationReport:
             raise MissingRegistryReference("report header has no 'registry' object")
         if not registry.get("registry_hash"):
             raise MissingRegistryReference("report header has no registry_hash")
-        return RegistryRef(
-            hypothesis_id=registry.get("hypothesis_id", ""),
-            registry_hash=registry["registry_hash"],
-            k=registry.get("k", 0),
-        )
+        try:
+            return RegistryRef(
+                hypothesis_id=registry.get("hypothesis_id", ""),
+                registry_hash=registry["registry_hash"],
+                k=registry.get("k", 0),
+            )
+        except ContractError as exc:
+            raise MissingRegistryReference(f"invalid registry header: {exc}") from exc

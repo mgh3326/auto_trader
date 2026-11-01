@@ -499,3 +499,40 @@ def test_canonical_hash_rejects_non_string_keys() -> None:
 def test_simulated_venue_matches_the_kis_kr_ledger_normalizer() -> None:
     report = kr_d3.evaluate(make_run_input(), ticks(), registry=REGISTRY, code_ref="t")
     assert {f.venue for f in report.result(BRACKET_OPTIMISTIC).fills} == {"krx"}
+
+
+# ------------------------------------------------ review round 2 (mergewake)
+
+
+def test_partial_fills_may_not_sum_past_the_order_quantity() -> None:
+    chain = _chain()
+    first = _fill_row(
+        filled_qty=Decimal(2),
+        filled_notional=Decimal(19200),
+        filled_at=T0 + timedelta(hours=1),
+    )
+    second = dataclasses.replace(first, fill_seq=1, filled_at=T0 + timedelta(hours=2))
+    with pytest.raises(ContractError, match="exceed their order quantity"):
+        dataclasses.replace(chain, fills=(first, second))
+    third = _fill_row(
+        filled_qty=Decimal(1),
+        filled_notional=Decimal(9600),
+        fill_seq=1,
+        filled_at=T0 + timedelta(hours=2),
+    )
+    assert dataclasses.replace(chain, fills=(first, third)).fill_rate == Decimal(1)
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        {"hypothesis_id": "H", "registry_hash": SHA},
+        {"hypothesis_id": "H", "registry_hash": "not-a-sha", "k": 1},
+        {"registry_hash": SHA, "k": 1},
+    ],
+)
+def test_malformed_registry_header_is_a_registry_failure(
+    registry: dict[str, object],
+) -> None:
+    with pytest.raises(MissingRegistryReference, match="invalid registry header"):
+        EvaluationReport.check_registry_header({"registry": registry})

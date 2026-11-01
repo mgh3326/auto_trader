@@ -56,7 +56,7 @@ v1 limits:
 - Net vs cash needs `CashflowView.NO_CONTRIBUTION` (equal capital). The cash rate
   is 0: D3's NAV earns no interest on idle cash, so an interest-bearing baseline
   would bias the comparison.
-- Markouts count market sessions, not bars. A horizon that lands on a missing bar
+- Markouts count `market_sessions` (bars are only looked up for closes), not bars. A horizon that lands on a missing bar
   is censored.
 - Simulated fills use `venue="krx"`, as the KIS KR ledger normalizer does.
 

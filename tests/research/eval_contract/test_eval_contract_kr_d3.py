@@ -283,6 +283,27 @@ def test_markouts_count_sessions_and_censor_a_missing_bar() -> None:
     assert outcomes[1].gross_return == Decimal(9910) / Decimal(9600) - 1
 
 
+def test_a_stray_bar_off_the_market_calendar_does_not_shift_horizons() -> None:
+    """Bars are looked up for closes only; market_sessions is the calendar."""
+
+    run_input = _extended()
+    result = PortfolioEngine(ticks()).run(run_input)
+    stray = sorted(run_input.market_sessions)[-18]  # extra session 3
+    off_calendar = replace(
+        run_input,
+        market_sessions=tuple(d for d in run_input.market_sessions if d != stray),
+    )
+    rows = kr_d3.translate(
+        off_calendar, result, hypothesis_id="H", fill_model_id="legacy_d3_engine"
+    )
+    first = result.fills[0]
+    outcomes = {o.horizon: o for o in rows.outcomes if o.order_id == first.order_id}
+    # Calendar without extra session 3: +1 -> extra 1, +5 -> extra 6.
+    assert outcomes[1].gross_return == Decimal(9910) / Decimal(9600) - 1
+    assert outcomes[5].gross_return == Decimal(9960) / Decimal(9600) - 1
+    assert outcomes[20].censored is True  # only 19 market sessions follow
+
+
 def test_time_trim_fills_become_marked_exit_orders() -> None:
     """C3 time trims fill at the open with no order_submitted event."""
 
