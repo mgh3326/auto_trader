@@ -1,0 +1,111 @@
+{
+  "artifact": "kr-delist-repair-v1",
+  "code_commit": "e5a5f0270cbafe4ba67aa3762c39090151e8460f",
+  "code_tree_clean": true,
+  "conventions": {
+    "bar_available_at": "session 16:00 Asia/Seoul (stored UTC)",
+    "listing_id": "symbol#segment; a code whose membership stops and later restarts is a new listing",
+    "terminal_available_at": "KRX notice filing time if a notice body was used, else delist_date 00:00 Asia/Seoul",
+    "terminal_row": "last membership session of a listing whose membership ended in main scope; never forward-filled",
+    "unresolved_terminal": "terminal_outcome=unresolved, no delist_date"
+  },
+  "coverage": {
+    "corpus_date_check": {
+      "equals_next_session": 397,
+      "not_checkable_main_scope_alive": 158
+    },
+    "date_basis": {
+      "kind_delist_list": 516,
+      "kind_disclosure_body": 39
+    },
+    "ended_in_main_scope": {
+      "coverage": 1.0,
+      "denominator": 404,
+      "resolved": 404,
+      "unresolved": 0
+    },
+    "membership_frame_not_listed": {
+      "coverage": 1.0,
+      "denominator": 560,
+      "resolved": 560,
+      "unresolved": 0
+    },
+    "payout_semantics": {
+      "ambiguous": 57,
+      "consideration_shares_or_cash": 126,
+      "converted_to_common": 11,
+      "residual_after_liquidation_trading": 210,
+      "tender_or_last_price": 34,
+      "trust_return": 117
+    },
+    "primary": {
+      "coverage": 1.0,
+      "denominator": 555,
+      "resolved": 555,
+      "unresolved": 0
+    },
+    "primary_delisted_frame": "corpus symbols with bars absent from today's KIS master (desk's 540 definition)",
+    "terminal_outcome": {
+      "dissolution_merger_or_liquidation": 36,
+      "fund_term_expiry": 6,
+      "merged_absorbed": 29,
+      "preferred_conversion": 11,
+      "preferred_float": 15,
+      "share_exchange": 44,
+      "spac_deadline": 117,
+      "spac_merger": 53,
+      "statutory_cause": 210,
+      "voluntary": 34
+    }
+  },
+  "files": {
+    "delist_resolution": {
+      "bytes": 246790,
+      "path": "delist_resolution.v1.csv",
+      "sha256": "019503c8dd4e2890edbd6cd374e5d145653adb9865b81aac353c2a106814fc9b"
+    },
+    "kr_daily_causal": {
+      "bytes": 65162657,
+      "path": "kr_daily_causal.v1.parquet",
+      "sha256": "8c52275fa01f4e0540aeb4959bd217efd5d184cf135731748753b282c3e74859"
+    },
+    "raw_index": {
+      "bytes": 72816,
+      "path": "index.json",
+      "sha256": "f1aef233cecfbd3db1a03a75f507b9670ec2a749f773d28e568736e35fcedd3b"
+    },
+    "unresolved": {
+      "bytes": 76,
+      "path": "unresolved.v1.csv",
+      "sha256": "f85783fa74638bd012d3073336563ba29e9f0b51b7b4381849528b970b977290"
+    }
+  },
+  "generated_at": "2026-11-01T07:45:27+00:00",
+  "inputs": {
+    "clamp_admit_v1_manifest_sha256": "25e2e9a5af85d3389488e5b3464d6d69bfaa877abeae7754ce50b8d23d2fd827",
+    "kr_corpus_v1_manifest_sha256": "da1ca376ac6693e96d311eda07f9fe96f1cb69fa2e3e8f346ededf96c5d5c54b",
+    "raw_index_sha256": "f1aef233cecfbd3db1a03a75f507b9670ec2a749f773d28e568736e35fcedd3b"
+  },
+  "issue": "ROB-1430",
+  "kind_asof": "2026-11-01",
+  "listings": 3149,
+  "rows": 5696650,
+  "scope": {
+    "first_session": "2015-01-02",
+    "holdout_read": false,
+    "last_session": "2024-12-30"
+  },
+  "symbols": 3148,
+  "terminal_outcome_counts": {
+    "dissolution_merger_or_liquidation": 33,
+    "fund_term_expiry": 7,
+    "merged_absorbed": 26,
+    "preferred_conversion": 11,
+    "preferred_float": 14,
+    "share_exchange": 32,
+    "spac_deadline": 68,
+    "spac_merger": 34,
+    "statutory_cause": 148,
+    "voluntary": 31
+  }
+}
