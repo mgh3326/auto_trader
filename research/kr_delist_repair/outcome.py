@@ -60,13 +60,18 @@ def classify(
             )
         if _SPAC_NAME.search(name):
             return TerminalOutcome.SPAC_DEADLINE, PayoutSemantics.TRUST_RETURN
-        return TerminalOutcome.DISSOLUTION, PayoutSemantics.AMBIGUOUS
+        return TerminalOutcome.FUND_TERM_EXPIRY, PayoutSemantics.AMBIGUOUS
     if "보통주" in r and "전환" in r and preferred:
         return TerminalOutcome.PREFERRED_CONVERSION, PayoutSemantics.CONVERTED_TO_COMMON
     if "신청" in r:
         return TerminalOutcome.VOLUNTARY, PayoutSemantics.TENDER_OR_LAST_PRICE
     if "해산" in r and "파산" not in r:
-        return TerminalOutcome.DISSOLUTION, PayoutSemantics.AMBIGUOUS
+        # KIND uses 해산 사유 발생 both for absorption mergers and for real
+        # liquidations; the list row cannot tell them apart.
+        return (
+            TerminalOutcome.DISSOLUTION_MERGER_OR_LIQUIDATION,
+            PayoutSemantics.AMBIGUOUS,
+        )
     if preferred and any(k in r for k in _PREFERRED_FLOAT):
         return TerminalOutcome.PREFERRED_FLOAT, PayoutSemantics.AMBIGUOUS
     if any(k in r for k in _STATUTORY) or "예비심사" in r:

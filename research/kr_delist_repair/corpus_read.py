@@ -26,16 +26,25 @@ class HoldoutAccessError(RuntimeError):
     """A read would touch the sealed holdout scope."""
 
 
-def _guard(path: Path) -> Path:
-    if "holdout" in path.parts:
+MAIN_YEARS = frozenset(f"year={y}" for y in range(2015, 2025))
+
+
+def _guard(path: Path, root: Path) -> Path:
+    """Refuse holdout paths, symlink escapes and non-main year partitions."""
+    real = path.resolve()
+    if "holdout" in path.parts or "holdout" in real.parts:
         raise HoldoutAccessError(f"refusing to read sealed holdout path {path}")
-    return path
+    if not real.is_relative_to(root.resolve()):
+        raise HoldoutAccessError(f"{path} resolves outside {root}")
+    if not any(part in MAIN_YEARS for part in path.parts):
+        raise HoldoutAccessError(f"{path} is not in a main-scope year partition")
+    return real
 
 
-def _read_all(files: list[Path], columns: list[str]) -> pa.Table:
+def _read_all(files: list[Path], columns: list[str], root: Path) -> pa.Table:
     if not files:
         raise FileNotFoundError("no corpus files matched")
-    tables = [pq.read_table(_guard(f), columns=columns) for f in files]
+    tables = [pq.read_table(_guard(f, root), columns=columns) for f in files]
     table = pa.concat_tables(tables)
     sessions = table.column("session")
     if (
@@ -55,18 +64,21 @@ class CorpusPaths:
         files = sorted(
             self.run_root.glob("membership/market=*/year=*/session=*.parquet")
         )
-        return _read_all(files, ["session", "market", "ticker"])
+        return _read_all(files, ["session", "market", "ticker"], self.run_root)
 
     def bars(self) -> pa.Table:
         files = sorted(self.run_root.glob("dataset/market=*/year=*/ticker=*.parquet"))
         return _read_all(
             files,
             ["session", "market", "ticker", "open", "high", "low", "close", "volume"],
+            self.run_root,
         )
 
     def no_trade(self) -> pa.Table:
         files = sorted(self.clamp_root.glob("no_trade/market=*/year=*/*.parquet"))
-        return _read_all(files, ["session", "market", "ticker", "close"])
+        return _read_all(
+            files, ["session", "market", "ticker", "close"], self.clamp_root
+        )
 
     def manifest_sha256(self) -> str:
         return hashlib.sha256(

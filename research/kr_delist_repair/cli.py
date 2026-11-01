@@ -79,46 +79,69 @@ class Sources:
 def presences(
     membership: pa.Table, bar_symbols: set[str]
 ) -> tuple[dict[str, Presence], list[date]]:
-    agg = membership.group_by("ticker").aggregate(
-        [("session", "min"), ("session", "max"), ("market", "distinct")]
-    )
-    out: dict[str, Presence] = {}
-    for sym, lo, hi, mkts in zip(
-        agg.column("ticker").to_pylist(),
-        agg.column("session_min").to_pylist(),
-        agg.column("session_max").to_pylist(),
-        agg.column("market_distinct").to_pylist(),
-        strict=True,
-    ):
-        out[sym] = Presence(
-            symbol=sym,
-            first_session=date.fromisoformat(lo),
-            last_session=date.fromisoformat(hi),
-            markets=tuple(sorted(mkts)),
-            has_bars=sym in bar_symbols,
-        )
+    """Split each code's membership into contiguous segments, keyed by listing id.
+
+    A segment ends where the code misses a calendar session and later returns
+    (code reuse after a delisting); each segment is a separate listing.
+    """
     calendar = sorted(
         date.fromisoformat(s)
         for s in pc.unique(membership.column("session")).to_pylist()
     )
+    index = {d.isoformat(): i for i, d in enumerate(calendar)}
+    sessions: dict[str, list[int]] = defaultdict(list)
+    markets: dict[tuple[str, int], set[str]] = defaultdict(set)
+    rows = zip(
+        membership.column("ticker").to_pylist(),
+        membership.column("session").to_pylist(),
+        membership.column("market").to_pylist(),
+        strict=True,
+    )
+    for sym, ses, mkt in rows:
+        sessions[sym].append(index[ses])
+        markets[(sym, index[ses])].add(mkt)
+    out: dict[str, Presence] = {}
+    for sym, idx in sessions.items():
+        idx.sort()
+        start = prev = idx[0]
+        segment = 0
+        for i in [*idx[1:], None]:
+            if i is not None and i == prev + 1:
+                prev = i
+                continue
+            seg_markets = sorted(
+                {m for k in range(start, prev + 1) for m in markets.get((sym, k), ())}
+            )
+            p = Presence(
+                symbol=sym,
+                first_session=calendar[start],
+                last_session=calendar[prev],
+                markets=tuple(seg_markets),
+                has_bars=sym in bar_symbols,
+                segment=segment,
+            )
+            out[p.listing_id] = p
+            if i is not None:
+                start = prev = i
+                segment += 1
     return out, calendar
 
 
 def activities(
-    targets: set[str], membership: pa.Table, bars: pa.Table, no_trade: pa.Table
+    targets: list[Presence], membership: pa.Table, bars: pa.Table, no_trade: pa.Table
 ) -> dict[str, Activity]:
-    def filt(t: pa.Table) -> pa.Table:
-        return t.filter(pc.is_in(t.column("ticker"), pa.array(sorted(targets))))
+    symbols = sorted({p.symbol for p in targets})
 
-    mem = defaultdict(list)
+    def filt(t: pa.Table) -> pa.Table:
+        return t.filter(pc.is_in(t.column("ticker"), pa.array(symbols)))
+
+    fm, fb, fn = filt(membership), filt(bars), filt(no_trade)
+    mem: dict[str, list[str]] = defaultdict(list)
     for s, t in zip(
-        filt(membership).column("session").to_pylist(),
-        filt(membership).column("ticker").to_pylist(),
-        strict=True,
+        fm.column("session").to_pylist(), fm.column("ticker").to_pylist(), strict=True
     ):
         mem[t].append(s)
     traded: dict[str, list[tuple[str, int]]] = defaultdict(list)
-    fb = filt(bars)
     for s, t, c in zip(
         fb.column("session").to_pylist(),
         fb.column("ticker").to_pylist(),
@@ -127,21 +150,21 @@ def activities(
     ):
         traded[t].append((s, c))
     nts: dict[str, set[str]] = defaultdict(set)
-    fn = filt(no_trade)
     for s, t in zip(
         fn.column("session").to_pylist(), fn.column("ticker").to_pylist(), strict=True
     ):
         nts[t].add(s)
     out: dict[str, Activity] = {}
-    for sym in targets:
-        sessions = sorted(mem.get(sym, []))
-        nt = nts.get(sym, set())
+    for p in targets:
+        lo, hi = p.first_session.isoformat(), p.last_session.isoformat()
+        sessions = sorted(s for s in mem.get(p.symbol, []) if lo <= s <= hi)
+        nt = {s for s in nts.get(p.symbol, set()) if lo <= s <= hi}
         run = best = 0
         for s in sessions:
             run = run + 1 if s in nt else 0
             best = max(best, run)
-        tr = sorted(traded.get(sym, []))
-        out[sym] = Activity(
+        tr = sorted(x for x in traded.get(p.symbol, []) if lo <= x[0] <= hi)
+        out[p.listing_id] = Activity(
             last_traded_session=date.fromisoformat(tr[-1][0]) if tr else None,
             no_trade_sessions=len(nt),
             no_trade_in_final_20=sum(1 for s in sessions[-20:] if s in nt),
@@ -325,12 +348,17 @@ def build(out: Path, repo_data: Path) -> dict[str, object]:
     pres, calendar = presences(membership, bar_symbols)
     main_end = calendar[-1]
 
-    not_listed = {s for s in pres if s not in listed}
-    ended = {s for s, p in pres.items() if p.last_session < main_end}
-    targets = not_listed | ended
+    latest: dict[str, Presence] = {}
+    for p in pres.values():
+        if p.symbol not in latest or p.segment > latest[p.symbol].segment:
+            latest[p.symbol] = p
+    # Listing ids. "Not listed" = the latest listing of a code absent from today's master.
+    not_listed = {p.listing_id for s, p in latest.items() if s not in listed}
+    ended = {lid for lid, p in pres.items() if p.last_session < main_end}
+    targets = [pres[lid] for lid in sorted(not_listed | ended)]
     act = activities(targets, membership, bars, no_trade)
     resolutions = resolve_all(
-        targets=[pres[s] for s in targets],
+        targets=targets,
         calendar=calendar,
         activity=act,
         kind_rows=src.kind_rows,
@@ -338,11 +366,16 @@ def build(out: Path, repo_data: Path) -> dict[str, object]:
         master_names=names,
     )
     for r in resolutions:
+        notes = [r.identity_note]
+        if r.segment > 0 or latest[r.symbol].segment > 0:
+            notes.append(
+                f"code_reused:segment_{r.segment}_of_{latest[r.symbol].segment}"
+            )
         if r.symbol in listed:
-            note = f"code_listed_today_as:{names[r.symbol]}"
-            r.identity_note = "|".join(x for x in (r.identity_note, note) if x)
+            notes.append(f"code_listed_today_as:{names[r.symbol]}")
+        r.identity_note = "|".join(x for x in notes if x)
 
-    panel = build_panel(membership, bars, no_trade, resolutions)
+    panel = build_panel(membership, bars, no_trade, resolutions, pres)
     export_path = out / "export" / "kr_daily_causal.v1.parquet"
     write_panel(panel, export_path)
 
@@ -351,9 +384,10 @@ def build(out: Path, repo_data: Path) -> dict[str, object]:
     _write_csv(res_path, res_rows, list(res_rows[0]))
     unresolved = [
         {
+            "listing_id": r.listing_id,
             "symbol": r.symbol,
             "name": r.name,
-            "in_denominator": r.symbol in not_listed and r.in_bar_frame,
+            "in_denominator": r.listing_id in not_listed and r.in_bar_frame,
             "corpus_last_session": r.corpus_last_session,
             "unresolved_reason": r.unresolved_reason,
         }
@@ -365,6 +399,7 @@ def build(out: Path, repo_data: Path) -> dict[str, object]:
         unresolved_path,
         unresolved,
         [
+            "listing_id",
             "symbol",
             "name",
             "in_denominator",
@@ -374,7 +409,7 @@ def build(out: Path, repo_data: Path) -> dict[str, object]:
     )
 
     coverage = coverage_summary(resolutions, pres, not_listed, ended)
-    audit = join_audit(pres, listed, src, calendar, resolutions)
+    audit = join_audit(latest, pres, listed, src, calendar, resolutions)
     (repo_data / "join_audit.md").write_text(render_audit(audit))
     (repo_data / "coverage_report.md").write_text(
         render_coverage(coverage, resolutions, unresolved)
@@ -412,11 +447,13 @@ def build(out: Path, repo_data: Path) -> dict[str, object]:
             "conventions": {
                 "bar_available_at": "session 16:00 Asia/Seoul (stored UTC)",
                 "terminal_available_at": "KRX notice filing time if a notice body was used, else delist_date 00:00 Asia/Seoul",
-                "terminal_row": "last membership session of a symbol whose membership ended in main scope; never forward-filled",
+                "listing_id": "symbol#segment; a code whose membership stops and later restarts is a new listing",
+                "terminal_row": "last membership session of a listing whose membership ended in main scope; never forward-filled",
                 "unresolved_terminal": "terminal_outcome=unresolved, no delist_date",
             },
             "rows": panel.num_rows,
-            "symbols": len(pres),
+            "symbols": len(latest),
+            "listings": len(pres),
             "terminal_outcome_counts": dict(sorted(terminal_counts.items())),
             "coverage": coverage,
         },
@@ -440,7 +477,7 @@ def coverage_summary(
     not_listed: set[str],
     ended: set[str],
 ) -> dict[str, object]:
-    by = {r.symbol: r for r in rows}
+    by = {r.listing_id: r for r in rows}
 
     def frame(symbols: set[str]) -> dict[str, object]:
         resolved = sum(1 for s in symbols if by[s].resolved)
@@ -476,6 +513,7 @@ def coverage_summary(
 
 def join_audit(
     pres: dict[str, Presence],
+    listings: dict[str, Presence],
     listed: set[str],
     src: Sources,
     calendar: list[date],
@@ -486,6 +524,7 @@ def join_audit(
     not_listed = {s for s in bar if s not in listed}
     alnum = sorted(s for s in pres if not s.isdigit())
     reused = sorted(r.symbol for r in rows if "code_listed_today_as" in r.identity_note)
+    segmented = sorted({p.symbol for p in listings.values() if p.segment > 0})
     multi = sorted(s for s, p in pres.items() if len(p.markets) > 1)
     kind_codes = {r.symbol for r in src.kind_rows}
     return {
@@ -510,6 +549,7 @@ def join_audit(
         "not_in_master_preferred": sum(1 for s in not_listed if not s.endswith("0")),
         "not_in_master_in_kind_list": len(not_listed & kind_codes),
         "ended_in_main_but_listed_today": reused,
+        "codes_with_more_than_one_listing": segmented,
         "multi_market_symbols": multi,
         "alphanumeric_codes": alnum,
         "kind_rows": len(src.kind_rows),
@@ -571,7 +611,9 @@ def render_audit(a: dict[str, object]) -> str:
         "4. **Key format is compatible.** Both sides use six-character codes and the table's sync keeps",
         "   alphanumeric codes (`_normalize_symbol_or_none`); the corpus has",
         f"   {len(a['alphanumeric_codes'])} of them: {', '.join(a['alphanumeric_codes'])}.",
-        f"5. **Code reuse.** Ended in the corpus but listed today under the same code: {', '.join(a['ended_in_main_but_listed_today']) or 'none'}.",
+        f"5. **Code reuse.** Codes whose membership stops and later restarts: {', '.join(a['codes_with_more_than_one_listing']) or 'none'};",
+        "   each run is a separate `listing_id` (`symbol#segment`) with its own terminal row. Listings that",
+        f"   ended in the corpus while the code is listed today: {', '.join(a['ended_in_main_but_listed_today']) or 'none'}.",
         "   A join on code alone would attach today's company to the old history.",
         f"6. **Market transfers.** {len(a['multi_market_symbols'])} symbols appear in both markets (KOSDAQ→KOSPI moves keep the code): {', '.join(a['multi_market_symbols'])}.",
         "",

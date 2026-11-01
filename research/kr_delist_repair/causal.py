@@ -51,6 +51,17 @@ def assert_available(
         )
 
 
+TERMINAL_GATE = "terminal_available_at"
+PANEL_GATES: dict[str, str] = {
+    "is_terminal_session": TERMINAL_GATE,
+    "terminal_outcome": TERMINAL_GATE,
+    "payout_semantics": TERMINAL_GATE,
+    "delist_date": TERMINAL_GATE,
+    TERMINAL_GATE: TERMINAL_GATE,
+}
+"""Every terminal column of the export and the column that gates it."""
+
+
 class CausalTable:
     """Keyed rows with a row-level ``available_at`` and optional per-column gates.
 
@@ -73,6 +84,15 @@ class CausalTable:
         self.key = tuple(key)
         self.available_col = available_col
         self.column_gates = dict(column_gates or {})
+        ungated = [
+            c
+            for c in PANEL_GATES
+            if c in table.column_names and self.column_gates.get(c) != PANEL_GATES[c]
+        ]
+        if ungated:
+            raise ValueError(
+                f"terminal columns {ungated} need their gate; use CausalTable.for_panel"
+            )
         self._rows = table.to_pylist()
         self._index: dict[tuple[object, ...], int] = {}
         for i, row in enumerate(self._rows):
@@ -80,6 +100,11 @@ class CausalTable:
             if k in self._index:
                 raise ValueError(f"duplicate key {k}")
             self._index[k] = i
+
+    @classmethod
+    def for_panel(cls, table: pa.Table) -> CausalTable:
+        """The export panel keyed by (symbol, session) with every terminal column gated."""
+        return cls(table, ["symbol", "session"], column_gates=PANEL_GATES)
 
     def lookup(
         self,
@@ -96,7 +121,9 @@ class CausalTable:
         out: dict[str, object] = {}
         for col in wanted:
             gate = self.column_gates.get(col)
-            if gate is not None and row[col] is not None:
+            # A gated column holding a value (anything but None/False) is only
+            # readable once its gate time is known and has passed.
+            if gate is not None and row[col] is not None and row[col] is not False:
                 assert_available(row[gate], decision_time, f"column {col} of row {k}")
             out[col] = row[col]
         return out

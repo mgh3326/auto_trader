@@ -36,11 +36,7 @@ def _table() -> pa.Table:
 
 
 def _causal() -> CausalTable:
-    return CausalTable(
-        _table(),
-        ["symbol", "session"],
-        column_gates={"terminal_outcome": "terminal_available_at"},
-    )
+    return CausalTable.for_panel(_table())
 
 
 def test_bar_is_available_at_16_kst() -> None:

@@ -154,7 +154,12 @@ def test_kis_master_layout() -> None:
             TerminalOutcome.STATUTORY_CAUSE,
         ),
         ("해산사유 발생(파산선고)", "A", "123450", TerminalOutcome.STATUTORY_CAUSE),
-        ("해산 사유 발생", "A", "123450", TerminalOutcome.DISSOLUTION),
+        (
+            "해산 사유 발생",
+            "A",
+            "123450",
+            TerminalOutcome.DISSOLUTION_MERGER_OR_LIQUIDATION,
+        ),
         (
             "상장예비심사 청구서 미제출로 관리종목 지정 후 1개월 이내 동 사유 미해소",
             "엔에이치스팩7호",
@@ -167,7 +172,12 @@ def test_kis_master_layout() -> None:
             "000327",
             TerminalOutcome.PREFERRED_CONVERSION,
         ),
-        ("존속기간 만료", "동북아12호선박투자", "083370", TerminalOutcome.DISSOLUTION),
+        (
+            "존속기간 만료",
+            "동북아12호선박투자",
+            "083370",
+            TerminalOutcome.FUND_TERM_EXPIRY,
+        ),
         ("상장주식수 미달", "X우", "000545", TerminalOutcome.PREFERRED_FLOAT),
         ("코스닥시장 이전상장", "A", "123450", TerminalOutcome.MARKET_TRANSFER),
         ("유가증권시장 상장", "A", "123450", TerminalOutcome.MARKET_TRANSFER),
@@ -271,3 +281,13 @@ def test_market_transfer_only_is_not_a_terminal_event() -> None:
         [_p("000400", CAL[2])], [_kind("000400", CAL[3], "유가증권시장 상장")]
     )["000400"]
     assert not r.resolved and "market-transfer" in r.unresolved_reason
+
+
+def test_real_delisting_row_beats_an_earlier_market_transfer_row() -> None:
+    rows = [
+        _kind("000500", date(2025, 3, 3), "유가증권시장 상장"),
+        _kind("000500", date(2025, 9, 1), "피흡수합병"),
+    ]
+    r = _resolve([_p("000500", CAL[-1])], rows)["000500"]
+    assert r.resolved and r.terminal_outcome == "merged_absorbed"
+    assert r.delist_date == "2025-09-01"

@@ -42,11 +42,26 @@ KIND_VIEWER_URL = (
 
 @dataclass(frozen=True)
 class Presence:
+    """One contiguous run of KRX membership sessions for a code (an issue segment).
+
+    A code whose membership stops and later restarts (code reuse after a
+    delisting) has two segments; each is its own listing.
+    """
+
     symbol: str
     first_session: date
     last_session: date
     markets: tuple[str, ...]
     has_bars: bool
+    segment: int = 0
+
+    @property
+    def listing_id(self) -> str:
+        return listing_id(self.symbol, self.segment)
+
+
+def listing_id(symbol: str, segment: int) -> str:
+    return f"{symbol}#{segment}"
 
 
 @dataclass(frozen=True)
@@ -62,7 +77,9 @@ class Activity:
 
 @dataclass
 class Resolution:
+    listing_id: str
     symbol: str
+    segment: int
     name: str
     markets: str
     in_bar_frame: bool
@@ -102,7 +119,8 @@ _CORPORATE_ACTION = {
     TerminalOutcome.SPAC_MERGER: "spac_merger",
     TerminalOutcome.SHARE_EXCHANGE: "share_exchange_or_transfer",
     TerminalOutcome.PREFERRED_CONVERSION: "conversion_to_common",
-    TerminalOutcome.DISSOLUTION: "dissolution",
+    TerminalOutcome.DISSOLUTION_MERGER_OR_LIQUIDATION: "dissolution",
+    TerminalOutcome.FUND_TERM_EXPIRY: "fund_liquidation",
 }
 
 
@@ -139,12 +157,14 @@ def resolve_all(
         disc_by_symbol[d.symbol].append(d)
 
     out: list[Resolution] = []
-    for p in sorted(targets, key=lambda x: x.symbol):
-        act = activity.get(p.symbol, Activity(None, 0, 0, 0, None))
+    for p in sorted(targets, key=lambda x: (x.symbol, x.segment)):
+        act = activity.get(p.listing_id, Activity(None, 0, 0, 0, None))
         alive = p.last_session == main_end
         listed_before = p.first_session == calendar[0]
         res = Resolution(
+            listing_id=p.listing_id,
             symbol=p.symbol,
+            segment=p.segment,
             name="",
             markets="|".join(p.markets),
             in_bar_frame=p.has_bars,
@@ -168,9 +188,14 @@ def resolve_all(
 
         floor = main_end if alive else p.last_session
 
+        # A market-transfer row is only used when no real delisting row exists.
         chosen_kind = sorted(
             (r for r in kind_by_symbol.get(p.symbol, []) if r.delist_date > floor),
-            key=lambda r: r.delist_date,
+            key=lambda r: (
+                classify(r.reason, name=r.name, symbol=p.symbol)[0]
+                is TerminalOutcome.MARKET_TRANSFER,
+                r.delist_date,
+            ),
         )
         chosen_disc = sorted(
             (d for d in disc_by_symbol.get(p.symbol, []) if d.delist_date > floor),
