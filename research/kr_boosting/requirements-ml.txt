@@ -6,4 +6,4 @@ numpy==2.5.4
 pandas==3.0.6
 pyarrow==26.0.0
 pyyaml==6.0.3
-scikit-learn==1.7.2
+scikit-learn==1.9.1
