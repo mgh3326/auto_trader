@@ -1,0 +1,119 @@
+"""Write-once file helpers and the public HTTP fetcher.
+
+Every artifact in this package is written once: staged as ``.partial``,
+fsynced, then published with ``os.link`` (fails if the target exists) so no
+code path can overwrite a finished file. Logs are opened in append mode only.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import ssl
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from pathlib import Path
+
+USER_AGENT = "auto_trader-research/ROB-1431 (public symbol directory archive reader)"
+
+Fetcher = Callable[[str], bytes]
+
+
+class AlreadyExistsError(FileExistsError):
+    pass
+
+
+def write_once(path: Path, data: bytes) -> None:
+    """Publish ``data`` at ``path``; raise AlreadyExistsError if it exists."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{path.name}.{os.getpid()}.partial")
+    with open(partial, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        os.link(partial, path)
+    except FileExistsError as exc:
+        raise AlreadyExistsError(str(path)) from exc
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def append_jsonl(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text("utf-8").splitlines() if ln]
+
+
+def code_commit(repo_root: Path) -> str:
+    """HEAD SHA, suffixed ``-dirty`` when the working tree has changes."""
+    try:
+        sha = subprocess.run(  # noqa: S603, S607
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(  # noqa: S603, S607
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return f"{sha}-dirty" if dirty else sha
+
+
+def http_fetcher(
+    *,
+    timeout: float = 60.0,
+    min_interval: float = 1.0,
+    max_requests: int = 600,
+    retries: int = 3,
+) -> Fetcher:
+    """Polite GET for public, unauthenticated URLs (no credentials, ever).
+
+    Spaces requests by ``min_interval`` seconds, retries 429/5xx with backoff,
+    and refuses to exceed ``max_requests`` in one process.
+    """
+    ctx = ssl.create_default_context()
+    state = {"count": 0, "last": 0.0}
+
+    def fetch(url: str) -> bytes:
+        if not url.startswith("https://"):
+            raise ValueError(f"refusing non-https URL {url!r}")
+        for attempt in range(retries + 1):
+            if state["count"] >= max_requests:
+                raise RuntimeError(f"request budget {max_requests} exhausted")
+            wait = state["last"] + min_interval - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            state["count"] += 1
+            state["last"] = time.monotonic()
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})  # noqa: S310
+            try:
+                with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
+                    return resp.read()
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (429, 500, 502, 503, 504) or attempt == retries:
+                    raise
+            except (urllib.error.URLError, TimeoutError):
+                if attempt == retries:
+                    raise
+            time.sleep(5 * 3**attempt)
+        raise AssertionError("unreachable")
+
+    return fetch
