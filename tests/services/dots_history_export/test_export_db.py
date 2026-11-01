@@ -16,7 +16,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.execution_ledger import ExecutionLedger
 from app.models.review import KISLiveOrderLedger
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
@@ -24,10 +24,13 @@ from app.services.dots_history_export import reader
 from app.services.dots_history_export.projection import Window
 from app.services.execution_ledger import quarantine as q
 from scripts import export_dots_history as cli
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.services.execution_ledger._quarantine_fixtures import (
     purge_test_ledger_rows,
     row_kwargs,
 )
+
+validate_run_owned_database_url(engine.url)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 

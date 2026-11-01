@@ -13,6 +13,7 @@ from typing import Any
 import pyarrow.parquet as pq
 import pytest
 
+from app.models import order_proposals as order_proposals_model
 from app.services.dots_history_export.projection import (
     EXPIRED_INFERENCE_MARKER,
     RefHasher,
@@ -428,6 +429,37 @@ def test_void_reason_keeps_the_code_and_drops_the_detail(
     )
     assert projection.tables["order_proposals"][0]["void_reason"] == expected
     assert projection.tables["order_proposal_rungs"][0]["void_reason"] == expected
+
+
+@pytest.mark.parametrize(
+    ("stored", "market", "local_tz"),
+    [
+        ("equity_kr", "kr", "Asia/Seoul"),
+        ("equity_us", "us", "America/New_York"),
+        ("crypto", "crypto", "Asia/Seoul"),
+        ("forex", "forex", "UTC"),
+        ("index", "index", "UTC"),
+    ],
+)
+def test_proposal_market_vocabulary_maps_to_a_real_market(
+    stored: str, market: str, local_tz: str
+) -> None:
+    # The column stores the instrument form, not kr/us. See the CHECK below.
+    assert f"'{stored}'" in order_proposals_model._MARKETS
+    projection = projected(
+        order_proposals=[proposal_row(market=stored)],
+        order_proposal_rungs=[rung_row(market=stored)],
+    )
+    for table in ("order_proposals", "order_proposal_rungs"):
+        [row] = projection.tables[table]
+        assert row["market"] == market
+        assert row["local_tz"] == local_tz
+
+
+def test_every_stored_proposal_market_is_covered_by_the_test_above() -> None:
+    assert order_proposals_model._MARKETS == (
+        "'equity_kr','equity_us','crypto','forex','index'"
+    )
 
 
 def test_the_kept_void_reason_marker_is_the_ledger_marker() -> None:
