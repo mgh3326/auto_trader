@@ -1,34 +1,29 @@
-"""Task #1003: live-session prompts vs the live-* MCP profiles they run on.
+"""Task #1003: live-session prompts vs the MCP surface they run on.
 
 Incident 2026-09-29 22:35: us-2235 ran on the dedicated at-mcp-live-us unit,
-which serves exactly the ``live-us`` profile of ``config/mcp_profiles/live.yaml``
-(29 tools). The prompt it executes requires tools that profile does not
-serve, and the session ended with 0 orders and 0 proposals.
+which served exactly the ``live-us`` profile of the old live.yaml manifest
+(29 tools). The prompt it executes required tools that profile did not serve,
+and the session ended with 0 orders and 0 proposals.
 
-Contract: every tool a live prompt REQUIRES as a step must be served by its
-lane's live profile. The prompts live in auto_trader-operator, so the
-required set is pinned in ``tests/fixtures/live_prompt_tool_requirements.yaml``
-(operator commit + file:line evidence), and:
+ROB-1436 (2026-11-01) retired the live-* profiles and their units: live
+sessions run in prefect ``KR_LIVE_MCP_MODE=shared`` on the DEFAULT surface.
+The contract is now: every tool a live prompt REQUIRES as a step, or names as
+served, must be registered on DEFAULT (gates on, as in production). The
+prompts live in auto_trader-operator, so the referenced set is pinned in
+``tests/fixtures/live_prompt_tool_requirements.yaml`` (operator commit +
+file:line evidence), and:
 
-* the always-run tests compare that pin to live.yaml — no checkout needed;
+* the always-run tests compare that pin to the DEFAULT registration — no
+  checkout needed; a tool cleanup that unregisters a prompt-required tool
+  fails here;
 * with ``AUTO_TRADER_OPERATOR_ROOT`` set, the drift tests re-read the prompts
-  and fail when a referenced non-profile tool is unclassified in the pin or a
-  pinned ref no longer holds;
-* with ``ROBIN_PREFECT_AUTOMATIONS_ROOT`` set, the rep -> profile -> prompt
-  lane mapping and the harness allowlist are checked against prefect.
+  and fail when a referenced tool is unclassified in the pin or a pinned ref
+  no longer holds;
+* with ``ROBIN_PREFECT_AUTOMATIONS_ROOT`` set, the rep -> lane mapping and the
+  harness allowlist are checked against prefect.
 
-The gap is open until the operator decides (hk:doc
-incident/2026-09-29/live-profile-gap, options A/B/C). ``KNOWN_REQUIRED_GAP``
-records it: the contract test is ``xfail(strict=True)`` for each lane with a
-non-empty known gap, and ``test_known_gap_is_exact`` fails on any change to
-the gap in either direction.
-
-Flipping to strict after the decision: make the change (B: add tools to
-live.yaml; C: shrink the prompts, re-pin the fixture at the new operator
-commit), then empty that lane's ``KNOWN_REQUIRED_GAP`` entry. The xfail mark
-disappears with it, and the strict xfail would XPASS-fail if the entry were
-left stale. Option A (shared mode) changes nothing here; the tests stay as
-they are and keep the gap visible.
+The conditional / guarded / not_required classes stay recorded (they say how
+a prompt uses a name) but are not enforced against the surface.
 """
 
 from __future__ import annotations
@@ -43,10 +38,6 @@ import pytest
 import yaml
 
 from app.mcp_server.profiles import McpProfile
-from app.mcp_server.tooling.live_profile_registration import (
-    LIVE_PROFILES,
-    load_live_manifest,
-)
 from app.mcp_server.tooling.route_request_lanes import ALL_KNOWN_TOOLS
 from tests.mcp_server._registration_recorder import collect_profile_tools
 
@@ -60,42 +51,6 @@ REQUIREMENTS_PATH = (
 CLASSES = ("required", "conditional", "guarded", "not_required")
 NOT_REQUIRED_KINDS = frozenset({"NEG", "DESC", "NA"})
 LANES = ("kr", "us", "crypto")
-
-# The open #1003 gap: required-by-prompt tools the lane's live profile does
-# not serve, as of live.yaml at f2b6be139 and operator 6595658. Empty a lane's
-# entry once the operator decision closes it (see module docstring).
-KNOWN_REQUIRED_GAP: dict[str, frozenset[str]] = {
-    "kr": frozenset(
-        {
-            "analysis_artifact_get",
-            "get_holdings_news",
-            "get_news",
-            "get_trading_policy",
-            "screen_stocks",
-            "session_bootstrap_pack",
-        }
-    ),
-    "us": frozenset(
-        {
-            "get_earnings_calendar",
-            "get_holdings_news",
-            "get_news",
-            "get_top_stocks",
-            "get_trading_policy",
-            "screen_stocks_snapshot",
-            "toss_get_order_history",
-        }
-    ),
-    "crypto": frozenset(
-        {
-            "analyze_stock_batch",
-            "get_holdings_news",
-            "get_news",
-            "get_trading_policy",
-            "order_proposal_void",
-        }
-    ),
-}
 
 # Bootstrap tools every live prompt names (root CLAUDE.md §0). Their absence
 # from an extraction means the scan read the wrong files or nothing at all.
@@ -140,9 +95,17 @@ def _pinned(lane: str) -> set[str]:
     return _pinned_tokens(lane) | set(_prose_served(lane))
 
 
+_SURFACE_CACHE: dict[str, frozenset[str]] = {}
+
+
 def _profile_tools(lane: str) -> frozenset[str]:
-    profile = McpProfile(_lane(lane)["profile"])
-    return load_live_manifest().spec_for(profile).selected_tool_names()
+    """The registered surface of the lane's profile, gates on (production)."""
+    profile = McpProfile(_lane(lane)["profile"]).value
+    if profile not in _SURFACE_CACHE:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            surfaces = collect_profile_tools(monkeypatch, gates_enabled=True)
+        _SURFACE_CACHE[profile] = frozenset(surfaces[profile])
+    return _SURFACE_CACHE[profile]
 
 
 def _required_gap(lane: str) -> set[str]:
@@ -150,7 +113,7 @@ def _required_gap(lane: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Always-run: pinned requirements vs live.yaml
+# Always-run: pinned requirements vs the DEFAULT registration
 # ---------------------------------------------------------------------------
 
 
@@ -159,10 +122,10 @@ class TestPinnedRequirementsShape:
         data = _requirements()
         assert data["version"] == 1
         assert tuple(data["lanes"]) == LANES
-        profiles = {data["lanes"][lane]["profile"] for lane in LANES}
-        assert profiles == {profile.value for profile in LIVE_PROFILES}
         for lane in LANES:
-            assert _lane(lane)["profile"] == f"live-{lane}"
+            # ROB-1436: live sessions run on DEFAULT (prefect shared mode).
+            assert _lane(lane)["profile"] == McpProfile.DEFAULT.value
+            assert _lane(lane)["prefect_rep_profile"] == f"live-{lane}"
             assert _lane(lane)["reps"], lane
             assert _lane(lane)["prompt_files"], lane
 
@@ -207,68 +170,24 @@ class TestPinnedRequirementsShape:
         }
         assert not unknown, f"pinned names no registrar produces: {sorted(unknown)}"
 
-    def test_only_required_entries_may_be_in_the_profile(self) -> None:
-        # Non-required classes exist to account for non-profile references;
-        # a conditional/guarded/not_required entry that the profile serves is
-        # stale and would hide a reclassification.
-        for lane in LANES:
-            profile = _profile_tools(lane)
-            stale = {
-                f"{cls}/{tool}"
-                for cls in CLASSES[1:]
-                for tool in _classified(lane, cls)
-                if tool in profile
-            }
-            assert not stale, f"{lane}: served by the profile, drop from pin: {stale}"
-
 
 @pytest.mark.parametrize("lane", LANES)
 def test_served_references_stay_in_profile(lane: str) -> None:
-    """A live.yaml edit may not drop a tool the lane prompts reference."""
+    """A registration change may not drop a tool the lane prompts reference."""
     dropped = (_served(lane) | set(_prose_served(lane))) - _profile_tools(lane)
     assert not dropped, (
-        f"live-{lane} no longer serves prompt-referenced tools {sorted(dropped)}; "
+        f"DEFAULT no longer serves {lane} prompt-referenced tools {sorted(dropped)}; "
         f"either restore them or reclassify them in {REQUIREMENTS_PATH.name} "
         "with the operator decision"
     )
 
 
 @pytest.mark.parametrize("lane", LANES)
-def test_known_gap_is_exact(lane: str) -> None:
-    """The open gap is exactly KNOWN_REQUIRED_GAP — no silent growth or fix."""
-    actual = _required_gap(lane)
-    known = set(KNOWN_REQUIRED_GAP[lane])
-    assert actual == known, (
-        f"{lane}: required-by-prompt tools missing from live-{lane} changed. "
-        f"newly missing={sorted(actual - known)} (a live.yaml edit dropped a "
-        f"prompt-required tool, or the pin gained one); "
-        f"now served={sorted(known - actual)} (update KNOWN_REQUIRED_GAP)"
-    )
-
-
-@pytest.mark.parametrize(
-    "lane",
-    [
-        pytest.param(
-            lane,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    f"#1003 open gap pending operator decision; live-{lane} "
-                    f"lacks {sorted(KNOWN_REQUIRED_GAP[lane])}"
-                ),
-            ),
-        )
-        if KNOWN_REQUIRED_GAP[lane]
-        else lane
-        for lane in LANES
-    ],
-)
-def test_live_prompt_required_tools_are_in_live_profile(lane: str) -> None:
+def test_live_prompt_required_tools_are_registered(lane: str) -> None:
     gap = _required_gap(lane)
     assert not gap, (
-        f"live prompts for lane {lane} require tools live-{lane} does not "
-        f"serve: {sorted(gap)}"
+        f"live prompts for lane {lane} require tools DEFAULT does not "
+        f"register: {sorted(gap)}"
     )
 
 
@@ -356,7 +275,7 @@ def test_prompt_references_are_all_classified(
     }
     assert not unpinned, (
         f"{lane}: live prompts reference tools the pin does not record — add "
-        f"each to served (if live-{lane} serves it) or classify it in "
+        f"each to served (if DEFAULT serves it) or classify it in "
         f"{REQUIREMENTS_PATH.name}: "
         f"{ {tool: refs[:4] for tool, refs in sorted(unpinned.items())} }"
     )
@@ -446,14 +365,14 @@ def test_rep_lane_mapping_matches_prefect() -> None:
     module = _prefect_sessions_module()
     reps: dict[str, dict[str, str]] = _module_literal(module, "REPS")
     rep_profiles: dict[str, str] = _module_literal(module, "REP_MCP_PROFILES")
-    lane_by_profile = {_lane(lane)["profile"]: lane for lane in LANES}
+    lane_by_profile = {_lane(lane)["prefect_rep_profile"]: lane for lane in LANES}
 
     for lane in LANES:
         pinned = set(_lane(lane)["reps"])
         served = {
             rep
             for rep, profile in rep_profiles.items()
-            if profile == _lane(lane)["profile"] and rep != "smoke"
+            if profile == _lane(lane)["prefect_rep_profile"] and rep != "smoke"
         }
         assert pinned == served, f"{lane}: pinned reps {pinned} != prefect {served}"
 

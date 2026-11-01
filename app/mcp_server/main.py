@@ -32,6 +32,18 @@ init_sentry(
     enable_mcp=True,
 )
 
+# #1189: no blank-to-DEFAULT fallback for a server process. A blank, missing
+# or whitespace-only MCP_PROFILE raises here, before FastMCP is built or any
+# tool is registered.
+_mcp_profile = require_mcp_profile(_env("MCP_PROFILE"))
+
+# ROB-1436: the low-traffic units (kiwoom, h3-*) defer pandas, numpy,
+# yfinance and the calendar packages until a tool first uses them. This must
+# run before the tooling package is imported below; DEFAULT stays eager.
+from app.mcp_server.lazy_imports import install_lazy_imports  # noqa: E402
+
+install_lazy_imports(_mcp_profile)
+
 # 2) Now it is safe to create the FastMCP instance and register tools.
 from fastmcp import FastMCP  # noqa: E402
 
@@ -51,10 +63,6 @@ from app.mcp_server.tool_call_log_middleware import (  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
-# #1189: no blank-to-DEFAULT fallback for a server process. A blank, missing
-# or whitespace-only MCP_PROFILE raises here, before FastMCP is built or any
-# tool is registered.
-_mcp_profile = require_mcp_profile(_env("MCP_PROFILE"))
 _mcp_type = _env("MCP_TYPE", "streamable-http")
 
 
@@ -62,8 +70,6 @@ def _validate_profile_auth_token(
     profile: McpProfile, token: str | None, mcp_type: str
 ) -> None:
     token_required_profiles = {
-        McpProfile.ACCOUNT_READ,
-        McpProfile.TRADINGCODEX_EXECUTION,
         McpProfile.ALPACA_PAPER_CLEAN,
     }
     if profile in token_required_profiles and not (token or "").strip():
@@ -72,14 +78,11 @@ def _validate_profile_auth_token(
         )
     if mcp_type not in {"streamable-http", "sse"} or (token or "").strip():
         return
-    # Task 975: the live-* profiles serve live-trading sessions over the
-    # tailnet from dedicated units; a network listener never runs tokenless.
+    # Profiles served over the tailnet from dedicated units; a network
+    # listener never runs tokenless.
     if profile in {
         McpProfile.KIWOOM,
         McpProfile.KIWOOM_KR,
-        McpProfile.LIVE_KR,
-        McpProfile.LIVE_US,
-        McpProfile.LIVE_CRYPTO,
         # #1171: the H3 paper pilot surface carries paper order mutations.
         McpProfile.H3_CRYPTO_PAPER,
         # #1257: the H3-US paper pilot surface carries Alpaca paper orders.
@@ -122,8 +125,6 @@ def _validate_profile_runtime_settings(profile: McpProfile) -> None:
         return
 
     restricted_profiles = {
-        McpProfile.ACCOUNT_READ,
-        McpProfile.TRADINGCODEX_EXECUTION,
         # ROB-1159 — the KR-only Kiwoom profile is mock-pinned by construction,
         # so it fails closed at startup on incomplete mock config or a base URL
         # that is not the mock host, instead of only at first tool call. This
@@ -145,18 +146,6 @@ def _validate_profile_runtime_settings(profile: McpProfile) -> None:
             raise RuntimeError(
                 f"MCP_PROFILE={profile.value} requires Kiwoom mock host "
                 "https://mockapi.kiwoom.com"
-            )
-
-    if profile is McpProfile.TRADINGCODEX_EXECUTION:
-        if settings.order_approval_hash_mode != "required":
-            raise RuntimeError(
-                "MCP_PROFILE=tradingcodex_execution requires "
-                "ORDER_APPROVAL_HASH_MODE=required"
-            )
-        if settings.toss_approval_hash_mode != "required":
-            raise RuntimeError(
-                "MCP_PROFILE=tradingcodex_execution requires "
-                "TOSS_APPROVAL_HASH_MODE=required"
             )
 
 

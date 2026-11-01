@@ -9,16 +9,17 @@
 # here, or when a pinned name or ref no longer holds.
 #
 # served lists the referenced tools the profile serves. The other classes
-# cover referenced tools it does NOT serve (required ones may later move in):
+# were written for the retired live-* profiles (ROB-1436) and now record how
+# a prompt uses a name; DEFAULT registers them all:
 #   required     — unconditional step, or the only named source for a step
 #   conditional  — conditional step, fallback, or one of two alternatives
 #   guarded      — prompt already says: call only if on the surface, else record
 #   not_required — prompt forbids it / says not callable (NEG), mentions it
 #                  descriptively (DESC), or only in another market's section (NA)
-# The contract: served and required must both be in the live profile
-# (required is xfail while the #1003 gap is open); conditional, guarded and
-# not_required are recorded, not enforced. Move entries between classes only
-# with the operator decision (hk:doc incident/2026-09-29/live-profile-gap).
+# The contract: served and required must both be registered on DEFAULT
+# (gates on); conditional, guarded and not_required are recorded, not
+# enforced. Move entries between classes only with the operator decision
+# (hk:doc incident/2026-09-29/live-profile-gap).
 version: 1
 source:
   operator_repo: auto_trader-operator
@@ -42,7 +43,10 @@ common_files:
   - live/AGENTS.md
 lanes:
   kr:
-    profile: live-kr
+    # ROB-1436: live sessions run on DEFAULT (prefect KR_LIVE_MCP_MODE=shared).
+    profile: default
+    # prefect REP_MCP_PROFILES label of this lane; its keys are the reps below
+    prefect_rep_profile: live-kr
     # prefect REP_MCP_PROFILES keys served by this profile (smoke calls no tools)
     reps: [nxt-prep, nxt-open, '0905', '1130', '1430', nxt-eve]
     prompt_files:
@@ -51,7 +55,7 @@ lanes:
       - prompts/kr-open-trade.md
       - strategy-lab/docs/2026-09-27-prereg-h6-core-ai-v1.md
     # Referenced by this lane's prompts AND served by the profile at the pin.
-    # Dropping one from live.yaml fails the always-run contract.
+    # Unregistering one from DEFAULT fails the always-run contract.
     served:
       - analysis_artifact_save
       - analyze_stock_batch
@@ -245,14 +249,17 @@ lanes:
           - prompts/kr-open-trade.md:215
           - prompts/kr-open-trade.md:221
   us:
-    profile: live-us
+    # ROB-1436: live sessions run on DEFAULT (prefect KR_LIVE_MCP_MODE=shared).
+    profile: default
+    # prefect REP_MCP_PROFILES label of this lane; its keys are the reps below
+    prefect_rep_profile: live-us
     # prefect REP_MCP_PROFILES keys served by this profile (smoke calls no tools)
     reps: [us-2235]
     prompt_files:
       - prompts/us-open-trade.md
       - strategy-lab/docs/2026-09-27-prereg-h6-core-ai-v1.md
     # Referenced by this lane's prompts AND served by the profile at the pin.
-    # Dropping one from live.yaml fails the always-run contract.
+    # Unregistering one from DEFAULT fails the always-run contract.
     served:
       - analysis_artifact_save
       - analyze_stock_batch
@@ -438,7 +445,10 @@ lanes:
         refs:
           - prompts/us-open-trade.md:99
   crypto:
-    profile: live-crypto
+    # ROB-1436: live sessions run on DEFAULT (prefect KR_LIVE_MCP_MODE=shared).
+    profile: default
+    # prefect REP_MCP_PROFILES label of this lane; its keys are the reps below
+    prefect_rep_profile: live-crypto
     # prefect REP_MCP_PROFILES keys served by this profile (smoke calls no tools)
     reps: [crypto-0220, crypto-0820, crypto-1420, crypto-2020]
     prompt_files:
@@ -447,7 +457,7 @@ lanes:
     # crypto-underwater-v0.md as a repo copy, but it does not exist at
     # operator_commit (hk doc only), so it is not scanned.
     # Referenced by this lane's prompts AND served by the profile at the pin.
-    # Dropping one from live.yaml fails the always-run contract.
+    # Unregistering one from DEFAULT fails the always-run contract.
     served:
       - analysis_artifact_save
       - forecast_resolve

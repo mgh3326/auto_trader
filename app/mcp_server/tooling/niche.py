@@ -31,16 +31,13 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "account_read",
                 "alpaca-paper-clean",
-                "analysis_readonly",
                 "crypto",
                 "db-paper",
                 "default",
                 "hermes-paper-kis",
                 "kiwoom",
                 "kiwoom_kr",
-                "tradingcodex_execution",
                 "us-paper",
                 "watch_repricing",
             }
@@ -56,7 +53,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "hermes-paper-kis",
                 "kiwoom",
                 "kiwoom_kr",
-                "tradingcodex_execution",
                 "us-paper",
                 "watch_repricing",
             }
@@ -66,11 +62,8 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "account_read",
-                "analysis_readonly",
                 "default",
                 "crypto",
-                "tradingcodex_execution",
             }
         ),
         frozenset(
@@ -94,7 +87,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "analysis_readonly",
                 "kiwoom",
                 "db-paper",
                 "default",
@@ -150,7 +142,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "default",
                 "kiwoom_kr",
                 "us-paper",
-                "tradingcodex_execution",
                 "hermes-paper-kis",
                 "crypto",
             }
@@ -207,10 +198,8 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        # HK #657 — these two C tools also serve analysis_readonly now.
         frozenset(
             {
-                "analysis_readonly",
                 "kiwoom",
                 "db-paper",
                 "default",
@@ -248,7 +237,7 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset({"default", "crypto", "tradingcodex_execution"}),
+        frozenset({"default", "crypto"}),
         frozenset(
             {
                 "buy_ladder_fill_preview",
@@ -309,7 +298,7 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset({"default", "kiwoom", "kiwoom_kr", "tradingcodex_execution"}),
+        frozenset({"default", "kiwoom", "kiwoom_kr"}),
         frozenset(
             {
                 "kiwoom_mock_cancel_order",
@@ -320,7 +309,7 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset({"default", "tradingcodex_execution"}),
+        frozenset({"default"}),
         frozenset(
             {
                 "kis_live_cancel_order",

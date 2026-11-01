@@ -47,14 +47,7 @@ DEV_ID, BACKUP_ID, MIXED_ID = _id("7"), _id("6"), _id("5")
 PG_ID, REDIS_ID, HAPROXY_ID, BARE_ID = _id("4"), _id("3"), _id("2"), _id("1")
 
 MCP_PROFILES = (
-    "at-mcp-analysis-readonly",
-    "at-mcp-account-read",
-    "at-mcp-tradingcodex-execution",
-    "at-mcp-paper-001",
     "at-mcp-kiwoom",
-    "at-mcp-live-kr",
-    "at-mcp-live-us",
-    "at-mcp-live-crypto",
     "at-mcp-h3-crypto-paper",
     "at-mcp-h3-us-paper",
 )
@@ -324,14 +317,7 @@ class Env:
                 f"{name}=x\n"
                 for name in (
                     "MCP_AUTH_TOKEN",
-                    "MCP_ANALYSIS_READONLY_AUTH_TOKEN",
-                    "MCP_ACCOUNT_READ_AUTH_TOKEN",
-                    "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN",
-                    "MCP_PAPER_001_AUTH_TOKEN",
                     "MCP_KIWOOM_AUTH_TOKEN",
-                    "MCP_LIVE_KR_AUTH_TOKEN",
-                    "MCP_LIVE_US_AUTH_TOKEN",
-                    "MCP_LIVE_CRYPTO_AUTH_TOKEN",
                     "MCP_H3_CRYPTO_PAPER_AUTH_TOKEN",
                     "MCP_H3_US_PAPER_AUTH_TOKEN",
                 )

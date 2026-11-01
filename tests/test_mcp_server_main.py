@@ -59,8 +59,6 @@ def _load_main_module(
     monkeypatch: pytest.MonkeyPatch,
     *,
     auth_token: str = "",
-    account_read: bool = False,
-    tradingcodex_execution: bool = False,
     paper_execution: bool = False,
     paper_execution_enabled: bool = False,
     kiwoom: bool = False,
@@ -69,7 +67,7 @@ def _load_main_module(
     kiwoom_mock_us_enabled: bool = False,
     live_profile: str | None = None,
     real_profile_guard: bool = False,
-) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object, object]:
+) -> tuple[ModuleType, _FakeFastMCP, MagicMock]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
     _FakeFastMCP.init_count = 0
@@ -146,25 +144,17 @@ def _load_main_module(
     fake_monitoring.__dict__["capture_exception"] = MagicMock()
     fake_monitoring.__dict__["init_sentry"] = MagicMock()
 
-    account_read_profile = _FakeProfileMember("account_read")
-    tradingcodex_execution_profile = _FakeProfileMember("tradingcodex_execution")
     paper_execution_profile = _FakeProfileMember("paper_execution")
     alpaca_paper_clean_profile = _FakeProfileMember("alpaca-paper-clean")
     default_profile = _FakeProfileMember("default")
     kiwoom_profile = _FakeProfileMember("kiwoom")
     kiwoom_kr_profile = _FakeProfileMember("kiwoom_kr")
     unrelated_profile_member = _FakeProfileMember("crypto")
-    live_kr_profile = _FakeProfileMember("live-kr")
-    live_us_profile = _FakeProfileMember("live-us")
-    live_crypto_profile = _FakeProfileMember("live-crypto")
     h3_crypto_paper_profile = _FakeProfileMember("h3-crypto-paper")
     h3_us_paper_profile = _FakeProfileMember("h3-us-paper")
     live_profiles = {
         member.value: member
         for member in (
-            live_kr_profile,
-            live_us_profile,
-            live_crypto_profile,
             h3_crypto_paper_profile,
             h3_us_paper_profile,
         )
@@ -173,10 +163,6 @@ def _load_main_module(
         resolved_profile = live_profiles[live_profile]
     elif paper_execution:
         resolved_profile = paper_execution_profile
-    elif tradingcodex_execution:
-        resolved_profile = tradingcodex_execution_profile
-    elif account_read:
-        resolved_profile = account_read_profile
     elif kiwoom:
         resolved_profile = kiwoom_profile
     elif kiwoom_kr:
@@ -187,16 +173,11 @@ def _load_main_module(
         resolved_profile = default_profile
     fake_profiles = ModuleType("app.mcp_server.profiles")
     fake_profiles.__dict__["McpProfile"] = SimpleNamespace(
-        ACCOUNT_READ=account_read_profile,
-        TRADINGCODEX_EXECUTION=tradingcodex_execution_profile,
         PAPER_EXECUTION=paper_execution_profile,
         ALPACA_PAPER_CLEAN=alpaca_paper_clean_profile,
         DEFAULT=default_profile,
         KIWOOM=kiwoom_profile,
         KIWOOM_KR=kiwoom_kr_profile,
-        LIVE_KR=live_kr_profile,
-        LIVE_US=live_us_profile,
-        LIVE_CRYPTO=live_crypto_profile,
         H3_CRYPTO_PAPER=h3_crypto_paper_profile,
         H3_US_PAPER=h3_us_paper_profile,
     )
@@ -245,6 +226,11 @@ def _load_main_module(
     )
     fake_tool_call_log_middleware.__dict__["ToolCallLogMiddleware"] = _RealTCLM
 
+    # ROB-1436: main.py installs the lazy-import switch before the tooling
+    # import; the switch itself is covered by tests/mcp_server/test_lazy_imports.py.
+    fake_lazy_imports = ModuleType("app.mcp_server.lazy_imports")
+    fake_lazy_imports.__dict__["install_lazy_imports"] = MagicMock(return_value=())
+
     env_utils_module = _load_env_utils_module()
 
     monkeypatch.setitem(sys.modules, "fastmcp", fake_fastmcp)
@@ -263,6 +249,7 @@ def _load_main_module(
     monkeypatch.setitem(sys.modules, "app.mcp_server.tooling", fake_tooling)
     monkeypatch.setitem(sys.modules, "app.monitoring.sentry", fake_monitoring)
     monkeypatch.setitem(sys.modules, "app.mcp_server.profiles", fake_profiles)
+    monkeypatch.setitem(sys.modules, "app.mcp_server.lazy_imports", fake_lazy_imports)
     monkeypatch.setitem(sys.modules, "app.mcp_server.lifecycle", fake_lifecycle)
     monkeypatch.setitem(
         sys.modules, "app.mcp_server.timeout_middleware", fake_timeout_middleware
@@ -286,13 +273,7 @@ def _load_main_module(
     # session, poisoning other tests that import the real app.mcp_server.main.
     monkeypatch.setitem(sys.modules, "app.mcp_server.main", module)
     spec.loader.exec_module(module)
-    return (
-        module,
-        module.mcp,
-        fake_monitoring.capture_exception,
-        account_read_profile,
-        tradingcodex_execution_profile,
-    )
+    return module, module.mcp, fake_monitoring.capture_exception
 
 
 @pytest.mark.unit
@@ -300,7 +281,7 @@ class TestMcpServerMain:
     def test_registers_caller_identity_middleware_before_sentry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        module, mcp, _, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _ = _load_main_module(monkeypatch)
 
         calls = [call.args[0] for call in mcp.add_middleware.call_args_list]
         # Tool-call logging is outermost so every tools/call is recorded even when
@@ -316,7 +297,7 @@ class TestMcpServerMain:
     def test_non_integer_log_level_falls_back_to_info(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        module, mcp, _, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _ = _load_main_module(monkeypatch)
         module.settings.LOG_LEVEL = "BASIC_FORMAT"
 
         module.main()
@@ -335,7 +316,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "streamable-http")
         monkeypatch.delenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", raising=False)
 
-        module, mcp, _, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -353,7 +334,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "sse")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "27")
 
-        module, mcp, _, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -371,7 +352,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "stdio")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "33")
 
-        module, mcp, _, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -383,7 +364,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "stdio")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "invalid")
 
-        module, _, _, _, _ = _load_main_module(monkeypatch)
+        module, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -392,7 +373,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "invalid")
 
-        module, _, capture_exception, _, _ = _load_main_module(monkeypatch)
+        module, _, capture_exception = _load_main_module(monkeypatch)
 
         with pytest.raises(ValueError, match="Unsupported MCP_TYPE: invalid"):
             module.main()
@@ -405,7 +386,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", transport)
 
-        module, mcp, capture_exception, _, _ = _load_main_module(monkeypatch)
+        module, mcp, capture_exception = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
 
         with pytest.raises(
@@ -424,7 +405,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "sse")
 
-        module, mcp, capture_exception, _, _ = _load_main_module(monkeypatch)
+        module, mcp, capture_exception = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = None
 
         module.main()
@@ -443,32 +424,13 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "stdio")
 
-        module, mcp, capture_exception, _, _ = _load_main_module(monkeypatch)
+        module, mcp, capture_exception = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
 
         module.main()
 
         mcp.run.assert_called_once_with(transport="stdio")
         capture_exception.assert_not_called()
-
-    def test_account_read_profile_requires_auth_token(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-
-        with pytest.raises(
-            RuntimeError,
-            match="MCP_PROFILE=account_read requires non-empty MCP_AUTH_TOKEN",
-        ):
-            _load_main_module(monkeypatch, account_read=True)
-
-    def test_account_read_profile_accepts_auth_token(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MCP_AUTH_TOKEN", "account-read-token")
-        module, _, _, _, _ = _load_main_module(monkeypatch, account_read=True)
-
-        module.main()
 
     @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
     def test_kiwoom_network_profile_requires_auth_at_import(
@@ -503,7 +465,7 @@ class TestMcpServerMain:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "sse")
-        module, _, _, _, _ = _load_main_module(
+        module, _, _ = _load_main_module(
             monkeypatch,
             auth_token="kiwoom-token",
             kiwoom=True,
@@ -515,7 +477,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "stdio")
         monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-        module, _, _, _, _ = _load_main_module(monkeypatch, kiwoom=True)
+        module, _, _ = _load_main_module(monkeypatch, kiwoom=True)
         assert module._mcp_profile.value == "kiwoom"
 
     @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
@@ -540,7 +502,7 @@ class TestMcpServerMain:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "sse")
-        module, _, _, _, _ = _load_main_module(
+        module, _, _ = _load_main_module(
             monkeypatch,
             auth_token="kiwoom-kr-token",
             kiwoom_kr=True,
@@ -601,24 +563,6 @@ class TestMcpServerMain:
         ):
             _load_main_module(monkeypatch, auth_token="kiwoom-kr-token", kiwoom_kr=True)
 
-    @pytest.mark.parametrize("profile", ["live-kr", "live-us", "live-crypto"])
-    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
-    def test_live_network_profile_requires_auth_at_import(
-        self, monkeypatch: pytest.MonkeyPatch, transport: str, profile: str
-    ) -> None:
-        # Task 975: the dedicated live-* units listen on the tailnet through
-        # HAProxy; a tokenless network boot must fail before FastMCP exists.
-        monkeypatch.setenv("MCP_TYPE", transport)
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-
-        with pytest.raises(
-            RuntimeError,
-            match=f"MCP_PROFILE={profile} requires non-empty MCP_AUTH_TOKEN",
-        ):
-            _load_main_module(monkeypatch, live_profile=profile)
-
-        assert _FakeFastMCP.init_count == 0
-
     @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
     def test_h3_crypto_paper_network_profile_requires_auth_at_import(
         self, monkeypatch: pytest.MonkeyPatch, transport: str
@@ -640,7 +584,7 @@ class TestMcpServerMain:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "streamable-http")
-        module, _, _, _, _ = _load_main_module(
+        module, _, _ = _load_main_module(
             monkeypatch, auth_token="h3-token", live_profile="h3-crypto-paper"
         )
         assert module._mcp_profile.value == "h3-crypto-paper"
@@ -671,7 +615,7 @@ class TestMcpServerMain:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "streamable-http")
-        module, _, _, _, _ = _load_main_module(
+        module, _, _ = _load_main_module(
             monkeypatch, auth_token="h3-us-token", live_profile="h3-us-paper"
         )
         assert module._mcp_profile.value == "h3-us-paper"
@@ -679,173 +623,22 @@ class TestMcpServerMain:
         register_all_tools.assert_called_once()
         assert register_all_tools.call_args.kwargs["profile"].value == "h3-us-paper"
 
-    @pytest.mark.parametrize("profile", ["live-kr", "live-us", "live-crypto"])
-    def test_live_network_profile_accepts_auth_token_and_registers_itself(
-        self, monkeypatch: pytest.MonkeyPatch, profile: str
-    ) -> None:
-        monkeypatch.setenv("MCP_TYPE", "streamable-http")
-        module, _, _, _, _ = _load_main_module(
-            monkeypatch, auth_token="live-token", live_profile=profile
-        )
-        assert module._mcp_profile.value == profile
-        register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
-        register_all_tools.assert_called_once()
-        assert register_all_tools.call_args.kwargs["profile"].value == profile
-
-        module.main()
-
-    @pytest.mark.parametrize("profile", ["live-kr", "live-us", "live-crypto"])
-    def test_live_stdio_local_path_may_run_without_auth(
-        self, monkeypatch: pytest.MonkeyPatch, profile: str
-    ) -> None:
-        monkeypatch.setenv("MCP_TYPE", "stdio")
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-        module, _, _, _, _ = _load_main_module(monkeypatch, live_profile=profile)
-        assert module._mcp_profile.value == profile
-
     def test_default_gate_off_and_unrelated_network_profiles_remain_unchanged(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "streamable-http")
         monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-        default_module, _, _, _, _ = _load_main_module(
+        default_module, _, _ = _load_main_module(
             monkeypatch, kiwoom_mock_us_enabled=False
         )
         assert default_module._mcp_profile.value == "default"
 
-        unrelated_module, _, _, _, _ = _load_main_module(
+        unrelated_module, _, _ = _load_main_module(
             monkeypatch,
             unrelated_profile=True,
             kiwoom_mock_us_enabled=True,
         )
         assert unrelated_module._mcp_profile.value == "crypto"
-
-    def test_tradingcodex_execution_profile_requires_auth_token(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-
-        with pytest.raises(
-            RuntimeError,
-            match=(
-                "MCP_PROFILE=tradingcodex_execution requires non-empty MCP_AUTH_TOKEN"
-            ),
-        ):
-            _load_main_module(monkeypatch, tradingcodex_execution=True)
-
-    def test_tradingcodex_execution_profile_requires_hash_modes(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        fake_settings = types.SimpleNamespace(
-            mcp_caller_agent_id_fallback="",
-            order_approval_hash_mode="optional",
-            toss_approval_hash_mode="required",
-            LOG_LEVEL="INFO",
-        )
-        monkeypatch.setitem(
-            sys.modules,
-            "app.core.config",
-            types.SimpleNamespace(settings=fake_settings),
-        )
-        with pytest.raises(
-            RuntimeError,
-            match="ORDER_APPROVAL_HASH_MODE=required",
-        ):
-            _load_main_module(
-                monkeypatch,
-                auth_token="execution-token",
-                tradingcodex_execution=True,
-            )
-
-    def test_tradingcodex_execution_profile_accepts_required_hash_modes(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        module, _, _, _, execution_profile = _load_main_module(
-            monkeypatch,
-            auth_token="execution-token",
-            tradingcodex_execution=True,
-        )
-        assert module._mcp_profile is execution_profile
-
-    @pytest.mark.parametrize(
-        "profile_kwargs",
-        [
-            {"account_read": True},
-            {"tradingcodex_execution": True},
-        ],
-    )
-    def test_restricted_profiles_fail_startup_when_kiwoom_mock_enabled_incomplete(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        profile_kwargs: dict[str, bool],
-    ) -> None:
-        fake_settings = types.SimpleNamespace(
-            mcp_caller_agent_id_fallback="",
-            order_approval_hash_mode="required",
-            toss_approval_hash_mode="required",
-            LOG_LEVEL="INFO",
-            kiwoom_mock_enabled=True,
-            kiwoom_mock_app_key=None,
-            kiwoom_mock_app_secret=None,
-            kiwoom_mock_account_no=None,
-            kiwoom_mock_base_url="https://mockapi.kiwoom.com",
-        )
-        monkeypatch.setitem(
-            sys.modules,
-            "app.core.config",
-            types.SimpleNamespace(settings=fake_settings),
-        )
-
-        with pytest.raises(
-            RuntimeError,
-            match=(
-                "KIWOOM_MOCK_APP_KEY.*KIWOOM_MOCK_APP_SECRET.*KIWOOM_MOCK_ACCOUNT_NO"
-            ),
-        ):
-            _load_main_module(
-                monkeypatch,
-                auth_token="restricted-profile-token",
-                **profile_kwargs,
-            )
-
-    @pytest.mark.parametrize(
-        "profile_kwargs",
-        [
-            {"account_read": True},
-            {"tradingcodex_execution": True},
-        ],
-    )
-    def test_restricted_profiles_fail_startup_on_kiwoom_live_host(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        profile_kwargs: dict[str, bool],
-    ) -> None:
-        fake_settings = types.SimpleNamespace(
-            mcp_caller_agent_id_fallback="",
-            order_approval_hash_mode="required",
-            toss_approval_hash_mode="required",
-            LOG_LEVEL="INFO",
-            kiwoom_mock_enabled=True,
-            kiwoom_mock_app_key="configured",
-            kiwoom_mock_app_secret="configured",
-            kiwoom_mock_account_no="configured",
-            kiwoom_mock_base_url="https://api.kiwoom.com",
-        )
-        monkeypatch.setitem(
-            sys.modules,
-            "app.core.config",
-            types.SimpleNamespace(settings=fake_settings),
-        )
-
-        with pytest.raises(RuntimeError, match="mockapi.kiwoom.com"):
-            _load_main_module(
-                monkeypatch,
-                auth_token="restricted-profile-token",
-                **profile_kwargs,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -879,7 +672,7 @@ def test_blank_profile_refuses_before_any_tool_registers(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("profile", ["default", "h3-crypto-paper", " live-kr "])
+@pytest.mark.parametrize("profile", ["default", "h3-crypto-paper", " kiwoom "])
 def test_explicit_profile_passes_the_guard(
     monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
@@ -887,7 +680,7 @@ def test_explicit_profile_passes_the_guard(
     monkeypatch.setenv("MCP_TYPE", "stdio")
     # The real guard returns real enum members; main.py's validators compare
     # them against the harness fakes, so a pass here means "no refusal".
-    module, _, _, _, _ = _load_main_module(
+    module, _, _ = _load_main_module(
         monkeypatch, auth_token="tok", real_profile_guard=True
     )
     assert module._mcp_profile.value == profile.strip()

@@ -114,9 +114,6 @@ def test_compose_mcp_services_each_set_an_explicit_profile() -> None:
         launched[name] = value
     assert launched == {
         "mcp": "default",
-        "mcp-analysis-readonly": "analysis_readonly",
-        "mcp-account-read": "account_read",
-        "mcp-tradingcodex-execution": "tradingcodex_execution",
     }
     for value in launched.values():
         assert "$" not in value  # a literal, never an interpolated fallback

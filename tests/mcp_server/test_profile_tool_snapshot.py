@@ -99,6 +99,11 @@ _DELETED_MODULE_PATHS = (
     "app/mcp_server/tooling/paper_journal_bridge.py",
     "app/mcp_server/tooling/paper_journal_registration.py",
     "app/mcp_server/tooling/paper_validation_registration.py",
+    # ROB-1436 retired profiles' registrars.
+    "app/mcp_server/tooling/account_read_registration.py",
+    "app/mcp_server/tooling/analysis_readonly_registration.py",
+    "app/mcp_server/tooling/live_profile_registration.py",
+    "app/mcp_server/tooling/tradingcodex_execution_registration.py",
 )
 
 
@@ -121,7 +126,6 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     # historical audit and name the reviewed expansion explicitly here.
     for profile in (
         "default",
-        "tradingcodex_execution",
         "watch_repricing",
     ):
         expected[profile].add("toss_proposal_accounts")
@@ -136,19 +140,6 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
 
     expected["default"].update(NH_MOCK_TOOL_NAMES)
-    # #891 / Q-53 — the live-* surfaces postdate the 2026-09-03 audit; their
-    # expected surface is the operator manifest config/mcp_profiles/live.yaml
-    # (all three groups).
-    from app.mcp_server.tooling.live_profile_registration import (
-        live_profile_tool_names,
-    )
-
-    for live_profile in (
-        McpProfile.LIVE_KR,
-        McpProfile.LIVE_US,
-        McpProfile.LIVE_CRYPTO,
-    ):
-        expected[live_profile.value] = set(live_profile_tool_names(live_profile))
     # #1171 — the H3-CRYPTO paper surface postdates the audit; its expected
     # surface is the reviewed closed-world allowlist.
     from app.mcp_server.tooling.h3_crypto_paper_registration import (

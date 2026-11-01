@@ -233,8 +233,8 @@ See the full design in
   `unverified` for reconciliation rather than being retried or voided.
 - **Default OFF.** `ORDER_PROPOSALS_ENABLED=false` by default
   (`app/core/config.py`). When off, the four MCP tools are not registered
-  in either the default profile (`registry.py`) or the 8770 TradingCodex
-  execution profile allowlist (`tradingcodex_execution_registration.py`).
+  in the default profile (`registry.py`). (The 8770 TradingCodex execution
+  profile that also carried them was retired by ROB-1436.)
 - **Pure state machine.** `app/services/order_proposals/state_machine.py` is
   stdlib-only (no broker/DB/network imports). The DB `CheckConstraint`s only
   validate the string bag (`RUNG_STATES` / `GROUP_STATES`); the actual
@@ -264,9 +264,8 @@ Setting this env var (or config override) surfaces the four MCP tools
 (`order_proposal_create`, `order_proposal_get`, `order_proposal_list`,
 `order_proposal_void`) in:
 
-- The default MCP profile (`app/mcp_server/tooling/registry.py`).
-- The 8770 TradingCodex execution profile allowlist
-  (`app/mcp_server/tooling/tradingcodex_execution_registration.py`).
+- The default MCP profile (`app/mcp_server/tooling/registry.py`). The 8770
+  TradingCodex execution profile was retired by ROB-1436.
 
 With the flag off (default), none of the four tools are registered anywhere
 and the tables remain unused (migration is additive and applies regardless
@@ -1185,9 +1184,8 @@ Confirm `ORDER_PROPOSALS_ENABLED=true` is set in the MCP process environment
 uv run python -m app.mcp_server.main
 ```
 
-Check both the default profile (`registry.py`) and, if using the 8770
-TradingCodex execution profile, that `ORDER_PROPOSAL_TOOL_NAMES` appears in
-`tradingcodex_execution_registration.py`'s allowlist.
+Check the default profile (`registry.py`); the 8770 TradingCodex execution
+profile was retired by ROB-1436.
 
 ### `order_proposal_create` returns `{success: false, error: ...}`
 

@@ -2311,8 +2311,6 @@ class TestGetFxRateToolRegistration:
     # registers get_fx_rate (fundamentals tools), so it is deliberately
     # excluded here; see tests/mcp_server/test_shadow_replay_profile.py.
     #
-    # ROB-760 — account_read is a physical account-sync allowlist and must not
-    # inherit fundamentals tools.
     # ROB-1782 R2 — alpaca-paper-clean is a closed-world physical-account
     # surface and must not inherit the common fundamentals block.
     @pytest.mark.parametrize(
@@ -2323,15 +2321,9 @@ class TestGetFxRateToolRegistration:
             if p
             not in (
                 McpProfile.SHADOW_REPLAY,
-                McpProfile.ACCOUNT_READ,
                 McpProfile.ALPACA_PAPER_CLEAN,
                 # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
                 McpProfile.FILL_WATCH_CONTEXT,
-                # #891 — live profiles are manifest-bounded closed worlds;
-                # get_fx_rate is not in the manifest.
-                McpProfile.LIVE_KR,
-                McpProfile.LIVE_US,
-                McpProfile.LIVE_CRYPTO,
                 # #1171 — the H3-CRYPTO paper runner does not use get_fx_rate.
                 McpProfile.H3_CRYPTO_PAPER,
                 # #1257 — the H3-US paper runner does not use get_fx_rate.

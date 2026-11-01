@@ -16,22 +16,43 @@ import pandas as pd
 
 from app.core.config import settings
 
-try:
-    _opendartreader = importlib.import_module("OpenDartReader")
-    _opendartreader_dart = importlib.import_module("OpenDartReader.dart")
-    _opendartreader_dart_list = importlib.import_module("OpenDartReader.dart_list")
-except ImportError:
-    OpenDartReaderFactory: Any | None = None
-    OpenDartReaderClass: Any | None = None
-    OpenDartReaderCorpCodesFetcher: Any | None = None
-else:
-    OpenDartReaderClass = getattr(_opendartreader_dart, "OpenDartReader", None)
-    OpenDartReaderFactory = getattr(_opendartreader, "OpenDartReader", _opendartreader)
-    OpenDartReaderCorpCodesFetcher = getattr(
-        _opendartreader_dart_list,
-        "corp_codes",
-        None,
-    )
+# OpenDartReader imports pandas at module level. It is resolved on first use
+# instead of at import time so the ROB-1436 lazy-import MCP profiles do not
+# load pandas at boot. The three names stay module attributes (PEP 562
+# ``__getattr__``); a missing package resolves them to None, as before.
+_OPENDARTREADER_NAMES = (
+    "OpenDartReaderFactory",
+    "OpenDartReaderClass",
+    "OpenDartReaderCorpCodesFetcher",
+)
+
+
+def _load_opendartreader() -> dict[str, Any]:
+    try:
+        root = importlib.import_module("OpenDartReader")
+        dart_module = importlib.import_module("OpenDartReader.dart")
+        dart_list_module = importlib.import_module("OpenDartReader.dart_list")
+    except ImportError:
+        return dict.fromkeys(_OPENDARTREADER_NAMES)
+    return {
+        "OpenDartReaderClass": getattr(dart_module, "OpenDartReader", None),
+        "OpenDartReaderFactory": getattr(root, "OpenDartReader", root),
+        "OpenDartReaderCorpCodesFetcher": getattr(dart_list_module, "corp_codes", None),
+    }
+
+
+def _opendartreader(name: str) -> Any:
+    namespace = globals()
+    if name not in namespace:
+        for key, value in _load_opendartreader().items():
+            namespace.setdefault(key, value)
+    return namespace[name]
+
+
+def __getattr__(name: str) -> Any:
+    if name in _OPENDARTREADER_NAMES:
+        return _opendartreader(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ReportType(enum.StrEnum):
@@ -106,7 +127,7 @@ def _seed_corp_codes_cache(
         cache_path = _corp_codes_cache_path(today=today)
 
         if not cache_path.exists():
-            if OpenDartReaderCorpCodesFetcher is None:
+            if _opendartreader("OpenDartReaderCorpCodesFetcher") is None:
                 raise RuntimeError("DART functionality not available")
 
             fd, temp_name = tempfile.mkstemp(
@@ -118,7 +139,7 @@ def _seed_corp_codes_cache(
             os.close(fd)
 
             try:
-                corp_codes = OpenDartReaderCorpCodesFetcher(api_key)
+                corp_codes = _opendartreader("OpenDartReaderCorpCodesFetcher")(api_key)
                 corp_codes.to_pickle(temp_path)
                 os.replace(temp_path, cache_path)
             except Exception:
@@ -135,18 +156,21 @@ def _seed_corp_codes_cache(
 
 
 def _build_client(api_key: str) -> Any:
-    if OpenDartReaderFactory is None:
+    if _opendartreader("OpenDartReaderFactory") is None:
         raise RuntimeError("DART functionality not available")
 
     if (
-        OpenDartReaderClass is None
-        or OpenDartReaderCorpCodesFetcher is None
-        or OpenDartReaderFactory is not OpenDartReaderClass
+        _opendartreader("OpenDartReaderClass") is None
+        or _opendartreader("OpenDartReaderCorpCodesFetcher") is None
+        or _opendartreader("OpenDartReaderFactory")
+        is not _opendartreader("OpenDartReaderClass")
     ):
-        return OpenDartReaderFactory(api_key)
+        return _opendartreader("OpenDartReaderFactory")(api_key)
 
     corp_codes = _seed_corp_codes_cache(api_key)
-    client = OpenDartReaderClass.__new__(OpenDartReaderClass)
+    client = _opendartreader("OpenDartReaderClass").__new__(
+        _opendartreader("OpenDartReaderClass")
+    )
     client.corp_codes = corp_codes
     client.api_key = api_key
     return client
@@ -158,7 +182,7 @@ async def _get_client() -> Any | None:
     if _dart_client is not None:
         return _dart_client
 
-    if OpenDartReaderFactory is None:
+    if _opendartreader("OpenDartReaderFactory") is None:
         return None
 
     async with _dart_client_lock:

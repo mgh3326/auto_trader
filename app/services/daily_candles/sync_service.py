@@ -48,11 +48,11 @@ class SyncOneResult:
     skipped_reason: str | None = None
 
 
-KISKrFetcher = Callable[..., Awaitable[pd.DataFrame]]
-KISUsFetcher = Callable[..., Awaitable[pd.DataFrame]]
+KISKrFetcher = Callable[..., Awaitable["pd.DataFrame"]]
+KISUsFetcher = Callable[..., Awaitable["pd.DataFrame"]]
 YahooUsFetcher = Callable[..., Awaitable[list[YahooFallbackRow]]]
-UpbitCryptoFetcher = Callable[..., Awaitable[pd.DataFrame]]
-TossDailyFetcher = Callable[..., Awaitable[pd.DataFrame]]
+UpbitCryptoFetcher = Callable[..., Awaitable["pd.DataFrame"]]
+TossDailyFetcher = Callable[..., Awaitable["pd.DataFrame"]]
 
 
 class DailyCandleSyncService:

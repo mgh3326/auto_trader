@@ -44,7 +44,7 @@ def _lines(caplog: pytest.LogCaptureFixture) -> list[tuple[int, str]]:
 
 @pytest.mark.asyncio
 async def test_logs_tool_name_and_profile_in_the_message_body(caplog) -> None:
-    middleware = ToolCallLogMiddleware(profile="analysis_readonly")
+    middleware = ToolCallLogMiddleware(profile="kiwoom")
 
     async def call_next(ctx):
         return "ok"
@@ -52,7 +52,7 @@ async def test_logs_tool_name_and_profile_in_the_message_body(caplog) -> None:
     caplog.set_level(logging.INFO)
     assert await middleware.on_call_tool(_ctx("get_quote"), call_next) == "ok"
     assert _lines(caplog) == [
-        (logging.INFO, "mcp.tool.called tool=get_quote profile=analysis_readonly")
+        (logging.INFO, "mcp.tool.called tool=get_quote profile=kiwoom")
     ]
 
 

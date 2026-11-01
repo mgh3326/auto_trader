@@ -989,9 +989,6 @@ def test_live_source_population_is_explicitly_bounded_unknown_without_total() ->
 
 
 def test_registration_is_read_only_and_observation_only() -> None:
-    from app.mcp_server.tooling.analysis_readonly_registration import (
-        ANALYSIS_READONLY_TOOL_NAMES,
-    )
     from app.mcp_server.tooling.buy_candidate_fanout_registration import (
         register_buy_candidate_fanout_tools,
     )
@@ -1011,7 +1008,6 @@ def test_registration_is_read_only_and_observation_only() -> None:
 
     mcp = _FakeMCP()
     register_buy_candidate_fanout_tools(mcp)  # type: ignore[arg-type]
-    assert "discover_buy_candidates_fanout" in ANALYSIS_READONLY_TOOL_NAMES
     description = mcp.descriptions["discover_buy_candidates_fanout"].lower()
     assert "read-only" in description
     assert "never a proposal or order" in description

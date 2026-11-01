@@ -31,7 +31,7 @@ tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
 tests/mcp_server/test_h3_crypto_paper_profile.py
 tests/mcp_server/test_intraday_support_resistance_recompute.py
 tests/mcp_server/test_lane_allowlist_contract.py
-tests/mcp_server/test_live_profiles.py
+tests/mcp_server/test_lazy_imports.py
 tests/mcp_server/test_live_prompt_profile_contract.py
 tests/mcp_server/test_nh_mock_tools.py
 tests/mcp_server/test_operating_briefing_negative_class.py

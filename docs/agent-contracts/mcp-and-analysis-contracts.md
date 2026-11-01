@@ -18,14 +18,26 @@
 레인 allowlist 정본: `config/mcp_lane_allowlists/` (`tool<TAB>basis` 보존).
 계약 테스트: `tests/mcp_server/test_lane_allowlist_contract.py` — 레인별 배정 프로필의 실제 등록 합집합 검증.
 등록 스냅샷: `tests/mcp_server/test_profile_tool_snapshot.py`; D 제거·C niche 관측: `docs/runbooks/mcp-surface-cleanup-20260905.md`.
-live 프롬프트↔live-* 프로필 계약(#1003): `tests/mcp_server/test_live_prompt_profile_contract.py` + 핀 `tests/fixtures/live_prompt_tool_requirements.yaml` — 프롬프트가 요구하는 도구가 레인 프로필에 없으면 실패(운영자 결정 전까지 `KNOWN_REQUIRED_GAP` xfail). 절차: `docs/runbooks/live-mcp-profiles.md` §Prompt-to-profile contract.
+live 프롬프트↔서빙 표면 계약(#1003, ROB-1436 이후 DEFAULT): `tests/mcp_server/test_live_prompt_profile_contract.py` + 핀 `tests/fixtures/live_prompt_tool_requirements.yaml` — live 프롬프트가 served/required 로 기록한 도구가 DEFAULT(게이트 on)에 등록돼 있지 않으면 실패한다(strict, xfail 없음). 도구 정리로 프롬프트 필수 도구를 등록 해제하면 이 테스트가 막는다. 절차: 운영자 레포 프롬프트가 바뀌면 핀을 새 operator commit 으로 재고정.
 
-**live-* 전용 유닛 (task 975, 운영자 Q-87 A)**: `scripts/deploy-ncp-pull.sh` 가 `at-mcp-live-kr/-us/-crypto`
-(`MCP_PROFILE=live-kr/live-us/live-crypto`, 루프백 8773/8774/8775, 토큰 `MCP_LIVE_{KR,US,CRYPTO}_AUTH_TOKEN`)를
-다른 고정 유닛과 같은 digest 고정·교체 로그·롤백·#934 prune 규칙으로 배포한다. HAProxy 는 tailnet
-`100.122.100.56:8773-8775` 만 바인드하며 렌더 가드가 루프백·tailnet 외 bind 를 거부한다. live-* 프로필은
-네트워크 전송에서 토큰 없이 부팅하지 않는다. 세션 전환은 robin-prefect-automations `KR_LIVE_MCP_MODE`
-(기본 `shared` = 기존 동작) — 절차·롤백은 `docs/runbooks/live-mcp-servers.md`.
+**MCP 유닛 은퇴 (ROB-1436, 2026-11-01, 운영자 결정)**: NCP 고정 유닛 `at-mcp-analysis-readonly`(8768)·
+`at-mcp-account-read`(8769)·`at-mcp-tradingcodex-execution`(8770)·`at-mcp-paper-001`(8771)·
+`at-mcp-live-kr/-us/-crypto`(8773-8775)를 `scripts/deploy-ncp-pull.sh`·HAProxy 템플릿·`docker-compose.prod.yml` 에서
+제거했다. 남은 고정 유닛은 kiwoom·h3-crypto-paper·h3-us-paper 뿐이다(근거·소비자 표·정지 순서·롤백은
+`docs/runbooks/mcp-unit-retirement-rob1436.md`). 프로필 `analysis_readonly`·`account_read`·`tradingcodex_execution`·
+`live-kr`·`live-us`·`live-crypto` 와 그 registrar·`config/mcp_profiles/live.yaml`·fable-workbench 레인 allowlist 는 삭제됐고
+이 이름의 `MCP_PROFILE` 은 미지 프로필로 기동 거부된다. 🔴 이제 레포에 **물리적 읽기 전용 MCP 표면이 없다** — 외부 읽기 세션이
+필요해지면 새 리뷰로 추가한다(운영자 결정). DEFAULT 는 주문 도구를 등록하므로 읽기 전용 대체물이 아니다.
+live 세션은 prefect `KR_LIVE_MCP_MODE=shared`(기본)로 DEFAULT 를 쓴다 — 🔴 `dedicated` 로 바꾸면 사라진 8773-8775 에 붙으려다
+실패하므로 prefect 쪽 dedicated 분기 제거는 별도 후속이다. `hermes-paper-kis` 프로필은 유닛만 은퇴하고 코드는 남는다(레인
+claude-mock/orch-mock 계약, 운영자 H3-KR 선언, Task 881 도구). 은퇴한 포트는 새 리뷰 없이 재사용 금지.
+**저트래픽 프로필 지연 import (ROB-1436)**: `app/mcp_server/lazy_imports.py` — `kiwoom`·`kiwoom_kr`·`h3-crypto-paper`·
+`h3-us-paper` 프로세스는 `main.py` 가 tooling import 전에 pandas·numpy·yfinance·exchange_calendars·
+pandas_market_calendars·finnhub 를 placeholder 모듈로 등록해 첫 속성 접근(첫 사용 도구 호출) 때 실제 import 한다.
+DEFAULT·그 밖 프로필은 eager 그대로다. 도구 출력 불변. 🔴 모듈 최상위에서 이 패키지들의 속성에 접근하지 마라
+(`from pandas import X`, `from __future__ import annotations` 없는 `pd.DataFrame` 어노테이션, `pd.Timestamp(...)` 상수) —
+`tests/mcp_server/test_lazy_imports.py` 가 지연 프로필 등록 후 실행된 패키지가 0개인지 검증한다. 측정:
+`scripts/mcp_profile_import_rss.py --compare`.
 **h3-crypto-paper 전용 프로필 (#1171, 운영자 hk 1135 = A)**: `MCP_PROFILE=h3-crypto-paper` 는
 auto_trader-operator H3-CRYPTO 파일럿 러너(`registered_tools("crypto")`)의 20개 도구만 등록하는 closed world다
 (`app/mcp_server/tooling/h3_crypto_paper_registration.py`, "Always" 블록 전 early return, 등록 집합 ≠ 목록이면 부팅 실패).
@@ -34,7 +46,7 @@ auto_trader-operator H3-CRYPTO 파일럿 러너(`registered_tools("crypto")`)의
 브로커 자격증명에 닿을 수 있는 목록 도구 11종은 `market="crypto"` 로 고정되고(생략 시 crypto, 그 밖은 본문 실행 전 거부),
 `get_operating_briefing` 은 `account_scope="db_simulated"`(DB paper 보유, 브로커 미체결 수집기 미생성)로 고정된다.
 네트워크 전송은 토큰 없이 부팅하지 않는다. 유닛(`at-mcp-h3-crypto-paper`, 루프백 8776, 토큰 `MCP_H3_CRYPTO_PAPER_AUTH_TOKEN`)은
-#1189부터 `scripts/deploy-ncp-pull.sh` 가 live-* 와 같은 digest 고정·교체 로그·롤백·tailnet 라우트 probe·#934 prune 규칙으로
+#1189부터 `scripts/deploy-ncp-pull.sh` 가 다른 고정 유닛과 같은 digest 고정·교체 로그·롤백·tailnet 라우트 probe·#934 prune 규칙으로
 배포하고, HAProxy 는 tailnet `100.122.100.56:8776` 만 바인드한다. 스케줄러 연결은 없다. 토큰 생성·배포는 운영자 몫이다
 (`docs/runbooks/h3-crypto-paper-mcp.md`). 계약 테스트: `tests/mcp_server/test_h3_crypto_paper_profile.py`,
 `tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py`.
@@ -66,7 +78,7 @@ USD/KRW 는 open.er-api 로 기존 폴백). 이 방화벽 검사를 KIS/Toss/Upb
 그래서 kr/us route 는 모든 lane 에서 이 도구를 `allowed_tools` 에 두고 `blocked_actions` 에서 뺀다(시퀀스 step 아님, 레지스트리 교집합 유지).
 crypto route 는 계속 차단한다. 레지스트리 분할(`STATUS_HELPER_TOOLS`·`MUTATION_TOOLS`)은 그대로이고, 브로커 호출은 Toss `GET /api/v1/buying-power`(+`/accounts`)뿐이다.
 `test_route_request_profile_golden.py` 는 이 한 도구 이동을 되돌린 바이트가 main golden 과 같음을 검증한다
-(default·tradingcodex_execution 의 kr/us 케이스만 이동, live-kr/live-us 는 미등록이라 불변).
+(default 의 kr/us 케이스만 이동; tradingcodex_execution·live-kr/live-us 는 ROB-1436 에서 은퇴).
 **MCP_PROFILE 필수 (#1189)**: 서버 진입점은 `require_mcp_profile` 로 프로필을 해석하며 비었거나·없거나·공백뿐인
 `MCP_PROFILE` 은 DEFAULT 로 폴백하지 않고 기동을 거부한다(DEFAULT 는 `MCP_PROFILE=default` 로 명시). deploy 스크립트도
 배포 전 모든 유닛의 프로필이 비어 있지 않음을 검사한다. 레포 안 모든 서버 정의의 명시 프로필은

@@ -28,11 +28,6 @@ from tests.mcp_server._registration_recorder import (
             McpProfile.FILL_WATCH_CONTEXT,
             # SHADOW_REPLAY exposes only its exact seven observation/replay tools.
             McpProfile.SHADOW_REPLAY,
-            # #891 — live profiles are manifest-bounded closed worlds and do
-            # not register session_bootstrap_pack.
-            McpProfile.LIVE_KR,
-            McpProfile.LIVE_US,
-            McpProfile.LIVE_CRYPTO,
             # #1171 — the H3-CRYPTO paper surface is the runner's exact 20
             # tools; session_bootstrap_pack is not one of them.
             McpProfile.H3_CRYPTO_PAPER,
@@ -70,35 +65,3 @@ async def test_sections_follow_the_actual_profile_registration(
                 "state": "denied_by_profile",
                 "tool": source_tool,
             }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("gates_enabled", [False, True])
-async def test_analysis_readonly_has_exactly_four_filled_sections(
-    monkeypatch: pytest.MonkeyPatch, gates_enabled: bool
-) -> None:
-    inventories = collect_profile_tools(monkeypatch, gates_enabled=gates_enabled)
-    registered = set(inventories[McpProfile.ANALYSIS_READONLY.value])
-    expected_filled = {"briefing", "holdings", "policy", "recent_context"}
-
-    assert {
-        section for section, tool in SECTION_SOURCE_TOOLS.items() if tool in registered
-    } == expected_filled
-
-    async def source(*args: object, **kwargs: object) -> dict[str, object]:
-        return {"success": True}
-
-    monkeypatch.setattr(pack, "_section_source", source)
-    result = await pack._session_bootstrap_pack(
-        "kr", None, False, registered_tool_names=lambda: registered
-    )
-    assert {
-        section
-        for section, meta in result["meta"]["sections"].items()
-        if meta["state"] == "fresh"
-    } == expected_filled
-    assert {
-        section
-        for section, value in result["sections"].items()
-        if value.get("state") == "denied_by_profile"
-    } == set(SECTION_SOURCE_TOOLS) - expected_filled

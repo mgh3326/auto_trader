@@ -5,7 +5,7 @@ Why a profile and not a sentence
 r1 named ``order_proposal_create`` as the execution boundary in a string
 field on the spawn request. A string is a *statement of intent*: nothing
 downstream reads it, and the MCP profile a live spawner would most
-naturally reuse -- ``tradingcodex_execution`` -- registers the repo's
+naturally reuse -- ``tradingcodex_execution`` (since retired, ROB-1436) -- registered the repo's
 direct broker submit and cancel tools (the exact names are asserted
 against the live registries in ``test_capability_profile.py``; this file
 deliberately does not spell them, so the package-wide token invariant can

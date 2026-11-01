@@ -70,9 +70,6 @@ def test_read_tool_is_present_only_on_reviewed_read_profiles(
     tools = collect_profile_tools(monkeypatch, gates_enabled=True)
     for profile in (
         McpProfile.DEFAULT,
-        McpProfile.ANALYSIS_READONLY,
-        McpProfile.ACCOUNT_READ,
-        McpProfile.TRADINGCODEX_EXECUTION,
         McpProfile.CRYPTO,
         McpProfile.DB_PAPER,
         McpProfile.HERMES_PAPER_KIS,
