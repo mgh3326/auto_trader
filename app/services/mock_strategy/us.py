@@ -21,6 +21,21 @@ from app.services.mock_strategy.us_signals import (
 
 VENUE = "alpaca_paper"
 BROKER_TERMINAL = {"filled", "canceled", "expired", "rejected"}
+BROKER_NONTERMINAL = {
+    "new",
+    "accepted",
+    "pending_new",
+    "partially_filled",
+    "accepted_for_bidding",
+    "done_for_day",
+    "stopped",
+    "suspended",
+    "pending_replace",
+    "pending_cancel",
+    "replaced",
+    "calculated",
+    "held",
+}
 
 
 @dataclass(frozen=True)
@@ -238,13 +253,7 @@ class UsPaperStrategy:
             raise ValueError("broker fill price missing")
         if order.status == "filled" and qty <= 0:
             raise ValueError("filled order has no fill evidence")
-        if order.status not in BROKER_TERMINAL | {
-            "new",
-            "accepted",
-            "pending_new",
-            "partially_filled",
-            "accepted_for_bidding",
-        }:
+        if order.status not in BROKER_TERMINAL | BROKER_NONTERMINAL:
             raise ValueError("unsupported broker lifecycle status")
         previous_qty = Decimal(row.meta.get("filled_qty", "0"))
         if qty < previous_qty:

@@ -333,6 +333,9 @@ The normalized feed requires an inclusive `covers_from` entry-session bound and
 runs defer new signals without consuming keys and publish reports only. A separate
 immutable epoch marker pins the initial date, so corrected input can retry the
 same asof or a later catch-up without losing the first interval.
+Bar gaps block collection only along new signal paths and existing active or
+still-maturing episodes. Unused missing-universe members remain in `data_gaps`
+without blocking a commit; `blocking_data_gaps` records the required missing bars.
 
 ## 유지 규약
 

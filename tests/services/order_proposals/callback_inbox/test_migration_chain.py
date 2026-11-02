@@ -104,6 +104,9 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: made. Same maintenance point the sibling roundtrip tests carry.
 _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.mock_strategy_orders",
+    # ROB-1263 dispatch evidence is post-parent; child must precede lineage.
+    "review.kis_mock_dispatch_evidence",
+    "review.kis_mock_dispatch_lineage",
     "review.protected_position_revisions",
     "review.protected_positions",
     "review.kiwoom_authority_cessation_receipts",

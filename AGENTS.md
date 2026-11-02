@@ -52,6 +52,9 @@
    (`error_code`: `attribution_required` / `signal_record_unavailable`).
    **이 게이트를 우회·완화하거나 placeholder strategy 를 만들어 넣지 마라** — 귀속 불가는
    값이 아니라 에러다. 귀속을 못 정하겠으면 멈추고 운영자에게 보고하라.
+   KR mock E3 설정 `KIS_MOCK_E3_ACTIVATION_ENABLED`는 기본 false다. 명시 opt-in과
+   일치하는 모의 fingerprint만 §6 단일 운영자 동석·foreground 계약을 바인딩하며,
+   기존 확인·귀속·킬·송신 가드와 스케줄러 금지는 그대로다.
 8. **심볼 형식**: DB 기준은 `.` 구분(`BRK.B`). 변환은 `app/core/symbol.py`
    (`to_kis_symbol`/`to_yahoo_symbol`/`to_db_symbol`)만 사용하고 직접 문자열 치환 금지.
 9. **검증·보고 규율**: 완료 주장 전 관련 테스트를 실제 실행하고 결과 원문을 보고하라.

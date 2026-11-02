@@ -1,7 +1,7 @@
 """ROB-1474: paper/demo strategy attribution and one-send journal.
 
 Revision ID: 20261102_rob1474_mock_orders
-Revises: 20261102_rob1460_exit_plans
+Revises: 20261102_rob1263_kis_evidence
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261102_rob1474_mock_orders"
-down_revision: str | Sequence[str] | None = "20261102_rob1460_exit_plans"
+down_revision: str | Sequence[str] | None = "20261102_rob1263_kis_evidence"
 branch_labels = None
 depends_on = None
 

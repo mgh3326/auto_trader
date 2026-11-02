@@ -335,6 +335,140 @@ async def test_accepted_is_not_fill_and_partial_terminal_entry_closes_only_prove
     assert entry.status == "closed" and entry.realized_pnl == Decimal("70")
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        "done_for_day",
+        "stopped",
+        "suspended",
+        "pending_replace",
+        "pending_cancel",
+        "replaced",
+        "calculated",
+        "held",
+    ],
+)
+@pytest.mark.parametrize("filled", ["0", "7"])
+async def test_documented_waiting_entry_status_preserves_fill_without_exit(
+    state, filled
+):
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    broker.accept_only = True
+    await run(strategy)
+    entry = next(r for r in recorder.rows.values() if r.side == "buy")
+    broker.orders[entry.client_order_id] = broker.orders[
+        entry.client_order_id
+    ].model_copy(
+        update={
+            "status": state,
+            "filled_qty": Decimal(filled),
+            "filled_avg_price": Decimal("100") if Decimal(filled) else None,
+        }
+    )
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert entry.status == ("partially_filled" if Decimal(filled) else "accepted")
+    assert entry.meta["broker_status"] == state
+    assert entry.meta["filled_qty"] == filled
+    assert entry.meta["broker_terminal"] is False
+    assert len(broker.posts) == 2
+    if Decimal(filled):
+        broker.orders[entry.client_order_id] = broker.orders[
+            entry.client_order_id
+        ].model_copy(update={"status": "canceled"})
+        broker.accept_only = False
+        await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+        assert entry.status == "closed"
+        assert broker.posts[-1][0] == "sell" and broker.posts[-1][1].qty == Decimal(
+            filled
+        )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "done_for_day",
+        "stopped",
+        "suspended",
+        "pending_replace",
+        "pending_cancel",
+        "replaced",
+        "calculated",
+        "held",
+    ],
+)
+async def test_documented_waiting_exit_blocks_new_leg_until_terminal_proof(state):
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    broker.accept_only = True
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    exits = [r for r in recorder.rows.values() if r.side in {"sell", "cover"}]
+    for leg in exits:
+        broker.orders[leg.client_order_id] = broker.orders[
+            leg.client_order_id
+        ].model_copy(
+            update={
+                "status": state,
+                "filled_qty": Decimal("7"),
+                "filled_avg_price": Decimal("100"),
+            }
+        )
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert len(broker.posts) == 4
+    assert all(
+        leg.status == "partially_filled" and leg.meta["broker_terminal"] is False
+        for leg in exits
+    )
+    assert all(
+        r.status == "filled"
+        for r in recorder.rows.values()
+        if r.side in {"buy", "short"}
+    )
+    for leg in exits:
+        broker.orders[leg.client_order_id] = broker.orders[
+            leg.client_order_id
+        ].model_copy(update={"status": "canceled"})
+    broker.accept_only = False
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert len(broker.posts) == 6
+    assert all(
+        r.status == "closed"
+        for r in recorder.rows.values()
+        if r.side in {"buy", "short"}
+    )
+
+
+async def test_unknown_status_and_regressed_fill_remain_uncertain_without_resend():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    broker.accept_only = True
+    await run(strategy)
+    entry = next(r for r in recorder.rows.values() if r.side == "buy")
+    original = broker.orders[entry.client_order_id]
+    broker.orders[entry.client_order_id] = original.model_copy(
+        update={"status": "future_unknown_state"}
+    )
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert entry.status == "uncertain" and len(broker.posts) == 2
+    broker.orders[entry.client_order_id] = original.model_copy(
+        update={
+            "status": "partially_filled",
+            "filled_qty": Decimal("7"),
+            "filled_avg_price": Decimal("100"),
+        }
+    )
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert entry.meta["filled_qty"] == "7"
+    broker.orders[entry.client_order_id] = original.model_copy(
+        update={"status": "done_for_day"}
+    )
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert entry.status == "uncertain"
+    assert entry.meta["filled_qty"] == "7"
+    assert len(broker.posts) == 2
+
+
 async def test_close_ack_waits_for_fill_evidence_without_resubmission():
     recorder, broker = MemoryRecorder(), PaperBroker()
     strategy = UsPaperStrategy(recorder, broker)

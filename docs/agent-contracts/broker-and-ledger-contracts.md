@@ -73,6 +73,10 @@ leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill�
 US due 에피소드의 일반 오류는 `episode_status=unresolved`와 예외 클래스만
 보고하고 다른 청산은 계속한다. CLI는 nonzero이며 durable 상태/재시도 권한을
 만들지 않는다. 계좌/세션 게이트는 루프 밖에서 유지하고 프로세스 취소는 전파한다.
+Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel`/
+`replaced`/`calculated`/`held`는 검증된 누적 fill과 함께 관찰하되 nonterminal로
+유지한다. 이 상태만으로 entry 청산이나 잔여 exit leg를 만들지 않으며, 미지 상태·
+귀속 불일치·누적 fill 감소는 uncertain으로 남긴다.
 별도 paper 전략 어댑터의 own journal은 공매도와 cover를 지원하며 기존 수동 MCP의
 보유 매도 전용 coordinator를 완화하지 않는다. 스케줄·배포 없음.
 런북: `docs/runbooks/rob1474-us-paper-strategy.md`. DB round trip/동시 claim은 CI에서 검증한다.
@@ -253,9 +257,10 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - **패키지**: `app/services/execution_intent_gateway/` — `decisions`(순수 거부 규칙) · `store`(두 테이블의 유일한 writer) · `gateway`(순서) · `kis_mock_forwarder`(기존 주문 함수 호출, `is_mock=True` 고정)
 - **테이블**: `review.execution_intents`(불변, `account IN ('kis_mock')` CHECK), `review.execution_child_requests`(write-ahead journal). 마이그레이션 `20261101_rob1440_intent_gw`. at_app 은 DELETE 없음, journal UPDATE 는 결과 컬럼 4개만, intent UPDATE 는 `FOR UPDATE` 잠금용 `id` 하나만. 🔴 트리거가 어떤 역할이든 intent 변경·삭제, journal 요청 필드 변경·삭제, `sending`→`accepted`/`uncertain` 외 전이, 결과를 미리 담은 새 행(초기 상태는 `sending`/`refused`, `broker_order_id`·`result` 는 NULL)을 거부한다. intent 는 CHECK 가 스키마 상한을 반복하고 트리거가 만기 과거·24시간 초과 INSERT 를 거부한다. 🔴 downgrade 는 행이 있으면 거부한다(journal 을 잃으면 쓴 키로 다시 전송될 수 있다). 이 트리거를 완화하지 마라(`sending` 행의 키를 바꾸면 재시도가 새 요청으로 보여 이중 전송된다)
 - **설계**: `docs/design/1440-intent-gateway-contract.md`
-- **HTTP 라우트 (ROB-1461)**: `POST /execution-intents/children`, `GET /execution-intents/children/<key>`, `GET /execution-intents/intents/<id>`. 런북 `docs/runbooks/execution-intent-gateway.md`. 계약 픽스처 `tests/fixtures/fillwire_e1/`(fillwire 원본 SHA 는 `SOURCE.md`)
+- **HTTP 라우트 (ROB-1461)**: `POST /execution-intents/children`, `GET /execution-intents/children/<key>`, `GET /execution-intents/intents/<id>`, `GET /execution-intents/intents/<id>/fills`. 런북 `docs/runbooks/execution-intent-gateway.md`. 계약 픽스처 `tests/fixtures/fillwire_e1/`(fillwire 원본 SHA 는 `SOURCE.md`)
 
 **HTTP 라우트 계약 (ROB-1461)**:
+- `GET .../intents/<id>/fills` 는 저널 submit/amend 주문번호 + KST 거래일에 결속된 커밋 원장만 읽는다. `execution_ledger_in_effect()` + ROB-1379 supersede 적용, 누적량은 반환 qty 합계다. 계좌번호/raw payload 없음. `fill_id` 는 원장 id 문자열, `committed_at` 은 커밋 후 보이는 저장 `created_at`(정확한 COMMIT 시각 아님).
 - 🔴 `app.main` 에 마운트하지 마라 — 공개 프록시 뒤에 있다. 라우트는 별도 프로세스(`app/execution_intent_gateway_server.py`)만 서빙하고, `scripts/run_execution_intent_gateway.py` 는 숫자 loopback 주소가 아닌 호스트(`localhost` 이름 포함)를 exit 2 로 거부한다. 운영자가 수동으로 띄운다(스케줄러·유닛·재시작 정책 없음).
 - 🔴 게이트 순서: `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED`(기본 false, 꺼지면 DB 접근 전 404) → 토큰(미설정 403, 오류 401) → 본문 검증(`parse_child_request`, 미지 필드 거부) → E1 `handle`. confirm 헤더가 본문 `idempotency_key` 와 정확히 같을 때만 `confirm=True` 이고 그 외는 E1 의 `confirm_required` 다. E1 env 게이트 `EXECUTION_INTENT_GATEWAY_ENABLED` 는 별도로 유지된다.
 - 🔴 조회는 `READ ONLY` 트랜잭션이고 쓰기·잠금·브로커 호출이 없다. 저널과 레저 증거만 읽으며 `uncertain`/`sending` 은 양성 증거가 없으면 `view: null` 이다. 레저 행 부재를 "주문 없음"으로 답하지 마라(레저 행은 전송 후 기록된다). soft cancel 은 종결 증거가 아니다. 🔴 lineage 의 주문을 말하는 곳은 `lineage_orders` 하나뿐이다 — 리더가 체결을 읽는 주문과 종결이 읽는 주문이 같은 목록에서 나온다. 주문은 (선행 0 제거한 번호, KST 거래일)이고 submit/amend 만 주문을 만든다. 이 키를 번호만으로 줄이거나 정규화를 빼지 마라 — 재사용 번호의 과거 체결이 살아 있는 주문을 종료로 보고하거나 체결이 누락된다. 🔴 `filled_qty` 는 `execution_ledger` 체결의 lineage 누적이고, 종결은 마지막 submit/amend 가 만든 주문의 자기 체결을 저널 수량과 비교해서만 판정한다. 🔴 `attributed_fill_qty` 는 종목 전체 보유 변화를 나눈 추정치라 주문 증거가 아니다 — 종결·`filled_qty` 에 쓰지 말고, 실행 원장보다 크거나 판독 불가면 `fill_evidence_conflict` 로 `view: null` 이다(`_derive_shadow_fill` 은 값이 없으면 전량 체결로 답하므로 여기서 쓰지 않는다). 저널과 레저가 한 주문을 말하지 못하면(재사용 번호·미설명 번호·번호 공유) `order_identity_ambiguous` 다. 🔴 레저가 따라오지 않은 unknown amend 는 이전 주문의 체결·만료·취소 증거로 닫지 마라 — 대체 주문이 살아 있을 수 있다. 불변식 표 J1~J12 와 테스트는 `docs/design/1440-intent-gateway-contract.md`.
@@ -538,6 +543,27 @@ allowlist change exists because `get_holdings` is already live-kr core.
 - **CLI**: `uv run python -m scripts.kis_websocket_mock_smoke`
 - **런북**: `docs/runbooks/kis-websocket-mock-smoke.md`
 - **이벤트 태깅**: `app/services/kis_websocket_internal/events.py::build_lifecycle_event` (ROB-100 `OrderLifecycleEvent`)
+
+### KIS mock dispatch evidence (ROB-1263)
+
+KR mock only: `kis_mock_runner/evidence_store.py` provides durable lineage,
+dispatch evidence and restart uncertainty ports in two new append-only tables
+(migration `20261102_rob1263_kis_evidence`, operator-applied). All seven native
+kinds use `(lineage, kind, broker evidence key)` idempotency. Recovery binds only
+exact attributed ODNO; missing/unknown evidence retains claims. Release requires
+committed terminal reconciliation plus the existing common AND gate and exact
+claim owner. `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` is optional fingerprint-only
+configuration consumed by the approved route installer; alone it changes only
+`kr.kis.mock` identity. Optional `KIS_MOCK_E3_ACTIVATION_ENABLED` defaults false;
+exact true plus matching mock identity supplies the operator-approved single-run
+E3 policy/cap/owner/canary bindings and writer/auto flags, preserving every
+existing guard. It is configuration only: one share, strict KRW 100,000 bound,
+at most 30-minute expiry, one working order per intent and one intent per E3 run,
+gateway writer and operator-present foreground route owner. No recurrence is
+authorized; the operator must store the matching bounded E1 intent. No production provider installation, scheduler or broker call is
+part of this amendment. No in-repo reconciler yet calls the new native-evidence
+or release methods; reviewed recovery adapter wiring is required before route
+installation. Contract: `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
 
 ### kis_mock 귀속 사슬 — pre-submit 강제
 
