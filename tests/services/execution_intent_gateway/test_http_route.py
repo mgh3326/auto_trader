@@ -137,6 +137,7 @@ def test_no_route_creates_an_intent() -> None:
         ("POST", "/execution-intents/children"),
         ("GET", "/execution-intents/children/{idempotency_key}"),
         ("GET", "/execution-intents/intents/{intent_id}"),
+        ("GET", "/execution-intents/intents/{intent_id}/fills"),
     }
 
 
