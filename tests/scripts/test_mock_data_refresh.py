@@ -396,3 +396,85 @@ def test_retention_rejects_symlink_generation(tmp_path):
     with pytest.raises(ValueError, match="outside snapshot"):
         prune(tmp_path, "us", apply=True)
     assert outside.exists()
+
+
+def test_crypto_refresh_cli_uses_real_binance_source_feed(
+    tmp_path, monkeypatch, capsys
+):
+    """Exercise the production source/config boundary with only HTTP replaced."""
+    requests = []
+    symbols = ["BTCUSDT", "COIN01USDT", "COIN02USDT"]
+
+    def handler(request):
+        requests.append(request)
+        assert request.method == "GET"
+        if request.url.path == "/api/v3/exchangeInfo":
+            return httpx.Response(
+                200,
+                json={
+                    "symbols": [
+                        {
+                            "symbol": s,
+                            "baseAsset": s[:-4],
+                            "quoteAsset": "USDT",
+                            "status": "TRADING",
+                            "isSpotTradingAllowed": True,
+                        }
+                        for s in symbols
+                    ]
+                },
+            )
+        assert request.url.path == "/api/v3/klines"
+        start = int(request.url.params["startTime"])
+        end = int(request.url.params["endTime"])
+        rank = symbols.index(request.url.params["symbol"]) + 1
+        return httpx.Response(
+            200,
+            json=[
+                [
+                    stamp,
+                    "10",
+                    "12",
+                    "9",
+                    "11",
+                    str(rank * 100),
+                    stamp + 86400000 - 1,
+                    str(rank * 1000),
+                    1,
+                    "0",
+                    "0",
+                    "0",
+                ]
+                for stamp in range(start, end + 1, 86400000)
+            ],
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr("scripts.mock_data_sources.time.sleep", lambda _: None)
+    monkeypatch.setattr(
+        producer.httpx,
+        "Client",
+        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handler)),
+    )
+    args = [
+        "--market",
+        "crypto",
+        "--root",
+        str(tmp_path / "bars"),
+        "--limit",
+        "2",
+        "--top-n",
+        "1",
+        "--lookback",
+        "365",
+    ]
+    assert producer.main([*args, "--dry-run"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["feed"] == "binance_spot_utc" and requests == []
+    assert producer.main([*args, "--backfill"]) == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["producer_config"]["feed"] == "binance_spot_utc"
+    bars, persisted = read_bars(tmp_path / "bars", "crypto")
+    assert persisted == manifest and manifest["symbols"] == 2
+    assert bars.groupby("symbol").size().min() == 365
+    assert len(requests) == 4
