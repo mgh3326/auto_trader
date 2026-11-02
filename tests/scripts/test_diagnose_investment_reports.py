@@ -53,7 +53,7 @@ def test_linkage_verdict_separates_watch_use_from_report_writes() -> None:
         active_dangling=0,
     )
     assert result["verdict"] == "no_report_linked_events"
-    assert result["watch_reads_do_not_imply_report_writes"] is True
+    assert result["recent_report_linked_events_observed"] is False
 
 
 def test_linkage_verdict_reports_dependency_when_events_are_linked() -> None:
@@ -64,7 +64,7 @@ def test_linkage_verdict_reports_dependency_when_events_are_linked() -> None:
         active_dangling=0,
     )
     assert result["verdict"] == "report_linked_events"
-    assert result["watch_reads_do_not_imply_report_writes"] is False
+    assert result["recent_report_linked_events_observed"] is True
 
 
 def test_linkage_verdict_without_events() -> None:

@@ -85,8 +85,8 @@ def watch_linkage_verdict(
 
     A delivered watch event only carries a report link when the alert it fired
     from was activated from a report item; ROB-768 direct watches carry none by
-    design. So recent report-linked events are the only evidence that the watch
-    surface depends on the report writer.
+    design. The diagnostic reports only the links observed in its lookback window;
+    it does not establish that no other report dependency exists.
     """
     if lookback_resolved > 0:
         verdict = "report_linked_events"
@@ -98,7 +98,7 @@ def watch_linkage_verdict(
         "verdict": verdict,
         "active_dangling_alerts": active_dangling,
         "dangling_links_are_legacy_placeholders": True,
-        "watch_reads_do_not_imply_report_writes": lookback_resolved == 0,
+        "recent_report_linked_events_observed": lookback_resolved > 0,
     }
 
 

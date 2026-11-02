@@ -3,7 +3,8 @@
 `review.investment_reports` / `_items` / `_item_decisions` have not been written since
 **2026-07-28T00:32:03Z**. The watch surface kept working the whole time
 (`investment_watch_events_list_recent` 245 calls / 30d), which made the gap look like a broken
-writer. It is not: **no in-repo writer exists, and none stopped.** The caller stopped calling.
+writer. The report-writing services and MCP/HTTP entrypoints exist in this repo, but
+no internal scheduled producer calls them. Recent watch events use the separate direct-watch path.
 
 This runbook is the read-only measurement and the restart-vs-retire decision. Nothing here
 creates a report, and no report may ever be inferred from a watch read.
@@ -39,8 +40,8 @@ but three classes exist and only one is a link:
 Measured: active alerts `null=76, resolved=0, dangling=0`; 30-day events
 `null=29, resolved=0, dangling=0`; all-time dangling alerts 169 / events 132, none active.
 The last report-linked event fired 2026-08-24 from an alert created on or before 2026-07-28 —
-i.e. after 2026-08-07 every watch was created directly. **Watch activity therefore carries no
-evidence that a report should exist**, and a non-null `source_report_uuid` must never be counted
+the active alerts and recent events in this measurement are direct watches. **These watch
+observations do not establish that a report should exist**, and a non-null `source_report_uuid` must never be counted
 as a link without the `EXISTS` check above.
 
 ## 2. Root cause
@@ -51,7 +52,7 @@ Writer entrypoints, all of them:
 |---|---|---|
 | `investment_report_create` (MCP) | none — out-of-process caller | 0 calls / 30d |
 | `investment_report_generate_from_bundle` | none | `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` default **false** |
-| Hermes HTTP ingest (`/trading/api/investment-reports/hermes/`) | none | gate default off + `HERMES_INGEST_TOKEN`; `review.investment_snapshot_*` tables **empty**, so it never ran in production |
+| Hermes HTTP ingest (`/trading/api/investment-reports/hermes/`) | none | gate default off + `HERMES_INGEST_TOKEN`; `review.investment_snapshot_*` tables **empty** in this measurement; prior runs are not proved |
 | `scripts/invest_reports_us_schedule.py` | none — default-disabled manual CLI (`INVEST_REPORTS_US_SCHEDULE_ENABLED`) | not referenced by any TaskIQ/Prefect flow or `ops/ncp/systemd/*.timer` |
 
 There is no TaskIQ task, Prefect flow, or desk timer that writes these tables. The 68 rows are
@@ -59,8 +60,9 @@ the trace of sessions that called the tool from 2026-05-19 to 2026-07-28; the la
 (`CLAUDE_ADVISOR`, 2026-07-28) is also the commit date of ROB-1103, after which direct watch
 creation became the standard path and the report+activate watch flow stopped being used.
 
-**Verdict: missing caller.** The tables are not corrupt, the handlers are not broken, and the
-item contract is unchanged. What is stale is the *practice*, not the code.
+**Verdict: dormant report generation.** No recent external report-create calls or internal
+scheduled producer are observed. The watch activity is independent of report generation.
+This measurement does not exercise every writer or prove that all handlers are healthy.
 
 ## 3. Diagnostic
 
@@ -77,38 +79,26 @@ ENV_FILE=<env> uv run python -m scripts.diagnose_investment_reports --json    # 
 - Exit code `0` = last report write within `STALL_THRESHOLD_DAYS` (14); `1` = stale or never
   written. The 14-day threshold is a visibility device — no report cadence is declared in the
   repo, so a desk-declared cadence should replace it before this gates anything.
-- `watch_linkage.verdict = no_report_linked_events` means the watch surface is alive but
-  independent of the report writer. That is a normal state for direct watches, not a defect.
+- `watch_linkage.verdict = no_report_linked_events` means no report-linked event was
+  observed in the selected window. It is not proof of the absence of every report dependency.
 
-## 4. Restart or retire — operator decision
+## 4. Approved disposition (operator-desk, 2026-11-03)
 
-This is inventory §5.3 / H4. Neither option is taken by this PR.
+H4 takes A: preserve `investment_report_create`, `investment_report_list`, and
+`investment_report_get`. Retire the dormant Hermes composition/write pipeline in
+R4, using this SELECT-only diagnostic as its evidence. This PR does not remove
+those paths. No writer activation or backfill is authorized.
 
-**Restart** (choose only if reports are wanted again) needs all of:
-
-1. A writer decision: an out-of-process session prompt calling `investment_report_create` (or
-   the snapshot generator), **or** a desk-scheduled
-   `python -m scripts.invest_reports_us_schedule --run --kst-date <YYYY-MM-DD>`.
-2. `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` for either generator path
-   (`scripts.invest_reports_us_schedule` also needs `INVEST_REPORTS_US_SCHEDULE_ENABLED=true`).
-3. For the Hermes path, `HERMES_INGEST_TOKEN` plus a real bundle — the
-   `review.investment_snapshot_*` tables are empty, so the first run builds everything.
-4. Scheduling is a desk-approved step (`docs/runbooks/invest-reports-us-schedule.md`); this PR
-   registers nothing. Hard rule 6 still applies.
-5. Do **not** backfill or relabel the 68 historical rows. 49 are drafts that were never
-   published and all are past `valid_until`; they are audit history, not current context.
-
-**Retire** (inventory H4 / R4) needs operator approval because
-`docs/agent-contracts/mcp-and-analysis-contracts.md` treats the report item contract as live.
-If retirement is chosen, the evidence above is the basis: 0 writes/30d, 0 calls to every writer
-tool, empty Hermes tables, and no scheduled producer.
+The 68 historical rows and their legacy watch links remain unchanged. R4 must
+preserve the report item contract for the three retained tools and must not
+manufacture reports from watch activity.
 
 ## 5. After-deploy verification (read-only)
 
 Run from the active API container (`ssh ncp 'C=at-api-$(cat /root/at-run/api-active-color); docker exec $C ...'`):
 
 ```sql
--- 1. writer heartbeat + 30-day cadence (expect last_created to move and rows_30d > 0 after a restart)
+-- 1. writer heartbeat + 30-day cadence (diagnostic deployment alone must not move last_created or create rows)
 select count(*)                                            as rows,
        max(created_at)                                     as last_created,
        count(*) filter (where created_at >= now() - interval '30 days') as rows_30d,
@@ -116,7 +106,7 @@ select count(*)                                            as rows,
          filter (where created_at >= now() - interval '30 days')         as days_30d
 from review.investment_reports;
 
--- 2. items follow the header (same date as #1 after a restart)
+-- 2. item history remains unchanged by this diagnostic
 select count(*) as rows, max(created_at) as last_created
 from review.investment_report_items;
 
@@ -150,7 +140,9 @@ group by 1, 2
 order by 1, 2;
 ```
 
-Or simply re-run `scripts.diagnose_investment_reports` — exit `0` after a successful restart.
+Re-run `scripts.diagnose_investment_reports` to compare the measured state. The diagnostic
+continues to exit `1` while historical report writes remain outside its visibility threshold;
+shipping this diagnostic does not restart them.
 
 ## 6. Limits
 
