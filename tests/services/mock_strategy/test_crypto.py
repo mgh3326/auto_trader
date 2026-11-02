@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -449,3 +450,41 @@ async def test_uncertain_close_without_evidence_never_creates_another_leg():
     with pytest.raises(KeyError):
         await close_due(**args)
     assert len(broker.calls) == 11
+
+
+@pytest.mark.asyncio
+async def test_later_planned_leg_cannot_hide_earlier_nonterminal_leg():
+    recorder = Recorder()
+    broker = Broker(recorder)
+    await run_lists(
+        signals(),
+        venue="binance_futures_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    args = {
+        "venue": "binance_futures_demo",
+        "asof": DECISION + timedelta(days=3),
+        "broker": broker,
+        "recorder": recorder,
+        "dry_run": False,
+        "confirm": True,
+    }
+    broker.pending = True
+    await close_due(**args)
+    prior = next(r for r in recorder.rows.values() if r.side == "cover")
+    later = copy(prior)
+    later.client_order_id, later.status = "r1474c-x-later-planned", "planned"
+    recorder.rows[later.client_order_id] = later
+    await close_due(**args)
+    assert len(broker.calls) == 20
+    another = copy(later)
+    another.client_order_id = "r1474c-x-another-planned"
+    recorder.rows[another.client_order_id] = another
+    with pytest.raises(ValueError, match="multiple planned"):
+        await close_due(**args)
+    assert len(broker.calls) == 20

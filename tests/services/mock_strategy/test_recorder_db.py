@@ -23,9 +23,24 @@ def recorder():
     return MockStrategyRecorder()
 
 
-async def test_recorder_round_trip_and_real_two_session_claim(db_session, recorder):
+@pytest.mark.parametrize(
+    "venue",
+    [
+        "alpaca_paper",
+        "alpaca_paper_crypto",
+        "binance_spot_demo",
+        "binance_futures_demo",
+    ],
+)
+async def test_recorder_round_trip_and_real_two_session_claim(
+    db_session, recorder, venue
+):
     coid = f"r1474-db-{uuid4().hex}"
-    order = intent(client_order_id=coid)
+    order = replace(
+        intent(client_order_id=coid),
+        venue=venue,
+        side="short" if venue == "binance_futures_demo" else "buy",
+    )
     first = await recorder.record(order)
     assert (await recorder.record(order)).id == first.id
     won = await asyncio.gather(recorder.claim(coid), recorder.claim(coid))
@@ -42,21 +57,21 @@ async def test_recorder_round_trip_and_real_two_session_claim(db_session, record
     assert updated.exit_due_at == order.exit_due_at
     assert coid in {
         r.client_order_id
-        for r in await recorder.list_open(venue="alpaca_paper", account_ref="fixture")
+        for r in await recorder.list_open(venue=venue, account_ref="fixture")
     }
     assert coid not in {
         r.client_order_id
         for r in await recorder.list_due(
-            venue="alpaca_paper", asof=datetime(2026, 11, 9, 14, 29, tzinfo=UTC)
+            venue=venue, asof=datetime(2026, 11, 9, 14, 29, tzinfo=UTC)
         )
     }
     assert coid in {
         r.client_order_id
-        for r in await recorder.list_due(venue="alpaca_paper", asof=order.exit_due_at)
+        for r in await recorder.list_due(venue=venue, asof=order.exit_due_at)
     }
     await recorder.update(coid, status="closed", closed_at=datetime.now(UTC))
     assert coid not in {
-        r.client_order_id for r in await recorder.list_open(venue="alpaca_paper")
+        r.client_order_id for r in await recorder.list_open(venue=venue)
     }
     with pytest.raises(ValueError, match="terminal"):
         await recorder.update(coid, status="accepted")

@@ -154,7 +154,9 @@ async def execute(args: argparse.Namespace) -> dict:
                 )
             return await close_due(
                 venue=args.venue,
-                asof=decision_at("crypto", args.asof - timedelta(days=1)).to_pydatetime(),
+                asof=decision_at(
+                    "crypto", args.asof - timedelta(days=1)
+                ).to_pydatetime(),
                 broker=broker,
                 recorder=recorder,
                 dry_run=args.dry_run,
@@ -172,10 +174,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"success": False, "error_class": type(exc).__name__}))
         return 2
     print(json.dumps(result, sort_keys=True))
-    return int(any(row.get("status") in {
-        "dust_remaining", "close_pending", "close_partial", "uncertain",
-        "entry_not_sent", "entry_fill_pending",
-    } for row in result.get("orders", [])))
+    return int(
+        any(
+            row.get("status")
+            in {
+                "dust_remaining",
+                "close_pending",
+                "close_partial",
+                "uncertain",
+                "entry_not_sent",
+                "entry_fill_pending",
+            }
+            for row in result.get("orders", [])
+        )
+    )
 
 
 if __name__ == "__main__":

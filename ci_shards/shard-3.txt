@@ -18,6 +18,7 @@ tests/jobs/test_analyst_consensus_snapshots_job.py
 tests/jobs/test_kis_mock_expiry_race.py
 tests/mcp_server/test_alpaca_paper_automated_orders.py
 tests/mcp_server/test_alpaca_paper_default_profile_gate.py
+tests/mcp_server/test_alpaca_paper_no_size_caps.py
 tests/mcp_server/test_analyze_stock_batch_us_quote_session.py
 tests/mcp_server/test_b0x_shadow_replay_tools.py
 tests/mcp_server/test_binance_demo_ledger_status_tool.py
@@ -520,4 +521,3 @@ tests/unit/services/daily_candles/test_yahoo_us_fallback.py
 tests/unit/tasks/test_daily_candles_tasks.py
 tests/upbit_public_read_model/test_market_warnings.py
 tests/upbit_public_read_model/test_orderbook_cache.py
-tests/mcp_server/test_alpaca_paper_no_size_caps.py

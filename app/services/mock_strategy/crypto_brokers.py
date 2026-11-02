@@ -113,6 +113,8 @@ class BinanceCryptoDemo:
         self.account_ref = client.credential_fingerprint
 
     async def rules(self, symbol: str) -> MarketRules:
+        if self.futures:
+            await self._position(symbol)
         return binance_rules(await self.client.get_symbol_info(symbol=symbol))
 
     async def price(self, symbol: str) -> Decimal:

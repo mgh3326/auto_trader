@@ -291,7 +291,10 @@ async def close_due(
             raise ValueError("close fills exceed attributed entry")
         if in_flight:
             results.append(
-                {"client_order_id": in_flight[0].client_order_id, "status": "close_pending"}
+                {
+                    "client_order_id": in_flight[0].client_order_id,
+                    "status": "close_pending",
+                }
             )
             continue
         rules, price = (
