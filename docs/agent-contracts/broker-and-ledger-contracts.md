@@ -493,6 +493,27 @@ allowlist change exists because `get_holdings` is already live-kr core.
 - **런북**: `docs/runbooks/kis-websocket-mock-smoke.md`
 - **이벤트 태깅**: `app/services/kis_websocket_internal/events.py::build_lifecycle_event` (ROB-100 `OrderLifecycleEvent`)
 
+### KIS mock dispatch evidence (ROB-1263)
+
+KR mock only: `kis_mock_runner/evidence_store.py` provides durable lineage,
+dispatch evidence and restart uncertainty ports in two new append-only tables
+(migration `20261102_rob1263_kis_evidence`, operator-applied). All seven native
+kinds use `(lineage, kind, broker evidence key)` idempotency. Recovery binds only
+exact attributed ODNO; missing/unknown evidence retains claims. Release requires
+committed terminal reconciliation plus the existing common AND gate and exact
+claim owner. `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` is optional fingerprint-only
+configuration consumed by the approved route installer; alone it changes only
+`kr.kis.mock` identity. Optional `KIS_MOCK_E3_ACTIVATION_ENABLED` defaults false;
+exact true plus matching mock identity supplies the operator-approved single-run
+E3 policy/cap/owner/canary bindings and writer/auto flags, preserving every
+existing guard. It is configuration only: one share, strict KRW 100,000 bound,
+at most 30-minute expiry, one working order per intent and one intent per E3 run,
+gateway writer and operator-present foreground route owner. No recurrence is
+authorized; the operator must store the matching bounded E1 intent. No production provider installation, scheduler or broker call is
+part of this amendment. No in-repo reconciler yet calls the new native-evidence
+or release methods; reviewed recovery adapter wiring is required before route
+installation. Contract: `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
+
 ### kis_mock 귀속 사슬 — pre-submit 강제
 
 `kis_mock` 주문은 **브로커 전송 전에** 귀속이 확정돼야 한다. 확정 못 하면 주문이 나가지 않는다(fail-closed).
