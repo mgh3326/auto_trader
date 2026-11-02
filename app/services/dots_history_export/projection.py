@@ -237,9 +237,10 @@ _DECIMAL_PLACES = Decimal("0.000000000001")
 def _decimal_scaled(value: Any) -> str | None:
     if value is None:
         return None
-    return format(
-        Decimal(str(value)).quantize(_DECIMAL_PLACES, rounding=ROUND_HALF_UP), "f"
-    )
+    number = Decimal(str(value))
+    if not number.is_finite():
+        return None
+    return format(number.quantize(_DECIMAL_PLACES, rounding=ROUND_HALF_UP), "f")
 
 
 def _plain_text(value: str) -> str | None:
@@ -263,7 +264,9 @@ def _masked_account(value: str) -> str:
 
 
 def _pct(numerator: Decimal, denominator: Decimal) -> str | None:
-    if denominator <= 0 or not numerator.is_finite() or not denominator.is_finite():
+    # Finiteness first: comparing a NaN Decimal raises InvalidOperation, so a
+    # broken candle close must be rejected before it can reach the comparison.
+    if not numerator.is_finite() or not denominator.is_finite() or denominator <= 0:
         return None
     return format(((numerator / denominator) - Decimal(1)) * Decimal(100), ".4f")
 
@@ -1191,32 +1194,32 @@ def fill_lot_links(
         book = lots.get(key) or []
         if not book:
             continue
-        consumed = book[0]
-        consumed_unit_cost = consumed.unit_cost
-        remaining = qty
-        while remaining > 0 and book:
-            lot = book[0]
-            take = min(remaining, lot.qty)
-            unit = lot.unit_cost
-            lot.qty -= take
-            lot.cost_total -= take * unit
-            remaining -= take
+        # The walk holds at most one open lot per account, market and symbol: a
+        # buy merges into it, a seed replaces it, and a fully sold lot is removed.
+        # So a sell either fits that one lot or exceeds everything the export can
+        # see; it never spans two lots.
+        lot = book[0]
+        take = min(qty, lot.qty)
+        unit = lot.unit_cost
+        lot.qty -= take
+        lot.cost_total -= take * unit
+        if qty > take:
+            # The order sold more than the lot this export can see. The overhang
+            # is reported as unlinked rather than folded into a lot it does not fit.
             if lot.qty <= 0:
-                book.pop(0)
-        if remaining > 0:
-            # The order sold more than the lots this export can see, so the row
-            # cannot be attributed to one lot. It stays unlinked and the overhang
-            # is countable instead of being folded into a lot it does not fit.
+                book.clear()
             continue
+        if lot.qty <= 0:
+            book.clear()
         cell.update(
-            lot_ref=consumed.lot_ref,
+            lot_ref=lot.lot_ref,
             lot_link_kind="partial_sell" if book else "full_sell",
-            lot_opened_at_utc=consumed.opened_at.astimezone(UTC)
+            lot_opened_at_utc=lot.opened_at.astimezone(UTC)
             .isoformat()
             .replace("+00:00", "Z"),
-            lot_cost_basis=_decimal_scaled(consumed_unit_cost),
-            lot_basis_kind=consumed.basis_kind,
-            linked_fill_ref=consumed.fill_ref,
+            lot_cost_basis=_decimal_scaled(unit),
+            lot_basis_kind=lot.basis_kind,
+            linked_fill_ref=lot.fill_ref,
         )
     return cells
 
@@ -1401,14 +1404,18 @@ class _ReferencePrices:
             if not symbol:
                 continue
             venue = _text(row.get("venue")) or ""
-            series.setdefault((venue, symbol), []).append(
-                (_aware(row["time"]), Decimal(str(row["close"])))
-            )
+            close = Decimal(str(row["close"]))
+            if not close.is_finite():
+                # A broken candle is not a reference price. Keeping the key makes
+                # the reason "no usable candle" rather than "no instrument".
+                series.setdefault((venue, symbol), [])
+                continue
+            series.setdefault((venue, symbol), []).append((_aware(row["time"]), close))
         for values in series.values():
             values.sort()
         self._series = series
 
-    def _values(self, venue: str, symbol: str) -> list[tuple[datetime, Decimal]]:
+    def _values(self, venue: str, symbol: str) -> list[tuple[datetime, Decimal]] | None:
         values = self._series.get((venue, symbol))
         if values is not None:
             return values
@@ -1416,18 +1423,18 @@ class _ReferencePrices:
         # exactly one venue lists it; two venues with the same ticker would
         # otherwise be priced with each other's close.
         matches = [
-            series
-            for (listed_venue, listed), series in self._series.items()
-            if listed == symbol
+            series for (_, listed), series in self._series.items() if listed == symbol
         ]
-        return matches[0] if len(matches) == 1 else []
+        return matches[0] if len(matches) == 1 else None
 
     def lookup(
         self, venue: str, symbol: str, created_at: datetime
     ) -> tuple[Decimal | None, datetime | None, str]:
         values = self._values(venue, symbol)
-        if not values:
+        if values is None:
             return None, None, "unavailable:no_instrument"
+        if not values:
+            return None, None, "unavailable:no_candle"
         cutoff = _aware(created_at) - timedelta(days=1)
         found: tuple[datetime, Decimal] | None = None
         for when, close in values:

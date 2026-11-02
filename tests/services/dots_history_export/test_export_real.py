@@ -23,6 +23,9 @@ from app.services.dots_history_export.projection import (
     fill_lot_links,
     fill_sequences,
 )
+from app.services.dots_history_export.projection import (
+    _pct as projection_pct,
+)
 from app.services.dots_history_export.publish import MANIFEST_NAME, publish
 from app.services.dots_history_export.spec import Mode, tables_for
 from scripts import export_dots_history as cli
@@ -548,6 +551,65 @@ def test_a_kr_rung_gets_no_reference_price_columns() -> None:
     [rung] = projected_real().tables["order_proposal_rungs"]
     assert rung["reference_price"] is None
     assert rung["reference_price_source"] is None
+
+
+def test_a_non_finite_candle_close_is_not_a_reference_price() -> None:
+    [rung] = projected_real(
+        order_proposal_rungs=[CRYPTO_SELL_RUNG],
+        crypto_daily_candles=[
+            {
+                "venue": "upbit",
+                "venue_symbol": "KRW-BTC",
+                "time": datetime(2026, 6, 8, tzinfo=UTC),
+                "close": Decimal("NaN"),
+            }
+        ],
+    ).tables["order_proposal_rungs"]
+    assert rung["reference_price"] is None
+    assert rung["reference_price_source"] == "unavailable:no_candle"
+
+
+def test_pct_rejects_a_non_finite_operand_before_comparing() -> None:
+    # Decimal("NaN") <= 0 raises InvalidOperation; the finiteness check must come
+    # first so a broken close cannot abort the projection.
+    assert projection_pct(Decimal("NaN"), Decimal("1")) is None
+    assert projection_pct(Decimal("1"), Decimal("NaN")) is None
+    assert projection_pct(Decimal("1"), Decimal("0")) is None
+
+
+def test_the_walk_keeps_one_lot_per_symbol_and_merges_buys() -> None:
+    first = fill_row(
+        id=140,
+        source="websocket",
+        side="buy",
+        filled_qty=Decimal("5"),
+        filled_price=Decimal("100"),
+        filled_at=CREATED,
+    )
+    second = fill_row(
+        id=141,
+        source="websocket",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("200"),
+        filled_at=CREATED + timedelta(hours=1),
+    )
+    sell = fill_row(
+        id=142,
+        source="websocket",
+        side="sell",
+        filled_qty=Decimal("7"),
+        filled_price=Decimal("300"),
+        filled_at=CREATED + timedelta(hours=2),
+    )
+    rows = [first, second, sell]
+    cells = fill_lot_links(rows, fill_sequences(rows))
+    assert cells[141]["lot_link_kind"] == "adds_to_lot"
+    assert cells[141]["lot_ref"] == cells[140]["lot_ref"]
+    # One merged lot of 15 at (5*100 + 10*200) / 15, so the sell has one lot.
+    assert cells[142]["lot_link_kind"] == "partial_sell"
+    assert cells[142]["lot_ref"] == cells[140]["lot_ref"]
+    assert cells[142]["lot_cost_basis"] == "166.666666666667"
 
 
 def test_the_toss_us_row_keeps_its_real_symbol_and_plain_strategy() -> None:
