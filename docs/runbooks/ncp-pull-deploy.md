@@ -15,6 +15,71 @@ A forward deploy exits 78 before any mutation while a ROB-1436 retired unit is
 running or can restart (`RETIRED_CONTAINERS`). Stop and disable those units
 first: [mcp-unit-retirement-rob1436.md](mcp-unit-retirement-rob1436.md) §3.
 
+## Exact-SHA full-suite gate (ROB-1456)
+
+Every forward deploy, including `--dry-run`, checks GitHub **before the first
+image pull, file write or container change**. `scripts/deploy_ci_gate.py` reads
+the remote tag using `docker buildx imagetools inspect`, pins its registry
+digest, and reads `org.opencontainers.image.revision` from that immutable
+image's platform configs. Every runnable platform must name the same full
+40-character commit SHA. It never substitutes the current `main` tip, a
+short tag suffix, or a locally cached image's revision.
+
+For that exact SHA, the newest `Test` workflow push/dispatch run and its latest
+attempt must contain all six completed, successful jobs:
+
+- `lint`
+- `taskiq-smoke`
+- `test (3.13, 1)` through `test (3.13, 4)`
+
+These names come from `.github/workflows/test.yml` (`lint`, `taskiq-smoke`,
+the Python `3.13` × groups `[1, 2, 3, 4]` matrix). ROB-1454's fast PR gate
+does not replace this evidence: neither `PR gate`, `ci-required`, a PR run,
+nor a skipped/neutral shard is accepted. Results cannot be combined across
+runs, attempts or commits. Missing, red, running, cancelled or unreadable
+checks print their names and refuse with **exit 78**. API/authentication
+failures also fail closed. There is no implicit wait/retry; rerun after CI
+finishes. A manual full-suite run uses `gh workflow run test.yml --ref <branch>`
+(ROB-1454); confirm its `head_sha` is the intended commit.
+
+On success the script pulls and promotes the **already verified digest**,
+not the tag again. A tag moving between inspection and pull cannot change
+the deployed commit. Both automatic failure recovery and explicit `--rollback`
+remain **unchecked emergency paths**, using their existing immutable targets.
+
+Break-glass forward deploy (operator decision; keep the reason in the incident
+record and do not put secrets in it):
+
+```bash
+/root/at-run/deploy-ncp-pull.sh sha-abcdef0 --dry-run \
+  --allow-unverified 'INC-123: operator accepted missing full-suite evidence'
+/root/at-run/deploy-ncp-pull.sh sha-abcdef0 \
+  --allow-unverified 'INC-123: operator accepted missing full-suite evidence'
+```
+
+`--allow-unverified REASON` requires a non-blank reason and logs `OVERRIDE`,
+the exact SHA and JSON-escaped reason, along with the missing/red checks.
+It waives only CI evidence, not image identity, retired-unit checks or other
+deployment preconditions. A missing digest/revision or mixed platform SHAs
+must be corrected, even when overriding CI.
+
+The GHCR application image workflow (`.github/workflows/deploy.yml`) uses the
+same gate before QEMU/Buildx setup, registry login and build/push. Automatic
+builds follow completed `Test` runs for this repository's `main` pushes, so
+CI is not raced by an immediate build. Checkout, build arguments, OCI revision
+and `sha-<short7>` tag use that run's `head_sha`, not the newer default-branch
+tip. `workflow_dispatch` and published releases check their own event SHA;
+manual dispatch offers `allow_unverified` for the same logged override.
+Waiting via `workflow_run` means docs-only main pushes now also build after
+CI (there is no `paths-ignore` on that event).
+
+This gate covers the NCP pull path and its application image producer.
+`scripts/deploy.sh` and `scripts/deploy-native.sh` remain retired and refuse
+execution. `build-caddy.yml` publishes a separate legacy Caddy image, not the
+NCP app image (NCP uses HAProxy); existing one-shot jobs consume
+`deployed-digest` rather than promote a new image.
+
+
 ## Tag policy
 
 - `main` is the latest image built from a verified `main` push. It is suitable
@@ -24,9 +89,8 @@ first: [mcp-unit-retirement-rob1436.md](mcp-unit-retirement-rob1436.md) §3.
 - `production` remains a manual release tag. This workflow does not advance it
   on a `main` push.
 
-The GitHub Actions image workflow still supports `workflow_dispatch` and
-published releases. It also ignores a `main` push when every changed path is
-under `docs/` or is a Markdown file.
+The GitHub Actions image workflow also supports `workflow_dispatch` and
+published releases; both require the same exact-SHA full-suite evidence.
 
 ## One-time host preparation
 
@@ -37,6 +101,12 @@ repository:
 ```bash
 printf '%s' "$GHCR_PAT" | docker login ghcr.io -u mgh3326 --password-stdin
 ```
+
+The host also needs Python 3 (stdlib only), Docker's Buildx plugin, and GitHub
+CLI `gh` with authenticated read access to this repository's Actions runs/jobs.
+Use the operator's established `gh` authentication or inherited `GH_TOKEN`;
+the gate never reads runtime env files for GitHub credentials. Verify access
+without printing tokens: `gh api repos/mgh3326/auto_trader/actions/workflows/test.yml`.
 
 Keep the two existing runtime env files outside the repository. By default the
 script uses the NCP host's files `/root/at-secrets/.env.api` and
@@ -52,12 +122,13 @@ value from the second file. A missing file stops the run before any pull or
 container change with `required env file is unavailable: <path> (set <VAR> to
 the host file)`. No env contents are copied into the image or script.
 
-Install the versioned operator script and its HAProxy template, from the same
-merged commit, with restricted permissions. The NCP host keeps the template in
-the run directory's ops tree:
+Install the versioned operator script, gate helper and HAProxy template from
+the same merged commit, with restricted permissions. The NCP host keeps the
+template in the run directory's ops tree:
 
 ```bash
 install -m 0750 scripts/deploy-ncp-pull.sh /root/at-run/deploy-ncp-pull.sh
+install -m 0750 scripts/deploy_ci_gate.py /root/at-run/deploy_ci_gate.py
 install -D -m 0644 ops/ncp/haproxy/haproxy.cfg.tmpl /root/at-run/ops/ncp/haproxy/haproxy.cfg.tmpl
 ```
 
@@ -150,7 +221,7 @@ digest with profile-scoped environment policy (including the required
 approval-hash modes for TradingCodex execution). HAProxy must remain bound only
 to loopback and the configured tailnet address; it is never a public listener.
 
-The script resolves the GHCR repo digest after pulling it. It retries the inactive
+The script resolves and verifies the GHCR digest before pulling it. It retries the inactive
 API color's loopback `/healthz` for up to 60 seconds by default. If the new API
 does not return HTTP 200, the worker is not running and does not emit its
 TaskIQ startup line, or either WebSocket is not running and does not emit a
@@ -160,9 +231,9 @@ already replaced, in reverse replacement order, using each unit's prior
 digest. Untouched units stay untouched. A later MCP failure uses the same
 rollback path, then restores the prior HAProxy config and active colors. The
 final table compares the expected digest with each container's running digest;
-any mismatch leaves the command nonzero. A tag is used only to pull and resolve
-the image; `docker run` always receives `repo@sha256:...`, so the next
-deployment's `.Config.Image` is stable even after a later `:main` pull.
+any mismatch leaves the command nonzero. The input tag is resolved once through
+remote metadata before the gate; both `docker pull` and `docker run` receive
+that `repo@sha256:...`, so a later `:main` update cannot change this deployment.
 If container inspection fails during the preflight snapshot, the script checks
 the container list and stops before mutation unless absence is confirmed.
 
@@ -238,13 +309,13 @@ Both flags combine with a tag or with --rollback, in any order:
     /root/at-run/deploy-ncp-pull.sh --rollback --skip-kis-ws
     /root/at-run/deploy-ncp-pull.sh --dry-run --skip-kis-ws
 
---dry-run prints a read-only plan and exits. It reports the intended digest
-resolved from the locally inspectable image, the planned action for every
-unit, and, when --skip-kis-ws is set, the skip reason and retained KIS
-digest. When no local repo digest is inspectable it prints the literal word
-unresolved instead of claiming a digest; a real run pulls first and resolves
-there. Dry-run performs no docker pull, run, rm, stop, rename, or kill and
-writes no HAProxy route or color files. A rollback dry-run instead reads
+--dry-run prints a read-only plan and enforces the exact-SHA gate above.
+It reads the intended digest and revision from the registry even when no image
+is cached locally, reports every unit's planned action and, when --skip-kis-ws
+is set, the skip reason and retained KIS digest. Missing CI evidence exits 78
+instead of printing a successful plan. Dry-run performs no docker pull, run,
+rm, stop, rename, or kill and writes no HAProxy route or color files.
+A rollback dry-run bypasses CI and registry inspection, reads
 deployed-digest.previous and reports it (or unresolved) as the target.
 
 --skip-kis-ws is an explicit operator decision. The script performs no

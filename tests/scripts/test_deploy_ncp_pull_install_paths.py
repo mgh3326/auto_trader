@@ -18,6 +18,7 @@ import re
 import shutil
 from pathlib import Path
 
+from tests.scripts._deploy_gate_fakes import install_gate_helper
 from tests.scripts.test_deploy_ncp_pull_rollback import (
     DEPLOY,
     INITIAL,
@@ -42,6 +43,7 @@ def _install(tmp_path: Path, *, with_template: bool) -> Path:
     install.mkdir()
     script = install / "deploy-ncp-pull.sh"
     shutil.copy2(DEPLOY, script)
+    install_gate_helper(script.parent)
     script.chmod(0o750)
     if with_template:
         shutil.copy2(TEMPLATE, install / "haproxy.cfg.tmpl")
@@ -459,6 +461,7 @@ def _ncp_root(tmp_path: Path) -> tuple[Path, Path, Path]:
     shutil.copy2(TEMPLATE, template)
     script = run_dir / "deploy-ncp-pull.sh"
     shutil.copy2(DEPLOY, script)
+    install_gate_helper(script.parent)
     script.chmod(0o750)
     secrets = tmp_path / "at-secrets"
     secrets.mkdir()
@@ -555,6 +558,7 @@ def test_checkout_reaching_the_run_ops_template_counts_once(tmp_path: Path):
     script = tmp_path / "run" / "scripts" / "deploy-ncp-pull.sh"
     script.parent.mkdir()
     shutil.copy2(DEPLOY, script)
+    install_gate_helper(script.parent)
     result, _, _, run_dir = _run(
         tmp_path,
         deploy=script,

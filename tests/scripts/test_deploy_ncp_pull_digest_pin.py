@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.scripts._deploy_gate_fakes import install_gate_fakes, install_gate_helper
+
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY = Path(os.environ.get("DEPLOY_UNDER_TEST", REPO / "scripts/deploy-ncp-pull.sh"))
 OLD = "ghcr.io/mgh3326/auto_trader@sha256:" + "1" * 64
@@ -34,7 +36,9 @@ def run(
     bindir.mkdir()
     log = tmp_path / "log"
     log.touch()
-    (bindir / "docker").write_text("""#!/usr/bin/env bash
+    install_gate_fakes(
+        bindir,
+        """#!/usr/bin/env bash
 printf 'docker %s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 state="$FAKE_DOCKER_STATE"
 case "$1" in
@@ -68,7 +72,9 @@ case "$1" in
    ;;
  *) : ;;
 esac
-""")
+""",
+        NEW,
+    )
     (bindir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         'url="${!#}"\n'
@@ -342,6 +348,7 @@ def test_single_probe_mutant_is_red_by_connection_refused_sequence(
     assert replacements == 1
     mutant.write_text(mutant_source, encoding="utf-8")
     mutant.chmod(0o755)
+    install_gate_helper(tmp_path)
 
     p, log, _ = run(
         tmp_path,
