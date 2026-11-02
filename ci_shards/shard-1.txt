@@ -189,6 +189,8 @@ tests/services/execution_intent_gateway/test_followup_capability.py
 tests/services/execution_intent_gateway/test_gateway.py
 tests/services/execution_intent_gateway/test_http_contract_fixtures.py
 tests/services/execution_intent_gateway/test_http_route.py
+tests/services/execution_intent_gateway/test_intent_fills.py
+tests/services/execution_intent_gateway/test_intent_fills_db.py
 tests/services/execution_intent_gateway/test_intent_query.py
 tests/services/execution_intent_gateway/test_query_db.py
 tests/services/execution_intent_gateway/test_store_db.py
