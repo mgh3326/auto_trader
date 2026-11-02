@@ -316,12 +316,42 @@ async def test_crypto_submit_rejects_unsafe_shapes_before_service_call(
     cases = [
         ({"symbol": "DOGE/USD"}, "crypto symbol"),
         ({"type": "market", "limit_price": None}, "limit-only"),
-        ({"notional": Decimal("51")}, "crypto notional"),
+        ({"notional": Decimal("0")}, "notional"),
+        ({"notional": Decimal("-1")}, "notional"),
+        ({"notional": Decimal("NaN")}, "notional"),
+        ({"notional": None, "qty": Decimal("0")}, "qty"),
+        ({"notional": None, "qty": Decimal("-1")}, "qty"),
+        ({"notional": None, "qty": Decimal("NaN")}, "qty"),
+        ({"limit_price": Decimal("0")}, "limit_price"),
+        ({"limit_price": Decimal("NaN")}, "limit_price"),
+        ({"side": "short"}, "side"),
     ]
     for kwargs, message in cases:
         payload = base | kwargs
         with pytest.raises(ValueError, match=message):
             await alpaca_paper_submit_order(**payload)
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_crypto_large_notional_remains_confirmation_gated(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    # ROB-1474 operator decision removes size caps, including the former $50.
+    for notional in (Decimal("51"), Decimal("10000001")):
+        result = await alpaca_paper_submit_order(
+            symbol="BTC/USD",
+            side="buy",
+            type="limit",
+            notional=notional,
+            limit_price=Decimal("50000"),
+            asset_class="crypto",
+            confirm=False,
+        )
+        assert result["submitted"] is False
+        assert result["blocked_reason"] == "confirmation_required"
+        assert Decimal(result["order_request"]["notional"]) == notional
     assert fake_orders_service.calls == []
 
 
