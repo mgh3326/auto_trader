@@ -289,7 +289,7 @@ async def test_journal_reads_return_each_recorded_state_and_issue_no_write(
     await gateway.handle(_submit(intent, "child-0001"), confirm=True)
     broker.accepted = False
     await gateway.handle(_submit(intent, "child-0002"), confirm=True)
-    await gateway.handle(_submit(intent, "child-0003", quantity=100), confirm=True)
+    await gateway.handle(_submit(intent, "child-0003", quantity=11), confirm=True)
     before = [(row.id, row.state) for row in await _rows(intent)]
 
     statements: list[str] = []
