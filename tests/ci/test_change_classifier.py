@@ -16,16 +16,22 @@ from pathlib import Path
 import pytest
 
 from scripts.ci.classify_changes import (
+    AFFECTED_JOB,
     ALL_JOBS,
+    MAX_AFFECTED_TEST_FILES,
     ChangeEntry,
     Classification,
     ClassifierError,
+    TestUniverse,
     build_outputs,
     classify_entries,
     classify_path,
     main,
     parse_name_status,
+    select_affected_tests,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # --------------------------------------------------------------------------
 # Pure lane classification
@@ -47,6 +53,8 @@ from scripts.ci.classify_changes import (
         ("frontend/invest/src/desktop/screener/x.tsx", "frontend"),
         ("alembic/versions/1a2b3c4d5e6f_x.py", "migrations"),
         ("config/trading_policy.yaml", "config"),
+        # a one-line manifest entry is how every new test file lands
+        ("ci_shards/shard-1.txt", "manifests"),
         # shared CI/config/test infrastructure -> forces run_all
         (".github/workflows/test.yml", "ci_shared"),
         (".github/workflows/taskiq-smoke.sh", "ci_shared"),
@@ -61,6 +69,8 @@ from scripts.ci.classify_changes import (
         ("env.example", "ci_shared"),
         # unrecognised -> unknown, which also forces run_all
         (".gitignore", "unknown"),
+        ("ci_shards/weights.json", "unknown"),
+        ("ci_shards/shard-1.txt.orig", "unknown"),
         ("some_new_top_level_dir/thing.py", "unknown"),
         ("", "unknown"),
     ],
@@ -99,21 +109,21 @@ def test_app_only_change_selects_the_app_lane_jobs() -> None:
     result = classify_entries(_added("app/services/x.py", "app/models/y.py"))
     assert result.run_all is False
     assert result.lanes == ("app",)
-    assert result.jobs == ("lint", "security", "taskiq-smoke", "test")
+    assert result.jobs == (AFFECTED_JOB, "lint")
 
 
 def test_tests_only_change_selects_lint_and_test() -> None:
     result = classify_entries(_added("tests/test_a.py"))
     assert result.run_all is False
     assert result.lanes == ("tests",)
-    assert result.jobs == ("lint", "test")
+    assert result.jobs == (AFFECTED_JOB, "lint")
 
 
 def test_mixed_lanes_union_their_jobs() -> None:
     result = classify_entries(_added("docs/a.md", "tests/test_a.py"))
     assert result.run_all is False
     assert result.lanes == ("docs", "tests")
-    assert result.jobs == ("lint", "test")
+    assert result.jobs == (AFFECTED_JOB, "lint")
 
 
 @pytest.mark.parametrize(
@@ -207,11 +217,14 @@ def test_parse_name_status_rejects_a_status_with_no_path() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_build_outputs_marks_shadow_and_emits_every_job_flag() -> None:
+def test_build_outputs_emits_every_job_flag_and_the_selection() -> None:
     outputs = build_outputs(classify_entries(_added("docs/a.md")))
-    assert outputs["shadow"] == "true"
+    assert "shadow" not in outputs
     assert outputs["result"] == "classified"
     assert outputs["run_all"] == "false"
+    assert outputs["run_affected_tests"] == "false"
+    assert outputs["check_manifests"] == "false"
+    assert outputs["affected_tests"] == "[]"
     for job in ALL_JOBS:
         assert outputs["run_" + job.replace("-", "_")] == "false"
 
@@ -226,6 +239,7 @@ def test_build_outputs_for_run_all_turns_every_job_flag_on() -> None:
         )
     )
     assert outputs["run_all"] == "true"
+    assert outputs["run_affected_tests"] == "false"
     for job in ALL_JOBS:
         assert outputs["run_" + job.replace("-", "_")] == "true"
 
@@ -282,7 +296,7 @@ def test_cli_classifies_a_real_docs_only_diff(repo: Path, tmp_path: Path) -> Non
     assert report["run_all"] is False
     assert report["lanes"] == ["docs"]
     assert report["jobs"] == []
-    assert report["shadow"] is True
+    assert report["affected_tests"] == []
 
 
 def test_cli_run_alls_on_a_real_workflow_change(repo: Path, tmp_path: Path) -> None:
@@ -411,10 +425,22 @@ def test_cli_reads_a_name_status_file_without_touching_git(tmp_path: Path) -> No
     payload = tmp_path / "diff.txt"
     payload.write_text("A\0app/x.py\0", encoding="utf-8")
     out = tmp_path / "report.json"
-    code = main(["--name-status-file", str(payload), "--json-out", str(out)])
+    code = main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--name-status-file",
+            str(payload),
+            "--json-out",
+            str(out),
+        ]
+    )
     assert code == 0
     report = json.loads(out.read_text(encoding="utf-8"))
+    # No manifests under this root, so nothing can map: the full suite.
     assert report["lanes"] == ["app"]
+    assert report["run_all"] is True
+    assert report["reason"] == "unmapped_path"
 
 
 def test_cli_is_red_on_a_malformed_name_status_file(tmp_path: Path) -> None:
@@ -698,3 +724,314 @@ def test_an_offline_name_status_file_still_needs_no_sha_resolution(
     out = tmp_path / "report.json"
     assert main(["--name-status-file", str(payload), "--json-out", str(out)]) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["lanes"] == ["docs"]
+
+
+# --------------------------------------------------------------------------
+# ROB-1454 — affected-test selection
+# --------------------------------------------------------------------------
+
+
+def _universe(tree: dict[str, str]) -> TestUniverse:
+    return TestUniverse(files=frozenset(tree), read=tree.__getitem__)
+
+
+def _modified(*paths: str) -> list[ChangeEntry]:
+    return [ChangeEntry(status="M", path=path) for path in paths]
+
+
+def _select(tree: dict[str, str], *paths: str) -> Classification:
+    return select_affected_tests(classify_entries(_modified(*paths)), _universe(tree))
+
+
+def test_a_docs_only_change_runs_no_tests() -> None:
+    result = _select({"tests/test_a.py": "import app.a\n"}, "docs/a.md", "README.md")
+    assert result.run_all is False
+    assert result.affected_tests == ()
+    assert result.run_affected_tests is False
+    assert result.jobs == ()
+
+
+def test_a_research_only_change_with_no_suite_here_runs_no_tests() -> None:
+    result = _select({"tests/test_a.py": "import app.a\n"}, "research/foo/run.py")
+    assert result.run_all is False
+    assert result.affected_tests == ()
+    assert result.jobs == ("lint",)
+
+
+def test_a_research_change_runs_its_mirror_directory() -> None:
+    tree = {"tests/research/foo/test_run.py": "x = 1\n", "tests/test_a.py": "x = 2\n"}
+    result = _select(tree, "research/foo/run.py")
+    assert result.affected_tests == ("tests/research/foo/test_run.py",)
+
+
+def test_a_frontend_only_change_runs_no_python_tests() -> None:
+    result = _select({"tests/test_a.py": "x = 1\n"}, "frontend/invest/src/a.tsx")
+    assert result.run_all is False
+    assert result.affected_tests == ()
+
+
+def test_an_app_change_selects_only_the_tests_that_reference_it() -> None:
+    tree = {
+        "tests/test_imports_it.py": "from app.services.halt import classify\n",
+        "tests/test_from_parent.py": "from app.services import (\n    halt,\n)\n",
+        "tests/test_patches_it.py": 'patch("app.services.halt.classify")\n',
+        "tests/test_reads_it.py": 'Path("app/services/halt.py").read_text()\n',
+        "tests/services/halt/test_mirror.py": "x = 1\n",
+        "tests/test_longer_name.py": "from app.services.halt_extra import y\n",
+        "tests/test_other_parent.py": "from app.services import halt_extra\n",
+        "tests/test_unrelated.py": "from app.services.other import halt\n",
+    }
+    result = _select(tree, "app/services/halt.py")
+    assert result.run_all is False
+    assert result.jobs == (AFFECTED_JOB, "lint")
+    assert result.affected_tests == (
+        "tests/services/halt/test_mirror.py",
+        "tests/test_from_parent.py",
+        "tests/test_imports_it.py",
+        "tests/test_patches_it.py",
+        "tests/test_reads_it.py",
+    )
+
+
+def test_a_package_change_selects_its_mirror_directory_but_not_the_whole_tree() -> None:
+    tree = {
+        "tests/services/foo/test_bar.py": "x = 1\n",
+        "tests/services/test_foo_flat.py": "x = 1\n",
+        "tests/services/other/test_x.py": "x = 1\n",
+    }
+    result = _select(tree, "app/services/foo/bar.py")
+    assert result.affected_tests == ("tests/services/foo/test_bar.py",)
+
+
+def test_a_top_level_service_does_not_select_all_of_tests_services() -> None:
+    tree = {
+        "tests/services/test_other.py": "x = 1\n",
+        "tests/test_flat.py": "import app.services.flat\n",
+    }
+    result = _select(tree, "app/services/flat.py")
+    assert result.affected_tests == ("tests/test_flat.py",)
+
+
+def test_a_broker_change_is_narrow_like_any_other_path() -> None:
+    """Operator 2026-11-02: no blocking-path exception; merging is not deploying."""
+
+    tree = {"tests/test_kis.py": "from app.services.brokers.kis.client import C\n"}
+    result = _select(tree, "app/services/brokers/kis/client.py")
+    assert result.run_all is False
+    assert result.affected_tests == ("tests/test_kis.py",)
+
+
+def test_a_changed_test_file_selects_itself() -> None:
+    tree = {"tests/test_a.py": "x = 1\n", "tests/test_b.py": "x = 1\n"}
+    assert _select(tree, "tests/test_a.py").affected_tests == ("tests/test_a.py",)
+
+
+def test_a_nested_helper_selects_its_directory() -> None:
+    tree = {
+        "tests/services/foo/test_x.py": "x = 1\n",
+        "tests/services/test_y.py": "x = 1\n",
+    }
+    result = _select(tree, "tests/services/foo/conftest.py")
+    assert result.affected_tests == ("tests/services/foo/test_x.py",)
+
+
+def test_a_root_helper_selects_its_importers_only() -> None:
+    tree = {
+        "tests/test_x.py": "from tests._helpers import a\n",
+        "tests/test_y.py": "x = 1\n",
+    }
+    assert _select(tree, "tests/_helpers.py").affected_tests == ("tests/test_x.py",)
+
+
+def test_a_test_file_missing_from_the_manifests_forces_run_all() -> None:
+    """A forgotten manifest entry reaches taskiq-smoke's exact-cover check."""
+
+    result = _select({"tests/test_a.py": "x = 1\n"}, "tests/test_new.py")
+    assert result.run_all is True
+    assert result.reason == "unmapped_path"
+    assert result.forcing_paths == ("tests/test_new.py",)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "app/services/untested.py",
+        "scripts/untested.py",
+        "config/untested.yaml",
+        "alembic/versions/untested.py",
+        "tests/fixtures/untested.json",
+    ],
+)
+def test_a_path_no_test_names_forces_run_all(path: str) -> None:
+    result = _select({"tests/test_a.py": "x = 1\n"}, path)
+    assert result.run_all is True
+    assert result.reason == "unmapped_path"
+    assert result.forcing_paths == (path,)
+    assert result.jobs == tuple(sorted(ALL_JOBS))
+    assert result.affected_tests == ()
+
+
+def test_one_unmapped_path_widens_a_change_set_that_also_has_mapped_paths() -> None:
+    tree = {"tests/test_a.py": "import app.a\n"}
+    result = _select(tree, "app/a.py", "app/untested.py")
+    assert result.run_all is True
+    assert result.forcing_paths == ("app/untested.py",)
+
+
+def test_an_empty_universe_forces_run_all() -> None:
+    assert _select({}, "app/a.py").run_all is True
+
+
+def test_a_selection_bigger_than_a_shard_forces_run_all() -> None:
+    fits = {f"tests/t{i}/test_x.py": "import app.a\n" for i in range(500)}
+    assert MAX_AFFECTED_TEST_FILES == 500
+    assert _select(fits, "app/a.py").run_all is False
+    over = fits | {"tests/t500/test_x.py": "import app.a\n"}
+    result = _select(over, "app/a.py")
+    assert result.run_all is True
+    assert result.reason == "selection_too_broad"
+    assert result.affected_tests == ()
+
+
+def test_a_manifest_edit_asks_for_the_exact_cover_check_without_forcing_run_all() -> (
+    None
+):
+    tree = {"tests/test_new.py": "x = 1\n"}
+    result = select_affected_tests(
+        classify_entries(
+            [
+                ChangeEntry("A", "tests/test_new.py"),
+                ChangeEntry("M", "ci_shards/shard-2.txt"),
+            ]
+        ),
+        _universe(tree),
+    )
+    assert result.run_all is False
+    assert result.check_manifests is True
+    assert result.affected_tests == ("tests/test_new.py",)
+
+
+def test_a_manifest_only_edit_still_needs_the_job() -> None:
+    result = _select({"tests/test_a.py": "x = 1\n"}, "ci_shards/shard-2.txt")
+    assert result.run_all is False
+    assert result.affected_tests == ()
+    assert result.run_affected_tests is True
+    assert result.jobs == (AFFECTED_JOB, "lint")
+
+
+def test_selection_leaves_a_run_all_verdict_alone() -> None:
+    forced = classify_entries(_modified(".github/workflows/test.yml"))
+    assert select_affected_tests(forced, _universe({})) is forced
+
+
+def test_an_unparseable_test_file_counts_as_importing_the_module() -> None:
+    tree = {"tests/test_broken.py": "from app.services import halt (\n"}
+    assert _select(tree, "app/services/halt.py").affected_tests == (
+        "tests/test_broken.py",
+    )
+
+
+def test_a_manifest_naming_a_missing_file_is_red(tmp_path: Path) -> None:
+    (tmp_path / "ci_shards").mkdir()
+    (tmp_path / "ci_shards/shard-1.txt").write_text("tests/test_gone.py\n")
+    payload = tmp_path / "diff.txt"
+    payload.write_text("M\0app/a.py\0", encoding="utf-8")
+    out = tmp_path / "report.json"
+    code = main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--name-status-file",
+            str(payload),
+            "--json-out",
+            str(out),
+        ]
+    )
+    assert code == 1
+    assert json.loads(out.read_text(encoding="utf-8"))["result"] == "error"
+
+
+# Acceptance 1, against this repository's real manifests and test files.
+@pytest.mark.parametrize(
+    "path", ["docs/runbooks/ci-required-aggregator.md", "CLAUDE.md"]
+)
+def test_real_repo_docs_change_runs_no_shards_and_no_tests(path: str) -> None:
+    result = select_affected_tests(
+        classify_entries(_modified(path)), TestUniverse.from_manifests(REPO_ROOT)
+    )
+    assert result.run_all is False
+    assert result.affected_tests == ()
+    assert "test" not in result.jobs
+
+
+def test_real_repo_app_service_change_runs_only_its_lane() -> None:
+    universe = TestUniverse.from_manifests(REPO_ROOT)
+    result = select_affected_tests(
+        classify_entries(_modified("app/services/halt_detection.py")), universe
+    )
+    assert result.run_all is False
+    assert "test" not in result.jobs
+    assert "taskiq-smoke" not in result.jobs
+    assert any("halt" in path for path in result.affected_tests)
+    assert len(result.affected_tests) < len(universe.files) / 10
+
+
+def test_real_repo_workflow_change_runs_the_full_suite() -> None:
+    result = select_affected_tests(
+        classify_entries(_modified(".github/workflows/test.yml")),
+        TestUniverse.from_manifests(REPO_ROOT),
+    )
+    assert result.run_all is True
+    assert set(result.jobs) == set(ALL_JOBS)
+
+
+# --------------------------------------------------------------------------
+# ROB-1454 — the diff is what the PR changed, not what main gained since
+# --------------------------------------------------------------------------
+
+
+def test_cli_ignores_what_the_base_branch_gained_after_the_branch_point(
+    repo: Path, tmp_path: Path
+) -> None:
+    """pull_request.base.sha is the base tip, so a two-dot diff reports main's
+    new file as a delete and forces run_all on nearly every PR."""
+
+    _git(repo, "branch", "-M", "main")
+    _git(repo, "switch", "-q", "-c", "feature")
+    head = _commit(repo, "docs/feature.md", "x\n", "feature")
+    _git(repo, "switch", "-q", "main")
+    base = _commit(repo, "app/added_on_main.py", "x = 1\n", "main moved on")
+
+    code, report = _run_cli(repo, tmp_path, "--base-sha", base, "--head-sha", head)
+    assert code == 0
+    assert report["run_all"] is False
+    assert report["path_lanes"] == {"docs/feature.md": "docs"}
+
+
+def test_cli_sees_a_pr_merge_of_main_as_no_change_of_its_own(
+    repo: Path, tmp_path: Path
+) -> None:
+    _git(repo, "branch", "-M", "main")
+    _git(repo, "switch", "-q", "-c", "feature")
+    _commit(repo, "docs/feature.md", "x\n", "feature")
+    _git(repo, "switch", "-q", "main")
+    base = _commit(repo, "app/added_on_main.py", "x = 1\n", "main moved on")
+    _git(repo, "switch", "-q", "feature")
+    _git(repo, "merge", "-q", "--no-edit", "main")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    code, report = _run_cli(repo, tmp_path, "--base-sha", base, "--head-sha", head)
+    assert code == 0
+    assert report["path_lanes"] == {"docs/feature.md": "docs"}
+
+
+def test_cli_is_red_when_base_and_head_share_no_history(
+    repo: Path, tmp_path: Path
+) -> None:
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "-q", "--orphan", "stray")
+    head = _commit(repo, "docs/stray.md", "x\n", "stray")
+
+    code, report = _run_cli(repo, tmp_path, "--base-sha", base, "--head-sha", head)
+    assert code == 1
+    assert report["result"] == "error"

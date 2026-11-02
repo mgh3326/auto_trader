@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-closed aggregator behind the stable ``ci-required`` check.
+"""Fail-closed evaluator behind the stable ``PR gate`` check.
 
-ROB-1294 (R2B). Branch protection today names six checks directly (``lint``,
-``taskiq-smoke``, ``test (3.13, 1..4)``), so any change to shard count or lane
-topology is a branch-protection edit. This script is the evaluation half of a
-single fixed-name check that could later stand in for all of them.
-
-**This PR does not make ``ci-required`` a required check.** See
-``docs/runbooks/ci-required-aggregator.md`` for the operator-only cutover.
+ROB-1294 built this in shadow as ``ci-required``; ROB-1454 makes it the verdict
+a PR merges on. ``--pr-gate`` derives which skips are authorized from the
+classifier's own outputs, so a job counts as skipped-by-design only when the
+classifier said it was not needed. See ``docs/runbooks/ci-required-aggregator.md``.
 
 Truth table (per required child)
 --------------------------------
@@ -46,6 +43,11 @@ from pathlib import Path
 #: Child results that are individually acceptable without an explicit
 #: authorization. Deliberately a one-element set.
 PASSING_RESULTS: frozenset[str] = frozenset({"success"})
+
+#: Job ids in ``.github/workflows/test.yml`` that the PR gate reasons about.
+CLASSIFIER_JOB = "change-classifier"
+AFFECTED_JOB = "affected-tests"
+FULL_SUITE_ONLY_JOBS: tuple[str, ...] = ("test", "taskiq-smoke")
 
 #: Results we recognise but treat as red unless authorized.
 KNOWN_RESULTS: frozenset[str] = frozenset(
@@ -231,6 +233,52 @@ def evaluate(
     return verdict
 
 
+def _classifier_flag(outputs: Mapping[str, object], key: str) -> bool:
+    value = outputs.get(key)
+    if value not in ("true", "false"):
+        raise AggregateError(
+            f"{CLASSIFIER_JOB} output {key!r} is {value!r}, not 'true' or 'false'; "
+            "refusing to infer that a job was not needed."
+        )
+    return value == "true"
+
+
+def pr_gate_authorized_skips(
+    event_name: str, results: Mapping[str, object]
+) -> tuple[str, ...]:
+    """Which skips this run's classifier verdict makes legitimate.
+
+    ==================================  ==========================================
+    run                                 may be skipped
+    ==================================  ==========================================
+    not a pull request (main, dispatch)  ``affected-tests``
+    PR, ``run_all=true``                ``affected-tests``
+    PR, narrow, tests selected          ``test``, ``taskiq-smoke``
+    PR, narrow, nothing to test         the above and ``affected-tests``
+    ==================================  ==========================================
+
+    Everything else must report ``success``, so the full suite can never be
+    skipped into green on a run that needed it.
+    """
+
+    if not event_name.strip():
+        raise AggregateError("--event-name is empty; cannot tell which rule applies.")
+    if event_name != "pull_request":
+        return (AFFECTED_JOB,)
+    classifier = results.get(CLASSIFIER_JOB)
+    outputs = classifier.get("outputs") if isinstance(classifier, Mapping) else None
+    if not isinstance(outputs, Mapping):
+        raise AggregateError(
+            f"{CLASSIFIER_JOB} has no outputs in the results payload; a skip cannot "
+            "be authorized without its verdict."
+        )
+    if _classifier_flag(outputs, "run_all"):
+        return (AFFECTED_JOB,)
+    if _classifier_flag(outputs, "run_affected_tests"):
+        return FULL_SUITE_ONLY_JOBS
+    return (*FULL_SUITE_ONLY_JOBS, AFFECTED_JOB)
+
+
 def load_results(args: argparse.Namespace) -> Mapping[str, object]:
     sources = [
         bool(args.results_json),
@@ -271,7 +319,7 @@ def load_results(args: argparse.Namespace) -> Mapping[str, object]:
 
 def _summary_lines(report: Mapping[str, object]) -> list[str]:
     lines = [
-        f"### ci-required aggregate: **{str(report.get('result', '')).upper()}**",
+        f"### PR gate: **{str(report.get('result', '')).upper()}**",
         "",
         "| child | result | verdict | note |",
         "|---|---|---|---|",
@@ -324,6 +372,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="do not fail on children present in the payload but not --required",
     )
+    parser.add_argument(
+        "--pr-gate",
+        action="store_true",
+        help="derive the authorized skips from the classifier outputs in the "
+        "payload (needs --event-name); cannot be combined with --authorize-skip",
+    )
+    parser.add_argument(
+        "--event-name", default="", help="github.event_name, read by --pr-gate"
+    )
     parser.add_argument("--json-out", help="write the machine-readable report here")
     parser.add_argument(
         "--summary", action="store_true", help="append a $GITHUB_STEP_SUMMARY table"
@@ -344,11 +401,19 @@ def main(argv: list[str] | None = None) -> int:
         # Validated before the payload is even read: a malformed gate
         # declaration must never reach a verdict.
         validate_configuration(args.required, args.authorize_skip)
+        if args.pr_gate and args.authorize_skip:
+            raise AggregateError("--pr-gate and --authorize-skip are exclusive.")
         results = load_results(args)
+        authorized = (
+            pr_gate_authorized_skips(args.event_name, results)
+            if args.pr_gate
+            else tuple(args.authorize_skip)
+        )
+        report["authorized_skips"] = sorted(authorized)
         verdict = evaluate(
             results,
             args.required,
-            args.authorize_skip,
+            authorized,
             allow_undeclared=args.allow_undeclared,
         )
         report["children"] = [
@@ -365,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = 0 if verdict.passed else 1
         if verdict.passed:
             print(
-                "CI-REQUIRED: PASS — "
+                "PR GATE: PASS — "
                 f"{len(verdict.children)} child result(s) all acceptable"
             )
         else:
@@ -373,12 +438,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{child.name}={child.result!r}({child.status})"
                 for child in verdict.failing
             )
-            print(f"CI-REQUIRED: FAIL — {detail}", file=sys.stderr)
+            print(f"PR GATE: FAIL — {detail}", file=sys.stderr)
     except (AggregateError, OSError) as exc:
         report["result"] = "fail"
         report["error"] = str(exc)
         exit_code = 1
-        print(f"CI-REQUIRED: FAIL — {exc}", file=sys.stderr)
+        print(f"PR GATE: FAIL — {exc}", file=sys.stderr)
 
     serialized = json.dumps(report, indent=2, sort_keys=True)
     print(serialized)

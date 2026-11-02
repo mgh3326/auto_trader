@@ -1,42 +1,62 @@
-# `ci-required` shadow aggregator + change classifier (ROB-1294)
+# PR gate and change classifier (ROB-1294, ROB-1454)
 
-**Status: shadow.** Nothing here changes what CI enforces today. The two new
-jobs observe and report; the six branch-protection-required checks run exactly
-as they did before this PR.
+**Status: live.** A PR is checked on what it changed and merges on `lint` + `PR gate`.
+The full suite runs on main, where the mergewake watch reverts a culprit, and has to be
+green on the exact SHA before a deploy.
 
-## 1. Why this exists
+## 1. What runs where
 
-Branch protection currently names six checks directly:
+| event | lint | tests | `test (3.13, 1..4)` + `taskiq-smoke` | `PR gate` |
+|---|---|---|---|---|
+| pull request, `run_all=false` | yes | `affected-tests`: the classifier's file list, if any | skipped | runs |
+| pull request, `run_all=true` | yes | the shards | yes | runs |
+| push to main or develop | yes | the shards | yes | runs |
+| `workflow_dispatch` | yes | the shards | yes | runs |
 
+Merging is not deploying: orders, ledger and migrations take effect at deploy. So
+`blocking` paths in `.mergewake/policy.yaml` get no exception here. A broker change runs its
+affected tests like any other path. That list still means two review passes and no
+auto-revert.
+
+### Force the full suite on a PR
+
+```bash
+gh workflow run test.yml --ref <branch>
 ```
-lint
-taskiq-smoke
-test (3.13, 1)
-test (3.13, 2)
-test (3.13, 3)
-test (3.13, 4)
+
+This runs the full suite on the branch head and reports its checks on that commit. It does
+not change the PR's own gate verdict, so read the dispatched run's result yourself before
+merging.
+
+### Deploy requires the full suite on the exact SHA
+
+🔴 Do not deploy a SHA until all six full-suite checks are green on that SHA:
+
+```bash
+SHA=<deploy sha>
+test "$(gh api --paginate "repos/mgh3326/auto_trader/commits/$SHA/check-runs" \
+    --jq '.check_runs[] | select(.conclusion == "success") | .name' \
+  | grep -cxE 'lint|taskiq-smoke|test \(3\.13, [1-4]\)')" = 6 && echo FULL-SUITE-GREEN
 ```
 
-Those names are derived from the `test` job's matrix (`python-version` ×
-`group`). Any change to shard count, shard naming, or lane topology therefore
-*also* requires a branch-protection edit, and an edit that is forgotten leaves
-either a permanently pending required check (the old name never reports) or a
-silently unenforced one (the new shard is not required). ROB-1294 builds the
-two pieces a later change needs so that topology can move behind one fixed
-name:
+No `FULL-SUITE-GREEN` means do not deploy. A SHA that never ran the suite, such as a
+`production` merge commit, needs `gh workflow run test.yml --ref production` first. A PR's
+green `PR gate` is not this evidence, because the shards may have been skipped.
 
-| piece | file | what it is |
-|---|---|---|
-| change classifier | `scripts/ci/classify_changes.py` | deterministic changed-path → lane mapping, fail-closed |
-| aggregate evaluator | `scripts/ci/aggregate_required.py` | fixed-name gate over the required children's results |
-| workflow wiring | `.github/workflows/test.yml` (`change-classifier`, `ci-required`) | runs both on every PR/push run |
+This is a manual step today. Enforcing it in the deploy path is hk task 2586.
 
 ## 2. Change classifier contract
 
 Invoked as `python3 scripts/ci/classify_changes.py` (stdlib only, no
 dependency install). It reads `$CLASSIFY_BASE_SHA` / `$CLASSIFY_HEAD_SHA` (or
 `--base-sha` / `--head-sha`, or a `--name-status-file` for offline use) and
-emits a JSON report plus `$GITHUB_OUTPUT` keys.
+emits a JSON report plus `$GITHUB_OUTPUT` keys. The workflow reads `run_all`,
+`run_affected_tests`, `check_manifests` and `affected_tests` (a JSON array).
+
+The diff is `base...head`, three dots, so it holds what the PR changed.
+`pull_request.base.sha` is the base branch tip, not the merge base, so a two-dot diff also
+reports what main gained after the branch point. A file added on main then reads as a
+delete and forces `run_all`.
 
 There are exactly three outcomes, and none of them is "run less because
 something went wrong":
@@ -44,7 +64,7 @@ something went wrong":
 | outcome | exit | when |
 |---|---|---|
 | `classified` | 0 | every changed path mapped to a known lane, and every change was an add or a modify |
-| `run_all` | 0 | any unknown path, any rename/copy/delete/type-change/unmerged path, any shared CI/config/test-infrastructure file, an empty change set, or an absent base SHA |
+| `run_all` | 0 | any unknown path, any rename/copy/delete/type-change/unmerged path, any shared CI/config/test-infrastructure file, an empty change set, an absent base SHA, a path that selects no test, or a selection over 500 files |
 | `error` | **1** | a head SHA that was not supplied, a supplied SHA that stays unresolvable after `git fetch` (shallow/incomplete history, or an object that is not a commit), a failing `git` invocation, or a malformed `--name-status` record |
 
 **Resolution order matters.** A supplied head is resolved *before* the
@@ -61,20 +81,32 @@ distinct:
 
 (`--name-status-file` remains a pure offline path and resolves no SHA at all.)
 
-Lanes and the jobs each one implies:
+Lanes and what each one runs on a PR:
 
-| lane | example paths | jobs |
+| lane | example paths | selected tests |
 |---|---|---|
-| `docs` | `docs/**`, `*.md` | *(none)* |
-| `app` | `app/**` | `lint`, `test`, `taskiq-smoke`, `security` |
-| `tests` | `tests/**` | `lint`, `test` |
-| `research` | `research/**`, `research_contracts/**` | `lint`, `research` |
-| `scripts` | `scripts/**` (except `scripts/ci/**`) | `lint`, `test` |
-| `frontend` | `frontend/**` | `frontend` |
-| `migrations` | `alembic/**` | `lint`, `test` |
-| `config` | `config/**` | `lint`, `test` |
+| `docs` | `docs/**`, `*.md` | none |
+| `frontend` | `frontend/**` | none; the unconditional `frontend` job covers it |
+| `research` | `research/**`, `research_contracts/**` | references + mirror directory; none is fine, because research suites run in their own jobs |
+| `app` | `app/**` | references + mirror directory; none forces `run_all` |
+| `scripts` | `scripts/**` (except `scripts/ci/**`) | same |
+| `migrations` | `alembic/**` | same |
+| `config` | `config/**` | same |
+| `tests` | `tests/**` | the file itself; a helper or nested `conftest.py` selects its directory and importers; none forces `run_all` |
+| `manifests` | `ci_shards/shard-N.txt` | none, but runs the exact-cover check in `affected-tests` |
 | `ci_shared` | `.github/**`, `scripts/ci/**`, `pyproject.toml`, `uv.lock`, `Makefile`, `.test_durations`, `tests/conftest.py`, `tests/_socket_guard*.py`, `env.example`, `scripts/setup-test-env.sh`, `alembic.ini`, `codecov.yml` | **forces `run_all`** |
-| `unknown` | anything unmatched | **forces `run_all`** |
+| `unknown` | anything unmatched, including `.mergewake/**` and `ci_shards/weights.json` | **forces `run_all`** |
+
+**How a path selects tests.** The universe is the union of `ci_shards/shard-*.txt`, exactly
+the files the full suite runs. A changed path selects the files that name it (dotted module,
+`from parent import name`, or repo path) plus the `tests/` directory that mirrors it:
+`app/services/foo/bar.py` selects `tests/services/foo/bar/` and `tests/services/foo/`. The
+selection does not follow imports transitively: on recorded merges that reached 1169 of 2024
+files. A regression it misses reaches main, where the full suite catches it and the watch
+reverts the change.
+
+On the last 40 merges this gave 7 lint-only, 22 narrow (median 10 files, maximum 464) and 11
+full-suite runs.
 
 Design points that look over-conservative and are meant to be:
 
@@ -114,87 +146,67 @@ resynchronises quietly is a parser that reports the wrong lane confidently:
   an ordinary modify either, so the whole token is kept, which places it
   outside `CLASSIFIABLE_STATUSES` and forces `run_all`.
 
-## 3. `ci-required` aggregate contract
+## 3. `PR gate` contract
 
-`ci-required` declares `if: always()` and
-`needs: [lint, test, taskiq-smoke, change-classifier]`. `always()` is
-load-bearing: a job with no `if:` is *skipped* when a `needs:` child fails, and
-a required check that disappears on failure is a green merge button.
+`PR gate` declares `if: always()` and
+`needs: [lint, change-classifier, affected-tests, test, taskiq-smoke]`. `always()` is
+load-bearing: a job with no `if:` is *skipped* when a `needs:` child fails, and mergewake
+counts a skipped required check as unknown.
 
-`scripts/ci/aggregate_required.py` evaluates `toJSON(needs)`:
+`scripts/ci/aggregate_required.py --pr-gate` evaluates `toJSON(needs)`. The classifier's own
+outputs decide which skips are legitimate:
+
+| run | may be skipped |
+|---|---|
+| not a pull request | `affected-tests` |
+| PR, `run_all=true` | `affected-tests` |
+| PR, narrow, tests selected or manifests changed | `test`, `taskiq-smoke` |
+| PR, narrow, nothing to test | `test`, `taskiq-smoke`, `affected-tests` |
+
+Everything else must report `success`:
 
 | child result | verdict |
 |---|---|
 | `success` | pass |
-| `skipped` | pass **only** with `--authorize-skip <name>`; red otherwise |
+| `skipped` | pass **only** when the table above allows it; red otherwise |
 | `failure` | red |
 | `cancelled` | red |
 | absent from the payload | red (`missing`) |
 | any other string, `""`, `null`, a missing `result` key | red (`unexpected`) |
 | present in the payload but not `--required` | red (`undeclared`) |
 
-Malformed input — non-JSON, a non-object payload, an unset env var, a child
-whose value is neither a string nor an object with `result` — is red. The
-workflow passes **no** `--authorize-skip` and **no** `--allow-undeclared`
-today, so `ci-required` is green only when all four children report `success`.
+Malformed input is red: non-JSON, a non-object payload, an unset env var, a child whose value
+is neither a string nor an object with `result`, or classifier outputs that are not exactly
+`true` or `false`. A non-PR run ignores a narrow verdict, so main can never skip into green.
 
-The *declaration itself* is validated before the payload is even read
-(`validate_configuration`), so a malformed gate can never reach a verdict:
+The declaration is validated before the payload is read: an empty `--required` list, a blank
+or duplicated name, an `--authorize-skip` name that is not required, or `--pr-gate` combined
+with `--authorize-skip` is red.
 
-- an empty `--required` list is red (an aggregate with no children passes
-  vacuously);
-- a blank or whitespace-only `--required` / `--authorize-skip` name is red —
-  argparse turns `--required ''` into a one-element list that satisfies the
-  non-empty check while naming no real job;
-- a duplicated `--required` / `--authorize-skip` name is red;
-- an `--authorize-skip` name that is not in `--required` is red.
+The `test` matrix collapses into one `needs.test.result`, which is `failure` if any shard
+failed.
 
-For the matrix `test` job, GitHub collapses all four shards into a single
-`needs.test.result`, which is `failure` if any shard failed. The aggregate
-therefore covers all six protected checks through three child entries.
-
-## 4. Verifying the shadow property
-
-`tests/ci/test_ci_required_workflow_contract.py` machine-checks that:
-
-- the six displayed check names, the `test` matrix shape, and the absence of
-  `if:`/`name:`/`needs:` on `lint`, `test` and `taskiq-smoke` are unchanged;
-- `ci-required` exists with a constant displayed name and `if: always()`;
-- its `--required` flags match its `needs:` list exactly;
-- no job other than `ci-required` lists `change-classifier` in `needs:`, no
-  `if:` expression anywhere mentions it, and `needs.change-classifier.outputs`
-  appears nowhere in the workflow.
-
-Run the whole ROB-1294 suite with:
+## 4. Verifying
 
 ```bash
 uv run pytest tests/ci/ -q -ra
-actionlint .github/workflows/test.yml
 ```
 
-## 5. Operator-only follow-up — OUT OF SCOPE for ROB-1294
+`tests/ci/test_pr_gate_workflow_contract.py` pins the `if:` on the full-suite jobs, the gate's
+`needs:` and `--required` lists, and that every check named in `.mergewake/policy.yaml` is one
+the workflow displays. `tests/ci/test_required_aggregator.py` holds the gate's truth table.
 
-🔴 **Not performed by this PR.** ROB-1294 writes no GitHub repository setting
-and no branch-protection configuration. What follows is a description of the
-work, not an instruction to run it now.
+## 5. Branch protection (operator-only)
 
-Making `ci-required` the sole stable required check would be, in order:
+GitHub's required list is separate from `.mergewake/policy.yaml` and only the operator desk
+edits it. It must be exactly:
 
-1. Let `ci-required` run on `main` for a while and confirm it reports on every
-   PR and push run and that its verdict always matches the six checks it
-   summarises. Any divergence is a bug in the aggregate, not in the children.
-2. In branch protection, **add** `ci-required` to the required-checks list
-   while keeping the existing six. Merge a few PRs in that overlapping state.
-3. Only then **remove** the six from the required list, leaving `ci-required`
-   alone. Removing them first would leave a window with no enforcement at all.
-4. From that point the shard count, the matrix shape, and lane topology can
-   change without touching branch protection — provided every new job that
-   must gate a merge is added to `ci-required`'s `needs:` **and** to its
-   `--required` flags. The contract test in §4 fails if those two lists drift.
-5. Activating the classifier (letting `run_all=false` actually skip jobs) is a
-   separate change again, and it must keep the skipped jobs' *displayed names*
-   reporting — a required check that is skipped is not a passing check unless
-   it is passed to `--authorize-skip` deliberately.
+```
+lint
+PR gate
+```
 
-Ordering matters more than any individual step: at no point should the set of
-enforced checks be empty.
+A skipped matrix job does not report `test (3.13, N)`, so a narrow PR cannot merge while those
+names are required. The edit follows the landing of ROB-1454, not the other way round: `PR gate`
+does not report until the workflow is on main. An open PR reports `PR gate` only after it merges
+main. Keep `lint` required throughout so the enforced set is never empty.

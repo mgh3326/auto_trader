@@ -5,16 +5,20 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  # Full suite on any ref, e.g. to force it for a PR branch or a deploy SHA:
+  # gh workflow run test.yml --ref <branch>
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Branch protection snapshot (verified 2026-07-28): only lint,
-  # taskiq-smoke, and test (3.13, 1..4) are required checks. The
-  # report-only security job and both research jobs remain diagnostic,
-  # non-required checks; this workflow does not change protection policy.
+  # ROB-1454: a PR merges on `lint` + `PR gate`. It runs the classifier-selected
+  # tests, or the full suite only when the classifier says run_all. Main pushes
+  # and workflow_dispatch always run the full suite (lint, taskiq-smoke, test).
+  # security, research and frontend jobs stay unconditional and non-required.
+  # See docs/runbooks/ci-required-aggregator.md.
   lint:
     runs-on: ubuntu-latest
     env:
@@ -119,15 +123,13 @@ jobs:
         path: write-fence-report.json
         if-no-files-found: warn
 
-  # ROB-1294 (R2B) — SHADOW ONLY. Classifies this run's change set into
-  # resource lanes and publishes the verdict as job outputs + an artifact.
-  # Nothing consumes those outputs to skip a job in this PR; the six
-  # branch-protection-required checks (lint, taskiq-smoke, test (3.13, 1..4))
-  # run exactly as before. See docs/runbooks/ci-required-aggregator.md.
+  # Classifies what this PR changed and selects the tests it runs. The verdict
+  # only narrows a pull_request run; every other event runs the full suite
+  # whatever it says. See docs/runbooks/ci-required-aggregator.md.
   #
   # Fail-closed: an unknown path, a rename/copy/delete, any shared CI/config
-  # /test-infrastructure file, an empty change set, or an absent base SHA all
-  # yield run_all=true; an unresolvable supplied SHA, a git failure, or a
+  # /test-infrastructure file, an empty change set, an absent base SHA, or a
+  # path that selects no test all yield run_all=true; an unresolvable supplied SHA, a git failure, or a
   # malformed diff record turn this job RED instead of narrowing coverage.
   change-classifier:
     name: change-classifier
@@ -141,6 +143,9 @@ jobs:
       reason: ${{ steps.classify.outputs.reason }}
       lanes: ${{ steps.classify.outputs.lanes }}
       jobs: ${{ steps.classify.outputs.jobs }}
+      run_affected_tests: ${{ steps.classify.outputs.run_affected_tests }}
+      check_manifests: ${{ steps.classify.outputs.check_manifests }}
+      affected_tests: ${{ steps.classify.outputs.affected_tests }}
     steps:
     - uses: actions/checkout@v5
       with:
@@ -150,7 +155,7 @@ jobs:
         fetch-depth: 0
         persist-credentials: false
 
-    - name: Classify changed paths (shadow)
+    - name: Classify changed paths
       id: classify
       env:
         CLASSIFY_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -171,6 +176,11 @@ jobs:
         if-no-files-found: warn
 
   test:
+    needs: change-classifier
+    # `!= 'false'`, not `== 'true'`: a classifier that crashed before writing its
+    # outputs must leave this job running. `!cancelled()` because a plain `if`
+    # would otherwise skip this job whenever the classifier job failed.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -319,6 +329,11 @@ jobs:
         disable_search: true
 
   taskiq-smoke:
+    needs: change-classifier
+    # `!= 'false'`, not `== 'true'`: a classifier that crashed before writing its
+    # outputs must leave this job running. `!cancelled()` because a plain `if`
+    # would otherwise skip this job whenever the classifier job failed.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -425,6 +440,104 @@ jobs:
           taskiq-worker.log
           taskiq-scheduler.log
         if-no-files-found: warn
+
+  # ROB-1454: the PR's replacement for the four shards. Same services, flags and
+  # marker as a shard, over the files the classifier selected. No coverage upload:
+  # Codecov merges per commit from the full suite on main.
+  affected-tests:
+    needs: change-classifier
+    if: ${{ github.event_name == 'pull_request' && needs.change-classifier.outputs.run_all == 'false' && needs.change-classifier.outputs.run_affected_tests == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHON_VERSION: "3.13"
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd "pg_isready -U postgres -d test_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 127.0.0.1:6379:6379
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        # The context scope contract resolves the actual PR merge-base and
+        # deliberately fails if it cannot be proven from local history.
+        fetch-depth: 0
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Set environment variables from env.example
+      run: |
+        chmod +x scripts/setup-test-env.sh
+        bash scripts/setup-test-env.sh
+
+    # taskiq-smoke owns this check on a full run. A PR that edits a manifest (how
+    # every new test file lands) does not run taskiq-smoke, so it checks here.
+    - name: Record authoritative test collection
+      if: ${{ needs.change-classifier.outputs.check_manifests == 'true' }}
+      run: |
+        set -euo pipefail
+        uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
+          2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
+          > authoritative-collected-nodes.txt
+        test -s authoritative-collected-nodes.txt
+
+    - name: Validate file-shard manifests (exact-cover)
+      if: ${{ needs.change-classifier.outputs.check_manifests == 'true' }}
+      run: |
+        python3 -m scripts.ci.file_shard_plan check \
+          --collected authoritative-collected-nodes.txt \
+          --manifest-dir ci_shards \
+          --shard-count 4
+
+    - name: Run affected tests
+      if: ${{ needs.change-classifier.outputs.affected_tests != '[]' }}
+      env:
+        # Through the environment, never interpolated into the script: the list
+        # comes from the PR's tree.
+        AFFECTED_TESTS: ${{ needs.change-classifier.outputs.affected_tests }}
+      run: |
+        set -euo pipefail
+        python3 -c 'import json, os; print("\n".join(json.loads(os.environ["AFFECTED_TESTS"])))' > affected-tests.txt
+        mapfile -t AFFECTED_FILES < affected-tests.txt
+        # pytest with no paths would silently run its default testpaths instead.
+        test "${#AFFECTED_FILES[@]}" -gt 0
+        uv run pytest "${AFFECTED_FILES[@]}" -m "not live" -n 4 --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120
 
   security:
     runs-on: ubuntu-latest
@@ -683,14 +796,11 @@ jobs:
   # BL-2: frontend/invest was previously not exercised by CI at all -- no
   # workflow, composite action, or reusable workflow ever invoked npm/vitest
   # (confirmed by both a static .github/ audit and the actual job list of
-  # recent workflow runs). This job is intentionally non-required (not added
-  # to ci-required's --required flags or needs list, and not one of the six
-  # branch-protection check names) so wiring it up carries zero risk to the
-  # merge gate. `classify_changes.py` already reserves the job id "frontend"
-  # for this (ROB-1294 shadow lane vocabulary); this job claims that name but
-  # runs unconditionally rather than being gated by the (still-shadow)
-  # classifier output, so a red run is always a real signal, never a skip
-  # laundered into green.
+  # recent workflow runs). This job is intentionally non-required (not in the PR
+  # gate's --required flags or needs list) so wiring it up carries zero risk to
+  # the merge gate. It runs unconditionally rather than being gated by the
+  # classifier, so a red run is always a real signal, never a skip laundered
+  # into green.
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -722,22 +832,19 @@ jobs:
     - name: Run Vitest suite
       run: npm test
 
-  # ROB-1294 (R2B) — fixed-name aggregate over the currently required checks.
-  #
-  # 🔴 This PR does NOT make `ci-required` a required check and writes no
-  # branch-protection setting. Branch protection still names lint,
-  # taskiq-smoke and test (3.13, 1..4) directly. The operator-only cutover
-  # procedure lives in docs/runbooks/ci-required-aggregator.md.
+  # ROB-1454: the one verdict a PR merges on, with `lint`. A skip is fine only
+  # when the classifier said the job was not needed (--pr-gate); on any other
+  # event the full suite must be green.
   #
   # `if: always()` is load-bearing: without it this job is skipped whenever a
-  # child fails, and a required check that vanishes on failure is a green
-  # merge button. Red on child failure, child cancellation, classifier
-  # failure, an absent child result, or any unrecognised result string; only
-  # an explicitly `--authorize-skip`ped child may be skipped and still pass.
-  ci-required:
-    name: ci-required
+  # child fails, and a required check that vanishes on failure is unknown to
+  # mergewake and a green merge button to GitHub. Red on child failure, child
+  # cancellation, classifier failure, an absent child result, or any
+  # unrecognised result string.
+  pr-gate:
+    name: PR gate
     if: always()
-    needs: [lint, test, taskiq-smoke, change-classifier]
+    needs: [lint, change-classifier, affected-tests, test, taskiq-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -747,34 +854,38 @@ jobs:
       with:
         persist-credentials: false
 
-    - name: Evaluate required child results
+    - name: Evaluate the PR verdict
       env:
-        # toJSON(needs) -> {"lint": {"result": "success", ...}, ...}. For the
-        # matrix `test` job GitHub collapses all four shards into one result,
-        # which is failure if any shard failed.
+        # toJSON(needs) -> {"lint": {"result": "success", "outputs": {...}}, ...}.
+        # For the matrix `test` job GitHub collapses all four shards into one
+        # result, which is failure if any shard failed.
         CI_REQUIRED_NEEDS: ${{ toJSON(needs) }}
+        GATE_EVENT_NAME: ${{ github.event_name }}
       # stdlib-only: no uv sync, no dependency install.
       run: |
         python3 scripts/ci/aggregate_required.py \
           --results-env CI_REQUIRED_NEEDS \
+          --pr-gate \
+          --event-name "$GATE_EVENT_NAME" \
           --required lint \
+          --required change-classifier \
+          --required affected-tests \
           --required test \
           --required taskiq-smoke \
-          --required change-classifier \
           --summary \
-          --json-out ci-required-report.json
+          --json-out pr-gate-report.json
 
-    - name: Upload ci-required report
+    - name: Upload PR gate report
       if: always()
       uses: actions/upload-artifact@v6
       with:
-        name: ci-required-report
-        path: ci-required-report.json
+        name: pr-gate-report
+        path: pr-gate-report.json
         if-no-files-found: warn
 
   notify:
     if: failure()
-    needs: [lint, test, taskiq-smoke, security, alpaca-track-fast-tests, alpaca-track-walkforward-tests, frontend]
+    needs: [lint, test, affected-tests, taskiq-smoke, security, alpaca-track-fast-tests, alpaca-track-walkforward-tests, frontend]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification

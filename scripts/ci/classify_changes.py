@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Deterministic changed-path classifier for CI resource lanes.
+"""Deterministic changed-path classifier that decides what a PR tests.
 
-ROB-1294 (R2B) ships this as **shadow output only**: nothing in
-``.github/workflows/test.yml`` consumes its outputs to skip a job. It exists so
-that a later change can move shard/lane topology behind a stable required
-check without inventing the fail-closed semantics at that moment.
+ROB-1294 built this in shadow; ROB-1454 makes it decide. On a pull request
+``.github/workflows/test.yml`` runs lint plus the test files named here, and
+falls back to the full suite only on ``run_all``. Main pushes and
+workflow_dispatch always run the full suite, whatever this script says.
+
+Selection (``select_affected_tests``)
+-------------------------------------
+The universe is the union of ``ci_shards/shard-*.txt``: exactly the files the
+full suite runs. A changed path selects the universe files that reference it
+by module name or repo path, plus the directory that mirrors it under
+``tests/``. This is deliberately not a transitive import closure: on recorded
+merges the closure reached 1169 of 2024 files, which is the full suite with
+extra steps. What it misses is what the full suite on main is for.
 
 Fail-closed contract
 --------------------
@@ -15,7 +24,8 @@ Two distinct non-green outcomes exist and neither is ever laundered into a
     The conservative answer. Emitted whenever the change set cannot be proven
     to be confined to a known lane: an unknown/unclassified path, a rename, a
     copy, a delete, a type change, an unmerged path, any shared CI/config/test
-    infrastructure file, an empty change set, or an absent base SHA.
+    infrastructure file, an empty change set, an absent base SHA, a path that
+    selects no test, or a selection too broad for one job.
 
 ``error`` (exit 1, ``result="error"``)
     A hard red. Emitted when the inputs themselves cannot be trusted: a head
@@ -34,43 +44,53 @@ Run with ``-h`` for usage.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
 import subprocess
 import sys
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # --------------------------------------------------------------------------
 # Lanes
 # --------------------------------------------------------------------------
 
-#: Every CI job name the classifier can address. ``run_all`` selects all of
-#: them; these strings are the vocabulary a later resource-lane change would
-#: bind actual job ``if:`` conditions to.
-ALL_JOBS: tuple[str, ...] = (
-    "lint",
-    "test",
-    "taskiq-smoke",
-    "security",
-    "research",
-    "frontend",
-)
+#: The full suite: what ``run_all`` selects and what every main push runs.
+ALL_JOBS: tuple[str, ...] = ("lint", "test", "taskiq-smoke")
 
-#: Lane -> jobs that lane needs. A lane mapping to an empty set is a lane that
-#: provably needs no CI job; only ``docs`` qualifies today.
+#: The PR job that runs the selected test files instead of the shards.
+AFFECTED_JOB = "affected-tests"
+
+#: Lane -> jobs that lane needs on a PR. Lint runs on every PR regardless, so
+#: an empty set means "no test job": ``docs`` has nothing to test and
+#: ``frontend`` is covered by the unconditional ``frontend`` job.
+_NARROW_JOBS = frozenset({"lint", AFFECTED_JOB})
 LANE_JOBS: dict[str, frozenset[str]] = {
     "docs": frozenset(),
-    "app": frozenset({"lint", "test", "taskiq-smoke", "security"}),
-    "tests": frozenset({"lint", "test"}),
-    "research": frozenset({"lint", "research"}),
-    "scripts": frozenset({"lint", "test"}),
-    "frontend": frozenset({"frontend"}),
-    "migrations": frozenset({"lint", "test"}),
-    "config": frozenset({"lint", "test"}),
+    "app": _NARROW_JOBS,
+    "tests": _NARROW_JOBS,
+    "research": _NARROW_JOBS,
+    "scripts": _NARROW_JOBS,
+    "frontend": frozenset(),
+    "migrations": _NARROW_JOBS,
+    "config": _NARROW_JOBS,
+    "manifests": _NARROW_JOBS,
 }
+
+#: Lanes where a path that selects no test means "we do not know what this
+#: touches", so it forces ``run_all``. ``research`` is exempt: research code is
+#: isolated from the runtime and its suites run in their own jobs. ``docs``,
+#: ``frontend`` and ``manifests`` select no test files by definition.
+_MUST_MAP_LANES: frozenset[str] = frozenset(
+    {"app", "tests", "scripts", "migrations", "config"}
+)
+
+#: A selection bigger than one shard (~500 files, 5-9 minutes) would not fit one
+#: job's timeout and is no longer narrow, so it becomes the full suite instead.
+MAX_AFFECTED_TEST_FILES = 500
 
 #: Pseudo-lanes that always force ``run_all``. They are reported so an operator
 #: can see *why* a run was not narrowed.
@@ -83,6 +103,11 @@ FORCING_LANES: frozenset[str] = frozenset({"ci_shared", "unknown"})
 CLASSIFIABLE_STATUSES: frozenset[str] = frozenset({"A", "M"})
 
 _NULL_SHA_RE = re.compile(r"\A0{7,64}\Z")
+
+#: A one-line manifest edit is how every new test file lands (see
+#: docs/runbooks/ci-file-shard-manifests.md §4), so it must not force run_all.
+#: ``weights.json`` stays unknown: only the duration refresh writes it.
+_SHARD_MANIFEST_RE = re.compile(r"\Aci_shards/shard-\d+\.txt\Z")
 
 # `git diff --raw`/`--name-status` status grammar: a single letter, optionally
 # followed by a similarity/dissimilarity score. Scores appear only for R and C
@@ -163,10 +188,18 @@ class Classification:
     path_lanes: dict[str, str] = field(default_factory=dict)
     forcing_paths: tuple[str, ...] = ()
     changed_path_count: int = 0
+    affected_tests: tuple[str, ...] = ()
+    check_manifests: bool = False
 
     @property
     def result(self) -> str:
         return "run_all" if self.run_all else "classified"
+
+    @property
+    def run_affected_tests(self) -> bool:
+        """Whether the PR needs the ``affected-tests`` job at all."""
+
+        return not self.run_all and (bool(self.affected_tests) or self.check_manifests)
 
 
 def classify_path(path: str) -> str:
@@ -185,6 +218,8 @@ def classify_path(path: str) -> str:
     for exact, lane in _EXACT_RULES:
         if path == exact:
             return lane
+    if _SHARD_MANIFEST_RE.match(path):
+        return "manifests"
     for prefix, lane in _PREFIX_RULES:
         if path.startswith(prefix):
             return lane
@@ -243,6 +278,193 @@ def classify_entries(entries: Sequence[ChangeEntry]) -> Classification:
         jobs=tuple(sorted(jobs)),
         path_lanes=path_lanes,
         changed_path_count=len(path_lanes),
+    )
+
+
+# --------------------------------------------------------------------------
+# Affected-test selection
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class TestUniverse:
+    """The test files the full suite runs, with lazily cached source text."""
+
+    __test__ = False  # not a pytest class, despite the name
+
+    files: frozenset[str]
+    read: Callable[[str], str]
+    _texts: dict[str, str] = field(default_factory=dict)
+
+    def text(self, path: str) -> str:
+        if path not in self._texts:
+            self._texts[path] = self.read(path)
+        return self._texts[path]
+
+    @classmethod
+    def from_manifests(cls, repo_root: Path) -> TestUniverse:
+        """Load ``ci_shards/shard-*.txt``. No manifests means an empty universe,
+        which selects nothing and therefore falls back to ``run_all``."""
+
+        files: set[str] = set()
+        for manifest in sorted((repo_root / "ci_shards").glob("shard-*.txt")):
+            files.update(manifest.read_text(encoding="utf-8").split())
+
+        def read(path: str) -> str:
+            try:
+                return (repo_root / path).read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                # A manifest naming a file that is not there is a broken tree,
+                # not a reason to select less.
+                raise ClassifierError(
+                    f"shard manifest lists {path!r} but it cannot be read: {exc}"
+                ) from exc
+
+        return cls(files=frozenset(files), read=read)
+
+
+def _module_name(path: str) -> str | None:
+    if not path.endswith(".py"):
+        return None
+    dotted = path[: -len(".py")].replace("/", ".")
+    return dotted.removesuffix(".__init__")
+
+
+def _imports_name(source: str, parent: str, name: str) -> bool:
+    """True when ``source`` has ``from parent import name``."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Unparseable means we cannot prove it does not import the module.
+        return True
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and node.module == parent
+        and any(alias.name in (name, "*") for alias in node.names)
+        for node in ast.walk(tree)
+    )
+
+
+def _references(path: str, universe: TestUniverse) -> set[str]:
+    """Universe files that name ``path`` as a module or a repo-relative path."""
+
+    module = _module_name(path)
+    patterns = [re.escape(path)]
+    if module:
+        patterns.append(re.escape(module))
+    # The lookbehind keeps `app.foo` from matching `xapp.foo` or `a.app.foo`;
+    # the lookahead keeps it from matching `app.foo_bar`, and still allows
+    # `app.foo.attr`, which is how patch() targets name a module.
+    pattern = re.compile(rf"(?<![\w./-])(?:{'|'.join(patterns)})(?![\w-])")
+    parent, _, name = (module or "").rpartition(".")
+    from_import = (
+        re.compile(rf"\bfrom\s+{re.escape(parent)}\s+import\b") if parent else None
+    )
+    needle = name or path.rsplit("/", 1)[-1]
+
+    hits: set[str] = set()
+    for test_file in universe.files:
+        source = universe.text(test_file)
+        if needle not in source:
+            continue
+        if pattern.search(source) or (
+            from_import
+            and from_import.search(source)
+            and _imports_name(source, parent, name)
+        ):
+            hits.add(test_file)
+    return hits
+
+
+def _mirror_prefixes(path: str) -> tuple[str, ...]:
+    """``tests/`` directories that mirror ``path``.
+
+    ``app/services/foo/bar.py`` -> ``tests/services/foo/bar/`` and
+    ``tests/services/foo/``. The parent is skipped when it is only one level
+    below the source root (``tests/services/``): that is most of the suite, not
+    this module's surface.
+    """
+
+    parts = path.split("/")
+    if parts[0] == "app":
+        parts = parts[1:]
+    stem = parts[-1].split(".", 1)[0]
+    parents = parts[:-1]
+    prefixes = []
+    if stem != "__init__":
+        prefixes.append("/".join(["tests", *parents, stem]) + "/")
+    if len(parents) >= 2:
+        prefixes.append("/".join(["tests", *parents]) + "/")
+    return tuple(prefixes)
+
+
+def _tests_for_path(path: str, lane: str, universe: TestUniverse) -> set[str]:
+    if lane == "tests":
+        if path in universe.files:
+            return {path}
+        selected = _references(path, universe)
+        directory = path.rpartition("/")[0]
+        # A helper or conftest serves its own directory. tests/ itself is not
+        # a surface: the root conftest is ci_shared and forces run_all earlier.
+        if directory != "tests":
+            selected |= {f for f in universe.files if f.startswith(directory + "/")}
+        return selected
+    prefixes = _mirror_prefixes(path)
+    return _references(path, universe) | {
+        f for f in universe.files if f.startswith(prefixes)
+    }
+
+
+def select_affected_tests(
+    classification: Classification, universe: TestUniverse
+) -> Classification:
+    """Turn lanes into a concrete file list, or fall back to ``run_all``.
+
+    Pure apart from ``universe``. A ``run_all`` input is returned unchanged.
+    """
+
+    if classification.run_all:
+        return classification
+
+    selected: set[str] = set()
+    unmapped: set[str] = set()
+    for path, lane in classification.path_lanes.items():
+        if lane in ("docs", "frontend", "manifests"):
+            continue
+        tests = _tests_for_path(path, lane, universe)
+        if not tests and lane in _MUST_MAP_LANES:
+            unmapped.add(path)
+        selected |= tests
+
+    if unmapped:
+        return replace(
+            classification,
+            run_all=True,
+            reason="unmapped_path",
+            jobs=tuple(sorted(ALL_JOBS)),
+            forcing_paths=tuple(sorted(unmapped)),
+        )
+    if len(selected) > MAX_AFFECTED_TEST_FILES:
+        return replace(
+            classification,
+            run_all=True,
+            reason="selection_too_broad",
+            jobs=tuple(sorted(ALL_JOBS)),
+        )
+
+    check_manifests = "manifests" in classification.lanes
+    # Only a real selection or a manifest check earns the job; a lane that asked
+    # for it but selected nothing (research with no suite here) does not.
+    jobs = set(classification.jobs)
+    if not selected and not check_manifests:
+        jobs.discard(AFFECTED_JOB)
+    return replace(
+        classification,
+        affected_tests=tuple(sorted(selected)),
+        check_manifests=check_manifests,
+        jobs=tuple(sorted(jobs)),
     )
 
 
@@ -349,14 +571,22 @@ def _resolve_commit(repo_root: Path, sha: str) -> None:
 
 
 def collect_entries(repo_root: Path, base_sha: str, head_sha: str) -> list[ChangeEntry]:
-    """Resolve both commits and return their change set."""
+    """Resolve both commits and return what ``head`` changed since they diverged.
+
+    Three dots on purpose. ``pull_request.base.sha`` is the base branch tip, not
+    the merge base, so a two-dot diff also reports whatever main gained after the
+    branch point: a file added on main shows up as a delete here and forces
+    run_all on nearly every PR.
+    """
 
     _resolve_commit(repo_root, base_sha)
     _resolve_commit(repo_root, head_sha)
-    diff = _run_git(repo_root, "diff", "--name-status", "-z", f"{base_sha}..{head_sha}")
+    diff = _run_git(
+        repo_root, "diff", "--name-status", "-z", f"{base_sha}...{head_sha}"
+    )
     if diff.returncode != 0:
         raise ClassifierError(
-            f"`git diff --name-status {base_sha}..{head_sha}` failed (exit "
+            f"`git diff --name-status {base_sha}...{head_sha}` failed (exit "
             f"{diff.returncode}): {diff.stderr.strip()!r}. This is a hard "
             "failure, not a narrower run."
         )
@@ -388,8 +618,10 @@ def build_outputs(classification: Classification) -> dict[str, str]:
         "lanes": ",".join(classification.lanes),
         "jobs": ",".join(classification.jobs),
         "changed_path_count": str(classification.changed_path_count),
-        # Shadow marker: ROB-1294 wires no job condition to these outputs.
-        "shadow": "true",
+        "run_affected_tests": "true" if classification.run_affected_tests else "false",
+        "check_manifests": "true" if classification.check_manifests else "false",
+        # A JSON array, not a shell string: read it through an env var.
+        "affected_tests": json.dumps(list(classification.affected_tests)),
     }
     for job in ALL_JOBS:
         key = "run_" + job.replace("-", "_")
@@ -417,13 +649,14 @@ def _write_step_summary(lines: Iterable[str]) -> None:
 
 def _summary_lines(report: Mapping[str, object]) -> list[str]:
     lines = [
-        "### Change classifier (shadow — drives no job skip)",
+        "### Change classifier",
         "",
         "| field | value |",
         "|---|---|",
     ]
     for key in ("result", "reason", "run_all", "lanes", "jobs", "changed_path_count"):
         lines.append(f"| {key} | `{report.get(key)}` |")
+    lines.append(f"| affected_tests | `{len(report.get('affected_tests') or [])}` |")
     if report.get("error"):
         lines.append(f"| error | `{report['error']}` |")
     return lines
@@ -467,7 +700,8 @@ def main(argv: list[str] | None = None) -> int:
         "path_lanes": {},
         "forcing_paths": [],
         "changed_path_count": 0,
-        "shadow": True,
+        "affected_tests": [],
+        "check_manifests": False,
         "error": None,
     }
     outputs: dict[str, str] = {}
@@ -514,6 +748,9 @@ def main(argv: list[str] | None = None) -> int:
                     collect_entries(repo_root, base_sha, head_sha)
                 )
 
+        classification = select_affected_tests(
+            classification, TestUniverse.from_manifests(Path(args.repo_root).resolve())
+        )
         report.update(
             {
                 "result": classification.result,
@@ -524,6 +761,8 @@ def main(argv: list[str] | None = None) -> int:
                 "path_lanes": dict(sorted(classification.path_lanes.items())),
                 "forcing_paths": list(classification.forcing_paths),
                 "changed_path_count": classification.changed_path_count,
+                "affected_tests": list(classification.affected_tests),
+                "check_manifests": classification.check_manifests,
             }
         )
         outputs = build_outputs(classification)
@@ -559,7 +798,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"CHANGE CLASSIFIER: {report['result'].upper()} — "  # type: ignore[union-attr]
             f"reason={report['reason']} lanes={report['lanes']} "
-            f"jobs={report['jobs']} (shadow: drives no job skip)"
+            f"jobs={report['jobs']} "
+            f"affected_tests={len(report['affected_tests'])}"  # type: ignore[arg-type]
         )
     return exit_code
 
