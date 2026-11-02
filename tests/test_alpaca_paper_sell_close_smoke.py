@@ -198,7 +198,7 @@ async def test_build_sell_close_payload_fails_closed_on_source_and_size_mismatch
             source_lookup_fn=bad_source,
         )
 
-    with pytest.raises(smoke.SellCloseStopError, match="estimated notional"):
+    with pytest.raises(smoke.SellCloseStopError, match="sell qty exceeds source"):
         await smoke.build_sell_close_payload(
             source_client_order_id="source-buy-1",
             symbol="BTC/USD",
@@ -206,6 +206,23 @@ async def test_build_sell_close_payload_fails_closed_on_source_and_size_mismatch
             limit_price_usd=Decimal("50000"),
             source_lookup_fn=_source_lookup,
         )
+
+
+@pytest.mark.asyncio
+async def test_build_sell_close_payload_above_old_cap_keeps_exact_source_size() -> None:
+    payload = await smoke.build_sell_close_payload(
+        source_client_order_id="source-buy-1",
+        symbol="BTC/USD",
+        qty=Decimal("0.001"),
+        limit_price_usd=Decimal("100000"),
+        source_lookup_fn=_source_lookup,
+    )
+
+    assert payload.qty * payload.limit_price_usd == Decimal("100")
+    assert payload.qty == payload.source.qty
+    assert payload.close_intent == "close"
+    assert payload.order_request["qty"] == Decimal("0.001")
+    assert payload.order_request["limit_price"] == Decimal("100000")
 
 
 @pytest.mark.parametrize(
