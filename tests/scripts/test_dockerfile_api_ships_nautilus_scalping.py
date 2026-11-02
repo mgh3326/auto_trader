@@ -52,7 +52,7 @@ ENTRY_SCRIPTS = tuple(
         p.relative_to(REPO_ROOT).as_posix()
         for p in REPO_ROOT.glob("scripts/binance_h5_*.py")
     )
-) + ("scripts/mock_strategy.py",)
+) + ("scripts/mock_strategy.py", "scripts/mock_strategy_crypto.py")
 RESEARCH_MODULE = "research.nautilus_scalping.rob974_features"
 SCRIPT_COPY = "COPY research/nautilus_scalping/ ./research/nautilus_scalping/"
 PAPER_RESEARCH_FILES = {
@@ -64,6 +64,8 @@ PAPER_RESEARCH_FILES = {
     "research/data_plane/__init__.py",
     "research/data_plane/calendars.py",
     "research/data_plane/contract.py",
+    "research/crypto_universe/__init__.py",
+    "research/crypto_universe/universe.py",
 }
 
 
@@ -486,6 +488,13 @@ def test_only_execution_research_dependencies_are_added(real_image) -> None:
                 "research/data_plane/contract.py",
             ),
             "/app/research/data_plane",
+        ),
+        (
+            (
+                "research/crypto_universe/__init__.py",
+                "research/crypto_universe/universe.py",
+            ),
+            "/app/research/crypto_universe",
         ),
     ]
 

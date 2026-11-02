@@ -21,6 +21,21 @@ from app.services.mock_strategy.us_signals import (
 
 VENUE = "alpaca_paper"
 BROKER_TERMINAL = {"filled", "canceled", "expired", "rejected"}
+BROKER_NONTERMINAL = {
+    "new",
+    "accepted",
+    "pending_new",
+    "partially_filled",
+    "accepted_for_bidding",
+    "done_for_day",
+    "stopped",
+    "suspended",
+    "pending_replace",
+    "pending_cancel",
+    "replaced",
+    "calculated",
+    "held",
+}
 
 
 @dataclass(frozen=True)
@@ -240,13 +255,7 @@ class UsPaperStrategy:
             raise ValueError("broker fill price missing")
         if order.status == "filled" and qty <= 0:
             raise ValueError("filled order has no fill evidence")
-        if order.status not in BROKER_TERMINAL | {
-            "new",
-            "accepted",
-            "pending_new",
-            "partially_filled",
-            "accepted_for_bidding",
-        }:
+        if order.status not in BROKER_TERMINAL | BROKER_NONTERMINAL:
             raise ValueError("unsupported broker lifecycle status")
         previous_qty = Decimal(row.meta.get("filled_qty", "0"))
         if qty < previous_qty:
@@ -339,19 +348,31 @@ class UsPaperStrategy:
             for entry in await self.recorder.list_due(
                 venue=VENUE, account_ref=account, asof=start
             ):
-                entry = await self._refresh(entry)
-                qty = Decimal(entry.meta.get("filled_qty", "0"))
-                if (
-                    entry.status not in {"filled", "partially_filled"}
-                    or not entry.meta.get("broker_terminal")
-                    or qty <= 0
-                    or entry.entry_price is None
-                ):
+                try:
+                    entry = await self._refresh(entry)
+                    qty = Decimal(entry.meta.get("filled_qty", "0"))
+                    if (
+                        entry.status not in {"filled", "partially_filled"}
+                        or not entry.meta.get("broker_terminal")
+                        or qty <= 0
+                        or entry.entry_price is None
+                    ):
+                        outcomes.append(
+                            {
+                                **projection(entry),
+                                "reason": "entry_not_terminal_with_fill",
+                            }
+                        )
+                        continue
+                    outcomes.append(await self._close_entry(entry, qty, asof))
+                except Exception as exc:
                     outcomes.append(
-                        {**projection(entry), "reason": "entry_not_terminal_with_fill"}
+                        {
+                            **projection(entry),
+                            "episode_status": "unresolved",
+                            "error_class": type(exc).__name__,
+                        }
                     )
-                    continue
-                outcomes.append(await self._close_entry(entry, qty, asof))
         return {"venue": VENUE, "asof": asof.isoformat(), "orders": outcomes}
 
     @staticmethod
@@ -414,7 +435,11 @@ class UsPaperStrategy:
                 type(index) is not int
                 or index < 0
                 or leg.side != side
-                or leg.meta.get("entry_client_order_id") != entry.client_order_id
+                or leg.meta.get(
+                    "entry_client_order_id",
+                    entry.client_order_id if index == 0 else None,
+                )
+                != entry.client_order_id
                 or leg.client_order_id != self._exit_id(entry, side, index)
             ):
                 return {
@@ -501,13 +526,6 @@ class UsPaperStrategy:
         assert entry.entry_price is not None
         pnl = (proceeds - entry.entry_price * qty) * (1 if entry.side == "buy" else -1)
         now = datetime.now(UTC)
-        await self.recorder.update(
-            entry.client_order_id,
-            status="closed",
-            closed_at=now,
-            exit_price=proceeds / qty,
-            realized_pnl=pnl,
-        )
         for leg in legs:
             current = await self.recorder.get(leg.client_order_id)
             assert current is not None
@@ -515,4 +533,11 @@ class UsPaperStrategy:
                 await self.recorder.update(
                     leg.client_order_id, status="closed", closed_at=now
                 )
+        await self.recorder.update(
+            entry.client_order_id,
+            status="closed",
+            closed_at=now,
+            exit_price=proceeds / qty,
+            realized_pnl=pnl,
+        )
         return {**outcome, "episode_status": "closed", "realized_pnl": str(pnl)}
