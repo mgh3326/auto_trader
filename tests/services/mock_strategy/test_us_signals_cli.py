@@ -125,6 +125,7 @@ async def test_actual_cli_dry_run_prints_twenty_orders_without_broker_or_databas
     payload = await execute(args)
     assert payload["dry_run"] is True
     assert len(payload["orders"]) == 20
+    assert payload["orders"][0]["account_ref"] == "fixture-paper"
     assert len({r["client_order_id"] for r in payload["orders"]}) == 20
     assert all(
         r["notional"] == "10000" for r in payload["orders"] if r["side"] == "buy"

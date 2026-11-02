@@ -303,6 +303,19 @@ async def test_close_ack_waits_for_fill_evidence_without_resubmission():
     assert {r.status for r in recorder.rows.values()} == {"closed"}
 
 
+async def test_new_evidence_mismatch_cannot_close_using_older_fill_metadata():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    entry = next(row for row in recorder.rows.values() if row.side == "buy")
+    broker.orders[entry.client_order_id] = broker.orders[
+        entry.client_order_id
+    ].model_copy(update={"symbol": "WRONG"})
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert entry.status == "uncertain" and entry.realized_pnl is None
+    assert [side for side, _ in broker.posts] == ["buy", "short", "cover"]
+
+
 async def test_trading_day_exit_uses_holidays_and_requires_confirm():
     _, _, due = session_times(date(2026, 11, 25), 1)
     assert due == datetime(2026, 11, 27, 14, 30, tzinfo=UTC)  # Thanksgiving excluded

@@ -134,6 +134,8 @@ def projection(row: OrderIntent | MockStrategyOrder) -> dict:
     return {
         "client_order_id": row.client_order_id,
         "strategy_id": row.strategy_id,
+        "account_ref": row.account_ref,
+        "episode_id": row.episode_id,
         "symbol": row.symbol,
         "side": row.side,
         "qty": str(row.qty) if row.qty is not None else None,

@@ -66,7 +66,8 @@ python -m scripts.mock_strategy close-due --venue alpaca_paper --asof 2026-11-09
 
 The first preview reads local files only: no DB, broker or file writes. The second
 reads due DB rows without mutations and does not claim that broker checks passed.
-`status` reads the DB only and reports recorded evidence, including unresolved
+`status` reads the DB only and includes the recorded account reference for scoping
+previews. It reports recorded evidence, including unresolved
 `sending` and `uncertain`; it does not perform broker reconciliation.
 
 ## Frozen selection and execution
