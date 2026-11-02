@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.scripts._deploy_gate_fakes import install_gate_fakes
+
 pytestmark = pytest.mark.unit
 
 REPO = Path(__file__).resolve().parents[2]
@@ -75,8 +77,7 @@ def _deploy(
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "docker").write_text(FAKE_DOCKER)
-    (bindir / "docker").chmod(0o755)
+    install_gate_fakes(bindir, FAKE_DOCKER, DIGEST)
     (bindir / "curl").write_text("#!/usr/bin/env bash\nexit 0\n")
     (bindir / "curl").chmod(0o755)
     state = tmp_path / "state"

@@ -27,14 +27,17 @@ fi
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
 readonly HAPROXY_IMAGE="haproxy:3.1-alpine"
-usage() { printf 'usage: %s [tag|--rollback] [--skip-kis-ws] [--dry-run] [--haproxy-template PATH]\n' "$0" >&2; exit 64; }
+usage() { printf 'usage: %s [tag|--rollback] [--skip-kis-ws] [--dry-run] [--haproxy-template PATH] [--allow-unverified REASON]\n' "$0" >&2; exit 64; }
 
-SKIP_KIS_WS=0 DRY_RUN=0 DEPLOY_MODE=deploy IMAGE_TAG=main TAG_SET=0 HAPROXY_TEMPLATE_ARG=""
+SKIP_KIS_WS=0 DRY_RUN=0 DEPLOY_MODE=deploy IMAGE_TAG=main TAG_SET=0 HAPROXY_TEMPLATE_ARG="" ALLOW_UNVERIFIED=""
 while (($#)); do
   case "$1" in
     --skip-kis-ws) SKIP_KIS_WS=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --rollback) DEPLOY_MODE=rollback ;;
+    --allow-unverified)
+      (($# >= 2)) && [[ -n "${2//[[:space:]]/}" && "$2" != -* ]] || usage
+      ALLOW_UNVERIFIED="$2"; shift ;;
     # A value starting with '-' is the next option, not a path: refusing it
     # keeps --dry-run/--rollback from being swallowed. Write such a path as ./-x.
     --haproxy-template)
@@ -54,7 +57,7 @@ if [[ "$DEPLOY_MODE" == rollback ]]; then
   if ((TAG_SET)); then usage; fi
   IMAGE_TAG=""
 fi
-readonly SKIP_KIS_WS DRY_RUN DEPLOY_MODE IMAGE_TAG HAPROXY_TEMPLATE_ARG
+readonly SKIP_KIS_WS DRY_RUN DEPLOY_MODE IMAGE_TAG HAPROXY_TEMPLATE_ARG ALLOW_UNVERIFIED
 
 readonly IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 readonly RUN_DIRECTORY="${AT_RUN_DIRECTORY:-/root/at-run}"
@@ -135,6 +138,19 @@ DIGEST_RECORD_MUTATED=false
 
 require_command() { command -v "$1" >/dev/null 2>&1 || { printf 'required command is unavailable: %s\n' "$1" >&2; exit 127; }; }
 require_file() { [[ -f "$1" ]] || { printf 'required env file is unavailable: %s (set %s to the host file)\n' "$1" "$2" >&2; exit 78; }; }
+# Registry metadata is read before any pull, file write or container mutation.
+# The helper returns the immutable digest whose OCI revision passed GitHub CI.
+# Install it beside this script; --rollback intentionally never invokes it.
+verified_deploy_image() {
+  local gate="${SCRIPT_DIRECTORY}/deploy_ci_gate.py" digest
+  local -a args=(--image "$IMAGE")
+  [[ -r "$gate" ]] || { printf 'deploy gate is unavailable: %s; install scripts/deploy_ci_gate.py beside this script\n' "$gate" >&2; return 78; }
+  command -v python3 >/dev/null 2>&1 || { printf 'deploy gate requires python3\n' >&2; return 78; }
+  [[ -z "$ALLOW_UNVERIFIED" ]] || args+=(--allow-unverified "$ALLOW_UNVERIFIED")
+  digest="$(python3 "$gate" "${args[@]}")" || return $?
+  is_digest "$digest" || { printf 'deploy gate returned no immutable image digest\n' >&2; return 78; }
+  printf '%s\n' "$digest"
+}
 # Explicit sources win in order: --haproxy-template, then MCP_HAPROXY_TEMPLATE.
 # Without either, exactly one of the installed copy, the run directory's ops
 # tree and the checkout copy must exist (the same file reached twice counts
@@ -766,7 +782,7 @@ dry_run_image_prune() {
 
 # promote_digest returns nonzero on any failure, which ends main under errexit,
 # so the prune below is reached only after a fully successful deploy.
-main() { local digest; prepare || exit $?; refuse_active_retired_units || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; run_image_prune "$digest"; }
+main() { local digest; digest="$(verified_deploy_image)" || exit $?; prepare || exit $?; refuse_active_retired_units || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$digest"; promote_digest "$digest"; run_image_prune "$digest"; }
 manual_rollback() { local previous; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; current_api_rollback_digest >/dev/null || return 78; capture_initial_state || return 78; docker pull "$previous"; promote_digest "$previous"; }
 
 # A real run refuses before any mutation when one of these is MISSING; the
@@ -803,13 +819,8 @@ dry_run() {
   else
     printf 'mode: deploy\n'
     printf 'target image: %s\n' "$IMAGE"
-    target="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || true)"
-    if is_digest "$target"; then
-      printf 'intended digest: %s\n' "$target"
-    else
-      target=""
-      printf 'intended digest: unresolved (no local repo digest for %s; a real run pulls first)\n' "$IMAGE"
-    fi
+    target="$(verified_deploy_image)" || return $?
+    printf 'intended digest: %s\n' "$target"
     verb='promote to'
   fi
   planned="${target:-unresolved}"
