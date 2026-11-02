@@ -15,6 +15,7 @@ from app.services.mechanical_loss_cut.rules import (
     HeldLot,
     LotKey,
     PlanDraft,
+    PriorDecision,
 )
 from app.services.trading_policy_service import load_trading_policy
 
@@ -134,12 +135,21 @@ class FakePorts:
     async def protected_quantities(self, keys: list[LotKey]) -> dict[LotKey, Decimal]:
         return {key: self.protected.get(key, Decimal("0")) for key in keys}
 
-    async def last_decision_sessions(self, keys: list[LotKey]) -> dict[LotKey, date]:
-        latest: dict[LotKey, date] = {}
+    async def prior_decisions(self, keys: list[LotKey]) -> dict[LotKey, PriorDecision]:
+        latest: dict[LotKey, PriorDecision] = {}
         for row in self.rows:
             decision = row["decision"]
-            latest[decision.key] = max(
-                latest.get(decision.key, decision.session), decision.session
+            previous = latest.get(decision.key)
+            same = (
+                previous is not None
+                and previous.plan_version == decision.plan_version
+                and previous.stop_price == decision.stop_price
+            )
+            latest[decision.key] = PriorDecision(
+                session=decision.session,
+                plan_version=decision.plan_version,
+                stop_price=decision.stop_price,
+                cuts_on_this_stop=(previous.cuts_on_this_stop + 1) if same else 1,
             )
         return latest
 

@@ -14,6 +14,7 @@ from app.services.mechanical_loss_cut.rules import (
     CutDecision,
     ExitPlanInputError,
     LotKey,
+    PriorDecision,
     Skip,
     add_plan,
     backfill_plan,
@@ -49,7 +50,7 @@ def _evaluate(**overrides):
         "price_fresh": True,
         "open_sell_quantity": Decimal("0"),
         "protected_quantity": Decimal("0"),
-        "last_decision_session": None,
+        "prior_decision": None,
     }
     values.update(overrides)
     return evaluate_lot(**values)
@@ -236,62 +237,97 @@ def test_fraction_below_one_share_does_not_round_up():
     assert result.reason == "below_one_unit"
 
 
-def test_cooldown_counts_sessions_since_the_last_decision():
-    two_sessions_ago = SESSION - timedelta(days=2)
+def _prior(session=SESSION, *, version=1, stop="85000", cuts=1) -> PriorDecision:
+    return PriorDecision(
+        session=session,
+        plan_version=version,
+        stop_price=Decimal(stop),
+        cuts_on_this_stop=cuts,
+    )
 
-    result = _evaluate(last_decision_session=two_sessions_ago)
+
+def test_a_later_day_of_the_same_run_is_not_another_cut():
+    closes = [*_FALLING[1:], 83000]
+
+    result = _evaluate(
+        bars=bars_from_closes(closes, end=SESSION + timedelta(days=1)),
+        prior_decision=_prior(),
+    )
 
     assert isinstance(result, Skip)
-    assert result.reason == "cooldown"
-    assert result.details["sessions_since_last"] == "2"
+    assert result.reason == "already_cut_this_run"
 
 
-def test_one_trigger_key_across_runs_of_the_same_episode():
-    first = _evaluate()
-    closes = [*_FALLING[1:], 83000]
-    later = _evaluate(bars=bars_from_closes(closes, end=SESSION + timedelta(days=1)))
-
-    assert isinstance(first, CutDecision)
-    assert isinstance(later, CutDecision)
-    assert first.trigger_key == later.trigger_key
-
-
-def test_a_run_longer_than_the_window_keeps_one_trigger_key():
-    """The window rolls forward each day. The key must not roll with it."""
+def test_a_run_longer_than_the_bar_window_is_still_the_same_run():
+    """The old decision has rolled off the bars, and every bar is below the stop."""
     below = [84000, 83000, 82000, 81000, 80000, 79000, 78000]
 
-    today = _evaluate(bars=bars_from_closes(below))
-    tomorrow = _evaluate(
-        bars=bars_from_closes([*below[1:], 77000], end=SESSION + timedelta(days=1))
+    result = _evaluate(
+        bars=bars_from_closes(below),
+        prior_decision=_prior(SESSION - timedelta(days=60)),
+    )
+
+    assert isinstance(result, Skip)
+    assert result.reason == "already_cut_this_run"
+
+
+def test_the_trigger_key_does_not_depend_on_the_bars_read():
+    today = _evaluate(bars=bars_from_closes(_FALLING))
+    later = _evaluate(
+        bars=bars_from_closes(
+            [84000, 83000, 82000, 81000, 80000, 79000, 78000],
+            end=SESSION + timedelta(days=40),
+        )
     )
 
     assert isinstance(today, CutDecision)
-    assert isinstance(tomorrow, CutDecision)
-    assert today.episode_start is None
-    assert today.trigger_key == tomorrow.trigger_key
+    assert isinstance(later, CutDecision)
+    assert today.trigger_key == later.trigger_key == "v1:85000:r1"
 
 
 def test_a_recovery_then_a_new_break_is_a_new_trigger():
-    first_break = [90000, 89000, 88000, 87000, 86000, 86000, 84000]
-    second_break = [84000, 84000, 90000, 89000, 88000, 87000, 84000]
+    closes = [84000, 90000, 89000, 88000, 87000, 86000, 84000]
 
-    first = _evaluate(bars=bars_from_closes(first_break))
-    second = _evaluate(
-        bars=bars_from_closes(second_break, end=SESSION + timedelta(days=6))
+    result = _evaluate(
+        bars=bars_from_closes(closes, end=SESSION + timedelta(days=6)),
+        prior_decision=_prior(),
     )
 
-    assert isinstance(first, CutDecision)
-    assert isinstance(second, CutDecision)
-    assert first.trigger_key != second.trigger_key
+    assert isinstance(result, CutDecision)
+    assert result.trigger_key == "v1:85000:r2"
 
 
-def test_a_new_plan_version_is_a_new_trigger():
-    first = _evaluate()
-    second = _evaluate(plan=plan(version=2))
+def test_cooldown_holds_a_new_break_soon_after_the_last_decision():
+    closes = [86000, 86000, 85000, 84000, 90000, 87000, 84000]
 
-    assert isinstance(first, CutDecision)
-    assert isinstance(second, CutDecision)
-    assert first.trigger_key != second.trigger_key
+    result = _evaluate(
+        bars=bars_from_closes(closes),
+        prior_decision=_prior(SESSION - timedelta(days=3)),
+    )
+
+    assert isinstance(result, Skip)
+    assert result.reason == "cooldown"
+    assert result.details["sessions_since_last"] == "3"
+
+
+def test_a_new_plan_version_is_a_new_trigger_after_the_cooldown():
+    closes = _FALLING
+
+    soon = _evaluate(
+        bars=bars_from_closes(closes),
+        plan=plan(version=2),
+        prior_decision=_prior(SESSION - timedelta(days=2)),
+    )
+    later = _evaluate(
+        bars=bars_from_closes(closes),
+        plan=plan(version=2),
+        prior_decision=_prior(SESSION - timedelta(days=6)),
+    )
+
+    assert isinstance(soon, Skip)
+    assert soon.reason == "cooldown"
+    assert isinstance(later, CutDecision)
+    assert later.trigger_key == "v2:85000:r1"
 
 
 def test_n_day_low_family_needs_a_fresh_low():

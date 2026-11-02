@@ -65,7 +65,7 @@ def broker_trap(monkeypatch):
     monkeypatch.setattr("httpx.AsyncClient.send", refuse)
 
 
-async def _no_sessions(_keys):
+async def _no_prior(_keys):
     return {}
 
 
@@ -183,13 +183,17 @@ async def test_second_run_on_the_same_trigger_writes_nothing_new(broker_trap):
     ports = _fixture_ports()
 
     first = await evaluate_all_lots(ports, now=NOW, markets=("equity_kr",))
-    # Leave only the once-per-trigger rule in the way: no cooldown evidence.
-    ports.last_decision_sessions = _no_sessions
     second = await evaluate_all_lots(ports, now=NOW, markets=("equity_kr",))
+    # Two runs racing cannot see each other's row. The constraint is what stops
+    # the second one.
+    ports.prior_decisions = _no_prior
+    racing = await evaluate_all_lots(ports, now=NOW, markets=("equity_kr",))
 
     assert first["decisions_written"] == 2
     assert second["decisions_written"] == 0
-    assert second["already_recorded"] == 2
+    assert second["skipped"]["already_cut_this_run"] == 2
+    assert racing["decisions_written"] == 0
+    assert racing["already_recorded"] == 2
     assert len(ports.rows) == 2
 
 

@@ -11,7 +11,7 @@ import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -28,6 +28,7 @@ from app.services.mechanical_loss_cut.rules import (
     HeldLot,
     LotKey,
     PlanDraft,
+    PriorDecision,
     Skip,
     backfill_plan,
     evaluate_lot,
@@ -64,9 +65,9 @@ class EvaluationPorts(Protocol):
         self, keys: list[LotKey]
     ) -> dict[LotKey, Decimal]: ...
 
-    async def last_decision_sessions(
+    async def prior_decisions(
         self, keys: list[LotKey]
-    ) -> dict[LotKey, date]: ...
+    ) -> dict[LotKey, PriorDecision]: ...
 
     async def append_backfill(self, draft: PlanDraft) -> ExitPlan: ...
 
@@ -101,8 +102,8 @@ class DatabasePorts:
     async def protected_quantities(self, keys: list[LotKey]) -> dict[LotKey, Decimal]:
         return await positions.load_protected_quantities(self._session, keys)
 
-    async def last_decision_sessions(self, keys: list[LotKey]) -> dict[LotKey, date]:
-        return await self._store.last_decision_sessions(keys, mode="shadow")
+    async def prior_decisions(self, keys: list[LotKey]) -> dict[LotKey, PriorDecision]:
+        return await self._store.prior_decisions(keys, mode="shadow")
 
     async def append_backfill(self, draft: PlanDraft) -> ExitPlan:
         await self._store.lock_lot(draft.key)
@@ -176,7 +177,7 @@ async def evaluate_all_lots(
             extra={"exception_type": type(exc).__name__},
         )
         protected = None
-    last_sessions = await ports.last_decision_sessions(keys)
+    prior = await ports.prior_decisions(keys)
 
     written: list[WrittenDecision] = []
     skipped: Counter[str] = Counter()
@@ -215,7 +216,7 @@ async def evaluate_all_lots(
                 protected_quantity=(
                     protected.get(lot.key) if protected is not None else None
                 ),
-                last_decision_session=last_sessions.get(lot.key),
+                prior_decision=prior.get(lot.key),
             )
             if isinstance(verdict, Skip):
                 skipped[verdict.reason] += 1

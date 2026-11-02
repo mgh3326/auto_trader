@@ -490,7 +490,7 @@ def _written() -> WrittenDecision:
         price_fresh=True,
         open_sell_quantity=Decimal("0"),
         protected_quantity=Decimal("0"),
-        last_decision_session=None,
+        prior_decision=None,
     )
     assert isinstance(decision, CutDecision)
     assert decision.session == SESSION

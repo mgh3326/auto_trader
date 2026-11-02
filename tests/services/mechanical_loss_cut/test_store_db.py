@@ -88,7 +88,7 @@ def _draft(key: LotKey, **overrides: Any) -> PlanDraft:
     return PlanDraft(**values)
 
 
-def _decision(key: LotKey, *, trigger: str = "v1:85000:2026-10-30") -> CutDecision:
+def _decision(key: LotKey, *, trigger: str = "v1:85000:r1") -> CutDecision:
     return CutDecision(
         key=key,
         plan_id=1,
@@ -151,7 +151,7 @@ async def test_one_decision_per_trigger() -> None:
             evaluated_at=_NOW,
         )
         other_trigger = await store.insert_decision(
-            _decision(key, trigger="v2:85000:2026-10-30"),
+            _decision(key, trigger="v2:85000:r1"),
             mode="shadow",
             per_order_cap=Decimal("2000000"),
             evaluated_at=_NOW,
@@ -161,6 +161,26 @@ async def test_one_decision_per_trigger() -> None:
     assert inserted is not None
     assert repeated is None
     assert other_trigger is not None
+
+
+async def test_prior_decision_is_the_latest_and_counts_its_plan_and_stop() -> None:
+    key = _key()
+    async with AsyncSessionLocal() as session:
+        store = MechanicalLossCutStore(session)
+        for trigger in ("v1:85000:r1", "v1:85000:r2"):
+            await store.insert_decision(
+                _decision(key, trigger=trigger),
+                mode="shadow",
+                per_order_cap=Decimal("2000000"),
+                evaluated_at=_NOW,
+            )
+        await session.commit()
+        prior = await store.prior_decisions([key], mode="shadow")
+        other_mode = await store.prior_decisions([key], mode="live")
+
+    assert prior[key].cuts_on_this_stop == 2
+    assert prior[key].stop_price == Decimal("85000")
+    assert other_mode == {}
 
 
 async def test_a_live_row_requires_a_proposal_and_a_shadow_row_refuses_one() -> None:

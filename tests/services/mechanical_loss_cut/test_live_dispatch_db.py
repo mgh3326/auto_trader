@@ -26,7 +26,10 @@ from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_rejections,
 )
 from app.services.order_proposals.dispatch import dispatch_proposal
-from app.services.order_proposals.revalidation import RungOutcome
+from app.services.order_proposals.revalidation import (
+    RungOutcome,
+    revalidate_and_submit,
+)
 from app.services.order_proposals.service import OrderProposalsService, RungInput
 from app.services.trade_journal.trade_retrospective_service import save_retrospective
 from app.services.trading_policy_service import load_trading_policy
@@ -159,7 +162,7 @@ def _decision(symbol: str, *, quantity: str = "10") -> CutDecision:
         plan_version=1,
         backfilled=False,
         trigger_family="plan_stop_close",
-        trigger_key="v1:85000:2026-10-29",
+        trigger_key="v1:85000:r1",
         session=date(2026, 10, 29),
         close=Decimal("84000"),
         stop_price=Decimal("85000"),
@@ -211,6 +214,43 @@ async def test_inside_the_caps_a_mechanical_cut_submits_with_no_card(db_session)
     assert group.exit_intent == "loss_cut"
     assert group.strategy == MECHANICAL_STRATEGY
     assert isinstance(group.source_asof["auto_approved"], dict)
+
+
+async def test_a_mechanical_cut_clears_the_real_revalidation_path(db_session):
+    """The existing state machine accepts a loss_cut with no human approval."""
+    proposal_id = await _create(db_session, _decision(_symbol()))
+    notifier = _Notifier()
+    orders: list[dict] = []
+
+    async def place_order(**kwargs):
+        orders.append(kwargs)
+        if kwargs["dry_run"]:
+            return _preview()
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "kis-real-path",
+        }
+
+    async def revalidate(*, service, proposal_id, now, eligibility_gate):
+        return await revalidate_and_submit(
+            service=service,
+            proposal_id=proposal_id,
+            now=now,
+            eligibility_gate=eligibility_gate,
+            place_order_fn=place_order,
+            window_evaluator=allow_known_session,
+            now_fn=lambda: NOW,
+        )
+
+    await _dispatch(db_session, proposal_id, notifier, revalidate)
+
+    assert [order["dry_run"] for order in orders] == [True, False]
+    assert orders[1]["exit_intent"] == "loss_cut"
+    assert orders[1]["retrospective_id"] is not None
+    assert notifier.approval_cards() == []
+    _group, rungs = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    assert rungs[0].state == "resting"
 
 
 async def test_over_the_per_order_cap_goes_to_the_human_card(db_session):

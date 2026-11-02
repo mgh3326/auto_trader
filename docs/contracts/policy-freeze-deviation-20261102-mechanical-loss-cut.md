@@ -11,7 +11,7 @@ freeze_epoch_id: UNKNOWN
   # No freeze-epoch value was supplied with this decision. The buy-gate shadow
   # epoch is a separate axis and is not substituted here.
 change_id: rob1460-mechanical-loss-cut-20261102
-pr_number: TBD_ON_PR
+pr_number: 2266
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: >-
   Operator chat 2026-11-02, relayed by operator-desk: the brief for hk task 2605

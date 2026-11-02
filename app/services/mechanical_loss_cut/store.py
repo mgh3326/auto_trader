@@ -22,6 +22,7 @@ from app.services.mechanical_loss_cut.rules import (
     ExitPlan,
     LotKey,
     PlanDraft,
+    PriorDecision,
 )
 from app.services.trading_policy_service import policy_version_stamp
 
@@ -180,9 +181,10 @@ class MechanicalLossCutStore:
         )
         return (await self._session.execute(statement)).scalar_one_or_none()
 
-    async def last_decision_sessions(
+    async def prior_decisions(
         self, keys: list[LotKey], *, mode: str
-    ) -> dict[LotKey, date]:
+    ) -> dict[LotKey, PriorDecision]:
+        """Each lot's latest decision, with its count on that plan and stop."""
         if not keys:
             return {}
         rows = await self._session.execute(
@@ -190,19 +192,32 @@ class MechanicalLossCutStore:
                 MechanicalLossCutDecision.account_mode,
                 MechanicalLossCutDecision.market,
                 MechanicalLossCutDecision.symbol,
-                func.max(MechanicalLossCutDecision.session),
+                MechanicalLossCutDecision.session,
+                MechanicalLossCutDecision.plan_version,
+                MechanicalLossCutDecision.stop_price,
             )
             .where(
                 MechanicalLossCutDecision.mode == mode,
                 MechanicalLossCutDecision.symbol.in_({key.symbol for key in keys}),
             )
-            .group_by(
-                MechanicalLossCutDecision.account_mode,
-                MechanicalLossCutDecision.market,
-                MechanicalLossCutDecision.symbol,
-            )
+            .order_by(MechanicalLossCutDecision.id)
         )
-        return {LotKey(row[0], row[1], row[2]): row[3] for row in rows.all()}
+        latest: dict[LotKey, PriorDecision] = {}
+        for account, market, symbol, session_date, version, stop in rows.all():
+            key = LotKey(account, market, symbol)
+            previous = latest.get(key)
+            same = (
+                previous is not None
+                and previous.plan_version == version
+                and previous.stop_price == stop
+            )
+            latest[key] = PriorDecision(
+                session=session_date,
+                plan_version=version,
+                stop_price=stop,
+                cuts_on_this_stop=(previous.cuts_on_this_stop + 1) if same else 1,
+            )
+        return latest
 
     async def live_decision_for_proposal(
         self, proposal_id: uuid.UUID

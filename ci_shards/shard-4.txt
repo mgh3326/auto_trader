@@ -204,6 +204,14 @@ tests/services/kis_websocket/test_parsers.py
 tests/services/market_close_digest/test_service.py
 tests/services/market_events/test_session_calendar.py
 tests/services/market_valuation_snapshots/test_normalized_market_cap.py
+tests/services/mechanical_loss_cut/test_direct_buy_hook.py
+tests/services/mechanical_loss_cut/test_job.py
+tests/services/mechanical_loss_cut/test_live_dispatch_db.py
+tests/services/mechanical_loss_cut/test_live_gate.py
+tests/services/mechanical_loss_cut/test_migration_and_wiring.py
+tests/services/mechanical_loss_cut/test_plans.py
+tests/services/mechanical_loss_cut/test_rules.py
+tests/services/mechanical_loss_cut/test_store_db.py
 tests/services/mock_integration/test_kis_coordination_adapter.py
 tests/services/mock_integration/test_lineage.py
 tests/services/naver_finance/test_investor_detail_cache_wiring.py

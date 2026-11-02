@@ -384,7 +384,7 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - 🔴 **트리거는 가격이다**: 현재성 있는 완결 일봉 종가가 평단·lot 의 기록된 손절가 아래이고, `unrealized_floor_pct` 이하이고, `rising_lookback_sessions` 전 종가보다 높지 않으며, `trigger.family` 조건을 만족해야 한다. 평단 아래이거나 손절가 위인 lot, 손절가 아래여도 상승 중인 lot 은 팔지 않는다. 가격 없음·stale·정지 의심은 절대 발동하지 않는다
 - 🔴 **shadow 는 브로커에 닿지 않는다**: `job`·`store`·`positions`·`rules`·`gate`·`plans` 는 브로커·주문 모듈을 import 하지 않는다(`test_shadow_modules_import_no_broker_or_order_path`). `live` 는 스위치 분기 안에서만 로드한다
 - 🔴 **`loss_cut_intent` 거부를 푸는 것은 결정 행뿐이다**: 이 제안에 묶인 `mode='live'` 행 + 스위치 AND 시장 AND 계정 + `thresholds_confirmed` + `expanded` + 정규장. 제안의 strategy 라벨·`source_asof` 는 입력이 아니다. 거부는 사람 카드로 간다. 🔴 per-order·daily 캡을 올리지 말고, 이 경로의 캡은 `max(limit, current) x quantity` 로 잰다. 손실매도 가드와 다른 모든 비기계식 매도는 불변
-- 🔴 **trigger 당 1회**: `trigger_key` = 계획 버전 + 손절가 + 손절가 아래 연속 구간 시작일. 이 UNIQUE 를 약화하지 마라
+- 🔴 **trigger 당 1회**: `trigger_key` = 계획 버전 + 손절가 + 구간 번호. 같은 구간의 재발동은 직전 결정 행으로 막고(종가가 손절가 이상으로 돌아와야 구간이 끝난다), 동시 실행은 UNIQUE 가 막는다. 키에 봉 창에서 읽은 날짜를 넣거나 이 UNIQUE 를 약화하지 마라
 - 파킹 종목은 어느 계좌든 자르지 않고 계획도 만들지 않는다. 미체결 매도·활성 매도 제안·보호 수량 P 는 먼저 뺀다. 읽기 실패는 unknown 이며 자르지 않는다
 - 계획 쓰기는 `LOT_EXIT_PLAN_WRITE_ENABLED` 뒤, 브로커 수락 후, fail-open 이다. 매수 경로의 주문 결과를 절대 바꾸지 않는다. `add_verdict` 는 기록일 뿐 매수를 막지 않는다
 - 계획 없는 lot 은 정책 기본값으로 `backfilled=true` 계획을 받고 따로 보고된다. live 는 `live_include_backfilled` 없이는 거부한다

@@ -125,6 +125,7 @@ AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("target_evidence_missing", "replace·cancel 대상 주문 증거"),
     ("order_type_not_limit", "limit 주문 여부"),
     ("loss_cut_intent", "손절 의도 아님"),
+    ("mechanical_loss_cut_refused", "기계식 손절 게이트 통과"),
     ("exit_intent_present", "청산 의도 아님"),
     ("cash_funding_boundary_failed", "cash_funding 필수 증거·부족액·수량 경계"),
     ("cash_funding_cumulative_cap_exceeded", "cash_funding KST 일일 누적 상한 잔여"),

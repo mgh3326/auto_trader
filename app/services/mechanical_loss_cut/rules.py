@@ -49,6 +49,7 @@ SKIP_REASONS: frozenset[str] = frozenset(
         "protected_unknown",
         "covered_by_open_sell",
         "below_one_unit",
+        "already_cut_this_run",
         "cooldown",
     }
 )
@@ -201,6 +202,16 @@ class CutDecision:
     currency: str
     episode_start: date | None
     details: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class PriorDecision:
+    """The lot's latest recorded decision, and how many share its plan and stop."""
+
+    session: date
+    plan_version: int
+    stop_price: Decimal
+    cuts_on_this_stop: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,10 +564,13 @@ def episode_start(bars: list[Bar], stop: Decimal) -> date | None:
     return None
 
 
-def trigger_key(plan: ExitPlan, start: date | None) -> str:
-    """One lot gets one cut per plan version, stop level and below-stop run."""
-    run = start.isoformat() if start is not None else "before_window"
-    return f"v{plan.version}:{text(plan.stop_price)}:{run}"
+def trigger_key(plan: ExitPlan, run_number: int) -> str:
+    """One lot gets one cut per plan version, stop level and below-stop run.
+
+    A run number, not a date. Any date read from the bar window would change once
+    that date rolled off the window, and the same run would then fire again.
+    """
+    return f"v{plan.version}:{text(plan.stop_price)}:r{run_number}"
 
 
 def evaluate_lot(
@@ -568,7 +582,7 @@ def evaluate_lot(
     price_fresh: bool,
     open_sell_quantity: Decimal | None,
     protected_quantity: Decimal | None,
-    last_decision_session: date | None,
+    prior_decision: PriorDecision | None,
 ) -> CutDecision | Skip:
     """Decide one lot. Every path that lacks evidence ends in a ``Skip``."""
     market = lot.key.market
@@ -660,24 +674,36 @@ def evaluate_lot(
     if intended <= 0:
         return Skip("below_one_unit", {"capped": text(capped)})
 
-    if last_decision_session is not None:
-        since = sum(1 for bar in bars if bar.session > last_decision_session)
-        if since < params.cooldown_sessions:
-            return Skip("cooldown", {"sessions_since_last": str(since)})
+    run_number = 1
+    if prior_decision is not None:
+        since = [bar for bar in bars if bar.session > prior_decision.session]
+        if (
+            prior_decision.plan_version == plan.version
+            and prior_decision.stop_price == plan.stop_price
+        ):
+            # Only a close back at or above the stop ends a run. With no such
+            # close in the bars read, this is still the run already cut.
+            if not any(bar.close >= plan.stop_price for bar in since):
+                return Skip(
+                    "already_cut_this_run",
+                    {"last_decision": prior_decision.session.isoformat()},
+                )
+            run_number = prior_decision.cuts_on_this_stop + 1
+        if len(since) < params.cooldown_sessions:
+            return Skip("cooldown", {"sessions_since_last": str(len(since))})
 
     limit = bounded_limit_price(
         market,
         price=close,
         slippage_pct=Decimal(str(params.order.max_slippage_pct)),
     )
-    start = episode_start(bars, plan.stop_price)
     return CutDecision(
         key=lot.key,
         plan_id=plan.id,
         plan_version=plan.version,
         backfilled=plan.backfilled,
         trigger_family=trigger.family,
-        trigger_key=trigger_key(plan, start),
+        trigger_key=trigger_key(plan, run_number),
         session=last.session,
         close=close,
         stop_price=plan.stop_price,
@@ -690,7 +716,7 @@ def evaluate_lot(
         intended_limit_price=limit,
         intended_notional=limit * intended,
         currency=lot.currency,
-        episode_start=start,
+        episode_start=episode_start(bars, plan.stop_price),
         details={**facts, **family_details, "position_source": lot.position_source},
     )
 
