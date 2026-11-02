@@ -49,6 +49,11 @@ def _recommended_action(failure_code: str) -> str:
             "다음 주문 가능 세션에서 order_proposal_redispatch(dry_run=true)로 "
             "재검증한 뒤 재발송하세요."
         )
+    if "STALE_PENDING" in upper:
+        return (
+            "재발송 금지. 카드가 이미 게시됐을 수 있습니다. Telegram 과 제안 상태를 "
+            "확인한 뒤 직접 처리하세요."
+        )
     if "TELEGRAM" in upper or "APPROVAL_" in upper:
         return (
             "Telegram 설정/전송 상태를 복구한 뒤 order_proposal_redispatch"

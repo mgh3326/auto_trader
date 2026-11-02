@@ -157,7 +157,9 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # column (ADD COLUMN IF NOT EXISTS for a persistent test DB) and the guard
 # triggers, loaded from the production migration 20261102_rob1470_sleeves so the
 # DB tests run its exact DDL.
-SCHEMA_BOOTSTRAP_VERSION = 63
+# v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
+# are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
+SCHEMA_BOOTSTRAP_VERSION = 64
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
