@@ -23,7 +23,7 @@ Implementation and contract: `app/services/dots_history_export/`,
 - Window: `[2026-05-01T00:00:00Z, 2026-11-03T00:00:00Z)`, `end: exclusive`.
 - Code commit `3bd2d2d7615109fdf2d37a51cf1bfe7e4ef88170`, `code_dirty: false`.
 - Read: one `REPEATABLE READ READ ONLY` transaction against production
-  (`100.122.100.56:25432/auto_trader`). No broker call, no write.
+  (production database, read-only). No broker call, no write.
 - `manifest.json` sha256 `a4a12e422c02529a6038dcefcd3f1f1b35937bcb710ac551df3613490190e2fb`.
 - Leak check: passed on the rows and again on the written files. Rules kept:
   `account_number`, `bearer`, `credential_assignment`, `jwt`, `token_prefix`, plus the
