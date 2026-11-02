@@ -21,6 +21,9 @@ from app.services.mechanical_loss_cut.rules import CutDecision, LotKey
 from app.services.mechanical_loss_cut.store import MechanicalLossCutStore
 from app.services.order_proposals import dispatch as dispatch_module
 from app.services.order_proposals import revalidation as revalidation_module
+from app.services.order_proposals.approval_window import (
+    evaluate_approval_window_boundary,
+)
 from app.services.order_proposals.auto_approve import AutoApproveLimits
 from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_rejections,
@@ -233,6 +236,16 @@ async def test_a_mechanical_cut_clears_the_real_revalidation_path(db_session):
         }
 
     async def revalidate(*, service, proposal_id, now, eligibility_gate):
+        # Dispatch passes the stamp only to the real function, by identity. This
+        # wrapper exists to swap the order seam, so it derives the same stamp.
+        group, rungs = await service.get_proposal(proposal_id)
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=allow_known_session,
+            now_fn=lambda: NOW,
+            require_policy_stamp=False,
+            rungs=rungs,
+        )
         return await revalidate_and_submit(
             service=service,
             proposal_id=proposal_id,
@@ -240,6 +253,7 @@ async def test_a_mechanical_cut_clears_the_real_revalidation_path(db_session):
             eligibility_gate=eligibility_gate,
             place_order_fn=place_order,
             window_evaluator=allow_known_session,
+            expected_policy_stamp=window.policy_stamp,
             now_fn=lambda: NOW,
         )
 

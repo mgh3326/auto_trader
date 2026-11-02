@@ -305,6 +305,7 @@ async def test_held_lots_and_open_sells_come_from_the_database() -> None:
                 account_mode="kis_live",
                 broker="kis",
                 status="accepted",
+                lifecycle_state="accepted",
                 filled_qty=Decimal("1"),
             )
         )
