@@ -1,0 +1,3 @@
+# Research only; never add ML to the application's runtime dependencies.
+lightgbm==4.6.0
+scikit-learn==1.7.2
