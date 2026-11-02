@@ -37,6 +37,8 @@ class Asset(BaseModel):
     status: str
     tradable: bool
     asset_class: str = Field(alias="class", default="us_equity")
+    min_order_size: Decimal | None = None
+    min_trade_increment: Decimal | None = None
 
     model_config = {"populate_by_name": True}
 

@@ -94,6 +94,22 @@ paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유
 - **CLI**: `scripts/binance_futures_demo_smoke.py` (default-disabled, 5 modes)
 - **런북**: `docs/runbooks/binance-futures-demo-smoke.md`
 
+### ROB-1474 crypto paper 수동 에피소드
+
+`app/services/mock_strategy/crypto_*`와 `scripts.mock_strategy`의 crypto venue
+분기. Binance USDT spot delisted-complete 패널에서 고정
+`relative_volatility_20` top-10 long/short, 기본 3일·이름당 1,000 USDT다.
+공통 US PR의 `review.mock_strategy_orders`와 recorder만 쓴다.
+모든 쓰기는 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
+일자별 배치 membership·입력 해시를 고정하고 partial close는 자기 체결 잔량만
+새 leg로 닫는다. dust는 열린 잔량이며 gross 실현 P&L은 청산 수량만이다.
+`MOCK_STRATEGY_ENABLED`와 기존 venue gate·confirm은 기본 off/명시 조건이다.
+기존 demo host·예상 credential fingerprint, Alpaca clean 예상 계정 검증을 유지한다.
+선물 isolated·1x·one-way 읽기 검증, cover reduceOnly 필수. 사이징 상한은
+운영자 2026-11-02 결정의 이 경로만 제거하며 venue filter와 다른 전략 상수는
+유지한다. 스케줄 등록·실거래·배포 없음. 런북:
+`docs/runbooks/rob1474-crypto-paper.md`.
+
 ### Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 
 실시간 1m→4h bar 집계(H1 오프라인 builder `research/nautilus_scalping/rob974_features.py`의
