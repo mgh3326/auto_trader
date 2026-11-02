@@ -1360,9 +1360,9 @@ async def kis_mock_mutation_authority(
 class KISMockCoordinationRoute:
     """Everything :func:`coordinate_kis_mock_mutation` needs for one real send.
 
-    A lane that cannot assemble this — because no durable dispatch-evidence store
-    exists and the canonical registry row has no bound identity — reports
-    ``AUTO_READY_BLOCKED_BY_LIFECYCLE`` instead of inventing one.
+    The lane store supplies durable ports. Schema application, an effective mock
+    fingerprint binding and separately authorized activation bindings are still
+    prerequisites; unavailable authority is never synthesized.
     """
 
     envelope: LineageEnvelope
@@ -1373,10 +1373,9 @@ class KISMockCoordinationRoute:
     lineage_factory: MockLineageFactory | None = None
 
 
-# The lane's route provider. It is ``None`` in production: see
-# ``docs/contracts/rob-1263-kis-coordination-adapter.md`` §6 for the two
-# independent blockers that keep it unset. Operations installs one only after
-# both are resolved, which is a separate, approval-gated decision.
+# The lane's route provider remains unset. The evidence-store amendment supplies
+# ports and fingerprint configuration; operations still verifies schema and signed
+# activation bindings before installing a route (contract §6 and §10).
 _KIS_MOCK_COORDINATION_ROUTE_PROVIDER: (
     Callable[..., KISMockCoordinationRoute | None] | None
 ) = None
