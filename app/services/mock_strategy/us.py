@@ -120,6 +120,13 @@ def plan_orders(
                         "horizon": selection.horizon,
                         "baseline": BASELINES[selection.horizon],
                         "input_sha256": selection.input_sha256,
+                        **(
+                            {
+                                "universe_observed_at": selection.universe_observed_at.isoformat()
+                            }
+                            if selection.universe_observed_at is not None
+                            else {}
+                        ),
                         "role": "entry",
                         "notional_per_name": str(notional),
                         "top_n": len(selection.up),

@@ -89,13 +89,34 @@ def load_binance_panel(root: Path, asof: date) -> pd.DataFrame:
     ]
 
 
-def daily_lists(root: Path, asof: date, *, horizon: int = 3) -> dict:
+def daily_lists(
+    root: Path | None, asof: date, *, horizon: int = 3, cache_root: Path | None = None
+) -> dict:
     if horizon not in HORIZONS:
         raise ValueError("horizon must be 1, 3, 5 or 10")
-    bars = load_binance_panel(root, asof)
+    meta: dict | None = None
+    if cache_root is not None:
+        from research.stock_selection.io import read_bars
+
+        bars, meta = read_bars(cache_root, "crypto")
+        if meta.get("producer") != "mock-data-refresh/v1":
+            raise ValueError("crypto cache requires mock_data_refresh provenance")
+        if date.fromisoformat(meta["observation_date"]) > asof + timedelta(days=1):
+            raise ValueError("future universe observation")
+        if date.fromisoformat(meta["data_cutoff"]) != asof:
+            raise ValueError("universe cutoff must match requested crypto candle")
+    else:
+        if root is None:
+            raise ValueError("panel root required")
+        bars = load_binance_panel(root, asof)
     payload = make_lists(
         bars, market="crypto", asof=asof.isoformat(), model=BASELINE, top_n=10
     )
+    if meta is not None:
+        payload["universe_observed_at"] = meta["fetched_at"]
+        payload["prediction_at"] = max(
+            pd.Timestamp(payload["prediction_at"]), pd.Timestamp(meta["fetched_at"])
+        ).isoformat()
     payload["panel_venue"] = PANEL_VENUE
     payload["selection_basis"] = "ROB-1474 report #2271, descriptive Upbit diagnostic"
     return payload

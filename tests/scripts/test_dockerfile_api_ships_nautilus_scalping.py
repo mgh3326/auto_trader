@@ -52,7 +52,11 @@ ENTRY_SCRIPTS = tuple(
         p.relative_to(REPO_ROOT).as_posix()
         for p in REPO_ROOT.glob("scripts/binance_h5_*.py")
     )
-) + ("scripts/mock_strategy.py", "scripts/mock_strategy_crypto.py")
+) + (
+    "scripts/mock_strategy.py",
+    "scripts/mock_strategy_crypto.py",
+    "scripts/mock_data_refresh.py",
+)
 RESEARCH_MODULE = "research.nautilus_scalping.rob974_features"
 SCRIPT_COPY = "COPY research/nautilus_scalping/ ./research/nautilus_scalping/"
 PAPER_RESEARCH_FILES = {
