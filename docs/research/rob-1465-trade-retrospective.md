@@ -21,28 +21,30 @@ Implementation and contract: `app/services/dots_history_export/`,
 - Drive: **https://drive.google.com/drive/folders/1xYcTDCcNgx4oS_N0PN_OKEE_UoWA8bM3**
   (`auto_trader/dots/2026-11-02-real`).
 - Window: `[2026-05-01T00:00:00Z, 2026-11-03T00:00:00Z)`, `end: exclusive`.
-- Code commit `3bd2d2d7615109fdf2d37a51cf1bfe7e4ef88170`, `code_dirty: false`.
+- Code commit `1d8187d6a4bf03c992b0a23126ca853be392f630`, `code_dirty: false`.
+- Snapshot read at 2026-11-02 05:44Z (production moves between runs; a later export is a
+  later snapshot, not a corrected one).
 - Read: one `REPEATABLE READ READ ONLY` transaction against production
   (production database, read-only). No broker call, no write.
-- `manifest.json` sha256 `a4a12e422c02529a6038dcefcd3f1f1b35937bcb710ac551df3613490190e2fb`.
+- `manifest.json` sha256 `ce8550a6c7e1c04e85c94395692b9badcfe0e0315eda4a1d474f175b46e23f46`.
 - Leak check: passed on the rows and again on the written files. Rules kept:
   `account_number`, `bearer`, `credential_assignment`, `jwt`, `token_prefix`, plus the
   operator's deny-values list (6 account identifiers read from `.env.prod`, never printed).
 
 | Table | Rows | CSV bytes | CSV sha256 (first 16) | Parquet bytes | Parquet sha256 (first 16) |
 | --- | ---: | ---: | --- | ---: | --- |
-| `kis_live_order_ledger` | 251 | 117445 | `9bf402cf45a9bca6` | 56399 | `bd00975f9f246b09` |
-| `live_order_ledger` | 437 | 241126 | `b8b72e06ac142b11` | 104123 | `a028ec568e0267d0` |
-| `toss_live_order_ledger` | 1128 | 622824 | `8de7428f7ed9b042` | 277595 | `0315d0391d069bd7` |
-| `kis_mock_order_ledger` | 76 | 26839 | `f9700616783c8b80` | 22573 | `8c7bb344e31ed86c` |
+| `account_balance_daily` | 7 | 938 | `afc7505f14c5a8cf` | 4178 | `04f0420aa54fd6b6` |
 | `alpaca_paper_order_ledger` | 45 | 16866 | `b3d3bbc488bcc7a7` | 18005 | `f657eed2c7cbc558` |
+| `execution_ledger` | 3682 | 1424029 | `bb36ad39086e451a` | 340742 | `665f96b1ad660377` |
+| `kis_live_order_ledger` | 251 | 117445 | `9bf402cf45a9bca6` | 56399 | `bd00975f9f246b09` |
+| `kis_mock_order_ledger` | 76 | 26839 | `f9700616783c8b80` | 22573 | `8c7bb344e31ed86c` |
+| `live_order_ledger` | 437 | 241126 | `b8b72e06ac142b11` | 104123 | `a028ec568e0267d0` |
+| `order_proposal_rungs` | 1458 | 638769 | `27681bcbb66aecce` | 287624 | `bde1b36c3cf8cd56` |
+| `order_proposals` | 1440 | 651118 | `88b5f6a1a0443dea` | 267047 | `2afac79a85abea82` |
 | `paper_pending_orders` | 58 | 22994 | `ed7224d66c94a61e` | 18805 | `caab43269832c3b8` |
 | `paper_trades` | 35 | 14356 | `f792b25c9c15cffa` | 16105 | `030b40043e8c3933` |
-| `execution_ledger` | 3682 | 1565628 | `91840453d7c54ed2` | 357880 | `5d2819d48f7f4fae` |
-| `order_proposals` | 1438 | 650483 | `861662c019d24a63` | 266871 | `0b2321c8c2b35148` |
-| `order_proposal_rungs` | 1456 | 637935 | `8002ebac3d9ef1ff` | 287163 | `72f3b022ab238c1c` |
-| `account_balance_daily` | 7 | 938 | `afc7505f14c5a8cf` | 4178 | `04f0420aa54fd6b6` |
-| **total** | **8613** | | | | |
+| `toss_live_order_ledger` | 1129 | 623255 | `b84622d1abf1415f` | 277820 | `21defd57314620db` |
+| **total** | **8618** | | | | |
 
 The full sha256 of every file is in the appendix. `account_balance_daily` is 7 rows
 because only the DB paper simulator has a daily cash table; the seven broker accounts
@@ -52,12 +54,12 @@ carry `available = false` markers.
 
 | Column | Table | Meaning |
 | --- | --- | --- |
-| `lot_ref`, `lot_link_kind`, `lot_opened_at_utc`, `lot_cost_basis`, `lot_basis_kind`, `linked_fill_ref` | `execution_ledger` | FIFO lot walk. `opens_lot` / `adds_to_lot` / `partial_sell` / `full_sell` / `unlinked`. `lot_basis_kind = period_start_seed` restarts the lot at the 2026-09-29 cutover, which is the period-start cost basis. |
+| `lot_ref`, `lot_link_kind`, `lot_opened_at_utc`, `lot_cost_basis`, `lot_basis_kind`, `linked_fill_ref` | `execution_ledger` | FIFO lot walk. `opens_lot` / `adds_to_lot` / `partial_sell` / `full_sell` / `unlinked`. `lot_basis_kind = period_start_seed` restarts the lot at an opening import, which is the period-start cost basis. The import is 45 rows on 2026-05-10 (KR 14, US 20, crypto 11) and 6 KR rows on 2026-09-29; it is not a single cutover and its date is when the position was imported, not when it was acquired. |
 | `first_fill_at_utc`, `first_fill_at_local` | every order table | First in-effect fill, next to the existing last-fill time. |
 | `reference_price`, `reference_price_asof_utc`, `reference_price_source`, `distance_above_reference_pct` | `order_proposal_rungs` | For crypto sells: the last completed UTC daily close before the order was created (`public.crypto_candles_1d`) and the limit's distance above it. |
 
-Reference-price coverage: 131 crypto sell rungs in the window; 131 have a
-`reference_price_source` (see §3.3 for the source split).
+Reference-price coverage: every crypto sell rung in the window has a
+`reference_price_source` (§3.3).
 
 ### Drive visibility
 
@@ -80,6 +82,27 @@ the same directory.
 **Fills.** `execution_ledger.csv`, `superseded_duplicate = false` only, live accounts only
 (`kis_live`, `toss_live`, `upbit_live`), quantity from `incremental_qty`, price from
 `fill_price`. Seeds (`is_seed = true`) set a lot, they are not executions.
+
+**How the two duplicate sources are reconciled.** One execution can be written twice: the
+websocket monitor sees the exchange notice and the reconciler sees the broker's order row.
+Three rules keep the quantity right, and the export's lot walk follows exactly the rows
+they leave:
+
+1. A `websocket` row is provisional. If any authoritative row (`reconciler` or
+   `manual_import`) shares its order identity — broker, account mode, instrument, symbol,
+   side, currency, normalized order number and, for KIS, the trading day — the websocket
+   row is `superseded_duplicate = true` and is not counted (ROB-1379).
+2. A cumulative writer (KIS reconciler rows, Upbit aggregate rows with ledger `fill_seq` 0)
+   contributes `incremental_qty`: the rise over the same source's earlier high-water mark
+   for that order, so a re-reported running total is never counted twice. A repeated total
+   adds 0; a dip adds nothing.
+3. A non-seed `manual_import` row has no defined quantity basis, so it carries no increment
+   and does not enter the walk. A `SEED-` row is a whole position and resets the lot.
+
+The export's lot columns are therefore computed **on the non-superseded rows only**, and a
+superseded row carries `lot_link_kind = unlinked` with empty lot columns. A sell that is
+larger than the lots the window can see is also `unlinked`, so the overhang is countable
+rather than folded into a lot it does not fit.
 
 **Price screen.** Following ROB-1439, a fill priced more than 30% away from that day's
 close is not treated as a trade (a legacy or mis-mapped row). 3 of 2164 live fills were
@@ -138,15 +161,19 @@ Three things follow from the columns, not from an opinion:
 Strategy tags are now plain text. Long free-text thesis tags are grouped as *session
 thesis*; the named rules are the ASCII tags the tooling writes.
 
-| Market | Rule family | Closed | Open | Mean lot return | Mean excess |
+Means here are **lot-weighted** (a family's lots, not the average of its tags' averages), so
+they add up to the market table in §3.1. An unweighted mean of tag means is a different
+statistic and is not used.
+
+| Market | Rule family | Closed | Open | Lot-weighted mean return | Lot-weighted mean excess |
 | --- | --- | ---: | ---: | ---: | ---: |
-| KR | session thesis (free text) | 29 | 37 | -5.69% | +15.94pp |
+| KR | session thesis (free text) | 29 | 37 | -8.55% | +14.32pp |
 | KR | `underwater_support_net` (averaging-down tier) | 0 | 1 | -41.43% | -17.86pp |
-| KR | cash parking | 0 | 2 | +0.02% | +16.18pp |
+| KR | cash parking | 0 | 2 | +0.02% | +16.40pp |
 | KR | `pullback_starter_ladder` | 1 | 0 | +15.27% | +16.07pp |
-| US | session thesis (free text) | 8 | 1 | +3.96% | +3.60pp |
+| US | session thesis (free text) | 8 | 1 | +12.82% | +11.42pp |
 | US | `oversold_quality_kis_deploy` | 1 | 0 | +18.56% | +16.40pp |
-| US | cash parking | 0 | 2 | +0.12% | +1.83pp |
+| US | cash parking | 0 | 2 | +0.16% | +1.91pp |
 | Crypto | session thesis (free text) | 13 | 1 | -1.34% | +4.73pp |
 
 KR's one `underwater_support_net` lot is -41.4% and 17.9pp behind the index. That is the
@@ -158,11 +185,15 @@ operator decided to suspend on 2026-11-02.
 `terminal_outcome` over submitted live orders (not `not_submitted`). A `partial` counts as
 filled.
 
-| Market | Submitted | Filled | Fill rate |
-| --- | ---: | ---: | ---: |
-| KR | 937 | 188 | 20.06% |
-| US | 723 | 129 | 17.84% |
-| Crypto | 156 | 45 | 28.85% |
+| Market | Submitted | Filled | Fill rate | Excluding `operation_kind = cancel` |
+| --- | ---: | ---: | ---: | ---: |
+| KR | 938 | 188 | 20.04% | 188 / 917 = 20.50% |
+| US | 723 | 129 | 17.84% | 129 / 720 = 17.92% |
+| Crypto | 156 | 45 | 28.85% | 45 / 156 = 28.85% |
+
+A cancel is not an intent to buy, so the right-hand column is the closer denominator. It is
+still not one row per order: a Toss replace chain adds a row per operation, and that is not
+normalized here.
 
 The rule that dominates the submitted count is the TRIM/resting sell family
 (`sell.trim_preplace*`), which is a resting limit by design, so the blended rate is not a
@@ -170,7 +201,7 @@ statement about buy style. Named buy cohorts with n ≥ 10:
 
 | Market | Tag | Submitted | Fill rate |
 | --- | --- | ---: | ---: |
-| KR | `underwater_support_net` | 101 | 0.99% |
+| KR | `underwater_support_net` | 101 (filled 1, open 53, expired 47) | 0.99% |
 | KR | `discovery_new_entry_mean_reversion` | 15 | 0.00% |
 | US | (untagged buys) | 72 | 9.72% |
 
@@ -182,13 +213,16 @@ the window have `reference_price_source = crypto_candles_1d_close`; the median d
 **+0.90%** above the last completed close. Rung `state` is the authoritative ending
 (`order_proposal_rungs.csv`, `state` and `filled_qty`).
 
-| Band | Rungs | Filled | Fill rate | Resting | Cancelled | Unverified |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| below +1% | 66 | 52 | 78.8% | 11 | 0 | 0 |
-| +1% to +3% | 27 | 18 | 66.7% | 7 | 1 | 1 |
-| +3% to +8% | 26 | 19 | 73.1% | 3 | 1 | 2 |
-| +8% to +16% | 5 | 2 | 40.0% | 0 | 1 | 2 |
-| +16% or more | 7 | 2 | 28.6% | 0 | 1 | 4 |
+| Band | Rungs | Filled | Fill rate | Resting | Cancelled | Unverified | Superseded |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| below +1% | 66 | 52 | 78.8% | 11 | 0 | 0 | 3 |
+| +1% to +3% | 27 | 18 | 66.7% | 7 | 1 | 1 | 0 |
+| +3% to +8% | 26 | 19 | 73.1% | 3 | 1 | 2 | 1 |
+| +8% to +16% | 5 | 2 | 40.0% | 0 | 1 | 2 | 0 |
+| +16% or more | 7 | 2 | 28.6% | 0 | 1 | 4 | 0 |
+
+The columns add to the rung count in every band (66 = 52+11+3, 26 = 19+3+1+2+1). A
+`superseded` rung is one the proposal replaced; it is not a fill and not an open order.
 
 The +8% and above bands fill at 28.6–40.0% against 66.7–78.8% below +8%, which is the same
 direction ROB-1458 measured (44.4% against 70.4%) and supports giving those rungs an
@@ -410,10 +444,57 @@ python3 ~/work/herdr-artifacts/rob-1465-trade-retro/analyze.py \
 
 Tests for the new mode: `uv run pytest tests/services/dots_history_export -m unit`.
 
+## 8. Review response (ROB-1466)
+
+dots found a real defect in the first export: the lot walk ran over every in-window fill
+and only then marked `superseded_duplicate`, so a reader who excluded the duplicates got
+cost bases that had already absorbed the duplicate's price. 1,441 of 1,887 comparable rows
+disagreed with an independent non-superseded replay, and 9 sells exceeded the quantity
+left after de-duplication.
+
+**Fixed in the export** (`app/services/dots_history_export/projection.py`): the walk now
+receives the non-superseded rows only; a superseded row carries `lot_link_kind = unlinked`
+and empty lot columns; a sell larger than the visible lots is also `unlinked`. A test
+(`test_a_superseded_fill_never_moves_the_lot_cost_basis`) plants a websocket duplicate at
+a different price and asserts the lot keeps the authoritative price — with the old walk it
+would be the average of the two. Two more tests cover the over-sized sell and the rule that
+no active row links to a superseded one.
+
+**Re-export and effect.** The export was re-run read-only at commit `1d8187d6a`; §1 and the
+appendix are its numbers. Comparing the two exports row by row (same account, symbol, fill
+time, side, quantity and order ref): **1,470 of 2,164 active rows changed cost basis, 694
+did not**, no active row links to a superseded row (was 22), and 146 active rows are
+`unlinked` and countable.
+
+**The retrospective numbers did not change.** `analyze.py` reads `execution_ledger.csv`,
+filters `superseded_duplicate = false` and rebuilds FIFO itself; it never consumed the
+export's lot columns. That answers dots' open question: the first report's P&L was not
+computed from the defective columns. The §3 figures are byte-identical after the re-export.
+
+**Other corrections taken from the review.**
+
+- Seeds are not one 2026-09-29 cutover: 45 rows are dated 2026-05-10 (KR 14, US 20, crypto
+  11) and 6 KR rows 2026-09-29. The date is the import date, not the acquisition date.
+- The ladder table now lists `superseded` rungs, so each band's columns add to its rung
+  count.
+- The fill-rate table adds the denominator with `operation_kind = cancel` removed, because
+  a cancel is not a buy intent.
+- §3.2 means are now explicitly lot-weighted, so they add up to §3.1. The earlier table was
+  an unweighted mean of tag means, which is why dots could not reproduce it from the full
+  report.
+
+**Still open** (from the same review, not fixed here): fees, taxes, distributions, FX and
+real cash balances are absent, so a net-of-cost round trip cannot be computed; 238 sells
+have no lot in the window; D+20 is not mature for the two `underwater_support_net` fills;
+a rung's `reference_price` is the previous UTC daily close, not a contemporaneous quote;
+and the ledger's own `filled_qty` disagrees with the canonical first fill for 64 of the 93
+filled rungs, so rung state and ledger quantity must not be mixed. The canary design in
+§4 was not changed in this pass; the review's objections to its stop rule, shadow/live
+interference and small-sample scale-up remain open for the operator.
 
 ## Appendix: full sha256 of every exported file
 
-`manifest.json` itself: `a4a12e422c02529a6038dcefcd3f1f1b35937bcb710ac551df3613490190e2fb`
+`manifest.json` itself: `ce8550a6c7e1c04e85c94395692b9badcfe0e0315eda4a1d474f175b46e23f46`
 
 | File | Bytes | sha256 |
 | --- | ---: | --- |
@@ -421,21 +502,21 @@ Tests for the new mode: `uv run pytest tests/services/dots_history_export -m uni
 | `account_balance_daily.parquet` | 4178 | `04f0420aa54fd6b68382f77372bafc0f9e3a12b7b5710be1da84ca8ff208196c` |
 | `alpaca_paper_order_ledger.csv` | 16866 | `b3d3bbc488bcc7a7e6b1aadcdb0cc834aeef18d193c1541631dd329ead265840` |
 | `alpaca_paper_order_ledger.parquet` | 18005 | `f657eed2c7cbc558bb7052f51efe86570d6ab591a9df14b0e31198b65904b6fb` |
-| `execution_ledger.csv` | 1565628 | `91840453d7c54ed293141f51d6a15ced6eda19fbdcd80c4a19f09bb9f4129ed7` |
-| `execution_ledger.parquet` | 357880 | `5d2819d48f7f4fae06d65ef7f5150808cae8b8d67c5ab20b9aadaeab9a8db151` |
+| `execution_ledger.csv` | 1424029 | `bb36ad39086e451a448860f3601cec5b89c29b35da272aefb58170d460fe5a5e` |
+| `execution_ledger.parquet` | 340742 | `665f96b1ad6603773353dc08b275c76487d62797c39fde69f147f1b0c8a3bfc1` |
 | `kis_live_order_ledger.csv` | 117445 | `9bf402cf45a9bca6d6c2f7a16e96e3e80caea2a65f590bd0c1c96008a4f98b1f` |
 | `kis_live_order_ledger.parquet` | 56399 | `bd00975f9f246b09f3f9ebb93d0dbb5783489370a58c59a10fcd6aa57c913182` |
 | `kis_mock_order_ledger.csv` | 26839 | `f9700616783c8b801924a33035c57b1f470649e4a5f75608880a011c703a521d` |
 | `kis_mock_order_ledger.parquet` | 22573 | `8c7bb344e31ed86c5faed27ba4f6b5ede113d4a967b78b874291ff30d46fb23a` |
 | `live_order_ledger.csv` | 241126 | `b8b72e06ac142b111aad9738fd954f085f780c8d0b94e8b61ff2c0ad5889b8b1` |
 | `live_order_ledger.parquet` | 104123 | `a028ec568e0267d024a9afa22c1a28ef64126d0eab03ce05227626473c2081b7` |
-| `order_proposal_rungs.csv` | 637935 | `8002ebac3d9ef1ff9c3a9370dc59badb14761c0f3c2e1b2676bf8d9c5fd790b4` |
-| `order_proposal_rungs.parquet` | 287163 | `72f3b022ab238c1cf171771e280a51471c67cd79674c59ce06cb63e2c557ebe0` |
-| `order_proposals.csv` | 650483 | `861662c019d24a63bae87a6f9c4818ec551d63a4770ffcee925979ded2b651d2` |
-| `order_proposals.parquet` | 266871 | `0b2321c8c2b35148e4f3270bcafa23270c49ed1275449306116799e11a767abd` |
+| `order_proposal_rungs.csv` | 638769 | `27681bcbb66aecce188733bde4e917956ddd468d8d42981574035f172237d1c4` |
+| `order_proposal_rungs.parquet` | 287624 | `bde1b36c3cf8cd564ddb2b1b54e4d8726d635d94a13b969a35c2564a33f015c6` |
+| `order_proposals.csv` | 651118 | `88b5f6a1a0443deac36c46e59269badfb1bd6fd7ff8811d7a24f85892d0330f0` |
+| `order_proposals.parquet` | 267047 | `2afac79a85abea82a8fcfede93e4584514bfc91320c4f162177ea2833adddcdf` |
 | `paper_pending_orders.csv` | 22994 | `ed7224d66c94a61e0fdf4a62df8bde397c0d54848faeff7c897c57227e7306a4` |
 | `paper_pending_orders.parquet` | 18805 | `caab43269832c3b8105633ff0e94b4dd2a8dbf2975b5fcb9bd13e73725d7dc9a` |
 | `paper_trades.csv` | 14356 | `f792b25c9c15cffa6ee2b2f35a496decb06cc1c2bec84583ceef43859bcc4448` |
 | `paper_trades.parquet` | 16105 | `030b40043e8c3933670bd6b556dce96a986b9bca1a5219744e8c47b482298490` |
-| `toss_live_order_ledger.csv` | 622824 | `8de7428f7ed9b042ccdc2fcab6d5b41a8b33001f72da91d69a61b3f06aba9628` |
-| `toss_live_order_ledger.parquet` | 277595 | `0315d0391d069bd77b14f8206e07a6b535056af7b17ca1bc6e7da4b7c555846e` |
+| `toss_live_order_ledger.csv` | 623255 | `b84622d1abf1415f3023da4b60ee536aebb6a7c262e6ba7b2e1da0c4d19e4361` |
+| `toss_live_order_ledger.parquet` | 277820 | `21defd57314620db29c1abfa7100bdfb0db00d8b01202a94b5ed11807c9b89c7` |
