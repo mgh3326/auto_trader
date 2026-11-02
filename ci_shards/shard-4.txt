@@ -7,6 +7,7 @@ tests/brokers/kis/mock_scalping_ws/test_quote_queue.py
 tests/brokers/kis/test_lean_execution_once.py
 tests/brokers/kis/test_vts_order_pacer.py
 tests/ci/test_call_durations_workflow_entrypoint.py
+tests/ci/test_deploy_gate_workflow.py
 tests/ci/test_required_aggregator.py
 tests/core/test_config_order_proposals.py
 tests/core/test_invest_deep_links.py
@@ -93,6 +94,7 @@ tests/scripts/test_at_job_runner.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
+tests/scripts/test_deploy_ci_gate.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
 tests/scripts/test_deploy_ncp_pull_h3_us_paper.py
 tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py

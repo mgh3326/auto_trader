@@ -1,12 +1,18 @@
 name: Build GHCR images (legacy Docker deploy disabled)
 
 on:
-  push:
+  # Automatic builds wait for the Test workflow of the exact main push SHA.
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
   workflow_dispatch:
+    inputs:
+      allow_unverified:
+        description: "Break-glass: build even if CI gate fails. Non-empty reason is logged; empty means gate enforced."
+        required: false
+        type: string
+        default: ""
   release:
     types: [published]
 
@@ -18,9 +24,22 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # Keep tag publication ordered across automatic, manual and release builds.
+    # Never interrupt a registry push; an older queued run is tip-checked below.
+    concurrency:
+      group: ghcr-${{ github.repository }}-app-publication
+      cancel-in-progress: false
+    # Only trusted main pushes enter the automatic build; the gate judges the six full-suite jobs.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     permissions:
       contents: read
       packages: write
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +49,45 @@ jobs:
             suffix: ""
 
     steps:
+      - name: Resolve build SHA
+        id: sha
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            sha="$WORKFLOW_RUN_SHA"
+          else
+            sha="$EVENT_SHA"
+          fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Refusing to build: '$sha' is not a full 40-hex commit SHA"
+            exit 78
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          persist-credentials: false
+
+      - name: Verify CI gate for exact SHA
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_SHA: ${{ steps.sha.outputs.sha }}
+          ALLOW_UNVERIFIED: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_unverified || '' }}
+        run: |
+          set -euo pipefail
+          args=(--sha "$BUILD_SHA" --repo "$GITHUB_REPOSITORY")
+          if [ -n "$ALLOW_UNVERIFIED" ]; then
+            args+=(--allow-unverified "$ALLOW_UNVERIFIED")
+          fi
+          python3 scripts/deploy_ci_gate.py "${args[@]}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -53,20 +109,43 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check automatic moving tags
+        id: moving
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          BUILD_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          publish=true
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            tip="$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+            if [ "$tip" != "$BUILD_SHA" ]; then
+              publish=false
+              echo "Historical automatic build: publish only the immutable SHA tag, not main/latest."
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
+          # workflow_run runs in default-branch context, so ref/sha/default-branch
+          # defaults would describe the branch tip, not the gated SHA: tag explicitly.
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
+            type=raw,value=main,enable=${{ github.event_name == 'workflow_run' && steps.moving.outputs.publish == 'true' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' && steps.moving.outputs.publish == 'true' }}
+            type=ref,event=branch,enable=${{ github.event_name != 'workflow_run' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=sha,format=short,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=sha-${{ steps.sha.outputs.short }}
+            type=raw,value=latest,enable=${{ github.event_name != 'workflow_run' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
             type=raw,value=production,enable=${{ startsWith(github.ref, 'refs/heads/production') }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.sha.outputs.sha }}
 
       - name: Build and push ${{ matrix.image }} Docker image
         id: build
@@ -76,8 +155,8 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           build-args: |
-            VCS_REF=${{ github.sha }}
-            GITHUB_SHA=${{ github.sha }}
+            VCS_REF=${{ steps.sha.outputs.sha }}
+            GITHUB_SHA=${{ steps.sha.outputs.sha }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -124,12 +203,13 @@ jobs:
       - name: Discord failure notification
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           curl -s -H "Content-Type: application/json" \
             -d "{
               \"embeds\": [{
                 \"title\": \"❌ GHCR 이미지 빌드 실패\",
-                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${GITHUB_SHA::7}\`\n**Author:** ${{ github.actor }}\n**Image:** GHCR push failed\",
+                \"description\": \"**Branch:** \`${{ github.event.workflow_run.head_branch || github.ref_name }}\`\n**Commit:** \`${BUILD_SHA::7}\`\n**Author:** ${{ github.actor }}\n**Image:** GHCR push failed\",
                 \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
                 \"color\": 16711680,
                 \"footer\": {\"text\": \"${{ github.repository }}\"},
