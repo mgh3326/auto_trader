@@ -84,6 +84,7 @@ from .market_quote_snapshot import MarketQuoteSnapshot
 from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
 from .mechanical_loss_cut import LotExitPlan, MechanicalLossCutDecision
+from .mock_strategy import MockStrategyOrder
 from .naver_research_detail_cache import NaverResearchDetailCache
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
 from .order_proposals import (
@@ -204,6 +205,7 @@ from .watch_event_repricing_claims import WatchEventRepricingClaim
 # from .price import PricesLatest, PricesOHLCV, FxRate
 
 __all__ = [
+    "MockStrategyOrder",
     "WatchEventRepricingClaim",
     "FillWatchContextOutcome",
     "Base",

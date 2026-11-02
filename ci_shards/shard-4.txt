@@ -58,6 +58,7 @@ tests/research/rob1391_us_resubmit_shadow/test_parents.py
 tests/research/rob1391_us_resubmit_shadow/test_stats_report.py
 tests/research/rob1391_us_resubmit_shadow/test_toss_preday_sweep.py
 tests/research/stock_selection/test_harness.py
+tests/services/mock_strategy/test_intents.py
 tests/research/strategy_evidence/test_core_calculations.py
 tests/research/strategy_evidence/test_report_public.py
 tests/research/test_adjacent_window_predicate.py
