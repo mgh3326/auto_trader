@@ -400,10 +400,22 @@ def _mirror_prefixes(path: str) -> tuple[str, ...]:
     return tuple(prefixes)
 
 
+def _is_collected_test_name(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    return name.endswith(".py") and (
+        name.startswith("test_") or name.endswith("_test.py")
+    )
+
+
 def _tests_for_path(path: str, lane: str, universe: TestUniverse) -> set[str]:
     if lane == "tests":
         if path in universe.files:
             return {path}
+        # A file pytest would collect but no manifest lists: selecting its
+        # siblings instead would let the PR pass with the file never run. Select
+        # nothing, so it forces run_all and reaches taskiq-smoke's exact cover.
+        if _is_collected_test_name(path):
+            return set()
         selected = _references(path, universe)
         directory = path.rpartition("/")[0]
         # A helper or conftest serves its own directory. tests/ itself is not

@@ -853,6 +853,28 @@ def test_a_test_file_missing_from_the_manifests_forces_run_all() -> None:
 
 
 @pytest.mark.parametrize(
+    "path", ["tests/services/foo/test_new.py", "tests/services/foo/new_test.py"]
+)
+def test_an_unlisted_test_file_beside_a_listed_sibling_forces_run_all(
+    path: str,
+) -> None:
+    """Selecting the sibling would pass the PR with the new file never run."""
+
+    tree = {"tests/services/foo/test_listed.py": "x = 1\n"}
+    result = _select(tree, path)
+    assert result.run_all is True
+    assert result.reason == "unmapped_path"
+    assert result.forcing_paths == (path,)
+
+
+def test_an_unlisted_test_file_named_by_another_test_still_forces_run_all() -> None:
+    tree = {"tests/test_listed.py": 'Path("tests/test_new.py").read_text()\n'}
+    result = _select(tree, "tests/test_new.py")
+    assert result.run_all is True
+    assert result.forcing_paths == ("tests/test_new.py",)
+
+
+@pytest.mark.parametrize(
     "path",
     [
         "app/services/untested.py",
