@@ -21,12 +21,12 @@ Implementation and contract: `app/services/dots_history_export/`,
 - Drive: **https://drive.google.com/drive/folders/1xYcTDCcNgx4oS_N0PN_OKEE_UoWA8bM3**
   (`auto_trader/dots/2026-11-02-real`).
 - Window: `[2026-05-01T00:00:00Z, 2026-11-03T00:00:00Z)`, `end: exclusive`.
-- Code commit `1d8187d6a4bf03c992b0a23126ca853be392f630`, `code_dirty: false`.
+- Code commit `5a3c0535569b1f008eaf26db810061e5861ee93c`, `code_dirty: false`.
 - Snapshot read at 2026-11-02 05:44Z (production moves between runs; a later export is a
   later snapshot, not a corrected one).
 - Read: one `REPEATABLE READ READ ONLY` transaction against production
   (production database, read-only). No broker call, no write.
-- `manifest.json` sha256 `ce8550a6c7e1c04e85c94395692b9badcfe0e0315eda4a1d474f175b46e23f46`.
+- `manifest.json` sha256 `ca85915241e68ae1478783e30e99aa5e251276a8c72ddacb6558089d36cde286`.
 - Leak check: passed on the rows and again on the written files. Rules kept:
   `account_number`, `bearer`, `credential_assignment`, `jwt`, `token_prefix`, plus the
   operator's deny-values list (6 account identifiers read from `.env.prod`, never printed).
@@ -460,7 +460,7 @@ a different price and asserts the lot keeps the authoritative price — with the
 would be the average of the two. Two more tests cover the over-sized sell and the rule that
 no active row links to a superseded one.
 
-**Re-export and effect.** The export was re-run read-only at commit `1d8187d6a`; §1 and the
+**Re-export and effect.** The export was re-run read-only at commit `5a3c0535`; §1 and the
 appendix are its numbers. Comparing the two exports row by row (same account, symbol, fill
 time, side, quantity and order ref): **1,470 of 2,164 active rows changed cost basis, 694
 did not**, no active row links to a superseded row (was 22), and 146 active rows are
@@ -494,7 +494,7 @@ interference and small-sample scale-up remain open for the operator.
 
 ## Appendix: full sha256 of every exported file
 
-`manifest.json` itself: `ce8550a6c7e1c04e85c94395692b9badcfe0e0315eda4a1d474f175b46e23f46`
+`manifest.json` itself: `ca85915241e68ae1478783e30e99aa5e251276a8c72ddacb6558089d36cde286`
 
 | File | Bytes | sha256 |
 | --- | ---: | --- |
