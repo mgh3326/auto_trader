@@ -18,7 +18,7 @@ from research.strategy_evidence.common import ROUND_TRIP_COST
 from research.strategy_evidence.rulesets import VARIANTS, simulate
 from research.trade_retro.canonical import next_open_session
 from research.trade_retro.prices import Bars
-from scripts.paper_forward.run import run
+from scripts.paper_forward.run import main, run
 
 pytestmark = pytest.mark.unit
 FIRST = date(2026, 8, 3)
@@ -525,3 +525,82 @@ def test_shadow_modules_have_no_broker_or_database_imports():
                 )
                 for name in names
             ), path
+
+
+def test_verified_dry_run_can_preview_corrected_inputs_without_overwriting(
+    tmp_path, monkeypatch
+):
+    days, signals, path, args = cli_fixture(tmp_path, monkeypatch)
+    args.dry_run = True
+    write_feed(path, days[0], days[0], signals)
+    first = run(args)
+    files = {
+        p: p.read_bytes()
+        for p in (Path(args.ledger_dir) / "preview").rglob("*")
+        if p.is_file()
+    }
+    corrected = Signal("corrected", "BBB", signals[0].at, D(200))
+    write_feed(path, days[0], days[0], [corrected])
+    second = run(args)
+    assert first["seen"] == ["signal-1"]
+    assert second["seen"] == ["corrected"]
+    assert {p: p.read_bytes() for p in files} == files
+    previews = list((Path(args.ledger_dir) / "preview/crypto").glob("*.json"))
+    assert len(previews) == 2
+    assert run(args) == second
+    assert list((Path(args.ledger_dir) / "preview/crypto").glob("*.json")) == previews
+    assert store.latest(Path(args.ledger_dir), "crypto") == (None, None)
+
+
+def test_signal_selection_uses_resolved_entry_session_after_long_closure(
+    tmp_path, monkeypatch
+):
+    days, signals, path, args = cli_fixture(tmp_path, monkeypatch)
+    args.market = "us"
+    universe = Path(args.universe)
+    universe.write_text(universe.read_text().replace("crypto/", "us/"))
+    # A fixture calendar with a closure longer than the CLI's old 14-day padding.
+    sessions = [days[0] + timedelta(days=i) for i in range(60)]
+    monkeypatch.setattr(
+        inputs,
+        "calendar",
+        lambda market, start, end: [d for d in sessions if start <= d <= end],
+    )
+    old_signal = Signal(
+        "before-closure", "AAA", signals[0].at - timedelta(days=20), D(100), D(90)
+    )
+    write_feed(path, days[0], days[0], [old_signal])
+    path.write_text(path.read_text().replace('"market": "crypto"', '"market": "us"'))
+    report = run(args)
+    assert report["input_state"] == "verified"
+    assert report["seen"] == ["before-closure"]
+    assert report["episodes"][0]["entry_day"] == str(days[0])
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_cli_unverified_run_signals_noncommit_and_can_recover(
+    tmp_path, monkeypatch, capsys, dry_run
+):
+    days, signals, path, args = cli_fixture(tmp_path, monkeypatch)
+    argv = [
+        "--market",
+        args.market,
+        "--asof",
+        args.asof,
+        "--universe",
+        args.universe,
+        "--signals",
+        args.signals,
+        "--ledger-dir",
+        args.ledger_dir,
+    ]
+    if dry_run:
+        argv.append("--dry-run")
+    assert main(argv) == (0 if dry_run else 3)
+    report = json.loads(capsys.readouterr().out)
+    assert report["committed"] is False
+    assert report["input_state"] == "unverified:missing_signal_feed"
+    assert store.latest(Path(args.ledger_dir), "crypto") == (None, None)
+    write_feed(path, days[0], days[0], signals)
+    assert main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["committed"] is (not dry_run)

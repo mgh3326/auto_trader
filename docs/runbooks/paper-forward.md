@@ -113,7 +113,9 @@ uv run python scripts/paper_forward/run.py --market crypto --asof <completed UTC
 
 `--asof` defaults to the last completed market session. The JSON printed to stdout
 contains the signals, ledger diff and episode report. Markdown and JSON previews
-go to `preview/<market>/<date>.*`; they never advance committed episodes. Normal
+go to `preview/<market>/<date>-<content hash>.*`; corrected inputs produce separate
+immutable previews, while identical retries reuse the same files. Previews never
+advance committed episodes. Normal
 runs with verified input publish `ledger/<market>/<date>.json` and
 `reports/<market>/<date>.*`. An unverified run defers new signals without consuming
 their keys and does not advance the committed ledger. It writes a report under
@@ -121,6 +123,9 @@ their keys and does not advance the committed ledger. It writes a report under
 `committed=false`. Repeated attempts with corrected inputs cannot overwrite the
 earlier evidence. The next complete run retries every session after the last
 committed day, or from the pinned epoch start if none has committed yet.
+The CLI exits 0 for verified runs, committed-date replays and dry runs, 2 for a
+refused run, and 3 for an unverified non-dry run that commits nothing. Exit 3 keeps
+stalled collection visible to an invoking scheduler without consuming signals.
 The ledger is append-only at the service boundary: write-once files, fsync,
 atomic hard-link publication, per-market flock, and a previous-file hash chain.
 Re-running a committed date performs no fetch and changes no ledger/report bytes;

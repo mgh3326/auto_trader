@@ -137,7 +137,7 @@ def reports(root: Path, report: dict) -> tuple[Path, Path]:
     )
     name = (
         report["asof"]
-        if verified
+        if verified and report["mode"] != "dry-run"
         else report["asof"] + "-" + hashlib.sha256(json_bytes(public)).hexdigest()[:16]
     )
     json_path = directory / f"{name}.json"

@@ -85,7 +85,12 @@ def run(args: argparse.Namespace) -> dict:
             asof,
             due[0],
         )
-        signals = [s for s in signals if s.at.astimezone(UTC).date() >= calendar_start]
+        signals = [
+            signal
+            for signal in signals
+            if (day := engine.entry_day(args.market, signal.at, sessions)) is not None
+            and start <= day <= asof
+        ]
         bars, failures = inputs.public_bars(args.market, names, start, asof)
         gaps = [
             f"{name}:{day}"
@@ -207,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             indent=2,
         )
     )
-    return 0
+    return 3 if not args.dry_run and not report["committed"] else 0
 
 
 if __name__ == "__main__":
