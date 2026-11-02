@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20261101_rob1440_intent_gw"
+HEAD_REVISION = "20261102_rob1470_sleeves"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -135,6 +135,10 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # ROB-1440 intent gateway tables are later than this boundary (child first).
     "review.execution_child_requests",
     "review.execution_intents",
+    # ROB-1470 sleeve tables are later than this boundary (versions first; the
+    # order_proposals.sleeve_id column referencing them is dropped before).
+    "review.strategy_sleeve_versions",
+    "review.strategy_sleeves",
 )
 
 
@@ -166,6 +170,14 @@ async def scratch_database() -> AsyncIterator[str]:
                         text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                     )
                 await connection.run_sync(Base.metadata.create_all)
+                # ROB-1470: the sleeve tag column references a post-parent
+                # table, so it goes before the table drops below.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.order_proposals "
+                        "DROP COLUMN IF EXISTS sleeve_id"
+                    )
+                )
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
                 # #1175 quarantine columns are later than this boundary;

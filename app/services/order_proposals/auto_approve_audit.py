@@ -25,6 +25,7 @@ from app.services.order_proposals.cash_funding_exemption import (
 from app.services.order_proposals.parking_allowlist import (
     PARKING_EXPOSURE_UNAVAILABLE_REASONS,
 )
+from app.services.strategy_sleeves.vocabulary import SleeveGateReason, SleeveState
 
 AUTO_APPROVE_REJECTIONS_KEY = "auto_approve_rejections"
 AUTO_APPROVE_CAP_OBSERVATIONS_KEY = "cap_observations"
@@ -95,6 +96,17 @@ _NUMERIC_INPUT_KEYS = frozenset(
         "parking_exposure_before",
         "parking_exposure_after",
         "parking_cap",
+        # ROB-1470 sleeve gate evidence: which sleeve, how much it has used and
+        # may use, and how far its P&L is from the loss limit.
+        "sleeve_id",
+        "sleeve_version",
+        "sleeve_used",
+        "sleeve_order_notional",
+        "sleeve_used_after",
+        "sleeve_budget_cap",
+        "sleeve_net_pnl",
+        "sleeve_loss_limit",
+        "sleeve_missing_mark_count",
     }
 )
 _ENUM_INPUT_VALUES = {
@@ -129,6 +141,8 @@ _ENUM_INPUT_VALUES = {
     # could not supply one when the Toss preview came back without a price.
     "price_source": PRICE_SOURCES,
     "price_fallback_reason": PRICE_FALLBACK_FAILURE_REASONS | {"unrecognized"},
+    # ROB-1470 -- the sleeve's state when the gate read it.
+    "sleeve_state": frozenset(s.value for s in SleeveState),
 }
 # Sub-reasons rendered next to the reason code on the manual approval card.
 _CARD_DETAIL_REASON_KEYS = (
@@ -136,6 +150,7 @@ _CARD_DETAIL_REASON_KEYS = (
     "cash_funding_reason",
     "cash_funding_cumulative_reason",
     "price_fallback_reason",
+    "sleeve_state",
 )
 _BOOLEAN_INPUT_KEYS = frozenset(
     {
@@ -185,6 +200,8 @@ _KNOWN_REASON_CODES = frozenset(
         "toss_auto_submission_frozen",
         "unknown_auto_approve_mode",
     }
+    # ROB-1470: every sleeve gate demotion names its own reason on the card.
+    | {reason.value for reason in SleeveGateReason}
 )
 _DECIMAL_TEXT_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
 _POLICY_VERSION_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\.[0-9]{1,4})?")
