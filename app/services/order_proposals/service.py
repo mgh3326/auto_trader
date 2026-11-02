@@ -40,6 +40,7 @@ from app.services.order_proposals.auto_approve_audit import (
     append_auto_approve_rejection_attempt,
     build_auto_approve_cap_observations,
 )
+from app.services.order_proposals.batch_health import batch_member_skip_intentional
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.buying_power import build_create_advisory
 from app.services.order_proposals.cash_funding_exemption import (
@@ -501,6 +502,26 @@ def batch_member_block_reason(
     if not any(rung.state == "pending_approval" for rung in rungs):
         return "no_pending_approval_rungs"
     return None
+
+
+def _log_batch_member_skip(*, proposal_id: uuid.UUID, reason: str) -> None:
+    """Record why a published approval card did not enter a batch.
+
+    Registration runs after the individual card was already delivered. A bare
+    ``return None`` leaves a published card with no trace of why it is absent
+    from the batch surface; the durable member row is the positive evidence and
+    this log is the negative evidence.
+    """
+    intentional = batch_member_skip_intentional(reason)
+    logger.log(
+        logging.INFO if intentional else logging.WARNING,
+        "order_proposals.batch_member_skipped",
+        extra={
+            "proposal_id": str(proposal_id),
+            "reason": reason,
+            "intentional": intentional,
+        },
+    )
 
 
 def check_action_capability(
@@ -2827,12 +2848,17 @@ class OrderProposalsService:
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
         rungs = await self._repo.list_rungs(group.id)
-        if batch_member_block_reason(group, rungs, now=now) is not None:
+        block_reason = batch_member_block_reason(group, rungs, now=now)
+        if block_reason is not None:
+            _log_batch_member_skip(proposal_id=group.proposal_id, reason=block_reason)
             return None
         if await self._repo.get_approval_batch_member_by_nonce(
             proposal_pk=group.id,
             approval_nonce=str(group.approval_nonce),
         ):
+            _log_batch_member_skip(
+                proposal_id=group.proposal_id, reason="duplicate_nonce_member"
+            )
             return None
 
         batch = await self._repo.get_open_approval_batch(
@@ -2857,6 +2883,9 @@ class OrderProposalsService:
 
         existing_members = await self._repo.list_approval_batch_members(batch.id)
         if any(member.proposal_pk == group.id for member in existing_members):
+            _log_batch_member_skip(
+                proposal_id=group.proposal_id, reason="already_member_of_batch"
+            )
             return None
 
         await self._repo.insert_approval_batch_member(

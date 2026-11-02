@@ -719,6 +719,45 @@ cuts keep their mandatory two-click evidence flow. Market orders and explicit
 replace/cancel actions remain human-gated and may use the batch surface; the
 batch does not weaken any action-specific fresh broker checks.
 
+#### Health: member writer versus summary cadence (ROB-1488)
+
+`review.order_proposal_approval_batch_members` has two timestamps and they
+answer different questions:
+
+| column | written by | what it proves |
+|---|---|---|
+| `added_at` | `register_approval_batch_member` (membership) | the card was published and admitted to a batch |
+| `processed_at` | `record_approval_batch_member_result` (callback) | a `전체 승인` click reached that member |
+
+An "approval digest members stopped" audit **must read `added_at`**. Reading
+`processed_at` reports a healthy writer as dead, because members of
+single-member windows never receive a callback result. The 2026-11-02 ROB-1488
+inventory made exactly that mistake.
+
+Two independent surfaces share the word "digest": the ROB-1052 auto-approve
+digest is message-only and writes **no** row here; only the manual ROB-870
+batch does. A summary requires two batch-eligible manual cards inside one
+ten-minute window, so a day with two separated manual cards produces two
+single-member `idle` batches and **no** summary. That is an expected idle
+batch, not a lost card: the individual card was already delivered (its
+`approval_message_id` is the evidence).
+
+Read-only check (SELECT aggregates only, no writes, no Telegram call):
+
+```bash
+ENV_FILE=... uv run python -m scripts.diagnose_approval_batch_health [--json]
+```
+
+Exit code 1 means a hard invariant broke: a batch with zero members, or the
+member writer produced zero rows for the whole recent window while manual cards
+kept publishing. A non-zero `published_cards_without_member` is reported, not
+failed: the designed exclusions below leave a delivered card out of a batch.
+Every skip of a published card is logged as
+`order_proposals.batch_member_skipped` with its closed reason
+(`loss_cut_excluded`, `proposal_terminal:*`, `no_pending_approval_rungs`,
+`duplicate_nonce_member`, …) so a published card is never silently absent from
+the batch surface.
+
 Clicking `전체 승인` performs these steps:
 
 1. Lock and freeze the exact ordered member/nonce-snapshot set shown by the
