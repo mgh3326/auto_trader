@@ -223,7 +223,10 @@ def advance(
                     e
                     for e in episodes
                     if e["symbol"] == signal.symbol
-                    and (D(e["candidate"]["qty"]) > 0 or e["unverified"])
+                    and (
+                        D(e["candidate"]["qty"]) > 0
+                        or (e["unverified"] and not e["candidate"]["fills"])
+                    )
                 ),
                 None,
             )

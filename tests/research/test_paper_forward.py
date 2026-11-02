@@ -182,6 +182,22 @@ def test_missing_control_limit_is_not_zero_pnl():
     assert result["control_pnl"] is None and result["D_i"] is None
 
 
+def test_a_closed_candidate_can_start_an_episode_despite_a_control_data_gap():
+    days, bars, signals = fixture("crypto", ("100", "110", "100", "100"))
+    first = advance("crypto", days, bars, signals, 0)
+    closed = advance("crypto", days, bars, signals, 1, first)
+    assert closed["episodes"][0]["candidate"]["qty"] == "0"
+    del bars["AAA", days[2]]
+    gap = advance("crypto", days, bars, signals, 2, closed)
+    later = Signal(
+        "signal-2", "AAA", datetime.combine(days[2], datetime.min.time(), UTC), D(100)
+    )
+    result = advance("crypto", days, bars, signals + [later], 3, gap)
+    assert result["summary"]["opened"] == 1
+    assert len(result["episodes"]) == 2
+    assert result["episodes"][0]["unverified"]
+
+
 def test_missing_signal_feed_is_unverified(tmp_path):
     assert inputs.signal_feed(tmp_path / "absent.json", "us", ["AAA"], FIRST) == (
         [],
