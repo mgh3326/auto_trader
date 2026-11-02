@@ -14,8 +14,6 @@ from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import alpaca_paper_orders as _orders_mod
 from app.mcp_server.tooling.alpaca_paper_orders import (
     ALPACA_PAPER_MUTATING_TOOL_NAMES,
-    SUBMIT_MAX_NOTIONAL_USD,
-    SUBMIT_MAX_QTY,
     alpaca_paper_cancel_order,
     alpaca_paper_reconcile_orders,
     alpaca_paper_submit_order,
@@ -92,8 +90,6 @@ def test_module_exposes_expected_surface() -> None:
     assert callable(_orders_mod.set_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.reset_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.register_alpaca_paper_orders_tools)
-    assert _orders_mod.SUBMIT_MAX_QTY == pytest.approx(Decimal("5"))
-    assert _orders_mod.SUBMIT_MAX_NOTIONAL_USD == pytest.approx(Decimal("1000"))
 
 
 class FakeOrdersService(FakeAlpacaPaperService):
@@ -320,12 +316,42 @@ async def test_crypto_submit_rejects_unsafe_shapes_before_service_call(
     cases = [
         ({"symbol": "DOGE/USD"}, "crypto symbol"),
         ({"type": "market", "limit_price": None}, "limit-only"),
-        ({"notional": Decimal("51")}, "crypto notional"),
+        ({"notional": Decimal("0")}, "notional"),
+        ({"notional": Decimal("-1")}, "notional"),
+        ({"notional": Decimal("NaN")}, "notional"),
+        ({"notional": None, "qty": Decimal("0")}, "qty"),
+        ({"notional": None, "qty": Decimal("-1")}, "qty"),
+        ({"notional": None, "qty": Decimal("NaN")}, "qty"),
+        ({"limit_price": Decimal("0")}, "limit_price"),
+        ({"limit_price": Decimal("NaN")}, "limit_price"),
+        ({"side": "short"}, "side"),
     ]
     for kwargs, message in cases:
         payload = base | kwargs
         with pytest.raises(ValueError, match=message):
             await alpaca_paper_submit_order(**payload)
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_crypto_large_notional_remains_confirmation_gated(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    # ROB-1474 operator decision removes size caps, including the former $50.
+    for notional in (Decimal("51"), Decimal("10000001")):
+        result = await alpaca_paper_submit_order(
+            symbol="BTC/USD",
+            side="buy",
+            type="limit",
+            notional=notional,
+            limit_price=Decimal("50000"),
+            asset_class="crypto",
+            confirm=False,
+        )
+        assert result["submitted"] is False
+        assert result["blocked_reason"] == "confirmation_required"
+        assert Decimal(result["order_request"]["notional"]) == notional
     assert fake_orders_service.calls == []
 
 
@@ -403,54 +429,16 @@ async def test_submit_has_no_caller_client_order_id_param(
     assert sent.client_order_id.startswith("rob73-")
 
 
-@pytest.mark.unit
 @pytest.mark.asyncio
-async def test_submit_rejects_qty_exceeding_cap(
-    fake_orders_service: FakeOrdersService,
-) -> None:
-    with pytest.raises(ValueError, match="exceeds submit cap"):
-        await alpaca_paper_submit_order(
-            symbol="AAPL",
-            side="buy",
-            type="limit",
-            qty=SUBMIT_MAX_QTY + Decimal("1"),
-            limit_price=Decimal("1.00"),
-            confirm=True,
-        )
-    assert [c for c in fake_orders_service.calls if c[0] == "submit_order"] == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_submit_rejects_notional_exceeding_cap(
-    fake_orders_service: FakeOrdersService,
-) -> None:
-    with pytest.raises(ValueError, match="exceeds submit cap"):
-        await alpaca_paper_submit_order(
-            symbol="AAPL",
-            side="buy",
-            type="market",
-            notional=SUBMIT_MAX_NOTIONAL_USD + Decimal("1"),
-            confirm=True,
-        )
-    assert [c for c in fake_orders_service.calls if c[0] == "submit_order"] == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_submit_rejects_estimated_cost_exceeding_cap(
-    fake_orders_service: FakeOrdersService,
-) -> None:
-    with pytest.raises(ValueError, match="estimated_cost"):
-        await alpaca_paper_submit_order(
-            symbol="AAPL",
-            side="buy",
-            type="limit",
-            qty=Decimal("5"),
-            limit_price=Decimal("250"),  # 5 * 250 = 1250 > 1000
-            confirm=True,
-        )
-    assert [c for c in fake_orders_service.calls if c[0] == "submit_order"] == []
+@pytest.mark.parametrize(
+    "size", [{"qty": Decimal("1000001")}, {"notional": Decimal("10000001")}]
+)
+async def test_large_paper_order_still_requires_confirmation(fake_orders_service, size):
+    result = await alpaca_paper_submit_order(
+        symbol="AAPL", side="buy", type="market", confirm=False, **size
+    )
+    assert result["blocked_reason"] == "confirmation_required"
+    assert fake_orders_service.calls == []
 
 
 @pytest.mark.unit

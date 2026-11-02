@@ -34,6 +34,12 @@
 
 ### Alpaca Paper 실행 레저 (ROB-84)
 
+**ROB-1474 모의 크기 상한 예외 (운영자 결정 2026-11-02,
+`decision/2026-11-02/mock-trading-all-venues-no-caps`)**: Alpaca paper의
+수량·금액 상한을 제거한다. 양수·유한값, 정확한 주문 크기의 승인 패킷 결속,
+paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유지한다.
+이 예외는 live 주문·다른 전략의 고정 리스크 상수를 변경할 권한이 아니다.
+
 `review.alpaca_paper_order_ledger` — Alpaca Paper 주문 라이프사이클 레코드 (previewed → canceled/filled/unexpected).
 
 - **ORM 모델**: `app/models/review.AlpacaPaperOrderLedger`
@@ -43,6 +49,30 @@
 - **런북**: `docs/runbooks/alpaca-paper-ledger.md`
 
 **주의**: 서비스는 브로커 mutation 없음. 직접 SQL INSERT/UPDATE/DELETE 금지.
+
+### ROB-1474 US paper 전략 에피소드
+
+`review.mock_strategy_orders`는 네 paper/demo venue의 전략 귀속과 전송 journal이다.
+유일 writer는 `app/services/mock_strategy/recorder.py`. `record_many`는 계획 전체를
+커밋하며 unique client ID + 커밋된 `planned→sending` CAS의 승자만 POST한다.
+`sending`/`uncertain`은 조회로만 복구하고, 행 부재·조회 실패로 재전송하지 않는다.
+마이그레이션은 intent 변경·sent→planned·terminal 재개·journal 삭제를 거부한다.
+
+US 수동 CLI `python -m scripts.mock_strategy run|close-due|status --venue alpaca_paper`
+는 동결된 ROB-1474 기준선만 사용한다. `MOCK_STRATEGY_US_ENABLED` AND 기존
+`ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED`는 기본 false, 쓰기는 호출별 `--confirm` 필수다.
+정확한 paper URL·예상 계좌 suffix 2개·활성 계좌·fresh clock 정규장 검증을 유지한다.
+short는 shortable AND easy-to-borrow AND 계좌 shorting 허가 뒤 정수 수량만 보낸다.
+직전 완결 세션으로 신호를 만들고 h번째 후속 XNYS 세션 개장에 만기가 온다.
+만기 청산은 terminal entry의 양성 fill 증거 수량만, 청산 fill 전에는 closed/P&L 없음.
+US 사전 eligibility/session/shape 검사는 claim 전과 POST 직전에 둘 다 실행한다.
+초기 거부는 planned 유지, claim 뒤 양성 no-POST 거부만 terminal rejected(0 fill)이며
+POST 경계 뒤 오류·취소는 sending/uncertain 예약을 유지한다. 청산은 durable indexed
+leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill을 뺀 잔량을 새 leg로
+보낸다. uncertain/nonterminal leg는 후속 leg를 막는다. recorder API/스키마 변경 없음.
+별도 paper 전략 어댑터의 own journal은 공매도와 cover를 지원하며 기존 수동 MCP의
+보유 매도 전용 coordinator를 완화하지 않는다. 스케줄·배포 없음.
+런북: `docs/runbooks/rob1474-us-paper-strategy.md`. DB round trip/동시 claim은 CI에서 검증한다.
 
 ### Binance Demo Order Ledger (ROB-298)
 
@@ -132,8 +162,9 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - **표면**: app/services/brokers/binance/h5, scripts/binance_h5_demo.py,
   scripts/binance_h5_weekly_score.py. 수동 CLI만 있으며 scheduler 등록은 없다.
 - **배포 이미지 (task 1254)**: H5 모듈이 research.nautilus_scalping.rob974_features를
-  import하므로 `Dockerfile.api` 최종 단계는 `research/nautilus_scalping/`만 복사한다
-  (`research/`의 나머지는 이미지에 넣지 않는다). 이 COPY는 order permission이 아니다.
+  import하므로 `Dockerfile.api` 최종 단계는 `research/nautilus_scalping/`를 복사한다.
+  추가 연구 파일은 ROB-1474 순수 목록 빌더 5개와 data_plane 달력 의존 3개뿐이며
+  `research/`의 나머지는 이미지에 넣지 않는다. 이 COPY는 order permission이 아니다.
   `tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py`가 최종 단계의 COPY
   집합과 `.dockerignore`를 시뮬레이션해 `scripts/binance_h5_*.py`의 import 폐쇄(정적 +
   이미지 파일만 둔 새 인터프리터 import)와 `research/` 범위를 고정한다.

@@ -28,7 +28,6 @@ from app.services.alpaca_paper_ledger_service import (
 )
 from app.services.alpaca_paper_market_evidence import (
     MarketEvidenceError,
-    hard_notional_cap,
     load_market_evidence,
 )
 from app.services.alpaca_paper_submit_service import (
@@ -50,7 +49,6 @@ from app.services.paper_approval_packet import (
     verify_sell_packet_source,
 )
 
-ALPACA_CRYPTO_PAPER_MAX_NOTIONAL = Decimal("50")
 DEFAULT_PACKET_TTL = timedelta(minutes=5)
 DEFAULT_QUOTE_MAX_AGE = timedelta(minutes=5)
 
@@ -203,7 +201,8 @@ class AlpacaPaperOrderApplication:
             except MarketEvidenceError as exc:
                 return self._legacy_rejected(None, exc.code, str(exc))
 
-            max_notional = hard_notional_cap(asset_class)
+            max_notional = self._decimal_or_none(canonical.get("notional"))
+            max_qty = self._decimal_or_none(canonical.get("qty"))
             client_order_id = derive_automated_key(
                 correlation_id=evidence.correlation_id,
                 snapshot_id=evidence.snapshot_id,
@@ -220,7 +219,7 @@ class AlpacaPaperOrderApplication:
                     execution_asset_class=asset_class,
                     side=str(canonical.get("side") or ""),
                     max_notional=max_notional,
-                    max_qty=None,
+                    max_qty=max_qty,
                     qty_source="notional_estimate",
                     expected_lifecycle_step="previewed",
                     lifecycle_correlation_id=evidence.correlation_id,
@@ -248,7 +247,7 @@ class AlpacaPaperOrderApplication:
                 "snapshot_content_hash": evidence.content_hash,
                 "market_data_source": evidence.market_data_source,
                 "reference_price": str(evidence.price),
-                "policy_max_notional": str(max_notional),
+                "policy_max_notional": str(max_notional) if max_notional else None,
                 "packet_hash": self._packet_hash(packet_dict)[:16],
             }
             ledger = AlpacaPaperLedgerService(db)
@@ -577,8 +576,8 @@ class AlpacaPaperOrderApplication:
             execution_venue="alpaca_paper",
             execution_asset_class="crypto",
             side=decision.order.side,
-            max_notional=ALPACA_CRYPTO_PAPER_MAX_NOTIONAL,
-            max_qty=None,
+            max_notional=None,
+            max_qty=decision.order.qty,
             qty_source=(
                 "verified_native_buy"
                 if decision.order.side == "sell"
@@ -697,7 +696,6 @@ class AlpacaPaperOrderApplication:
 
 
 __all__ = [
-    "ALPACA_CRYPTO_PAPER_MAX_NOTIONAL",
     "AlpacaPaperApplicationOutcome",
     "AlpacaPaperOrderApplication",
     "AlpacaPaperOrderSpec",

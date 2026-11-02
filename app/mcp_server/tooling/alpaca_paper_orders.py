@@ -23,7 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.alpaca_paper_preview import (
-    ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
     PreviewOrderInput,
 )
 from app.services.alpaca_paper_account_modes import (
@@ -64,8 +63,6 @@ ALPACA_PAPER_MUTATING_TOOL_NAMES: set[str] = {
     "alpaca_paper_reconcile_orders",
 }
 
-SUBMIT_MAX_QTY: Decimal = Decimal("5")
-SUBMIT_MAX_NOTIONAL_USD: Decimal = Decimal("1000")
 ORDER_ID_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 ORDER_ID_RESERVED_VALUES = frozenset({"all", "order", "orders", "bulk", "cancel"})
 _MANUAL_PACKET_TTL_SECONDS = 120
@@ -168,19 +165,8 @@ def _validate_exact_order_id(order_id: str) -> str:
 def _manual_ceiling(
     validated: PreviewOrderInput,
 ) -> tuple[Decimal | None, Decimal | None]:
-    """Server hard-cap NOTIONAL ceiling for a manual order (never caller-supplied).
-
-    Always a max_notional so that qty/market orders are bounded by
-    ``packet.reference_price × qty`` (the trusted price), not merely a qty cap —
-    a qty order at a high reference price must still respect the notional hard cap
-    (ROB-842 G2). The separate qty<=5 equity cap is enforced by the tool itself.
-    """
-    hard_notional = (
-        ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
-        if validated.asset_class == "crypto"
-        else SUBMIT_MAX_NOTIONAL_USD
-    )
-    return hard_notional, None
+    """Bind the paper packet to this exact order size (operator no-caps decision)."""
+    return validated.notional, validated.qty
 
 
 def _build_manual_packet(
@@ -281,31 +267,6 @@ async def alpaca_paper_submit_order(
         # preview. Missing/incomplete lab credentials must never be mistaken for
         # a valid request that could later route through the shared account.
         _service_for_account_mode(selected_account_mode)
-
-    submit_notional_cap = (
-        ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
-        if validated.asset_class == "crypto"
-        else SUBMIT_MAX_NOTIONAL_USD
-    )
-    if (
-        validated.asset_class != "crypto"
-        and validated.qty is not None
-        and validated.qty > SUBMIT_MAX_QTY
-    ):
-        raise ValueError(f"qty {validated.qty} exceeds submit cap ({SUBMIT_MAX_QTY})")
-    if validated.notional is not None and validated.notional > submit_notional_cap:
-        raise ValueError(
-            f"notional {validated.notional} exceeds submit cap ({submit_notional_cap})"
-        )
-    if (
-        validated.qty is not None
-        and validated.limit_price is not None
-        and validated.qty * validated.limit_price > submit_notional_cap
-    ):
-        raise ValueError(
-            f"estimated_cost {validated.qty * validated.limit_price} "
-            f"exceeds submit cap ({submit_notional_cap})"
-        )
 
     canonical = _canonical_payload(validated)
     coid = _derive_client_order_id(
@@ -547,9 +508,8 @@ def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
             "terminal, and an uncertain outcome is reconciled (never re-POSTed). "
             "The idempotency key is server-derived — there is no caller "
             "client_order_id or origin. Paper endpoint only; live endpoint cannot "
-            "be selected. Strict caps: us_equity qty<=5/notional<=$1000/"
-            "qty*limit_price<=$1000; crypto is buy/sell limit-only, allowlisted, "
-            "and capped at $50."
+            "be selected. Crypto is buy/sell limit-only and allowlisted. "
+            "The packet remains bound to the exact requested size."
         ),
     )(alpaca_paper_submit_order)
     _ = mcp.tool(
@@ -574,8 +534,6 @@ def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
 
 __all__ = [
     "ALPACA_PAPER_MUTATING_TOOL_NAMES",
-    "SUBMIT_MAX_NOTIONAL_USD",
-    "SUBMIT_MAX_QTY",
     "ORDER_ID_SAFE_SEGMENT_RE",
     "alpaca_paper_cancel_order",
     "alpaca_paper_reconcile_orders",

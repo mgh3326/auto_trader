@@ -24,10 +24,6 @@ from app.services.crypto_execution_mapping import (
     map_upbit_to_alpaca_paper,
 )
 
-# Server hard-cap per-order notional policy (never caller-supplied).
-HARD_NOTIONAL_CAP_USD = Decimal("1000")
-CRYPTO_HARD_NOTIONAL_CAP_USD = Decimal("50")
-
 # raw_payload.provenance markers that identify a caller/order-derived (not
 # server-observed) snapshot — never usable as trusted evidence.
 _SYNTHETIC_PROVENANCE: frozenset[str] = frozenset(
@@ -53,14 +49,6 @@ class MarketEvidence:
     market_data_source: str
     signal_symbol: str
     price: Decimal
-
-
-def hard_notional_cap(asset_class: str) -> Decimal:
-    return (
-        CRYPTO_HARD_NOTIONAL_CAP_USD
-        if asset_class == "crypto"
-        else HARD_NOTIONAL_CAP_USD
-    )
 
 
 def _snapshot_content_hash(snap: MarketQuoteSnapshot) -> str:
@@ -171,10 +159,7 @@ async def load_market_evidence(
 
 
 __all__ = [
-    "CRYPTO_HARD_NOTIONAL_CAP_USD",
-    "HARD_NOTIONAL_CAP_USD",
     "MarketEvidence",
     "MarketEvidenceError",
-    "hard_notional_cap",
     "load_market_evidence",
 ]

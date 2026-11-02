@@ -42,7 +42,6 @@ ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS: frozenset[str] = frozenset(
         "SOL/USD",
     }
 )
-ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD: Decimal = Decimal("50")
 ALPACA_PAPER_EQUITY_TIME_IN_FORCE: frozenset[str] = frozenset(
     {"day", "gtc", "ioc", "fok"}
 )
@@ -154,8 +153,6 @@ class PreviewOrderInput(BaseModel):
             raise ValueError("qty must be a finite number")
         if v <= 0:
             raise ValueError("qty must be > 0")
-        if v > Decimal("1000000"):
-            raise ValueError("qty exceeds maximum allowed value")
         return v
 
     @field_validator("notional")
@@ -167,8 +164,6 @@ class PreviewOrderInput(BaseModel):
             raise ValueError("notional must be a finite number")
         if v <= 0:
             raise ValueError("notional must be > 0")
-        if v > Decimal("10000000"):
-            raise ValueError("notional exceeds maximum allowed value")
         return v
 
     @field_validator("stop_price")
@@ -215,7 +210,7 @@ class PreviewOrderInput(BaseModel):
     @field_validator("limit_price")
     @classmethod
     def validate_limit_price_positive(cls, v: Decimal | None) -> Decimal | None:
-        if v is not None and v <= 0:
+        if v is not None and (not v.is_finite() or v <= 0):
             raise ValueError("limit_price must be > 0")
         return v
 
@@ -234,21 +229,6 @@ class PreviewOrderInput(BaseModel):
             raise ValueError(f"crypto time_in_force must be one of: {allowed_tif}")
         if self.limit_price is None:
             raise ValueError("limit_price is required for crypto limit orders")
-        if (
-            self.notional is not None
-            and self.notional > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
-        ):
-            raise ValueError(
-                f"crypto notional exceeds max ({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
-            )
-        if (
-            self.qty is not None
-            and self.qty * self.limit_price > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
-        ):
-            raise ValueError(
-                "crypto estimated_cost exceeds max "
-                f"({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
-            )
 
     def _validate_equity_rules(self, has_notional: bool) -> None:
         # notional + limit type is rejected for US equities — Alpaca only
@@ -402,7 +382,6 @@ def register_alpaca_paper_preview_tools(mcp: FastMCP) -> None:
 
 __all__ = [
     "ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS",
-    "ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD",
     "ALPACA_PAPER_PREVIEW_TOOL_NAMES",
     "_FORBIDDEN_SERVICE_METHODS",
     "PreviewOrderInput",
