@@ -16,6 +16,9 @@ from scripts import diagnose_approval_batch_health as cli
 
 
 class _FakeSession:
+    async def execute(self, statement):
+        return None
+
     async def __aenter__(self) -> _FakeSession:
         return self
 
@@ -40,12 +43,12 @@ def _report(
         member_processed=0,
         batches=33,
     )
-    status: Status = "ok" if zero_member_batches == 0 and member_added else "gap"
+    status: Status = (
+        "gap" if zero_member_batches else ("ok" if member_added else "review")
+    )
     anomalies: tuple[str, ...] = ()
     if zero_member_batches:
         anomalies = ("approval_batch_without_members",)
-    elif not member_added:
-        anomalies = ("approval_batch_member_writer_stalled",)
     return BatchHealthReport(
         as_of=datetime(2026, 11, 2, tzinfo=UTC),
         recent=recent,
@@ -92,3 +95,25 @@ async def test_gap_exits_one_and_names_the_reason(monkeypatch, capsys) -> None:
     assert rc == 1
     assert "approval_batch_without_members" in out
     assert "member_writer_column=added_at" in out
+
+
+@pytest.mark.asyncio
+async def test_read_only_bounded_transaction_precedes_probe(monkeypatch, capsys):
+    statements = []
+
+    class Session(_FakeSession):
+        async def execute(self, statement):
+            statements.append(str(statement))
+
+    monkeypatch.setattr(cli, "AsyncSessionLocal", Session)
+
+    async def loader(db, **kwargs):
+        assert statements == [
+            "SET TRANSACTION READ ONLY",
+            "SET LOCAL statement_timeout = '8000'",
+        ]
+        return _report(member_added=0)
+
+    monkeypatch.setattr(cli, "load_batch_health", loader)
+    assert await cli.run() == 0
+    assert "REVIEW" in capsys.readouterr().out

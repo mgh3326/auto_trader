@@ -53,13 +53,13 @@ def test_zero_member_batch_is_a_gap() -> None:
 
 
 @pytest.mark.unit
-def test_writer_stalled_while_cards_publish_is_a_gap() -> None:
+def test_cards_without_members_need_review_not_a_proven_writer_failure() -> None:
     status, anomalies = evaluate_batch_health(
         recent=_window(manual_cards=5, member_added=0),
         zero_member_batches=0,
     )
-    assert status == "gap"
-    assert anomalies == ("approval_batch_member_writer_stalled",)
+    assert status == "review"
+    assert anomalies == ()
 
 
 @pytest.mark.unit
@@ -146,10 +146,39 @@ def test_health_readers_are_select_only() -> None:
             "insert(",
             "update(",
             "delete(",
-            "text(",
             ".commit(",
             ".flush(",
         )
         for forbidden in forbidden_calls:
             assert forbidden not in source, f"{relative} contains {forbidden!r}"
         assert "select(" in source or "load_batch_health" in source
+
+
+def test_skip_log_uses_closed_category_without_dynamic_detail(caplog) -> None:
+    import logging
+    import uuid
+
+    from app.services.order_proposals.service import _log_batch_member_skip
+
+    with caplog.at_level(logging.WARNING):
+        _log_batch_member_skip(
+            proposal_id=uuid.UUID(int=1),
+            reason="proposal_superseded_by:private-dynamic-detail",
+        )
+    record = caplog.records[-1]
+    assert record.reason == "proposal_superseded"
+    assert "private-dynamic-detail" not in str(record.__dict__)
+
+
+@pytest.mark.parametrize(
+    "reason, expected",
+    [
+        ("proposal_terminal:private", "proposal_terminal"),
+        ("approval_window:code:private", "approval_window_blocked"),
+        ("unknown-private-detail", "unclassified"),
+    ],
+)
+def test_skip_categories_drop_dynamic_details(reason, expected):
+    from app.services.order_proposals.batch_health import batch_member_skip_category
+
+    assert batch_member_skip_category(reason) == expected

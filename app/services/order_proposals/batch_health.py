@@ -41,7 +41,7 @@ from app.models.order_proposals import (
     OrderProposalApprovalDispatchAttempt,
 )
 
-Status = Literal["ok", "gap"]
+Status = Literal["ok", "review", "gap"]
 
 DEFAULT_RECENT_DAYS = 7
 DEFAULT_WINDOW_DAYS = 30
@@ -57,6 +57,31 @@ INTENTIONAL_BATCH_MEMBER_EXCLUSIONS = frozenset(
         "auto_approved_excluded",
     }
 )
+
+
+_EXACT_SKIP_CATEGORIES = INTENTIONAL_BATCH_MEMBER_EXCLUSIONS | {
+    "approval_dispatch_not_current",
+    "approval_card_kind_not_batchable",
+    "approval_nonce_missing",
+    "approval_nonce_used",
+    "no_pending_approval_rungs",
+    "duplicate_nonce_member",
+    "already_member_of_batch",
+}
+
+
+def batch_member_skip_category(reason: str) -> str:
+    """Return a closed log category without dynamic UUIDs or window details."""
+    if reason in _EXACT_SKIP_CATEGORIES:
+        return reason
+    for prefix, category in (
+        ("proposal_superseded_by:", "proposal_superseded"),
+        ("proposal_terminal:", "proposal_terminal"),
+        ("approval_window:", "approval_window_blocked"),
+    ):
+        if reason.startswith(prefix):
+            return category
+    return "unclassified"
 
 
 def batch_member_skip_intentional(reason: str) -> bool:
@@ -115,6 +140,8 @@ class BatchHealthReport:
                 "member_writer_column": "added_at",
                 "result_recorder_column": "processed_at",
                 "auto_digest_writes_batch_rows": False,
+                "manual_cards_include_batch_exclusions": True,
+                "unmatched_cards_need_skip_reason_review": True,
                 "summary_rule": (
                     "전체 승인 summary requires two batch-eligible manual cards "
                     "inside one ten-minute window; a single-member idle batch is "
@@ -131,19 +158,16 @@ def evaluate_batch_health(
 ) -> tuple[Status, tuple[str, ...]]:
     """Return the hard-invariant verdict for the batch member surface.
 
-    Only invariants that cannot hold on a healthy writer are anomalies:
-
-    * a batch row without a single member (registration must accompany the
-      batch insert in the same transaction);
-    * a published manual card in the recent window with zero member rows
-      (the writer stopped while the dispatch surface kept publishing).
+    A batch without a member is an invariant violation. Published cards with
+    no recent members require review: manual/reconfirm counts also include
+    intentional exclusions, so those counts alone cannot prove a stalled writer.
     """
     anomalies: list[str] = []
     if zero_member_batches > 0:
         anomalies.append("approval_batch_without_members")
-    if recent.manual_cards > 0 and recent.member_added == 0:
-        anomalies.append("approval_batch_member_writer_stalled")
     status: Status = "gap" if anomalies else "ok"
+    if not anomalies and recent.manual_cards > 0 and recent.member_added == 0:
+        status = "review"
     return status, tuple(anomalies)
 
 
@@ -270,6 +294,7 @@ __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "INTENTIONAL_BATCH_MEMBER_EXCLUSIONS",
     "batch_member_skip_intentional",
+    "batch_member_skip_category",
     "evaluate_batch_health",
     "load_batch_health",
 ]

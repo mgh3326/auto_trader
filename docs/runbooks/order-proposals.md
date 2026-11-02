@@ -748,15 +748,18 @@ Read-only check (SELECT aggregates only, no writes, no Telegram call):
 ENV_FILE=... uv run python -m scripts.diagnose_approval_batch_health [--json]
 ```
 
-Exit code 1 means a hard invariant broke: a batch with zero members, or the
-member writer produced zero rows for the whole recent window while manual cards
-kept publishing. A non-zero `published_cards_without_member` is reported, not
-failed: the designed exclusions below leave a delivered card out of a batch.
-Every skip of a published card is logged as
-`order_proposals.batch_member_skipped` with its closed reason
-(`loss_cut_excluded`, `proposal_terminal:*`, `no_pending_approval_rungs`,
-`duplicate_nonce_member`, …) so a published card is never silently absent from
-the batch surface.
+The CLI opens a READ ONLY transaction with an eight-second statement timeout.
+Exit code 1 means a batch has zero members. Published cards with zero recent
+members produce `status=review` and exit 0: intentional exclusions can explain
+that pattern, so the aggregate alone cannot prove a stalled writer.
+A non-zero `published_cards_without_member` also needs review of skip evidence.
+
+Every registration skip logs `order_proposals.batch_member_skipped` with a
+closed category such as `loss_cut_excluded`, `proposal_terminal`,
+`proposal_superseded`, `approval_window_blocked`, or `no_pending_approval_rungs`.
+Dynamic reason details and superseding IDs are removed from the reason field.
+Unknown reasons become `unclassified`. This adds observation only and changes
+no registration, approval or callback decision.
 
 Clicking `전체 승인` performs these steps:
 

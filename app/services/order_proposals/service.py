@@ -40,7 +40,10 @@ from app.services.order_proposals.auto_approve_audit import (
     append_auto_approve_rejection_attempt,
     build_auto_approve_cap_observations,
 )
-from app.services.order_proposals.batch_health import batch_member_skip_intentional
+from app.services.order_proposals.batch_health import (
+    batch_member_skip_category,
+    batch_member_skip_intentional,
+)
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.buying_power import build_create_advisory
 from app.services.order_proposals.cash_funding_exemption import (
@@ -518,7 +521,7 @@ def _log_batch_member_skip(*, proposal_id: uuid.UUID, reason: str) -> None:
         "order_proposals.batch_member_skipped",
         extra={
             "proposal_id": str(proposal_id),
-            "reason": reason,
+            "reason": batch_member_skip_category(reason),
             "intentional": intentional,
         },
     )

@@ -12,8 +12,8 @@ It issues SELECTs only -- no INSERT/UPDATE/DELETE, no DDL, no broker or
 Telegram call, no scheduler registration. It never backfills and never infers:
 a quiet surface is printed as quiet.
 
-Exit code is 0 when the hard invariants hold, 1 when a batch has no member or
-the member writer stalled while manual approval cards were still published.
+Exit code is 1 when a batch has no member. Cards without recent members are
+reported as review, since designed exclusions may explain them; that is exit 0.
 ``--json`` prints the machine-readable payload.
 """
 
@@ -24,6 +24,8 @@ import asyncio
 import json
 import sys
 from datetime import UTC, datetime
+
+from sqlalchemy import text
 
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals.batch_health import (
@@ -63,8 +65,15 @@ def _print_report(report: BatchHealthReport) -> None:
     )
     if report.anomalies:
         print("\nGAP: " + ", ".join(report.anomalies))
+    elif report.status == "review":
+        print(
+            "\nREVIEW — published cards have no recent members; inspect skip reasons. "
+            "These counts alone do not prove that the writer stalled."
+        )
     else:
-        print("\nOK — every batch has a member and the writer follows published cards.")
+        print(
+            "\nOK — no batch without a member observed; unmatched cards need skip-reason review."
+        )
 
 
 async def run(
@@ -75,6 +84,8 @@ async def run(
     now: datetime | None = None,
 ) -> int:
     async with AsyncSessionLocal() as db:
+        await db.execute(text("SET TRANSACTION READ ONLY"))
+        await db.execute(text("SET LOCAL statement_timeout = '8000'"))
         report = await load_batch_health(
             db,
             now=now or datetime.now(UTC),
