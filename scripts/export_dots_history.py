@@ -49,6 +49,7 @@ from app.services.dots_history_export.publish import (
     resolve_output_directory,
 )
 from app.services.dots_history_export.reader import default_since, read_sources
+from app.services.dots_history_export.spec import Mode
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -59,17 +60,22 @@ EXIT_ERROR = 1
 EXIT_LEAK = 2
 
 
+DESCRIPTION = (
+    "Export order and fill history for dots (read-only). The default mode is "
+    "de-identified (ROB-1438); --real-values writes real values and refuses only "
+    "credentials and full account numbers (ROB-1465)."
+)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Export de-identified order and fill history for dots (read-only)"
-    )
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument(
         "--database-url-env",
         required=True,
         metavar="NAME",
         help="Name of the environment variable that holds the postgresql+asyncpg URL",
     )
-    salt = parser.add_mutually_exclusive_group(required=True)
+    salt = parser.add_mutually_exclusive_group(required=False)
     salt.add_argument(
         "--salt-file",
         type=Path,
@@ -79,6 +85,15 @@ def _parser() -> argparse.ArgumentParser:
         "--salt-env",
         metavar="NAME",
         help="Name of the environment variable that holds the salt",
+    )
+    parser.add_argument(
+        "--real-values",
+        action="store_true",
+        help=(
+            "Write real symbols, order ids, labels and account suffixes instead "
+            "of salted hashes; only credentials and full account numbers are "
+            "refused. No salt is needed in this mode"
+        ),
     )
     parser.add_argument(
         "--out",
@@ -164,9 +179,11 @@ def _outside_repo_file(path: Path, *, option: str, repo_root: Path) -> Path:
     return resolved
 
 
-def load_salt(args: argparse.Namespace, *, repo_root: Path) -> bytes:
+def load_salt(args: argparse.Namespace, *, repo_root: Path) -> bytes | None:
     if args.salt_env:
         return _env_value(args.salt_env, option="--salt-env").encode("utf-8")
+    if args.salt_file is None:
+        return None
     path = _outside_repo_file(args.salt_file, option="--salt-file", repo_root=repo_root)
     if stat.S_IMODE(path.stat().st_mode) & 0o077:
         raise ValueError("--salt-file must be readable by its owner only (chmod 600)")
@@ -225,8 +242,13 @@ async def run(
     repo_root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
     window = resolve_window(args, now=now or datetime.now(UTC))
+    mode = Mode.REAL if args.real_values else Mode.DEIDENTIFIED
     salt = load_salt(args, repo_root=repo_root)
-    hasher = RefHasher(salt)
+    if mode is Mode.DEIDENTIFIED and salt is None:
+        raise ValueError(
+            "--salt-file or --salt-env is required unless --real-values is given"
+        )
+    hasher = RefHasher(salt) if salt is not None and mode is Mode.DEIDENTIFIED else None
     deny_values = load_deny_values(args.deny_values_file, repo_root=repo_root)
     out_dir = resolve_output_directory(args.out, repo_root=repo_root)
     code_commit, code_dirty = resolve_code_commit(args.code_commit)
@@ -242,7 +264,7 @@ async def run(
     try:
         async with session_factory() as session:
             try:
-                sources = await read_sources(session, window)
+                sources = await read_sources(session, window, real=mode is Mode.REAL)
             finally:
                 await session.rollback()
     finally:
@@ -250,20 +272,23 @@ async def run(
             await engine.dispose()
 
     return publish(
-        project(sources, hasher=hasher, window=window),
+        project(sources, hasher=hasher, window=window, mode=mode),
         out_dir=out_dir,
         window=window,
-        salt=salt,
-        salt_fingerprint=hasher.fingerprint(),
+        salt=salt if mode is Mode.DEIDENTIFIED else None,
+        salt_fingerprint=hasher.fingerprint() if hasher is not None else "none",
         code_commit=code_commit,
         code_dirty=code_dirty,
         extra_forbidden=deny_values,
+        mode=mode,
     )
 
 
 def _summary(manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "exported",
+        "schema_version": manifest["schema_version"],
+        "mode": manifest["mode"],
         "window": manifest["window"],
         "code_commit": manifest["code_commit"],
         "row_counts": {
