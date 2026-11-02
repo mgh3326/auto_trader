@@ -82,6 +82,8 @@ class ChildSnapshot:
     refusal_reason: str | None
     broker_order_id: str | None
     result: dict[str, Any] | None
+    #: Committed before the send, so its KST day is the day the child was sent.
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)

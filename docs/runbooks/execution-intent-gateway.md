@@ -63,7 +63,7 @@ Put these on the one container or process that serves the route. Do not add them
      /app/.venv/bin/python -m scripts.run_execution_intent_gateway --port 8782
    ```
 
-   Do not add `-d` or `--restart`. The process stays up only while an operator is watching it. The server exits 2 for any host that is not loopback.
+   Do not add `-d` or `--restart`. The process stays up only while an operator is watching it. The server exits 2 for any host that is not a numeric loopback address, including the name `localhost`.
 
 4. Check the gates from the same host. The first answer must be 401. The second must be 200 with `"status":"refused"` and `"reason":"confirm_required"`. Neither one creates a journal row.
 
@@ -129,7 +129,7 @@ A reverted build keeps one data effect. An amend that already ran re-pointed its
 ## Limits
 
 - **`view` is not broker truth.** It comes from the journal and the ledger, and the route calls no broker. An order placed outside the gateway does not appear.
-- **`filled_qty` can overstate,** because KIS order numbers repeat across days. It only holds back further sends, and it is never fill evidence.
+- **`filled_qty` is never fill evidence.** It holds back further sends and can end a working order in `view`, so it counts a fill only on the KST trading day the order was sent. KIS order numbers repeat across days. If a real fill is stamped on another day, `view` shows the order as still working.
 - **A cancel after a partial fill sends the ledger's order quantity.** The capability checks the remainder, but the existing cancel path sends the full quantity to KIS. The first mock run should check how KIS answers this.
 - **A refused or contended follow-up strands the order in the journal.** If the mint is refused, or another writer holds the KIS mock lease, the child ends `uncertain` with zero broker calls. E1 cannot tell that apart from a send that may have happened, so later cancels of that order answer `target_superseded`. Clear the order at the broker. `result.reason_code` or `result.error_class` on the child says which case it was.
 - **The kill state is read once, at reservation.** A send can still cross a newly engaged kill in the time between the journal commit and the wire (design doc, "Expiry and kill at the wire").

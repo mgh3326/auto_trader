@@ -17,8 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def is_loopback(host: str) -> bool:
-    if host == "localhost":
-        return True
+    """Numeric addresses only. A name such as ``localhost`` can resolve anywhere."""
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -28,7 +27,9 @@ def is_loopback(host: str) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--host", default="127.0.0.1", help="A loopback address. Anything else exits 2."
+        "--host",
+        default="127.0.0.1",
+        help="A numeric loopback address. Anything else exits 2.",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     return parser

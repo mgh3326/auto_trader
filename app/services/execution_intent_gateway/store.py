@@ -126,6 +126,7 @@ def _child_snapshot(row: ExecutionChildRequest) -> ChildSnapshot:
         refusal_reason=row.refusal_reason,
         broker_order_id=row.broker_order_id,
         result=row.result,
+        created_at=row.created_at,
     )
 
 

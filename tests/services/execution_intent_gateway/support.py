@@ -93,6 +93,7 @@ class MemoryGatewayStore:
             refusal_reason=decision.refusal.value if refused else None,
             broker_order_id=None,
             result=None,
+            created_at=now,
         )
         self.children.append(child)
         self._intent_of_child[child.child_id] = request.intent_id
@@ -145,6 +146,7 @@ class MemoryGatewayStore:
                     refusal_reason=None,
                     broker_order_id=broker_order_id,
                     result=result,
+                    created_at=child.created_at,
                 )
                 self.events.append(f"finish:{state.value}:{child.idempotency_key}")
                 return True

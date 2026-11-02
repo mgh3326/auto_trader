@@ -30,6 +30,8 @@ validate_run_owned_database_url(engine.url)
 
 pytestmark = pytest.mark.integration
 
+SENT_AT = datetime(2026, 11, 2, 0, 0, tzinfo=UTC)
+
 
 def _submit(key: str, order_id: str | None) -> ChildSnapshot:
     return ChildSnapshot(
@@ -44,6 +46,7 @@ def _submit(key: str, order_id: str | None) -> ChildSnapshot:
         refusal_reason=None,
         broker_order_id=order_id,
         result=None,
+        created_at=SENT_AT,
     )
 
 
@@ -69,7 +72,12 @@ def _ledger_row(symbol: str, order_no: str, correlation: str) -> KISMockOrderLed
 
 
 def _execution_row(
-    symbol: str, order_no: str, *, fill_seq: int, account_mode: str = "mock"
+    symbol: str,
+    order_no: str,
+    *,
+    fill_seq: int,
+    account_mode: str = "mock",
+    filled_at: datetime = datetime(2026, 11, 2, 0, 1, tzinfo=UTC),
 ) -> ExecutionLedger:
     return ExecutionLedger(
         broker="kis",
@@ -84,7 +92,7 @@ def _execution_row(
         filled_qty=Decimal("2"),
         filled_price=Decimal("70000"),
         filled_notional=Decimal("140000"),
-        filled_at=datetime(2026, 11, 2, 0, 1, tzinfo=UTC),
+        filled_at=filled_at,
         currency="KRW",
         source="websocket",
     )
@@ -155,6 +163,26 @@ async def test_reader_ignores_live_rows_with_the_same_order_number(
     db_session.add(
         _execution_row(
             seeded["symbol"], seeded["order_no"], fill_seq=3, account_mode="live"
+        )
+    )
+    await db_session.commit()
+    intent = intent_snapshot(symbol=seeded["symbol"])
+    evidence = await SqlLedgerEvidenceReader(AsyncSessionLocal).read(
+        intent, [_submit(seeded["root"], seeded["order_no"])]
+    )
+    assert evidence.filled_by_order_id == {seeded["order_no"]: 4}
+
+
+@pytest.mark.asyncio
+async def test_reader_ignores_fills_from_another_day_under_the_same_number(
+    db_session: Any, seeded: dict[str, str]
+) -> None:
+    db_session.add(
+        _execution_row(
+            seeded["symbol"],
+            seeded["order_no"],
+            fill_seq=3,
+            filled_at=datetime(2026, 10, 30, 1, 0, tzinfo=UTC),
         )
     )
     await db_session.commit()

@@ -207,13 +207,14 @@ def test_public_app_does_not_mount_the_route() -> None:
     assert "execution_intent_gateway" not in (ROOT / "app/main.py").read_text("utf-8")
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost", "127.0.0.2"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "127.0.0.2"])
 def test_loopback_hosts_are_allowed(host: str) -> None:
     assert is_loopback(host)
 
 
 @pytest.mark.parametrize(
-    "host", ["0.0.0.0", "::", "10.0.0.5", "100.122.100.56", "example.com", ""]
+    "host",
+    ["0.0.0.0", "::", "10.0.0.5", "100.122.100.56", "example.com", "localhost", ""],
 )
 def test_the_server_refuses_a_non_loopback_host(
     host: str, monkeypatch: pytest.MonkeyPatch

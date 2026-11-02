@@ -12,8 +12,9 @@ proof that no order exists, because the ledger row is written after the send. So
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final, Protocol
@@ -22,6 +23,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import trade_day_kst
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.review import KISMockOrderLedger
 from app.services.execution_intent_gateway.decisions import (
@@ -229,8 +231,61 @@ class LedgerEvidenceReader(Protocol):
 
 
 def _whole_shares_up(value: Any) -> int:
-    """Round up. A larger filled quantity only holds back further sends."""
     return math.ceil(Decimal(str(value)))
+
+
+def order_trading_days(
+    lineages: Mapping[str, Sequence[ChildSnapshot]],
+    orders_by_root: Mapping[str, Sequence[LedgerOrder]],
+) -> dict[str, set[str]]:
+    """The KST trading days each of the intent's order numbers can have fills on.
+
+    A journaled number belongs to the day its child was sent. A number known only
+    from the ledger could come from any child of its lineage.
+    """
+    days: dict[str, set[str]] = {}
+    for root, rows in lineages.items():
+        for row in rows:
+            if row.broker_order_id:
+                days.setdefault(row.broker_order_id, set()).add(
+                    trade_day_kst(row.created_at)
+                )
+        lineage_days = {trade_day_kst(row.created_at) for row in rows}
+        for order in orders_by_root.get(root, ()):
+            if order.order_no:
+                days[order.order_no] = days.get(order.order_no, set()) | lineage_days
+    return days
+
+
+def executed_by_order_id(
+    rows: Iterable[tuple[str, Any, str, datetime]],
+    order_days: Mapping[str, set[str]],
+) -> dict[str, int]:
+    """Executed quantity per order number, from ``(id, qty, source, filled_at)``.
+
+    KIS reuses order numbers across days, and this value can close an order. So a
+    fill counts only on a trading day of that order. Otherwise an old fill under
+    the same number would report a live order as finished.
+    """
+    incremental: dict[str, Decimal] = {}
+    cumulative: dict[str, Decimal] = {}
+    for order_id, quantity, source, filled_at in rows:
+        if trade_day_kst(filled_at) not in order_days.get(order_id, ()):
+            continue
+        amount = Decimal(str(quantity))
+        if source == "websocket":
+            incremental[order_id] = incremental.get(order_id, Decimal(0)) + amount
+        else:
+            cumulative[order_id] = max(cumulative.get(order_id, Decimal(0)), amount)
+    return {
+        order_id: _whole_shares_up(
+            max(
+                incremental.get(order_id, Decimal(0)),
+                cumulative.get(order_id, Decimal(0)),
+            )
+        )
+        for order_id in incremental.keys() | cumulative.keys()
+    }
 
 
 def _detail_flag(detail: Any) -> bool | None:
@@ -252,13 +307,10 @@ class SqlLedgerEvidenceReader:
     ) -> LedgerEvidence:
         from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
 
-        roots = list(_lineages(children))
-        if not roots:
+        lineages = _lineages(children)
+        if not lineages:
             return LedgerEvidence()
-        root_by_correlation = {order_correlation_id(root): root for root in roots}
-        order_ids = {
-            child.broker_order_id for child in children if child.broker_order_id
-        }
+        root_by_correlation = {order_correlation_id(root): root for root in lineages}
 
         orders_by_root: dict[str, list[LedgerOrder]] = {}
         async with self._session_factory() as session:
@@ -271,8 +323,6 @@ class SqlLedgerEvidenceReader:
             for row in rows:
                 ordered = float(row.quantity)
                 filled, _, _ = _derive_shadow_fill(row, ordered)
-                if row.order_no:
-                    order_ids.add(row.order_no)
                 orders_by_root.setdefault(
                     root_by_correlation[str(row.correlation_id)], []
                 ).append(
@@ -286,7 +336,9 @@ class SqlLedgerEvidenceReader:
                     )
                 )
             filled_by_order_id = await self._executions(
-                session, symbol=intent.symbol, order_ids=order_ids
+                session,
+                symbol=intent.symbol,
+                order_days=order_trading_days(lineages, orders_by_root),
             )
             await session.rollback()
         return LedgerEvidence(
@@ -296,46 +348,25 @@ class SqlLedgerEvidenceReader:
 
     @staticmethod
     async def _executions(
-        session: AsyncSession, *, symbol: str, order_ids: set[str]
+        session: AsyncSession, *, symbol: str, order_days: Mapping[str, set[str]]
     ) -> dict[str, int]:
-        """Executed quantity per order id, from the in-effect execution ledger.
-
-        KIS order numbers can repeat across days, so a match from another day can
-        overstate this. That is the safe direction: the value only holds back
-        sends and is never counted as a fill.
-        """
-        if not order_ids:
+        if not order_days:
             return {}
         rows = await session.execute(
             select(
                 ExecutionLedger.broker_order_id,
                 ExecutionLedger.filled_qty,
                 ExecutionLedger.source,
+                ExecutionLedger.filled_at,
             ).where(
                 ExecutionLedger.broker == "kis",
                 ExecutionLedger.account_mode == "mock",
                 ExecutionLedger.symbol == symbol,
-                ExecutionLedger.broker_order_id.in_(list(order_ids)),
+                ExecutionLedger.broker_order_id.in_(list(order_days)),
                 execution_ledger_in_effect(),
             )
         )
-        incremental: dict[str, Decimal] = {}
-        cumulative: dict[str, Decimal] = {}
-        for order_id, quantity, source in rows.all():
-            amount = Decimal(str(quantity))
-            if source == "websocket":
-                incremental[order_id] = incremental.get(order_id, Decimal(0)) + amount
-            else:
-                cumulative[order_id] = max(cumulative.get(order_id, Decimal(0)), amount)
-        return {
-            order_id: _whole_shares_up(
-                max(
-                    incremental.get(order_id, Decimal(0)),
-                    cumulative.get(order_id, Decimal(0)),
-                )
-            )
-            for order_id in incremental.keys() | cumulative.keys()
-        }
+        return executed_by_order_id(rows.tuples().all(), order_days)
 
 
 def child_json(child: ChildSnapshot) -> dict[str, Any]:

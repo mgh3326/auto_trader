@@ -8,6 +8,7 @@ are replaced. See the amendment in
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -92,6 +93,7 @@ def _child(
         refusal_reason="x" if state is ChildState.REFUSED else None,
         broker_order_id=order_id,
         result=None,
+        created_at=datetime(2026, 11, 2, 0, 0, tzinfo=UTC),
     )
 
 
@@ -240,6 +242,26 @@ async def test_amend_repoints_the_ledger_row_so_the_next_follow_up_finds_it(
     assert kind == "terms"
     assert written["order_no"] == "0001002"
     assert written["detail"]["modified_from_order_no"] == ORDER_ID
+
+
+@pytest.mark.asyncio
+async def test_amend_without_a_replacement_number_fails_and_leaves_the_ledger_alone(
+    wire: _Kis, ledger: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def no_number(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"ord_tmd": "100000"}
+
+    monkeypatch.setattr(wire, "modify_korea_order", no_number)
+    intent = intent_snapshot()
+    forwarder = KisMockForwarder(
+        journal=_seeded(intent, _child()), lease_factory=_Lease
+    )
+
+    forwarded = await forwarder.amend(intent, _amend(intent), broker_order_id=ORDER_ID)
+
+    assert forwarded.accepted is False
+    assert forwarded.result["error"] == "kis_mock modify returned no order number"
+    assert ledger["writes"] == []
 
 
 @pytest.mark.asyncio

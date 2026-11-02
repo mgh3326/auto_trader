@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import copy
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from app.services.execution_intent_gateway.query import (
     UnresolvedReason,
     WorkingOrder,
     build_reconciliation,
+    executed_by_order_id,
+    order_trading_days,
 )
 from tests.services.execution_intent_gateway.support import (
     MemoryGatewayStore,
@@ -35,6 +38,8 @@ from tests.services.execution_intent_gateway.support import (
 ROOT = Path(__file__).resolve().parents[3]
 TOKEN = "query-test-token"
 HEADERS = {"X-Execution-Intent-Gateway-Token": TOKEN}
+#: 09:30 KST on 2026-11-02.
+SENT_AT = datetime(2026, 11, 2, 0, 30, tzinfo=UTC)
 
 
 def _child(
@@ -49,6 +54,7 @@ def _child(
     order_id: str | None = None,
     reason: str | None = None,
     result: dict[str, Any] | None = None,
+    created_at: datetime = SENT_AT,
 ) -> ChildSnapshot:
     return ChildSnapshot(
         child_id=child_id,
@@ -62,6 +68,7 @@ def _child(
         refusal_reason=reason,
         broker_order_id=order_id,
         result=result,
+        created_at=created_at,
     )
 
 
@@ -294,6 +301,119 @@ def test_filled_takes_the_larger_of_the_two_ledgers() -> None:
         filled_by_order_id={"1001": 5},
     )
     assert build_reconciliation([SUBMIT_OK], evidence).filled_qty == 5
+
+
+def _reconcile_with_fills(
+    children: list[ChildSnapshot],
+    orders_by_root: dict[str, tuple[LedgerOrder, ...]],
+    fills: list[tuple[str, int, str, datetime]],
+) -> Reconciliation:
+    """The reader's path without the database: days, then fills, then the fold."""
+    lineages = {children[0].idempotency_key: children}
+    days = order_trading_days(lineages, orders_by_root)
+    return build_reconciliation(
+        children,
+        LedgerEvidence(
+            orders_by_root=orders_by_root,
+            filled_by_order_id=executed_by_order_id(fills, days),
+        ),
+    )
+
+
+@pytest.mark.parametrize("source", ["websocket", "reconciler"])
+def test_an_old_fill_under_a_reused_number_does_not_close_a_live_order(
+    source: str,
+) -> None:
+    result = _reconcile_with_fills(
+        [SUBMIT_OK],
+        {"key-00001": (_ledger(),)},
+        [("1001", 10, source, datetime(2026, 10, 30, 1, 0, tzinfo=UTC))],
+    )
+    assert result == Reconciliation(True, WorkingOrder("key-00001", 70_000, 10), 0, ())
+
+
+def test_a_same_day_fill_still_closes_the_order() -> None:
+    result = _reconcile_with_fills(
+        [SUBMIT_OK],
+        {"key-00001": (_ledger(),)},
+        [("1001", 10, "reconciler", datetime(2026, 11, 2, 0, 31, tzinfo=UTC))],
+    )
+    assert result == Reconciliation(True, None, 10, ())
+
+
+def test_an_old_fill_does_not_resolve_an_unknown_submit() -> None:
+    unknown = _child(1, "key-00001", ChildState.UNCERTAIN)
+    ledger_row = _ledger(status="pending", lifecycle="planned")
+    result = _reconcile_with_fills(
+        [unknown],
+        {"key-00001": (ledger_row,)},
+        [("1001", 10, "reconciler", datetime(2026, 10, 30, 1, 0, tzinfo=UTC))],
+    )
+    assert result.reconciled is False
+    assert result.filled_qty == 0
+
+
+def test_the_trading_day_boundary_is_kst_midnight() -> None:
+    days = {"1001": {"20261102"}}
+    before_midnight = datetime(2026, 11, 1, 14, 59, tzinfo=UTC)
+    after_midnight = datetime(2026, 11, 1, 15, 0, tzinfo=UTC)
+    assert executed_by_order_id([("1001", 3, "websocket", before_midnight)], days) == {}
+    assert executed_by_order_id([("1001", 3, "websocket", after_midnight)], days) == {
+        "1001": 3
+    }
+
+
+def test_a_journaled_number_counts_only_on_the_day_its_child_was_sent() -> None:
+    lineage = [
+        _child(
+            1,
+            "key-00001",
+            ChildState.ACCEPTED,
+            order_id="1001",
+            created_at=datetime(2026, 11, 1, 14, 0, tzinfo=UTC),
+        ),
+        _child(
+            2,
+            "key-00002",
+            ChildState.ACCEPTED,
+            action="amend",
+            target="key-00001",
+            order_id="1002",
+            created_at=SENT_AT,
+        ),
+    ]
+    assert order_trading_days({"key-00001": lineage}, {}) == {
+        "1001": {"20261101"},
+        "1002": {"20261102"},
+    }
+
+
+def test_a_number_known_only_from_the_ledger_takes_its_lineages_days() -> None:
+    lineage = [
+        _child(
+            1,
+            "key-00001",
+            ChildState.UNCERTAIN,
+            created_at=datetime(2026, 11, 1, 14, 0, tzinfo=UTC),
+        ),
+        _child(
+            2,
+            "key-00002",
+            ChildState.UNCERTAIN,
+            action="amend",
+            target="key-00001",
+            created_at=SENT_AT,
+        ),
+    ]
+    days = order_trading_days(
+        {"key-00001": lineage}, {"key-00001": (_ledger(order_no="1002"),)}
+    )
+    assert days == {"1002": {"20261101", "20261102"}}
+
+
+def test_a_fill_for_an_order_with_no_established_day_is_not_counted() -> None:
+    fill = ("9999", 10, "reconciler", SENT_AT)
+    assert executed_by_order_id([fill], {"1001": {"20261102"}}) == {}
 
 
 def test_two_working_orders_refuse_to_name_one() -> None:

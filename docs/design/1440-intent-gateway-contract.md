@@ -63,7 +63,7 @@ Both reads need the token, take no lock, and run in a `READ ONLY` transaction. N
 `view` has exactly the fields of fillwire's `exec.View`:
 
 - `order` is absent when no order is working. `qty` is the quantity last sent, and fills do not reduce it. The open quantity is `qty` minus the fills on that order.
-- `filled_qty` only holds back further sends. It is not fill evidence, and it can overstate because KIS order numbers repeat across days.
+- `filled_qty` is not fill evidence. It holds back further sends, and it also decides that a fully filled order is no longer working. KIS order numbers repeat across days, so a fill counts only on the KST trading day of the child that sent that number. A number known only from the ledger takes the days of its lineage. An execution-ledger row from any other day is ignored, because it could report a live order as finished.
 
 **`view` is `null` when `reconciled` is false, and E2 must keep holding.** `unresolved` then names each child and why:
 
