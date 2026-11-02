@@ -106,6 +106,8 @@ from app.services.order_proposals.revalidation import (
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import OrderProposalsService
+from app.services.strategy_sleeves.dispatch_gate import evaluate_sleeve_for_dispatch
+from app.services.strategy_sleeves.vocabulary import SleeveGateReason
 from app.telegram_contract import (
     TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
     TelegramErrorClassification,
@@ -198,6 +200,27 @@ def _manual_fallback_decisions(
             "reason": reason,
             "policy_version": policy_version,
             **inputs,
+        }
+        for rung in rungs
+        if rung.state == "pending_approval"
+    ]
+
+
+def _sleeve_fallback_decisions(
+    *,
+    rungs: list[Any],
+    verdict: Any,
+    policy_version: str,
+) -> list[dict[str, Any]]:
+    """ROB-1470: the sleeve gate's closed reason plus its numeric evidence."""
+    reason = SleeveGateReason(verdict.reason).value
+    return [
+        {
+            "rung_index": rung.rung_index,
+            "eligible": False,
+            "reason": reason,
+            "policy_version": policy_version,
+            **verdict.details,
         }
         for rung in rungs
         if rung.state == "pending_approval"
@@ -1098,6 +1121,25 @@ async def dispatch_proposal(
                 )
             )
             limits = None
+        if limits is not None and getattr(group, "sleeve_id", None) is not None:
+            # ROB-1470: a sleeve-tagged proposal is auto-approvable only while
+            # its sleeve is live, under its loss limit and inside its budget.
+            # Measured before revalidation (before any broker call), under the
+            # sleeve lock this transaction holds until commit. Any other answer
+            # demotes to the human card with the sleeve reason. An untagged
+            # proposal (sleeve_id NULL) never enters this branch.
+            sleeve_verdict = await evaluate_sleeve_for_dispatch(
+                session, group=group, rungs=initial_rungs, now=gate_now
+            )
+            if not sleeve_verdict.allowed:
+                fallback_decisions.extend(
+                    _sleeve_fallback_decisions(
+                        rungs=initial_rungs,
+                        verdict=sleeve_verdict,
+                        policy_version=limits.policy_version,
+                    )
+                )
+                limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
             cash_funding_shortfall: Decimal | None = None

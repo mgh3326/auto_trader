@@ -88,6 +88,7 @@ class OrderProposal(Base):
         Index("ix_order_proposals_root", "root_proposal_id"),
         Index("ix_order_proposals_state", "lifecycle_state"),
         Index("ix_order_proposals_symbol", "symbol"),
+        Index("ix_order_proposals_sleeve_id", "sleeve_id"),
         {"schema": "review"},
     )
 
@@ -118,6 +119,12 @@ class OrderProposal(Base):
     proposer: Mapped[str] = mapped_column(Text, nullable=False)
     thesis: Mapped[str | None] = mapped_column(Text)
     strategy: Mapped[str | None] = mapped_column(Text)
+    # ROB-1470: the strategy sleeve this proposal's orders belong to. NULL for
+    # every existing flow. Set once at create; a DB trigger refuses a change.
+    sleeve_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("review.strategy_sleeves.id", ondelete="RESTRICT"),
+    )
     rationale: Mapped[dict | None] = mapped_column(JSONB)
     broker_account_id: Mapped[str | None] = mapped_column(Text)
     lot_context: Mapped[dict | None] = mapped_column(JSONB)

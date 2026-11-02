@@ -152,7 +152,12 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v62 (ROB-1378 r1): the kis_mock_order_ledger writer lock trigger has no WHEN
 # (no user-defined function on the ordinary write path under the #789 Stage 4
 # function ACLs); it fires on every INSERT/UPDATE.
-SCHEMA_BOOTSTRAP_VERSION = 62
+# v63 (ROB-1470): review.strategy_sleeves / review.strategy_sleeve_versions
+# (new ORM tables via create_all), the nullable review.order_proposals.sleeve_id
+# column (ADD COLUMN IF NOT EXISTS for a persistent test DB) and the guard
+# triggers, loaded from the production migration 20261102_rob1470_sleeves so the
+# DB tests run its exact DDL.
+SCHEMA_BOOTSTRAP_VERSION = 63
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2350,6 +2355,29 @@ FOR EACH ROW
 EXECUTE FUNCTION review.kis_mock_q46_fill_writer_lock()
 """,
 )
+
+
+def _rob1470_sleeve_ddl() -> tuple[str, ...]:
+    """ROB-1470 guard DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261102_rob1470_strategy_sleeves.py"
+    )
+    spec = importlib.util.spec_from_file_location("rob1470_sleeves_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (
+        "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS sleeve_id "
+        "BIGINT REFERENCES review.strategy_sleeves(id) ON DELETE RESTRICT",
+        *module.GUARD_DDL,
+    )
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _rob1470_sleeve_ddl()
 
 
 # --------------------------------------------------------------------------- #

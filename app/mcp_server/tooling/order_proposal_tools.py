@@ -133,6 +133,13 @@ def _group_dict(g: Any) -> dict[str, Any]:
         "lifecycle_state": g.lifecycle_state,
         "thesis": g.thesis,
         "strategy": g.strategy,
+        # ROB-1470: present only on a sleeve-tagged proposal, so every untagged
+        # proposal's projection is unchanged.
+        **(
+            {"sleeve_id": g.sleeve_id}
+            if getattr(g, "sleeve_id", None) is not None
+            else {}
+        ),
         "exit_intent": g.exit_intent,
         "exit_reason": g.exit_reason,
         "retrospective_id": g.retrospective_id,
@@ -675,6 +682,7 @@ async def order_proposal_create(
     funding_candidate_event: dict | None = None,
     funding_target: dict | None = None,
     source_funding_advisory_id: str | None = None,
+    sleeve_id: int | None = None,
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
 
@@ -716,6 +724,13 @@ async def order_proposal_create(
                 the canonical account sequence returned by
                 toss_proposal_accounts. No value is derived from settings or
                 from rationale/source_asof. Missing remains a manual card.
+        sleeve_id: optional ROB-1470 strategy sleeve id. Tags the proposal's
+                orders, fills and P&L to that sleeve; the sleeve must be of the
+                same account_mode and market. A tagged proposal auto-approves
+                only while the sleeve is live, under its loss limit and within
+                its budget; otherwise it goes to the approval card with the
+                sleeve reason. A revision inherits the superseded proposal's
+                sleeve. Omit it for every untagged flow.
     """
     try:
         market = _normalize_order_proposal_market(market)
@@ -791,6 +806,7 @@ async def order_proposal_create(
                     if exit_intent == "cash_funding"
                     else None
                 ),
+                sleeve_id=sleeve_id,
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
             if sup is not None:
