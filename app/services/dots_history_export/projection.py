@@ -242,9 +242,18 @@ def _decimal_scaled(value: Any) -> str | None:
     )
 
 
-def _plain_text(value: str) -> str:
-    """Drop line breaks and control characters; keep the words as written."""
-    return " ".join(value.split())
+def _plain_text(value: str) -> str | None:
+    """Drop line breaks and control characters; keep the words as written.
+
+    Returns ``None`` when nothing printable is left, so an all-control label
+    becomes an empty cell instead of a ``shape_plain`` leak-check failure that
+    would abort the whole export.
+    """
+    cleaned = "".join(
+        character if character.isprintable() else " " for character in value
+    )
+    text = " ".join(cleaned.split())
+    return text or None
 
 
 def _masked_account(value: str) -> str:
@@ -1095,6 +1104,7 @@ def fill_lot_links(
     """
     cells: dict[int, OutputRow] = {}
     lots: dict[tuple[str, str, str], list[_OpenLot]] = {}
+    covered = supersede.covered_identities(SimpleNamespace(**row) for row in rows)
     for row in sorted(rows, key=_fill_order):
         row_id = int(row["id"])
         alias = _FILL_ALIASES.get(
@@ -1106,6 +1116,8 @@ def fill_lot_links(
         fill_ref = f"execution_ledger:{row_id}"
         cell: OutputRow = _unlinked_lot_cell()
         cells[row_id] = cell
+        if supersede.is_superseded(SimpleNamespace(**row), covered):
+            continue
         sequence = sequences[row_id]
         filled_at = _aware(row["filled_at"])
         price = Decimal(str(row["filled_price"]))
@@ -1383,22 +1395,37 @@ class _ReferencePrices:
     """
 
     def __init__(self, candles: Iterable[SourceRow]) -> None:
-        series: dict[str, list[tuple[datetime, Decimal]]] = {}
+        series: dict[tuple[str, str], list[tuple[datetime, Decimal]]] = {}
         for row in candles:
             symbol = _text(row.get("venue_symbol"))
             if not symbol:
                 continue
-            series.setdefault(symbol, []).append(
+            venue = _text(row.get("venue")) or ""
+            series.setdefault((venue, symbol), []).append(
                 (_aware(row["time"]), Decimal(str(row["close"])))
             )
         for values in series.values():
             values.sort()
         self._series = series
 
+    def _values(self, venue: str, symbol: str) -> list[tuple[datetime, Decimal]]:
+        values = self._series.get((venue, symbol))
+        if values is not None:
+            return values
+        # A venue the export did not label falls back to the symbol only when
+        # exactly one venue lists it; two venues with the same ticker would
+        # otherwise be priced with each other's close.
+        matches = [
+            series
+            for (listed_venue, listed), series in self._series.items()
+            if listed == symbol
+        ]
+        return matches[0] if len(matches) == 1 else []
+
     def lookup(
-        self, symbol: str, created_at: datetime
+        self, venue: str, symbol: str, created_at: datetime
     ) -> tuple[Decimal | None, datetime | None, str]:
-        values = self._series.get(symbol)
+        values = self._values(venue, symbol)
         if not values:
             return None, None, "unavailable:no_instrument"
         cutoff = _aware(created_at) - timedelta(days=1)
@@ -1479,7 +1506,9 @@ def _project_rungs(
 def _apply_reference_price(
     cell: OutputRow, row: SourceRow, prices: _ReferencePrices
 ) -> None:
-    price, asof, source = prices.lookup(str(row["symbol"]), row["created_at"])
+    alias = _PROPOSAL_ALIASES.get(str(row["account_mode"]), str(row["account_mode"]))
+    venue = alias.split("_", 1)[0]
+    price, asof, source = prices.lookup(venue, str(row["symbol"]), row["created_at"])
     cell["reference_price"] = _decimal_scaled(price)
     cell["reference_price_asof_utc"] = (
         asof.astimezone(UTC).isoformat().replace("+00:00", "Z") if asof else None

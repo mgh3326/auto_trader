@@ -163,6 +163,58 @@ def test_real_mode_refuses_an_operator_supplied_deny_value(tmp_path: Path) -> No
     assert {item.rule for item in raised.value.violations} == {"forbidden_value"}
 
 
+def test_real_mode_refuses_the_unhyphenated_form_of_a_known_account(
+    tmp_path: Path,
+) -> None:
+    # The stored id is "87654321-01"; a label that drops the hyphen is the same
+    # secret. A 10-digit broker order number must still pass.
+    projection = projected_real(
+        kis_live_order_ledger=[kis_live_row(strategy="desk acct 8765432101")]
+    )
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(projection, tmp_path / "export")
+    assert {item.rule for item in raised.value.violations} == {"forbidden_value"}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_broker_order_id_is_exempt_from_the_account_number_rule(
+    tmp_path: Path,
+) -> None:
+    # A copied order id is not an account number, and Toss ids may contain "-".
+    _publish(
+        projected_real(kis_live_order_ledger=[kis_live_row(order_no="12345678-01")]),
+        tmp_path / "export",
+    )
+
+
+def test_a_correlation_id_carrying_an_account_number_is_refused(tmp_path: Path) -> None:
+    projection = projected_real(
+        order_proposals=[proposal_row(correlation_id=ACCOUNT_NUMBER)]
+    )
+    with pytest.raises(LeakCheckFailed) as raised:
+        _publish(projection, tmp_path / "export")
+    assert any(
+        item.column == "correlation_ref" and item.rule == "account_number"
+        for item in raised.value.violations
+    )
+
+
+def test_a_whitespace_or_control_label_becomes_an_empty_cell_not_a_failure(
+    tmp_path: Path,
+) -> None:
+    # _plain_text collapses to nothing; the cell must be empty rather than a
+    # shape_plain violation that aborts the whole export.
+    _publish(
+        projected_real(kis_live_order_ledger=[kis_live_row(strategy="\x00\x01")]),
+        tmp_path / "export",
+    )
+    with (tmp_path / "export" / "kis_live_order_ledger.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        [row] = list(csv.DictReader(handle))
+    assert row["strategy_tag"] == ""
+
+
 def test_real_mode_writes_every_table_and_records_the_mode(tmp_path: Path) -> None:
     out = tmp_path / "export"
     manifest = _publish(projected_real(), out)
@@ -278,6 +330,39 @@ def test_a_superseded_fill_never_moves_the_lot_cost_basis() -> None:
     assert by_id["execution_ledger:102"]["lot_cost_basis"] == "100.000000000000"
     assert by_id["execution_ledger:102"]["linked_fill_ref"] == "execution_ledger:100"
     assert by_id["execution_ledger:100"]["lot_cost_basis"] == "100"
+
+
+def test_fill_lot_links_skips_a_superseded_row_when_called_directly() -> None:
+    # The walk must be safe for a caller that passes every row, not only the
+    # projection path that pre-filters.
+    authoritative = fill_row(
+        id=130,
+        source="reconciler",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("100"),
+        filled_at=CREATED,
+    )
+    duplicate = fill_row(
+        id=131,
+        source="websocket",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("50"),
+        filled_at=CREATED,
+    )
+    sell = fill_row(
+        id=132,
+        source="websocket",
+        side="sell",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("120"),
+        filled_at=CREATED + timedelta(hours=2),
+    )
+    rows = [authoritative, duplicate, sell]
+    cells = fill_lot_links(rows, fill_sequences(rows))
+    assert cells[131]["lot_link_kind"] == "unlinked"
+    assert cells[132]["lot_cost_basis"] == "100.000000000000"
 
 
 def test_a_sell_larger_than_the_visible_lots_is_unlinked() -> None:
@@ -436,6 +521,27 @@ def test_a_symbol_without_a_candle_source_says_so() -> None:
     ]
     assert rung["reference_price"] is None
     assert rung["reference_price_source"] == "unavailable:no_instrument"
+
+
+def test_two_venues_with_one_symbol_do_not_share_a_close() -> None:
+    candles = [
+        {
+            "venue": "upbit",
+            "venue_symbol": "KRW-BTC",
+            "time": datetime(2026, 6, 8, tzinfo=UTC),
+            "close": Decimal("145000000"),
+        },
+        {
+            "venue": "binance",
+            "venue_symbol": "KRW-BTC",
+            "time": datetime(2026, 6, 8, tzinfo=UTC),
+            "close": Decimal("100"),
+        },
+    ]
+    [rung] = projected_real(
+        order_proposal_rungs=[CRYPTO_SELL_RUNG], crypto_daily_candles=candles
+    ).tables["order_proposal_rungs"]
+    assert rung["reference_price"] == "145000000.000000000000"
 
 
 def test_a_kr_rung_gets_no_reference_price_columns() -> None:

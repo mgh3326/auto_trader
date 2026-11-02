@@ -207,11 +207,27 @@ def _shape_rule(column: Column, value: str) -> str | None:
     return None
 
 
+#: A copied ref that carries free-form caller text, not a broker order id. The
+#: account-number rule applies to these; a broker order id may contain hyphens
+#: (Toss ids are base64url) and is exempt.
+ACCOUNT_CHECKED_RAW_REFS = frozenset({"correlation_ref", "report_item_ref"})
+
+
 def _forbidden_variants(values: Iterable[str]) -> frozenset[str]:
+    """Stored identifiers plus the shapes they take without separators.
+
+    A stored ``87654321-01`` is also refused as ``8765432101``: an unhyphenated
+    copy of a known account number is the same secret. Only values the tool read
+    or the operator listed reach this set, so a legitimate 10-digit order number
+    is not affected unless it is one of those values.
+    """
     variants: set[str] = set()
     for value in values:
         text = value.strip().casefold()
         variants.update(item for item in (text, text.lstrip("0")) if item)
+        digits = "".join(character for character in text if character.isdigit())
+        if digits and digits != text:
+            variants.add(digits)
     return frozenset(variants)
 
 
@@ -229,11 +245,12 @@ class _CellScanner:
         # with a long all-digit identifier (an account or order number written
         # without separators) is refused. Substrings would refuse real amounts.
         self._numeric = frozenset(item for item in self._substrings if item.isdigit())
-        self._cache: dict[tuple[Kind, str], str | None] = {}
+        self._cache: dict[tuple[Kind, str, str], str | None] = {}
 
-    def _pattern_rule(self, kind: Kind, value: str) -> str | None:
+    def _pattern_rule(self, column: Column, value: str) -> str | None:
+        kind = column.kind
         if self._real:
-            if kind is Kind.RAW_REF:
+            if kind is Kind.RAW_REF and column.name not in ACCOUNT_CHECKED_RAW_REFS:
                 rule = _credential_rule(value)
             else:
                 rule = _real_identifier_rule(value)
@@ -289,9 +306,9 @@ class _CellScanner:
             Kind.MASKED,
         ):
             return None
-        key = (column.kind, value)
+        key = (column.kind, column.name, value)
         if key not in self._cache:
-            self._cache[key] = self._pattern_rule(column.kind, value)
+            self._cache[key] = self._pattern_rule(column, value)
         return self._cache[key]
 
 
