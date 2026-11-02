@@ -372,6 +372,14 @@ async def test_an_undelivered_proposal_gets_one_card_later_and_is_never_submitte
 
     monkeypatch.setattr(live_module, "now_kst", lambda: NOW)
     monkeypatch.setattr(live_module, "_UNDELIVERED_GRACE", NOW - far_future)
+    real_read = live_module._undelivered_proposal_ids
+
+    async def this_proposal_only(*args, **kwargs):
+        # The shared test database holds other tests' waiting proposals.
+        found = await real_read(*args, **kwargs)
+        return [item for item in found if item == proposal_id]
+
+    monkeypatch.setattr(live_module, "_undelivered_proposal_ids", this_proposal_only)
     notifier = _Notifier()
     outcomes: Counter[str] = Counter()
     for _attempt in range(2):
