@@ -119,6 +119,15 @@ It never liquidates the account's entire symbol holding. A close ACK leaves the
 episode open. Only terminal close fill evidence covering the entry fill quantity
 closes the entry and records gross USD P&L; borrow costs and fees are not fabricated.
 
+The documented waiting states `done_for_day`, `stopped`, `suspended`,
+`pending_replace`, `pending_cancel`, `replaced`, `calculated` and `held` retain
+their broker status and any validated cumulative fill. They remain nonterminal
+for this strategy: neither an entry exit nor a residual exit leg is authorized by
+these observations. A subsequent `filled`, `canceled`, `expired` or `rejected`
+observation must establish the final fill quantity. Unknown statuses, mismatched
+order identity and regressing fill quantities remain uncertain. See Alpaca's
+[order lifecycle](https://docs.alpaca.markets/us/docs/orders-at-alpaca).
+
 ## Idempotency and recovery
 
 Every entry has a deterministic strategy/date/symbol/side client ID with a
@@ -149,6 +158,11 @@ preceding terminal evidence.
 
 `run` reconciles existing entry evidence on same-session replay. `close-due`
 reconciles due entry/exit evidence and safely resumes bookkeeping after a crash.
+An ordinary error in one due entry is reported as `episode_status=unresolved`
+with its exception class; independent entries continue and the CLI returns nonzero.
+This result does not change the entry's durable status or grant retry authority.
+Account/session preflight still gates the whole invocation. Cancellation and
+process control exceptions propagate instead of being treated as entry failures.
 Use `status` to identify unresolved orders. Broker exceptions and DB DSNs are not
 printed: the CLI emits a fixed error and exception class, and returns nonzero for
 unresolved sends. No schedules, TaskIQ jobs, cron entries or deployments are added.

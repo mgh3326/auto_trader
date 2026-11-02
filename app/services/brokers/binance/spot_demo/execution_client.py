@@ -218,6 +218,39 @@ class BinanceSpotDemoExecutionClient:
         """Release the underlying httpx client."""
         await self._client.aclose()
 
+    async def get_symbol_info(self, *, symbol: str) -> dict[str, Any]:
+        """Demo-local exchange filters; never consult a live execution host."""
+        response = await self._client.get("/api/v3/exchangeInfo")
+        response.raise_for_status()
+        rows = response.json()["symbols"]
+        match = next((row for row in rows if row["symbol"] == symbol), None)
+        if match is None:
+            raise ValueError("demo symbol unavailable")
+        return match
+
+    async def get_ticker_price(self, *, symbol: str) -> Decimal:
+        response = await self._client.get(
+            "/api/v3/ticker/price", params={"symbol": symbol}
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body["symbol"] != symbol:
+            raise ValueError("demo ticker symbol mismatch")
+        return Decimal(body["price"])
+
+    async def get_order_trades(
+        self, *, symbol: str, order_id: str
+    ) -> list[dict[str, Any]]:
+        params = {
+            "symbol": symbol,
+            "orderId": order_id,
+            "recvWindow": str(BINANCE_SPOT_DEMO_RECV_WINDOW_MS),
+        }
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        response = await self._client.get("/api/v3/myTrades", params=signed)
+        response.raise_for_status()
+        return [_redact(row) for row in response.json()]
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

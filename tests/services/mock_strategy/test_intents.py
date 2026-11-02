@@ -3,13 +3,14 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from app.models.mock_strategy import VENUES
-from app.services.mock_strategy.recorder import OrderIntent
+from app.services.mock_strategy.recorder import MockStrategyRecorder, OrderIntent
 
 
 def intent(**overrides):
@@ -50,6 +51,40 @@ def test_all_four_mock_venues_and_large_paper_sizes(venue):
 def test_invalid_boundary(changes):
     with pytest.raises(ValueError):
         replace(intent(), **changes)
+
+
+@pytest.mark.asyncio
+async def test_recorder_keeps_first_open_timestamp_with_fake_session():
+    row = SimpleNamespace(
+        status="accepted", broker_order_id=None, opened_at=None, meta={}
+    )
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def begin(self):
+            return self
+
+        async def scalars(self, statement):
+            return SimpleNamespace(one=lambda: row)
+
+        async def flush(self):
+            pass
+
+        def expunge(self, value):
+            assert value is row
+
+    recorder = MockStrategyRecorder(session_factory=Session)
+    first_open = datetime(2026, 11, 9, 14, 30, tzinfo=UTC)
+    await recorder.update("fixture-entry", status="filled", opened_at=first_open)
+    refreshed = await recorder.update(
+        "fixture-entry", status="filled", opened_at=first_open + timedelta(days=1)
+    )
+    assert refreshed.opened_at == first_open
 
 
 class ExpiringSession:

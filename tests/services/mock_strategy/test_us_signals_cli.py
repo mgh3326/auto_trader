@@ -150,3 +150,37 @@ async def test_fixture_cannot_enable_real_orders(tmp_path):
     )
     with pytest.raises(ValueError, match="dry-run only"):
         await execute(args)
+
+
+def test_cli_reports_unresolved_episode_as_failure(monkeypatch, capsys):
+    from scripts import mock_strategy
+
+    async def unresolved(args):
+        return {
+            "orders": [
+                {
+                    "client_order_id": "synthetic",
+                    "status": "filled",
+                    "episode_status": "unresolved",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(mock_strategy, "execute", unresolved)
+    assert (
+        mock_strategy.main(
+            [
+                "close-due",
+                "--venue",
+                "alpaca_paper",
+                "--asof",
+                "2026-11-09",
+                "--confirm",
+            ]
+        )
+        == 1
+    )
+    assert (
+        json.loads(capsys.readouterr().out)["orders"][0]["episode_status"]
+        == "unresolved"
+    )
