@@ -75,6 +75,22 @@
           "report_sha256": "42a32095480688e214c1f296a497ad9586c85ae39c7f4806984c55d71a9007b3"
         }
       ]
+    },
+    {
+      "id": "ROB-1473",
+      "title": "Daily crypto B3 and US composite shadow function check",
+      "tracker": "ROB-1473",
+      "markets": [
+        "crypto",
+        "us"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-02",
+      "manifest": "research/experiments/manifests/rob-1473.json",
+      "manifest_sha256": "22ee94b6e2a2de798c871bb5982a6e04b0b2c889401d739e2b0b31d0b5cb4ae1",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }
