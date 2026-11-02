@@ -142,6 +142,8 @@ def projection(row: OrderIntent | MockStrategyOrder) -> dict:
         "notional": str(row.notional) if row.notional is not None else None,
         "exit_due_at": row.exit_due_at.isoformat() if row.exit_due_at else None,
         "status": getattr(row, "status", "dry_run"),
+        "broker_status": row.meta.get("broker_status"),
+        "filled_qty": row.meta.get("filled_qty"),
     }
 
 
@@ -250,7 +252,7 @@ class UsPaperStrategy:
         if qty < previous_qty:
             raise ValueError("broker cumulative fill quantity regressed")
         if qty > 0:
-            status = "filled" if order.status in BROKER_TERMINAL else "partially_filled"
+            status = "filled" if order.status == "filled" else "partially_filled"
         elif order.status in BROKER_TERMINAL:
             status = "rejected" if order.status == "rejected" else "canceled"
         else:
@@ -340,7 +342,7 @@ class UsPaperStrategy:
                 entry = await self._refresh(entry)
                 qty = Decimal(entry.meta.get("filled_qty", "0"))
                 if (
-                    entry.status != "filled"
+                    entry.status not in {"filled", "partially_filled"}
                     or not entry.meta.get("broker_terminal")
                     or qty <= 0
                     or entry.entry_price is None
@@ -366,7 +368,8 @@ class UsPaperStrategy:
     @staticmethod
     def _exit_fill(leg: MockStrategyOrder) -> tuple[Decimal, Decimal] | None:
         if (
-            leg.status not in {"filled", "closed", "canceled", "rejected"}
+            leg.status
+            not in {"filled", "partially_filled", "closed", "canceled", "rejected"}
             or leg.meta.get("broker_terminal") is not True
         ):
             return None
@@ -508,7 +511,7 @@ class UsPaperStrategy:
         for leg in legs:
             current = await self.recorder.get(leg.client_order_id)
             assert current is not None
-            if current.status == "filled":
+            if current.status in {"filled", "partially_filled"}:
                 await self.recorder.update(
                     leg.client_order_id, status="closed", closed_at=now
                 )

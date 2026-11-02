@@ -103,12 +103,17 @@ An entry that would net an opposite account position is refused. Alpaca accounts
 are netted: unrelated manual activity can still interfere between reads and POST.
 Operate this paper book with that limitation in mind; the account lock coordinates
 this consumer only, and cannot fence unrelated clients.
+The account lock belongs to an explicit database transaction and is released by
+commit or rollback, including cancellation. It does not use a pooled session lock.
 
 Exit due time is the regular open of the h-th XNYS session **after** the entry
 session, including holiday handling and daylight saving. `close-due` refreshes each
 due entry's broker order by its bound client ID. It closes only proven filled
 quantity after the entry is terminal (filled, or partially filled then canceled/
 expired). An accepted or still-working entry cannot supply close quantity.
+Canceled or expired partial fills retain `status=partially_filled` and their exact
+`broker_status` and `filled_qty`. The terminal flag is required separately for
+entry exits and residual legs; a partial status alone grants no close authority.
 Fresh account position and available long quantity must also cover the exit.
 It never liquidates the account's entire symbol holding. A close ACK leaves the
 episode open. Only terminal close fill evidence covering the entry fill quantity

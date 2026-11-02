@@ -282,6 +282,33 @@ async def test_accepted_is_not_fill_and_partial_terminal_entry_closes_only_prove
     assert entry.status == "closed" and entry.realized_pnl == Decimal("70")
 
 
+async def test_terminal_partial_fill_remains_partial_with_authoritative_broker_status():
+    from app.services.mock_strategy.us import projection
+
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    broker.accept_only = True
+    await run(strategy)
+    entry = next(row for row in recorder.rows.values() if row.side == "buy")
+    broker.orders[entry.client_order_id] = broker.orders[
+        entry.client_order_id
+    ].model_copy(
+        update={
+            "status": "canceled",
+            "filled_qty": Decimal("40"),
+            "filled_avg_price": Decimal("100"),
+        }
+    )
+    partial = await strategy._refresh(entry)
+    assert partial.status == "partially_filled"
+    assert projection(partial)["broker_status"] == "canceled"
+    assert projection(partial)["filled_qty"] == "40"
+    broker.accept_only = False
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert entry.status == "closed"
+    assert broker.posts[-1][0] == "sell" and broker.posts[-1][1].qty == Decimal("40")
+
+
 async def test_close_ack_waits_for_fill_evidence_without_resubmission():
     recorder, broker = MemoryRecorder(), PaperBroker()
     strategy = UsPaperStrategy(recorder, broker)
