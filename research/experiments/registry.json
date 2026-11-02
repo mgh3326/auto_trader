@@ -77,6 +77,22 @@
       ]
     },
     {
+      "id": "ROB-1473",
+      "title": "Daily crypto B3 and US composite shadow function check",
+      "tracker": "ROB-1473",
+      "markets": [
+        "crypto",
+        "us"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-02",
+      "manifest": "research/experiments/manifests/rob-1473.json",
+      "manifest_sha256": "22ee94b6e2a2de798c871bb5982a6e04b0b2c889401d739e2b0b31d0b5cb4ae1",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
+    },
+    {
       "id": "ROB-1474",
       "title": "Daily cross-sectional stock selection harness, bounded diagnostics",
       "tracker": "ROB-1474",

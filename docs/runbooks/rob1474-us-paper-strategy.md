@@ -66,7 +66,8 @@ python -m scripts.mock_strategy close-due --venue alpaca_paper --asof 2026-11-09
 
 The first preview reads local files only: no DB, broker or file writes. The second
 reads due DB rows without mutations and does not claim that broker checks passed.
-`status` reads the DB only and reports recorded evidence, including unresolved
+`status` reads the DB only and includes the recorded account reference for scoping
+previews. It reports recorded evidence, including unresolved
 `sending` and `uncertain`; it does not perform broker reconciliation.
 
 ## Frozen selection and execution
@@ -115,18 +116,31 @@ closes the entry and records gross USD P&L; borrow costs and fees are not fabric
 
 ## Idempotency and recovery
 
-Every entry and exit has a deterministic strategy/date/symbol/side client ID with
-a strategy-encoding prefix. The whole entry plan commits before any POST. A unique
+Every entry has a deterministic strategy/date/symbol/side client ID with a
+strategy-encoding prefix. Exit IDs also bind a durable leg index. Leg zero keeps
+the original exit ID, so existing journal rows remain valid. The whole entry plan commits before any POST. A unique
 ID and committed `planned` → `sending` compare-and-set permits exactly one sender.
 The migration blocks intent changes, resetting a sent row to planned, reopening
 terminal rows and erasing the journal. The service is the only table writer.
 
+Read-only eligibility, order-shape and session guards run before claim and again
+immediately before POST. An initial refusal leaves the plan unclaimed. A late
+`PreDispatchRefusal` records a terminal zero-fill rejection with positive no-POST
+proof, without resetting its claim. Every error after entering the order POST
+boundary remains ambiguous, even a ValueError or a refusal-shaped exception.
+Cancellation propagates unchanged and leaves the durable sending fence intact.
+
 Timeout, bad broker echo, failed result commit or crash leaves `uncertain` or the
 already committed `sending`. Replay only looks up evidence by client ID; missing
-or failed lookup is never permission to resubmit. An ambiguous or partially filled
-close is not automatically replaced. Retain its reservation and reconcile the
-original order; unresolved residuals require operator investigation. Do not delete
-rows, reset statuses or change IDs to force a retry.
+or failed lookup is never permission to resubmit. An uncertain or nonterminal close
+keeps its reservation and blocks later legs. Once all preceding legs have proven
+terminal outcomes, a later `close-due` invocation can create one indexed leg for
+the entry fill quantity minus their proven fills. Canceled, expired or rejected
+zero-fill closes release no filled quantity. A terminal partial fill reduces only
+the residual. Each leg commits and claims separately. The episode closes only when
+aggregate terminal fills cover the entry, with weighted exit price and aggregate
+gross P&L. Do not delete rows, reset statuses or invent a new index without the
+preceding terminal evidence.
 
 `run` reconciles existing entry evidence on same-session replay. `close-due`
 reconciles due entry/exit evidence and safely resumes bookkeeping after a crash.

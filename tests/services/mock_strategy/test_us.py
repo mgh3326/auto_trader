@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime
@@ -13,6 +14,7 @@ import pytest
 from app.models.mock_strategy import OPEN_STATUSES, MockStrategyOrder
 from app.services.brokers.alpaca.schemas import Asset, Order
 from app.services.mock_strategy.us import UsPaperStrategy, plan_orders
+from app.services.mock_strategy.us_broker import PreDispatchRefusal
 from app.services.mock_strategy.us_signals import Candidate, UsSelection, session_times
 
 pytestmark = pytest.mark.asyncio
@@ -129,6 +131,9 @@ class PaperBroker:
 
     async def lookup(self, coid):
         return self.orders.get(coid)
+
+    async def prepare(self, request, *, side, asof, confirm):
+        assert confirm is True
 
     async def submit(self, request, *, side, asof, confirm):
         assert confirm is True
@@ -301,6 +306,163 @@ async def test_close_ack_waits_for_fill_evidence_without_resubmission():
     await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
     assert len(broker.posts) == 4
     assert {r.status for r in recorder.rows.values()} == {"closed"}
+
+
+async def test_new_evidence_mismatch_cannot_close_using_older_fill_metadata():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    entry = next(row for row in recorder.rows.values() if row.side == "buy")
+    broker.orders[entry.client_order_id] = broker.orders[
+        entry.client_order_id
+    ].model_copy(update={"symbol": "WRONG"})
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert entry.status == "uncertain" and entry.realized_pnl is None
+    assert [side for side, _ in broker.posts] == ["buy", "short", "cover"]
+
+
+@pytest.mark.parametrize(
+    "terminal,filled",
+    [("canceled", "0"), ("expired", "0"), ("rejected", "0"), ("canceled", "40")],
+)
+async def test_terminal_exit_opens_only_a_new_durable_residual_leg(terminal, filled):
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    entry = next(r for r in recorder.rows.values() if r.side == "buy")
+    broker.accept_only = True
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    first = next(r for r in recorder.rows.values() if r.side == "sell")
+    first_id = first.client_order_id
+    broker.orders[first_id] = broker.orders[first_id].model_copy(
+        update={
+            "status": terminal,
+            "filled_qty": Decimal(filled),
+            "filled_avg_price": Decimal("105") if Decimal(filled) else None,
+        }
+    )
+    broker.accept_only = False
+    await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    exits = [r for r in recorder.rows.values() if r.side == "sell"]
+    assert len(exits) == 2
+    residual = exits[-1]
+    assert residual.client_order_id != first_id
+    assert residual.qty == Decimal("100") - Decimal(filled)
+    assert residual.meta["exit_leg"] == 1
+    assert entry.status == "closed"
+    assert entry.realized_pnl == Decimal("1000") - Decimal(filled) * Decimal("5")
+    assert entry.exit_price == Decimal("110") - Decimal(filled) / Decimal("20")
+    assert sum(req.client_order_id == first_id for _, req in broker.posts) == 1
+    count = len(broker.posts)
+    await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    assert len(broker.posts) == count
+
+
+@pytest.mark.parametrize(
+    "state", ["nonterminal_partial", "timeout", "missing_fill_evidence"]
+)
+async def test_unknown_or_nonterminal_exit_never_gets_another_leg(state):
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    broker.accept_only = True
+    broker.fail_submit = state == "timeout"
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    for row in recorder.rows.values():
+        if row.side in {"sell", "cover"} and row.client_order_id in broker.orders:
+            broker.orders[row.client_order_id] = broker.orders[
+                row.client_order_id
+            ].model_copy(
+                update={
+                    "status": "partially_filled"
+                    if state == "nonterminal_partial"
+                    else "canceled",
+                    "filled_qty": Decimal("1")
+                    if state == "nonterminal_partial"
+                    else None,
+                    "filled_avg_price": Decimal("105"),
+                }
+            )
+    count = len(broker.posts)
+    broker.fail_submit = False
+    await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    assert len(broker.posts) == count
+    assert len([r for r in recorder.rows.values() if r.side in {"sell", "cover"}]) == 2
+
+
+async def test_late_no_post_exit_refusal_gets_a_new_residual_leg(monkeypatch):
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    submit = broker.submit
+
+    async def refusal(request, *, side, **kwargs):
+        if side == "sell":
+            raise PreDispatchRefusal("fixture late pre-POST refusal")
+        return await submit(request, side=side, **kwargs)
+
+    monkeypatch.setattr(broker, "submit", refusal)
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    first = next(row for row in recorder.rows.values() if row.side == "sell")
+    assert first.status == "rejected" and not first.broker_order_id
+    monkeypatch.setattr(broker, "submit", submit)
+    await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    exits = [row for row in recorder.rows.values() if row.side == "sell"]
+    assert len(exits) == 2 and exits[1].meta["exit_leg"] == 1
+    assert exits[1].qty == Decimal("100")
+    assert (
+        next(row for row in recorder.rows.values() if row.side == "buy").status
+        == "closed"
+    )
+
+
+async def test_unknown_residual_leg_keeps_its_reservation_across_reruns():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    broker.accept_only = True
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    first = next(row for row in recorder.rows.values() if row.side == "sell")
+    broker.orders[first.client_order_id] = broker.orders[
+        first.client_order_id
+    ].model_copy(
+        update={
+            "status": "canceled",
+            "filled_qty": Decimal("40"),
+            "filled_avg_price": Decimal("105"),
+        }
+    )
+    broker.fail_submit = True
+    await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    exits = [row for row in recorder.rows.values() if row.side == "sell"]
+    assert len(exits) == 2 and exits[1].status == "uncertain"
+    assert exits[1].qty == Decimal("60")
+    posts = len(broker.posts)
+    broker.fail_submit = False
+    await strategy.close_due(asof=date(2026, 11, 11), confirm=True)
+    assert len(broker.posts) == posts
+    assert len([row for row in recorder.rows.values() if row.side == "sell"]) == 2
+
+
+async def test_post_dispatch_cancellation_preserves_original_even_when_db_updates_fail(
+    monkeypatch,
+):
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    intent = plan_orders(
+        selection(), broker.asset_map, account_ref=broker.account_ref
+    ).orders[0]
+    row = await recorder.record(intent)
+    recorder.fail_updates = True
+    stop = asyncio.CancelledError("fixture cancellation")
+
+    async def canceled(*args, **kwargs):
+        raise stop
+
+    monkeypatch.setattr(broker, "submit", canceled)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await UsPaperStrategy(recorder, broker)._execute(row, DAY)
+    assert caught.value is stop and row.status == "sending"
+    assert not await recorder.claim(row.client_order_id)
 
 
 async def test_trading_day_exit_uses_holidays_and_requires_confirm():
