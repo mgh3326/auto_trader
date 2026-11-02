@@ -102,6 +102,7 @@ tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_list_recent_fill_events_cli.py
 tests/scripts/test_list_recent_watch_events_cli.py
 tests/scripts/test_mcp_tool_usage_audit.py
+tests/scripts/test_mock_data_refresh.py
 tests/scripts/test_mock_session_mcp.py
 tests/scripts/test_policy_table_halt_suspect.py
 tests/scripts/test_protected_positions.py
