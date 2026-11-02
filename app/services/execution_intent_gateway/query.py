@@ -22,6 +22,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.core.timezone import trade_day_kst
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
@@ -36,6 +37,7 @@ from app.services.execution_intent_gateway.kis_mock_forwarder import (
     OPEN_LEDGER_STATES,
     order_correlation_id,
 )
+from app.services.execution_ledger.supersede import supersede_provisional
 
 _UNKNOWN_STATES: Final = frozenset({ChildState.SENDING, ChildState.UNCERTAIN})
 
@@ -441,6 +443,56 @@ def _detail_flag(detail: Any) -> bool | None:
     return None
 
 
+class IntentFillsReader(Protocol):
+    async def read_fills(
+        self, intent: IntentSnapshot, children: Sequence[ChildSnapshot]
+    ) -> list[dict[str, Any]]: ...
+
+
+def intent_fill_orders(
+    children: Sequence[ChildSnapshot], rows: Sequence[ExecutionLedger]
+) -> list[dict[str, Any]]:
+    """Project committed fills for journaled senders only, never inferred orders.
+
+    Cancel rows repeat a target number; only submit/amend establish its day.
+    Preserve the journal's spelling in the answer and count each row once.
+    """
+    names: dict[OrderDay, str] = {}
+    for child in sorted(children, key=lambda item: item.child_id):
+        if child.action in {"submit", "amend"} and child.broker_order_id:
+            key = (
+                _order_number(child.broker_order_id),
+                trade_day_kst(child.created_at),
+            )
+            names.setdefault(key, child.broker_order_id)
+    effective = [
+        row
+        for row in rows
+        if row.quarantined_at is None
+        and (_order_number(row.broker_order_id), trade_day_kst(row.filled_at)) in names
+    ]
+    effective, _ = supersede_provisional(effective)
+    orders: dict[str, dict[str, Any]] = {
+        name: {"broker_order_id": name, "cumulative_qty": 0, "fills": []}
+        for name in names.values()
+    }
+    for row in sorted(effective, key=lambda item: (item.filled_at, item.id)):
+        name = names[(_order_number(row.broker_order_id), trade_day_kst(row.filled_at))]
+        qty = _whole_shares(row.filled_qty)
+        orders[name]["cumulative_qty"] += qty
+        orders[name]["fills"].append(
+            {
+                "fill_id": str(row.id),
+                "side": row.side,
+                "qty": qty,
+                "price": format(row.filled_price, "f"),
+                "filled_at": row.filled_at.isoformat(),
+                "committed_at": row.created_at.isoformat(),
+            }
+        )
+    return list(orders.values())
+
+
 class SqlLedgerEvidenceReader:
     """Reads ledger evidence in a ``READ ONLY`` transaction. Calls no broker."""
 
@@ -487,6 +539,56 @@ class SqlLedgerEvidenceReader:
             orders_by_root={key: tuple(value) for key, value in orders_by_root.items()},
             filled_by_order_day=filled_by_order_day,
         )
+
+    async def read_fills(
+        self, intent: IntentSnapshot, children: Sequence[ChildSnapshot]
+    ) -> list[dict[str, Any]]:
+        """Only committed, effective ledger rows for this journal's order IDs."""
+        numbers = {
+            _order_number(child.broker_order_id).lstrip("0")
+            for child in children
+            if child.action in {"submit", "amend"} and child.broker_order_id
+        }
+        if not numbers:
+            return []
+        async with self._session_factory() as session:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            rows = await session.scalars(
+                select(ExecutionLedger)
+                .options(
+                    load_only(
+                        ExecutionLedger.id,
+                        ExecutionLedger.broker,
+                        ExecutionLedger.account_mode,
+                        ExecutionLedger.venue,
+                        ExecutionLedger.instrument_type,
+                        ExecutionLedger.symbol,
+                        ExecutionLedger.side,
+                        ExecutionLedger.currency,
+                        ExecutionLedger.broker_order_id,
+                        ExecutionLedger.source,
+                        ExecutionLedger.filled_qty,
+                        ExecutionLedger.filled_price,
+                        ExecutionLedger.filled_at,
+                        ExecutionLedger.created_at,
+                        ExecutionLedger.quarantined_at,
+                    )
+                )
+                .where(
+                    ExecutionLedger.broker == "kis",
+                    ExecutionLedger.account_mode == "mock",
+                    ExecutionLedger.venue == intent.venue,
+                    ExecutionLedger.instrument_type == "equity_kr",
+                    ExecutionLedger.symbol == intent.symbol,
+                    ExecutionLedger.side == intent.side,
+                    ExecutionLedger.currency == "KRW",
+                    func.ltrim(ExecutionLedger.broker_order_id, "0").in_(list(numbers)),
+                    execution_ledger_in_effect(),
+                )
+            )
+            orders = intent_fill_orders(children, rows.all())
+            await session.rollback()
+        return orders
 
     @staticmethod
     async def _executions(

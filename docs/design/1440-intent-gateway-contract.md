@@ -44,7 +44,7 @@ If `handle` raises, nothing was forwarded for that call, unless the row was alre
 
 ## Query
 
-Both reads need the token, take no lock, and run in a `READ ONLY` transaction. Neither calls a broker.
+All reads need the token, take no lock, and run in a `READ ONLY` transaction. None calls a broker.
 
 `GET /execution-intents/children/<idempotency_key>` returns one journal row: `intent_id`, `child_id`, `idempotency_key`, `action`, `target_idempotency_key`, `quantity`, `limit_price_krw`, `state`, `refusal_reason`, `broker_order_id` and `result`.
 
@@ -86,6 +86,45 @@ What resolves an unknown outcome:
 | An accepted cancel in the journal | No order |
 
 A missing ledger row proves nothing, because the row is written after the send. An unknown amend or cancel on an open order stays unresolved. An unknown amend closes only on evidence about the order the ledger names for it: fills, expiry or a cancel on the order it may have replaced say nothing about a replacement. The journal rows themselves never change: a query reports them and does not move them.
+
+### Committed fills (ROB-1461)
+
+`GET /execution-intents/intents/<intent_id>/fills` uses the same route gate
+(404 when disabled) and machine token (unset: 403; missing/wrong: 401).
+Unknown intents return 404; read failures return a fixed 503, never an empty
+success. It performs no writes, locks, broker calls or stream reads.
+
+```json
+{"intent_id":"<uuid>","orders":[{"broker_order_id":"000123","cumulative_qty":2,
+ "fills":[{"fill_id":"42","side":"buy","qty":2,"price":"70000.00000000",
+ "filled_at":"2026-11-02T01:00:00+00:00",
+ "committed_at":"2026-11-02T01:00:01+00:00"}]}]}
+```
+
+Only submit/amend broker order IDs already recorded in
+`review.execution_child_requests` for this intent establish orders. Cancel rows
+repeat a target and do not establish another trading day. Missing journal
+numbers are never inferred from the mock order ledger, symbol or time proximity.
+Numbers compare without leading zeros and fills must match the sender's KST
+trading day, broker `kis`, account mode `mock`, venue, KR instrument, symbol,
+side and KRW currency. The response preserves the journal's order-number spelling.
+
+The reader uses `execution_ledger_in_effect()` and ROB-1379
+`supersede_provisional` to exclude quarantine and websocket rows covered by an
+authoritative row of the same order identity. `cumulative_qty` is the sum of the
+returned `qty` values, whole shares. `fill_id` is the stable ledger row ID as a
+decimal string; `price` is an exact decimal string. Rows are ordered by
+`filled_at`, then row ID. Known orders with no effective fills have zero quantity
+and an empty fill list; intents with no journaled order IDs have `orders: []`.
+
+`committed_at` exposes the ledger's stored `created_at` ingestion timestamp,
+visible only after the writer commits. PostgreSQL stores transaction-start time
+there; it is **not an exact COMMIT clock**. A later upsert can update a row under
+the same `fill_id`, so consumers must refresh the full snapshot rather than add
+repeated snapshots. Supersession may replace previously returned websocket IDs.
+The reader selects only identity/projection columns, excludes raw payloads and
+account numbers, and never exposes broker responses. This endpoint does not
+change the existing reconcile-view calculation or resolve unknown sends.
 
 ### How the query joins its evidence
 

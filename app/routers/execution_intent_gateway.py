@@ -34,6 +34,7 @@ from app.services.execution_intent_gateway.decisions import MOCK_ACCOUNTS
 from app.services.execution_intent_gateway.gateway import IntentGateway
 from app.services.execution_intent_gateway.kis_mock_forwarder import KisMockForwarder
 from app.services.execution_intent_gateway.query import (
+    IntentFillsReader,
     LedgerEvidenceReader,
     SqlLedgerEvidenceReader,
     build_reconciliation,
@@ -91,6 +92,10 @@ def get_gateway_reader() -> GatewayReader:
 
 
 def get_evidence_reader() -> LedgerEvidenceReader:
+    return SqlLedgerEvidenceReader(AsyncSessionLocal)
+
+
+def get_fills_reader() -> IntentFillsReader:
     return SqlLedgerEvidenceReader(AsyncSessionLocal)
 
 
@@ -175,3 +180,23 @@ async def get_intent(
     return JSONResponse(
         reconciliation_json(intent_id, journal.children, reconciliation)
     )
+
+
+@router.get("/intents/{intent_id}/fills")
+async def get_intent_fills(
+    intent_id: UUID,
+    reader: Annotated[GatewayReader, Depends(get_gateway_reader)],
+    fills_reader: Annotated[IntentFillsReader, Depends(get_fills_reader)],
+) -> JSONResponse:
+    """Committed fills scoped exclusively to the intent's journaled orders."""
+    try:
+        journal = await reader.read_intent_journal(intent_id)
+        if journal is None or journal.intent.account not in MOCK_ACCOUNTS:
+            raise HTTPException(status_code=404, detail="intent_not_found")
+        orders = await fills_reader.read_fills(journal.intent, journal.children)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - never substitute an empty fill set
+        logger.error("intent fills query raised: error_class=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="query_unavailable") from exc
+    return JSONResponse({"intent_id": str(intent_id), "orders": orders})

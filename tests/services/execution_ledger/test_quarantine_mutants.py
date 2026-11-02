@@ -285,6 +285,10 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
 
 #: (path, function) -> why it deliberately reads every row (EXEMPT).
 EXEMPT_READERS: dict[tuple[str, str], str] = {
+    ("app/services/execution_intent_gateway/query.py", "read_fills"): (
+        "mock-only journal fill reader still ANDs execution_ledger_in_effect; "
+        "test_intent_fills_db tests committed quarantined/superseded exclusion"
+    ),
     ("app/services/execution_intent_gateway/query.py", "_executions"): (
         "reads only account_mode='mock' rows, which the quarantine tool refuses "
         "(not_live), so no phantom can seed the filter-dropped mutant; the filter "
