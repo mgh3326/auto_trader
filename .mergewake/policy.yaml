@@ -74,9 +74,13 @@ review_gate:
   land: graded
 
 # Deploy holds are independent of the broader merge-review blocking rules.
-# Dedicated mock/paper adapters and telemetry-only modules are intentionally absent.
+# Dedicated mock/paper adapters and telemetry-only modules are normally absent.
+# The operator explicitly requires the complete Kiwoom client/order tree below.
 deploy_approval:
   - paths:
+      # Desk requires the Kiwoom client/order tree, including future live support.
+      # No Kiwoom modules are excluded from this approval boundary.
+      - 'app/services/brokers/kiwoom/**'
       - 'app/services/brokers/kis/__init__.py'
       - 'app/services/brokers/kis/base.py'
       - 'app/services/brokers/kis/client.py'
@@ -175,6 +179,10 @@ deploy_approval:
       - 'alembic/env.py'
     reason: Production migrations change persistent schema or data and require operator coordination.
   - paths:
+      - 'deploy/dagu/**'
+      - '**/prefect.yaml'
+      - '**/prefect.yml'
+      - 'deploy/prefect/**'
       - 'app/core/scheduler.py'
       - 'app/core/taskiq_broker.py'
       - 'app/tasks/__init__.py'
