@@ -28,6 +28,7 @@ from app.services.investment_reports.query_service import (
     _advisory_draft_profiles,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.krx_after_market_health import load_krx_after_market_health
 from app.services.session_context import SessionContextService
 from app.services.trade_journal.negative_class import (
     load_negative_class_health,
@@ -510,6 +511,22 @@ async def get_operating_briefing_impl(
     except Exception as exc:  # noqa: BLE001 — fail-open, briefing must still return
         policy_version = {"error": str(exc)}
 
+    eligibility_health = None
+    if market == "kr":
+        try:
+            # A separate session isolates a failed diagnostic from the briefing's
+            # other reads. No eligibility write or provider fetch occurs here.
+            async with AsyncSessionLocal() as health_db:
+                eligibility_health = await load_krx_after_market_health(
+                    health_db, now=as_of
+                )
+        except Exception:  # noqa: BLE001 — keep the briefing, expose the gap
+            eligibility_health = {
+                "status": "unavailable",
+                "requires_attention": True,
+                "warning": "KRX after-market eligibility freshness could not be read.",
+            }
+
     response = {
         "success": True,
         "market": market,
@@ -571,6 +588,8 @@ async def get_operating_briefing_impl(
         "trading_scoreboards": trading_scoreboards,
         "negative_class_recording": negative_class_recording,
     }
+    if eligibility_health is not None:
+        response["staleness"]["krx_after_market_eligibility"] = eligibility_health
     return OperatingBriefingResponse.model_validate(response).model_dump(mode="json")
 
 
