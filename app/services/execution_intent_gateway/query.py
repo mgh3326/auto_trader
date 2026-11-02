@@ -37,7 +37,6 @@ from app.services.execution_intent_gateway.kis_mock_forwarder import (
     OPEN_LEDGER_STATES,
     order_correlation_id,
 )
-from app.services.execution_ledger.supersede import supersede_provisional
 
 _UNKNOWN_STATES: Final = frozenset({ChildState.SENDING, ChildState.UNCERTAIN})
 
@@ -457,6 +456,8 @@ def intent_fill_orders(
     Cancel rows repeat a target number; only submit/amend establish its day.
     Preserve the journal's spelling in the answer and count each row once.
     """
+    from app.services.execution_ledger.supersede import supersede_provisional
+
     names: dict[OrderDay, str] = {}
     for child in sorted(children, key=lambda item: item.child_id):
         if child.action in {"submit", "amend"} and child.broker_order_id:
