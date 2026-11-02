@@ -1157,6 +1157,14 @@ aliases include `warnings`.
   - Set `quick=False` for full analysis payload (like `analyze_portfolio`)
   - Example: `analyze_stock_batch(symbols=["NVDA", "AMZN", "MSFT", "GOOGL"], market="us")`
 
+#### KIS mock dispatch claim recovery
+
+The unscoped `kis_mock_reconciliation_run` also reports KR mock dispatch claims
+by exact claim ID. Its default is read-only; `dry_run=False, confirm=True` may
+record exact-order native evidence. All claims remain retained with
+`position proof unavailable` until the independent position-proof work in hk
+2690 is reviewed. See `docs/runbooks/execution-intent-gateway.md`.
+
 #### KIS mock unsupported endpoints
 
 > See [`docs/kis-mock-tr-routing-matrix.md`](../../docs/kis-mock-tr-routing-matrix.md)

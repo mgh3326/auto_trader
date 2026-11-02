@@ -221,6 +221,7 @@ tests/services/mechanical_loss_cut/test_store_db.py
 tests/services/mock_integration/test_kis_coordination_adapter.py
 tests/services/mock_integration/test_kis_mock_evidence_store.py
 tests/services/mock_integration/test_kis_mock_evidence_store_db.py
+tests/services/mock_integration/test_kis_mock_recovery.py
 tests/services/mock_integration/test_lineage.py
 tests/services/naver_finance/test_investor_detail_cache_wiring.py
 tests/services/nhplug_mock/test_adversarial_dispatch.py

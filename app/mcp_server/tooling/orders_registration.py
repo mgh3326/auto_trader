@@ -545,6 +545,8 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Manually trigger reconciliation of open KIS mock orders against "
             "KIS mock holdings (read-only, is_mock=True). Detects fills via "
             "holdings deltas and updates ledger lifecycle states. "
+            "An unscoped manual run also reports surviving KR dispatch claims; "
+            "they remain held while account-position proof is unavailable. "
             "dry_run=True by default for safety. Applying transitions requires "
             "BOTH dry_run=False AND confirm=True. "
             "market (kr/us or equity_kr/equity_us) and/or symbol scope the run "
@@ -605,6 +607,7 @@ def register_order_tools(mcp: FastMCP) -> None:
         # both derive from the identical resolve_kis_mock_reconcile_scope.
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
             dry_run=dry_run,
+            confirm=confirm,
             limit=limit,
             market=market,
             symbol=symbol,

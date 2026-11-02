@@ -1,6 +1,7 @@
 """PostgreSQL acceptance: CI only under the fleet's host safety policy."""
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -10,6 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.kis_mock_dispatch_evidence import KISMockDispatchEvidence
+from app.models.review import OrderSendIntent
+from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
 from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceConflict,
     KISMockEvidenceStore,
@@ -285,4 +288,55 @@ async def test_native_dispatch_key_cannot_clear_missing_dispatch_uncertainty(
             claim=claim,
             claims=DurableSendClaimAdapter(intents),
         )
+    intents.release_if_matches.assert_not_awaited()
+
+
+async def test_operator_recovery_retains_terminal_claim_and_deduplicates(evidence_lane):
+    store, sessions, factory, envelope, claim = evidence_lane
+    await ack(store, factory, envelope, claim)
+    now = datetime.now(timezone(timedelta(hours=9)))
+    reader = AsyncMock(
+        return_value={
+            "odno": ODNO,
+            "ord_dt": now.strftime("%Y%m%d"),
+            "ord_tmd": now.strftime("%H%M%S"),
+            "pdno": "005930",
+            "sll_buy_dvsn_cd": "02",
+            "ord_qty": "1",
+            "tot_ccld_qty": "1",
+            "rmn_qty": "0",
+        }
+    )
+    intents = AsyncMock()
+    async with sessions() as session:
+        lifecycle = KISMockLifecycleService(session)
+        for _ in range(2):
+            result = await lifecycle.recover_dispatch_claims(
+                store=store,
+                claims=DurableSendClaimAdapter(intents),
+                reader=reader,
+                dry_run=False,
+                confirm=True,
+            )
+            own = next(
+                item for item in result["claims"] if item["claim_id"] == claim.row_id
+            )
+            assert own["status"] == "retained"
+            assert own["reason"] == "position proof unavailable"
+            assert own["readback"] == "terminal_fill"
+        assert await session.get(OrderSendIntent, claim.row_id) is not None
+        events = list(
+            await session.scalars(
+                select(KISMockDispatchEvidence).where(
+                    KISMockDispatchEvidence.order_attempt_id
+                    == envelope.order_attempt.order_attempt_id,
+                    KISMockDispatchEvidence.kind == "terminal_reconciliation",
+                )
+            )
+        )
+        assert len(events) == 1
+        assert events[0].payload["terminal"]["account_position_reconciled"] is False
+    assert await store.has_unresolved_account_uncertainty(
+        claim_account_scope=claim.claim_account_scope
+    )
     intents.release_if_matches.assert_not_awaited()

@@ -1,6 +1,7 @@
 """KIS mock order lifecycle service (ROB-102).
 
-Pure record-keeping. Must not import or call broker mutation services,
+Record-keeping and operator recovery through an injected readback. Must not
+import or call broker mutation services,
 KIS live execution, watch alerts, order intents, scheduler, fill
 notification, or trade journal code. All writes are atomic per call.
 
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,11 @@ from app.services.kis_mock_terminal_expiry import (
     validate_request,
 )
 from app.services.market_events.session_calendar import trading_session_status
+
+if TYPE_CHECKING:
+    from app.services.kis_mock_recovery import RecoveryReader
+    from app.services.kis_mock_runner.evidence_store import KISMockEvidenceStore
+    from app.services.mock_integration.coordination import DurableSendClaimAdapter
 
 # These are the lifecycle states the reconciler may read from. A ``fill`` with
 # durable full-fill evidence is excluded separately in ``list_open_orders``:
@@ -52,10 +58,25 @@ class ExpiredLifecycleConflict(ValueError):
 
 
 class KISMockLifecycleService:
-    """Pure record-keeping service for KIS mock order lifecycle."""
+    """KIS mock lifecycle records and operator-run recovery."""
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+
+    async def recover_dispatch_claims(
+        self,
+        *,
+        store: KISMockEvidenceStore,
+        claims: DurableSendClaimAdapter,
+        reader: RecoveryReader,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        from app.services.kis_mock_recovery import recover_kis_mock_dispatch_claims
+
+        return await recover_kis_mock_dispatch_claims(
+            store=store, claims=claims, reader=reader, dry_run=dry_run, confirm=confirm
+        )
 
     async def list_open_orders(
         self,

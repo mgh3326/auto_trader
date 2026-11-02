@@ -19,7 +19,7 @@ Every item must hold. Code availability alone does not satisfy the operator step
 | 5 | The ROB-1263 evidence migration `20261102_rob1263_kis_evidence` is applied; new tables and append-only triggers exist | Operator only | Pending operator verification; builders do not apply migrations |
 | 6 | `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` is set on the one mock route process; derive it using `kis_mock_account_fingerprint` from the approved mock credential namespace, without printing credentials or account numbers | Operator only | Unset remains UNKNOWN/BLOCKED |
 | 7 | Required for this run: `KIS_MOCK_E3_ACTIVATION_ENABLED=true` supplies the approved single-run E3 bindings from contract §6, with a matching mock fingerprint | Operator on the one foreground process only | Default off/BLOCKED; opt-in gives registry readiness, not permission to skip any other precondition |
-| 8 | A reviewed operator-run adapter wires native broker readback and terminal release into `KISMockEvidenceStore` | Operator / separate wiring review | **Not implemented in this PR; do not install the route before it exists** |
+| 8 | A reviewed exact-account position-proof source establishes `account_position_reconciled` for recovery (hk 2690) | Separate implementation and review | **Not available; do not install the route** |
 
 The approved installer must call
 `kis_mock_registry_from_environment()` to obtain the effective registry, construct
@@ -28,12 +28,12 @@ The approved installer must call
 Keep the route uninstalled until rows 5–8 are verified. Identity alone is an
 identity pin; the separate exact activation opt-in supplies the approved bounded
 policy/cap/owner/canary labels. The canonical registry remains default off. No
-recovery scheduler or automatic replay is installed. There is currently no in-repo reconciler call path to
-`record_native_evidence` or `release_with_recorded_terminal_evidence`; the existing
-`KISMockLifecycleService` does not write this new store or release its claims.
-The designated operator recovery owner must obtain that reviewed adapter before
-route installation. Until then a terminal broker order can still have a held
-claim; neither elapsed time nor a local ledger state releases it.
+recovery scheduler or automatic replay is installed. The designated manual KIS
+mock reconciler now reads exact attributed ODNOs and records native evidence,
+but it cannot establish account-position reconciliation. Even a confirmed full
+fill stays held. The position-proof work in hk 2690 and its review are required
+before route installation; neither elapsed time nor a local ledger state releases
+a claim.
 
 The activation opt-in is required for this E3 run and remains default off.
 Its contract is configuration only: exactly 1 share per intent, `max_notional_krw < 100000`, expiry at most 30 minutes after authorization,
@@ -48,6 +48,25 @@ with writer/auto false and E3 policy/cap/owner/canary bindings removed; no
 recurrence is authorized.
 
 Until item 1 holds, the route can run, but it cannot place an order. That is the expected result, and you can use it to check the wiring.
+
+## Inspect surviving dispatch claims
+
+Use the existing `kis_mock_reconciliation_run` MCP tool without market, symbol,
+or ledger-id filters. It first performs its existing holdings reconciliation;
+the additional `dispatch_recovery` result covers this physical account's
+surviving dispatch claims. The mock configuration and fingerprint must be
+available and match the actual mock client. The default `dry_run=True` makes no
+evidence writes; `dry_run=False, confirm=True` records eligible native readback.
+No order submission, cancel, retry, or claim release is performed by recovery.
+
+Each discovered claim has its exact `claim_id`, `status="retained"`, and
+`reason="position proof unavailable"`. `readback` distinguishes exact full
+fill, accepted or partial status, and uncertainty. Missing/blank ODNO does not
+trigger a broker read; an order-number mismatch, ambiguous result or failed read
+remains uncertain. A terminal event explicitly records position proof as false;
+repeating the same readback does not add a second event. The account remains
+blocked while any claim survives. If identity or claim discovery is unavailable,
+the result is uncertain and does not pretend to enumerate claim IDs.
 
 ## What the route serves
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -48,6 +50,13 @@ class RediscoveredKISMockClaim:
     order_attempt_id: str | None
     broker_order_id: str | None
     blocks_account: bool
+    attribution_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class KISMockRecoveryLineage:
+    envelope: LineageEnvelope
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,28 +381,16 @@ class KISMockEvidenceStore:
                         KISMockDispatchLineage.idempotency_key == claim.idempotency_key,
                     )
                 )
-                events = (
-                    []
-                    if row is None
-                    else list(
-                        await session.scalars(
-                            select(KISMockDispatchEvidence).where(
-                                KISMockDispatchEvidence.order_attempt_id
-                                == row.order_attempt_id
-                            )
-                        )
+                attribution_error = None
+                try:
+                    odno = (
+                        None
+                        if row is None
+                        else await self._attributed_odno(session, row.order_attempt_id)
                     )
-                )
-                dispatch = [
-                    event
-                    for event in events
-                    if event.broker_evidence_key == _key(_DISPATCH_EVIDENCE_KEY)
-                ]
-                odno = (
-                    None
-                    if row is None
-                    else await self._attributed_odno(session, row.order_attempt_id)
-                )
+                except KISMockEvidenceConflict:
+                    odno = None
+                    attribution_error = "attributed_odno_ambiguous"
                 result.append(
                     RediscoveredKISMockClaim(
                         DurableClaim(
@@ -404,15 +401,54 @@ class KISMockEvidenceStore:
                         ),
                         None if row is None else row.order_attempt_id,
                         odno,
-                        not dispatch
-                        or not all(
-                            _dispatch_matches_claim(event, claim.id)
-                            for event in dispatch
-                        )
-                        or any(event.kind == "unknown" for event in events),
+                        # An ACK identifies the order; it does not establish
+                        # terminal reconciliation or release this account.
+                        True,
+                        attribution_error,
                     )
                 )
             return tuple(result)
+
+    async def load_recovery_lineage(
+        self, claim: RediscoveredKISMockClaim
+    ) -> KISMockRecoveryLineage:
+        """Reconstruct the immutable lineage only for the exact surviving claim."""
+        if (
+            type(claim) is not RediscoveredKISMockClaim
+            or claim.order_attempt_id is None
+        ):
+            raise KISMockEvidenceConflict("recovery_lineage_unavailable")
+        async with self._session_factory() as session:
+            row = await session.get(KISMockDispatchLineage, claim.order_attempt_id)
+            current = await session.get(OrderSendIntent, claim.claim.row_id)
+            if (
+                row is None
+                or current is None
+                or row.physical_account_id != self._identity
+                or row.claim_account_scope != self._scope
+                or (current.account_scope, current.idempotency_key, current.side)
+                != (
+                    claim.claim.claim_account_scope,
+                    claim.claim.idempotency_key,
+                    claim.claim.side,
+                )
+                or row.idempotency_key != claim.claim.idempotency_key
+                or claim.claim.claim_account_scope != self._scope
+                or row.created_at.tzinfo is None
+                or row.created_at.utcoffset() is None
+            ):
+                raise KISMockEvidenceConflict("recovery_claim_binding_mismatch")
+            envelope = LineageEnvelope.model_validate_json(
+                json.dumps(row.initial_envelope, allow_nan=False)
+            )
+            if (
+                _payload(envelope) != row.initial_envelope
+                or envelope.order_attempt is None
+                or envelope.order_attempt.order_attempt_id != claim.order_attempt_id
+                or envelope.decision_intent.side != claim.claim.side
+            ):
+                raise KISMockEvidenceConflict("recovery_lineage_binding_mismatch")
+            return KISMockRecoveryLineage(envelope=envelope, created_at=row.created_at)
 
     async def has_unresolved_account_uncertainty(
         self, *, claim_account_scope: str

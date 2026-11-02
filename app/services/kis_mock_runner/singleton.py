@@ -791,8 +791,8 @@ KIS_MOCK_LANE_RECOVERY_CONTRACT: Final[dict[str, str]] = {
     "(app/mcp_server/tooling/kis_mock_ledger.py :: KISMockLifecycleService)",
     # C3-2: what rediscovers surviving durable claims after a restart.
     "restart_trigger": "operator-invoked reconciliation over "
-    "review.order_send_intents rows whose account_scope is the physical-account "
-    "claim scope and whose lineage has no durably attributed broker_order_id",
+    "all unreleased review.order_send_intents rows whose account_scope is the "
+    "physical-account claim scope",
     # C3-3: the authoritative broker readback.
     "readback_operation": "KIS inquire_daily_order_domestic keyed by the exact "
     "attributed ODNO (order-id-keyed, never symbol/side/qty/time proximity)",

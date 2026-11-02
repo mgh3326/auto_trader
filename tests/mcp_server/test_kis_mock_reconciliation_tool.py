@@ -27,7 +27,12 @@ async def test_kis_mock_reconciliation_tool_dry_run_default(monkeypatch):
     result = await tools["kis_mock_reconciliation_run"]()
     assert result == {"success": True, "applied": 0}
     mock_run.assert_awaited_once_with(
-        dry_run=True, limit=100, market=None, symbol=None, ledger_ids=None
+        dry_run=True,
+        confirm=False,
+        limit=100,
+        market=None,
+        symbol=None,
+        ledger_ids=None,
     )
 
 
@@ -100,7 +105,7 @@ async def test_kis_mock_reconciliation_tool_apply_with_confirm(monkeypatch):
 
     assert result == {"success": True, "applied": 3}
     mock_run.assert_awaited_once_with(
-        dry_run=False, limit=10, market=None, symbol=None, ledger_ids=None
+        dry_run=False, confirm=True, limit=10, market=None, symbol=None, ledger_ids=None
     )
 
 
@@ -123,7 +128,12 @@ async def test_kis_mock_reconciliation_tool_passes_market_and_symbol(monkeypatch
 
     assert result == {"success": True, "applied": 0}
     mock_run.assert_awaited_once_with(
-        dry_run=True, limit=10, market="us", symbol="AVGO", ledger_ids=None
+        dry_run=True,
+        confirm=False,
+        limit=10,
+        market="us",
+        symbol="AVGO",
+        ledger_ids=None,
     )
 
 
@@ -410,7 +420,12 @@ async def test_kis_mock_reconciliation_tool_passes_ledger_ids(monkeypatch):
 
     assert result == {"success": True, "applied": 0}
     mock_run.assert_awaited_once_with(
-        dry_run=True, limit=100, market=None, symbol=None, ledger_ids=[10, 20]
+        dry_run=True,
+        confirm=False,
+        limit=100,
+        market=None,
+        symbol=None,
+        ledger_ids=[10, 20],
     )
 
 
