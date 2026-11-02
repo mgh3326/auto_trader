@@ -18,6 +18,7 @@ un-commits or re-inserts a fill.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -42,6 +43,10 @@ from app.services.fill_notification import (
     FillOrder,
     normalize_kis_fill,
     normalize_upbit_fill,
+)
+from app.services.fill_notification_kis_frame import (
+    KisFillwireFrameError,
+    decode_fillwire_kis_frame,
 )
 from app.services.reconcile_trigger import get_reconcile_trigger_coordinator
 
@@ -118,7 +123,24 @@ def _rebuild_fill_order(fill: ExecutionLedgerUpsert) -> FillOrder:
         if fill.broker == "kis" and ("tr" in raw or "fields" in raw):
             # Strict fillwire evidence decoding must never fall back on error.
             # The caller reports failure after commit; the ledger stays durable.
-            return normalize_kis_fill(raw)
+            parsed = decode_fillwire_kis_frame(raw)
+            if (
+                parsed["symbol"] != fill.symbol
+                or parsed["side"] != fill.side
+                or parsed["order_id"] != fill.broker_order_id
+                or Decimal(parsed["filled_qty"]) != fill.filled_qty
+                or Decimal(parsed["filled_price"]) != fill.filled_price
+                or fill.instrument_type != "equity_kr"
+                or fill.currency != "KRW"
+            ):
+                raise KisFillwireFrameError(
+                    "KIS fillwire frame disagrees with canonical fill"
+                )
+            order = normalize_kis_fill(parsed)
+            order.account = (
+                fill.broker if fill.account_mode == "live" else fill.account_mode
+            )
+            return order
         try:
             if fill.broker == "upbit":
                 return normalize_upbit_fill(raw)

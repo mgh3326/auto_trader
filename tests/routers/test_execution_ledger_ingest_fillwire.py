@@ -1,12 +1,15 @@
 """Domestic fillwire frames must reach the notifier with real fill values."""
 
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.routers import execution_ledger_ingest as ingest_module
 from app.routers.execution_ledger_ingest import _rebuild_fill_order
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.schemas.execution_ledger_ingest import ExecutionLedgerFillIngestRequest
 from app.services.execution_ledger.fill_ingest import send_fill_notification
 from app.services.fill_notification import is_fill_notifiable, normalize_kis_fill
 from tests.fixtures.execution_ledger_fill_frames import fillwire_kis_domestic_frame
@@ -179,3 +182,104 @@ def test_incomplete_fillwire_frame_cannot_fall_back_to_canonical(key: str) -> No
     del raw[key]
     with pytest.raises(ValueError, match="KIS fillwire"):
         _rebuild_fill_order(_fill(raw))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("symbol", "000660"),
+        ("side", "sell"),
+        ("filled_qty", Decimal("11")),
+        ("filled_price", Decimal("70001")),
+        ("filled_price", Decimal("70000.000000000001")),
+        ("broker_order_id", "0000123457"),
+        ("instrument_type", "equity_us"),
+        ("currency", "USD"),
+    ],
+)
+def test_frame_must_match_the_committed_canonical_fill(
+    field: str, value: object
+) -> None:
+    fill = _fill(fillwire_kis_domestic_frame())
+    setattr(fill, field, value)
+    with pytest.raises(ValueError, match="canonical"):
+        _rebuild_fill_order(fill)
+
+
+@pytest.mark.parametrize("account_mode,expected", [("live", "kis"), ("mock", "mock")])
+def test_fillwire_account_label_comes_from_the_canonical_row(
+    account_mode: str, expected: str
+) -> None:
+    raw = fillwire_kis_domestic_frame(
+        tr="H0STCNI9" if account_mode == "mock" else "H0STCNI0"
+    )
+    fill = _fill(raw)
+    fill.account_mode = account_mode
+    assert _rebuild_fill_order(fill).account == expected
+
+
+@pytest.mark.parametrize("delta_seconds", [1, 1800, 3600])
+def test_any_future_fill_clock_is_assigned_to_the_previous_day(
+    delta_seconds: int,
+) -> None:
+    raw = fillwire_kis_domestic_frame(received_at="2026-11-02T13:00:00Z")
+    clock = datetime(2026, 11, 2, 22) + timedelta(seconds=delta_seconds)
+    raw["fields"][11] = clock.strftime("%H%M%S")
+    order = normalize_kis_fill(raw)
+    assert datetime.fromisoformat(order.filled_at) == datetime(
+        2026, 11, 1, 13, tzinfo=UTC
+    ) + timedelta(seconds=delta_seconds)
+
+
+def test_krx_alphanumeric_short_code_notifies_with_canonical_identity() -> None:
+    raw = fillwire_kis_domestic_frame()
+    raw["fields"][8] = "0074K0"
+    fill = _fill(raw)
+    fill.symbol = fill.raw_symbol = "0074K0"
+    order = _rebuild_fill_order(fill)
+    assert order.symbol == "0074K0"
+    assert order.market_type == "kr"
+    assert is_fill_notifiable(order)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", [False, True])
+async def test_route_keeps_commit_and_reports_raw_identity_mismatch(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, mismatch: bool
+) -> None:
+    raw = fillwire_kis_domestic_frame()
+    if mismatch:
+        raw["fields"][8] = "000660"
+    fill = _fill(raw)
+    repository = MagicMock()
+    repository.upsert_fill = AsyncMock(return_value=("inserted", 123))
+    monkeypatch.setattr(
+        ingest_module, "ExecutionLedgerRepository", lambda db: repository
+    )
+    db = MagicMock()
+    db.begin_nested.return_value.__aenter__ = AsyncMock()
+    db.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
+    db.commit = AsyncMock()
+    downstream = AsyncMock()
+    monkeypatch.setattr(ingest_module, "run_post_upsert_downstream", downstream)
+
+    response = await ingest_module.ingest_execution_ledger_fills(
+        ExecutionLedgerFillIngestRequest(
+            fills=[fill.model_dump(mode="json")], source="fillwire"
+        ),
+        db,
+    )
+
+    assert response.accepted == 1
+    assert response.results[0].status == "inserted"
+    assert response.results[0].row_id == 123
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_called()
+    assert repository.upsert_fill.call_args.args[0].symbol == "005930"
+    if mismatch:
+        downstream.assert_not_awaited()
+        assert "downstream failed after commit" in caplog.text
+        assert "disagrees with canonical fill" in caplog.text
+    else:
+        downstream.assert_awaited_once()
+        assert downstream.call_args.kwargs["fill_order"].symbol == "005930"

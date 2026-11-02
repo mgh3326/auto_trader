@@ -41,11 +41,19 @@ modules remain outside the proposed removal.
 `normalize_kis_fill` recognizes the presence of `tr` or `fields` as a fillwire
 frame. `app/services/fill_notification_kis_frame.py` reads the official domestic
 indices for `H0STCNI0` and `H0STCNI9`. It requires a proven fill, an order ID,
-a six-digit symbol, a known side, positive finite price and integral quantity,
+a six-character uppercase ASCII alphanumeric KRX code, a known side, positive finite price and integral quantity,
 and a valid clock with a timezone-aware `received_at`.
 
-The clock uses the received KST date and fillwire's previous-day rule for
-midnight arrivals. Duplicate-hint metadata does not change fill identity.
+The clock uses the received KST date. Any computed time after receipt belongs
+to the previous day, including positive deltas of one second through one hour.
+This corrects the producer's one-hour approximation for reconstructed
+notifications without rewriting committed ledger timestamps.
+Duplicate-hint metadata does not change fill identity.
+The HTTP path compares the decoded symbol, side, order ID, exact Decimal
+quantity and price, domestic instrument type, and KRW currency with the
+canonical row before notification. A mismatch raises and the existing
+post-commit error handler logs it. The notifier account label comes from the
+canonical `account_mode`, so mock fills are labeled `mock`.
 The existing parsed-dict and canonical-only paths remain available.
 
 Malformed, unsupported, and non-fill frames raise `KisFillwireFrameError` with
@@ -71,7 +79,7 @@ shared notifier call with a mocked transport, non-fill rejection, malformed
 frames, and KST date handling. It is registered in `ci_shards/shard-4.txt`.
 The external handoff report records the full test commands and current results.
 
-Local validation passed 233 affected unit tests, including the 57 new regression
+Initial local validation passed 233 affected unit tests, including the 57 new regression
 cases and the existing monitor, sink, notification, ingest-auth, and shard-plan
 tests. Twenty DB integration cases were deselected. `make lint` passed Ruff,
 format checks, and ty for the full configured paths. These checks do not prove
@@ -79,6 +87,20 @@ production message delivery or DB integration behavior.
 The full non-live collection and shard check passed for 2,054 test files with
 zero missing, duplicate, or unexpected files, using an explicit localhost test
 DSN for the collection guards.
+
+## Review corrections
+
+All four review findings are fixed in the follow-up. The canonical mismatch
+checks happen before float conversion, so a price mismatch that rounds to the
+same float still blocks notification. Route tests verify an accepted ledger
+result and commit call despite a raw mismatch, no downstream notification,
+and an error log. They use a fake repository and session and do not claim
+PostgreSQL durability proof. Positive controls verify the matching-frame path.
+
+Clock regressions cover future deltas of 1, 1,800, and 3,600 seconds. The KRX
+regression uses `0074K0` on both the canonical row and raw frame. The decoder
+accepts `[0-9A-Z]{6}` and still rejects malformed symbols without canonical
+fallback, preserving the operator's strict-evidence requirement.
 
 ## Separate fillwire task, hk 2680
 

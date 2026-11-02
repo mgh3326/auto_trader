@@ -83,6 +83,9 @@ Python 모니터의 sink 스위치까지만 만들었다 — **Go 코드 0줄, R
   `H0STCNI0`/`H0STCNI9`의 공식 필드와 체결 표지·수량·가격·시각을 검증한다.
   잘못된 프레임이나 비체결·해외 TR은 `KisFillwireFrameError`이며,
   canonical 폴백으로 숨기지 않고 커밋 후 다운스트림 오류 로그로 드러낸다.
+  raw의 심볼·side·주문번호·Decimal 수량/가격이 canonical 행과 다르거나 국내
+  instrument/KRW가 아니어도 알림을 막고 같은 오류 로그로 드러낸다.
+  mock 계좌 알림은 canonical account_mode에 따라 `mock`으로 표시된다.
   이미 커밋된 원장과 ingest 성공 응답은 유지된다. 과거 누락 알림 재발송은 없다.
 - `raw_payload_json`이 **없어도** canonical 필드로 `FillOrder`를 재구성해
   알림이 나간다. raw frame은 Upbit 누적 `executed_volume`(rung 투영 증거) 같은

@@ -56,7 +56,7 @@ def decode_fillwire_kis_frame(raw: Mapping[str, Any]) -> dict[str, Any]:
         "2": "buy",
         "B": "buy",
     }.get(fields[4])
-    if not order_id or not re.fullmatch(r"[0-9]{6}", symbol) or side is None:
+    if not order_id or not re.fullmatch(r"[0-9A-Z]{6}", symbol) or side is None:
         raise KisFillwireFrameError("KIS fillwire fill identity invalid")
     qty, price = fields[9], fields[10]
     if not re.fullmatch(r"[0-9]+", qty) or not re.fullmatch(
@@ -84,8 +84,8 @@ def decode_fillwire_kis_frame(raw: Mapping[str, Any]) -> dict[str, Any]:
             raise KisFillwireFrameError("KIS fillwire received_at requires a timezone")
         received = received.astimezone(KST)
         filled_at = datetime.combine(received.date(), clock, tzinfo=KST)
-        # Match fillwire combineKSTDate: midnight can carry yesterday's fill.
-        if filled_at - received > timedelta(hours=1):
+        # A fill cannot follow receipt. Delayed frames can carry yesterday's clock.
+        if filled_at > received:
             filled_at -= timedelta(days=1)
     except (ValueError, OverflowError):
         raise KisFillwireFrameError("KIS fillwire timestamps invalid") from None
