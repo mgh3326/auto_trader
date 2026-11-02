@@ -1161,7 +1161,9 @@ aliases include `warnings`.
 
 The unscoped `kis_mock_reconciliation_run` also reports KR mock dispatch claims
 by exact claim ID. Its default is read-only; `dry_run=False, confirm=True` may
-record exact-order native evidence. All claims remain retained with
+apply holdings transitions without writing dispatch evidence. Append-only
+exact-order evidence requires the additional `record_dispatch_evidence=True`
+on an unscoped call. All claims remain retained with
 `position proof unavailable` until the independent position-proof work in hk
 2690 is reviewed. See `docs/runbooks/execution-intent-gateway.md`.
 

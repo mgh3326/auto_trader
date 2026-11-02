@@ -56,14 +56,21 @@ or ledger-id filters. It first performs its existing holdings reconciliation;
 the additional `dispatch_recovery` result covers this physical account's
 surviving dispatch claims. The mock configuration and fingerprint must be
 available and match the actual mock client. The default `dry_run=True` makes no
-evidence writes; `dry_run=False, confirm=True` records eligible native readback.
+evidence writes. A holdings-only `dry_run=False, confirm=True` also leaves the
+append-only dispatch evidence unchanged. To permanently record eligible native
+readback, explicitly add `record_dispatch_evidence=True` to that confirmed,
+unscoped call. This separate flag defaults to false; using it with a preview or
+scope filter is refused before the holdings reconciliation starts.
 No order submission, cancel, retry, or claim release is performed by recovery.
 
 Each discovered claim has its exact `claim_id`, `status="retained"`, and
 `reason="position proof unavailable"`. `readback` distinguishes exact full
 fill, accepted or partial status, and uncertainty. Missing/blank ODNO does not
 trigger a broker read; an order-number mismatch, ambiguous result or failed read
-remains uncertain. A terminal event explicitly records position proof as false;
+remains uncertain. The query is restricted to the claim's KST day, bracketed by
+its matching post-send ACK. If the timestamps span days, or the broker returns
+zero or multiple rows for that day, the claim remains uncertain. Rows from a
+later day are ignored. A terminal event explicitly records position proof as false;
 repeating the same readback does not add a second event. The account remains
 blocked while any claim survives. If identity or claim discovery is unavailable,
 the result is uncertain and does not pretend to enumerate claim IDs.

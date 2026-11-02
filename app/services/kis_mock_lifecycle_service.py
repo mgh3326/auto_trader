@@ -71,11 +71,17 @@ class KISMockLifecycleService:
         reader: RecoveryReader,
         dry_run: bool = True,
         confirm: bool = False,
+        record_dispatch_evidence: bool = False,
     ) -> dict[str, Any]:
         from app.services.kis_mock_recovery import recover_kis_mock_dispatch_claims
 
         return await recover_kis_mock_dispatch_claims(
-            store=store, claims=claims, reader=reader, dry_run=dry_run, confirm=confirm
+            store=store,
+            claims=claims,
+            reader=reader,
+            dry_run=dry_run,
+            confirm=confirm,
+            record_dispatch_evidence=record_dispatch_evidence,
         )
 
     async def list_open_orders(

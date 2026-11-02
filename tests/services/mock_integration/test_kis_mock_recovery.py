@@ -17,6 +17,7 @@ from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceStore,
     KISMockRecoveryLineage,
     RediscoveredKISMockClaim,
+    _key,
 )
 from app.services.mock_integration.coordination import DurableClaim
 from tests.services.mock_integration.test_coordination import _attempt_envelope
@@ -30,8 +31,10 @@ KST = timezone(timedelta(hours=9))
 @pytest.fixture
 def recovery():
     _, envelope = _attempt_envelope()
-    created = datetime.now(UTC) - timedelta(seconds=2)
     row_time = datetime.now(KST)
+    created = row_time.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(
+        UTC
+    )
     row = {
         "odno": ODNO,
         "ord_dt": row_time.strftime("%Y%m%d"),
@@ -51,7 +54,9 @@ def recovery():
     store = KISMockEvidenceStore(MagicMock(), entry=bound_entry())
     store.rediscover_unreleased_claims = AsyncMock(return_value=(claim,))
     store.load_recovery_lineage = AsyncMock(
-        return_value=KISMockRecoveryLineage(envelope, created)
+        return_value=KISMockRecoveryLineage(
+            envelope, created, row_time + timedelta(seconds=1)
+        )
     )
     recorded = {}
 
@@ -73,17 +78,21 @@ def recovery():
         service=service,
         recorded=recorded,
         created=created,
+        acknowledged=row_time + timedelta(seconds=1),
         claims=MagicMock(),
     )
 
 
-async def run_recovery(recovery, *, dry_run=False, confirm=True):
+async def run_recovery(
+    recovery, *, dry_run=False, confirm=True, record_dispatch_evidence=True
+):
     return await recovery.service.recover_dispatch_claims(
         store=recovery.store,
         claims=recovery.claims,
         reader=recovery.reader,
         dry_run=dry_run,
         confirm=confirm,
+        record_dispatch_evidence=record_dispatch_evidence,
     )
 
 
@@ -204,7 +213,7 @@ async def test_partial_fill_is_recorded_and_retained(recovery):
     )
     recovery.store.rediscover_unreleased_claims.return_value = (claim,)
     recovery.store.load_recovery_lineage.return_value = KISMockRecoveryLineage(
-        envelope, recovery.created
+        envelope, recovery.created, recovery.acknowledged
     )
     recovery.row.update(ord_qty="2", tot_ccld_qty="1", rmn_qty="1")
     result = await run_recovery(recovery)
@@ -215,12 +224,75 @@ async def test_partial_fill_is_recorded_and_retained(recovery):
 
 
 async def test_preview_has_no_evidence_writes_and_confirm_is_required(recovery):
-    result = await run_recovery(recovery, dry_run=True, confirm=False)
+    result = await run_recovery(
+        recovery, dry_run=True, confirm=False, record_dispatch_evidence=False
+    )
     assert result["claims"][0]["readback"] == "terminal_fill"
+    assert result["claims"][0]["evidence"] == "not_recorded"
     recovery.store.record_native_evidence.assert_not_awaited()
     with pytest.raises(ValueError, match="confirm_required"):
         await run_recovery(recovery, dry_run=False, confirm=False)
     recovery.store.release_with_recorded_terminal_evidence.assert_not_awaited()
+
+
+async def test_holdings_apply_needs_separate_opt_in_to_record_evidence(recovery):
+    result = await recovery.service.recover_dispatch_claims(
+        store=recovery.store,
+        claims=recovery.claims,
+        reader=recovery.reader,
+        dry_run=False,
+        confirm=True,
+    )
+    assert result["claims"][0]["evidence"] == "not_recorded"
+    assert result["record_dispatch_evidence"] is False
+    recovery.store.record_native_evidence.assert_not_awaited()
+    with pytest.raises(ValueError, match="record_dispatch_evidence_requires"):
+        await run_recovery(recovery, dry_run=True, confirm=True)
+    recovery.store.record_native_evidence.assert_not_awaited()
+    result = await run_recovery(recovery)
+    assert result["claims"][0]["evidence"] == "recorded"
+    recovery.store.record_native_evidence.assert_awaited_once()
+
+
+async def test_later_same_odno_readback_is_not_dispatch_day_evidence(recovery):
+    lineage = await recovery.store.load_recovery_lineage(recovery.claim)
+    earlier = recovery.created - timedelta(days=1)
+    recovery.store.load_recovery_lineage.return_value = KISMockRecoveryLineage(
+        lineage.envelope, earlier, earlier + timedelta(seconds=2)
+    )
+    result = await run_recovery(recovery)
+    assert result["claims"][0]["readback"] == "uncertain"
+    assert result["account_blocked"] is True
+    assert result["claims"][0]["claim_id"] == 7
+    recovery.store.record_native_evidence.assert_not_awaited()
+    recovery.store.release_with_recorded_terminal_evidence.assert_not_awaited()
+
+
+async def test_same_day_order_after_ack_is_not_dispatch_evidence(recovery):
+    lineage = await recovery.store.load_recovery_lineage(recovery.claim)
+    created = recovery.created - timedelta(days=1)
+    recovery.store.load_recovery_lineage.return_value = KISMockRecoveryLineage(
+        lineage.envelope, created, created + timedelta(seconds=2)
+    )
+    recovery.row.update(
+        ord_dt=created.astimezone(KST).strftime("%Y%m%d"), ord_tmd="000003"
+    )
+    result = await run_recovery(recovery)
+    assert result["claims"][0]["readback"] == "uncertain"
+    assert result["account_blocked"] is True
+    recovery.store.record_native_evidence.assert_not_awaited()
+
+
+async def test_ambiguous_dispatch_day_is_reported_before_readback(recovery):
+    recovery.store.load_recovery_lineage.side_effect = KISMockEvidenceConflict(
+        "recovery_dispatch_day_ambiguous"
+    )
+    result = await run_recovery(recovery)
+    assert result["claims"][0]["claim_id"] == 7
+    assert result["claims"][0]["readback_reason"] == "recovery_dispatch_day_ambiguous"
+    assert result["account_blocked"] is True
+    recovery.reader.assert_not_awaited()
+    recovery.store.record_native_evidence.assert_not_awaited()
 
 
 async def test_rediscovery_failure_blocks_without_claiming_exact_ids(recovery):
@@ -252,19 +324,46 @@ async def test_recovery_lineage_reconstructs_exact_current_claim(recovery):
         created_at=recovery.created,
     )
     current = SimpleNamespace(
+        id=7,
         account_scope=store._scope,
         idempotency_key=claim.claim.idempotency_key,
         side="buy",
+        created_at=recovery.created,
     )
+    ack = SimpleNamespace(
+        broker_evidence_key=_key("lineage-ack"),
+        created_at=recovery.created + timedelta(seconds=1),
+    )
+    session.scalars.return_value = [ack]
     session.get.side_effect = [row, current]
     lineage = await store.load_recovery_lineage(claim)
     assert lineage.envelope == envelope
     assert lineage.created_at == recovery.created
+    assert lineage.acknowledged_at == ack.created_at
 
     current.side = "sell"
     session.get.side_effect = [row, current]
     with pytest.raises(KISMockEvidenceConflict, match="recovery_claim_binding"):
         await store.load_recovery_lineage(claim)
+
+    current.side = "buy"
+    ack.created_at = current.created_at + timedelta(days=1)
+    session.get.side_effect = [row, current]
+    with pytest.raises(
+        KISMockEvidenceConflict, match="recovery_dispatch_day_ambiguous"
+    ):
+        await store.load_recovery_lineage(claim)
+    ack.created_at = current.created_at + timedelta(seconds=1)
+    ack.broker_evidence_key = _key("dispatch")
+    ack.kind, ack.payload = "ack", {"claim_row_id": 8}
+    session.get.side_effect = [row, current]
+    with pytest.raises(
+        KISMockEvidenceConflict, match="recovery_dispatch_day_ambiguous"
+    ):
+        await store.load_recovery_lineage(claim)
+    ack.payload = {"claim_row_id": 7}
+    session.get.side_effect = [row, current]
+    assert (await store.load_recovery_lineage(claim)).acknowledged_at == ack.created_at
 
 
 async def test_manual_reconciler_uses_mock_exact_order_reader_and_closes_client(
@@ -300,22 +399,105 @@ async def test_manual_reconciler_uses_mock_exact_order_reader_and_closes_client(
         singleton, "kis_mock_account_fingerprint", lambda **k: entry.physical_account_id
     )
     result = await kis_mock_ledger._recover_mock_dispatch_claims(
-        MagicMock(), dry_run=False, confirm=True
+        MagicMock(), dry_run=False, confirm=True, record_dispatch_evidence=True
     )
     assert result["claims"][0]["readback"] == "terminal_fill"
     assert result["claims"][0]["reason"] == "position proof unavailable"
     kwargs = client.inquire_daily_order_domestic.await_args.kwargs
     assert kwargs["order_number"] == ODNO and kwargs["is_mock"] is True
     assert kwargs["start_date"] == recovery.created.astimezone(KST).strftime("%Y%m%d")
+    assert kwargs["end_date"] == kwargs["start_date"]
     client.close.assert_awaited_once()
     recovery.store.release_with_recorded_terminal_evidence.assert_not_awaited()
+    recovery.store.record_native_evidence.reset_mock()
+    result = await kis_mock_ledger._recover_mock_dispatch_claims(
+        MagicMock(), dry_run=False, confirm=True
+    )
+    assert result["claims"][0]["evidence"] == "not_recorded"
+    recovery.store.record_native_evidence.assert_not_awaited()
     recovery.store.rediscover_unreleased_claims.return_value = ()
     result = await kis_mock_ledger._recover_mock_dispatch_claims(
         MagicMock(), dry_run=True, confirm=False
     )
     assert result["status"] == "no_unreleased_claims"
     assert result["account_blocked"] is False
-    client.inquire_daily_order_domestic.assert_awaited_once()
+    assert client.inquire_daily_order_domestic.await_count == 2
+
+
+async def test_manual_reader_ignores_later_reuse_and_rejects_duplicates(
+    recovery, monkeypatch
+):
+    from app.mcp_server.tooling import kis_mock_ledger
+    from app.services.brokers import kis
+    from app.services.kis_mock_runner import evidence_store, registry_binding, singleton
+
+    entry = bound_entry()
+    client = SimpleNamespace(
+        _is_mock_client=True,
+        _settings=SimpleNamespace(
+            _is_mock=True,
+            kis_base_url="https://openapivts.koreainvestment.com:29443",
+            kis_app_key="fake",
+            kis_account_no="fake",
+        ),
+        inquire_daily_order_domestic=AsyncMock(),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(kis, "KISClient", lambda **k: client)
+    monkeypatch.setattr(
+        registry_binding, "kis_mock_registry_from_environment", lambda: (entry,)
+    )
+    monkeypatch.setattr(
+        evidence_store, "KISMockEvidenceStore", lambda *a, **k: recovery.store
+    )
+    monkeypatch.setattr(
+        singleton, "kis_mock_account_fingerprint", lambda **k: entry.physical_account_id
+    )
+    lineage = await recovery.store.load_recovery_lineage(recovery.claim)
+    dispatch_created_at = recovery.created - timedelta(days=1)
+    recovery.store.load_recovery_lineage.return_value = KISMockRecoveryLineage(
+        lineage.envelope,
+        dispatch_created_at,
+        dispatch_created_at + timedelta(seconds=2),
+    )
+    dispatch_day = dispatch_created_at.astimezone(KST).strftime("%Y%m%d")
+    original = {**recovery.row, "ord_dt": dispatch_day, "ord_tmd": "000001"}
+    later_reuse = dict(recovery.row)
+    client.inquire_daily_order_domestic.return_value = [later_reuse, original]
+    result = await kis_mock_ledger._recover_mock_dispatch_claims(
+        MagicMock(), dry_run=False, confirm=True, record_dispatch_evidence=True
+    )
+    assert result["claims"][0]["readback"] == "terminal_fill"
+    assert result["claims"][0]["status"] == "retained"
+    assert (
+        client.inquire_daily_order_domestic.await_args.kwargs["start_date"]
+        == dispatch_day
+    )
+    assert (
+        client.inquire_daily_order_domestic.await_args.kwargs["end_date"]
+        == dispatch_day
+    )
+    assert len(recovery.recorded) == 1
+
+    recovery.recorded.clear()
+    recovery.store.record_native_evidence.reset_mock()
+    client.inquire_daily_order_domestic.return_value = [later_reuse]
+    result = await kis_mock_ledger._recover_mock_dispatch_claims(
+        MagicMock(), dry_run=False, confirm=True, record_dispatch_evidence=True
+    )
+    assert result["claims"][0]["readback"] == "uncertain"
+    assert result["claims"][0]["claim_id"] == 7
+    assert result["claims"][0]["readback_reason"] == "recovery_readback_not_unique"
+    assert result["account_blocked"] is True
+    recovery.store.record_native_evidence.assert_not_awaited()
+
+    client.inquire_daily_order_domestic.return_value = [original, dict(original)]
+    result = await kis_mock_ledger._recover_mock_dispatch_claims(
+        MagicMock(), dry_run=False, confirm=True, record_dispatch_evidence=True
+    )
+    assert result["claims"][0]["readback"] == "uncertain"
+    recovery.store.record_native_evidence.assert_not_awaited()
+    recovery.store.release_with_recorded_terminal_evidence.assert_not_awaited()
 
 
 async def test_mismatched_mock_identity_never_reads_broker(recovery, monkeypatch):
@@ -380,12 +562,28 @@ async def test_only_unscoped_manual_entry_invokes_claim_recovery(monkeypatch):
         dry_run=False, confirm=True
     )
     assert result["dispatch_recovery"]["status"] == "blocked"
-    recovery_call.assert_awaited_once_with(session, dry_run=False, confirm=True)
+    recovery_call.assert_awaited_once_with(
+        session, dry_run=False, confirm=True, record_dispatch_evidence=False
+    )
     recovery_call.reset_mock()
     await kis_mock_ledger.kis_mock_reconciliation_run_impl(market="kr")
     recovery_call.assert_not_awaited()
     denied = await kis_mock_ledger.kis_mock_reconciliation_run_impl(dry_run=False)
     assert denied["error"] == "confirm_required"
+    recovery_call.assert_not_awaited()
+    denied = await kis_mock_ledger.kis_mock_reconciliation_run_impl(
+        dry_run=False, confirm=True, market="kr", record_dispatch_evidence=True
+    )
+    assert denied["error"] == "record_dispatch_evidence_requires_unscoped"
+    recovery_call.assert_not_awaited()
+    denied = await kis_mock_ledger.kis_mock_reconciliation_run_impl(
+        dry_run=True, confirm=True, record_dispatch_evidence=True
+    )
+    assert denied["error"] == "record_dispatch_evidence_requires_confirmed_apply"
+    denied = await kis_mock_ledger.kis_mock_reconciliation_run_impl(
+        dry_run=False, confirm=True, record_dispatch_evidence="true"
+    )
+    assert denied["error"] == "invalid_confirmation"
     recovery_call.assert_not_awaited()
 
 

@@ -197,14 +197,21 @@ reader and requires the returned row's `odno` to match exactly. No ODNO means
 no readback callback; symbol/side/quantity/time candidates are not a fallback.
 The operator reader must return one authoritative row, not a proximity match.
 The adapter checks the actual mock client, host and account fingerprint before
-the read. It requires an exact, unique order row, valid order date/time, matching
+the read. The exact claim creation and matching post-send ACK must fall on the
+same KST day; if they span days or cannot be bound, recovery retains the claim without
+a read. The broker query uses that one day for both start and end. A returned
+row must be on that same day and within the claim-to-ACK time window; later ODNO
+reuse is ignored. Exactly one row on the day is required, even when duplicates
+are byte-identical. It requires an exact order row, valid order date/time, matching
 plan terms, and consistent filled and remaining quantities. Missing, conflicting
 or failed reads are reported as uncertain; partial orders remain held and are
 reported as partial. Neither can release.
 
 The existing `kis_mock_reconciliation_run` invokes dispatch recovery only when
 the operator requests an unscoped run. Preview is read-only; evidence writes
-require `dry_run=False, confirm=True`. An exact full fill records a
+require `dry_run=False, confirm=True, record_dispatch_evidence=True`; the last
+flag defaults to false. An unscoped holdings-only apply does not append dispatch
+evidence. An exact full fill with the explicit opt-in records a
 `terminal_reconciliation` event with `lane_native_terminal_evidence=True`,
 `remainder_known=True`, and **`account_position_reconciled=False`**. Its exact
 claim row ID is reported as `retained: position proof unavailable`. The current

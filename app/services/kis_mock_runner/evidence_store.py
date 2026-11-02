@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -38,6 +38,7 @@ from app.services.mock_lane_registry import LaneRegistryEntry
 
 _DISPATCH_EVIDENCE_KEY = "dispatch"
 _ACK_ENVELOPE_KEY = "lineage-ack"
+_KST = timezone(timedelta(hours=9))
 
 
 class KISMockEvidenceConflict(ValueError):
@@ -56,7 +57,10 @@ class RediscoveredKISMockClaim:
 @dataclass(frozen=True, slots=True)
 class KISMockRecoveryLineage:
     envelope: LineageEnvelope
+    # Claim creation precedes the broker send and pins its KST day when a
+    # matching, post-send ACK was committed on that same day.
     created_at: datetime
+    acknowledged_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,8 +438,13 @@ class KISMockEvidenceStore:
                 )
                 or row.idempotency_key != claim.claim.idempotency_key
                 or claim.claim.claim_account_scope != self._scope
+                or not isinstance(row.created_at, datetime)
+                or not isinstance(current.created_at, datetime)
                 or row.created_at.tzinfo is None
                 or row.created_at.utcoffset() is None
+                or current.created_at.tzinfo is None
+                or current.created_at.utcoffset() is None
+                or row.created_at > current.created_at
             ):
                 raise KISMockEvidenceConflict("recovery_claim_binding_mismatch")
             envelope = LineageEnvelope.model_validate_json(
@@ -448,7 +457,36 @@ class KISMockEvidenceStore:
                 or envelope.decision_intent.side != claim.claim.side
             ):
                 raise KISMockEvidenceConflict("recovery_lineage_binding_mismatch")
-            return KISMockRecoveryLineage(envelope=envelope, created_at=row.created_at)
+            acknowledgements = await session.scalars(
+                select(KISMockDispatchEvidence).where(
+                    KISMockDispatchEvidence.order_attempt_id == claim.order_attempt_id,
+                    KISMockDispatchEvidence.kind == "ack",
+                    KISMockDispatchEvidence.broker_order_id == claim.broker_order_id,
+                    KISMockDispatchEvidence.broker_evidence_key.in_(
+                        (_key(_ACK_ENVELOPE_KEY), _key(_DISPATCH_EVIDENCE_KEY))
+                    ),
+                )
+            )
+            claim_day = current.created_at.astimezone(_KST).date()
+            valid_ack_times = [
+                event.created_at
+                for event in acknowledgements
+                if isinstance(event.created_at, datetime)
+                and event.created_at.utcoffset() is not None
+                and event.created_at >= current.created_at
+                and event.created_at.astimezone(_KST).date() == claim_day
+                and (
+                    event.broker_evidence_key == _key(_ACK_ENVELOPE_KEY)
+                    or _dispatch_matches_claim(event, current.id)
+                )
+            ]
+            if not valid_ack_times:
+                raise KISMockEvidenceConflict("recovery_dispatch_day_ambiguous")
+            return KISMockRecoveryLineage(
+                envelope=envelope,
+                created_at=current.created_at,
+                acknowledged_at=min(valid_ack_times),
+            )
 
     async def has_unresolved_account_uncertainty(
         self, *, claim_account_scope: str

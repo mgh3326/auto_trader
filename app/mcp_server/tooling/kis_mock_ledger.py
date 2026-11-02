@@ -686,6 +686,7 @@ async def kis_mock_reconciliation_run_impl(
     market: str | None = None,
     symbol: str | None = None,
     ledger_ids: list[int] | None = None,
+    record_dispatch_evidence: bool = False,
 ) -> dict[str, Any]:
     """Execute KIS mock order reconciliation and return summary.
 
@@ -713,10 +714,27 @@ async def kis_mock_reconciliation_run_impl(
     )
     if scope_error:
         return scope_error
-    if type(dry_run) is not bool or type(confirm) is not bool:
+    if any(
+        type(value) is not bool
+        for value in (dry_run, confirm, record_dispatch_evidence)
+    ):
         return {"success": False, "error": "invalid_confirmation", "scope": scope}
     if not dry_run and confirm is not True:
         return {"success": False, "error": "confirm_required", "scope": scope}
+    if record_dispatch_evidence and (dry_run or confirm is not True):
+        return {
+            "success": False,
+            "error": "record_dispatch_evidence_requires_confirmed_apply",
+            "scope": scope,
+        }
+    if record_dispatch_evidence and any(
+        scope.get(key) is not None for key in ("market", "symbol", "ledger_ids")
+    ):
+        return {
+            "success": False,
+            "error": "record_dispatch_evidence_requires_unscoped",
+            "scope": scope,
+        }
     try:
         async with _order_session_factory()() as db:
             result = await run_kis_mock_reconciliation(
@@ -731,7 +749,10 @@ async def kis_mock_reconciliation_run_impl(
                 scope.get(key) is not None for key in ("market", "symbol", "ledger_ids")
             ):
                 result["dispatch_recovery"] = await _recover_mock_dispatch_claims(
-                    db, dry_run=dry_run, confirm=confirm
+                    db,
+                    dry_run=dry_run,
+                    confirm=confirm,
+                    record_dispatch_evidence=record_dispatch_evidence,
                 )
             return result
     except Exception as exc:
@@ -746,7 +767,11 @@ async def kis_mock_reconciliation_run_impl(
 
 
 async def _recover_mock_dispatch_claims(
-    db: AsyncSession, *, dry_run: bool, confirm: bool
+    db: AsyncSession,
+    *,
+    dry_run: bool,
+    confirm: bool,
+    record_dispatch_evidence: bool = False,
 ) -> dict[str, Any]:
     """The manual MCP entry is the only caller of dispatch-claim recovery."""
     from app.services.brokers.kis import KISClient
@@ -778,6 +803,7 @@ async def _recover_mock_dispatch_claims(
             "reason": "recovery_identity_unavailable",
             "claims": [],
             "dry_run": dry_run,
+            "record_dispatch_evidence": record_dispatch_evidence,
         }
 
     client: KISClient | None = None
@@ -804,22 +830,29 @@ async def _recover_mock_dispatch_claims(
         odno: str, created_at: datetime.datetime
     ) -> dict[str, Any]:
         actual_client = checked_client()
-        start = created_at.astimezone(datetime.timezone(datetime.timedelta(hours=9)))
-        end = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+        dispatch_day = created_at.astimezone(
+            datetime.timezone(datetime.timedelta(hours=9))
+        ).strftime("%Y%m%d")
         rows = await actual_client.inquire_daily_order_domestic(
-            start_date=start.strftime("%Y%m%d"),
-            end_date=end.strftime("%Y%m%d"),
+            start_date=dispatch_day,
+            end_date=dispatch_day,
             order_number=odno,
             is_mock=True,
         )
         if (
             type(rows) is not list
-            or not rows
             or any(type(row) is not dict for row in rows)
-            or any(row != rows[0] for row in rows[1:])
+            or any(
+                type(row.get("ord_dt")) is not str
+                or re.fullmatch(r"[0-9]{8}", row["ord_dt"]) is None
+                for row in rows
+            )
         ):
             raise KISMockEvidenceConflict("recovery_readback_not_unique")
-        return rows[0]
+        matching_day = [row for row in rows if row["ord_dt"] == dispatch_day]
+        if len(matching_day) != 1:
+            raise KISMockEvidenceConflict("recovery_readback_not_unique")
+        return matching_day[0]
 
     close_failed = False
     try:
@@ -829,6 +862,7 @@ async def _recover_mock_dispatch_claims(
             reader=read_exact_order,
             dry_run=dry_run,
             confirm=confirm,
+            record_dispatch_evidence=record_dispatch_evidence,
         )
         if result["status"] == "no_unreleased_claims":
             try:

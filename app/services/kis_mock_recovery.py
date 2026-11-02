@@ -57,9 +57,10 @@ def _classify_readback(
     except ValueError:
         return None
     if not (
-        lineage.created_at.astimezone(KST).replace(microsecond=0)
+        ordered_at.date() == lineage.created_at.astimezone(KST).date()
+        and lineage.created_at.astimezone(KST).replace(microsecond=0)
         <= ordered_at
-        <= now.astimezone(KST)
+        <= min(lineage.acknowledged_at.astimezone(KST), now.astimezone(KST))
     ):
         return None
     ordered = _quantity(row.get("ord_qty"))
@@ -104,16 +105,22 @@ async def recover_kis_mock_dispatch_claims(
     reader: RecoveryReader,
     dry_run: bool = True,
     confirm: bool = False,
+    record_dispatch_evidence: bool = False,
 ) -> dict[str, Any]:
     """Read surviving claims; no source in this version proves account position.
 
     Each reported claim stays blocked. Exact terminal readback may be recorded
     with the position bit explicitly false; hk 2690 owns a real position proof.
     """
-    if type(dry_run) is not bool or type(confirm) is not bool:
+    if any(
+        type(value) is not bool
+        for value in (dry_run, confirm, record_dispatch_evidence)
+    ):
         raise ValueError("recovery_confirmation_invalid")
     if not dry_run and confirm is not True:
         raise ValueError("confirm_required")
+    if record_dispatch_evidence and (dry_run or confirm is not True):
+        raise ValueError("record_dispatch_evidence_requires_confirmed_apply")
     try:
         discovered = await store.rediscover_unreleased_claims()
     except Exception:  # noqa: BLE001 - account uncertainty is fail-closed
@@ -123,12 +130,17 @@ async def recover_kis_mock_dispatch_claims(
             "reason": "claim_rediscovery_unavailable",
             "claims": [],
             "dry_run": dry_run,
+            "record_dispatch_evidence": record_dispatch_evidence,
         }
 
     results = []
     for item in discovered:
         result = await _recover_one(
-            store=store, claims=claims, item=item, reader=reader, dry_run=dry_run
+            store=store,
+            claims=claims,
+            item=item,
+            reader=reader,
+            record_dispatch_evidence=record_dispatch_evidence,
         )
         results.append(result)
     return {
@@ -136,6 +148,7 @@ async def recover_kis_mock_dispatch_claims(
         "account_blocked": bool(results),
         "claims": results,
         "dry_run": dry_run,
+        "record_dispatch_evidence": record_dispatch_evidence,
     }
 
 
@@ -145,7 +158,7 @@ async def _recover_one(
     claims: DurableSendClaimAdapter,
     item: RediscoveredKISMockClaim,
     reader: RecoveryReader,
-    dry_run: bool,
+    record_dispatch_evidence: bool,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "claim_id": item.claim.row_id,
@@ -175,7 +188,8 @@ async def _recover_one(
             return result
         state, digest = classified
         result["readback"] = state
-        if dry_run:
+        if not record_dispatch_evidence:
+            result["evidence"] = "not_recorded"
             return result
 
         kind = {
@@ -208,9 +222,14 @@ async def _recover_one(
                 claims=claims,
             )
         result["evidence"] = "recorded"
-    except KISMockEvidenceConflict:
+    except KISMockEvidenceConflict as exc:
         result["readback"] = "uncertain"
-        result["readback_reason"] = "exact_readback_or_claim_unavailable"
+        result["readback_reason"] = (
+            str(exc)
+            if str(exc)
+            in {"recovery_dispatch_day_ambiguous", "recovery_readback_not_unique"}
+            else "exact_readback_or_claim_unavailable"
+        )
     except Exception:  # noqa: BLE001 - read/write failure is never release authority
         result["readback"] = "uncertain"
         result["readback_reason"] = "recovery_error"

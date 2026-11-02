@@ -503,8 +503,10 @@ at most 30-minute expiry, one working order per intent and one intent per E3 run
 gateway writer and operator-present foreground route owner. No recurrence is
 authorized; the operator must store the matching bounded E1 intent. No production provider installation, scheduler or broker call is
 part of this amendment. The unscoped, operator-run KIS mock reconciler now reads
-exact attributed ODNOs and records native evidence; every surviving claim blocks
-the account. No current source proves `account_position_reconciled`, so even a
+exact attributed ODNOs on the claim's KST dispatch day. A separate per-call
+`record_dispatch_evidence=True` opt-in, default false, is required in addition
+to confirmed non-dry-run execution to append native evidence; every surviving
+claim blocks the account. No current source proves `account_position_reconciled`, so even a
 terminal full fill is reported as `retained: position proof unavailable` with
 its claim ID and is never released. A reviewed position-proof implementation
 (hk 2690) remains an activation gate. Contract:

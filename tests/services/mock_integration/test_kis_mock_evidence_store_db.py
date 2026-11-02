@@ -1,7 +1,7 @@
 """PostgreSQL acceptance: CI only under the fleet's host safety policy."""
 
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -294,7 +294,10 @@ async def test_native_dispatch_key_cannot_clear_missing_dispatch_uncertainty(
 async def test_operator_recovery_retains_terminal_claim_and_deduplicates(evidence_lane):
     store, sessions, factory, envelope, claim = evidence_lane
     await ack(store, factory, envelope, claim)
-    now = datetime.now(timezone(timedelta(hours=9)))
+    async with sessions() as session:
+        stored_claim = await session.get(OrderSendIntent, claim.row_id)
+        assert stored_claim is not None
+        now = stored_claim.created_at.astimezone(timezone(timedelta(hours=9)))
     reader = AsyncMock(
         return_value={
             "odno": ODNO,
@@ -310,6 +313,27 @@ async def test_operator_recovery_retains_terminal_claim_and_deduplicates(evidenc
     intents = AsyncMock()
     async with sessions() as session:
         lifecycle = KISMockLifecycleService(session)
+        preview = await lifecycle.recover_dispatch_claims(
+            store=store,
+            claims=DurableSendClaimAdapter(intents),
+            reader=reader,
+            dry_run=False,
+            confirm=True,
+        )
+        own = next(
+            item for item in preview["claims"] if item["claim_id"] == claim.row_id
+        )
+        assert own["evidence"] == "not_recorded"
+        before = await session.scalar(
+            select(func.count())
+            .select_from(KISMockDispatchEvidence)
+            .where(
+                KISMockDispatchEvidence.order_attempt_id
+                == envelope.order_attempt.order_attempt_id,
+                KISMockDispatchEvidence.kind == "terminal_reconciliation",
+            )
+        )
+        assert before == 0
         for _ in range(2):
             result = await lifecycle.recover_dispatch_claims(
                 store=store,
@@ -317,6 +341,7 @@ async def test_operator_recovery_retains_terminal_claim_and_deduplicates(evidenc
                 reader=reader,
                 dry_run=False,
                 confirm=True,
+                record_dispatch_evidence=True,
             )
             own = next(
                 item for item in result["claims"] if item["claim_id"] == claim.row_id
