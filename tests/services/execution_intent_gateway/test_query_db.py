@@ -139,7 +139,6 @@ async def test_reader_returns_ledger_evidence_for_the_lineage(
             order_no=seeded["order_no"],
             status="accepted",
             lifecycle_state="fill",
-            quantity=10,
             filled_qty=3,
             broker_cancel_confirmed=None,
         ),

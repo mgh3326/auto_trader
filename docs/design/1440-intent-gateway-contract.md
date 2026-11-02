@@ -80,12 +80,12 @@ What resolves an unknown outcome:
 | Evidence | Result |
 |---|---|
 | An `accepted` ledger row with an order number, for an unknown submit | The order is working under the submit's key |
-| A `rejected` ledger row, unless the broker accepted a sender | No order |
+| A `rejected` ledger row, unless the journal or the row holds a broker number | No order |
 | A ledger row in `expired`, or a cancel the broker confirmed | No order |
 | `execution_ledger` fills on the current order that reach the quantity it was sent for | No order |
 | An accepted cancel in the journal | No order |
 
-A missing ledger row proves nothing, because the row is written after the send. An unknown amend or cancel on an open order stays unresolved. The journal rows themselves never change: a query reports them and does not move them.
+A missing ledger row proves nothing, because the row is written after the send. An unknown amend or cancel on an open order stays unresolved. An unknown amend closes only on evidence about the order the ledger names for it: fills, expiry or a cancel on the order it may have replaced say nothing about a replacement. The journal rows themselves never change: a query reports them and does not move them.
 
 ### How the query joins its evidence
 
@@ -93,7 +93,7 @@ A missing ledger row proves nothing, because the row is written after the send. 
 
 An order is its number and its KST trading day, the ROB-1379 identity. KIS reuses numbers across days, and writers differ on leading zeros, so numbers compare with leading zeros removed. A submit or an amend places an order on the day it was sent. A cancel journals its target's number and places nothing.
 
-E1 accepts a sender only with a number and amends only an accepted sender, so only the last sender in a lineage can lack a number. The ledger row names that order if it followed the send. A ledger number from an earlier order on another day cannot be told apart from a reused number, so it names nothing.
+E1 accepts a sender only with a number and amends only an accepted sender, so only the last sender in a lineage can lack a number. The ledger row names that order if it followed the send, and the order's quantity is still what the journal sent. A ledger number from an earlier order on another day cannot be told apart from a reused number, so it names nothing.
 
 `kis_mock_order_ledger.last_reconcile_detail.attributed_fill_qty` is not evidence about one order. The holdings reconciler shares out the whole symbol's holdings change, so another order's fill can appear on a resting order. That estimate can never close an order or enter `filled_qty`. It can only conflict with the execution ledger.
 
@@ -105,14 +105,14 @@ Each row has a test named `test_j<n>_*` in `tests/services/execution_intent_gate
 | J2 | Numbers join with leading zeros removed, by the same rule as ROB-1379's `normalize_order_id` | An understated fill would be possible otherwise |
 | J3 | An order closes only on its own `execution_ledger` fills, compared with the quantity the journal sent. Fills on the order it replaced do not count | Working order stays working |
 | J4 | The ledger row's holdings estimate never closes an order or enters `filled_qty`. If it exceeds what the execution ledger shows, the answer is `fill_evidence_conflict` | `view: null` |
-| J5 | Closure reads only orders the reader loads. Yesterday's number under today's unknown amend is `order_identity_ambiguous` | `view: null` |
+| J5 | Closure reads only orders the reader loads. Yesterday's number under today's unknown amend is `order_identity_ambiguous`. Evidence about the old order never closes an unknown amend the ledger has not followed | `view: null` |
 | J6 | More than one ledger row is `ledger_row_ambiguous`, and no partial total exists anywhere in the answer | `view: null` |
 | J7 | A missing or unreadable estimate on a `fill` row is unknown, not zero and not a full fill. A blank ledger number names nothing. An unreadable share quantity or a journal row the DB forbids answers 503 | `view: null` or 503 |
 | J8 | More fills than an order held are not believed | `view: null` |
 | J9 | One order has one owner: an amend that keeps its number, or two lineages holding one number on one day, is `order_identity_ambiguous` | `view: null` |
 | J10 | A ledger number the journal cannot explain is `order_identity_ambiguous`. This also covers a journal read before a later amend, because the two reads are separate transactions | `view: null` |
 | J11 | The answer does not depend on the order of the journal rows | |
-| J12 | A `rejected` ledger row does not override a sender the broker accepted | `view: null` |
+| J12 | A `rejected` ledger row does not override a broker number | `view: null` |
 
 ## Intent (`ExecutionIntentV1`)
 

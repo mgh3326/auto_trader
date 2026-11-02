@@ -72,7 +72,6 @@ class LedgerOrder:
     order_no: str | None
     status: str
     lifecycle_state: str
-    quantity: int
     filled_qty: int | None
     broker_cancel_confirmed: bool | None = None
 
@@ -125,6 +124,9 @@ class LineageOrders:
     #: The order the last submit or amend placed, when it can be named.
     current: PlacedOrder | None
     identity_known: bool
+    #: An amend with an unknown outcome that no evidence names. It may have placed a
+    #: replacement, and anything the ledger says is about the order before it.
+    replacement_unseen: bool = False
 
 
 def _lineages(children: Sequence[ChildSnapshot]) -> dict[str, list[ChildSnapshot]]:
@@ -159,8 +161,9 @@ def lineage_orders(
     A submit or an amend places an order on the day it was sent, and a cancel places
     nothing. E1 accepts a sender only with a number and amends only an accepted one,
     so only the last sender can lack a number: the ledger names that order if it
-    followed the send. Anything else cannot be told apart from a stale or reused
-    number, so it is not an identity to count fills against.
+    followed the send. Its quantity is always what the journal sent. Anything else
+    cannot be told apart from a stale or reused number, so it is not an identity to
+    count fills against.
     """
     senders = _senders(rows)
     if not senders:
@@ -188,16 +191,18 @@ def lineage_orders(
 
     identity_known = len(numbered) == len(senders) - 1
     if ledger_order is None or not ledger_number:
-        return LineageOrders(tuple(placed), None, identity_known)
+        return LineageOrders(
+            tuple(placed), None, identity_known, last.action == "amend"
+        )
     key = (ledger_number, trade_day_kst(last.created_at))
     if placed and placed[-1].key == key:
         # The ledger did not follow the send, so it still names the previous order.
-        return LineageOrders(tuple(placed), placed[-1], identity_known)
+        return LineageOrders(tuple(placed), None, identity_known, True)
     if ledger_number in numbers:
         # An earlier order's number on another day: either the send never applied or
         # the broker reused the number, and fills under it may be a stranger's.
         return LineageOrders(tuple(placed), None, False)
-    current = PlacedOrder(key, ledger_order.quantity)
+    current = PlacedOrder(key, _sent_quantity(last))
     return LineageOrders((*placed, current), current, identity_known)
 
 
@@ -213,8 +218,10 @@ def _ledger_proves_gone(
     ledger_order: LedgerOrder, rows: Sequence[ChildSnapshot]
 ) -> bool:
     if ledger_order.status == "rejected":
-        # The broker accepted a sender, so a rejected row contradicts the journal.
-        return not any(row.state is ChildState.ACCEPTED for row in _senders(rows))
+        # A broker number means the broker took the order, whatever the row says.
+        return not _order_number(ledger_order.order_no) and not any(
+            _order_number(row.broker_order_id) for row in _senders(rows)
+        )
     if ledger_order.lifecycle_state == "expired":
         return True
     if ledger_order.lifecycle_state == "cancelled":
@@ -254,7 +261,11 @@ def _resolve_lineage(
     last = rows[-1]
     if last.action == "cancel" and last.state is ChildState.ACCEPTED:
         return None, ()
-    if ledger_order is not None and _ledger_proves_gone(ledger_order, rows):
+    if (
+        ledger_order is not None
+        and not orders.replacement_unseen
+        and _ledger_proves_gone(ledger_order, rows)
+    ):
         return None, ()
     current = orders.current
     if current is not None and 0 < current.quantity <= filled_by_order_day.get(
@@ -460,7 +471,6 @@ class SqlLedgerEvidenceReader:
                         order_no=row.order_no,
                         status=row.status,
                         lifecycle_state=row.lifecycle_state,
-                        quantity=_whole_shares(row.quantity),
                         filled_qty=_estimated_fill(
                             row.lifecycle_state, row.last_reconcile_detail
                         ),
