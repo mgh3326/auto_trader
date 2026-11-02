@@ -92,6 +92,21 @@ def run(args: argparse.Namespace) -> dict:
             and start <= day <= asof
         ]
         bars, failures = inputs.public_bars(args.market, names, start, asof)
+        required: set[tuple[str, date]] = set()
+        for signal in signals:
+            entry = engine.entry_day(args.market, signal.at, sessions)
+            if entry is not None:
+                required.update((signal.symbol, day) for day in due if day >= entry)
+        for episode in previous["episodes"] if previous else []:
+            required.update(
+                (episode["symbol"], day)
+                for day in due
+                if episode["entry_day"] <= str(day)
+                and (
+                    Decimal(episode["candidate"]["qty"]) > 0
+                    or str(day) <= episode["h_day"]
+                )
+            )
         gaps = [
             f"{name}:{day}"
             for day in sessions
@@ -99,7 +114,12 @@ def run(args: argparse.Namespace) -> dict:
             for name in names
             if (name, day) not in bars
         ]
-        if gaps:
+        blocking_gaps = [
+            f"{name}:{day}"
+            for name, day in sorted(required, key=lambda pair: (pair[1], pair[0]))
+            if (name, day) not in bars
+        ]
+        if blocking_gaps:
             input_state = (
                 "unverified:missing_bars"
                 if input_state == "verified"
@@ -125,6 +145,7 @@ def run(args: argparse.Namespace) -> dict:
                 "context": context,
                 "previous_sha256": previous_hash,
                 "data_gaps": gaps,
+                "blocking_data_gaps": blocking_gaps,
                 "fetch_failures": failures,
                 "coverage_gaps": (previous.get("coverage_gaps", []) if previous else [])
                 + ([str(day) for day in due] if input_state != "verified" else []),
