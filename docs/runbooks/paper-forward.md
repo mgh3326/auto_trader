@@ -11,7 +11,7 @@ Set `PAPER_FORWARD_UNIVERSE` to the **frozen research** `prices_manifest.json`
 (`trade-retro-prices/v1`), including its missing-symbol keys. Crypto uses that
 snapshot's Upbit KRW symbols; US uses its US symbols, excluding parking in both.
 The universe's hash, shared rule hash, engine hash and research cost reserve are
-frozen on the first committed day. A changed definition requires a new directory
+frozen with the first non-dry-run epoch marker. A changed definition requires a new directory
 (epoch). Public Upbit daily candles and Yahoo daily history are fetched directly
 through the existing research readers; app settings and broker clients are absent.
 
@@ -21,6 +21,7 @@ through the existing research readers; app settings and broker clients are absen
 {
   "schema": "paper-forward-signals/v1",
   "market": "us",
+  "covers_from": "2026-11-02",
   "complete_through": "2026-11-02T22:00:00+00:00",
   "signals": [
     {
@@ -38,9 +39,14 @@ The amount and price placeholders must be replaced by **decimal strings from
 the original intent**; they are never amounts chosen by this code. Omit
 `control_limit` for crypto. Keys must be unique, opaque and stable; no account or
 order identifiers, credentials or free-text rationale belong in this feed.
-`complete_through` is evidence of input coverage, not the time the file was copied.
-Missing/stale feeds are `unverified`, while a fresh feed with `signals: []` proves
-zero entries for that period. Keep overlapping history so a retry can deduplicate.
+`covers_from` is required. It is the inclusive first market entry session for
+which the feed contains the complete eligible intent stream, including the
+earlier intent timestamps needed to resolve that session's next-open entries.
+It must cover the first session not yet ledgered, not just the requested asof.
+`complete_through` is the upper coverage timestamp, not the time the file was copied.
+Missing history bounds, a late `covers_from`, and stale/missing feeds are
+`unverified`. Only a feed covering both ends with `signals: []` proves zero entries.
+Keep overlapping history so a retry can deduplicate.
 
 The desk supplies this read-only feed from its intent/export collection; this PR
 does not add a producer or activate one. Follow the research signal definitions:
@@ -53,7 +59,8 @@ does not add a producer or activate one. Follow the research signal definitions:
   additional entry. A new signal while flat can open another episode.
 
 These rules need an intent stream; they do not generate a buy from prices alone.
-The first run begins at `--asof` and does not invent historical positions. Later
+The first non-dry-run attempt pins `--asof` in `epochs/<market>.json`, even if its
+inputs are unverified. It does not open historical positions before that date. Later
 runs catch up every missing **market session**. Supply complete feed history for
 that interval. A fresh feed is required before calling collection operational.
 
@@ -68,6 +75,10 @@ cost, and -35% average-cost stop only after both adds. Adds precede exits on
 the same bar. There is no B3 time stop. US adds 50% of held **quantity** at its
 first close <= -8% from entry, once, with fractional quantities and no stop.
 US split events adjust the held quantities and entry reference before decisions.
+The shared B3 rule preserves the pre-refactor replay's float arithmetic, including
+rounding at exact -10%/-20% add, +10% target and -35% stop boundaries. Ledger
+amounts and quantities remain decimal strings. For example, 100 to 110 does not
+take the target because the replay computes its threshold as 110.00000000000001.
 
 The controls and capital are fixed per episode:
 
@@ -103,7 +114,13 @@ uv run python scripts/paper_forward/run.py --market crypto --asof <completed UTC
 `--asof` defaults to the last completed market session. The JSON printed to stdout
 contains the signals, ledger diff and episode report. Markdown and JSON previews
 go to `preview/<market>/<date>.*`; they never advance committed episodes. Normal
-runs publish `ledger/<market>/<date>.json` and `reports/<market>/<date>.*`.
+runs with verified input publish `ledger/<market>/<date>.json` and
+`reports/<market>/<date>.*`. An unverified run defers new signals without consuming
+their keys and does not advance the committed ledger. It writes a report under
+`unverified/<market>/<date>-<content hash>.*` (under `preview` for dry runs), with
+`committed=false`. Repeated attempts with corrected inputs cannot overwrite the
+earlier evidence. The next complete run retries every session after the last
+committed day, or from the pinned epoch start if none has committed yet.
 The ledger is append-only at the service boundary: write-once files, fsync,
 atomic hard-link publication, per-market flock, and a previous-file hash chain.
 Re-running a committed date performs no fetch and changes no ledger/report bytes;
@@ -121,8 +138,11 @@ net episode P&L, H maturity and `D_i = (candidate P&L - control P&L) / E`. H is
 D0+60 crypto days or D0+20 XNYS sessions, fixed on the independent calendar.
 Exits before H remain cash through H; a still-open candidate is marked at H and
 continues under its strategy afterwards. The H result is frozen once recorded.
-Missing bars never move H. A gap could hide an add or exit, so that episode stays
-`unverified` and subsequent decisions are suspended rather than fabricated.
+Missing bars never move H. A tentative gap is `unverified`; it does not commit
+fabricated adds or exits. A later complete run can replay the uncommitted interval.
+An episode with no entry fill never counts as a held position and cannot suppress
+a later independent signal. A previously committed episode with a path gap stays
+unverified; its unknown decisions are not guessed.
 Missing marks, limits and coverage are reported explicitly, with null numeric
 results rather than 0. Unfilled controls with complete data legitimately earn 0.
 
@@ -136,7 +156,10 @@ confirmation requires an operator-sealed manifest and counted test-set looks.
 00:20 UTC (after crypto close) and 23:00 UTC (after US close in either DST
 regime), running both market steps; the extra market invocation is idempotent.
 Desk must provision fresh intent feeds, a durable directory and a reviewed checkout
-before registration. No scheduler, deploy or paper-account activation occurs here.
+before registration. Required scheduler/worker variables are `AUTO_TRADER_DIR`,
+`PAPER_FORWARD_UNIVERSE`, `PAPER_FORWARD_DIR`, `PAPER_FORWARD_SIGNALS_CRYPTO`, and
+`PAPER_FORWARD_SIGNALS_US`; both commands pass the universe and directory explicitly.
+No scheduler, deploy or paper-account activation occurs here.
 
 ```bash
 uv run pytest tests/research/test_paper_forward.py tests/research/strategy_evidence/test_core_calculations.py -q

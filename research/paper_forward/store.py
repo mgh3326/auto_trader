@@ -63,6 +63,7 @@ def markdown(report: dict) -> str:
         f"# Paper forward shadow: {report['market']} {report['asof']}",
         "",
         f"Input state: {report['input_state']}. Mode: {report['mode']}.",
+        f"Ledger committed: {str(report.get('committed', False)).lower()}.",
         f"Sessions with incomplete input coverage: {', '.join(report.get('coverage_gaps', [])) or 'none'}.",
         "Hypothetical fills only. Costs use the research conservative round-trip reserve.",
         "D_i = (candidate P&L - control P&L) / fixed episode E; cash earns zero.",
@@ -121,14 +122,26 @@ def markdown(report: dict) -> str:
 
 
 def reports(root: Path, report: dict) -> tuple[Path, Path]:
+    public = {k: v for k, v in report.items() if k not in {"episodes", "seen"}}
+    verified = report["input_state"] == "verified"
     directory = (
         root
-        / ("preview" if report["mode"] == "dry-run" else "reports")
+        / (
+            "preview"
+            if report["mode"] == "dry-run"
+            else "reports"
+            if verified
+            else "unverified"
+        )
         / report["market"]
     )
-    json_path = directory / f"{report['asof']}.json"
-    md_path = directory / f"{report['asof']}.md"
-    public = {k: v for k, v in report.items() if k not in {"episodes", "seen"}}
+    name = (
+        report["asof"]
+        if verified
+        else report["asof"] + "-" + hashlib.sha256(json_bytes(public)).hexdigest()[:16]
+    )
+    json_path = directory / f"{name}.json"
+    md_path = directory / f"{name}.md"
     publish(json_path, json_bytes(public))
     publish(md_path, markdown(public).encode())
     return md_path, json_path

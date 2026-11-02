@@ -81,7 +81,11 @@ def universe(path: Path, market: str) -> list[str]:
 
 
 def signal_feed(
-    path: Path | None, market: str, names: list[str], asof: date
+    path: Path | None,
+    market: str,
+    names: list[str],
+    asof: date,
+    required_from: date | None = None,
 ) -> tuple[list[Signal], str]:
     if path is None or not path.is_file():
         return [], "unverified:missing_signal_feed"
@@ -91,11 +95,21 @@ def signal_feed(
     through = datetime.fromisoformat(feed["complete_through"])
     if through.tzinfo is None:
         raise ValueError("signal feed needs an offset-aware coverage timestamp")
-    state = (
-        "verified"
-        if through >= close_time(market, asof)
-        else "unverified:stale_signal_feed"
-    )
+    reasons = []
+    if through < close_time(market, asof):
+        reasons.append("stale_signal_feed")
+    covers_from = feed.get("covers_from")
+    if covers_from is None:
+        reasons.append("missing_signal_history")
+    else:
+        if not isinstance(covers_from, str):
+            raise ValueError("covers_from must be an ISO date")
+        covered_start = date.fromisoformat(covers_from)
+        if str(covered_start) != covers_from:
+            raise ValueError("covers_from must be an ISO date")
+        if covered_start > (required_from or asof):
+            reasons.append("incomplete_signal_history")
+    state = "unverified:" + ";".join(reasons) if reasons else "verified"
     rows, keys = [], set()
     for row in feed["signals"]:
         at = datetime.fromisoformat(row["at"])

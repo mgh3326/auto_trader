@@ -4,6 +4,8 @@
 # days select the last completed session and become idempotent reruns.
 # This file merely proposes two UTC invocations. Do not copy it into Dagu
 # until the desk provisions the frozen universe and a fresh intent feed.
+# Required scheduler/worker environment (provision before registration):
+# AUTO_TRADER_DIR = checkout pinned to the reviewed commit
 # PAPER_FORWARD_UNIVERSE = frozen research prices_manifest.json
 # PAPER_FORWARD_SIGNALS_CRYPTO / _US = normalized paper-forward-signals/v1
 # PAPER_FORWARD_DIR = private durable artifact directory outside git
@@ -16,10 +18,10 @@ hist_retention_days: 60
 steps:
   - name: crypto
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python scripts/paper_forward/run.py --market crypto --signals ${PAPER_FORWARD_SIGNALS_CRYPTO}
+    command: uv run python scripts/paper_forward/run.py --market crypto --signals ${PAPER_FORWARD_SIGNALS_CRYPTO} --universe ${PAPER_FORWARD_UNIVERSE} --ledger-dir ${PAPER_FORWARD_DIR}
   - name: us
     working_dir: ${AUTO_TRADER_DIR}
-    command: uv run python scripts/paper_forward/run.py --market us --signals ${PAPER_FORWARD_SIGNALS_US}
+    command: uv run python scripts/paper_forward/run.py --market us --signals ${PAPER_FORWARD_SIGNALS_US} --universe ${PAPER_FORWARD_UNIVERSE} --ledger-dir ${PAPER_FORWARD_DIR}
 # Both steps run at both times. Each independently selects its last completed
 # session; the extra invocation is a read-only replay if that day is committed.
 # No broker, credential, TaskIQ, Prefect or cron wiring exists in this PR.

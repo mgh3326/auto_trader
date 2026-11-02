@@ -205,11 +205,12 @@ def advance(
     signals: list[Signal],
     cost: Decimal,
     input_state: str = "verified",
+    start_day: date | None = None,
 ) -> dict:
     """Advance only new calendar sessions. D0+H never shifts for missing symbol bars."""
     episodes = deepcopy(previous["episodes"]) if previous else []
     seen = set(previous["seen"]) if previous else set()
-    start = (
+    start = start_day or (
         date.fromisoformat(previous["asof"]) + timedelta(days=1) if previous else asof
     )
     actions, today_signals = [], []
@@ -217,16 +218,22 @@ def advance(
         for signal in sorted(signals, key=lambda s: (s.at, s.key)):
             if signal.key in seen or entry_day(market, signal.at, sessions) != day:
                 continue
+            if input_state != "verified":
+                today_signals.append(
+                    {
+                        "id": signal.key,
+                        "symbol": signal.symbol,
+                        "day": str(day),
+                        "state": "deferred_unverified",
+                    }
+                )
+                continue
             seen.add(signal.key)
             held = next(
                 (
                     e
                     for e in episodes
-                    if e["symbol"] == signal.symbol
-                    and (
-                        D(e["candidate"]["qty"]) > 0
-                        or (e["unverified"] and not e["candidate"]["fills"])
-                    )
+                    if e["symbol"] == signal.symbol and D(e["candidate"]["qty"]) > 0
                 ),
                 None,
             )

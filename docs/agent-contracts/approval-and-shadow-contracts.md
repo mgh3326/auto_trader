@@ -328,6 +328,11 @@ are `unverified`, never zero. H uses the independent 24/7 or XNYS calendar.
 The normalized intent feed preserves research signal definitions, and the universe
 is frozen from its research price manifest. `deploy/dagu/paper-forward.yaml` is
 PROPOSAL only, unregistered. Details: `docs/runbooks/paper-forward.md`.
+The normalized feed requires an inclusive `covers_from` entry-session bound and
+`complete_through`; coverage must span the whole uncommitted interval. Unverified
+runs defer new signals without consuming keys and publish reports only. A separate
+immutable epoch marker pins the initial date, so corrected input can retry the
+same asof or a later catch-up without losing the first interval.
 
 ## 유지 규약
 

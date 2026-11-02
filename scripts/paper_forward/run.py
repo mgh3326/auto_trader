@@ -54,21 +54,36 @@ def run(args: argparse.Namespace) -> dict:
             raise ValueError(
                 "frozen universe/rules/cost changed; use a new ledger epoch"
             )
-        signals, input_state = inputs.signal_feed(
-            Path(args.signals).expanduser() if args.signals else None,
-            args.market,
-            names,
-            asof,
+        epoch_path = root / "epochs" / f"{args.market}.json"
+        epoch = (
+            json.loads(epoch_path.read_bytes())
+            if epoch_path.exists()
+            else {"start_asof": str(asof), "context": context}
         )
+        if epoch["context"] != context:
+            raise ValueError("frozen epoch context changed; use a new ledger epoch")
+        epoch_start = date.fromisoformat(epoch["start_asof"])
+        if epoch_start > asof:
+            raise ValueError("asof predates the pinned epoch start")
+        if not args.dry_run:
+            store.publish(epoch_path, store.json_bytes(epoch))
         start = (
             date.fromisoformat(previous["asof"]) + timedelta(days=1)
             if previous
-            else asof
+            else epoch_start
         )
         # Include the preceding weeks to resolve next-open dates without snapping old intents to D0.
         calendar_start = start - timedelta(days=14)
         sessions = inputs.calendar(
             args.market, calendar_start, asof + timedelta(days=370)
+        )
+        due = [day for day in sessions if start <= day <= asof]
+        signals, input_state = inputs.signal_feed(
+            Path(args.signals).expanduser() if args.signals else None,
+            args.market,
+            names,
+            asof,
+            due[0],
         )
         signals = [s for s in signals if s.at.astimezone(UTC).date() >= calendar_start]
         bars, failures = inputs.public_bars(args.market, names, start, asof)
@@ -86,17 +101,28 @@ def run(args: argparse.Namespace) -> dict:
                 else input_state + ";missing_bars"
             )
         report = engine.advance(
-            args.market, asof, previous, sessions, bars, signals, cost, input_state
+            args.market,
+            asof,
+            previous,
+            sessions,
+            bars,
+            signals,
+            cost,
+            input_state,
+            start_day=start,
         )
         report.update(
             {
                 "mode": "dry-run" if args.dry_run else "shadow",
+                "committed": not args.dry_run and input_state == "verified",
+                "start_asof": epoch["start_asof"],
+                "required_signal_history_from": str(due[0]),
                 "context": context,
                 "previous_sha256": previous_hash,
                 "data_gaps": gaps,
                 "fetch_failures": failures,
                 "coverage_gaps": (previous.get("coverage_gaps", []) if previous else [])
-                + ([str(asof)] if input_state != "verified" else []),
+                + ([str(day) for day in due] if input_state != "verified" else []),
                 "bar_inputs": {
                     f"{s}:{d}": {
                         "open": str(b.open),
@@ -122,7 +148,7 @@ def run(args: argparse.Namespace) -> dict:
                 ).hexdigest(),
             }
         )
-        if not args.dry_run:
+        if report["committed"]:
             store.publish(existing, store.json_bytes(report))
         store.reports(root, report)
         return report
@@ -170,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                     "asof",
                     "mode",
                     "input_state",
+                    "committed",
                     "signals",
                     "summary",
                     "ledger_diff",

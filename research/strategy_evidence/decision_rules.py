@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 B3_ADDS = (0.10, 0.20)
@@ -41,23 +40,22 @@ def averaging_decision(
     target: float = B3_TARGET,
     stop_after_adds: float | None = B3_STOP_AFTER_ADDS,
 ) -> AveragingDecision:
-    """Equal *notional* units. All touched adds precede target/stop evaluation."""
-    prices = [Decimal(str(price)) for price in unit_prices]
-    entry_price, closing_price = Decimal(str(entry)), Decimal(str(close))
+    """Equal notional units, preserving the pre-refactor replay's float boundaries."""
+    prices = list(unit_prices)
     added = 0
     while len(prices) - 1 < len(adds):
-        if closing_price > entry_price * (1 - Decimal(str(adds[len(prices) - 1]))):
+        if close > entry * (1.0 - adds[len(prices) - 1]):
             break
-        prices.append(closing_price)
+        prices.append(close)
         added += 1
-    avg = len(prices) / sum(1 / price for price in prices)
+    avg = len(prices) / sum(1.0 / price for price in prices)
     reason = None
-    if closing_price >= avg * (1 + Decimal(str(target))):
+    if close >= avg * (1.0 + target):
         reason = "target"
     elif (
         stop_after_adds
         and len(prices) - 1 == len(adds)
-        and closing_price <= avg * (1 - Decimal(str(stop_after_adds)))
+        and close <= avg * (1.0 - stop_after_adds)
     ):
         reason = "loss-cut"
     return AveragingDecision(added, reason)
