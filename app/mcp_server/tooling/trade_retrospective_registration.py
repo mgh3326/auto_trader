@@ -74,7 +74,9 @@ def register_trade_retrospective_tools(
         name="get_trade_retrospectives",
         description=(
             "List structured trade retrospectives with filters "
-            "(symbol/account_mode/strategy_key/market/correlation_id/days). Read-only."
+            "(symbol/account_mode/strategy_key/market/correlation_id/days). Read-only. "
+            "Each entry carries pnl_status (recorded / buy_leg / no_fill_outcome / "
+            "no_fill_evidence / unknown_side / missing_realized_pnl)."
         ),
     )(get_trade_retrospectives)
     _ = mcp.tool(
@@ -88,6 +90,9 @@ def register_trade_retrospective_tools(
             "(excluded_no_fill_evidence reported); process dims "
             "(trigger_type/root_cause) include no-evidence rows so "
             "rejected/cancelled postmortems are analyzed too. Read-only. "
+            "pnl_coverage separates realized P&L that is recorded from rows "
+            "that are structurally not applicable (no fill / buy leg) and rows "
+            "that are missing it (a filled sell with no cost basis). "
             "Complements get_mock_loop_retrospective."
         ),
     )(get_retrospective_aggregate)

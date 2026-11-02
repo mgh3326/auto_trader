@@ -99,6 +99,80 @@ _VALID_OUTCOMES = {
 }
 _KST = ZoneInfo("Asia/Seoul")
 
+# ROB-1488 — why `realized_pnl` is NULL. A closed vocabulary derived at read
+# time so a genuinely non-applicable value is not confused with a filled sell
+# whose cost basis was never recorded. This classification never fabricates a
+# P&L and never writes a row; it only labels evidence the row already carries.
+PNL_STATUS_RECORDED = "recorded"
+PNL_STATUS_NO_FILL_EVIDENCE = "no_fill_evidence"
+PNL_STATUS_NO_FILL_OUTCOME = "no_fill_outcome"
+PNL_STATUS_BUY_LEG = "buy_leg"
+PNL_STATUS_UNKNOWN_SIDE = "unknown_side"
+PNL_STATUS_MISSING_REALIZED_PNL = "missing_realized_pnl"
+
+PNL_STATUS_CLASS: dict[str, str] = {
+    PNL_STATUS_RECORDED: "recorded",
+    PNL_STATUS_NO_FILL_EVIDENCE: "not_applicable",
+    PNL_STATUS_NO_FILL_OUTCOME: "not_applicable",
+    PNL_STATUS_BUY_LEG: "not_applicable",
+    PNL_STATUS_UNKNOWN_SIDE: "unknown",
+    PNL_STATUS_MISSING_REALIZED_PNL: "missing",
+}
+
+_FILLED_OUTCOMES = frozenset({"filled", "partially_filled"})
+
+
+def classify_pnl_status(
+    *,
+    outcome: str | None,
+    side: str | None,
+    realized_pnl: Decimal | None,
+    fill_evidence_available: bool,
+) -> str:
+    """Label an existing row's realized-P&L state without inventing a value.
+
+    ``missing_realized_pnl`` is the only bucket that means "a value could have
+    existed but was not recorded" (a filled sell without a cost basis). Every
+    other NULL is structurally non-applicable: no fill, a buy leg, no fill
+    evidence, or an unknown side.
+    """
+    if realized_pnl is not None:
+        return PNL_STATUS_RECORDED
+    if not fill_evidence_available:
+        return PNL_STATUS_NO_FILL_EVIDENCE
+    if outcome not in _FILLED_OUTCOMES:
+        return PNL_STATUS_NO_FILL_OUTCOME
+    if side == "buy":
+        return PNL_STATUS_BUY_LEG
+    if side is None:
+        return PNL_STATUS_UNKNOWN_SIDE
+    return PNL_STATUS_MISSING_REALIZED_PNL
+
+
+def _pnl_status_counts(items: list[TradeRetrospective]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        status = classify_pnl_status(
+            outcome=item.outcome,
+            side=item.side,
+            realized_pnl=item.realized_pnl,
+            fill_evidence_available=item.fill_evidence_available,
+        )
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _build_pnl_coverage(items: list[TradeRetrospective]) -> dict[str, Any]:
+    by_status = _pnl_status_counts(items)
+    classes = {"recorded": 0, "not_applicable": 0, "unknown": 0, "missing": 0}
+    for status, count in by_status.items():
+        classes[PNL_STATUS_CLASS[status]] += count
+    return {
+        "rows": sum(by_status.values()),
+        **classes,
+        "by_status": by_status,
+    }
+
 
 class RetrospectiveValidationError(ValueError):
     """Raised when a retrospective payload violates a typed constraint."""
@@ -206,6 +280,12 @@ def serialize_retrospective(
         "realized_pnl": float(r.realized_pnl) if r.realized_pnl is not None else None,
         "realized_pnl_currency": r.realized_pnl_currency,
         "realized_pnl_source": r.realized_pnl_source,
+        "pnl_status": classify_pnl_status(
+            outcome=r.outcome,
+            side=r.side,
+            realized_pnl=r.realized_pnl,
+            fill_evidence_available=r.fill_evidence_available,
+        ),
         "pnl_pct": float(r.pnl_pct) if r.pnl_pct is not None else None,
         "buy_fx_rate": float(r.buy_fx_rate) if r.buy_fx_rate is not None else None,
         "sell_fx_rate": float(r.sell_fx_rate) if r.sell_fx_rate is not None else None,
@@ -1041,6 +1121,7 @@ async def build_retrospective_aggregate(
     )
 
     groups: dict[str, list[TradeRetrospective]] = {}
+    included_items: list[TradeRetrospective] = []
     excluded_no_evidence = 0
     excluded_intake = 0
     for r in rows:
@@ -1062,6 +1143,7 @@ async def build_retrospective_aggregate(
         else:  # root_cause
             key = r.root_cause_class or "no_root_cause"
         groups.setdefault(key, []).append(r)
+        included_items.append(r)
 
     out: list[dict[str, Any]] = []
     for key, items in groups.items():
@@ -1107,6 +1189,7 @@ async def build_retrospective_aggregate(
                 "by_outcome": by_outcome,
                 "by_trigger_type": by_trigger_type,
                 "by_root_cause_class": by_root_cause_class,
+                "pnl_status_counts": _pnl_status_counts(items),
             }
         )
     out.sort(key=lambda g: -g["sample_size"])
@@ -1115,6 +1198,7 @@ async def build_retrospective_aggregate(
         "groups": out,
         "excluded_no_fill_evidence": excluded_no_evidence,
         "excluded_intake": excluded_intake,
+        "pnl_coverage": _build_pnl_coverage(included_items),
     }
 
 

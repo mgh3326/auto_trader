@@ -456,3 +456,85 @@ async def test_process_dims_include_no_fill_evidence_rows(db_session: AsyncSessi
     assert by_trigger["excluded_no_fill_evidence"] == 0
     groups = {g["group"]: g for g in by_trigger["groups"]}
     assert groups["rejected_order"]["sample_size"] == 1
+
+
+# ---------------------------------------------------------------------------
+# ROB-1488 — pnl_coverage separates legitimate NULLs from a missing value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pnl_coverage_separates_not_applicable_from_missing(
+    db_session: AsyncSession,
+):
+    # 1. recorded: filled sell WITH a realized P&L
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        side="sell",
+        strategy_key="A",
+        realized_pnl=100.0,
+        realized_pnl_currency="KRW",
+    )
+    # 2. missing: filled sell WITHOUT a cost basis (the only actionable NULL)
+    await svc.save_retrospective(
+        db_session,
+        symbol="000660",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        side="sell",
+        strategy_key="A",
+    )
+    # 3. not applicable: filled buy leg
+    await svc.save_retrospective(
+        db_session,
+        symbol="035420",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        side="buy",
+        strategy_key="A",
+    )
+    # 4. not applicable: no fill outcome (evidence available)
+    await svc.save_retrospective(
+        db_session,
+        symbol="051910",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="rejected",
+        side="buy",
+        strategy_key="A",
+    )
+    # 5. excluded from PnL dims: no fill evidence (kiwoom_mock)
+    await svc.save_retrospective(
+        db_session,
+        symbol="068270",
+        instrument_type="equity_kr",
+        account_mode="kiwoom_mock",
+        outcome="unfilled",
+        side="sell",
+        strategy_key="A",
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_aggregate(db_session, group_by="strategy")
+    assert result["excluded_no_fill_evidence"] == 1
+
+    group = result["groups"][0]
+    counts = group["pnl_status_counts"]
+    assert counts["recorded"] == 1
+    assert counts["missing_realized_pnl"] == 1
+    assert counts["buy_leg"] == 1
+    assert counts["no_fill_outcome"] == 1
+
+    coverage = result["pnl_coverage"]
+    assert coverage["rows"] == 4
+    assert coverage["recorded"] == 1
+    assert coverage["not_applicable"] == 2
+    assert coverage["unknown"] == 0
+    assert coverage["missing"] == 1
+    assert coverage["by_status"]["missing_realized_pnl"] == 1
