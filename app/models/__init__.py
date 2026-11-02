@@ -65,6 +65,7 @@ from .investment_snapshots import (
     InvestmentSnapshotRun,
 )
 from .investor_flow_snapshot import InvestorFlowSnapshot
+from .kis_mock_dispatch_evidence import KISMockDispatchEvidence, KISMockDispatchLineage
 from .kiwoom_authority_cessation import (
     KiwoomAuthorityAttempt,
     KiwoomAuthorityCessationReceipt,
@@ -203,6 +204,8 @@ from .watch_event_repricing_claims import WatchEventRepricingClaim
 # from .price import PricesLatest, PricesOHLCV, FxRate
 
 __all__ = [
+    "KISMockDispatchEvidence",
+    "KISMockDispatchLineage",
     "WatchEventRepricingClaim",
     "FillWatchContextOutcome",
     "Base",

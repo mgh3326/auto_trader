@@ -8,7 +8,7 @@ The route is off by default. Merging the code enables nothing, and no scheduler 
 
 ## Before you schedule a run
 
-Every item must hold. Today, the first two do not.
+Every item must hold. Code availability alone does not satisfy the operator steps.
 
 | # | Precondition | Owner | State |
 |---|---|---|---|
@@ -16,6 +16,18 @@ Every item must hold. Today, the first two do not.
 | 2 | fillwire has a live book feed and ledger fills, its `execmock` send-mode refusal is removed, and its `Query` calls the [query endpoint](#what-the-route-serves) | fillwire PR | **Not done** |
 | 3 | The ROB-1440 migration `20261101_rob1440_intent_gw` is applied | Operator | Check with `uv run alembic current` |
 | 4 | One intent is stored through `SqlAlchemyGatewayStore.store_intent`: `account = "kis_mock"`, 1 share, `max_notional_krw` below 100,000, expiry within 30 minutes | Operator | Per run |
+| 5 | The ROB-1263 evidence migration `20261102_rob1263_kis_evidence` is applied; new tables and append-only triggers exist | Operator only | Pending operator verification; builders do not apply migrations |
+| 6 | `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` is set on the one mock route process; derive it using `kis_mock_account_fingerprint` from the approved mock credential namespace, without printing credentials or account numbers | Operator only | Unset remains UNKNOWN/BLOCKED |
+| 7 | Signed policy/cap/owner/canary bindings and explicit activation/writer/auto authorization satisfy the existing registry guard | Operator only | Identity alone does not pass execution readiness; auto stays default off |
+
+The approved installer must call
+`kis_mock_registry_from_environment()` to obtain the effective registry, construct
+`KISMockEvidenceStore(session_factory, entry=effective_kr_mock_entry)`, and use
+`store.ports()` in the coordinated route. This changes only the KR mock binding.
+Keep the route uninstalled until rows 5–7 are verified. A configured fingerprint
+is an identity pin, not a replacement for policy/cap/canary or explicit order
+enablement. The operator-run reconciler owns restart discovery and records all
+native evidence; no recovery scheduler or automatic replay is installed.
 
 Until item 1 holds, the route can run, but it cannot place an order. That is the expected result, and you can use it to check the wiring.
 
@@ -34,6 +46,7 @@ Until item 1 holds, the route can run, but it cannot place an order. That is the
 | `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED` | `false` | Off: every path answers 404 before any DB access |
 | `EXECUTION_INTENT_GATEWAY_TOKEN` | empty | Empty: every request answers 403. Wrong or missing token: 401 |
 | `EXECUTION_INTENT_GATEWAY_TOKEN_HEADER` | `X-Execution-Intent-Gateway-Token` | Must match fillwire's `token_header` |
+| `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` | empty | Optional §4 fingerprint only, consumed by the approved route installer; unset blocks identity, set does not enable orders |
 | `EXECUTION_INTENT_GATEWAY_ENABLED` | unset | The E1 gate. Anything except exactly `true` means E1 answers `gateway_disabled`. It is read from the process environment, not from an env file |
 
 Put these on the one container or process that serves the route. Do not add them to a shared env file such as `.env.api`.
@@ -123,7 +136,7 @@ To set the kill switch, use the existing control service (`PostgresKillSwitchSto
 1. Stop the process. The route is gone, because nothing else serves it. Stored intents expire on their own.
 2. If you only want to disable it, restart without `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED=true`, and every path answers 404.
 3. Remove the token from the secret store.
-4. Keep the journal. The downgrade of the ROB-1440 migration refuses while rows exist, because a forgotten key could send again. This PR adds no migration, so there is nothing else to undo in the database.
+4. Keep the journal. The downgrade of the ROB-1440 migration refuses while rows exist, because a forgotten key could send again. The ROB-1263 evidence migration also refuses downgrade while evidence exists. Keep its append-only records; stopping the route requires no database rollback.
 
 A reverted build keeps one data effect. An amend that already ran re-pointed its `kis_mock_order_ledger.order_no` at the replacement number, and the previous number stays in `last_reconcile_detail.modified_from_order_no`. Leave those rows as they are.
 

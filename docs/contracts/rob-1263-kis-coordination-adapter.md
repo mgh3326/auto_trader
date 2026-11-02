@@ -9,7 +9,8 @@ The KIS mock lane's adapter over the merged ROB-1262 (J3A) coordination port.
   `mock_integration/coordination`, and the existing `order_send_intent_service`.
 
 J3B opens no socket of its own, signs nothing, loads no credential value,
-registers no scheduler, adds no model and no migration.
+registers no scheduler. The ROB-1263 evidence amendment adds two lane-native
+append-only tables; operators alone apply its additive migration.
 
 ---
 
@@ -157,28 +158,65 @@ manual-resolution queues. Machine-readable as
 `ack`, `unknown`, `reject`, `expiry`, `partial_fill`, `cancel`,
 `terminal_reconciliation`.
 
-### Current status: `AUTO_READY_BLOCKED_BY_LIFECYCLE`
+### Evidence amendment (ROB-1263, task 2668): implemented, activation pending
 
-This lane does **not** satisfy the six elements today, and
-`coordinate_kis_mock_mutation` fails closed with
-`kis_mock_lifecycle_ports_unavailable` before any lease, claim, or callback when
-they are absent. Two independent blockers:
+`app/services/kis_mock_runner/evidence_store.py::KISMockEvidenceStore` supplies
+lineage persistence, dispatch evidence and the account uncertainty gate through
+`store.ports()`. The additive migration `20261102_rob1263_kis_evidence` creates
+only lane-native objects: `review.kis_mock_dispatch_lineage` and
+`review.kis_mock_dispatch_evidence`, their constraints, sequence and triggers.
+It changes no existing table or `review.order_send_intents` semantics. Both new
+tables reject UPDATE/DELETE/TRUNCATE; downgrade refuses retained evidence.
 
-1. **No durable dispatch-evidence store exists.** J3A forbids
-   `review.order_send_intents` as a `DispatchEvidencePort` target (it is a binary
-   reservation, not a state store), and a new durable store would require a
-   migration — which this job's boundary sets to zero. The lane therefore cannot
-   durably record `unknown` / `partial_fill` / `terminal_reconciliation` as typed
-   evidence.
-2. **The canonical `kr.kis.mock` registry row has no bound identity.**
-   `physical_account_id` is `None`, `identity_status` is `UNKNOWN`, `writer` and
-   `auto_order_enabled` are `False`, and `activation_status` is `BLOCKED`, so
-   `assert_entry_execution_ready` and `physical_account_scope_for_entry` both
-   reject it. The coordinated AUTO path is structurally unreachable in production
-   until an operator binds an identity — which is a separate, approval-gated
-   decision.
+The service commits initial lineage before the common coordinator reserves a
+claim. ACK attachments and dispatch outcomes are append-only. The common
+`DispatchEvidence` vocabulary maps acknowledged definitive results to `ack`;
+every other outcome maps to `unknown`, never inferred rejection. The operator
+reconciler records the remaining native kinds using `record_native_evidence`.
+Each event is unique on `(order_attempt_id, kind, broker_evidence_key)`; the
+broker evidence key is stored as a domain-separated digest. Same-key replay is
+a no-op only when the exact payload matches; conflicting evidence is refused.
 
-Nothing here claims `AUTO_ENABLED`, and no runtime canary is in scope.
+Fresh-session `rediscover_unreleased_claims()` reads surviving binary claims
+and their attributed evidence. Missing dispatch evidence or any unknown event
+blocks the account. An ACK supplies an exact ODNO for
+`readback_by_exact_odno`; it never erases an earlier unknown. This reader sends
+only that attributed ODNO to the operator-provided `inquire_daily_order_domestic`
+reader and requires the returned row's `odno` to match exactly. No ODNO means
+no readback callback; symbol/side/quantity/time candidates are not a fallback.
+The operator reader must return one authoritative row, not a proximity match.
+
+`release_with_recorded_terminal_evidence` requires a committed
+`terminal_reconciliation` event and the dispatch's exact claim row/scope/key/side,
+then delegates to the existing `release_with_terminal_evidence` AND gate.
+`partial_fill`, `cancel`, `expiry`, `reject` and local/soft cancel alone never
+release. The store currently records terminal reconciliation only for an
+attributed exact ODNO; absent-ODNO ambiguity remains held for the recovery owner.
+The common authoritative-absence predicate is unchanged and is not inferred
+from missing store rows, elapsed time or a local ledger state.
+
+Identity configuration is explicitly consumed by the route installer via
+`registry_binding.kis_mock_registry_from_environment()`. The optional
+`KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` holds only a fingerprint using §4's
+existing derivation. The helper binds **only** the canonical `kr.kis.mock` row;
+it rejects malformed or conflicting pins and leaves every other row unchanged.
+The send boundary still compares the actual mock client's fingerprint, host
+and namespace to this binding before every POST. No full account number or
+credential is placed in configuration examples or durable evidence.
+
+**Identity does not authorize activation.** With no fingerprint the row remains
+UNKNOWN/BLOCKED. With one it becomes identity-known and physical scope derivation
+is available, but policy/cap/owner/canary bindings, writer, activation and
+`auto_order_enabled` retain their existing requirements. Auto remains false by
+default. Identity alone cannot pass `assert_entry_execution_ready`. Supplying
+those signed activation bindings is a separate operator decision; no placeholder
+policy, cap or canary is invented by this amendment.
+
+After schema application and explicit port construction, lifecycle readiness is
+`AUTO_READY_PENDING_ACTIVATION`; absent ports still report
+`AUTO_READY_BLOCKED_BY_LIFECYCLE`. This is not `AUTO_ENABLED`. The production
+route provider remains unset: this amendment neither installs it nor runs a
+runtime canary, migration, broker request or scheduler.
 
 ## 7. Follow-up mutations
 
@@ -233,7 +271,7 @@ The issuer reads the journal row again inside the lease. If the row no longer ma
 **What does not change.**
 
 - **Other origins stay closed.** An order from J2B, the coordinated lane, a mirror or an operator has no `intent-gateway:` correlation for a journal lineage, so it cannot mint. `cancel_order(account_mode="kis_mock")` called directly on such an order still fails closed with zero broker calls. `tests/services/execution_intent_gateway/test_followup_capability.py` pins this, along with the non-mock case.
-- **The route stays uninstalled.** This PR does not call `set_kis_mock_coordination_route_provider`. The two §6 blockers stay open for the coordinated route. While no route is installed, `run_kis_mock_send` refuses every submit, so no gateway order has a broker order id, and E1 refuses every amend and cancel with `target_not_working`. So the mint cannot reach the broker until an operator installs a route, which remains a separate, approval-gated decision.
+- **The route stays uninstalled.** This PR does not call `set_kis_mock_coordination_route_provider`. The §6 evidence amendment supplies ports and identity configuration, but schema application, signed activation bindings and route installation remain operator preconditions. While no route is installed, `run_kis_mock_send` refuses every submit, so no gateway order has a broker order id, and E1 refuses every amend and cancel with `target_not_working`. So the mint cannot reach the broker until an operator installs a route, which remains a separate, approval-gated decision.
 - **`authorize_kis_mock_claim_followup` is unchanged.** It still requires a live grant. The gateway does not use it, because a gateway follow-up runs outside `coordinate_kis_mock_mutation` and has no grant.
 - **The verifier is unchanged.** `verify_kis_mock_followup_capability` checks the receipt as before.
 
@@ -289,8 +327,9 @@ alters a live request.
   closing it; the adapter is the final enforcement point, so the send does not
   happen.
 
-The route provider is `None` in production, for the two independent reasons in
-§6. Installing one is a separate, approval-gated decision; it is a single
+The route provider remains `None` in production. The §6 evidence amendment
+supplies the store and configurable fingerprint; schema application and signed
+activation bindings are still operator preconditions. Installing one is a separate, approval-gated decision; it is a single
 `set_kis_mock_coordination_route_provider(...)` call, deliberately not made here.
 
 ## 11. Known unguarded surface — the US (`us.kis.mock`) lane

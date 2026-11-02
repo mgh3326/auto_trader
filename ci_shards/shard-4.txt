@@ -210,6 +210,8 @@ tests/services/market_close_digest/test_service.py
 tests/services/market_events/test_session_calendar.py
 tests/services/market_valuation_snapshots/test_normalized_market_cap.py
 tests/services/mock_integration/test_kis_coordination_adapter.py
+tests/services/mock_integration/test_kis_mock_evidence_store.py
+tests/services/mock_integration/test_kis_mock_evidence_store_db.py
 tests/services/mock_integration/test_lineage.py
 tests/services/naver_finance/test_investor_detail_cache_wiring.py
 tests/services/nhplug_mock/test_adversarial_dispatch.py
