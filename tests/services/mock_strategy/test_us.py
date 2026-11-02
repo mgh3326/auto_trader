@@ -258,6 +258,59 @@ async def test_close_due_closes_exactly_due_long_and_short_and_preserves_future(
     assert len(broker.posts) == 6
 
 
+@pytest.mark.parametrize(
+    "failure", ["corrupt_fill", "record_conflict", "outcome_store"]
+)
+async def test_bad_due_entry_does_not_block_independent_exit(failure):
+    class FailingRecorder(MemoryRecorder):
+        blocked_id = None
+
+        async def record(self, intent):
+            if failure == "record_conflict" and intent.side == "sell":
+                raise ValueError("synthetic exit intent conflict")
+            return await super().record(intent)
+
+        async def update(self, client_order_id, **kwargs):
+            if failure == "outcome_store" and client_order_id == self.blocked_id:
+                raise RuntimeError("synthetic outcome store unavailable")
+            return await super().update(client_order_id, **kwargs)
+
+    recorder, broker = FailingRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    bad = next(r for r in recorder.rows.values() if r.side == "buy")
+    recorder.blocked_id = bad.client_order_id
+    if failure == "corrupt_fill":
+        bad.meta = {**bad.meta, "filled_qty": "not-a-decimal"}
+        del broker.orders[bad.client_order_id]
+    result = await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert result["orders"][0]["episode_status"] == "unresolved"
+    assert result["orders"][0]["error_class"] in {
+        "InvalidOperation",
+        "ValueError",
+        "RuntimeError",
+    }
+    assert result["orders"][1]["episode_status"] == "closed"
+    assert [side for side, _ in broker.posts] == ["buy", "short", "cover"]
+    assert bad.status != "closed"
+
+
+async def test_due_entry_cancellation_propagates_without_processing_other_entries():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    canceled = asyncio.CancelledError()
+
+    async def canceled_lookup(coid):
+        raise canceled
+
+    broker.lookup = canceled_lookup
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    assert caught.value is canceled
+    assert len(broker.posts) == 2
+
+
 async def test_accepted_is_not_fill_and_partial_terminal_entry_closes_only_proven_qty():
     recorder, broker = MemoryRecorder(), PaperBroker()
     strategy = UsPaperStrategy(recorder, broker)

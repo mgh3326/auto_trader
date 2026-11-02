@@ -144,6 +144,11 @@ preceding terminal evidence.
 
 `run` reconciles existing entry evidence on same-session replay. `close-due`
 reconciles due entry/exit evidence and safely resumes bookkeeping after a crash.
+An ordinary error in one due entry is reported as `episode_status=unresolved`
+with its exception class; independent entries continue and the CLI returns nonzero.
+This result does not change the entry's durable status or grant retry authority.
+Account/session preflight still gates the whole invocation. Cancellation and
+process control exceptions propagate instead of being treated as entry failures.
 Use `status` to identify unresolved orders. Broker exceptions and DB DSNs are not
 printed: the CLI emits a fixed error and exception class, and returns nonzero for
 unresolved sends. No schedules, TaskIQ jobs, cron entries or deployments are added.

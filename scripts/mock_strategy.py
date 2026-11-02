@@ -165,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     return int(
         any(
             row.get("status") in {"sending", "uncertain"}
+            or row.get("episode_status") == "unresolved"
             for row in result.get("orders", [])
         )
     )

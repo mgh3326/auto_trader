@@ -337,19 +337,31 @@ class UsPaperStrategy:
             for entry in await self.recorder.list_due(
                 venue=VENUE, account_ref=account, asof=start
             ):
-                entry = await self._refresh(entry)
-                qty = Decimal(entry.meta.get("filled_qty", "0"))
-                if (
-                    entry.status != "filled"
-                    or not entry.meta.get("broker_terminal")
-                    or qty <= 0
-                    or entry.entry_price is None
-                ):
+                try:
+                    entry = await self._refresh(entry)
+                    qty = Decimal(entry.meta.get("filled_qty", "0"))
+                    if (
+                        entry.status != "filled"
+                        or not entry.meta.get("broker_terminal")
+                        or qty <= 0
+                        or entry.entry_price is None
+                    ):
+                        outcomes.append(
+                            {
+                                **projection(entry),
+                                "reason": "entry_not_terminal_with_fill",
+                            }
+                        )
+                        continue
+                    outcomes.append(await self._close_entry(entry, qty, asof))
+                except Exception as exc:
                     outcomes.append(
-                        {**projection(entry), "reason": "entry_not_terminal_with_fill"}
+                        {
+                            **projection(entry),
+                            "episode_status": "unresolved",
+                            "error_class": type(exc).__name__,
+                        }
                     )
-                    continue
-                outcomes.append(await self._close_entry(entry, qty, asof))
         return {"venue": VENUE, "asof": asof.isoformat(), "orders": outcomes}
 
     @staticmethod

@@ -70,6 +70,9 @@ US 사전 eligibility/session/shape 검사는 claim 전과 POST 직전에 둘 �
 POST 경계 뒤 오류·취소는 sending/uncertain 예약을 유지한다. 청산은 durable indexed
 leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill을 뺀 잔량을 새 leg로
 보낸다. uncertain/nonterminal leg는 후속 leg를 막는다. recorder API/스키마 변경 없음.
+US due 에피소드의 일반 오류는 `episode_status=unresolved`와 예외 클래스만
+보고하고 다른 청산은 계속한다. CLI는 nonzero이며 durable 상태/재시도 권한을
+만들지 않는다. 계좌/세션 게이트는 루프 밖에서 유지하고 프로세스 취소는 전파한다.
 별도 paper 전략 어댑터의 own journal은 공매도와 cover를 지원하며 기존 수동 MCP의
 보유 매도 전용 coordinator를 완화하지 않는다. 스케줄·배포 없음.
 런북: `docs/runbooks/rob1474-us-paper-strategy.md`. DB round trip/동시 claim은 CI에서 검증한다.
