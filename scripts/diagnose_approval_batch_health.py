@@ -12,8 +12,8 @@ It issues SELECTs only -- no INSERT/UPDATE/DELETE, no DDL, no broker or
 Telegram call, no scheduler registration. It never backfills and never infers:
 a quiet surface is printed as quiet.
 
-Exit code is 1 when a batch has no member. Cards without recent members are
-reported as review, since designed exclusions may explain them; that is exit 0.
+Exit code is 1 when a batch has no member. Unmatched cards or frozen unsent
+summaries produce review (exit 0); inspect skip reasons and summary dispatch.
 ``--json`` prints the machine-readable payload.
 """
 
@@ -67,12 +67,14 @@ def _print_report(report: BatchHealthReport) -> None:
         print("\nGAP: " + ", ".join(report.anomalies))
     elif report.status == "review":
         print(
-            "\nREVIEW — published cards have no recent members; inspect skip reasons. "
-            "These counts alone do not prove that the writer stalled."
+            "\nREVIEW — inspect unmatched cards / missing recent members and frozen "
+            "unsent summaries in the counts above. Check skip reasons and summary "
+            "dispatch; these counts alone do not prove that the writer stalled."
         )
     else:
         print(
-            "\nOK — no batch without a member observed; unmatched cards need skip-reason review."
+            "\nOK — no memberless batch, membership review condition or frozen unsent "
+            "summary observed in the recent window."
         )
 
 

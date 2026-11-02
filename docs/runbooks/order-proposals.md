@@ -752,7 +752,11 @@ The CLI opens a READ ONLY transaction with an eight-second statement timeout.
 Exit code 1 means a batch has zero members. Published cards with zero recent
 members produce `status=review` and exit 0: intentional exclusions can explain
 that pattern, so the aggregate alone cannot prove a stalled writer.
-A non-zero `published_cards_without_member` also needs review of skip evidence.
+A non-zero `published_cards_without_member` produces `review` even when other
+cards have members; inspect skip evidence for designed exclusions or registration
+failures. A non-zero `frozen_unsent` also produces `review`; inspect summary
+dispatch for an in-flight or stuck send. Neither observation alone proves a lost
+card, and both keep exit 0. A memberless batch takes precedence as `gap`.
 
 Every registration skip logs `order_proposals.batch_member_skipped` with a
 closed category such as `loss_cut_excluded`, `proposal_terminal`,

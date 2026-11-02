@@ -10,7 +10,7 @@ import pytest
 from app.services.order_proposals.batch_health import (
     BatchHealthReport,
     BatchHealthWindow,
-    Status,
+    evaluate_batch_health,
 )
 from scripts import diagnose_approval_batch_health as cli
 
@@ -27,7 +27,11 @@ class _FakeSession:
 
 
 def _report(
-    *, zero_member_batches: int = 0, member_added: int = 2
+    *,
+    zero_member_batches: int = 0,
+    member_added: int = 2,
+    frozen_unsent: int = 0,
+    published_cards_without_member: int = 0,
 ) -> BatchHealthReport:
     recent = BatchHealthWindow(
         days=7,
@@ -35,6 +39,8 @@ def _report(
         member_added=member_added,
         member_processed=0,
         batches=5,
+        frozen_unsent=frozen_unsent,
+        published_cards_without_member=published_cards_without_member,
     )
     window = BatchHealthWindow(
         days=30,
@@ -43,12 +49,9 @@ def _report(
         member_processed=0,
         batches=33,
     )
-    status: Status = (
-        "gap" if zero_member_batches else ("ok" if member_added else "review")
+    status, anomalies = evaluate_batch_health(
+        recent=recent, zero_member_batches=zero_member_batches
     )
-    anomalies: tuple[str, ...] = ()
-    if zero_member_batches:
-        anomalies = ("approval_batch_without_members",)
     return BatchHealthReport(
         as_of=datetime(2026, 11, 2, tzinfo=UTC),
         recent=recent,
@@ -95,6 +98,29 @@ async def test_gap_exits_one_and_names_the_reason(monkeypatch, capsys) -> None:
     assert rc == 1
     assert "approval_batch_without_members" in out
     assert "member_writer_column=added_at" in out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "counts",
+    [{"frozen_unsent": 1}, {"published_cards_without_member": 1}],
+)
+async def test_partial_gap_is_visible_as_review_with_exit_zero(
+    monkeypatch, capsys, counts
+) -> None:
+    monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: _FakeSession())
+
+    async def loader(db, **kwargs):
+        return _report(**counts)
+
+    monkeypatch.setattr(cli, "load_batch_health", loader)
+    assert await cli.run() == 0
+    out = capsys.readouterr().out
+    assert "REVIEW" in out
+    assert "summary dispatch" in out
+    assert "OK —" not in out
+    assert all(f"{name}=1" in out for name in counts)
 
 
 @pytest.mark.asyncio

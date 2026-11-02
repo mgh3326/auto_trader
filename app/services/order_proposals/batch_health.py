@@ -156,17 +156,22 @@ def evaluate_batch_health(
     recent: BatchHealthWindow,
     zero_member_batches: int,
 ) -> tuple[Status, tuple[str, ...]]:
-    """Return the hard-invariant verdict for the batch member surface.
+    """Return hard-invariant failures and observations requiring review.
 
     A batch without a member is an invariant violation. Published cards with
-    no recent members require review: manual/reconfirm counts also include
-    intentional exclusions, so those counts alone cannot prove a stalled writer.
+    no recent members, any unmatched published cards, and frozen unsent summaries
+    require review. Intentional exclusions or an in-flight summary dispatch can
+    explain those observations; the counts alone cannot prove a failed writer.
     """
     anomalies: list[str] = []
     if zero_member_batches > 0:
         anomalies.append("approval_batch_without_members")
     status: Status = "gap" if anomalies else "ok"
-    if not anomalies and recent.manual_cards > 0 and recent.member_added == 0:
+    if not anomalies and (
+        (recent.manual_cards > 0 and recent.member_added == 0)
+        or recent.published_cards_without_member > 0
+        or recent.frozen_unsent > 0
+    ):
         status = "review"
     return status, tuple(anomalies)
 

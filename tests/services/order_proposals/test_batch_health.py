@@ -63,6 +63,29 @@ def test_cards_without_members_need_review_not_a_proven_writer_failure() -> None
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {"frozen_unsent": 1},
+        {"published_cards_without_member": 1},
+        {"frozen_unsent": 1, "published_cards_without_member": 1},
+    ],
+)
+@pytest.mark.parametrize("zero_member_batches", [0, 1])
+def test_summary_and_partial_membership_gaps_require_review(
+    counts: dict[str, int], zero_member_batches: int
+) -> None:
+    status, anomalies = evaluate_batch_health(
+        recent=_window(manual_cards=4, member_added=3, **counts),
+        zero_member_batches=zero_member_batches,
+    )
+    assert status == ("gap" if zero_member_batches else "review")
+    assert anomalies == (
+        ("approval_batch_without_members",) if zero_member_batches else ()
+    )
+
+
+@pytest.mark.unit
 def test_idle_surface_is_not_a_gap() -> None:
     status, anomalies = evaluate_batch_health(
         recent=_window(manual_cards=0, member_added=0),
