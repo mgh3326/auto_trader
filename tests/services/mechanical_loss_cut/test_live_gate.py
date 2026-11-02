@@ -14,7 +14,9 @@ from app.mcp_server.tooling.order_validation import evaluate_sell_price_guards
 from app.services.mechanical_loss_cut.gate import (
     MECHANICAL_STRATEGY,
     MechanicalLossCutBinding,
+    binding_refusal,
     live_switch_refusal,
+    price_refusal,
     regular_session_open,
 )
 from app.services.mechanical_loss_cut.job import WrittenDecision
@@ -527,6 +529,7 @@ def _no_undelivered_proposals(monkeypatch):
         return []
 
     monkeypatch.setattr(live_module, "_undelivered_proposal_ids", none)
+    monkeypatch.setattr(live_module, "_stale_pending_proposal_ids", none)
 
 
 async def _noop_round(*_args, **_kwargs):
@@ -591,6 +594,8 @@ async def test_emitter_creates_and_dispatches_one_proposal(switch_on, live_seams
     [
         (None, "fresh_price_unavailable"),
         (0, "fresh_price_unavailable"),
+        (float("nan"), "fresh_price_unavailable"),
+        (float("inf"), "fresh_price_unavailable"),
         (85000.0, "price_recovered"),
     ],
 )
@@ -799,3 +804,139 @@ async def test_a_later_run_sends_only_a_card_for_an_undelivered_proposal(
 
     assert result["outcomes"] == {"card_recovered": 1, "card_recovery_failed": 1}
     assert sent == [(waiting[0], True), (waiting[1], True)]
+
+
+@pytest.mark.parametrize(
+    "rung",
+    [
+        {"quantity": None},
+        {"limit_price": None},
+        {"quantity": "not-a-number"},
+        {"limit_price": ""},
+    ],
+)
+def test_a_malformed_rung_is_a_mismatch_not_an_exception(switch_on, rung):
+    refusal = binding_refusal(
+        group=_group(),
+        rung=_rung(**rung),
+        binding=_binding(),
+        mode="expanded",
+        now=NOW,
+    )
+
+    assert refusal == "binding_mismatch"
+
+
+def test_a_sell_limit_above_the_market_goes_to_the_card(switch_on):
+    assert (
+        price_refusal(
+            binding=_binding(),
+            current_price=Decimal("83000"),
+            limit_price=Decimal("83200"),
+            average_cost=Decimal("100000"),
+        )
+        == "limit_outside_band"
+    )
+    assert (
+        price_refusal(
+            binding=_binding(),
+            current_price=Decimal("83200"),
+            limit_price=Decimal("83200"),
+            average_cost=Decimal("100000"),
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_pending_proposal_alerts_every_run_and_is_never_resent(
+    switch_on, live_seams, alerts, monkeypatch
+):
+    from app.services.mechanical_loss_cut import live as live_module
+
+    async def stuck(*_args, **_kwargs):
+        return [uuid.uuid4()]
+
+    async def send(*_args, **_kwargs):
+        raise AssertionError("a pending proposal was sent again")
+
+    monkeypatch.setattr(live_module, "_stale_pending_proposal_ids", stuck)
+    monkeypatch.setattr(live_module, "send_proposal_for_approval", send)
+
+    for _run in range(2):
+        result = await emit_live_decisions(
+            [],
+            NOW,
+            session_factory=object,
+            fresh_price_fn=_fresh_falling,
+            dispatch_fn=_noop_round,
+            notifier=_Notifier(),
+        )
+        assert result["outcomes"] == {"stale_pending_alerted": 1}
+    assert alerts == ["approval_dispatch_stale_pending"] * 2
+
+
+def _send_gate(monkeypatch, *, required: bool, observed_at: datetime):
+    from app.services.order_proposals import revalidation as revalidation_module
+    from app.services.order_proposals.approval_window import (
+        ApprovalWindowCode,
+        ApprovalWindowDecision,
+    )
+
+    async def allow(*_args, **_kwargs):
+        return ApprovalWindowDecision(
+            code=ApprovalWindowCode.ALLOW,
+            observed_at=observed_at,
+            valid_until=None,
+            policy_stamp="stamp",
+            market="equity_kr",
+            account_mode="kis_live",
+            action="place",
+            order_type="limit",
+        )
+
+    monkeypatch.setattr(revalidation_module, "evaluate_approval_window_boundary", allow)
+    return revalidation_module.ApprovalWindowPreSendGate(
+        group=_group(),
+        rung=_rung(),
+        window_evaluator=None,
+        expected_policy_stamp="stamp",
+        now_fn=lambda: observed_at,
+        require_regular_session=required,
+    )
+
+
+_AFTER_CLOSE = datetime(2026, 10, 30, 7, 10, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_an_auto_sell_that_reaches_the_send_after_the_close_is_stopped(
+    monkeypatch,
+):
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+    from app.services.order_proposals.approval_window import ApprovalWindowCode
+
+    gate = _send_gate(monkeypatch, required=True, observed_at=_AFTER_CLOSE)
+
+    with pytest.raises(PreSendFreshnessError):
+        await gate()
+
+    assert gate.blocked_decision.code is ApprovalWindowCode.DEFER_SESSION_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_an_auto_sell_inside_the_session_passes_the_send_check(monkeypatch):
+    gate = _send_gate(monkeypatch, required=True, observed_at=NOW)
+
+    await gate()
+
+    assert gate.blocked_decision is None
+
+
+@pytest.mark.asyncio
+async def test_a_person_can_still_send_a_loss_cut_after_the_close(monkeypatch):
+    gate = _send_gate(monkeypatch, required=False, observed_at=_AFTER_CLOSE)
+
+    await gate()
+
+    assert gate.blocked_decision is None

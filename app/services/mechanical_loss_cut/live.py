@@ -22,7 +22,7 @@ import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.core.config import settings
@@ -64,6 +64,7 @@ DispatchFn = Callable[..., Awaitable[Any]]
 
 # Long enough that another run's dispatch has committed or died.
 _UNDELIVERED_GRACE = timedelta(minutes=15)
+_STALE_PENDING_CODE = "approval_dispatch_stale_pending"
 _DELIVERED_STATES = frozenset(
     {ApprovalDispatchState.PENDING, ApprovalDispatchState.SENT_CURRENT}
 )
@@ -179,12 +180,17 @@ def _undelivered_code(result: Any) -> str | None:
 
 
 async def _alert_undelivered(
-    proposal_id: Any, *, code: str, now: datetime, session_factory: Any
+    proposal_id: Any,
+    *,
+    code: str,
+    now: datetime,
+    session_factory: Any,
+    dispatch_state: str = "failed",
 ) -> None:
     try:
         await send_approval_dispatch_alert(
             proposal_id,
-            dispatch_state="failed",
+            dispatch_state=dispatch_state,
             dispatch_failure_code=code,
             now=now,
             service_factory=session_factory,
@@ -201,6 +207,56 @@ async def _undelivered_proposal_ids(session_factory: Any, *, before: datetime) -
         return await MechanicalLossCutStore(session).undelivered_live_proposals(
             before=before
         )
+
+
+async def _stale_pending_proposal_ids(
+    session_factory: Any, *, before: datetime
+) -> list:
+    async with session_factory() as session:
+        return await MechanicalLossCutStore(session).stale_pending_live_proposals(
+            before=before
+        )
+
+
+async def _alert_stale_pending(
+    now: datetime, *, session_factory: Any, outcomes: Counter[str]
+) -> None:
+    """Tell the operator on every run until a person resolves the proposal.
+
+    The live row blocks a new proposal for this trigger and redispatch refuses a
+    pending attempt, so without this nothing would ever surface it.
+    """
+    try:
+        proposal_ids = await _stale_pending_proposal_ids(
+            session_factory, before=now - _UNDELIVERED_GRACE
+        )
+    except Exception as exc:  # noqa: BLE001 - new triggers can still go out
+        logger.error(
+            "mechanical_loss_cut.stale_pending_read_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        outcomes["stale_pending_read_failed"] += 1
+        return
+    for proposal_id in proposal_ids:
+        await _alert_undelivered(
+            proposal_id,
+            code=_STALE_PENDING_CODE,
+            now=now,
+            session_factory=session_factory,
+            dispatch_state="pending",
+        )
+        outcomes["stale_pending_alerted"] += 1
+
+
+def _usable_price(raw_price: Any) -> Decimal | None:
+    """A positive finite price, or ``None``. NaN must not reach a comparison."""
+    if raw_price is None:
+        return None
+    try:
+        price = Decimal(str(raw_price))
+    except InvalidOperation:
+        return None
+    return price if price.is_finite() and price > 0 else None
 
 
 async def _recover_undelivered_cards(
@@ -282,6 +338,9 @@ async def emit_live_decisions(
             notifier=notifier,
             outcomes=outcomes,
         )
+        await _alert_stale_pending(
+            now, session_factory=session_factory, outcomes=outcomes
+        )
         async with open_auto_digest_round(
             notifier=notifier, service_factory=session_factory
         ):
@@ -311,10 +370,10 @@ async def emit_live_decisions(
                         extra={"exception_type": type(exc).__name__},
                     )
                     raw_price = None
-                if raw_price is None or raw_price <= 0:
+                fresh_price = _usable_price(raw_price)
+                if fresh_price is None:
                     outcomes["fresh_price_unavailable"] += 1
                     continue
-                fresh_price = Decimal(str(raw_price))
                 if fresh_price >= decision.stop_price:
                     outcomes["price_recovered"] += 1
                     continue

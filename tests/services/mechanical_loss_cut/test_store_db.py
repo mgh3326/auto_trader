@@ -260,6 +260,57 @@ async def test_unemitted_trigger_is_the_armed_latest_shadow_row_with_no_live_row
         }
 
 
+async def test_a_backfill_never_overwrites_a_plan_a_buy_just_wrote() -> None:
+    key = _key()
+    async with AsyncSessionLocal() as session:
+        store = MechanicalLossCutStore(session)
+        await store.lock_lot(key)
+        entry = await store.append_plan(_draft(key))
+        await session.commit()
+
+        result = await DatabasePorts(session).append_backfill(
+            _draft(key, event="backfill", backfilled=True)
+        )
+        await session.commit()
+
+        assert result.id == entry.id
+        latest = await store.latest_plan(key)
+        assert latest is not None
+        assert (latest.version, latest.event) == (entry.version, "entry")
+
+
+async def test_latest_sell_is_read_per_lot_from_authoritative_fills() -> None:
+    symbol = f"{uuid.uuid4().int % 1000000:06d}"
+    key = LotKey("kis_live", "equity_kr", symbol)
+    async with AsyncSessionLocal() as session:
+        await _seed_fill(session, symbol)
+        await session.commit()
+        assert await positions.latest_sell_at(session, key) is None
+
+        sold_at = datetime(2026, 10, 30, 2, 0, tzinfo=UTC)
+        session.add(
+            ExecutionLedger(
+                broker="kis",
+                account_mode="live",
+                venue="krx",
+                instrument_type=InstrumentType.equity_kr,
+                symbol=symbol,
+                raw_symbol=symbol,
+                side="sell",
+                filled_qty=Decimal("10"),
+                filled_price=Decimal("90000"),
+                filled_notional=Decimal("900000"),
+                filled_at=sold_at,
+                currency="KRW",
+                broker_order_id=f"{symbol}S1",
+                fill_seq=0,
+                source="reconciler",
+            )
+        )
+        await session.commit()
+        assert await positions.latest_sell_at(session, key) == sold_at
+
+
 async def test_live_decision_is_found_by_its_proposal_only() -> None:
     key = _key()
     proposal_id = uuid.uuid4()
@@ -299,6 +350,11 @@ async def test_rows_are_append_only_under_the_migration_guards() -> None:
             with pytest.raises(DBAPIError, match="append-only"):
                 await session.execute(text("DELETE FROM review.lot_exit_plans"))
             await session.rollback()
+        for table in ("lot_exit_plans", "mechanical_loss_cut_decisions"):
+            async with AsyncSessionLocal() as session:
+                with pytest.raises(DBAPIError, match="append-only"):
+                    await session.execute(text(f"TRUNCATE review.{table}"))
+                await session.rollback()
     finally:
         async with engine.begin() as conn:
             await conn.execute(
@@ -311,6 +367,19 @@ async def test_rows_are_append_only_under_the_migration_guards() -> None:
                 text(
                     "DROP TRIGGER IF EXISTS "
                     "trg_mechanical_loss_cut_decisions_append_only "
+                    "ON review.mechanical_loss_cut_decisions"
+                )
+            )
+            await conn.execute(
+                text(
+                    "DROP TRIGGER IF EXISTS trg_lot_exit_plans_no_truncate "
+                    "ON review.lot_exit_plans"
+                )
+            )
+            await conn.execute(
+                text(
+                    "DROP TRIGGER IF EXISTS "
+                    "trg_mechanical_loss_cut_decisions_no_truncate "
                     "ON review.mechanical_loss_cut_decisions"
                 )
             )

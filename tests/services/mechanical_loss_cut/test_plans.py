@@ -79,6 +79,11 @@ def writes_on(monkeypatch):
 
     monkeypatch.setattr(plans_module, "load_position", flat)
 
+    async def never_sold(_session, _key):
+        return None
+
+    monkeypatch.setattr(plans_module, "latest_sell_at", never_sold)
+
 
 def _buy(**overrides):
     values = {
@@ -184,6 +189,37 @@ async def test_buy_after_the_position_went_flat_starts_a_new_entry(writes_on):
 
     assert await _buy() == "entry"
     assert _Store.appended[0].adds_used == 0
+
+
+@pytest.mark.asyncio
+async def test_buy_after_a_recent_lot_was_sold_flat_starts_a_new_entry(
+    writes_on, monkeypatch
+):
+    created = NOW - timedelta(hours=2)
+    _Store.latest = _with_created_at(plan(adds_used=1), created)
+
+    async def sold(_session, _key):
+        return created + timedelta(hours=1)
+
+    monkeypatch.setattr(plans_module, "latest_sell_at", sold)
+
+    assert await _buy() == "entry"
+    assert _Store.appended[0].adds_used == 0
+
+
+@pytest.mark.asyncio
+async def test_a_sell_from_before_the_plan_does_not_end_the_unreconciled_lot(
+    writes_on, monkeypatch
+):
+    created = NOW - timedelta(hours=2)
+    _Store.latest = _with_created_at(plan(), created)
+
+    async def sold(_session, _key):
+        return created - timedelta(days=3)
+
+    monkeypatch.setattr(plans_module, "latest_sell_at", sold)
+
+    assert await _buy(price=Decimal("95000")) == "add"
 
 
 def _with_created_at(value, created_at):
@@ -296,6 +332,7 @@ def test_proposal_argument_accepts_a_stop_below_every_rung():
         {"stop_price": "85000", "stop_basis": "support"},
         side="buy",
         action="place",
+        order_type="limit",
         rungs=_rungs("100000", "95000"),
     )
 
@@ -311,8 +348,29 @@ def test_proposal_argument_only_fits_a_place_buy(kwargs, message):
     with pytest.raises(ValueError, match=message):
         _validate_exit_plan_argument(
             {"stop_price": "85000", "stop_basis": "support"},
+            order_type="limit",
             rungs=_rungs("100000"),
             **kwargs,
+        )
+
+
+@pytest.mark.parametrize(
+    ("order_type", "rungs"),
+    [
+        ("market", [RungInput(0, "buy", Decimal("10"), None, None)]),
+        ("limit", [RungInput(0, "buy", None, Decimal("100000"), Decimal("1000000"))]),
+    ],
+)
+def test_proposal_argument_refuses_a_rung_the_plan_could_not_be_written_from(
+    order_type, rungs
+):
+    with pytest.raises(ValueError, match="exit_plan_needs_limit_and_quantity"):
+        _validate_exit_plan_argument(
+            {"stop_price": "85000", "stop_basis": "support"},
+            side="buy",
+            action="place",
+            order_type=order_type,
+            rungs=rungs,
         )
 
 
@@ -322,6 +380,7 @@ def test_proposal_argument_refuses_a_stop_at_or_above_a_rung():
             {"stop_price": "95000", "stop_basis": "support"},
             side="buy",
             action="place",
+            order_type="limit",
             rungs=_rungs("100000", "95000"),
         )
 
@@ -332,6 +391,7 @@ def test_proposal_argument_refuses_a_malformed_plan():
             {"stop_price": "85000", "stop_basis": "vibes"},
             side="buy",
             action="place",
+            order_type="limit",
             rungs=_rungs("100000"),
         )
 

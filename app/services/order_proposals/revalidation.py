@@ -29,7 +29,7 @@ import logging
 import re
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
@@ -38,6 +38,7 @@ from app.core.timezone import now_kst
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.live_correlation import live_correlation_id
+from app.services.mechanical_loss_cut.gate import regular_session_open
 from app.services.mechanical_loss_cut.plans import (
     EXIT_PLAN_SOURCE_KEY,
     record_buy_exit_plan,
@@ -336,12 +337,14 @@ class ApprovalWindowPreSendGate:
         window_evaluator: WindowEvaluator,
         expected_policy_stamp: str,
         now_fn: Clock,
+        require_regular_session: bool = False,
     ) -> None:
         self._group = group
         self._rung = rung
         self._window_evaluator = window_evaluator
         self._expected_policy_stamp = expected_policy_stamp
         self._now_fn = now_fn
+        self._require_regular_session = require_regular_session
         self.blocked_decision: ApprovalWindowDecision | None = None
 
     async def __call__(self) -> None:
@@ -354,6 +357,16 @@ class ApprovalWindowPreSendGate:
             expected_policy_stamp=self._expected_policy_stamp,
             rungs=(self._rung,),
         )
+        if (
+            decision.allowed
+            and self._require_regular_session
+            and not regular_session_open(self._group.market, decision.observed_at)
+        ):
+            decision = replace(
+                decision,
+                code=ApprovalWindowCode.DEFER_SESSION_CLOSED,
+                detail="mechanical_loss_cut_session_closed",
+            )
         if decision.allowed:
             return
         self.blocked_decision = decision
@@ -1439,6 +1452,12 @@ async def _revalidate_place_rung(
         window_evaluator=window_evaluator,
         expected_policy_stamp=expected_policy_stamp,
         now_fn=now_fn,
+        # ROB-1460: only the auto path. A loss_cut is exempt from the approval
+        # window so that a person can act at any hour; an automatic sell is not.
+        # The classifier checked this too, but the send can land after the close.
+        require_regular_session=(
+            eligibility_gate is not None and group.exit_intent == "loss_cut"
+        ),
     )
 
     try:

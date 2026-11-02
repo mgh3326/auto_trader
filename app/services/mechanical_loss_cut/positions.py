@@ -78,17 +78,12 @@ def _symbol_forms(keys: Sequence[LotKey]) -> set[str]:
     return forms
 
 
-async def load_held_lots(
+async def _load_lot_fills(
     session: AsyncSession,
     *,
     markets: Sequence[str],
     symbols: set[str] | None = None,
-) -> list[HeldLot]:
-    """FIFO position per account, market and symbol from authoritative fills.
-
-    FIFO needs every fill, so this reads the whole history. ``symbols`` keeps the
-    buy path from reading other symbols' rows.
-    """
+) -> dict[LotKey, list[LedgerFill]]:
     grouped: dict[LotKey, list[LedgerFill]] = defaultdict(list)
     statement = select(ExecutionLedger).where(
         execution_ledger_in_effect(),
@@ -116,6 +111,21 @@ async def load_held_lots(
                 venue=row.venue,
             )
         )
+    return grouped
+
+
+async def load_held_lots(
+    session: AsyncSession,
+    *,
+    markets: Sequence[str],
+    symbols: set[str] | None = None,
+) -> list[HeldLot]:
+    """FIFO position per account, market and symbol from authoritative fills.
+
+    FIFO needs every fill, so this reads the whole history. ``symbols`` keeps the
+    buy path from reading other symbols' rows.
+    """
+    grouped = await _load_lot_fills(session, markets=markets, symbols=symbols)
     lots: list[HeldLot] = []
     for key, fills in grouped.items():
         held = held_lot_from_fills(key, fills)
@@ -142,6 +152,17 @@ async def load_position(session: AsyncSession, key: LotKey) -> HeldLot | None:
         session, markets=(key.market,), symbols=_symbol_forms((key,))
     )
     return next((lot for lot in lots if lot.key == key), None)
+
+
+async def latest_sell_at(session: AsyncSession, key: LotKey) -> datetime | None:
+    """When the ledger last saw this lot sell, if ever."""
+    grouped = await _load_lot_fills(
+        session, markets=(key.market,), symbols=_symbol_forms((key,))
+    )
+    return max(
+        (fill.filled_at for fill in grouped.get(key, []) if fill.side == "sell"),
+        default=None,
+    )
 
 
 def _to_bar(row: DailyCandleRow) -> Bar:

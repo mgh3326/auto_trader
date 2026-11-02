@@ -615,9 +615,8 @@ def evaluate_lot(
     last = bars[-1]
     close = last.close
     trigger = params.trigger
-    unrealized = (
-        (close - lot.average_cost) / lot.average_cost * _ONE_HUNDRED
-    ).quantize(_PCT_STEP)
+    exact_unrealized = (close - lot.average_cost) / lot.average_cost * _ONE_HUNDRED
+    unrealized = exact_unrealized.quantize(_PCT_STEP)
     facts = {
         "close": text(close),
         "stop": text(plan.stop_price),
@@ -627,7 +626,8 @@ def evaluate_lot(
         return Skip("not_underwater", facts)
     if close >= plan.stop_price:
         return Skip("above_planned_stop", facts)
-    if unrealized > Decimal(str(trigger.unrealized_floor_pct)):
+    # The exact value: rounding could carry a loss just short of the floor past it.
+    if exact_unrealized > Decimal(str(trigger.unrealized_floor_pct)):
         return Skip("floor_not_reached", facts)
 
     # One comparison with one earlier close, not a run of rising sessions.

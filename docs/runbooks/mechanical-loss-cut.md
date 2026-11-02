@@ -217,8 +217,14 @@ ready for live at that moment.
 The job prints these as `live.outcomes`, including `session_closed`,
 `proposal_create_failed`, `dispatch_undelivered`, `card_recovered` and
 `card_recovery_failed`. Recovery leaves alone a proposal younger than 15 minutes,
-which another run may still be dispatching. A proposal stuck with its dispatch state
-`pending` is not recovered automatically; the alert is the signal to look at it.
+which another run may still be dispatching.
+
+A proposal stuck with its dispatch state `pending` is never resent, because its card
+may already be out. Each run alerts the operator about it until a person resolves it,
+and counts it as `stale_pending_alerted`.
+
+A cut that reaches the send after the close stops right before the broker call and
+goes to the human card.
 
 ### If the human card appears
 
@@ -235,7 +241,7 @@ is a human decision like any other.
 | Stop plan writes | `LOT_EXIT_PLAN_WRITE_ENABLED=false`. Buys carry on; missing plans get backfilled later. |
 | Undo an automatic sell | The veto button on the card cancels an unfilled order. A filled order stays filled. Reconcile from broker evidence. |
 | Remove the code | Revert the PR. Set the flags to false first. |
-| Remove the tables | `uv run alembic downgrade -1`. It refuses while either table holds rows, because losing the decisions table lets a trigger fire twice. Both tables are append-only, so export and clear them deliberately first. |
+| Remove the tables | `uv run alembic downgrade -1`. It refuses while either table holds rows, because losing the decisions table lets a trigger fire twice. Both tables refuse UPDATE, DELETE and TRUNCATE from every role, so clearing them means the operator exports them and drops the guard triggers first. |
 
 ## Known limits
 
@@ -248,4 +254,3 @@ is a human decision like any other.
 - A plan's average cost is the planned value at acceptance. The job measures
   against the position it reads at evaluation time.
 - The ledger has no account ID, so one account mode counts as one account.
-- The live session check runs at classification, not again inside the send.

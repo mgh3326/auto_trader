@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -121,6 +121,16 @@ class MechanicalLossCutBinding:
     params: MechanicalLossCutMarket
 
 
+def _equals(value: Any, expected: Decimal) -> bool:
+    """A missing or malformed rung value is a mismatch, never an exception."""
+    if value is None:
+        return False
+    try:
+        return Decimal(str(value)) == expected
+    except InvalidOperation:
+        return False
+
+
 def binding_refusal(
     *, group: Any, rung: Any, binding: MechanicalLossCutBinding, mode: str, now: Any
 ) -> str | None:
@@ -146,8 +156,8 @@ def binding_refusal(
         and group.account_mode == binding.account_mode
         and group.market == binding.market
         and group.symbol == binding.symbol
-        and Decimal(str(getattr(rung, "quantity", None))) == binding.quantity
-        and Decimal(str(getattr(rung, "limit_price", None))) == binding.limit_price
+        and _equals(getattr(rung, "quantity", None), binding.quantity)
+        and _equals(getattr(rung, "limit_price", None), binding.limit_price)
     ):
         return "binding_mismatch"
     if not regular_session_open(group.market, now):
@@ -170,6 +180,7 @@ def price_refusal(
     if current_price >= average_cost:
         return "not_underwater"
     slippage = Decimal(str(binding.params.order.max_slippage_pct)) / Decimal("100")
-    if limit_price < current_price * (Decimal("1") - slippage):
+    # Above the market it would rest unfilled, and this run gets no second cut.
+    if not current_price * (Decimal("1") - slippage) <= limit_price <= current_price:
         return "limit_outside_band"
     return None

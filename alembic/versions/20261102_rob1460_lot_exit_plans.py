@@ -50,6 +50,21 @@ GUARD_DDL: tuple[str, ...] = (
     BEFORE UPDATE OR DELETE ON review.mechanical_loss_cut_decisions
     FOR EACH ROW EXECUTE FUNCTION review.rob1460_append_only_guard()
     """,
+    # REVOKE does not stop the owner, and clearing the decisions would let every
+    # recorded trigger fire again.
+    "DROP TRIGGER IF EXISTS trg_lot_exit_plans_no_truncate ON review.lot_exit_plans",
+    """
+    CREATE TRIGGER trg_lot_exit_plans_no_truncate
+    BEFORE TRUNCATE ON review.lot_exit_plans
+    FOR EACH STATEMENT EXECUTE FUNCTION review.rob1460_append_only_guard()
+    """,
+    "DROP TRIGGER IF EXISTS trg_mechanical_loss_cut_decisions_no_truncate "
+    "ON review.mechanical_loss_cut_decisions",
+    """
+    CREATE TRIGGER trg_mechanical_loss_cut_decisions_no_truncate
+    BEFORE TRUNCATE ON review.mechanical_loss_cut_decisions
+    FOR EACH STATEMENT EXECUTE FUNCTION review.rob1460_append_only_guard()
+    """,
 )
 
 DOWNGRADE_GUARD = """

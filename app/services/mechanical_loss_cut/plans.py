@@ -17,6 +17,7 @@ from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_db_symbol
 from app.services.mechanical_loss_cut.gate import POLICY_MARKET
 from app.services.mechanical_loss_cut.positions import (
+    latest_sell_at,
     load_bars,
     load_position,
     lot_symbol,
@@ -116,6 +117,12 @@ async def record_buy_exit_plan(
                 and previous.created_at is not None
                 and now - previous.created_at < _UNRECONCILED_ENTRY_WINDOW
             )
+            if held is None and recent:
+                # Flat with a recent plan means one of two things. A sell the
+                # ledger saw after that plan closed the lot, so this is a new one.
+                # Otherwise the earlier buy has not reconciled yet: still an add.
+                sold_at = await latest_sell_at(session, key)
+                recent = sold_at is None or sold_at <= previous.created_at
             if previous is not None and (held is not None or recent):
                 draft = add_plan(
                     previous=previous,

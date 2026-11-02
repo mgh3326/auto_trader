@@ -59,6 +59,7 @@ def test_append_only_guard_covers_update_and_delete_on_both_tables():
 
     for table in ("lot_exit_plans", "mechanical_loss_cut_decisions"):
         assert f"BEFORE UPDATE OR DELETE ON review.{table}" in ddl
+        assert f"BEFORE TRUNCATE ON review.{table}" in ddl
 
 
 @pytest.mark.parametrize("model", [LotExitPlan, MechanicalLossCutDecision])

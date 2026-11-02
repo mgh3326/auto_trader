@@ -74,7 +74,9 @@ wins and the proposal goes to a human:
    `target_evidence_missing` (§141차)
 3. `order_type != limit` → `order_type_not_limit` (**not applied to `cancel`**,
    which places no order)
-4. `exit_intent == "loss_cut"` → **`loss_cut_intent`**
+4. `exit_intent == "loss_cut"` → **`loss_cut_intent`**, unless a mechanical
+   decision row binds this proposal and its gate passes (see
+   [Mechanical loss-cut](#mechanical-loss-cut-rob-1460))
 5. any other `exit_intent` → `exit_intent_present`
 6. account/market not in `_VETO_CAPABLE_ACCOUNT_MARKETS` → `account_not_veto_capable`
 7. `policy_deviation` tag → **`approval_required_tag`**

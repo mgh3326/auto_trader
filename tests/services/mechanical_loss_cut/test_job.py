@@ -540,6 +540,7 @@ async def test_a_cut_found_after_the_close_goes_out_in_the_next_session(
     monkeypatch.setattr(live_module, "load_trading_policy", lambda: live_on)
     monkeypatch.setattr(live_module, "open_auto_digest_round", empty_round)
     monkeypatch.setattr(live_module, "_undelivered_proposal_ids", no_undelivered)
+    monkeypatch.setattr(live_module, "_stale_pending_proposal_ids", no_undelivered)
     monkeypatch.setattr(live_module, "_create_proposal", create)
     results = []
 

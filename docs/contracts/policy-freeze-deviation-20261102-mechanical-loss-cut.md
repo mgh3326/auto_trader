@@ -84,7 +84,7 @@ sale on its own while the price recovers.
 | Caps | The existing per-order and daily caps. Neither is raised. Both meter `max(limit, current) x quantity`, because this sell may be marketable. Over a cap goes to the human card. |
 | Order | Limit only, with a fresh successful preview. The limit is at most `order.max_slippage_pct` below the fresh price, and policy refuses a value wider than `sell.loss_cut_max_slip`. |
 | Fresh re-check | At submit time the current price must still be below the stop and below average cost. Otherwise the proposal goes to the human card. |
-| Session | Equities need the exchange's regular session. A loss-cut is otherwise exempt from the approval window so a person can act at any hour. An automatic sell does not inherit that. |
+| Session | Equities need the exchange's regular session, checked at classification and again in the hook right before the broker call. A loss-cut is otherwise exempt from the approval window so a person can act at any hour. An automatic sell does not inherit that. |
 | Excluded | Parking instruments on any account, backfilled plans unless policy admits them, and protected quantity. |
 | Everything else | `policy_deviation` tag scan, veto-capable account/market allowlist, veto thesis, broker env gates, approval hash, nonce and idempotency controls all stay. |
 | Non-mechanical sells | Unchanged. A loss-cut without a decision row keeps reason `loss_cut_intent`, and the average-cost guard still blocks every other loss sell. |
@@ -113,8 +113,8 @@ sale on its own while the price recovers.
   fails or goes to the card.
 - Open-sell coverage has the same blind spot for orders placed outside
   auto_trader. On the live path, broker sellable quantity is the remaining check.
-- The session check runs at classification, not again inside the send. An order
-  classified in the last seconds of a session can reach the broker after the close.
+- The session is checked at classification and again right before the broker call.
+  An order that has left for the broker before the close can still arrive after it.
 - `exit_plan` lets a buyer state a lower stop with an add, which widens the loss a
   plan allows. Every version is recorded, but nothing refuses this yet.
 - Fresh thresholds are unproven. Live stays refused until `thresholds_confirmed`.

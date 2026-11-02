@@ -32,6 +32,7 @@ from app.services.trading_policy_service import policy_version_stamp
 LIVE_ARMED_DETAIL = "live_armed"
 #: ``ApprovalDispatchState`` values that mean no card reached anyone.
 _UNDELIVERED_DISPATCH_STATES = ("failed", "partial_failed")
+_FINISHED_PROPOSAL_STATES = ("terminal", "rejected", "expired", "voided", "superseded")
 
 
 def _ladder_json(ladder: tuple[AddLevel, ...]) -> list[dict[str, str]]:
@@ -285,6 +286,29 @@ class MechanicalLossCutStore:
                         _UNDELIVERED_DISPATCH_STATES
                     ),
                 ),
+            )
+            .order_by(OrderProposal.created_at)
+        )
+        return list(rows.scalars().all())
+
+    async def stale_pending_live_proposals(
+        self, *, before: datetime
+    ) -> list[uuid.UUID]:
+        """Live proposals whose dispatch never finished, so a card may be out.
+
+        Nothing resends these, because that could duplicate a published card.
+        """
+        rows = await self._session.execute(
+            select(OrderProposal.proposal_id)
+            .join(
+                MechanicalLossCutDecision,
+                MechanicalLossCutDecision.proposal_id == OrderProposal.proposal_id,
+            )
+            .where(
+                MechanicalLossCutDecision.mode == "live",
+                OrderProposal.approval_dispatch_state == "pending",
+                OrderProposal.approval_dispatch_attempted_at < before,
+                OrderProposal.lifecycle_state.not_in(_FINISHED_PROPOSAL_STATES),
             )
             .order_by(OrderProposal.created_at)
         )

@@ -408,3 +408,88 @@ async def test_a_delivered_auto_submit_is_not_recovered(db_session):
     far_future = datetime(2099, 1, 1, tzinfo=UTC)
     store = MechanicalLossCutStore(db_session)
     assert proposal_id not in await store.undelivered_live_proposals(before=far_future)
+
+
+def _real_revalidate(place_order, *, gate_clock):
+    async def revalidate(*, service, proposal_id, now, eligibility_gate):
+        group, rungs = await service.get_proposal(proposal_id)
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=allow_known_session,
+            now_fn=lambda: NOW,
+            require_policy_stamp=False,
+            rungs=rungs,
+        )
+        return await revalidate_and_submit(
+            service=service,
+            proposal_id=proposal_id,
+            now=now,
+            eligibility_gate=eligibility_gate,
+            place_order_fn=place_order,
+            window_evaluator=allow_known_session,
+            expected_policy_stamp=window.policy_stamp,
+            now_fn=gate_clock,
+        )
+
+    return revalidate
+
+
+async def test_a_session_that_closes_before_the_send_leaves_only_a_human_card(
+    db_session,
+):
+    proposal_id = await _create(db_session, _decision(_symbol()))
+    notifier = _Notifier()
+    after_close = datetime(2026, 10, 30, 7, 10, tzinfo=UTC)
+    clock = {"now": NOW}
+    reached_broker: list[dict] = []
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return _preview()
+        clock["now"] = after_close
+        await kwargs["pre_send_hook"]()
+        reached_broker.append(kwargs)
+        return {"success": True, "status": "resting", "broker_order_id": "kis-late"}
+
+    await _dispatch(
+        db_session,
+        proposal_id,
+        notifier,
+        _real_revalidate(place_order, gate_clock=lambda: clock["now"]),
+    )
+
+    assert reached_broker == []
+    assert len(notifier.approval_cards()) == 1
+    assert notifier.auto_cards() == []
+    _group, rungs = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    assert rungs[0].state == "pending_approval"
+
+
+async def test_a_stale_pending_proposal_is_found_and_a_finished_one_is_not(db_session):
+    proposal_id = await _create(db_session, _decision(_symbol()))
+    store = MechanicalLossCutStore(db_session)
+    far_future = datetime(2099, 1, 1, tzinfo=UTC)
+    assert proposal_id not in await store.stale_pending_live_proposals(
+        before=far_future
+    )
+
+    await db_session.execute(
+        text(
+            "UPDATE review.order_proposals SET approval_dispatch_state = 'pending', "
+            "approval_dispatch_attempted_at = :at WHERE proposal_id = :proposal_id"
+        ),
+        {"at": NOW, "proposal_id": proposal_id},
+    )
+    assert proposal_id in await store.stale_pending_live_proposals(before=far_future)
+    assert proposal_id not in await store.stale_pending_live_proposals(before=NOW)
+
+    await db_session.execute(
+        text(
+            "UPDATE review.order_proposals SET lifecycle_state = 'voided' "
+            "WHERE proposal_id = :proposal_id"
+        ),
+        {"proposal_id": proposal_id},
+    )
+    assert proposal_id not in await store.stale_pending_live_proposals(
+        before=far_future
+    )

@@ -789,3 +789,23 @@ def test_malformed_exit_plan_is_refused(raw, code):
     with pytest.raises(ExitPlanInputError) as caught:
         parse_exit_plan_input(raw)
     assert str(caught.value) == code
+
+
+def test_a_loss_just_short_of_the_floor_does_not_round_past_it():
+    market = params().model_copy(deep=True)
+    market.trigger.unrealized_floor_pct = -5
+
+    verdict = evaluate_lot(
+        lot=held(average_cost="100000"),
+        plan=plan(stop="96000"),
+        bars=bars_from_closes([97000, 96900, 96800, 96700, 96600, 96500, "95000.004"]),
+        params=market,
+        price_fresh=True,
+        open_sell_quantity=Decimal("0"),
+        protected_quantity=Decimal("0"),
+        prior_decision=None,
+    )
+
+    assert isinstance(verdict, Skip)
+    assert verdict.reason == "floor_not_reached"
+    assert verdict.details["unrealized_pct"] == "-5"

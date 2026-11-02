@@ -120,6 +120,10 @@ class DatabasePorts:
 
     async def append_backfill(self, draft: PlanDraft) -> ExitPlan:
         await self._store.lock_lot(draft.key)
+        # A buy may have written its plan after this run read the plans.
+        existing = await self._store.latest_plan(draft.key)
+        if existing is not None:
+            return existing
         return await self._store.append_plan(draft)
 
     async def insert_shadow_decision(
@@ -225,7 +229,7 @@ async def evaluate_all_lots(
                 plan = await ports.append_backfill(
                     backfill_plan(lot=lot, params=params, bars=bars)
                 )
-                backfilled_plans += 1
+                backfilled_plans += 1 if plan.backfilled else 0
 
             decide = partial(
                 evaluate_lot,

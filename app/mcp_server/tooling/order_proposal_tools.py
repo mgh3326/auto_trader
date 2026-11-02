@@ -661,6 +661,7 @@ def _validate_exit_plan_argument(
     *,
     side: str,
     action: str,
+    order_type: str,
     rungs: list[RungInput],
 ) -> None:
     """ROB-1460: refuse a malformed plan before any row exists."""
@@ -672,6 +673,12 @@ def _validate_exit_plan_argument(
         parsed = parse_exit_plan_input(exit_plan)
     except ExitPlanInputError as exc:
         raise ValueError(f"exit_plan invalid: {exc}") from exc
+    # The plan is written at acceptance from the rung's price and quantity. Without
+    # both it would be dropped and the lot would get the default stop instead.
+    if order_type != "limit" or any(
+        rung.limit_price is None or rung.quantity is None for rung in rungs
+    ):
+        raise ValueError("exit_plan invalid: exit_plan_needs_limit_and_quantity")
     limits = [rung.limit_price for rung in rungs if rung.limit_price is not None]
     if any(limit <= parsed.stop_price for limit in limits):
         raise ValueError("exit_plan invalid: exit_plan_stop_not_below_rung")
@@ -767,7 +774,11 @@ async def order_proposal_create(
         sup = uuid.UUID(supersedes_proposal_id) if supersedes_proposal_id else None
         normalized_action = action or "place"
         _validate_exit_plan_argument(
-            exit_plan, side=side, action=normalized_action, rungs=rung_inputs
+            exit_plan,
+            side=side,
+            action=normalized_action,
+            order_type=order_type,
+            rungs=rung_inputs,
         )
         target_snapshot = None
         if normalized_action in {"replace", "cancel"}:
