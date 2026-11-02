@@ -196,6 +196,21 @@ async def test_reader_ignores_fills_from_another_day_under_the_same_number(
 
 
 @pytest.mark.asyncio
+async def test_reader_joins_a_number_whatever_its_leading_zeros(
+    db_session: Any, seeded: dict[str, str]
+) -> None:
+    db_session.add(
+        _execution_row(seeded["symbol"], f"00{seeded['order_no']}", fill_seq=3)
+    )
+    await db_session.commit()
+    intent = intent_snapshot(symbol=seeded["symbol"])
+    evidence = await SqlLedgerEvidenceReader(AsyncSessionLocal).read(
+        intent, [_submit(seeded["root"], f"000{seeded['order_no']}")]
+    )
+    assert evidence.filled_by_order_day == {(seeded["order_no"], TRADING_DAY): 6}
+
+
+@pytest.mark.asyncio
 async def test_reader_runs_read_only_and_issues_no_write(
     seeded: dict[str, str],
 ) -> None:

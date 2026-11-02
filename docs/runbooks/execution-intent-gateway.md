@@ -104,6 +104,7 @@ Stop on any of these. Set the kill switch, then stop the process.
 | An outcome is `uncertain` or `sending`, and the query keeps answering `view: null` | The order may exist, and there is no evidence to say. Clear it at the broker |
 | A `result` carries a `followup_*` `reason_code` | The capability was refused, so the binding between journal and ledger is broken. Zero broker calls were made for that child |
 | A `refused` outcome other than `submissions_killed` or `authorization_expired` | E2 sent something E1 forbids, so the mirror or the binding is wrong |
+| The query keeps answering `fill_evidence_conflict` or `order_identity_ambiguous` | The ledgers disagree about this order, and more waiting may not settle it. Check the order at the broker. E1 may refuse the cancel, and `view` stays `null` even after you clear the order, so abandon the intent |
 | A second working order for the intent appears at the broker | E2 tracks one order |
 | A fill has no ledger row, or a ledger row names an unknown order id | Fill attribution is broken |
 | Any answer other than 200 repeats | The route or the DB is unhealthy, and E2 reads each one as an unknown outcome |
@@ -112,7 +113,7 @@ To set the kill switch, use the existing control service (`PostgresKillSwitchSto
 
 ## After a stop
 
-1. Cancel the working order through E1 if the journal allows it. A cancel needs no `ACTIVE` kill state. It is refused with `target_superseded` if a later child has an unknown outcome.
+1. Cancel the working order through E1 if the journal allows it. A cancel needs no `ACTIVE` kill state. It is refused with `target_superseded` if a later child has an unknown outcome, and it ends `uncertain` with `followup_remainder_unknown` if the order ledger shows no remainder.
 2. If E1 refuses the cancel, clear the order at the broker (KIS mock HTS), and record that you did.
 3. Do not edit journal rows. DB triggers refuse it, and an unknown row stays on the record.
 4. Attach the executor journal, the E1 rows and the query answer to the ticket.
@@ -129,8 +130,10 @@ A reverted build keeps one data effect. An amend that already ran re-pointed its
 ## Limits
 
 - **`view` is not broker truth.** It comes from the journal and the ledger, and the route calls no broker. An order placed outside the gateway does not appear.
-- **`filled_qty` is never fill evidence.** It holds back further sends and can end a working order in `view`, so it counts a fill only on the KST trading day the order was sent. KIS order numbers repeat across days. If a real fill is stamped on another day, `view` shows the order as still working.
-- **An amended order closes only on execution-ledger fills under its own number.** The ledger row's filled quantity cannot prove it, because the row keeps that quantity across numbers. If only that evidence exists, `view` shows the order as still working. Check the KIS mock HTS.
+- **`filled_qty` is only as complete as `execution_ledger`.** It sums fills on the intent's orders, by number and KST trading day, because KIS order numbers repeat across days. A fill that has not reached `execution_ledger`, or that is stamped on another day, is not counted. If the row later records a confirmed cancel, nothing shows the missing fill, and `view` understates it. Check the KIS mock HTS before you size a new intent from `view`.
+- **An order closes only on execution-ledger fills under its own number.** The order ledger's `attributed_fill_qty` cannot prove it: it shares out the whole symbol's holdings change, so another order's fill can appear on a resting order. If that estimate exceeds the execution ledger, the query answers `fill_evidence_conflict` and `view: null`. A lagging feed clears this when it catches up. If the fill belongs to another order, it never clears (see [Stop conditions](#stop-conditions)).
+- **Run one fill writer for mock.** If both fillwire and the in-app monitor write mock fills, one fill can land twice, and a doubled total can close a live order. Nothing detects this below the order's quantity. `kis_ws_is_mock` and `EXECUTION_LEDGER_COMMIT_ENABLED` both default to off. Keep the in-app monitor off for mock while fillwire writes.
+- **The fill feed must exclude accept notices.** Quarantine refuses mock rows, so a `CNTG_YN=1` phantom in a mock feed cannot be excluded later and can close a live order. Confirm that the deployed fillwire has the #1172 decoder fix before the run.
 - **A cancel after a partial fill sends the ledger's order quantity.** The capability checks the remainder, but the existing cancel path sends the full quantity to KIS. The first mock run should check how KIS answers this.
 - **A refused or contended follow-up strands the order in the journal.** If the mint is refused, or another writer holds the KIS mock lease, the child ends `uncertain` with zero broker calls. E1 cannot tell that apart from a send that may have happened, so later cancels of that order answer `target_superseded`. Clear the order at the broker. `result.reason_code` or `result.error_class` on the child says which case it was.
 - **The kill state is read once, at reservation.** A send can still cross a newly engaged kill in the time between the journal commit and the wire (design doc, "Expiry and kill at the wire").

@@ -11,16 +11,16 @@ proof that no order exists, because the ledger row is written after the send. So
 
 from __future__ import annotations
 
-import math
+from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Final, Protocol
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import trade_day_kst
@@ -44,22 +44,36 @@ _UNKNOWN_STATES: Final = frozenset({ChildState.SENDING, ChildState.UNCERTAIN})
 type OrderDay = tuple[str, str]
 
 
+def _order_number(raw: object) -> str:
+    """Writers differ on leading zeros. The same rule as ROB-1379's identity."""
+    number = str(raw or "").strip()
+    return number.lstrip("0") or ("0" if number else "")
+
+
 class UnresolvedReason(StrEnum):
     NO_LEDGER_EVIDENCE = "no_ledger_evidence"
     LEDGER_ROW_AMBIGUOUS = "ledger_row_ambiguous"
     LEDGER_STATE_UNRESOLVED = "ledger_state_unresolved"
     MULTIPLE_WORKING_ORDERS = "multiple_working_orders"
+    ORDER_IDENTITY_AMBIGUOUS = "order_identity_ambiguous"
+    FILL_EVIDENCE_CONFLICT = "fill_evidence_conflict"
 
 
 @dataclass(frozen=True, slots=True)
 class LedgerOrder:
-    """One ``kis_mock_order_ledger`` row, as evidence for one order lineage."""
+    """One ``kis_mock_order_ledger`` row, as evidence for one order lineage.
+
+    ``filled_qty`` is the holdings reconciler's estimate, and ``None`` when the row
+    claims a fill without a readable quantity. It is shared out from a whole symbol's
+    holdings change, so it proves nothing about this order. It can only conflict
+    with the execution ledger, never close an order.
+    """
 
     order_no: str | None
     status: str
     lifecycle_state: str
     quantity: int
-    filled_qty: int
+    filled_qty: int | None
     broker_cancel_confirmed: bool | None = None
 
 
@@ -85,18 +99,38 @@ class Unresolved:
 
 @dataclass(frozen=True, slots=True)
 class Reconciliation:
-    """``reconciled`` is true only when ``order`` and ``filled_qty`` can be trusted."""
+    """``filled_qty`` is ``None`` unless reconciled: without every lineage it is partial."""
 
     reconciled: bool
     order: WorkingOrder | None
-    filled_qty: int
+    filled_qty: int | None
     unresolved: tuple[Unresolved, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PlacedOrder:
+    key: OrderDay
+    quantity: int
+
+
+@dataclass(frozen=True, slots=True)
+class LineageOrders:
+    """The only statement of which orders a lineage placed.
+
+    The evidence reader loads fills for ``placed``, and closure reads fills for
+    ``current``, so closure can never ask about an order the reader did not load.
+    """
+
+    placed: tuple[PlacedOrder, ...]
+    #: The order the last submit or amend placed, when it can be named.
+    current: PlacedOrder | None
+    identity_known: bool
 
 
 def _lineages(children: Sequence[ChildSnapshot]) -> dict[str, list[ChildSnapshot]]:
     by_key = {child.idempotency_key: child for child in children}
     lineages: dict[str, list[ChildSnapshot]] = {}
-    for child in children:
+    for child in sorted(children, key=lambda row: row.child_id):
         if child.state is not ChildState.REFUSED:
             root = _root_of(child.idempotency_key, by_key)
             lineages.setdefault(root, []).append(child)
@@ -107,101 +141,132 @@ def _senders(rows: Sequence[ChildSnapshot]) -> list[ChildSnapshot]:
     return [row for row in rows if row.action != "cancel"]
 
 
-def _lineage_orders(
-    rows: Sequence[ChildSnapshot], ledger_orders: Sequence[LedgerOrder]
-) -> set[OrderDay]:
-    """The orders this lineage placed.
+def _sent_quantity(row: ChildSnapshot) -> int:
+    if row.quantity is None:
+        raise ValueError("a journaled submit or amend has no quantity")
+    return row.quantity
 
-    A submit or an amend places an order on the day it was sent. A cancel journals
-    its target's number on its own day, so it places nothing. A number known only
-    from the ledger belongs to a sender with no recorded number.
+
+def _single(rows: Sequence[LedgerOrder]) -> LedgerOrder | None:
+    return rows[0] if len(rows) == 1 else None
+
+
+def lineage_orders(
+    rows: Sequence[ChildSnapshot], ledger_order: LedgerOrder | None
+) -> LineageOrders:
+    """Name the orders of one lineage.
+
+    A submit or an amend places an order on the day it was sent, and a cancel places
+    nothing. E1 accepts a sender only with a number and amends only an accepted one,
+    so only the last sender can lack a number: the ledger names that order if it
+    followed the send. Anything else cannot be told apart from a stale or reused
+    number, so it is not an identity to count fills against.
     """
     senders = _senders(rows)
-    journaled = {
-        (row.broker_order_id, trade_day_kst(row.created_at))
-        for row in senders
-        if row.broker_order_id
-    }
-    journaled_numbers = {number for number, _ in journaled}
-    unnumbered_days = {
-        trade_day_kst(row.created_at) for row in senders if not row.broker_order_id
-    }
-    ledger_only = {
-        (order.order_no, day)
-        for order in ledger_orders
-        if order.order_no and order.order_no not in journaled_numbers
-        for day in unnumbered_days
-    }
-    return journaled | ledger_only
-
-
-def _lineage_filled(
-    rows: Sequence[ChildSnapshot],
-    ledger_orders: Sequence[LedgerOrder],
-    filled_by_order_day: Mapping[OrderDay, int],
-) -> int:
-    executed = sum(
-        filled_by_order_day.get(order, 0)
-        for order in _lineage_orders(rows, ledger_orders)
-    )
-    return max(executed, max((o.filled_qty for o in ledger_orders), default=0))
-
-
-def _current_order_filled(
-    rows: Sequence[ChildSnapshot],
-    ledger_order: LedgerOrder | None,
-    filled_by_order_day: Mapping[OrderDay, int],
-) -> int:
-    """Fills on the order the lineage's last submit or amend placed.
-
-    This decides whether that order is finished. An amended order's quantity is
-    what was still open, so fills on the order it replaced must not count. The
-    ledger row's own quantity covers every number the row has held, so it counts
-    only while the lineage has never been amended.
-    """
-    senders = _senders(rows)
+    if not senders:
+        raise ValueError("a lineage has no journaled submit or amend")
     last = senders[-1]
-    number = last.broker_order_id or (ledger_order.order_no if ledger_order else None)
-    executed = (
-        filled_by_order_day.get((number, trade_day_kst(last.created_at)), 0)
-        if number
-        else 0
+    numbered = [row for row in senders if _order_number(row.broker_order_id)]
+    placed = [
+        PlacedOrder(
+            (_order_number(row.broker_order_id), trade_day_kst(row.created_at)),
+            _sent_quantity(row),
+        )
+        for row in numbered
+    ]
+    ledger_number = (
+        _order_number(ledger_order.order_no) if ledger_order is not None else ""
     )
-    own = ledger_order.filled_qty if ledger_order and len(senders) == 1 else 0
-    return max(executed, own)
+    numbers = {order.key[0] for order in placed}
+
+    if _order_number(last.broker_order_id):
+        return LineageOrders(
+            tuple(placed),
+            placed[-1],
+            len(numbered) == len(senders) and ledger_number in ("", placed[-1].key[0]),
+        )
+
+    identity_known = len(numbered) == len(senders) - 1
+    if ledger_order is None or not ledger_number:
+        return LineageOrders(tuple(placed), None, identity_known)
+    key = (ledger_number, trade_day_kst(last.created_at))
+    if placed and placed[-1].key == key:
+        # The ledger did not follow the send, so it still names the previous order.
+        return LineageOrders(tuple(placed), placed[-1], identity_known)
+    if ledger_number in numbers:
+        # An earlier order's number on another day: either the send never applied or
+        # the broker reused the number, and fills under it may be a stranger's.
+        return LineageOrders(tuple(placed), None, False)
+    current = PlacedOrder(key, ledger_order.quantity)
+    return LineageOrders((*placed, current), current, identity_known)
 
 
-def _ledger_proves_closed(ledger_order: LedgerOrder, current_filled: int) -> bool:
-    if ledger_order.status == "rejected" or ledger_order.lifecycle_state == "expired":
+def _unresolved(
+    rows: Iterable[ChildSnapshot], reason: UnresolvedReason
+) -> tuple[Unresolved, ...]:
+    return tuple(
+        Unresolved(row.idempotency_key, row.state.value, reason) for row in rows
+    )
+
+
+def _ledger_proves_gone(
+    ledger_order: LedgerOrder, rows: Sequence[ChildSnapshot]
+) -> bool:
+    if ledger_order.status == "rejected":
+        # The broker accepted a sender, so a rejected row contradicts the journal.
+        return not any(row.state is ChildState.ACCEPTED for row in _senders(rows))
+    if ledger_order.lifecycle_state == "expired":
         return True
     if ledger_order.lifecycle_state == "cancelled":
         # A soft cancel leaves the order possibly live at the broker.
         return ledger_order.broker_cancel_confirmed is True
-    return 0 < ledger_order.quantity <= current_filled
+    return False
+
+
+def _fills_conflict(
+    orders: LineageOrders,
+    ledger_order: LedgerOrder | None,
+    filled_by_order_day: Mapping[OrderDay, int],
+) -> bool:
+    """Whether the fills cannot be true, or the ledger row knows of more of them."""
+    if any(
+        filled_by_order_day.get(order.key, 0) > order.quantity
+        for order in orders.placed
+    ):
+        return True
+    if ledger_order is None:
+        return False
+    executed = sum(filled_by_order_day.get(order.key, 0) for order in orders.placed)
+    return ledger_order.filled_qty is None or ledger_order.filled_qty > executed
 
 
 def _resolve_lineage(
     rows: Sequence[ChildSnapshot],
+    orders: LineageOrders,
     ledger_order: LedgerOrder | None,
-    current_filled: int,
+    filled_by_order_day: Mapping[OrderDay, int],
 ) -> tuple[WorkingOrder | None, tuple[Unresolved, ...]]:
+    if not orders.identity_known:
+        return None, _unresolved(rows, UnresolvedReason.ORDER_IDENTITY_AMBIGUOUS)
+    if _fills_conflict(orders, ledger_order, filled_by_order_day):
+        return None, _unresolved(rows, UnresolvedReason.FILL_EVIDENCE_CONFLICT)
+
     last = rows[-1]
     if last.action == "cancel" and last.state is ChildState.ACCEPTED:
         return None, ()
-    if ledger_order is not None and _ledger_proves_closed(ledger_order, current_filled):
+    if ledger_order is not None and _ledger_proves_gone(ledger_order, rows):
+        return None, ()
+    current = orders.current
+    if current is not None and 0 < current.quantity <= filled_by_order_day.get(
+        current.key, 0
+    ):
+        # Only this order's own fills: its quantity is what was still open.
         return None, ()
     if (
         ledger_order is not None
         and ledger_order.lifecycle_state not in OPEN_LEDGER_STATES
     ):
-        return None, tuple(
-            Unresolved(
-                row.idempotency_key,
-                row.state.value,
-                UnresolvedReason.LEDGER_STATE_UNRESOLVED,
-            )
-            for row in rows
-        )
+        return None, _unresolved(rows, UnresolvedReason.LEDGER_STATE_UNRESOLVED)
 
     unknown = [
         row
@@ -213,29 +278,20 @@ def _resolve_lineage(
             row.action == "submit"
             and ledger_order is not None
             and ledger_order.status == "accepted"
-            and ledger_order.order_no
+            and _order_number(ledger_order.order_no)
         )
     ]
     if unknown:
-        return None, tuple(
-            Unresolved(
-                row.idempotency_key,
-                row.state.value,
-                UnresolvedReason.NO_LEDGER_EVIDENCE,
-            )
-            for row in unknown
-        )
+        return None, _unresolved(unknown, UnresolvedReason.NO_LEDGER_EVIDENCE)
 
     working = _senders(rows)[-1]
-    if working.quantity is None or working.limit_price_krw is None:
-        raise ValueError("a journaled submit or amend has no quantity or price")
-    if working.quantity <= current_filled:
-        return None, ()
+    if working.limit_price_krw is None:
+        raise ValueError("a journaled submit or amend has no price")
     return (
         WorkingOrder(
             key=working.idempotency_key,
             price=working.limit_price_krw,
-            qty=working.quantity,
+            qty=_sent_quantity(working),
         ),
         (),
     )
@@ -245,31 +301,40 @@ def build_reconciliation(
     children: Sequence[ChildSnapshot], evidence: LedgerEvidence
 ) -> Reconciliation:
     """Fold the journal and the ledger evidence into E2's view of the intent."""
+    lineages = _lineages(children)
+    orders_of = {
+        root: lineage_orders(rows, _single(evidence.orders_by_root.get(root, ())))
+        for root, rows in lineages.items()
+    }
+    holders = Counter(
+        order.key for orders in orders_of.values() for order in orders.placed
+    )
+
     working: list[WorkingOrder] = []
     unresolved: list[Unresolved] = []
     filled_total = 0
-    for root, rows in _lineages(children).items():
+    for root, rows in lineages.items():
         ledger_rows = evidence.orders_by_root.get(root, ())
+        orders = orders_of[root]
         if len(ledger_rows) > 1:
+            unresolved.extend(_unresolved(rows, UnresolvedReason.LEDGER_ROW_AMBIGUOUS))
+            continue
+        if any(holders[order.key] > 1 for order in orders.placed):
+            # One order has one owner. An amend that kept its number, or two lineages
+            # holding one, cannot split the order's fills between them.
             unresolved.extend(
-                Unresolved(
-                    row.idempotency_key,
-                    row.state.value,
-                    UnresolvedReason.LEDGER_ROW_AMBIGUOUS,
-                )
-                for row in rows
+                _unresolved(rows, UnresolvedReason.ORDER_IDENTITY_AMBIGUOUS)
             )
             continue
-        ledger_order = ledger_rows[0] if ledger_rows else None
-        filled_total += _lineage_filled(rows, ledger_rows, evidence.filled_by_order_day)
         order, lineage_unresolved = _resolve_lineage(
-            rows,
-            ledger_order,
-            _current_order_filled(rows, ledger_order, evidence.filled_by_order_day),
+            rows, orders, _single(ledger_rows), evidence.filled_by_order_day
         )
         unresolved.extend(lineage_unresolved)
         if order is not None:
             working.append(order)
+        filled_total += sum(
+            evidence.filled_by_order_day.get(placed.key, 0) for placed in orders.placed
+        )
 
     if len(working) > 1:
         # E2 tracks one working order. Naming one here would orphan the others.
@@ -283,7 +348,7 @@ def build_reconciliation(
             for order in working
         )
     if unresolved:
-        return Reconciliation(False, None, filled_total, tuple(unresolved))
+        return Reconciliation(False, None, None, tuple(unresolved))
     return Reconciliation(True, working[0] if working else None, filled_total, ())
 
 
@@ -293,8 +358,12 @@ class LedgerEvidenceReader(Protocol):
     ) -> LedgerEvidence: ...
 
 
-def _whole_shares_up(value: Any) -> int:
-    return math.ceil(Decimal(str(value)))
+def _whole_shares(value: Any) -> int:
+    """KR shares are whole. Anything else raises, and the route answers 503."""
+    amount = Decimal(str(value))
+    if not amount.is_finite() or amount != amount.to_integral_value():
+        raise ValueError("a share quantity is not a whole number")
+    return int(amount)
 
 
 def order_days_of(
@@ -303,9 +372,9 @@ def order_days_of(
 ) -> set[OrderDay]:
     """Every order the intent's lineages placed."""
     return {
-        order
+        order.key
         for root, rows in lineages.items()
-        for order in _lineage_orders(rows, orders_by_root.get(root, ()))
+        for order in lineage_orders(rows, _single(orders_by_root.get(root, ()))).placed
     }
 
 
@@ -317,12 +386,12 @@ def executed_by_order_day(
 
     This value can close an order, so a fill counts only for the order it belongs
     to. Otherwise an old fill under a reused number would report a live order as
-    finished.
+    finished. Writers differ on leading zeros, so numbers compare normalized.
     """
     incremental: dict[OrderDay, Decimal] = {}
     cumulative: dict[OrderDay, Decimal] = {}
     for order_id, quantity, source, filled_at in rows:
-        order = (order_id, trade_day_kst(filled_at))
+        order = (_order_number(order_id), trade_day_kst(filled_at))
         if order not in order_days:
             continue
         amount = Decimal(str(quantity))
@@ -331,7 +400,7 @@ def executed_by_order_day(
         else:
             cumulative[order] = max(cumulative.get(order, Decimal(0)), amount)
     return {
-        order: _whole_shares_up(
+        order: _whole_shares(
             max(
                 incremental.get(order, Decimal(0)),
                 cumulative.get(order, Decimal(0)),
@@ -339,6 +408,18 @@ def executed_by_order_day(
         )
         for order in incremental.keys() | cumulative.keys()
     }
+
+
+def _estimated_fill(lifecycle_state: str, detail: Any) -> int | None:
+    """The reconciler's estimate. A row in ``fill`` without one is unknown, not zero."""
+    raw = detail.get("attributed_fill_qty") if isinstance(detail, Mapping) else None
+    if raw is None:
+        return None if lifecycle_state == "fill" else 0
+    try:
+        estimate = _whole_shares(raw)
+    except (InvalidOperation, ValueError):
+        return None
+    return estimate if estimate >= 0 else None
 
 
 def _detail_flag(detail: Any) -> bool | None:
@@ -358,8 +439,6 @@ class SqlLedgerEvidenceReader:
     async def read(
         self, intent: IntentSnapshot, children: Sequence[ChildSnapshot]
     ) -> LedgerEvidence:
-        from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
-
         lineages = _lineages(children)
         if not lineages:
             return LedgerEvidence()
@@ -374,8 +453,6 @@ class SqlLedgerEvidenceReader:
                 )
             )
             for row in rows:
-                ordered = float(row.quantity)
-                filled, _, _ = _derive_shadow_fill(row, ordered)
                 orders_by_root.setdefault(
                     root_by_correlation[str(row.correlation_id)], []
                 ).append(
@@ -383,8 +460,10 @@ class SqlLedgerEvidenceReader:
                         order_no=row.order_no,
                         status=row.status,
                         lifecycle_state=row.lifecycle_state,
-                        quantity=_whole_shares_up(row.quantity),
-                        filled_qty=_whole_shares_up(filled),
+                        quantity=_whole_shares(row.quantity),
+                        filled_qty=_estimated_fill(
+                            row.lifecycle_state, row.last_reconcile_detail
+                        ),
                         broker_cancel_confirmed=_detail_flag(row.last_reconcile_detail),
                     )
                 )
@@ -415,8 +494,8 @@ class SqlLedgerEvidenceReader:
                 ExecutionLedger.broker == "kis",
                 ExecutionLedger.account_mode == "mock",
                 ExecutionLedger.symbol == symbol,
-                ExecutionLedger.broker_order_id.in_(
-                    list({number for number, _ in order_days})
+                func.ltrim(ExecutionLedger.broker_order_id, "0").in_(
+                    list({number.lstrip("0") for number, _ in order_days})
                 ),
                 execution_ledger_in_effect(),
             )

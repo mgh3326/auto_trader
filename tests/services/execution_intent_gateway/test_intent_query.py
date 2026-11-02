@@ -6,6 +6,7 @@ import ast
 import copy
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from decimal import InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +27,15 @@ from app.services.execution_intent_gateway.query import (
     Reconciliation,
     UnresolvedReason,
     WorkingOrder,
+    _estimated_fill,
     _lineages,
+    _order_number,
     build_reconciliation,
     executed_by_order_day,
+    lineage_orders,
     order_days_of,
 )
+from app.services.execution_ledger.supersede import normalize_order_id
 from tests.services.execution_intent_gateway.support import (
     MemoryGatewayStore,
     intent_snapshot,
@@ -268,7 +273,8 @@ def test_two_ledger_rows_for_one_order_are_ambiguous() -> None:
 
 def test_partial_fill_keeps_the_order_and_reports_the_quantity() -> None:
     evidence = LedgerEvidence(
-        orders_by_root={"key-00001": (_ledger(lifecycle="fill", filled=4),)}
+        orders_by_root={"key-00001": (_ledger(lifecycle="fill", filled=4),)},
+        filled_by_order_day={("1001", SENT_DAY): 4},
     )
     result = build_reconciliation([SUBMIT_OK], evidence)
     assert result == Reconciliation(True, WorkingOrder("key-00001", 70_000, 10), 4, ())
@@ -276,7 +282,8 @@ def test_partial_fill_keeps_the_order_and_reports_the_quantity() -> None:
 
 def test_full_fill_closes_the_order() -> None:
     evidence = LedgerEvidence(
-        orders_by_root={"key-00001": (_ledger(lifecycle="fill", filled=10),)}
+        orders_by_root={"key-00001": (_ledger(lifecycle="fill", filled=10),)},
+        filled_by_order_day={("1001", SENT_DAY): 10},
     )
     assert build_reconciliation([SUBMIT_OK], evidence) == Reconciliation(
         True, None, 10, ()
@@ -306,7 +313,7 @@ def test_filled_counts_every_order_id_in_the_lineage() -> None:
     assert build_reconciliation(children, evidence).filled_qty == 3
 
 
-def test_filled_takes_the_larger_of_the_two_ledgers() -> None:
+def test_filled_is_the_execution_ledgers_figure() -> None:
     evidence = LedgerEvidence(
         orders_by_root={"key-00001": (_ledger(lifecycle="fill", filled=2),)},
         filled_by_order_day={("1001", SENT_DAY): 5},
@@ -360,7 +367,7 @@ def test_an_old_fill_does_not_resolve_an_unknown_submit() -> None:
         [("1001", 10, "reconciler", datetime(2026, 10, 30, 1, 0, tzinfo=UTC))],
     )
     assert result.reconciled is False
-    assert result.filled_qty == 0
+    assert result.filled_qty is None
 
 
 def test_the_trading_day_boundary_is_kst_midnight() -> None:
@@ -422,14 +429,23 @@ def test_an_old_fill_under_the_amends_number_does_not_close_it() -> None:
     assert result == Reconciliation(True, WorkingOrder("key-00002", 70_000, 10), 0, ())
 
 
-def test_a_number_known_only_from_the_ledger_takes_the_unnumbered_senders_days() -> (
-    None
-):
-    children = [_submit_day_before(None), _amend_today(ChildState.UNCERTAIN, None)]
+def test_a_number_known_only_from_the_ledger_takes_the_last_senders_day() -> None:
+    children = [_child(1, "key-00001", ChildState.UNCERTAIN)]
     days = order_days_of(
         _lineages(children), {"key-00001": (_ledger(order_no="1002"),)}
     )
-    assert days == {("1002", DAY_BEFORE), ("1002", SENT_DAY)}
+    assert days == {("1002", SENT_DAY)}
+
+
+def test_a_sender_lost_before_the_last_one_makes_the_identity_unknown() -> None:
+    children = [_submit_day_before(None), _amend_today(ChildState.UNCERTAIN, None)]
+    result = build_reconciliation(
+        children,
+        LedgerEvidence(orders_by_root={"key-00001": (_ledger(order_no="1002"),)}),
+    )
+    assert {u.reason for u in result.unresolved} == {
+        UnresolvedReason.ORDER_IDENTITY_AMBIGUOUS
+    }
 
 
 def test_a_ledger_only_number_takes_only_the_unnumbered_senders_day() -> None:
@@ -476,7 +492,9 @@ def test_a_cancel_day_fill_under_a_reused_number_is_not_counted() -> None:
         [("1001", 10, "reconciler", SENT_AT)],
     )
     assert result.reconciled is False
-    assert result.filled_qty == 0
+    assert result.filled_qty is None
+    days = order_days_of(_lineages(children), {"key-00001": (_ledger(),)})
+    assert executed_by_order_day([("1001", 10, "reconciler", SENT_AT)], days) == {}
 
 
 def test_two_lineages_sharing_a_reused_number_keep_their_own_fills() -> None:
@@ -556,7 +574,8 @@ def test_fills_on_the_replacement_itself_close_the_amended_order(
 def test_an_amended_ledger_rows_own_quantity_does_not_close_it() -> None:
     ledger_row = _ledger(order_no="1002", lifecycle="fill", quantity=6, filled=6)
     result = _reconcile_with_fills(list(_AMENDED), {"key-00001": (ledger_row,)}, [])
-    assert result == Reconciliation(True, _AMENDED_WORKING, 6, ())
+    assert result.order is None
+    assert result.reconciled is False
 
 
 def test_old_fills_do_not_close_an_unknown_amend_the_ledger_followed() -> None:
@@ -844,3 +863,375 @@ def test_the_query_module_holds_no_write_or_broker_call() -> None:
         "finish",
         "KISClient",
     }
+
+
+# The invariants of the lineage and ledger join. One test per row of the table in
+# docs/design/1440-intent-gateway-contract.md. Each one fails if its rule goes.
+
+_AMBIGUOUS = UnresolvedReason.ORDER_IDENTITY_AMBIGUOUS
+_CONFLICT = UnresolvedReason.FILL_EVIDENCE_CONFLICT
+
+
+def _reasons(result: Reconciliation) -> set[UnresolvedReason]:
+    assert result.reconciled is False
+    assert result.order is None
+    assert result.filled_qty is None
+    return {item.reason for item in result.unresolved}
+
+
+def _query(store: _ReadOnlyStore, evidence: LedgerEvidence | None = None) -> Any:
+    intent_id = next(iter(store.intents))
+    return _client(store, evidence).get(
+        f"/execution-intents/intents/{intent_id}", headers=HEADERS
+    )
+
+
+def test_j1_a_reused_number_counts_only_on_its_own_day() -> None:
+    children = [_submit_day_before(), _amend_today(order_id="1001", quantity=6)]
+    ledger = {"key-00001": (_ledger(order_no="1001", quantity=6),)}
+    old_fill = ("1001", 6, "websocket", DAY_BEFORE_AT)
+    result = _reconcile_with_fills(children, ledger, [old_fill])
+    assert result == Reconciliation(True, WorkingOrder("key-00002", 70_000, 6), 6, ())
+    closed = _reconcile_with_fills(
+        children, ledger, [old_fill, ("1001", 6, "websocket", SENT_AT)]
+    )
+    assert closed == Reconciliation(True, None, 12, ())
+
+
+@pytest.mark.parametrize(
+    ("journal", "ledger", "fill"),
+    [
+        ("0000000300", "00300", "300"),
+        ("300", "300", "0000000300"),
+        ("000300", "300", "00300"),
+    ],
+)
+def test_j2_order_numbers_join_whatever_their_leading_zeros(
+    journal: str, ledger: str, fill: str
+) -> None:
+    children = [_child(1, "key-00001", ChildState.ACCEPTED, order_id=journal)]
+    result = _reconcile_with_fills(
+        children,
+        {"key-00001": (_ledger(order_no=ledger),)},
+        [(fill, 10, "websocket", SENT_AT)],
+    )
+    assert result == Reconciliation(True, None, 10, ())
+
+
+@pytest.mark.parametrize("raw", [None, "", "  ", "0", "000", "1001", "0010", " 007 "])
+def test_j2_the_number_rule_is_the_order_identitys_rule(raw: str | None) -> None:
+    assert _order_number(raw) == normalize_order_id(raw)
+
+
+def test_j3_closure_reads_only_the_current_orders_fills() -> None:
+    result = _reconcile_with_fills(
+        list(_AMENDED), _AMENDED_LEDGER, _fills(("1001", 4), ("1002", 2))
+    )
+    assert result == Reconciliation(True, _AMENDED_WORKING, 6, ())
+
+
+def test_j3_closure_compares_with_the_journals_quantity_not_the_ledger_rows() -> None:
+    raised = [
+        _child(1, "key-00001", ChildState.ACCEPTED, quantity=6, order_id="1001"),
+        _amend_today(quantity=10),
+    ]
+    # The journal was read before a later amend shrank the row to 2.
+    ledger = {"key-00001": (_ledger(order_no="1002", quantity=2),)}
+    result = _reconcile_with_fills(raised, ledger, _fills(("1002", 4)))
+    assert result == Reconciliation(True, WorkingOrder("key-00002", 70_000, 10), 4, ())
+
+
+@pytest.mark.parametrize(
+    ("children", "ledger_row"),
+    [
+        pytest.param(
+            [SUBMIT_OK],
+            _ledger(lifecycle="fill", quantity=10, filled=10),
+            id="another_orders_holdings_change_on_a_resting_order",
+        ),
+        pytest.param(
+            list(_AMENDED),
+            _ledger(order_no="1002", lifecycle="fill", quantity=2, filled=2),
+            id="an_amended_row_carrying_its_estimate",
+        ),
+    ],
+)
+def test_j4_a_holdings_estimate_never_closes_and_never_reports(
+    children: list[ChildSnapshot], ledger_row: LedgerOrder
+) -> None:
+    result = _reconcile_with_fills(children, {"key-00001": (ledger_row,)}, [])
+    assert _reasons(result) == {_CONFLICT}
+
+
+def test_j5_closure_only_ever_reads_an_order_the_reader_loads() -> None:
+    shapes = [
+        ([SUBMIT_OK], _ledger()),
+        ([SUBMIT_OK], None),
+        ([_child(1, "key-00001", ChildState.UNCERTAIN)], _ledger()),
+        ([_child(1, "key-00001", ChildState.UNCERTAIN)], None),
+        (list(_AMENDED), _ledger(order_no="1002")),
+        ([_AMENDED[0], _amend_today(ChildState.UNCERTAIN, None)], _ledger()),
+        (
+            [_AMENDED[0], _amend_today(ChildState.UNCERTAIN, None)],
+            _ledger(order_no="1002"),
+        ),
+        ([_submit_day_before(), _amend_today(ChildState.UNCERTAIN, None)], _ledger()),
+    ]
+    for rows, ledger_row in shapes:
+        orders = lineage_orders(rows, ledger_row)
+        assert orders.current is None or orders.current in orders.placed
+
+
+@pytest.mark.parametrize("fills", [[], [("1001", 6, "websocket", SENT_AT)]])
+def test_j5_a_reused_number_under_an_unknown_amend_is_never_an_answer(
+    fills: list[tuple[str, int, str, datetime]],
+) -> None:
+    """r4439953158: yesterday's number with today's unknown amend says nothing."""
+    children = [_submit_day_before(), _amend_today(ChildState.UNCERTAIN, None, 6)]
+    result = _reconcile_with_fills(
+        children, {"key-00001": (_ledger(order_no="1001", quantity=6),)}, fills
+    )
+    assert _reasons(result) == {_AMBIGUOUS}
+
+
+def test_j5_a_same_day_order_the_ledger_stayed_on_can_still_finish() -> None:
+    children = [_AMENDED[0], _amend_today(ChildState.UNCERTAIN, None, 6)]
+    result = _reconcile_with_fills(
+        children, {"key-00001": (_ledger(),)}, _fills(("1001", 10))
+    )
+    assert result == Reconciliation(True, None, 10, ())
+
+
+def test_j6_two_ledger_rows_report_no_order_and_no_partial_total() -> None:
+    store = _seed(SUBMIT_OK)
+    evidence = LedgerEvidence(
+        orders_by_root={"key-00001": (_ledger(filled=2), _ledger())},
+        filled_by_order_day={("1001", SENT_DAY): 2},
+    )
+    result = build_reconciliation([SUBMIT_OK], evidence)
+    assert _reasons(result) == {UnresolvedReason.LEDGER_ROW_AMBIGUOUS}
+    body = _query(store, evidence).json()
+    assert body["view"] is None
+    assert "filled_qty" not in body
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "detail", "expected"),
+    [
+        ("fill", None, None),
+        ("fill", {}, None),
+        ("fill", "not a mapping", None),
+        ("fill", {"attributed_fill_qty": None}, None),
+        ("fill", {"attributed_fill_qty": "abc"}, None),
+        ("fill", {"attributed_fill_qty": "NaN"}, None),
+        ("fill", {"attributed_fill_qty": "Infinity"}, None),
+        ("fill", {"attributed_fill_qty": "2.5"}, None),
+        ("fill", {"attributed_fill_qty": "-1"}, None),
+        ("fill", {"attributed_fill_qty": True}, None),
+        ("fill", {"attributed_fill_qty": "3"}, 3),
+        ("cancelled", {"attributed_fill_qty": "3"}, 3),
+        ("accepted", None, 0),
+        ("accepted", {"attributed_fill_qty": None}, 0),
+    ],
+)
+def test_j7_a_missing_ledger_estimate_is_unknown_and_never_a_full_fill(
+    lifecycle: str, detail: Any, expected: int | None
+) -> None:
+    assert _estimated_fill(lifecycle, detail) == expected
+
+
+def test_j7_an_unknown_estimate_answers_a_conflict() -> None:
+    ledger_row = _ledger(lifecycle="fill", filled=None)  # type: ignore[arg-type]
+    result = _reconcile_with_fills([SUBMIT_OK], {"key-00001": (ledger_row,)}, [])
+    assert _reasons(result) == {_CONFLICT}
+
+
+@pytest.mark.parametrize("order_no", [None, "", "   "])
+def test_j7_a_blank_ledger_number_proves_nothing(order_no: str | None) -> None:
+    unknown = _child(1, "key-00001", ChildState.UNCERTAIN)
+    ledger_row = _ledger(order_no=order_no)
+    result = _reconcile_with_fills([unknown], {"key-00001": (ledger_row,)}, [])
+    assert _reasons(result) == {UnresolvedReason.NO_LEDGER_EVIDENCE}
+
+
+@pytest.mark.parametrize("quantity", ["2.5", "NaN", "Infinity", "not a number"])
+def test_j7_an_unreadable_fill_quantity_raises_and_the_route_says_503(
+    quantity: str,
+) -> None:
+    with pytest.raises((ValueError, InvalidOperation)):
+        executed_by_order_day(
+            [("1001", quantity, "websocket", SENT_AT)], {("1001", SENT_DAY)}
+        )
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        _child(1, "key-00001", ChildState.ACCEPTED, quantity=None, order_id="1001"),
+        _child(1, "key-00001", ChildState.ACCEPTED, price=None, order_id="1001"),
+        _child(
+            1,
+            "key-00001",
+            ChildState.ACCEPTED,
+            action="cancel",
+            target="missing-target",
+            order_id="1001",
+        ),
+    ],
+    ids=["no_quantity", "no_price", "no_sender"],
+)
+def test_j7_a_journal_row_the_db_forbids_answers_503_and_never_a_guess(
+    broken: ChildSnapshot,
+) -> None:
+    answer = _query(_seed(broken))
+    assert answer.status_code == 503
+    assert answer.json() == {"detail": "query_unavailable"}
+
+
+@pytest.mark.parametrize(
+    "fills",
+    [
+        pytest.param([("1001", 11)], id="above_the_only_order"),
+        pytest.param([("1001", 11), ("1002", 1)], id="above_a_replaced_order"),
+        pytest.param([("1002", 7)], id="above_the_current_order"),
+    ],
+)
+def test_j8_more_fills_than_an_order_held_are_not_believed(
+    fills: list[tuple[str, int]],
+) -> None:
+    children = (
+        [SUBMIT_OK] if len(fills) == 1 and fills[0][0] == "1001" else list(_AMENDED)
+    )
+    ledger = _AMENDED_LEDGER if len(children) > 1 else {"key-00001": (_ledger(),)}
+    result = _reconcile_with_fills(children, ledger, _fills(*fills))
+    assert _reasons(result) == {_CONFLICT}
+
+
+def test_j9_an_amend_keeping_its_number_cannot_split_the_fills() -> None:
+    children = [_AMENDED[0], _amend_today(order_id="1001", quantity=6)]
+    result = _reconcile_with_fills(
+        children, {"key-00001": (_ledger(quantity=6),)}, _fills(("1001", 6))
+    )
+    assert _reasons(result) == {_AMBIGUOUS}
+
+
+def test_j9_two_lineages_cannot_own_one_order() -> None:
+    children = [
+        SUBMIT_OK,
+        _child(2, "key-00002", ChildState.ACCEPTED, order_id="1001"),
+    ]
+    result = _reconcile_with_fills(children, {}, _fills(("1001", 10)))
+    assert _reasons(result) == {_AMBIGUOUS}
+
+
+@pytest.mark.parametrize(
+    ("children", "ledger_no"),
+    [
+        pytest.param([SUBMIT_OK], "9999", id="journal_read_before_a_later_amend"),
+        pytest.param(list(_AMENDED), "1001", id="ledger_behind_an_accepted_amend"),
+        pytest.param(
+            [
+                _child(1, "key-00001", ChildState.ACCEPTED, order_id="1001"),
+                _amend_today(order_id="1002", quantity=8),
+                _child(
+                    3,
+                    "key-00003",
+                    ChildState.UNCERTAIN,
+                    action="amend",
+                    target="key-00002",
+                    quantity=6,
+                ),
+            ],
+            "1001",
+            id="ledger_on_an_order_two_senders_back",
+        ),
+    ],
+)
+def test_j10_a_ledger_number_the_journal_cannot_explain_is_not_trusted(
+    children: list[ChildSnapshot], ledger_no: str
+) -> None:
+    result = _reconcile_with_fills(
+        children, {"key-00001": (_ledger(order_no=ledger_no),)}, []
+    )
+    assert _reasons(result) == {_AMBIGUOUS}
+
+
+def test_j11_the_answer_does_not_depend_on_row_order() -> None:
+    forward = list(_AMENDED)
+    evidence = LedgerEvidence(
+        orders_by_root=_AMENDED_LEDGER, filled_by_order_day={("1002", SENT_DAY): 2}
+    )
+    assert build_reconciliation(forward, evidence) == build_reconciliation(
+        forward[::-1], evidence
+    )
+
+
+def test_j12_a_rejected_row_does_not_override_an_accepted_sender() -> None:
+    ledger_row = _ledger(status="rejected", lifecycle="anomaly")
+    result = _reconcile_with_fills([SUBMIT_OK], {"key-00001": (ledger_row,)}, [])
+    assert _reasons(result) == {UnresolvedReason.LEDGER_STATE_UNRESOLVED}
+
+
+# The route's own invariants hold on the same hostile evidence.
+
+_HOSTILE = [
+    pytest.param(
+        LedgerEvidence(
+            orders_by_root={"key-00001": (_ledger(), _ledger())},
+            filled_by_order_day={("1001", SENT_DAY): 2},
+        ),
+        id="two_ledger_rows",
+    ),
+    pytest.param(
+        LedgerEvidence(
+            orders_by_root={"key-00001": (_ledger(order_no="9999"),)},
+            filled_by_order_day={("9999", DAY_BEFORE): 10},
+        ),
+        id="reused_or_stale_number",
+    ),
+    pytest.param(
+        LedgerEvidence(
+            orders_by_root={
+                "key-00001": (_ledger(lifecycle="fill", filled=None),)  # type: ignore[arg-type]
+            }
+        ),
+        id="missing_estimate",
+    ),
+]
+
+
+@pytest.mark.parametrize("evidence", _HOSTILE)
+def test_invariant_5_hostile_evidence_changes_nothing_and_yields_no_view(
+    evidence: LedgerEvidence,
+) -> None:
+    store = _seed(SUBMIT_OK)
+    before = (copy.deepcopy(store.children), copy.deepcopy(store.events))
+    answer = _query(store, evidence)
+    assert answer.status_code == 200
+    assert answer.json()["view"] is None
+    assert (store.children, store.events) == before
+
+
+@pytest.mark.parametrize("evidence", _HOSTILE)
+def test_invariant_3_hostile_evidence_is_never_read_without_the_token(
+    evidence: LedgerEvidence,
+) -> None:
+    store = _seed(SUBMIT_OK)
+    intent_id = next(iter(store.intents))
+    answer = _client(store, evidence).get(f"/execution-intents/intents/{intent_id}")
+    assert answer.status_code == 401
+
+
+@pytest.mark.parametrize("evidence", _HOSTILE)
+def test_invariant_1_a_non_mock_intent_is_not_reported_whatever_the_evidence(
+    evidence: LedgerEvidence,
+) -> None:
+    assert _query(_seed(SUBMIT_OK, account="kis_live"), evidence).status_code == 404
+
+
+@pytest.mark.parametrize("evidence", _HOSTILE)
+def test_invariant_2_route_off_answers_404_whatever_the_evidence(
+    evidence: LedgerEvidence, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED", False)
+    assert _query(_seed(SUBMIT_OK), evidence).status_code == 404
