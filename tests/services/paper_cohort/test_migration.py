@@ -333,6 +333,8 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # ROB-1440 intent gateway tables are later too (child first).
             await connection.execute(text("DROP TABLE review.execution_child_requests"))
             await connection.execute(text("DROP TABLE review.execution_intents"))
+            # ROB-1474's table (including its indexes) is already in metadata.
+            await connection.execute(text("DROP TABLE review.mock_strategy_orders"))
             # ROB-1460 exit plan tables are later too.
             await connection.execute(text("DROP TABLE review.lot_exit_plans"))
             await connection.execute(
