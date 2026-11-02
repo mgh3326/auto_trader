@@ -1,4 +1,4 @@
-"""ROB-1294 — the ci-required aggregate must have no green path to false.
+"""ROB-1294/ROB-1454 — the PR gate must have no green path to false.
 
 A stable required check is only worth having if every way a child can fail to
 produce coverage -- failure, cancellation, an unauthorized skip, a missing
@@ -17,6 +17,7 @@ from scripts.ci.aggregate_required import (
     AggregateError,
     evaluate,
     main,
+    pr_gate_authorized_skips,
     validate_configuration,
 )
 
@@ -372,3 +373,209 @@ def test_a_malformed_declaration_is_rejected_before_the_payload_is_read(
     )
     assert code == 1
     assert "blank or whitespace-only" in str(report["error"])
+
+
+# --------------------------------------------------------------------------
+# ROB-1454 — PR gate truth table, through the CLI the workflow runs
+# --------------------------------------------------------------------------
+
+GATE_CHILDREN = ("lint", "change-classifier", "affected-tests", "test", "taskiq-smoke")
+
+
+def _gate_payload(
+    *,
+    run_all: object,
+    run_affected_tests: object = "false",
+    **overrides: str,
+) -> dict[str, object]:
+    results = dict.fromkeys(GATE_CHILDREN, "success") | {
+        key.replace("_", "-"): value for key, value in overrides.items()
+    }
+    payload: dict[str, object] = {
+        name: {"result": result, "outputs": {}} for name, result in results.items()
+    }
+    payload["change-classifier"] = {
+        "result": results["change-classifier"],
+        "outputs": {"run_all": run_all, "run_affected_tests": run_affected_tests},
+    }
+    return payload
+
+
+def _run_gate(
+    tmp_path: Path, payload: dict[str, object], event: str = "pull_request"
+) -> int:
+    results = tmp_path / "needs.json"
+    results.write_text(json.dumps(payload), encoding="utf-8")
+    argv = ["--results-file", str(results), "--pr-gate", "--event-name", event]
+    for child in GATE_CHILDREN:
+        argv += ["--required", child]
+    return main(argv)
+
+
+SKIPPED_SHARDS = {"test": "skipped", "taskiq_smoke": "skipped"}
+
+
+@pytest.mark.parametrize(
+    ("case", "payload", "expected_exit"),
+    [
+        (
+            "full suite all green",
+            _gate_payload(run_all="true", affected_tests="skipped"),
+            0,
+        ),
+        (
+            "affected tests green, shards skipped by design",
+            _gate_payload(run_all="false", run_affected_tests="true", **SKIPPED_SHARDS),
+            0,
+        ),
+        (
+            "affected tests red",
+            _gate_payload(
+                run_all="false",
+                run_affected_tests="true",
+                affected_tests="failure",
+                **SKIPPED_SHARDS,
+            ),
+            1,
+        ),
+        (
+            "affected tests needed but skipped",
+            _gate_payload(
+                run_all="false",
+                run_affected_tests="true",
+                affected_tests="skipped",
+                **SKIPPED_SHARDS,
+            ),
+            1,
+        ),
+        (
+            "affected tests cancelled",
+            _gate_payload(
+                run_all="false",
+                run_affected_tests="true",
+                affected_tests="cancelled",
+                **SKIPPED_SHARDS,
+            ),
+            1,
+        ),
+        (
+            "run_all with a skipped shard",
+            _gate_payload(run_all="true", affected_tests="skipped", test="skipped"),
+            1,
+        ),
+        (
+            "run_all with a skipped taskiq-smoke",
+            _gate_payload(
+                run_all="true", affected_tests="skipped", taskiq_smoke="skipped"
+            ),
+            1,
+        ),
+        (
+            "run_all with a red shard",
+            _gate_payload(run_all="true", affected_tests="skipped", test="failure"),
+            1,
+        ),
+        (
+            "docs-only with everything skipped",
+            _gate_payload(run_all="false", affected_tests="skipped", **SKIPPED_SHARDS),
+            0,
+        ),
+        (
+            "docs-only with lint red",
+            _gate_payload(
+                run_all="false",
+                affected_tests="skipped",
+                lint="failure",
+                **SKIPPED_SHARDS,
+            ),
+            1,
+        ),
+        (
+            "narrow PR whose shard ran anyway and failed",
+            _gate_payload(run_all="false", run_affected_tests="true", test="failure"),
+            1,
+        ),
+        (
+            "classifier red",
+            _gate_payload(
+                run_all="true",
+                change_classifier="failure",
+                affected_tests="skipped",
+            ),
+            1,
+        ),
+        (
+            "classifier wrote no verdict",
+            _gate_payload(run_all="", affected_tests="skipped", **SKIPPED_SHARDS),
+            1,
+        ),
+        (
+            "classifier verdict is not a boolean string",
+            _gate_payload(run_all="False", affected_tests="skipped", **SKIPPED_SHARDS),
+            1,
+        ),
+        (
+            "narrow verdict with an unreadable affected flag",
+            _gate_payload(
+                run_all="false",
+                run_affected_tests=None,
+                affected_tests="skipped",
+                **SKIPPED_SHARDS,
+            ),
+            1,
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_pr_gate_truth_table(
+    tmp_path: Path, case: str, payload: dict[str, object], expected_exit: int
+) -> None:
+    assert _run_gate(tmp_path, payload) == expected_exit, case
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_outside_a_pr_a_narrow_verdict_cannot_excuse_a_skipped_shard(
+    tmp_path: Path, event: str
+) -> None:
+    """Main never narrows, whatever the classifier output says."""
+
+    payload = _gate_payload(run_all="false", affected_tests="skipped", test="skipped")
+    assert _run_gate(tmp_path, payload, event=event) == 1
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_outside_a_pr_the_full_suite_passes(tmp_path: Path, event: str) -> None:
+    payload = _gate_payload(run_all="true", affected_tests="skipped")
+    assert _run_gate(tmp_path, payload, event=event) == 0
+
+
+def test_a_gate_with_no_event_name_is_red(tmp_path: Path) -> None:
+    payload = _gate_payload(run_all="true", affected_tests="skipped")
+    assert _run_gate(tmp_path, payload, event="") == 1
+
+
+def test_a_gate_with_no_classifier_in_the_payload_is_red(tmp_path: Path) -> None:
+    payload = _gate_payload(run_all="false", **SKIPPED_SHARDS)
+    del payload["change-classifier"]
+    assert _run_gate(tmp_path, payload) == 1
+
+
+def test_pr_gate_refuses_hand_written_skips(tmp_path: Path) -> None:
+    results = tmp_path / "needs.json"
+    results.write_text(json.dumps(_gate_payload(run_all="true")), encoding="utf-8")
+    argv = ["--results-file", str(results), "--pr-gate", "--event-name", "push"]
+    for child in GATE_CHILDREN:
+        argv += ["--required", child]
+    assert main([*argv, "--authorize-skip", "test"]) == 1
+
+
+def test_authorized_skips_never_include_lint_or_the_classifier() -> None:
+    for flags in (("true", "false"), ("false", "true"), ("false", "false")):
+        payload = _gate_payload(run_all=flags[0], run_affected_tests=flags[1])
+        skips = pr_gate_authorized_skips("pull_request", payload)
+        assert not {"lint", "change-classifier"} & set(skips)
+
+
+def test_a_malformed_classifier_payload_raises_rather_than_authorizing() -> None:
+    with pytest.raises(AggregateError, match="no outputs"):
+        pr_gate_authorized_skips("pull_request", {"change-classifier": "success"})
