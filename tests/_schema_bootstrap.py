@@ -152,7 +152,9 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v62 (ROB-1378 r1): the kis_mock_order_ledger writer lock trigger has no WHEN
 # (no user-defined function on the ordinary write path under the #789 Stage 4
 # function ACLs); it fires on every INSERT/UPDATE.
-SCHEMA_BOOTSTRAP_VERSION = 62
+# v63 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
+# are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
+SCHEMA_BOOTSTRAP_VERSION = 63
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

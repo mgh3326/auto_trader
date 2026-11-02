@@ -125,6 +125,13 @@
     새 객체를 앱이 사용하기 전 해당 migration에 객체별 `at_app` GRANT를 넣는다.
     개발·CI DB에 역할이 없을 수 있으므로 조건부 GRANT를 사용한다. Stage 4 전에는
     기존 migration 입력을 유지한다.
+19. **기계식 손절 (ROB-1460)**: `LOT_EXIT_PLAN_WRITE_ENABLED`·
+   `MECHANICAL_LOSS_CUT_SHADOW_ENABLED`·`MECHANICAL_LOSS_CUT_LIVE_ENABLED`·시장/계정
+   allowlist 는 기본 off 유지. 스케줄 등록 금지. shadow 경로(`job`·`store`·`positions`·
+   `rules`·`gate`·`plans`)는 브로커·주문 모듈을 import 하지 않는다. `loss_cut` 자동승인은
+   이 제안에 묶인 결정 행과 스위치 AND 시장 AND 계정, `thresholds_confirmed` 뒤에서만
+   풀리며, per-order·daily 캡을 올리거나 건너뛰지 마라. 평단 아래라는 이유만으로
+   자르지 말고, 기록된 손절가 이탈·상승 중 제외·stale 가격 불발을 완화하지 마라.
 
 ## 최소 명령어
 

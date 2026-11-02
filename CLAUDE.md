@@ -220,6 +220,14 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
     서버 진입점은 비었거나·없거나·공백뿐인 `MCP_PROFILE` 을 DEFAULT 로 폴백하지 않고
     기동을 거부한다(#1189). 모든 서버 정의는 프로필을 명시하며 이 폴백을 되살리지 마라.
 
+18. **기계식 손절 (ROB-1460)**: `LOT_EXIT_PLAN_WRITE_ENABLED`·
+   `MECHANICAL_LOSS_CUT_SHADOW_ENABLED`·`MECHANICAL_LOSS_CUT_LIVE_ENABLED`·시장/계정
+   allowlist 는 기본 off 유지. 스케줄 등록 금지. shadow 경로(`job`·`store`·`positions`·
+   `rules`·`gate`·`plans`)는 브로커·주문 모듈을 import 하지 않는다. `loss_cut` 자동승인은
+   이 제안에 묶인 결정 행과 스위치 AND 시장 AND 계정, `thresholds_confirmed` 뒤에서만
+   풀리며, per-order·daily 캡을 올리거나 건너뛰지 마라. 평단 아래라는 이유만으로
+   자르지 말고, 기록된 손절가 이탈·상승 중 제외·stale 가격 불발을 완화하지 마라.
+
 ## 계약 찾아보기
 
 이 표는 작업 위치를 찾는 보조 수단이다. 표의 행 하나만 읽어도 된다는 뜻이 아니며, 위의 모든 파일을 읽은 뒤에만 사용한다.

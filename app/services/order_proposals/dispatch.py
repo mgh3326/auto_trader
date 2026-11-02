@@ -32,6 +32,12 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.fill_notification import resolve_display_name_db
+from app.services.mechanical_loss_cut.gate import (
+    POLICY_MARKET,
+    MechanicalLossCutBinding,
+    live_switch_refusal,
+)
+from app.services.mechanical_loss_cut.store import MechanicalLossCutStore
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     ApprovalDispatchMessages,
@@ -106,6 +112,7 @@ from app.services.order_proposals.revalidation import (
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import OrderProposalsService
+from app.services.trading_policy_service import load_trading_policy
 from app.telegram_contract import (
     TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
     TelegramErrorClassification,
@@ -349,6 +356,46 @@ async def _mirror_auto_veto_card(
             extra={"proposal_id": str(group.proposal_id)},
         )
         return False
+
+
+async def _load_mechanical_binding(
+    session: AsyncSession, group: Any
+) -> MechanicalLossCutBinding | None:
+    """The durable proof that this ``loss_cut`` is mechanical, or ``None``."""
+    if (
+        getattr(group, "exit_intent", None) != "loss_cut"
+        or live_switch_refusal(
+            market=getattr(group, "market", None),
+            account_mode=getattr(group, "account_mode", None),
+        )
+        is not None
+    ):
+        return None
+    try:
+        row = await MechanicalLossCutStore(session).live_decision_for_proposal(
+            group.proposal_id
+        )
+        if row is None:
+            return None
+        return MechanicalLossCutBinding(
+            decision_id=row.id,
+            account_mode=row.account_mode,
+            market=row.market,
+            symbol=row.symbol,
+            quantity=row.intended_quantity,
+            limit_price=row.intended_limit_price,
+            stop_price=row.stop_price,
+            backfilled=row.backfilled,
+            params=load_trading_policy().mechanical_loss_cut.markets[
+                POLICY_MARKET[row.market]
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 - unproven means the human card
+        logger.warning(
+            "order_proposals.mechanical_binding_unavailable",
+            extra={"exception_type": type(exc).__name__},
+        )
+        return None
 
 
 def _generate_nonce() -> str:
@@ -1173,6 +1220,10 @@ async def dispatch_proposal(
                 ),
             )
 
+            # ROB-1460: only with the live switch open, and only from the row the
+            # mechanical job wrote. Any failure leaves None, which is the card.
+            mechanical_binding = await _load_mechanical_binding(session, group)
+
             async def eligibility_gate(**kwargs: Any) -> Any:
                 nonlocal \
                     daily_notional, \
@@ -1191,6 +1242,11 @@ async def dispatch_proposal(
                         cash_funding_cumulative_notional=cash_funding_cumulative_notional,
                         now=kwargs["now"],
                         price_fallback=price_fallback,
+                        **(
+                            {"mechanical_binding": mechanical_binding}
+                            if mechanical_binding is not None
+                            else {}
+                        ),
                     )
 
                 decision = evaluate()

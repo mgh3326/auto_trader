@@ -1008,3 +1008,9 @@ preview's `price_context_message` (#1053) and adds the closed
 re-evaluation: operator decision #1083 (option B) removed the 30-second retry
 that earlier revisions of #1067 carried, together with its retry marker, task
 and residual limits. No scheduler, task or new broker path exists.
+
+## Mechanical loss-cut (ROB-1460)
+
+A `loss_cut` stays a human decision unless the mechanical job wrote a decision row
+for that exact proposal and every switch is on. The caps in this runbook still
+apply. See `docs/runbooks/mechanical-loss-cut.md`.

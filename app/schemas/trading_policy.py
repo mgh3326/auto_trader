@@ -2226,6 +2226,96 @@ class KrTradingSessionsPolicy(BaseModel):
         return self
 
 
+class MechanicalLossCutDefaultStop(BaseModel):
+    """ROB-1460 — how a plan's stop is computed when the buyer states none.
+
+    ``floor_pct`` is also the maximum width: a support or volatility stop is
+    never placed further below the reference price than this floor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    basis: Literal["pct_floor", "support", "volatility"]
+    floor_pct: float = Field(gt=0, lt=100)
+    support_lookback_sessions: int = Field(ge=5, le=250)
+    support_buffer_pct: float = Field(ge=0, lt=100)
+    atr_sessions: int = Field(ge=2, le=100)
+    atr_multiple: float = Field(gt=0, le=20)
+
+
+class MechanicalLossCutTrigger(BaseModel):
+    """ROB-1460 — the price-action condition on a lot's recorded stop.
+
+    Every family requires a completed close below the plan's stop. Every family
+    also applies ``unrealized_floor_pct`` and refuses a lot whose close is above
+    the close ``rising_lookback_sessions`` ago, so an underwater lot that is
+    recovering is not cut.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    family: Literal[
+        "plan_stop_close",
+        "plan_stop_and_n_day_low",
+        "plan_stop_and_trailing_drop",
+    ]
+    unrealized_floor_pct: float = Field(lt=0, gt=-100)
+    rising_lookback_sessions: int = Field(ge=1, le=60)
+    n_day_low_sessions: int = Field(ge=2, le=250)
+    trailing_drop_pct: float = Field(gt=0, lt=100)
+    trailing_lookback_sessions: int = Field(ge=2, le=250)
+
+
+class MechanicalLossCutOrder(BaseModel):
+    """ROB-1460 — limit style for a would-sell decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_slippage_pct: float = Field(gt=0, lt=100)
+    max_lot_fraction: float = Field(gt=0, le=1)
+
+
+class MechanicalLossCutMarket(BaseModel):
+    """ROB-1460 — one market's parameters.
+
+    ``thresholds_confirmed`` stays false until the operator accepts values, and
+    the live path refuses a market whose thresholds are unconfirmed. Shadow
+    evaluation runs on provisional values because it sends nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    thresholds_confirmed: bool
+    default_stop: MechanicalLossCutDefaultStop
+    stop_after_add: Literal["keep", "recompute_from_average"]
+    trigger: MechanicalLossCutTrigger
+    order: MechanicalLossCutOrder
+    cooldown_sessions: int = Field(ge=0, le=60)
+    live_include_backfilled: bool
+
+
+class MechanicalLossCutPolicy(BaseModel):
+    """ROB-1460 — parameters only. No switch lives in this document.
+
+    The live switch, market allowlist and account allowlist are settings that
+    default off. Editing this block cannot start an automatic sell.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parameter_source: str = Field(min_length=1)
+    markets: dict[Market, MechanicalLossCutMarket]
+
+    @model_validator(mode="after")
+    def validate_every_market_is_declared(self) -> MechanicalLossCutPolicy:
+        expected = {"kr", "us", "crypto"}
+        if set(self.markets) != expected:
+            raise ValueError(
+                f"mechanical_loss_cut.markets must declare exactly {sorted(expected)}"
+            )
+        return self
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2253,6 +2343,29 @@ class TradingPolicyDocument(BaseModel):
     cash_yields: CashYieldsPolicy
     transfer_costs: TransferCostsPolicy
     kr_trading_sessions: KrTradingSessionsPolicy
+    mechanical_loss_cut: MechanicalLossCutPolicy
+
+    @model_validator(mode="after")
+    def validate_mechanical_loss_cut_stays_inside_the_slip_band(
+        self,
+    ) -> TradingPolicyDocument:
+        """ROB-1460 — sell.loss_cut_max_slip stays the outer bound.
+
+        A wider setting here would produce limits the code-enforced preview
+        guard rejects, so the document refuses it.
+        """
+
+        threshold = self.thresholds.get("sell.loss_cut_max_slip")
+        if threshold is None or not isinstance(threshold.value, int | float):
+            raise ValueError("sell.loss_cut_max_slip must stay a numeric threshold")
+        limit_pct = float(threshold.value) * 100
+        for market, params in self.mechanical_loss_cut.markets.items():
+            if params.order.max_slippage_pct > limit_pct:
+                raise ValueError(
+                    f"mechanical_loss_cut.markets.{market}.order.max_slippage_pct "
+                    "must not exceed sell.loss_cut_max_slip"
+                )
+        return self
 
     @model_validator(mode="after")
     def validate_broker_split_threshold_maps(self) -> TradingPolicyDocument:

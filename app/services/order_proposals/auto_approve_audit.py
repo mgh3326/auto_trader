@@ -15,6 +15,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from app.services.mechanical_loss_cut.gate import MECHANICAL_REFUSAL_REASONS
 from app.services.order_proposals.auto_approve_price_fallback import (
     PRICE_FALLBACK_FAILURE_REASONS,
     PRICE_SOURCES,
@@ -129,6 +130,8 @@ _ENUM_INPUT_VALUES = {
     # could not supply one when the Toss preview came back without a price.
     "price_source": PRICE_SOURCES,
     "price_fallback_reason": PRICE_FALLBACK_FAILURE_REASONS | {"unrecognized"},
+    # ROB-1460 -- why a mechanical loss-cut went to the human card.
+    "mechanical_refusal": MECHANICAL_REFUSAL_REASONS,
 }
 # Sub-reasons rendered next to the reason code on the manual approval card.
 _CARD_DETAIL_REASON_KEYS = (
@@ -136,6 +139,7 @@ _CARD_DETAIL_REASON_KEYS = (
     "cash_funding_reason",
     "cash_funding_cumulative_reason",
     "price_fallback_reason",
+    "mechanical_refusal",
 )
 _BOOLEAN_INPUT_KEYS = frozenset(
     {
@@ -167,6 +171,7 @@ _KNOWN_REASON_CODES = frozenset(
         "expected_pnl_not_positive",
         "loss_cut_intent",
         "marketable_not_resting",
+        "mechanical_loss_cut_refused",
         "multi_rung_requires_approval",
         "order_type_not_limit",
         "parking_cap_exceeded",

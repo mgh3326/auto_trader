@@ -94,6 +94,14 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     ``parking_allowlist`` for closed constants and ``parking_exposure`` for
     measurement provenance.
 
+ROB-1460 -- mechanical loss-cut
+    A ``loss_cut`` stays a human's call unless dispatch supplies the durable
+    decision row the mechanical job wrote for this exact proposal, and the
+    switch, market and account allowlists, confirmed thresholds, ``expanded``
+    mode and regular session all hold. The per-order cap, daily cap, tag scan,
+    veto-capable account/market allowlist, limit-order rule, fresh preview and
+    veto thesis still run. A refusal goes to the ordinary card.
+
 §177차 -- ``buy.underwater_support_net``
     The averaging-down tier registered by §177차 is auto-approvable through
     the rules already written above, and this classifier is NOT taught to
@@ -122,6 +130,11 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
+from app.services.mechanical_loss_cut.gate import (
+    MechanicalLossCutBinding,
+    binding_refusal,
+    price_refusal,
+)
 from app.services.order_proposals.approval_message import (
     _build_order_core_metrics,
     _escape_inline_code,
@@ -653,8 +666,14 @@ def evaluate_auto_approve_eligibility(
     cash_funding_cumulative_notional: Decimal | None = None,
     now: datetime | None = None,
     price_fallback: PriceFallback | None = None,
+    mechanical_binding: MechanicalLossCutBinding | None = None,
 ) -> AutoApproveDecision:
     """Classify a rung using the fresh submit-time preview, failing closed.
+
+    ``mechanical_binding`` (ROB-1460) is the durable decision row dispatch read
+    for this proposal. It defaults to ``None``, which keeps every ``loss_cut`` on
+    the human card. A proposal's own strategy label or ``source_asof`` is never
+    an input.
 
     ``parking_exposure`` is the §163차 cumulative parking exposure on this
     account: broker-held market value plus the durable same-day record of
@@ -729,13 +748,27 @@ def evaluate_auto_approve_eligibility(
                 order_type=_known_value(order_type, frozenset({"limit", "market"})),
             )
     exit_intent = getattr(group, "exit_intent", None)
+    mechanical_active = False
     if exit_intent == "loss_cut":
         # §40차: a loss cut is always a human's call. Kept as its own reason so
         # the audit row says why, and so a future exit-intent vocabulary cannot
-        # dilute this branch.
-        return reject("loss_cut_intent", exit_intent_present=True)
+        # dilute this branch. ROB-1460's only release is a decision row the
+        # mechanical job wrote for this proposal, behind its own default-off
+        # switch, market and account allowlists.
+        if mechanical_binding is None:
+            return reject("loss_cut_intent", exit_intent_present=True)
+        refusal = binding_refusal(
+            group=group,
+            rung=rung,
+            binding=mechanical_binding,
+            mode=mode,
+            now=now,
+        )
+        if refusal is not None:
+            return reject("mechanical_loss_cut_refused", mechanical_refusal=refusal)
+        mechanical_active = True
     cash_funding_requested = exit_intent == CASH_FUNDING_EXIT_INTENT
-    if exit_intent is not None and not cash_funding_requested:
+    if exit_intent is not None and not cash_funding_requested and not mechanical_active:
         return reject("exit_intent_present", exit_intent_present=True)
     account_mode = getattr(group, "account_mode", None)
     market = getattr(group, "market", None)
@@ -1112,9 +1145,42 @@ def evaluate_auto_approve_eligibility(
             if cash_funding_active
             else "parking_sell_exempt"
             if parking_sell
+            else "mechanical_loss_cut"
+            if mechanical_active
             else "preview_passed"
         )
-        if cash_funding_active:
+        if mechanical_active:
+            # ROB-1460: the trigger is checked again on the fresh preview. This
+            # sell may be marketable, so both caps meter the executable amount,
+            # the same rule §156 set for a marketable profit-take. The caps are
+            # neither raised nor skipped.
+            assert mechanical_binding is not None
+            refusal = price_refusal(
+                binding=mechanical_binding,
+                current_price=current_price,
+                limit_price=limit_price,
+                average_cost=_decimal(preview.get("avg_buy_price")),
+            )
+            if refusal is not None:
+                return reject("mechanical_loss_cut_refused", mechanical_refusal=refusal)
+            notional = max(limit_price, current_price) * quantity
+            if notional > per_order_cap:
+                return reject(
+                    "per_order_cap_exceeded",
+                    notional=_text(notional),
+                    per_order_cap=_text(per_order_cap),
+                )
+            daily_after = daily_notional + notional
+            if daily_after > limits.daily_cap:
+                return reject(
+                    "daily_cap_exceeded",
+                    daily_notional_after=_text(daily_after),
+                    daily_cap=_text(limits.daily_cap),
+                )
+            profit_details["mechanical_decision_id"] = str(
+                mechanical_binding.decision_id
+            )
+        elif cash_funding_active:
             # §S177: cash-equivalent liquidation funds the already-proved
             # planned buy; it is explicitly not a take-profit classification.
             # A marketable limit sell is allowed, but its executable notional
