@@ -94,6 +94,7 @@ def daily_lists(
 ) -> dict:
     if horizon not in HORIZONS:
         raise ValueError("horizon must be 1, 3, 5 or 10")
+    meta: dict | None = None
     if cache_root is not None:
         from research.stock_selection.io import read_bars
 
@@ -111,7 +112,7 @@ def daily_lists(
     payload = make_lists(
         bars, market="crypto", asof=asof.isoformat(), model=BASELINE, top_n=10
     )
-    if cache_root is not None:
+    if meta is not None:
         payload["universe_observed_at"] = meta["fetched_at"]
         payload["prediction_at"] = max(
             pd.Timestamp(payload["prediction_at"]), pd.Timestamp(meta["fetched_at"])
