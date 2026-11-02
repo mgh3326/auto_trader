@@ -63,3 +63,46 @@ def kis_domestic_fill_frame(**overrides: Any) -> dict[str, Any]:
 
 def kis_overseas_fill_frame(**overrides: Any) -> dict[str, Any]:
     return {**KIS_OVERSEAS_FILL_FRAME, **overrides}
+
+
+def fillwire_kis_domestic_frame(**overrides: Any) -> dict[str, Any]:
+    """Synthetic official 26-field H0STCNI0 frame, in fillwire's wire shape.
+
+    Matches fillwire f78adc9 internal/decode/decode.go RawPayload and the
+    documented domestic field order in internal/decode/notice.go. Customer,
+    account, and holder values are placeholders, never production evidence.
+    """
+    fields = [
+        "TEST_CUSTOMER",
+        "00000000",
+        "0000123456",
+        "0000000000",
+        "02",
+        "0",
+        "00",
+        "0",
+        "005930",
+        "10",
+        "70000",
+        "093000",
+        "0",
+        "2",
+        "2",
+        "00000",
+        "10",
+        "TEST_HOLDER",
+        "0",
+        "1",
+        "Y",
+        "",
+        "00",
+        "",
+        "TEST_STOCK",
+        "70000",
+    ]
+    return {
+        "tr": "H0STCNI0",
+        "fields": fields,
+        "received_at": "2026-11-02T00:30:01Z",
+        **overrides,
+    }

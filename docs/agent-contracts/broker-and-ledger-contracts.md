@@ -70,6 +70,13 @@ US 사전 eligibility/session/shape 검사는 claim 전과 POST 직전에 둘 �
 POST 경계 뒤 오류·취소는 sending/uncertain 예약을 유지한다. 청산은 durable indexed
 leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill을 뺀 잔량을 새 leg로
 보낸다. uncertain/nonterminal leg는 후속 leg를 막는다. recorder API/스키마 변경 없음.
+US due 에피소드의 일반 오류는 `episode_status=unresolved`와 예외 클래스만
+보고하고 다른 청산은 계속한다. CLI는 nonzero이며 durable 상태/재시도 권한을
+만들지 않는다. 계좌/세션 게이트는 루프 밖에서 유지하고 프로세스 취소는 전파한다.
+Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel`/
+`replaced`/`calculated`/`held`는 검증된 누적 fill과 함께 관찰하되 nonterminal로
+유지한다. 이 상태만으로 entry 청산이나 잔여 exit leg를 만들지 않으며, 미지 상태·
+귀속 불일치·누적 fill 감소는 uncertain으로 남긴다.
 별도 paper 전략 어댑터의 own journal은 공매도와 cover를 지원하며 기존 수동 MCP의
 보유 매도 전용 coordinator를 완화하지 않는다. 스케줄·배포 없음.
 런북: `docs/runbooks/rob1474-us-paper-strategy.md`. DB round trip/동시 claim은 CI에서 검증한다.
@@ -117,6 +124,27 @@ leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill�
 - **계정 전체 조회 (ROB-993 R3 추가)**: `get_all_positions()`/`get_all_open_orders()` — `symbol` 파라미터 생략 시 Binance가 전종목 데이터 반환하는 것을 그대로 노출(additive, 기존 `get_position(symbol=...)`/`get_open_orders(symbol=...)` 동작 불변). 공유 Demo 계정에서 신호 symbol이 아닌 다른 symbol의 기존 포지션/미체결도 감지해야 하는 소비자(ROB-993 strategy loop)용
 - **CLI**: `scripts/binance_futures_demo_smoke.py` (default-disabled, 5 modes)
 - **런북**: `docs/runbooks/binance-futures-demo-smoke.md`
+
+### ROB-1474 crypto paper 수동 에피소드
+
+`app/services/mock_strategy/crypto_*`와 `scripts.mock_strategy`의 crypto venue
+분기. Binance USDT spot delisted-complete 패널에서 고정
+`relative_volatility_20` top-10 long/short, 기본 3일·이름당 1,000 USDT다.
+공통 US PR의 `review.mock_strategy_orders`와 recorder만 쓴다.
+모든 쓰기는 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
+일자별 배치 membership·입력 해시를 고정하고 partial close는 자기 체결 잔량만
+새 leg로 닫는다. dust는 열린 잔량이며 gross 실현 P&L은 청산 수량만이다.
+read-only preflight는 claim 전이며 전송 직전에도 반복한다. POST 전용 호출
+이전의 typed refusal만 no-order 증거로 rejected에 기록할 수 있다. generic
+전송/증거 오류는 uncertain 또는 unresolved로 남고 키를 재사용하지 않는다.
+due 에피소드별 증거 실패는 다른 청산을 막지 않고, 프로세스 취소는 그대로
+전파한다. 최초 opened_at은 refresh로 덮어쓰지 않는다.
+`MOCK_STRATEGY_ENABLED`와 기존 venue gate·confirm은 기본 off/명시 조건이다.
+기존 demo host·예상 credential fingerprint, Alpaca clean 예상 계정 검증을 유지한다.
+선물 isolated·1x·one-way 읽기 검증, cover reduceOnly 필수. 사이징 상한은
+운영자 2026-11-02 결정의 이 경로만 제거하며 venue filter와 다른 전략 상수는
+유지한다. 스케줄 등록·실거래·배포 없음. 런북:
+`docs/runbooks/rob1474-crypto-paper.md`.
 
 ### Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 
@@ -280,6 +308,14 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 - `raw_payload_json` 은 optional. 없으면 canonical 필드로 `FillOrder` 를 재구성해
   **알림은 그대로 나간다**. raw frame 은 Upbit 누적 `executed_volume` 같은 추가 문맥용이며
   없다는 이유로 알림을 생략하지 않는다.
+- KIS fillwire raw `{tr, fields, received_at}` 는 국내 `H0STCNI0`/`H0STCNI9`
+  공식 인덱스로 검증·정규화한다(hk 2676). 비체결·오류·해외 TR 은
+  `KisFillwireFrameError` 로 드러내고 canonical 폴백으로 숨기지 않는다.
+  HTTP 알림 전 raw의 심볼·side·주문번호·정확한 Decimal 수량/가격을 canonical 행과
+  대조하고 국내 instrument/KRW를 확인한다. 불일치는 알림 없이 커밋 후 오류로
+  드러낸다. 계좌 라벨은 canonical account_mode에서 가져오며 mock은 `mock`이다.
+  이 알림 재구성 실패는 커밋 후 다운스트림 오류이며 원장·응답을 롤백하지 않는다.
+  해외 구독·liveness 대체는 fillwire hk 2680 별건이고 `at-kis-ws` 은퇴는 보류다.
 - 🔴 **원장 커밋이 권한자.** 다운스트림(알림·rung 투영) 실패는 커밋된 fill 을 rejected 로
   세탁하거나 롤백/재삽입하지 않는다.
 - reconcile 트리거는 **기존 커널만** 호출(KR=`kis_live_reconcile_orders_impl`,
