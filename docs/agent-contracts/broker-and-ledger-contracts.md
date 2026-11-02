@@ -122,6 +122,11 @@ short는 shortable AND easy-to-borrow AND 계좌 shorting 허가 뒤 정수 수�
 모든 쓰기는 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
 일자별 배치 membership·입력 해시를 고정하고 partial close는 자기 체결 잔량만
 새 leg로 닫는다. dust는 열린 잔량이며 gross 실현 P&L은 청산 수량만이다.
+read-only preflight는 claim 전이며 전송 직전에도 반복한다. POST 전용 호출
+이전의 typed refusal만 no-order 증거로 rejected에 기록할 수 있다. generic
+전송/증거 오류는 uncertain 또는 unresolved로 남고 키를 재사용하지 않는다.
+due 에피소드별 증거 실패는 다른 청산을 막지 않고, 프로세스 취소는 그대로
+전파한다. 최초 opened_at은 refresh로 덮어쓰지 않는다.
 `MOCK_STRATEGY_ENABLED`와 기존 venue gate·confirm은 기본 off/명시 조건이다.
 기존 demo host·예상 credential fingerprint, Alpaca clean 예상 계정 검증을 유지한다.
 선물 isolated·1x·one-way 읽기 검증, cover reduceOnly 필수. 사이징 상한은

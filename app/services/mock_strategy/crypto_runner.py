@@ -10,6 +10,7 @@ from typing import Any
 from app.services.mock_strategy.crypto_brokers import (
     CryptoBroker,
     FillEvidence,
+    PreDispatchRefusal,
     require_enabled,
 )
 from app.services.mock_strategy.crypto_orders import (
@@ -37,7 +38,11 @@ async def _save(recorder: Any, order: Any, evidence: FillEvidence) -> None:
         status=_entry_status(evidence),
         broker_order_id=evidence.broker_order_id,
         entry_price=evidence.price,
-        opened_at=datetime.now(UTC) if evidence.filled_qty else None,
+        opened_at=(
+            datetime.now(UTC)
+            if evidence.filled_qty and getattr(order, "opened_at", None) is None
+            else None
+        ),
         meta={
             "filled_qty": str(evidence.filled_qty),
             "entry_terminal": evidence.terminal,
@@ -50,6 +55,21 @@ async def _send(
     recorder: Any, broker: CryptoBroker, order: Any, *, confirm: bool
 ) -> dict:
     require_enabled(order.venue, confirm=confirm)
+    if order.status != "planned":
+        return {
+            "client_order_id": order.client_order_id,
+            "status": "replayed",
+            "submitted": False,
+        }
+    try:
+        await broker.preflight(order, confirm=confirm)
+    except PreDispatchRefusal as exc:
+        return {
+            "client_order_id": order.client_order_id,
+            "status": "preflight_refused",
+            "submitted": False,
+            "reason_class": exc.reason_class,
+        }
     if not await recorder.claim(order.client_order_id):
         return {
             "client_order_id": order.client_order_id,
@@ -59,10 +79,26 @@ async def _send(
     try:
         evidence = await broker.submit(order, confirm=confirm)
         await _save(recorder, order, evidence)
+    except PreDispatchRefusal as exc:
+        # Only the broker adapter's checks, before its POST, can grant this proof.
+        await recorder.update(
+            order.client_order_id,
+            status="rejected",
+            meta={"no_order_sent": True, "pre_dispatch_reason_class": exc.reason_class},
+        )
+        return {
+            "client_order_id": order.client_order_id,
+            "status": "rejected",
+            "submitted": False,
+            "reason_class": exc.reason_class,
+        }
     except BaseException:
         # A committed sending fence survives even if this status update fails.
         # No exception, timeout or missing lookup grants permission to resend.
-        await recorder.update(order.client_order_id, status="uncertain")
+        try:
+            await recorder.update(order.client_order_id, status="uncertain")
+        except Exception:
+            pass  # Preserve the dispatch/control exception; sending stays durable.
         raise
     return {
         "client_order_id": order.client_order_id,
@@ -235,154 +271,185 @@ async def close_due(
     )
     results = []
     for entry in entries:
-        if not entry.strategy_id.startswith("rob1474.crypto.") or entry.side not in {
-            "buy",
-            "short",
-        }:
-            continue
-        if entry.status == "planned":
-            # Planned alone proves no fill; never send an overdue entry here.
-            results.append(
-                {"client_order_id": entry.client_order_id, "status": "entry_not_sent"}
-            )
-            continue
-        evidence = await broker.evidence(entry)
-        if not dry_run:
-            await _save(recorder, entry, evidence)
-        if not evidence.terminal or evidence.filled_qty <= 0:
-            results.append(
-                {
-                    "client_order_id": entry.client_order_id,
-                    "status": "entry_fill_pending",
-                }
-            )
-            continue
-        all_rows = await recorder.list_orders(
-            venue=venue, account_ref=broker.account_ref
-        )
-        legs = [
-            r
-            for r in all_rows
-            if r.episode_id == entry.episode_id and r.side in {"sell", "cover"}
-        ]
-        sold, proceeds, pending = Decimal("0"), Decimal("0"), None
-        in_flight = []
-        planned_count = 0
-        for leg in legs:
-            if leg.status == "planned":
-                planned_count += 1
-                pending = leg
+        try:
+            if not entry.strategy_id.startswith(
+                "rob1474.crypto."
+            ) or entry.side not in {
+                "buy",
+                "short",
+            }:
                 continue
-            proof = await broker.evidence(leg)
-            if not dry_run and leg.status != "closed":
-                await _save(recorder, leg, proof)
-            sold += proof.filled_qty
-            if proof.filled_qty:
-                proceeds += proof.filled_qty * positive(proof.price)
-            if not proof.terminal:
-                in_flight.append(leg)
-        if planned_count > 1:
-            raise ValueError("multiple planned close legs require review")
-        held = (
-            evidence.held_qty if evidence.held_qty is not None else evidence.filled_qty
-        )
-        remaining = held - sold
-        if remaining < 0:
-            raise ValueError("close fills exceed attributed entry")
-        if in_flight:
-            results.append(
-                {
-                    "client_order_id": in_flight[0].client_order_id,
-                    "status": "close_pending",
-                }
-            )
-            continue
-        rules, price = (
-            await broker.rules(entry.symbol),
-            await broker.price(entry.symbol),
-        )
-        qty = None
-        if remaining:
-            try:
-                qty = rules.floor(remaining, price)
-            except BelowVenueMinimum:
-                # Only an actual residual after at least one proven exit is dust.
-                if not sold:
-                    raise
-        if qty is not None:
-            await broker.closeable(entry, qty)
-            close_id = client_id(entry.client_order_id, str(len(legs)), closing=True)
-            close = OrderIntent(
-                strategy_id=entry.strategy_id,
-                venue=venue,
-                account_ref=entry.account_ref,
-                episode_id=entry.episode_id,
-                symbol=entry.symbol,
-                side="cover" if entry.side == "short" else "sell",
-                qty=qty,
-                notional=qty * price,
-                client_order_id=close_id,
-                exit_due_at=None,
-                meta={
-                    "entry_client_order_id": entry.client_order_id,
-                    "asof": entry.meta["asof"],
-                    "baseline": BASELINE,
-                    "version": "v1",
-                },
-            )
-            if dry_run:
-                results.append(_output(pending or close))
-                continue
-            leg = pending or await recorder.record(close)
-            await broker.closeable(entry, leg.qty)
-            await _send(recorder, broker, leg, confirm=confirm)
-            proof = await broker.evidence(leg)
-            await _save(recorder, leg, proof)
-            if not proof.terminal:
+            if entry.status == "planned":
+                # Planned alone proves no fill; never send an overdue entry here.
                 results.append(
-                    {"client_order_id": leg.client_order_id, "status": "close_pending"}
+                    {
+                        "client_order_id": entry.client_order_id,
+                        "status": "entry_not_sent",
+                    }
                 )
                 continue
-            sold += proof.filled_qty
-            if proof.filled_qty:
-                proceeds += proof.filled_qty * positive(proof.price)
+            evidence = await broker.evidence(entry)
+            if not dry_run:
+                await _save(recorder, entry, evidence)
+            if not evidence.terminal or evidence.filled_qty <= 0:
+                results.append(
+                    {
+                        "client_order_id": entry.client_order_id,
+                        "status": "entry_fill_pending",
+                    }
+                )
+                continue
+            all_rows = await recorder.list_orders(
+                venue=venue, account_ref=broker.account_ref
+            )
+            legs = [
+                r
+                for r in all_rows
+                if r.episode_id == entry.episode_id and r.side in {"sell", "cover"}
+            ]
+            sold, proceeds, pending = Decimal("0"), Decimal("0"), None
+            in_flight = []
+            planned_count = 0
+            for leg in legs:
+                if leg.status == "rejected" and leg.meta.get("no_order_sent") is True:
+                    continue
+                if leg.status == "planned":
+                    planned_count += 1
+                    pending = leg
+                    continue
+                proof = await broker.evidence(leg)
+                if not dry_run and leg.status != "closed":
+                    await _save(recorder, leg, proof)
+                sold += proof.filled_qty
+                if proof.filled_qty:
+                    proceeds += proof.filled_qty * positive(proof.price)
+                if not proof.terminal:
+                    in_flight.append(leg)
+            if planned_count > 1:
+                raise ValueError("multiple planned close legs require review")
+            held = (
+                evidence.held_qty
+                if evidence.held_qty is not None
+                else evidence.filled_qty
+            )
             remaining = held - sold
-            try:
-                if remaining:
-                    rules.floor(remaining, price)
-            except BelowVenueMinimum:
-                pass  # unsellable, step/min-notional residual is reported below
-            else:
-                if remaining:
+            if remaining < 0:
+                raise ValueError("close fills exceed attributed entry")
+            if in_flight:
+                results.append(
+                    {
+                        "client_order_id": in_flight[0].client_order_id,
+                        "status": "close_pending",
+                    }
+                )
+                continue
+            rules, price = (
+                await broker.rules(entry.symbol),
+                await broker.price(entry.symbol),
+            )
+            qty = None
+            if remaining:
+                try:
+                    qty = rules.floor(remaining, price)
+                except BelowVenueMinimum:
+                    # Only an actual residual after at least one proven exit is dust.
+                    if not sold:
+                        raise
+            if qty is not None:
+                await broker.closeable(entry, qty)
+                close_id = client_id(
+                    entry.client_order_id, str(len(legs)), closing=True
+                )
+                close = OrderIntent(
+                    strategy_id=entry.strategy_id,
+                    venue=venue,
+                    account_ref=entry.account_ref,
+                    episode_id=entry.episode_id,
+                    symbol=entry.symbol,
+                    side="cover" if entry.side == "short" else "sell",
+                    qty=qty,
+                    notional=qty * price,
+                    client_order_id=close_id,
+                    exit_due_at=None,
+                    meta={
+                        "entry_client_order_id": entry.client_order_id,
+                        "asof": entry.meta["asof"],
+                        "baseline": BASELINE,
+                        "version": "v1",
+                    },
+                )
+                if dry_run:
+                    results.append(_output(pending or close))
+                    continue
+                leg = pending or await recorder.record(close)
+                await broker.closeable(entry, leg.qty)
+                sent = await _send(recorder, broker, leg, confirm=confirm)
+                if (
+                    sent["status"] in {"preflight_refused", "rejected"}
+                    and not sent["submitted"]
+                ):
+                    results.append(sent)
+                    continue
+                proof = await broker.evidence(leg)
+                await _save(recorder, leg, proof)
+                if not proof.terminal:
                     results.append(
                         {
                             "client_order_id": leg.client_order_id,
-                            "status": "close_partial",
+                            "status": "close_pending",
                         }
                     )
                     continue
-        if not dry_run and sold:
-            pnl = proceeds - positive(evidence.price) * sold
-            if entry.side == "short":
-                pnl = -pnl
-            await recorder.update(
-                entry.client_order_id,
-                status="filled" if remaining else "closed",
-                closed_at=None if remaining else datetime.now(UTC),
-                exit_price=proceeds / sold,
-                realized_pnl=pnl,
-                meta={
-                    "pnl_basis": "gross_closed_quantity_excludes_fees_and_funding",
+                sold += proof.filled_qty
+                if proof.filled_qty:
+                    proceeds += proof.filled_qty * positive(proof.price)
+                remaining = held - sold
+                try:
+                    if remaining:
+                        rules.floor(remaining, price)
+                except BelowVenueMinimum:
+                    pass  # unsellable, step/min-notional residual is reported below
+                else:
+                    if remaining:
+                        results.append(
+                            {
+                                "client_order_id": leg.client_order_id,
+                                "status": "close_partial",
+                            }
+                        )
+                        continue
+            if not dry_run and sold:
+                pnl = proceeds - positive(evidence.price) * sold
+                if entry.side == "short":
+                    pnl = -pnl
+                await recorder.update(
+                    entry.client_order_id,
+                    status="filled" if remaining else "closed",
+                    closed_at=None if remaining else datetime.now(UTC),
+                    exit_price=proceeds / sold,
+                    realized_pnl=pnl,
+                    meta={
+                        "pnl_basis": "gross_closed_quantity_excludes_fees_and_funding",
+                        "residual_qty": str(remaining),
+                    },
+                )
+            results.append(
+                {
+                    "client_order_id": entry.client_order_id,
+                    "status": ("would_close" if dry_run else "closed")
+                    if not remaining
+                    else "dust_remaining",
                     "residual_qty": str(remaining),
-                },
+                }
             )
-        results.append(
-            {
-                "client_order_id": entry.client_order_id,
-                "status": ("would_close" if dry_run else "closed")
-                if not remaining
-                else "dust_remaining",
-                "residual_qty": str(remaining),
-            }
-        )
+        except Exception as exc:
+            # Keep this episode blocked, while independent due episodes can exit.
+            # Never turn an evidence error into permission to resend any leg.
+            results.append(
+                {
+                    "client_order_id": entry.client_order_id,
+                    "status": "unresolved",
+                    "error_class": type(exc).__name__,
+                }
+            )
     return {"dry_run": dry_run, "orders": results}

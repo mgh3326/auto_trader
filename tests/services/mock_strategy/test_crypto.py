@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from asyncio import CancelledError
 from copy import copy
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.mock_strategy.crypto_brokers import FillEvidence
+from app.services.mock_strategy.crypto_brokers import FillEvidence, PreDispatchRefusal
 from app.services.mock_strategy.crypto_orders import MarketRules, binance_rules
 from app.services.mock_strategy.crypto_runner import close_due, run_lists
 from app.services.mock_strategy.crypto_signals import BASELINE
@@ -113,6 +114,9 @@ class Broker:
 
     async def closeable(self, order, qty):
         assert qty > 0
+
+    async def preflight(self, order, *, confirm):
+        assert confirm is True
 
     async def submit(self, order, *, confirm):
         assert confirm is True
@@ -444,12 +448,12 @@ async def test_uncertain_close_without_evidence_never_creates_another_leg():
         "confirm": True,
     }
     broker.fail = True
-    with pytest.raises(TimeoutError):
-        await close_due(**args)
+    result = await close_due(**args)
+    assert all(row["status"] == "unresolved" for row in result["orders"])
     broker.fail = False
-    with pytest.raises(KeyError):
-        await close_due(**args)
-    assert len(broker.calls) == 11
+    result = await close_due(**args)
+    assert all(row["status"] == "unresolved" for row in result["orders"])
+    assert len(broker.calls) == 20
 
 
 @pytest.mark.asyncio
@@ -485,6 +489,147 @@ async def test_later_planned_leg_cannot_hide_earlier_nonterminal_leg():
     another = copy(later)
     another.client_order_id = "r1474c-x-another-planned"
     recorder.rows[another.client_order_id] = another
-    with pytest.raises(ValueError, match="multiple planned"):
-        await close_due(**args)
+    result = await close_due(**args)
+    assert result["orders"][0]["status"] == "unresolved"
     assert len(broker.calls) == 20
+
+
+@pytest.mark.asyncio
+async def test_preflight_refusal_leaves_entry_planned_and_retryable():
+    recorder = Recorder()
+
+    class Guarded(Broker):
+        blocked = True
+
+        async def preflight(self, order, *, confirm):
+            if self.blocked and order.symbol == "COIN0USDT":
+                raise PreDispatchRefusal("ValueError")
+
+    broker = Guarded(recorder)
+    args = {
+        "venue": "binance_spot_demo",
+        "asof": ASOF,
+        "broker": broker,
+        "recorder": recorder,
+        "dry_run": False,
+        "confirm": True,
+        "now": DECISION,
+    }
+    first = await run_lists(signals(), **args)
+    assert first["orders"][0]["status"] == "preflight_refused"
+    assert (
+        next(r for r in recorder.rows.values() if r.symbol == "COIN0USDT").status
+        == "planned"
+    )
+    assert len(broker.calls) == 9
+    broker.blocked = False
+    await run_lists(signals(), **args)
+    assert len(broker.calls) == 10
+
+
+@pytest.mark.asyncio
+async def test_late_proven_no_post_refusal_allows_new_close_leg():
+    recorder = Recorder()
+
+    class Guarded(Broker):
+        blocked = True
+
+        async def submit(self, order, *, confirm):
+            if self.blocked and order.symbol == "COIN10USDT" and order.side == "cover":
+                raise PreDispatchRefusal("ValueError")
+            return await super().submit(order, confirm=confirm)
+
+    broker = Guarded(recorder)
+    await run_lists(
+        signals(),
+        venue="binance_futures_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    args = {
+        "venue": "binance_futures_demo",
+        "asof": DECISION + timedelta(days=3),
+        "broker": broker,
+        "recorder": recorder,
+        "dry_run": False,
+        "confirm": True,
+    }
+    first = await close_due(**args)
+    assert first["orders"][0]["status"] == "rejected"
+    refused = next(
+        r
+        for r in recorder.rows.values()
+        if r.side == "cover" and r.symbol == "COIN10USDT"
+    )
+    assert refused.status == "rejected" and refused.meta["no_order_sent"] is True
+    assert len(broker.calls) == 19
+    broker.blocked = False
+    second = await close_due(**args)
+    assert second["orders"][0]["status"] == "closed"
+    assert len(broker.calls) == 20
+    assert refused.client_order_id not in broker.orders
+
+
+@pytest.mark.asyncio
+async def test_one_missing_entry_does_not_block_other_due_exits_or_reset_open_time():
+    recorder = Recorder()
+    broker = Broker(recorder)
+    await run_lists(
+        signals(),
+        venue="binance_spot_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    opened = {cid: r.opened_at for cid, r in recorder.rows.items()}
+    missing = broker.calls[0].client_order_id
+    del broker.orders[missing]
+    result = await close_due(
+        venue="binance_spot_demo",
+        asof=DECISION + timedelta(days=3),
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+    )
+    assert result["orders"][0]["status"] == "unresolved"
+    assert sum(r["status"] == "closed" for r in result["orders"]) == 9
+    assert len(broker.calls) == 19
+    assert all(recorder.rows[cid].opened_at == stamp for cid, stamp in opened.items())
+
+
+@pytest.mark.asyncio
+async def test_cancellation_survives_uncertain_update_failure():
+    class BrokenOutcomeRecorder(Recorder):
+        async def update(self, cid, **kwargs):
+            if kwargs["status"] == "uncertain":
+                raise RuntimeError("synthetic outcome-store unavailable")
+            return await super().update(cid, **kwargs)
+
+    class CanceledBroker(Broker):
+        async def submit(self, order, *, confirm):
+            self.calls.append(order)
+            raise CancelledError
+
+    recorder = BrokenOutcomeRecorder()
+    broker = CanceledBroker(recorder)
+    with pytest.raises(CancelledError):
+        await run_lists(
+            signals(),
+            venue="binance_spot_demo",
+            asof=ASOF,
+            broker=broker,
+            recorder=recorder,
+            dry_run=False,
+            confirm=True,
+            now=DECISION,
+        )
+    assert len(broker.calls) == 1
+    assert recorder.rows[broker.calls[0].client_order_id].status == "sending"
