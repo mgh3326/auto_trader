@@ -1,0 +1,21 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "ROB-1473",
+  "version": 1,
+  "title": "Crypto B3 and US composite daily shadow function check",
+  "question": "Can the fixed research rules accumulate daily shadow episode evidence with fixed capital and paired controls?",
+  "status": "draft",
+  "markets": ["crypto", "us"],
+  "hashes": {"pending": "Function-check inputs and code are hashed in each immutable daily ledger; operator seals confirmation inputs after feasibility."},
+  "features": [{"name": "original buy intent and daily open/close", "available_at": "intent timestamp and market session completion respectively", "source": "frozen research universe, normalized intent feed, Upbit/Yahoo public bars"}],
+  "labels": [{"name": "paired D_i crypto", "definition": "net candidate minus control P&L divided by fixed E=3u at D0+60", "horizon_sessions": 60}, {"name": "paired D_i US", "definition": "net candidate minus control P&L divided by fixed E=1.5u at D0+20", "horizon_sessions": 20}],
+  "calendar": {"crypto": "24/7", "us": "XNYS"},
+  "splits": {"scheme": "prospective function check; no fitting", "rules_doc": "docs/research/experiment-split-leakage-rules.md", "purge_sessions": 60, "gap_sessions": 60, "folds": [], "test": {"kind": "prospective_seal", "period": {"pending": "operator seals a separate confirmation epoch after the function check"}, "exposure_audit": "Function-check outputs are exposed and cannot become sealed confirmation data.", "seal_rule": "new manifest version and new ledger directory before confirmation"}},
+  "candidate_policies": [{"id": "crypto-b3", "description": "fixed ROB-1458 B3; E=3u"}, {"id": "crypto-control", "description": "1u next-open hold to H=60 plus 2u cash"}, {"id": "us-composite", "description": "near-market next-open entry plus first -8% 50%-quantity add; E=1.5u"}, {"id": "us-control", "description": "original frozen DAY limit, conservative open/close-only fill, no add; absent original limit is unverified"}, {"id": "cash", "description": "unspent capital earns zero"}],
+  "costs_fills": {"cost_table": "research.strategy_evidence.common.ROUND_TRIP_COST; conservative full round-trip reserve per invested notional", "fill_models": ["research: next open entry; closes for adds, targets and stops", "US control: open <= original limit at open, otherwise close <= limit at limit, otherwise DAY unfilled; no intraday touch claim"]},
+  "tuning_budget": {"max_configurations": 0, "search": "none"},
+  "seeds": [1473],
+  "metrics": {"primary": "descriptive paired net P&L difference / fixed E at H", "secondary": ["open cost/E", "open value/E", "missing data", "signal and fill parity"], "family": ["crypto-b3", "us-composite"], "alpha": "0.05", "delta_min": {"pending": "operator defines confirmation minimum effect; no efficacy or scale-up verdict in function check"}},
+  "stopping_rules": ["No broker, DB, credentials or order placement", "Missing path-dependent bars suspend episode decisions and produce unverified results", "Changed universe/rule/engine/cost hash requires new epoch", "No statistical promotion from function-check evidence"],
+  "cumulative_k": {"prior_k": 0, "source": "registry"}
+}
