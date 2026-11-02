@@ -1,0 +1,334 @@
+[
+  {
+    "path": "app/services/brokers/kis/domestic_orders.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/brokers/toss/client.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/brokers/upbit/orders.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/order_proposals/callback_inbox/worker.py",
+    "hold": true
+  },
+  {
+    "path": "app/routers/invest_loss_cut_approvals.py",
+    "hold": true
+  },
+  {
+    "path": "alembic/versions/20261102_rob1470_sleeves.py",
+    "hold": true
+  },
+  {
+    "path": "app/core/scheduler.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/telegram_callback_inbox_tasks.py",
+    "hold": true
+  },
+  {
+    "path": "app/flows/invest_screener_snapshots_us_flow.py",
+    "hold": false
+  },
+  {
+    "path": "deploy/dagu/data-plane/data-plane-kr.yaml",
+    "hold": true
+  },
+  {
+    "path": "deploy/dagu/data-plane/nested/new-production-flow.yaml",
+    "hold": true
+  },
+  {
+    "path": "config/trading_policy.yaml",
+    "hold": true
+  },
+  {
+    "path": "app/core/config.py",
+    "hold": true
+  },
+  {
+    "path": "app/schemas/trading_policy.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/order_proposals/approval_window.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/order_proposals/dispatch.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/mechanical_loss_cut/live.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/strategy_sleeves/dispatch_gate.py",
+    "hold": true
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-0905.timer",
+    "hold": true
+  },
+  {
+    "path": "app/services/brokers/kis/mock_scalping_exec/executor.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/brokers/kiwoom/domestic_orders.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/brokers/nhplug/client.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/brokers/alpaca/paper_adapter.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/brokers/binance/futures_demo/execution_client.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/paper_trading_service.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/paper_cohort_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "deploy/dagu/paper-forward.yaml",
+    "hold": true
+  },
+  {
+    "path": "app/monitoring/sentry.py",
+    "hold": false
+  },
+  {
+    "path": "app/core/logging_config.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/order_proposals/alerts.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/order_proposals/auto_approve_audit.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/order_proposals/callback_inbox/observability.py",
+    "hold": false
+  },
+  {
+    "path": "tests/services/order_proposals/test_dispatch.py",
+    "hold": false
+  },
+  {
+    "path": "docs/runbooks/order-proposals.md",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/kis_mock_reconciliation_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/services/mock_strategy/recorder.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/__init__.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/execution_ledger.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/kis_live_reconcile_tasks.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/live_reconcile_tasks.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/toss_live_reconcile_tasks.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/order_proposal_expiry_tasks.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/mechanical_loss_cut_tasks.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/protected_position_tasks.py",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/pending_orders.py",
+    "hold": true
+  },
+  {
+    "path": "scripts/lane_event_kickoff.py",
+    "hold": true
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-0905.service",
+    "hold": true
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-crypto-0220.timer",
+    "hold": true
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-nxt-open.service",
+    "hold": true
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-us-2235.timer",
+    "hold": true
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-b0x-nudge-kr.service.in",
+    "hold": true
+  },
+  {
+    "path": "app/tasks/intraday_order_review_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/watch_scan_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/watch_expiry_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/watch_follow_up_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/watch_validity_review_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/daily_candles_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/kr_candles_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/us_candles_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/kr_symbol_universe_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/us_symbol_universe_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/upbit_symbol_universe_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/invest_screener_snapshot_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/invest_momentum_event_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/investor_flow_snapshot_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/tasks/market_valuation_snapshot_tasks.py",
+    "hold": false
+  },
+  {
+    "path": "app/flows/market_close_digest_flow.py",
+    "hold": false
+  },
+  {
+    "path": "app/flows/forexfactory_calendar_flow.py",
+    "hold": false
+  },
+  {
+    "path": "app/flows/investment_snapshots_refresh_flow.py",
+    "hold": false
+  },
+  {
+    "path": "ops/ncp/systemd/job-crypto-invest-screener-snapshots.service",
+    "hold": false
+  },
+  {
+    "path": "ops/ncp/systemd/job-us-market-valuation-snapshots.timer",
+    "hold": false
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-b0x-harvest.service.in",
+    "hold": false
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-b0x-harvest.timer",
+    "hold": false
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-b0x-table-kr.service.in",
+    "hold": false
+  },
+  {
+    "path": "ops/ncp/systemd/job-kickoff-b0x-table-us.timer",
+    "hold": false
+  },
+  {
+    "path": "app/middleware/auth.py",
+    "hold": true
+  },
+  {
+    "path": "prefect.yaml",
+    "hold": true
+  },
+  {
+    "path": "prefect.yml",
+    "hold": true
+  },
+  {
+    "path": "deploy/prefect/live-orders.yaml",
+    "hold": true
+  },
+  {
+    "path": "flows/prefect.yaml",
+    "hold": true
+  },
+  {
+    "path": "app/services/brokers/kiwoom/client.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/brokers/kiwoom/us_orders.py",
+    "hold": true
+  },
+  {
+    "path": "app/services/brokers/kiwoom/live_market_data.py",
+    "hold": true
+  }
+]
