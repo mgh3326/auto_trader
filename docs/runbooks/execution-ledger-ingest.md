@@ -79,6 +79,11 @@ Python 모니터의 sink 스위치까지만 만들었다 — **Go 코드 0줄, R
 `websocket_monitor.py`를 import 하지 않으며 로직을 복제하지 않는다.
 
 - `raw_payload_json`이 있으면 모니터와 동일한 normalizer로 `FillOrder`를 만든다.
+- 국내 KIS fillwire의 `{tr, fields, received_at}`도 지원한다(hk 2676).
+  `H0STCNI0`/`H0STCNI9`의 공식 필드와 체결 표지·수량·가격·시각을 검증한다.
+  잘못된 프레임이나 비체결·해외 TR은 `KisFillwireFrameError`이며,
+  canonical 폴백으로 숨기지 않고 커밋 후 다운스트림 오류 로그로 드러낸다.
+  이미 커밋된 원장과 ingest 성공 응답은 유지된다. 과거 누락 알림 재발송은 없다.
 - `raw_payload_json`이 **없어도** canonical 필드로 `FillOrder`를 재구성해
   알림이 나간다. raw frame은 Upbit 누적 `executed_volume`(rung 투영 증거) 같은
   추가 문맥용이며, 없다는 이유로 알림을 통째로 생략하지 않는다.

@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.core.kr_symbols import KR_SYMBOLS
+from app.services.fill_notification_kis_frame import decode_fillwire_kis_frame
 from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
 
 logger = logging.getLogger(__name__)
@@ -348,6 +349,8 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
 
 
 def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
+    if "tr" in raw or "fields" in raw:
+        raw = decode_fillwire_kis_frame(raw)
     symbol = str(_pick_first(raw, ["symbol", "pdno", "mksc_shrn_iscd"]) or "UNKNOWN")
     account = str(_pick_first(raw, ["account"]) or "kis")
     side = _normalize_side(

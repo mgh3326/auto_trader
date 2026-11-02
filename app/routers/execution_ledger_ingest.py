@@ -115,6 +115,10 @@ def _rebuild_fill_order(fill: ExecutionLedgerUpsert) -> FillOrder:
     """
     raw = fill.raw_payload_json
     if isinstance(raw, dict) and raw:
+        if fill.broker == "kis" and ("tr" in raw or "fields" in raw):
+            # Strict fillwire evidence decoding must never fall back on error.
+            # The caller reports failure after commit; the ledger stays durable.
+            return normalize_kis_fill(raw)
         try:
             if fill.broker == "upbit":
                 return normalize_upbit_fill(raw)
