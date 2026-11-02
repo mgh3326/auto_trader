@@ -80,18 +80,15 @@ class MockStrategyRecorder:
             "big",
             signed=True,
         )
-        async with self._sessions() as session:
+        async with self._sessions() as session, session.begin():
             locked = await session.scalar(
-                text("SELECT pg_try_advisory_lock(:key)"), {"key": key}
+                text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key}
             )
             if not locked:
                 raise ValueError("paper strategy account already in use")
-            try:
-                yield
-            finally:
-                await session.execute(
-                    text("SELECT pg_advisory_unlock(:key)"), {"key": key}
-                )
+            # Commit/rollback releases the lock on the owning connection,
+            # including cancellation, with no session-level unlock to leak.
+            yield
 
     async def record(self, intent: OrderIntent) -> MockStrategyOrder:
         return (await self.record_many([intent]))[0]
@@ -100,7 +97,7 @@ class MockStrategyRecorder:
         self, intents: Sequence[OrderIntent]
     ) -> list[MockStrategyOrder]:
         """Commit the entire plan or nothing; a conflicting reused ID is an error."""
-        rows = []
+        by_id = {}
         async with self._sessions() as session:
             async with session.begin():
                 for intent in sorted(intents, key=lambda item: item.client_order_id):
@@ -127,10 +124,11 @@ class MockStrategyRecorder:
                                 raise ValueError("client_order_id intent conflict")
                         elif actual != value:
                             raise ValueError("client_order_id intent conflict")
-                    rows.append(row)
-            for row in rows:
-                session.expunge(row)
-        by_id = {row.client_order_id: row for row in rows}
+                    by_id[intent.client_order_id] = row
+                # Detach unique, loaded rows before commit can expire them,
+                # including factories with expire_on_commit=True.
+                for row in by_id.values():
+                    session.expunge(row)
         return [by_id[intent.client_order_id] for intent in intents]
 
     async def get(self, client_order_id: str) -> MockStrategyOrder | None:

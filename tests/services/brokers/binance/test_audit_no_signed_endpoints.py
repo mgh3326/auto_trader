@@ -88,6 +88,19 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # doesn't flag them as "unexpected Binance locations". The legacy
         # binance_testnet_order_ledger.py file was deleted in ROB-298.
         "app/models/binance_demo_order_ledger.py",
+        # ROB-1474 — shared paper/demo attribution ORM: Binance appears only
+        # in the closed venue literals and CHECK. No HTTP/WS client, signing,
+        # credentials or endpoints; actual adapters remain in the one package.
+        "app/models/mock_strategy.py",
+        # ROB-1474 — frozen-list signal/sizing and manual paper/demo episode
+        # orchestration. crypto_brokers composes the existing in-package Demo
+        # clients; none of these files implements Binance HTTP/WS or signing.
+        # Authority: hk:doc decision/2026-11-02/mock-trading-all-venues-no-caps;
+        # default-off gates and exact Demo endpoint/identity checks remain.
+        "app/services/mock_strategy/crypto_brokers.py",
+        "app/services/mock_strategy/crypto_orders.py",
+        "app/services/mock_strategy/crypto_runner.py",
+        "app/services/mock_strategy/crypto_signals.py",
         # Task 847 — the H5-LS-ENV-v1 durable-state ORM model lives under
         # app/models/. Persistence only: review.binance_h5_* tables, no
         # HTTP/WS, signing, credential, or endpoint behavior; "Binance"
