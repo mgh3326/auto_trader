@@ -9,6 +9,7 @@
 - 테스트 작성
 - 문제 해결
 - 참고 문서
+- Exact-SHA deployment gate (ROB-1456)
 
 ## 기준 원문 계약
 
@@ -119,6 +120,24 @@ pytest tests/test_file.py -v -k "test_name"  # 특정 테스트
 pytest tests/ -v -m "not integration"        # 통합 테스트 제외
 pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 ```
+
+## Exact-SHA deployment gate (ROB-1456)
+
+`scripts/deploy-ncp-pull.sh` forward deploys and dry-runs call the stdlib-only
+`scripts/deploy_ci_gate.py` before mutation. Remote OCI revision identifies the
+exact commit; the verified registry digest is what is pulled and promoted.
+GitHub's newest exact-SHA `Test` push/dispatch run and latest attempt must have
+`lint`, `taskiq-smoke`, and all four `test (3.13, N)` jobs completed successfully.
+Missing/red/skipped/unreadable evidence refuses with exit 78. ROB-1454's
+`PR gate` is not full-suite evidence. The image build workflow enforces the
+same gate on its pinned build SHA and follows completed main-push Test runs.
+
+`--allow-unverified REASON` is an explicit logged CI override, not permission
+to bypass immutable image identity or other safety checks. `--rollback` and
+automatic failure recovery stay unchecked emergency paths. Install the helper
+beside the host script; Python 3, Docker Buildx, and authenticated GitHub CLI
+Actions read access are prerequisites. Runbook:
+`docs/runbooks/ncp-pull-deploy.md` §Exact-SHA full-suite gate.
 
 ## 문제 해결
 

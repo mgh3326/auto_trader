@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.scripts._deploy_gate_fakes import install_gate_fakes
+
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY = Path(os.environ.get("DEPLOY_UNDER_TEST", REPO / "scripts/deploy-ncp-pull.sh"))
 OLD = "ghcr.io/mgh3326/auto_trader@sha256:" + "1" * 64
@@ -163,7 +165,7 @@ def _run(
         state_file.write_text(json.dumps(state))
         """
     )
-    (bindir / "docker").write_text(docker)
+    install_gate_fakes(bindir, docker, NEW)
     (bindir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         'url="${!#}"\n'
