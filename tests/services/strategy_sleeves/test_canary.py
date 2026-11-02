@@ -181,3 +181,37 @@ def test_an_add_while_the_position_is_held_joins_the_first_episode() -> None:
     assert entry.result == D("200")
     assert entry.signals == 3
     assert re_entry.status == "open"
+
+
+def test_a_sell_with_no_sleeve_lot_does_not_open_an_episode_for_later_signals() -> None:
+    """Held is the FIFO quantity: an unmatched sell leaves the sleeve flat."""
+    orders = [
+        order(1, side="sell", signal_key="cut", signal_minutes=-60),
+        order(2, signal_key="entry", signal_minutes=-10),
+    ]
+    fills = [fill(1, 1, side="sell", quantity="5", price="90", minutes=-50)]
+    episodes = episodes_of(orders, fills)
+    assert [e.signal_keys for e in episodes] == [("cut",), ("entry",)]
+
+
+def test_fills_after_the_horizon_do_not_enter_the_result() -> None:
+    orders = [
+        order(1, signal_key="entry", signal_minutes=-120),
+        order(2, signal_key="late-add", signal_minutes=-50),
+    ]
+    fills = [
+        fill(1, 1, quantity="10", price="100", minutes=-100),
+        # The add fills after the H-th session's day ended: outside H.
+        fill(2, 2, quantity="10", price="50", minutes=-40),
+    ]
+    cohort = build_cohort(
+        orders=orders,
+        fills=fills,
+        marks={
+            "entry": HorizonMark(True, D("120"), cutoff=NOW - timedelta(minutes=45))
+        },
+        budget_at={"entry": D("1000")},
+    )
+    [entry] = cohort.samples
+    assert entry.signals == 2
+    assert (entry.filled_quantity, entry.result) == (D("10"), D("200"))

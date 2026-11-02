@@ -294,7 +294,7 @@ async def load_report(
         cohort = build_cohort(
             orders=inputs.orders,
             fills=inputs.fills,
-            marks={k: HorizonMark(m, c) for k, (m, c) in raw_marks.items()},
+            marks={k: HorizonMark(*mark) for k, mark in raw_marks.items()},
             budget_at={
                 e.episode_key: budget_at_signal(versions, e.start_at) for e in episodes
             },

@@ -94,3 +94,25 @@ async def test_marks_are_keyed_by_the_requested_symbols(monkeypatch) -> None:
     monkeypatch.setattr(repository, "DailyCandlesRepository", _Repo)
     result = await marks.latest_close_marks(None, "crypto", ["krw-btc "], now)
     assert result == {"krw-btc ": D("120")}
+
+
+@pytest.mark.asyncio
+async def test_a_matured_horizon_carries_the_end_of_the_h_th_day(monkeypatch) -> None:
+    from app.services.daily_candles import repository
+
+    now = datetime(2026, 11, 10, 6, 0, tzinfo=UTC)
+    signal_at = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
+    target = datetime(2026, 11, 5, tzinfo=UTC)  # H = 3 UTC days after the signal
+
+    class _Repo:
+        def __init__(self, session) -> None:
+            pass
+
+        async def fetch_recent_batch(self, **_kw):
+            return {"KRW-BTC": [SimpleNamespace(time_utc=target, close=150.0)]}
+
+    monkeypatch.setattr(repository, "DailyCandlesRepository", _Repo)
+    result = await marks.horizon_closes(
+        None, "crypto", [("sig", "KRW-BTC", signal_at)], 3, now
+    )
+    assert result == {"sig": (True, D("150"), datetime(2026, 11, 6, tzinfo=UTC))}

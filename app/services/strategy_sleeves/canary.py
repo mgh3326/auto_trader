@@ -45,6 +45,9 @@ class HorizonMark:
 
     matured: bool
     close: Decimal | None = None
+    #: End of the H-th session's day on the market clock. Fills at or after it
+    #: are outside the horizon and do not enter the result.
+    cutoff: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -110,7 +113,8 @@ def episodes_of(
     A signal raised while the sleeve still holds a position in that symbol (by
     the sleeve's own fills before the signal) joins that symbol's open episode:
     an add or a later ladder is not a new sample. A signal raised while flat
-    starts a new episode.
+    starts a new episode. Held is the FIFO book's quantity: a sell with no
+    sleeve lot never makes the sleeve hold anything.
     """
     fills_by_symbol: dict[str, list[SleeveFill]] = defaultdict(list)
     for fill in fills:
@@ -118,14 +122,17 @@ def episodes_of(
     open_episode: dict[str, list[Signal]] = {}
     episodes: list[list[Signal]] = []
     for signal in signals_of(orders):
-        position = sum(
-            (
-                f.quantity if f.side == "buy" else -f.quantity
-                for f in fills_by_symbol.get(signal.symbol, [])
-                if f.filled_at < signal.signal_at
-            ),
-            ZERO,
-        )
+        position = ZERO
+        for f in sorted(
+            fills_by_symbol.get(signal.symbol, []),
+            key=lambda f: (f.filled_at, f.ledger_id),
+        ):
+            if f.filled_at >= signal.signal_at:
+                break
+            if f.side == "buy":
+                position += f.quantity
+            else:
+                position -= min(f.quantity, position)
         current = open_episode.get(signal.symbol)
         if current is not None and position != 0:
             current.append(signal)
@@ -167,9 +174,14 @@ def build_cohort(
 
     samples: list[SignalSample] = []
     for episode in episodes_of(orders, fill_list):
-        own = [f for key in episode.signal_keys for f in fills_by_signal.get(key, [])]
-        filled = sum((f.quantity for f in own), ZERO)
         mark = marks.get(episode.episode_key, HorizonMark(matured=False))
+        own = [
+            f
+            for key in episode.signal_keys
+            for f in fills_by_signal.get(key, [])
+            if mark.cutoff is None or f.filled_at < mark.cutoff
+        ]
+        filled = sum((f.quantity for f in own), ZERO)
         result: Decimal | None
         if not mark.matured:
             status, result = "open", None

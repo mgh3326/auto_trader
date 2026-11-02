@@ -86,7 +86,7 @@ async def latest_close_marks(
 
 HorizonFn = Callable[
     [AsyncSession, str, Sequence[tuple[str, str, datetime]], int, datetime],
-    Awaitable[dict[str, tuple[bool, Decimal | None]]],
+    Awaitable[dict[str, tuple[bool, Decimal | None, datetime | None]]],
 ]
 
 
@@ -96,13 +96,14 @@ async def horizon_closes(
     signals: Sequence[tuple[str, str, datetime]],
     horizon_sessions: int,
     now: datetime,
-) -> dict[str, tuple[bool, Decimal | None]]:
-    """Per signal key: (matured, close of the H-th completed bar after it).
+) -> dict[str, tuple[bool, Decimal | None, datetime | None]]:
+    """Per signal key: (matured, close of the H-th bar, end of that bar's day).
 
     ``signals`` is ``(signal_key, symbol, signal_at)``. A bar is a session for
     KR and US and a UTC day for crypto. Matured means H completed sessions have
     passed on the exchange calendar (crypto: H days); the close is ``None`` when
-    the candle table lacks that bar.
+    the candle table lacks that bar. The cutoff (matured only) is midnight after
+    the H-th bar's date on the market clock: fills from then on are past H.
     """
     if not signals:
         return {}
@@ -131,12 +132,12 @@ async def horizon_closes(
         partition=_PARTITION[market],
         count=min(max(span_days + 10, horizon_sessions + 10), 2000),
     )
-    out: dict[str, tuple[bool, Decimal | None]] = {}
+    out: dict[str, tuple[bool, Decimal | None, datetime | None]] = {}
     for key, symbol, signal_at in signals:
         # The signal's own session date on the market's clock.
         signal_date = signal_at.astimezone(_LOCAL_TZ.get(market, UTC)).date()
         if last_complete is None:
-            out[key] = (False, None)
+            out[key] = (False, None, None)
             continue
         if exchange is None:
             target = signal_date + timedelta(days=horizon_sessions)
@@ -150,6 +151,13 @@ async def horizon_closes(
             matured = len(sessions) >= horizon_sessions
             target = sessions[horizon_sessions - 1].date() if matured else None
         close: Decimal | None = None
+        cutoff: datetime | None = None
+        if matured and target is not None:
+            cutoff = datetime.combine(
+                target + timedelta(days=1),
+                datetime.min.time(),
+                tzinfo=_LOCAL_TZ.get(market, UTC),
+            )
         if matured:
             # The bar of exactly the H-th session; a gap in the candle table is
             # a missing close, never the next bar.
@@ -167,5 +175,5 @@ async def horizon_closes(
                 candidate = None
             if candidate is not None and candidate.is_finite() and candidate > 0:
                 close = candidate
-        out[key] = (matured, close)
+        out[key] = (matured, close, cutoff)
     return out

@@ -105,7 +105,9 @@ uv run python scripts/strategy_sleeves.py --database-url-env <ENV NAME> create \
 # check the preview, then repeat with --commit
 ```
 
-The output has `sleeve_id`. Use it in `order_proposal_create(sleeve_id=...)`.
+The `--commit` output has `sleeve_id`. Use that value in
+`order_proposal_create(sleeve_id=...)`. A preview's `sleeve_id` was rolled back
+and does not exist.
 
 ### Change amounts
 
@@ -174,8 +176,9 @@ Canary statistics (ROB-1468):
   symbol raised while the sleeve still holds a position from it (adds, later
   ladders, the exit). A signal raised while the sleeve is flat starts a new
   episode.
-- An episode's result is all its trades marked at the H-th close after its
-  first signal, net of fees, in percent of the budget in effect when it began.
+- An episode's result is all its trades up to the H-th close after its first
+  signal, marked at that close, net of fees, in percent of the budget in effect
+  when it began. Fills after the H-th session's day are outside the horizon.
   A sell is measured against holding to H.
 - An unfilled episode stays in the cohort with result 0. A matured episode
   whose H close is missing is `unmeasured`: counted, never averaged as zero.
@@ -212,8 +215,10 @@ uv run alembic downgrade -1     # roll back
   Its tagged orders then go to the card.
 - The downgrade refuses while any sleeve exists or any proposal carries a
   sleeve, because dropping the column would move those orders back into the
-  untagged book silently. Export the sleeve rows first and remove the tags and
-  sleeves deliberately before downgrading.
+  untagged book silently. The database triggers refuse removing sleeves or
+  versions and clearing a proposal's `sleeve_id` for every role, and no CLI
+  command removes them. Do not downgrade while sleeves or tagged proposals
+  exist; recovery needs a separately approved database procedure.
 
 ## Known limits
 
