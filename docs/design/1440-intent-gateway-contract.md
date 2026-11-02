@@ -108,6 +108,12 @@ numbers are never inferred from the mock order ledger, symbol or time proximity.
 Numbers compare without leading zeros and fills must match the sender's KST
 trading day, broker `kis`, account mode `mock`, venue, KR instrument, symbol,
 side and KRW currency. The response preserves the journal's order-number spelling.
+Each `orders` entry represents one normalized number and KST day, ordered by
+its first journaled sender. A reused number on another day produces a separate
+entry, even when its spelling is identical or it has no fills. Consumers must
+preserve these entries rather than merge them by `broker_order_id` alone; a
+returned fill's `filled_at` identifies its KST day. The fixed response fields
+remain unchanged.
 
 The reader uses `execution_ledger_in_effect()` and ROB-1379
 `supersede_provisional` to exclude quarantine and websocket rows covered by an

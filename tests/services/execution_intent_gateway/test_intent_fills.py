@@ -100,6 +100,27 @@ def test_authority_supersedes_websocket_but_another_day_does_not():
     assert intent_fill_orders(children(), rows)[0]["cumulative_qty"] == 2
 
 
+@pytest.mark.parametrize("tomorrow_qty", [0, 3])
+def test_reused_number_on_two_journaled_days_stays_two_orders(tomorrow_qty):
+    first = children()[0]
+    tomorrow = NOW + timedelta(hours=15)
+    second = replace(
+        first, child_id=2, idempotency_key="own-order-02", created_at=tomorrow
+    )
+    rows = [fill(1, source="reconciler")]
+    if tomorrow_qty:
+        rows.append(fill(2, filled_at=tomorrow, filled_qty=Decimal(tomorrow_qty)))
+    orders = intent_fill_orders([second, first], list(reversed(rows)))
+    assert [order["broker_order_id"] for order in orders] == ["000123", "000123"]
+    assert [order["cumulative_qty"] for order in orders] == [2, tomorrow_qty]
+    assert [[f["fill_id"] for f in order["fills"]] for order in orders] == [
+        ["1"],
+        ["2"] if tomorrow_qty else [],
+    ]
+    for order in orders:
+        assert order["cumulative_qty"] == sum(f["qty"] for f in order["fills"])
+
+
 def test_cancel_does_not_advance_the_order_day_or_double_count():
     child = children()[0]
     cancel = replace(

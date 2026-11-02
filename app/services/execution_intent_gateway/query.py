@@ -472,15 +472,15 @@ def intent_fill_orders(
         and (_order_number(row.broker_order_id), trade_day_kst(row.filled_at)) in names
     ]
     effective, _ = supersede_provisional(effective)
-    orders: dict[str, dict[str, Any]] = {
-        name: {"broker_order_id": name, "cumulative_qty": 0, "fills": []}
-        for name in names.values()
+    orders: dict[OrderDay, dict[str, Any]] = {
+        key: {"broker_order_id": name, "cumulative_qty": 0, "fills": []}
+        for key, name in names.items()
     }
     for row in sorted(effective, key=lambda item: (item.filled_at, item.id)):
-        name = names[(_order_number(row.broker_order_id), trade_day_kst(row.filled_at))]
+        key = (_order_number(row.broker_order_id), trade_day_kst(row.filled_at))
         qty = _whole_shares(row.filled_qty)
-        orders[name]["cumulative_qty"] += qty
-        orders[name]["fills"].append(
+        orders[key]["cumulative_qty"] += qty
+        orders[key]["fills"].append(
             {
                 "fill_id": str(row.id),
                 "side": row.side,
