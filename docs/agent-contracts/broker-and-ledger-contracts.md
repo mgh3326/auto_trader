@@ -308,6 +308,14 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 - `raw_payload_json` 은 optional. 없으면 canonical 필드로 `FillOrder` 를 재구성해
   **알림은 그대로 나간다**. raw frame 은 Upbit 누적 `executed_volume` 같은 추가 문맥용이며
   없다는 이유로 알림을 생략하지 않는다.
+- KIS fillwire raw `{tr, fields, received_at}` 는 국내 `H0STCNI0`/`H0STCNI9`
+  공식 인덱스로 검증·정규화한다(hk 2676). 비체결·오류·해외 TR 은
+  `KisFillwireFrameError` 로 드러내고 canonical 폴백으로 숨기지 않는다.
+  HTTP 알림 전 raw의 심볼·side·주문번호·정확한 Decimal 수량/가격을 canonical 행과
+  대조하고 국내 instrument/KRW를 확인한다. 불일치는 알림 없이 커밋 후 오류로
+  드러낸다. 계좌 라벨은 canonical account_mode에서 가져오며 mock은 `mock`이다.
+  이 알림 재구성 실패는 커밋 후 다운스트림 오류이며 원장·응답을 롤백하지 않는다.
+  해외 구독·liveness 대체는 fillwire hk 2680 별건이고 `at-kis-ws` 은퇴는 보류다.
 - 🔴 **원장 커밋이 권한자.** 다운스트림(알림·rung 투영) 실패는 커밋된 fill 을 rejected 로
   세탁하거나 롤백/재삽입하지 않는다.
 - reconcile 트리거는 **기존 커널만** 호출(KR=`kis_live_reconcile_orders_impl`,

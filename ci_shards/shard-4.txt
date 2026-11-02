@@ -71,6 +71,7 @@ tests/research_contracts/test_strategy_ownership_manifest.py
 tests/routers/test_alpaca_paper_ledger_router.py
 tests/routers/test_execution_ledger_ingest_auth.py
 tests/routers/test_execution_ledger_ingest_downstream.py
+tests/routers/test_execution_ledger_ingest_fillwire.py
 tests/routers/test_execution_ledger_reconcile_trigger.py
 tests/routers/test_invest_forecasts_router.py
 tests/routers/test_invest_order_proposal_approvals.py
