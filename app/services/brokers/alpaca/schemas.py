@@ -40,6 +40,8 @@ class Asset(BaseModel):
     status: str
     tradable: bool
     asset_class: str = Field(alias="class", default="us_equity")
+    min_order_size: Decimal | None = None
+    min_trade_increment: Decimal | None = None
     shortable: bool = False
     easy_to_borrow: bool = False
     fractionable: bool = False

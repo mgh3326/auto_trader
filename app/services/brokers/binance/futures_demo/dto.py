@@ -108,6 +108,7 @@ class FuturesDemoPositionResult:
     # ``position_amt``". Contract v2 §4.3 forbids that inference; callers that
     # need a value call :meth:`require_position_side` and get an exception.
     position_side: str | None = None
+    margin_type: str | None = None
 
     def require_position_side(self) -> str:
         """Return the broker-reported ``positionSide`` or fail closed.
