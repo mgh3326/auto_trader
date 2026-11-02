@@ -54,9 +54,13 @@ def grade_lists(bars: pd.DataFrame, lists: dict, *, asof: str, market: str) -> d
         market, lists["asof"], (start + timedelta(days=60)).date().isoformat()
     )
     grades = {}
+    # A horizon is still pending until the snapshot itself reaches its maturity
+    # session; grading against an --asof later than the last bar must not turn a
+    # pending outcome into a final unknown_outcome.
+    last_bar = str(pd.to_datetime(prefix.date).max().date()) if len(prefix) else ""
     for h in HORIZONS:
         maturity = future_sessions[h].date().isoformat()
-        if maturity > asof:
+        if maturity > asof or maturity > last_bar:
             grades[str(h)] = {"state": "pending", "matures_on": maturity}
             continue
         saved = lists["horizons"][str(h)]
