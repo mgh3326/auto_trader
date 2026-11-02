@@ -163,6 +163,7 @@ tests/services/daily_candles/test_crypto_venue_resolution.py
 tests/services/daily_candles/test_sync_service.py
 tests/services/dots_history_export/test_export_contract.py
 tests/services/dots_history_export/test_export_db.py
+tests/services/dots_history_export/test_export_real.py
 tests/services/dots_history_export/test_export_v2.py
 tests/services/dots_history_export/test_export_v2_db.py
 tests/services/dots_history_export/test_leak_check.py
