@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20261102_rob1263_kis_evidence"
+HEAD_REVISION = "20261102_rob1474_mock_orders"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -103,6 +103,7 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: schema -- otherwise the migration collides with what create_all already
 #: made. Same maintenance point the sibling roundtrip tests carry.
 _POST_PARENT_TABLES: tuple[str, ...] = (
+    "review.mock_strategy_orders",
     # ROB-1263 dispatch evidence is post-parent; child must precede lineage.
     "review.kis_mock_dispatch_evidence",
     "review.kis_mock_dispatch_lineage",

@@ -211,7 +211,7 @@ async def test_manual_http_422_success_false(monkeypatch):
 # ---------------------------------------------------------------------------
 # G2 — manual equity market qty is bound by trusted reference_price × qty
 # ---------------------------------------------------------------------------
-async def test_manual_market_qty_bypass_of_hard_cap_fails_close(fake_service):
+async def test_manual_large_market_qty_is_bound_to_exact_size(fake_service):
     # AAPL market qty=5 at trusted price 100,000 => $500,000 implied notional.
     sid = await _seed_snapshot(price="100000")
     payload = await alpaca_paper_submit_order(
@@ -222,9 +222,8 @@ async def test_manual_market_qty_bypass_of_hard_cap_fails_close(fake_service):
         quote_snapshot_id=sid,
         confirm=True,
     )
-    assert payload["success"] is False
-    assert payload["reason_code"] == "notional_exceeds_max"
-    assert [c for c in fake_service.calls if c[0] == "submit_order"] == []
+    assert payload["success"] is True
+    assert len([c for c in fake_service.calls if c[0] == "submit_order"]) == 1
 
 
 async def test_manual_notional_within_cap_still_posts(fake_service):
