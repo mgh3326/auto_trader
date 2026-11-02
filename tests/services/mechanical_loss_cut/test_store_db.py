@@ -15,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal, engine
 from app.models.base import Base
 from app.models.execution_ledger import ExecutionLedger
@@ -24,6 +25,7 @@ from app.models.review import KISLiveOrderLedger
 from app.models.trading import InstrumentType
 from app.services.mechanical_loss_cut import positions
 from app.services.mechanical_loss_cut.job import DatabasePorts, evaluate_all_lots
+from app.services.mechanical_loss_cut.plans import record_buy_exit_plan
 from app.services.mechanical_loss_cut.rules import (
     AddLevel,
     CutDecision,
@@ -482,6 +484,69 @@ async def test_an_active_sell_proposal_counts_as_committed_quantity() -> None:
         await session.rollback()
 
     assert sells[key] == Decimal("6")
+
+
+async def test_buy_on_an_unplanned_held_lot_keeps_the_whole_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "LOT_EXIT_PLAN_WRITE_ENABLED", True)
+    key = _key()
+    async with AsyncSessionLocal() as session:
+        await _seed_fill(session, key.symbol)
+        await session.commit()
+    buy = {
+        "account_mode": key.account_mode,
+        "market": key.market,
+        "symbol": key.symbol,
+        "price": Decimal("90000"),
+        "quantity": Decimal("10"),
+        "now": _NOW,
+    }
+
+    async def rows() -> list[Any]:
+        async with AsyncSessionLocal() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(LotExitPlan)
+                        .where(LotExitPlan.symbol == key.symbol)
+                        .order_by(LotExitPlan.version)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    try:
+        assert await record_buy_exit_plan(**buy) == "left_to_backfill"
+        assert await rows() == []
+
+        stated = {"stop_price": "80000", "stop_basis": "support", "stop_reason": "low"}
+        assert await record_buy_exit_plan(**buy, stated=stated) == "add"
+
+        backfill, add = await rows()
+        assert (backfill.version, backfill.event, backfill.backfilled) == (
+            1,
+            "backfill",
+            True,
+        )
+        assert (backfill.quantity, backfill.average_cost) == (
+            Decimal("10"),
+            Decimal("100000"),
+        )
+        assert (add.version, add.event, add.backfilled) == (2, "add", False)
+        assert (add.quantity, add.average_cost, add.stop_price) == (
+            Decimal("20"),
+            Decimal("95000"),
+            Decimal("80000"),
+        )
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                text("DELETE FROM review.execution_ledger WHERE symbol = :symbol"),
+                {"symbol": key.symbol},
+            )
+            await session.commit()
 
 
 async def test_job_backfills_and_stays_quiet_without_candles() -> None:

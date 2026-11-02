@@ -18,6 +18,9 @@ A **lot** is one account mode + market + symbol position.
    version and records how it compared with the plan (`add_verdict`). That verdict
    is a record only and blocks no buy.
 2. A lot with no plan gets one from the policy defaults, marked `backfilled=true`.
+   A buy with no stated stop writes no plan on such a lot and does not clear that
+   mark, so live keeps refusing it. A buy that states a stop first records the held
+   position as the backfill, then writes the add with that stop.
 3. The job reads held lots and daily closes from the database. A lot is cut only
    when **all** of these hold:
    - the last completed close is current, and the series is not frozen;

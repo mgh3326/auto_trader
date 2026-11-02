@@ -23,7 +23,7 @@ from app.services.mechanical_loss_cut.positions import (
     held_lot_from_fills,
     lot_symbol,
 )
-from app.services.mechanical_loss_cut.rules import LotKey
+from app.services.mechanical_loss_cut.rules import HeldLot, LotKey
 from app.services.order_proposals import revalidation as revalidation_module
 from app.services.order_proposals.revalidation import (
     RungOutcome,
@@ -224,6 +224,95 @@ async def test_a_sell_from_before_the_plan_does_not_end_the_unreconciled_lot(
     monkeypatch.setattr(plans_module, "latest_sell_at", sold)
 
     assert await _buy(price=Decimal("95000")) == "add"
+
+
+@pytest.fixture
+def already_held(monkeypatch):
+    async def position(_session, key):
+        return HeldLot(
+            key=key,
+            quantity=Decimal("7"),
+            average_cost=Decimal("120000"),
+            currency="KRW",
+        )
+
+    monkeypatch.setattr(plans_module, "load_position", position)
+
+
+_STATED_STOP = {"stop_price": "80000", "stop_basis": "support", "stop_reason": "low"}
+
+
+@pytest.mark.asyncio
+async def test_buy_with_no_stop_on_an_unplanned_held_lot_leaves_it_to_the_backfill(
+    writes_on, already_held
+):
+    """The buy alone is not the lot, and a plan here would block the backfill."""
+    assert await _buy() == "left_to_backfill"
+
+    assert _Store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_stated_stop_on_an_unplanned_held_lot_keeps_the_whole_position(
+    writes_on, already_held
+):
+    assert await _buy(stated=_STATED_STOP) == "add"
+
+    backfill, add = _Store.appended
+    assert (backfill.event, backfill.backfilled) == ("backfill", True)
+    assert (backfill.quantity, backfill.average_cost) == (
+        Decimal("7"),
+        Decimal("120000"),
+    )
+    assert (add.event, add.backfilled) == ("add", False)
+    assert add.stop_price == Decimal("80000")
+    assert add.quantity == Decimal("17")
+    assert add.average_cost == Decimal("1840000") / Decimal("17")
+
+
+@pytest.mark.asyncio
+async def test_buy_with_no_stop_does_not_clear_a_backfilled_mark(
+    writes_on, already_held
+):
+    """The stop is still the policy default, so live must keep refusing it."""
+    _Store.latest = plan(backfilled=True)
+
+    assert await _buy(price=Decimal("90000")) == "left_to_backfill"
+
+    assert _Store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_unreconciled_buy_with_no_stop_does_not_clear_a_backfilled_mark(
+    writes_on,
+):
+    _Store.latest = _with_created_at(plan(backfilled=True), NOW - timedelta(hours=2))
+
+    assert await _buy(price=Decimal("90000")) == "left_to_backfill"
+
+    assert _Store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_stated_stop_turns_a_backfilled_lot_into_a_planned_one(
+    writes_on, already_held
+):
+    _Store.latest = plan(backfilled=True)
+
+    assert await _buy(stated=_STATED_STOP) == "add"
+
+    draft = _Store.appended[0]
+    assert (draft.event, draft.backfilled) == ("add", False)
+    assert draft.stop_price == Decimal("80000")
+
+
+@pytest.mark.asyncio
+async def test_new_lot_after_a_backfilled_one_went_flat_is_a_planned_entry(writes_on):
+    _Store.latest = _with_created_at(plan(backfilled=True), NOW - timedelta(days=30))
+
+    assert await _buy() == "entry"
+
+    assert _Store.appended[0].backfilled is False
 
 
 def _with_created_at(value, created_at):

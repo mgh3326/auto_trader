@@ -399,7 +399,7 @@ ROB-1439 의 정규화 체결·주문·포지션·현금 하한을 그대로 재
 - 🔴 **제안 없는 trigger 만 다시 시도한다**: 시장 마감·fresh 가격 없음·제안 쓰기 실패처럼 live 행이 없는 trigger 는 다음 실행이 오늘 사실로 다시 판정해 내보낸다. 재시도 대상은 live 가능 상태에서 기록된 최신 shadow 행(`details.live_armed`)뿐이다. 스위치 전에 기록된 trigger 는 나중에 내보내지 않는다. 🔴 제안이 있는데 dispatch 가 실패·예외면 브로커 미전송 증거가 아니므로 다시 dispatch 하지 말고, 다음 실행은 `send_proposal_for_approval` 로 사람 카드만 보낸다
 - 파킹 종목은 어느 계좌든 자르지 않고 계획도 만들지 않는다. 미체결 매도·활성 매도 제안·보호 수량 P 는 먼저 뺀다. 읽기 실패는 unknown 이며 자르지 않는다
 - 계획 쓰기는 `LOT_EXIT_PLAN_WRITE_ENABLED` 뒤, 브로커 수락 후, fail-open 이다. 매수 경로의 주문 결과를 절대 바꾸지 않는다. `add_verdict` 는 기록일 뿐 매수를 막지 않는다
-- 계획 없는 lot 은 정책 기본값으로 `backfilled=true` 계획을 받고 따로 보고된다. live 는 `live_include_backfilled` 없이는 거부한다
+- 계획 없는 lot 은 정책 기본값으로 `backfilled=true` 계획을 받고 따로 보고된다. live 는 `live_include_backfilled` 없이는 거부한다. 🔴 손절을 명시하지 않은 매수는 계획 없는 보유 lot 에 계획을 쓰지 않고 backfilled 표시도 지우지 못한다(`left_to_backfill`). 손절을 명시한 매수는 보유 포지션을 backfill 로 먼저 기록한 뒤 add 를 쓴다
 - 포지션은 `execution_ledger_in_effect()` 의 authoritative 행 FIFO 다. 브로커 앱에서 낸 거래는 안 보이므로, live 는 fresh preview 의 수량·평단으로 다시 확인한다
 - **테스트**: `tests/services/mechanical_loss_cut/`
 

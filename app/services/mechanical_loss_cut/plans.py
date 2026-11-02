@@ -27,6 +27,7 @@ from app.services.mechanical_loss_cut.rules import (
     ExitPlanInputError,
     LotKey,
     add_plan,
+    backfill_plan,
     entry_plan,
     is_parking_instrument,
     parse_exit_plan_input,
@@ -51,6 +52,9 @@ _PLANNABLE: frozenset[tuple[str, str]] = frozenset(
 # A buy reconciles into the ledger late. A plan this recent means the earlier
 # buy may be filled but unseen, so the next buy is still an add.
 _UNRECONCILED_ENTRY_WINDOW = timedelta(days=1)
+#: A buy with no stated stop on a lot whose stop no buy ever decided. The buy alone
+#: is not the lot, and only a backfill keeps that lot marked for the live refusal.
+LEFT_TO_BACKFILL = "left_to_backfill"
 
 
 def _positive(value: Any) -> Decimal | None:
@@ -59,6 +63,25 @@ def _positive(value: Any) -> Decimal | None:
     except (InvalidOperation, ValueError):
         return None
     return parsed if parsed.is_finite() and parsed > 0 else None
+
+
+async def _default_stop_bars(
+    session: Any, key: LotKey, params: Any, now: datetime
+) -> list[Bar]:
+    if params.default_stop.basis == "pct_floor":
+        return []
+    loaded = await load_bars(
+        session,
+        market=key.market,
+        symbols=[key.symbol],
+        count=max(
+            params.default_stop.support_lookback_sessions,
+            params.default_stop.sma_atr_sessions,
+        )
+        + 1,
+        now=now,
+    )
+    return next(iter(loaded.values()), ([], False))[0]
 
 
 async def record_buy_exit_plan(
@@ -131,7 +154,19 @@ async def record_buy_exit_plan(
                 # Otherwise the earlier buy has not reconciled yet: still an add.
                 sold_at = await latest_sell_at(session, key)
                 recent = sold_at is None or sold_at <= previous.created_at
+            if previous is None and held is not None:
+                if stated_plan is None:
+                    return LEFT_TO_BACKFILL
+                previous = await store.append_plan(
+                    backfill_plan(
+                        lot=held,
+                        params=params,
+                        bars=await _default_stop_bars(session, key, params, now),
+                    )
+                )
             if previous is not None and (held is not None or recent):
+                if previous.backfilled and stated_plan is None:
+                    return LEFT_TO_BACKFILL
                 draft = add_plan(
                     previous=previous,
                     params=params,
@@ -144,26 +179,16 @@ async def record_buy_exit_plan(
                     rung_index=rung_index,
                 )
             else:
-                bars: list[Bar] = []
-                if stated_plan is None and params.default_stop.basis != "pct_floor":
-                    loaded = await load_bars(
-                        session,
-                        market=market,
-                        symbols=[key.symbol],
-                        count=max(
-                            params.default_stop.support_lookback_sessions,
-                            params.default_stop.sma_atr_sessions,
-                        )
-                        + 1,
-                        now=now,
-                    )
-                    bars = next(iter(loaded.values()), ([], False))[0]
                 draft = entry_plan(
                     key=key,
                     params=params,
                     price=buy_price,
                     quantity=buy_quantity,
-                    bars=bars,
+                    bars=(
+                        []
+                        if stated_plan is not None
+                        else await _default_stop_bars(session, key, params, now)
+                    ),
                     stated=stated_plan,
                     proposal_id=proposal_id,
                     rung_index=rung_index,
