@@ -7,7 +7,6 @@ import copy
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -485,7 +484,7 @@ def test_query_writes_nothing() -> None:
     "path",
     [
         "/execution-intents/children/unknown-key",
-        f"/execution-intents/intents/{uuid4()}",
+        "/execution-intents/intents/00000000-0000-4000-8000-000000000000",
     ],
 )
 def test_unknown_key_or_intent_is_404(path: str) -> None:
