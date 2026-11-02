@@ -56,6 +56,8 @@ from app.services.strategy_sleeves.vocabulary import (
 
 ZERO = Decimal("0")
 _CRYPTO_PREFIX = "KRW-"
+#: NUMERIC(20, 4) holds at most 16 integer digits.
+_MAX_AMOUNT = Decimal("1e16")
 
 
 class SleeveError(ValueError):
@@ -92,7 +94,13 @@ def _amount(name: str, value: Any, *, positive: bool) -> Decimal:
         raise SleeveError(f"{name} must be greater than zero")
     if not positive and parsed < 0:
         raise SleeveError(f"{name} must not be negative")
-    if parsed != parsed.quantize(Decimal("0.0001")):
+    if parsed >= _MAX_AMOUNT:
+        raise SleeveError(f"{name} is too large")
+    try:
+        exact = parsed == parsed.quantize(Decimal("0.0001"))
+    except InvalidOperation as exc:
+        raise SleeveError(f"{name} must be a plain number") from exc
+    if not exact:
         raise SleeveError(f"{name} has more than 4 decimal places")
     return parsed
 
@@ -110,6 +118,14 @@ def _nonblank(name: str, value: Any, limit: int) -> str:
     if not text_value or len(text_value) > limit:
         raise SleeveError(f"{name} is required (1-{limit} characters)")
     return text_value
+
+
+def _actor(value: Any) -> str:
+    """An operator actor; the loss gate's system actor is never accepted here."""
+    who = _nonblank("actor", value, 128)
+    if who == SYSTEM_LOSS_GATE_ACTOR:
+        raise SleeveError(f"{SYSTEM_LOSS_GATE_ACTOR} is reserved for the loss gate")
+    return who
 
 
 async def acquire_sleeve_lock(session: AsyncSession, sleeve_id: int) -> None:
@@ -297,7 +313,7 @@ async def create_sleeve(
         max_duration_days=max_duration_days,
     )
     _require_prereg_for_live(initial_state.value, prereg)
-    who = _nonblank("actor", actor, 128)
+    who = _actor(actor)
     why = _nonblank("reason", reason, 500)
     if await get_sleeve_by_key(session, key) is not None:
         raise SleeveError(f"sleeve {key!r} already exists")
@@ -346,9 +362,7 @@ async def set_sleeve_version(
     changed metric, effect, horizon or duration is a new sleeve (a new epoch),
     never an edit of a running one.
     """
-    who = _nonblank("actor", actor, 128)
-    if who == SYSTEM_LOSS_GATE_ACTOR:
-        raise SleeveError(f"{SYSTEM_LOSS_GATE_ACTOR} is reserved for the loss gate")
+    who = _actor(actor)
     why = _nonblank("reason", reason, 500)
     await acquire_sleeve_lock(session, sleeve_id)
     rows = await history(session, sleeve_id)

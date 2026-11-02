@@ -256,6 +256,7 @@ tests/services/strategy_sleeves/test_gate.py
 tests/services/strategy_sleeves/test_migration_and_wiring.py
 tests/services/strategy_sleeves/test_report.py
 tests/services/strategy_sleeves/test_store_db.py
+tests/services/strategy_sleeves/test_store_inputs.py
 tests/services/test_alpaca_paper_ledger_execution_asset_class.py
 tests/services/test_alpaca_paper_ledger_service.py
 tests/services/test_alpaca_paper_market_evidence.py

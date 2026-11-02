@@ -64,10 +64,14 @@ async def latest_close_marks(
         return marks
     for symbol, rows in rows_by_symbol.items():
         completed = [row for row in rows if row.time_utc.date() <= last_complete]
-        if not completed or completed[-1].time_utc.date() != last_complete:
+        if not completed:
+            continue
+        # Newest by date, not by list position.
+        latest = max(completed, key=lambda row: row.time_utc)
+        if latest.time_utc.date() != last_complete:
             continue
         try:
-            close = Decimal(str(completed[-1].close))
+            close = Decimal(str(latest.close))
         except (InvalidOperation, ValueError):
             continue
         if close.is_finite() and close > 0:
