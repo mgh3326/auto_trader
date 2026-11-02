@@ -499,6 +499,28 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 - U5 KR 어댑터는 D3 엔진을 감싸 자체 순위만 쓰고 거래량이 없어서, `simulator.py` 가 같은 계약 타입·체결 모델로 후보 목록과 `VolumeShare` 를 돌린다.
 - **런북**: `research/kr_boosting/README.md`. 스케줄 없음(수동 `validate`/`diagnostic`/`report`).
 
+### 종목 선별 연구 하네스 (ROB-1474)
+
+`research/stock_selection/` — KR·US·Upbit KRW의 일별 횡단면 순위 연구. 공개 무인증
+시세 GET과 해시 검증된 로컬 CSV만 사용하며 DB·계좌·주문·스케줄러 연결은 없다.
+CLI `fetch`/`build`/`evaluate`/`forward`/`score`는 수동이다. ML 의존성은 별도
+`requirements-ml.txt`, LightGBM은 학습 함수 안 지연 import만 허용한다.
+
+- 피처는 마감 시각까지, 라벨은 공통 거래소 세션 t+h. 결측/기업행위 교차 결과는
+  unknown이며 미래 결과의 유무로 오늘 유니버스를 고르지 않는다. purge 10세션 +
+  embargo 10세션을 더하고 모델·기준선에 동일 평가 날짜/채점기를 쓴다.
+- forward는 날짜 prefix만 읽고 파일을 덮어쓰지 않는다. score는 저장 당시 입력
+  prefix 해시와 대조하여 과거 시세 수정이 있으면 거부한다.
+- `prediction_at`·`data_cutoff`·`label_kind=statistical_close_to_close`와
+  `execution_label=null`을 기록한다. close(t)는 통계 기준점이며 예측 후 최초 거래가능
+  가격에서 시작하는 실행 라벨과 섞지 않는다. pending·상폐·결측 결과는 0으로 채우지 않는다.
+- 공개 과거 스냅샷은 당시 관측 vintage가 아니다. 결과는 **survivor-only/bounded
+  diagnostic**으로만 보고한다. KR/US close×volume은 실제 거래대금이 아닌 추정치다.
+  시장 전체 readiness/실행 성과로 승격하지 않는다. 데이터·모델·행별 결과는
+  gitignored cache, 실험 사전등록과 k는 `research/experiments/`에 둔다.
+- 런북: `research/stock_selection/README.md`, 보고서:
+  `research/experiments/reports/rob-1474-stock-selection.md`.
+
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 두 진입점의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.

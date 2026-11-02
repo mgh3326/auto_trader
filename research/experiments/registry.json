@@ -91,6 +91,40 @@
       "previous_manifest_sha256": [],
       "k": 0,
       "test_looks": []
+    },
+    {
+      "id": "ROB-1474",
+      "title": "Daily cross-sectional stock selection harness, bounded diagnostics",
+      "tracker": "ROB-1474",
+      "markets": [
+        "kr",
+        "us",
+        "crypto"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-02",
+      "manifest": "research/experiments/manifests/rob-1474.json",
+      "manifest_sha256": "c698f8b0af75eff96788de35d61d6e8f1593a783e5c734994fea47abda12d4d3",
+      "previous_manifest_sha256": [
+        "58dadaf8247a284f348cd02075192adcbfa86dceb408298a5abf424a9ed72080"
+      ],
+      "k": 2,
+      "test_looks": [
+        {
+          "seq": 1,
+          "at": "2026-11-02",
+          "manifest_sha256": "58dadaf8247a284f348cd02075192adcbfa86dceb408298a5abf424a9ed72080",
+          "report": "research/experiments/reports/rob-1474-diagnostic-v1.md",
+          "report_sha256": "8c5ab74446942996f9005b0a5b81cdf5c732d253f3e5942f3aa9d9d43a8f08dd"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-02",
+          "manifest_sha256": "c698f8b0af75eff96788de35d61d6e8f1593a783e5c734994fea47abda12d4d3",
+          "report": "research/experiments/reports/rob-1474-stock-selection.md",
+          "report_sha256": "c4ccc2a8f1d65a864a625daef393f88d01e41d94624393387698719da4823041"
+        }
+      ]
     }
   ]
 }
