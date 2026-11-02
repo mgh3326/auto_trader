@@ -92,7 +92,8 @@ def register_trade_retrospective_tools(
             "rejected/cancelled postmortems are analyzed too. Read-only. "
             "pnl_coverage separates realized P&L that is recorded from rows "
             "that are structurally not applicable (no fill / buy leg) and rows "
-            "that are missing it (a filled sell with no cost basis). "
+            "that are unknown (no fill evidence / unknown side) or missing it "
+            "(a filled sell with no recorded P&L). "
             "Complements get_mock_loop_retrospective."
         ),
     )(get_retrospective_aggregate)

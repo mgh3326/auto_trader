@@ -479,7 +479,7 @@ async def test_pnl_coverage_separates_not_applicable_from_missing(
         realized_pnl=100.0,
         realized_pnl_currency="KRW",
     )
-    # 2. missing: filled sell WITHOUT a cost basis (the only actionable NULL)
+    # 2. missing: filled sell WITHOUT recorded P&L (cause not inferred)
     await svc.save_retrospective(
         db_session,
         symbol="000660",

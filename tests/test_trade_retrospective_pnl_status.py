@@ -105,8 +105,8 @@ def test_only_filled_sell_is_actionable_missing():
     # aggregate reader must never treat them as a loss or a zero.
     assert PNL_STATUS_CLASS[PNL_STATUS_MISSING_REALIZED_PNL] == "missing"
     assert PNL_STATUS_CLASS[PNL_STATUS_UNKNOWN_SIDE] == "unknown"
+    assert PNL_STATUS_CLASS[PNL_STATUS_NO_FILL_EVIDENCE] == "unknown"
     for not_applicable in (
-        PNL_STATUS_NO_FILL_EVIDENCE,
         PNL_STATUS_NO_FILL_OUTCOME,
         PNL_STATUS_BUY_LEG,
     ):
@@ -150,8 +150,8 @@ def test_pnl_coverage_counts_by_class():
     coverage = _build_pnl_coverage(rows)
     assert coverage["rows"] == 7
     assert coverage["recorded"] == 1
-    assert coverage["not_applicable"] == 4  # buy_leg + 2 no_fill + no_evidence
-    assert coverage["unknown"] == 1
+    assert coverage["not_applicable"] == 3  # buy_leg + 2 no_fill
+    assert coverage["unknown"] == 2
     assert coverage["missing"] == 1
     assert coverage["by_status"] == {
         PNL_STATUS_RECORDED: 1,

@@ -97,6 +97,15 @@ auto_trader runtime code must not import or instantiate in-process LLM providers
 `tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`
 scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 
+### Retrospective P&L coverage (ROB-1488)
+
+`get_trade_retrospectives`의 `pnl_status`와 `get_retrospective_aggregate`의
+`pnl_coverage`는 기존 행만 읽는 투영이다. `recorded`는 값 존재, `not_applicable`은
+매수 leg·no-fill outcome, `unknown`은 fill 증거 부재·side 미상, `missing`은
+fill 증거가 있는 매도에 값이 없는 경우다. missing의 원인은 추정하지 않는다.
+체결 증거 부재를 P&L 비해당이나 0으로 바꾸지 않으며, 원장·기존 행에 쓰지 않는다.
+aggregate coverage는 기존 group/filter에 포함된 행만 센다.
+
 ### Investment Report Item Contract
 
 `investment_report_create` / `investment_report_add_items` reject unknown top-level item keys. Use typed fields for current contracts:

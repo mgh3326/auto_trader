@@ -101,7 +101,7 @@ _KST = ZoneInfo("Asia/Seoul")
 
 # ROB-1488 — why `realized_pnl` is NULL. A closed vocabulary derived at read
 # time so a genuinely non-applicable value is not confused with a filled sell
-# whose cost basis was never recorded. This classification never fabricates a
+# whose realized P&L was not recorded. This classification never fabricates a
 # P&L and never writes a row; it only labels evidence the row already carries.
 PNL_STATUS_RECORDED = "recorded"
 PNL_STATUS_NO_FILL_EVIDENCE = "no_fill_evidence"
@@ -112,7 +112,7 @@ PNL_STATUS_MISSING_REALIZED_PNL = "missing_realized_pnl"
 
 PNL_STATUS_CLASS: dict[str, str] = {
     PNL_STATUS_RECORDED: "recorded",
-    PNL_STATUS_NO_FILL_EVIDENCE: "not_applicable",
+    PNL_STATUS_NO_FILL_EVIDENCE: "unknown",
     PNL_STATUS_NO_FILL_OUTCOME: "not_applicable",
     PNL_STATUS_BUY_LEG: "not_applicable",
     PNL_STATUS_UNKNOWN_SIDE: "unknown",
@@ -131,10 +131,9 @@ def classify_pnl_status(
 ) -> str:
     """Label an existing row's realized-P&L state without inventing a value.
 
-    ``missing_realized_pnl`` is the only bucket that means "a value could have
-    existed but was not recorded" (a filled sell without a cost basis). Every
-    other NULL is structurally non-applicable: no fill, a buy leg, no fill
-    evidence, or an unknown side.
+    ``missing_realized_pnl`` is the only bucket that means "a filled sell has no recorded value". The cause is not inferred.
+    Other NULLs are non-applicable (no fill or a buy leg) or unknown (missing
+    fill evidence or an unknown side).
     """
     if realized_pnl is not None:
         return PNL_STATUS_RECORDED

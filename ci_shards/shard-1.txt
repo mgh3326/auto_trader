@@ -496,6 +496,7 @@ tests/test_toss_consumer_transport.py
 tests/test_toss_warnings_sync.py
 tests/test_trade_notifier_types.py
 tests/test_trade_retrospective_aggregate.py
+tests/test_trade_retrospective_pnl_status.py
 tests/test_trade_retrospective_web_read.py
 tests/test_tvscreener_capabilities.py
 tests/test_undervalued_breakout_screener.py
