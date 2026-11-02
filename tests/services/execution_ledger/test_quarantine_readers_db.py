@@ -46,6 +46,7 @@ from app.services.execution_ledger.query_service import ExecutionLedgerQueryServ
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.fill_event_handoff import broker_risk
 from app.services.market_close_digest import queries as digest_queries
+from app.services.mechanical_loss_cut.positions import load_held_lots
 from app.services.order_proposals import kis_leftover_inference_service as inference
 from app.services.quotes_consumer import repository as quotes_repository
 from tests.services.execution_ledger._quarantine_fixtures import (
@@ -590,3 +591,22 @@ async def test_fill_evidence_and_report_readers_exclude_the_quarantined_phantom(
     assert await counted() is False, "the quarantined phantom is excluded"
     _drop_filter(monkeypatch, module)
     assert await counted() is True, "dropping the filter re-admits the phantom"
+
+
+async def test_mechanical_loss_cut_lots_drop_the_quarantined_row(
+    db_session, seed
+) -> None:
+    """ROB-1460: a quarantined row never becomes a position.
+
+    This reader also keeps only authoritative sources, and only a websocket row
+    can be quarantined, so the source filter would catch this row too. The
+    contract still ANDs the in-effect predicate on every fill reader.
+    """
+    scenario = await seed.scenario()
+    await _quarantine(db_session, scenario)
+
+    lots = await load_held_lots(db_session, markets=("equity_kr",))
+    await db_session.rollback()
+
+    [lot] = [lot for lot in lots if lot.key.symbol == scenario.symbol]
+    assert lot.quantity == Decimal("10")

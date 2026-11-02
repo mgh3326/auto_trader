@@ -95,6 +95,7 @@ from app.services.kis_mock_attribution import (
 )
 from app.services.kis_mock_runner.singleton import run_kis_mock_send
 from app.services.kr_symbol_universe_service import get_kr_security_type
+from app.services.mechanical_loss_cut.plans import record_buy_exit_plan
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_EXIT_INTENT,
     parse_funding_target,
@@ -2248,7 +2249,7 @@ async def _place_order_impl(
         )
 
         # Real execution
-        return await _execute_and_record(
+        execution_result = await _execute_and_record(
             normalized_symbol=normalized_symbol,
             side=side_lower,
             order_type=order_type_lower,
@@ -2281,6 +2282,23 @@ async def _place_order_impl(
             pre_send_hook=pre_send_hook,
             send_outcome=send_outcome,
         )
+        # ROB-1460: a proposal-flow buy is recorded by revalidation, which has
+        # the proposal's stated stop. A mock order has no plan.
+        if (
+            not proposal_flow
+            and not is_mock
+            and side_lower == "buy"
+            and execution_result.get("success") is True
+        ):
+            await record_buy_exit_plan(
+                account_mode="upbit" if market_type == "crypto" else "kis_live",
+                market=market_type,
+                symbol=normalized_symbol,
+                price=price if price is not None else current_price,
+                quantity=order_quantity,
+                now=datetime.datetime.now(datetime.UTC),
+            )
+        return execution_result
     except Exception as exc:
         logger.exception(
             "place_order execution failed (symbol=%s side=%s market=%s): %s",

@@ -15,6 +15,7 @@
 - dots 이력 익명화 export (ROB-1438)
 - 실거래 회고 (ROB-1439)
 - 보호 수량 P 규칙 추종 (#943)
+- 기계식 손절과 lot exit plan (ROB-1460)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
@@ -368,6 +369,27 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - 🔴 **unobserved (#1061)**: 브로커가 응답했지만 그 키의 보유/매도가능 수량이 판독 불가(Toss `sellable_quantity=None` 등)면 그 키만 `unobserved`(reason `FIELD_unavailable:SYMBOL`) — P·revision 불변, 알림 없음, 레버 exit 1. **held 0 으로 취급 금지**(P 하향·해제 = 위험 방향). 락 안 재조회도 동일(save 롤백). 같은 응답의 다른 Toss 키·미선언 종목은 영향 없음. KIS 리더는 불변(시장 단위 실패)
 - **알려진 공백**: Toss 앱 수동 매도는 원장에 안 들어온다 — 레버 실행 전까지 P 가 보유보다 높게 남는다
 - **런북**: `docs/runbooks/longterm-lot-protection.md` §Rule-executed P follow · §Desk write CLI
+
+### 기계식 손절과 lot exit plan (ROB-1460)
+
+매수 시점에 lot(account_mode + market + symbol)별 손절가를 기록하고, 가격이 실제로 그 손절가 아래로 떨어질 때만 파는 새 자동 매도 부류. 단계는 shadow(기록만)와 live(코드에 있으나 기본 off)다. 🔴 스케줄 등록 없음, 스위치 전부 기본 false.
+
+- **패키지**: `app/services/mechanical_loss_cut/` — `rules`(순수) · `store`(두 테이블의 유일한 writer) · `positions`(DB 전용 읽기) · `plans`(매수 경로 기록) · `job`(평가) · `gate`(live 게이트) · `live`(제안 생성, 주문 경로에 닿는 유일한 모듈)
+- **테이블**: `review.lot_exit_plans`(버전 append-only), `review.mechanical_loss_cut_decisions`(UNIQUE `mode,account_mode,market,symbol,trigger_key`). 마이그레이션 `20261102_rob1460_exit_plans`. at_app 은 SELECT·INSERT 만, 트리거가 UPDATE·DELETE 를 모든 역할에 거부, downgrade 는 행이 있으면 거부
+- **정책**: `config/trading_policy.yaml` `mechanical_loss_cut`(파라미터만, 스위치 없음). 값은 잠정이며 ROB-1458 근거로 정한다. `thresholds_confirmed` 가 false 인 시장은 live 거부
+- **CLI/태스크**: `scripts/mechanical_loss_cut.py`, `mechanical_loss_cut.evaluate`(scheduleless)
+- **런북**: `docs/runbooks/mechanical-loss-cut.md`. 편차 기록: `docs/contracts/policy-freeze-deviation-20261102-mechanical-loss-cut.md`
+
+**계약**:
+- 🔴 **트리거는 가격이다**: 현재성 있는 완결 일봉 종가가 평단·lot 의 기록된 손절가 아래이고, `unrealized_floor_pct` 이하이고, `rising_lookback_sessions` 전 종가보다 높지 않으며, `trigger.family` 조건을 만족해야 한다. 평단 아래이거나 손절가 위인 lot, 손절가 아래여도 상승 중인 lot 은 팔지 않는다. 가격 없음·stale·정지 의심은 절대 발동하지 않는다
+- 🔴 **shadow 는 브로커에 닿지 않는다**: `job`·`store`·`positions`·`rules`·`gate`·`plans` 는 브로커·주문 모듈을 import 하지 않는다(`test_shadow_modules_import_no_broker_or_order_path`). `live` 는 스위치 분기 안에서만 로드한다
+- 🔴 **`loss_cut_intent` 거부를 푸는 것은 결정 행뿐이다**: 이 제안에 묶인 `mode='live'` 행 + 스위치 AND 시장 AND 계정 + `thresholds_confirmed` + `expanded` + 정규장. 제안의 strategy 라벨·`source_asof` 는 입력이 아니다. 거부는 사람 카드로 간다. 🔴 per-order·daily 캡을 올리지 말고, 이 경로의 캡은 `max(limit, current) x quantity` 로 잰다. 손실매도 가드와 다른 모든 비기계식 매도는 불변
+- 🔴 **trigger 당 1회**: `trigger_key` = 계획 버전 + 손절가 + 구간 번호. 같은 구간의 재발동은 직전 결정 행으로 막고(종가가 손절가 이상으로 돌아와야 구간이 끝난다), 동시 실행은 UNIQUE 가 막는다. 키에 봉 창에서 읽은 날짜를 넣거나 이 UNIQUE 를 약화하지 마라
+- 파킹 종목은 어느 계좌든 자르지 않고 계획도 만들지 않는다. 미체결 매도·활성 매도 제안·보호 수량 P 는 먼저 뺀다. 읽기 실패는 unknown 이며 자르지 않는다
+- 계획 쓰기는 `LOT_EXIT_PLAN_WRITE_ENABLED` 뒤, 브로커 수락 후, fail-open 이다. 매수 경로의 주문 결과를 절대 바꾸지 않는다. `add_verdict` 는 기록일 뿐 매수를 막지 않는다
+- 계획 없는 lot 은 정책 기본값으로 `backfilled=true` 계획을 받고 따로 보고된다. live 는 `live_include_backfilled` 없이는 거부한다
+- 포지션은 `execution_ledger_in_effect()` 의 authoritative 행 FIFO 다. 브로커 앱에서 낸 거래는 안 보이므로, live 는 fresh preview 의 수량·평단으로 다시 확인한다
+- **테스트**: `tests/services/mechanical_loss_cut/`
 
 ### KIS live KR ledger lots — get_holdings opt-in (#963)
 

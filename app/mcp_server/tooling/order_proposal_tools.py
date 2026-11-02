@@ -28,6 +28,11 @@ from app.mcp_server.tooling.support_reserve_net_consumer_tool import (
 from app.services.funding_advisory.contracts import FundingCandidateEvent
 from app.services.funding_advisory.service import FundingAdvisoryService
 from app.services.funding_advisory.telegram import deliver_claimed_advisory
+from app.services.mechanical_loss_cut.plans import EXIT_PLAN_SOURCE_KEY
+from app.services.mechanical_loss_cut.rules import (
+    ExitPlanInputError,
+    parse_exit_plan_input,
+)
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
@@ -651,6 +656,27 @@ async def _link_funding_provenance_fail_open(
         }
 
 
+def _validate_exit_plan_argument(
+    exit_plan: dict | None,
+    *,
+    side: str,
+    action: str,
+    rungs: list[RungInput],
+) -> None:
+    """ROB-1460: refuse a malformed plan before any row exists."""
+    if exit_plan is None:
+        return
+    if side != "buy" or action != "place":
+        raise ValueError("exit_plan is only accepted on a place buy proposal")
+    try:
+        parsed = parse_exit_plan_input(exit_plan)
+    except ExitPlanInputError as exc:
+        raise ValueError(f"exit_plan invalid: {exc}") from exc
+    limits = [rung.limit_price for rung in rungs if rung.limit_price is not None]
+    if any(limit <= parsed.stop_price for limit in limits):
+        raise ValueError("exit_plan invalid: exit_plan_stop_not_below_rung")
+
+
 async def order_proposal_create(
     symbol: str,
     market: str,
@@ -675,6 +701,7 @@ async def order_proposal_create(
     funding_candidate_event: dict | None = None,
     funding_target: dict | None = None,
     source_funding_advisory_id: str | None = None,
+    exit_plan: dict | None = None,
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
 
@@ -716,6 +743,13 @@ async def order_proposal_create(
                 the canonical account sequence returned by
                 toss_proposal_accounts. No value is derived from settings or
                 from rationale/source_asof. Missing remains a manual card.
+        exit_plan: optional for a place buy. The stop decided with this buy:
+                {"stop_price": str, "stop_basis": support|pct_floor|volatility,
+                "stop_reason": str, "add_ladder": [{"price": str, "quantity":
+                str}], "max_adds": int}. Ladder prices descend and sit above the
+                stop, and the stop sits below every rung. Without it the plan
+                uses the policy default. It is recorded when the broker accepts
+                the buy, and it never affects approval.
     """
     try:
         market = _normalize_order_proposal_market(market)
@@ -732,6 +766,9 @@ async def order_proposal_create(
         vu = datetime.fromisoformat(valid_until) if valid_until else None
         sup = uuid.UUID(supersedes_proposal_id) if supersedes_proposal_id else None
         normalized_action = action or "place"
+        _validate_exit_plan_argument(
+            exit_plan, side=side, action=normalized_action, rungs=rung_inputs
+        )
         target_snapshot = None
         if normalized_action in {"replace", "cancel"}:
             if not target_broker_order_id:
@@ -789,6 +826,8 @@ async def order_proposal_create(
                 source_asof=(
                     {"cash_funding": {"funding_target": funding_target}}
                     if exit_intent == "cash_funding"
+                    else {EXIT_PLAN_SOURCE_KEY: exit_plan}
+                    if exit_plan is not None
                     else None
                 ),
             )

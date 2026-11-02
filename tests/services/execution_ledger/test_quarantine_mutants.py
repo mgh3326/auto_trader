@@ -225,6 +225,9 @@ def test_batch_noop_mutant_would_swallow_a_mixed_batch() -> None:
 
 #: (path, function) -> DB test proof that runs the "filter dropped" mutant.
 IN_EFFECT_READERS: dict[tuple[str, str], str] = {
+    ("app/services/mechanical_loss_cut/positions.py", "load_held_lots"): (
+        "test_quarantine_readers_db::test_mechanical_loss_cut_lots_drop_the_quarantined_row"
+    ),
     (
         "app/services/dots_history_export/reader.py",
         "execution_ledger_statement",

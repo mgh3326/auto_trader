@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20261101_rob1440_intent_gw"
+HEAD_REVISION = "20261102_rob1460_exit_plans"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -135,6 +135,9 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # ROB-1440 intent gateway tables are later than this boundary (child first).
     "review.execution_child_requests",
     "review.execution_intents",
+    # ROB-1460 exit plan tables are later than this boundary.
+    "review.lot_exit_plans",
+    "review.mechanical_loss_cut_decisions",
 )
 
 

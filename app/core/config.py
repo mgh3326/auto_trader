@@ -1111,6 +1111,15 @@ class Settings(BaseSettings):
     # Activation is the desk's decision, not this repo's.
     order_proposal_night_sweep_enabled: bool = False
     order_proposal_night_sweep_schedule_enabled: bool = False
+    # ROB-1460: mechanical loss-cut. All default off. Plan writes need the
+    # migration applied first. Shadow only records and never reaches a broker.
+    # Live needs the switch AND the market AND the account mode, plus each
+    # market's thresholds_confirmed in the trading policy.
+    LOT_EXIT_PLAN_WRITE_ENABLED: bool = False
+    MECHANICAL_LOSS_CUT_SHADOW_ENABLED: bool = False
+    MECHANICAL_LOSS_CUT_LIVE_ENABLED: bool = False
+    MECHANICAL_LOSS_CUT_LIVE_MARKETS: str = ""
+    MECHANICAL_LOSS_CUT_LIVE_ACCOUNT_MODES: str = ""
 
     @property
     def order_proposals_telegram_chat_allowlist(self) -> list[str]:

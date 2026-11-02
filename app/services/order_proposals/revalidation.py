@@ -38,6 +38,10 @@ from app.core.timezone import now_kst
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.live_correlation import live_correlation_id
+from app.services.mechanical_loss_cut.plans import (
+    EXIT_PLAN_SOURCE_KEY,
+    record_buy_exit_plan,
+)
 from app.services.order_proposals.approval_window import (
     ApprovalWindowCode,
     ApprovalWindowDecision,
@@ -1547,7 +1551,35 @@ async def _revalidate_place_rung(
             group=group,
             reservation=buying_power_reservation,
         )
+    await _record_exit_plan_after_accepted_buy(group, rung, outcome, now=now)
     return outcome
+
+
+async def _record_exit_plan_after_accepted_buy(
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    outcome: RungOutcome,
+    *,
+    now: datetime,
+) -> None:
+    """ROB-1460: a buy the broker accepted gets an exit plan. Never raises."""
+    if rung.side != "buy" or outcome.result not in {
+        "submitted_acked",
+        "submitted_resting",
+    }:
+        return
+    source_asof = group.source_asof if isinstance(group.source_asof, dict) else {}
+    await record_buy_exit_plan(
+        account_mode=group.account_mode,
+        market=group.market,
+        symbol=group.symbol,
+        price=rung.limit_price,
+        quantity=rung.quantity,
+        now=now,
+        stated=source_asof.get(EXIT_PLAN_SOURCE_KEY),
+        proposal_id=group.proposal_id,
+        rung_index=rung.rung_index,
+    )
 
 
 async def _release_after_rejection(
