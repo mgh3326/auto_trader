@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 SCHEMA_VERSION = "dots-history-export/v2"
+SCHEMA_VERSION_REAL = "dots-history-export/real-v1"
 
 
 class Kind(StrEnum):
@@ -19,6 +20,19 @@ class Kind(StrEnum):
     ENUM = "enum"
     SYMBOL = "symbol"
     TAG = "tag"
+    #: Real mode: a broker order id, correlation id or proposal id copied as is.
+    RAW_REF = "raw_ref"
+    #: Real mode: a label copied with its spaces and non-ASCII text intact.
+    PLAIN = "plain"
+    #: Real mode: an account identifier reduced to its last digits.
+    MASKED = "masked"
+
+
+class Mode(StrEnum):
+    """``deidentified`` is the ROB-1438 default; ``real`` is ROB-1465."""
+
+    DEIDENTIFIED = "deidentified"
+    REAL = "real"
 
 
 @dataclass(frozen=True)
@@ -263,3 +277,83 @@ TABLES: tuple[TableSpec, ...] = (
     TableSpec("account_balance_daily", "created_at", BALANCE_COLUMNS),
 )
 TABLE_BY_NAME = {table.name: table for table in TABLES}
+
+
+# --- Real mode (ROB-1465) -------------------------------------------------
+#
+# The operator's 2026-11-02 decision drops de-identification except for
+# credentials, API keys and full account numbers. Real mode copies the same
+# rows with real identifiers and plain labels, adds a first-fill time, and
+# adds the columns the ROB-1459 review asked for: lot links and the crypto
+# sell-ladder reference price.
+
+LOT_LINK_KINDS = frozenset(
+    {"opens_lot", "adds_to_lot", "partial_sell", "full_sell", "unlinked"}
+)
+LOT_BASIS_KINDS = frozenset({"period_start_seed", "opened_in_window", "unknown"})
+REFERENCE_PRICE_SOURCES = frozenset(
+    {"crypto_candles_1d_close", "unavailable:no_instrument", "unavailable:no_candle"}
+)
+
+
+def _real(columns: tuple[Column, ...]) -> tuple[Column, ...]:
+    """Swap hashed refs for raw ones, hashed labels for plain text, mask accounts."""
+    output: list[Column] = []
+    for column in columns:
+        if column.name == "account_ref":
+            output.append(Column(column.name, Kind.MASKED))
+        elif column.kind is Kind.REF:
+            output.append(Column(column.name, Kind.RAW_REF))
+        elif column.kind is Kind.TAG:
+            output.append(Column(column.name, Kind.PLAIN))
+        else:
+            output.append(column)
+    return tuple(output)
+
+
+_LOT_COLUMNS: tuple[Column, ...] = (
+    Column("lot_ref", Kind.RAW_REF),
+    _enum("lot_link_kind", LOT_LINK_KINDS),
+    Column("lot_opened_at_utc", Kind.TS_UTC),
+    _decimal("lot_cost_basis"),
+    _enum("lot_basis_kind", LOT_BASIS_KINDS),
+    Column("linked_fill_ref", Kind.RAW_REF),
+)
+
+_RUNG_REFERENCE_COLUMNS: tuple[Column, ...] = (
+    _decimal("reference_price"),
+    Column("reference_price_asof_utc", Kind.TS_UTC),
+    _enum("reference_price_source", REFERENCE_PRICE_SOURCES),
+    _decimal("distance_above_reference_pct"),
+)
+
+ORDER_COLUMNS_REAL = _real(ORDER_COLUMNS) + _times("first_fill_at")
+FILL_COLUMNS_REAL = _real(FILL_COLUMNS) + _LOT_COLUMNS
+PROPOSAL_COLUMNS_REAL = _real(PROPOSAL_COLUMNS)
+RUNG_COLUMNS_REAL = (
+    _real(RUNG_COLUMNS) + _RUNG_REFERENCE_COLUMNS + _times("first_fill_at")
+)
+BALANCE_COLUMNS_REAL = _real(BALANCE_COLUMNS)
+
+TABLES_REAL: tuple[TableSpec, ...] = (
+    TableSpec("kis_live_order_ledger", "created_at", ORDER_COLUMNS_REAL),
+    TableSpec("live_order_ledger", "created_at", ORDER_COLUMNS_REAL),
+    TableSpec("toss_live_order_ledger", "created_at", ORDER_COLUMNS_REAL),
+    TableSpec("kis_mock_order_ledger", "created_at", ORDER_COLUMNS_REAL),
+    TableSpec("alpaca_paper_order_ledger", "created_at", ORDER_COLUMNS_REAL),
+    TableSpec("paper_pending_orders", "placed_at", ORDER_COLUMNS_REAL),
+    TableSpec("paper_trades", "executed_at", ORDER_COLUMNS_REAL),
+    TableSpec("execution_ledger", "filled_at", FILL_COLUMNS_REAL),
+    TableSpec("order_proposals", "created_at", PROPOSAL_COLUMNS_REAL),
+    TableSpec("order_proposal_rungs", "proposal.created_at", RUNG_COLUMNS_REAL),
+    TableSpec("account_balance_daily", "created_at", BALANCE_COLUMNS_REAL),
+)
+TABLE_BY_NAME_REAL = {table.name: table for table in TABLES_REAL}
+
+
+def tables_for(mode: Mode) -> tuple[TableSpec, ...]:
+    return TABLES_REAL if mode is Mode.REAL else TABLES
+
+
+def schema_version_for(mode: Mode) -> str:
+    return SCHEMA_VERSION_REAL if mode is Mode.REAL else SCHEMA_VERSION

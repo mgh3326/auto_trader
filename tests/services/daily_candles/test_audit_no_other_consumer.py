@@ -21,6 +21,16 @@ ALLOWED = {
     # Docstring reference describing the FK relationship from
     # crypto_instruments to crypto_candles_*.
     "app/models/crypto_instruments.py",
+    # ROB-1465: the dots history export reads the last completed daily close
+    # only to state a crypto sell rung's reference price at order creation. It
+    # is a read-only, single-transaction research export: no write, no broker
+    # call, no schedule, and it never feeds a trading decision.
+    "app/services/dots_history_export/reader.py",
+    # ROB-1465: the column name and its close-time convention are described in
+    # the export schema and its reference-price lookup docstring. Both are
+    # definitional references to the same read-only use above.
+    "app/services/dots_history_export/projection.py",
+    "app/services/dots_history_export/spec.py",
 }
 
 

@@ -1,4 +1,4 @@
-# dots history export (ROB-1438, v2 ROB-1450)
+# dots history export (ROB-1438, v2 ROB-1450, real mode ROB-1465)
 
 dots is an external research and design AI session that reads Google Drive and
 Linear. This runbook gives dots real order and fill history without account
@@ -12,6 +12,11 @@ transaction, calls no broker and writes only to its output directory.
 The current schema is `dots-history-export/v2` (`schema_version` in
 `manifest.json`). v2 adds four fill columns, an opening-seed flag and the
 `account_balance_daily` table. See [Changes in v2](#changes-in-v2).
+
+`--real-values` writes a different schema, `dots-history-export/real-v1`. The
+operator's 2026-11-02 decision allows real symbols, order ids, labels and account
+suffixes; only credentials and full account numbers stay out. See
+[Real-value mode](#real-value-mode).
 
 ## Run the export
 
@@ -320,6 +325,55 @@ deposit, buying power, NAV, equity and snapshot tables:
 - `research/trade_retro` reads both v1 and v2. It ignores the new columns, so a
   v1 export gives byte-identical reports, and its report names the export's
   `schema_version`.
+
+## Real-value mode
+
+`--real-values` is the ROB-1465 mode, added after the operator's 2026-11-02
+decision that dots no longer needs de-identification. It writes the same tables
+with real values and needs no salt.
+
+```bash
+uv run python -m scripts.export_dots_history \
+  --database-url-env DOTS_EXPORT_DATABASE_URL \
+  --real-values \
+  --since 2026-05-01 \
+  --until <now> \
+  --deny-values-file ~/.config/auto_trader/dots_deny_values \
+  --out ~/dots-exports/<date>-real
+```
+
+What changes:
+
+- `order_ref`, `correlation_ref`, `proposal_ref`, `rung_ref`, `row_ref` and
+  `report_item_ref` hold real ids. A numeric KIS order number loses its leading
+  zeros so it still joins its fills; a UUID or base64 broker id is copied
+  exactly (`Toss` ids are base64url and can start with `_` or `-`).
+- Label columns hold the text as written, including Korean and spaces.
+- `account_ref` is masked to `****` plus the last four characters. No table this
+  tool reads holds a broker account number, so a full number can only reach the
+  output through a label, and the leak check refuses it there.
+- Order tables gain `first_fill_at_utc` / `first_fill_at_local`.
+- `execution_ledger` gains `lot_ref`, `lot_link_kind`, `lot_opened_at_utc`,
+  `lot_cost_basis`, `lot_basis_kind` and `linked_fill_ref`: the FIFO lot walk
+  that links an add-buy to the lot it grew and a sell to the lot it reduced. A
+  `manual_import` `SEED-` row restarts the lot with
+  `lot_basis_kind = period_start_seed`, which is the position's cost basis at the
+  cutover.
+- `order_proposal_rungs` gains `reference_price`, `reference_price_asof_utc`,
+  `reference_price_source`, `distance_above_reference_pct` and
+  `first_fill_at_*`. For a crypto sell the reference is the last completed UTC
+  daily close before the order was created (`public.crypto_candles_1d`, whose
+  `time` is the day the candle covers, so its close is at `time + 1 day`).
+
+The leak check keeps the account-number and credential rules (JWT, token
+prefixes, bearer, credential assignment) and still refuses `--deny-values-file`
+values anywhere. It drops the rules that only made sense for hashes: long digit
+runs, hex secrets, UUIDs and long opaque runs. A UUID-shaped cell is exempt from
+the account-number rule, because proposal and Upbit order ids are UUIDs.
+
+The mode is a deliberate exception to "de-identified is not anonymous": a real
+export names symbols, sizes and times. Keep the Drive folder restricted and do
+not commit the output.
 
 ## How the leak check works
 
