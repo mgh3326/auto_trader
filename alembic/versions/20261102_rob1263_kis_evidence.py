@@ -6,7 +6,7 @@ No existing table, binary reservation semantics, or activation setting changes.
 from alembic import op
 
 revision = "20261102_rob1263_kis_evidence"
-down_revision = "20261102_rob1470_sleeves"
+down_revision = "20261102_rob1460_exit_plans"
 branch_labels = None
 depends_on = None
 
