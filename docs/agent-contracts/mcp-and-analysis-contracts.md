@@ -100,9 +100,13 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 ### Retrospective P&L coverage (ROB-1488)
 
 `get_trade_retrospectives`의 `pnl_status`와 `get_retrospective_aggregate`의
-`pnl_coverage`는 기존 행만 읽는 투영이다. `recorded`는 값 존재, `not_applicable`은
-매수 leg·no-fill outcome, `unknown`은 fill 증거 부재·side 미상, `missing`은
-fill 증거가 있는 매도에 값이 없는 경우다. missing의 원인은 추정하지 않는다.
+`pnl_coverage`는 기존 행만 읽는 투영이다. `recorded` class는 `realized_pnl` 값 존재
+또는 `recorded_other_pnl`(pnl_pct·total_pnl_krw·fx_pnl_krw·security_pnl_usd/krw 중
+값 존재)를 센다. 후자는 절대 realized 금액을 안다는 뜻이 아니며 NULL을 채우지 않는다.
+`not_applicable`은 position_intake·매수 leg·no-fill outcome이다. intake는 execution이
+아니므로 fill 증거 검사보다 먼저 비해당으로 분류한다. `unknown`은 execution의
+fill 증거 부재·side 미상, `missing`은 fill 증거가 있는 매도에 위 P&L 필드가 모두
+없는 경우다. missing의 원인은 추정하지 않는다.
 체결 증거 부재를 P&L 비해당이나 0으로 바꾸지 않으며, 원장·기존 행에 쓰지 않는다.
 aggregate coverage는 기존 group/filter에 포함된 행만 센다.
 

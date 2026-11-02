@@ -104,6 +104,8 @@ _KST = ZoneInfo("Asia/Seoul")
 # whose realized P&L was not recorded. This classification never fabricates a
 # P&L and never writes a row; it only labels evidence the row already carries.
 PNL_STATUS_RECORDED = "recorded"
+PNL_STATUS_RECORDED_OTHER_PNL = "recorded_other_pnl"
+PNL_STATUS_POSITION_INTAKE = "position_intake"
 PNL_STATUS_NO_FILL_EVIDENCE = "no_fill_evidence"
 PNL_STATUS_NO_FILL_OUTCOME = "no_fill_outcome"
 PNL_STATUS_BUY_LEG = "buy_leg"
@@ -112,6 +114,8 @@ PNL_STATUS_MISSING_REALIZED_PNL = "missing_realized_pnl"
 
 PNL_STATUS_CLASS: dict[str, str] = {
     PNL_STATUS_RECORDED: "recorded",
+    PNL_STATUS_RECORDED_OTHER_PNL: "recorded",
+    PNL_STATUS_POSITION_INTAKE: "not_applicable",
     PNL_STATUS_NO_FILL_EVIDENCE: "unknown",
     PNL_STATUS_NO_FILL_OUTCOME: "not_applicable",
     PNL_STATUS_BUY_LEG: "not_applicable",
@@ -122,28 +126,36 @@ PNL_STATUS_CLASS: dict[str, str] = {
 _FILLED_OUTCOMES = frozenset({"filled", "partially_filled"})
 
 
-def classify_pnl_status(
-    *,
-    outcome: str | None,
-    side: str | None,
-    realized_pnl: Decimal | None,
-    fill_evidence_available: bool,
-) -> str:
-    """Label an existing row's realized-P&L state without inventing a value.
+def classify_pnl_status(row: TradeRetrospective) -> str:
+    """Label existing P&L evidence without converting or inventing a value.
 
-    ``missing_realized_pnl`` is the only bucket that means "a filled sell has no recorded value". The cause is not inferred.
-    Other NULLs are non-applicable (no fill or a buy leg) or unknown (missing
-    fill evidence or an unknown side).
+    ``recorded_other_pnl`` means another P&L field is present, not that the
+    absolute realized amount is known. ``missing_realized_pnl`` is reserved
+    for evidenced filled sells with no P&L field populated; cause is not inferred.
+    Position intake is not an execution and has no realized-P&L obligation.
     """
-    if realized_pnl is not None:
+    if is_intake_retrospective(row):
+        return PNL_STATUS_POSITION_INTAKE
+    if row.realized_pnl is not None:
         return PNL_STATUS_RECORDED
-    if not fill_evidence_available:
+    if any(
+        value is not None
+        for value in (
+            row.pnl_pct,
+            row.total_pnl_krw,
+            row.fx_pnl_krw,
+            row.security_pnl_usd,
+            row.security_pnl_krw,
+        )
+    ):
+        return PNL_STATUS_RECORDED_OTHER_PNL
+    if not row.fill_evidence_available:
         return PNL_STATUS_NO_FILL_EVIDENCE
-    if outcome not in _FILLED_OUTCOMES:
+    if row.outcome not in _FILLED_OUTCOMES:
         return PNL_STATUS_NO_FILL_OUTCOME
-    if side == "buy":
+    if row.side == "buy":
         return PNL_STATUS_BUY_LEG
-    if side is None:
+    if row.side is None:
         return PNL_STATUS_UNKNOWN_SIDE
     return PNL_STATUS_MISSING_REALIZED_PNL
 
@@ -151,12 +163,7 @@ def classify_pnl_status(
 def _pnl_status_counts(items: list[TradeRetrospective]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in items:
-        status = classify_pnl_status(
-            outcome=item.outcome,
-            side=item.side,
-            realized_pnl=item.realized_pnl,
-            fill_evidence_available=item.fill_evidence_available,
-        )
+        status = classify_pnl_status(item)
         counts[status] = counts.get(status, 0) + 1
     return counts
 
@@ -279,12 +286,7 @@ def serialize_retrospective(
         "realized_pnl": float(r.realized_pnl) if r.realized_pnl is not None else None,
         "realized_pnl_currency": r.realized_pnl_currency,
         "realized_pnl_source": r.realized_pnl_source,
-        "pnl_status": classify_pnl_status(
-            outcome=r.outcome,
-            side=r.side,
-            realized_pnl=r.realized_pnl,
-            fill_evidence_available=r.fill_evidence_available,
-        ),
+        "pnl_status": classify_pnl_status(r),
         "pnl_pct": float(r.pnl_pct) if r.pnl_pct is not None else None,
         "buy_fx_rate": float(r.buy_fx_rate) if r.buy_fx_rate is not None else None,
         "sell_fx_rate": float(r.sell_fx_rate) if r.sell_fx_rate is not None else None,
