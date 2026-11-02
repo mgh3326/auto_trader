@@ -77,7 +77,12 @@ def build_selection(
     session_times(asof, horizon)
     calendar = xcals.get_calendar("XNYS")
     signal_date = calendar.previous_session(asof.isoformat()).date()
-    bars, _ = read_bars(root, "us")
+    bars, meta = read_bars(root, "us")
+    if (
+        meta.get("producer") == "mock-data-refresh/v1"
+        and date.fromisoformat(meta["observation_date"]) > asof
+    ):
+        raise ValueError("future universe observation")
     payload = make_lists(
         bars,
         market="us",

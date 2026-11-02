@@ -28,7 +28,7 @@ def write_json(path: Path, payload: dict) -> Path:
 
 
 def read_bars(root: Path, market: str) -> tuple[pd.DataFrame, dict]:
-    path = root / market / "bars.csv"
+    path = (root / market).resolve() / "bars.csv"
     meta = json.loads(path.with_suffix(".json").read_text())
     if meta["market"] != market or digest(path) != meta["sha256"]:
         raise ValueError("input market/hash mismatch")

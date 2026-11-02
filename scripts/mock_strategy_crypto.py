@@ -56,7 +56,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("command", choices=("run", "close-due", "status"))
     result.add_argument("--venue", required=True, choices=VENUES)
     result.add_argument("--asof", required=True, type=date.fromisoformat)
-    result.add_argument("--panel-root", type=Path)
+    inputs = result.add_mutually_exclusive_group()
+    inputs.add_argument("--panel-root", type=Path)
+    inputs.add_argument("--cache-dir", type=Path, help="mock_data_refresh root")
     result.add_argument("--horizon", type=int, choices=HORIZONS, default=3)
     result.add_argument("--notional", type=positive, default=Decimal("1000"))
     result.add_argument("--dry-run", action="store_true")
@@ -114,11 +116,13 @@ async def execute(args: argparse.Namespace) -> dict:
         }
     payload = None
     if args.command == "run":
-        if args.panel_root is None:
-            raise ValueError("run requires --panel-root")
+        if args.panel_root is None and args.cache_dir is None:
+            raise ValueError("run requires --panel-root or --cache-dir")
         if args.dry_run and args.market_fixture is None:
             raise ValueError("run --dry-run requires --market-fixture")
-        payload = daily_lists(args.panel_root, args.asof, horizon=args.horizon)
+        payload = daily_lists(
+            args.panel_root, args.asof, horizon=args.horizon, cache_root=args.cache_dir
+        )
     # Offline fixture dry runs create neither a recorder nor a broker transport.
     broker = (
         FixtureMarket(args.market_fixture)
