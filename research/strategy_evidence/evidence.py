@@ -18,6 +18,7 @@ from research.strategy_evidence import (
 )
 from research.strategy_evidence import overlay as ov
 from research.strategy_evidence.common import IDLE_CASH_YIELD, MARKETS
+from research.strategy_evidence.decision_rules import US_ADD_DRAWDOWN
 from research.strategy_evidence.dividends import load_dividends
 from research.strategy_evidence.lots import all_paths
 from research.trade_retro.report import Results
@@ -27,7 +28,7 @@ WINDOW_START = date(2026, 5, 1)
 #: Thresholds named in advance for the overlays and the options table: the tier's
 #: -8% floor, a middle value, and the -40% depth of today's loss-cut classification.
 OVERLAY_CUTS = (0.08, 0.20, 0.40)
-OVERLAY_ADDS = (0.08, 0.15)
+OVERLAY_ADDS = (US_ADD_DRAWDOWN, 0.15)
 #: Rule-set variants named in advance for the options table (all are in the grid).
 OPTION_VARIANTS = ("A2", "A4", "B3")
 PARKING_INSTRUMENT = {"kr": "459580", "us": "SGOV"}
