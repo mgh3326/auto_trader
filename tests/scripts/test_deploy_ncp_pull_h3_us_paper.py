@@ -20,6 +20,7 @@ from app.mcp_server.tooling import register_all_tools
 from app.mcp_server.tooling.h3_us_paper_registration import H3_US_PAPER_TOOL_NAMES
 from tests.mcp_server._registration_recorder import RegistrationRecorder
 from tests.scripts import test_deploy_ncp_pull_image_prune as prune
+from tests.scripts._deploy_gate_fakes import install_gate_helper
 from tests.scripts.test_deploy_ncp_pull_rollback import (
     DEPLOY,
     INITIAL,
@@ -103,6 +104,7 @@ def _mutant(tmp_path: Path, old: str, new: str) -> Path:
     path = tmp_path / "deploy-mutant.sh"
     path.write_text(source.replace(old, new))
     path.chmod(0o755)
+    install_gate_helper(tmp_path)
     return path
 
 
@@ -461,6 +463,7 @@ def test_run_mcp_refuses_a_blank_profile_even_past_the_pre_check(
     deploy = tmp_path / "deploy-mutant.sh"
     deploy.write_text(mutated)
     deploy.chmod(0o755)
+    install_gate_helper(tmp_path)
     result, calls, state, _ = _run(tmp_path, deploy=deploy)
     assert result.returncode != 0
     assert f"MCP_PROFILE is required for {UNIT}" in result.stderr
