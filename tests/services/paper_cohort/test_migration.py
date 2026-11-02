@@ -169,6 +169,14 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 )
             await connection.run_sync(Base.metadata.create_all)
+            # ROB-1263 tables are post-boundary metadata, not parent objects.
+            # Remove the evidence child before its lineage FK target.
+            await connection.execute(
+                text("DROP TABLE review.kis_mock_dispatch_evidence")
+            )
+            await connection.execute(
+                text("DROP TABLE review.kis_mock_dispatch_lineage")
+            )
             # Base metadata represents the current application head. Rebuild
             # the ROB-849 boundary so later migrations are exercised instead
             # of colliding with tables that create_all already materialized.
