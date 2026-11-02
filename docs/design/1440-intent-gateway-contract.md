@@ -53,7 +53,6 @@ Both reads need the token, take no lock, and run in a `READ ONLY` transaction. N
 ```json
 {"intent_id": "<uuid>", "reconciled": true,
  "view": {"filled_qty": 4, "order": {"key": "<key>", "price": 70100, "qty": 10}},
- "filled_qty": 4,
  "unresolved": [],
  "children": [{"child_id": 1, "idempotency_key": "<key>", "state": "accepted"}]}
 ```
@@ -63,9 +62,9 @@ Both reads need the token, take no lock, and run in a `READ ONLY` transaction. N
 `view` has exactly the fields of fillwire's `exec.View`:
 
 - `order` is absent when no order is working. `qty` is the quantity last sent, and fills do not reduce it. The open quantity is `qty` minus the fills on that order.
-- `filled_qty` is not fill evidence. It holds back further sends, and it also decides that a fully filled order is no longer working. KIS order numbers repeat across days, so a fill counts only on the KST trading day of the child that sent that number. A number known only from the ledger takes the days of its lineage. An execution-ledger row from any other day is ignored, because it could report a live order as finished.
+- `filled_qty` is not fill evidence. It holds back further sends, and it also decides that a fully filled order is no longer working. KIS order numbers repeat across days, so an order is its number and its KST trading day, and a lineage counts only fills on its own orders. A submit or amend places an order on the day it was sent. A cancel journals its target's number and places nothing. A number known only from the ledger takes the days of the lineage's submits and amends that have no recorded number. An execution-ledger row on any other day is ignored, because it could report a live order as finished.
 
-**`view` is `null` when `reconciled` is false, and E2 must keep holding.** `unresolved` then names each child and why:
+**`view` is `null` when `reconciled` is false, and E2 must keep holding.** No fill total is reported then, because a total without every lineage is partial. `unresolved` names each child and why:
 
 | `reason` | Condition |
 |---|---|

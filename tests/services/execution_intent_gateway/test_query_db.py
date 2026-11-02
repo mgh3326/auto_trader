@@ -31,6 +31,8 @@ validate_run_owned_database_url(engine.url)
 pytestmark = pytest.mark.integration
 
 SENT_AT = datetime(2026, 11, 2, 0, 0, tzinfo=UTC)
+#: The KST trading day of SENT_AT and of the seeded fills.
+TRADING_DAY = "20261102"
 
 
 def _submit(key: str, order_id: str | None) -> ChildSnapshot:
@@ -142,7 +144,7 @@ async def test_reader_returns_ledger_evidence_for_the_lineage(
             broker_cancel_confirmed=None,
         ),
     )
-    assert evidence.filled_by_order_id == {seeded["order_no"]: 4}
+    assert evidence.filled_by_order_day == {(seeded["order_no"], TRADING_DAY): 4}
 
 
 @pytest.mark.asyncio
@@ -153,7 +155,7 @@ async def test_reader_finds_the_order_id_of_an_unknown_submit_from_the_ledger(
     evidence = await SqlLedgerEvidenceReader(AsyncSessionLocal).read(
         intent, [_submit(seeded["root"], None)]
     )
-    assert evidence.filled_by_order_id == {seeded["order_no"]: 4}
+    assert evidence.filled_by_order_day == {(seeded["order_no"], TRADING_DAY): 4}
 
 
 @pytest.mark.asyncio
@@ -170,7 +172,7 @@ async def test_reader_ignores_live_rows_with_the_same_order_number(
     evidence = await SqlLedgerEvidenceReader(AsyncSessionLocal).read(
         intent, [_submit(seeded["root"], seeded["order_no"])]
     )
-    assert evidence.filled_by_order_id == {seeded["order_no"]: 4}
+    assert evidence.filled_by_order_day == {(seeded["order_no"], TRADING_DAY): 4}
 
 
 @pytest.mark.asyncio
@@ -190,7 +192,7 @@ async def test_reader_ignores_fills_from_another_day_under_the_same_number(
     evidence = await SqlLedgerEvidenceReader(AsyncSessionLocal).read(
         intent, [_submit(seeded["root"], seeded["order_no"])]
     )
-    assert evidence.filled_by_order_id == {seeded["order_no"]: 4}
+    assert evidence.filled_by_order_day == {(seeded["order_no"], TRADING_DAY): 4}
 
 
 @pytest.mark.asyncio
