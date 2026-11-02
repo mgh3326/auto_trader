@@ -135,6 +135,14 @@ the scanner, and reprocessing paths are unaffected.
 
 **운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover). 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
 
+### Report writer diagnostic (ROB-1488)
+
+`scripts.diagnose_investment_reports`는 READ ONLY·8초 timeout으로 report 시각과
+watch의 resolved/null/dangling link를 집계한다. 최근 report-linked event 부재는
+모든 의존성 부재 증명이 아니다. H4 운영자 결정은 create/list/get 유지, 비활성
+Hermes composition/write 경로의 R4 은퇴이며 writer 활성화·backfill은 없다.
+이 진단은 report나 watch를 생성하지 않고 스케줄러에 연결하지 않는다.
+
 ### investment_report_create item 계약 (ROB-458)
 
 `investment_report_create`의 `items[]` 각 항목 필수/선택 필드:
