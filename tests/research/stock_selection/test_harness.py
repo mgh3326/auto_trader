@@ -155,6 +155,17 @@ def test_walk_forward_adds_purge_and_embargo_on_common_dates():
     assert folds[0].train_dates[-1] == days[79]
     assert folds[0].test_dates[0] == days[100]
     assert len(folds[1].train_dates) == len(folds[0].train_dates) + 20
+    # Uneven panel density must not turn the 10-session gap into 10 rows.
+    panel_dates = [
+        day for index, day in enumerate(days) for _ in range(2 + index % 101)
+    ]
+    panel_folds = walk_forward(
+        panel_dates, first_test=days[100].isoformat(), test_sessions=20
+    )
+    pd.testing.assert_index_equal(panel_folds[0].train_dates, folds[0].train_dates)
+    for h in HORIZONS:
+        label_end = days.get_loc(panel_folds[0].train_dates[-1]) + h
+        assert days.get_loc(panel_folds[0].test_dates[0]) - label_end - 1 >= 10
     with pytest.raises(ValueError, match="max horizon"):
         walk_forward(days, first_test="2020-06-01", embargo=9)
 
@@ -232,6 +243,10 @@ def test_forward_score_roundtrip_pending_matured_and_revisions(
     lists = json.loads(list_path.read_text())
     assert set(lists["horizons"]) == {"1", "3", "5", "10"}
     assert len(lists["horizons"]["1"]["up"]) == 3
+    assert lists["label_kind"] == "statistical_close_to_close"
+    assert lists["prediction_at"] == decision_at(market, date(2021, 6, 15)).isoformat()
+    assert lists["data_cutoff"] == "2021-06-15"
+    assert lists["execution_label"] is None
     assert (
         grade_lists(bars, lists, asof="2021-06-15", market=market)["horizons"]["1"][
             "state"
@@ -245,6 +260,33 @@ def test_forward_score_roundtrip_pending_matured_and_revisions(
     score.main()
     grade = json.loads(Path(capsys.readouterr().out.strip()).read_text())
     assert all(g["state"] == "scored" for g in grade["horizons"].values())
+    assert grade["label_kind"] == lists["label_kind"]
+    assert grade["execution_label"] is None
+    # A delisted or missing future series never becomes a zero return.
+    missing_symbol = lists["horizons"]["1"]["up"][0]["symbol"]
+    missing_future = bars[
+        ~((bars.symbol == missing_symbol) & (bars.date > "2021-06-15"))
+    ]
+    unknown = grade_lists(missing_future, lists, asof="2021-08-01", market=market)
+    for h in HORIZONS:
+        result = unknown["horizons"][str(h)]
+        assert result["state"] == "unknown_outcome"
+        assert result["raw"]["summary"]["up_hit"] is None
+        assert 0 < result["raw"]["summary"]["outcome_coverage"] < 1
+    with pytest.raises(ValueError, match="separate scorer"):
+        grade_lists(
+            bars,
+            {**lists, "label_kind": "first_tradable_after_prediction"},
+            asof="2021-08-01",
+            market=market,
+        )
+    with pytest.raises(ValueError, match="prediction time"):
+        grade_lists(
+            bars,
+            {**lists, "prediction_at": "2021-06-15T00:00:00Z"},
+            asof="2021-08-01",
+            market=market,
+        )
     # Labels from bars after the list date never enter list generation.
     early = make_lists(
         bars[bars.date <= "2021-06-15"], market=market, asof="2021-06-15", top_n=3

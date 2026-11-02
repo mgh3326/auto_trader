@@ -9,7 +9,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from .dataset import FEATURE_CONTRACT, HORIZONS, build_dataset, sessions
+from .dataset import (
+    FEATURE_CONTRACT,
+    HORIZONS,
+    LABEL_KIND,
+    build_dataset,
+    decision_at,
+    sessions,
+)
 from .forward import prefix_digest
 from .io import add_input_args, digest, read_bars, write_json
 from .metrics import score_daily
@@ -22,6 +29,19 @@ def grade_lists(bars: pd.DataFrame, lists: dict, *, asof: str, market: str) -> d
         )
     if lists["market"] != market or lists["schema"] != "stock-selection-forward/v1":
         raise ValueError("forward market/schema mismatch")
+    # Earlier v1 records already use the same statistical close-return contract.
+    # New metadata cannot relabel them as an executable trade outcome.
+    prediction_at = decision_at(market, pd.Timestamp(lists["asof"]).date()).isoformat()
+    if (
+        lists.get("label_kind", LABEL_KIND) != LABEL_KIND
+        or lists.get("execution_label") is not None
+    ):
+        raise ValueError("execution labels require a separate scorer")
+    if (
+        lists.get("prediction_at", prediction_at) != prediction_at
+        or lists.get("data_cutoff", lists["asof"]) != lists["asof"]
+    ):
+        raise ValueError("forward prediction time/data cutoff mismatch")
     if asof < lists["asof"]:
         raise ValueError("grading date precedes list")
     if prefix_digest(bars, lists["asof"]) != lists["input_prefix_sha256"]:
@@ -65,6 +85,10 @@ def grade_lists(bars: pd.DataFrame, lists: dict, *, asof: str, market: str) -> d
         }
     return {
         "schema": "stock-selection-grade/v1",
+        "label_kind": LABEL_KIND,
+        "prediction_at": prediction_at,
+        "data_cutoff": lists["asof"],
+        "execution_label": None,
         "market": market,
         "list_asof": lists["asof"],
         "graded_asof": asof,

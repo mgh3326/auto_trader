@@ -12,6 +12,7 @@ from research.data_plane.calendars import bar_available_at, partition_days
 
 HORIZONS = (1, 3, 5, 10)
 FEATURE_CONTRACT = "stock-selection-v2"
+LABEL_KIND = "statistical_close_to_close"
 MARKETS = ("kr", "us", "crypto")
 FEATURES = (
     "momentum_5",
@@ -150,6 +151,7 @@ def build_dataset(
             f[f"relative_{col}"] = f[col] - bf[col]
         f["symbol"], f["market"], f["regime"] = symbol, market, regime
         f["available_at"] = frame.available_at
+        f["prediction_at"] = [decision_at(market, day.date()) for day in days]
         # A zero-volume current bar is observable but not tradable.
         f["tradable"] = frame.close.notna() & (frame.volume > 0)
         for h in HORIZONS:

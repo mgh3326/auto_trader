@@ -44,6 +44,13 @@ relative columns can still provide time-varying context to a fitted model.
 Outcomes are close(t+h)/close(t)-1 for h=1,3,5,10, raw and minus benchmark return.
 Any missing intermediate bar or flagged corporate action makes that outcome unknown.
 No dividend total-return, delisting payout, or terminal loss is fabricated.
+Dataset output carries `prediction_at`. Forward and grade JSON identify
+`label_kind="statistical_close_to_close"`, the prediction timestamp, `data_cutoff`,
+and `execution_label=null`. An executable label would start at the first tradable
+price after `prediction_at` and needs its own fill and cost contract. This scorer
+rejects a record relabelled as executable.
+In a historical diagnostic replay, `prediction_at` is the simulated decision time;
+it does not certify a contemporaneous source vintage.
 
 ## Commands
 
@@ -86,10 +93,17 @@ later IC and deciles are graded by the identical scorer. Score emits `pending`,
 
 Common-date expanding folds, 63 validation sessions each. Before each boundary,
 drop ten training decision sessions for label purge and another ten for embargo.
+These are unique session dates, independent of the number of symbol rows. The
+shared ten-session purge covers each h=1,3,5,10 label and keeps comparison folds
+identical. `TimeSeriesSplit(gap=10)` on panel rows is not used.
 All rolling features are causal; there is no fitted preprocessing, tuning, early
 stopping, or model selection. LightGBM regresses on training-day percentile ranks
 of relative returns: 60 trees, 7 leaves, learning rate .05, minimum child 40, L2 1,
 seed 1474, one thread. Frozen configuration lives in `models.py`.
+This is `LGBMRegressor` on daily percentile ranks, not LambdaRank on raw returns.
+Each fit is already scoped to one market and one horizon. A future `LGBMRanker`
+must define market/date/horizon query groups and integer relevance buckets with
+explicit gains in a separately registered experiment.
 
 `metrics.score_daily` accepts any finite daily scores. Spearman uses average ranks
 for ties; ICIR is mean daily IC / sample standard deviation, unannualized (undefined
@@ -117,6 +131,13 @@ model × market × horizon, source hashes, raw commands, failures and data gaps.
 Survivorship usually inflates long returns and hides negative tails; its effect on
 long-short spread and IC has no guaranteed sign. Revised price histories and estimated
 turnover add unmeasured biases. No market-wide readiness claim follows from these runs.
+
+The survivor label describes these downloaded samples, not all available repository
+data. KR already has a delisted-inclusive causal export with primary terminal
+classification 555/555; Binance USDT spot has 256 delisted pairs; US PIT listing
+intervals use observation brackets. See the [dots follow-up and corpus audit](../../docs/research/rob-1474-dots-follow-up.md).
+The registered numerical reports remain frozen. This addendum does not rename the
+12-name KR sample as a full-corpus evaluation or substitute Binance for Upbit.
 
 ```bash
 uv run pytest tests/research/stock_selection/test_harness.py -q

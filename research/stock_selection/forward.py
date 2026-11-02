@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .dataset import FEATURE_CONTRACT, HORIZONS, build_dataset
+from .dataset import FEATURE_CONTRACT, HORIZONS, LABEL_KIND, build_dataset, decision_at
 from .io import add_input_args, read_bars, write_json
 from .models import BASELINES, ranker_predict
 
@@ -62,6 +62,10 @@ def make_lists(
     return {
         "schema": "stock-selection-forward/v1",
         "feature_contract": FEATURE_CONTRACT,
+        "label_kind": LABEL_KIND,
+        "prediction_at": decision_at(market, pd.Timestamp(asof).date()).isoformat(),
+        "data_cutoff": asof,
+        "execution_label": None,
         "market": market,
         "asof": asof,
         "model": model,

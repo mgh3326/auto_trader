@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .dataset import FEATURE_CONTRACT, HORIZONS, build_dataset, sessions
+from .dataset import FEATURE_CONTRACT, HORIZONS, LABEL_KIND, build_dataset, sessions
 from .io import add_input_args, read_bars, write_json
 from .metrics import score_daily
 from .models import BASELINES, LGBM_CONFIG, ranker_predict
@@ -56,6 +56,8 @@ def evaluate(
     return {
         "market": market,
         "feature_contract": FEATURE_CONTRACT,
+        "label_kind": LABEL_KIND,
+        "execution_label": None,
         "results": results,
         "eligibility_audit": {
             "expected_validation_sessions": sum(len(f.test_dates) for f in folds),
