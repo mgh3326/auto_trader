@@ -28,9 +28,10 @@ Inputs reused, not re-derived:
 
 1. **The research input already has a better home than the serving tables.** The PIT data plane
    (`research/data_plane`, contract v1) is the only store in this repo that records `available_at`,
-   write-once partitions, source, content hash and fallbacks. It is **implemented but not running**
-   (four Dagu DAGs are unregistered proposals; no artifact root on the desk host). The first build
-   step is to run it, not to write another collector.
+   write-once partitions, source, content hash and fallbacks. It is **implemented and running since
+   2026-11-02** (Dagu DAGs `data-plane-{kr,us,crypto}` registered on the scheduler, worker = the NCP
+   host; operator approval hk:doc decision/2026-11-03/data-plane-dagu-registration). The first build
+   step is to let it accumulate and watch its health, not to write another collector.
 2. **The DB candle tables are serving caches, not research panels.** They are adjusted-only (KR),
    adjusted with `adj_close` 100% NULL (US), Upbit-only (crypto), upserted in place, and shallow:
    only 451 KR and 302 US symbols have ≥250 daily bars, and every symbol's history is capped at
@@ -182,7 +183,7 @@ so a backfilled row is the provider's view at observation time, not a contempora
 | | status |
 |---|---|
 | DB | **no table** in `public`/`review`/`research`/`paper` (no dividend, split or action table) |
-| existing collector | `research/data_plane` `corporate_actions` dataset — Yahoo dividends/splits + listing diff, first-observed `available_at`, 60-day lookback with outage extension. **Not run** (no root, Dagu unregistered) |
+| existing collector | `research/data_plane` `corporate_actions` dataset — Yahoo dividends/splits + listing diff, first-observed `available_at`, 60-day lookback with outage extension. Running daily since 2026-11-02 (KR/crypto first partitions 2026-11-02) |
 | coverage limits (contract §Known limits) | Yahoo only; rights issues, mergers, KR capital reductions are **not** covered; no broker client implements dividends or splits |
 | PIT | contract: `fact_hash` identity, a revised amount is a new fact, `available_at` = first observation. No announcement time exists in the source |
 | impact on F1/F2 | a split/dividend between t and t+h makes `close(t+h)/close(t)-1` meaningless unless the action is applied; ROB-1474 already marks action-crossing outcomes `unknown` from Yahoo event dates, which is the correct fail-closed behaviour |
@@ -514,14 +515,15 @@ Alert wiring, in the order that already exists:
 3. **Grafana Cloud** (the fleet's existing external dashboards, ROB-1455/1486): alert rules on
    manifest age, coverage, and health exit per dataset/market, routed to the ops channel. The repo
    holds no Grafana config, so the rules are created on the Grafana side and referenced here.
-4. **No new scheduler** is registered by this document. Dagu DAGs stay unregistered proposals until
-   the operator approves (hard rule 6).
+4. **No new scheduler** is registered by this document. The three data-plane DAGs were registered
+   separately on 2026-11-02 and approved 2026-11-03; any new-dataset DAG needs its own approval
+   (hard rule 6).
 
 ### 4.6 Where it runs
 
 | layer | what runs there | status |
 |---|---|---|
-| `research/data_plane` on the NCP host with broker credentials | KR/US/crypto universe, bars, adjusted vintage, actions | code exists; Dagu DAGs `deploy/dagu/data-plane-*.yaml` are **proposals, unregistered** |
+| `research/data_plane` on the NCP host with broker credentials | KR/US/crypto universe, bars, adjusted vintage, actions | code exists; Dagu DAGs `deploy/dagu/data-plane-*.yaml` are **registered and running since 2026-11-02** |
 | Prefect (`robin-prefect-automations`) | news crawl, screener/fundamentals/valuation/insight flows | runs today for serving; must write the PIT contract if reused for research |
 | TaskIQ (`at-scheduler`/`at-worker`) | in-app serving writers (daily candles, universes, flows, watch scan) | runs today; **serving only** |
 | Dagu (new datasets) | earnings/fundamentals/flows/news/derivatives DAGs | proposal only |
@@ -577,7 +579,7 @@ Reuse first; new collectors second. "Ops" items are approvals/execution, not cod
 
 | # | unit | kind | depends on | acceptance | what it replaces |
 |---|---|---|---|---|---|
-| **B0** | Run the data plane backfill for KR/US/crypto, publish the artifact root, start the health pings | ops (no PR) | operator approval to register Dagu; broker credentials on the worker | `health` green for 5 consecutive sessions; coverage ≥0.95 | — |
+| **B0** | Let the data plane accumulate KR/US/crypto (registered 2026-11-02; no backfill before the first universe partition, by the point-in-time design), keep the health pings green | ops (no PR) | done: Dagu registered and approved, broker credentials on the worker | `health` green for 5 consecutive sessions; coverage ≥0.95 | — |
 | **B1** | Data plane: add `traded_value` + `value_basis` to equity bars (KIS `acml_tr_pbmn`, Yahoo estimate labeled) | PR (research) | B0 | contract test + manifest field; estimate never labeled actual | close×volume-only liquidity |
 | **B2** | Data plane: `listing_outcomes` dataset from U2/U3/U4 exports + join rule for bar selection | PR (research) | B0 | delisted names appear in the panel with terminal status; no forward-fill | DB universe as a panel |
 | **B3** | Data plane: corporate actions from a broker source (KIS `ksdinfo` client) with Yahoo fallback | PR | B0 | dividend/split rows reconcile with Yahoo for a sample; revisions visible | Yahoo-only actions |
@@ -822,8 +824,8 @@ Derived facts used above: KR bars-per-symbol histogram (42 / 172 / 3,357 / 440 /
 - Production reads are aggregates from one moment. A table's depth can change tomorrow; the
   verdicts are structural (overwrite/no `available_at`/current-vintage), not only numeric.
 - The data-plane artifact root was absent on the desk host used here. The code and contract were
-  read; no partition was inspected, so "not running" means "no evidence of a current root and the
-  Dagu DAGs are unregistered", not "the operator never ran it".
+  read; no partition was inspected, so "not running" here was wrong: the DAGs had been running on the
+  NCP host since 2026-11-02 (corrected by operator-desk 2026-11-03).
 - Broker entitlements, quotas and storage/redistribution rights were **not** exercised. Every
   provider claim is a documented route with the limits the dots research found; none is a verified
   account capability.
