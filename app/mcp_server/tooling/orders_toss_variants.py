@@ -63,6 +63,7 @@ from app.services.kr_symbol_universe_service import (
     get_kr_nxt_tradability,
     get_kr_security_type,
 )
+from app.services.mechanical_loss_cut.plans import record_buy_exit_plan
 from app.services.nxt_preflight import (
     RETRY_AT_REGULAR,
     ROUTE_VIA_KIS,
@@ -2056,6 +2057,16 @@ async def _toss_place_order_impl(
                     "run toss_reconcile_orders to book confirmed fills."
                 ),
             }
+            # ROB-1460: a proposal-flow buy is recorded by revalidation.
+            if proposal_context is None and side == "buy":
+                await record_buy_exit_plan(
+                    account_mode="toss_live",
+                    market=f"equity_{mkt}",
+                    symbol=symbol,
+                    price=price_dec,
+                    quantity=quantity_dec,
+                    now=now_kst(),
+                )
             return response
         except PreSendFreshnessError:
             raise
