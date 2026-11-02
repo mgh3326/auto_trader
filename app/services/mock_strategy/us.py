@@ -414,7 +414,11 @@ class UsPaperStrategy:
                 type(index) is not int
                 or index < 0
                 or leg.side != side
-                or leg.meta.get("entry_client_order_id") != entry.client_order_id
+                or leg.meta.get(
+                    "entry_client_order_id",
+                    entry.client_order_id if index == 0 else None,
+                )
+                != entry.client_order_id
                 or leg.client_order_id != self._exit_id(entry, side, index)
             ):
                 return {
@@ -501,13 +505,6 @@ class UsPaperStrategy:
         assert entry.entry_price is not None
         pnl = (proceeds - entry.entry_price * qty) * (1 if entry.side == "buy" else -1)
         now = datetime.now(UTC)
-        await self.recorder.update(
-            entry.client_order_id,
-            status="closed",
-            closed_at=now,
-            exit_price=proceeds / qty,
-            realized_pnl=pnl,
-        )
         for leg in legs:
             current = await self.recorder.get(leg.client_order_id)
             assert current is not None
@@ -515,4 +512,11 @@ class UsPaperStrategy:
                 await self.recorder.update(
                     leg.client_order_id, status="closed", closed_at=now
                 )
+        await self.recorder.update(
+            entry.client_order_id,
+            status="closed",
+            closed_at=now,
+            exit_price=proceeds / qty,
+            realized_pnl=pnl,
+        )
         return {**outcome, "episode_status": "closed", "realized_pnl": str(pnl)}
