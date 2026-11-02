@@ -176,6 +176,8 @@ reconciler records the remaining native kinds using `record_native_evidence`.
 Each event is unique on `(order_attempt_id, kind, broker_evidence_key)`; the
 broker evidence key is stored as a domain-separated digest. Same-key replay is
 a no-op only when the exact payload matches; conflicting evidence is refused.
+Native evidence cannot use the reserved coordinator keys `dispatch` and
+`lineage-ack`, so a native event cannot impersonate a dispatch outcome.
 
 Fresh-session `rediscover_unreleased_claims()` reads surviving binary claims
 and their attributed evidence. Missing dispatch evidence or any unknown event
@@ -245,8 +247,11 @@ E1 schema and locked runner envelope are unchanged. Readiness is not an E3
 result or a replacement for intent validation.
 
 Without opt-in, including when re-evaluating a previously activated effective
-row, writer and auto are false and activation is BLOCKED. Opt-in without an
-identity, with a conflicting pin, or with live/noncanonical account, namespace
+row, the helper rebuilds from the canonical row and re-applies only a currently
+configured identity. E3 policy/cap/owner/canary labels and their missing-binding
+state return to canonical defaults; writer and auto are false and activation
+is BLOCKED. Removing the fingerprint too restores UNKNOWN identity. Opt-in without
+an identity, with a conflicting pin, or with live/noncanonical account, namespace
 or host metadata is refused. The unchanged send boundary still checks the
 actual client's identity and transport before every POST. Every other registry
 row stays unchanged. Canonical rows remain default-off in code.

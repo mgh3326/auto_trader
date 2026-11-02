@@ -37,7 +37,9 @@ the process runs in the foreground. The canary is the single run below. Store
 the E1 intent with these bounds before starting: registry readiness does not
 rewrite a broader stored intent. Existing E1 intent caps and journal decisions
 remain the enforcement path. Removing the setting returns the effective KR mock
-row to BLOCKED with writer/auto false; no recurrence is authorized.
+row to canonical defaults (plus any still-configured fingerprint), BLOCKED
+with writer/auto false and E3 policy/cap/owner/canary bindings removed; no
+recurrence is authorized.
 
 Until item 1 holds, the route can run, but it cannot place an order. That is the expected result, and you can use it to check the wiring.
 

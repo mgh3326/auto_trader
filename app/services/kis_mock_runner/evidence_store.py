@@ -34,6 +34,9 @@ from app.services.mock_integration.coordination import (
 from app.services.mock_integration.lineage import LineageEnvelope
 from app.services.mock_lane_registry import LaneRegistryEntry
 
+_DISPATCH_EVIDENCE_KEY = "dispatch"
+_ACK_ENVELOPE_KEY = "lineage-ack"
+
 
 class KISMockEvidenceConflict(ValueError):
     """A closed-shape evidence or exact identity check failed (no raw values)."""
@@ -150,7 +153,7 @@ class KISMockEvidenceStore:
                     session,
                     row,
                     kind="ack",
-                    evidence_key="lineage-ack",
+                    evidence_key=_ACK_ENVELOPE_KEY,
                     odno=attempt["broker_order_id"],
                     payload={"envelope": payload},
                 )
@@ -263,7 +266,7 @@ class KISMockEvidenceStore:
                 session,
                 row,
                 kind="ack" if acknowledged else "unknown",
-                evidence_key="dispatch",
+                evidence_key=_DISPATCH_EVIDENCE_KEY,
                 odno=evidence.broker_order_id,
                 payload={
                     "envelope": payload,
@@ -285,6 +288,8 @@ class KISMockEvidenceStore:
             or evidence.kind not in KIS_MOCK_LANE_EVIDENCE_KINDS
         ):
             raise KISMockEvidenceConflict("native_evidence_shape_rejected")
+        if evidence.broker_evidence_key in (_DISPATCH_EVIDENCE_KEY, _ACK_ENVELOPE_KEY):
+            raise KISMockEvidenceConflict("reserved_evidence_key")
         if (
             type(evidence.terminal) is not TerminalClaimEvidence
             or not evidence.terminal.exact_booleans
@@ -369,7 +374,7 @@ class KISMockEvidenceStore:
                 dispatch = [
                     event
                     for event in events
-                    if event.broker_evidence_key == _key("dispatch")
+                    if event.broker_evidence_key == _key(_DISPATCH_EVIDENCE_KEY)
                 ]
                 odno = (
                     None
@@ -440,7 +445,8 @@ class KISMockEvidenceStore:
                     select(KISMockDispatchEvidence).where(
                         KISMockDispatchEvidence.order_attempt_id
                         == row.order_attempt_id,
-                        KISMockDispatchEvidence.broker_evidence_key == _key("dispatch"),
+                        KISMockDispatchEvidence.broker_evidence_key
+                        == _key(_DISPATCH_EVIDENCE_KEY),
                     )
                 )
             )

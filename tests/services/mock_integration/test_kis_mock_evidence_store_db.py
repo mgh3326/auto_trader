@@ -241,3 +241,48 @@ async def test_cross_account_and_wrong_odno_never_attach(evidence_lane):
             )
             == 2
         )
+
+
+async def test_native_dispatch_key_cannot_clear_missing_dispatch_uncertainty(
+    evidence_lane,
+):
+    store, sessions, factory, envelope, claim = evidence_lane
+    # ACK attachment exists, but the coordinator has not persisted its dispatch.
+    await store.persist(factory.acknowledge_order_attempt(envelope, ODNO))
+    assert await store.has_unresolved_account_uncertainty(
+        claim_account_scope=claim.claim_account_scope
+    )
+    with pytest.raises(KISMockEvidenceConflict, match="reserved_evidence_key"):
+        await store.record_native_evidence(
+            envelope, NativeOrderEvidence("cancel", "dispatch", ODNO, ODNO)
+        )
+    own = next(
+        item
+        for item in await store.rediscover_unreleased_claims()
+        if item.claim == claim
+    )
+    assert own.blocks_account
+    assert await store.has_unresolved_account_uncertainty(
+        claim_account_scope=claim.claim_account_scope
+    )
+    async with sessions() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(KISMockDispatchEvidence)
+                .where(
+                    KISMockDispatchEvidence.order_attempt_id
+                    == envelope.order_attempt.order_attempt_id
+                )
+            )
+            == 1
+        )
+    intents = AsyncMock()
+    with pytest.raises(KISMockEvidenceConflict, match="terminal_claim_binding"):
+        await store.release_with_recorded_terminal_evidence(
+            envelope,
+            broker_evidence_key="dispatch",
+            claim=claim,
+            claims=DurableSendClaimAdapter(intents),
+        )
+    intents.release_if_matches.assert_not_awaited()

@@ -55,6 +55,9 @@ def kis_mock_registry_from_environment(
     supplies the approved E3 bindings; all existing readiness guards still run.
     """
     assert_registry_startup(entries, require_canonical=True)
+    canonical = next(
+        entry for entry in CANONICAL_LANE_REGISTRY if entry.lane_id == "kr.kis.mock"
+    )
     config = os.environ if environ is None else environ
     activated = config.get(ACTIVATION_ENV, "false") == "true"
     identity = config.get(IDENTITY_ENV, "")
@@ -64,15 +67,7 @@ def kis_mock_registry_from_environment(
                 "kis_mock_activation_identity_required", lane_id="kr.kis.mock"
             )
         return tuple(
-            replace(
-                entry,
-                activation_status=ActivationStatus.BLOCKED,
-                writer=False,
-                auto_order_enabled=False,
-            )
-            if entry.lane_id == "kr.kis.mock"
-            else entry
-            for entry in entries
+            canonical if entry.lane_id == "kr.kis.mock" else entry for entry in entries
         )
     if not re.fullmatch(r"kismock:v1:[0-9a-f]{64}", identity):
         raise LaneGuardError(
@@ -86,13 +81,13 @@ def kis_mock_registry_from_environment(
         if entry.physical_account_id not in (None, identity):
             raise LaneGuardError("kis_mock_identity_mismatch", lane_id=entry.lane_id)
         bound = replace(
-            entry,
+            canonical,
             physical_account_id=identity,
             identity_status="KNOWN",
             fingerprint_evidence_ref=f"env:{IDENTITY_ENV}",
             missing_bindings=tuple(
                 binding
-                for binding in entry.missing_bindings
+                for binding in canonical.missing_bindings
                 if binding is not MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT
             ),
         )
@@ -119,13 +114,6 @@ def kis_mock_registry_from_environment(
                 reconcile_required=True,
                 canary_binding=contract.canary,
                 missing_bindings=(),
-            )
-        else:
-            bound = replace(
-                bound,
-                activation_status=ActivationStatus.BLOCKED,
-                writer=False,
-                auto_order_enabled=False,
             )
         result.append(bound)
     assert_registry_startup(result, require_canonical=True)

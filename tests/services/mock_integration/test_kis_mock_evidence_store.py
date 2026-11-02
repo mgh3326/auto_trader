@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import UniqueConstraint
@@ -278,5 +278,23 @@ def test_e3_turning_setting_off_removes_prior_effective_authority(keep_identity)
     )[0]
     assert entry.auto_order_enabled is False and entry.writer is False
     assert entry.activation_status is ActivationStatus.BLOCKED
+    expected = bound_entry() if keep_identity else CANONICAL_LANE_REGISTRY[0]
+    assert entry == expected
     with pytest.raises(LaneGuardError, match="lane_activation_not_enabled"):
         assert_entry_execution_ready(entry)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["dispatch", "lineage-ack"])
+async def test_native_evidence_cannot_use_coordinator_reserved_keys(key):
+    factory = MagicMock()
+    factory.return_value.__aenter__.return_value = AsyncMock()
+    store = KISMockEvidenceStore(factory, entry=bound_entry())
+    store._lineage = AsyncMock(
+        side_effect=KISMockEvidenceConflict("lineage_unavailable")
+    )
+    with pytest.raises(KISMockEvidenceConflict, match="reserved_evidence_key"):
+        await store.record_native_evidence(
+            None, NativeOrderEvidence("cancel", key, None)
+        )
+    factory.assert_not_called()
