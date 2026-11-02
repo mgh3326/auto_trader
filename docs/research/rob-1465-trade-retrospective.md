@@ -177,11 +177,23 @@ statement about buy style. Named buy cohorts with n ≥ 10:
 `underwater_support_net` fills 1 of 101 in KR. That is the tier's own problem: the deep
 support clause asks for a price the market rarely prints.
 
-**Crypto sell-ladder reference coverage.** 131 crypto sell rungs in the window. Every rung
-got a `reference_price_source`: `crypto_candles_1d_close` where the pair had a completed
-candle before creation, `unavailable:no_instrument` or `unavailable:no_candle` otherwise.
-The source split is in `order_proposal_rungs.csv` — filter `market = crypto`,
-`side = sell`, and group by `reference_price_source`.
+**Crypto sell ladder, by distance above the reference close.** All 131 crypto sell rungs in
+the window have `reference_price_source = crypto_candles_1d_close`; the median distance is
+**+0.90%** above the last completed close. Rung `state` is the authoritative ending
+(`order_proposal_rungs.csv`, `state` and `filled_qty`).
+
+| Band | Rungs | Filled | Fill rate | Resting | Cancelled | Unverified |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| below +1% | 66 | 52 | 78.8% | 11 | 0 | 0 |
+| +1% to +3% | 27 | 18 | 66.7% | 7 | 1 | 1 |
+| +3% to +8% | 26 | 19 | 73.1% | 3 | 1 | 2 |
+| +8% to +16% | 5 | 2 | 40.0% | 0 | 1 | 2 |
+| +16% or more | 7 | 2 | 28.6% | 0 | 1 | 4 |
+
+The +8% and above bands fill at 28.6–40.0% against 66.7–78.8% below +8%, which is the same
+direction ROB-1458 measured (44.4% against 70.4%) and supports giving those rungs an
+expiry. `unverified` means the ledger never recorded an ending; it is not proof of a live
+order.
 
 ### 3.4 Slippage against the intended price
 
@@ -335,8 +347,8 @@ The operator sets these; no amount is proposed here.
 - US averaging-down cohort: ROB-1458 measured 12 systematic adds at D+20 median +7.0%,
   Q1 +2.4% (PASS). This window's realised US adds are small but positive and do not
   contradict it.
-- Crypto ladder sells: the filled bands show positive rest-vs-hold, and the data now has
-  the reference price the earlier review was missing (§3.3).
+- Crypto ladder sells: the reference close is now real for all 131 rungs, and the fill rate
+  falls from 78.8% below +1% to 28.6% at +16% or more (§3.3).
 - Parking: every parking lot is non-negative and two KR lots are +0.02% against a -17.4%
   index. Small, consistent with ROB-1458's "long-idle cash only".
 
@@ -360,7 +372,7 @@ The operator sets these; no amount is proposed here.
 | KR deep-limit buy fill rate 20.1% blended, 0.99% for the tier (§3.3) | KR keep deep limits | Does not contradict; the tier's own clause is the binding constraint. |
 | Crypto -75.4% single-shot lot, no stop (§3.5) | Crypto B3 stop at -35% (mock) | Supports running B3 as a mock before live. |
 | Parking lots 0.02–0.19% positive (§3.2) | Parking: long-idle cash only | Consistent; the closed-lot test is still unmet (0 closed). |
-| Crypto sells at the limit fill at their limit (0.000% slippage, §3.4) | Crypto ladder +8% expiry | Neutral on price, supports measuring fill delay instead. |
+| Crypto fill rate 28.6% at +16% vs 78.8% below +1% (§3.3); sells fill at the limit (§3.4) | Crypto ladder +8% expiry | Supports the expiry: the far bands rarely fill and price is not the lever. |
 
 **Not supported by this data.** Any claim that the strategies are ready for full live
 sizing: 238 sells have no cost basis, the KR sample is one falling regime, and the US book
