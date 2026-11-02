@@ -483,6 +483,15 @@ the docs.
 Backfills are **partitioned by day** and refuse a day before its first universe partition; a
 corrected older bar is a new revision in a new partition, never a rewrite of the original day.
 
+**Prerequisite for every historical row above:** the only universe partitions today are the daily
+ones that began 2026-11-02, so the guard would refuse every earlier day. Historical backfill
+therefore starts with a **reconstructed universe** step: one `universe` partition per past day,
+built from the `listing_outcomes` exports (B2) plus the frozen corpora membership, marked
+`vintage=reconstructed` with `available_at` = the reconstruction time (not the historical day), so
+nothing can pass it off as a contemporaneous snapshot. Its range is the earliest start in the table
+(2008 US universe / 2015 KR / 2017 crypto) up to 2026-11-01. Until that step lands, the data plane
+is forward-only (B0).
+
 ### 4.5 Freshness SLOs and alerts
 
 Due time = the earliest instant the dataset should be readable for a decision; a miss raises after
@@ -579,7 +588,7 @@ Reuse first; new collectors second. "Ops" items are approvals/execution, not cod
 
 | # | unit | kind | depends on | acceptance | what it replaces |
 |---|---|---|---|---|---|
-| **B0** | Let the data plane accumulate KR/US/crypto (registered 2026-11-02; no backfill before the first universe partition, by the point-in-time design), keep the health pings green | ops (no PR) | done: Dagu registered and approved, broker credentials on the worker | `health` green for 5 consecutive sessions; coverage ≥0.95 | — |
+| **B0** | Let the data plane accumulate KR/US/crypto (registered 2026-11-02; forward-only until the reconstructed-universe step in §4.4 lands with B2), keep the health pings green | ops (no PR) | done: Dagu registered and approved, broker credentials on the worker | `health` green for 5 consecutive sessions; coverage ≥0.95 | — |
 | **B1** | Data plane: add `traded_value` + `value_basis` to equity bars (KIS `acml_tr_pbmn`, Yahoo estimate labeled) | PR (research) | B0 | contract test + manifest field; estimate never labeled actual | close×volume-only liquidity |
 | **B2** | Data plane: `listing_outcomes` dataset from U2/U3/U4 exports + join rule for bar selection | PR (research) | B0 | delisted names appear in the panel with terminal status; no forward-fill | DB universe as a panel |
 | **B3** | Data plane: corporate actions from a broker source (KIS `ksdinfo` client) with Yahoo fallback | PR | B0 | dividend/split rows reconcile with Yahoo for a sample; revisions visible | Yahoo-only actions |
