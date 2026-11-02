@@ -434,6 +434,22 @@ def _fifo_lots(
     return lots, net, oversold
 
 
+def fifo_position(
+    authoritative: Sequence[LedgerFill],
+) -> tuple[Decimal, Decimal | None, Decimal]:
+    """(net_quantity, average_cost_of_remaining_lots, oversold_quantity).
+
+    Applies the latest opening seed first, so a later seed is read as the full
+    position it records and not as an increment.
+    """
+    counted, _superseded, _cutover = _apply_seed_cutover(authoritative)
+    lots, net, oversold = _fifo_lots(counted)
+    if net <= 0:
+        return net, None, oversold
+    cost = sum((lot["_qty"] * lot["_cost"] for lot in lots), Decimal("0"))
+    return net, cost / net, oversold
+
+
 def _signed_net(fills: Sequence[LedgerFill]) -> Decimal:
     return sum(
         (f.quantity if f.side == "buy" else -f.quantity for f in fills), Decimal("0")

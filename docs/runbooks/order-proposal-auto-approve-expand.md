@@ -74,7 +74,9 @@ wins and the proposal goes to a human:
    `target_evidence_missing` (§141차)
 3. `order_type != limit` → `order_type_not_limit` (**not applied to `cancel`**,
    which places no order)
-4. `exit_intent == "loss_cut"` → **`loss_cut_intent`**
+4. `exit_intent == "loss_cut"` → **`loss_cut_intent`**, unless a mechanical
+   decision row binds this proposal and its gate passes (see
+   [Mechanical loss-cut](#mechanical-loss-cut-rob-1460))
 5. any other `exit_intent` → `exit_intent_present`
 6. account/market not in `_VETO_CAPABLE_ACCOUNT_MARKETS` → `account_not_veto_capable`
 7. `policy_deviation` tag → **`approval_required_tag`**
@@ -1008,3 +1010,9 @@ preview's `price_context_message` (#1053) and adds the closed
 re-evaluation: operator decision #1083 (option B) removed the 30-second retry
 that earlier revisions of #1067 carried, together with its retry marker, task
 and residual limits. No scheduler, task or new broker path exists.
+
+## Mechanical loss-cut (ROB-1460)
+
+A `loss_cut` stays a human decision unless the mechanical job wrote a decision row
+for that exact proposal and every switch is on. The caps in this runbook still
+apply. See `docs/runbooks/mechanical-loss-cut.md`.
