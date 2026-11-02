@@ -103,6 +103,7 @@ def refresh(
         previous = current.resolve() if current.exists() else None
         old = pd.DataFrame()
         observations = {}
+        meta: dict = {}
         if previous:
             _, meta = read_bars(root, market)
             if meta["producer_config"] != config:
