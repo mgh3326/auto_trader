@@ -78,6 +78,7 @@ COPY research/nautilus_scalping/ ./research/nautilus_scalping/
 # bars. Include its pure research dependency closure, never cached datasets.
 COPY research/stock_selection/__init__.py research/stock_selection/forward.py research/stock_selection/dataset.py research/stock_selection/io.py research/stock_selection/models.py ./research/stock_selection/
 COPY research/data_plane/__init__.py research/data_plane/calendars.py research/data_plane/contract.py ./research/data_plane/
+COPY research/crypto_universe/__init__.py research/crypto_universe/universe.py ./research/crypto_universe/
 COPY alembic/ ./alembic/
 COPY alembic.ini pyproject.toml README.md ./
 # NCP runs the Upbit/KIS websocket monitors from this image (at-upbit-ws /

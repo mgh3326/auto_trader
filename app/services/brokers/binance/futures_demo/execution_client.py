@@ -254,6 +254,27 @@ class BinanceFuturesDemoExecutionClient:
         """Release the underlying httpx client."""
         await self._client.aclose()
 
+    async def get_symbol_info(self, *, symbol: str) -> dict[str, Any]:
+        """Demo-local contract filters for manual strategy sizing."""
+        response = await self._client.get("/fapi/v1/exchangeInfo")
+        response.raise_for_status()
+        match = next(
+            (row for row in response.json()["symbols"] if row["symbol"] == symbol), None
+        )
+        if match is None:
+            raise ValueError("demo symbol unavailable")
+        return match
+
+    async def get_ticker_price(self, *, symbol: str) -> Decimal:
+        response = await self._client.get(
+            "/fapi/v1/ticker/price", params={"symbol": symbol}
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body["symbol"] != symbol:
+            raise ValueError("demo ticker symbol mismatch")
+        return Decimal(body["price"])
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -824,6 +845,7 @@ class BinanceFuturesDemoExecutionClient:
             # ROB-1288: preserved verbatim; 🔴 never derived from the sign of
             # ``position_amt``.
             position_side=_extract_position_side(entry),
+            margin_type=entry.get("marginType"),
         )
 
     async def get_all_positions(self) -> list[FuturesDemoPositionResult]:

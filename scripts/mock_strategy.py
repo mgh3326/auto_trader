@@ -138,6 +138,17 @@ async def execute(args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    venue_probe = argparse.ArgumentParser(add_help=False)
+    venue_probe.add_argument("--venue")
+    route, _ = venue_probe.parse_known_args(argv)
+    if route.venue in {
+        "binance_spot_demo",
+        "binance_futures_demo",
+        "alpaca_paper_crypto",
+    }:
+        from scripts.mock_strategy_crypto import main as crypto_main
+
+        return crypto_main(argv)
     args = parser().parse_args(argv)
     try:
         result = asyncio.run(execute(args))
@@ -154,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     return int(
         any(
             row.get("status") in {"sending", "uncertain"}
+            or row.get("episode_status") == "unresolved"
             for row in result.get("orders", [])
         )
     )
