@@ -27,7 +27,13 @@ async def test_kis_mock_reconciliation_tool_dry_run_default(monkeypatch):
     result = await tools["kis_mock_reconciliation_run"]()
     assert result == {"success": True, "applied": 0}
     mock_run.assert_awaited_once_with(
-        dry_run=True, limit=100, market=None, symbol=None, ledger_ids=None
+        dry_run=True,
+        confirm=False,
+        limit=100,
+        market=None,
+        symbol=None,
+        ledger_ids=None,
+        record_dispatch_evidence=False,
     )
 
 
@@ -100,8 +106,33 @@ async def test_kis_mock_reconciliation_tool_apply_with_confirm(monkeypatch):
 
     assert result == {"success": True, "applied": 3}
     mock_run.assert_awaited_once_with(
-        dry_run=False, limit=10, market=None, symbol=None, ledger_ids=None
+        dry_run=False,
+        confirm=True,
+        limit=10,
+        market=None,
+        symbol=None,
+        ledger_ids=None,
+        record_dispatch_evidence=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_reconciliation_tool_explicitly_passes_evidence_opt_in(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda: [],
+    )
+    mock_run = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(kis_mock_ledger, "kis_mock_reconciliation_run_impl", mock_run)
+    result = await build_tools()["kis_mock_reconciliation_run"](
+        dry_run=False, confirm=True, record_dispatch_evidence=True
+    )
+    assert result["success"] is True
+    assert mock_run.await_args.kwargs["record_dispatch_evidence"] is True
 
 
 @pytest.mark.asyncio
@@ -123,7 +154,13 @@ async def test_kis_mock_reconciliation_tool_passes_market_and_symbol(monkeypatch
 
     assert result == {"success": True, "applied": 0}
     mock_run.assert_awaited_once_with(
-        dry_run=True, limit=10, market="us", symbol="AVGO", ledger_ids=None
+        dry_run=True,
+        confirm=False,
+        limit=10,
+        market="us",
+        symbol="AVGO",
+        ledger_ids=None,
+        record_dispatch_evidence=False,
     )
 
 
@@ -384,6 +421,8 @@ def test_tool_description_matches_scope_contract():
 
     assert "effective" in description or "canonical" in description
     assert "requested_scope" in description
+    assert "record_dispatch_evidence=True" in description
+    assert "append-only and permanent" in description
     # The stale round-1 claim ("always echoes the requested scope" as the
     # verbatim input) must be gone now that success/error paths normalize.
     assert "always echoes the requested" not in description.lower()
@@ -410,7 +449,13 @@ async def test_kis_mock_reconciliation_tool_passes_ledger_ids(monkeypatch):
 
     assert result == {"success": True, "applied": 0}
     mock_run.assert_awaited_once_with(
-        dry_run=True, limit=100, market=None, symbol=None, ledger_ids=[10, 20]
+        dry_run=True,
+        confirm=False,
+        limit=100,
+        market=None,
+        symbol=None,
+        ledger_ids=[10, 20],
+        record_dispatch_evidence=False,
     )
 
 

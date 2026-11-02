@@ -542,9 +542,14 @@ def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="kis_mock_reconciliation_run",
         description=(
-            "Manually trigger reconciliation of open KIS mock orders against "
-            "KIS mock holdings (read-only, is_mock=True). Detects fills via "
-            "holdings deltas and updates ledger lifecycle states. "
+            "Manually reconcile open KIS mock orders using read-only mock "
+            "holdings inquiries (is_mock=True). A confirmed apply updates ledger "
+            "lifecycle states based on holdings deltas. "
+            "An unscoped manual run also reports surviving KR dispatch claims; "
+            "they remain held while account-position proof is unavailable. "
+            "Dispatch evidence is append-only and permanent. It is recorded "
+            "only with record_dispatch_evidence=True, dry_run=False, "
+            "confirm=True and no scope filters; the flag defaults to False. "
             "dry_run=True by default for safety. Applying transitions requires "
             "BOTH dry_run=False AND confirm=True. "
             "market (kr/us or equity_kr/equity_us) and/or symbol scope the run "
@@ -573,6 +578,7 @@ def register_order_tools(mcp: FastMCP) -> None:
         market: str | None = None,
         symbol: str | None = None,
         ledger_ids: list[int] | None = None,
+        record_dispatch_evidence: bool = False,
     ):
         # ROB-1018 fix #3 / ROB-1007 fix #2/#3: selector validation runs at
         # this single front-layer point, BEFORE the config-error and confirm
@@ -605,10 +611,12 @@ def register_order_tools(mcp: FastMCP) -> None:
         # both derive from the identical resolve_kis_mock_reconcile_scope.
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
             dry_run=dry_run,
+            confirm=confirm,
             limit=limit,
             market=market,
             symbol=symbol,
             ledger_ids=ledger_ids,
+            record_dispatch_evidence=record_dispatch_evidence,
         )
 
 

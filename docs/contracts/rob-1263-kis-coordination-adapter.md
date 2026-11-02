@@ -148,8 +148,8 @@ manual-resolution queues. Machine-readable as
 
 | Element | This lane's answer |
 |---|---|
-| **recovery owner** (exactly one) | the designated operator-run KIS mock reconciler in `app/mcp_server/tooling/kis_mock_ledger.py` (`KISMockLifecycleService`); its adapter to the new dispatch store is not implemented |
-| **restart trigger** | operator-invoked reconciliation over `review.order_send_intents` rows whose `account_scope` is this physical account's claim scope and whose lineage has no durably attributed `broker_order_id` |
+| **recovery owner** (exactly one) | the designated operator-run KIS mock reconciler in `app/mcp_server/tooling/kis_mock_ledger.py` (`KISMockLifecycleService`), using its dispatch-store adapter |
+| **restart trigger** | an unscoped operator-invoked reconciliation over all unreleased `review.order_send_intents` rows whose `account_scope` is this physical account's claim scope |
 | **authoritative broker readback** | KIS `inquire_daily_order_domestic`, keyed by the exact attributed ODNO — never symbol/side/quantity/time proximity |
 | **exact `release_if_matches` condition** | `release_with_terminal_evidence` with `TerminalClaimEvidence(lane_native_terminal_evidence, account_position_reconciled, remainder_known)`, or a proven `authoritative_absence_proven` + `account_position_reconciled`; the underlying `OrderSendIntentService.release_if_matches` is never called directly |
 | **operator-visible blocked state** | `AUTO_READY_BLOCKED_BY_LIFECYCLE` |
@@ -171,13 +171,13 @@ tables reject UPDATE/DELETE/TRUNCATE; downgrade refuses retained evidence.
 The service commits initial lineage before the common coordinator reserves a
 claim. ACK attachments and dispatch outcomes are append-only. The common
 `DispatchEvidence` vocabulary maps acknowledged definitive results to `ack`;
-every other outcome maps to `unknown`, never inferred rejection. The designated
-operator reconciler must record the remaining native kinds using
-`record_native_evidence`. **No in-repo caller currently wires that method or
-`release_with_recorded_terminal_evidence`.** The existing KIS mock reconciler
-has not been connected to the new store. This adapter is a required, separately
-reviewed precondition before installing a production coordinated route; the
-methods here provide ports, not a completed recovery workflow.
+every other outcome maps to `unknown`, never inferred rejection. The manual
+reconciler now records exact-order native readback through
+`record_native_evidence`. Its guarded release path calls
+`release_with_recorded_terminal_evidence` only when the common terminal gate
+is satisfied. **No source in this implementation proves
+`account_position_reconciled`**, so the guard never permits release. Defining and
+reviewing real position proof is a separate activation precondition, hk 2690.
 Each event is unique on `(order_attempt_id, kind, broker_evidence_key)`; the
 broker evidence key is stored as a domain-separated digest. Same-key replay is
 a no-op only when the exact payload matches; conflicting evidence is refused.
@@ -188,13 +188,41 @@ matching the current claim; malformed or foreign-claim dispatch data holds the
 account and cannot authorize release.
 
 Fresh-session `rediscover_unreleased_claims()` reads surviving binary claims
-and their attributed evidence. Missing dispatch evidence or any unknown event
-blocks the account. An ACK supplies an exact ODNO for
+and their attributed evidence. **Every surviving claim blocks the account**,
+including a definite ACK and a terminal readback, until it is released by a
+later proof-backed workflow. An ACK supplies an exact ODNO for
 `readback_by_exact_odno`; it never erases an earlier unknown. This reader sends
 only that attributed ODNO to the operator-provided `inquire_daily_order_domestic`
 reader and requires the returned row's `odno` to match exactly. No ODNO means
 no readback callback; symbol/side/quantity/time candidates are not a fallback.
 The operator reader must return one authoritative row, not a proximity match.
+The adapter checks the actual mock client, host and account fingerprint before
+the read. The exact claim creation and matching post-send ACK must fall on the
+same KST day; if they span days or cannot be bound, recovery retains the claim without
+a read. The broker query uses that one day for both start and end. A returned
+row must be on that same day and within the claim-to-ACK time window; later ODNO
+reuse is ignored. Exactly one row on the day is required, even when duplicates
+are byte-identical. It requires an exact order row, valid order date/time, matching
+plan terms, and consistent filled and remaining quantities. Missing, conflicting
+or failed reads are reported as uncertain; partial orders remain held and are
+reported as partial. Neither can release.
+
+The existing `kis_mock_reconciliation_run` invokes dispatch recovery only when
+the operator requests an unscoped run. Preview is read-only; evidence writes
+require `dry_run=False, confirm=True, record_dispatch_evidence=True`; the last
+flag defaults to false. An unscoped holdings-only apply does not append dispatch
+evidence. An exact full fill with the explicit opt-in records a
+`terminal_reconciliation` event with `lane_native_terminal_evidence=True`,
+`remainder_known=True`, and **`account_position_reconciled=False`**. Its exact
+claim row ID is reported as `retained: position proof unavailable`. The current
+holdings baseline, holdings listing and mock order ledger are not position proof.
+The same evidence key is idempotent on repeat. No claim is released by this
+version, even on a fully terminal fill; missing ODNO is never guessed. There is
+no recovery schedule or automatic replay. Cancel, expiry, rejection and absence
+are not inferred as terminal from this reader. A future proof-backed release
+must append new complete evidence; the existing event cannot be upgraded in
+place. An empty claim result is reported as clear only after the actual mock
+client's fingerprint is checked against the configured physical account.
 
 `release_with_recorded_terminal_evidence` requires a committed
 `terminal_reconciliation` event and the dispatch's exact claim row/scope/key/side,
@@ -275,8 +303,9 @@ After schema application and explicit port construction, lifecycle readiness is
 `AUTO_READY_PENDING_ACTIVATION`; absent ports still report
 `AUTO_READY_BLOCKED_BY_LIFECYCLE`. This is not `AUTO_ENABLED`. The production
 route provider remains unset: this amendment neither installs it nor runs a
-runtime canary, migration, broker request or scheduler. Native reconciliation
-and claim-release adapter wiring must also exist before route installation.
+runtime canary, migration, broker request or scheduler. The implemented readback
+adapter alone does not authorize installation: hk 2690's independently verifiable
+account-position proof and review remain required before route installation.
 
 ## 7. Follow-up mutations
 

@@ -80,7 +80,8 @@ def test_init_sentry_uses_build_vcs_ref_release_with_fastapi(monkeypatch):
     assert kwargs["dsn"] == "https://public@example.ingest.sentry.io/1"
     assert kwargs["environment"] == "development"
     assert kwargs["release"] == expected_release
-    assert kwargs["traces_sample_rate"] == pytest.approx(1.0)
+    assert kwargs["traces_sampler"] is sentry_module._traces_sampler
+    assert "traces_sample_rate" not in kwargs
     assert kwargs["profiles_sample_rate"] == pytest.approx(1.0)
     assert kwargs["send_default_pii"] is True
     assert kwargs["before_send_transaction"] is sentry_module._before_send_transaction
@@ -449,11 +450,11 @@ def test_before_send_log_drops_healthz_uvicorn_access_log():
 
 
 @pytest.mark.unit
-def test_before_send_log_keeps_non_healthz_uvicorn_access_log():
+def test_before_send_log_keeps_client_error_uvicorn_access_log():
     sentry_log: Log = {
         "severity_text": "error",
         "severity_number": 17,
-        "body": '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200',
+        "body": '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 404',
         "attributes": {"logger.name": "uvicorn.access"},
         "time_unix_nano": 1,
         "trace_id": None,
@@ -464,7 +465,7 @@ def test_before_send_log_keeps_non_healthz_uvicorn_access_log():
 
     assert kept is not None
     assert kept.get("body") == pytest.approx(
-        '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200'
+        '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 404'
     )
 
 
