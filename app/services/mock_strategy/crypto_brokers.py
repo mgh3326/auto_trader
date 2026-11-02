@@ -375,8 +375,13 @@ async def build_broker(
         from app.services.brokers.alpaca.config import AlpacaPaperSettings
 
         settings = AlpacaPaperSettings.from_app_settings(profile="clean")
+        expected_id = settings.expected_account_id_suffix
+        expected_number = settings.expected_account_number_suffix
+        if not (expected_id or "").strip() or not (expected_number or "").strip():
+            raise ValueError("clean Alpaca expected account identity required")
         alpaca = AlpacaPaperBrokerService(settings=settings, profile="clean")
-        account_ref = f"alpaca-paper:{settings.expected_account_id_suffix}:{settings.expected_account_number_suffix}"
+        # Existing episode/client IDs include this exact account_ref encoding.
+        account_ref = f"alpaca-paper:{expected_id}:{expected_number}"
         return AlpacaCryptoPaper(alpaca, demo, account_ref=account_ref)
     except BaseException:
         await client.aclose()

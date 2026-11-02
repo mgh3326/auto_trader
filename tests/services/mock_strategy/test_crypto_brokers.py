@@ -348,3 +348,51 @@ def test_clean_alpaca_profile_refuses_missing_expected_identity(
             ),
             profile="clean",
         )
+
+
+@pytest.mark.parametrize(
+    "expected_id,expected_number", [(" ", "number"), ("id", "\t"), ("\n", " ")]
+)
+@pytest.mark.asyncio
+async def test_crypto_factory_refuses_whitespace_identity_before_constructing_alpaca(
+    monkeypatch, expected_id, expected_number
+):
+    from app.services.brokers.alpaca.config import AlpacaPaperSettings
+    from app.services.mock_strategy import crypto_brokers
+
+    class Pricing(Client):
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    client = Pricing()
+    settings = AlpacaPaperSettings(
+        api_key="fake",
+        api_secret="fake",
+        expected_account_id_suffix=expected_id,
+        expected_account_number_suffix=expected_number,
+    )
+    for key in (
+        "MOCK_STRATEGY_ENABLED",
+        "ALPACA_PAPER_CRYPTO_ENABLED",
+        "BINANCE_SPOT_DEMO_ENABLED",
+    ):
+        monkeypatch.setenv(key, "true")
+    monkeypatch.setenv("BINANCE_SPOT_DEMO_EXPECTED_FINGERPRINT", "fixture-fingerprint")
+    monkeypatch.setattr(
+        BinanceSpotDemoExecutionClient, "from_env", classmethod(lambda cls: client)
+    )
+    monkeypatch.setattr(
+        AlpacaPaperSettings,
+        "from_app_settings",
+        classmethod(lambda cls, **kwargs: settings),
+    )
+
+    def forbidden(**kwargs):
+        raise AssertionError("invalid identity must not construct Alpaca transport")
+
+    monkeypatch.setattr(crypto_brokers, "AlpacaPaperBrokerService", forbidden)
+    with pytest.raises(ValueError, match="expected account identity"):
+        await build_broker("alpaca_paper_crypto", confirm=True)
+    assert client.closed
