@@ -449,6 +449,9 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && needs.change-classifier.outputs.run_all == 'false' && needs.change-classifier.outputs.run_affected_tests == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # This job runs PR-controlled test code, so it holds no write token.
+    permissions:
+      contents: read
     env:
       PYTHON_VERSION: "3.13"
 
@@ -482,6 +485,7 @@ jobs:
         # The context scope contract resolves the actual PR merge-base and
         # deliberately fails if it cannot be proven from local history.
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v6

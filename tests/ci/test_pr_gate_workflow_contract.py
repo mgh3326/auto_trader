@@ -149,6 +149,19 @@ def test_affected_job_runs_only_on_a_narrow_pull_request(
     assert "needs.change-classifier.outputs.run_affected_tests == 'true'" in condition
 
 
+def test_affected_job_holds_no_token_while_running_pr_test_code(
+    workflow: dict[str, Any],
+) -> None:
+    job = workflow["jobs"][AFFECTED_JOB]
+    assert job["permissions"] == {"contents": "read"}
+    checkout = next(
+        step
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout")
+    )
+    assert checkout["with"]["persist-credentials"] is False
+
+
 def test_affected_job_excludes_live_tests_like_a_shard(
     workflow: dict[str, Any],
 ) -> None:

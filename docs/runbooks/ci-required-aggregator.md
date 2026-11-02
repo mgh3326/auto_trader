@@ -30,18 +30,31 @@ merging.
 
 ### Deploy requires the full suite on the exact SHA
 
-🔴 Do not deploy a SHA until all six full-suite checks are green on that SHA:
+🔴 Do not deploy a SHA until all six full-suite checks are green on that SHA, in one run of
+the `Test` workflow:
 
 ```bash
 SHA=<deploy sha>
-test "$(gh api --paginate "repos/mgh3326/auto_trader/commits/$SHA/check-runs" \
-    --jq '.check_runs[] | select(.conclusion == "success") | .name' \
-  | grep -cxE 'lint|taskiq-smoke|test \(3\.13, [1-4]\)')" = 6 && echo FULL-SUITE-GREEN
+REPO=mgh3326/auto_trader
+RUN=$(gh api "repos/$REPO/actions/workflows/test.yml/runs?head_sha=$SHA&per_page=100" \
+  --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")]
+        | sort_by(.run_started_at) | last | .id // empty')
+GREEN=$(test -n "$RUN" && gh api --paginate "repos/$REPO/actions/runs/$RUN/jobs?filter=latest" \
+  --jq '.jobs[] | select(.conclusion == "success") | .name')
+FAILED=$(test -n "$RUN" && echo 0 || echo 1)
+for NAME in lint taskiq-smoke 'test (3.13, 1)' 'test (3.13, 2)' 'test (3.13, 3)' 'test (3.13, 4)'; do
+  grep -qxF "$NAME" <<<"$GREEN" || { echo "NOT GREEN: $NAME"; FAILED=1; }
+done
+test "$FAILED" = 0 && echo "FULL-SUITE-GREEN run=$RUN" || echo "DO NOT DEPLOY $SHA"
 ```
 
-No `FULL-SUITE-GREEN` means do not deploy. A SHA that never ran the suite, such as a
-`production` merge commit, needs `gh workflow run test.yml --ref production` first. A PR's
-green `PR gate` is not this evidence, because the shards may have been skipped.
+The command checks each name, so a rerun cannot make a duplicate entry stand in for a missing
+check. It reads the latest attempt of the newest push or dispatch run. A `pull_request` run does
+not count, because it tests a merge commit and not this SHA.
+
+`DO NOT DEPLOY` means exactly that. A SHA that never ran the suite, such as a `production` merge
+commit, needs `gh workflow run test.yml --ref production` first. A PR's green `PR gate` is not
+this evidence, because the shards may have been skipped.
 
 This is a manual step today. Enforcing it in the deploy path is hk task 2586.
 
