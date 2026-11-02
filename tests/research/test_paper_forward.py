@@ -604,3 +604,78 @@ def test_cli_unverified_run_signals_noncommit_and_can_recover(
     write_feed(path, days[0], days[0], signals)
     assert main(argv) == 0
     assert json.loads(capsys.readouterr().out)["committed"] is (not dry_run)
+
+
+@pytest.mark.parametrize("with_signal", [False, True])
+def test_unused_missing_universe_member_does_not_stall_collection(
+    tmp_path, monkeypatch, with_signal
+):
+    days, signals, path, args = cli_fixture(tmp_path, monkeypatch)
+    universe = Path(args.universe)
+    value = json.loads(universe.read_text())
+    value["missing"] = {"crypto/ZZZ": "no bars from upbit"}
+    universe.write_text(json.dumps(value))
+    write_feed(path, days[0], days[0], signals if with_signal else [])
+    report = run(args)
+    assert report["input_state"] == "verified"
+    assert report["committed"] is True
+    assert report["data_gaps"] == [f"ZZZ:{days[0]}"]
+    assert report["seen"] == (["signal-1"] if with_signal else [])
+
+
+def test_missing_held_path_still_blocks_commit_without_a_new_signal(
+    tmp_path, monkeypatch
+):
+    days, signals, path, args = cli_fixture(tmp_path, monkeypatch)
+    write_feed(path, days[0], days[0], signals)
+    first = run(args)
+    bars, _ = inputs.public_bars("crypto", ["AAA", "BBB"], days[0], days[2])
+    del bars["AAA", days[1]]
+    args.asof = str(days[2])
+    write_feed(path, days[1], days[2], [])
+    report = run(args)
+    assert report["input_state"] == "unverified:missing_bars"
+    assert report["committed"] is False
+    assert store.latest(Path(args.ledger_dir), "crypto")[0] == first
+
+
+def test_missing_signal_entry_bar_still_blocks_commit(tmp_path, monkeypatch):
+    days, signals, path, args = cli_fixture(tmp_path, monkeypatch)
+    bars, _ = inputs.public_bars("crypto", ["AAA", "BBB"], days[0], days[0])
+    del bars["AAA", days[0]]
+    write_feed(path, days[0], days[0], signals)
+    report = run(args)
+    assert report["input_state"] == "unverified:missing_bars"
+    assert report["committed"] is False
+    assert report["seen"] == []
+    assert store.latest(Path(args.ledger_dir), "crypto") == (None, None)
+
+
+def test_unrelated_gap_before_a_new_entry_does_not_block_catchup(tmp_path, monkeypatch):
+    days, signals, path, args = cli_fixture(tmp_path, monkeypatch)
+    write_feed(path, days[0], days[0], [])
+    run(args)
+    bars, _ = inputs.public_bars("crypto", ["AAA", "BBB"], days[0], days[2])
+    del bars["AAA", days[1]]
+    later = Signal(
+        "later", "AAA", datetime.combine(days[1], datetime.min.time(), UTC), D(100)
+    )
+    args.asof = str(days[2])
+    write_feed(path, days[1], days[2], [later])
+    report = run(args)
+    assert report["committed"] is True
+    assert report["episodes"][0]["entry_day"] == str(days[2])
+    assert report["data_gaps"] == [f"AAA:{days[1]}"]
+
+
+def test_dagu_proposal_continues_to_us_after_crypto_failure():
+    import yaml
+
+    proposal = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[2] / "deploy/dagu/paper-forward.yaml"
+        ).read_text()
+    )
+    crypto, us = proposal["steps"]
+    assert crypto["name"] == "crypto" and us["name"] == "us"
+    assert crypto.get("continue_on", {}).get("failure") is True
