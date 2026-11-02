@@ -306,7 +306,7 @@ def test_successful_empty_candidate_is_reported(tmp_path):
 
     source.bars = omit
     meta = producer.refresh(tmp_path, source, now=NOW, limit=20)
-    assert meta["excluded"][source.names[0]] == "incomplete_feature_history"
+    assert meta["excluded"][source.names[0]] == "refresh_data_unavailable"
 
 
 def test_reader_pins_generation_before_opening_metadata(tmp_path, monkeypatch):
@@ -501,10 +501,15 @@ def test_incremental_refresh_replaces_withdrawn_overlap(
     source.bars = withdraw
     meta = producer.refresh(tmp_path, source, now=NOW + timedelta(days=1), limit=20)
     candidates = pd.read_csv(tmp_path / "crypto/candidates.csv")
-    assert not (
+    retained = (
         (candidates.symbol == symbol) & (candidates.date == withdrawn_day)
     ).any()
-    assert meta["excluded"][symbol] == "incomplete_feature_history"
+    assert bool(retained) is withdraw_entire_symbol
+    assert meta["excluded"][symbol] == (
+        "refresh_data_unavailable"
+        if withdraw_entire_symbol
+        else "incomplete_feature_history"
+    )
     bars, _ = read_bars(tmp_path, "crypto")
     assert symbol not in set(bars.symbol)
     # A complete response replaces only its requested window; preserve older
@@ -520,3 +525,97 @@ def test_incremental_refresh_replaces_withdrawn_overlap(
     )
     pd.testing.assert_frame_equal(original, pd.read_csv(previous / "candidates.csv"))
     assert len(source.calls) == 2
+
+
+def test_unavailable_symbol_preserves_cache_but_cannot_enter_weekend_universe(tmp_path):
+    source = FakeSource("us")
+    friday = datetime(2026, 11, 6, 23, tzinfo=UTC)
+    producer.refresh(tmp_path, source, now=friday, limit=20)
+    original = pd.read_csv(tmp_path / "us/candidates.csv")
+    missing = source.names[-1]
+    original_fetch = source.bars
+
+    def omit_unavailable(*args):
+        frame = original_fetch(*args)
+        return frame[frame.symbol != missing]
+
+    source.bars = omit_unavailable
+    meta = producer.refresh(tmp_path, source, now=friday + timedelta(days=1), limit=20)
+    candidates = pd.read_csv(tmp_path / "us/candidates.csv")
+    pd.testing.assert_frame_equal(
+        original[original.symbol == missing].reset_index(drop=True),
+        candidates[candidates.symbol == missing].reset_index(drop=True),
+    )
+    assert meta["excluded"][missing] == "refresh_data_unavailable"
+    bars, _ = read_bars(tmp_path, "us")
+    assert missing not in set(bars.symbol)
+
+
+@pytest.mark.parametrize("failure", ["http_503", "read_timeout"])
+def test_real_binance_failure_after_partial_fetch_preserves_snapshot(
+    tmp_path, monkeypatch, failure
+):
+    baseline = FakeSource()
+    baseline.feed = BinanceSource.feed
+    producer.refresh(tmp_path, baseline, now=NOW, limit=20)
+    generation = (tmp_path / "crypto").resolve()
+    before = {p.name: p.read_bytes() for p in generation.iterdir()}
+    successful = []
+
+    def handler(request):
+        if request.url.path.endswith("exchangeInfo"):
+            return httpx.Response(
+                200,
+                json={
+                    "symbols": [
+                        {
+                            "symbol": s,
+                            "baseAsset": s[:-4],
+                            "quoteAsset": "USDT",
+                            "status": "TRADING",
+                            "isSpotTradingAllowed": True,
+                        }
+                        for s in baseline.names
+                    ]
+                },
+            )
+        symbol = request.url.params["symbol"]
+        if symbol == "COIN02USDT":
+            if failure == "read_timeout":
+                raise httpx.ReadTimeout("synthetic timeout", request=request)
+            return httpx.Response(503)
+        successful.append(symbol)
+        start, end = (
+            int(request.url.params["startTime"]),
+            int(request.url.params["endTime"]),
+        )
+        return httpx.Response(
+            200,
+            json=[
+                [
+                    stamp,
+                    "10",
+                    "12",
+                    "9",
+                    "11",
+                    "100",
+                    stamp + 86400000 - 1,
+                    "1000",
+                    1,
+                    "0",
+                    "0",
+                    "0",
+                ]
+                for stamp in range(start, end + 1, 86400000)
+            ],
+        )
+
+    monkeypatch.setattr("scripts.mock_data_sources.time.sleep", lambda _: None)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        source = BinanceSource(JsonGet(client))
+        with pytest.raises(ValueError, match="market data request failed"):
+            producer.refresh(tmp_path, source, now=NOW + timedelta(days=1), limit=20)
+    assert successful == ["BTCUSDT", "COIN00USDT", "COIN01USDT"]
+    assert (tmp_path / "crypto").resolve() == generation
+    assert before == {p.name: p.read_bytes() for p in generation.iterdir()}
+    assert len(list((tmp_path / ".crypto-snapshots").iterdir())) == 1

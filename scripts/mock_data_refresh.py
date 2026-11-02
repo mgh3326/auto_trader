@@ -150,7 +150,7 @@ def refresh(
                     [fresh[~fresh.symbol.isin(repair)], repaired], ignore_index=True
                 )
             old = old[~old.symbol.isin(repair)]
-            refreshed = old.symbol.isin(symbols) & (old.date >= start.isoformat())
+            refreshed = old.symbol.isin(present) & (old.date >= start.isoformat())
             old = old[~refreshed]
             merged = pd.concat([old, fresh], ignore_index=True).drop_duplicates(
                 ["symbol", "date"], keep="last"
@@ -171,6 +171,9 @@ def refresh(
         scores, excluded = [], {}
         window = 20 if market == "us" else 30
         for symbol in symbols:
+            if symbol not in present:
+                excluded[symbol] = "refresh_data_unavailable"
+                continue
             history = merged[merged.symbol == symbol].sort_values("date")
             if set(history.date) != expected:
                 excluded[symbol] = "incomplete_feature_history"
