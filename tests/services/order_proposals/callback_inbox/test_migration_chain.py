@@ -138,6 +138,10 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # ROB-1460 exit plan tables are later than this boundary.
     "review.lot_exit_plans",
     "review.mechanical_loss_cut_decisions",
+    # ROB-1470 sleeve tables are later than this boundary (versions first; the
+    # order_proposals.sleeve_id column referencing them is dropped before).
+    "review.strategy_sleeve_versions",
+    "review.strategy_sleeves",
 )
 
 
@@ -169,6 +173,14 @@ async def scratch_database() -> AsyncIterator[str]:
                         text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                     )
                 await connection.run_sync(Base.metadata.create_all)
+                # ROB-1470: the sleeve tag column references a post-parent
+                # table, so it goes before the table drops below.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.order_proposals "
+                        "DROP COLUMN IF EXISTS sleeve_id"
+                    )
+                )
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
                 # #1175 quarantine columns are later than this boundary;

@@ -43,7 +43,7 @@ def test_migration_is_additive_and_grants_no_update_or_delete():
 def test_migration_follows_the_previous_head():
     module = _load()
 
-    assert module.down_revision == "20261101_rob1440_intent_gw"
+    assert module.down_revision == "20261102_rob1470_sleeves"
     assert len(module.revision) <= 32
 
 

@@ -246,6 +246,17 @@ tests/services/scalping_reviews/test_benchmark_column.py
 tests/services/screener_evidence/test_builder.py
 tests/services/social_sentiment_probe/test_cli.py
 tests/services/social_sentiment_probe/test_sources.py
+tests/services/strategy_sleeves/test_attribution.py
+tests/services/strategy_sleeves/test_book.py
+tests/services/strategy_sleeves/test_canary.py
+tests/services/strategy_sleeves/test_cli.py
+tests/services/strategy_sleeves/test_dispatch_gate_db.py
+tests/services/strategy_sleeves/test_dispatch_gate_unit.py
+tests/services/strategy_sleeves/test_gate.py
+tests/services/strategy_sleeves/test_migration_and_wiring.py
+tests/services/strategy_sleeves/test_report.py
+tests/services/strategy_sleeves/test_store_db.py
+tests/services/strategy_sleeves/test_store_inputs.py
 tests/services/test_alpaca_paper_ledger_execution_asset_class.py
 tests/services/test_alpaca_paper_ledger_service.py
 tests/services/test_alpaca_paper_market_evidence.py

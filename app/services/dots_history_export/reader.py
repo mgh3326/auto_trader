@@ -7,11 +7,13 @@ account identifiers other than the denylist inputs are never fetched at all.
 from __future__ import annotations
 
 from calendar import monthrange
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import Select, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.crypto_candles import CryptoCandle1d
+from app.models.crypto_instruments import CryptoInstrument
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.paper_trading import (
@@ -400,6 +402,30 @@ def paper_reservations_statement(window: Window) -> Select:
     )
 
 
+def crypto_daily_candles_statement(window: Window) -> Select:
+    """Closed daily candles, wide enough to price the first rung of the window.
+
+    A rung's reference price is the last completed UTC daily close before the
+    order, so the read starts well before ``--since``.
+    """
+    m = CryptoCandle1d
+    return (
+        select(
+            CryptoInstrument.venue,
+            CryptoInstrument.venue_symbol,
+            m.time,
+            m.close,
+        )
+        .join(CryptoInstrument, CryptoInstrument.id == m.instrument_id)
+        .where(
+            m.is_closed.is_(True),
+            m.time >= window.since - timedelta(days=400),
+            m.time <= window.until,
+        )
+        .order_by(m.time, m.instrument_id)
+    )
+
+
 async def _begin_read_only(session: AsyncSession) -> None:
     # One repeatable-read snapshot, so refs and row counts agree across tables.
     await session.execute(
@@ -410,7 +436,9 @@ async def _begin_read_only(session: AsyncSession) -> None:
         raise ReadOnlyViolation("transaction_read_only is not on")
 
 
-async def read_sources(session: AsyncSession, window: Window) -> SourceRows:
+async def read_sources(
+    session: AsyncSession, window: Window, *, real: bool = False
+) -> SourceRows:
     await _begin_read_only(session)
 
     async def rows(statement: Select) -> list[dict]:
@@ -430,6 +458,9 @@ async def read_sources(session: AsyncSession, window: Window) -> SourceRows:
         order_proposal_rungs=await rows(rungs_statement(window)),
         paper_daily_snapshots=await rows(paper_daily_snapshots_statement(window)),
         paper_reservations=await rows(paper_reservations_statement(window)),
+        crypto_daily_candles=(
+            await rows(crypto_daily_candles_statement(window)) if real else []
+        ),
     )
 
 

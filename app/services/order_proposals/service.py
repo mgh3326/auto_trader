@@ -837,9 +837,14 @@ class OrderProposalsService:
         target_broker_order_id: str | None = None,
         target_order_snapshot: dict[str, str | None] | None = None,
         now: datetime | None = None,
+        sleeve_id: int | None = None,
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
+        if sleeve_id is not None and (
+            isinstance(sleeve_id, bool) or not isinstance(sleeve_id, int)
+        ):
+            raise OrderProposalError("sleeve_id must be an integer")
         normalized_action, target_snapshot = _validate_action_contract(
             action=action,
             account_mode=account_mode,
@@ -918,6 +923,19 @@ class OrderProposalsService:
             if superseded_group is None:
                 raise OrderProposalNotFound(str(supersedes_proposal_id))
             root_id = superseded_group.root_proposal_id
+            # ROB-1470: a revision stays in its sleeve. Omitting sleeve_id
+            # inherits it; naming another sleeve (or dropping out of one by
+            # superseding into an untagged book) is refused.
+            if sleeve_id is None:
+                sleeve_id = superseded_group.sleeve_id
+            elif sleeve_id != superseded_group.sleeve_id:
+                raise OrderProposalError(
+                    "a revision must keep the superseded proposal's sleeve"
+                )
+        if sleeve_id is not None:
+            await self._validate_sleeve_binding(
+                sleeve_id=sleeve_id, account_mode=account_mode, market=market
+            )
 
         payload_hash = compute_proposal_payload_hash(
             symbol=symbol,
@@ -967,6 +985,7 @@ class OrderProposalsService:
             exit_reason=exit_reason,
             retrospective_id=retrospective_id,
             approval_issue_id=approval_issue_id,
+            sleeve_id=sleeve_id,
             lifecycle_state="proposed",
             correlation_id=correlation_id,
             valid_until=valid_until,
@@ -1000,6 +1019,27 @@ class OrderProposalsService:
                 approval_nonce_used_at=now,
             )
         return group
+
+    async def _validate_sleeve_binding(
+        self, *, sleeve_id: int, account_mode: str, market: str
+    ) -> None:
+        """ROB-1470: a tagged proposal must name a sleeve of its account/market.
+
+        The DB trigger enforces the same binding; this check answers the
+        caller with a readable error before any row is written. The sleeve's
+        state is not checked here: a proposal in a non-live sleeve is still
+        created and goes to the human card at dispatch.
+        """
+        from app.services.strategy_sleeves.store import get_sleeve
+
+        sleeve = await get_sleeve(self._session, sleeve_id)
+        if sleeve is None:
+            raise OrderProposalError(f"sleeve {sleeve_id} does not exist")
+        if sleeve.account_mode != account_mode or sleeve.market != market:
+            raise OrderProposalError(
+                f"sleeve {sleeve_id} is {sleeve.account_mode}/{sleeve.market}, "
+                f"not {account_mode}/{market}"
+            )
 
     async def _validate_exit_binding(
         self,

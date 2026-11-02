@@ -610,3 +610,63 @@ async def test_mechanical_loss_cut_lots_drop_the_quarantined_row(
 
     [lot] = [lot for lot in lots if lot.key.symbol == scenario.symbol]
     assert lot.quantity == Decimal("10")
+
+
+async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) -> None:
+    """ROB-1470: a quarantined row is never a sleeve's fill.
+
+    The sleeve reader also keeps only authoritative sources, and only a
+    websocket row can be quarantined, so the source filter would catch this row
+    too (the same position as the ROB-1460 reader). The contract still ANDs the
+    in-effect predicate on every fill reader. The reconciler fill of the same
+    sleeve is kept, which shows the reader is not simply empty.
+    """
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+    from app.services.strategy_sleeves import store as sleeve_store
+    from tests.services.strategy_sleeves.db_support import SleeveSeed
+
+    scenario = await seed.scenario()
+    await _quarantine(db_session, scenario)
+    sleeves = SleeveSeed(db_session)
+    try:
+        sleeve = await sleeves.sleeve()
+        valid_until = NOW + timedelta(days=30)
+        tagged = []
+        # Each rung's send row dates its order on its fill's KIS trading day,
+        # so only the in-effect/source filters can drop the phantom.
+        for order_no, sent_at in (
+            (f"R{scenario.symbol[1:]}0001", NOW - timedelta(days=5)),
+            (scenario.phantom_order_no, TODAY_MORNING),
+        ):
+            group = await OrderProposalsService(db_session).create_proposal(
+                symbol=scenario.symbol,
+                market="equity_kr",
+                account_mode="kis_live",
+                side="buy",
+                order_type="limit",
+                proposer="p",
+                thesis="t",
+                rungs=[RungInput(0, "buy", Decimal("10"), Decimal("5000"), None)],
+                sleeve_id=sleeve.id,
+                valid_until=valid_until,
+                now=NOW - timedelta(days=6),
+            )
+            sleeves.proposal_pks.append(group.id)
+            await sleeves.record_send(group, order_no, at=sent_at)
+            tagged.append(group)
+        # The proposals must predate the real fill (NOW - 5 days).
+        await db_session.execute(
+            sa.text(
+                "UPDATE review.order_proposals SET created_at = :at WHERE id = ANY(:ids)"
+            ),
+            {"at": NOW - timedelta(days=6), "ids": [g.id for g in tagged]},
+        )
+        await db_session.commit()
+
+        inputs = await sleeve_store.load_sleeve_inputs(db_session, sleeve)
+        await db_session.rollback()
+    finally:
+        await sleeves.cleanup()
+
+    assert [fill.ledger_id for fill in inputs.fills] == [scenario.real_id]

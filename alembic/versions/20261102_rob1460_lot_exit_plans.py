@@ -6,7 +6,7 @@ every role. Losing the decisions table would let a trigger fire twice, so
 downgrade refuses while either table holds rows.
 
 Revision ID: 20261102_rob1460_exit_plans
-Revises: 20261101_rob1440_intent_gw
+Revises: 20261102_rob1470_sleeves
 Create Date: 2026-11-02
 """
 
@@ -20,7 +20,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261102_rob1460_exit_plans"
-down_revision: str | Sequence[str] | None = "20261101_rob1440_intent_gw"
+down_revision: str | Sequence[str] | None = "20261102_rob1470_sleeves"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

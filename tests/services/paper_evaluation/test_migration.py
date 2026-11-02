@@ -325,6 +325,13 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE review.mechanical_loss_cut_decisions")
             )
+            # ROB-1470 sleeves are later too: the tag column (its FK goes with
+            # it) before the tables it references.
+            await connection.execute(
+                text("ALTER TABLE review.order_proposals DROP COLUMN sleeve_id")
+            )
+            await connection.execute(text("DROP TABLE review.strategy_sleeve_versions"))
+            await connection.execute(text("DROP TABLE review.strategy_sleeves"))
             for column in ("quarantined_by", "quarantine_reason", "quarantined_at"):
                 await connection.execute(
                     text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")

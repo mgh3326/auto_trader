@@ -161,6 +161,7 @@ from .screener_pick_log import ScreenerPickLog
 from .sell_condition import SellCondition
 from .session_context import OperatorSessionContext
 from .strategy_learning_event import ResearchStrategyLearningEvent
+from .strategy_sleeves import StrategySleeve, StrategySleeveVersion
 from .symbol_news_relevance import SymbolNewsRelevance
 from .symbol_sectors import SymbolSector
 from .symbol_trade_settings import SymbolTradeSettings
@@ -223,6 +224,8 @@ __all__ = [
     "ScalpingReviewAction",
     "ExecutionChildRequest",
     "ExecutionIntent",
+    "StrategySleeve",
+    "StrategySleeveVersion",
     "ExecutionLedger",
     "ExecutionLedgerQuarantineEvent",
     "ExecutionLedgerReconcileRun",
