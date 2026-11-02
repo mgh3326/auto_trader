@@ -29,7 +29,7 @@ class KISMockE3ActivationContract:
     max_lifetime_seconds: int = 30 * 60
     max_working_orders_per_intent: int = 1
     max_intents_per_run: int = 1
-    owner: str = "app.routers.execution_intent_gateway"
+    owner: str = "E1 gateway route (POST /execution-intents/children)"
     writer: str = "gateway"
     operator_present: bool = True
     foreground_only: bool = True

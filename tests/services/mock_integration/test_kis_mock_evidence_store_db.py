@@ -29,7 +29,7 @@ from app.services.order_send_intent_service import OrderSendIntentService
 from tests.services.mock_integration.test_coordination import _attempt_envelope
 from tests.services.mock_integration.test_kis_mock_evidence_store import bound_entry
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 ODNO = "0007"
 
 

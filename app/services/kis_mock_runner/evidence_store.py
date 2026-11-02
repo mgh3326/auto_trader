@@ -72,6 +72,19 @@ def _key(value: str) -> str:
     return hashlib.sha256(b"kis-mock-evidence-v1\0" + value.encode()).hexdigest()
 
 
+def _dispatch_matches_claim(event: KISMockDispatchEvidence, claim_row_id: int) -> bool:
+    payload = event.payload
+    return (
+        event.broker_evidence_key == _key(_DISPATCH_EVIDENCE_KEY)
+        and event.kind in ("ack", "unknown")
+        and type(claim_row_id) is int
+        and claim_row_id > 0
+        and type(payload) is dict
+        and type(payload.get("claim_row_id")) is int
+        and payload["claim_row_id"] == claim_row_id
+    )
+
+
 def _payload(envelope: LineageEnvelope) -> dict[str, Any]:
     if type(envelope) is not LineageEnvelope:
         raise KISMockEvidenceConflict("lineage_type_rejected")
@@ -392,6 +405,10 @@ class KISMockEvidenceStore:
                         None if row is None else row.order_attempt_id,
                         odno,
                         not dispatch
+                        or not all(
+                            _dispatch_matches_claim(event, claim.id)
+                            for event in dispatch
+                        )
                         or any(event.kind == "unknown" for event in events),
                     )
                 )
@@ -456,8 +473,8 @@ class KISMockEvidenceStore:
                 or claim.claim_account_scope != self._scope
                 or claim.idempotency_key != row.idempotency_key
                 or claim.side != envelope.decision_intent.side
-                or any(
-                    item.payload["claim_row_id"] != claim.row_id for item in dispatch
+                or not all(
+                    _dispatch_matches_claim(item, claim.row_id) for item in dispatch
                 )
             ):
                 raise KISMockEvidenceConflict("terminal_claim_binding_mismatch")

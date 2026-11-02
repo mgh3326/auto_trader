@@ -18,19 +18,25 @@ Every item must hold. Code availability alone does not satisfy the operator step
 | 4 | One intent is stored through `SqlAlchemyGatewayStore.store_intent`: `account = "kis_mock"`, 1 share, `max_notional_krw` below 100,000, expiry within 30 minutes | Operator | Per run |
 | 5 | The ROB-1263 evidence migration `20261102_rob1263_kis_evidence` is applied; new tables and append-only triggers exist | Operator only | Pending operator verification; builders do not apply migrations |
 | 6 | `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` is set on the one mock route process; derive it using `kis_mock_account_fingerprint` from the approved mock credential namespace, without printing credentials or account numbers | Operator only | Unset remains UNKNOWN/BLOCKED |
-| 7 | Optional `KIS_MOCK_E3_ACTIVATION_ENABLED=true` supplies the approved single-run E3 bindings from contract §6, with a matching mock fingerprint | Operator on the one foreground process only | Default off/BLOCKED; opt-in gives registry readiness, not permission to skip any other precondition |
+| 7 | Required for this run: `KIS_MOCK_E3_ACTIVATION_ENABLED=true` supplies the approved single-run E3 bindings from contract §6, with a matching mock fingerprint | Operator on the one foreground process only | Default off/BLOCKED; opt-in gives registry readiness, not permission to skip any other precondition |
+| 8 | A reviewed operator-run adapter wires native broker readback and terminal release into `KISMockEvidenceStore` | Operator / separate wiring review | **Not implemented in this PR; do not install the route before it exists** |
 
 The approved installer must call
 `kis_mock_registry_from_environment()` to obtain the effective registry, construct
 `KISMockEvidenceStore(session_factory, entry=effective_kr_mock_entry)`, and use
 `store.ports()` in the coordinated route. This changes only the KR mock binding.
-Keep the route uninstalled until rows 5–7 are verified. Identity alone is an
+Keep the route uninstalled until rows 5–8 are verified. Identity alone is an
 identity pin; the separate exact activation opt-in supplies the approved bounded
-policy/cap/owner/canary labels. The canonical registry remains default off. The operator-run reconciler owns restart discovery and records all
-native evidence; no recovery scheduler or automatic replay is installed.
+policy/cap/owner/canary labels. The canonical registry remains default off. No
+recovery scheduler or automatic replay is installed. There is currently no in-repo reconciler call path to
+`record_native_evidence` or `release_with_recorded_terminal_evidence`; the existing
+`KISMockLifecycleService` does not write this new store or release its claims.
+The designated operator recovery owner must obtain that reviewed adapter before
+route installation. Until then a terminal broker order can still have a held
+claim; neither elapsed time nor a local ledger state releases it.
 
-The optional activation contract is configuration only: exactly 1 share per
-intent, `max_notional_krw < 100000`, expiry at most 30 minutes after authorization,
+The activation opt-in is required for this E3 run and remains default off.
+Its contract is configuration only: exactly 1 share per intent, `max_notional_krw < 100000`, expiry at most 30 minutes after authorization,
 at most 1 working order per intent, and one intent for this E3 run. The owner is
 the E1 gateway route and the writer is gateway; the operator stays present while
 the process runs in the foreground. The canary is the single run below. Store

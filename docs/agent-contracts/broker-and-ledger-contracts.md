@@ -501,7 +501,9 @@ existing guard. It is configuration only: one share, strict KRW 100,000 bound,
 at most 30-minute expiry, one working order per intent and one intent per E3 run,
 gateway writer and operator-present foreground route owner. No recurrence is
 authorized; the operator must store the matching bounded E1 intent. No production provider installation, scheduler or broker call is
-part of this amendment. Contract: `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
+part of this amendment. No in-repo reconciler yet calls the new native-evidence
+or release methods; reviewed recovery adapter wiring is required before route
+installation. Contract: `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
 
 ### kis_mock 귀속 사슬 — pre-submit 강제
 

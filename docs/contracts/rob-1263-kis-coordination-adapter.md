@@ -148,7 +148,7 @@ manual-resolution queues. Machine-readable as
 
 | Element | This lane's answer |
 |---|---|
-| **recovery owner** (exactly one) | the operator-run KIS mock reconciler in `app/mcp_server/tooling/kis_mock_ledger.py` (`KISMockLifecycleService`) |
+| **recovery owner** (exactly one) | the designated operator-run KIS mock reconciler in `app/mcp_server/tooling/kis_mock_ledger.py` (`KISMockLifecycleService`); its adapter to the new dispatch store is not implemented |
 | **restart trigger** | operator-invoked reconciliation over `review.order_send_intents` rows whose `account_scope` is this physical account's claim scope and whose lineage has no durably attributed `broker_order_id` |
 | **authoritative broker readback** | KIS `inquire_daily_order_domestic`, keyed by the exact attributed ODNO — never symbol/side/quantity/time proximity |
 | **exact `release_if_matches` condition** | `release_with_terminal_evidence` with `TerminalClaimEvidence(lane_native_terminal_evidence, account_position_reconciled, remainder_known)`, or a proven `authoritative_absence_proven` + `account_position_reconciled`; the underlying `OrderSendIntentService.release_if_matches` is never called directly |
@@ -171,13 +171,21 @@ tables reject UPDATE/DELETE/TRUNCATE; downgrade refuses retained evidence.
 The service commits initial lineage before the common coordinator reserves a
 claim. ACK attachments and dispatch outcomes are append-only. The common
 `DispatchEvidence` vocabulary maps acknowledged definitive results to `ack`;
-every other outcome maps to `unknown`, never inferred rejection. The operator
-reconciler records the remaining native kinds using `record_native_evidence`.
+every other outcome maps to `unknown`, never inferred rejection. The designated
+operator reconciler must record the remaining native kinds using
+`record_native_evidence`. **No in-repo caller currently wires that method or
+`release_with_recorded_terminal_evidence`.** The existing KIS mock reconciler
+has not been connected to the new store. This adapter is a required, separately
+reviewed precondition before installing a production coordinated route; the
+methods here provide ports, not a completed recovery workflow.
 Each event is unique on `(order_attempt_id, kind, broker_evidence_key)`; the
 broker evidence key is stored as a domain-separated digest. Same-key replay is
 a no-op only when the exact payload matches; conflicting evidence is refused.
 Native evidence cannot use the reserved coordinator keys `dispatch` and
-`lineage-ack`, so a native event cannot impersonate a dispatch outcome.
+`lineage-ack`, so a native event cannot impersonate a dispatch outcome. Readers
+also require dispatch kind `ack`/`unknown` and an exact integer `claim_row_id`
+matching the current claim; malformed or foreign-claim dispatch data holds the
+account and cannot authorize release.
 
 Fresh-session `rediscover_unreleased_claims()` reads surviving binary claims
 and their attributed evidence. Missing dispatch evidence or any unknown event
@@ -211,9 +219,10 @@ remains UNKNOWN/BLOCKED. With a fingerprint but no activation opt-in it becomes
 identity-known and physical scope derivation is available, while execution
 readiness remains BLOCKED.
 
-### Optional single-run E3 activation configuration (operator-desk ESC response)
+### Default-off single-run E3 activation configuration (required for the run)
 
-`KIS_MOCK_E3_ACTIVATION_ENABLED` defaults off and accepts only the exact string
+`KIS_MOCK_E3_ACTIVATION_ENABLED` is required for the E3 run, defaults off, and
+accepts only the exact string
 `true` as opt-in. `e3_activation.E3_ACTIVATION_CONTRACT` records the approved
 configuration, version `kis-mock-e3-activation/v1`. The operator sets the flag
 only on the foreground route process for the single operator-present run; this
@@ -227,7 +236,7 @@ PR changes no host environment and installs no route.
 | Intent expiry | at most 30 minutes after authorization |
 | Working orders | at most 1 per intent |
 | Scope | one intent in the single E3 run |
-| Owner | E1 gateway route, `app.routers.execution_intent_gateway`, operator present, foreground only |
+| Owner | E1 gateway route (`POST /execution-intents/children`), operator present, foreground only |
 | Writer | gateway; the registry `writer` flag becomes true only with explicit activation |
 | Auto | true only while the explicit activation setting is on |
 | Canary | the single operator-present run in `docs/runbooks/execution-intent-gateway.md#run-one-mock-order` |
@@ -266,7 +275,8 @@ After schema application and explicit port construction, lifecycle readiness is
 `AUTO_READY_PENDING_ACTIVATION`; absent ports still report
 `AUTO_READY_BLOCKED_BY_LIFECYCLE`. This is not `AUTO_ENABLED`. The production
 route provider remains unset: this amendment neither installs it nor runs a
-runtime canary, migration, broker request or scheduler.
+runtime canary, migration, broker request or scheduler. Native reconciliation
+and claim-release adapter wiring must also exist before route installation.
 
 ## 7. Follow-up mutations
 

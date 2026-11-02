@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceConflict,
     KISMockEvidenceStore,
     NativeOrderEvidence,
+    _key,
 )
 from app.services.kis_mock_runner.registry_binding import (
     IDENTITY_ENV,
@@ -231,7 +233,7 @@ def test_e3_activation_contract_has_the_approved_per_intent_bounds():
     assert contract.max_lifetime_seconds == 30 * 60
     assert contract.max_working_orders_per_intent == 1
     assert contract.max_intents_per_run == 1
-    assert contract.owner == "app.routers.execution_intent_gateway"
+    assert contract.owner == "E1 gateway route (POST /execution-intents/children)"
     assert contract.writer == "gateway"
     assert contract.operator_present is True and contract.foreground_only is True
     assert (
@@ -298,3 +300,74 @@ async def test_native_evidence_cannot_use_coordinator_reserved_keys(key):
             None, NativeOrderEvidence("cancel", key, None)
         )
     factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,payload,blocked",
+    [
+        ("reject", {}, True),
+        ("ack", {}, True),
+        ("ack", {"claim_row_id": "7"}, True),
+        ("ack", {"claim_row_id": True}, True),
+        ("ack", {"claim_row_id": 8}, True),
+        ("ack", {"claim_row_id": 7}, False),
+    ],
+)
+async def test_rediscovery_requires_typed_current_claim_dispatch(
+    kind, payload, blocked
+):
+    session = AsyncMock()
+    sessions = MagicMock()
+    sessions.return_value.__aenter__.return_value = session
+    store = KISMockEvidenceStore(sessions, entry=bound_entry())
+    claim = SimpleNamespace(
+        id=7, account_scope=store._scope, idempotency_key="key", side="buy"
+    )
+    event = SimpleNamespace(
+        kind=kind, payload=payload, broker_evidence_key=_key("dispatch")
+    )
+    session.scalars.side_effect = [[claim], [event]]
+    session.scalar.return_value = SimpleNamespace(order_attempt_id="attempt")
+    store._attributed_odno = AsyncMock(return_value=None)
+    discovered = await store.rediscover_unreleased_claims()
+    assert len(discovered) == 1
+    assert discovered[0].blocks_account is blocked
+
+
+@pytest.mark.asyncio
+async def test_malformed_reserved_dispatch_cannot_crash_or_release_claim():
+    session = AsyncMock()
+    sessions = MagicMock()
+    sessions.return_value.__aenter__.return_value = session
+    store = KISMockEvidenceStore(sessions, entry=bound_entry())
+    store._lineage = AsyncMock(
+        return_value=SimpleNamespace(order_attempt_id="attempt", idempotency_key="key")
+    )
+    session.scalar.return_value = SimpleNamespace(
+        payload={
+            "terminal": {
+                "lane_native_terminal_evidence": True,
+                "account_position_reconciled": True,
+                "remainder_known": True,
+                "authoritative_absence_proven": False,
+            }
+        }
+    )
+    session.scalars.return_value = [
+        SimpleNamespace(kind="reject", payload={}, broker_evidence_key=_key("dispatch"))
+    ]
+    claim = DurableClaim(
+        row_id=7, claim_account_scope=store._scope, idempotency_key="key", side="buy"
+    )
+    intents = AsyncMock()
+    with pytest.raises(
+        KISMockEvidenceConflict, match="terminal_claim_binding_mismatch"
+    ):
+        await store.release_with_recorded_terminal_evidence(
+            SimpleNamespace(decision_intent=SimpleNamespace(side="buy")),
+            broker_evidence_key="terminal",
+            claim=claim,
+            claims=DurableSendClaimAdapter(intents),
+        )
+    intents.release_if_matches.assert_not_awaited()
