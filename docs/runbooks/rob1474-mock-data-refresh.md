@@ -57,7 +57,26 @@ Each generation has `bars.csv` / `bars.json` in the exact `read_bars` layout,
 `candidates.csv` for incremental history, and `membership.json` containing the
 observed-date universe and ranking. The manifest records counts, SHA-256 hashes,
 feed, benchmark and completed-bar cutoff. Publication is a single symlink swap.
-Old generations are retained; there is no automatic cleanup.
+Old generations are retained; cleanup is a manual maintenance operation.
+Keep seven total generations by default (current plus six newest archives).
+Stop **all** readers/runners using this root before applying retention: the writer
+lock serializes against refresh, but readers pin paths without holding that lock.
+Preview, review the hashes, then apply during that same maintenance window:
+
+```bash
+python -m scripts.mock_data_prune --root /data/mock-strategy-bars --market us --keep 7
+python -m scripts.mock_data_prune --root /data/mock-strategy-bars --market us --keep 7 --apply
+# Repeat for --market crypto when its readers are stopped.
+```
+
+This deletes only producer generation directories beyond the retention count,
+always protecting the current target. Earlier dated memberships remain inside
+the retained current generation. Export generations needed for exact historical
+price-vintage replay before deleting them. Resume readers after pruning. Monitor
+free disk and run maintenance before the next daily refresh; no scheduler is added.
+The full candidate symbol list is stored once per generation in
+`source_symbols.json` (manifest SHA), rather than copied into each new dated
+membership. Previously sealed membership records remain unchanged.
 
 Membership starts at the **observation date**, never at the backfilled candle's
 date. A first backfill cannot reconstruct historical membership or delisted
@@ -65,8 +84,11 @@ assets: it is current-vintage feature history, not a certified historical PIT
 corpus. Each next daily observation preserves earlier memberships exactly.
 Current bars contain only the current selected names; prior generations preserve
 prior names. The runners reject a producer snapshot whose observation date is
-later than the requested run (crypto permits the following UTC date on which the
-candle becomes available). Use a separate replay root whose market symlink points to the archived generation
+later than the requested run. US additionally requires the universe cutoff to
+match the preceding signal session and records `universe_observed_at` in entry
+metadata. Crypto requires its universe cutoff to match the requested candle and
+permits the following UTC date on which the
+candle becomes available. Use a separate replay root whose market symlink points to the archived generation
 for historical replay,
 not today's active universe. Crypto signal provenance records the actual universe
 observation time and moves `prediction_at` forward to at least that time. These

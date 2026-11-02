@@ -68,7 +68,7 @@ class FakeSource:
 
 
 @pytest.mark.parametrize("market", ["us", "crypto"])
-def test_roundtrip_rank_and_full_feature_history(tmp_path, market):
+def test_roundtrip_rank_and_full_feature_history(tmp_path, monkeypatch, market):
     source = FakeSource(market)
     meta = producer.refresh(tmp_path, source, now=NOW, limit=20)
     bars, actual = read_bars(tmp_path, market)
@@ -77,6 +77,10 @@ def test_roundtrip_rank_and_full_feature_history(tmp_path, market):
     assert bars.groupby("symbol").size().min() >= (260 if market == "us" else 365)
     members = json.loads((tmp_path / market / "membership.json").read_text())
     assert set(members) == {"2026-11-02"}
+    assert "source_symbols" not in members["2026-11-02"]
+    source_list = tmp_path / market / "source_symbols.json"
+    assert producer.digest(source_list) == meta["source_symbols_sha256"]
+    assert json.loads(source_list.read_text())["symbols"] == source.names
     assert members["2026-11-02"]["symbols"] == list(reversed(source.names[4:]))
     assert source.names[0] not in set(bars.symbol)
     assert "__benchmark__" in set(bars.symbol)
@@ -86,6 +90,13 @@ def test_roundtrip_rank_and_full_feature_history(tmp_path, market):
         assert len(payload["horizons"]["3"]["up"]) == 10
         assert payload["universe_observed_at"] == NOW.isoformat()
         assert pd.Timestamp(payload["prediction_at"]) >= pd.Timestamp(NOW)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "research.stock_selection.io.read_bars",
+                lambda *args: (bars, {**meta, "data_cutoff": "2026-10-31"}),
+            )
+            with pytest.raises(ValueError, match="universe cutoff"):
+                daily_lists(None, date(2026, 11, 1), cache_root=tmp_path)
         with pytest.raises(ValueError, match="future universe"):
             daily_lists(None, date(2026, 10, 31), cache_root=tmp_path)
 
@@ -340,3 +351,48 @@ def test_crypto_cli_accepts_explicit_cache_root():
         ]
     )
     assert str(args.cache_dir) == "/data/bars" and args.panel_root is None
+
+
+def test_manual_retention_preview_apply_preserves_current_and_membership(tmp_path):
+    from scripts.mock_data_prune import prune
+
+    generations = tmp_path / ".crypto-snapshots"
+    generations.mkdir()
+    for i in range(5):
+        path = generations / f"{i:064x}"
+        path.mkdir()
+        (path / "bars.json").write_text(
+            json.dumps(
+                {
+                    "producer": "mock-data-refresh/v1",
+                    "market": "crypto",
+                    "fetched_at": f"2026-11-0{i + 1}T12:00:00+00:00",
+                }
+            )
+        )
+        (path / "membership.json").write_text('{"old": "preserved"}')
+    current = generations / f"{0:064x}"
+    (tmp_path / "crypto").symlink_to(current)
+    expected = [f"{i:064x}" for i in (3, 2, 1)]
+    assert prune(tmp_path, "crypto", keep=2) == expected
+    assert len(list(generations.iterdir())) == 5
+    assert prune(tmp_path, "crypto", keep=2, apply=True) == expected
+    assert sorted(p.name for p in generations.iterdir()) == [
+        f"{i:064x}" for i in (0, 4)
+    ]
+    assert (tmp_path / "crypto/membership.json").read_text() == '{"old": "preserved"}'
+    assert prune(tmp_path, "crypto", keep=2, apply=True) == []
+
+
+def test_retention_rejects_symlink_generation(tmp_path):
+    from scripts.mock_data_prune import prune
+
+    generations = tmp_path / ".us-snapshots"
+    generations.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (generations / ("a" * 64)).symlink_to(outside)
+    (tmp_path / "us").symlink_to(generations / ("a" * 64))
+    with pytest.raises(ValueError, match="outside snapshot"):
+        prune(tmp_path, "us", apply=True)
+    assert outside.exists()

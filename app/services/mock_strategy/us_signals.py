@@ -36,6 +36,7 @@ class UsSelection:
     up: tuple[Candidate, ...]
     down: tuple[Candidate, ...]
     input_sha256: str
+    universe_observed_at: datetime | None = None
 
     @property
     def strategy_id(self) -> str:
@@ -83,6 +84,11 @@ def build_selection(
         and date.fromisoformat(meta["observation_date"]) > asof
     ):
         raise ValueError("future universe observation")
+    if (
+        meta.get("producer") == "mock-data-refresh/v1"
+        and date.fromisoformat(meta["data_cutoff"]) != signal_date
+    ):
+        raise ValueError("universe cutoff must match previous signal session")
     payload = make_lists(
         bars,
         market="us",
@@ -110,4 +116,7 @@ def build_selection(
         candidates("up"),
         candidates("down"),
         payload["input_prefix_sha256"],
+        pd.Timestamp(meta["fetched_at"]).to_pydatetime()
+        if meta.get("producer") == "mock-data-refresh/v1"
+        else None,
     )

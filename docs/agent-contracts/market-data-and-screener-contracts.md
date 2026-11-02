@@ -537,3 +537,11 @@ membership. Immutable generations and a single atomic market symlink publish
 No orders, DB writes, scheduler registration or deployment. Crypto's explicit
 `--cache-dir` runner input retains the legacy `--panel-root` path. Details:
 `docs/runbooks/rob1474-mock-data-refresh.md`.
+
+ROB-1474 input maintenance: `scripts.mock_data_prune` previews manual retention
+(default seven generations including the protected current target). `--apply`
+requires all root readers stopped; refresh shares its market flock. No automatic
+cleanup or scheduler. New membership dates omit full source lists; each generation
+stores `source_symbols.json` with its manifest hash. US producer consumers require
+universe cutoff equal to the prior signal session and record observation time.
+Crypto cache consumers require cutoff equal to the requested completed candle.

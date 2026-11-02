@@ -201,7 +201,6 @@ def refresh(
             if market == "us"
             else "30_day_quote_volume_sum",
             "scores": {s: v for s, v in scores if s in selected},
-            "source_symbols": assets,
             "excluded": excluded,
         }
         observations[observed_date] = observation
@@ -215,6 +214,9 @@ def refresh(
             "bars.csv": _csv(bars),
             "candidates.csv": _csv(merged),
             "membership.json": _json(observations),
+            "source_symbols.json": _json(
+                {"observed_at": now.isoformat(), "symbols": assets}
+            ),
         }
         manifest = {
             "schema": "stock-selection-bars/v1",
@@ -233,6 +235,9 @@ def refresh(
             "sha256": hashlib.sha256(content["bars.csv"]).hexdigest(),
             "candidates_sha256": hashlib.sha256(content["candidates.csv"]).hexdigest(),
             "membership_sha256": hashlib.sha256(content["membership.json"]).hexdigest(),
+            "source_symbols_sha256": hashlib.sha256(
+                content["source_symbols.json"]
+            ).hexdigest(),
             "adjustment": "all" if market == "us" else "none",
             "universe": "prospective observed membership only; backfilled bars are not historical membership",
             "availability": "nominal completed-session availability; first backfill is current vintage",

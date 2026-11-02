@@ -102,6 +102,8 @@ def daily_lists(
             raise ValueError("crypto cache requires mock_data_refresh provenance")
         if date.fromisoformat(meta["observation_date"]) > asof + timedelta(days=1):
             raise ValueError("future universe observation")
+        if date.fromisoformat(meta["data_cutoff"]) != asof:
+            raise ValueError("universe cutoff must match requested crypto candle")
     else:
         if root is None:
             raise ValueError("panel root required")
