@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.scripts._deploy_gate_fakes import install_gate_fakes, install_gate_helper
+
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY = Path(os.environ.get("DEPLOY_UNDER_TEST", REPO / "scripts/deploy-ncp-pull.sh"))
 CONTRACT = REPO / "docs/contracts/task-934-image-prune.md"
@@ -300,7 +302,7 @@ class Env:
         self.run_dir.mkdir()
         state = _initial_state(skipped_kis_stopped=skipped_kis_stopped)
         self.state_path.write_text(json.dumps(state))
-        (self.bindir / "docker").write_text(FAKE_DOCKER)
+        install_gate_fakes(self.bindir, FAKE_DOCKER, NEW)
         (self.bindir / "curl").write_text(
             "#!/usr/bin/env bash\n"
             'url="${!#}"\n'
@@ -332,7 +334,7 @@ class Env:
         (self.run_dir / "mcp-active-color").write_text("blue\n")
 
     def put_new_locally_as_main(self) -> None:
-        """Dry-run inspects `:main` locally; model an earlier pull of it."""
+        """Dry-run plans against the verified remote digest; model an earlier pull of it."""
         state = self.state()
         state["images"][NEW_ID] = _image([f"{REPOSITORY}:main"], [NEW], 2000)
         self.state_path.write_text(json.dumps(state))
@@ -803,6 +805,7 @@ def _mutant(tmp_path: Path, pattern: str, replacement: str) -> Path:
     path = tmp_path / "deploy-mutant.sh"
     path.write_text(mutated)
     path.chmod(0o755)
+    install_gate_helper(tmp_path)
     return path
 
 

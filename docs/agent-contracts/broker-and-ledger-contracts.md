@@ -14,6 +14,7 @@
 - Execution Ledger 교차 소스 중복 체결 (ROB-1379)
 - dots 이력 익명화 export (ROB-1438)
 - 실거래 회고 (ROB-1439)
+- 전략 조정 증거 묶음 (ROB-1458)
 - 보호 수량 P 규칙 추종 (#943)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
@@ -355,6 +356,16 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - 🔴 **`superseded_duplicate=false` 만으로 중복이 걸러지지 않는다**: 하루 일찍 찍힌 KIS websocket 행은 다음 날의 동일한 reconciler 행과 날짜 키가 달라 flag 를 통과한다. 이 패키지는 그런 행을 지우고, 그 행을 흡수한 seed 도 같은 수량만큼 줄이며, 주문 수량을 넘는 합계 중 주문 수량과 같은 행이 있으면 그 행만 남긴다. export 의 다른 소비자도 같은 함정을 만난다. 반대로 경제 필드가 같은 행이 곧 중복은 아니다: export 에 `fill_seq` 가 없고 시각이 분 단위로 잘려 한 주문의 별개 체결이 같아 보일 수 있으므로, 합계를 주문 수량과 대조한 뒤 판단한다
 - 🔴 **나중 배치의 seed 는 증분이 아니라 전체 보유량이다**: `net_quantity_by_match_key_since` 는 seed 행을 빼고 그 실행의 cutover 이후 체결만 세므로, 2026-09-29 배치 6행은 그 시점 보유량 전체를 담는다. 이 패키지는 해당 종목 보유량을 그 값으로 재설정한다. seed 행을 합산하는 리더는 첫 배치 위에 이 행을 이중으로 더하게 된다
 - **테스트**: `tests/research/trade_retro/`
+
+### 전략 조정 증거 묶음 (ROB-1458)
+
+ROB-1439 의 정규화 체결·주문·포지션·현금 하한을 그대로 재사용해 물타기(tier 자체 `underwater-d20-v1` 규칙)·손절 반사실·매수 주문 방식·파킹·코인 매도 래더·유휴 현금과, 같은 신호에 다시 돌린 처음부터 짠 규칙 세트(낙폭 포함)를 잰다. 결과는 운영자용 선택지 표다. 🔴 연구 전용 — DB·브로커·자격증명·스케줄러 없음, `app/`·`config/` 변경 없음, 종목·금액 권고 없음.
+
+- **패키지·명령**: `research/strategy_evidence/`, `uv run python -m research.strategy_evidence.run report ...`(`--check` 는 바이트 비교, 입력 manifest 불일치면 종료 코드 3). 파킹 분배금은 `fetch-dividends` 로 만든 별도 해시 스냅샷에서만 읽는다
+- 🔴 **커밋본은 비율·건수·마스킹 계좌만**: `docs/research/rob-1458-strategy-evidence-2026-11-02.md`. 계좌명·행 단위 CSV 는 레포 밖 `--private-dir` 에만 둔다(레포 안이면 종료 코드 2). `tests/research/strategy_evidence/test_report_public.py` 가 커밋본을 스캔한다
+- 🔴 **in-sample 이다**: 한 창(2026-05-01~11-01)에서 계산한 반사실이라 예측이 아니다. 실험 레지스트리의 look 이 아니며, 표의 행을 채택하려면 그 행의 사전 등록 점검을 따로 돌려야 한다. 선택지 표의 "변경/유지" 문구는 코드에 고정된 판정식으로만 정해진다
+- **평균단가**는 브로커 값이 아니라 체결에서 재구성한다(`lots.py`): 매수는 가중평균, 매도는 불변, seed 는 수량·단가 재설정, 원가 불명 보유분이 남은 날은 제외. 임계값은 포함 경계(-8.00% 포함)다
+- **태그**: `underwater_support_net` 은 export 에 평문으로 남아 정확한 코호트다. `held_majors_support_net` 은 해시돼 대리 코호트로만 잰다
 
 ### 보호 수량 P 규칙 추종 (#943)
 
