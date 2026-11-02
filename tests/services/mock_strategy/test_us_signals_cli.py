@@ -184,3 +184,35 @@ def test_cli_reports_unresolved_episode_as_failure(monkeypatch, capsys):
         json.loads(capsys.readouterr().out)["orders"][0]["episode_status"]
         == "unresolved"
     )
+
+
+def test_producer_universe_cutoff_and_observation_provenance(tmp_path):
+    from app.services.brokers.alpaca.schemas import Asset
+    from app.services.mock_strategy.us import plan_orders
+
+    fixture = write_fixture(tmp_path)
+    path = tmp_path / "us/bars.json"
+    meta = json.loads(path.read_text()) | {
+        "producer": "mock-data-refresh/v1",
+        "observation_date": "2026-11-02",
+        "data_cutoff": "2026-10-30",
+        "fetched_at": "2026-11-02T12:00:00+00:00",
+    }
+    for cutoff in ("2026-11-02", "2026-10-29"):
+        write_json(path, {**meta, "data_cutoff": cutoff})
+        with pytest.raises(ValueError, match="universe cutoff"):
+            build_selection(tmp_path, date(2026, 11, 2))
+    write_json(path, meta)
+    selection = build_selection(tmp_path, date(2026, 11, 2))
+    assert selection.universe_observed_at.isoformat() == meta["fetched_at"]
+    assets = {
+        a["symbol"]: Asset.model_validate(a)
+        for a in json.loads(fixture.read_text())["assets"]
+    }
+    plan = plan_orders(
+        selection, assets, account_ref="fixture-paper", notional=Decimal("10000")
+    )
+    assert plan.orders
+    assert all(
+        o.meta["universe_observed_at"] == meta["fetched_at"] for o in plan.orders
+    )

@@ -524,3 +524,24 @@ CLI `fetch`/`build`/`evaluate`/`forward`/`score`는 수동이다. ML 의존성�
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 두 진입점의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.
+
+### ROB-1474 paper-runner daily input producer
+
+`python -m scripts.mock_data_refresh --market us|crypto --root DIR` is a manual,
+GET-only file producer, separate from the research public-only fetch harness.
+Alpaca active equities / Binance TRADING USDT spot are ranked using completed
+20-session median estimated dollar volume / 30-day actual quote volume. Current
+membership is observed prospectively; backfilled features never create historical
+membership. Immutable generations and a single atomic market symlink publish
+`read_bars` CSV/metadata plus candidate history and dated membership hashes.
+No orders, DB writes, scheduler registration or deployment. Crypto's explicit
+`--cache-dir` runner input retains the legacy `--panel-root` path. Details:
+`docs/runbooks/rob1474-mock-data-refresh.md`.
+
+ROB-1474 input maintenance: `scripts.mock_data_prune` previews manual retention
+(default seven generations including the protected current target). `--apply`
+requires all root readers stopped; refresh shares its market flock. No automatic
+cleanup or scheduler. New membership dates omit full source lists; each generation
+stores `source_symbols.json` with its manifest hash. US producer consumers require
+universe cutoff equal to the prior signal session and record observation time.
+Crypto cache consumers require cutoff equal to the requested completed candle.
