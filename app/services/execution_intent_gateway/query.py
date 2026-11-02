@@ -103,6 +103,10 @@ def _lineages(children: Sequence[ChildSnapshot]) -> dict[str, list[ChildSnapshot
     return lineages
 
 
+def _senders(rows: Sequence[ChildSnapshot]) -> list[ChildSnapshot]:
+    return [row for row in rows if row.action != "cancel"]
+
+
 def _lineage_orders(
     rows: Sequence[ChildSnapshot], ledger_orders: Sequence[LedgerOrder]
 ) -> set[OrderDay]:
@@ -112,7 +116,7 @@ def _lineage_orders(
     its target's number on its own day, so it places nothing. A number known only
     from the ledger belongs to a sender with no recorded number.
     """
-    senders = [row for row in rows if row.action != "cancel"]
+    senders = _senders(rows)
     journaled = {
         (row.broker_order_id, trade_day_kst(row.created_at))
         for row in senders
@@ -143,24 +147,48 @@ def _lineage_filled(
     return max(executed, max((o.filled_qty for o in ledger_orders), default=0))
 
 
-def _ledger_proves_closed(ledger_order: LedgerOrder, filled: int) -> bool:
+def _current_order_filled(
+    rows: Sequence[ChildSnapshot],
+    ledger_order: LedgerOrder | None,
+    filled_by_order_day: Mapping[OrderDay, int],
+) -> int:
+    """Fills on the order the lineage's last submit or amend placed.
+
+    This decides whether that order is finished. An amended order's quantity is
+    what was still open, so fills on the order it replaced must not count. The
+    ledger row's own quantity covers every number the row has held, so it counts
+    only while the lineage has never been amended.
+    """
+    senders = _senders(rows)
+    last = senders[-1]
+    number = last.broker_order_id or (ledger_order.order_no if ledger_order else None)
+    executed = (
+        filled_by_order_day.get((number, trade_day_kst(last.created_at)), 0)
+        if number
+        else 0
+    )
+    own = ledger_order.filled_qty if ledger_order and len(senders) == 1 else 0
+    return max(executed, own)
+
+
+def _ledger_proves_closed(ledger_order: LedgerOrder, current_filled: int) -> bool:
     if ledger_order.status == "rejected" or ledger_order.lifecycle_state == "expired":
         return True
     if ledger_order.lifecycle_state == "cancelled":
         # A soft cancel leaves the order possibly live at the broker.
         return ledger_order.broker_cancel_confirmed is True
-    return 0 < ledger_order.quantity <= filled
+    return 0 < ledger_order.quantity <= current_filled
 
 
 def _resolve_lineage(
     rows: Sequence[ChildSnapshot],
     ledger_order: LedgerOrder | None,
-    filled: int,
+    current_filled: int,
 ) -> tuple[WorkingOrder | None, tuple[Unresolved, ...]]:
     last = rows[-1]
     if last.action == "cancel" and last.state is ChildState.ACCEPTED:
         return None, ()
-    if ledger_order is not None and _ledger_proves_closed(ledger_order, filled):
+    if ledger_order is not None and _ledger_proves_closed(ledger_order, current_filled):
         return None, ()
     if (
         ledger_order is not None
@@ -198,10 +226,10 @@ def _resolve_lineage(
             for row in unknown
         )
 
-    working = next(row for row in reversed(rows) if row.action != "cancel")
+    working = _senders(rows)[-1]
     if working.quantity is None or working.limit_price_krw is None:
         raise ValueError("a journaled submit or amend has no quantity or price")
-    if working.quantity <= filled:
+    if working.quantity <= current_filled:
         return None, ()
     return (
         WorkingOrder(
@@ -233,9 +261,12 @@ def build_reconciliation(
             )
             continue
         ledger_order = ledger_rows[0] if ledger_rows else None
-        filled = _lineage_filled(rows, ledger_rows, evidence.filled_by_order_day)
-        filled_total += filled
-        order, lineage_unresolved = _resolve_lineage(rows, ledger_order, filled)
+        filled_total += _lineage_filled(rows, ledger_rows, evidence.filled_by_order_day)
+        order, lineage_unresolved = _resolve_lineage(
+            rows,
+            ledger_order,
+            _current_order_filled(rows, ledger_order, evidence.filled_by_order_day),
+        )
         unresolved.extend(lineage_unresolved)
         if order is not None:
             working.append(order)

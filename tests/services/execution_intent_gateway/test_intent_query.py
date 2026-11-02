@@ -381,10 +381,18 @@ def _submit_day_before(order_id: str | None = "1001") -> ChildSnapshot:
 
 
 def _amend_today(
-    state: ChildState = ChildState.ACCEPTED, order_id: str | None = "1002"
+    state: ChildState = ChildState.ACCEPTED,
+    order_id: str | None = "1002",
+    quantity: int = 10,
 ) -> ChildSnapshot:
     return _child(
-        2, "key-00002", state, action="amend", target="key-00001", order_id=order_id
+        2,
+        "key-00002",
+        state,
+        action="amend",
+        target="key-00001",
+        order_id=order_id,
+        quantity=quantity,
     )
 
 
@@ -498,6 +506,88 @@ def test_one_lineage_reusing_a_number_sums_its_two_orders() -> None:
 def test_a_fill_for_an_order_with_no_established_day_is_not_counted() -> None:
     fill = ("9999", 10, "reconciler", SENT_AT)
     assert executed_by_order_day([fill], {("1001", SENT_DAY)}) == {}
+
+
+# After an amend, closure looks only at the replacement order. The view's total
+# stays cumulative: fillwire holds back sends with it.
+
+
+_AMENDED = (
+    _child(1, "key-00001", ChildState.ACCEPTED, order_id="1001"),
+    _amend_today(quantity=6),
+)
+_AMENDED_LEDGER = {"key-00001": (_ledger(order_no="1002", quantity=6),)}
+_AMENDED_WORKING = WorkingOrder("key-00002", 70_000, 6)
+
+
+def _fills(*quantities: tuple[str, int]) -> list[tuple[str, int, str, datetime]]:
+    return [(number, qty, "reconciler", SENT_AT) for number, qty in quantities]
+
+
+def test_fills_on_the_replaced_order_do_not_close_the_amended_one() -> None:
+    result = _reconcile_with_fills(
+        list(_AMENDED), _AMENDED_LEDGER, _fills(("1001", 10))
+    )
+    assert result == Reconciliation(True, _AMENDED_WORKING, 10, ())
+
+
+def test_old_and_new_fills_together_do_not_close_the_amended_order() -> None:
+    result = _reconcile_with_fills(
+        list(_AMENDED), _AMENDED_LEDGER, _fills(("1001", 4), ("1002", 2))
+    )
+    assert result == Reconciliation(True, _AMENDED_WORKING, 6, ())
+
+
+def test_the_journal_alone_does_not_close_the_amended_order_either() -> None:
+    result = _reconcile_with_fills(list(_AMENDED), {}, _fills(("1001", 4), ("1002", 2)))
+    assert result == Reconciliation(True, _AMENDED_WORKING, 6, ())
+
+
+@pytest.mark.parametrize("orders_by_root", [_AMENDED_LEDGER, {}])
+def test_fills_on_the_replacement_itself_close_the_amended_order(
+    orders_by_root: dict[str, tuple[LedgerOrder, ...]],
+) -> None:
+    result = _reconcile_with_fills(
+        list(_AMENDED), orders_by_root, _fills(("1001", 4), ("1002", 6))
+    )
+    assert result == Reconciliation(True, None, 10, ())
+
+
+def test_an_amended_ledger_rows_own_quantity_does_not_close_it() -> None:
+    ledger_row = _ledger(order_no="1002", lifecycle="fill", quantity=6, filled=6)
+    result = _reconcile_with_fills(list(_AMENDED), {"key-00001": (ledger_row,)}, [])
+    assert result == Reconciliation(True, _AMENDED_WORKING, 6, ())
+
+
+def test_old_fills_do_not_close_an_unknown_amend_the_ledger_followed() -> None:
+    children = [_AMENDED[0], _amend_today(ChildState.UNCERTAIN, None, 6)]
+    result = _reconcile_with_fills(children, _AMENDED_LEDGER, _fills(("1001", 6)))
+    assert result.reconciled is False
+    assert [u.idempotency_key for u in result.unresolved] == ["key-00002"]
+
+
+def test_fills_on_the_replacement_close_an_unknown_amend_the_ledger_followed() -> None:
+    children = [_AMENDED[0], _amend_today(ChildState.UNCERTAIN, None, 6)]
+    result = _reconcile_with_fills(children, _AMENDED_LEDGER, _fills(("1002", 6)))
+    assert result == Reconciliation(True, None, 6, ())
+
+
+def test_a_cancel_after_an_amend_still_looks_at_the_replacement() -> None:
+    children = [
+        *_AMENDED,
+        _child(
+            3,
+            "key-00003",
+            ChildState.UNCERTAIN,
+            action="cancel",
+            target="key-00002",
+            order_id="1002",
+        ),
+    ]
+    closed = _reconcile_with_fills(children, _AMENDED_LEDGER, _fills(("1002", 6)))
+    assert closed == Reconciliation(True, None, 6, ())
+    held = _reconcile_with_fills(children, _AMENDED_LEDGER, _fills(("1001", 6)))
+    assert held.reconciled is False
 
 
 def test_two_working_orders_refuse_to_name_one() -> None:
