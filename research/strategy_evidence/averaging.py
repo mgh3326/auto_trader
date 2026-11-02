@@ -23,6 +23,7 @@ from datetime import date, datetime
 import pandas as pd
 
 from research.strategy_evidence.common import TOLERANCE
+from research.strategy_evidence.decision_rules import US_ADD_FRACTION, add_quantity
 from research.strategy_evidence.lots import state_before
 from research.trade_retro.canonical import reference_close
 from research.trade_retro.prices import PriceBook
@@ -214,7 +215,7 @@ def held_majors_proxy(buys: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def average_down_overlay(
-    paths: pd.DataFrame, threshold: float, fraction: float = 0.5
+    paths: pd.DataFrame, threshold: float, fraction: float = US_ADD_FRACTION
 ) -> pd.DataFrame:
     """Systematic averaging down on the real book: at each episode's first close at or
     below -``threshold`` against average cost, buy ``fraction`` of the quantity then
@@ -227,7 +228,7 @@ def average_down_overlay(
             "market": t.market,
             "symbol": t.symbol,
             "day": t.day,
-            "qty": fraction * t.qty,
+            "qty": add_quantity(t.qty, fraction),
             "price": t.price,
         }
         for t in first_touches(paths, threshold)

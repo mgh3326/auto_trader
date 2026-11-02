@@ -1,0 +1,25 @@
+# PROPOSAL — ROB-1473; NOT registered. Desk owns registration after review.
+# Dagu host uses UTC. 00:20 UTC = 09:20 KST, after the crypto daily close.
+# US runs at 23:00 UTC (after both EDT and EST regular closes); non-session
+# days select the last completed session and become idempotent reruns.
+# This file merely proposes two UTC invocations. Do not copy it into Dagu
+# until the desk provisions the frozen universe and a fresh intent feed.
+# PAPER_FORWARD_UNIVERSE = frozen research prices_manifest.json
+# PAPER_FORWARD_SIGNALS_CRYPTO / _US = normalized paper-forward-signals/v1
+# PAPER_FORWARD_DIR = private durable artifact directory outside git
+description: "PROPOSAL: daily crypto B3 and US composite forward shadow"
+schedule:
+  - "20 0 * * *"
+  - "0 23 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+steps:
+  - name: crypto
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python scripts/paper_forward/run.py --market crypto --signals ${PAPER_FORWARD_SIGNALS_CRYPTO}
+  - name: us
+    working_dir: ${AUTO_TRADER_DIR}
+    command: uv run python scripts/paper_forward/run.py --market us --signals ${PAPER_FORWARD_SIGNALS_US}
+# Both steps run at both times. Each independently selects its last completed
+# session; the extra invocation is a read-only replay if that day is committed.
+# No broker, credential, TaskIQ, Prefect or cron wiring exists in this PR.
