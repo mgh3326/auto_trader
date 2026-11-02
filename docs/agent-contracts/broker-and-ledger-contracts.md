@@ -34,6 +34,12 @@
 
 ### Alpaca Paper 실행 레저 (ROB-84)
 
+**ROB-1474 모의 크기 상한 예외 (운영자 결정 2026-11-02,
+`decision/2026-11-02/mock-trading-all-venues-no-caps`)**: Alpaca paper의
+수량·금액 상한을 제거한다. 양수·유한값, 정확한 주문 크기의 승인 패킷 결속,
+paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유지한다.
+이 예외는 live 주문·다른 전략의 고정 리스크 상수를 변경할 권한이 아니다.
+
 `review.alpaca_paper_order_ledger` — Alpaca Paper 주문 라이프사이클 레코드 (previewed → canceled/filled/unexpected).
 
 - **ORM 모델**: `app/models/review.AlpacaPaperOrderLedger`

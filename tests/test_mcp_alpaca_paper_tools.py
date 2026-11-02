@@ -600,9 +600,7 @@ async def test_preview_accepts_exact_shared_client_order_id_limit(
     [
         ({"symbol": "TOO-LONG-SYMBOL"}, "1-10 characters"),
         ({"qty": Decimal("Infinity")}, "finite number"),
-        ({"qty": Decimal("1000001")}, "maximum allowed"),
         ({"notional": Decimal("NaN"), "qty": None}, "finite number"),
-        ({"notional": Decimal("10000001"), "qty": None}, "maximum allowed"),
         ({"time_in_force": "opg"}, "time_in_force"),
         ({"client_order_id": "   "}, "client_order_id"),
         ({"client_order_id": "x" * 49}, "client_order_id"),
@@ -769,8 +767,6 @@ async def test_preview_crypto_rejects_missing_limit_price(
     ("kwargs", "message"),
     [
         ({"type": "market", "limit_price": None}, "limit-only"),
-        ({"notional": Decimal("51")}, "crypto notional"),
-        ({"qty": Decimal("0.002"), "notional": None}, "estimated_cost"),
     ],
 )
 async def test_preview_crypto_rejects_unsafe_order_shapes(

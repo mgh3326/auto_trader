@@ -520,3 +520,4 @@ tests/unit/services/daily_candles/test_yahoo_us_fallback.py
 tests/unit/tasks/test_daily_candles_tasks.py
 tests/upbit_public_read_model/test_market_warnings.py
 tests/upbit_public_read_model/test_orderbook_cache.py
+tests/mcp_server/test_alpaca_paper_no_size_caps.py

@@ -14,8 +14,6 @@ from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import alpaca_paper_orders as _orders_mod
 from app.mcp_server.tooling.alpaca_paper_orders import (
     ALPACA_PAPER_MUTATING_TOOL_NAMES,
-    SUBMIT_MAX_NOTIONAL_USD,
-    SUBMIT_MAX_QTY,
     alpaca_paper_cancel_order,
     alpaca_paper_reconcile_orders,
     alpaca_paper_submit_order,
@@ -92,8 +90,6 @@ def test_module_exposes_expected_surface() -> None:
     assert callable(_orders_mod.set_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.reset_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.register_alpaca_paper_orders_tools)
-    assert _orders_mod.SUBMIT_MAX_QTY == pytest.approx(Decimal("5"))
-    assert _orders_mod.SUBMIT_MAX_NOTIONAL_USD == pytest.approx(Decimal("1000"))
 
 
 class FakeOrdersService(FakeAlpacaPaperService):
@@ -403,54 +399,16 @@ async def test_submit_has_no_caller_client_order_id_param(
     assert sent.client_order_id.startswith("rob73-")
 
 
-@pytest.mark.unit
 @pytest.mark.asyncio
-async def test_submit_rejects_qty_exceeding_cap(
-    fake_orders_service: FakeOrdersService,
-) -> None:
-    with pytest.raises(ValueError, match="exceeds submit cap"):
-        await alpaca_paper_submit_order(
-            symbol="AAPL",
-            side="buy",
-            type="limit",
-            qty=SUBMIT_MAX_QTY + Decimal("1"),
-            limit_price=Decimal("1.00"),
-            confirm=True,
-        )
-    assert [c for c in fake_orders_service.calls if c[0] == "submit_order"] == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_submit_rejects_notional_exceeding_cap(
-    fake_orders_service: FakeOrdersService,
-) -> None:
-    with pytest.raises(ValueError, match="exceeds submit cap"):
-        await alpaca_paper_submit_order(
-            symbol="AAPL",
-            side="buy",
-            type="market",
-            notional=SUBMIT_MAX_NOTIONAL_USD + Decimal("1"),
-            confirm=True,
-        )
-    assert [c for c in fake_orders_service.calls if c[0] == "submit_order"] == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_submit_rejects_estimated_cost_exceeding_cap(
-    fake_orders_service: FakeOrdersService,
-) -> None:
-    with pytest.raises(ValueError, match="estimated_cost"):
-        await alpaca_paper_submit_order(
-            symbol="AAPL",
-            side="buy",
-            type="limit",
-            qty=Decimal("5"),
-            limit_price=Decimal("250"),  # 5 * 250 = 1250 > 1000
-            confirm=True,
-        )
-    assert [c for c in fake_orders_service.calls if c[0] == "submit_order"] == []
+@pytest.mark.parametrize(
+    "size", [{"qty": Decimal("1000001")}, {"notional": Decimal("10000001")}]
+)
+async def test_large_paper_order_still_requires_confirmation(fake_orders_service, size):
+    result = await alpaca_paper_submit_order(
+        symbol="AAPL", side="buy", type="market", confirm=False, **size
+    )
+    assert result["blocked_reason"] == "confirmation_required"
+    assert fake_orders_service.calls == []
 
 
 @pytest.mark.unit
