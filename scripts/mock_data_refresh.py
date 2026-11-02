@@ -150,6 +150,8 @@ def refresh(
                     [fresh[~fresh.symbol.isin(repair)], repaired], ignore_index=True
                 )
             old = old[~old.symbol.isin(repair)]
+            refreshed = old.symbol.isin(symbols) & (old.date >= start.isoformat())
+            old = old[~refreshed]
             merged = pd.concat([old, fresh], ignore_index=True).drop_duplicates(
                 ["symbol", "date"], keep="last"
             )

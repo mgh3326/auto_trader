@@ -478,3 +478,45 @@ def test_crypto_refresh_cli_uses_real_binance_source_feed(
     assert persisted == manifest and manifest["symbols"] == 2
     assert bars.groupby("symbol").size().min() == 365
     assert len(requests) == 4
+
+
+@pytest.mark.parametrize("withdraw_entire_symbol", [False, True])
+def test_incremental_refresh_replaces_withdrawn_overlap(
+    tmp_path, withdraw_entire_symbol
+):
+    source = FakeSource()
+    producer.refresh(tmp_path, source, now=NOW, limit=20)
+    previous = (tmp_path / "crypto").resolve()
+    original = pd.read_csv(previous / "candidates.csv")
+    symbol, withdrawn_day = source.names[-1], "2026-10-31"
+    original_fetch = source.bars
+
+    def withdraw(symbols, start, end):
+        frame = original_fetch(symbols, start, end)
+        removed = frame.symbol == symbol
+        if not withdraw_entire_symbol:
+            removed &= frame.date == withdrawn_day
+        return frame[~removed]
+
+    source.bars = withdraw
+    meta = producer.refresh(tmp_path, source, now=NOW + timedelta(days=1), limit=20)
+    candidates = pd.read_csv(tmp_path / "crypto/candidates.csv")
+    assert not (
+        (candidates.symbol == symbol) & (candidates.date == withdrawn_day)
+    ).any()
+    assert meta["excluded"][symbol] == "incomplete_feature_history"
+    bars, _ = read_bars(tmp_path, "crypto")
+    assert symbol not in set(bars.symbol)
+    # A complete response replaces only its requested window; preserve older
+    # feature history and the immutable previous generation's evidence.
+    anchor = "2026-09-01"
+    pd.testing.assert_frame_equal(
+        original[(original.symbol == symbol) & (original.date == anchor)].reset_index(
+            drop=True
+        ),
+        candidates[
+            (candidates.symbol == symbol) & (candidates.date == anchor)
+        ].reset_index(drop=True),
+    )
+    pd.testing.assert_frame_equal(original, pd.read_csv(previous / "candidates.csv"))
+    assert len(source.calls) == 2
