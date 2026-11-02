@@ -56,6 +56,11 @@ _CANDLE_READ: dict[str, tuple[MarketKey, str | None, str | None]] = {
     "crypto": (MarketKey.CRYPTO, "upbit_krw", None),
 }
 _PROTECTED_MARKET = {"equity_kr": "kr", "equity_us": "us", "crypto": "crypto"}
+_LOT_MARKET_BY_LEDGER_MARKET = {
+    "kr": "equity_kr",
+    "us": "equity_us",
+    "crypto": "crypto",
+}
 _PROTECTED_SCOPE = {"upbit": "upbit_live"}
 _CURRENCY = {"equity_kr": "KRW", "equity_us": "USD", "crypto": "KRW"}
 _CRYPTO_PREFIX = "KRW-"
@@ -210,6 +215,15 @@ async def load_bars(
     return out
 
 
+def _live_ledger_lot_key(row: Any) -> LotKey | None:
+    """The lot a ``review.live_order_ledger`` row belongs to, from its own fields."""
+    market = _LOT_MARKET_BY_LEDGER_MARKET.get(row.market)
+    account = _ACCOUNT_BY_BROKER_MARKET.get((row.broker, market or ""))
+    if market is None or account is None:
+        return None
+    return LotKey(account, market, lot_symbol(row.symbol, market))
+
+
 def _open_quantity(row: Any) -> Decimal:
     quantity = Decimal(str(row.quantity or 0))
     filled = Decimal(str(row.filled_qty or 0))
@@ -258,11 +272,9 @@ async def load_open_sell_quantities(
         )
     )
     for row in live_rows.scalars().all():
-        account = "upbit" if row.broker == "upbit" else "kis_live"
-        market = "crypto" if account == "upbit" else "equity_us"
-        add(
-            LotKey(account, market, lot_symbol(row.symbol, market)), _open_quantity(row)
-        )
+        key = _live_ledger_lot_key(row)
+        if key is not None:
+            add(key, _open_quantity(row))
 
     toss_rows = await session.execute(
         select(TossLiveOrderLedger).where(

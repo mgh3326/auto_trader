@@ -18,7 +18,11 @@ from app.schemas.trading_policy import TradingPolicyDocument
 from app.services.execution_ledger.kis_lots import LedgerFill
 from app.services.mechanical_loss_cut import plans as plans_module
 from app.services.mechanical_loss_cut.plans import record_buy_exit_plan
-from app.services.mechanical_loss_cut.positions import held_lot_from_fills, lot_symbol
+from app.services.mechanical_loss_cut.positions import (
+    _live_ledger_lot_key,
+    held_lot_from_fills,
+    lot_symbol,
+)
 from app.services.mechanical_loss_cut.rules import LotKey
 from app.services.order_proposals import revalidation as revalidation_module
 from app.services.order_proposals.revalidation import (
@@ -354,6 +358,18 @@ def test_proposal_argument_only_fits_a_place_buy(kwargs, message):
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", ["100000", "110000"])
+async def test_a_stated_stop_at_or_above_the_buy_falls_back_to_the_default(
+    writes_on, stop
+):
+    status = await _buy(stated={"stop_price": stop, "stop_basis": "support"})
+
+    assert status == "entry"
+    assert _Store.appended[0].stop_price < Decimal("100000")
+    assert _Store.appended[0].stop_basis != "support"
+
+
 @pytest.mark.parametrize(
     ("order_type", "rungs"),
     [
@@ -449,6 +465,25 @@ def test_flat_or_oversold_ledger_is_no_position():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("broker", "market", "symbol", "expected"),
+    [
+        ("kis", "kr", "035720", LotKey("kis_live", "equity_kr", "035720")),
+        ("kis", "us", "AAPL", LotKey("kis_live", "equity_us", "AAPL")),
+        ("upbit", "crypto", "BTC", LotKey("upbit", "crypto", "KRW-BTC")),
+        ("toss", "us", "AAPL", LotKey("toss_live", "equity_us", "AAPL")),
+        ("kis", "crypto", "BTC", None),
+        ("kis", "unknown", "AAPL", None),
+    ],
+)
+def test_a_live_ledger_row_goes_to_the_lot_its_own_fields_name(
+    broker, market, symbol, expected
+):
+    row = SimpleNamespace(broker=broker, market=market, symbol=symbol)
+
+    assert _live_ledger_lot_key(row) == expected
 
 
 @pytest.mark.parametrize(

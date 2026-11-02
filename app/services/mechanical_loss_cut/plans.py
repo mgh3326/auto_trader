@@ -96,6 +96,14 @@ async def record_buy_exit_plan(
                 logger.warning(
                     "lot_exit_plan.stated_plan_ignored", extra={"code": str(exc)}
                 )
+            # Also checked at proposal creation. A stop at or above the buy would
+            # cut the lot on any dip below cost, so an altered row gets the default.
+            if stated_plan is not None and stated_plan.stop_price >= buy_price:
+                logger.warning(
+                    "lot_exit_plan.stated_plan_ignored",
+                    extra={"code": "exit_plan_stop_not_below_rung"},
+                )
+                stated_plan = None
         key = LotKey(
             account_mode,
             market,

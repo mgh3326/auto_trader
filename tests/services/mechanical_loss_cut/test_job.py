@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -570,3 +570,26 @@ async def test_a_cut_found_after_the_close_goes_out_in_the_next_session(
 
     await _live_run(monkeypatch, ports, now=monday_in_session, emitter=emitter)
     assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_recoveries_between_runs_still_record_the_next_break(broker_trap):
+    """The run number counts recorded decisions, so a missed cycle cannot collide."""
+    ports = FakePorts(
+        lots=[held(key=_BREAK_KEY)],
+        plans={_BREAK_KEY: plan(key=_BREAK_KEY)},
+        bars={_BREAK_KEY.symbol: (bars_from_closes(_FALLING), True)},
+    )
+    first = await evaluate_all_lots(ports, now=NOW, markets=("equity_kr",))
+
+    two_cycles_later = [*_FALLING, 90000, 84000, 90000, 84000, 90000, 84000]
+    ports.bar_map[_BREAK_KEY.symbol] = (
+        bars_from_closes(two_cycles_later, end=SESSION + timedelta(days=6)),
+        True,
+    )
+    second = await evaluate_all_lots(ports, now=NOW, markets=("equity_kr",))
+
+    assert first["decisions"][0].decision.trigger_key.endswith(":r1")
+    assert second["already_recorded"] == 0
+    assert second["decisions_written"] == 1
+    assert second["decisions"][0].decision.trigger_key.endswith(":r2")
