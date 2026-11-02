@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from app.core.symbol import to_db_symbol
 from app.models.mock_strategy import MockStrategyOrder
 from app.services.brokers.alpaca.schemas import Asset, Order, OrderRequest
 from app.services.mock_strategy.recorder import MockStrategyRecorder, OrderIntent
-from app.services.mock_strategy.us_broker import UsPaperBroker
+from app.services.mock_strategy.us_broker import PreDispatchRefusal, UsPaperBroker
 from app.services.mock_strategy.us_signals import (
     BASELINES,
     UsSelection,
@@ -134,6 +134,8 @@ def projection(row: OrderIntent | MockStrategyOrder) -> dict:
     return {
         "client_order_id": row.client_order_id,
         "strategy_id": row.strategy_id,
+        "account_ref": row.account_ref,
+        "episode_id": row.episode_id,
         "symbol": row.symbol,
         "side": row.side,
         "qty": str(row.qty) if row.qty is not None else None,
@@ -278,17 +280,37 @@ class UsPaperStrategy:
     async def _execute(self, row: MockStrategyOrder, asof: date) -> dict:
         if row.status != "planned":
             return projection(await self._refresh(row))
+        request = order_request(row)
+        try:
+            await self.broker.prepare(request, side=row.side, asof=asof, confirm=True)
+        except PreDispatchRefusal:
+            return {**projection(row), "reason": "pre_dispatch_refused"}
         if not await self.recorder.claim(row.client_order_id):
             current = await self.recorder.get(row.client_order_id)
             assert current is not None
             return projection(current)
         try:
             order = await self.broker.submit(
-                order_request(row), side=row.side, asof=asof, confirm=True
+                request, side=row.side, asof=asof, confirm=True
             )
             return projection(await self._observe(row, order))
+        except PreDispatchRefusal:
+            # Late guard refusal has positive no-POST proof. Never reset the
+            # committed claim; a due close may create a new indexed leg instead.
+            return projection(
+                await self.recorder.update(
+                    row.client_order_id,
+                    status="rejected",
+                    meta={
+                        "no_order_proven": True,
+                        "broker_terminal": True,
+                        "filled_qty": "0",
+                        "broker_status": "pre_dispatch_refused",
+                    },
+                )
+            )
         except Exception:
-            # A refusal, timeout, bad echo, or failed result commit never grants
+            # A timeout, bad echo, or failed result commit never grants
             # another POST. The committed sending fence survives a DB outage.
             return projection(
                 await self.recorder.update(row.client_order_id, status="uncertain")
@@ -315,70 +337,191 @@ class UsPaperStrategy:
             for entry in await self.recorder.list_due(
                 venue=VENUE, account_ref=account, asof=start
             ):
-                entry = await self._refresh(entry)
-                qty = Decimal(entry.meta.get("filled_qty", "0"))
-                if (
-                    entry.status != "filled"
-                    or not entry.meta.get("broker_terminal")
-                    or qty <= 0
-                    or entry.entry_price is None
-                ):
+                try:
+                    entry = await self._refresh(entry)
+                    qty = Decimal(entry.meta.get("filled_qty", "0"))
+                    if (
+                        entry.status != "filled"
+                        or not entry.meta.get("broker_terminal")
+                        or qty <= 0
+                        or entry.entry_price is None
+                    ):
+                        outcomes.append(
+                            {
+                                **projection(entry),
+                                "reason": "entry_not_terminal_with_fill",
+                            }
+                        )
+                        continue
+                    outcomes.append(await self._close_entry(entry, qty, asof))
+                except Exception as exc:
                     outcomes.append(
-                        {**projection(entry), "reason": "entry_not_terminal_with_fill"}
+                        {
+                            **projection(entry),
+                            "episode_status": "unresolved",
+                            "error_class": type(exc).__name__,
+                        }
                     )
-                    continue
-                side = "sell" if entry.side == "buy" else "cover"
-                entry_asof = date.fromisoformat(entry.meta["asof"])
-                horizon = entry.meta["horizon"]
-                coid = client_order_id(
-                    entry.strategy_id, entry_asof, entry.symbol, side, horizon
-                )
-                close = await self.recorder.record(
-                    OrderIntent(
-                        strategy_id=entry.strategy_id,
-                        venue=VENUE,
-                        account_ref=account,
-                        episode_id=entry.episode_id,
-                        symbol=entry.symbol,
-                        side=side,
-                        qty=qty,
-                        notional=None,
-                        client_order_id=coid,
-                        exit_due_at=None,
-                        meta={
-                            "asof": entry.meta["asof"],
-                            "horizon": horizon,
-                            "role": "exit",
-                            "entry_client_order_id": entry.client_order_id,
-                        },
-                    )
-                )
-                outcome = await self._execute(close, asof)
-                close = await self.recorder.get(coid)
-                assert close is not None
-                if (
-                    close.status in {"filled", "closed"}
-                    and close.meta.get("broker_terminal")
-                    and Decimal(close.meta.get("filled_qty", "0")) == qty
-                    and close.exit_price is not None
-                ):
-                    pnl = (
-                        (close.exit_price - entry.entry_price)
-                        * qty
-                        * (1 if entry.side == "buy" else -1)
-                    )
-                    now = datetime.now(UTC)
-                    await self.recorder.update(
-                        entry.client_order_id,
-                        status="closed",
-                        closed_at=now,
-                        exit_price=close.exit_price,
-                        realized_pnl=pnl,
-                    )
-                    await self.recorder.update(coid, status="closed", closed_at=now)
-                    outcome["episode_status"] = "closed"
-                    outcome["realized_pnl"] = str(pnl)
-                else:
-                    outcome["episode_status"] = "awaiting_close_evidence"
-                outcomes.append(outcome)
         return {"venue": VENUE, "asof": asof.isoformat(), "orders": outcomes}
+
+    @staticmethod
+    def _exit_id(entry: MockStrategyOrder, side: str, leg: int) -> str:
+        # Leg zero retains the original ID, including already persisted exits.
+        return client_order_id(
+            entry.strategy_id,
+            date.fromisoformat(entry.meta["asof"]),
+            entry.symbol,
+            side if leg == 0 else f"{side}:{leg}",
+            entry.meta["horizon"],
+        )
+
+    @staticmethod
+    def _exit_fill(leg: MockStrategyOrder) -> tuple[Decimal, Decimal] | None:
+        if (
+            leg.status not in {"filled", "closed", "canceled", "rejected"}
+            or leg.meta.get("broker_terminal") is not True
+        ):
+            return None
+        try:
+            qty = Decimal(leg.meta["filled_qty"])
+        except (KeyError, InvalidOperation, TypeError):
+            return None
+        if not qty.is_finite() or qty < 0 or leg.qty is None or qty > leg.qty:
+            return None
+        if not leg.broker_order_id and not (
+            leg.status == "rejected"
+            and leg.meta.get("no_order_proven") is True
+            and qty == 0
+        ):
+            return None
+        if qty == 0:
+            return (qty, Decimal(0)) if leg.status in {"canceled", "rejected"} else None
+        if (
+            leg.exit_price is None
+            or not leg.exit_price.is_finite()
+            or leg.exit_price <= 0
+        ):
+            return None
+        return qty, qty * leg.exit_price
+
+    async def _close_entry(
+        self, entry: MockStrategyOrder, qty: Decimal, asof: date
+    ) -> dict:
+        side = "sell" if entry.side == "buy" else "cover"
+        legs = [
+            row
+            for row in await self.recorder.list_orders(
+                venue=VENUE,
+                account_ref=entry.account_ref,
+                strategy_id=entry.strategy_id,
+            )
+            if row.episode_id == entry.episode_id and row.side in {"sell", "cover"}
+        ]
+        for leg in legs:
+            index = leg.meta.get("exit_leg", 0)
+            if (
+                type(index) is not int
+                or index < 0
+                or leg.side != side
+                or leg.meta.get("entry_client_order_id") != entry.client_order_id
+                or leg.client_order_id != self._exit_id(entry, side, index)
+            ):
+                return {
+                    **projection(entry),
+                    "episode_status": "awaiting_close_evidence",
+                    "reason": "exit_identity_invalid",
+                }
+        legs.sort(key=lambda row: row.meta.get("exit_leg", 0))
+        if [row.meta.get("exit_leg", 0) for row in legs] != list(range(len(legs))):
+            return {
+                **projection(entry),
+                "episode_status": "awaiting_close_evidence",
+                "reason": "exit_sequence_invalid",
+            }
+        filled, proceeds = Decimal(0), Decimal(0)
+        submitted = False
+        outcome = projection(entry)
+        for index, leg in enumerate(legs):
+            if leg.qty != qty - filled or leg.notional is not None:
+                return {
+                    **projection(leg),
+                    "episode_status": "awaiting_close_evidence",
+                    "reason": "exit_quantity_conflict",
+                }
+            if leg.status == "planned":
+                if index != len(legs) - 1:
+                    return {
+                        **projection(leg),
+                        "episode_status": "awaiting_close_evidence",
+                        "reason": "exit_sequence_invalid",
+                    }
+                outcome = await self._execute(leg, asof)
+                submitted = True
+                leg = await self.recorder.get(leg.client_order_id)
+                assert leg is not None
+            else:
+                leg = await self._refresh(leg)
+                outcome = projection(leg)
+            evidence = self._exit_fill(leg)
+            if evidence is None:
+                return {**outcome, "episode_status": "awaiting_close_evidence"}
+            filled += evidence[0]
+            proceeds += evidence[1]
+        # At most one planned/new leg is attempted per entry per invocation.
+        # Every prior leg must first have terminal, positive evidence.
+        if filled < qty and not submitted:
+            index = len(legs)
+            leg = await self.recorder.record(
+                OrderIntent(
+                    strategy_id=entry.strategy_id,
+                    venue=VENUE,
+                    account_ref=entry.account_ref,
+                    episode_id=entry.episode_id,
+                    symbol=entry.symbol,
+                    side=side,
+                    qty=qty - filled,
+                    notional=None,
+                    client_order_id=self._exit_id(entry, side, index),
+                    exit_due_at=None,
+                    meta={
+                        "asof": entry.meta["asof"],
+                        "horizon": entry.meta["horizon"],
+                        "role": "exit",
+                        "entry_client_order_id": entry.client_order_id,
+                        "exit_leg": index,
+                    },
+                )
+            )
+            legs.append(leg)
+            outcome = await self._execute(leg, asof)
+            leg = await self.recorder.get(leg.client_order_id)
+            assert leg is not None
+            evidence = self._exit_fill(leg)
+            if evidence is None:
+                return {**outcome, "episode_status": "awaiting_close_evidence"}
+            filled += evidence[0]
+            proceeds += evidence[1]
+        if filled != qty:
+            return {
+                **outcome,
+                "episode_status": "awaiting_close_evidence",
+                "remaining_qty": str(qty - filled),
+            }
+        assert entry.entry_price is not None
+        pnl = (proceeds - entry.entry_price * qty) * (1 if entry.side == "buy" else -1)
+        now = datetime.now(UTC)
+        await self.recorder.update(
+            entry.client_order_id,
+            status="closed",
+            closed_at=now,
+            exit_price=proceeds / qty,
+            realized_pnl=pnl,
+        )
+        for leg in legs:
+            current = await self.recorder.get(leg.client_order_id)
+            assert current is not None
+            if current.status == "filled":
+                await self.recorder.update(
+                    leg.client_order_id, status="closed", closed_at=now
+                )
+        return {**outcome, "episode_status": "closed", "realized_pnl": str(pnl)}

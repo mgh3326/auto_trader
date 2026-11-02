@@ -1,5 +1,6 @@
 """Exercise the real paper HTTP service through an in-memory transport."""
 
+import asyncio
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -247,3 +248,142 @@ async def test_close_checks_current_same_direction_available_quantity(enabled):
             confirm=True,
         )
     assert not any(m == "POST" for m, _, _ in transport.calls)
+
+
+@pytest.mark.parametrize(
+    "guard", ["borrowability", "closed", "available_quantity", "read_failure"]
+)
+async def test_pre_dispatch_refusal_does_not_burn_the_send_claim(enabled, guard):
+    from dataclasses import replace
+
+    from app.services.mock_strategy.us import UsPaperStrategy, plan_orders
+    from tests.services.mock_strategy.test_us import (
+        MemoryRecorder,
+        PaperBroker,
+        selection,
+    )
+
+    transport = Transport()
+    broker = UsPaperBroker(settings=config(), transport=transport)
+    account = await broker.preflight(DAY)
+    recorder = MemoryRecorder()
+    planned = plan_orders(
+        selection(), await PaperBroker().assets(), account_ref=account
+    ).orders[0]
+    original_request = transport.request
+    if guard == "borrowability":
+        planned = replace(planned, side="short", qty=Decimal("81"), notional=None)
+        transport.borrowable = False
+    elif guard == "closed":
+        transport.open = False
+    elif guard == "available_quantity":
+        planned = replace(planned, side="sell", qty=Decimal("4"), notional=None)
+        transport.position = {
+            "asset_id": "fixture-asset",
+            "symbol": "AAPL",
+            "qty": "10",
+            "qty_available": "3",
+            "avg_entry_price": "100",
+            "side": "long",
+        }
+    else:
+
+        async def read_failure(method, path, **kwargs):
+            if path.startswith("/v2/assets/"):
+                raise httpx.ReadTimeout("fixture read failed")
+            return await original_request(method, path, **kwargs)
+
+        transport.request = read_failure
+    row = await recorder.record(planned)
+    result = await UsPaperStrategy(recorder, broker)._execute(row, DAY)
+    assert result["status"] == "planned"
+    assert row.status == "planned"
+    assert not any(m == "POST" for m, _, _ in transport.calls)
+    transport.request = original_request
+    transport.open = transport.borrowable = True
+    if transport.position is not None:
+        transport.position["qty_available"] = "10"
+    await UsPaperStrategy(recorder, broker)._execute(row, DAY)
+    assert row.status == "accepted"
+    assert sum(m == "POST" for m, _, _ in transport.calls) == 1
+
+
+async def test_late_guard_no_post_proof_is_terminal_without_reopening_claim(
+    enabled, monkeypatch
+):
+    from app.services.mock_strategy.us import UsPaperStrategy, plan_orders
+    from tests.services.mock_strategy.test_us import (
+        MemoryRecorder,
+        PaperBroker,
+        selection,
+    )
+
+    transport = Transport()
+    broker = UsPaperBroker(settings=config(), transport=transport)
+    account = await broker.preflight(DAY)
+    recorder = MemoryRecorder()
+    row = await recorder.record(
+        plan_orders(
+            selection(), await PaperBroker().assets(), account_ref=account
+        ).orders[0]
+    )
+    prepare = broker.prepare
+    calls = 0
+
+    async def close_after_claim(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            transport.open = False
+        return await prepare(*args, **kwargs)
+
+    monkeypatch.setattr(broker, "prepare", close_after_claim)
+    await UsPaperStrategy(recorder, broker)._execute(row, DAY)
+    assert row.status == "rejected" and row.meta["no_order_proven"] is True
+    assert not row.broker_order_id and row.meta["filled_qty"] == "0"
+    assert not await recorder.claim(row.client_order_id)
+    assert not any(m == "POST" for m, _, _ in transport.calls)
+
+
+@pytest.mark.parametrize(
+    "exception_type", [ValueError, us_broker.PreDispatchRefusal, asyncio.CancelledError]
+)
+async def test_errors_after_post_boundary_are_always_uncertain(
+    enabled, monkeypatch, exception_type
+):
+    from app.services.mock_strategy.us import UsPaperStrategy, plan_orders
+    from tests.services.mock_strategy.test_us import (
+        MemoryRecorder,
+        PaperBroker,
+        selection,
+    )
+
+    transport = Transport()
+    original_request = transport.request
+    failure = exception_type("fixture post outcome unknown")
+
+    async def lost_response(method, path, **kwargs):
+        if method == "POST":
+            transport.calls.append((method, path, kwargs))
+            raise failure
+        return await original_request(method, path, **kwargs)
+
+    monkeypatch.setattr(transport, "request", lost_response)
+    broker = UsPaperBroker(settings=config(), transport=transport)
+    account = await broker.preflight(DAY)
+    recorder = MemoryRecorder()
+    row = await recorder.record(
+        plan_orders(
+            selection(), await PaperBroker().assets(), account_ref=account
+        ).orders[0]
+    )
+    if exception_type is asyncio.CancelledError:
+        recorder.fail_updates = True
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await UsPaperStrategy(recorder, broker)._execute(row, DAY)
+        assert caught.value is failure and row.status == "sending"
+    else:
+        await UsPaperStrategy(recorder, broker)._execute(row, DAY)
+        assert row.status == "uncertain" and not row.meta.get("no_order_proven")
+    assert not await recorder.claim(row.client_order_id)
+    assert sum(m == "POST" for m, _, _ in transport.calls) == 1

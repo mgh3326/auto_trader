@@ -41,6 +41,9 @@ class FixtureMarket:
     async def submit(self, *args, **kwargs):
         raise ValueError("fixtures cannot submit")
 
+    async def preflight(self, *args, **kwargs):
+        raise ValueError("fixtures cannot authorize dispatch")
+
     async def evidence(self, *args, **kwargs):
         raise ValueError("fixtures cannot supply fill evidence")
 
@@ -188,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
                 "uncertain",
                 "entry_not_sent",
                 "entry_fill_pending",
+                "unresolved",
+                "preflight_refused",
+                "rejected",
             }
             for row in result.get("orders", [])
         )

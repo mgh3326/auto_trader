@@ -24,6 +24,14 @@ from app.services.mock_strategy.crypto_orders import (
 VENUES = ("binance_spot_demo", "binance_futures_demo", "alpaca_paper_crypto")
 
 
+class PreDispatchRefusal(Exception):
+    """Raised only by the checks that precede the broker POST call."""
+
+    def __init__(self, reason_class: str):
+        self.reason_class = reason_class
+        super().__init__("crypto_pre_dispatch_refused")
+
+
 @dataclass(frozen=True)
 class FillEvidence:
     broker_order_id: str
@@ -39,6 +47,7 @@ class CryptoBroker(Protocol):
 
     async def rules(self, symbol: str) -> MarketRules: ...
     async def price(self, symbol: str) -> Decimal: ...
+    async def preflight(self, order: Any, *, confirm: bool) -> None: ...
     async def submit(self, order: Any, *, confirm: bool) -> FillEvidence: ...
     async def evidence(self, order: Any) -> FillEvidence: ...
     async def closeable(self, order: Any, qty: Decimal) -> None: ...
@@ -146,14 +155,25 @@ class BinanceCryptoDemo:
             if balance.free < qty:
                 raise ValueError("demo free quantity unavailable")
 
+    async def preflight(self, order: Any, *, confirm: bool) -> None:
+        try:
+            require_enabled(self.venue, confirm=confirm)
+            rules, price = (
+                await self.rules(order.symbol),
+                await self.price(order.symbol),
+            )
+            if rules.floor(order.qty, price) != order.qty:
+                raise ValueError("demo order no longer matches venue step")
+            if order.side in {"sell", "cover"}:
+                await self.closeable(order, order.qty)
+        except Exception as exc:
+            raise PreDispatchRefusal(type(exc).__name__) from None
+
     async def submit(self, order: Any, *, confirm: bool) -> FillEvidence:
-        require_enabled(self.venue, confirm=confirm)
-        rules, price = await self.rules(order.symbol), await self.price(order.symbol)
-        if rules.floor(order.qty, price) != order.qty:
-            raise ValueError("demo order no longer matches venue step")
+        # Recheck immediately before dispatch, with a typed no-POST outcome.
+        await self.preflight(order, confirm=confirm)
         kwargs: dict[str, Any] = {}
         if self.futures:
-            await self._position(order.symbol)
             kwargs = {"reduce_only": order.side == "cover", "position_side": "BOTH"}
         result = await self.client.submit_order(
             symbol=order.symbol,
@@ -291,13 +311,22 @@ class AlpacaCryptoPaper:
             response.status in {"filled", "canceled", "expired", "rejected"},
         )
 
+    async def preflight(self, order: Any, *, confirm: bool) -> None:
+        try:
+            require_enabled("alpaca_paper_crypto", confirm=confirm)
+            rules, price = (
+                await self.rules(order.symbol),
+                await self.price(order.symbol),
+            )
+            if rules.floor(order.qty, price) != order.qty:
+                raise ValueError("paper order no longer matches venue step")
+            if order.side == "sell":
+                await self.closeable(order, order.qty)
+        except Exception as exc:
+            raise PreDispatchRefusal(type(exc).__name__) from None
+
     async def submit(self, order: Any, *, confirm: bool) -> FillEvidence:
-        require_enabled("alpaca_paper_crypto", confirm=confirm)
-        rules, price = await self.rules(order.symbol), await self.price(order.symbol)
-        if rules.floor(order.qty, price) != order.qty:
-            raise ValueError("paper order no longer matches venue step")
-        if order.side == "sell":
-            await self.closeable(order, order.qty)
+        await self.preflight(order, confirm=confirm)
         response = await self.client.submit_order(
             OrderRequest(
                 symbol=self.execution_symbol(order.symbol),
@@ -346,8 +375,13 @@ async def build_broker(
         from app.services.brokers.alpaca.config import AlpacaPaperSettings
 
         settings = AlpacaPaperSettings.from_app_settings(profile="clean")
+        expected_id = settings.expected_account_id_suffix
+        expected_number = settings.expected_account_number_suffix
+        if not (expected_id or "").strip() or not (expected_number or "").strip():
+            raise ValueError("clean Alpaca expected account identity required")
         alpaca = AlpacaPaperBrokerService(settings=settings, profile="clean")
-        account_ref = f"alpaca-paper:{settings.expected_account_id_suffix}:{settings.expected_account_number_suffix}"
+        # Existing episode/client IDs include this exact account_ref encoding.
+        account_ref = f"alpaca-paper:{expected_id}:{expected_number}"
         return AlpacaCryptoPaper(alpaca, demo, account_ref=account_ref)
     except BaseException:
         await client.aclose()

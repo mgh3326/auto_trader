@@ -3,7 +3,7 @@
 import asyncio
 import runpy
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -55,6 +55,12 @@ async def test_recorder_round_trip_and_real_two_session_claim(
     assert updated.meta["reason"] == "synthetic"
     assert updated.notional == order.notional
     assert updated.exit_due_at == order.exit_due_at
+    first_open = datetime(2026, 11, 9, 14, 30, tzinfo=UTC)
+    await recorder.update(coid, status="filled", opened_at=first_open)
+    later = await recorder.update(
+        coid, status="filled", opened_at=first_open + timedelta(days=1)
+    )
+    assert later.opened_at == first_open
     assert coid in {
         r.client_order_id
         for r in await recorder.list_open(venue=venue, account_ref="fixture")

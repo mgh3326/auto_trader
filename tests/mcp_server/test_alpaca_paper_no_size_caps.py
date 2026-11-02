@@ -75,3 +75,18 @@ def test_large_order_support_does_not_allow_live_endpoints(url):
                 api_key="fake", api_secret="fake", base_url=url
             )
         )
+
+
+def test_crypto_verified_decision_cannot_be_notional_sized():
+    from app.services.alpaca_paper_order_application import AlpacaPaperOrderSpec
+
+    with pytest.raises(ValueError, match="requires qty sizing"):
+        AlpacaPaperOrderSpec(
+            symbol="BTC/USD",
+            side="buy",
+            order_type="limit",
+            qty=None,
+            notional=Decimal("1000"),
+            time_in_force="gtc",
+            limit_price=Decimal("100"),
+        )

@@ -14,6 +14,7 @@ from app.services.brokers.binance.spot_demo.execution_client import (
 from app.services.mock_strategy.crypto_brokers import (
     AlpacaCryptoPaper,
     BinanceCryptoDemo,
+    PreDispatchRefusal,
     _binance_evidence,
     build_broker,
 )
@@ -124,8 +125,9 @@ async def test_futures_margin_or_leverage_mismatch_never_submits(
     broker = BinanceCryptoDemo(
         client, futures=True, expected_fingerprint="fixture-fingerprint"
     )
-    with pytest.raises(ValueError, match="isolated 1x"):
+    with pytest.raises(PreDispatchRefusal) as refused:
         await broker.submit(intent(), confirm=True)
+    assert refused.value.reason_class == "ValueError"
     assert client.calls == []
 
 
@@ -309,3 +311,88 @@ async def test_alpaca_wrong_expected_account_blocks_before_post():
             )
         )
     assert transport.calls == [("GET", "/v2/account")]
+
+
+@pytest.mark.asyncio
+async def test_alpaca_pricing_respects_existing_spot_demo_gate(monkeypatch):
+    from app.services.brokers.binance.spot_demo.errors import BinanceSpotDemoDisabled
+
+    monkeypatch.setenv("MOCK_STRATEGY_ENABLED", "true")
+    monkeypatch.setenv("ALPACA_PAPER_CRYPTO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_SPOT_DEMO_ENABLED", "false")
+    monkeypatch.setenv("BINANCE_SPOT_DEMO_EXPECTED_FINGERPRINT", "fixture")
+    with pytest.raises(BinanceSpotDemoDisabled):
+        await build_broker("alpaca_paper_crypto", confirm=True)
+
+
+@pytest.mark.parametrize(
+    "expected_id,expected_number",
+    [(None, None), ("id", None), (None, "number"), ("", "")],
+)
+def test_clean_alpaca_profile_refuses_missing_expected_identity(
+    expected_id, expected_number
+):
+    from app.services.brokers.alpaca.config import AlpacaPaperSettings
+    from app.services.brokers.alpaca.exceptions import AlpacaPaperConfigurationError
+    from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+
+    with pytest.raises(
+        AlpacaPaperConfigurationError, match="expected account identity"
+    ):
+        AlpacaPaperBrokerService(
+            settings=AlpacaPaperSettings(
+                api_key="fake",
+                api_secret="fake",
+                expected_account_id_suffix=expected_id,
+                expected_account_number_suffix=expected_number,
+            ),
+            profile="clean",
+        )
+
+
+@pytest.mark.parametrize(
+    "expected_id,expected_number", [(" ", "number"), ("id", "\t"), ("\n", " ")]
+)
+@pytest.mark.asyncio
+async def test_crypto_factory_refuses_whitespace_identity_before_constructing_alpaca(
+    monkeypatch, expected_id, expected_number
+):
+    from app.services.brokers.alpaca.config import AlpacaPaperSettings
+    from app.services.mock_strategy import crypto_brokers
+
+    class Pricing(Client):
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    client = Pricing()
+    settings = AlpacaPaperSettings(
+        api_key="fake",
+        api_secret="fake",
+        expected_account_id_suffix=expected_id,
+        expected_account_number_suffix=expected_number,
+    )
+    for key in (
+        "MOCK_STRATEGY_ENABLED",
+        "ALPACA_PAPER_CRYPTO_ENABLED",
+        "BINANCE_SPOT_DEMO_ENABLED",
+    ):
+        monkeypatch.setenv(key, "true")
+    monkeypatch.setenv("BINANCE_SPOT_DEMO_EXPECTED_FINGERPRINT", "fixture-fingerprint")
+    monkeypatch.setattr(
+        BinanceSpotDemoExecutionClient, "from_env", classmethod(lambda cls: client)
+    )
+    monkeypatch.setattr(
+        AlpacaPaperSettings,
+        "from_app_settings",
+        classmethod(lambda cls, **kwargs: settings),
+    )
+
+    def forbidden(**kwargs):
+        raise AssertionError("invalid identity must not construct Alpaca transport")
+
+    monkeypatch.setattr(crypto_brokers, "AlpacaPaperBrokerService", forbidden)
+    with pytest.raises(ValueError, match="expected account identity"):
+        await build_broker("alpaca_paper_crypto", confirm=True)
+    assert client.closed

@@ -317,6 +317,23 @@ wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, 
   통계 판정은 별개 필드이고 판정은 "통과"를 내지 않는다(`final_date_reached` = 사전등록 대비 채점 대상).
 - 직접 주문 도구는 슬리브를 받지 않는다(슬리브 주문은 제안 경로만). 스케줄러 연결 없음. ROB-1460 exit plan 연결은 #2266 머지 후 후속.
 
+### Daily strategy forward shadow (ROB-1473 phases 1–2)
+
+`scripts/paper_forward/run.py` → `research/paper_forward/` records hypothetical
+B3/US-composite episodes in immutable per-market daily JSON files outside git.
+Research replay and forward share `research/strategy_evidence/decision_rules.py`.
+No broker/DB/credentials/orders; paper-account and sleeve wiring are later phases.
+E is fixed per episode (B3 3u, US 1.5u); missing bars/intent evidence/control limits
+are `unverified`, never zero. H uses the independent 24/7 or XNYS calendar.
+The normalized intent feed preserves research signal definitions, and the universe
+is frozen from its research price manifest. `deploy/dagu/paper-forward.yaml` is
+PROPOSAL only, unregistered. Details: `docs/runbooks/paper-forward.md`.
+The normalized feed requires an inclusive `covers_from` entry-session bound and
+`complete_through`; coverage must span the whole uncommitted interval. Unverified
+runs defer new signals without consuming keys and publish reports only. A separate
+immutable epoch marker pins the initial date, so corrected input can retry the
+same asof or a later catch-up without losing the first interval.
+
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 두 진입점의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.

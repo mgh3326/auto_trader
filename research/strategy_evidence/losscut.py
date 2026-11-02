@@ -26,7 +26,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from research.strategy_evidence.common import ROUND_TRIP_COST, TOLERANCE
+from research.strategy_evidence.common import ROUND_TRIP_COST
+from research.strategy_evidence.decision_rules import add_trigger
 from research.trade_retro.prices import PriceBook
 
 THRESHOLDS = (0.08, 0.12, 0.15, 0.20, 0.30, 0.40)
@@ -63,7 +64,7 @@ def first_touches(paths: pd.DataFrame, threshold: float) -> list[Touch]:
     for (alias, market, symbol, episode), group in known.groupby(
         ["alias", "market", "symbol", "episode"], sort=True
     ):
-        hit = group[group["unrealized"] <= -threshold + TOLERANCE]
+        hit = group[add_trigger(group["unrealized"], threshold)]
         if hit.empty:
             continue
         first = hit.iloc[0]

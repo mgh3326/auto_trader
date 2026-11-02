@@ -14,6 +14,14 @@ from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.mock_strategy.us_signals import session_times
 
 
+class PreDispatchRefusal(ValueError):
+    """The US adapter proves it has not entered the order POST."""
+
+
+class DispatchUncertain(RuntimeError):
+    """The order POST boundary was entered; never grants resubmission."""
+
+
 def require_enabled() -> None:
     from app.core.config import settings
 
@@ -21,7 +29,7 @@ def require_enabled() -> None:
         settings.mock_strategy_us_enabled is not True
         or settings.alpaca_paper_automated_submit_enabled is not True
     ):
-        raise ValueError(
+        raise PreDispatchRefusal(
             "MOCK_STRATEGY_US_ENABLED and ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED required"
         )
 
@@ -31,12 +39,14 @@ class UsPaperBroker:
         require_enabled()
         settings = settings or AlpacaPaperSettings.from_app_settings(profile="default")
         if settings.base_url != PAPER_TRADING_BASE_URL:
-            raise ValueError("exact Alpaca paper endpoint required")
+            raise PreDispatchRefusal("exact Alpaca paper endpoint required")
         if (
             not (settings.expected_account_id_suffix or "").strip()
             or not (settings.expected_account_number_suffix or "").strip()
         ):
-            raise ValueError("Alpaca paper expected account identity suffixes required")
+            raise PreDispatchRefusal(
+                "Alpaca paper expected account identity suffixes required"
+            )
         self._service = AlpacaPaperBrokerService(settings=settings, transport=transport)
         self.account_ref: str | None = None
 
@@ -48,13 +58,13 @@ class UsPaperBroker:
             not {"trading_blocked", "account_blocked", "shorting_enabled"}
             <= account.model_fields_set
         ):
-            raise ValueError("paper account trading permissions unavailable")
+            raise PreDispatchRefusal("paper account trading permissions unavailable")
         if (
             account.status != "ACTIVE"
             or account.trading_blocked
             or account.account_blocked
         ):
-            raise ValueError("paper account is not active for trading")
+            raise PreDispatchRefusal("paper account is not active for trading")
         self._shorting_enabled = account.shorting_enabled
         self.account_ref = (
             "alpaca_paper:" + hashlib.sha256(account.id.encode()).hexdigest()[:24]
@@ -70,13 +80,13 @@ class UsPaperBroker:
             clock.timestamp.utcoffset() is None
             or abs((now - clock.timestamp).total_seconds()) > 60
         ):
-            raise ValueError("paper market clock stale or invalid")
+            raise PreDispatchRefusal("paper market clock stale or invalid")
         if (
             not clock.is_open
             or not start <= clock.timestamp < end
             or not start <= now < end
         ):
-            raise ValueError("current US regular session must match --asof")
+            raise PreDispatchRefusal("current US regular session must match --asof")
 
     async def assets(self) -> dict[str, Asset]:
         return {
@@ -98,15 +108,19 @@ class UsPaperBroker:
             or asset.status != "active"
             or not asset.tradable
         ):
-            raise ValueError("asset not tradable US equity")
+            raise PreDispatchRefusal("asset not tradable US equity")
         if side == "short" and not (
             self._shorting_enabled and asset.shortable and asset.easy_to_borrow
         ):
-            raise ValueError("short requires shorting enabled and easy-to-borrow asset")
+            raise PreDispatchRefusal(
+                "short requires shorting enabled and easy-to-borrow asset"
+            )
         position = await self._service.get_position(symbol)
         held = position.qty if position is not None else Decimal(0)
         if (side == "buy" and held < 0) or (side == "short" and held > 0):
-            raise ValueError("opposite account position would net another episode")
+            raise PreDispatchRefusal(
+                "opposite account position would net another episode"
+            )
         if side in {"sell", "cover"}:
             if (
                 qty is None
@@ -114,22 +128,24 @@ class UsPaperBroker:
                 or (side == "sell" and held < qty)
                 or (side == "cover" and -held < qty)
             ):
-                raise ValueError("close exceeds fresh same-direction account position")
+                raise PreDispatchRefusal(
+                    "close exceeds fresh same-direction account position"
+                )
             if side == "sell" and (
                 position is None
                 or position.qty_available is None
                 or position.qty_available < qty
             ):
-                raise ValueError("close exceeds available paper quantity")
+                raise PreDispatchRefusal("close exceeds available paper quantity")
 
-    async def submit(
+    async def _prepare(
         self, request: OrderRequest, *, side: str, asof: date, confirm: bool = False
-    ) -> Order:
+    ) -> None:
         require_enabled()
         if confirm is not True:
-            raise ValueError("confirm=True required")
+            raise PreDispatchRefusal("confirm=True required")
         if self.account_ref is None:
-            raise ValueError("paper preflight required")
+            raise PreDispatchRefusal("paper preflight required")
         if (
             side not in {"buy", "sell", "short", "cover"}
             or request.side != ("sell" if side in {"sell", "short"} else "buy")
@@ -140,14 +156,39 @@ class UsPaperBroker:
             or re.fullmatch(r"[A-Z][A-Z0-9.]{0,31}", request.symbol) is None
             or (request.qty is None) == (request.notional is None)
         ):
-            raise ValueError("invalid US paper strategy order shape")
+            raise PreDispatchRefusal("invalid US paper strategy order shape")
         for value in (request.qty, request.notional):
             if value is not None and (not value.is_finite() or value <= 0):
-                raise ValueError("invalid paper size")
+                raise PreDispatchRefusal("invalid paper size")
         if side == "short" and (
             request.qty is None or request.qty != request.qty.to_integral_value()
         ):
-            raise ValueError("short requires whole shares")
+            raise PreDispatchRefusal("short requires whole shares")
         await self.eligible(request.symbol, side, request.qty)
         await self.check_session(asof)
-        return await self._service.submit_order(request)
+
+    async def prepare(
+        self, request: OrderRequest, *, side: str, asof: date, confirm: bool = False
+    ) -> None:
+        """Read-only guards, used before claim and again immediately before POST."""
+        try:
+            await self._prepare(request, side=side, asof=asof, confirm=confirm)
+            return
+        except PreDispatchRefusal:
+            raise
+        except Exception:
+            pass
+        # A failed read here is also proven pre-POST. Drop raw transport errors.
+        raise PreDispatchRefusal("paper pre-dispatch read failed")
+
+    async def submit(
+        self, request: OrderRequest, *, side: str, asof: date, confirm: bool = False
+    ) -> Order:
+        await self.prepare(request, side=side, asof=asof, confirm=confirm)
+        try:
+            return await self._service.submit_order(request)
+        except Exception:
+            pass
+        # Even a ValueError or a typed refusal originating past this boundary
+        # cannot be mistaken for proof that no order reached the broker.
+        raise DispatchUncertain("paper order dispatch outcome unknown")

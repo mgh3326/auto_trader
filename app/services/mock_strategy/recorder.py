@@ -201,7 +201,7 @@ class MockStrategyRecorder:
                 ("exit_price", exit_price),
                 ("realized_pnl", realized_pnl),
             ):
-                if value is not None:
+                if value is not None and (key != "opened_at" or row.opened_at is None):
                     setattr(row, key, value)
             row.meta = {**row.meta, **(meta or {})}
             await session.flush()
