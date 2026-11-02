@@ -73,6 +73,10 @@ leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill�
 US due 에피소드의 일반 오류는 `episode_status=unresolved`와 예외 클래스만
 보고하고 다른 청산은 계속한다. CLI는 nonzero이며 durable 상태/재시도 권한을
 만들지 않는다. 계좌/세션 게이트는 루프 밖에서 유지하고 프로세스 취소는 전파한다.
+Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel`/
+`replaced`/`calculated`/`held`는 검증된 누적 fill과 함께 관찰하되 nonterminal로
+유지한다. 이 상태만으로 entry 청산이나 잔여 exit leg를 만들지 않으며, 미지 상태·
+귀속 불일치·누적 fill 감소는 uncertain으로 남긴다.
 별도 paper 전략 어댑터의 own journal은 공매도와 cover를 지원하며 기존 수동 MCP의
 보유 매도 전용 coordinator를 완화하지 않는다. 스케줄·배포 없음.
 런북: `docs/runbooks/rob1474-us-paper-strategy.md`. DB round trip/동시 claim은 CI에서 검증한다.
