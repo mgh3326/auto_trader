@@ -39,6 +39,11 @@ _REPO_ROOT = _repo_root()
 
 #: path -> the operator authority that permits it to mutate the Demo account.
 APPROVED_SUBMIT_CALLERS: dict[str, str] = {
+    "app/services/mock_strategy/crypto_brokers.py": (
+        "ROB-1474 frozen crypto list manual Spot Demo execution; operator "
+        "hk:doc decision/2026-11-02/mock-trading-all-venues-no-caps; "
+        "default-off gates, confirm and exact demo endpoint/account retained"
+    ),
     "scripts/binance_spot_demo_smoke.py": "ROB-298 Spot Demo smoke (BUY round-trip)",
     "scripts/b0x/crypto/sidecar.py": (
         "b0x-adapter-orders-20260808 / binance_spot_demo_sidecar_buy_side_only"

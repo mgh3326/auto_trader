@@ -273,6 +273,13 @@ def test_forward_score_roundtrip_pending_matured_and_revisions(
         assert result["state"] == "unknown_outcome"
         assert result["raw"]["summary"]["up_hit"] is None
         assert 0 < result["raw"]["summary"]["outcome_coverage"] < 1
+    # A stale snapshot graded with a later --asof keeps unmatured horizons
+    # pending instead of writing a final unknown_outcome.
+    stale = bars[bars.date <= "2021-06-18"]
+    early = grade_lists(stale, lists, asof="2021-08-01", market=market)["horizons"]
+    assert early["1"]["state"] == "scored"
+    assert early["5"]["state"] == "pending"
+    assert early["10"]["state"] == "pending"
     with pytest.raises(ValueError, match="separate scorer"):
         grade_lists(
             bars,
