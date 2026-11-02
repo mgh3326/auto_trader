@@ -210,6 +210,35 @@ are gone. A soft cancel now carries `terminal_evidence: False` and
 `claim_released: False`: it is a local bookkeeping note about an order that may
 still be live at the broker, not terminal evidence and not a claim release.
 
+### Amendment: kis_mock gateway-origin orders (ROB-1461)
+
+The desk decided this in `at-e3b-decision-1`: option A, scoped. It amends this section and §6 for **one origin only**: a kis_mock order sent by the execution intent gateway (ROB-1440). Everything above stays in force for every other order.
+
+**What changes.** For a gateway-origin order, the durable claim is the gateway journal row in `review.execution_child_requests`, and the lifecycle owner is `KisMockForwarder`. It mints the capability with `issue_kis_mock_followup_capability`, using a new short lease. It holds the receipt only for that one amend or cancel call. No migration is needed.
+
+**What the receipt binds to.** `followup_refusal` checks all of these before it mints:
+
+| Binding | Check |
+|---|---|
+| Account | The intent's account is in `MOCK_ACCOUNTS` |
+| Intent | The journal belongs to this intent |
+| Target key | The target idempotency key is in that journal |
+| Broker order id | That row is a submit or amend that was not refused, and its journaled order id is exactly the one this call names |
+| Ledger correlation | The `kis_mock_order_ledger` row for that order id carries `intent-gateway:<root key>`, where the root is the submit of that journal lineage |
+| Terms | The ledger symbol, side and instrument match the intent |
+| Open order | The ledger state is `submitted`, `accepted`, `pending` or `fill`, and the remainder is known and above zero |
+
+The issuer reads the journal row again inside the lease. If the row no longer matches, nothing is sent.
+
+**What does not change.**
+
+- **Other origins stay closed.** An order from J2B, the coordinated lane, a mirror or an operator has no `intent-gateway:` correlation for a journal lineage, so it cannot mint. `cancel_order(account_mode="kis_mock")` called directly on such an order still fails closed with zero broker calls. `tests/services/execution_intent_gateway/test_followup_capability.py` pins this, along with the non-mock case.
+- **The route stays uninstalled.** This PR does not call `set_kis_mock_coordination_route_provider`. The two §6 blockers stay open for the coordinated route. While no route is installed, `run_kis_mock_send` refuses every submit, so no gateway order has a broker order id, and E1 refuses every amend and cancel with `target_not_working`. So the mint cannot reach the broker until an operator installs a route, which remains a separate, approval-gated decision.
+- **`authorize_kis_mock_claim_followup` is unchanged.** It still requires a live grant. The gateway does not use it, because a gateway follow-up runs outside `coordinate_kis_mock_mutation` and has no grant.
+- **The verifier is unchanged.** `verify_kis_mock_followup_capability` checks the receipt as before.
+
+**Remaining risk.** A journal row is a binary claim. It is not the typed dispatch evidence §6 asks for, so it records no `partial_fill` or `terminal_reconciliation`. The gateway journal and the ledger are the only evidence for these orders. An installed route that later writes J2B claim identity onto the ledger row needs its own review of this amendment, because `_kis_mock_expected_claim` would then compare that identity with this receipt and refuse a mismatch.
+
 ## 8. C5 — carried forward, still `UNKNOWN`
 
 J3A deliberately left the `TaskGroup` / `asyncio.timeout` cancellation-count

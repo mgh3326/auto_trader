@@ -190,12 +190,21 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 
 ### Execution Intent Gateway (ROB-1440)
 
-기계식 전략용 주문 경계. Python 이 무엇을(버전·인가·상한이 있는 intent), Go 실행기가 언제·얼마에(그 안에서)를 맡는다. Go 는 브로커·DB 에 직접 닿지 않고 child request 만 보낸다. 🔴 **`app/` 어디에서도 import 하지 않는다** — 라우터·MCP·스케줄러 연결 0, 기본 비활성. 전송 경로 추가는 E2/E3 의 별도 PR 이다.
+기계식 전략용 주문 경계. Python 이 무엇을(버전·인가·상한이 있는 intent), Go 실행기가 언제·얼마에(그 안에서)를 맡는다. Go 는 브로커·DB 에 직접 닿지 않고 child request 만 보낸다. 🔴 **전송 경로는 ROB-1461 의 loopback HTTP 라우트 하나뿐이다** — `app.main`·MCP·스케줄러 연결 0, 기본 비활성. 게이트웨이를 import 하는 `app/` 모듈은 패키지 밖에서 `app/routers/execution_intent_gateway.py` 와 `app/execution_intent_gateway_server.py` 뿐이다(`test_only_the_loopback_route_wires_the_gateway_to_a_transport`).
 
 - **스키마**: `app/schemas/execution_intent.py` (`ExecutionIntentV1`, submit/amend/cancel child)
 - **패키지**: `app/services/execution_intent_gateway/` — `decisions`(순수 거부 규칙) · `store`(두 테이블의 유일한 writer) · `gateway`(순서) · `kis_mock_forwarder`(기존 주문 함수 호출, `is_mock=True` 고정)
 - **테이블**: `review.execution_intents`(불변, `account IN ('kis_mock')` CHECK), `review.execution_child_requests`(write-ahead journal). 마이그레이션 `20261101_rob1440_intent_gw`. at_app 은 DELETE 없음, journal UPDATE 는 결과 컬럼 4개만, intent UPDATE 는 `FOR UPDATE` 잠금용 `id` 하나만. 🔴 트리거가 어떤 역할이든 intent 변경·삭제, journal 요청 필드 변경·삭제, `sending`→`accepted`/`uncertain` 외 전이, 결과를 미리 담은 새 행(초기 상태는 `sending`/`refused`, `broker_order_id`·`result` 는 NULL)을 거부한다. intent 는 CHECK 가 스키마 상한을 반복하고 트리거가 만기 과거·24시간 초과 INSERT 를 거부한다. 🔴 downgrade 는 행이 있으면 거부한다(journal 을 잃으면 쓴 키로 다시 전송될 수 있다). 이 트리거를 완화하지 마라(`sending` 행의 키를 바꾸면 재시도가 새 요청으로 보여 이중 전송된다)
 - **설계**: `docs/design/1440-intent-gateway-contract.md`
+- **HTTP 라우트 (ROB-1461)**: `POST /execution-intents/children`, `GET /execution-intents/children/<key>`, `GET /execution-intents/intents/<id>`. 런북 `docs/runbooks/execution-intent-gateway.md`. 계약 픽스처 `tests/fixtures/fillwire_e1/`(fillwire 원본 SHA 는 `SOURCE.md`)
+
+**HTTP 라우트 계약 (ROB-1461)**:
+- 🔴 `app.main` 에 마운트하지 마라 — 공개 프록시 뒤에 있다. 라우트는 별도 프로세스(`app/execution_intent_gateway_server.py`)만 서빙하고, `scripts/run_execution_intent_gateway.py` 는 loopback 이 아닌 호스트를 exit 2 로 거부한다. 운영자가 수동으로 띄운다(스케줄러·유닛·재시작 정책 없음).
+- 🔴 게이트 순서: `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED`(기본 false, 꺼지면 DB 접근 전 404) → 토큰(미설정 403, 오류 401) → 본문 검증(`parse_child_request`, 미지 필드 거부) → E1 `handle`. confirm 헤더가 본문 `idempotency_key` 와 정확히 같을 때만 `confirm=True` 이고 그 외는 E1 의 `confirm_required` 다. E1 env 게이트 `EXECUTION_INTENT_GATEWAY_ENABLED` 는 별도로 유지된다.
+- 🔴 조회는 `READ ONLY` 트랜잭션이고 쓰기·잠금·브로커 호출이 없다. 저널과 레저 증거만 읽으며 `uncertain`/`sending` 은 양성 증거가 없으면 `view: null` 이다. 레저 행 부재를 "주문 없음"으로 답하지 마라(레저 행은 전송 후 기록된다). soft cancel 은 종결 증거가 아니다.
+- 🔴 **후속 capability 범위**: `KisMockForwarder` 가 amend/cancel 마다 게이트웨이 저널 행을 durable claim 으로 capability 를 발급한다. 게이트웨이가 보낸 kis_mock 주문에만 해당한다(계좌·intent·대상 키·브로커 주문번호·레저 correlation `intent-gateway:<root>`). 그 밖의 출처(J2B·coordinated·mirror·운영자)와 비모의 주문은 발급되지 않고 ROB-1263 §7 폐쇄를 유지한다. 근거는 `docs/contracts/rob-1263-kis-coordination-adapter.md` §7 Amendment. 이 바인딩을 완화하지 마라.
+- 🔴 **코디네이션 라우트는 미설치다**: 이 PR 은 `set_kis_mock_coordination_route_provider` 를 호출하지 않는다. 설치 전에는 submit 이 전부 `uncertain`(주문 없음)이고 amend/cancel 은 `target_not_working` 이다. 설치는 별도 승인 사항이다.
+- cancel 은 `broker_cancel_confirmed` 가 true 일 때만 `accepted` 다. KIS mock 정정은 새 주문번호를 받으므로 `update_order_terms(order_no=...)` 로 레저 행의 번호를 옮기고 이전 번호는 `modified_from_order_no` 로 남긴다.
 
 **계약**:
 - 🔴 `EXECUTION_INTENT_GATEWAY_ENABLED` 정확히 `true` + 호출별 `confirm is True` 이중 게이트. 둘 다 DB 접근 전에 거부한다.

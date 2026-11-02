@@ -26,6 +26,7 @@ from typing import Any, Final, Literal, Protocol
 
 from app.schemas.execution_intent import (
     AmendChild,
+    CancelChild,
     SubmitChild,
     contract_digest,
 )
@@ -76,7 +77,7 @@ class BrokerForwarder(Protocol):
     ) -> ForwardResult: ...
 
     async def cancel(
-        self, intent: IntentSnapshot, *, broker_order_id: str
+        self, intent: IntentSnapshot, request: CancelChild, *, broker_order_id: str
     ) -> ForwardResult: ...
 
 
@@ -252,4 +253,4 @@ class IntentGateway:
             raise RuntimeError("allowed amend or cancel has no target order id")
         if isinstance(request, AmendChild):
             return await forwarder.amend(intent, request, broker_order_id=order_id)
-        return await forwarder.cancel(intent, broker_order_id=order_id)
+        return await forwarder.cancel(intent, request, broker_order_id=order_id)

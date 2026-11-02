@@ -290,3 +290,20 @@ async def test_update_order_terms_persists(
     assert row.price == Decimal("71000")
     assert row.quantity == Decimal("8")
     assert row.last_reconcile_detail == {"modified_via": "test"}
+
+
+@pytest.mark.asyncio
+async def test_update_order_terms_repoints_the_order_number_only_when_given(
+    db_session: AsyncSession, seeded_ledger_id: int
+):
+    svc = KISMockLifecycleService(db_session)
+    row = await db_session.get(KISMockOrderLedger, seeded_ledger_id)
+    original = row.order_no
+
+    await svc.update_order_terms(ledger_id=seeded_ledger_id, price=Decimal("71000"))
+    assert row.order_no == original
+
+    replacement = f"MOCK-{uuid4()}"
+    await svc.update_order_terms(ledger_id=seeded_ledger_id, order_no=replacement)
+    assert (await svc.get_by_order_no(order_no=original)) is None
+    assert (await svc.get_by_order_no(order_no=replacement)).id == seeded_ledger_id

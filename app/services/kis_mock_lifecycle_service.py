@@ -380,11 +380,18 @@ class KISMockLifecycleService:
         price: Decimal | None = None,
         quantity: Decimal | None = None,
         detail: dict[str, Any] | None = None,
+        order_no: str | None = None,
     ) -> None:
-        """Reflect a broker-confirmed modify on the ledger row."""
+        """Reflect a broker-confirmed modify on the ledger row.
+
+        A KIS modify issues a new order number, and ``order_no`` re-points the row
+        at it. Without that, the next cancel or modify cannot find the order.
+        """
         row = await self._db.get(KISMockOrderLedger, ledger_id)
         if row is None:
             raise LedgerNotFoundError(str(ledger_id))
+        if order_no is not None:
+            row.order_no = order_no
         if price is not None:
             row.price = price
         if quantity is not None:
