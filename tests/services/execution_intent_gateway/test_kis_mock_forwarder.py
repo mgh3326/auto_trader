@@ -8,14 +8,31 @@ from uuid import uuid4
 
 import pytest
 
-from app.mcp_server.tooling import order_execution, orders_modify_cancel
+from app.mcp_server.tooling import (
+    kis_mock_ledger,
+    order_execution,
+    orders_modify_cancel,
+)
 from app.mcp_server.tooling.orders_modify_cancel import (
     _validate_cancel_inputs,
     _validate_modify_inputs,
 )
-from app.schemas.execution_intent import AmendChild, SubmitChild
-from app.services.execution_intent_gateway.kis_mock_forwarder import KisMockForwarder
-from tests.services.execution_intent_gateway.support import intent_snapshot
+from app.schemas.execution_intent import AmendChild, CancelChild, SubmitChild
+from app.services.execution_intent_gateway.decisions import IntentSnapshot
+from app.services.execution_intent_gateway.kis_mock_forwarder import (
+    KisMockForwarder,
+    order_correlation_id,
+)
+from tests.services.execution_intent_gateway.support import (
+    MemoryGatewayStore,
+    intent_snapshot,
+)
+from tests.services.execution_intent_gateway.test_followup_capability import (
+    _child,
+    _Lease,
+    _ledger_order,
+    _seeded,
+)
 
 
 def _fake(
@@ -34,6 +51,19 @@ def _fake(
 
     monkeypatch.setattr(module, name, fake)
     return captured
+
+
+def _forwarder() -> KisMockForwarder:
+    return KisMockForwarder(journal=MemoryGatewayStore())
+
+
+def _cancel() -> CancelChild:
+    return CancelChild(
+        action="cancel",
+        intent_id=uuid4(),
+        idempotency_key="child-0003",
+        target_idempotency_key="child-0001",
+    )
 
 
 def _submit() -> SubmitChild:
@@ -67,7 +97,7 @@ async def test_submit_pins_mock_and_carries_the_intent_strategy(
         "_place_order_impl",
         {"success": True, "order_no": "0000123"},
     )
-    forwarded = await KisMockForwarder().submit(
+    forwarded = await _forwarder().submit(
         intent_snapshot(strategy="s3-test"), _submit()
     )
     assert captured["is_mock"] is True
@@ -96,8 +126,22 @@ async def test_submit_failure_shapes_are_not_accepted(
     monkeypatch: pytest.MonkeyPatch, result: dict[str, Any]
 ) -> None:
     _fake(monkeypatch, order_execution, "_place_order_impl", result)
-    forwarded = await KisMockForwarder().submit(intent_snapshot(), _submit())
+    forwarded = await _forwarder().submit(intent_snapshot(), _submit())
     assert forwarded.accepted is False
+
+
+def _followup_forwarder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[KisMockForwarder, IntentSnapshot]:
+    """A forwarder whose target order is a mintable gateway-origin order."""
+
+    async def resolve(order_no: str) -> dict[str, Any]:
+        return _ledger_order(correlation_id=order_correlation_id("child-0001"))
+
+    monkeypatch.setattr(kis_mock_ledger, "resolve_mock_order_for_cancel", resolve)
+    intent = intent_snapshot()
+    store = _seeded(intent, _child("child-0001", order_id="0000123"))
+    return KisMockForwarder(journal=store, lease_factory=_Lease), intent
 
 
 @pytest.mark.asyncio
@@ -110,9 +154,8 @@ async def test_amend_pins_mock_and_returns_the_replacement_order_id(
         "modify_order_impl",
         {"success": True, "status": "modified", "new_order_id": "0000456"},
     )
-    forwarded = await KisMockForwarder().amend(
-        intent_snapshot(), _amend(), broker_order_id="0000123"
-    )
+    forwarder, intent = _followup_forwarder(monkeypatch)
+    forwarded = await forwarder.amend(intent, _amend(), broker_order_id="0000123")
     assert captured["is_mock"] is True
     assert captured["dry_run"] is False
     assert captured["order_id"] == "0000123"
@@ -125,11 +168,13 @@ async def test_cancel_pins_mock_and_uses_the_journaled_order_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured = _fake(
-        monkeypatch, orders_modify_cancel, "cancel_order_impl", {"success": True}
+        monkeypatch,
+        orders_modify_cancel,
+        "cancel_order_impl",
+        {"success": True, "broker_cancel_confirmed": True},
     )
-    forwarded = await KisMockForwarder().cancel(
-        intent_snapshot(), broker_order_id="0000123"
-    )
+    forwarder, intent = _followup_forwarder(monkeypatch)
+    forwarded = await forwarder.cancel(intent, _cancel(), broker_order_id="0000123")
     assert captured["is_mock"] is True
     assert captured["order_id"] == "0000123"
     assert (captured["symbol"], captured["market"]) == ("005930", "kr")
@@ -137,18 +182,21 @@ async def test_cancel_pins_mock_and_uses_the_journaled_order_id(
 
 
 @pytest.mark.asyncio
-async def test_cancel_refused_by_the_followup_capability_guard_is_not_accepted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _fake(
-        monkeypatch,
-        orders_modify_cancel,
-        "cancel_order_impl",
+@pytest.mark.parametrize(
+    "result",
+    [
         {"success": False, "broker_cancel_confirmed": False, "reason_code": "x"},
-    )
-    forwarded = await KisMockForwarder().cancel(
-        intent_snapshot(), broker_order_id="0000123"
-    )
+        {"success": True, "broker_cancel_confirmed": False, "soft_cancelled": True},
+        {"success": True},
+    ],
+    ids=["guard_refused", "soft_cancel", "confirmation_missing"],
+)
+async def test_cancel_without_broker_confirmation_is_not_accepted(
+    monkeypatch: pytest.MonkeyPatch, result: dict[str, Any]
+) -> None:
+    _fake(monkeypatch, orders_modify_cancel, "cancel_order_impl", result)
+    forwarder, intent = _followup_forwarder(monkeypatch)
+    forwarded = await forwarder.cancel(intent, _cancel(), broker_order_id="0000123")
     assert forwarded.accepted is False
 
 

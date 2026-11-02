@@ -2,7 +2,7 @@
 
 This document is the contract the E2 Go executor implements. Python owns what may trade. Go owns when, and at what price, inside that permission. Go never reaches a broker or the database directly in this design: it sends child requests to a Python gateway, which calls the existing broker services.
 
-**Status:** default-disabled. Nothing in `app/` imports the gateway, so no route, MCP tool, scheduler or process can reach it yet. E1 sends no orders.
+**Status:** default-disabled. Since ROB-1461, one HTTP route reaches the gateway. It is served only by a separate loopback process that an operator starts by hand. `app.main`, MCP tools and schedulers do not reach it. No KR mock order can be sent until a coordination route is installed (see [Open items](#open-items-for-e2-and-e3)).
 
 ## Roles
 
@@ -15,15 +15,104 @@ This document is the contract the E2 Go executor implements. Python owns what ma
 
 ## Transport
 
-The transport is left open for E2. It can be HTTP on localhost or a queue. Any transport must:
+The transport is HTTP on loopback (ROB-1461), and fillwire `docs/e3a-mock-runbook.md` defines the binding. `app/routers/execution_intent_gateway.py` implements it, and `tests/fixtures/fillwire_e1/` holds fillwire's recorded requests and answers.
 
-- Deliver one child request as the JSON in [Child request](#child-request).
-- Validate it with `parse_child_request` before calling `IntentGateway.handle`.
-- Return the [outcome](#outcome) as JSON.
-- Pass `confirm=True` only from an explicit per-action confirmation.
-- Expose no way to create an intent. Intents enter only through `SqlAlchemyGatewayStore.store_intent`, which Python calls.
+```http
+POST /execution-intents/children
+Content-Type: application/json
+X-Execution-Intent-Gateway-Token: <token>
+X-Execution-Intent-Confirm: <idempotency_key of this body>
+
+<one child request>
+```
+
+| Answer | Meaning |
+|---|---|
+| 200 with the [outcome](#outcome) | E1 decided. This includes every refusal, such as `confirm_required` and `gateway_disabled` |
+| 404 | The route setting is off |
+| 403 or 401 | The token is unset on the server, or the supplied token is missing or wrong |
+| 415, 413 or 422 | The body is not JSON, is too large, or is not a valid child request. Nothing was decided |
+| 503 | `handle` raised. If the row was already journaled, a retry with the same key replays it and never sends again |
+
+fillwire treats every answer except 200 as an unknown outcome.
+
+- **Confirm:** the route passes `confirm=True` only when the confirm header equals the body's `idempotency_key`.
+- **Mount:** `app/execution_intent_gateway_server.py` serves the route, and `scripts/run_execution_intent_gateway.py` refuses any host that is not loopback. `app.main` does not include it, because `app.main` sits behind the public proxy.
+- **No way to create an intent:** intents enter only through `SqlAlchemyGatewayStore.store_intent`, which Python calls.
 
 If `handle` raises, nothing was forwarded for that call, unless the row was already journaled. The caller retries with the same key, and the retry replays the row. It never sends again.
+
+## Query
+
+Both reads need the token, take no lock, and run in a `READ ONLY` transaction. Neither calls a broker.
+
+`GET /execution-intents/children/<idempotency_key>` returns one journal row: `intent_id`, `child_id`, `idempotency_key`, `action`, `target_idempotency_key`, `quantity`, `limit_price_krw`, `state`, `refusal_reason`, `broker_order_id` and `result`.
+
+`GET /execution-intents/intents/<intent_id>` returns:
+
+```json
+{"intent_id": "<uuid>", "reconciled": true,
+ "view": {"filled_qty": 4, "order": {"key": "<key>", "price": 70100, "qty": 10}},
+ "unresolved": [],
+ "children": [{"child_id": 1, "idempotency_key": "<key>", "state": "accepted"}]}
+```
+
+`children` holds every journal row, with the fields of the single-row answer except `intent_id` and `result`.
+
+`view` has exactly the fields of fillwire's `exec.View`:
+
+- `order` is absent when no order is working. `qty` is the quantity last sent, and fills do not reduce it. `view` does not carry the fills on that order alone.
+- `filled_qty` is the sum of `execution_ledger` fills on the lineages' orders. It is cumulative, as fillwire's `State.Remaining` expects. It holds back further sends, and it is only as complete as that feed: a fill that has not reached `execution_ledger` is not in it. See [How the query joins its evidence](#how-the-query-joins-its-evidence).
+
+**`view` is `null` when `reconciled` is false, and E2 must keep holding.** No fill total is reported then, because a total without every lineage is partial. `unresolved` names each child and why:
+
+| `reason` | Condition |
+|---|---|
+| `no_ledger_evidence` | A child is `sending` or `uncertain`, and no ledger row resolves it |
+| `ledger_state_unresolved` | The ledger row is in a state that proves nothing, such as `anomaly`, `stale`, or a soft cancel |
+| `ledger_row_ambiguous` | More than one ledger row carries this order's correlation |
+| `multiple_working_orders` | More than one order is working, and E2 tracks one |
+| `order_identity_ambiguous` | The journal and the ledger do not name one order for each sender, so fills cannot be assigned |
+| `fill_evidence_conflict` | An order has more fills than it held, or the ledger row's estimate is unreadable or above what the execution ledger shows |
+
+What resolves an unknown outcome:
+
+| Evidence | Result |
+|---|---|
+| An `accepted` ledger row with an order number, for an unknown submit | The order is working under the submit's key |
+| A `rejected` ledger row, unless the journal or the row holds a broker number | No order |
+| A ledger row in `expired`, or a cancel the broker confirmed | No order |
+| `execution_ledger` fills on the current order that reach the quantity it was sent for | No order |
+| An accepted cancel in the journal | No order |
+
+A missing ledger row proves nothing, because the row is written after the send. An unknown amend or cancel on an open order stays unresolved. An unknown amend closes only on evidence about the order the ledger names for it: fills, expiry or a cancel on the order it may have replaced say nothing about a replacement. The journal rows themselves never change: a query reports them and does not move them.
+
+### How the query joins its evidence
+
+`lineage_orders` is the only statement of which orders a lineage placed. The evidence reader loads fills for those orders, and closure reads fills from the same list.
+
+An order is its number and its KST trading day, the ROB-1379 identity. KIS reuses numbers across days, and writers differ on leading zeros, so numbers compare with leading zeros removed. A submit or an amend places an order on the day it was sent. A cancel journals its target's number and places nothing.
+
+E1 accepts a sender only with a number and amends only an accepted sender, so only the last sender in a lineage can lack a number. The ledger row names that order if it followed the send, and the order's quantity is still what the journal sent. A ledger number from an earlier order on another day cannot be told apart from a reused number, so it names nothing.
+
+`kis_mock_order_ledger.last_reconcile_detail.attributed_fill_qty` is not evidence about one order. The holdings reconciler shares out the whole symbol's holdings change, so another order's fill can appear on a resting order. That estimate can never close an order or enter `filled_qty`. It can only conflict with the execution ledger.
+
+Each row has a test named `test_j<n>_*` in `tests/services/execution_intent_gateway/test_intent_query.py`:
+
+| Row | Invariant | Fails toward |
+|---|---|---|
+| J1 | A fill counts only on its order's number and KST day. A reused number's old fills never count | Working order stays working |
+| J2 | Numbers join with leading zeros removed, by the same rule as ROB-1379's `normalize_order_id` | An understated fill would be possible otherwise |
+| J3 | An order closes only on its own `execution_ledger` fills, compared with the quantity the journal sent. Fills on the order it replaced do not count | Working order stays working |
+| J4 | The ledger row's holdings estimate never closes an order or enters `filled_qty`. If it exceeds what the execution ledger shows, the answer is `fill_evidence_conflict` | `view: null` |
+| J5 | Closure reads only orders the reader loads. Yesterday's number under today's unknown amend is `order_identity_ambiguous`. Evidence about the old order never closes an unknown amend the ledger has not followed | `view: null` |
+| J6 | More than one ledger row is `ledger_row_ambiguous`, and no partial total exists anywhere in the answer | `view: null` |
+| J7 | A missing or unreadable estimate on a `fill` row is unknown, not zero and not a full fill. A blank ledger number names nothing. An unreadable share quantity or a journal row the DB forbids answers 503 | `view: null` or 503 |
+| J8 | More fills than an order held are not believed | `view: null` |
+| J9 | One order has one owner: an amend that keeps its number, or two lineages holding one number on one day, is `order_identity_ambiguous` | `view: null` |
+| J10 | A ledger number the journal cannot explain is `order_identity_ambiguous`. This also covers a journal read before a later amend, because the two reads are separate transactions | `view: null` |
+| J11 | The answer does not depend on the order of the journal rows | |
+| J12 | A `rejected` ledger row does not override a broker number | `view: null` |
 
 ## Intent (`ExecutionIntentV1`)
 
@@ -73,7 +162,7 @@ Unknown fields are refused. Quantity and price are integers, so nothing can be t
 | `status` | Meaning | What Go does |
 |---|---|---|
 | `accepted` | The broker service reported success | Track the order. This is not a fill |
-| `uncertain` | The service failed, raised, or returned no order id. The order may exist | Stop acting on this order and wait for reconciliation |
+| `uncertain` | The service failed, raised, or returned no order id, or a cancel was not confirmed by the broker. The order may exist | Stop acting on this order and wait for reconciliation |
 | `sending` | The row is journaled and no outcome is recorded | Same as `uncertain` |
 | `refused` | The gateway sent nothing. `reason` says why | Make a new decision with a new key |
 | `conflict` | The key was used with a different payload | Treat as a bug in the executor. Nothing was sent |
@@ -88,7 +177,7 @@ Other fields are `child_id`, `broker_order_id`, `result`, `replayed` and `outcom
 2. **Confirm:** `confirm` must be exactly `True`. Otherwise the call is refused before any DB access.
 3. **Kill state (submit and amend only):** the gateway reads the existing `review.kis_mock_runner_control`. Only `ACTIVE` allows them, and a failed read counts as `GLOBAL_FREEZE`.
 4. **Reserve:** under the intent's row lock, a known key replays its first answer. A new key is decided, and the row commits as `sending` or `refused`. This commit is the write-ahead record, and it happens before any broker call.
-5. **Forward:** the matching forwarder runs once. `KisMockForwarder` calls `_place_order_impl`, `modify_order_impl` or `cancel_order_impl` with `is_mock=True`.
+5. **Forward:** the matching forwarder runs once. `KisMockForwarder` calls `_place_order_impl`, `modify_order_impl` or `cancel_order_impl` with `is_mock=True`. For an amend or cancel it first mints the follow-up capability (see [Follow-up capability](#follow-up-capability)).
 6. **Record:** the row moves from `sending` to `accepted` or `uncertain`, once only. A DB trigger refuses any other state change, any change to the request fields, a new row that already carries an outcome, and any delete. The app role can update only the outcome columns.
 
 A refusal from step 4 is stored, so the same key gets the same answer later. A delayed retry cannot send a stale decision after a kill is lifted. Refusals from steps 1 and 2 leave no row, because nothing was decided.
@@ -127,9 +216,17 @@ A strategy that needs more capacity gets a new intent. If E2 needs cancel-and-re
 
 A cancel does not check expiry, kill state or caps. It needs the env gate, confirm, a mock account, and a target order id in the journal that no later child may have moved.
 
-If a later amend or cancel ends `sending` or `uncertain`, the gateway refuses further cancels of that order with `target_superseded`, because it cannot tell which broker order id is live. Those orders wait for reconciliation, and nothing in E1 performs it.
+If a later amend or cancel ends `sending` or `uncertain`, the gateway refuses further cancels of that order with `target_superseded`, because it cannot tell which broker order id is live. Those orders wait for reconciliation, and E1 only reports the recorded state (see [Query](#query)).
 
 This includes `GLOBAL_FREEZE`. The runner's permission table says `GLOBAL_FREEZE` blocks every automatic mutation, while this contract keeps cancels allowed whenever submissions are blocked. The gateway follows this contract for its own path and does not change the runner's table. The guards below the gateway still apply to the cancel.
+
+## Follow-up capability
+
+KIS mock amend and cancel need an operation-scoped capability. `KisMockForwarder` mints one for each call, with the gateway journal row as the durable claim. The scope and the bindings are in `docs/contracts/rob-1263-kis-coordination-adapter.md` §7, "Amendment: kis_mock gateway-origin orders".
+
+If a binding fails, the forwarder makes zero broker calls and the row ends `uncertain` with a `followup_*` `reason_code` in `result`. An order from any other origin cannot mint.
+
+A KIS amend issues a new order number, so a successful amend re-points the `kis_mock_order_ledger` row at it. Later follow-ups then find the order under the amend's key.
 
 ## Rollback
 
@@ -137,11 +234,10 @@ The migration's downgrade refuses while either table holds rows. Dropping the jo
 
 ## Open items for E2 and E3
 
-- **Coordination route:** `run_kis_mock_send` refuses every KR mock send until a coordinated route is installed. Until then a submit ends as `uncertain`, and no order is sent.
-- **Follow-up capability:** KIS mock cancel and modify need an operation-scoped capability that this gateway does not mint. Without it, amend and cancel end as `uncertain` with zero broker calls. The owner of that capability must be decided before E3.
+- **Coordination route:** `run_kis_mock_send` refuses every KR mock send until a coordinated route is installed. Until then a submit ends as `uncertain`, and no order is sent. Installing a route is a separate, approval-gated decision (`docs/contracts/rob-1263-kis-coordination-adapter.md` §6 and §10).
 - **Other envelope caps:** gross exposure, position count, per-session entry and exit counts, and the NLV-based order cap all need an account snapshot. The gateway enforces only the locked single-order notional. The E3 pilot must decide how the others apply.
 - **Inventory drift:** the inventory check uses the position stated at authorization, and the gateway reads no broker position. A position that moves outside the intent is not detected here.
-- **Resolving `uncertain` and `sending`:** nothing in E1 moves these rows, and there is no automatic replay. E2 needs a reconciler that reads ledger evidence. Until then, an order with an unknown later child cannot be cancelled through the gateway, so it must be cleared outside it.
+- **Resolving `uncertain` and `sending`:** nothing in E1 moves these rows, and there is no automatic replay. The [query](#query) lets E2 reconcile when the ledger has evidence, and it answers `view: null` when it does not. An order with an unknown later child still cannot be cancelled through the gateway (`target_superseded`), so it must be cleared outside it.
 - **Expiry and kill at the wire:** both are judged at reservation, not at the broker call. Expiry is read under the intent row lock. The kill state is read just before that lock, so a lock wait can make it stale. A send can still cross `expires_at` or a newly engaged kill in the time between the journal commit and the wire. Closing that needs a journal state for "reserved, proven not sent" and a pre-send check on every forward path. `_place_order_impl` and `cancel_order_impl` take a `pre_send_hook`, but `modify_order_impl` does not. Decide this in E2, before the E3 pilot.
 - **What the DB cannot check:** a role with INSERT on intents can still write a row inside every bound, because the database cannot verify `authorization_ref`. Placeholder strategies are not checked in the DB either; the kis_mock attribution gate refuses them before a send. Intents must enter only through `store_intent`.
 - **Other accounts:** adding `kiwoom_mock` or `nh_mock` means adding a forwarder and extending the schema `Literal`, `MOCK_ACCOUNTS`, and the DB CHECK in a new migration.
