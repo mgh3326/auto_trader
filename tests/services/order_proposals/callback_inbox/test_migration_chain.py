@@ -135,6 +135,9 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # ROB-1440 intent gateway tables are later than this boundary (child first).
     "review.execution_child_requests",
     "review.execution_intents",
+    # ROB-1460 exit plan tables are later than this boundary.
+    "review.lot_exit_plans",
+    "review.mechanical_loss_cut_decisions",
 )
 
 
