@@ -29,6 +29,12 @@ import numpy as np
 import pandas as pd
 
 from research.strategy_evidence.common import ROUND_TRIP_COST
+from research.strategy_evidence.decision_rules import (
+    B3_ADDS,
+    B3_STOP_AFTER_ADDS,
+    B3_TARGET,
+    averaging_decision,
+)
 from research.trade_retro.canonical import is_parking, next_open_session, session_date
 from research.trade_retro.markouts import cluster_ci
 from research.trade_retro.prices import Bars, PriceBook
@@ -77,9 +83,9 @@ VARIANTS = (
     Variant("A2", "A", loss=0.10, target=0.30, time_cap=TIME_CAP),
     Variant("A3", "A", loss=0.20, target=0.15, time_cap=TIME_CAP),
     Variant("A4", "A", loss=0.20, target=0.30, time_cap=TIME_CAP),
-    Variant("B1", "B", target=0.10, time_cap=TIME_CAP, adds=(0.10, 0.20), target_on_avg=True),
-    Variant("B2", "B", target=0.10, adds=(0.10, 0.20), target_on_avg=True),
-    Variant("B3", "B", target=0.10, adds=(0.10, 0.20), stop_after_adds=0.35, target_on_avg=True),
+    Variant("B1", "B", target=B3_TARGET, time_cap=TIME_CAP, adds=B3_ADDS, target_on_avg=True),
+    Variant("B2", "B", target=B3_TARGET, adds=B3_ADDS, target_on_avg=True),
+    Variant("B3", "B", target=B3_TARGET, adds=B3_ADDS, stop_after_adds=B3_STOP_AFTER_ADDS, target_on_avg=True),
     Variant("C1", "C"),
     Variant("C2", "C", time_cap=20),
 )  # fmt: skip
@@ -149,27 +155,25 @@ def simulate(
     units = [Unit(i0, entry)]
     last = len(bars) - 1
     end = last if variant.time_cap is None else min(i0 + variant.time_cap, last)
-    pending = list(variant.adds)
     for k in range(i0, end + 1):
         close = float(bars.close[k])
-        while pending and close <= entry * (1.0 - pending[0]):
-            units.append(Unit(k, close))
-            pending.pop(0)
-        avg = len(units) / sum(1.0 / u.price for u in units)
         if variant.family == "A":
             if close <= entry * (1.0 - variant.loss):
                 return units, k, close, "loss-cut"
             if close >= entry * (1.0 + variant.target):
                 return units, k, close, "target"
         elif variant.family == "B":
-            if close >= avg * (1.0 + variant.target):
-                return units, k, close, "target"
-            if (
-                variant.stop_after_adds
-                and not pending
-                and close <= avg * (1.0 - variant.stop_after_adds)
-            ):
-                return units, k, close, "loss-cut"
+            decision = averaging_decision(
+                entry,
+                [u.price for u in units],
+                close,
+                adds=variant.adds,
+                target=variant.target,
+                stop_after_adds=variant.stop_after_adds,
+            )
+            units.extend(Unit(k, close) for _ in range(decision.adds))
+            if decision.exit_reason:
+                return units, k, close, decision.exit_reason
     if variant.time_cap is not None and i0 + variant.time_cap <= last:
         return units, end, float(bars.close[end]), "time"
     return units, last, float(bars.close[last]), "open at end"

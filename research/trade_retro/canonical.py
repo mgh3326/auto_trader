@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from app.core.symbol import to_db_symbol
+from research.strategy_evidence.decision_rules import next_open_day
 from research.trade_retro.export import Export
 from research.trade_retro.prices import Bars, PriceBook
 
@@ -47,7 +48,6 @@ _TZ = {
     "crypto": ZoneInfo("UTC"),
 }
 _CLOSE = {"kr": time(15, 30), "us": time(16, 0)}
-_OPEN = {"kr": time(9, 0), "us": time(9, 30)}
 #: How far apart a websocket row and its identical reconciler row can be stamped.
 TWIN_MAX_GAP = timedelta(days=2)
 #: A repeat was recorded about a day after the time it claims. A live websocket row is
@@ -96,11 +96,7 @@ def reference_close(bars: Bars, market: str, stamp: datetime) -> float | None:
 
 def next_open_session(bars: Bars, market: str, stamp: datetime) -> int | None:
     """The first session whose open comes after ``stamp``."""
-    day = session_date(market, stamp)
-    market_open = _OPEN.get(market)
-    if market_open is None or stamp.astimezone(_TZ[market]).time() >= market_open:
-        day += timedelta(days=1)
-    return bars.idx_on_or_after(day)
+    return bars.idx_on_or_after(next_open_day(market, stamp))
 
 
 @dataclass(frozen=True)
