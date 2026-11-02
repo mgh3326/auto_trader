@@ -569,9 +569,15 @@ existing guard. It is configuration only: one share, strict KRW 100,000 bound,
 at most 30-minute expiry, one working order per intent and one intent per E3 run,
 gateway writer and operator-present foreground route owner. No recurrence is
 authorized; the operator must store the matching bounded E1 intent. No production provider installation, scheduler or broker call is
-part of this amendment. No in-repo reconciler yet calls the new native-evidence
-or release methods; reviewed recovery adapter wiring is required before route
-installation. Contract: `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
+part of this amendment. The unscoped, operator-run KIS mock reconciler now reads
+exact attributed ODNOs on the claim's KST dispatch day. A separate per-call
+`record_dispatch_evidence=True` opt-in, default false, is required in addition
+to confirmed non-dry-run execution to append native evidence; every surviving
+claim blocks the account. No current source proves `account_position_reconciled`, so even a
+terminal full fill is reported as `retained: position proof unavailable` with
+its claim ID and is never released. A reviewed position-proof implementation
+(hk 2690) remains an activation gate. Contract:
+`docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
 
 ### kis_mock 귀속 사슬 — pre-submit 강제
 
