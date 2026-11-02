@@ -78,7 +78,6 @@ REAL_LEAK_RULE_NAMES = (
 REAL_LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (name, pattern) for name, pattern in LEAK_PATTERNS if name in REAL_LEAK_RULE_NAMES
 )
-REAL_LEAK_RULE_NAMES = tuple(sorted({name for name, _ in REAL_LEAK_PATTERNS}))
 
 #: A broker order id is not an account number, so the account pattern is only
 #: applied to copied labels and symbols. Credentials have no legitimate place in
