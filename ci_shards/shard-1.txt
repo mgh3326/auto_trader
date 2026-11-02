@@ -245,6 +245,7 @@ tests/services/order_proposals/callback_inbox/test_production_wiring.py
 tests/services/order_proposals/callback_inbox/test_recovery.py
 tests/services/order_proposals/callback_inbox/test_recovery_liveness.py
 tests/services/order_proposals/callback_inbox/test_runtime_surface.py
+tests/services/order_proposals/test_batch_health.py
 tests/services/order_proposals/test_cash_funding_auto_approve.py
 tests/services/order_proposals/test_cash_funding_exemption.py
 tests/services/order_proposals/test_dispatch.py
@@ -342,6 +343,7 @@ tests/test_crypto_pending_order_alert_tasks.py
 tests/test_crypto_voting_integration.py
 tests/test_crypto_voting_signals.py
 tests/test_daily_scan.py
+tests/test_diagnose_approval_batch_health_cli.py
 tests/test_execution_event.py
 tests/test_fill_enrichment.py
 tests/test_fill_event_triage_command.py

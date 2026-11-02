@@ -216,6 +216,18 @@ fresh 아님), `data_state == "fresh"`, 유한 양수 가격. US 는 `market_uns
   없음**(운영자 결정 #1083 B). 스케줄러/TaskIQ/detached task 추가 금지.
 - **런북**: `docs/runbooks/order-proposal-auto-approve-expand.md` §11
 
+### Approval batch health (ROB-1488)
+
+수동 ROB-870 batch의 member writer 시각은 `added_at`이며 `processed_at`은
+callback 결과 시각이다. ROB-1052 auto digest는 이 batch/member 테이블을 쓰지 않는다.
+`scripts.diagnose_approval_batch_health`는 READ ONLY·8초 timeout의 SELECT 집계만 한다.
+member 없는 batch는 `gap`이지만, manual/reconfirm 발송 후 member가 없는 경우는
+설계상 제외도 가능하므로 `review`이지 writer 정지 증명이 아니다. 다른 member가 있어도
+미등록 published card 또는 frozen unsent summary가 하나라도 있으면 `review`다.
+skip/summary dispatch 증거를 확인하며, member 없는 batch의 `gap`이 우선한다. 등록 skip 로그는
+닫힌 category만 남기고 UUID/승인창의 동적 상세를 reason 필드에 넣지 않는다.
+등록·승인·callback의 판정과 반환값, 스케줄은 변경하지 않는다.
+
 ### Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
 
 승인 카드(사람 판단 필요: manual/reconfirm/loss-cut/batch)는 항상
