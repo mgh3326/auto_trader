@@ -204,13 +204,58 @@ The send boundary still compares the actual mock client's fingerprint, host
 and namespace to this binding before every POST. No full account number or
 credential is placed in configuration examples or durable evidence.
 
-**Identity does not authorize activation.** With no fingerprint the row remains
-UNKNOWN/BLOCKED. With one it becomes identity-known and physical scope derivation
-is available, but policy/cap/owner/canary bindings, writer, activation and
-`auto_order_enabled` retain their existing requirements. Auto remains false by
-default. Identity alone cannot pass `assert_entry_execution_ready`. Supplying
-those signed activation bindings is a separate operator decision; no placeholder
-policy, cap or canary is invented by this amendment.
+**Identity alone does not authorize activation.** With no fingerprint the row
+remains UNKNOWN/BLOCKED. With a fingerprint but no activation opt-in it becomes
+identity-known and physical scope derivation is available, while execution
+readiness remains BLOCKED.
+
+### Optional single-run E3 activation configuration (operator-desk ESC response)
+
+`KIS_MOCK_E3_ACTIVATION_ENABLED` defaults off and accepts only the exact string
+`true` as opt-in. `e3_activation.E3_ACTIVATION_CONTRACT` records the approved
+configuration, version `kis-mock-e3-activation/v1`. The operator sets the flag
+only on the foreground route process for the single operator-present run; this
+PR changes no host environment and installs no route.
+
+| Binding | Approved E3 value |
+|---|---|
+| Lane / account | `kr.kis.mock` / `kis_mock` only |
+| Quantity per intent | exactly 1 share |
+| Notional per intent | `max_notional_krw < 100000` (whole KRW: at most 99,999) |
+| Intent expiry | at most 30 minutes after authorization |
+| Working orders | at most 1 per intent |
+| Scope | one intent in the single E3 run |
+| Owner | E1 gateway route, `app.routers.execution_intent_gateway`, operator present, foreground only |
+| Writer | gateway; the registry `writer` flag becomes true only with explicit activation |
+| Auto | true only while the explicit activation setting is on |
+| Canary | the single operator-present run in `docs/runbooks/execution-intent-gateway.md#run-one-mock-order` |
+
+With opt-in plus a matching mock identity, the configuration helper supplies
+these approved policy/cap/owner/canary labels, `activation_status=ENABLED`,
+`writer=true` and `auto_order_enabled=true`. The policy binding is the activation
+contract version and the SHA-256 of its canonical projection, not a substituted
+trading-decision policy. Existing `assert_entry_execution_ready` and physical
+scope guards then pass unchanged. The coarse registry fields describe the
+single-intent E3 scope: `max_order_notional=99999`,
+`max_orders_per_session=1`, `max_open_orders=1`, limit/DAY only, reconcile required,
+manual scheduler owner and gateway timing owner. These registry fields are
+configuration labels; the operator must store the E1 intent with the per-intent
+bounds above, which the existing E1 journal/decision path enforces. The broader
+E1 schema and locked runner envelope are unchanged. Readiness is not an E3
+result or a replacement for intent validation.
+
+Without opt-in, including when re-evaluating a previously activated effective
+row, writer and auto are false and activation is BLOCKED. Opt-in without an
+identity, with a conflicting pin, or with live/noncanonical account, namespace
+or host metadata is refused. The unchanged send boundary still checks the
+actual client's identity and transport before every POST. Every other registry
+row stays unchanged. Canonical rows remain default-off in code.
+
+This is a bounded manual configuration: the lane status remains observational,
+so the existing recurring-authority guard still refuses recurrence. It adds no
+scheduler, server, canary execution, runtime provider installation or automatic
+activation. Existing route enablement, per-call confirm, attribution, kill state,
+coordination, follow-up and broker gates all remain in force.
 
 After schema application and explicit port construction, lifecycle readiness is
 `AUTO_READY_PENDING_ACTIVATION`; absent ports still report

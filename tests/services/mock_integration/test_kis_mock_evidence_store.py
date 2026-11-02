@@ -8,6 +8,11 @@ import pytest
 from sqlalchemy import UniqueConstraint
 
 from app.models.kis_mock_dispatch_evidence import KISMockDispatchEvidence
+from app.schemas.execution_contracts import SchedulerOwner
+from app.services.kis_mock_runner.e3_activation import (
+    ACTIVATION_ENV,
+    E3_ACTIVATION_CONTRACT,
+)
 from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceConflict,
     KISMockEvidenceStore,
@@ -27,9 +32,12 @@ from app.services.mock_integration.coordination import (
 from app.services.mock_lane_registry import (
     CANONICAL_LANE_REGISTRY,
     AccountMode,
+    ActivationStatus,
     LaneGuardError,
     MissingBinding,
+    RegistryStartupError,
     assert_entry_execution_ready,
+    assert_recurring_authorized,
 )
 
 pytestmark = pytest.mark.unit
@@ -172,3 +180,103 @@ async def test_native_wrong_shape_refused_before_database():
             None, NativeOrderEvidence("soft_cancel", "key", None)
         )
     factory.assert_not_called()
+
+
+@pytest.mark.parametrize("setting", [None, "false", "True", "1", " true", "true "])
+def test_e3_activation_defaults_off_and_requires_exact_opt_in(setting):
+    config = {IDENTITY_ENV: FINGERPRINT}
+    if setting is not None:
+        config[ACTIVATION_ENV] = setting
+    entry = kis_mock_registry_from_environment(environ=config)[0]
+    assert entry.activation_status is ActivationStatus.BLOCKED
+    assert entry.auto_order_enabled is False and entry.writer is False
+    with pytest.raises(LaneGuardError, match="lane_activation_not_enabled"):
+        assert_entry_execution_ready(entry)
+
+
+def test_e3_explicit_on_matching_identity_satisfies_existing_readiness():
+    entries = kis_mock_registry_from_environment(
+        environ={IDENTITY_ENV: FINGERPRINT, ACTIVATION_ENV: "true"}
+    )
+    entry = entries[0]
+    assert_entry_execution_ready(entry)
+    assert entry.activation_status is ActivationStatus.ENABLED
+    assert entry.writer is True and entry.auto_order_enabled is True
+    assert entry.physical_account_id == FINGERPRINT
+    assert entry.policy_binding == E3_ACTIVATION_CONTRACT.policy_binding
+    assert entry.missing_bindings == ()
+    assert entry.execution_mode == "operator_present_foreground_e3"
+    assert entry.scheduler_owner is SchedulerOwner.MANUAL
+    assert entry.timing_owner == E3_ACTIVATION_CONTRACT.owner
+    assert entry.canary_binding == E3_ACTIVATION_CONTRACT.canary
+    assert entry.max_order_notional == 99_999
+    assert entry.max_orders_per_session == 1 and entry.max_open_orders == 1
+    assert entry.allowed_order_types == ("limit",)
+    assert entry.allowed_time_in_force == ("day",)
+    assert entry.reconcile_required is True
+    assert physical_account_scope_for_entry(entry).claim_account_scope
+    assert entries[1:] == CANONICAL_LANE_REGISTRY[1:]
+    assert CANONICAL_LANE_REGISTRY[0].writer is False
+    assert CANONICAL_LANE_REGISTRY[0].auto_order_enabled is False
+    # This is one foreground canary. Opt-in grants no recurring lane status.
+    with pytest.raises(LaneGuardError, match="lane_recurring_not_authorized"):
+        assert_recurring_authorized(entry, recurring_requested=True)
+
+
+def test_e3_activation_contract_has_the_approved_per_intent_bounds():
+    contract = E3_ACTIVATION_CONTRACT
+    assert contract.lane_id == "kr.kis.mock" and contract.account == "kis_mock"
+    assert contract.max_quantity_per_intent == 1
+    assert contract.max_notional_krw_exclusive == 100_000
+    assert contract.max_lifetime_seconds == 30 * 60
+    assert contract.max_working_orders_per_intent == 1
+    assert contract.max_intents_per_run == 1
+    assert contract.owner == "app.routers.execution_intent_gateway"
+    assert contract.writer == "gateway"
+    assert contract.operator_present is True and contract.foreground_only is True
+    assert (
+        contract.canary
+        == "docs/runbooks/execution-intent-gateway.md#run-one-mock-order"
+    )
+
+
+def test_e3_on_without_identity_or_with_mismatched_pin_refused():
+    with pytest.raises(LaneGuardError, match="activation_identity_required"):
+        kis_mock_registry_from_environment(environ={ACTIVATION_ENV: "true"})
+    with pytest.raises(LaneGuardError, match="identity_mismatch"):
+        kis_mock_registry_from_environment(
+            entries=(bound_entry(), *CANONICAL_LANE_REGISTRY[1:]),
+            environ={ACTIVATION_ENV: "true", IDENTITY_ENV: "kismock:v1:" + "b" * 64},
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"account_mode": "live"},
+        {"account_profile": "live"},
+        {"credential_namespace": "KIS_*"},
+        {"allowed_hosts": ("openapi.koreainvestment.com:9443",)},
+    ],
+)
+def test_e3_on_with_live_identity_or_transport_refused(change):
+    invalid = replace(CANONICAL_LANE_REGISTRY[0], **change)
+    with pytest.raises(RegistryStartupError):
+        kis_mock_registry_from_environment(
+            entries=(invalid, *CANONICAL_LANE_REGISTRY[1:]),
+            environ={ACTIVATION_ENV: "true", IDENTITY_ENV: FINGERPRINT},
+        )
+
+
+@pytest.mark.parametrize("keep_identity", [False, True])
+def test_e3_turning_setting_off_removes_prior_effective_authority(keep_identity):
+    activated = kis_mock_registry_from_environment(
+        environ={IDENTITY_ENV: FINGERPRINT, ACTIVATION_ENV: "true"}
+    )
+    entry = kis_mock_registry_from_environment(
+        entries=activated, environ={IDENTITY_ENV: FINGERPRINT} if keep_identity else {}
+    )[0]
+    assert entry.auto_order_enabled is False and entry.writer is False
+    assert entry.activation_status is ActivationStatus.BLOCKED
+    with pytest.raises(LaneGuardError, match="lane_activation_not_enabled"):
+        assert_entry_execution_ready(entry)

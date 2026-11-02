@@ -18,16 +18,26 @@ Every item must hold. Code availability alone does not satisfy the operator step
 | 4 | One intent is stored through `SqlAlchemyGatewayStore.store_intent`: `account = "kis_mock"`, 1 share, `max_notional_krw` below 100,000, expiry within 30 minutes | Operator | Per run |
 | 5 | The ROB-1263 evidence migration `20261102_rob1263_kis_evidence` is applied; new tables and append-only triggers exist | Operator only | Pending operator verification; builders do not apply migrations |
 | 6 | `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` is set on the one mock route process; derive it using `kis_mock_account_fingerprint` from the approved mock credential namespace, without printing credentials or account numbers | Operator only | Unset remains UNKNOWN/BLOCKED |
-| 7 | Signed policy/cap/owner/canary bindings and explicit activation/writer/auto authorization satisfy the existing registry guard | Operator only | Identity alone does not pass execution readiness; auto stays default off |
+| 7 | Optional `KIS_MOCK_E3_ACTIVATION_ENABLED=true` supplies the approved single-run E3 bindings from contract §6, with a matching mock fingerprint | Operator on the one foreground process only | Default off/BLOCKED; opt-in gives registry readiness, not permission to skip any other precondition |
 
 The approved installer must call
 `kis_mock_registry_from_environment()` to obtain the effective registry, construct
 `KISMockEvidenceStore(session_factory, entry=effective_kr_mock_entry)`, and use
 `store.ports()` in the coordinated route. This changes only the KR mock binding.
-Keep the route uninstalled until rows 5–7 are verified. A configured fingerprint
-is an identity pin, not a replacement for policy/cap/canary or explicit order
-enablement. The operator-run reconciler owns restart discovery and records all
+Keep the route uninstalled until rows 5–7 are verified. Identity alone is an
+identity pin; the separate exact activation opt-in supplies the approved bounded
+policy/cap/owner/canary labels. The canonical registry remains default off. The operator-run reconciler owns restart discovery and records all
 native evidence; no recovery scheduler or automatic replay is installed.
+
+The optional activation contract is configuration only: exactly 1 share per
+intent, `max_notional_krw < 100000`, expiry at most 30 minutes after authorization,
+at most 1 working order per intent, and one intent for this E3 run. The owner is
+the E1 gateway route and the writer is gateway; the operator stays present while
+the process runs in the foreground. The canary is the single run below. Store
+the E1 intent with these bounds before starting: registry readiness does not
+rewrite a broader stored intent. Existing E1 intent caps and journal decisions
+remain the enforcement path. Removing the setting returns the effective KR mock
+row to BLOCKED with writer/auto false; no recurrence is authorized.
 
 Until item 1 holds, the route can run, but it cannot place an order. That is the expected result, and you can use it to check the wiring.
 
@@ -46,10 +56,14 @@ Until item 1 holds, the route can run, but it cannot place an order. That is the
 | `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED` | `false` | Off: every path answers 404 before any DB access |
 | `EXECUTION_INTENT_GATEWAY_TOKEN` | empty | Empty: every request answers 403. Wrong or missing token: 401 |
 | `EXECUTION_INTENT_GATEWAY_TOKEN_HEADER` | `X-Execution-Intent-Gateway-Token` | Must match fillwire's `token_header` |
-| `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` | empty | Optional §4 fingerprint only, consumed by the approved route installer; unset blocks identity, set does not enable orders |
+| `KIS_MOCK_PHYSICAL_ACCOUNT_FINGERPRINT` | empty | Optional §4 fingerprint only; unset blocks identity and opt-in activation, set alone does not enable orders |
+| `KIS_MOCK_E3_ACTIVATION_ENABLED` | `false` | Only exact `true` plus matching mock identity supplies the approved §6 single-run bindings; no host env change is made by this PR |
 | `EXECUTION_INTENT_GATEWAY_ENABLED` | unset | The E1 gate. Anything except exactly `true` means E1 answers `gateway_disabled`. It is read from the process environment, not from an env file |
 
-Put these on the one container or process that serves the route. Do not add them to a shared env file such as `.env.api`.
+Put these on the one container or process that serves the route. Do not add them to a shared env file such as `.env.api`. If the operator elects
+the bounded E3 activation, pass `KIS_MOCK_E3_ACTIVATION_ENABLED` and the
+fingerprint only to that one process; neither is enabled by the start command
+below or by merging this code.
 
 ## Enable the route
 
