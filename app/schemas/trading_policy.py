@@ -2229,8 +2229,14 @@ class KrTradingSessionsPolicy(BaseModel):
 class MechanicalLossCutDefaultStop(BaseModel):
     """ROB-1460 — how a plan's stop is computed when the buyer states none.
 
+    ``basis`` picks one formula, so the other formula's keys do nothing. With
+    ``pct_floor``, the ``support_*`` and ``sma_atr_*`` keys are unused.
+
     ``floor_pct`` is also the maximum width: a support or volatility stop is
-    never placed further below the reference price than this floor.
+    never placed further below the reference price than this floor. It is a stop
+    distance, not a limit on the realized loss.
+
+    ``sma_atr_*`` is a simple mean of true range, not Wilder smoothing.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -2239,8 +2245,8 @@ class MechanicalLossCutDefaultStop(BaseModel):
     floor_pct: float = Field(gt=0, lt=100)
     support_lookback_sessions: int = Field(ge=5, le=250)
     support_buffer_pct: float = Field(ge=0, lt=100)
-    atr_sessions: int = Field(ge=2, le=100)
-    atr_multiple: float = Field(gt=0, le=20)
+    sma_atr_sessions: int = Field(ge=2, le=100)
+    sma_atr_multiple: float = Field(gt=0, le=20)
 
 
 class MechanicalLossCutTrigger(BaseModel):
@@ -2248,8 +2254,12 @@ class MechanicalLossCutTrigger(BaseModel):
 
     Every family requires a completed close below the plan's stop. Every family
     also applies ``unrealized_floor_pct`` and refuses a lot whose close is above
-    the close ``rising_lookback_sessions`` ago, so an underwater lot that is
-    recovering is not cut.
+    the close ``rising_compare_sessions_ago`` ago, so an underwater lot that is
+    recovering is not cut. That is one comparison with one earlier close, not a
+    count of rising sessions.
+
+    ``family`` picks one extra condition. With ``plan_stop_close``, the
+    ``n_day_low_sessions`` and ``trailing_*`` keys are unused.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -2260,7 +2270,7 @@ class MechanicalLossCutTrigger(BaseModel):
         "plan_stop_and_trailing_drop",
     ]
     unrealized_floor_pct: float = Field(lt=0, gt=-100)
-    rising_lookback_sessions: int = Field(ge=1, le=60)
+    rising_compare_sessions_ago: int = Field(ge=1, le=60)
     n_day_low_sessions: int = Field(ge=2, le=250)
     trailing_drop_pct: float = Field(gt=0, lt=100)
     trailing_lookback_sessions: int = Field(ge=2, le=250)
@@ -2281,6 +2291,12 @@ class MechanicalLossCutMarket(BaseModel):
     ``thresholds_confirmed`` stays false until the operator accepts values, and
     the live path refuses a market whose thresholds are unconfirmed. Shadow
     evaluation runs on provisional values because it sends nothing.
+
+    ``cooldown_sessions`` only holds back the lot's next decision. It is not a
+    wait before buying again, a maximum holding period, or a retry timer.
+
+    ``stop_after_add: keep`` holds the stop price, but money at risk still grows
+    with the added quantity.
     """
 
     model_config = ConfigDict(extra="forbid")

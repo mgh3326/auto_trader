@@ -314,7 +314,8 @@ def parse_exit_plan_input(raw: Any) -> ExitPlanInput:
     )
 
 
-def _average_true_range(bars: list[Bar], sessions: int) -> Decimal | None:
+def _sma_true_range(bars: list[Bar], sessions: int) -> Decimal | None:
+    """Simple mean of true range over the window. Not Wilder smoothing."""
     if len(bars) < sessions + 1:
         return None
     window = bars[-(sessions + 1) :]
@@ -360,14 +361,14 @@ def default_stop(
                     f"{params.support_buffer_pct}%",
                 )
     elif params.basis == "volatility":
-        atr = _average_true_range(bars, params.atr_sessions)
+        atr = _sma_true_range(bars, params.sma_atr_sessions)
         if atr is not None:
-            candidate = reference_price - atr * Decimal(str(params.atr_multiple))
+            candidate = reference_price - atr * Decimal(str(params.sma_atr_multiple))
             if floor < candidate < reference_price:
                 return (
                     candidate,
                     "volatility",
-                    f"{params.atr_multiple} x {params.atr_sessions}-session ATR",
+                    f"{params.sma_atr_multiple} x {params.sma_atr_sessions}-session SMA ATR",
                 )
     return floor, "pct_floor", floor_reason
 
@@ -629,13 +630,14 @@ def evaluate_lot(
     if unrealized > Decimal(str(trigger.unrealized_floor_pct)):
         return Skip("floor_not_reached", facts)
 
-    lookback = trigger.rising_lookback_sessions
-    if len(bars) <= lookback:
+    # One comparison with one earlier close, not a run of rising sessions.
+    sessions_ago = trigger.rising_compare_sessions_ago
+    if len(bars) <= sessions_ago:
         # A rising check that cannot be made is not a pass.
         return Skip("price_missing", {"bars": str(len(bars))})
-    if close > bars[-1 - lookback].close:
+    if close > bars[-1 - sessions_ago].close:
         return Skip(
-            "rising", {**facts, "compared_close": text(bars[-1 - lookback].close)}
+            "rising", {**facts, "compared_close": text(bars[-1 - sessions_ago].close)}
         )
 
     family_details: dict[str, str] = {}

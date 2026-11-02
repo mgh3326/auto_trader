@@ -1825,6 +1825,20 @@ user_stances:
 # ROB-1460: values below are provisional shadow inputs, not decided thresholds.
 # ROB-1458 proposes the real ones. The live path refuses a market while its
 # thresholds_confirmed is false.
+#
+# What the keys do (docs/runbooks/mechanical-loss-cut.md, Thresholds):
+# - default_stop applies only to a buy with no stated stop and to a backfill.
+#   basis picks one formula. With pct_floor, the support_* and sma_atr_* keys do
+#   nothing. floor_pct is a stop distance, not a limit on the realized loss.
+# - sma_atr_* is a simple mean of true range, not Wilder smoothing.
+# - rising_compare_sessions_ago is one comparison: no cut while the close is above
+#   the close that many sessions ago. It does not ask for that many rising sessions.
+# - family picks one condition. With plan_stop_close, n_day_low_sessions and
+#   trailing_* do nothing.
+# - cooldown_sessions only holds back the lot's next decision. It is not a wait
+#   before buying again, a maximum holding period, or a retry timer.
+# - stop_after_add: keep holds the stop price, but money at risk still grows with
+#   the added quantity.
 mechanical_loss_cut:
   parameter_source: "provisional shadow defaults pending ROB-1458 evidence"
   markets:
@@ -1835,13 +1849,13 @@ mechanical_loss_cut:
         floor_pct: 15
         support_lookback_sessions: 60
         support_buffer_pct: 1
-        atr_sessions: 14
-        atr_multiple: 2
+        sma_atr_sessions: 14
+        sma_atr_multiple: 2
       stop_after_add: keep
       trigger:
         family: plan_stop_close
         unrealized_floor_pct: -5
-        rising_lookback_sessions: 5
+        rising_compare_sessions_ago: 5
         n_day_low_sessions: 20
         trailing_drop_pct: 10
         trailing_lookback_sessions: 60
@@ -1857,13 +1871,13 @@ mechanical_loss_cut:
         floor_pct: 15
         support_lookback_sessions: 60
         support_buffer_pct: 1
-        atr_sessions: 14
-        atr_multiple: 2
+        sma_atr_sessions: 14
+        sma_atr_multiple: 2
       stop_after_add: keep
       trigger:
         family: plan_stop_close
         unrealized_floor_pct: -5
-        rising_lookback_sessions: 5
+        rising_compare_sessions_ago: 5
         n_day_low_sessions: 20
         trailing_drop_pct: 10
         trailing_lookback_sessions: 60
@@ -1879,13 +1893,13 @@ mechanical_loss_cut:
         floor_pct: 20
         support_lookback_sessions: 60
         support_buffer_pct: 1
-        atr_sessions: 14
-        atr_multiple: 2
+        sma_atr_sessions: 14
+        sma_atr_multiple: 2
       stop_after_add: keep
       trigger:
         family: plan_stop_close
         unrealized_floor_pct: -5
-        rising_lookback_sessions: 5
+        rising_compare_sessions_ago: 5
         n_day_low_sessions: 20
         trailing_drop_pct: 10
         trailing_lookback_sessions: 60

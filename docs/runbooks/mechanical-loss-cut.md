@@ -24,7 +24,7 @@ A **lot** is one account mode + market + symbol position.
    - the close is below average cost;
    - the close is below the plan's stop;
    - unrealized P&L is at or below `trigger.unrealized_floor_pct`;
-   - the close is not above the close `rising_lookback_sessions` ago;
+   - the close is not above the close `rising_compare_sessions_ago` sessions ago;
    - the `trigger.family` condition holds (see [Thresholds](#set-thresholds)).
 4. Each cut is one row in `review.mechanical_loss_cut_decisions`, once per plan
    version, stop and unbroken below-stop run.
@@ -126,18 +126,53 @@ by operator PR, per market:
 |---|---|
 | `default_stop.basis` | `pct_floor`, `support` or `volatility`, for a buy with no stated stop and for backfills. |
 | `default_stop.floor_pct` | Percent below the reference. Also the widest stop any basis can produce. |
+| `default_stop.support_lookback_sessions`, `support_buffer_pct` | Used only with basis `support`: the lowest low in the window, less the buffer. A shorter history uses the bars it has. |
+| `default_stop.sma_atr_sessions`, `sma_atr_multiple` | Used only with basis `volatility`: the reference less the multiple times the simple mean of true range. |
 | `stop_after_add` | `keep`, or `recompute_from_average`, which lowers the stop as the average falls. |
 | `trigger.family` | `plan_stop_close`, `plan_stop_and_n_day_low` or `plan_stop_and_trailing_drop`. |
+| `trigger.n_day_low_sessions` | Used only with family `plan_stop_and_n_day_low`. |
+| `trigger.trailing_drop_pct`, `trailing_lookback_sessions` | Used only with family `plan_stop_and_trailing_drop`. |
 | `trigger.unrealized_floor_pct` | The -X% floor that must also be reached. |
-| `trigger.rising_lookback_sessions` | No cut if the close is above the close this many sessions ago. |
+| `trigger.rising_compare_sessions_ago` | No cut if the close is above the close this many sessions ago. |
 | `order.max_slippage_pct` | Limit distance below the price. Policy refuses a value wider than `sell.loss_cut_max_slip`. |
 | `order.max_lot_fraction` | The most of a lot one cut can sell. |
-| `cooldown_sessions` | Sessions after a decision before that lot can have another. |
+| `cooldown_sessions` | Sessions after a decision before that lot can have another decision. |
 | `live_include_backfilled` | Whether live may act on a backfilled plan. |
 | `thresholds_confirmed` | Live refuses the market until this is true. |
 
 Editing this block changes the policy version and hash, so update the version pins
 in the tests.
+
+### What these keys do not do
+
+Read shadow results with these in mind, because each name suggests more than the
+code does.
+
+- **Unused keys.** `basis` and `family` each pick one rule, and the other rules'
+  keys do nothing. The current policy uses `pct_floor` and `plan_stop_close` in every
+  market, so the `support_*`, `sma_atr_*`, `n_day_low_sessions` and `trailing_*`
+  values have no effect today. A stop the buyer states ignores `default_stop`
+  entirely.
+- **`recompute_from_average` uses only the floor.** It has no bars to read, so it
+  applies `floor_pct` whatever `basis` says.
+- **`floor_pct` is not a loss limit.** It sets how far below the reference the stop
+  sits. The sale comes after a completed close below the stop and only when every
+  other condition holds, so a gap or an unfilled limit can lose more.
+- **`sma_atr_*` is not Wilder's ATR.** It is a simple mean of the true range over
+  the window, and older bars have no effect. Numbers from a Wilder ATR elsewhere
+  will not match.
+- **`rising_compare_sessions_ago` is one comparison.** With 5, the close is compared
+  with the single close 5 sessions ago. It does not look for 5 rising sessions. A lot
+  that fell for the last 4 sessions but is above that one close is not cut. A lot
+  that rose for the last 4 sessions but is not above it can be cut.
+- **`cooldown_sessions` only holds back the next decision on that lot.** It is not a
+  wait before buying again, and no buy path reads it. It is not a maximum holding
+  period, so nothing sells because time passed. It is not a retry timer either; see
+  [Known limits](#known-limits).
+- **`stop_after_add: keep` does not keep the risk the same.** The stop price holds,
+  but money at risk grows with the quantity. Before costs and gaps: 1 share at 100
+  with a stop at 85 risks 15. Add 1 share at 90 and keep the stop, and the cost is 190
+  against 170 at the stop, so it risks 20.
 
 ## Turn on live
 
@@ -186,6 +221,9 @@ is a human decision like any other.
 ## Known limits
 
 - Daily closes only. An intraday fall is not cut until the close and the next run.
+- An unfilled cut is not retried in the same below-stop run. Once the order is gone,
+  that lot gets no new decision until a close at or above the stop, or a new plan
+  version with a new stop. Check for this before turning on live.
 - Shadow positions and open sells come from the database, as described above.
 - `add_verdict` records whether an add fits the plan and does not block it.
 - A plan's average cost is the planned value at acceptance. The job measures

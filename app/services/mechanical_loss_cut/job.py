@@ -134,11 +134,11 @@ def _bar_count(params: Any) -> int:
     return (
         max(
             _MIN_BARS,
-            trigger.rising_lookback_sessions,
+            trigger.rising_compare_sessions_ago,
             trigger.n_day_low_sessions,
             trigger.trailing_lookback_sessions,
             params.default_stop.support_lookback_sessions,
-            params.default_stop.atr_sessions,
+            params.default_stop.sma_atr_sessions,
             params.cooldown_sessions,
         )
         + 2

@@ -11,6 +11,7 @@ import pytest
 from app.services.brokers.upbit.orders import adjust_price_to_upbit_unit
 from app.services.mechanical_loss_cut.rules import (
     AddLevel,
+    Bar,
     CutDecision,
     ExitPlanInputError,
     LotKey,
@@ -99,6 +100,44 @@ def test_underwater_but_recovering_is_not_cut_even_below_the_stop():
 
     assert isinstance(result, Skip)
     assert result.reason == "rising"
+
+
+def test_rising_check_compares_one_close_not_a_run_of_rising_sessions():
+    fell_four_sessions_but_above_that_close = [
+        90000,
+        80000,
+        84500,
+        84000,
+        83500,
+        83000,
+        82500,
+    ]
+    result = _evaluate(bars=bars_from_closes(fell_four_sessions_but_above_that_close))
+    assert isinstance(result, Skip)
+    assert result.reason == "rising"
+    assert result.details["compared_close"] == "80000"
+
+    rose_four_sessions_but_not_above_it = [
+        90000,
+        84000,
+        80000,
+        81000,
+        82000,
+        83000,
+        84000,
+    ]
+    result = _evaluate(bars=bars_from_closes(rose_four_sessions_but_not_above_it))
+    assert isinstance(result, CutDecision)
+
+
+def test_family_keys_do_nothing_under_the_plain_stop_family():
+    unused = _with_trigger(
+        n_day_low_sessions=2,
+        trailing_drop_pct=99,
+        trailing_lookback_sessions=2,
+    )
+
+    assert _evaluate(params=unused) == _evaluate()
 
 
 def test_rising_check_that_cannot_be_made_does_not_pass():
@@ -310,6 +349,31 @@ def test_cooldown_holds_a_new_break_soon_after_the_last_decision():
     assert result.details["sessions_since_last"] == "3"
 
 
+def test_cooldown_ending_does_not_retry_the_same_run():
+    closes = [90000, 86000, 84000, 84000, 84000, 84000, 84000, 84000, 84000]
+
+    result = _evaluate(
+        bars=bars_from_closes(closes),
+        prior_decision=_prior(SESSION - timedelta(days=6)),
+    )
+
+    assert isinstance(result, Skip)
+    assert result.reason == "already_cut_this_run"
+
+
+def test_no_cooldown_lets_the_next_break_through_at_once():
+    closes = [86000, 86000, 85000, 84000, 90000, 87000, 84000]
+    without_cooldown = params().model_copy(update={"cooldown_sessions": 0})
+
+    result = _evaluate(
+        bars=bars_from_closes(closes),
+        params=without_cooldown,
+        prior_decision=_prior(SESSION - timedelta(days=3)),
+    )
+
+    assert isinstance(result, CutDecision)
+
+
 def test_a_new_plan_version_is_a_new_trigger_after_the_cooldown():
     closes = _FALLING
 
@@ -466,6 +530,47 @@ def test_add_updates_average_and_adds_used_and_keeps_the_stop_by_default():
     assert draft.stop_price == Decimal("85000")
 
 
+def test_keeping_the_stop_after_an_add_still_raises_money_at_risk():
+    # Before the add: 1 share at 100 with a stop at 85 risks 15.
+    draft = add_plan(
+        previous=plan(stop="85"),
+        params=params(),
+        held_quantity=Decimal("1"),
+        held_average_cost=Decimal("100"),
+        price=Decimal("90"),
+        quantity=Decimal("1"),
+        stated=None,
+    )
+
+    assert draft.stop_price == Decimal("85")
+    assert draft.quantity == Decimal("2")
+    assert (draft.average_cost - draft.stop_price) * draft.quantity == Decimal("20")
+
+
+@pytest.mark.parametrize("basis", ["support", "volatility"])
+def test_recomputing_after_an_add_uses_only_the_floor(basis):
+    base = params()
+    tuned = base.model_copy(
+        update={
+            "stop_after_add": "recompute_from_average",
+            "default_stop": base.default_stop.model_copy(update={"basis": basis}),
+        }
+    )
+
+    draft = add_plan(
+        previous=plan(),
+        params=tuned,
+        held_quantity=Decimal("10"),
+        held_average_cost=Decimal("100000"),
+        price=Decimal("90000"),
+        quantity=Decimal("10"),
+        stated=None,
+    )
+
+    assert draft.stop_basis == "pct_floor"
+    assert draft.stop_price == Decimal("80750")
+
+
 def test_add_can_recompute_the_stop_from_the_new_average_when_policy_says_so():
     tuned = params().model_copy(update={"stop_after_add": "recompute_from_average"})
 
@@ -573,6 +678,50 @@ def test_support_stop_uses_the_low_and_cannot_be_wider_than_the_floor():
     stop, basis, _ = default_stop(base, reference_price=Decimal("100000"), bars=far_low)
     assert basis == "pct_floor"
     assert stop == Decimal("85000")
+
+
+def test_pct_floor_basis_ignores_the_support_and_atr_keys():
+    base = params().default_stop
+    assert base.basis == "pct_floor"
+    bars = bars_from_closes([96000] * 20)
+    other_values = base.model_copy(
+        update={
+            "support_lookback_sessions": 5,
+            "support_buffer_pct": 0,
+            "sma_atr_sessions": 2,
+            "sma_atr_multiple": 1,
+        }
+    )
+
+    assert default_stop(
+        other_values, reference_price=Decimal("100000"), bars=bars
+    ) == default_stop(base, reference_price=Decimal("100000"), bars=bars)
+
+
+def test_volatility_stop_is_a_simple_mean_of_true_range_not_wilder():
+    base = params().default_stop.model_copy(
+        update={"basis": "volatility", "sma_atr_sessions": 3, "sma_atr_multiple": 2}
+    )
+    # Wilder would carry the 9000 range forward and put the stop near 92444.
+    ranges = [1000, 9000, 1000, 1000, 4000]
+    bars = [
+        Bar(
+            session=SESSION - timedelta(days=len(ranges) - 1 - offset),
+            high=Decimal(99000 + width // 2),
+            low=Decimal(99000 - width // 2),
+            close=Decimal(99000),
+            volume=Decimal(1000),
+            open=Decimal(99000),
+        )
+        for offset, width in enumerate(ranges)
+    ]
+
+    stop, basis, reason = default_stop(
+        base, reference_price=Decimal("100000"), bars=bars
+    )
+
+    assert (stop, basis) == (Decimal("96000"), "volatility")
+    assert reason == "2 x 3-session SMA ATR"
 
 
 def test_volatility_stop_falls_back_to_the_floor_without_enough_bars():

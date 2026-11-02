@@ -127,6 +127,32 @@ async def test_buy_without_a_stop_records_the_policy_default(writes_on):
 
 
 @pytest.mark.asyncio
+async def test_entry_reads_enough_bars_for_a_long_atr_window(writes_on, monkeypatch):
+    policy = load_trading_policy().model_copy(deep=True)
+    policy.mechanical_loss_cut.markets[
+        "kr"
+    ].default_stop = policy.mechanical_loss_cut.markets["kr"].default_stop.model_copy(
+        update={
+            "basis": "volatility",
+            "support_lookback_sessions": 5,
+            "sma_atr_sessions": 30,
+        }
+    )
+    monkeypatch.setattr(plans_module, "load_trading_policy", lambda: policy)
+    counts = []
+
+    async def load_bars(_session, *, market, symbols, count, now):
+        counts.append(count)
+        return {}
+
+    monkeypatch.setattr(plans_module, "load_bars", load_bars)
+
+    assert await _buy() == "entry"
+
+    assert counts == [31]
+
+
+@pytest.mark.asyncio
 async def test_add_updates_the_plan_with_a_new_version(writes_on, monkeypatch):
     _Store.latest = plan()
 

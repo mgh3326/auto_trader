@@ -381,7 +381,7 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - **런북**: `docs/runbooks/mechanical-loss-cut.md`. 편차 기록: `docs/contracts/policy-freeze-deviation-20261102-mechanical-loss-cut.md`
 
 **계약**:
-- 🔴 **트리거는 가격이다**: 현재성 있는 완결 일봉 종가가 평단·lot 의 기록된 손절가 아래이고, `unrealized_floor_pct` 이하이고, `rising_lookback_sessions` 전 종가보다 높지 않으며, `trigger.family` 조건을 만족해야 한다. 평단 아래이거나 손절가 위인 lot, 손절가 아래여도 상승 중인 lot 은 팔지 않는다. 가격 없음·stale·정지 의심은 절대 발동하지 않는다
+- 🔴 **트리거는 가격이다**: 현재성 있는 완결 일봉 종가가 평단·lot 의 기록된 손절가 아래이고, `unrealized_floor_pct` 이하이고, `rising_compare_sessions_ago` 세션 전 종가 하나보다 높지 않으며(연속 상승 횟수가 아니라 단일 비교다), `trigger.family` 조건을 만족해야 한다. 평단 아래이거나 손절가 위인 lot, 손절가 아래여도 상승 중인 lot 은 팔지 않는다. 가격 없음·stale·정지 의심은 절대 발동하지 않는다
 - 🔴 **shadow 는 브로커에 닿지 않는다**: `job`·`store`·`positions`·`rules`·`gate`·`plans` 는 브로커·주문 모듈을 import 하지 않는다(`test_shadow_modules_import_no_broker_or_order_path`). `live` 는 스위치 분기 안에서만 로드한다
 - 🔴 **`loss_cut_intent` 거부를 푸는 것은 결정 행뿐이다**: 이 제안에 묶인 `mode='live'` 행 + 스위치 AND 시장 AND 계정 + `thresholds_confirmed` + `expanded` + 정규장. 제안의 strategy 라벨·`source_asof` 는 입력이 아니다. 거부는 사람 카드로 간다. 🔴 per-order·daily 캡을 올리지 말고, 이 경로의 캡은 `max(limit, current) x quantity` 로 잰다. 손실매도 가드와 다른 모든 비기계식 매도는 불변
 - 🔴 **trigger 당 1회**: `trigger_key` = 계획 버전 + 손절가 + 구간 번호. 같은 구간의 재발동은 직전 결정 행으로 막고(종가가 손절가 이상으로 돌아와야 구간이 끝난다), 동시 실행은 UNIQUE 가 막는다. 키에 봉 창에서 읽은 날짜를 넣거나 이 UNIQUE 를 약화하지 마라

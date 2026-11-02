@@ -135,7 +135,11 @@ async def record_buy_exit_plan(
                         session,
                         market=market,
                         symbols=[key.symbol],
-                        count=params.default_stop.support_lookback_sessions + 1,
+                        count=max(
+                            params.default_stop.support_lookback_sessions,
+                            params.default_stop.sma_atr_sessions,
+                        )
+                        + 1,
                         now=now,
                     )
                     bars = next(iter(loaded.values()), ([], False))[0]

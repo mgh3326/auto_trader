@@ -93,6 +93,11 @@ sale on its own while the price recovers.
 
 - A marketable sell can fill before the veto card is seen. Exposure is bounded per
   order and per day by the existing caps, which are per-account per-market.
+- `stop_after_add: keep` holds the stop price, but money at risk still grows with
+  each add. The stop distance `floor_pct` is not a limit on the realized loss: a gap
+  or an unfilled limit can lose more.
+- An unfilled cut is not retried until a close at or above the stop or a new plan
+  version, so a lot can stay below its stop with no further sell.
 - The trigger reads completed daily closes. A fast intraday fall is not cut until
   the session closes and the job next runs, and that job has no schedule yet.
 - The shadow position comes from `review.execution_ledger`, which cannot see a
