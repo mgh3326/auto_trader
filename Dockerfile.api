@@ -74,6 +74,10 @@ COPY research_contracts/ ./research_contracts/
 # research.nautilus_scalping.rob974_features through the H5 modules. Ship that one
 # package, never the rest of research/ (a namespace package: no __init__.py chain).
 COPY research/nautilus_scalping/ ./research/nautilus_scalping/
+# The explicit ROB-1474 paper consumer builds frozen lists from mounted local
+# bars. Include its pure research dependency closure, never cached datasets.
+COPY research/stock_selection/__init__.py research/stock_selection/forward.py research/stock_selection/dataset.py research/stock_selection/io.py research/stock_selection/models.py ./research/stock_selection/
+COPY research/data_plane/__init__.py research/data_plane/calendars.py research/data_plane/contract.py ./research/data_plane/
 COPY alembic/ ./alembic/
 COPY alembic.ini pyproject.toml README.md ./
 # NCP runs the Upbit/KIS websocket monitors from this image (at-upbit-ws /

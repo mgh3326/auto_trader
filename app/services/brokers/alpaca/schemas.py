@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 
 class AccountSnapshot(BaseModel):
@@ -11,6 +11,9 @@ class AccountSnapshot(BaseModel):
     cash: Decimal
     portfolio_value: Decimal
     status: str
+    trading_blocked: bool = False
+    account_blocked: bool = False
+    shorting_enabled: bool = False
 
 
 class CashBalance(BaseModel):
@@ -39,6 +42,9 @@ class Asset(BaseModel):
     asset_class: str = Field(alias="class", default="us_equity")
     min_order_size: Decimal | None = None
     min_trade_increment: Decimal | None = None
+    shortable: bool = False
+    easy_to_borrow: bool = False
+    fractionable: bool = False
 
     model_config = {"populate_by_name": True}
 
@@ -71,6 +77,11 @@ class Order(BaseModel):
     filled_avg_price: Decimal | None = None
     submitted_at: datetime | None = None
     filled_at: datetime | None = None
+
+
+class MarketClock(BaseModel):
+    timestamp: datetime
+    is_open: StrictBool
 
 
 class Fill(BaseModel):
