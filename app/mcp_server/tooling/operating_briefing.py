@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+
+import sentry_sdk
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
@@ -36,6 +42,27 @@ from app.services.trading_policy_service import policy_version_stamp
 
 _CONSTRAINT_CONTEXT_LOOKBACK_DAYS = 3
 _CONSTRAINT_CONTEXT_LIMIT = 100
+
+#: Sentry span op for one briefing phase. The traces view groups on the ``op``
+#: prefix, so every phase of ``get_operating_briefing`` lands in one bucket and
+#: the ``name`` says which phase was slow (ROB-1487).
+_PHASE_SPAN_OP = "operating_briefing.phase"
+
+
+@contextlib.contextmanager
+def _phase(name: str) -> Iterator[Any]:
+    """Child span for one briefing phase (ROB-1487).
+
+    ``get_operating_briefing`` was p95 45 s with no attribution inside the
+    transaction. Spans are cheap and are the only way the next trace can say
+    which phase burned the time. Never raises: span creation is best-effort
+    observability and must not be able to break the briefing.
+    """
+    with sentry_sdk.start_span(
+        op=_PHASE_SPAN_OP, name=f"operating_briefing.{name}"
+    ) as span:
+        span.set_data("phase", name)
+        yield span
 
 
 def _normalize_watch_symbol(symbol: str | None, market: str | None) -> str | None:
@@ -198,8 +225,12 @@ async def _latest_report_summary(
     )
     if report is None:
         return None
-    bundle = await service.get_bundle(report.report_uuid)
-    items = bundle["items"] if bundle is not None else []
+    # ROB-1487: the summary consumes items only, but this used to call
+    # ``get_bundle`` — ten sequential queries per briefing (report, items,
+    # decisions, alerts, events, citations, linked orders, forecasts,
+    # retrospectives). The other nine were thrown away. Same item list, one
+    # query.
+    items = await service.list_items_for_report(report.id)
     by_status: dict[str, int] = {}
     top_items: list[dict[str, Any]] = []
     for item in items:
@@ -344,6 +375,214 @@ def _session_context_staleness(session_context: dict[str, Any]) -> dict[str, Any
     return {"freshness_status": "db_read"}
 
 
+@dataclass(slots=True)
+class _BriefingDbSections:
+    """Everything the briefing reads on its primary DB session (ROB-1487)."""
+
+    pending: Any
+    latest_report: dict[str, Any] | None
+    latest_report_staleness: dict[str, Any]
+    session_context: dict[str, Any]
+    session_context_staleness: dict[str, Any]
+    analysis_artifacts: dict[str, Any]
+    analysis_artifacts_staleness: dict[str, Any]
+    negative_class_recording: dict[str, Any]
+    trading_scoreboards: dict[str, Any]
+
+
+async def _collect_db_sections(
+    *,
+    market: str,
+    account_scope: str,
+    session_context_limit: int,
+    cohort: str,
+    include_counterfactual_delta: bool,
+    as_of: Any,
+) -> _BriefingDbSections:
+    """Read the primary-session briefing sections in their historical order.
+
+    Sections stay sequential here because they share one ``AsyncSession``
+    (concurrent use of a single session is not allowed). What changed in
+    ROB-1487 is that this whole block now runs concurrently with the two
+    session-owning sections below via ``asyncio.gather``.
+    """
+    async with AsyncSessionLocal() as db:
+        with _phase("pending_orders"):
+            pending = await collect_pending_orders_snapshot(
+                db,
+                market=market,
+                account_scope=account_scope,
+            )
+        with _phase("latest_report"):
+            try:
+                latest_report = await _latest_report_summary(
+                    db,
+                    market=market,
+                    account_scope=account_scope,
+                )
+                latest_report_staleness = {
+                    "freshness_status": "db_read" if latest_report else "not_found",
+                }
+            except Exception as exc:  # noqa: BLE001
+                reason = _section_unavailable_reason("latest_report", exc)
+                latest_report = None
+                latest_report_staleness = {
+                    "freshness_status": "unavailable",
+                    "unavailable_reason": reason,
+                }
+
+        with _phase("session_context"):
+            try:
+                session_context = await _recent_session_context(
+                    db,
+                    market=market,
+                    account_scope=account_scope,
+                    limit=session_context_limit,
+                )
+                session_context_staleness = _session_context_staleness(session_context)
+            except Exception as exc:  # noqa: BLE001
+                reason = _section_unavailable_reason("session_context", exc)
+                session_context = {
+                    "count": 0,
+                    "entries": [],
+                    "unavailable_reason": reason,
+                    "constraints": _unavailable_constraints(reason),
+                }
+                session_context_staleness = {
+                    "freshness_status": "unavailable",
+                    "unavailable_reason": reason,
+                }
+
+        with _phase("analysis_artifacts"):
+            try:
+                analysis_artifacts = await _recent_analysis_artifacts(
+                    db,
+                    market=market,
+                    limit=10,
+                )
+                analysis_artifacts_staleness = {
+                    "freshness_status": "db_read",
+                }
+            except Exception as exc:  # noqa: BLE001
+                reason = _section_unavailable_reason("analysis_artifacts", exc)
+                analysis_artifacts = {
+                    "count": 0,
+                    "artifacts": [],
+                    "unavailable_reason": reason,
+                }
+                analysis_artifacts_staleness = {
+                    "freshness_status": "unavailable",
+                    "unavailable_reason": reason,
+                }
+
+        # ROB-1283 — negative-class recording health. Fail-open: the briefing is
+        # the run-start surface and must still return if this probe errors, but
+        # a failure is reported as such rather than as a clean "ok".
+        with _phase("negative_class_recording"):
+            try:
+                negative_class_recording = (
+                    await load_negative_class_health(db, market=market, now=as_of)
+                ).to_dict()
+            except Exception as exc:  # noqa: BLE001
+                negative_class_recording = {
+                    "status": "unavailable",
+                    "market": market,
+                    "unavailable_reason": _section_unavailable_reason(
+                        "negative_class_recording", exc
+                    ),
+                }
+
+        with _phase("trading_scoreboards"):
+            try:
+                from app.services.trade_journal.aggregates import (
+                    build_counterfactual_delta_scoreboard,
+                    build_trading_scoreboard,
+                )
+
+                if include_counterfactual_delta:
+                    trading_scoreboards = await build_counterfactual_delta_scoreboard(
+                        db,
+                        market=market,
+                    )
+                else:
+                    trading_scoreboards = await build_trading_scoreboard(
+                        db,
+                        market=market,
+                        cohort=cohort,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                trading_scoreboards = {"error": str(exc)}
+
+    return _BriefingDbSections(
+        pending=pending,
+        latest_report=latest_report,
+        latest_report_staleness=latest_report_staleness,
+        session_context=session_context,
+        session_context_staleness=session_context_staleness,
+        analysis_artifacts=analysis_artifacts,
+        analysis_artifacts_staleness=analysis_artifacts_staleness,
+        negative_class_recording=negative_class_recording,
+        trading_scoreboards=trading_scoreboards,
+    )
+
+
+async def _active_watches_section(
+    market: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Active watches plus its staleness block (owns its own session)."""
+    with _phase("active_watches"):
+        try:
+            active_watches = await list_active_watches_impl(market=market)
+            active_watches_staleness = {
+                "as_of": active_watches.get("as_of"),
+                "freshness_status": "db_read",
+            }
+        except Exception as exc:  # noqa: BLE001
+            reason = _section_unavailable_reason("active_watches", exc)
+            active_watches = {
+                "count": 0,
+                "active_watches": [],
+                "unavailable_reason": reason,
+            }
+            active_watches_staleness = {
+                "as_of": None,
+                "freshness_status": "unavailable",
+                "unavailable_reason": reason,
+            }
+    return active_watches, active_watches_staleness
+
+
+async def _account_costs_section() -> tuple[Any, Exception | None]:
+    """Account-cost setting plus the error, if any (owns its own session).
+
+    The caller keeps the historical error surfacing: the failure is appended
+    to ``holdings["errors"]`` after the gathered sections return.
+    """
+    with _phase("account_costs"):
+        try:
+            return await get_account_costs_setting(), None
+        except Exception as exc:  # noqa: BLE001
+            return None, exc
+
+
+async def _gather_sections(*coros: Any) -> list[Any]:
+    """``asyncio.gather`` that cancels siblings when one section raises.
+
+    Plain ``gather`` leaves the other tasks running after the first exception
+    and their results/exceptions are never retrieved. The briefing used to run
+    these sections strictly sequentially, so an exception must not leave work
+    dangling behind the caller's back.
+    """
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
 async def get_operating_briefing_impl(
     market: str,
     account_scope: str | None = None,
@@ -358,9 +597,10 @@ async def get_operating_briefing_impl(
     # reuse the full holdings projection or fan out to sellable/current-price
     # endpoints; the shared Toss snapshot supplies only the balance metrics.
     try:
-        holdings = await _get_portfolio_summary_impl(
-            **_holdings_kwargs(market, effective_scope, False)
-        )
+        with _phase("holdings"):
+            holdings = await _get_portfolio_summary_impl(
+                **_holdings_kwargs(market, effective_scope, False)
+            )
     except PortfolioSnapshotUnavailableError as exc:
         # BLOCKER-2: a hung whole-snapshot owner past the hard wait bound
         # must degrade the briefing's holdings section rather than raise a
@@ -376,139 +616,48 @@ async def get_operating_briefing_impl(
                 }
             ],
         }
-    async with AsyncSessionLocal() as db:
-        pending = await collect_pending_orders_snapshot(
-            db,
+    # ROB-1487: the primary-session block, active watches and account costs are
+    # independent reads. They used to run back-to-back (three serial session
+    # acquisitions); now they run concurrently. Within the primary block the
+    # sections stay sequential because they share one AsyncSession.
+    (
+        db_sections,
+        (active_watches, active_watches_staleness),
+        (account_costs, account_costs_error),
+    ) = await _gather_sections(
+        _collect_db_sections(
             market=market,
             account_scope=effective_scope,
-        )
-        try:
-            latest_report = await _latest_report_summary(
-                db,
-                market=market,
-                account_scope=effective_scope,
-            )
-            latest_report_staleness = {
-                "freshness_status": "db_read" if latest_report else "not_found",
-            }
-        except Exception as exc:  # noqa: BLE001
-            reason = _section_unavailable_reason("latest_report", exc)
-            latest_report = None
-            latest_report_staleness = {
-                "freshness_status": "unavailable",
-                "unavailable_reason": reason,
-            }
-
-        try:
-            session_context = await _recent_session_context(
-                db,
-                market=market,
-                account_scope=effective_scope,
-                limit=session_context_limit,
-            )
-            session_context_staleness = _session_context_staleness(session_context)
-        except Exception as exc:  # noqa: BLE001
-            reason = _section_unavailable_reason("session_context", exc)
-            session_context = {
-                "count": 0,
-                "entries": [],
-                "unavailable_reason": reason,
-                "constraints": _unavailable_constraints(reason),
-            }
-            session_context_staleness = {
-                "freshness_status": "unavailable",
-                "unavailable_reason": reason,
-            }
-
-        try:
-            analysis_artifacts = await _recent_analysis_artifacts(
-                db,
-                market=market,
-                limit=10,
-            )
-            analysis_artifacts_staleness = {
-                "freshness_status": "db_read",
-            }
-        except Exception as exc:  # noqa: BLE001
-            reason = _section_unavailable_reason("analysis_artifacts", exc)
-            analysis_artifacts = {
-                "count": 0,
-                "artifacts": [],
-                "unavailable_reason": reason,
-            }
-            analysis_artifacts_staleness = {
-                "freshness_status": "unavailable",
-                "unavailable_reason": reason,
-            }
-
-        # ROB-1283 — negative-class recording health. Fail-open: the briefing is
-        # the run-start surface and must still return if this probe errors, but
-        # a failure is reported as such rather than as a clean "ok".
-        try:
-            negative_class_recording = (
-                await load_negative_class_health(db, market=market, now=as_of)
-            ).to_dict()
-        except Exception as exc:  # noqa: BLE001
-            negative_class_recording = {
-                "status": "unavailable",
-                "market": market,
-                "unavailable_reason": _section_unavailable_reason(
-                    "negative_class_recording", exc
-                ),
-            }
-
-        try:
-            from app.services.trade_journal.aggregates import (
-                build_counterfactual_delta_scoreboard,
-                build_trading_scoreboard,
-            )
-
-            if include_counterfactual_delta:
-                trading_scoreboards = await build_counterfactual_delta_scoreboard(
-                    db,
-                    market=market,
-                )
-            else:
-                trading_scoreboards = await build_trading_scoreboard(
-                    db,
-                    market=market,
-                    cohort=cohort,
-                )
-        except Exception as exc:  # noqa: BLE001
-            trading_scoreboards = {"error": str(exc)}
-
-    try:
-        active_watches = await list_active_watches_impl(market=market)
-        active_watches_staleness = {
-            "as_of": active_watches.get("as_of"),
-            "freshness_status": "db_read",
-        }
-    except Exception as exc:  # noqa: BLE001
-        reason = _section_unavailable_reason("active_watches", exc)
-        active_watches = {
-            "count": 0,
-            "active_watches": [],
-            "unavailable_reason": reason,
-        }
-        active_watches_staleness = {
-            "as_of": None,
-            "freshness_status": "unavailable",
-            "unavailable_reason": reason,
-        }
+            session_context_limit=session_context_limit,
+            cohort=cohort,
+            include_counterfactual_delta=include_counterfactual_delta,
+            as_of=as_of,
+        ),
+        _active_watches_section(market),
+        _account_costs_section(),
+    )
+    pending = db_sections.pending
+    latest_report = db_sections.latest_report
+    latest_report_staleness = db_sections.latest_report_staleness
+    session_context = db_sections.session_context
+    session_context_staleness = db_sections.session_context_staleness
+    analysis_artifacts = db_sections.analysis_artifacts
+    analysis_artifacts_staleness = db_sections.analysis_artifacts_staleness
+    negative_class_recording = db_sections.negative_class_recording
+    trading_scoreboards = db_sections.trading_scoreboards
 
     active_watches_unavailable_reason = active_watches.get("unavailable_reason")
-    try:
-        account_costs = await get_account_costs_setting()
-    except Exception as exc:  # noqa: BLE001
+    if account_costs_error is not None:
         account_costs = None
         holdings.setdefault("errors", []).append(
-            {"source": "account_costs", "error": str(exc)}
+            {"source": "account_costs", "error": str(account_costs_error)}
         )
 
-    try:
-        policy_version = policy_version_stamp()
-    except Exception as exc:  # noqa: BLE001 — fail-open, briefing must still return
-        policy_version = {"error": str(exc)}
+    with _phase("policy_version"):
+        try:
+            policy_version = policy_version_stamp()
+        except Exception as exc:  # noqa: BLE001 — fail-open, briefing must still return
+            policy_version = {"error": str(exc)}
 
     response = {
         "success": True,

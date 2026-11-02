@@ -945,13 +945,27 @@ async def _fetch_price_map_for_positions(
     )
 
     if equity_pairs:
-        results = await bounded_gather(
-            _EQUITY_PRICE_CONCURRENCY,
+        # ROB-1487: resolve the US exchanges for the whole fan-out up front. The
+        # KIS quote arm otherwise opened its own AsyncSessionLocal per symbol —
+        # at _EQUITY_PRICE_CONCURRENCY concurrent slots that overran
+        # DB_POOL_SIZE and made the pool dial fresh connections (Sentry connect
+        # spans) on every refresh.
+        from app.services.us_symbol_universe_service import us_exchange_prefetch
+
+        async with us_exchange_prefetch(
             [
-                lambda it=it, sym=sym: fetch_equity_price(it, sym)
-                for it, sym in equity_pairs
-            ],
-        )
+                sym
+                for instrument_type, sym in equity_pairs
+                if instrument_type == "equity_us"
+            ]
+        ):
+            results = await bounded_gather(
+                _EQUITY_PRICE_CONCURRENCY,
+                [
+                    lambda it=it, sym=sym: fetch_equity_price(it, sym)
+                    for it, sym in equity_pairs
+                ],
+            )
         for instrument_type, symbol, price, error, source, metadata in results:
             if price is not None:
                 key = (instrument_type, symbol)

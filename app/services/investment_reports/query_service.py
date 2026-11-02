@@ -144,6 +144,16 @@ class InvestmentReportQueryService:
             exclude_statuses=exclude_statuses,
         )
 
+    async def list_items_for_report(self, report_id: int) -> list[InvestmentReportItem]:
+        """Items of one report without the bundle's sibling reads (ROB-1487).
+
+        ``get_bundle`` costs ten queries (report, items, decisions, alerts,
+        events, citations, linked orders, forecasts, retrospectives). Callers
+        that only need the items — e.g. the operating briefing summary — must
+        use this instead.
+        """
+        return await self._repo.list_items_for_report(report_id)
+
     async def get_bundle(self, report_uuid: UUID) -> dict[str, Any] | None:
         """Return the report + nested items, decisions, alerts, recent events.
 
