@@ -150,6 +150,10 @@ a later independent signal. A previously committed episode with a path gap stays
 unverified; its unknown decisions are not guessed.
 Missing marks, limits and coverage are reported explicitly, with null numeric
 results rather than 0. Unfilled controls with complete data legitimately earn 0.
+`data_gaps` retains missing bars across the frozen universe. Only
+`blocking_data_gaps` prevents a commit: bars from a new signal's entry onward,
+or bars needed by an existing candidate position or its still-maturing control.
+An unused missing-universe member does not block another symbol's evidence.
 
 These reports are a function check and descriptive evidence, not a statistical
 promotion verdict. ROB-1473 is registered as a draft feasibility experiment;
@@ -160,6 +164,8 @@ confirmation requires an operator-sealed manifest and counted test-set looks.
 `deploy/dagu/paper-forward.yaml` is a **PROPOSAL**, unregistered. It proposes
 00:20 UTC (after crypto close) and 23:00 UTC (after US close in either DST
 regime), running both market steps; the extra market invocation is idempotent.
+The crypto step continues on failure so its unverified input cannot suppress the
+US invocation. Its nonzero exit remains visible in that step's result.
 Desk must provision fresh intent feeds, a durable directory and a reviewed checkout
 before registration. Required scheduler/worker variables are `AUTO_TRADER_DIR`,
 `PAPER_FORWARD_UNIVERSE`, `PAPER_FORWARD_DIR`, `PAPER_FORWARD_SIGNALS_CRYPTO`, and
