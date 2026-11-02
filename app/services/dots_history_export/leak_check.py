@@ -65,6 +65,44 @@ LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 LEAK_RULE_NAMES = tuple(sorted({name for name, _ in LEAK_PATTERNS}))
 
+#: Real mode keeps order numbers, UUIDs and long digit runs. What stays forbidden
+#: is what the operator's 2026-11-02 decision names: credentials and full account
+#: numbers.
+REAL_LEAK_RULE_NAMES = (
+    "account_number",
+    "bearer",
+    "credential_assignment",
+    "jwt",
+    "token_prefix",
+)
+REAL_LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (name, pattern) for name, pattern in LEAK_PATTERNS if name in REAL_LEAK_RULE_NAMES
+)
+
+#: A broker order id is not an account number, so the account pattern is only
+#: applied to copied labels and symbols. Credentials have no legitimate place in
+#: any cell.
+CREDENTIAL_RULE_NAMES = frozenset(
+    {"jwt", "token_prefix", "bearer", "credential_assignment"}
+)
+CREDENTIAL_LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (name, pattern) for name, pattern in LEAK_PATTERNS if name in CREDENTIAL_RULE_NAMES
+)
+
+#: A copied identifier: broker order id, correlation id or proposal id. Toss
+#: broker ids are base64url and may start with ``_`` or ``-``.
+RAW_REF_SHAPE = re.compile(r"[A-Za-z0-9._:/+\-]{1,128}")
+#: A canonical UUID. Proposal and Upbit order ids take this shape, and its digit
+#: groups can look like an account number, so it is exempt from that one rule.
+UUID_SHAPE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+#: A plain label or free-text reason, including Korean text and spaces, on one
+#: line. Strategy columns hold up to a few thousand characters.
+PLAIN_SHAPE = re.compile(r"[^\x00-\x1f\x7f]{1,4000}")
+#: An account identifier reduced to its last digits.
+MASKED_SHAPE = re.compile(r"\*{4}[0-9A-Za-z]{0,8}")
+
 
 class LeakCheckFailed(Exception):
     def __init__(self, violations: Iterable[Violation]) -> None:
@@ -85,6 +123,23 @@ class Violation:
 
 def _identifier_rule(value: str) -> str | None:
     for name, pattern in LEAK_PATTERNS:
+        if pattern.search(value):
+            return name
+    return None
+
+
+def _credential_rule(value: str) -> str | None:
+    for name, pattern in CREDENTIAL_LEAK_PATTERNS:
+        if pattern.search(value):
+            return name
+    return None
+
+
+def _real_identifier_rule(value: str) -> str | None:
+    is_uuid = UUID_SHAPE.fullmatch(value) is not None
+    for name, pattern in REAL_LEAK_PATTERNS:
+        if is_uuid and name == "account_number":
+            continue
         if pattern.search(value):
             return name
     return None
@@ -140,21 +195,47 @@ def _shape_rule(column: Column, value: str) -> str | None:
     elif kind is Kind.TAG:
         if TAG_SHAPE.fullmatch(value) is None:
             return "shape_tag"
+    elif kind is Kind.RAW_REF:
+        if RAW_REF_SHAPE.fullmatch(value) is None:
+            return "shape_raw_ref"
+    elif kind is Kind.PLAIN:
+        if PLAIN_SHAPE.fullmatch(value) is None:
+            return "shape_plain"
+    elif kind is Kind.MASKED:
+        if MASKED_SHAPE.fullmatch(value) is None:
+            return "shape_masked"
     return None
 
 
+#: A copied ref that carries free-form caller text, not a broker order id. The
+#: account-number rule applies to these; a broker order id may contain hyphens
+#: (Toss ids are base64url) and is exempt.
+ACCOUNT_CHECKED_RAW_REFS = frozenset({"correlation_ref", "report_item_ref"})
+
+
 def _forbidden_variants(values: Iterable[str]) -> frozenset[str]:
+    """Stored identifiers plus the shapes they take without separators.
+
+    A stored ``87654321-01`` is also refused as ``8765432101``: an unhyphenated
+    copy of a known account number is the same secret. Only values the tool read
+    or the operator listed reach this set, so a legitimate 10-digit order number
+    is not affected unless it is one of those values.
+    """
     variants: set[str] = set()
     for value in values:
         text = value.strip().casefold()
         variants.update(item for item in (text, text.lstrip("0")) if item)
+        digits = "".join(character for character in text if character.isdigit())
+        if digits and digits != text:
+            variants.add(digits)
     return frozenset(variants)
 
 
 class _CellScanner:
     """Memoized per distinct free-form value, since most tags repeat."""
 
-    def __init__(self, forbidden: Collection[str]) -> None:
+    def __init__(self, forbidden: Collection[str], *, real: bool = False) -> None:
+        self._real = real
         variants = _forbidden_variants(forbidden)
         self._substrings = frozenset(
             item for item in variants if len(item) >= MIN_FORBIDDEN_VALUE_CHARS
@@ -164,9 +245,27 @@ class _CellScanner:
         # with a long all-digit identifier (an account or order number written
         # without separators) is refused. Substrings would refuse real amounts.
         self._numeric = frozenset(item for item in self._substrings if item.isdigit())
-        self._cache: dict[tuple[Kind, str], str | None] = {}
+        self._cache: dict[tuple[Kind, str, str], str | None] = {}
 
-    def _pattern_rule(self, kind: Kind, value: str) -> str | None:
+    def _pattern_rule(self, column: Column, value: str) -> str | None:
+        kind = column.kind
+        if self._real:
+            if kind is Kind.RAW_REF and column.name not in ACCOUNT_CHECKED_RAW_REFS:
+                rule = _credential_rule(value)
+            else:
+                rule = _real_identifier_rule(value)
+            if rule is not None:
+                return rule
+            folded = value.casefold()
+
+            def real_applies(item: str) -> bool:
+                return kind is not Kind.SYMBOL or not item.isdigit()
+
+            if folded in self._whole_cells and real_applies(folded):
+                return "forbidden_value"
+            if any(item in folded and real_applies(item) for item in self._substrings):
+                return "forbidden_value"
+            return None
         if kind is Kind.TAG and HASHED_TAG_SHAPE.fullmatch(value):
             return None
         rule = _identifier_rule(value)
@@ -199,11 +298,17 @@ class _CellScanner:
             if whole in self._numeric or whole.lstrip("0") in self._numeric:
                 return "forbidden_value"
             return None
-        if column.kind not in (Kind.TAG, Kind.SYMBOL):
+        if column.kind not in (
+            Kind.TAG,
+            Kind.SYMBOL,
+            Kind.RAW_REF,
+            Kind.PLAIN,
+            Kind.MASKED,
+        ):
             return None
-        key = (column.kind, value)
+        key = (column.kind, column.name, value)
         if key not in self._cache:
-            self._cache[key] = self._pattern_rule(column.kind, value)
+            self._cache[key] = self._pattern_rule(column, value)
         return self._cache[key]
 
 
@@ -213,6 +318,7 @@ def scan_table(
     rows: Iterable[Mapping[str, str | None]],
     *,
     forbidden: Collection[str] = (),
+    real: bool = False,
 ) -> list[Violation]:
     violations: list[Violation] = []
     allowed = spec.column_names
@@ -224,7 +330,7 @@ def scan_table(
         if name not in found:
             violations.append(Violation(spec.name, name, 0, "column_missing"))
     by_name = {column.name: column for column in spec.columns}
-    scanner = _CellScanner(forbidden)
+    scanner = _CellScanner(forbidden, real=real)
     for index, row in enumerate(rows, start=1):
         for name, value in row.items():
             column = by_name.get(name)

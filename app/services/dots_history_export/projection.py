@@ -14,7 +14,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -27,7 +27,8 @@ from app.services.dots_history_export.spec import (
     BALANCE_UNAVAILABLE_REASON,
     DEFAULT_LOCAL_TIMEZONE,
     LOCAL_TIMEZONES,
-    TABLE_BY_NAME,
+    Mode,
+    tables_for,
 )
 from app.services.execution_ledger import supersede
 
@@ -49,6 +50,8 @@ RAW_IDENTIFIER_FIELDS = (
     "idempotency_key",
     "broker_account_id",
 )
+#: In real mode the order ids are output, so only a full account number is refused.
+REAL_IDENTIFIER_FIELDS = ("broker_account_id",)
 
 _INSTRUMENT_MARKETS = {
     "equity_kr": "kr",
@@ -197,6 +200,7 @@ class SourceRows:
     order_proposal_rungs: list[SourceRow] = field(default_factory=list)
     paper_daily_snapshots: list[SourceRow] = field(default_factory=list)
     paper_reservations: list[SourceRow] = field(default_factory=list)
+    crypto_daily_candles: list[SourceRow] = field(default_factory=list)
 
 
 @dataclass
@@ -204,6 +208,7 @@ class Projection:
     tables: dict[str, list[OutputRow]]
     forbidden: frozenset[str]
     tags_hashed: Counter[str]
+    mode: Mode = Mode.DEIDENTIFIED
 
 
 def _aware(when: datetime) -> datetime:
@@ -222,6 +227,48 @@ def _decimal(value: Any) -> str | None:
     if value is None:
         return None
     return format(Decimal(str(value)), "f")
+
+
+#: Parquet stores decimals as ``decimal128(38, 12)``. A candle close read from a
+#: bare ``Numeric`` column can carry more precision than that, so it is rounded.
+_DECIMAL_PLACES = Decimal("0.000000000001")
+
+
+def _decimal_scaled(value: Any) -> str | None:
+    if value is None:
+        return None
+    number = Decimal(str(value))
+    if not number.is_finite():
+        return None
+    return format(number.quantize(_DECIMAL_PLACES, rounding=ROUND_HALF_UP), "f")
+
+
+def _plain_text(value: str) -> str | None:
+    """Drop line breaks and control characters; keep the words as written.
+
+    Returns ``None`` when nothing printable is left, so an all-control label
+    becomes an empty cell instead of a ``shape_plain`` leak-check failure that
+    would abort the whole export.
+    """
+    cleaned = "".join(
+        character if character.isprintable() else " " for character in value
+    )
+    text = " ".join(cleaned.split())
+    return text or None
+
+
+def _masked_account(value: str) -> str:
+    """The last digits of an account identifier, never the whole number."""
+    compact = re.sub(r"[^0-9A-Za-z]", "", value)
+    return f"****{compact[-4:]}"
+
+
+def _pct(numerator: Decimal, denominator: Decimal) -> str | None:
+    # Finiteness first: comparing a NaN Decimal raises InvalidOperation, so a
+    # broken candle close must be rejected before it can reach the comparison.
+    if not numerator.is_finite() or not denominator.is_finite() or denominator <= 0:
+        return None
+    return format(((numerator / denominator) - Decimal(1)) * Decimal(100), ".4f")
 
 
 def _instrument(value: Any) -> str:
@@ -347,22 +394,36 @@ def _kis_mock_outcome(row: SourceRow) -> str:
 
 
 class _Projector:
-    def __init__(self, hasher: RefHasher, window: Window) -> None:
+    def __init__(
+        self, hasher: RefHasher | None, window: Window, *, real: bool = False
+    ) -> None:
         self.hasher = hasher
         self.window = window
+        self.real = real
         self.tags_hashed: Counter[str] = Counter()
         self.table = ""
+        self.specs = {
+            spec.name: spec
+            for spec in tables_for(Mode.REAL if real else Mode.DEIDENTIFIED)
+        }
+
+    def _hash(self, prefix: str, *parts: str) -> str:
+        if self.hasher is None:  # pragma: no cover - guarded by ``real``
+            raise RuntimeError("the de-identified mode needs a salt")
+        return self.hasher.ref(prefix, *parts)
 
     def tag(self, value: Any) -> str | None:
         text = _text(value)
         if text is None:
             return None
+        if self.real:
+            return _plain_text(text)
         if is_safe_label(text):
             return text
         # Prose, a name or anything identifier-shaped has no place in a label
         # column. A stable hash keeps the grouping and carries none of the text.
         self.tags_hashed[self.table] += 1
-        return self.hasher.ref("oth", text)
+        return self._hash("oth", text)
 
     def reason_code(self, value: Any) -> str | None:
         """A void reason's code; the text after a colon can be anything.
@@ -373,6 +434,8 @@ class _Projector:
         text = _text(value)
         if text is None:
             return None
+        if self.real:
+            return _plain_text(text)
         if text == EXPIRED_INFERENCE_MARKER:
             return text
         head, separator, _detail = text.partition(":")
@@ -383,19 +446,45 @@ class _Projector:
         if separator:
             # No recognizable code, so a safe-looking whole value is not safe either.
             self.tags_hashed[self.table] += 1
-            return self.hasher.ref("oth", text)
+            return self._hash("oth", text)
         return self.tag(text)
 
     def order_ref(self, alias: str, order_id: Any) -> str | None:
+        if self.real:
+            # KIS reuses numeric order numbers with leading zeros, so those are
+            # normalized to join their fills. A UUID or base64 broker id is not a
+            # number and must be copied exactly, or the join and the id both break.
+            raw = str(order_id or "").strip()
+            if not raw:
+                return None
+            return (raw.lstrip("0") or "0") if raw.isdigit() else raw
         normalized = supersede.normalize_order_id(order_id)
-        return self.hasher.ref("ord", alias, normalized) if normalized else None
+        if not normalized:
+            return None
+        return self._hash("ord", alias, normalized)
 
     def key_ref(self, prefix: str, value: Any) -> str | None:
         text = _text(value)
-        return self.hasher.ref(prefix, text.lower()) if text else None
+        if text is None:
+            return None
+        return _plain_text(text) if self.real else self._hash(prefix, text.lower())
 
-    def row_ref(self, row_id: Any) -> str:
-        return self.hasher.ref("row", self.table, str(row_id))
+    def account_ref(self, alias: str, value: Any) -> str | None:
+        text = _text(value)
+        if text is None:
+            return None
+        if self.real:
+            return _masked_account(text)
+        return self._hash("acc", alias, text)
+
+    def row_ref(self, row_id: Any, *extra: Any) -> str:
+        if self.real:
+            suffix = "".join(f":{item}" for item in extra)
+            return f"{self.table}:{row_id}{suffix}"
+        return self._hash("row", self.table, str(row_id), *(str(x) for x in extra))
+
+    def rung_ref(self, row_id: Any) -> str:
+        return f"rung:{row_id}" if self.real else self._hash("rng", str(row_id))
 
     def times(self, tz_name: str, **instants: datetime | None) -> OutputRow:
         zone = ZoneInfo(tz_name)
@@ -426,10 +515,11 @@ class _Projector:
         cancelled_at: datetime | None,
         outcome: str,
         trading_day: str | None = None,
+        first_fill_at: datetime | None = None,
         **cells: Any,
     ) -> OutputRow:
         tz_name = _local_tz(market)
-        output: OutputRow = dict.fromkeys(TABLE_BY_NAME[self.table].column_names)
+        output: OutputRow = dict.fromkeys(self.specs[self.table].column_names)
         correlation = row.get("correlation_id") or row.get("lifecycle_correlation_id")
         output.update(
             row_ref=self.row_ref(row["id"]),
@@ -457,6 +547,8 @@ class _Projector:
                 cancelled_at=cancelled_at,
             )
         )
+        if self.real:
+            output.update(self.times(tz_name, first_fill_at=first_fill_at))
         for name in ("venue", "order_type", "time_in_force", "currency"):
             output[name] = self.tag(cells.pop(name, None))
         for name in ("operation_kind", "record_kind"):
@@ -475,12 +567,14 @@ class _Projector:
 
 @dataclass(frozen=True)
 class _FillTimes:
-    """Last in-effect fill per order, so an order row never claims a fill alone."""
+    """First and last in-effect fill per order, so an order row never claims one alone."""
 
+    first: dict[tuple[Any, ...], datetime]
     latest: dict[tuple[Any, ...], datetime]
 
     @classmethod
     def build(cls, fills: Iterable[SourceRow]) -> _FillTimes:
+        first: dict[tuple[Any, ...], datetime] = {}
         latest: dict[tuple[Any, ...], datetime] = {}
         for fill in fills:
             alias = _FILL_ALIASES.get((fill["broker"], fill["account_mode"]))
@@ -493,9 +587,11 @@ class _FillTimes:
                 fill["broker_order_id"],
                 filled_at,
             )
+            if key not in first or filled_at < first[key]:
+                first[key] = filled_at
             if key not in latest or filled_at > latest[key]:
                 latest[key] = filled_at
-        return cls(latest)
+        return cls(first, latest)
 
     def lookup(
         self, alias: str, instrument: str, order_id: Any, when: datetime
@@ -504,12 +600,20 @@ class _FillTimes:
             return None
         return self.latest.get(_fill_key(alias, instrument, order_id, when))
 
+    def lookup_first(
+        self, alias: str, instrument: str, order_id: Any, when: datetime
+    ) -> datetime | None:
+        if not order_id:
+            return None
+        return self.first.get(_fill_key(alias, instrument, order_id, when))
 
-def _forbidden_values(sources: SourceRows) -> frozenset[str]:
+
+def _forbidden_values(sources: SourceRows, *, real: bool = False) -> frozenset[str]:
+    fields = REAL_IDENTIFIER_FIELDS if real else RAW_IDENTIFIER_FIELDS
     found: set[str] = set()
     for rows in vars(sources).values():
         for row in rows:
-            for name in RAW_IDENTIFIER_FIELDS:
+            for name in fields:
                 value = str(row.get(name) or "").strip()
                 if value:
                     found.add(value)
@@ -545,6 +649,9 @@ def _project_kis_live(
                     else None
                 ),
                 filled_at=fills.lookup("kis_live", instrument, order_no, created),
+                first_fill_at=fills.lookup_first(
+                    "kis_live", instrument, order_no, created
+                ),
                 expired_at=_recorded_at(row, row["status"], "expired"),
                 cancelled_at=_recorded_at(row, row["status"], "cancelled"),
                 outcome=outcome,
@@ -588,6 +695,7 @@ def _project_live(
                     else None
                 ),
                 filled_at=fills.lookup(alias, instrument, order_no, created),
+                first_fill_at=fills.lookup_first(alias, instrument, order_no, created),
                 expired_at=_recorded_at(row, row["status"], "expired"),
                 cancelled_at=_recorded_at(row, row["status"], "cancelled"),
                 outcome=outcome,
@@ -631,6 +739,9 @@ def _project_toss(
                     else None
                 ),
                 filled_at=fills.lookup("toss_live", instrument, order_id, created),
+                first_fill_at=fills.lookup_first(
+                    "toss_live", instrument, order_id, created
+                ),
                 expired_at=row.get("expired_at"),
                 cancelled_at=_recorded_at(row, row["status"], "cancelled"),
                 outcome=outcome,
@@ -678,6 +789,9 @@ def _project_kis_mock(
                 if row.get("status") == "accepted"
                 else None,
                 filled_at=fills.lookup("kis_mock", instrument, order_no, created),
+                first_fill_at=fills.lookup_first(
+                    "kis_mock", instrument, order_no, created
+                ),
                 expired_at=_recorded_at(row, row["lifecycle_state"], "expired"),
                 cancelled_at=_recorded_at(row, row["lifecycle_state"], "cancelled"),
                 outcome=outcome,
@@ -734,7 +848,9 @@ def _project_alpaca(p: _Projector, rows: Iterable[SourceRow]) -> list[OutputRow]
 
 
 def _paper_order_ref(p: _Projector, kind: str, row_id: Any) -> str:
-    return p.hasher.ref("ord", "db_paper", f"{kind}:{row_id}")
+    if p.real:
+        return f"db_paper:{kind}:{row_id}"
+    return p._hash("ord", "db_paper", f"{kind}:{row_id}")
 
 
 def _project_paper_pending(p: _Projector, rows: Iterable[SourceRow]) -> list[OutputRow]:
@@ -763,7 +879,7 @@ def _project_paper_pending(p: _Projector, rows: Iterable[SourceRow]) -> list[Out
             limit_price=row.get("limit_price"),
             filled_qty=row.get("quantity") if status == "filled" else None,
             fill_price=row.get("fill_price"),
-            account_ref=p.hasher.ref("acc", "db_paper", str(row["account_id"])),
+            account_ref=p.account_ref("db_paper", row["account_id"]),
         )
         cell["order_ref"] = _paper_order_ref(p, "pending", row["id"])
         output.append(cell)
@@ -797,7 +913,7 @@ def _project_paper_trades(p: _Projector, rows: Iterable[SourceRow]) -> list[Outp
             currency=row.get("currency"),
             filled_qty=row.get("quantity"),
             fill_price=row.get("price"),
-            account_ref=p.hasher.ref("acc", "db_paper", str(row["account_id"])),
+            account_ref=p.account_ref("db_paper", row["account_id"]),
         )
         cell["status"] = "executed"
         cell["order_ref"] = (
@@ -932,6 +1048,182 @@ def fill_sequences(rows: list[SourceRow]) -> dict[int, OutputRow]:
     return cells
 
 
+def _unlinked_lot_cell() -> OutputRow:
+    """The lot columns of a row that is not part of the walk.
+
+    That covers a superseded duplicate and a sell larger than the lots the export
+    can see. Both are reported, never guessed into a lot.
+    """
+    return {
+        "lot_ref": None,
+        "lot_link_kind": "unlinked",
+        "lot_opened_at_utc": None,
+        "lot_cost_basis": None,
+        "lot_basis_kind": "unknown",
+        "linked_fill_ref": None,
+    }
+
+
+@dataclass
+class _OpenLot:
+    """An open lot in the FIFO walk that links add-buys and partial sells."""
+
+    lot_ref: str
+    fill_ref: str
+    qty: Decimal
+    cost_total: Decimal
+    opened_at: datetime
+    basis_kind: str
+
+    @property
+    def unit_cost(self) -> Decimal:
+        return self.cost_total / self.qty if self.qty else Decimal("0")
+
+
+def fill_lot_links(
+    rows: list[SourceRow], sequences: Mapping[int, OutputRow]
+) -> dict[int, OutputRow]:
+    """Lot linkage per fill row: opening, add-buy, partial or full sell.
+
+    The caller passes **non-superseded** rows only, so the walk sees exactly the
+    fills a reader counts. Two quantity rules make that set add up:
+
+    * A ``websocket`` row is provisional. Whenever an authoritative row
+      (``reconciler`` / ``manual_import``) shares its order identity, the
+      websocket row is ``superseded_duplicate = true`` and never reaches here —
+      the reconciler's order total already contains that execution (ROB-1379).
+    * A cumulative writer (KIS reconciler rows, Upbit aggregate ``fill_seq = 0``)
+      contributes ``incremental_qty``; the export derives it as the rise over the
+      same source's earlier high-water mark, so a re-reported running total is not
+      counted twice. Rows whose basis is ``unknown`` (a non-seed
+      ``manual_import``) carry no increment and are skipped.
+
+    An opening seed (``manual_import`` with a ``SEED-`` order id) is the whole
+    position at the cutover, so it starts a fresh lot with
+    ``lot_basis_kind = period_start_seed``. A buy with an open lot on the same
+    account, market and symbol adds to it; a sell reduces it first-in-first-out.
+    A sell with no open lot, or larger than every open lot it can see, is
+    ``unlinked`` rather than guessed.
+    """
+    cells: dict[int, OutputRow] = {}
+    lots: dict[tuple[str, str, str], list[_OpenLot]] = {}
+    covered = supersede.covered_identities(SimpleNamespace(**row) for row in rows)
+    for row in sorted(rows, key=_fill_order):
+        row_id = int(row["id"])
+        alias = _FILL_ALIASES.get(
+            (row["broker"], row["account_mode"]),
+            f"{row['broker']}_{row['account_mode']}",
+        )
+        instrument = _instrument(row["instrument_type"])
+        key = (alias, _market_from_instrument(instrument), str(row["symbol"]))
+        fill_ref = f"execution_ledger:{row_id}"
+        cell: OutputRow = _unlinked_lot_cell()
+        cells[row_id] = cell
+        if supersede.is_superseded(SimpleNamespace(**row), covered):
+            continue
+        sequence = sequences[row_id]
+        filled_at = _aware(row["filled_at"])
+        price = Decimal(str(row["filled_price"]))
+
+        if sequence["is_seed"] == "true":
+            qty = Decimal(str(row["filled_qty"]))
+            lot = _OpenLot(
+                lot_ref=f"lot:{key[0]}:{key[2]}:{row_id}",
+                fill_ref=fill_ref,
+                qty=qty,
+                cost_total=qty * price,
+                opened_at=filled_at,
+                basis_kind="period_start_seed",
+            )
+            lots[key] = [lot]
+            cell.update(
+                lot_ref=lot.lot_ref,
+                lot_link_kind="opens_lot",
+                lot_opened_at_utc=filled_at.astimezone(UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                lot_cost_basis=_decimal(price),
+                lot_basis_kind="period_start_seed",
+            )
+            continue
+
+        incremental = sequence["incremental_qty"]
+        if incremental is None:
+            continue
+        qty = Decimal(str(incremental))
+        if qty <= 0:
+            continue
+
+        if _side(row["side"]) == "buy":
+            book = lots.setdefault(key, [])
+            if not book:
+                lot = _OpenLot(
+                    lot_ref=f"lot:{key[0]}:{key[2]}:{row_id}",
+                    fill_ref=fill_ref,
+                    qty=qty,
+                    cost_total=qty * price,
+                    opened_at=filled_at,
+                    basis_kind="opened_in_window",
+                )
+                book.append(lot)
+                cell.update(
+                    lot_ref=lot.lot_ref,
+                    lot_link_kind="opens_lot",
+                    lot_opened_at_utc=filled_at.astimezone(UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    lot_cost_basis=_decimal(price),
+                    lot_basis_kind="opened_in_window",
+                )
+                continue
+            lot = book[-1]
+            cell.update(
+                lot_ref=lot.lot_ref,
+                lot_link_kind="adds_to_lot",
+                lot_opened_at_utc=lot.opened_at.astimezone(UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                lot_cost_basis=_decimal_scaled(lot.unit_cost),
+                lot_basis_kind=lot.basis_kind,
+                linked_fill_ref=lot.fill_ref,
+            )
+            lot.qty += qty
+            lot.cost_total += qty * price
+            continue
+
+        book = lots.get(key) or []
+        if not book:
+            continue
+        # The walk holds at most one open lot per account, market and symbol: a
+        # buy merges into it, a seed replaces it, and a fully sold lot is removed.
+        # So a sell either fits that one lot or exceeds everything the export can
+        # see; it never spans two lots.
+        lot = book[0]
+        take = min(qty, lot.qty)
+        unit = lot.unit_cost
+        lot.qty -= take
+        lot.cost_total -= take * unit
+        if qty > take:
+            # The order sold more than the lot this export can see. The overhang
+            # is reported as unlinked rather than folded into a lot it does not fit.
+            if lot.qty <= 0:
+                book.clear()
+            continue
+        if lot.qty <= 0:
+            book.clear()
+        cell.update(
+            lot_ref=lot.lot_ref,
+            lot_link_kind="partial_sell" if book else "full_sell",
+            lot_opened_at_utc=lot.opened_at.astimezone(UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            lot_cost_basis=_decimal_scaled(unit),
+            lot_basis_kind=lot.basis_kind,
+            linked_fill_ref=lot.fill_ref,
+        )
+    return cells
+
+
 def _project_fills(
     p: _Projector, rows: list[SourceRow], window: Window
 ) -> list[OutputRow]:
@@ -940,6 +1232,19 @@ def _project_fills(
     # not flag the one exported row of a fill, or filtering would lose the fill.
     covered = supersede.covered_identities(SimpleNamespace(**row) for row in in_window)
     sequences = fill_sequences(in_window)
+    # The lot walk must see exactly the rows a consumer counts: the non-superseded
+    # ones. Walking the superseded rows first moved quantities and cost bases that
+    # the export itself then tells the reader to exclude (ROB-1465 review).
+    links: dict[int, OutputRow] = {}
+    if p.real:
+        effective = [
+            row
+            for row in in_window
+            if not supersede.is_superseded(SimpleNamespace(**row), covered)
+        ]
+        links = fill_lot_links(effective, sequences)
+        for row in in_window:
+            links.setdefault(int(row["id"]), _unlinked_lot_cell())
     output = []
     for row in in_window:
         filled_at = _aware(row["filled_at"])
@@ -970,6 +1275,8 @@ def _project_fills(
             "trading_day": _trading_day_cell(str(row["broker"]), instrument, filled_at),
             "local_tz": tz_name,
         }
+        if links:
+            cell.update(links[int(row["id"])])
         cell.update(p.times(tz_name, filled_at=filled_at, created_at=row["created_at"]))
         output.append(cell)
     return output
@@ -1007,15 +1314,15 @@ def _project_balances(
     output: list[OutputRow] = []
     for row in snapshots:
         created = _aware(row["created_at"])
-        account_ref = p.hasher.ref("acc", "db_paper", str(row["account_id"]))
+        account_ref = p.account_ref("db_paper", row["account_id"])
         for currency, column, reserved in (
             ("KRW", "cash_krw", _reserved_at(reservations, row["account_id"], created)),
             # Paper buys reserve KRW only; no table records a USD reservation.
             ("USD", "cash_usd", None),
         ):
-            cell: OutputRow = dict.fromkeys(TABLE_BY_NAME[p.table].column_names)
+            cell: OutputRow = dict.fromkeys(p.specs[p.table].column_names)
             cell.update(
-                row_ref=p.hasher.ref("row", p.table, str(row["id"]), currency),
+                row_ref=p.row_ref(row["id"], currency),
                 account_alias="db_paper",
                 account_ref=account_ref,
                 currency=currency,
@@ -1030,9 +1337,9 @@ def _project_balances(
             cell.update(p.times(tz_name, snapshot_created_at=created))
             output.append(cell)
     for alias in BALANCE_UNAVAILABLE:
-        cell = dict.fromkeys(TABLE_BY_NAME[p.table].column_names)
+        cell = dict.fromkeys(p.specs[p.table].column_names)
         cell.update(
-            row_ref=p.hasher.ref("row", p.table, "unavailable", alias),
+            row_ref=p.row_ref("unavailable", alias),
             account_alias=alias,
             available="false",
             unavailable_reason=BALANCE_UNAVAILABLE_REASON,
@@ -1082,7 +1389,70 @@ def _project_proposals(p: _Projector, rows: Iterable[SourceRow]) -> list[OutputR
     return output
 
 
-def _project_rungs(p: _Projector, rows: Iterable[SourceRow]) -> list[OutputRow]:
+class _ReferencePrices:
+    """The last completed UTC daily close per crypto symbol before an order.
+
+    ``crypto_candles_1d.time`` is the UTC day a daily candle covers (Upbit's
+    ``candle_date_time_utc``), so that candle's close is at ``time + 1 day`` and
+    it is only usable as a reference once that instant has passed.
+    """
+
+    def __init__(self, candles: Iterable[SourceRow]) -> None:
+        series: dict[tuple[str, str], list[tuple[datetime, Decimal]]] = {}
+        for row in candles:
+            symbol = _text(row.get("venue_symbol"))
+            if not symbol:
+                continue
+            venue = _text(row.get("venue")) or ""
+            close = Decimal(str(row["close"]))
+            if not close.is_finite():
+                # A broken candle is not a reference price. Keeping the key makes
+                # the reason "no usable candle" rather than "no instrument".
+                series.setdefault((venue, symbol), [])
+                continue
+            series.setdefault((venue, symbol), []).append((_aware(row["time"]), close))
+        for values in series.values():
+            values.sort()
+        self._series = series
+
+    def _values(self, venue: str, symbol: str) -> list[tuple[datetime, Decimal]] | None:
+        values = self._series.get((venue, symbol))
+        if values is not None:
+            return values
+        # A venue the export did not label falls back to the symbol only when
+        # exactly one venue lists it; two venues with the same ticker would
+        # otherwise be priced with each other's close.
+        matches = [
+            series for (_, listed), series in self._series.items() if listed == symbol
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def lookup(
+        self, venue: str, symbol: str, created_at: datetime
+    ) -> tuple[Decimal | None, datetime | None, str]:
+        values = self._values(venue, symbol)
+        if values is None:
+            return None, None, "unavailable:no_instrument"
+        if not values:
+            return None, None, "unavailable:no_candle"
+        cutoff = _aware(created_at) - timedelta(days=1)
+        found: tuple[datetime, Decimal] | None = None
+        for when, close in values:
+            if when <= cutoff:
+                found = (when, close)
+            else:
+                break
+        if found is None:
+            return None, None, "unavailable:no_candle"
+        return found[1], found[0] + timedelta(days=1), "crypto_candles_1d_close"
+
+
+def _project_rungs(
+    p: _Projector,
+    rows: Iterable[SourceRow],
+    fills: _FillTimes | None = None,
+    prices: _ReferencePrices | None = None,
+) -> list[OutputRow]:
     output = []
     for row in rows:
         market = _market_from_instrument(row["market"])
@@ -1092,7 +1462,7 @@ def _project_rungs(p: _Projector, rows: Iterable[SourceRow]) -> list[OutputRow]:
         tz_name = _local_tz(market)
         cell: OutputRow = {
             "row_ref": p.row_ref(row["id"]),
-            "rung_ref": p.hasher.ref("rng", str(row["id"])),
+            "rung_ref": p.rung_ref(row["id"]),
             "proposal_ref": p.key_ref("prp", row["proposal_id"]),
             "rung_index": _text(row["rung_index"]),
             "account_alias": alias,
@@ -1118,13 +1488,59 @@ def _project_rungs(p: _Projector, rows: Iterable[SourceRow]) -> list[OutputRow]:
                 updated_at=row.get("updated_at"),
             )
         )
+        if p.real:
+            first_fill = None
+            if fills is not None:
+                first_fill = fills.lookup_first(
+                    alias,
+                    _MARKET_INSTRUMENTS.get(market, ""),
+                    row.get("broker_order_id"),
+                    row["created_at"],
+                )
+            cell.update(p.times(tz_name, first_fill_at=first_fill))
+            cell.update(
+                reference_price=None,
+                reference_price_asof_utc=None,
+                reference_price_source=None,
+                distance_above_reference_pct=None,
+            )
+            if market == "crypto" and _side(row["side"]) == "sell" and prices:
+                _apply_reference_price(cell, row, prices)
         output.append(cell)
     return output
 
 
-def project(sources: SourceRows, *, hasher: RefHasher, window: Window) -> Projection:
-    projector = _Projector(hasher, window)
+def _apply_reference_price(
+    cell: OutputRow, row: SourceRow, prices: _ReferencePrices
+) -> None:
+    alias = _PROPOSAL_ALIASES.get(str(row["account_mode"]), str(row["account_mode"]))
+    venue = alias.split("_", 1)[0]
+    price, asof, source = prices.lookup(venue, str(row["symbol"]), row["created_at"])
+    cell["reference_price"] = _decimal_scaled(price)
+    cell["reference_price_asof_utc"] = (
+        asof.astimezone(UTC).isoformat().replace("+00:00", "Z") if asof else None
+    )
+    cell["reference_price_source"] = source
+    limit = row.get("limit_price")
+    if price is not None and limit is not None:
+        cell["distance_above_reference_pct"] = _pct(
+            Decimal(str(limit)), Decimal(str(price))
+        )
+
+
+def project(
+    sources: SourceRows,
+    *,
+    hasher: RefHasher | None,
+    window: Window,
+    mode: Mode = Mode.DEIDENTIFIED,
+) -> Projection:
+    real = mode is Mode.REAL
+    if not real and hasher is None:
+        raise ValueError("the de-identified mode needs a salt")
+    projector = _Projector(hasher, window, real=real)
     fills = _FillTimes.build(sources.execution_ledger)
+    prices = _ReferencePrices(sources.crypto_daily_candles) if real else None
     builders = {
         "kis_live_order_ledger": lambda: _project_kis_live(
             projector, sources.kis_live_order_ledger, fills
@@ -1152,7 +1568,10 @@ def project(sources: SourceRows, *, hasher: RefHasher, window: Window) -> Projec
             projector, sources.order_proposals
         ),
         "order_proposal_rungs": lambda: _project_rungs(
-            projector, sources.order_proposal_rungs
+            projector,
+            sources.order_proposal_rungs,
+            fills if real else None,
+            prices,
         ),
         "account_balance_daily": lambda: _project_balances(
             projector, sources.paper_daily_snapshots, sources.paper_reservations
@@ -1164,6 +1583,7 @@ def project(sources: SourceRows, *, hasher: RefHasher, window: Window) -> Projec
         tables[name] = build()
     return Projection(
         tables=tables,
-        forbidden=_forbidden_values(sources),
+        forbidden=_forbidden_values(sources, real=real),
         tags_hashed=projector.tags_hashed,
+        mode=mode,
     )

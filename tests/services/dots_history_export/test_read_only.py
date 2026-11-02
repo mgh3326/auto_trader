@@ -43,6 +43,7 @@ STATEMENTS = (
     reader.rungs_statement,
     reader.paper_daily_snapshots_statement,
     reader.paper_reservations_statement,
+    reader.crypto_daily_candles_statement,
 )
 NEVER_READ = (
     "raw_response",
@@ -112,8 +113,18 @@ async def test_the_read_only_transaction_is_set_before_anything_is_read() -> Non
     first, second, *selects = session.statements
     assert str(first) == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
     assert str(second) == "SHOW transaction_read_only"
-    assert len(selects) == len(STATEMENTS)
+    # Real mode additionally reads the crypto daily closes.
+    assert len(selects) == len(STATEMENTS) - 1
     assert all(isinstance(statement, Select) for statement in selects)
+
+
+@pytest.mark.asyncio
+async def test_real_mode_reads_the_crypto_daily_closes_too() -> None:
+    session = _RecordingSession()
+    await reader.read_sources(session, WINDOW, real=True)  # type: ignore[arg-type]
+    _first, _second, *selects = session.statements
+    assert len(selects) == len(STATEMENTS)
+    assert any("crypto_candles_1d" in str(statement) for statement in selects)
 
 
 @pytest.mark.asyncio
