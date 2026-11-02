@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -29,7 +30,10 @@ from app.services.mechanical_loss_cut.rules import (
     LotKey,
     PlanDraft,
 )
-from app.services.mechanical_loss_cut.store import MechanicalLossCutStore
+from app.services.mechanical_loss_cut.store import (
+    LIVE_ARMED_DETAIL,
+    MechanicalLossCutStore,
+)
 from tests._run_owned_database import validate_run_owned_database_url
 
 validate_run_owned_database_url(engine.url)
@@ -204,6 +208,56 @@ async def test_a_live_row_requires_a_proposal_and_a_shadow_row_refuses_one() -> 
                 proposal_id=uuid.uuid4(),
             )
         await session.rollback()
+
+
+async def test_unemitted_trigger_is_the_armed_latest_shadow_row_with_no_live_row() -> (
+    None
+):
+    armed = _key()
+    unarmed = _key()
+    async with AsyncSessionLocal() as session:
+        store = MechanicalLossCutStore(session)
+
+        async def shadow(key: LotKey, trigger: str, *, live_armed: bool) -> int | None:
+            decision = _decision(key, trigger=trigger)
+            if live_armed:
+                decision = replace(
+                    decision,
+                    details={**decision.details, LIVE_ARMED_DETAIL: "true"},
+                )
+            return await store.insert_decision(
+                decision,
+                mode="shadow",
+                per_order_cap=Decimal("2000000"),
+                evaluated_at=_NOW,
+            )
+
+        first = await shadow(armed, "v1:85000:r1", live_armed=True)
+        await shadow(unarmed, "v1:85000:r1", live_armed=False)
+        await session.commit()
+
+        keys = [armed, unarmed]
+        assert await store.unemitted_live_triggers(keys) == {
+            armed: ("v1:85000:r1", first)
+        }
+        assert await store.unemitted_live_triggers([unarmed]) == {}
+
+        await store.insert_decision(
+            _decision(armed, trigger="v1:85000:r1"),
+            mode="live",
+            per_order_cap=Decimal("2000000"),
+            evaluated_at=_NOW,
+            proposal_id=uuid.uuid4(),
+        )
+        await session.commit()
+        assert await store.unemitted_live_triggers(keys) == {}
+
+        # A later run on the lot is owed on its own; the old one is not revived.
+        second = await shadow(armed, "v1:85000:r2", live_armed=True)
+        await session.commit()
+        assert await store.unemitted_live_triggers(keys) == {
+            armed: ("v1:85000:r2", second)
+        }
 
 
 async def test_live_decision_is_found_by_its_proposal_only() -> None:

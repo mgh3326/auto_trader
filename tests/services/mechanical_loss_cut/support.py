@@ -17,6 +17,7 @@ from app.services.mechanical_loss_cut.rules import (
     PlanDraft,
     PriorDecision,
 )
+from app.services.mechanical_loss_cut.store import LIVE_ARMED_DETAIL
 from app.services.trading_policy_service import load_trading_policy
 
 KEY = LotKey("kis_live", "equity_kr", "035720")
@@ -113,6 +114,7 @@ class FakePorts:
         self.protected = protected or {}
         self.open_sell_error = open_sell_error
         self.rows: list[dict[str, Any]] = []
+        self.emitted: set[tuple[LotKey, str]] = set()
         self.backfills: list[PlanDraft] = []
         self.commits = 0
 
@@ -152,6 +154,20 @@ class FakePorts:
                 cuts_on_this_stop=(previous.cuts_on_this_stop + 1) if same else 1,
             )
         return latest
+
+    async def unemitted_live_triggers(
+        self, keys: list[LotKey]
+    ) -> dict[LotKey, tuple[str, int]]:
+        latest: dict[LotKey, tuple[CutDecision, int]] = {}
+        for row_id, row in enumerate(self.rows, start=1):
+            latest[row["decision"].key] = (row["decision"], row_id)
+        return {
+            key: (decision.trigger_key, row_id)
+            for key, (decision, row_id) in latest.items()
+            if key in keys
+            and decision.details.get(LIVE_ARMED_DETAIL) == "true"
+            and (key, decision.trigger_key) not in self.emitted
+        }
 
     async def append_backfill(self, draft: PlanDraft) -> ExitPlan:
         self.backfills.append(draft)

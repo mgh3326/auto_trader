@@ -65,6 +65,20 @@ def live_switch_refusal(*, market: Any, account_mode: Any) -> str | None:
     return None
 
 
+def live_emission_refusal(
+    *, market: Any, account_mode: Any, backfilled: bool, params: Any
+) -> str | None:
+    """Why this lot's trigger cannot become a live proposal, whatever the hour."""
+    refusal = live_switch_refusal(market=market, account_mode=account_mode)
+    if refusal is not None:
+        return refusal
+    if params.thresholds_confirmed is not True:
+        return "thresholds_unconfirmed"
+    if backfilled and params.live_include_backfilled is not True:
+        return "backfilled_plan"
+    return None
+
+
 def regular_session_open(market: Any, now: datetime | None) -> bool:
     """Crypto never closes. Equities need the exchange's regular session.
 

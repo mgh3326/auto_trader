@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import random
 import uuid
+from collections import Counter
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -354,3 +355,48 @@ async def test_a_second_emission_for_one_trigger_leaves_nothing_behind(db_sessio
     row = await MechanicalLossCutStore(db_session).live_decision_for_proposal(first)
     assert row is not None
     assert row.intended_quantity == decision.intended_quantity
+
+
+async def test_an_undelivered_proposal_gets_one_card_later_and_is_never_submitted(
+    db_session, monkeypatch
+):
+    proposal_id = await _create(db_session, _decision(_symbol()))
+    store = MechanicalLossCutStore(db_session)
+    far_future = datetime(2099, 1, 1, tzinfo=UTC)
+    # A proposal this young may still be inside another run's dispatch.
+    young = await store.undelivered_live_proposals(
+        before=datetime(2000, 1, 1, tzinfo=UTC)
+    )
+    assert proposal_id not in young
+    assert proposal_id in await store.undelivered_live_proposals(before=far_future)
+
+    monkeypatch.setattr(live_module, "now_kst", lambda: NOW)
+    monkeypatch.setattr(live_module, "_UNDELIVERED_GRACE", NOW - far_future)
+    notifier = _Notifier()
+    outcomes: Counter[str] = Counter()
+    for _attempt in range(2):
+        await live_module._recover_undelivered_cards(
+            NOW,
+            session_factory=_factory(db_session),
+            notifier=notifier,
+            outcomes=outcomes,
+        )
+
+    assert outcomes == {"card_recovered": 1}
+    assert len(notifier.approval_cards()) == 1
+    assert notifier.auto_cards() == []
+    assert proposal_id not in await store.undelivered_live_proposals(before=far_future)
+    _group, rungs = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    assert [rung.state for rung in rungs] == ["pending_approval"]
+
+
+async def test_a_delivered_auto_submit_is_not_recovered(db_session):
+    proposal_id = await _create(db_session, _decision(_symbol()))
+    revalidate = _Revalidate(_preview())
+
+    await _dispatch(db_session, proposal_id, _Notifier(), revalidate)
+
+    assert revalidate.submits == 1
+    far_future = datetime(2099, 1, 1, tzinfo=UTC)
+    store = MechanicalLossCutStore(db_session)
+    assert proposal_id not in await store.undelivered_live_proposals(before=far_future)

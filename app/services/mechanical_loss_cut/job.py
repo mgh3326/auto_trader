@@ -10,9 +10,10 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
+from functools import partial
 from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.mechanical_loss_cut import positions
-from app.services.mechanical_loss_cut.gate import POLICY_MARKET
+from app.services.mechanical_loss_cut.gate import POLICY_MARKET, live_emission_refusal
 from app.services.mechanical_loss_cut.rules import (
     Bar,
     CutDecision,
@@ -35,7 +36,10 @@ from app.services.mechanical_loss_cut.rules import (
     is_parking_instrument,
     text,
 )
-from app.services.mechanical_loss_cut.store import MechanicalLossCutStore
+from app.services.mechanical_loss_cut.store import (
+    LIVE_ARMED_DETAIL,
+    MechanicalLossCutStore,
+)
 from app.services.trading_policy_service import load_trading_policy
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,10 @@ class EvaluationPorts(Protocol):
     async def prior_decisions(
         self, keys: list[LotKey]
     ) -> dict[LotKey, PriorDecision]: ...
+
+    async def unemitted_live_triggers(
+        self, keys: list[LotKey]
+    ) -> dict[LotKey, tuple[str, int]]: ...
 
     async def append_backfill(self, draft: PlanDraft) -> ExitPlan: ...
 
@@ -104,6 +112,11 @@ class DatabasePorts:
 
     async def prior_decisions(self, keys: list[LotKey]) -> dict[LotKey, PriorDecision]:
         return await self._store.prior_decisions(keys, mode="shadow")
+
+    async def unemitted_live_triggers(
+        self, keys: list[LotKey]
+    ) -> dict[LotKey, tuple[str, int]]:
+        return await self._store.unemitted_live_triggers(keys)
 
     async def append_backfill(self, draft: PlanDraft) -> ExitPlan:
         await self._store.lock_lot(draft.key)
@@ -178,8 +191,17 @@ async def evaluate_all_lots(
         )
         protected = None
     prior = await ports.prior_decisions(keys)
+    # A trigger the live path never turned into a proposal, for any reason, stays
+    # owed while the lot is still below its stop. The shadow row alone would
+    # otherwise hide it for the rest of the run.
+    unemitted = (
+        await ports.unemitted_live_triggers(keys)
+        if settings.MECHANICAL_LOSS_CUT_LIVE_ENABLED is True
+        else {}
+    )
 
     written: list[WrittenDecision] = []
+    live_retries: list[WrittenDecision] = []
     skipped: Counter[str] = Counter()
     already_recorded = 0
     backfilled_plans = 0
@@ -204,7 +226,9 @@ async def evaluate_all_lots(
                     backfill_plan(lot=lot, params=params, bars=bars)
                 )
                 backfilled_plans += 1
-            verdict = evaluate_lot(
+
+            decide = partial(
+                evaluate_lot,
                 lot=lot,
                 plan=plan,
                 bars=bars,
@@ -216,11 +240,34 @@ async def evaluate_all_lots(
                 protected_quantity=(
                     protected.get(lot.key) if protected is not None else None
                 ),
-                prior_decision=prior.get(lot.key),
             )
+            verdict = decide(prior_decision=prior.get(lot.key))
             if isinstance(verdict, Skip):
                 skipped[verdict.reason] += 1
+                owed = unemitted.get(lot.key)
+                if verdict.reason == "already_cut_this_run" and owed is not None:
+                    # Every other condition is read again from today's facts. A
+                    # lot that recovered or got covered has no decision here.
+                    again = decide(prior_decision=None)
+                    if isinstance(again, CutDecision):
+                        live_retries.append(
+                            WrittenDecision(
+                                replace(again, trigger_key=owed[0]), owed[1]
+                            )
+                        )
                 continue
+            if (
+                live_emission_refusal(
+                    market=market,
+                    account_mode=lot.key.account_mode,
+                    backfilled=verdict.backfilled,
+                    params=params,
+                )
+                is None
+            ):
+                verdict = replace(
+                    verdict, details={**verdict.details, LIVE_ARMED_DETAIL: "true"}
+                )
             row_id = await ports.insert_shadow_decision(
                 verdict, per_order_cap=per_order_cap, evaluated_at=now
             )
@@ -237,6 +284,7 @@ async def evaluate_all_lots(
         "already_recorded": already_recorded,
         "skipped": dict(sorted(skipped.items())),
         "decisions": written,
+        "live_retries": live_retries,
     }
 
 
@@ -281,14 +329,17 @@ async def run_mechanical_loss_cut(
         if not commit:
             await session.rollback()
     written: list[WrittenDecision] = result.pop("decisions")
+    retries: list[WrittenDecision] = result.pop("live_retries")
     result["status"] = "ok" if commit else "dry_run"
     result["decisions"] = [decision_preview(item) for item in written]
-    if commit and written and settings.MECHANICAL_LOSS_CUT_LIVE_ENABLED is True:
+    result["live_retries"] = len(retries)
+    # With nothing new to emit, the emitter still has undelivered cards to recover.
+    if commit and settings.MECHANICAL_LOSS_CUT_LIVE_ENABLED is True:
         emitter = live_emitter
         if emitter is None:
             # Only this branch can load the order path. A test holds it shut.
             from app.services.mechanical_loss_cut.live import emit_live_decisions
 
             emitter = emit_live_decisions
-        result["live"] = await emitter(written, now)
+        result["live"] = await emitter([*written, *retries], now)
     return result

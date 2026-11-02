@@ -6,12 +6,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.mcp_server.tooling import order_execution as oe
+from app.services.mechanical_loss_cut import plans as plans_module
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
-async def _place(*, side: str, result: dict, **kwargs):
+async def _place(
+    *,
+    side: str,
+    result: dict,
+    symbol: str = "KRW-DOT",
+    market: str = "crypto",
+    **kwargs,
+):
     recorder = AsyncMock(return_value="entry")
     executed = AsyncMock(return_value=result)
     with (
@@ -24,7 +33,7 @@ async def _place(*, side: str, result: dict, **kwargs):
             "_build_preview",
             new=AsyncMock(
                 return_value={
-                    "symbol": "KRW-DOT",
+                    "symbol": symbol,
                     "side": side,
                     "order_type": "limit",
                     "price": 1244.0,
@@ -42,9 +51,9 @@ async def _place(*, side: str, result: dict, **kwargs):
         patch.object(oe, "record_buy_exit_plan", new=recorder),
     ):
         response = await oe._place_order_impl(
-            symbol="KRW-DOT",
+            symbol=symbol,
             side=side,
-            market="crypto",
+            market=market,
             order_type="limit",
             price=1244.0,
             quantity=10,
@@ -95,3 +104,61 @@ async def test_a_sell_records_nothing(monkeypatch):
     _response, recorder = await _place(side="sell", result={"success": True})
 
     recorder.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("symbol", "market", "expected_market"),
+    [
+        ("035720", "kr", "equity_kr"),
+        ("035720", "equity_kr", "equity_kr"),
+        ("035720", None, "equity_kr"),
+        ("AAPL", "us", "equity_us"),
+        ("AAPL", "equity_us", "equity_us"),
+        ("AAPL", None, "equity_us"),
+    ],
+)
+async def test_a_direct_kis_buy_reaches_the_plan_writer_as_plannable(
+    monkeypatch, symbol, market, expected_market
+):
+    """The short code is resolved first, so a real plan is written, not a refusal."""
+    monkeypatch.setattr(oe.settings, "order_approval_hash_mode", "off", raising=False)
+    monkeypatch.setattr(settings, "LOT_EXIT_PLAN_WRITE_ENABLED", True)
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def commit(self):
+            return None
+
+    class Store:
+        def __init__(self, _session):
+            pass
+
+        async def lock_lot(self, _key):
+            return None
+
+        async def latest_plan(self, _key):
+            return None
+
+        async def append_plan(self, draft):
+            return draft
+
+    async def flat(_session, _key):
+        return None
+
+    monkeypatch.setattr(plans_module, "MechanicalLossCutStore", Store)
+    monkeypatch.setattr(plans_module, "load_position", flat)
+
+    _response, recorder = await _place(
+        side="buy", result={"success": True}, symbol=symbol, market=market
+    )
+
+    kwargs = recorder.await_args.kwargs
+    assert kwargs["account_mode"] == "kis_live"
+    assert kwargs["market"] == expected_market
+    status = await plans_module.record_buy_exit_plan(**kwargs, session_factory=Session)
+    assert status == "entry"

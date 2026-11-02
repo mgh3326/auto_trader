@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +24,7 @@ from app.services.mechanical_loss_cut.job import (
 )
 from app.services.mechanical_loss_cut.rules import LotKey
 from app.services.mechanical_loss_cut.store import summarize_decisions
+from app.services.trading_policy_service import load_trading_policy
 from tests.services.mechanical_loss_cut.support import (
     KEY,
     SESSION,
@@ -367,3 +369,203 @@ def test_task_ships_with_no_schedule():
     from app.tasks.mechanical_loss_cut_tasks import mechanical_loss_cut_evaluate_task
 
     assert "schedule" not in mechanical_loss_cut_evaluate_task.labels
+
+
+# --- A trigger the live path never turned into a proposal stays owed.
+
+
+@pytest.fixture
+def live_on(monkeypatch):
+    monkeypatch.setattr(settings, "MECHANICAL_LOSS_CUT_SHADOW_ENABLED", True)
+    monkeypatch.setattr(settings, "MECHANICAL_LOSS_CUT_LIVE_ENABLED", True)
+    monkeypatch.setattr(settings, "MECHANICAL_LOSS_CUT_LIVE_MARKETS", "kr")
+    monkeypatch.setattr(settings, "MECHANICAL_LOSS_CUT_LIVE_ACCOUNT_MODES", "kis_live")
+    policy = load_trading_policy().model_copy(deep=True)
+    policy.mechanical_loss_cut.markets["kr"].thresholds_confirmed = True
+    monkeypatch.setattr(job_module, "load_trading_policy", lambda: policy)
+    return policy
+
+
+async def _live_run(monkeypatch, ports, *, now=NOW, emitter=None):
+    monkeypatch.setattr(job_module, "DatabasePorts", lambda _session: ports)
+    seen: list[WrittenDecision] = []
+
+    async def record(written, _now):
+        seen.extend(written)
+        return {"outcomes": {}}
+
+    await run_mechanical_loss_cut(
+        now=now,
+        markets=("equity_kr",),
+        session_factory=_FakeSession,
+        live_emitter=emitter or record,
+    )
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_trigger_with_no_proposal_is_offered_again_next_run(
+    monkeypatch, live_on
+):
+    ports = _fixture_ports()
+
+    first = await _live_run(monkeypatch, ports)
+    again = await _live_run(monkeypatch, ports)
+
+    armed = [item for item in first if item.decision.key == _BREAK_KEY]
+    assert [item.decision.key for item in again] == [_BREAK_KEY]
+    assert again[0].decision.trigger_key == armed[0].decision.trigger_key
+    assert len(ports.rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_trigger_with_a_live_row_is_not_offered_again(monkeypatch, live_on):
+    ports = _fixture_ports()
+    first = await _live_run(monkeypatch, ports)
+    armed = next(item for item in first if item.decision.key == _BREAK_KEY)
+    ports.emitted.add((_BREAK_KEY, armed.decision.trigger_key))
+
+    assert await _live_run(monkeypatch, ports) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(
+            lambda ports: ports.bar_map.update(
+                {_BREAK_KEY.symbol: (bars_from_closes(_HOLDING_ABOVE_STOP), True)}
+            ),
+            id="recovered_above_the_stop",
+        ),
+        pytest.param(
+            lambda ports: ports.bar_map.update(
+                {_BREAK_KEY.symbol: (bars_from_closes(_FALLING), False)}
+            ),
+            id="price_went_stale",
+        ),
+        pytest.param(
+            lambda ports: ports.open_sells.update({_BREAK_KEY: Decimal("10")}),
+            id="now_covered_by_an_open_sell",
+        ),
+    ],
+)
+async def test_a_lot_that_no_longer_qualifies_is_not_offered_again(
+    monkeypatch, live_on, change
+):
+    ports = _fixture_ports()
+    await _live_run(monkeypatch, ports)
+    change(ports)
+
+    assert await _live_run(monkeypatch, ports) == []
+
+
+@pytest.mark.asyncio
+async def test_a_trigger_recorded_before_the_switch_is_not_offered_later(
+    monkeypatch, live_on
+):
+    ports = _fixture_ports()
+    monkeypatch.setattr(settings, "MECHANICAL_LOSS_CUT_LIVE_ENABLED", False)
+    await _live_run(monkeypatch, ports)
+    monkeypatch.setattr(settings, "MECHANICAL_LOSS_CUT_LIVE_ENABLED", True)
+
+    assert await _live_run(monkeypatch, ports) == []
+
+
+@pytest.mark.asyncio
+async def test_a_backfilled_trigger_is_never_armed_while_policy_refuses_it(
+    monkeypatch, live_on
+):
+    ports = _fixture_ports()
+
+    first = await _live_run(monkeypatch, ports)
+    again = await _live_run(monkeypatch, ports)
+
+    assert _LEGACY_KEY in {item.decision.key for item in first}
+    assert _LEGACY_KEY not in {item.decision.key for item in again}
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_offers_nothing_again(monkeypatch, live_on):
+    ports = _fixture_ports()
+    await _live_run(monkeypatch, ports)
+    monkeypatch.setattr(job_module, "DatabasePorts", lambda _session: ports)
+
+    async def emitter(_written, _now):
+        raise AssertionError("a dry run reached the live emitter")
+
+    result = await run_mechanical_loss_cut(
+        now=NOW,
+        markets=("equity_kr",),
+        commit=False,
+        session_factory=_FakeSession,
+        live_emitter=emitter,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["live_retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cut_found_after_the_close_goes_out_in_the_next_session(
+    monkeypatch, live_on
+):
+    """The suggested run is after the close, when the live path refuses to send."""
+    from contextlib import asynccontextmanager
+
+    from app.services.mechanical_loss_cut import live as live_module
+    from app.services.mechanical_loss_cut.live import emit_live_decisions
+    from app.services.order_proposals.dispatch_contract import ApprovalDispatchState
+
+    @asynccontextmanager
+    async def empty_round(**_kwargs):
+        yield None
+
+    async def no_undelivered(*_args, **_kwargs):
+        return []
+
+    created = []
+
+    async def create(decision, **_kwargs):
+        created.append(decision)
+        ports.emitted.add((decision.key, decision.trigger_key))
+        return uuid.uuid4()
+
+    async def fresh(_symbol, _market):
+        return 84000.0
+
+    async def dispatch(_proposal_id, **_kwargs):
+        return SimpleNamespace(state=ApprovalDispatchState.PENDING)
+
+    monkeypatch.setattr(live_module, "load_trading_policy", lambda: live_on)
+    monkeypatch.setattr(live_module, "open_auto_digest_round", empty_round)
+    monkeypatch.setattr(live_module, "_undelivered_proposal_ids", no_undelivered)
+    monkeypatch.setattr(live_module, "_create_proposal", create)
+    results = []
+
+    async def emitter(written, now):
+        result = await emit_live_decisions(
+            written,
+            now,
+            session_factory=object,
+            fresh_price_fn=fresh,
+            dispatch_fn=dispatch,
+            notifier=object(),
+        )
+        results.append(result["outcomes"])
+        return result
+
+    ports = _fixture_ports()
+    friday_after_close = datetime(2026, 10, 30, 7, 10, tzinfo=UTC)
+    monday_in_session = datetime(2026, 11, 2, 0, 10, tzinfo=UTC)
+
+    await _live_run(monkeypatch, ports, now=friday_after_close, emitter=emitter)
+    assert created == []
+    assert results[0]["session_closed"] == 1
+
+    await _live_run(monkeypatch, ports, now=monday_in_session, emitter=emitter)
+    assert [decision.key for decision in created] == [_BREAK_KEY]
+    assert results[1] == {"proposal_dispatched": 1}
+
+    await _live_run(monkeypatch, ports, now=monday_in_session, emitter=emitter)
+    assert len(created) == 1

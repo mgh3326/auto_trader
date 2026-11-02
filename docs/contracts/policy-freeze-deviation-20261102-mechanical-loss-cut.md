@@ -98,6 +98,13 @@ sale on its own while the price recovers.
   or an unfilled limit can lose more.
 - An unfilled cut is not retried until a close at or above the stop or a new plan
   version, so a lot can stay below its stop with no further sell.
+- A trigger with no proposal yet is offered again on each later run while the lot
+  qualifies, so a cut held by a closed market can go out a session later, at that
+  session's price.
+- A failed dispatch is never dispatched again, since it does not prove the broker
+  was not reached. A later run sends the human card instead. If the first attempt did
+  reach the broker, approving that card relies on the existing order idempotency keys
+  to stop a second order.
 - The trigger reads completed daily closes. A fast intraday fall is not cut until
   the session closes and the job next runs, and that job has no schedule yet.
 - The shadow position comes from `review.execution_ledger`, which cannot see a

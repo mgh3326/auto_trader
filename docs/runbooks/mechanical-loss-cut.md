@@ -71,6 +71,11 @@ one run per day:
 A run covers every market. A market whose latest session is missing from the
 candles skips as `price_stale`, so extra runs are harmless.
 
+These times suit shadow. **Live also needs a run inside each equity market's
+regular session**, because an automatic equity sell goes out only then. A cut found
+at 16:10 KST is held and goes out on the first run in the next session, for example
+09:10 KST for KR, if the lot still qualifies. Crypto has no closed session.
+
 ## Read shadow results
 
 One session's summary:
@@ -199,7 +204,21 @@ becomes the ordinary human card, with the reason in `auto_approve_rejections` as
 `mechanical_loss_cut_refused` and a `mechanical_refusal` code.
 
 A trigger already recorded in shadow before the switch is not emitted later. Live
-acts on triggers first recorded after it is on.
+acts on triggers first recorded after it is on, for a market and account that were
+ready for live at that moment.
+
+### When a cut does not go out at once
+
+| What happened | What the next run does |
+|---|---|
+| Market closed, no fresh price, fresh price back at the stop, or the proposal write failed | Offers the same trigger again, if the lot still qualifies on today's facts. No proposal exists yet, so nothing reached a broker. |
+| The dispatch raised, or returned without a card or auto-submit | Sends the human card. An operator alert already went out at the failure. It never dispatches that proposal again, because an exception does not prove the broker was not reached. |
+
+The job prints these as `live.outcomes`, including `session_closed`,
+`proposal_create_failed`, `dispatch_undelivered`, `card_recovered` and
+`card_recovery_failed`. Recovery leaves alone a proposal younger than 15 minutes,
+which another run may still be dispatching. A proposal stuck with its dispatch state
+`pending` is not recovered automatically; the alert is the signal to look at it.
 
 ### If the human card appears
 

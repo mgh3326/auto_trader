@@ -29,6 +29,10 @@ from app.services.order_proposals.auto_approve_audit import (
     append_auto_approve_rejection_attempt,
     project_auto_approve_rejections,
 )
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalDispatchState,
+    TelegramDispatchResult,
+)
 from tests.services.mechanical_loss_cut.support import (
     KEY,
     SESSION,
@@ -503,6 +507,28 @@ class _Notifier:
         raise AssertionError("unexpected card")
 
 
+def _dispatched(state=ApprovalDispatchState.PENDING, failure_code=None):
+    return TelegramDispatchResult(
+        state=state,
+        message_id=None,
+        status_code=None,
+        error_code=None,
+        error_classification=None,
+        payload_chars=0,
+        failure_code=failure_code,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_undelivered_proposals(monkeypatch):
+    from app.services.mechanical_loss_cut import live as live_module
+
+    async def none(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(live_module, "_undelivered_proposal_ids", none)
+
+
 async def _noop_round(*_args, **_kwargs):
     return None
 
@@ -540,6 +566,7 @@ async def test_emitter_creates_and_dispatches_one_proposal(switch_on, live_seams
 
     async def dispatch(proposal_id, **_kwargs):
         dispatched.append(proposal_id)
+        return _dispatched()
 
     async def fresh(_symbol, _market):
         return 84000.0
@@ -636,3 +663,139 @@ async def test_emitter_refuses_unconfirmed_thresholds(switch_on, monkeypatch):
     )
 
     assert result["outcomes"] == {"thresholds_unconfirmed": 1}
+
+
+async def _fresh_falling(_symbol, _market):
+    return 84000.0
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    from app.services.mechanical_loss_cut import live as live_module
+
+    sent: list[str] = []
+
+    async def alert(_proposal_id, *, dispatch_failure_code, **_kwargs):
+        sent.append(dispatch_failure_code)
+
+    monkeypatch.setattr(live_module, "send_approval_dispatch_alert", alert)
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_a_dispatch_that_raises_alerts_and_never_stops_the_next_lot(
+    switch_on, live_seams, alerts
+):
+    calls: list[uuid.UUID] = []
+
+    async def dispatch(proposal_id, **_kwargs):
+        calls.append(proposal_id)
+        if len(calls) == 1:
+            raise RuntimeError("dispatch blew up")
+        return _dispatched()
+
+    result = await emit_live_decisions(
+        [_written(), _written()],
+        NOW,
+        session_factory=object,
+        fresh_price_fn=_fresh_falling,
+        dispatch_fn=dispatch,
+        notifier=_Notifier(),
+    )
+
+    assert result["outcomes"] == {"dispatch_undelivered": 1, "proposal_dispatched": 1}
+    # An exception does not prove the broker was not reached: no second attempt.
+    assert len(calls) == 2
+    assert len(set(calls)) == 2
+    assert alerts == ["approval_dispatch_internal_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_card_that_failed_to_send_is_not_counted_as_dispatched(
+    switch_on, live_seams, alerts
+):
+    async def dispatch(_proposal_id, **_kwargs):
+        return _dispatched(ApprovalDispatchState.FAILED, "telegram_send_failed")
+
+    result = await emit_live_decisions(
+        [_written()],
+        NOW,
+        session_factory=object,
+        fresh_price_fn=_fresh_falling,
+        dispatch_fn=dispatch,
+        notifier=_Notifier(),
+    )
+
+    assert result["outcomes"] == {"dispatch_undelivered": 1}
+    assert alerts == ["telegram_send_failed"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_proposal_write_never_stops_the_next_lot(
+    switch_on, live_seams, monkeypatch
+):
+    from app.services.mechanical_loss_cut import live as live_module
+
+    attempts: list[CutDecision] = []
+
+    async def create(decision, **_kwargs):
+        attempts.append(decision)
+        if len(attempts) == 1:
+            raise RuntimeError("database went away")
+        return uuid.uuid4()
+
+    monkeypatch.setattr(live_module, "_create_proposal", create)
+
+    async def dispatch(_proposal_id, **_kwargs):
+        return _dispatched()
+
+    result = await emit_live_decisions(
+        [_written(), _written()],
+        NOW,
+        session_factory=object,
+        fresh_price_fn=_fresh_falling,
+        dispatch_fn=dispatch,
+        notifier=_Notifier(),
+    )
+
+    assert result["outcomes"] == {
+        "proposal_create_failed": 1,
+        "proposal_dispatched": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_later_run_sends_only_a_card_for_an_undelivered_proposal(
+    switch_on, live_seams, monkeypatch
+):
+    from app.services.mechanical_loss_cut import live as live_module
+
+    waiting = [uuid.uuid4(), uuid.uuid4()]
+    sent: list[tuple[uuid.UUID, bool]] = []
+
+    async def undelivered(*_args, **_kwargs):
+        return waiting
+
+    async def send(proposal_id, *, redispatch, **_kwargs):
+        sent.append((proposal_id, redispatch))
+        if len(sent) == 1:
+            raise RuntimeError("telegram blew up")
+        return _dispatched(ApprovalDispatchState.SENT_CURRENT)
+
+    async def dispatch(*_args, **_kwargs):
+        raise AssertionError("an undelivered proposal was dispatched again")
+
+    monkeypatch.setattr(live_module, "_undelivered_proposal_ids", undelivered)
+    monkeypatch.setattr(live_module, "send_proposal_for_approval", send)
+
+    result = await emit_live_decisions(
+        [],
+        NOW,
+        session_factory=object,
+        fresh_price_fn=_fresh_falling,
+        dispatch_fn=dispatch,
+        notifier=_Notifier(),
+    )
+
+    assert result["outcomes"] == {"card_recovered": 1, "card_recovery_failed": 1}
+    assert sent == [(waiting[0], True), (waiting[1], True)]

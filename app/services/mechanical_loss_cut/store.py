@@ -11,11 +11,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mechanical_loss_cut import LotExitPlan, MechanicalLossCutDecision
+from app.models.order_proposals import OrderProposal
 from app.services.mechanical_loss_cut.rules import (
     AddLevel,
     CutDecision,
@@ -25,6 +26,12 @@ from app.services.mechanical_loss_cut.rules import (
     PriorDecision,
 )
 from app.services.trading_policy_service import policy_version_stamp
+
+#: Set on a shadow row written while this lot could go live. A row without it was
+#: recorded before that, and live never acts on it later.
+LIVE_ARMED_DETAIL = "live_armed"
+#: ``ApprovalDispatchState`` values that mean no card reached anyone.
+_UNDELIVERED_DISPATCH_STATES = ("failed", "partial_failed")
 
 
 def _ladder_json(ladder: tuple[AddLevel, ...]) -> list[dict[str, str]]:
@@ -218,6 +225,70 @@ class MechanicalLossCutStore:
                 cuts_on_this_stop=(previous.cuts_on_this_stop + 1) if same else 1,
             )
         return latest
+
+    async def unemitted_live_triggers(
+        self, keys: list[LotKey]
+    ) -> dict[LotKey, tuple[str, int]]:
+        """Each lot's armed latest shadow trigger that has no live row yet."""
+        if not keys:
+            return {}
+        rows = await self._session.execute(
+            select(
+                MechanicalLossCutDecision.id,
+                MechanicalLossCutDecision.mode,
+                MechanicalLossCutDecision.account_mode,
+                MechanicalLossCutDecision.market,
+                MechanicalLossCutDecision.symbol,
+                MechanicalLossCutDecision.trigger_key,
+                MechanicalLossCutDecision.details,
+            )
+            .where(MechanicalLossCutDecision.symbol.in_({key.symbol for key in keys}))
+            .order_by(MechanicalLossCutDecision.id)
+        )
+        latest_shadow: dict[LotKey, tuple[str, int, bool]] = {}
+        emitted: set[tuple[LotKey, str]] = set()
+        for row_id, mode, account, market, symbol, trigger, details in rows.all():
+            key = LotKey(account, market, symbol)
+            if mode == "live":
+                emitted.add((key, trigger))
+            else:
+                armed = (details or {}).get(LIVE_ARMED_DETAIL) == "true"
+                latest_shadow[key] = (trigger, row_id, armed)
+        return {
+            key: (trigger, row_id)
+            for key, (trigger, row_id, armed) in latest_shadow.items()
+            if armed and key in set(keys) and (key, trigger) not in emitted
+        }
+
+    async def undelivered_live_proposals(self, *, before: datetime) -> list[uuid.UUID]:
+        """Live proposals still waiting with no card and no auto-submit behind them.
+
+        ``before`` leaves out a proposal another run may be dispatching right now,
+        which has the same fields until that dispatch commits.
+        """
+        rows = await self._session.execute(
+            select(OrderProposal.proposal_id)
+            .join(
+                MechanicalLossCutDecision,
+                MechanicalLossCutDecision.proposal_id == OrderProposal.proposal_id,
+            )
+            .where(
+                MechanicalLossCutDecision.mode == "live",
+                OrderProposal.lifecycle_state == "proposed",
+                OrderProposal.approval_nonce.is_(None),
+                OrderProposal.approval_nonce_used_at.is_(None),
+                OrderProposal.approval_dispatch_published_at.is_(None),
+                OrderProposal.created_at < before,
+                or_(
+                    OrderProposal.approval_dispatch_state.is_(None),
+                    OrderProposal.approval_dispatch_state.in_(
+                        _UNDELIVERED_DISPATCH_STATES
+                    ),
+                ),
+            )
+            .order_by(OrderProposal.created_at)
+        )
+        return list(rows.scalars().all())
 
     async def live_decision_for_proposal(
         self, proposal_id: uuid.UUID

@@ -7,6 +7,13 @@ card, as every other loss-cut does.
 
 The decision row and the proposal commit in one transaction before dispatch, so
 a crash can leave a proposal unsent but cannot send it twice.
+
+Two recoveries, on purpose different:
+
+- No proposal yet (market closed, no fresh price, a failed write): nothing reached
+  a broker, so the job offers the trigger again on its next run.
+- A proposal whose dispatch failed or raised: that is not proof the broker was not
+  reached, so it is never dispatched again. A later run only sends the human card.
 """
 
 from __future__ import annotations
@@ -14,7 +21,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -25,7 +32,7 @@ from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.mechanical_loss_cut.gate import (
     MECHANICAL_STRATEGY,
     POLICY_MARKET,
-    live_switch_refusal,
+    live_emission_refusal,
     regular_session_open,
 )
 from app.services.mechanical_loss_cut.job import WrittenDecision
@@ -35,10 +42,15 @@ from app.services.mechanical_loss_cut.rules import (
     with_fresh_limit,
 )
 from app.services.mechanical_loss_cut.store import MechanicalLossCutStore
+from app.services.order_proposals.alerts import send_approval_dispatch_alert
+from app.services.order_proposals.approval_window import ApprovalWindowDecision
 from app.services.order_proposals.dispatch import (
+    approval_window_failure_code,
     dispatch_proposal,
     open_auto_digest_round,
+    send_proposal_for_approval,
 )
+from app.services.order_proposals.dispatch_contract import ApprovalDispatchState
 from app.services.order_proposals.service import OrderProposalsService, RungInput
 from app.services.trade_journal.trade_retrospective_service import save_retrospective
 from app.services.trading_policy_service import load_trading_policy
@@ -49,6 +61,12 @@ _RETROSPECTIVE_ACCOUNT_MODE = {"upbit": "upbit_live"}
 
 FreshPriceFn = Callable[[str, str], Awaitable[float | None]]
 DispatchFn = Callable[..., Awaitable[Any]]
+
+# Long enough that another run's dispatch has committed or died.
+_UNDELIVERED_GRACE = timedelta(minutes=15)
+_DELIVERED_STATES = frozenset(
+    {ApprovalDispatchState.PENDING, ApprovalDispatchState.SENT_CURRENT}
+)
 
 
 async def _default_fresh_price(symbol: str, market: str) -> float | None:
@@ -150,6 +168,88 @@ async def _create_proposal(
         return group.proposal_id
 
 
+def _undelivered_code(result: Any) -> str | None:
+    """Why no card or auto-submit came of this dispatch, or ``None`` if one did."""
+    if isinstance(result, ApprovalWindowDecision):
+        return None if result.allowed else approval_window_failure_code(result)
+    state = getattr(result, "state", None)
+    if state in _DELIVERED_STATES:
+        return None
+    return getattr(result, "failure_code", None) or "approval_dispatch_failed"
+
+
+async def _alert_undelivered(
+    proposal_id: Any, *, code: str, now: datetime, session_factory: Any
+) -> None:
+    try:
+        await send_approval_dispatch_alert(
+            proposal_id,
+            dispatch_state="failed",
+            dispatch_failure_code=code,
+            now=now,
+            service_factory=session_factory,
+        )
+    except Exception as exc:  # noqa: BLE001 - the next run still sends the card
+        logger.error(
+            "mechanical_loss_cut.dispatch_alert_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+
+
+async def _undelivered_proposal_ids(session_factory: Any, *, before: datetime) -> list:
+    async with session_factory() as session:
+        return await MechanicalLossCutStore(session).undelivered_live_proposals(
+            before=before
+        )
+
+
+async def _recover_undelivered_cards(
+    now: datetime,
+    *,
+    session_factory: Any,
+    notifier: Any,
+    outcomes: Counter[str],
+) -> None:
+    """Send the human card for a proposal an earlier run failed to deliver.
+
+    Only ``send_proposal_for_approval``, which cannot reach a broker. It skips
+    ``validate_proposal_redispatch`` because that refuses a sell limit below the
+    market, and every mechanical limit is. Approving the card re-validates.
+    """
+    try:
+        proposal_ids = await _undelivered_proposal_ids(
+            session_factory, before=now - _UNDELIVERED_GRACE
+        )
+    except Exception as exc:  # noqa: BLE001 - new triggers can still go out
+        logger.error(
+            "mechanical_loss_cut.undelivered_read_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        outcomes["card_recovery_failed"] += 1
+        return
+    for proposal_id in proposal_ids:
+        try:
+            result = await send_proposal_for_approval(
+                proposal_id,
+                notifier=notifier,
+                now=now,
+                now_fn=now_kst,
+                service_factory=session_factory,
+                redispatch=True,
+            )
+            code = _undelivered_code(result)
+        except Exception as exc:  # noqa: BLE001 - one card must not stop the rest
+            logger.error(
+                "mechanical_loss_cut.card_recovery_failed",
+                extra={
+                    "proposal_id": str(proposal_id),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            code = "approval_redispatch_internal_error"
+        outcomes["card_recovered" if code is None else "card_recovery_failed"] += 1
+
+
 async def emit_live_decisions(
     written: list[WrittenDecision],
     now: datetime,
@@ -159,7 +259,12 @@ async def emit_live_decisions(
     dispatch_fn: DispatchFn = dispatch_proposal,
     notifier: Any | None = None,
 ) -> dict[str, Any]:
-    """Emit one proposal per decision that clears the job-side checks."""
+    """Recover undelivered cards, then emit one proposal per ready decision.
+
+    No outcome here ends the trigger except a committed live row, so a refusal or
+    a failed write is simply offered again by the next run. One lot's failure
+    never stops the lots after it.
+    """
     policy = load_trading_policy()
     outcomes: Counter[str] = Counter()
     proposal_ids: list[str] = []
@@ -170,6 +275,13 @@ async def emit_live_decisions(
     submit_agent_id = settings.ORDER_PROPOSALS_SUBMIT_AGENT_ID.strip() or None
     identity = caller_agent_id_var.set(submit_agent_id)
     try:
+        # Before emitting, so that this run's own new proposals are not seen.
+        await _recover_undelivered_cards(
+            now,
+            session_factory=session_factory,
+            notifier=notifier,
+            outcomes=outcomes,
+        )
         async with open_auto_digest_round(
             notifier=notifier, service_factory=session_factory
         ):
@@ -177,18 +289,14 @@ async def emit_live_decisions(
                 decision = item.decision
                 policy_market = POLICY_MARKET[decision.key.market]
                 params = policy.mechanical_loss_cut.markets[policy_market]
-                refusal = live_switch_refusal(
+                refusal = live_emission_refusal(
                     market=decision.key.market,
                     account_mode=decision.key.account_mode,
+                    backfilled=decision.backfilled,
+                    params=params,
                 )
                 if refusal is not None:
                     outcomes[refusal] += 1
-                    continue
-                if params.thresholds_confirmed is not True:
-                    outcomes["thresholds_unconfirmed"] += 1
-                    continue
-                if decision.backfilled and params.live_include_backfilled is not True:
-                    outcomes["backfilled_plan"] += 1
                     continue
                 if not regular_session_open(decision.key.market, now):
                     outcomes["session_closed"] += 1
@@ -216,24 +324,52 @@ async def emit_live_decisions(
                         policy.order_proposals.auto_approve.per_order_cap[policy_market]
                     )
                 )
-                proposal_id = await _create_proposal(
-                    priced,
-                    per_order_cap=per_order_cap,
-                    now=now,
-                    session_factory=session_factory,
-                )
+                try:
+                    proposal_id = await _create_proposal(
+                        priced,
+                        per_order_cap=per_order_cap,
+                        now=now,
+                        session_factory=session_factory,
+                    )
+                except Exception as exc:  # noqa: BLE001 - nothing was written
+                    logger.error(
+                        "mechanical_loss_cut.proposal_create_failed",
+                        extra={"exception_type": type(exc).__name__},
+                    )
+                    outcomes["proposal_create_failed"] += 1
+                    continue
                 if proposal_id is None:
                     outcomes["already_emitted"] += 1
                     continue
                 proposal_ids.append(str(proposal_id))
-                await dispatch_fn(
+                try:
+                    result = await dispatch_fn(
+                        proposal_id,
+                        notifier=notifier,
+                        now=now,
+                        now_fn=now_kst,
+                        service_factory=session_factory,
+                    )
+                    code = _undelivered_code(result)
+                except Exception as exc:  # noqa: BLE001 - the proposal is durable
+                    logger.error(
+                        "mechanical_loss_cut.dispatch_failed",
+                        extra={
+                            "proposal_id": str(proposal_id),
+                            "exception_type": type(exc).__name__,
+                        },
+                    )
+                    code = "approval_dispatch_internal_error"
+                if code is None:
+                    outcomes["proposal_dispatched"] += 1
+                    continue
+                outcomes["dispatch_undelivered"] += 1
+                await _alert_undelivered(
                     proposal_id,
-                    notifier=notifier,
+                    code=code,
                     now=now,
-                    now_fn=now_kst,
-                    service_factory=session_factory,
+                    session_factory=session_factory,
                 )
-                outcomes["proposal_dispatched"] += 1
     finally:
         caller_agent_id_var.reset(identity)
     return {"outcomes": dict(sorted(outcomes.items())), "proposal_ids": proposal_ids}
