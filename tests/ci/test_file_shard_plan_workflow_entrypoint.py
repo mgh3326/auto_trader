@@ -45,6 +45,11 @@ _TARGETS = [
         "Validate file-shard manifests (exact-cover)",
     ),
     (
+        REPO_ROOT / ".github/workflows/test.yml",
+        "affected-tests",
+        "Validate file-shard manifests (exact-cover)",
+    ),
+    (
         _DURATIONS_REFRESH_PATH,
         "collect-authoritative",
         "Validate file-shard manifests (exact-cover)",

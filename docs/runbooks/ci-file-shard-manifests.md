@@ -2,9 +2,9 @@
 
 **Status: live.** The four core `test (3.13, N)` matrix jobs and the weekly
 duration-refresh workflow both run committed file manifests instead of a
-runtime `pytest-split --splits/--group` selection. Branch protection is
-unchanged — the required check names and count are identical to before this
-change.
+runtime `pytest-split --splits/--group` selection. Since ROB-1454 those jobs
+run on main pushes, dispatch and `run_all` PRs only; other PRs run
+`affected-tests` (`docs/runbooks/ci-required-aggregator.md`).
 
 ## 1. Why this exists
 
@@ -116,7 +116,7 @@ manifest and one added line. The next duration refresh will measure its
 weight and perform the only permitted full rebalance (§6.1).
 
 If local `check` differs because its collection does not match CI's
-authoritative collection, treat the PR's `taskiq-smoke` result as authoritative.
+authoritative collection, treat the PR's `affected-tests` result as authoritative.
 Do not run `generate` to make a local check pass.
 
 ### 4.1 Duration refresh: full regeneration only
@@ -191,30 +191,24 @@ ROB-1308's `scripts/call_durations.py`; see
 Exact cover — every file the authoritative
 `pytest --collect-only -m "not live" tests/` run finds is in **exactly one**
 manifest, no duplicates, no stale entries, no empty shard — is validated
-**exactly once per `test.yml` run**, inside the `taskiq-smoke` job (steps
-"Record authoritative test collection" / "Validate file-shard manifests
-(exact-cover)"), not redundantly in each of the four `test` matrix jobs.
+**exactly once per `test.yml` run that needs it**, in one of two places:
 
-Two reasons this lives in `taskiq-smoke` specifically, not a new job:
+- `taskiq-smoke` on a full run (main push, dispatch, `run_all` PR);
+- `affected-tests` on a narrow PR that edits `ci_shards/shard-N.txt`.
 
-1. **No new required check.** `taskiq-smoke` is already one of the six
-   required checks named directly in branch protection
-   (`lint`, `taskiq-smoke`, `test (3.13, 1..4)`). A failure here fails a
-   required check for real — it cannot be green-merged past. A *new*,
-   non-required job doing this check would let a PR merge with a broken
-   manifest as long as the six existing required checks stayed green,
-   which is not fail-closed.
-2. **Avoiding the very redundancy this change removes.** A fresh full-suite
-   collect-only measured ~68–71s per shard in CI. Running it in all four
-   `test` matrix jobs would burn back most of the time saved by moving off
-   pytest-split's duplicate-collection design. `taskiq-smoke` already runs
-   `uv sync --group test` + env setup for its own purposes and does not
-   already collect the suite, so the marginal cost is one collect-only, once.
+A narrow PR cannot skip the check by forgetting the manifest: a changed test file
+that no manifest lists selects nothing, which forces `run_all` and therefore
+`taskiq-smoke`.
+
+The check is not repeated in each of the four `test` matrix jobs. A fresh
+full-suite collect-only measured ~68–71s per shard in CI, so running it four times
+would burn back most of the time saved by moving off pytest-split's
+duplicate-collection design.
 
 The `test` matrix jobs themselves do not independently validate exact cover
 — they trust the committed manifest and run it directly via `mapfile`. If a
 manifest is badly broken (nonexistent file, empty), `pytest` itself will
-fail loudly; the actionable diagnosis lives in `taskiq-smoke`'s output.
+fail loudly; the actionable diagnosis lives in the exact-cover step's output.
 
 The weekly `test-durations-refresh.yml` performs its own, independent
 version of the same guarantee — see §6 — and, unlike `test.yml`, *does* call
@@ -307,7 +301,7 @@ verification of the exact shell snippet needs `bash -c '...'` with a
 
 ## 8. Explicitly unchanged
 
-- Required check names/count: `lint`, `taskiq-smoke`, `test (3.13, 1..4)`.
+- Check names on a full run: `lint`, `taskiq-smoke`, `test (3.13, 1..4)`.
 - Matrix shard count (4) and `-n 4` xdist workers per shard.
 - PostgreSQL/Redis service definitions, coverage combine/upload, socket-guard
   evidence.
@@ -316,5 +310,3 @@ verification of the exact shell snippet needs `bash -c '...'` with a
   the weekly refresh. Only the **runtime shard-selection** use
   (`--splits`/`--group`) was removed; removing the dependency itself is out
   of scope.
-- `ci-required`/`change-classifier` shadow aggregator (ROB-1294): untouched,
-  still not a required check.

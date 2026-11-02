@@ -2,13 +2,11 @@ version: 1
 # Operator 2026-11-02: auto-merge (land) on. Merging is not deploying: trading deploys,
 # migrations and schedulers still need operator approval, and blocking paths get two review passes.
 enabled: true
+# Operator 2026-11-02 (ROB-1454): a PR needs lint + PR gate (classifier-selected tests);
+# the full suite runs on main, where the watch reverts a culprit, and on the deploy SHA.
 required_checks:
   - lint
-  - taskiq-smoke
-  - 'test (3.13, 1)'
-  - 'test (3.13, 2)'
-  - 'test (3.13, 3)'
-  - 'test (3.13, 4)'
+  - PR gate
 watch_checks:
   - lint
   - taskiq-smoke

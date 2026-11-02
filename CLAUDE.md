@@ -299,30 +299,29 @@ git branch -D <branch-name>
 - 이관: `git worktree move <old-path> <new-path>` (dirty 없는 상태에서)
 - 삭제된 원격 브랜치(`upstream gone`) 는 주기적으로 `git fetch --prune && git branch -vv | grep ': gone\]'` 로 확인하고 정리
 
-### CI required check — `ci-required` shadow 집계 (ROB-1294)
+### CI — PR 게이트와 main 전체 스위트 (ROB-1294, ROB-1454)
 
-branch protection 은 지금도 `lint` · `taskiq-smoke` · `test (3.13, 1..4)` **여섯 이름에 직접**
-결합돼 있다. shard 수·lane topology 를 바꾸려면 branch protection 편집이 함께 필요하고,
-그 편집을 빠뜨리면 required check 가 영구 pending 이거나 조용히 미강제가 된다.
+PR 은 자기가 바꾼 것만 검사받고 `lint` + `PR gate` 로 머지된다. 전체 스위트
+(`lint` · `taskiq-smoke` · `test (3.13, 1..4)`)는 main push·`workflow_dispatch` 와
+분류기가 `run_all` 이라고 한 PR 에서만 돈다. 머지는 배포가 아니므로 `blocking` 경로도
+예외 없이 같고, 그 목록은 리뷰 2회·자동 revert 없음을 뜻한다.
 
-- **분류기**: `scripts/ci/classify_changes.py` — 변경 경로 → lane 결정적 매핑 (stdlib only)
-- **집계기**: `scripts/ci/aggregate_required.py` — 고정 이름 게이트의 판정 로직
-- **워크플로우 job**: `.github/workflows/test.yml` 의 `change-classifier` · `ci-required`
+- **분류기**: `scripts/ci/classify_changes.py` — 변경 경로 → lane·실행할 테스트 파일 (stdlib only)
+- **게이트**: `scripts/ci/aggregate_required.py --pr-gate` — 분류기 출력으로만 skip 을 인가
+- **워크플로우 job**: `.github/workflows/test.yml` 의 `change-classifier` · `affected-tests` · `pr-gate`
 - **계약 테스트**: `tests/ci/`
 - **런북**: `docs/runbooks/ci-required-aggregator.md`
 
-**현재 상태 = shadow.** 🔴 `ci-required` 는 **required check 가 아니며** 이 작업은 branch
-protection/GitHub 설정을 하나도 쓰지 않았다. 분류기 출력은 어떤 job 도 skip 시키지 않는다
-(`tests/ci/test_ci_required_workflow_contract.py` 가 이를 기계 검증한다 — 기존 여섯 job 의
-표시 이름·matrix·`if` 부재가 변하면 red).
-
 **fail-closed 규칙**: 분류기는 unknown path·rename/copy/delete·공유 CI/config/test 인프라·
-빈 change set·base SHA 부재를 전부 `run_all=true` 로 떨어뜨리고, 지정된 SHA 해석 실패·git
-실패·malformed diff 는 성공으로 세탁하지 않고 **job 을 red** 로 만든다. 집계기는 child 의
-`failure`/`cancelled`/미인가 `skipped`/결과 부재/미지의 결과 문자열을 전부 red 로 보며,
-`--authorize-skip` 로 명시된 skip 만 green 이다 (워크플로우는 현재 아무것도 인가하지 않음).
+빈 change set·base SHA 부재·테스트를 하나도 고르지 못한 경로·500 파일 초과 선택을 전부
+`run_all=true` 로 떨어뜨리고, 지정된 SHA 해석 실패·git 실패·malformed diff 는 성공으로
+세탁하지 않고 **job 을 red** 로 만든다. 게이트는 child 의 `failure`/`cancelled`/미인가
+`skipped`/결과 부재/미지의 결과 문자열을 전부 red 로 본다. 🔴 full-suite job 의 `if:` 를
+main 에서 skip 될 수 있게 바꾸지 마라(`tests/ci/test_pr_gate_workflow_contract.py`).
 
-**cutover 는 운영자 전용이며 이번 범위 밖** — 절차는 런북 §5.
+🔴 **배포는 그 SHA 에서 전체 스위트가 초록이어야 한다** — 확인 명령은 런북 §1. 현재는
+수동 단계이며 PR 의 `PR gate` 초록은 이 증거가 아니다. branch protection 편집은 운영자
+전용이다(런북 §5).
 
 ## 주요 워크플로우
 

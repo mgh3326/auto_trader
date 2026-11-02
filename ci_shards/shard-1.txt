@@ -16,9 +16,9 @@ tests/brokers/kis/mock_scalping_ws/test_smoke_cli.py
 tests/brokers/kis/test_client_facade.py
 tests/brokers/kis/test_vts_distributed_gate.py
 tests/ci/test_change_classifier.py
-tests/ci/test_ci_required_workflow_contract.py
 tests/ci/test_experiment_registry_lint.py
 tests/ci/test_file_shard_plan.py
+tests/ci/test_pr_gate_workflow_contract.py
 tests/core/test_exceptions.py
 tests/core/test_money.py
 tests/core/test_research_pipeline_flags.py
