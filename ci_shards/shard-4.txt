@@ -57,6 +57,7 @@ tests/research/rob1391_us_resubmit_shadow/test_mutants.py
 tests/research/rob1391_us_resubmit_shadow/test_parents.py
 tests/research/rob1391_us_resubmit_shadow/test_stats_report.py
 tests/research/rob1391_us_resubmit_shadow/test_toss_preday_sweep.py
+tests/research/stock_selection/test_harness.py
 tests/research/strategy_evidence/test_core_calculations.py
 tests/research/strategy_evidence/test_report_public.py
 tests/research/test_adjacent_window_predicate.py
@@ -505,4 +506,3 @@ tests/unit/services/daily_candles/test_toss_ohlcv_daily_adjusted.py
 tests/upbit_public_read_model/test_read_model_facade.py
 tests/upbit_public_read_model/test_ticker_cache.py
 tests/upbit_public_read_model/test_trades_cache.py
-tests/research/stock_selection/test_harness.py

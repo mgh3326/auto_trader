@@ -105,7 +105,7 @@
           "seq": 2,
           "at": "2026-11-02",
           "manifest_sha256": "c698f8b0af75eff96788de35d61d6e8f1593a783e5c734994fea47abda12d4d3",
-          "report": "docs/research/rob-1474-stock-selection.md",
+          "report": "research/experiments/reports/rob-1474-stock-selection.md",
           "report_sha256": "c4ccc2a8f1d65a864a625daef393f88d01e41d94624393387698719da4823041"
         }
       ]

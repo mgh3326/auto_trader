@@ -511,12 +511,15 @@ CLI `fetch`/`build`/`evaluate`/`forward`/`score`는 수동이다. ML 의존성�
   embargo 10세션을 더하고 모델·기준선에 동일 평가 날짜/채점기를 쓴다.
 - forward는 날짜 prefix만 읽고 파일을 덮어쓰지 않는다. score는 저장 당시 입력
   prefix 해시와 대조하여 과거 시세 수정이 있으면 거부한다.
+- `prediction_at`·`data_cutoff`·`label_kind=statistical_close_to_close`와
+  `execution_label=null`을 기록한다. close(t)는 통계 기준점이며 예측 후 최초 거래가능
+  가격에서 시작하는 실행 라벨과 섞지 않는다. pending·상폐·결측 결과는 0으로 채우지 않는다.
 - 공개 과거 스냅샷은 당시 관측 vintage가 아니다. 결과는 **survivor-only/bounded
   diagnostic**으로만 보고한다. KR/US close×volume은 실제 거래대금이 아닌 추정치다.
   시장 전체 readiness/실행 성과로 승격하지 않는다. 데이터·모델·행별 결과는
   gitignored cache, 실험 사전등록과 k는 `research/experiments/`에 둔다.
 - 런북: `research/stock_selection/README.md`, 보고서:
-  `docs/research/rob-1474-stock-selection.md`.
+  `research/experiments/reports/rob-1474-stock-selection.md`.
 
 ## 유지 규약
 
