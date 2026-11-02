@@ -65,6 +65,11 @@ US 수동 CLI `python -m scripts.mock_strategy run|close-due|status --venue alpa
 short는 shortable AND easy-to-borrow AND 계좌 shorting 허가 뒤 정수 수량만 보낸다.
 직전 완결 세션으로 신호를 만들고 h번째 후속 XNYS 세션 개장에 만기가 온다.
 만기 청산은 terminal entry의 양성 fill 증거 수량만, 청산 fill 전에는 closed/P&L 없음.
+US 사전 eligibility/session/shape 검사는 claim 전과 POST 직전에 둘 다 실행한다.
+초기 거부는 planned 유지, claim 뒤 양성 no-POST 거부만 terminal rejected(0 fill)이며
+POST 경계 뒤 오류·취소는 sending/uncertain 예약을 유지한다. 청산은 durable indexed
+leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill을 뺀 잔량을 새 leg로
+보낸다. uncertain/nonterminal leg는 후속 leg를 막는다. recorder API/스키마 변경 없음.
 별도 paper 전략 어댑터의 own journal은 공매도와 cover를 지원하며 기존 수동 MCP의
 보유 매도 전용 coordinator를 완화하지 않는다. 스케줄·배포 없음.
 런북: `docs/runbooks/rob1474-us-paper-strategy.md`. DB round trip/동시 claim은 CI에서 검증한다.
