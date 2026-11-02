@@ -1,6 +1,6 @@
 version: 1
-# Operator 2026-11-02: auto-merge (land) on. Merging is not deploying: trading deploys,
-# migrations and schedulers still need operator approval, and blocking paths get two review passes.
+# Merge review and deployment approval are separate controls. Deployment holds
+# depend on changed paths below; blocking merge paths retain two review passes.
 enabled: true
 # Operator 2026-11-02 (ROB-1454): a PR needs lint + PR gate (classifier-selected tests);
 # the full suite runs on main, where the watch reverts a culprit, and on the deploy SHA.

@@ -139,6 +139,16 @@ beside the host script; Python 3, Docker Buildx, and authenticated GitHub CLI
 Actions read access are prerequisites. Runbook:
 `docs/runbooks/ncp-pull-deploy.md` §Exact-SHA full-suite gate.
 
+## Content-based rollout approval
+
+`.mergewake/policy.yaml` defines `deploy_approval` for live authority, production
+migrations, scheduler/flow enablement and trading defaults. The rollout controller
+checks the previous deployed policy against the exact deployed..release range.
+Matched or unknown ranges hold for an exact human-only hk decision; dedicated
+mock/paper and telemetry-only paths remain automatic. Environment and secret
+changes are never automatic. This policy does not relax the exact-SHA CI gate,
+register schedules, enable trading switches or authorize an order.
+
 ## 문제 해결
 
 ### KIS 분봉 API 문제
