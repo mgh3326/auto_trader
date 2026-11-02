@@ -39,6 +39,18 @@ ORDER BY relname
 """
 
 
+def asyncpg_dsn(raw: str) -> str:
+    """Strip a SQLAlchemy driver suffix (``postgresql+asyncpg://`` → ``postgresql://``).
+
+    ``DATABASE_URL`` in the deployed containers is a SQLAlchemy URL; plain
+    ``asyncpg.connect`` rejects the ``+driver`` scheme.
+    """
+    scheme, separator, rest = raw.partition("://")
+    if not separator:
+        return raw
+    return f"{scheme.split('+', 1)[0]}://{rest}"
+
+
 async def _explain(
     conn: asyncpg.Connection, sql: str, *, allow_index: bool
 ) -> list[str]:
@@ -52,7 +64,7 @@ async def _explain(
 
 
 async def _run(database_url: str) -> int:
-    conn = await asyncpg.connect(database_url, timeout=15)
+    conn = await asyncpg.connect(asyncpg_dsn(database_url), timeout=15)
     try:
         print("== table sizes (this database) ==")
         for row in await conn.fetch(_SIZES_SQL):
