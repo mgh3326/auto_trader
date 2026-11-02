@@ -91,3 +91,37 @@ def test_module_is_read_only_and_never_touches_orders() -> None:
         "fastmcp",
     ):
         assert forbidden not in SOURCE, f"diagnostic must stay read-only: {forbidden}"
+
+
+def test_stale_render_distinguishes_entrypoints_from_scheduled_producers() -> None:
+    from scripts.diagnose_investment_reports import render_text
+
+    table = {
+        "status": "stale",
+        "stale_days": 97,
+        "rows": 68,
+        "last_created": None,
+        "rows_30d": 0,
+    }
+    links = {name: {"rows": 0} for name in ("null", "resolved", "dangling")}
+    payload = {
+        "as_of": NOW.isoformat(),
+        "stall_threshold_days": 14,
+        "watch_lookback_days": 30,
+        "report_writer": table,
+        "report_items": table,
+        "report_item_decisions": table,
+        "report_status_counts": {},
+        "report_profiles": [],
+        "writer_ok": False,
+        "watch_alerts": {**table, "active": links},
+        "watch_events": {**table, "last_delivered": None, "lookback_by_link": links},
+        "watch_linkage": {
+            "verdict": "no_report_linked_events",
+            "active_dangling_alerts": 0,
+        },
+    }
+    output = render_text(payload)
+    assert "no in-repo scheduled producer" in output
+    assert "in-repo writer entrypoints" in output
+    assert "Writer entrypoints are out-of-process callers" not in output

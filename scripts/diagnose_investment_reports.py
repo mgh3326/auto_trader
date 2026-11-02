@@ -347,8 +347,8 @@ def render_text(payload: dict[str, Any]) -> str:
         lines.append("OK — the report writer is within the stall threshold.")
     else:
         lines.append(
-            "STALE — no in-repo producer is registered for investment_report_*. "
-            "Writer entrypoints are out-of-process callers "
+            "STALE — no in-repo scheduled producer is registered for investment_report_*. "
+            "External sessions can call the in-repo writer entrypoints "
             "(investment_report_create / the gated snapshot generator / Hermes "
             "ingest) plus the default-disabled manual runner "
             "scripts.invest_reports_us_schedule. See "
