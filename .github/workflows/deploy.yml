@@ -24,6 +24,11 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # Keep tag publication ordered across automatic, manual and release builds.
+    # Never interrupt a registry push; an older queued run is tip-checked below.
+    concurrency:
+      group: ghcr-${{ github.repository }}-app-publication
+      cancel-in-progress: false
     # Only trusted main pushes enter the automatic build; the gate judges the six full-suite jobs.
     if: >-
       github.event_name != 'workflow_run' || (
@@ -104,6 +109,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check automatic moving tags
+        id: moving
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          BUILD_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          publish=true
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            tip="$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+            if [ "$tip" != "$BUILD_SHA" ]; then
+              publish=false
+              echo "Historical automatic build: publish only the immutable SHA tag, not main/latest."
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -112,8 +135,8 @@ jobs:
           # workflow_run runs in default-branch context, so ref/sha/default-branch
           # defaults would describe the branch tip, not the gated SHA: tag explicitly.
           tags: |
-            type=raw,value=main,enable=${{ github.event_name == 'workflow_run' }}
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
+            type=raw,value=main,enable=${{ github.event_name == 'workflow_run' && steps.moving.outputs.publish == 'true' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' && steps.moving.outputs.publish == 'true' }}
             type=ref,event=branch,enable=${{ github.event_name != 'workflow_run' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

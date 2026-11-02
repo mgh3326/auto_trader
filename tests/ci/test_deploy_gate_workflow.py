@@ -51,7 +51,7 @@ def _steps() -> list[dict]:
 
 
 def _fake_gh(
-    bin_dir: Path, *, jobs: list[tuple[str, str, str]], runs: list[dict]
+    bin_dir: Path, *, jobs: list[tuple[str, str, str]], runs: list[dict], main_sha: str
 ) -> Path:
     log = bin_dir / "gh.log"
     runs_json = json.dumps([{"workflow_runs": runs}])
@@ -72,6 +72,7 @@ def _fake_gh(
             #!/bin/sh
             echo "$@" >> "{log}"
             case "$*" in
+              *"/commits/main"*) printf '%s\\n' '{main_sha}' ;;
               *"/jobs"*) cat <<'JSON'
             {jobs_json}
             JSON
@@ -117,11 +118,12 @@ def _execute(
     workflow_run_sha: str = SHA,
     event_sha: str = OTHER_SHA,
     allow_unverified: str = "",
+    main_sha: str = SHA,
 ) -> tuple[list[str], int | None, str, Path]:
     """Run resolve+gate steps (and record any later step reached)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    log = _fake_gh(bin_dir, jobs=jobs, runs=runs)
+    log = _fake_gh(bin_dir, jobs=jobs, runs=runs, main_sha=main_sha)
     out = tmp_path / "github_output"
     out.write_text("")
     base_env = {
@@ -150,6 +152,8 @@ def _execute(
                 "BUILD_SHA": outputs["sha"],
                 "ALLOW_UNVERIFIED": allow_unverified,
             }
+        elif step.get("id") == "moving":
+            step_env = {"BUILD_SHA": outputs["sha"], "EVENT_NAME": event_name}
         else:
             # Action uses (including build mutations) are recorded, never run.
             continue
@@ -173,6 +177,25 @@ def _mutations_reached(reached: list[str]) -> bool:
         s["name"] for s in _steps() if str(s.get("uses", "")).startswith(MUTATING_USES)
     }
     return any(n in mutating_names for n in reached)
+
+
+@pytest.mark.parametrize(("main_sha", "publish"), [(SHA, "true"), (OTHER_SHA, "false")])
+def test_automatic_historical_run_does_not_authorize_moving_tags(
+    tmp_path: Path, main_sha: str, publish: str
+) -> None:
+    _, rc, _, _ = _execute(
+        tmp_path,
+        event_name="workflow_run",
+        jobs=_green_jobs(),
+        runs=[_run(SHA)],
+        main_sha=main_sha,
+    )
+    assert rc is None
+    outputs = dict(
+        line.split("=", 1)
+        for line in (tmp_path / "github_output").read_text().splitlines()
+    )
+    assert outputs["publish"] == publish
 
 
 def test_workflow_run_gates_event_sha_not_default_branch_tip(tmp_path: Path) -> None:

@@ -72,6 +72,12 @@ tip. `workflow_dispatch` and published releases check their own event SHA;
 manual dispatch offers `allow_unverified` for the same logged override.
 Waiting via `workflow_run` means docs-only main pushes now also build after
 CI (there is no `paths-ignore` on that event).
+Application image jobs share one non-cancelling concurrency group, so registry
+publications cannot overlap. Immediately before tag generation,
+an automatic build also reads the current `main` tip: if its gated SHA is now
+historical, it publishes only `sha-<short7>`, never `main`/`latest`. The shared
+group makes a newer build publish after an already-running older build; a
+late queued historical run cannot overwrite the moving tags.
 
 This gate covers the NCP pull path and its application image producer.
 `scripts/deploy.sh` and `scripts/deploy-native.sh` remain retired and refuse
