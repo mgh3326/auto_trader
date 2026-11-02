@@ -213,3 +213,99 @@ async def test_demo_http_or_path_override_refused_before_credentials(monkeypatch
     monkeypatch.setenv("BINANCE_SPOT_DEMO_BASE_URL", "http://demo-api.binance.com")
     with pytest.raises(ValueError, match="exact demo HTTPS"):
         await build_broker("binance_spot_demo", confirm=True)
+
+
+@pytest.mark.asyncio
+async def test_alpaca_crypto_buy_and_sell_above_fifty_dollars(monkeypatch):
+    from app.services.brokers.alpaca.schemas import Asset, Order
+
+    class Alpaca:
+        calls = []
+
+        async def list_assets(self, **kwargs):
+            return [
+                Asset(
+                    id="asset",
+                    symbol="BTC/USD",
+                    status="active",
+                    tradable=True,
+                    asset_class="crypto",
+                    min_order_size=Decimal("0.001"),
+                    min_trade_increment=Decimal("0.001"),
+                )
+            ]
+
+        async def get_position(self, symbol):
+            assert symbol == "BTCUSD"
+            return SimpleNamespace(qty_available=Decimal("2"))
+
+        async def submit_order(self, request):
+            self.calls.append(request)
+            return Order(
+                id="fake-order",
+                client_order_id=request.client_order_id,
+                symbol="BTCUSD",
+                qty=request.qty,
+                filled_qty=request.qty,
+                filled_avg_price=Decimal("1000"),
+                side=request.side,
+                type=request.type,
+                time_in_force=request.time_in_force,
+                status="filled",
+            )
+
+    class Pricing:
+        async def price(self, symbol):
+            return Decimal("1000")
+
+    monkeypatch.setenv("MOCK_STRATEGY_ENABLED", "true")
+    monkeypatch.setenv("ALPACA_PAPER_CRYPTO_ENABLED", "true")
+    client = Alpaca()
+    broker = AlpacaCryptoPaper(client, Pricing(), account_ref="fixture-clean")
+    bought = await broker.submit(intent("buy"), confirm=True)
+    sold = await broker.submit(intent("sell"), confirm=True)
+    assert bought.filled_qty == sold.filled_qty == 2
+    assert [r.side for r in client.calls] == ["buy", "sell"]
+    assert all(r.symbol == "BTC/USD" and r.time_in_force == "gtc" for r in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_alpaca_wrong_expected_account_blocks_before_post():
+    import httpx
+
+    from app.services.brokers.alpaca.config import AlpacaPaperSettings
+    from app.services.brokers.alpaca.exceptions import AlpacaPaperIdentityMismatch
+    from app.services.brokers.alpaca.schemas import OrderRequest
+    from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+
+    class Transport:
+        calls = []
+
+        async def request(self, method, path, **kwargs):
+            self.calls.append((method, path))
+            return httpx.Response(
+                200, json={"id": "wrong-id", "account_number": "wrong-number"}
+            )
+
+    transport = Transport()
+    client = AlpacaPaperBrokerService(
+        transport=transport,
+        profile="clean",
+        settings=AlpacaPaperSettings(
+            api_key="fake",
+            api_secret="fake",
+            expected_account_id_suffix="expected",
+            expected_account_number_suffix="expected",
+        ),
+    )
+    with pytest.raises(AlpacaPaperIdentityMismatch):
+        await client.submit_order(
+            OrderRequest(
+                symbol="BTC/USD",
+                qty=Decimal("2"),
+                side="buy",
+                type="market",
+                time_in_force="gtc",
+            )
+        )
+    assert transport.calls == [("GET", "/v2/account")]
