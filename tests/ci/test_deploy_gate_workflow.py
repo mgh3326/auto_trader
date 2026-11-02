@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import textwrap
 from pathlib import Path
@@ -87,11 +88,30 @@ def _fake_gh(
         )
     )
     script.chmod(0o755)
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'case "$1 $2 $3" in\n'
+        "  'buildx imagetools create') "
+        f'printf \'%s\\n\' "$*" >> "{bin_dir / "docker.log"}" ;;\n'
+        "  *) exit 99 ;;\n"
+        "esac\n"
+    )
+    docker.chmod(0o755)
     return log
 
 
 def _green_jobs() -> list[tuple[str, str, str]]:
     return [(n, "completed", "success") for n in REQUIRED_JOBS]
+
+
+def _publications(tmp_path: Path) -> list[list[str]]:
+    path = tmp_path / "bin" / "docker.log"
+    return (
+        [shlex.split(line) for line in path.read_text().splitlines()]
+        if path.exists()
+        else []
+    )
 
 
 def _run(sha: str = SHA, event: str = "push") -> dict:
@@ -119,8 +139,9 @@ def _execute(
     event_sha: str = OTHER_SHA,
     allow_unverified: str = "",
     main_sha: str = SHA,
+    event_ref: str = "refs/heads/main",
 ) -> tuple[list[str], int | None, str, Path]:
-    """Run resolve+gate steps (and record any later step reached)."""
+    """Execute gate/publication shell steps; build actions remain offline markers."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = _fake_gh(bin_dir, jobs=jobs, runs=runs, main_sha=main_sha)
@@ -136,7 +157,12 @@ def _execute(
     reached: list[str] = []
     stderr = ""
     outputs: dict[str, str] = {}
-    for step in _steps():
+    steps = _steps()
+    if event_name == "workflow_run" or (
+        event_name == "workflow_dispatch" and event_ref == "refs/heads/main"
+    ):
+        steps += _load()["jobs"]["promote-moving-tags"]["steps"]
+    for step in steps:
         name = step.get("name", step.get("uses", ""))
         reached.append(name)
         if name == RESOLVE_STEP:
@@ -152,10 +178,13 @@ def _execute(
                 "BUILD_SHA": outputs["sha"],
                 "ALLOW_UNVERIFIED": allow_unverified,
             }
-        elif step.get("id") == "moving":
-            step_env = {"BUILD_SHA": outputs["sha"], "EVENT_NAME": event_name}
+        elif step.get("id") == "publish":
+            step_env = {
+                "BUILD_SHA": outputs["sha"],
+                "SHORT_SHA": outputs["short"],
+                "IMAGE_REPOSITORY": "ghcr.io/mgh3326/auto_trader",
+            }
         else:
-            # Action uses (including build mutations) are recorded, never run.
             continue
         result = subprocess.run(
             ["bash", "-c", step["run"]],
@@ -179,9 +208,9 @@ def _mutations_reached(reached: list[str]) -> bool:
     return any(n in mutating_names for n in reached)
 
 
-@pytest.mark.parametrize(("main_sha", "publish"), [(SHA, "true"), (OTHER_SHA, "false")])
-def test_automatic_historical_run_does_not_authorize_moving_tags(
-    tmp_path: Path, main_sha: str, publish: str
+@pytest.mark.parametrize("main_sha", [SHA, OTHER_SHA])
+def test_historical_sha_build_survives_without_rewinding_moving_tags(
+    tmp_path: Path, main_sha: str
 ) -> None:
     _, rc, _, _ = _execute(
         tmp_path,
@@ -191,11 +220,59 @@ def test_automatic_historical_run_does_not_authorize_moving_tags(
         main_sha=main_sha,
     )
     assert rc is None
-    outputs = dict(
-        line.split("=", 1)
-        for line in (tmp_path / "github_output").read_text().splitlines()
+    expected = (
+        [
+            [
+                "buildx",
+                "imagetools",
+                "create",
+                "--tag",
+                "ghcr.io/mgh3326/auto_trader:main",
+                "--tag",
+                "ghcr.io/mgh3326/auto_trader:latest",
+                "ghcr.io/mgh3326/auto_trader:sha-aaaaaaa",
+            ]
+        ]
+        if main_sha == SHA
+        else []
     )
-    assert outputs["publish"] == publish
+    assert _publications(tmp_path) == expected
+
+
+def test_main_dispatch_promotes_both_tags_under_the_same_gate(tmp_path: Path) -> None:
+    _, rc, _, _ = _execute(
+        tmp_path,
+        event_name="workflow_dispatch",
+        jobs=_green_jobs(),
+        runs=[_run(OTHER_SHA)],
+        event_sha=OTHER_SHA,
+        main_sha=OTHER_SHA,
+    )
+    assert rc is None
+    assert _publications(tmp_path) == [
+        [
+            "buildx",
+            "imagetools",
+            "create",
+            "--tag",
+            "ghcr.io/mgh3326/auto_trader:main",
+            "--tag",
+            "ghcr.io/mgh3326/auto_trader:latest",
+            "ghcr.io/mgh3326/auto_trader:sha-bbbbbbb",
+        ]
+    ]
+
+
+def test_non_main_dispatch_never_promotes_main_or_latest(tmp_path: Path) -> None:
+    _, rc, _, _ = _execute(
+        tmp_path,
+        event_name="workflow_dispatch",
+        event_ref="refs/heads/feature",
+        jobs=_green_jobs(),
+        runs=[_run(OTHER_SHA)],
+    )
+    assert rc is None
+    assert _publications(tmp_path) == []
 
 
 def test_workflow_run_gates_event_sha_not_default_branch_tip(tmp_path: Path) -> None:

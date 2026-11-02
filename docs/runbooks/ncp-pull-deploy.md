@@ -72,12 +72,21 @@ tip. `workflow_dispatch` and published releases check their own event SHA;
 manual dispatch offers `allow_unverified` for the same logged override.
 Waiting via `workflow_run` means docs-only main pushes now also build after
 CI (there is no `paths-ignore` on that event).
-Application image jobs share one non-cancelling concurrency group, so registry
-publications cannot overlap. Immediately before tag generation,
-an automatic build also reads the current `main` tip: if its gated SHA is now
-historical, it publishes only `sha-<short7>`, never `main`/`latest`. The shared
-group makes a newer build publish after an already-running older build; a
-late queued historical run cannot overwrite the moving tags.
+SHA image builds have no shared concurrency group. Every eligible run and
+matrix image publishes its `sha-<short7>` tag before a separate
+`promote-moving-tags` job can start. Only that promotion job uses a
+non-cancelling, per-image concurrency group: GitHub may supersede a pending
+promotion, but cannot thereby cancel the SHA image build.
+
+Automatic builds and manual dispatches on `main` use the same promotion
+path. Inside the serialized promotion job, the exact-SHA CI gate runs again
+before Buildx/login, then the current `main` tip is read immediately before
+publication. A matching SHA promotes **both `main` and `latest` together**
+from the already-published SHA image; a historical SHA changes neither tag.
+Version/release and non-main branch tags do not independently update either
+moving tag (`metadata-action` implicit latest generation is disabled).
+If a pending promotion is superseded, its SHA image remains deployable;
+manual dispatch on `main` can request paired promotion again.
 
 This gate covers the NCP pull path and its application image producer.
 `scripts/deploy.sh` and `scripts/deploy-native.sh` remain retired and refuse
@@ -88,8 +97,8 @@ NCP app image (NCP uses HAProxy); existing one-shot jobs consume
 
 ## Tag policy
 
-- `main` is the latest image built from a verified `main` push. It is suitable
-  for the normal promotion path, but is intentionally movable.
+- `main` and `latest` are promoted together from the verified current `main`
+  image, automatically or by manual dispatch on `main`. They are intentionally movable.
 - `sha-<short7>` identifies the exact `main` commit image and is the rollback
   or incident-pinning choice.
 - `production` remains a manual release tag. This workflow does not advance it

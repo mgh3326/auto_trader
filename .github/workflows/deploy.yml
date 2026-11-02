@@ -24,11 +24,6 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    # Keep tag publication ordered across automatic, manual and release builds.
-    # Never interrupt a registry push; an older queued run is tip-checked below.
-    concurrency:
-      group: ghcr-${{ github.repository }}-app-publication
-      cancel-in-progress: false
     # Only trusted main pushes enter the automatic build; the gate judges the six full-suite jobs.
     if: >-
       github.event_name != 'workflow_run' || (
@@ -40,6 +35,9 @@ jobs:
       contents: read
       packages: write
       actions: read
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      short: ${{ steps.sha.outputs.short }}
     strategy:
       fail-fast: false
       matrix:
@@ -109,40 +107,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check automatic moving tags
-        id: moving
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          BUILD_SHA: ${{ steps.sha.outputs.sha }}
-        run: |
-          set -euo pipefail
-          publish=true
-          if [ "$EVENT_NAME" = "workflow_run" ]; then
-            tip="$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-            if [ "$tip" != "$BUILD_SHA" ]; then
-              publish=false
-              echo "Historical automatic build: publish only the immutable SHA tag, not main/latest."
-            fi
-          fi
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
-
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
+          # Moving tags are promoted together only after this SHA image exists.
+          flavor: latest=false
           # workflow_run runs in default-branch context, so ref/sha/default-branch
           # defaults would describe the branch tip, not the gated SHA: tag explicitly.
           tags: |
-            type=raw,value=main,enable=${{ github.event_name == 'workflow_run' && steps.moving.outputs.publish == 'true' }}
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' && steps.moving.outputs.publish == 'true' }}
-            type=ref,event=branch,enable=${{ github.event_name != 'workflow_run' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=sha-${{ steps.sha.outputs.short }}
-            type=raw,value=latest,enable=${{ github.event_name != 'workflow_run' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
             type=raw,value=production,enable=${{ startsWith(github.ref, 'refs/heads/production') }}
           labels: |
             org.opencontainers.image.revision=${{ steps.sha.outputs.sha }}
@@ -195,9 +174,79 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Queued moving-tag promotions may be superseded by GitHub concurrency.
+  # SHA image builds above are outside this group and cannot be dropped by it.
+  promote-moving-tags:
+    needs: build-and-push
+    if: >-
+      github.event_name == 'workflow_run' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            suffix: ""
+    concurrency:
+      group: ghcr-${{ github.repository }}-${{ matrix.image }}-moving-tags
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build-and-push.outputs.sha }}
+          persist-credentials: false
+
+      - name: Verify CI gate for exact SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_SHA: ${{ needs.build-and-push.outputs.sha }}
+          ALLOW_UNVERIFIED: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_unverified || '' }}
+        run: |
+          set -euo pipefail
+          args=(--sha "$BUILD_SHA" --repo "$GITHUB_REPOSITORY")
+          if [ -n "$ALLOW_UNVERIFIED" ]; then
+            args+=(--allow-unverified "$ALLOW_UNVERIFIED")
+          fi
+          python3 scripts/deploy_ci_gate.py "${args[@]}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote current main image
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_SHA: ${{ needs.build-and-push.outputs.sha }}
+          SHORT_SHA: ${{ needs.build-and-push.outputs.short }}
+          IMAGE_REPOSITORY: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          tip="$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [ "$tip" != "$BUILD_SHA" ]; then
+            echo "Historical build: SHA image is published; leave main/latest unchanged."
+            exit 0
+          fi
+          docker buildx imagetools create \
+            --tag "$IMAGE_REPOSITORY:main" \
+            --tag "$IMAGE_REPOSITORY:latest" \
+            "$IMAGE_REPOSITORY:sha-$SHORT_SHA"
+
   notify:
     if: failure()
-    needs: [build-and-push]
+    needs: [build-and-push, promote-moving-tags]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification
