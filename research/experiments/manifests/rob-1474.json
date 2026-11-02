@@ -1,0 +1,161 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "ROB-1474",
+  "version": 2,
+  "title": "Daily cross-sectional stock selection harness, bounded diagnostics",
+  "status": "draft",
+  "question": "Can a fixed LightGBM regression on daily ranks improve selection against frozen price-volume baselines, on identical causal walk-forward dates? Historical sample diagnostics only; no market-wide or deployable-alpha claim.",
+  "markets": [
+    "kr",
+    "us",
+    "crypto"
+  ],
+  "hashes": {
+    "code_base": "c86d3c4e2",
+    "feature_contract": "stock-selection-v2: equity52w=252 sessions,crypto52w=364 UTC days",
+    "dataset_manifest": {
+      "pending": "public snapshot hashes recorded in diagnostic report; explicit symbols fixed before fetch"
+    },
+    "cost_table": "kr=25,us=10,crypto=15 bps one-way; 4 sides per long-short vintage"
+  },
+  "features": [
+    {
+      "name": "momentum_5/20/60",
+      "available_at": "nominal completed session plus data-plane lag; crypto UTC D closes D+1; historical current-vintage source is diagnostic only",
+      "source": "public OHLCV; Yahoo turnover is explicitly close*volume estimate, Upbit actual quote turnover"
+    },
+    {
+      "name": "reversal_1/5",
+      "available_at": "nominal completed session plus data-plane lag; crypto UTC D closes D+1; historical current-vintage source is diagnostic only",
+      "source": "public OHLCV; Yahoo turnover is explicitly close*volume estimate, Upbit actual quote turnover"
+    },
+    {
+      "name": "volume/value_shock",
+      "available_at": "nominal completed session plus data-plane lag; crypto UTC D closes D+1; historical current-vintage source is diagnostic only",
+      "source": "public OHLCV; Yahoo turnover is explicitly close*volume estimate, Upbit actual quote turnover"
+    },
+    {
+      "name": "volatility_20",
+      "available_at": "nominal completed session plus data-plane lag; crypto UTC D closes D+1; historical current-vintage source is diagnostic only",
+      "source": "public OHLCV; Yahoo turnover is explicitly close*volume estimate, Upbit actual quote turnover"
+    },
+    {
+      "name": "gap",
+      "available_at": "nominal completed session plus data-plane lag; crypto UTC D closes D+1; historical current-vintage source is diagnostic only",
+      "source": "public OHLCV; Yahoo turnover is explicitly close*volume estimate, Upbit actual quote turnover"
+    },
+    {
+      "name": "high_distance_52w (252 equity sessions; 364 crypto UTC daily sessions)",
+      "available_at": "nominal completed session plus data-plane lag; crypto UTC D closes D+1; historical current-vintage source is diagnostic only",
+      "source": "public OHLCV; Yahoo turnover is explicitly close*volume estimate, Upbit actual quote turnover"
+    },
+    {
+      "name": "benchmark-relative versions",
+      "available_at": "nominal completed session plus data-plane lag; crypto UTC D closes D+1; historical current-vintage source is diagnostic only",
+      "source": "public OHLCV; Yahoo turnover is explicitly close*volume estimate, Upbit actual quote turnover"
+    }
+  ],
+  "labels": [
+    {
+      "name": "return_1,relative_return_1",
+      "definition": "close(t+h)/close(t)-1, and minus same-horizon benchmark return; calendar sessions, any missing/corporate-action crossing is unknown",
+      "horizon_sessions": 1
+    },
+    {
+      "name": "return_3,relative_return_3",
+      "definition": "close(t+h)/close(t)-1, and minus same-horizon benchmark return; calendar sessions, any missing/corporate-action crossing is unknown",
+      "horizon_sessions": 3
+    },
+    {
+      "name": "return_5,relative_return_5",
+      "definition": "close(t+h)/close(t)-1, and minus same-horizon benchmark return; calendar sessions, any missing/corporate-action crossing is unknown",
+      "horizon_sessions": 5
+    },
+    {
+      "name": "return_10,relative_return_10",
+      "definition": "close(t+h)/close(t)-1, and minus same-horizon benchmark return; calendar sessions, any missing/corporate-action crossing is unknown",
+      "horizon_sessions": 10
+    }
+  ],
+  "calendar": {
+    "kr": "XKRX",
+    "us": "XNYS",
+    "crypto": "24/7"
+  },
+  "splits": {
+    "scheme": "expanding quarterly folds; train from 2021-01-01, validate common sessions of 2022 in chunks of 63; additive purge+embargo; baseline evaluated on identical validation days",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 10,
+    "gap_sessions": 10,
+    "folds": [
+      {
+        "train": [
+          "2021-01-01",
+          "2021-12-01"
+        ],
+        "validate": [
+          "2022-01-01",
+          "2022-12-31"
+        ]
+      }
+    ],
+    "test": {
+      "kind": "prospective_seal",
+      "period": {
+        "pending": "no final test in this PR; fixed window at future model freeze"
+      },
+      "exposure_audit": "2022 historical development diagnostics, not pristine sealed evidence; counted as one diagnostic look before fetch",
+      "seal_rule": "no prospective metrics or verdict in this PR"
+    }
+  },
+  "candidate_policies": [
+    {
+      "id": "baselines",
+      "description": "all 10 factors plus benchmark-relative versions; higher up except lower volatility; no selection by reported result"
+    },
+    {
+      "id": "lightgbm_rank",
+      "description": "60 estimators,7 leaves,lr .05,min_child40,L2 1,seed1474,one thread; regression on daily percentile rank"
+    }
+  ],
+  "costs_fills": {
+    "cost_table": "assumptions: KR25/US10/crypto15 bps per side; h-day spread minus 4 sides, independent vintages, no netting",
+    "fill_models": [
+      "close-marked diagnostic only; no fill, short availability, capacity, or NAV claim"
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 1,
+    "search": "none; no tuning, early stopping, fitted preprocessing or feature selection"
+  },
+  "seeds": [
+    1474
+  ],
+  "metrics": {
+    "primary": "daily cross-sectional Spearman IC; diagnostic exception to NAV-based primary",
+    "secondary": [
+      "unannualized ICIR",
+      "h-day decile spread",
+      "up/down top5 sign hit",
+      "gross2 weight turnover",
+      "cost-adjusted spread",
+      "year/regime",
+      "outcome coverage"
+    ],
+    "family": [
+      "20 baselines and one ranker per market x 4 horizons"
+    ],
+    "alpha": "0.05",
+    "delta_min": "0.00"
+  },
+  "stopping_rules": [
+    "any temporal leakage invalidates the run",
+    "no market-wide claim on explicit survivor samples",
+    "no scheduling, DB, account endpoints, or orders",
+    "no TFT or gate verdict in this PR"
+  ],
+  "cumulative_k": {
+    "prior_k": 1,
+    "source": "registry"
+  }
+}

@@ -505,3 +505,4 @@ tests/unit/services/daily_candles/test_toss_ohlcv_daily_adjusted.py
 tests/upbit_public_read_model/test_read_model_facade.py
 tests/upbit_public_read_model/test_ticker_cache.py
 tests/upbit_public_read_model/test_trades_cache.py
+tests/research/stock_selection/test_harness.py
