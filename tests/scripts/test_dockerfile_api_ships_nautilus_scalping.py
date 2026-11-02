@@ -1,4 +1,4 @@
-"""Dockerfile.api ships research/nautilus_scalping, and only that part of research/.
+"""Dockerfile.api ships only the H5 and ROB-1474 paper research dependencies.
 
 The H5 entry scripts (``scripts/binance_h5_*.py``: the demo runner, the read-only
 truth gate and the heartbeat watcher) import
@@ -52,9 +52,19 @@ ENTRY_SCRIPTS = tuple(
         p.relative_to(REPO_ROOT).as_posix()
         for p in REPO_ROOT.glob("scripts/binance_h5_*.py")
     )
-)
+) + ("scripts/mock_strategy.py",)
 RESEARCH_MODULE = "research.nautilus_scalping.rob974_features"
 SCRIPT_COPY = "COPY research/nautilus_scalping/ ./research/nautilus_scalping/"
+PAPER_RESEARCH_FILES = {
+    "research/stock_selection/__init__.py",
+    "research/stock_selection/forward.py",
+    "research/stock_selection/dataset.py",
+    "research/stock_selection/io.py",
+    "research/stock_selection/models.py",
+    "research/data_plane/__init__.py",
+    "research/data_plane/calendars.py",
+    "research/data_plane/contract.py",
+}
 
 
 # --- the Dockerfile final stage and .dockerignore ------------------------------
@@ -263,12 +273,13 @@ def missing_from_image(files: dict[str, Path], workdir: str) -> list[str]:
 
 
 def research_scope_violations(files: dict[str, Path], workdir: str) -> list[str]:
-    """Image files under research/ other than nautilus_scalping (and the package marker)."""
+    """Reject research outside H5 and the exact paper-list dependency closure."""
     return sorted(
         rel
         for rel in under_workdir(files, workdir)
         if rel.startswith("research/")
         and not rel.startswith("research/nautilus_scalping/")
+        and rel not in PAPER_RESEARCH_FILES
         and rel != "research/__init__.py"
     )
 
@@ -383,6 +394,7 @@ def import_from_image(
     modules = [
         Path(e).with_suffix("").as_posix().replace("/", ".") for e in ENTRY_SCRIPTS
     ]
+    modules.append("research.stock_selection.forward")  # the CLI imports this lazily
     return run_bootstrap(root / workdir.lstrip("/"), modules)
 
 
@@ -439,7 +451,7 @@ def test_entry_scripts_import_from_the_image_file_set_alone(real_runtime) -> Non
     assert RESEARCH_MODULE in real_runtime.loaded
 
 
-def test_only_nautilus_scalping_is_added_from_research(real_image) -> None:
+def test_only_execution_research_dependencies_are_added(real_image) -> None:
     files, workdir = real_image
     shipped = {
         rel for rel in under_workdir(files, workdir) if rel.startswith("research/")
@@ -447,7 +459,8 @@ def test_only_nautilus_scalping_is_added_from_research(real_image) -> None:
     assert shipped, "research/nautilus_scalping must ship"
     assert research_scope_violations(files, workdir) == []
     assert "research/nautilus_scalping/rob974_features.py" in shipped
-    # one COPY from research/, exactly this one
+    assert PAPER_RESEARCH_FILES <= shipped
+    # Keep the COPY source list explicit: no datasets or other research runners.
     dockerfile_copies, _ = final_stage((REPO_ROOT / "Dockerfile.api").read_text())
     research_copies = [
         (c.sources, c.dest)
@@ -455,7 +468,25 @@ def test_only_nautilus_scalping_is_added_from_research(real_image) -> None:
         if any(s.split("/")[0] == "research" for s in c.sources)
     ]
     assert research_copies == [
-        (("research/nautilus_scalping/",), "/app/research/nautilus_scalping")
+        (("research/nautilus_scalping/",), "/app/research/nautilus_scalping"),
+        (
+            (
+                "research/stock_selection/__init__.py",
+                "research/stock_selection/forward.py",
+                "research/stock_selection/dataset.py",
+                "research/stock_selection/io.py",
+                "research/stock_selection/models.py",
+            ),
+            "/app/research/stock_selection",
+        ),
+        (
+            (
+                "research/data_plane/__init__.py",
+                "research/data_plane/calendars.py",
+                "research/data_plane/contract.py",
+            ),
+            "/app/research/data_plane",
+        ),
     ]
 
 
@@ -476,8 +507,18 @@ def test_removing_the_copy_line_fails_both_layers(
     )
     runtime = import_from_image(files, workdir, tmp_path)
     assert runtime.errors, "an import must fail when research is not copied"
-    assert any("No module named 'research'" in e for e in runtime.errors.values())
+    assert any("research.nautilus_scalping" in e for e in runtime.errors.values())
     assert RESEARCH_MODULE not in runtime.loaded
+
+
+def test_paper_list_builder_requires_its_shipped_module(
+    dockerfile, ignore_text, tmp_path
+):
+    mutant = dockerfile.replace(" research/stock_selection/forward.py", "")
+    files, workdir = image_files(mutant, ignore_text)
+    assert "research/stock_selection/forward.py" in missing_from_image(files, workdir)
+    runtime = import_from_image(files, workdir, tmp_path)
+    assert "research.stock_selection.forward" in runtime.errors
 
 
 def test_copying_a_different_research_package_does_not_satisfy_the_scripts(

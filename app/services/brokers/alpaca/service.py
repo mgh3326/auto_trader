@@ -19,6 +19,7 @@ from app.services.brokers.alpaca.schemas import (
     Asset,
     CashBalance,
     Fill,
+    MarketClock,
     Order,
     OrderRequest,
     Position,
@@ -160,6 +161,12 @@ class AlpacaPaperBrokerService:
             cash=data["cash"],
             buying_power=data["buying_power"],
         )
+
+    async def get_clock(self) -> MarketClock:
+        return MarketClock.model_validate(await self._request("GET", "/v2/clock"))
+
+    async def get_asset(self, symbol: str) -> Asset:
+        return Asset.model_validate(await self._request("GET", f"/v2/assets/{symbol}"))
 
     async def list_positions(self) -> list[Position]:
         data = await self._request("GET", "/v2/positions")
