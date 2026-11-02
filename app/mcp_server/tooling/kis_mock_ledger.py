@@ -681,10 +681,12 @@ async def _record_kis_mock_order(
 async def kis_mock_reconciliation_run_impl(
     *,
     dry_run: bool = True,
+    confirm: bool = False,
     limit: int = 100,
     market: str | None = None,
     symbol: str | None = None,
     ledger_ids: list[int] | None = None,
+    record_dispatch_evidence: bool = False,
 ) -> dict[str, Any]:
     """Execute KIS mock order reconciliation and return summary.
 
@@ -712,9 +714,30 @@ async def kis_mock_reconciliation_run_impl(
     )
     if scope_error:
         return scope_error
+    if any(
+        type(value) is not bool
+        for value in (dry_run, confirm, record_dispatch_evidence)
+    ):
+        return {"success": False, "error": "invalid_confirmation", "scope": scope}
+    if not dry_run and confirm is not True:
+        return {"success": False, "error": "confirm_required", "scope": scope}
+    if record_dispatch_evidence and (dry_run or confirm is not True):
+        return {
+            "success": False,
+            "error": "record_dispatch_evidence_requires_confirmed_apply",
+            "scope": scope,
+        }
+    if record_dispatch_evidence and any(
+        scope.get(key) is not None for key in ("market", "symbol", "ledger_ids")
+    ):
+        return {
+            "success": False,
+            "error": "record_dispatch_evidence_requires_unscoped",
+            "scope": scope,
+        }
     try:
         async with _order_session_factory()() as db:
-            return await run_kis_mock_reconciliation(
+            result = await run_kis_mock_reconciliation(
                 db,
                 dry_run=dry_run,
                 limit=limit,
@@ -722,6 +745,16 @@ async def kis_mock_reconciliation_run_impl(
                 symbol=scope["symbol"],
                 ledger_ids=scope.get("ledger_ids"),
             )
+            if result.get("success") and not any(
+                scope.get(key) is not None for key in ("market", "symbol", "ledger_ids")
+            ):
+                result["dispatch_recovery"] = await _recover_mock_dispatch_claims(
+                    db,
+                    dry_run=dry_run,
+                    confirm=confirm,
+                    record_dispatch_evidence=record_dispatch_evidence,
+                )
+            return result
     except Exception as exc:
         logger.exception("Failed to run KIS mock reconciliation: %s", exc)
         return {
@@ -731,6 +764,125 @@ async def kis_mock_reconciliation_run_impl(
             "account_mode": "kis_mock",
             "scope": scope,
         }
+
+
+async def _recover_mock_dispatch_claims(
+    db: AsyncSession,
+    *,
+    dry_run: bool,
+    confirm: bool,
+    record_dispatch_evidence: bool = False,
+) -> dict[str, Any]:
+    """The manual MCP entry is the only caller of dispatch-claim recovery."""
+    from app.services.brokers.kis import KISClient
+    from app.services.kis_mock_runner.evidence_store import (
+        KISMockEvidenceConflict,
+        KISMockEvidenceStore,
+    )
+    from app.services.kis_mock_runner.registry_binding import (
+        kis_mock_registry_from_environment,
+        require_kis_mock_identity,
+    )
+    from app.services.kis_mock_runner.singleton import kis_mock_account_fingerprint
+    from app.services.mock_integration.coordination import DurableSendClaimAdapter
+    from app.services.mock_lane_registry import assert_mock_only_endpoint
+    from app.services.order_send_intent_service import OrderSendIntentService
+
+    try:
+        entry = next(
+            entry
+            for entry in kis_mock_registry_from_environment()
+            if entry.lane_id == "kr.kis.mock"
+        )
+        require_kis_mock_identity(entry)
+        store = KISMockEvidenceStore(_order_session_factory(), entry=entry)
+    except Exception:  # noqa: BLE001 - no identity means no recovery authority
+        return {
+            "status": "uncertain",
+            "account_blocked": True,
+            "reason": "recovery_identity_unavailable",
+            "claims": [],
+            "dry_run": dry_run,
+            "record_dispatch_evidence": record_dispatch_evidence,
+        }
+
+    client: KISClient | None = None
+
+    def checked_client() -> KISClient:
+        nonlocal client
+        if client is None:
+            client = KISClient(is_mock=True)
+        view = client._settings
+        if (
+            client._is_mock_client is not True
+            or getattr(view, "_is_mock", None) is not True
+            or assert_mock_only_endpoint(entry, view.kis_base_url)
+            != "openapivts.koreainvestment.com:29443"
+            or kis_mock_account_fingerprint(
+                app_key=view.kis_app_key, account_no=view.kis_account_no
+            )
+            != entry.physical_account_id
+        ):
+            raise KISMockEvidenceConflict("recovery_mock_identity_mismatch")
+        return client
+
+    async def read_exact_order(
+        odno: str, created_at: datetime.datetime
+    ) -> dict[str, Any]:
+        actual_client = checked_client()
+        dispatch_day = created_at.astimezone(
+            datetime.timezone(datetime.timedelta(hours=9))
+        ).strftime("%Y%m%d")
+        rows = await actual_client.inquire_daily_order_domestic(
+            start_date=dispatch_day,
+            end_date=dispatch_day,
+            order_number=odno,
+            is_mock=True,
+        )
+        if (
+            type(rows) is not list
+            or any(type(row) is not dict for row in rows)
+            or any(
+                type(row.get("ord_dt")) is not str
+                or re.fullmatch(r"[0-9]{8}", row["ord_dt"]) is None
+                for row in rows
+            )
+        ):
+            raise KISMockEvidenceConflict("recovery_readback_not_unique")
+        matching_day = [row for row in rows if row["ord_dt"] == dispatch_day]
+        if len(matching_day) != 1:
+            raise KISMockEvidenceConflict("recovery_readback_not_unique")
+        return matching_day[0]
+
+    close_failed = False
+    try:
+        result = await KISMockLifecycleService(db).recover_dispatch_claims(
+            store=store,
+            claims=DurableSendClaimAdapter(OrderSendIntentService(db)),
+            reader=read_exact_order,
+            dry_run=dry_run,
+            confirm=confirm,
+            record_dispatch_evidence=record_dispatch_evidence,
+        )
+        if result["status"] == "no_unreleased_claims":
+            try:
+                checked_client()
+            except Exception:  # noqa: BLE001 - an unverified account is not clear
+                result.update(
+                    status="uncertain",
+                    account_blocked=True,
+                    reason="recovery_identity_unavailable",
+                )
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001 - preserve the retained claim report
+                close_failed = True
+    if close_failed:
+        result["client_close"] = "failed"
+        result["account_blocked"] = True
+    return result
 
 
 async def resolve_mock_order_for_cancel(order_no: str) -> dict[str, Any] | None:

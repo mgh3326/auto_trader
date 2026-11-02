@@ -18,6 +18,7 @@ from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceConflict,
     KISMockEvidenceStore,
     NativeOrderEvidence,
+    _dispatch_matches_claim,
     _key,
 )
 from app.services.kis_mock_runner.registry_binding import (
@@ -304,18 +305,18 @@ async def test_native_evidence_cannot_use_coordinator_reserved_keys(key):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "kind,payload,blocked",
+    "kind,payload,dispatch_matches",
     [
-        ("reject", {}, True),
-        ("ack", {}, True),
-        ("ack", {"claim_row_id": "7"}, True),
-        ("ack", {"claim_row_id": True}, True),
-        ("ack", {"claim_row_id": 8}, True),
-        ("ack", {"claim_row_id": 7}, False),
+        ("reject", {}, False),
+        ("ack", {}, False),
+        ("ack", {"claim_row_id": "7"}, False),
+        ("ack", {"claim_row_id": True}, False),
+        ("ack", {"claim_row_id": 8}, False),
+        ("ack", {"claim_row_id": 7}, True),
     ],
 )
-async def test_rediscovery_requires_typed_current_claim_dispatch(
-    kind, payload, blocked
+async def test_rediscovery_blocks_even_when_dispatch_matches(
+    kind, payload, dispatch_matches
 ):
     session = AsyncMock()
     sessions = MagicMock()
@@ -327,12 +328,33 @@ async def test_rediscovery_requires_typed_current_claim_dispatch(
     event = SimpleNamespace(
         kind=kind, payload=payload, broker_evidence_key=_key("dispatch")
     )
-    session.scalars.side_effect = [[claim], [event]]
+    session.scalars.side_effect = [[claim]]
     session.scalar.return_value = SimpleNamespace(order_attempt_id="attempt")
     store._attributed_odno = AsyncMock(return_value=None)
     discovered = await store.rediscover_unreleased_claims()
     assert len(discovered) == 1
-    assert discovered[0].blocks_account is blocked
+    assert discovered[0].blocks_account is True
+    assert _dispatch_matches_claim(event, claim.id) is dispatch_matches
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_attribution_still_reports_the_exact_blocking_claim():
+    session = AsyncMock()
+    sessions = MagicMock()
+    sessions.return_value.__aenter__.return_value = session
+    store = KISMockEvidenceStore(sessions, entry=bound_entry())
+    session.scalars.return_value = [
+        SimpleNamespace(id=7, idempotency_key="key", side="buy")
+    ]
+    session.scalar.return_value = SimpleNamespace(order_attempt_id="attempt")
+    store._attributed_odno = AsyncMock(
+        side_effect=KISMockEvidenceConflict("attributed_odno_ambiguous")
+    )
+    result = await store.rediscover_unreleased_claims()
+    assert result[0].claim.row_id == 7
+    assert result[0].broker_order_id is None
+    assert result[0].attribution_error == "attributed_odno_ambiguous"
+    assert result[0].blocks_account is True
 
 
 @pytest.mark.asyncio

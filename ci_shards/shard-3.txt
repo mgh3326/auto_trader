@@ -480,10 +480,12 @@ tests/test_screener_service_investor_flow_chip.py
 tests/test_screener_snapshot_halted_suspect_boundary.py
 tests/test_screening_entrypoint.py
 tests/test_screening_instrument_type.py
+tests/test_sentry_access_log_filter.py
 tests/test_sentry_diagnostics.py
 tests/test_sentry_init.py
 tests/test_sentry_pii_docs_default_off.py
 tests/test_sentry_profiling_canary.py
+tests/test_sentry_traces_sampler.py
 tests/test_services_upbit.py
 tests/test_snapshot_commit_guard_wiring.py
 tests/test_stock_detail_research_consensus_service.py
