@@ -672,14 +672,16 @@ def attribute_fills(
         if day is not None and matches:
             # KIS reuses order numbers on other days: the fill must be on the
             # trading day of the rung's own order.
+            # A candidate with an unknown day could own the fill, even when
+            # another candidate's day matches: ambiguous, so never guessed.
             unknown = [ref for ref in matches if ref.order_day is None]
+            if unknown:
+                skipped["kis_order_day_unknown"] += 1
+                unattributed.update(ref.order.rung_id for ref in unknown)
+                continue
             same_day = [ref for ref in matches if ref.order_day == day]
             if not same_day:
-                if unknown:
-                    skipped["kis_order_day_unknown"] += 1
-                    unattributed.update(ref.order.rung_id for ref in unknown)
-                else:
-                    skipped["order_id_reused_on_another_day"] += 1
+                skipped["order_id_reused_on_another_day"] += 1
                 continue
             matches = same_day
         if not matches:

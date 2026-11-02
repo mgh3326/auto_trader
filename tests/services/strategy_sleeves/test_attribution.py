@@ -112,6 +112,18 @@ def test_a_kis_rung_without_a_known_order_day_gets_no_fill_and_flags_pnl() -> No
     assert unattributed == {10}
 
 
+def test_a_shared_number_with_an_unknown_day_rung_is_ambiguous() -> None:
+    """A day-proven rung does not win while another candidate's day is unknown."""
+    proven = _ref(10)
+    unknown = _ref(11, created=T0 - timedelta(days=1), order_day=None)
+    fills, skipped, unattributed = store.attribute_fills(
+        rows=[_row(1)], by_order_id={"123": [proven, unknown]}, sleeve=_kr_sleeve()
+    )
+    assert fills == []
+    assert skipped == {"kis_order_day_unknown": 1}
+    assert unattributed == {11}
+
+
 def test_the_rung_whose_order_day_matches_owns_a_shared_number() -> None:
     old = _ref(
         10,
