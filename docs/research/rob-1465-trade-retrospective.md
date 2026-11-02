@@ -44,7 +44,7 @@ Implementation and contract: `app/services/dots_history_export/`,
 | `account_balance_daily` | 7 | 938 | `afc7505f14c5a8cf` | 4178 | `04f0420aa54fd6b6` |
 | **total** | **8613** | | | | |
 
-The full sha256 of every file is in `manifest.json`. `account_balance_daily` is 7 rows
+The full sha256 of every file is in the appendix. `account_balance_daily` is 7 rows
 because only the DB paper simulator has a daily cash table; the seven broker accounts
 carry `available = false` markers.
 
@@ -409,3 +409,33 @@ python3 ~/work/herdr-artifacts/rob-1465-trade-retro/analyze.py \
 ```
 
 Tests for the new mode: `uv run pytest tests/services/dots_history_export -m unit`.
+
+
+## Appendix: full sha256 of every exported file
+
+`manifest.json` itself: `a4a12e422c02529a6038dcefcd3f1f1b35937bcb710ac551df3613490190e2fb`
+
+| File | Bytes | sha256 |
+| --- | ---: | --- |
+| `account_balance_daily.csv` | 938 | `afc7505f14c5a8cf547f1f81ea501bb1383160ab1e8ae82a6a6b3b1d8b277961` |
+| `account_balance_daily.parquet` | 4178 | `04f0420aa54fd6b68382f77372bafc0f9e3a12b7b5710be1da84ca8ff208196c` |
+| `alpaca_paper_order_ledger.csv` | 16866 | `b3d3bbc488bcc7a7e6b1aadcdb0cc834aeef18d193c1541631dd329ead265840` |
+| `alpaca_paper_order_ledger.parquet` | 18005 | `f657eed2c7cbc558bb7052f51efe86570d6ab591a9df14b0e31198b65904b6fb` |
+| `execution_ledger.csv` | 1565628 | `91840453d7c54ed293141f51d6a15ced6eda19fbdcd80c4a19f09bb9f4129ed7` |
+| `execution_ledger.parquet` | 357880 | `5d2819d48f7f4fae06d65ef7f5150808cae8b8d67c5ab20b9aadaeab9a8db151` |
+| `kis_live_order_ledger.csv` | 117445 | `9bf402cf45a9bca6d6c2f7a16e96e3e80caea2a65f590bd0c1c96008a4f98b1f` |
+| `kis_live_order_ledger.parquet` | 56399 | `bd00975f9f246b09f3f9ebb93d0dbb5783489370a58c59a10fcd6aa57c913182` |
+| `kis_mock_order_ledger.csv` | 26839 | `f9700616783c8b801924a33035c57b1f470649e4a5f75608880a011c703a521d` |
+| `kis_mock_order_ledger.parquet` | 22573 | `8c7bb344e31ed86c5faed27ba4f6b5ede113d4a967b78b874291ff30d46fb23a` |
+| `live_order_ledger.csv` | 241126 | `b8b72e06ac142b111aad9738fd954f085f780c8d0b94e8b61ff2c0ad5889b8b1` |
+| `live_order_ledger.parquet` | 104123 | `a028ec568e0267d024a9afa22c1a28ef64126d0eab03ce05227626473c2081b7` |
+| `order_proposal_rungs.csv` | 637935 | `8002ebac3d9ef1ff9c3a9370dc59badb14761c0f3c2e1b2676bf8d9c5fd790b4` |
+| `order_proposal_rungs.parquet` | 287163 | `72f3b022ab238c1cf171771e280a51471c67cd79674c59ce06cb63e2c557ebe0` |
+| `order_proposals.csv` | 650483 | `861662c019d24a63bae87a6f9c4818ec551d63a4770ffcee925979ded2b651d2` |
+| `order_proposals.parquet` | 266871 | `0b2321c8c2b35148e4f3270bcafa23270c49ed1275449306116799e11a767abd` |
+| `paper_pending_orders.csv` | 22994 | `ed7224d66c94a61e0fdf4a62df8bde397c0d54848faeff7c897c57227e7306a4` |
+| `paper_pending_orders.parquet` | 18805 | `caab43269832c3b8105633ff0e94b4dd2a8dbf2975b5fcb9bd13e73725d7dc9a` |
+| `paper_trades.csv` | 14356 | `f792b25c9c15cffa6ee2b2f35a496decb06cc1c2bec84583ceef43859bcc4448` |
+| `paper_trades.parquet` | 16105 | `030b40043e8c3933670bd6b556dce96a986b9bca1a5219744e8c47b482298490` |
+| `toss_live_order_ledger.csv` | 622824 | `8de7428f7ed9b042ccdc2fcab6d5b41a8b33001f72da91d69a61b3f06aba9628` |
+| `toss_live_order_ledger.parquet` | 277595 | `0315d0391d069bd77b14f8206e07a6b535056af7b17ca1bc6e7da4b7c555846e` |
