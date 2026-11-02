@@ -889,6 +889,17 @@ class Settings(BaseSettings):
     # ``deduped`` instead of re-entering the reconcile kernel.
     EXECUTION_LEDGER_RECONCILE_TRIGGER_DEDUPE_SECONDS: float = 60.0
 
+    # ROB-1461 — HTTP route for the E1 intent gateway. It is served only by its
+    # standalone loopback process, never by app.main (see the runbook
+    # docs/runbooks/execution-intent-gateway.md). Off means every path answers 404
+    # before any DB access. An unset
+    # token is 403 and a wrong one is 401. Never log or echo the value.
+    # EXECUTION_INTENT_GATEWAY_ENABLED is the separate E1 gate, read from the
+    # process environment by IntentGateway.
+    EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED: bool = False
+    EXECUTION_INTENT_GATEWAY_TOKEN: str = ""
+    EXECUTION_INTENT_GATEWAY_TOKEN_HEADER: str = "X-Execution-Intent-Gateway-Token"
+
     # fillwire P0 — websocket monitor ledger sink switch. ``db`` (default)
     # keeps the pre-existing direct service-layer write; ``http`` posts the
     # same normalized ``ExecutionLedgerUpsert`` to the localhost ingest API.

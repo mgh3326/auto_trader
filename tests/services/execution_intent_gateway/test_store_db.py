@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, event, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.core.db import AsyncSessionLocal, engine
@@ -276,6 +276,56 @@ async def test_finish_cannot_rewrite_a_finished_row(
         is False
     )
     assert (await _rows(intent))[0].state == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_journal_reads_return_each_recorded_state_and_issue_no_write(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
+    broker = FakeBroker()
+    gateway = _gateway(store, broker)
+    await gateway.handle(_submit(intent, "child-0001"), confirm=True)
+    broker.accepted = False
+    await gateway.handle(_submit(intent, "child-0002"), confirm=True)
+    await gateway.handle(_submit(intent, "child-0003", quantity=11), confirm=True)
+    before = [(row.id, row.state) for row in await _rows(intent)]
+
+    statements: list[str] = []
+
+    def record(conn: Any, cursor: Any, statement: str, *rest: Any) -> None:
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record)
+    try:
+        journal = await store.read_intent_journal(intent.intent_id)
+        found = await store.read_child("child-0001")
+        missing_intent = await store.read_intent_journal(uuid4())
+        missing_child = await store.read_child("child-9999")
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+    assert journal is not None
+    assert journal.intent.intent_id == intent.intent_id
+    assert [(c.idempotency_key, c.state.value) for c in journal.children] == [
+        ("child-0001", "accepted"),
+        ("child-0002", "uncertain"),
+        ("child-0003", "refused"),
+    ]
+    assert journal.children[2].refusal_reason == "quantity_cap_exceeded"
+    assert found is not None
+    assert found[0] == intent.intent_id
+    assert found[1].broker_order_id == "1001"
+    assert (missing_intent, missing_child) == (None, None)
+
+    own = [s for s in statements if not s.lstrip().upper().startswith("SELECT PG_")]
+    assert own.count("SET TRANSACTION READ ONLY") == 4
+    assert all(
+        s == "SET TRANSACTION READ ONLY" or s.lstrip().upper().startswith("SELECT")
+        for s in own
+    )
+    assert [(row.id, row.state) for row in await _rows(intent)] == before
 
 
 @pytest.mark.asyncio

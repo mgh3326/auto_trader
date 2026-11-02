@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from app.schemas.execution_intent import AmendChild, SubmitChild
+from app.schemas.execution_intent import AmendChild, CancelChild, SubmitChild
 from app.services.execution_intent_gateway.decisions import (
     Child,
     ChildSnapshot,
@@ -21,7 +21,11 @@ from app.services.execution_intent_gateway.decisions import (
     Refusal,
 )
 from app.services.execution_intent_gateway.gateway import ForwardResult
-from app.services.execution_intent_gateway.store import Decide, Reservation
+from app.services.execution_intent_gateway.store import (
+    Decide,
+    IntentJournal,
+    Reservation,
+)
 from app.services.kis_mock_runner.control import KillMode, KillSwitchState
 
 NOW = datetime(2026, 11, 2, 1, 0, tzinfo=UTC)
@@ -94,6 +98,20 @@ class MemoryGatewayStore:
         self._intent_of_child[child.child_id] = request.intent_id
         self.events.append(f"journal:{child.state.value}:{request.idempotency_key}")
         return Reservation(intent=intent, child=child, is_new=True, decision=decision)
+
+    async def read_intent_journal(self, intent_id: UUID) -> IntentJournal | None:
+        intent = self.intents.get(intent_id)
+        if intent is None:
+            return None
+        return IntentJournal(intent=intent, children=tuple(self._of(intent_id)))
+
+    async def read_child(
+        self, idempotency_key: str
+    ) -> tuple[UUID, ChildSnapshot] | None:
+        for child in self.children:
+            if child.idempotency_key == idempotency_key:
+                return self._intent_of_child[child.child_id], child
+        return None
 
     def _of(self, intent_id: UUID) -> Sequence[ChildSnapshot]:
         return [
@@ -170,7 +188,7 @@ class FakeBroker:
         )
 
     async def cancel(
-        self, intent: IntentSnapshot, *, broker_order_id: str
+        self, intent: IntentSnapshot, request: CancelChild, *, broker_order_id: str
     ) -> ForwardResult:
         self._record("cancel", broker_order_id)
         return ForwardResult(self.accepted, broker_order_id, {"success": self.accepted})

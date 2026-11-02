@@ -751,15 +751,19 @@ async def resolve_mock_order_for_cancel(order_no: str) -> dict[str, Any] | None:
             if isinstance(raw_edge_command_id, str) and raw_edge_command_id.strip()
             else None
         )
+        ordered = _decimal_to_float(row.quantity)
+        _, remaining, _ = _derive_shadow_fill(row, ordered)
         return {
             "ledger_id": row.id,
             "symbol": row.symbol,
             "side": row.side,
-            "quantity": _decimal_to_float(row.quantity),
+            "quantity": ordered,
+            "remaining_quantity": remaining,
             "price": _decimal_to_float(row.price),
             "krx_fwdg_ord_orgno": row.krx_fwdg_ord_orgno,
             "instrument_type": row.instrument_type,
             "lifecycle_state": row.lifecycle_state,
+            "correlation_id": row.correlation_id,
             # An edge-created order records its immutable command id alongside
             # the broker response. Direct KIS rows intentionally have no such
             # mapping and retain their legacy cancel path.
@@ -795,10 +799,15 @@ async def update_kis_mock_order_terms(
     price: Decimal | None = None,
     quantity: Decimal | None = None,
     detail: dict[str, Any] | None = None,
+    order_no: str | None = None,
 ) -> None:
     """Reflect a broker-confirmed modify on the ledger row."""
     async with _order_session_factory()() as db:
         svc = KISMockLifecycleService(db)
         await svc.update_order_terms(
-            ledger_id=ledger_id, price=price, quantity=quantity, detail=detail
+            ledger_id=ledger_id,
+            price=price,
+            quantity=quantity,
+            detail=detail,
+            order_no=order_no,
         )

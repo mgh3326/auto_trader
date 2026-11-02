@@ -1,0 +1,1288 @@
+{
+ "about": "Input for record_e1.py: child requests exactly as fillwire's executor sends them. See record_e1.py.",
+ "scenarios": [
+  {
+   "name": "accept_then_local_kill_cancel",
+   "kind": "executor",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "cancel",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1"
+     }
+    }
+   ]
+  },
+  {
+   "name": "partial_fill_amend_to_cap_cancel",
+   "kind": "executor",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 6,
+      "limit_price_krw": 70100
+     }
+    },
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:3",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "quantity": 6,
+      "limit_price_krw": 70200
+     }
+    },
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:4",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:3",
+      "quantity": 6,
+      "limit_price_krw": 70300
+     }
+    },
+    {
+     "request": {
+      "action": "cancel",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:5",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:4"
+     }
+    }
+   ]
+  },
+  {
+   "name": "refused_notional_cap",
+   "kind": "executor",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "7a1e2b3c-4d5e-4f60-8a1b-2c3d4e5f6a7b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 20,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 20
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {
+    "prior": [
+     {
+      "action": "submit",
+      "intent_id": "7a1e2b3c-4d5e-4f60-8a1b-2c3d4e5f6a7b",
+      "idempotency_key": "prior-0001",
+      "quantity": 1,
+      "limit_price_krw": 70000
+     }
+    ]
+   },
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "7a1e2b3c-4d5e-4f60-8a1b-2c3d4e5f6a7b",
+      "idempotency_key": "7a1e2b3c-4d5e-4f60-8a1b-2c3d4e5f6a7b:1",
+      "quantity": 14,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "refused_authorization_expired",
+   "kind": "executor",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {
+    "now": "2026-11-02T00:01:00Z"
+   },
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "refused_submissions_killed_then_cancel",
+   "kind": "executor",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70100
+     },
+     "kill_mode": "GLOBAL_FREEZE"
+    },
+    {
+     "request": {
+      "action": "cancel",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:3",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1"
+     },
+     "kill_mode": "GLOBAL_FREEZE"
+    }
+   ]
+  },
+  {
+   "name": "caps_quantity",
+   "kind": "caps",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 4,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "quantity": 6,
+      "limit_price_krw": 70000
+     },
+     "reconcile_empty_before": true
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:3",
+      "quantity": 1,
+      "limit_price_krw": 70000
+     },
+     "reconcile_empty_before": true
+    }
+   ]
+  },
+  {
+   "name": "caps_notional_high_water",
+   "kind": "caps",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 500000,
+    "limit_price_krw": 70000,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e",
+      "idempotency_key": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e:1",
+      "quantity": 4,
+      "limit_price_krw": 69000
+     }
+    },
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e",
+      "idempotency_key": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e:2",
+      "target_idempotency_key": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e:1",
+      "quantity": 4,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e",
+      "idempotency_key": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e:3",
+      "quantity": 3,
+      "limit_price_krw": 70000
+     },
+     "reconcile_empty_before": true
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e",
+      "idempotency_key": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e:4",
+      "quantity": 1,
+      "limit_price_krw": 10000
+     },
+     "reconcile_empty_before": true
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e",
+      "idempotency_key": "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e:5",
+      "quantity": 1,
+      "limit_price_krw": 1000
+     },
+     "reconcile_empty_before": true
+    }
+   ]
+  },
+  {
+   "name": "caps_inventory_sell",
+   "kind": "caps",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "sell",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 69700,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 10,
+     "min_position_after": 4,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "idempotency_key": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f:1",
+      "quantity": 6,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "idempotency_key": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f:2",
+      "quantity": 1,
+      "limit_price_krw": 70000
+     },
+     "reconcile_empty_before": true
+    }
+   ]
+  },
+  {
+   "name": "caps_uncertain_counts",
+   "kind": "caps",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     },
+     "broker": "fail"
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "quantity": 1,
+      "limit_price_krw": 70000
+     },
+     "reconcile_empty_before": true
+    }
+   ]
+  },
+  {
+   "name": "gateway_disabled",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {
+    "enabled": false
+   },
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "confirm_required",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     },
+     "confirm": false
+    }
+   ]
+  },
+  {
+   "name": "intent_not_found",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {
+    "store_intent": false
+   },
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "account_not_mock",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {
+    "store_account": "kis_live"
+   },
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "forwarder_unavailable",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {
+    "forwarders": []
+   },
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "price_outside_bound",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 71004
+     }
+    }
+   ]
+  },
+  {
+   "name": "locked_envelope_cap_exceeded",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 100,
+    "max_notional_krw": 5000000,
+    "limit_price_krw": 100000,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 100
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a",
+      "idempotency_key": "1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a:1",
+      "quantity": 51,
+      "limit_price_krw": 100000
+     }
+    }
+   ]
+  },
+  {
+   "name": "quantity_cap_exceeded",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 11,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "notional_cap_exceeded",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "7a1e2b3c-4d5e-4f60-8a1b-2c3d4e5f6a7b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 20,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 20
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "7a1e2b3c-4d5e-4f60-8a1b-2c3d4e5f6a7b",
+      "idempotency_key": "7a1e2b3c-4d5e-4f60-8a1b-2c3d4e5f6a7b:1",
+      "quantity": 15,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "inventory_constraint_exceeded",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "sell",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 69700,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 10,
+     "min_position_after": 4,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "idempotency_key": "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f:1",
+      "quantity": 7,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "target_not_found_amend",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70100
+     }
+    }
+   ]
+  },
+  {
+   "name": "target_not_found_cancel",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "cancel",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1"
+     }
+    }
+   ]
+  },
+  {
+   "name": "target_not_working",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     },
+     "broker": "fail"
+    },
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70100
+     }
+    }
+   ]
+  },
+  {
+   "name": "target_superseded",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "amend",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:2",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70100
+     },
+     "broker": "fail"
+    },
+    {
+     "request": {
+      "action": "cancel",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:3",
+      "target_idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1"
+     }
+    }
+   ]
+  },
+  {
+   "name": "uncertain_broker_failure",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     },
+     "broker": "fail"
+    }
+   ]
+  },
+  {
+   "name": "uncertain_broker_raised",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     },
+     "broker": "raise"
+    }
+   ]
+  },
+  {
+   "name": "sending_outcome_not_recorded",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     },
+     "finish_error": true
+    }
+   ]
+  },
+  {
+   "name": "conflict_key_reused",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 9,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  },
+  {
+   "name": "replayed_accepted",
+   "kind": "mapping",
+   "intent": {
+    "schema_version": 1,
+    "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+    "strategy": "s3-test",
+    "account": "kis_mock",
+    "venue": "krx",
+    "symbol": "005930",
+    "side": "buy",
+    "max_quantity": 10,
+    "max_notional_krw": 1000000,
+    "limit_price_krw": 70300,
+    "max_slippage_bps": 100,
+    "expires_at": "2026-11-02T00:01:00Z",
+    "inventory": {
+     "position_at_authorization": 0,
+     "min_position_after": 0,
+     "max_position_after": 10
+    },
+    "policy_version": "policy-v1",
+    "model_version": null,
+    "authorization_ref": "approval:operator:2570"
+   },
+   "e1": {},
+   "steps": [
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    },
+    {
+     "request": {
+      "action": "submit",
+      "intent_id": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b",
+      "idempotency_key": "3f2b6c1e-8a4d-4e5f-9a7b-1c2d3e4f5a6b:1",
+      "quantity": 10,
+      "limit_price_krw": 70000
+     }
+    }
+   ]
+  }
+ ]
+}

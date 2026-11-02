@@ -1701,7 +1701,11 @@ async def _modify_kis_mock_domestic(
         ledger_id=resolved["ledger_id"],
         price=Decimal(str(final_price)),
         quantity=Decimal(str(final_quantity)),
-        detail={"modified_to_order_no": result.get("odno")},
+        detail={
+            "modified_from_order_no": order_id,
+            "modified_to_order_no": result.get("odno"),
+        },
+        order_no=result["odno"],
     )
     return {
         "success": True,

@@ -3,6 +3,9 @@
 Each method is one short transaction and no session stays open across a broker
 call. :meth:`SqlAlchemyGatewayStore.reserve` holds the intent row lock while it
 decides, so concurrent children of one intent cannot both spend the same cap.
+
+ROB-1461 adds the journal reads. Each runs in a ``READ ONLY`` transaction, so a
+query cannot write even by accident.
 """
 
 from __future__ import annotations
@@ -11,8 +14,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Final, Protocol
+from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +60,22 @@ class Reservation:
     decision: Decision | None = None
     conflict: bool = False
     refusal_without_row: Refusal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IntentJournal:
+    """A stored intent and all its children, in the order they were journaled."""
+
+    intent: IntentSnapshot
+    children: tuple[ChildSnapshot, ...]
+
+
+class GatewayReader(Protocol):
+    async def read_intent_journal(self, intent_id: UUID) -> IntentJournal | None: ...
+
+    async def read_child(
+        self, idempotency_key: str
+    ) -> tuple[UUID, ChildSnapshot] | None: ...
 
 
 class GatewayStore(Protocol):
@@ -233,6 +253,43 @@ class SqlAlchemyGatewayStore:
             return Reservation(
                 intent=intent, child=reserved, is_new=True, decision=decision
             )
+
+    async def read_intent_journal(self, intent_id: UUID) -> IntentJournal | None:
+        """The recorded state of one intent. Takes no lock and cannot write."""
+        async with self._session_factory() as session:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            intent_row = await session.scalar(
+                select(ExecutionIntent).where(ExecutionIntent.id == intent_id)
+            )
+            if intent_row is None:
+                await session.rollback()
+                return None
+            rows = await session.scalars(
+                select(ExecutionChildRequest)
+                .where(ExecutionChildRequest.intent_id == intent_id)
+                .order_by(ExecutionChildRequest.id)
+            )
+            journal = IntentJournal(
+                intent=_intent_snapshot(intent_row),
+                children=tuple(_child_snapshot(row) for row in rows),
+            )
+            await session.rollback()
+            return journal
+
+    async def read_child(
+        self, idempotency_key: str
+    ) -> tuple[UUID, ChildSnapshot] | None:
+        """One recorded child by its key. Takes no lock and cannot write."""
+        async with self._session_factory() as session:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            row = await session.scalar(
+                select(ExecutionChildRequest).where(
+                    ExecutionChildRequest.idempotency_key == idempotency_key
+                )
+            )
+            found = None if row is None else (row.intent_id, _child_snapshot(row))
+            await session.rollback()
+            return found
 
     async def finish(
         self,
