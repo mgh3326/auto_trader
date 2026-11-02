@@ -1223,6 +1223,8 @@ class Settings(BaseSettings):
     # ROB-842 — automated Alpaca paper submit boundary (preview→claim→POST). The
     # automated cohort broker mutation is fail-closed unless this gate is armed.
     alpaca_paper_automated_submit_enabled: bool = False
+    # ROB-1474: scheduleless US paper list strategy; both switches are required.
+    mock_strategy_us_enabled: bool = False
 
     @field_validator("alpaca_paper_base_url", mode="before")
     @classmethod

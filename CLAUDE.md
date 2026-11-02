@@ -133,6 +133,10 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    per-call `confirm=True` 이중 게이트 뒤에 있다. **게이트 완화, 호스트 allowlist 확장,
    fail-closed→fail-open 전환, 하드 인바리언트 상수(레버리지 1x, notional cap, 동시 포지션
    상한 등) 변경 금지.** 이런 변경이 필요해 보이면 멈추고 운영자에게 보고하라.
+   ROB-1474의 명시 운영자 결정(2026-11-02 mock-trading-all-venues-no-caps)은
+   Alpaca paper 크기 상한 제거만 예외다. endpoint·예상 계정·이중 게이트는 유지한다.
+   ROB-1474 전략 CLI도 기본 off 이중 게이트와 예상 계좌 검증을 유지하며,
+   `mock_strategy_orders`의 sending/uncertain을 재전송하거나 journal을 지우지 않는다.
 5. **레저 쓰기는 서비스 레이어 경유만**: `alpaca_paper_order_ledger`,
    `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
    `toss_live_order_ledger` 등 주문 레저에 직접 SQL INSERT/UPDATE/DELETE 금지.

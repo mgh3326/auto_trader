@@ -31,7 +31,6 @@ from app.mcp_server.tooling.alpaca_paper import (
 from app.mcp_server.tooling.alpaca_paper_orders import alpaca_paper_submit_order
 from app.mcp_server.tooling.alpaca_paper_preview import (
     ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS,
-    ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
     alpaca_paper_preview_order,
 )
 from app.models.review import AlpacaPaperOrderLedger
@@ -331,10 +330,6 @@ async def build_sell_close_payload(
     execution_symbol = _validate_symbol(symbol)
     parsed_qty = _parse_decimal(qty, field_name="qty")
     parsed_limit = _parse_decimal(limit_price_usd, field_name="limit_price_usd")
-    if parsed_qty * parsed_limit > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD:
-        raise SellCloseStopError(
-            f"estimated notional exceeds ROB-86 max ({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
-        )
     normalized_tif = (time_in_force or "").strip().lower()
     if normalized_tif not in {"gtc", "ioc"}:
         raise SellCloseStopError("time_in_force must be gtc or ioc for crypto")

@@ -238,7 +238,7 @@ async def test_preview_symbol_mismatch_fails_close(broker):
     assert result["reason_code"] == "snapshot_symbol_mismatch"
 
 
-async def test_preview_order_exceeding_hard_cap_fails_close(broker):
+async def test_preview_large_paper_notional_has_exact_packet(broker):
     # us_equity notional above the $1000 server hard cap — caller cannot raise it
     sid = await _seed_snapshot(market="us", symbol="AAPL", source="yahoo", price="150")
     result = await alpaca_paper_automated_preview_order(
@@ -249,8 +249,7 @@ async def test_preview_order_exceeding_hard_cap_fails_close(broker):
         notional=Decimal("1500"),
         asset_class="us_equity",
     )
-    assert result["success"] is False
-    assert result["reason_code"] == "notional_exceeds_max"
+    assert result["success"] is True
 
 
 async def test_same_snapshot_same_key_different_snapshot_different_key(broker):
@@ -271,7 +270,7 @@ async def test_preview_records_provenance_hashes(broker):
     assert prov["quote_snapshot_id"] == sid
     assert prov["snapshot_content_hash"]
     assert prov["packet_hash"]
-    assert prov["policy_max_notional"] == "50"  # crypto hard cap
+    assert prov["policy_max_notional"] == "10"  # exact requested notional
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +320,7 @@ async def test_module_exposes_gate_and_factory_controls() -> None:
 # ---------------------------------------------------------------------------
 # F4 — trusted price × qty must not bypass the $1,000 hard cap
 # ---------------------------------------------------------------------------
-async def test_preview_market_qty_bypass_of_hard_cap_fails_close(broker):
+async def test_preview_large_paper_qty_has_exact_packet(broker):
     # equity MARKET qty=5 at trusted price 100,000 => $500,000 implied notional.
     sid = await _seed_snapshot(
         market="us", symbol="AAPL", source="yahoo", price="100000"
@@ -334,8 +333,7 @@ async def test_preview_market_qty_bypass_of_hard_cap_fails_close(broker):
         qty=Decimal("5"),
         asset_class="us_equity",
     )
-    assert result["success"] is False
-    assert result["reason_code"] == "notional_exceeds_max"
+    assert result["success"] is True
 
 
 async def test_preview_rejects_non_finite_snapshot_price(broker):
