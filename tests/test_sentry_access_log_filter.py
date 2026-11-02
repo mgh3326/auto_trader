@@ -68,6 +68,18 @@ def test_before_send_log_keeps_non_access_logger_warning():
 
 
 @pytest.mark.unit
+def test_before_send_log_does_not_mistake_a_quoted_path_for_the_status():
+    """A path containing a quote closes the request-line quote early and adds
+    a second quoted field; the leading 200 is path text, the status is 500."""
+    log = _access_log('127.0.0.1:52778 - "GET /reports/" 200 HTTP/1.1 HTTP/1.1" 500')
+
+    kept = sentry_module._before_send_log(log, {})
+
+    assert kept is not None
+    assert kept["body"] == log["body"]
+
+
+@pytest.mark.unit
 def test_before_send_log_keeps_access_log_without_parseable_status():
     log = _access_log('127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1"')
 

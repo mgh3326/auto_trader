@@ -42,6 +42,10 @@ _BUILD_VCS_REF_PATH = Path("/app/.build-vcs-ref")
 _INVEST_API_PREFIX = "/invest/api/"
 
 _initialized = False
+# True only after this process installed ``_traces_sampler`` through a
+# successful ``init_sentry`` call. Diagnostics must not claim a sampler that
+# was never installed (ROB-1479).
+_traces_sampler_active = False
 _enabled_integration_flags: dict[str, bool] = {
     "fastapi": False,
     "sqlalchemy": False,
@@ -188,10 +192,9 @@ def _is_healthcheck_access_log(logger_name: str | None, message: str | None) -> 
 
 
 # uvicorn's access log format is ``%s - "%s %s HTTP/%s" %d`` (client, method,
-# path, version, status). The status is the integer after the quoted request
-# line; the trailing boundary rejects a longer number after the first three
-# digits.
-_UVICORN_ACCESS_STATUS_RE = re.compile(r'"[^"]*"\s+(\d{3})(?:\s|$)')
+# path, version, status). Anchor on the request-line shape so a path or a
+# second quoted field containing digits can never be mistaken for the status.
+_UVICORN_ACCESS_STATUS_RE = re.compile(r'"[A-Z]+ \S+ HTTP/[0-9.]+"\s+(\d{3})(?:\s|$)')
 
 # ROB-1479: monitor-only probe routes. Their transactions were roughly 70% of
 # accepted spans in a seven-day sample, so the traces_sampler drops them before
@@ -280,19 +283,18 @@ def _is_probe_sampling_context(sampling_context: Mapping[str, Any]) -> bool:
 
 
 def _traces_sampler(sampling_context: Mapping[str, Any]) -> float:
-    """Decide trace sampling, dropping monitor-only probe traffic (ROB-1479).
+    """Decide trace sampling, dropping probes without inheriting forced samples.
 
-    Probe routes carry no user work, so they return 0 even when a parent asks
-    to be sampled. Everything else honours a parent decision when one is
-    present and otherwise uses the configured default rate, so real traces
-    keep the rate they had while ``SENTRY_TRACES_SAMPLE_RATE`` is unchanged.
+    Probe routes carry no user work, so they return 0 first. An incoming
+    ``sentry-trace`` header is caller-controlled, so a parent that declines
+    (``parent_sampled is False``) is honoured, but a parent asking to be
+    sampled never raises the decision above the configured default rate.
     """
     context: Mapping[str, Any] = sampling_context or {}
     if _is_probe_sampling_context(context):
         return 0.0
-    parent_sampled = context.get("parent_sampled")
-    if isinstance(parent_sampled, bool):
-        return 1.0 if parent_sampled else 0.0
+    if context.get("parent_sampled") is False:
+        return 0.0
     return settings.SENTRY_TRACES_SAMPLE_RATE
 
 
@@ -656,6 +658,11 @@ def _resolve_release() -> str | None:
     return release or None
 
 
+def traces_sampler_active() -> bool:
+    """Whether the last successful init installed the trace sampler."""
+    return _traces_sampler_active
+
+
 def init_sentry(
     service_name: str,
     enable_fastapi: bool = False,
@@ -665,7 +672,7 @@ def init_sentry(
     debug: bool | None = None,
 ) -> bool:
     """Initialize Sentry once per process."""
-    global _enabled_integration_flags, _initialized
+    global _enabled_integration_flags, _initialized, _traces_sampler_active
 
     requested_flags = {
         "fastapi": enable_fastapi,
@@ -683,6 +690,7 @@ def init_sentry(
 
     dsn = (settings.SENTRY_DSN or "").strip()
     if not dsn:
+        _traces_sampler_active = False
         logger.info("Sentry disabled: SENTRY_DSN is empty")
         return False
 
@@ -746,6 +754,7 @@ def init_sentry(
         sentry_sdk.set_tag("runtime", "python")
         sentry_sdk.set_tag("app", "auto-trader")
         _initialized = True
+        _traces_sampler_active = True
         _enabled_integration_flags = effective_flags
         logger.info(
             "Sentry initialized: service=%s environment=%s", service_name, environment

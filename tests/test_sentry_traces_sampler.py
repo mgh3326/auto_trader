@@ -95,17 +95,20 @@ def test_sampler_uses_default_rate_for_mcp_tool_call():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("parent_sampled", "expected"),
-    [(True, 1.0), (False, 0.0)],
-)
-def test_sampler_honours_parent_decision(parent_sampled, expected):
-    context = _sampling_context(
-        "tools/call get_quote",
-        parent_sampled=parent_sampled,
-    )
+def test_sampler_does_not_let_a_parent_force_sampling(monkeypatch):
+    """A sentry-trace header is caller-controlled: parent_sampled=True must
+    not raise sampling above the configured default rate."""
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_TRACES_SAMPLE_RATE", 0.1)
+    context = _sampling_context("tools/call get_quote", parent_sampled=True)
 
-    assert sentry_module._traces_sampler(context) == expected
+    assert sentry_module._traces_sampler(context) == 0.1
+
+
+@pytest.mark.unit
+def test_sampler_honours_a_parent_decline():
+    context = _sampling_context("tools/call get_quote", parent_sampled=False)
+
+    assert sentry_module._traces_sampler(context) == 0.0
 
 
 @pytest.mark.unit
