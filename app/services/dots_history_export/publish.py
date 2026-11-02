@@ -23,6 +23,7 @@ import pyarrow.parquet as pq
 
 from app.services.dots_history_export.leak_check import (
     LEAK_RULE_NAMES,
+    REAL_LEAK_RULE_NAMES,
     LeakCheckFailed,
     Violation,
     scan_table,
@@ -31,12 +32,13 @@ from app.services.dots_history_export.projection import OutputRow, Projection, W
 from app.services.dots_history_export.spec import (
     BALANCE_SOURCES,
     BALANCE_UNAVAILABLE,
-    SCHEMA_VERSION,
     SOURCES_WITHOUT_LEDGER,
-    TABLES,
     Column,
     Kind,
+    Mode,
     TableSpec,
+    schema_version_for,
+    tables_for,
 )
 
 MANIFEST_NAME = "manifest.json"
@@ -141,17 +143,19 @@ def check_written_files(
     expected_rows: Mapping[str, int],
     *,
     forbidden: Collection[str],
-    salt: bytes,
+    salt: bytes | None,
+    mode: Mode = Mode.DEIDENTIFIED,
 ) -> list[Violation]:
     """The final gate: re-read every published byte instead of trusting the writer."""
+    tables = tables_for(mode)
     violations: list[Violation] = []
     expected_files = {
-        f"{spec.name}.{suffix}" for spec in TABLES for suffix in ("csv", "parquet")
+        f"{spec.name}.{suffix}" for spec in tables for suffix in ("csv", "parquet")
     }
     for path in sorted(directory.iterdir()):
         if path.name not in expected_files and path.name != MANIFEST_NAME:
             violations.append(Violation(path.name, "", 0, "file_not_allowlisted"))
-    for spec in TABLES:
+    for spec in tables:
         for suffix in ("csv", "parquet"):
             path = directory / f"{spec.name}.{suffix}"
             name = f"{spec.name}.{suffix}"
@@ -161,13 +165,15 @@ def check_written_files(
             columns, rows = (
                 _read_csv(path) if suffix == "csv" else _read_parquet(path, spec)
             )
-            found = scan_table(spec, columns, rows, forbidden=forbidden)
+            found = scan_table(
+                spec, columns, rows, forbidden=forbidden, real=mode is Mode.REAL
+            )
             violations.extend(
                 Violation(name, item.column, item.row, item.rule) for item in found
             )
             if len(rows) != expected_rows[spec.name]:
                 violations.append(Violation(name, "", 0, "row_count_mismatch"))
-            if salt in path.read_bytes():
+            if salt is not None and salt in path.read_bytes():
                 violations.append(Violation(name, "", 0, "salt_in_output"))
     return violations
 
@@ -197,9 +203,10 @@ def build_manifest(
     code_dirty: bool | None,
     salt_fingerprint: str,
     generated_at: datetime,
+    mode: Mode = Mode.DEIDENTIFIED,
 ) -> dict[str, Any]:
     tables: dict[str, Any] = {}
-    for spec in TABLES:
+    for spec in tables_for(mode):
         tables[spec.name] = {
             "row_count": len(projection.tables[spec.name]),
             "columns": list(spec.column_names),
@@ -211,7 +218,8 @@ def build_manifest(
             },
         }
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version_for(mode),
+        "mode": str(mode),
         "generated_at_utc": generated_at.astimezone(UTC).isoformat(),
         "window": {
             "since_utc": window.since.astimezone(UTC).isoformat(),
@@ -223,7 +231,9 @@ def build_manifest(
         "salt_fingerprint": salt_fingerprint,
         "leak_check": {
             "status": "passed",
-            "rules": list(LEAK_RULE_NAMES),
+            "rules": list(
+                REAL_LEAK_RULE_NAMES if mode is Mode.REAL else LEAK_RULE_NAMES
+            ),
             "forbidden_value_count": len(projection.forbidden),
         },
         "sources_without_ledger": SOURCES_WITHOUT_LEDGER,
@@ -251,25 +261,33 @@ def publish(
     *,
     out_dir: Path,
     window: Window,
-    salt: bytes,
+    salt: bytes | None,
     salt_fingerprint: str,
     code_commit: str,
     code_dirty: bool | None,
     extra_forbidden: Collection[str] = (),
     generated_at: datetime | None = None,
     write_files: Callable[[Path, Projection], None] | None = None,
+    mode: Mode = Mode.DEIDENTIFIED,
 ) -> dict[str, Any]:
     """Validate, write, re-validate, then move the finished directory into place."""
+    tables = tables_for(mode)
     forbidden = {
         *projection.forbidden,
         *extra_forbidden,
-        salt.decode("utf-8", errors="ignore"),
+        *([salt.decode("utf-8", errors="ignore")] if salt is not None else []),
     }
     violations: list[Violation] = []
-    for spec in TABLES:
+    for spec in tables:
         rows = projection.tables[spec.name]
         violations.extend(
-            scan_table(spec, spec.column_names, rows, forbidden=forbidden)
+            scan_table(
+                spec,
+                spec.column_names,
+                rows,
+                forbidden=forbidden,
+                real=mode is Mode.REAL,
+            )
         )
     if violations:
         raise LeakCheckFailed(violations)
@@ -281,9 +299,10 @@ def publish(
         (write_files or _write_all)(staging, projection)
         violations = check_written_files(
             staging,
-            {spec.name: len(projection.tables[spec.name]) for spec in TABLES},
+            {spec.name: len(projection.tables[spec.name]) for spec in tables},
             forbidden=forbidden,
             salt=salt,
+            mode=mode,
         )
         if violations:
             raise LeakCheckFailed(violations)
@@ -295,11 +314,12 @@ def publish(
             code_dirty=code_dirty,
             salt_fingerprint=salt_fingerprint,
             generated_at=generated_at or datetime.now(UTC),
+            mode=mode,
         )
         manifest_bytes = (
             json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         ).encode("utf-8")
-        if salt in manifest_bytes:
+        if salt is not None and salt in manifest_bytes:
             raise LeakCheckFailed([Violation(MANIFEST_NAME, "", 0, "salt_in_output")])
         (staging / MANIFEST_NAME).write_bytes(manifest_bytes)
         for path in staging.iterdir():
@@ -314,7 +334,8 @@ def publish(
 
 
 def _write_all(directory: Path, projection: Projection) -> None:
-    for spec in TABLES:
+    tables = tables_for(projection.mode)
+    for spec in tables:
         rows = projection.tables[spec.name]
         _write_csv(directory / f"{spec.name}.csv", spec, rows)
         _write_parquet(directory / f"{spec.name}.parquet", spec, rows)
