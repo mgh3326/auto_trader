@@ -58,7 +58,7 @@ Rules (from the canary design, `docs/research/rob-1465-trade-retrospective.md` Â
   | --- | --- |
   | `sleeve_not_live` | The sleeve state is `shadow`, `paused` or `stopped` |
   | `sleeve_loss_limit_reached` | Loss â‰¥ loss limit. The sleeve is also moved to `stopped` (actor `system:sleeve_loss_gate`) |
-  | `sleeve_pnl_unmeasured` | A held symbol has no current daily close, so P&L is unknown |
+  | `sleeve_pnl_unmeasured` | A held symbol has no current daily close, or a KIS fill on a sleeve order number cannot be tied to the rung's own order day, so P&L is unknown |
   | `sleeve_budget_exceeded` | Buy: used + this order > budget cap |
   | `sleeve_used_unmeasured` | Buy: an open sleeve order has no price, so used is unknown |
   | `sleeve_unreadable` | The sleeve could not be read |
@@ -66,11 +66,19 @@ Rules (from the canary design, `docs/research/rob-1465-trade-retrospective.md` Â
   The card is the ordinary approval card: you can still approve it by hand.
   The gate runs before any broker call.
 - Used = held cost basis + open buy orders + fills the order already reports
-  that the ledger has not booked yet. Sells and cancels use no budget, but the
-  state and loss checks apply to them too.
+  that the ledger has not booked yet. Every buy rung counts, including rungs of
+  the proposal being gated that are already at the broker. A `filled` buy rung
+  that reports no quantity and has no booked fill makes used unknown
+  (`sleeve_used_unmeasured`). Sells and cancels use no budget, but the state
+  and loss checks apply to them too.
 - Fills come from `execution_ledger` (reconciled rows only, not quarantined)
   matched to the sleeve's own orders. A fill appears in the sleeve after the
   reconcile books it.
+- KIS reuses order numbers on other days. A KIS fill counts only on the trading
+  day of the rung's own order, which comes from the rung's send-ledger row
+  (matched by idempotency key or correlation id and the order number). If that
+  day cannot be established, the fill is not guessed onto the rung: the
+  sleeve's P&L is unknown and its tagged orders go to the card.
 
 ## Commands
 
@@ -183,7 +191,9 @@ Canary statistics (ROB-1468):
 | `final_date_reached` | Score it against the pre-registration. This is not a pass |
 
 `attribution skipped` lists ledger rows on the sleeve's order ids that were not
-counted, and why (for example a KIS order number reused on a later day).
+counted, and why: for example `order_id_reused_on_another_day` (a KIS order
+number on a day other than the rung's order) or `kis_order_day_unknown` (the
+rung's send-ledger row is missing, which also makes P&L unknown).
 
 ## Deploy and rollback
 

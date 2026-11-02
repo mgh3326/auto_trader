@@ -14,12 +14,16 @@ Fill attribution reads execution_ledger evidence only:
 * the broker and ledger account mode of the sleeve's account, the sleeve's
   currency, and the broker order id of one of the sleeve's own rungs;
 * the same side and symbol as that rung, filled no earlier than its proposal;
-* for KIS, whose order numbers repeat across days, only the first trading day a
-  rung's order id matched, and no later than the trading day of the proposal's
-  ``valid_until``.
+* for KIS, whose order numbers repeat across days, only fills on the trading
+  day of the rung's own order. That day comes from the rung's send-ledger row
+  (``kis_live_order_ledger`` for KR, ``live_order_ledger`` for US), matched by
+  the rung's idempotency key or correlation id *and* its order number -- never
+  by the order number alone.
 
 A fill that fails any of these is not the sleeve's fill. The diagnostics count
-what was skipped and why.
+what was skipped and why. A KIS fill that matches a rung whose order day is
+unknown is not guessed onto it either: the rung is reported as unattributed and
+the sleeve's P&L becomes unmeasured (unknown is never zero).
 """
 
 from __future__ import annotations
@@ -31,12 +35,13 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.models.review import KISLiveOrderLedger, LiveOrderLedger
 from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
 from app.services.execution_ledger.supersede import (
     AUTHORITATIVE_SOURCES,
@@ -69,6 +74,9 @@ class SleeveInputs:
     orders: tuple[SleeveOrder, ...]
     fills: tuple[SleeveFill, ...]
     diagnostics: dict[str, int] = field(default_factory=dict)
+    #: Rungs with a ledger fill on their order number that could not be tied
+    #: to them (KIS order day unknown). Their sleeve's P&L is unmeasured.
+    unattributed_rungs: tuple[int, ...] = ()
 
 
 def sleeve_symbol(symbol: str, market: str) -> str:
@@ -463,7 +471,17 @@ def _dec(value: Any) -> Decimal | None:
 class _RungRef:
     order: SleeveOrder
     created_at: datetime
-    valid_until: datetime | None
+    #: KIS only: the trading day of the rung's own order, from its send-ledger
+    #: row. ``None`` for other brokers and when it cannot be established.
+    order_day: Any = None
+
+
+@dataclass(frozen=True)
+class _SendKeys:
+    rung_id: int
+    order_id: str
+    idempotency_key: str | None
+    correlation_id: str | None
 
 
 def _ledger_symbol_keys(row: ExecutionLedger, market: str) -> set[str]:
@@ -477,6 +495,69 @@ def _instrument(row: ExecutionLedger) -> str:
     return str(getattr(row.instrument_type, "value", row.instrument_type) or "")
 
 
+def _key_text(value: Any) -> str | None:
+    text_value = str(value or "").strip()
+    return text_value or None
+
+
+def rung_order_days(
+    *, rungs: Sequence[_SendKeys], send_rows: Sequence[Any], instrument: str
+) -> dict[int, Any]:
+    """rung id -> the KIS trading day of the rung's own order (pure).
+
+    A send row belongs to a rung only if it carries the rung's idempotency key
+    or correlation id *and* the rung's order number. A rung with no such row,
+    or with rows on more than one trading day, gets no day.
+    """
+    days: dict[int, Any] = {}
+    for rung in rungs:
+        found = {
+            order_trading_day("kis", instrument, row.trade_date)
+            for row in send_rows
+            if normalize_order_id(row.order_no) == rung.order_id
+            and row.trade_date is not None
+            and (
+                (
+                    rung.idempotency_key is not None
+                    and _key_text(row.idempotency_key) == rung.idempotency_key
+                )
+                or (
+                    rung.correlation_id is not None
+                    and _key_text(row.correlation_id) == rung.correlation_id
+                )
+            )
+        }
+        if len(found) == 1:
+            days[rung.rung_id] = next(iter(found))
+    return days
+
+
+async def _kis_send_rows(
+    session: AsyncSession, sleeve: StrategySleeve, rungs: Sequence[_SendKeys]
+) -> list[Any]:
+    """Send-ledger rows that may be the sleeve's KIS rungs' own orders."""
+    idem = sorted({r.idempotency_key for r in rungs if r.idempotency_key})
+    corr = sorted({r.correlation_id for r in rungs if r.correlation_id})
+    if not idem and not corr:
+        return []
+    model: Any = LiveOrderLedger if sleeve.market == "equity_us" else KISLiveOrderLedger
+    clauses = []
+    if idem:
+        clauses.append(model.idempotency_key.in_(idem))
+    if corr:
+        clauses.append(model.correlation_id.in_(corr))
+    stmt = select(
+        model.order_no, model.idempotency_key, model.correlation_id, model.trade_date
+    ).where(model.broker == "kis", or_(*clauses))
+    if model is LiveOrderLedger:
+        stmt = stmt.where(
+            LiveOrderLedger.account_scope == "kis_live", LiveOrderLedger.market == "us"
+        )
+    else:
+        stmt = stmt.where(KISLiveOrderLedger.account_mode == "kis_live")
+    return list((await session.execute(stmt)).all())
+
+
 async def load_sleeve_inputs(
     session: AsyncSession, sleeve: StrategySleeve
 ) -> SleeveInputs:
@@ -487,8 +568,8 @@ async def load_sleeve_inputs(
         .where(OrderProposal.sleeve_id == sleeve.id)
         .order_by(OrderProposalRung.id)
     )
-    refs: list[_RungRef] = []
-    by_order_id: dict[str, list[_RungRef]] = defaultdict(list)
+    orders: list[tuple[SleeveOrder, datetime, str | None]] = []
+    send_keys: list[_SendKeys] = []
     for proposal, rung in rung_rows.all():
         order = SleeveOrder(
             proposal_pk=proposal.id,
@@ -503,15 +584,36 @@ async def load_sleeve_inputs(
             signal_key=str(proposal.root_proposal_id),
             signal_at=proposal.created_at,
         )
-        ref = _RungRef(order, proposal.created_at, proposal.valid_until)
-        refs.append(ref)
-        order_id = normalize_order_id(rung.broker_order_id)
+        order_id = normalize_order_id(rung.broker_order_id) or None
+        orders.append((order, proposal.created_at, order_id))
         if order_id:
-            by_order_id[order_id].append(ref)
+            send_keys.append(
+                _SendKeys(
+                    rung.id,
+                    order_id,
+                    _key_text(rung.idempotency_key),
+                    _key_text(rung.correlation_id),
+                )
+            )
+
+    broker, ledger_mode = LEDGER_IDENTITY[sleeve.account_mode]
+    order_days: dict[int, Any] = {}
+    if broker == "kis" and send_keys:
+        order_days = rung_order_days(
+            rungs=send_keys,
+            send_rows=await _kis_send_rows(session, sleeve, send_keys),
+            instrument="equity_us" if sleeve.market == "equity_us" else "equity_kr",
+        )
+    by_order_id: dict[str, list[_RungRef]] = defaultdict(list)
+    for order, created_at, order_id in orders:
+        if order_id:
+            by_order_id[order_id].append(
+                _RungRef(order, created_at, order_days.get(order.rung_id))
+            )
 
     diagnostics: Counter[str] = Counter()
     fills: list[SleeveFill] = []
-    broker, ledger_mode = LEDGER_IDENTITY[sleeve.account_mode]
+    unattributed: set[int] = set()
     if by_order_id:
         ledger_rows = await session.execute(
             select(ExecutionLedger).where(
@@ -524,16 +626,17 @@ async def load_sleeve_inputs(
                 ),
             )
         )
-        fills, skipped = attribute_fills(
+        fills, skipped, unattributed = attribute_fills(
             rows=list(ledger_rows.scalars().all()),
             by_order_id=by_order_id,
             sleeve=sleeve,
         )
         diagnostics.update(skipped)
     return SleeveInputs(
-        orders=tuple(ref.order for ref in refs),
+        orders=tuple(order for order, _created, _id in orders),
         fills=tuple(fills),
         diagnostics=dict(diagnostics),
+        unattributed_rungs=tuple(sorted(unattributed)),
     )
 
 
@@ -542,10 +645,15 @@ def attribute_fills(
     rows: Sequence[ExecutionLedger],
     by_order_id: dict[str, list[_RungRef]],
     sleeve: StrategySleeve,
-) -> tuple[list[SleeveFill], Counter[str]]:
-    """Match ledger rows to the sleeve's rungs; return fills and skip counts."""
+) -> tuple[list[SleeveFill], Counter[str], set[int]]:
+    """Match ledger rows to the sleeve's rungs.
+
+    Returns the fills, the skip counts, and the rungs that had a fill on their
+    order number that could not be tied to them.
+    """
     skipped: Counter[str] = Counter()
-    per_rung: dict[int, list[tuple[Any, SleeveFill]]] = defaultdict(list)
+    fills: list[SleeveFill] = []
+    unattributed: set[int] = set()
     for row in rows:
         if str(row.currency or "").upper() != sleeve.currency:
             skipped["currency_mismatch"] += 1
@@ -553,19 +661,27 @@ def attribute_fills(
         candidates = by_order_id.get(normalize_order_id(row.broker_order_id), [])
         symbols = _ledger_symbol_keys(row, sleeve.market)
         instrument = _instrument(row)
-        day = order_trading_day(row.broker, instrument, row.filled_at)
         matches = [
             ref
             for ref in candidates
             if ref.order.side == row.side
             and ref.order.symbol in symbols
             and row.filled_at >= ref.created_at
-            and (
-                day is None
-                or ref.valid_until is None
-                or day <= order_trading_day(row.broker, instrument, ref.valid_until)
-            )
         ]
+        day = order_trading_day(row.broker, instrument, row.filled_at)
+        if day is not None and matches:
+            # KIS reuses order numbers on other days: the fill must be on the
+            # trading day of the rung's own order.
+            unknown = [ref for ref in matches if ref.order_day is None]
+            same_day = [ref for ref in matches if ref.order_day == day]
+            if not same_day:
+                if unknown:
+                    skipped["kis_order_day_unknown"] += 1
+                    unattributed.update(ref.order.rung_id for ref in unknown)
+                else:
+                    skipped["order_id_reused_on_another_day"] += 1
+                continue
+            matches = same_day
         if not matches:
             skipped["no_matching_order"] += 1
             continue
@@ -580,29 +696,16 @@ def attribute_fills(
         if fee and fee_currency and fee_currency != sleeve.currency:
             skipped["fee_other_currency"] += 1
             fee = ZERO
-        per_rung[ref.order.rung_id].append(
-            (
-                day,
-                SleeveFill(
-                    ledger_id=row.id,
-                    rung_id=ref.order.rung_id,
-                    symbol=ref.order.symbol,
-                    side=row.side,
-                    quantity=quantity,
-                    price=price,
-                    fee=fee,
-                    filled_at=row.filled_at,
-                ),
+        fills.append(
+            SleeveFill(
+                ledger_id=row.id,
+                rung_id=ref.order.rung_id,
+                symbol=ref.order.symbol,
+                side=row.side,
+                quantity=quantity,
+                price=price,
+                fee=fee,
+                filled_at=row.filled_at,
             )
         )
-    fills: list[SleeveFill] = []
-    for entries in per_rung.values():
-        days = {day for day, _fill in entries if day is not None}
-        first_day = min(days) if days else None
-        for day, fill in entries:
-            if first_day is not None and day != first_day:
-                # A KIS order number reused on a later day is another order.
-                skipped["later_day_order_id_reuse"] += 1
-                continue
-            fills.append(fill)
-    return fills, skipped
+    return fills, skipped, unattributed

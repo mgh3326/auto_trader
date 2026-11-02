@@ -11,16 +11,23 @@ what keeps one sleeve's results apart from every other book.
   no sleeve cost basis: it is reported as ``unmatched_sell_quantity`` and adds
   nothing to realized P&L.
 * **Unrealized P&L** needs a mark for every held symbol. One missing mark makes
-  it ``None`` -- unknown, never zero.
+  it ``None`` -- unknown, never zero. A rung with a ledger fill that could not
+  be tied to it (``unattributed_rungs``) makes net P&L unknown too.
 * **Cash used** = held cost basis + open buy orders + filled quantity the order
   state already reports but the ledger has not booked yet. The last term keeps
-  a reconcile lag from understating what the sleeve has spent.
+  a reconcile lag from understating what the sleeve has spent. A ``filled``
+  buy rung that reports no quantity and has no booked fill is unmeasured: its
+  spend is unknown, not zero.
+* Every buy rung of every proposal counts, including the proposal being gated:
+  its ``pending_approval`` rungs are not open-order states, so the gate adds
+  them once as the order under evaluation, while its rungs already at the
+  broker stay in ``used``.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -101,6 +108,7 @@ class SleeveBook:
     unmatched_sell_quantity: Decimal
     missing_marks: tuple[str, ...] = ()
     unmeasured_orders: tuple[int, ...] = field(default=())
+    unattributed_rungs: tuple[int, ...] = field(default=())
 
     @property
     def loss(self) -> Decimal | None:
@@ -130,14 +138,9 @@ def compute_sleeve_book(
     orders: Sequence[SleeveOrder],
     fills: Iterable[SleeveFill],
     marks: Mapping[str, Decimal | None],
-    exclude_proposal_pk: int | None = None,
+    unattributed_rungs: Collection[int] = (),
 ) -> SleeveBook:
-    """Fold one sleeve's orders and attributed fills into its book.
-
-    ``exclude_proposal_pk`` leaves the proposal under evaluation out of the open
-    orders, so its own rungs are counted once (as the order being gated) and
-    not twice.
-    """
+    """Fold one sleeve's orders and attributed fills into its book."""
     fill_list = sorted(fills, key=lambda f: (f.filled_at, f.ledger_id))
     attributed_qty: dict[int, Decimal] = defaultdict(lambda: ZERO)
     attributed_notional: dict[int, Decimal] = defaultdict(lambda: ZERO)
@@ -193,7 +196,7 @@ def compute_sleeve_book(
     unbooked = ZERO
     unmeasured: list[int] = []
     for order in orders:
-        if order.side != "buy" or order.proposal_pk == exclude_proposal_pk:
+        if order.side != "buy":
             continue
         booked_qty = attributed_qty[order.rung_id]
         if order.state in OPEN_ORDER_STATES:
@@ -208,6 +211,14 @@ def compute_sleeve_book(
                 unmeasured.append(order.rung_id)
             continue
         if order.state in FILLED_TERMINAL_STATES:
+            if (
+                order.state == "filled"
+                and order.rung_filled_qty is None
+                and booked_qty <= 0
+            ):
+                # Filled, but neither the order nor the ledger says how much.
+                unmeasured.append(order.rung_id)
+                continue
             reported = order.rung_filled_qty or ZERO
             gap = reported - booked_qty
             if gap <= 0:
@@ -218,7 +229,8 @@ def compute_sleeve_book(
                 continue
             unbooked += gap * price
 
-    net = None if unrealized is None else realized + unrealized - fees
+    unattributed = tuple(sorted(set(unattributed_rungs)))
+    net = None if unrealized is None or unattributed else realized + unrealized - fees
     used = None if unmeasured else held_cost + open_notional + unbooked
     return SleeveBook(
         positions=tuple(positions),
@@ -234,4 +246,5 @@ def compute_sleeve_book(
         unmatched_sell_quantity=unmatched,
         missing_marks=tuple(missing),
         unmeasured_orders=tuple(sorted(unmeasured)),
+        unattributed_rungs=unattributed,
     )

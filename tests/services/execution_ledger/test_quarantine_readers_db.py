@@ -601,9 +601,6 @@ async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) 
     in-effect predicate on every fill reader. The reconciler fill of the same
     sleeve is kept, which shows the reader is not simply empty.
     """
-    from sqlalchemy import update
-
-    from app.models.order_proposals import OrderProposalRung
     from app.services.order_proposals import OrderProposalsService
     from app.services.order_proposals.service import RungInput
     from app.services.strategy_sleeves import store as sleeve_store
@@ -616,7 +613,12 @@ async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) 
         sleeve = await sleeves.sleeve()
         valid_until = NOW + timedelta(days=30)
         tagged = []
-        for order_no in (f"R{scenario.symbol[1:]}0001", scenario.phantom_order_no):
+        # Each rung's send row dates its order on its fill's KIS trading day,
+        # so only the in-effect/source filters can drop the phantom.
+        for order_no, sent_at in (
+            (f"R{scenario.symbol[1:]}0001", NOW - timedelta(days=5)),
+            (scenario.phantom_order_no, TODAY_MORNING),
+        ):
             group = await OrderProposalsService(db_session).create_proposal(
                 symbol=scenario.symbol,
                 market="equity_kr",
@@ -631,11 +633,7 @@ async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) 
                 now=NOW - timedelta(days=6),
             )
             sleeves.proposal_pks.append(group.id)
-            await db_session.execute(
-                update(OrderProposalRung)
-                .where(OrderProposalRung.proposal_pk == group.id)
-                .values(state="acked", broker_order_id=order_no)
-            )
+            await sleeves.record_send(group, order_no, at=sent_at)
             tagged.append(group)
         # The proposals must predate the real fill (NOW - 5 days).
         await db_session.execute(

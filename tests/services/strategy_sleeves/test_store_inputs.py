@@ -71,3 +71,26 @@ async def test_the_mark_is_the_newest_completed_close_whatever_the_row_order(
     monkeypatch.setattr(repository, "DailyCandlesRepository", _Repo)
     result = await marks.latest_close_marks(None, "crypto", ["KRW-BTC"], now)
     assert result == {"KRW-BTC": D("120")}
+
+
+@pytest.mark.asyncio
+async def test_marks_are_keyed_by_the_requested_symbols(monkeypatch) -> None:
+    """The repository normalizes keys and may add some; marks follow the caller."""
+    from app.services.daily_candles import repository
+
+    now = datetime(2026, 11, 2, 6, 0, tzinfo=UTC)
+    yesterday = datetime(2026, 11, 1, tzinfo=UTC)
+
+    class _Repo:
+        def __init__(self, session) -> None:
+            pass
+
+        async def fetch_recent_batch(self, **_kw):
+            return {
+                "KRW-BTC": [SimpleNamespace(time_utc=yesterday, close=120.0)],
+                "KRW-ETH": [SimpleNamespace(time_utc=yesterday, close=5.0)],
+            }
+
+    monkeypatch.setattr(repository, "DailyCandlesRepository", _Repo)
+    result = await marks.latest_close_marks(None, "crypto", ["krw-btc "], now)
+    assert result == {"krw-btc ": D("120")}

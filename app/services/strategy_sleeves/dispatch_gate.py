@@ -112,11 +112,14 @@ async def _measure(
     held = [position.symbol for position in unmarked.positions]
     marks = await mark_fn(session, sleeve.market, held, now) if held else {}
     marks = {sleeve_symbol(k, sleeve.market): v for k, v in marks.items()}
+    # The proposal's own rungs stay in: its pending rungs are not open orders
+    # (counted once below as the order being gated), and any rung of it that
+    # is already at the broker must still count toward used.
     book = compute_sleeve_book(
         orders=inputs.orders,
         fills=inputs.fills,
         marks=marks,
-        exclude_proposal_pk=group.id,
+        unattributed_rungs=inputs.unattributed_rungs,
     )
     verdict = evaluate_sleeve_gate(
         version=view,

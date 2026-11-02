@@ -94,11 +94,12 @@ async def test_versions_append_and_copy_unchanged_fields(db_session, seed) -> No
 async def test_the_db_refuses_to_rewrite_sleeve_history(
     db_session, seed, statement
 ) -> None:
-    sleeve = await seed.sleeve()
+    # A rollback expires ORM objects; keep plain ids, never re-read attributes.
+    sleeve_id = (await seed.sleeve()).id
     with pytest.raises(DBAPIError):
-        await raw(db_session, statement, id=sleeve.id)
+        await raw(db_session, statement, id=sleeve_id)
     await db_session.rollback()
-    assert [r.version for r in await store.history(db_session, sleeve.id)] == [1]
+    assert [r.version for r in await store.history(db_session, sleeve_id)] == [1]
 
 
 async def test_create_refuses_amounts_and_rules_it_cannot_use(db_session, seed) -> None:
@@ -134,22 +135,26 @@ async def test_create_refuses_amounts_and_rules_it_cannot_use(db_session, seed) 
 async def test_a_proposal_tag_binds_account_and_market_and_never_changes(
     db_session, seed
 ) -> None:
-    kr = await seed.sleeve()
-    other = await seed.sleeve()
-    us = await seed.sleeve(market="equity_us", rule_id="rob1458.us_near_market_entry")
+    # A rollback expires ORM objects; keep plain ids, never re-read attributes.
+    kr_id = (await seed.sleeve()).id
+    other_id = (await seed.sleeve()).id
+    us_id = (
+        await seed.sleeve(market="equity_us", rule_id="rob1458.us_near_market_entry")
+    ).id
     symbol = unique_symbol()
 
     with pytest.raises(OrderProposalError, match="not kis_live/equity_kr"):
-        await seed.proposal(sleeve_id=us.id, symbol=symbol, commit=False)
+        await seed.proposal(sleeve_id=us_id, symbol=symbol, commit=False)
     await db_session.rollback()
 
-    group = await seed.proposal(sleeve_id=kr.id, symbol=symbol)
-    assert group.sleeve_id == kr.id
-    for value in (other.id, None):
+    group = await seed.proposal(sleeve_id=kr_id, symbol=symbol)
+    group_pk, group_sleeve_id = group.id, group.sleeve_id
+    assert group_sleeve_id == kr_id
+    for value in (other_id, None):
         with pytest.raises(DBAPIError, match="cannot change once set"):
             await db_session.execute(
                 sa.update(OrderProposal)
-                .where(OrderProposal.id == group.id)
+                .where(OrderProposal.id == group_pk)
                 .values(sleeve_id=value)
             )
         await db_session.rollback()
@@ -163,7 +168,7 @@ async def test_a_proposal_tag_binds_account_and_market_and_never_changes(
             "VALUES (gen_random_uuid(), gen_random_uuid(), :s, 'equity_kr', "
             "'kis_live', 'buy', 'limit', 'p', :sleeve)",
             s=symbol,
-            sleeve=us.id,
+            sleeve=us_id,
         )
     await db_session.rollback()
 
@@ -213,14 +218,20 @@ async def test_a_fill_on_a_tagged_order_updates_only_that_sleeve(
     await seed.mark_acked(group_b, order_b)
     await seed.mark_acked(untagged, order_untagged)
 
-    async def book(sleeve):
+    # The helper rolls back after each read, which expires ORM objects: load
+    # the sleeve fresh by id every time.
+    sleeve_a_id, sleeve_b_id = sleeve_a.id, sleeve_b.id
+
+    async def book(sleeve_id):
+        sleeve = await store.get_sleeve(db_session, sleeve_id)
+        assert sleeve is not None
         inputs = await store.load_sleeve_inputs(db_session, sleeve)
         await db_session.rollback()
         return compute_sleeve_book(
             orders=inputs.orders, fills=inputs.fills, marks={symbol: Decimal("90")}
         )
 
-    before_b = await book(sleeve_b)
+    before_b = await book(sleeve_b_id)
     await seed.fill(order_id=order_a, symbol=symbol, quantity="10", price="100")
     await seed.fill(order_id=order_untagged, symbol=symbol, quantity="7", price="100")
     # A provisional websocket row on B's order is not a fill until reconciled.
@@ -228,8 +239,8 @@ async def test_a_fill_on_a_tagged_order_updates_only_that_sleeve(
         order_id=order_b, symbol=symbol, quantity="3", price="100", source="websocket"
     )
 
-    after_a = await book(sleeve_a)
-    after_b = await book(sleeve_b)
+    after_a = await book(sleeve_a_id)
+    after_b = await book(sleeve_b_id)
     [position] = after_a.positions
     assert (position.quantity, position.cost_basis) == (Decimal("10"), Decimal("1000"))
     assert after_a.net_pnl == Decimal("-100")
@@ -260,7 +271,7 @@ async def test_live_needs_a_complete_preregistration(db_session, seed) -> None:
             metric="m",
         )
     await db_session.rollback()
-    sleeve = await seed.sleeve(state="shadow")
+    sleeve_id = (await seed.sleeve(state="shadow")).id
     # The CHECK holds for a writer that skips the store too.
     with pytest.raises(DBAPIError, match="live_requires_prereg"):
         await raw(
@@ -268,7 +279,7 @@ async def test_live_needs_a_complete_preregistration(db_session, seed) -> None:
             "INSERT INTO review.strategy_sleeve_versions "
             "(sleeve_id, version, state, budget_cap, loss_limit, reason, set_by) "
             "VALUES (:id, 2, 'live', 1, 1, 'no prereg', 'op')",
-            id=sleeve.id,
+            id=sleeve_id,
         )
     await db_session.rollback()
 
@@ -276,22 +287,23 @@ async def test_live_needs_a_complete_preregistration(db_session, seed) -> None:
 async def test_preregistration_is_frozen_once_the_sleeve_has_been_live(
     db_session, seed
 ) -> None:
-    sleeve = await seed.sleeve(state="shadow")
+    # A rollback expires ORM objects; keep plain ids, never re-read attributes.
+    sleeve_id = (await seed.sleeve(state="shadow")).id
     # Before the first live version the operator may still revise it.
     await store.set_sleeve_version(
-        db_session, sleeve_id=sleeve.id, horizon_sessions="10", reason="r", actor="op"
+        db_session, sleeve_id=sleeve_id, horizon_sessions="10", reason="r", actor="op"
     )
     await store.set_sleeve_version(
-        db_session, sleeve_id=sleeve.id, state="live", reason="go", actor="op"
+        db_session, sleeve_id=sleeve_id, state="live", reason="go", actor="op"
     )
     await store.set_sleeve_version(
-        db_session, sleeve_id=sleeve.id, state="paused", reason="hold", actor="op"
+        db_session, sleeve_id=sleeve_id, state="paused", reason="hold", actor="op"
     )
     await db_session.commit()
 
     with pytest.raises(store.SleeveError, match="frozen"):
         await store.set_sleeve_version(
-            db_session, sleeve_id=sleeve.id, metric="other", reason="r", actor="op"
+            db_session, sleeve_id=sleeve_id, metric="other", reason="r", actor="op"
         )
     await db_session.rollback()
     with pytest.raises(DBAPIError, match="frozen once the sleeve has been live"):
@@ -302,12 +314,12 @@ async def test_preregistration_is_frozen_once_the_sleeve_has_been_live(
             "prereg_min_effect_pct, prereg_horizon_sessions, "
             "prereg_max_duration_days, reason, set_by) "
             "VALUES (:id, 5, 'paused', 1000, 100, 'other', 1, 10, 90, 'r', 'op')",
-            id=sleeve.id,
+            id=sleeve_id,
         )
     await db_session.rollback()
     # Amounts and state still change; the pre-registration is copied.
     row = await store.set_sleeve_version(
-        db_session, sleeve_id=sleeve.id, budget_cap="2000", reason="r", actor="op"
+        db_session, sleeve_id=sleeve_id, budget_cap="2000", reason="r", actor="op"
     )
     assert (row.version, row.prereg_horizon_sessions) == (5, 10)
     await db_session.commit()

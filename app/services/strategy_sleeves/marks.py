@@ -62,7 +62,12 @@ async def latest_close_marks(
     marks: dict[str, Decimal | None] = dict.fromkeys(symbols)
     if last_complete is None:
         return marks
-    for symbol, rows in rows_by_symbol.items():
+    # Keyed by the caller's symbols: the repository normalizes its keys
+    # (strip + upper) and may return keys nobody asked for.
+    for symbol in symbols:
+        rows = rows_by_symbol.get(str(symbol).strip().upper())
+        if rows is None:
+            rows = rows_by_symbol.get(symbol, [])
         completed = [row for row in rows if row.time_utc.date() <= last_complete]
         if not completed:
             continue

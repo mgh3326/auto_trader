@@ -272,7 +272,10 @@ async def load_report(
         marks = await mark_fn(session, sleeve.market, held, now) if held else {}
         marks = {sleeve_symbol(k, sleeve.market): v for k, v in marks.items()}
         book = compute_sleeve_book(
-            orders=inputs.orders, fills=inputs.fills, marks=marks
+            orders=inputs.orders,
+            fills=inputs.fills,
+            marks=marks,
+            unattributed_rungs=inputs.unattributed_rungs,
         )
 
         episodes = episodes_of(inputs.orders, inputs.fills)

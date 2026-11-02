@@ -304,7 +304,7 @@ wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, 
   설정되고 이후 변경 거부. 제안 트리거는 함수 호출 없는 WHEN 이라 태그 없는 쓰기는 트리거 코드를 실행하지 않는다.
   downgrade 는 슬리브나 태그된 제안이 있으면 거부. 이 트리거를 완화하지 마라.
 - **귀속**: fill 은 `execution_ledger_in_effect()` + authoritative 소스만, 슬리브 자기 rung 의 브로커 주문번호·side·종목·통화,
-  제안 생성 이후, KIS 는 첫 거래일·`valid_until` 거래일까지만. websocket 행은 reconcile 전까지 P&L 에 안 들어가지만
+  제안 생성 이후, KIS 는 rung 자기 주문의 거래일만(그 날짜는 rung 의 idempotency key·correlation id **와** 주문번호가 일치하는 송신 원장 행에서 — 주문번호만으로는 정하지 않는다. 날짜를 못 정하면 체결을 붙이지 않고 P&L 미측정). websocket 행은 reconcile 전까지 P&L 에 안 들어가지만
   열린 주문으로 사용액에는 남는다. 사용액 = 보유 원가 + 열린 매수 주문 + 원장 미기록 체결.
 - **사전등록 (ROB-1468)**: 버전에 `prereg_metric`·`prereg_min_effect_pct`(예산 대비 %)·`prereg_horizon_sessions`(H)·
   `prereg_max_duration_days` — 값은 운영자만. `live` 버전은 넷 다 필요(DB CHECK), 한 번 live 였던 슬리브의 사전등록은

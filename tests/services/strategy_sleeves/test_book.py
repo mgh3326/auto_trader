@@ -58,12 +58,44 @@ def test_open_buy_orders_count_their_unfilled_remainder_once() -> None:
     assert book.used == D("1200")
 
 
-def test_the_proposal_being_gated_is_left_out_of_open_orders() -> None:
-    orders = [order(1, proposal_pk=11, state="revalidating")]
+def test_a_gated_proposals_rung_at_the_broker_still_counts_once() -> None:
+    """Its acked rung is an open order; its pending rung is the gated order."""
+    orders = [
+        order(1, proposal_pk=11, state="acked", quantity="10", limit_price="100"),
+        order(2, proposal_pk=11, state="pending_approval", quantity="5"),
+    ]
+    book = compute_sleeve_book(orders=orders, fills=[], marks={})
+    assert book.open_order_notional == D("1000")
+    assert book.used == D("1000")
+
+
+def test_a_filled_rung_with_no_quantity_and_no_booked_fill_is_unmeasured() -> None:
     book = compute_sleeve_book(
-        orders=orders, fills=[], marks={}, exclude_proposal_pk=11
+        orders=[order(1, state="filled", rung_filled_qty=None)], fills=[], marks={}
     )
-    assert book.open_order_notional == D("0")
+    assert book.used is None
+    assert book.unmeasured_orders == (1,)
+
+
+@pytest.mark.parametrize("state", ["cancelled", "expired"])
+def test_a_cancelled_or_expired_rung_with_no_quantity_uses_nothing(state) -> None:
+    book = compute_sleeve_book(
+        orders=[order(1, state=state, rung_filled_qty=None)], fills=[], marks={}
+    )
+    assert book.used == D("0")
+    assert book.unmeasured_orders == ()
+
+
+def test_an_unattributed_fill_makes_pnl_unknown_not_zero() -> None:
+    book = compute_sleeve_book(
+        orders=[order(1, state="resting")],
+        fills=[],
+        marks={},
+        unattributed_rungs=[1],
+    )
+    assert book.net_pnl is None
+    assert book.loss is None
+    assert book.unattributed_rungs == (1,)
 
 
 def test_a_fill_the_rung_reports_but_the_ledger_has_not_booked_still_counts() -> None:

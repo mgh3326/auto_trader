@@ -11,6 +11,7 @@ import sqlalchemy as sa
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.models.review import KISLiveOrderLedger
 from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
 from app.models.trading import InstrumentType
 from app.services.order_proposals import OrderProposalsService
@@ -34,6 +35,8 @@ class SleeveSeed:
         self.sleeve_ids: list[int] = []
         self.proposal_pks: list[int] = []
         self.order_ids: list[str] = []
+        self.acked_at: dict[str, datetime] = {}
+        self.send_order_nos: list[str] = []
 
     async def sleeve(
         self,
@@ -92,15 +95,55 @@ class SleeveSeed:
         self.proposal_pks.append(group.id)
         return group
 
-    async def mark_acked(self, group: OrderProposal, order_id: str) -> None:
-        """Test seam: put the rung at the broker without a broker call."""
+    async def record_send(
+        self, group: OrderProposal, order_id: str, *, at: datetime
+    ) -> None:
+        """Test seam: what a real KIS send leaves behind, without a broker call.
+
+        The rung goes to ``acked`` with the order number and an idempotency key,
+        and the send ledger gets the row a real send writes (same number and
+        key). That row dates the rung's order. The caller commits.
+        """
+        idem = f"idem-{order_id}"
+        rung = (
+            await self.db.execute(
+                sa.select(OrderProposalRung).where(
+                    OrderProposalRung.proposal_pk == group.id
+                )
+            )
+        ).scalar_one()
         await self.db.execute(
             sa.update(OrderProposalRung)
-            .where(OrderProposalRung.proposal_pk == group.id)
-            .values(state="acked", broker_order_id=order_id)
+            .where(OrderProposalRung.id == rung.id)
+            .values(state="acked", broker_order_id=order_id, idempotency_key=idem)
         )
+        self.db.add(
+            KISLiveOrderLedger(
+                trade_date=at,
+                symbol=str(group.symbol),
+                instrument_type="equity_kr",
+                side=str(rung.side),
+                order_type="limit",
+                quantity=rung.quantity,
+                price=rung.limit_price,
+                currency="KRW",
+                order_no=order_id,
+                account_mode="kis_live",
+                broker="kis",
+                status="accepted",
+                lifecycle_state="accepted",
+                idempotency_key=idem,
+            )
+        )
+        self.send_order_nos.append(order_id)
+
+    async def mark_acked(self, group: OrderProposal, order_id: str) -> None:
+        """Put the rung at the broker (see ``record_send``) and commit."""
+        now = datetime.now(UTC)
+        await self.record_send(group, order_id, at=now)
         await self.db.commit()
         self.order_ids.append(order_id)
+        self.acked_at[order_id] = now
 
     async def fill(
         self,
@@ -126,7 +169,9 @@ class SleeveSeed:
             filled_qty=Decimal(quantity),
             filled_price=Decimal(price),
             filled_notional=Decimal(quantity) * Decimal(price),
-            filled_at=filled_at or datetime.now(UTC) + timedelta(minutes=5),
+            # Just after the send by default: the same KIS trading day.
+            filled_at=filled_at
+            or self.acked_at.get(order_id, datetime.now(UTC)) + timedelta(seconds=1),
             currency="KRW",
             source=source,
         )
@@ -144,6 +189,12 @@ class SleeveSeed:
             await self.db.execute(
                 sa.delete(ExecutionLedger).where(
                     ExecutionLedger.broker_order_id.in_(self.order_ids)
+                )
+            )
+        if self.send_order_nos:
+            await self.db.execute(
+                sa.delete(KISLiveOrderLedger).where(
+                    KISLiveOrderLedger.order_no.in_(self.send_order_nos)
                 )
             )
         if self.proposal_pks or self.sleeve_ids:
