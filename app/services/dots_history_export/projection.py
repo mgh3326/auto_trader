@@ -1036,6 +1036,22 @@ def fill_sequences(rows: list[SourceRow]) -> dict[int, OutputRow]:
     return cells
 
 
+def _unlinked_lot_cell() -> OutputRow:
+    """The lot columns of a row that is not part of the walk.
+
+    That covers a superseded duplicate and a sell larger than the lots the export
+    can see. Both are reported, never guessed into a lot.
+    """
+    return {
+        "lot_ref": None,
+        "lot_link_kind": "unlinked",
+        "lot_opened_at_utc": None,
+        "lot_cost_basis": None,
+        "lot_basis_kind": "unknown",
+        "linked_fill_ref": None,
+    }
+
+
 @dataclass
 class _OpenLot:
     """An open lot in the FIFO walk that links add-buys and partial sells."""
@@ -1057,11 +1073,25 @@ def fill_lot_links(
 ) -> dict[int, OutputRow]:
     """Lot linkage per fill row: opening, add-buy, partial or full sell.
 
+    The caller passes **non-superseded** rows only, so the walk sees exactly the
+    fills a reader counts. Two quantity rules make that set add up:
+
+    * A ``websocket`` row is provisional. Whenever an authoritative row
+      (``reconciler`` / ``manual_import``) shares its order identity, the
+      websocket row is ``superseded_duplicate = true`` and never reaches here —
+      the reconciler's order total already contains that execution (ROB-1379).
+    * A cumulative writer (KIS reconciler rows, Upbit aggregate ``fill_seq = 0``)
+      contributes ``incremental_qty``; the export derives it as the rise over the
+      same source's earlier high-water mark, so a re-reported running total is not
+      counted twice. Rows whose basis is ``unknown`` (a non-seed
+      ``manual_import``) carry no increment and are skipped.
+
     An opening seed (``manual_import`` with a ``SEED-`` order id) is the whole
     position at the cutover, so it starts a fresh lot with
     ``lot_basis_kind = period_start_seed``. A buy with an open lot on the same
     account, market and symbol adds to it; a sell reduces it first-in-first-out.
-    A sell with no open lot in the export is ``unlinked`` rather than guessed.
+    A sell with no open lot, or larger than every open lot it can see, is
+    ``unlinked`` rather than guessed.
     """
     cells: dict[int, OutputRow] = {}
     lots: dict[tuple[str, str, str], list[_OpenLot]] = {}
@@ -1074,14 +1104,7 @@ def fill_lot_links(
         instrument = _instrument(row["instrument_type"])
         key = (alias, _market_from_instrument(instrument), str(row["symbol"]))
         fill_ref = f"execution_ledger:{row_id}"
-        cell: OutputRow = {
-            "lot_ref": None,
-            "lot_link_kind": "unlinked",
-            "lot_opened_at_utc": None,
-            "lot_cost_basis": None,
-            "lot_basis_kind": "unknown",
-            "linked_fill_ref": None,
-        }
+        cell: OutputRow = _unlinked_lot_cell()
         cells[row_id] = cell
         sequence = sequences[row_id]
         filled_at = _aware(row["filled_at"])
@@ -1168,6 +1191,11 @@ def fill_lot_links(
             remaining -= take
             if lot.qty <= 0:
                 book.pop(0)
+        if remaining > 0:
+            # The order sold more than the lots this export can see, so the row
+            # cannot be attributed to one lot. It stays unlinked and the overhang
+            # is countable instead of being folded into a lot it does not fit.
+            continue
         cell.update(
             lot_ref=consumed.lot_ref,
             lot_link_kind="partial_sell" if book else "full_sell",
@@ -1189,7 +1217,19 @@ def _project_fills(
     # not flag the one exported row of a fill, or filtering would lose the fill.
     covered = supersede.covered_identities(SimpleNamespace(**row) for row in in_window)
     sequences = fill_sequences(in_window)
-    links = fill_lot_links(in_window, sequences) if p.real else {}
+    # The lot walk must see exactly the rows a consumer counts: the non-superseded
+    # ones. Walking the superseded rows first moved quantities and cost bases that
+    # the export itself then tells the reader to exclude (ROB-1465 review).
+    links: dict[int, OutputRow] = {}
+    if p.real:
+        effective = [
+            row
+            for row in in_window
+            if not supersede.is_superseded(SimpleNamespace(**row), covered)
+        ]
+        links = fill_lot_links(effective, sequences)
+        for row in in_window:
+            links.setdefault(int(row["id"]), _unlinked_lot_cell())
     output = []
     for row in in_window:
         filled_at = _aware(row["filled_at"])

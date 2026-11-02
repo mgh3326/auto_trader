@@ -234,6 +234,113 @@ def test_real_seed_fill_sets_the_period_start_cost_basis() -> None:
     assert links[50]["lot_ref"] == "lot:kis_live:005930:50"
 
 
+def test_a_superseded_fill_never_moves_the_lot_cost_basis() -> None:
+    """ROB-1465 review: the walk must run on the rows the reader counts.
+
+    A websocket row and a reconciler row book the same execution. The export
+    marks the websocket row ``superseded_duplicate = true``; if the walk still
+    consumed it, the lot's average cost would mix the duplicate's price into the
+    cost basis every downstream P&L figure uses.
+    """
+
+    authoritative = fill_row(
+        id=100,
+        source="reconciler",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("100"),
+        filled_at=CREATED,
+    )
+    duplicate = fill_row(
+        id=101,
+        source="websocket",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("50"),
+        filled_at=CREATED,
+    )
+    sell = fill_row(
+        id=102,
+        source="websocket",
+        side="sell",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("120"),
+        filled_at=CREATED + timedelta(hours=2),
+    )
+    rows = projected_real(execution_ledger=[authoritative, duplicate, sell]).tables[
+        "execution_ledger"
+    ]
+    by_id = {row["row_ref"]: row for row in rows}
+    assert by_id["execution_ledger:101"]["superseded_duplicate"] == "true"
+    assert by_id["execution_ledger:101"]["lot_link_kind"] == "unlinked"
+    assert by_id["execution_ledger:101"]["lot_cost_basis"] is None
+    # 100 is the reconciler's price. Mixing the 50 duplicate in would give 75.
+    assert by_id["execution_ledger:102"]["lot_cost_basis"] == "100.000000000000"
+    assert by_id["execution_ledger:102"]["linked_fill_ref"] == "execution_ledger:100"
+    assert by_id["execution_ledger:100"]["lot_cost_basis"] == "100"
+
+
+def test_a_sell_larger_than_the_visible_lots_is_unlinked() -> None:
+    buy = fill_row(
+        id=110,
+        source="reconciler",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("100"),
+        filled_at=CREATED,
+    )
+    over_sell = fill_row(
+        id=111,
+        source="websocket",
+        side="sell",
+        filled_qty=Decimal("15"),
+        filled_price=Decimal("120"),
+        filled_at=CREATED + timedelta(hours=1),
+    )
+    cells = fill_lot_links([buy, over_sell], fill_sequences([buy, over_sell]))
+    assert cells[110]["lot_link_kind"] == "opens_lot"
+    assert cells[111]["lot_link_kind"] == "unlinked"
+    assert cells[111]["lot_cost_basis"] is None
+    assert cells[111]["lot_basis_kind"] == "unknown"
+
+
+def test_no_active_sell_is_attributed_to_a_superseded_fill() -> None:
+    authoritative = fill_row(
+        id=120,
+        source="reconciler",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("100"),
+        filled_at=CREATED,
+    )
+    duplicate = fill_row(
+        id=121,
+        source="websocket",
+        side="buy",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("50"),
+        filled_at=CREATED,
+    )
+    sell = fill_row(
+        id=122,
+        source="websocket",
+        side="sell",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("120"),
+        filled_at=CREATED + timedelta(hours=2),
+    )
+    rows = projected_real(execution_ledger=[authoritative, duplicate, sell]).tables[
+        "execution_ledger"
+    ]
+    active = [row for row in rows if row["superseded_duplicate"] == "false"]
+    linked = {
+        row["linked_fill_ref"]
+        for row in active
+        if row["lot_link_kind"] in ("adds_to_lot", "partial_sell", "full_sell")
+    }
+    assert "execution_ledger:121" not in linked
+
+
 def test_real_partial_sell_links_to_the_lot_it_reduced() -> None:
     buy = fill_row(
         id=60,
