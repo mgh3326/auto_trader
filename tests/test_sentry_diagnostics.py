@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+import app.monitoring.sentry as sentry_module
 from app.monitoring import sentry_diagnostics
 
 
@@ -18,6 +19,17 @@ def _reset_settings(monkeypatch):
     monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_DSN", "")
     monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_TRACES_SAMPLE_RATE", 1.0)
     monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 1.0)
+    monkeypatch.setattr(sentry_module, "_initialized", False)
+    monkeypatch.setattr(sentry_module, "_traces_sampler_active", False)
+
+
+def _run_init_sentry(monkeypatch, *, dsn: str) -> bool:
+    monkeypatch.setattr(sentry_module, "_initialized", False)
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_DSN", dsn)
+    monkeypatch.setattr(sentry_module, "_resolve_release", lambda: "test-release")
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", lambda **_: None)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", lambda *_, **__: None)
+    return sentry_module.init_sentry("auto-trader-api")
 
 
 @pytest.mark.unit
@@ -46,8 +58,41 @@ def test_diagnostics_enabled_and_profiler_ready_with_dsn_and_positive_rate(
 
     assert result["enabled"] is True
     assert result["profiler_ready"] is True
+    assert result["traces_sampler_active"] is False
     assert result["traces_sample_rate"] == 1.0
     assert result["profiles_sample_rate"] == 0.5
+
+
+@pytest.mark.unit
+def test_diagnostics_sampler_inactive_before_init():
+    result = sentry_diagnostics.get_sentry_diagnostics("api")
+
+    assert result["traces_sampler_active"] is False
+
+
+@pytest.mark.unit
+def test_diagnostics_reports_sampler_after_successful_init(monkeypatch):
+    monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_TRACES_SAMPLE_RATE", 0.25)
+
+    assert _run_init_sentry(monkeypatch, dsn="fake-dsn-fixture-not-a-secret") is True
+
+    result = sentry_diagnostics.get_sentry_diagnostics("api")
+
+    assert result["enabled"] is True
+    assert result["traces_sampler_active"] is True
+    assert result["traces_sample_rate"] == 0.25
+
+
+@pytest.mark.unit
+def test_diagnostics_sampler_inactive_when_dsn_unset(monkeypatch):
+    monkeypatch.setattr(sentry_module, "_traces_sampler_active", True)
+
+    assert _run_init_sentry(monkeypatch, dsn="") is False
+
+    result = sentry_diagnostics.get_sentry_diagnostics("api")
+
+    assert result["enabled"] is False
+    assert result["traces_sampler_active"] is False
 
 
 @pytest.mark.unit

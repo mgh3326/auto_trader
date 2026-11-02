@@ -151,12 +151,12 @@ def test_all_extracted_process_calls_forward_identical_shared_sample_rates(
         assert result is True, call_kwargs
         mock_init.assert_called_once()
         _, kwargs = mock_init.call_args
-        assert kwargs["traces_sample_rate"] == 0.37
+        traces_sampler = kwargs["traces_sampler"]
+        assert traces_sampler is sentry_module._traces_sampler
+        assert traces_sampler({}) == 0.37
         assert kwargs["profiles_sample_rate"] == 0.42
         assert kwargs["send_default_pii"] is False
-        observed_rate_pairs.append(
-            (kwargs["traces_sample_rate"], kwargs["profiles_sample_rate"])
-        )
+        observed_rate_pairs.append((traces_sampler({}), kwargs["profiles_sample_rate"]))
 
     assert len(set(observed_rate_pairs)) == 1, observed_rate_pairs
 
