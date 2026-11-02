@@ -56,6 +56,7 @@ Until item 1 holds, the route can run, but it cannot place an order. That is the
 | `POST /execution-intents/children` | One child request: submit, amend or cancel |
 | `GET /execution-intents/children/<idempotency_key>` | One recorded child |
 | `GET /execution-intents/intents/<intent_id>` | The intent's children and the reconcile view |
+| `GET /execution-intents/intents/<intent_id>/fills` | Committed, effective ledger fills for journaled order IDs; no account numbers |
 
 ## Settings
 

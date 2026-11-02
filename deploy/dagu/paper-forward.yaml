@@ -19,6 +19,8 @@ steps:
   - name: crypto
     working_dir: ${AUTO_TRADER_DIR}
     command: uv run python scripts/paper_forward/run.py --market crypto --signals ${PAPER_FORWARD_SIGNALS_CRYPTO} --universe ${PAPER_FORWARD_UNIVERSE} --ledger-dir ${PAPER_FORWARD_DIR}
+    continue_on:
+      failure: true
   - name: us
     working_dir: ${AUTO_TRADER_DIR}
     command: uv run python scripts/paper_forward/run.py --market us --signals ${PAPER_FORWARD_SIGNALS_US} --universe ${PAPER_FORWARD_UNIVERSE} --ledger-dir ${PAPER_FORWARD_DIR}
