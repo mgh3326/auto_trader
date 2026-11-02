@@ -194,11 +194,14 @@ def test_package_imports_no_broker_client_ledger_or_live_tool_at_module_level() 
                 assert not name.startswith(forbidden_prefixes), f"{path.name}: {name}"
 
 
-def test_nothing_in_the_app_wires_the_gateway_to_a_transport_or_scheduler() -> None:
+def test_only_the_loopback_route_wires_the_gateway_to_a_transport() -> None:
     importers = []
     for path in (ROOT / "app").rglob("*.py"):
         if PACKAGE in path.parents:
             continue
         if "execution_intent_gateway" in path.read_text(encoding="utf-8"):
             importers.append(path.relative_to(ROOT).as_posix())
-    assert importers == []
+    assert sorted(importers) == [
+        "app/execution_intent_gateway_server.py",
+        "app/routers/execution_intent_gateway.py",
+    ]
