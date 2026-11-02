@@ -11,6 +11,7 @@
 - 주차자산 proposal-bound 자동 매도 (task 817)
 - Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
 - Toss US 확장세션 승인 창 (#1116)
+- 전략 슬리브 — 실계좌 안의 전략별 예산·손실 한도 (ROB-1470)
 
 ## 기준 원문 계약
 
@@ -282,6 +283,39 @@ wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, 
   채운다
 - **금지**: 이 PR 은 키를 켜지 않는다. 스케줄러·자동 플립 없음
 - **런북**: `docs/runbooks/order-proposals.md` §Approval-window defense in depth
+
+### 전략 슬리브 — 실계좌 안의 전략별 예산·손실 한도 (ROB-1470)
+
+기존 실계좌(KIS·Toss·Upbit) 안에서 ROB-1458 규칙별 카나리의 돈과 결과를 **DB 에서** 분리한다.
+새 계좌 없음. 🔴 **모든 금액은 운영자가 정한다** — 코드·정책·문서 예시에 금액 없음(자리표시자만).
+
+- **모델**: `app/models/strategy_sleeves.py` — `review.strategy_sleeves`(불변 정체성: 규칙·계좌·시장·통화)
+  + `review.strategy_sleeve_versions`(append-only: 상태 `shadow|live|paused|stopped`·예산·손실 한도·사유·설정자).
+  `review.order_proposals.sleeve_id`(nullable, 기존 흐름은 NULL). 마이그레이션 `20261102_rob1470_sleeves`.
+- **서비스**: `app/services/strategy_sleeves/` — `store`(두 테이블의 유일한 writer, 귀속), `book`(순수 FIFO·P&L·사용액),
+  `gate`(순수 판정), `dispatch_gate`(dispatch 배선), `report`, `marks`(DB 일봉 종가). **CLI**: `scripts/strategy_sleeves.py`.
+- **런북**: `docs/runbooks/strategy-sleeves.md`
+- 🔴 **게이트**: 태그된 제안은 `dispatch_proposal` 에서 revalidation(브로커 호출) **이전**에, 트랜잭션 끝까지 잡는 슬리브
+  advisory lock 아래 판정된다. live 아님·손실 ≥ 한도(→ `stopped` 버전 append, actor `system:sleeve_loss_gate`)·P&L 미측정·
+  매수 사용액+주문 > 예산·사용액 미측정·판독 실패는 전부 **사람 승인 카드**로 강등되고 카드에 사유 코드가 남는다
+  (`sleeve_*`, `auto_approve_audit` 어휘). 거절이 아니라 강등이다. 🔴 `sleeve_id IS NULL` 제안은 이 분기에 들어가지 않는다 —
+  태그 없는 주문 동작은 바이트 동일. 이 게이트를 revalidation 뒤로 옮기거나 미측정을 0 으로 취급하지 마라.
+- 🔴 **DB 가드**: 두 테이블 UPDATE/DELETE/TRUNCATE 거부, 버전은 직전+1 만, `sleeve_id` 는 INSERT 때만(같은 계좌·시장 슬리브)
+  설정되고 이후 변경 거부. 제안 트리거는 함수 호출 없는 WHEN 이라 태그 없는 쓰기는 트리거 코드를 실행하지 않는다.
+  downgrade 는 슬리브나 태그된 제안이 있으면 거부. 이 트리거를 완화하지 마라.
+- **귀속**: fill 은 `execution_ledger_in_effect()` + authoritative 소스만, 슬리브 자기 rung 의 브로커 주문번호·side·종목·통화,
+  제안 생성 이후, KIS 는 rung 자기 주문의 거래일만(그 날짜는 rung 의 idempotency key·correlation id **와** 주문번호가 일치하는 송신 원장 행에서 — 주문번호만으로는 정하지 않는다. 날짜를 못 정하면 체결을 붙이지 않고 P&L 미측정). websocket 행은 reconcile 전까지 P&L 에 안 들어가지만
+  열린 주문으로 사용액에는 남는다. 사용액 = 보유 원가 + 열린 매수 주문 + 원장 미기록 체결.
+- **사전등록 (ROB-1468)**: 버전에 `prereg_metric`·`prereg_min_effect_pct`(예산 대비 %)·`prereg_horizon_sessions`(H)·
+  `prereg_max_duration_days` — 값은 운영자만. `live` 버전은 넷 다 필요(DB CHECK), 한 번 live 였던 슬리브의 사전등록은
+  변경 거부(store + 트리거) — 바꾸려면 새 슬리브(새 epoch).
+- **리포트 통계**: 표본 = 에피소드 1개(신호 = 제안 lineage root 의 rung·래더·리비전·부분체결; 같은 종목 보유 중에 낸
+  후속 신호 — 물타기·후속 래더·청산 — 는 첫 신호의 에피소드에 합류, flat 에서 낸 신호는 새 에피소드). 첫 신호 후 H 번째
+  완성 종가로 MTM 한 비용 차감 결과 ÷ 에피소드 시작 시점 예산. 미체결은 결과 0 으로 코호트에 남고, H 종가 없음은
+  `unmeasured`(0 으로 평균 금지).
+  비교 기준선은 auto_trader 에 없어 `baseline=not_recorded`, D 는 비움. 통화별 합계만. 🔴 안전 상태(손실 한도·예산·정지)와
+  통계 판정은 별개 필드이고 판정은 "통과"를 내지 않는다(`final_date_reached` = 사전등록 대비 채점 대상).
+- 직접 주문 도구는 슬리브를 받지 않는다(슬리브 주문은 제안 경로만). 스케줄러 연결 없음. ROB-1460 exit plan 연결은 #2266 머지 후 후속.
 
 ## 유지 규약
 

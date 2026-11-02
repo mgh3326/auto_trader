@@ -1,0 +1,16 @@
+[7] us-near-market  rob1458.us_near_market_entry  kis_live/equity_us USD  state=live v2
+  budget=1000 used=790 left=210 (held=600 open=190 unbooked=0)
+  pnl net=298 realized=350 unrealized=-50 fees=2  loss_limit=100 reached=False
+  safety=ok trades=3 unmatched_sell_qty=0 missing_marks=-
+  prereg metric=cost-net result at H minus baseline min_effect=1% H=20 max_days=90
+  canary §4.1 verdict=collecting final=2027-01-26T06:00:00+00:00 signals=3 episodes=3 matured=2 (unfilled=0) open=1 unmeasured=0 mean_result=8.65% baseline=not_recorded
+    AAA qty=5 cost=600 mark=110 upnl=-50
+  attribution skipped: no_matching_order=1
+[8] kr-cut-shadow  rob1458.kr_cut_minus20  kis_live/equity_kr KRW  state=shadow v1
+  budget=1000 used=0 left=1000 (held=0 open=0 unbooked=0)
+  pnl net=0 realized=0 unrealized=0 fees=0  loss_limit=100 reached=False
+  safety=shadow trades=0 unmatched_sell_qty=0 missing_marks=-
+  prereg metric=- min_effect=-% H=- max_days=-
+  canary §4.3 verdict=not_preregistered final=- signals=0 episodes=0 matured=0 (unfilled=0) open=0 unmeasured=0 mean_result=-% baseline=not_recorded
+total KRW: budget=1000 used=0 net_pnl=0
+total USD: budget=1000 used=790 net_pnl=298

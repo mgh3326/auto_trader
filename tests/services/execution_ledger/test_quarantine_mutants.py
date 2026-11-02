@@ -225,6 +225,9 @@ def test_batch_noop_mutant_would_swallow_a_mixed_batch() -> None:
 
 #: (path, function) -> DB test proof that runs the "filter dropped" mutant.
 IN_EFFECT_READERS: dict[tuple[str, str], str] = {
+    ("app/services/strategy_sleeves/store.py", "load_sleeve_inputs"): (
+        "test_quarantine_readers_db::test_strategy_sleeve_fills_drop_the_quarantined_row"
+    ),
     (
         "app/services/dots_history_export/reader.py",
         "execution_ledger_statement",
