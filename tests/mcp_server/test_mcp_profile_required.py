@@ -74,7 +74,6 @@ REVIEWED_LAUNCHERS = {
     "scripts/deploy-ncp-pull.sh",
     "scripts/mcp_server.sh",
     "scripts/mock_session_mcp.py",
-    "scripts/shadow_replay_mcp.json",
 }
 # Mentions the module name in a docstring only; it launches nothing.
 NON_LAUNCHERS = {
@@ -138,12 +137,6 @@ def test_deploy_script_passes_an_explicit_profile_to_every_unit() -> None:
     for value in profiles.group(1).split():
         assert value.strip("'\"").strip(), "blank profile in MCP_PROFILES"
         require_mcp_profile(value)
-
-
-def test_shadow_replay_stdio_config_sets_its_profile() -> None:
-    config = json.loads((REPO / "scripts" / "shadow_replay_mcp.json").read_text())
-    (server,) = config["mcpServers"].values()
-    assert server["env"]["MCP_PROFILE"] == "shadow-replay"
 
 
 def test_mock_session_launcher_sets_the_approved_profile() -> None:

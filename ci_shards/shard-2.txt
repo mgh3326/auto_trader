@@ -34,7 +34,6 @@ tests/mcp_server/test_kis_mock_shadow_order_history.py
 tests/mcp_server/test_mirror_counterfactual_tool.py
 tests/mcp_server/test_session_bootstrap_pack.py
 tests/mcp_server/test_session_bootstrap_profile_sections.py
-tests/mcp_server/test_shadow_replay_profile.py
 tests/mcp_server/test_tool_call_observability.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
 tests/mcp_server/tooling/test_crypto_live_routing.py
@@ -465,7 +464,6 @@ tests/test_sentry_profile_envelope_contract.py
 tests/test_services_dart.py
 tests/test_services_kis_client.py
 tests/test_session_context_web_read.py
-tests/test_shadow_replay_cli.py
 tests/test_snapshot_schedulers_rob438.py
 tests/test_stock_detail_orders.py
 tests/test_support_proximity_snapshot_job.py

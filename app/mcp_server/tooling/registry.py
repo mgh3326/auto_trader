@@ -60,12 +60,6 @@ Profile → tool surface mapping
   proxies. KR order-path behavior is byte-identical to "kiwoom"; only the
   registered set is narrower.
 
-"shadow-replay" (McpProfile.SHADOW_REPLAY):
-  Task 191 closed-world B0X observation/replay. Registers the exact seven
-  supplied-artifact capabilities in shadow_replay_registration, then returns
-  before the "Always" block. No compatibility aliases or broad registrars are
-  reachable.
-
 "fill-watch-context" (McpProfile.FILL_WATCH_CONTEXT):
   #137 Phase 0 closed-world artifact surface. Registers exactly
   fill_watch_context_consume_artifact (independently default-off) and
@@ -207,9 +201,6 @@ from app.mcp_server.tooling.session_bootstrap_registration import (
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
 )
-from app.mcp_server.tooling.shadow_replay_registration import (
-    register_shadow_replay_tools,
-)
 from app.mcp_server.tooling.toss_manual_activity_tools import (
     register_toss_manual_activity_tools,
 )
@@ -311,13 +302,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
     mcp = cast("FastMCP", NicheMCP(mcp, profile=profile.value))
     mcp = without_dead_tools(mcp, profile.value)
-
-    if profile is McpProfile.SHADOW_REPLAY:
-        # Task 191: exact seven-function observation/replay boundary.  This
-        # early return is the physical privilege boundary; the broad Always
-        # block and every account/mutation registrar remain unreachable.
-        register_shadow_replay_tools(mcp)
-        return
 
     if profile is McpProfile.FILL_WATCH_CONTEXT:
         # #137 Phase 0 — closed world before the broad "Always" block. The

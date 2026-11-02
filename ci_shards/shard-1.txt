@@ -480,7 +480,6 @@ tests/test_services_forexfactory_calendar.py
 tests/test_services_kis_market_data_unit.py
 tests/test_services_krx.py
 tests/test_session_context_mcp.py
-tests/test_shadow_replay_probe_cli.py
 tests/test_snapshot_commit_guard.py
 tests/test_snapshot_kind_investor_flow.py
 tests/test_snapshot_kind_kr_market_ranking.py

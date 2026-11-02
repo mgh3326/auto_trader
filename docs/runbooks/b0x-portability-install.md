@@ -109,7 +109,9 @@ promotes it.
 
 ## Seven-capability shadow boundary
 
-The `shadow-replay` profile is closed to exactly
+ROB-1488 retires the unused `shadow-replay` profile and its seven tools. This
+section describes the historical boundary only; it is not an installation step.
+The old profile was closed to exactly
 `canonical_session_context_read`, `source_event_observe`,
 `emitted_trigger_playbook_read`, `identical_input_snapshot_read`,
 `shadow_report_write`, `deterministic_replay_compare`, and

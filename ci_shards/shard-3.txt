@@ -20,7 +20,6 @@ tests/mcp_server/test_alpaca_paper_automated_orders.py
 tests/mcp_server/test_alpaca_paper_default_profile_gate.py
 tests/mcp_server/test_alpaca_paper_no_size_caps.py
 tests/mcp_server/test_analyze_stock_batch_us_quote_session.py
-tests/mcp_server/test_b0x_shadow_replay_tools.py
 tests/mcp_server/test_binance_demo_ledger_status_tool.py
 tests/mcp_server/test_fill_watch_context_profile.py
 tests/mcp_server/test_investment_hermes_tools.py

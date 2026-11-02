@@ -36,11 +36,6 @@ def test_account_routing_tool_names_register():
     assert set(mcp.tools) == {"suggest_order_account"}
 
 
-# ROB-697 M1 — shadow-replay early-returns before the "Always" block that
-# registers suggest_order_account, so it is deliberately excluded here (its
-# validity guard is that it carries ONLY the frozen-context read + policy +
-# route_request tools; see tests/mcp_server/test_shadow_replay_profile.py).
-#
 # ROB-1782 R2 — alpaca-paper-clean is also a closed-world physical-account
 # surface; it contains only its pinned Alpaca read/preview/ledger tools.
 _READ_PROFILES = [
@@ -48,7 +43,6 @@ _READ_PROFILES = [
     for p in McpProfile
     if p
     not in (
-        McpProfile.SHADOW_REPLAY,
         McpProfile.ALPACA_PAPER_CLEAN,
         # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
         McpProfile.FILL_WATCH_CONTEXT,

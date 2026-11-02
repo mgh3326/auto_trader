@@ -848,15 +848,6 @@
       "update_trade_journal",
       "watch_downside_register_sweep"
     ],
-    "shadow-replay": [
-      "canonical_session_context_read",
-      "deterministic_replay_compare",
-      "emitted_trigger_playbook_read",
-      "identical_input_snapshot_read",
-      "raw_difference_artifact_write",
-      "shadow_report_write",
-      "source_event_observe"
-    ],
     "us-paper": [
       "alpaca_paper_automated_preview_order",
       "alpaca_paper_automated_submit_order",
@@ -2039,15 +2030,6 @@
       "update_manual_holdings",
       "update_trade_journal",
       "watch_downside_register_sweep"
-    ],
-    "shadow-replay": [
-      "canonical_session_context_read",
-      "deterministic_replay_compare",
-      "emitted_trigger_playbook_read",
-      "identical_input_snapshot_read",
-      "raw_difference_artifact_write",
-      "shadow_report_write",
-      "source_event_observe"
     ],
     "us-paper": [
       "alpaca_paper_automated_preview_order",

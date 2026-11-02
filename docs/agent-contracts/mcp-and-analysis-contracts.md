@@ -89,6 +89,15 @@ hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에�
 KIS_MOCK_ENABLED 및 기존 필수 설정 게이트, dry_run 기본 true와 쓰기 confirm
 true를 유지한다.
 
+### Shadow-replay profile retirement (ROB-1488 R1a)
+
+Unused `shadow-replay` and its seven supplied-artifact tools are retired together
+with their dedicated CLI/config/service/tests. Its profile name refuses startup
+as unknown; it never falls back to DEFAULT. No retained profile or lane allowlist
+changes, and no data/artifact deletion, migration or scheduler registration.
+The independent fill-watch-context replay code remains. Historical procedure:
+`docs/archive/shadow-replay-rob697.md`.
+
 ### Runtime LLM ownership boundary
 
 auto_trader runtime code must not import or instantiate in-process LLM providers

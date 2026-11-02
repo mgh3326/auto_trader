@@ -2307,10 +2307,6 @@ class TestGetFxRateHandler:
 class TestGetFxRateToolRegistration:
     """Tests for get_fx_rate MCP registration."""
 
-    # ROB-697 M1 — shadow-replay early-returns before the "Always" block that
-    # registers get_fx_rate (fundamentals tools), so it is deliberately
-    # excluded here; see tests/mcp_server/test_shadow_replay_profile.py.
-    #
     # ROB-1782 R2 — alpaca-paper-clean is a closed-world physical-account
     # surface and must not inherit the common fundamentals block.
     @pytest.mark.parametrize(
@@ -2320,7 +2316,6 @@ class TestGetFxRateToolRegistration:
             for p in McpProfile
             if p
             not in (
-                McpProfile.SHADOW_REPLAY,
                 McpProfile.ALPACA_PAPER_CLEAN,
                 # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
                 McpProfile.FILL_WATCH_CONTEXT,

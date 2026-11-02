@@ -99,6 +99,14 @@ _DELETED_MODULE_PATHS = (
     "app/mcp_server/tooling/paper_journal_bridge.py",
     "app/mcp_server/tooling/paper_journal_registration.py",
     "app/mcp_server/tooling/paper_validation_registration.py",
+    # ROB-1488 retired supplied-artifact replay profile and its dedicated code.
+    "app/mcp_server/tooling/shadow_replay_registration.py",
+    "app/services/shadow_replay/__init__.py",
+    "app/services/shadow_replay/corpus.py",
+    "app/services/shadow_replay/scoring.py",
+    "app/services/shadow_replay/portability.py",
+    "scripts/shadow_replay.py",
+    "scripts/shadow_replay_probe.py",
     # ROB-1436 retired profiles' registrars.
     "app/mcp_server/tooling/account_read_registration.py",
     "app/mcp_server/tooling/analysis_readonly_registration.py",
@@ -183,3 +191,21 @@ def test_orphaned_modules_and_runtime_imports_stay_absent():
                         f"{path.relative_to(root)}:{node.lineno}: {module}"
                     )
     assert not violations, f"deleted MCP handler import restored: {violations}"
+
+
+@pytest.mark.parametrize("gates_enabled", [True, False])
+def test_retired_shadow_replay_tools_absent_from_every_profile(
+    monkeypatch, gates_enabled
+):
+    retired = {
+        "canonical_session_context_read",
+        "source_event_observe",
+        "emitted_trigger_playbook_read",
+        "identical_input_snapshot_read",
+        "shadow_report_write",
+        "deterministic_replay_compare",
+        "raw_difference_artifact_write",
+    }
+    actual = collect_profile_tools(monkeypatch, gates_enabled=gates_enabled)
+    assert "shadow-replay" not in actual
+    assert retired.isdisjoint(set().union(*(set(names) for names in actual.values())))

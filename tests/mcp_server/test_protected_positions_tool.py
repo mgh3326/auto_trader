@@ -79,7 +79,6 @@ def test_read_tool_is_present_only_on_reviewed_read_profiles(
     ):
         assert "get_protected_positions" in tools[profile.value]
     for profile in (
-        McpProfile.SHADOW_REPLAY,
         McpProfile.WATCH_REPRICING,
         McpProfile.FILL_WATCH_CONTEXT,
     ):

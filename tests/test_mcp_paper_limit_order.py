@@ -22,13 +22,6 @@ def test_paper_limit_tools_registered_on_default() -> None:
 
 
 @pytest.mark.unit
-def test_paper_limit_tools_absent_on_shadow_replay() -> None:
-    mcp = DummyMCP()
-    register_all_tools(cast(Any, mcp), profile=McpProfile.SHADOW_REPLAY)
-    assert PAPER_LIMIT_ORDER_TOOL_NAMES.isdisjoint(set(mcp.tools.keys()))
-
-
-@pytest.mark.unit
 def test_paper_limit_tools_nameset_matches_handler() -> None:
     """Pin the exact tool name set so the profile-matrix guard stays aligned."""
     assert PAPER_LIMIT_ORDER_TOOL_NAMES == {

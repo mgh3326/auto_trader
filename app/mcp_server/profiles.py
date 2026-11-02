@@ -26,9 +26,6 @@ class McpProfile(StrEnum):
     # ROB-1159 — least-privilege split of KIWOOM: KR namespace only, the whole
     # kiwoom_mock_us_* namespace (4 mutations + 3 reads) physically absent.
     KIWOOM_KR = "kiwoom_kr"
-    # Task 191: exact seven-capability supplied-artifact observation/replay
-    # boundary. It is physically disjoint from live/default registrars.
-    SHADOW_REPLAY = "shadow-replay"
     # Canonical physical-account routing surface. The name is a route label;
     # strategy/universe admission is governed by separate contracts.
     ALPACA_PAPER_CLEAN = "alpaca-paper-clean"

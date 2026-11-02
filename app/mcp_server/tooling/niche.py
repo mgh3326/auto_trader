@@ -121,20 +121,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset({"shadow-replay"}),
-        frozenset(
-            {
-                "canonical_session_context_read",
-                "deterministic_replay_compare",
-                "emitted_trigger_playbook_read",
-                "identical_input_snapshot_read",
-                "raw_difference_artifact_write",
-                "shadow_report_write",
-                "source_event_observe",
-            }
-        ),
-    ),
-    (
         frozenset(
             {
                 "kiwoom",
