@@ -187,6 +187,115 @@ def _is_healthcheck_access_log(logger_name: str | None, message: str | None) -> 
     return "/healthz" in message and '" 200' in message
 
 
+# uvicorn's access log format is ``%s - "%s %s HTTP/%s" %d`` (client, method,
+# path, version, status). The status is the integer after the quoted request
+# line; the trailing boundary rejects a longer number after the first three
+# digits.
+_UVICORN_ACCESS_STATUS_RE = re.compile(r'"[^"]*"\s+(\d{3})(?:\s|$)')
+
+# ROB-1479: monitor-only probe routes. Their transactions were roughly 70% of
+# accepted spans in a seven-day sample, so the traces_sampler drops them before
+# an event is produced. Keep this list in sync with the probe routes.
+_PROBE_ROUTE_PATHS = frozenset({"/healthz", "/health", "/api/test/health-check"})
+_PROBE_TRANSACTION_NAMES = frozenset(
+    {
+        "app.routers.health.healthz",
+        "app.routers.test.test_health_check",
+    }
+)
+_HTTP_REQUEST_LINE_METHOD_RE = re.compile(
+    r"^(?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE)\s+",
+    flags=re.IGNORECASE,
+)
+
+
+def _uvicorn_access_status_code(message: str) -> int | None:
+    match = _UVICORN_ACCESS_STATUS_RE.search(message)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _is_successful_uvicorn_access_log(
+    logger_name: str | None, message: str | None
+) -> bool:
+    """True for uvicorn access records whose status is 2xx or 3xx."""
+    if logger_name != "uvicorn.access" or not message:
+        return False
+    status_code = _uvicorn_access_status_code(message)
+    return status_code is not None and 200 <= status_code < 400
+
+
+def _normalize_route_path(value: str) -> str:
+    """Reduce a transaction name or request path to its bare path."""
+    candidate = value.strip()
+    method_match = _HTTP_REQUEST_LINE_METHOD_RE.match(candidate)
+    if method_match is not None:
+        candidate = candidate[method_match.end() :]
+    if "://" in candidate:
+        candidate = urlsplit(candidate).path
+    else:
+        candidate = candidate.split("?", 1)[0].split("#", 1)[0]
+        # Request-line form: "/healthz HTTP/1.1".
+        candidate = candidate.split(" ", 1)[0]
+    if len(candidate) > 1:
+        candidate = candidate.rstrip("/")
+    return candidate
+
+
+def _endpoint_transaction_name(endpoint: Any) -> str | None:
+    module = getattr(endpoint, "__module__", None)
+    qualname = getattr(endpoint, "__qualname__", None)
+    if not isinstance(module, str) or not isinstance(qualname, str):
+        return None
+    return f"{module}.{qualname}"
+
+
+def _is_probe_sampling_context(sampling_context: Mapping[str, Any]) -> bool:
+    transaction_context = sampling_context.get("transaction_context")
+    if isinstance(transaction_context, Mapping):
+        name = transaction_context.get("name")
+        if isinstance(name, str):
+            if name.strip() in _PROBE_TRANSACTION_NAMES:
+                return True
+            if _normalize_route_path(name) in _PROBE_ROUTE_PATHS:
+                return True
+
+    asgi_scope = sampling_context.get("asgi_scope")
+    if isinstance(asgi_scope, Mapping):
+        for key in ("path", "raw_path"):
+            raw_path = asgi_scope.get(key)
+            if isinstance(raw_path, bytes):
+                raw_path = raw_path.decode("latin-1", errors="ignore")
+            if isinstance(raw_path, str) and (
+                _normalize_route_path(raw_path) in _PROBE_ROUTE_PATHS
+            ):
+                return True
+        if _endpoint_transaction_name(asgi_scope.get("endpoint")) in (
+            _PROBE_TRANSACTION_NAMES
+        ):
+            return True
+
+    return False
+
+
+def _traces_sampler(sampling_context: Mapping[str, Any]) -> float:
+    """Decide trace sampling, dropping monitor-only probe traffic (ROB-1479).
+
+    Probe routes carry no user work, so they return 0 even when a parent asks
+    to be sampled. Everything else honours a parent decision when one is
+    present and otherwise uses the configured default rate, so real traces
+    keep the rate they had while ``SENTRY_TRACES_SAMPLE_RATE`` is unchanged.
+    """
+    context: Mapping[str, Any] = sampling_context or {}
+    if _is_probe_sampling_context(context):
+        return 0.0
+    parent_sampled = context.get("parent_sampled")
+    if isinstance(parent_sampled, bool):
+        return 1.0 if parent_sampled else 0.0
+    return settings.SENTRY_TRACES_SAMPLE_RATE
+
+
 _YFINANCE_CRUMB_PATTERNS = ("invalid crumb", "invalid cookie")
 
 
@@ -432,6 +541,10 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     logger_name, message = _extract_sentry_log_context(sentry_log, hint)
     if _is_healthcheck_access_log(logger_name, message):
         return None
+    # ROB-1479: successful access logs are the bulk of the log quota and carry
+    # no failure signal. 4xx/5xx and every non-access logger stay.
+    if _is_successful_uvicorn_access_log(logger_name, message):
+        return None
     if _is_yfinance_crumb_error(logger_name, message):
         return None
     if _is_yfinance_noise_log(logger_name, message):
@@ -619,7 +732,7 @@ def init_sentry(
             environment=environment,
             release=release,
             debug=enable_debug,
-            traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+            traces_sampler=_traces_sampler,
             profiles_sample_rate=settings.SENTRY_PROFILES_SAMPLE_RATE,
             send_default_pii=settings.SENTRY_SEND_DEFAULT_PII,
             integrations=integrations,

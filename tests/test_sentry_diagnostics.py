@@ -46,8 +46,21 @@ def test_diagnostics_enabled_and_profiler_ready_with_dsn_and_positive_rate(
 
     assert result["enabled"] is True
     assert result["profiler_ready"] is True
+    assert result["traces_sampler_active"] is True
     assert result["traces_sample_rate"] == 1.0
     assert result["profiles_sample_rate"] == 0.5
+
+
+@pytest.mark.unit
+def test_diagnostics_reports_sampler_active_with_default_rate(monkeypatch):
+    """ROB-1479: tracing is sampler-driven; the reported rate is its default
+    for ordinary transactions, never the only sampling decision."""
+    monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_TRACES_SAMPLE_RATE", 0.25)
+
+    result = sentry_diagnostics.get_sentry_diagnostics("api")
+
+    assert result["traces_sampler_active"] is True
+    assert result["traces_sample_rate"] == 0.25
 
 
 @pytest.mark.unit

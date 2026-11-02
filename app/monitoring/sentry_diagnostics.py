@@ -23,6 +23,7 @@ DIAGNOSTICS_FIELDS: frozenset[str] = frozenset(
         "sdk_version",
         "enabled",
         "traces_sample_rate",
+        "traces_sampler_active",
         "profiles_sample_rate",
         "profiler_ready",
     }
@@ -59,7 +60,11 @@ def get_sentry_diagnostics(process_kind: str) -> dict[str, Any]:
         )
 
     dsn_configured = bool((settings.SENTRY_DSN or "").strip())
+    # ROB-1479: tracing is decided by app.monitoring.sentry._traces_sampler,
+    # not by a fixed rate. ``traces_sample_rate`` is the sampler's default
+    # rate for ordinary transactions; probe routes are dropped to 0.
     traces_sample_rate = settings.SENTRY_TRACES_SAMPLE_RATE
+    traces_sampler_active = True
     profiles_sample_rate = settings.SENTRY_PROFILES_SAMPLE_RATE
     # ROB obs/sentry-profiling-path: verified against installed sentry-sdk
     # 2.57.0 — the transaction profiler piggybacks on trace sampling, so
@@ -75,6 +80,7 @@ def get_sentry_diagnostics(process_kind: str) -> dict[str, Any]:
         "sdk_version": sentry_sdk.VERSION,
         "enabled": dsn_configured,
         "traces_sample_rate": traces_sample_rate,
+        "traces_sampler_active": traces_sampler_active,
         "profiles_sample_rate": profiles_sample_rate,
         "profiler_ready": profiler_ready,
     }
