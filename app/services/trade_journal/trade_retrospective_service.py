@@ -108,6 +108,7 @@ PNL_STATUS_RECORDED_OTHER_PNL = "recorded_other_pnl"
 PNL_STATUS_POSITION_INTAKE = "position_intake"
 PNL_STATUS_NO_FILL_EVIDENCE = "no_fill_evidence"
 PNL_STATUS_NO_FILL_OUTCOME = "no_fill_outcome"
+PNL_STATUS_UNKNOWN_OUTCOME = "unknown_outcome"
 PNL_STATUS_BUY_LEG = "buy_leg"
 PNL_STATUS_UNKNOWN_SIDE = "unknown_side"
 PNL_STATUS_MISSING_REALIZED_PNL = "missing_realized_pnl"
@@ -118,12 +119,14 @@ PNL_STATUS_CLASS: dict[str, str] = {
     PNL_STATUS_POSITION_INTAKE: "not_applicable",
     PNL_STATUS_NO_FILL_EVIDENCE: "unknown",
     PNL_STATUS_NO_FILL_OUTCOME: "not_applicable",
+    PNL_STATUS_UNKNOWN_OUTCOME: "unknown",
     PNL_STATUS_BUY_LEG: "not_applicable",
     PNL_STATUS_UNKNOWN_SIDE: "unknown",
     PNL_STATUS_MISSING_REALIZED_PNL: "missing",
 }
 
 _FILLED_OUTCOMES = frozenset({"filled", "partially_filled"})
+_NO_FILL_OUTCOMES = frozenset({"unfilled", "rejected", "cancelled"})
 
 
 def classify_pnl_status(row: TradeRetrospective) -> str:
@@ -151,8 +154,10 @@ def classify_pnl_status(row: TradeRetrospective) -> str:
         return PNL_STATUS_RECORDED_OTHER_PNL
     if not row.fill_evidence_available:
         return PNL_STATUS_NO_FILL_EVIDENCE
-    if row.outcome not in _FILLED_OUTCOMES:
+    if row.outcome in _NO_FILL_OUTCOMES:
         return PNL_STATUS_NO_FILL_OUTCOME
+    if row.outcome not in _FILLED_OUTCOMES:
+        return PNL_STATUS_UNKNOWN_OUTCOME
     if row.side == "buy":
         return PNL_STATUS_BUY_LEG
     if row.side is None:

@@ -77,7 +77,7 @@ def register_trade_retrospective_tools(
             "(symbol/account_mode/strategy_key/market/correlation_id/days). Read-only. "
             "Each entry carries pnl_status (recorded / recorded_other_pnl / "
             "position_intake / buy_leg / no_fill_outcome / "
-            "no_fill_evidence / unknown_side / missing_realized_pnl)."
+            "no_fill_evidence / unknown_outcome / unknown_side / missing_realized_pnl)."
         ),
     )(get_trade_retrospectives)
     _ = mcp.tool(
@@ -97,7 +97,8 @@ def register_trade_retrospective_tools(
             "that are structurally not applicable (no fill / buy leg; intake "
             "entries have position_intake status and remain aggregate-excluded), "
             "and rows "
-            "that are unknown (no fill evidence / unknown side) or missing it "
+            "that are unknown (no fill evidence / absent or unrecognized outcome / "
+            "unknown side) or missing it "
             "(a filled sell with no recorded P&L). "
             "Complements get_mock_loop_retrospective."
         ),

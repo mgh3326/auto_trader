@@ -22,6 +22,7 @@ from app.services.trade_journal.trade_retrospective_service import (
     PNL_STATUS_POSITION_INTAKE,
     PNL_STATUS_RECORDED,
     PNL_STATUS_RECORDED_OTHER_PNL,
+    PNL_STATUS_UNKNOWN_OUTCOME,
     PNL_STATUS_UNKNOWN_SIDE,
     _build_pnl_coverage,
     build_retrospective_aggregate,
@@ -107,6 +108,17 @@ def test_non_fill_outcome_is_not_applicable(outcome):
     assert _classify(outcome=outcome) == PNL_STATUS_NO_FILL_OUTCOME
 
 
+@pytest.mark.parametrize("outcome", [None, "", "pending", "unexpected"])
+@pytest.mark.parametrize("side", ["buy", "sell", None])
+def test_unknown_outcome_does_not_establish_no_fill(outcome, side):
+    row = _row(outcome=outcome, side=side, realized_pnl=None)
+    assert serialize_retrospective(row)["pnl_status"] == "unknown_outcome"
+    coverage = _build_pnl_coverage([row])
+    assert coverage["unknown"] == 1
+    assert coverage["not_applicable"] == 0
+    assert coverage["missing"] == 0
+
+
 @pytest.mark.parametrize("outcome", ["filled", "partially_filled"])
 def test_filled_buy_leg_is_not_applicable(outcome):
     assert _classify(outcome=outcome, side="buy") == PNL_STATUS_BUY_LEG
@@ -130,6 +142,7 @@ def test_every_status_has_a_class():
         PNL_STATUS_NO_FILL_OUTCOME,
         PNL_STATUS_BUY_LEG,
         PNL_STATUS_UNKNOWN_SIDE,
+        PNL_STATUS_UNKNOWN_OUTCOME,
         PNL_STATUS_MISSING_REALIZED_PNL,
     }
     assert statuses == set(PNL_STATUS_CLASS)
