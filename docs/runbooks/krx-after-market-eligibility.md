@@ -55,11 +55,53 @@ A list older than 7 days (`KRX_AFTER_LIST_STALE_AFTER`) reads as unknown,
 so every symbol is `false` and non-NXT names lose the evening window again.
 Re-import at least weekly, or after any KRX notice that changes the list.
 
+### Freshness alert (ROB-1488, hk task 2712 item 1a)
+
+`get_operating_briefing(market="kr")` includes
+`staleness.krx_after_market_eligibility`: `status`, `requires_attention`, row count,
+oldest/newest list timestamps and an operator warning. Missing, stale, future or
+unreadable evidence requires attention. The probe checks the oldest row, so one
+fresh row cannot conceal a partially stale snapshot. Other markets do not query it.
+This is a read-only alert; it never refreshes eligibility during a quote or approval.
+
+For a bounded, SELECT-only check with an error log captured by the existing CLI
+logging/Sentry setup:
+
+```bash
+uv run python -m scripts.diagnose_krx_after_market_eligibility
+```
+
+Exit 0 means the whole stored snapshot is within the existing seven-day freshness
+window; exit 1 means missing/stale/unknown/unavailable evidence. Freshness alone is
+not a tradability verdict. The normal positive-evidence gate still applies.
+
+No automatic producer exists in this repository: `replace_krx_after_market_list`
+is called only by the file importer. Fixing KRX login does not run that importer.
+An automated refresh needs a verified KRX-published per-symbol feed with its
+request/response contract, effective date and completeness evidence. Neither the
+general stock list nor positive after-market volume establishes eligibility. The
+[KRX KOSPI rules](https://regulation.krx.co.kr/contents/RGL/03/03010301/RGL03010301.jsp)
+and [KOSDAQ rules](https://regulation.krx.co.kr/contents/RGL/03/03020302/RGL03020302.jsp)
+include daily exclusions; do not use a universe-derived substitute.
+
+Proposed recurrence for desk review, **not registered**: `45 15 * * 1-5`,
+`Asia/Seoul`, run the diagnostic at 15:45 KST before the evening session. A future
+verified fetch should run before that check and persist only a complete, dated
+snapshot through the existing writer. Fetch scheduling remains a desk decision.
+
+
 ## 4. Read-only checks (desk)
 
 ```sql
-SELECT count(*), min(list_asof), max(list_asof), max(list_source)
+-- Before/after deployment and after each operator-approved import.
+SELECT count(*) AS rows, min(list_asof) AS oldest_asof,
+       max(list_asof) AS newest_asof,
+       count(*) FILTER (WHERE list_asof < now() - interval '7 days') AS stale_rows
 FROM krx_after_market_eligibility;
+
+-- Baseline 2026-11-03: rows=2766, stale_rows=2766,
+-- oldest_asof=newest_asof=2026-09-29 23:00:00+00.
+-- Deploying the alert does not refresh this data. A verified import must do so.
 
 SELECT u.symbol, u.exchange, u.security_type, u.krx_trading_suspended,
        e.symbol IS NOT NULL AS listed, e.list_asof

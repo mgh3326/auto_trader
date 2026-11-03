@@ -719,6 +719,52 @@ cuts keep their mandatory two-click evidence flow. Market orders and explicit
 replace/cancel actions remain human-gated and may use the batch surface; the
 batch does not weaken any action-specific fresh broker checks.
 
+#### Health: member writer versus summary cadence (ROB-1488)
+
+`review.order_proposal_approval_batch_members` has two timestamps and they
+answer different questions:
+
+| column | written by | what it proves |
+|---|---|---|
+| `added_at` | `register_approval_batch_member` (membership) | the card was published and admitted to a batch |
+| `processed_at` | `record_approval_batch_member_result` (callback) | a `전체 승인` click reached that member |
+
+An "approval digest members stopped" audit **must read `added_at`**. Reading
+`processed_at` reports a healthy writer as dead, because members of
+single-member windows never receive a callback result. The 2026-11-02 ROB-1488
+inventory made exactly that mistake.
+
+Two independent surfaces share the word "digest": the ROB-1052 auto-approve
+digest is message-only and writes **no** row here; only the manual ROB-870
+batch does. A summary requires two batch-eligible manual cards inside one
+ten-minute window, so a day with two separated manual cards produces two
+single-member `idle` batches and **no** summary. That is an expected idle
+batch, not a lost card: the individual card was already delivered (its
+`approval_message_id` is the evidence).
+
+Read-only check (SELECT aggregates only, no writes, no Telegram call):
+
+```bash
+ENV_FILE=... uv run python -m scripts.diagnose_approval_batch_health [--json]
+```
+
+The CLI opens a READ ONLY transaction with an eight-second statement timeout.
+Exit code 1 means a batch has zero members. Published cards with zero recent
+members produce `status=review` and exit 0: intentional exclusions can explain
+that pattern, so the aggregate alone cannot prove a stalled writer.
+A non-zero `published_cards_without_member` produces `review` even when other
+cards have members; inspect skip evidence for designed exclusions or registration
+failures. A non-zero `frozen_unsent` also produces `review`; inspect summary
+dispatch for an in-flight or stuck send. Neither observation alone proves a lost
+card, and both keep exit 0. A memberless batch takes precedence as `gap`.
+
+Every registration skip logs `order_proposals.batch_member_skipped` with a
+closed category such as `loss_cut_excluded`, `proposal_terminal`,
+`proposal_superseded`, `approval_window_blocked`, or `no_pending_approval_rungs`.
+Dynamic reason details and superseding IDs are removed from the reason field.
+Unknown reasons become `unclassified`. This adds observation only and changes
+no registration, approval or callback decision.
+
 Clicking `전체 승인` performs these steps:
 
 1. Lock and freeze the exact ordered member/nonce-snapshot set shown by the
