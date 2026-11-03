@@ -141,7 +141,7 @@ timestamp but the vintage is lost; `contract` = the ROB-1443 file contract appli
 |---|---|---|---|---|---|
 | D1 daily bars | `kr_candles_1d`, adjusted-only, 585k rows/4,022 syms/362 sessions, overwritten | `us_candles_1d` 1.05M/9,409/493, adjusted, `adj_close` NULL, overwritten | `crypto_candles_1d` 60k/309 Upbit KRW instruments/370 days, closed-only | none | **serving cache, not PIT** |
 | D1 intraday | `kr_candles_1m` 1.16M/39 syms since 2026-08-17 | `us_candles_1m` 304k/31 syms since 2026-08-31 | `crypto_candles_1m` **empty** | none | watchlist only |
-| D2 corporate actions | none in DB; Yahoo collector unrun | same | n/a | n/a | **missing** |
+| D2 corporate actions | none in DB; Yahoo collector running since 2026-11-02 (no history) | same | n/a | n/a | **missing** |
 | D3 survivorship | current-vintage: 12 delisted rows | current-vintage: 33 delisted rows | 0 delisted rows | none | **missing in DB; exports exist** |
 | D4 fundamentals | daily snapshot 43 days/4,401 syms, overwritten; financials table empty | financials/consensus **empty** | insight snapshots 18 rows, dead | funding event dates absent | **partial, not PIT** |
 | D4 earnings/disclosures | 202,801 DART rows but **no symbol**; 28,648 earnings on 201 symbols | 15,813 earnings rows/5,844 syms, fresh | n/a | n/a | **partial** |
@@ -171,7 +171,8 @@ timestamp but the vintage is lost; `contract` = the ROB-1443 file contract appli
 Consequences: the DB is a **serving cache**. It is fine for `get_ohlcv`/indicators (its actual
 consumers), but a research panel built from it is (a) survivor-only, (b) adjusted-only, (c) shallow
 (median 126 KR / 129 US bars per symbol), and (d) rewritten when a source revises history. The
-data-plane contract already solves all four; it is simply not running.
+data-plane contract already solves all four; it has only been running since 2026-11-02, so it has no
+history yet.
 
 Raw vs adjusted per the broker inventory: KIS KR `FID_ORG_ADJ_PRC` 0=adjusted, 1=raw; KIS US
 `MODP` 1=adjusted, 0=raw; Toss `adjusted=true/false`; Kiwoom/NHPLUG are not research sources
@@ -348,10 +349,10 @@ verified entitlement: no account, key or order was used for any of these.
 
 | # | gap | markets | why it blocks | candidate (free / existing) | licensed fallback |
 |---|---|---|---|---|---|
-| G1 | No running PIT bar collector | KR, US, crypto | every feature/label depends on it | `research/data_plane` (KIS→Toss→Yahoo; Binance/Upbit) — **code exists, unrun** | — |
+| G1 | No historical PIT bar depth (forward-only since 2026-11-02, no backfilled partitions) | KR, US, crypto | every feature/label depends on it | `research/data_plane` (KIS→Toss→Yahoo; Binance/Upbit) — **running since 2026-11-02; history needs the reconstructed-universe step (§4.4)** | — |
 | G2 | No raw price series (adjusted overwrites) | KR, US | cannot reconstruct actions, cannot reproduce a vintage | data plane `bars_1d` raw + `bars_1d_adjusted` vintage | FnGuide (KR), CRSP (US) |
 | G3 | No delisted price history joined to the panel | KR, US, crypto | survivorship bias | KR: KIS + `kr_delist_repair`; US: U3 intervals; crypto: Binance archive | FnGuide, CRSP, Norgate, Tardis (Upbit) |
-| G4 | Corporate actions are Yahoo-only and unrun; no event ledger | KR, US | split/dividend labels | data-plane `corporate_actions`; KIS `ksdinfo` dividend/rev-split needs a client | FnGuide events, CRSP |
+| G4 | Corporate actions are Yahoo-only and forward-only since 2026-11-02; no event ledger | KR, US | split/dividend labels | data-plane `corporate_actions`; KIS `ksdinfo` dividend/rev-split needs a client | FnGuide events, CRSP |
 | G5 | KR disclosures have no symbol; events are overwritten | KR, US | event-window exclusion, PIT event features | OpenDART full financials (2015+, key, ~20k req/day) and disclosure search; SEC XBRL (2009+, 10 req/s) | FnGuide, Refinitiv/IBES |
 | G6 | US fundamentals/consensus tables empty | US | value/quality features | SEC company facts/XBRL; existing yfinance path (serving only) | CRSP/Compustat, IBES |
 | G7 | KR flows 65 days, mutable; US flows/borrow absent | KR, US | 수급 and short feasibility | KRX investor-by-type / foreign holdings (login); Naver (current); FINRA daily short volume (2018-08-01, 18:00 ET; revised later) and short interest (biweekly) | KRX licensed, FnGuide, FIS/Equilend borrow |
