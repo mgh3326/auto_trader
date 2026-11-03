@@ -269,6 +269,11 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
   전체 스냅샷 교체)로 적재. 유일한 writer 는
   `kr_symbol_universe_service.replace_krx_after_market_list`. 스케줄러 없음.
   런북: `docs/runbooks/krx-after-market-eligibility.md`
+  ROB-1488: KR `get_operating_briefing`의 `staleness.krx_after_market_eligibility`와
+  수동 `scripts.diagnose_krx_after_market_eligibility`는 count/min/max SELECT로
+  결손·7일 초과·미래·판독 실패를 주의 상태로 드러낸다. 읽기 경로의 자동 갱신은 없고,
+  KRX의 검증된 목록 feed 없이 일반 주식 목록·거래량으로 적격을 만들지 않는다.
+  진단 CLI는 READ ONLY·8초 statement timeout, 정상 exit 0·주의 exit 1이며 스케줄 등록 없음.
 - **판정**: `app/services/krx_after_market.KrxAfterTradability` — 목록 등재 AND
   KOSPI/KOSDAQ AND `security_type == "STOCK"` AND `krx_trading_suspended is False` AND
   목록 as-of 7일 이내일 때만 true. 🔴 ETF/ETN·분류 미상·목록 없음/stale·조회 실패는 전부
