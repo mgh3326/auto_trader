@@ -52,9 +52,9 @@ Inputs reused, not re-derived:
 
 | capability | today | first needed by |
 |---|---|---|
-| PIT daily bars, KR/US/crypto (files) | contract + code exist, **not run** | first validation |
+| PIT daily bars, KR/US/crypto (files) | running daily since 2026-11-02 (forward-only) | first validation |
 | Delisted-inclusive universe | research exports exist, **not joined** | first validation |
-| Corporate actions | Yahoo-only collector, **not run**; DB has none | first validation |
+| Corporate actions | Yahoo-only collector, running daily since 2026-11-02; DB has none | first validation |
 | Exchange calendars | `exchange_calendars` in `research/data_plane`/`stock_selection` | first validation |
 | Traded value (liquidity) | US close×volume estimate; KR missing actual turnover | first validation |
 | Earnings/disclosure dates | DB rows exist, overwritten, KR disclosures have no symbol | family extension |
@@ -589,6 +589,7 @@ Reuse first; new collectors second. "Ops" items are approvals/execution, not cod
 | # | unit | kind | depends on | acceptance | what it replaces |
 |---|---|---|---|---|---|
 | **B0** | Let the data plane accumulate KR/US/crypto (registered 2026-11-02; forward-only until the reconstructed-universe step in §4.4 lands with B2), keep the health pings green | ops (no PR) | done: Dagu registered and approved, broker credentials on the worker | `health` green for 5 consecutive sessions; coverage ≥0.95 | — |
+| **B0a** | Adapter: export a data-plane panel (bars_1d / bars_1d_adjusted / corporate_actions / universe for a date range) into the ROB-1474 harness input format (`<market>/bars.csv` + `bars.json` with sha256 and market, `__benchmark__` rows, `action` flags, `available_at`), so the harness re-runs with unchanged code | PR (research) | B0 | the harness reads the exported panel unchanged; sha256 in `bars.json` matches; `available_at` never later than the row's decision date | hand-built CSVs |
 | **B1** | Data plane: add `traded_value` + `value_basis` to equity bars (KIS `acml_tr_pbmn`, Yahoo estimate labeled) | PR (research) | B0 | contract test + manifest field; estimate never labeled actual | close×volume-only liquidity |
 | **B2** | Data plane: `listing_outcomes` dataset from U2/U3/U4 exports + join rule for bar selection | PR (research) | B0 | delisted names appear in the panel with terminal status; no forward-fill | DB universe as a panel |
 | **B3** | Data plane: corporate actions from a broker source (KIS `ksdinfo` client) with Yahoo fallback | PR | B0 | dividend/split rows reconcile with Yahoo for a sample; revisions visible | Yahoo-only actions |
