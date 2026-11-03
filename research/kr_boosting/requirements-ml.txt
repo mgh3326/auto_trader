@@ -4,6 +4,6 @@
 lightgbm==4.6.0
 numpy==2.5.4
 pandas==3.0.6
-pyarrow==26.0.0
+pyarrow==26.0.1
 pyyaml==6.0.3
 scikit-learn==1.7.2
