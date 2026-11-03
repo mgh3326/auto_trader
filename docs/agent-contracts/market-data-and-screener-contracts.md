@@ -550,3 +550,9 @@ cleanup or scheduler. New membership dates omit full source lists; each generati
 stores `source_symbols.json` with its manifest hash. US producer consumers require
 universe cutoff equal to the prior signal session and record observation time.
 Crypto cache consumers require cutoff equal to the requested completed candle.
+
+ROB-1474 successful incremental fetches replace the overlap only for symbols
+present in the returned bars, including individual candle withdrawals. A requested
+symbol absent from the response retains cached history but is reported as
+`refresh_data_unavailable` and excluded from current membership. HTTP/transport
+exceptions abort publication; older history and immutable generations remain.

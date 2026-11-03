@@ -42,7 +42,13 @@ reported in `excluded`, not forward filled. Successful empty symbol histories ar
 malformed bars, or insufficient complete symbols abort publication.
 
 Subsequent days fetch a seven-day overlap and append new bars to the candidate
-cache. New assets and revised US histories get a full-window fetch; overlap
+cache. Each successful fetch replaces the overlap only for symbols present in
+the returned bars, including candles withdrawn within that returned symbol's
+window. A requested symbol absent from the response retains its cached history
+but is reported as `refresh_data_unavailable` and excluded from current selection,
+even when the latest completed session has not advanced (weekends/holidays).
+An HTTP/transport exception aborts the whole refresh before publication; previous
+snapshots remain unchanged. Older history and prior generations remain unchanged. New assets and revised US histories get a full-window fetch; overlap
 changes trigger replacement of the entire affected history to avoid mixing
 adjustment vintages. Older-only provider corrections outside that overlap cannot
 be detected incrementally; use `--backfill` on a new observation day to refresh all
