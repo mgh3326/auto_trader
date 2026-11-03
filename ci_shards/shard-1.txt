@@ -123,6 +123,7 @@ tests/scripts/test_binance_spot_demo_smoke.py
 tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_deploy_ncp_pull_install_paths.py
 tests/scripts/test_deploy_ncp_pull_retired_units.py
+tests/scripts/test_diagnose_investment_reports.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_native_retirement.py
@@ -244,6 +245,7 @@ tests/services/order_proposals/callback_inbox/test_production_wiring.py
 tests/services/order_proposals/callback_inbox/test_recovery.py
 tests/services/order_proposals/callback_inbox/test_recovery_liveness.py
 tests/services/order_proposals/callback_inbox/test_runtime_surface.py
+tests/services/order_proposals/test_batch_health.py
 tests/services/order_proposals/test_cash_funding_auto_approve.py
 tests/services/order_proposals/test_cash_funding_exemption.py
 tests/services/order_proposals/test_dispatch.py
@@ -341,6 +343,7 @@ tests/test_crypto_pending_order_alert_tasks.py
 tests/test_crypto_voting_integration.py
 tests/test_crypto_voting_signals.py
 tests/test_daily_scan.py
+tests/test_diagnose_approval_batch_health_cli.py
 tests/test_execution_event.py
 tests/test_fill_enrichment.py
 tests/test_fill_event_triage_command.py
