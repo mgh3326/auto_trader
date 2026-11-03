@@ -35,6 +35,7 @@ tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_lazy_imports.py
 tests/mcp_server/test_live_prompt_profile_contract.py
 tests/mcp_server/test_nh_mock_tools.py
+tests/mcp_server/test_operating_briefing_krx_after_health.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_parking_exclusion.py
 tests/mcp_server/test_portfolio_helpers.py
@@ -124,6 +125,7 @@ tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_deploy_ncp_pull_install_paths.py
 tests/scripts/test_deploy_ncp_pull_retired_units.py
 tests/scripts/test_diagnose_investment_reports.py
+tests/scripts/test_diagnose_krx_after_market_eligibility.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_native_retirement.py
@@ -292,6 +294,7 @@ tests/services/test_exchange_rate_service.py
 tests/services/test_fill_event_handoff.py
 tests/services/test_halt_detection.py
 tests/services/test_kis_mock_terminal_expiry.py
+tests/services/test_krx_after_market_health.py
 tests/services/test_loss_cut_settings_allowlist.py
 tests/services/test_market_events_discover_calendar.py
 tests/services/test_market_events_expected_sources.py
@@ -499,6 +502,7 @@ tests/test_toss_consumer_transport.py
 tests/test_toss_warnings_sync.py
 tests/test_trade_notifier_types.py
 tests/test_trade_retrospective_aggregate.py
+tests/test_trade_retrospective_pnl_status.py
 tests/test_trade_retrospective_web_read.py
 tests/test_tvscreener_capabilities.py
 tests/test_undervalued_breakout_screener.py
