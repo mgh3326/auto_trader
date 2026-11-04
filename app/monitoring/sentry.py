@@ -99,6 +99,12 @@ _SENSITIVE_KEYWORDS = (
     "approval_key",
     "approval_hash",
     "approvalhash",
+    # hk-2828: KRX data-portal member identifiers. The login response echoes
+    # ``MBR_NO`` and the request carries ``mbrId``.
+    "mbr_no",
+    "mbrno",
+    "mbr_id",
+    "mbrid",
 )
 
 # #1103: account-identifier tokens that are too short for bare substring
@@ -318,6 +324,9 @@ _YFINANCE_NOISE_PATTERNS = (
     "no price data found",
     "symbol may be delisted",
     "Quote not found",
+    # hk-2828: Yahoo answers 404 for symbols it does not list (e.g. US
+    # preferred shares such as ``MS/PE``). Not actionable per event.
+    "HTTP Error 404",
 )
 
 
