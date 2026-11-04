@@ -1,13 +1,61 @@
-# AGENTS.md — 외부 에이전트(Codex 등) 진입점
+# AGENTS.md
 
-> **이 파일은 얇은 진입점이다. 정본은 `CLAUDE.md`와 아래의 필독 계약 파일이다.**
-> 작업을 시작하기 전에 리포지토리 루트의 `CLAUDE.md`를 **전부** 읽고, 이어서 아래 계약 파일도
-> **전부** 읽어라. 이 파일과 충돌하면 `CLAUDE.md` 및 해당 계약이 이긴다. 아래 하드룰은
-> 어떤 필독 파일도 읽을 수 없는 경우에도 절대 위반하면 안 되는 최소 집합이다.
+이 파일이 이 레포의 유일한 에이전트 진입점이자 정본이다. Codex 등 모든 에이전트가 이 파일을 읽고,
+Claude Code는 한 줄 스텁 `CLAUDE.md`(`@AGENTS.md`)를 통해 같은 파일을 읽는다. 에이전트 지침은 여기에만 쓴다 —
+`CLAUDE.md`에 내용을 추가하지 마라.
+
+## 프로젝트 개요
+
+AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 수집하고 out-of-process MCP consumer(claude 세션 등)를 통해 투자 분석을 제공합니다.
+
+**주요 특징:**
+- 다중 시장 지원: 국내주식(KIS), 해외주식(KIS/Yahoo Finance), 암호화폐(Upbit)
+- 다중 시간대 분석: 일봉 200개 + 분봉(60분/5분/1분)
+- AI 분석: out-of-process MCP consumer(claude 세션 등)가 담당 (런타임은 in-process LLM provider 미탑재 — ROB-501 가드)
+
+## 핵심 명령어
+
+### 테스트
+```bash
+make test                         # 모든 테스트 실행
+make test-unit                    # 단위 테스트만
+make test-integration             # 통합 테스트만
+make test-cov                     # 커버리지 리포트 포함
+uv run pytest tests/test_*.py -v -k "test_name"  # 특정 테스트만
+```
+
+### 코드 품질
+```bash
+make lint                         # Ruff + ty 검사
+make format                       # Ruff로 코드 포맷팅
+make typecheck                    # ty 타입 체킹
+make security                     # bandit, safety 보안 검사
+```
+
+### 데이터베이스
+```bash
+# 마이그레이션 생성 및 적용
+uv run alembic revision --autogenerate -m "migration message"
+uv run alembic upgrade head
+
+# 마이그레이션 롤백
+uv run alembic downgrade -1
+
+# 현재 버전 확인
+uv run alembic current
+```
+
+### 개발 도구
+```bash
+python manage_users.py list                 # 사용자 권한/상태 확인
+python websocket_monitor.py --mode both     # 통합 WebSocket 모니터링
+python kis_websocket_monitor.py             # KIS WebSocket 모니터링
+python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
+```
 
 ## 작업 시작 전 필독 계약
 
-먼저 `CLAUDE.md` 전체를 읽고, 이어서 아래 계약 파일 **전부**를 읽어라. 관심 기능 선택 읽기는 허용되지 않는다.
+작업을 시작하기 전에 이 파일 전체와 아래 계약 파일 전부를 읽어라. 관심 기능만 골라 읽는 것은 허용되지 않는다.
 
 @docs/agent-contracts/mcp-and-analysis-contracts.md
 @docs/agent-contracts/broker-and-ledger-contracts.md
@@ -18,7 +66,61 @@
 
 필독 파일 중 하나라도 없거나 읽을 수 없으면 작업을 중단하라. 찾아보기 표는 탐색 보조일 뿐 필독 면제가 아니다. 문서 속 예시 명령은 실행 승인이나 운영 권한을 부여하지 않는다.
 
-## 하드룰 — 절대 위반 금지
+## 작업 방식 (robin-mode)
+
+비자명한 작업은 rstack의 `robin-mode` 스킬로 한다: 목표 재진술 → 데이터 형태 → 닫힌 Acceptance 목록 → 플레이북 하나 → 실물로 검증. 이 절은 위 필독 계약과 최소 하드룰을 대체하지 않으며, 충돌하면 하드룰이 우선한다.
+
+- 탐색·근거 수집·검증은 세션 안 서브에이전트에 맡긴다. 모델·effort는 `robin-mode/roles.md` 표를 따르고, 검증 모델은 고정한다.
+- `runtug spawn` 워커는 독립적으로 머지 가능한 큰 단위(자기 PR·자기 Acceptance)만 띄운다. 리뷰 지적은 작성자가 직접 고치고 fix 워커를 띄우지 않는다.
+- 머지: mergewake 리뷰 완료 + 필수 CI 초록 + critical/high 0 + 모든 medium/low에 처분이 있을 때 integrator가 head 고정으로 머지한다(`wake` 스킬의 머지 게이트).
+- PR 본문·커밋에는 `Mergewake-Author-Family`, `Mergewake-Author-Profile`, `Mergewake-Task: <숫자 hk task id>` 트레일러를 단다. 숫자가 아닌 값은 알림 경로를 잃는다.
+
+## 아키텍처
+
+아키텍처의 분야별 기능 계약은 위의 필독 파일에 lossless-first로 분리되어 있다. 아래 최소 하드룰과 명시적 필독 목록은 어떤 진입점에서도 선택 사항이 아니다.
+
+**Compatibility locator — analyze quick fast projection (ROB-1311):** complete contract text remains mandatory in `docs/agent-contracts/market-data-and-screener-contracts.md`. The root locator preserves the quick-only removed-field enumeration required by the static guard: `nxt_tradable`, `price_source`, `session_state`, `krx_prev_close`, `change_pct`, `venue`, `quote_asof`, `delayed`, `price_data_state`, `fresh_artifact_exists`. For a current quote, call `get_quote`.
+
+**Compatibility locator — W5 retry algebra:** the complete mandatory contract text remains in `docs/agent-contracts/approval-and-shadow-contracts.md`. This root-retained, byte-identical source excerpt exists only for the root-only static consumer `tests/services/order_proposals/callback_inbox/test_retry_contract_surfaces.py::test_agents_md_states_the_worker_owned_rule`; it neither replaces nor reduces the required contract file.
+
+**재시도 대수 (🔴 이걸 바꾸기 전에 런북 §5 를 읽을 것)**:
+콜백 코어는 모든 예외를 `{"handled": False, "reason": "internal_error"}` 로 삼킨다.
+그 문자열은 **브로커 leg 가 시작되지 않았다는 증거가 아니다** —
+`revalidate_and_submit` 가 브로커에 닿은 뒤 commit 전에 던져진 예외도 같은 결과이고,
+롤백은 nonce 를 **미소비** 상태로, published binding 을 **유효** 상태로 남긴다.
+재시도하면 합법으로 보이면서 두 번 제출된다.
+
+따라서 재실행 가능한 유일한 부류는 **코어에 진입하지 않았음이 증명된 실패**뿐:
+- `retry_wait` ← **worker-owned pre-core phase 실패만**. 현재 명시적으로
+  `PreCoreFailure` 를 만드는 경로는 코어 진입 전 notifier 해석 실패뿐이고,
+  `schedule_retry` 가 조건부 UPDATE 로 DB 에서 `state='processing'` +
+  `handler_entered_at`/`handler_completed_at`/`terminal_state_pending` 전부 NULL
+  임을 재확인해야 기록된다. 🔴 **핸들러가 반환하는
+  `mutation_not_started`/`retry`/`retryable`/`safe_to_retry` 는 진단용이며 재실행
+  권한을 전혀 만들지 못한다**(`IGNORED_HANDLER_RETRY_KEYS`) — 이미 mutate 한
+  핸들러도 똑같이 반환할 수 있기 때문이다. 코어 진입 마커 이후의 모든
+  예외·결과·reason 은 terminal(succeeded/discarded/dead_letter)일 뿐 재시도 없음.
+  저장 envelope 복원이 불가능하면 `discarded/envelope_invalid`, 현재 chat
+  allowlist 에서 빠졌으면 `discarded/chat_revoked` 이며 둘 다 재시도하지 않는다
+- `succeeded` ← `handled=True` (`results: ["unverified"]` 포함 — 모호한 *전송*은
+  proposal/order 상태머신 소관이고, 콜백 재실행은 해결이 아니라 중복 위험)
+- `discarded` ← 명시적 비즈니스 거부(nonce_replay/expired/guard_blocked/…), chat 취소,
+  복원 불가 envelope
+- `dead_letter` ← 코어 진입 후 `internal_error`·크래시·contract 위반, 또는 3회 소진.
+  **자동 replay 없음. 권한 필드 스크럽됨. 운영자가 새 승인 카드를 발급해야 한다.**
+
+내구 마커 3개가 프로세스가 죽은 뒤에도 이 판정을 가능하게 한다:
+`handler_entered_at`(코어 호출 직전 단독 커밋 — "진입 전 사망"과 "진입 후 사망"의
+유일한 내구 차이) / `handler_completed_at` + `terminal_state_pending`(코어 반환 직후
+단독 커밋 — 마지막 커밋을 잃으면 recovery 가 **재실행이 아니라 스크럽 보수**를 한다).
+🔴 세 마커는 **인과 순서**이고(완료⇒진입, 판정⇒진입+완료) DB CHECK
+(`ck_..._handler_marker_order`)가 강제하며, **단조(monotonic)** 다 — 어떤 API 도
+NULL 로 되돌리지 못한다. 재시도가 합법인 이유는 마커를 지웠기 때문이 아니라 CAS
+술어가 애초에 NULL 이었음을 증명했기 때문이다. 또한 `processing` 행은
+`started_at` 이 NOT NULL 이어야 한다(`ck_..._processing_started_at`) — NULL 이면
+staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는다.
+
+### 최소 하드룰 — 절대 위반 금지
 
 1. **런타임 LLM 경계 (ROB-501)**: `app/**` 런타임 코드에 in-process LLM provider
    (Gemini/OpenAI/Grok 등) import·인스턴스화 금지. LLM 판단은 out-of-process MCP consumer 몫.
@@ -140,22 +242,133 @@
    풀리며, per-order·daily 캡을 올리거나 건너뛰지 마라. 평단 아래라는 이유만으로
    자르지 말고, 기록된 손절가 이탈·상승 중 제외·stale 가격 불발을 완화하지 마라.
 
-## 최소 명령어
+## 계약 찾아보기
 
-```bash
-uv sync --all-groups        # 의존성 (test/dev 포함)
-make test                   # 테스트 (make test-unit / make test-integration)
-make lint                   # Ruff + ty
-make format                 # 포맷팅
-uv run alembic upgrade head # DB 마이그레이션
-```
+이 표는 작업 위치를 찾는 보조 수단이다. 표의 행 하나만 읽어도 된다는 뜻이 아니며, 위의 모든 파일을 읽은 뒤에만 사용한다.
 
-## 더 읽을 것
-
-- `CLAUDE.md` — 정본 (아키텍처, 표면별 계약, 워크플로우, 문제 해결 전체)
-- `docs/runbooks/` — 실행 표면별 런북 (smoke CLI, reconcile, 활성화 절차)
+| 작업 분야 | 필독 계약 파일 | 포함된 기준 기능 절 |
+|---|---|---|
+| MCP·분석 | [MCP·분석 계약](docs/agent-contracts/mcp-and-analysis-contracts.md) | MCP 표면, LLM 경계, Hermes, 리포트·뉴스 계약 |
+| 브로커·레저 | [브로커·레저 계약](docs/agent-contracts/broker-and-ledger-contracts.md) | Alpaca/Binance/KIS/Kiwoom/NHPLUG/토스, execution ledger |
+| 시장 데이터·스크리너 | [시장 데이터·스크리너 계약](docs/agent-contracts/market-data-and-screener-contracts.md) | 시장 이벤트·리서치·스크리너·freshness |
+| 승인·shadow | [승인·shadow 계약](docs/agent-contracts/approval-and-shadow-contracts.md) | Telegram durable inbox, buy gate A/B |
+| 데이터 모델·심볼 | [데이터 모델·심볼 계약](docs/agent-contracts/data-model-and-symbol-contracts.md) | DB 구조, 심볼, API 클라이언트, 정책 YAML |
+| 개발 참고 | [개발 참고 계약](docs/agent-contracts/developer-reference-contracts.md) | 환경, 테스트, 문제 해결, 참고 문서 |
 
 ## 유지 규약
 
-`CLAUDE.md`에 새 안전 경계·계약이 추가되면 이 파일의 하드룰 요약도 같은 PR에서 갱신한다.
-이 파일이 `CLAUDE.md`와 어긋나면 그 자체가 버그다.
+새 기능은 관련 분야 계약에 같은 PR에서 추가한다. 새 안전 경계·계약이 생기면 이 파일의 최소 하드룰과 명시적 필독 목록도 필요 시 같은 PR에서 함께 갱신한다. 이 구조는 총 필독 토큰 감소를 주장하지 않는다.
+
+## 브랜치 & PR 워크플로우
+
+### 브랜치 보호
+- **main**, **production** 브랜치는 보호됨 — 직접 push 금지
+- 모든 코드 변경은 Pull Request를 통해 머지
+
+### 브랜치 역할
+- **main**: 개발 브랜치 (모든 PR의 base)
+- **production**: 배포 브랜치 (GHCR 이미지 빌드 트리거)
+
+### 브랜치 네이밍
+```
+feature/<task-id>-<설명>     # 새 기능 (예: feature/ROB-16-branch-protection)
+fix/<task-id>-<설명>         # 버그 수정
+chore/<설명>                 # 유지보수
+```
+
+### 워크플로우
+1. `main` 브랜치에서 feature branch 생성
+2. 코드 변경 후 커밋
+3. PR 생성 (base: `main`)
+4. 리뷰 후 머지
+5. 배포 시 `main` → `production` 머지
+
+### Worktree 운영 규칙 (필수)
+
+**canonical repo `/Users/mgh3326/work/auto_trader` 는 항상 `main` 체크아웃 고정. 배포 머지 시에만 `production` 으로 일시 전환.** canonical repo에서 feature/fix 브랜치를 체크아웃하거나 작업하지 않습니다.
+
+코드 변경은 worktree에서 수행합니다. 다만 **새 Linear 이슈/병렬 작업**과 **같은 Linear 이슈의 follow-up**을 구분합니다:
+
+- 새 Linear 이슈, 병렬 작업, 기존 worktree가 dirty인 경우, 또는 이전 diff/reference를 보존해야 하는 경우: 새 worktree를 만듭니다.
+- 같은 Linear 이슈의 follow-up이고 기존 issue worktree가 clean하며 재사용 가능하면: 기존 worktree를 재사용해도 됩니다. 물리 worktree를 매번 새로 만드는 것이 필수는 아닙니다.
+- PR이 merge된 브랜치 위에서 계속 커밋하지 않습니다. follow-up 작업은 항상 최신 `origin/main` 기준 새 branch로 시작합니다.
+- worktree 재사용 전에는 `git status --short`, 필요한 diff/reference 백업, `git fetch --prune`을 먼저 확인합니다.
+
+```bash
+# canonical repo 업데이트
+cd /Users/mgh3326/work/auto_trader
+git fetch --prune origin
+git switch main
+git pull --ff-only
+
+# 새 Linear 이슈/병렬 작업: 새 worktree 생성
+git worktree add ../auto_trader.<issue-id> -b <branch-name> origin/main
+
+# 같은 Linear 이슈 follow-up: 기존 worktree가 clean하면 재사용
+cd /Users/mgh3326/work/auto_trader.<issue-id>
+git status --short
+git fetch --prune origin
+git switch -c <new-followup-branch> origin/main
+
+# PR 머지 후 정리 (필요 diff/reference가 없고 clean한 상태에서)
+cd /Users/mgh3326/work/auto_trader
+git worktree remove ../auto_trader.<issue-id>
+git branch -D <branch-name>
+```
+
+- **표준 worktree 경로**: `/Users/mgh3326/work/auto_trader.<issue-id>` (예: `/Users/mgh3326/work/auto_trader.rob-287`)
+- 이전 경로 `.claude/worktrees/`, `~/.claude/worktrees/`, `~/auto_trader/.worktrees/` 는 deprecated — 남아 있다면 표준 경로로 이관하거나 prune
+- 이관: `git worktree move <old-path> <new-path>` (dirty 없는 상태에서)
+- 삭제된 원격 브랜치(`upstream gone`) 는 주기적으로 `git fetch --prune && git branch -vv | grep ': gone\]'` 로 확인하고 정리
+
+### CI — PR 게이트와 main 전체 스위트 (ROB-1294, ROB-1454)
+
+PR 은 자기가 바꾼 것만 검사받고 `lint` + `PR gate` 로 머지된다. 전체 스위트
+(`lint` · `taskiq-smoke` · `test (3.13, 1..4)`)는 main push·`workflow_dispatch` 와
+분류기가 `run_all` 이라고 한 PR 에서만 돈다. 머지는 배포가 아니므로 `blocking` 경로도
+예외 없이 같고, 그 목록은 리뷰 2회·자동 revert 없음을 뜻한다.
+
+- **분류기**: `scripts/ci/classify_changes.py` — 변경 경로 → lane·실행할 테스트 파일 (stdlib only)
+- **게이트**: `scripts/ci/aggregate_required.py --pr-gate` — 분류기 출력으로만 skip 을 인가
+- **워크플로우 job**: `.github/workflows/test.yml` 의 `change-classifier` · `affected-tests` · `pr-gate`
+- **계약 테스트**: `tests/ci/`
+- **런북**: `docs/runbooks/ci-required-aggregator.md`
+
+**fail-closed 규칙**: 분류기는 unknown path·rename/copy/delete·공유 CI/config/test 인프라·
+빈 change set·base SHA 부재·테스트를 하나도 고르지 못한 경로·500 파일 초과 선택을 전부
+`run_all=true` 로 떨어뜨리고, 지정된 SHA 해석 실패·git 실패·malformed diff 는 성공으로
+세탁하지 않고 **job 을 red** 로 만든다. 게이트는 child 의 `failure`/`cancelled`/미인가
+`skipped`/결과 부재/미지의 결과 문자열을 전부 red 로 본다. 🔴 full-suite job 의 `if:` 를
+main 에서 skip 될 수 있게 바꾸지 마라(`tests/ci/test_pr_gate_workflow_contract.py`).
+
+🔴 **배포는 그 SHA 에서 전체 스위트가 초록이어야 한다** —
+`scripts/deploy_ci_gate.py`가 NCP forward deploy와 이미지 게시 전에 강제한다
+(`docs/runbooks/ncp-pull-deploy.md` §Exact-SHA full-suite gate).
+PR 의 `PR gate` 초록은 이 증거가 아니며, branch protection 편집은 운영자 전용이다.
+
+## 주요 워크플로우
+
+### 1. 데이터베이스 모델 변경
+
+```bash
+# 1. app/models/에서 모델 수정
+# 2. 마이그레이션 자동 생성
+uv run alembic revision --autogenerate -m "description"
+
+# 3. 생성된 마이그레이션 파일 검토 (alembic/versions/)
+# 4. 적용
+uv run alembic upgrade head
+
+# 5. 문제 시 롤백
+uv run alembic downgrade -1
+```
+
+**중요:** Alembic은 async 엔진 사용 - `alembic/env.py` 참고
+
+**#789 DB 역할 전환 후 프로덕션 마이그레이션 계약:** Stage 4가 승인되어
+마이그레이션 DSN이 분리된 배포에서는 전용 runner가
+`AT_MIGRATION_SET_ROLE=at_migration_owner`로 시작해야 한다. 새 객체의 소유자는
+`at_migration_owner`이며, 기본 권한은 새 테이블·시퀀스·함수의 앱 권한을 주지 않는다.
+앱이 새 객체를 사용하기 전에 해당 migration에 객체별 `at_app` GRANT를 검토해 넣어라.
+개발·CI DB에 `at_app`이 없을 수 있으므로 role 존재 여부를 확인한 조건부 GRANT를
+사용한다. Stage 4 승인 전에는 기존 migration 입력과 실행 경로를 유지한다.
