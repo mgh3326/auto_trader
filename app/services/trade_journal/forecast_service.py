@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
 from sqlalchemy import Text, and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
@@ -1193,6 +1194,16 @@ async def _backfill_daily_candles(
             horizon_bars=horizon_bars,
         )
         return result.rows_upserted
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            logger.exception("ROB-712 backfill: sync_one failed symbol=%s", symbol)
+            return 0
+        # hk-2828: the provider does not list this symbol (e.g. a delisted
+        # Upbit market). Expected for rejected/non-held symbols; not an error.
+        logger.warning(
+            "ROB-712 backfill: provider has no candles symbol=%s (HTTP 404)", symbol
+        )
+        return 0
     except Exception:
         logger.exception("ROB-712 backfill: sync_one failed symbol=%s", symbol)
         return 0

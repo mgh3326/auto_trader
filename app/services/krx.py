@@ -86,15 +86,33 @@ class KRXSessionManager:
             parsed = None
 
         if isinstance(parsed, dict):
-            code = parsed.get("code")
-            if isinstance(code, str) and code:
-                return code
+            for key in ("code", "_error_code"):
+                code = parsed.get(key)
+                if isinstance(code, str) and code:
+                    return code
 
         if "CD001" in body:
             return "CD001"
         if "CD011" in body:
             return "CD011"
         return None
+
+    @staticmethod
+    def _login_failure_reason(body: str) -> str:
+        """Return KRX's own failure message, never the raw response body.
+
+        The login response echoes member identifiers (``MBR_NO``), so the raw
+        body must not reach logs or Sentry (hk-2828).
+        """
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            return "unparsed response"
+        if isinstance(parsed, dict):
+            message = parsed.get("_error_message") or parsed.get("message")
+            if isinstance(message, str) and message:
+                return message[:80]
+        return "no message"
 
     def _has_jsessionid_cookie(self) -> bool:
         if self._client is None:
@@ -177,7 +195,7 @@ class KRXSessionManager:
                         "KRX 로그인 실패 (skipDup 후, status=%s, code=%s): %s",
                         resp2.status_code,
                         code2 or "unknown",
-                        resp2.text[:200],
+                        self._login_failure_reason(resp2.text),
                     )
                     self._auth_failed = True
             else:
@@ -185,7 +203,7 @@ class KRXSessionManager:
                     "KRX 로그인 실패 (status=%s, code=%s): %s",
                     resp.status_code,
                     code or "unknown",
-                    body[:200],
+                    self._login_failure_reason(body),
                 )
                 self._auth_failed = True
 
