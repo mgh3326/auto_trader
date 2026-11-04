@@ -15,6 +15,9 @@ from app.services.crypto_pending_order_alert_service import (
 )
 
 NOW = datetime(2026, 5, 4, 0, 0, tzinfo=UTC)
+# hk 2603: only flagged symbols (age >= 3d or |gap| >= 10%) get their own line.
+AGED = "2026-04-30T00:00:00+00:00"  # 4 days before NOW -> flagged
+FRESH = "2026-05-03T23:00:00+00:00"  # 1 hour before NOW
 
 
 def _config() -> CryptoPendingOrderAlertConfig:
@@ -37,6 +40,7 @@ def _order(
     price: float = 100_000_000,
     remaining: float = 0.1,
     ordered: float = 0.2,
+    ordered_at: str = FRESH,
 ) -> dict[str, Any]:
     return {
         "order_id": order_id,
@@ -46,7 +50,7 @@ def _order(
         "ordered_price": price,
         "remaining_qty": remaining,
         "ordered_qty": ordered,
-        "ordered_at": "2026-05-03T23:00:00+00:00",
+        "ordered_at": ordered_at,
     }
 
 
@@ -97,7 +101,11 @@ async def test_one_sell_order_sends_normal_payload():
     sends: list[tuple[str, str]] = []
 
     async def lookup() -> dict[str, Any]:
-        return {"success": True, "orders": [_order(side="sell")], "errors": []}
+        return {
+            "success": True,
+            "orders": [_order(side="sell", ordered_at=AGED)],
+            "errors": [],
+        }
 
     async def prices(symbols: list[str]) -> dict[str, float]:
         assert symbols == ["KRW-BTC"]
@@ -133,7 +141,7 @@ async def test_one_buy_order_sends_normal_payload():
     async def lookup() -> dict[str, Any]:
         return {
             "success": True,
-            "orders": [_order(side="buy", price=90_000_000)],
+            "orders": [_order(side="buy", price=90_000_000, ordered_at=AGED)],
             "errors": [],
         }
 
@@ -167,12 +175,15 @@ async def test_multiple_orders_are_grouped_in_one_message():
             "success": True,
             "orders": [
                 _order(
-                    symbol="KRW-BTC", order_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                    symbol="KRW-BTC",
+                    order_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    ordered_at=AGED,
                 ),
                 _order(
                     symbol="KRW-ETH",
                     order_id="bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
                     price=4_000_000,
+                    ordered_at=AGED,
                 ),
             ],
             "errors": [],
@@ -331,7 +342,7 @@ async def test_bot_token_fallback_targets_configured_channel_ids():
     )
 
     async def lookup() -> dict[str, Any]:
-        return {"success": True, "orders": [_order()], "errors": []}
+        return {"success": True, "orders": [_order(ordered_at=AGED)], "errors": []}
 
     async def prices(symbols: list[str]) -> dict[str, float]:
         return {"KRW-BTC": 95_000_000}
@@ -434,6 +445,7 @@ def test_formatter_caps_long_message_for_discord_content_limit():
             _order(
                 symbol=f"KRW-COIN{idx}",
                 order_id=f"{idx:08d}-aaaa-bbbb-cccc-123456789abc",
+                ordered_at=AGED,
             )
             for idx in range(40)
         ],
@@ -444,14 +456,15 @@ def test_formatter_caps_long_message_for_discord_content_limit():
 
     assert len(message) <= 1900
     assert "Crypto pending orders: 40 open" in message
-    assert "omitted" in message or "truncated" in message
+    assert "flagged line(s) cut to fit Discord content limits" in message
 
 
-def test_formatter_keeps_order_id_short_and_includes_link():
-    orders = normalize_pending_orders([_order()], {"KRW-BTC": 95_000_000}, now=NOW)
+def test_formatter_never_prints_full_order_id_and_includes_link():
+    orders = normalize_pending_orders(
+        [_order(ordered_at=AGED)], {"KRW-BTC": 95_000_000}, now=NOW
+    )
     message = format_pending_order_message(orders, config=_config(), run_ts=NOW)
 
-    assert "12345678" in message
     assert "12345678-aaaa" not in message
     assert "https://trader.robinco.dev/invest/stocks/crypto/KRW-BTC" in message
 
@@ -472,3 +485,97 @@ def test_position_url_uses_invest_stocks():
     url = _position_url(cfg, "KRW-BTC")
     assert url == "https://x.test/invest/stocks/crypto/KRW-BTC"
     assert "/portfolio" not in url
+
+
+def _gap_price(current: float, gap_pct: float) -> float:
+    return current * (1 + gap_pct / 100)
+
+
+@pytest.mark.unit
+def test_twenty_one_orders_collapse_to_flagged_symbol_lines():
+    # hk 2603: 21 resting rungs across 6 symbols; one symbol is stale (>=3d),
+    # one sits >=10% from the price. Only those two get a line.
+    prices = {
+        "KRW-BTC": 100_000_000,
+        "KRW-ETH": 4_000_000,
+        "KRW-XRP": 1_000,
+        "KRW-SOL": 200_000,
+        "KRW-DOGE": 300,
+        "KRW-ADA": 1_200,
+    }
+    raw = []
+    counts = {"KRW-BTC": 5, "KRW-ETH": 4, "KRW-XRP": 4, "KRW-SOL": 3, "KRW-DOGE": 3}
+    counts["KRW-ADA"] = 2
+    for symbol, n in counts.items():
+        for i in range(n):
+            gap = 2.0 + i
+            ordered_at = FRESH
+            if symbol == "KRW-ETH" and i == 0:
+                ordered_at = AGED
+            if symbol == "KRW-SOL" and i == 2:
+                gap = 12.5
+            raw.append(
+                _order(
+                    symbol=symbol,
+                    order_id=f"{symbol}-{i}",
+                    price=_gap_price(prices[symbol], gap),
+                    ordered_at=ordered_at,
+                )
+            )
+    assert len(raw) == 21
+
+    orders = normalize_pending_orders(raw, prices, now=NOW)
+    message = format_pending_order_message(orders, config=_config(), run_ts=NOW)
+    lines = message.splitlines()
+
+    assert "Crypto pending orders: 21 open" in lines[0]
+    symbol_lines = [line for line in lines if line[:3] in ("1. ", "2. ", "3. ")]
+    assert len(symbol_lines) == 2
+    assert "`KRW-SOL`" in symbol_lines[0]  # >=10% gap sorts first
+    assert "gap≥10%" in symbol_lines[0]
+    assert "`KRW-ETH`" in symbol_lines[1]
+    assert "age≥3d" in symbol_lines[1]
+    assert "Other 4 symbol(s) · 14 order(s)" in message
+    for unflagged in ("KRW-BTC", "KRW-XRP", "KRW-DOGE", "KRW-ADA"):
+        assert unflagged not in message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("ordered_at", "gap_pct", "flagged"),
+    [
+        ("2026-05-02T00:00:00+00:00", 9.9, False),  # 2 days, 9.9%
+        ("2026-05-01T00:00:00+00:00", 9.9, True),  # exactly 3 days
+        ("2026-05-02T00:00:00+00:00", 10.0, True),  # exactly 10.0%
+        ("2026-05-02T00:00:00+00:00", -10.0, True),  # below the price counts too
+    ],
+)
+def test_flag_boundaries_are_inclusive(ordered_at, gap_pct, flagged):
+    current = 1_000_000
+    orders = normalize_pending_orders(
+        [_order(price=_gap_price(current, gap_pct), ordered_at=ordered_at)],
+        {"KRW-BTC": current},
+        now=NOW,
+    )
+    message = format_pending_order_message(orders, config=_config(), run_ts=NOW)
+
+    assert ("`KRW-BTC`" in message) is flagged
+    assert ("Other 1 symbol(s) · 1 order(s)" in message) is (not flagged)
+
+
+@pytest.mark.unit
+def test_symbol_line_aggregates_rungs():
+    orders = normalize_pending_orders(
+        [
+            _order(price=105_000_000, remaining=0.1, ordered_at=AGED),
+            _order(price=101_000_000, remaining=0.2),
+        ],
+        {"KRW-BTC": 100_000_000},
+        now=NOW,
+    )
+    message = format_pending_order_message(orders, config=_config(), run_ts=NOW)
+
+    assert "`KRW-BTC` SELL ×2" in message
+    assert "nearest +1.00%" in message
+    assert "remaining ₩30,700,000" in message
+    assert "oldest 4d 0h" in message
