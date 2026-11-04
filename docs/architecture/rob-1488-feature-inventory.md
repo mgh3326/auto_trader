@@ -45,7 +45,7 @@ Two limits are worth stating up front:
 | Tools with zero calls in 30d | **154 (66%)** |
 | Tools with 30 or fewer calls in 30d | **37 of 79** (26 of them 8 or fewer) |
 | Top 6 tools as a share of all 30d calls | **54%** (7,683 of ~14,200) (`get_quote`, `get_ohlcv`, `route_request`, `forecast_resolve`, `get_support_resistance`, `forecast_save`) |
-| HTTP router modules / route declarations | **57 / 231** (57 mounted in `app.main`) |
+| HTTP router modules / route declarations | **57 / 231** (57 modules in `app/routers/`; `app.main` has 57 `include_router` calls and does not mount `execution_intent_gateway.py`) |
 | TaskIQ tasks / modules | **65 / 41** |
 | Prefect flows | **7** (7 `@flow`, 7 `@task`) |
 | Dagu DAGs under `deploy/` | **4** (all unregistered proposals) |
@@ -92,7 +92,7 @@ the *actual* registrar output for all 13 profiles, in both gate states
 | Surface | How I counted it | Count |
 |---|---|---|
 | HTTP routers | AST: one `APIRouter(...)` + decorator routes per file in `app/routers/` | 57 modules, 231 route decorators |
-| Mounted routers | `grep include_router app/main.py` | 57 (every module except `execution_intent_gateway.py`, which is a separate loopback process by contract) |
+| Mounted routers | `grep include_router app/main.py` | 57 `include_router` calls; `execution_intent_gateway.py` is not among them (separate loopback process by contract) |
 | TaskIQ tasks | AST: `broker.task` / `taskiq_broker.task` decorators in `app/tasks/` | 65 tasks in 41 modules |
 | Prefect flows | AST: `@flow` in `app/flows/` | 7 flows (+7 `@task`) |
 | Dagu DAGs | `deploy/dagu/**/*.yaml` | 4 |
@@ -155,7 +155,7 @@ Reads of quotes, candles, orderbooks, fundamentals, news, calendars and index/cr
 | `get_crypto_profile` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | retire |
 | `get_crypto_social` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep (unused; decide) |
 | `get_crypto_top_movers` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | merge into `get_market_index` |
-| `get_earnings_calendar` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep (unused; decide) |
+| `get_earnings_calendar` | 40 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep |
 | `get_execution_strength` | 0 | D+6 | `market_data_quotes` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep (unused; decide) |
 | `get_financials` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_company_profile` |
 | `get_indicators` | 0 | D+8 | `market_data_quotes` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep |
@@ -194,7 +194,8 @@ Notes on this group:
   `get_crypto_funding_rate` 0, `get_crypto_open_interest` 0, `get_crypto_market_regime` 0,
   `get_crypto_order_flow` 0). Two are used; the other four should fold into them.
 - `get_earnings_calendar` is used 40 times with a p95 of **10 s** — the Finnhub path is a retry-bounded async
-  fetch (ROB-1384); the latency is a provider property, not a code defect.
+  fetch (ROB-1384); the latency is a provider property, not a code defect. The count comes from a direct
+  Sentry `tools/call get_earnings_calendar` span query; the name was missing from the 79-name export (§2.1).
 
 ### 3.2 research & selection (29 tools)
 
@@ -561,7 +562,7 @@ router's guards and the tables it reads. Gate env values were read from the prod
 | `user_defaults.py` | /api/symbol-settings | 2 | `/invest` settings | keep |
 | `websocket.py` | — | 1 | websocket endpoint | keep |
 
-Retire list from this table: 8 router modules (`investment_hermes_http`, `investment_stage_runs`,
+Retire list from this table: 11 router modules (`investment_hermes_http`, `investment_stage_runs`,
 `investment_dimension_reports`, `investment_snapshots`, `research_pipeline`, `research_retrospective`,
 `research_reports`, `invest_scalping`, `kospi200`, `test`, `mock_auto_read_model`) = 11 modules, ~45 routes.
 `invest_api.py` alone is 34 routes and carries the whole `/invest` product; it should be split per domain before
@@ -574,6 +575,7 @@ Three schedulers run in prod: one TaskIQ worker (`at-worker`, `--workers 1`) wit
 and Dagu has 4 DAGs that are **not registered**.
 
 | job | kind | schedule | writes | 30d evidence | proposal |
+|---|---|---|---|---|---|
 | `analyst_consensus_snapshot_tasks.py` | TaskIQ | manual only (no schedule label) | `analyst_consensus_snapshots` | **table EMPTY** | retire (see $5) |
 | `binance_demo_root_reservation_reconcile_tasks.py` | TaskIQ | manual only | `binance_demo_order_ledger` | 43 write-days | keep, decide (venue idle) |
 | `crypto_pending_order_alert_tasks.py` | TaskIQ | cron 08:30 / 22:00 KST | notifications | — | keep |
@@ -855,7 +857,7 @@ The three retire families worth calling out:
    since **2026-07-28**, 0 tool calls. **This one needs an operator decision**, because the report schema is
    the contract Hermes writes into; see $5.3.
 
-Dropping all 103 would remove **about 60 tables that are already empty** and 43 that hold data. Ordering and
+Dropping all 103 would remove **73 tables that are already empty** and 30 that hold data. Ordering and
 export requirements are in $7.
 
 ### 4.2 Restructure candidates (11 tables)
