@@ -321,23 +321,45 @@ git branch -D <branch-name>
 - 이관: `git worktree move <old-path> <new-path>` (dirty 없는 상태에서)
 - 삭제된 원격 브랜치(`upstream gone`) 는 주기적으로 `git fetch --prune && git branch -vv | grep ': gone\]'` 로 확인하고 정리
 
-### CI — PR 게이트와 main 전체 스위트 (ROB-1294, ROB-1454)
+### CI — 3단계(T-PR / T-POST / T-DEPLOY)와 PR 게이트 (ROB-1294, ROB-1454, hk 2939)
 
 PR 은 자기가 바꾼 것만 검사받고 `lint` + `PR gate` 로 머지된다. 전체 스위트
 (`lint` · `taskiq-smoke` · `test (3.13, 1..4)`)는 main push·`workflow_dispatch` 와
 분류기가 `run_all` 이라고 한 PR 에서만 돈다. 머지는 배포가 아니므로 `blocking` 경로도
 예외 없이 같고, 그 목록은 리뷰 2회·자동 revert 없음을 뜻한다.
 
+- **T-PR** (`pull_request`): `lint` · `change-classifier` · `affected-tests` · `PR gate`.
+  `security`·`alpaca-track-fast-tests`·`intraday-harness-v2-tests`·`kiwoom-dual-surface-smoke`·
+  `alpaca-track-walkforward-tests` 는 T-POST 전용이고, `frontend` 는 분류기 `lanes` 에
+  `frontend` 가 있는 PR 에서만 돈다.
+- **T-POST** (main/develop push, `workflow_dispatch`): 전체 스위트 + 위 T-POST 전용 job.
+  main push 는 같은 ref 의 이전 push 실행을 취소한다(최신 head 만 돈다). `workflow_dispatch`
+  는 `github.run_id` 가 든 자기 group 이라 push 에 취소되지 않는다. PR 동작은 그대로다.
+- **T-DEPLOY**: `scripts/deploy_ci_gate.py` 가 그 SHA 의 전체 스위트 초록을 강제한다.
+- **취소 규칙**: push/dispatch 에서 필수 child 중 통과하지 못한 것이 전부 `cancelled` 이면
+  (failure·missing·미인가 skip 없음) `gate-verdict` 가 `superseded` 로 끝나고 `PR gate` 는
+  **skipped** 가 된다 — mergewake 는 unknown 으로 보고 hold 한다. 🔴 `pull_request` 에서는
+  적용하지 않는다: `cancelled` 는 그대로 red 다(skipped 필수 체크는 GitHub 에서 초록 병합 버튼).
+  취소된 `Test` run 에 대해서는 `deploy.yml` 의 자동 이미지 빌드도 skipped 다. 그래서
+  main run 이 취소된 SHA 를 배포하려면 먼저 `gh workflow run test.yml --ref <ref>` 로 그 SHA
+  의 전체 스위트를 돌려야 한다(bare SHA 는 임시 브랜치를 그 SHA 에 만들어 dispatch).
+- **러너 선택**: push/dispatch 에서 도는 모든 job 의 `runs-on` 은
+  `vars.AUTO_TRADER_POST_LINUX_RUNNER` 를 읽고 없으면 `ubuntu-latest` 다. 🔴 public 레포이므로
+  `pull_request` 에서 닿는 job 은 변수값이나 `self-hosted` 라벨로 풀리면 안 된다
+  (`github.event_name != 'pull_request'` 가드). 변수는 desk 가 설정하고, `services:`
+  (Postgres, Redis) 를 쓰는 job 이 있어 Linux self-hosted 러너에는 Docker 가 필요하다.
+  macOS job 은 없다.
+
 - **분류기**: `scripts/ci/classify_changes.py` — 변경 경로 → lane·실행할 테스트 파일 (stdlib only)
 - **게이트**: `scripts/ci/aggregate_required.py --pr-gate` — 분류기 출력으로만 skip 을 인가
-- **워크플로우 job**: `.github/workflows/test.yml` 의 `change-classifier` · `affected-tests` · `pr-gate`
+- **워크플로우 job**: `.github/workflows/test.yml` 의 `change-classifier` · `affected-tests` · `gate-verdict` · `pr-gate`
 - **계약 테스트**: `tests/ci/`
 - **런북**: `docs/runbooks/ci-required-aggregator.md`
 
 **fail-closed 규칙**: 분류기는 unknown path·rename/copy/delete·공유 CI/config/test 인프라·
 빈 change set·base SHA 부재·테스트를 하나도 고르지 못한 경로·500 파일 초과 선택을 전부
 `run_all=true` 로 떨어뜨리고, 지정된 SHA 해석 실패·git 실패·malformed diff 는 성공으로
-세탁하지 않고 **job 을 red** 로 만든다. 게이트는 child 의 `failure`/`cancelled`/미인가
+세탁하지 않고 **job 을 red** 로 만든다. 게이트는 child 의 `failure`/`cancelled`(PR)/미인가
 `skipped`/결과 부재/미지의 결과 문자열을 전부 red 로 본다. 🔴 full-suite job 의 `if:` 를
 main 에서 skip 될 수 있게 바꾸지 마라(`tests/ci/test_pr_gate_workflow_contract.py`).
 

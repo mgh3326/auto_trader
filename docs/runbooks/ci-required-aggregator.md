@@ -1,8 +1,67 @@
-# PR gate and change classifier (ROB-1294, ROB-1454)
+# PR gate and change classifier (ROB-1294, ROB-1454, hk 2939)
 
 **Status: live.** A PR is checked on what it changed and merges on `lint` + `PR gate`.
 The full suite runs on main, where the mergewake watch reverts a culprit, and has to be
 green on the exact SHA before a deploy.
+
+## 0. Three tiers (hk 2939, operator decision 2026-11-05)
+
+| tier | when | what | merge blocked? |
+|---|---|---|---|
+| T-PR | `pull_request` | `lint`, `change-classifier`, `affected-tests`, `PR gate`; the shards and `taskiq-smoke` only when the classifier says `run_all`; `frontend` only when the PR touches `frontend/` | `lint` + `PR gate` + review |
+| T-POST | push to main/develop, `workflow_dispatch` | the full suite (`lint`, `taskiq-smoke`, `test (3.13, 1..4)`), plus `security`, `alpaca-track-fast-tests`, `intraday-harness-v2-tests`, `kiwoom-dual-surface-smoke`, `alpaca-track-walkforward-tests`, `frontend` | no; red means the mergewake watch bisects and reverts |
+| T-DEPLOY | before an image or a forward deploy | `scripts/deploy_ci_gate.py`: the exact SHA's full suite must be green | the deploy |
+
+`security` and the four research/smoke jobs are not part of any required or watched check, so
+moving them off the PR costs no gate. Their failures show on the main run.
+
+### Only the newest main head runs
+
+`concurrency` groups a PR by its number and a push by its ref, and cancels in progress for
+both. A newer push to main cancels the run of the previous push, so T-POST tests the newest
+head only. A `workflow_dispatch` run is a deliberate request for one SHA (the deploy gate, a
+mergewake bisect), so its group includes `github.run_id` and `cancel-in-progress` is false:
+a later push never cancels it.
+
+A cancelled main run is **not** evidence about its SHA. Consequences:
+
+- `PR gate` of a run whose only non-passing children are `cancelled` is **skipped**, not red
+  (§3, "Superseded runs"). mergewake reads a skipped check as unknown and holds.
+- `deploy.yml`'s automatic `workflow_run` build skips a `Test` run whose conclusion is
+  `cancelled` (the job is skipped, not failed). Manual dispatch and release builds are
+  unchanged, and so is the exact-SHA gate.
+- 🔴 To deploy or build a SHA whose main run was superseded, run the suite on it first:
+
+  ```bash
+  gh workflow run test.yml --ref <sha>
+  ```
+
+  Dispatch takes a branch or tag ref; for a bare commit SHA push a throwaway branch at it and
+  dispatch that ref. The exact-SHA gate accepts the newest push or dispatch run for the SHA.
+
+### Runner selection
+
+Every job that can run on push or dispatch declares
+
+```yaml
+runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
+```
+
+With the repository variable `AUTO_TRADER_POST_LINUX_RUNNER` unset, everything runs on
+`ubuntu-latest` as before. The desk sets the variable (Settings → Secrets and variables →
+Actions → Variables) to the label of a Linux self-hosted runner to move T-POST there. The
+variable is one runner label; it has no effect on a pull request.
+
+🔴 The repository is public. A `pull_request` run executes unmerged code, so no job reachable
+from `pull_request` may resolve `runs-on` to a variable or a `self-hosted` label; the
+`github.event_name != 'pull_request'` guard in every `runs-on` is what enforces it, and
+`tests/ci/test_pr_gate_workflow_contract.py` evaluates every job's `runs-on` on a pull request
+with the variable set. PR-only jobs (`affected-tests`, `write-fence-guard`) keep the literal
+`ubuntu-latest`. There is no macOS job: the service runs on Linux.
+
+The `test` shards and `taskiq-smoke` declare `services:` (Postgres, Redis), which need
+**Docker on the runner**. A self-hosted Linux runner must have
+Docker, one concurrent job per runner, and no other workload that binds ports 5432 or 6379.
 
 ## 1. What runs where
 
@@ -10,8 +69,8 @@ green on the exact SHA before a deploy.
 |---|---|---|---|---|
 | pull request, `run_all=false` | yes | `affected-tests`: the classifier's file list, if any | skipped | runs |
 | pull request, `run_all=true` | yes | the shards | yes | runs |
-| push to main or develop | yes | the shards | yes | runs |
-| `workflow_dispatch` | yes | the shards | yes | runs |
+| push to main or develop | yes | the shards | yes | runs, or skipped when superseded |
+| `workflow_dispatch` | yes | the shards | yes | runs, or skipped when superseded |
 
 Merging is not deploying: orders, ledger and migrations take effect at deploy. So
 `blocking` paths in `.mergewake/policy.yaml` get no exception here. A broker change runs its
@@ -56,6 +115,9 @@ not count, because it tests a merge commit and not this SHA.
 commit, needs `gh workflow run test.yml --ref production` first. A PR's green `PR gate` is not
 this evidence, because the shards may have been skipped.
 
+A SHA whose main run was superseded (cancelled by a newer push) has no full-suite evidence:
+the command prints `DO NOT DEPLOY` for it. Run `gh workflow run test.yml --ref <sha>` first (see §0).
+
 This is a manual step today. Enforcing it in the deploy path is hk task 2586.
 
 ## 2. Change classifier contract
@@ -99,7 +161,7 @@ Lanes and what each one runs on a PR:
 | lane | example paths | selected tests |
 |---|---|---|
 | `docs` | `docs/**`, `*.md` | none |
-| `frontend` | `frontend/**` | none; the unconditional `frontend` job covers it |
+| `frontend` | `frontend/**` | none; the `frontend` job runs on a PR when this lane is present (its `if:` reads the classifier's `lanes` output) |
 | `research` | `research/**`, `research_contracts/**` | references + mirror directory; none is fine, because research suites run in their own jobs |
 | `app` | `app/**` | references + mirror directory; none forces `run_all` |
 | `scripts` | `scripts/**` (except `scripts/ci/**`) | same |
@@ -161,13 +223,15 @@ resynchronises quietly is a parser that reports the wrong lane confidently:
 
 ## 3. `PR gate` contract
 
-`PR gate` declares `if: always()` and
-`needs: [lint, change-classifier, affected-tests, test, taskiq-smoke]`. `always()` is
-load-bearing: a job with no `if:` is *skipped* when a `needs:` child fails, and mergewake
-counts a skipped required check as unknown.
+Two jobs carry the verdict. `gate-verdict` declares `if: always()` and
+`needs: [lint, change-classifier, affected-tests, test, taskiq-smoke]`, runs
+`scripts/ci/aggregate_required.py --pr-gate --allow-superseded` on `toJSON(needs)`, and
+publishes `superseded`. `PR gate` (the check name mergewake and branch protection know)
+needs only `gate-verdict` and goes red unless its result is `success`. `always()` is
+load-bearing on both: a job with no `if:` is *skipped* when a `needs:` child fails, and
+mergewake counts a skipped required check as unknown.
 
-`scripts/ci/aggregate_required.py --pr-gate` evaluates `toJSON(needs)`. The classifier's own
-outputs decide which skips are legitimate:
+The classifier's own outputs decide which skips are legitimate:
 
 | run | may be skipped |
 |---|---|
@@ -199,15 +263,40 @@ with `--authorize-skip` is red.
 The `test` matrix collapses into one `needs.test.result`, which is `failure` if any shard
 failed.
 
+### Superseded runs (T-POST only)
+
+hk 2924 rule: a cancellation is not a failure. On `push` and `workflow_dispatch`, when every
+non-passing required child is `cancelled` (no failure, no missing, no unauthorized skip, no
+undeclared or unexpected result), `aggregate_required.py` reports `superseded`, exits 0 and
+writes `superseded=true` to `$GITHUB_OUTPUT`. `gate-verdict` then succeeds and **`PR gate` is
+skipped** (the verdict chosen over an explicit "superseded" success, because a success would
+read as green). `PR gate` is also skipped when `gate-verdict` itself was cancelled with its
+run. A failure next to cancellations is still red.
+
+| event | only `cancelled` children | `PR gate` |
+|---|---|---|
+| `push`, `workflow_dispatch` | superseded | skipped (unknown to mergewake, which holds) |
+| `push`, `workflow_dispatch` | plus any failure, missing child, unauthorized skip | red |
+| `pull_request` | any cancelled child | **red**, unchanged |
+
+🔴 On `pull_request` the rule is never applied: `PR gate` is a required check, and GitHub
+treats a skipped required check as passing, so a skipped gate would be a green merge button.
+The flag is ignored for that event inside the script, and the workflow's `if:` on `PR gate`
+has no skip branch for it.
+
 ## 4. Verifying
 
 ```bash
 uv run pytest tests/ci/ -q -ra
 ```
 
-`tests/ci/test_pr_gate_workflow_contract.py` pins the `if:` on the full-suite jobs, the gate's
-`needs:` and `--required` lists, and that every check named in `.mergewake/policy.yaml` is one
-the workflow displays. `tests/ci/test_required_aggregator.py` holds the gate's truth table.
+`tests/ci/test_pr_gate_workflow_contract.py` pins the `if:` on the full-suite jobs, the
+verdict job's `needs:` and `--required` lists, the tiers (which jobs a pull request can reach,
+the concurrency groups, `runs-on` on every event with and without the runner variable) and that
+every check named in `.mergewake/policy.yaml` is one the workflow displays; it evaluates the
+workflow expressions with `tests/ci/gh_expr.py`. `tests/ci/test_required_aggregator.py` holds
+the gate's truth table and the superseded rule. `tests/ci/test_deploy_gate_workflow.py` pins
+that `deploy.yml` skips a cancelled `Test` run.
 
 ## 5. Branch protection (operator-only)
 
