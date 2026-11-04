@@ -1374,6 +1374,32 @@ class OrderProposalsService:
         )
         return [(g, await self._repo.list_rungs(g.id)) for g in groups]
 
+    async def find_fill_intent_rows(
+        self,
+        *,
+        broker_order_id: str,
+        account_mode: str | None,
+    ) -> tuple[OrderProposal, OrderProposalRung, list[OrderProposalRung]] | None:
+        """Read-only: the rung that carries this broker order id, with its proposal and ladder.
+
+        Used by the fill-alert intent lookup. Returns ``None`` when no rung
+        carries the id; raises ``OrderProposalNotFound`` when the rung's
+        proposal row is missing.
+        """
+        found = await self._repo.find_rung_by_evidence(
+            correlation_id=None,
+            broker_order_id=broker_order_id,
+            account_mode=account_mode,
+        )
+        if found is None:
+            return None
+        proposal_id, rung = found
+        proposal = await self._repo.get_group_by_proposal_id(proposal_id)
+        if proposal is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        rungs = await self._repo.list_rungs(proposal.id)
+        return proposal, rung, rungs
+
     async def list_rungs_by_void_reasons(
         self,
         *,

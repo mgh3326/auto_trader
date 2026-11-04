@@ -7,6 +7,7 @@ Upbit small-fill proposal-rung recovery) are asserted here once.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -216,19 +217,13 @@ async def test_no_order_context_reports_no_notification() -> None:
 
 
 class _RungRepo:
-    """Fake OrderProposalRepository: one rung (2 of 3) of a limit-buy proposal."""
+    """Fake OrderProposalsService: one rung (2 of 3) of a limit-buy proposal."""
 
     def __init__(self, session: object) -> None:
         self._session = session
 
-    async def find_rung_by_evidence(self, **_: Any) -> tuple[object, object]:
-        return ("00000000-0000-0000-0000-00000000beef", _RUNG)
-
-    async def get_group_by_proposal_id(self, _proposal_id: object, **_: Any) -> Any:
-        return _PROPOSAL
-
-    async def list_rungs(self, _proposal_pk: int) -> list[object]:
-        return [_rung_row(0), _RUNG, _rung_row(2)]
+    async def find_fill_intent_rows(self, **_: Any) -> tuple[Any, Any, list[Any]]:
+        return _PROPOSAL, _RUNG, [_rung_row(0), _RUNG, _rung_row(2)]
 
 
 class _NoopSession:
@@ -241,7 +236,10 @@ class _NoopSession:
 
 def _rung_row(index: int) -> SimpleNamespace:
     return SimpleNamespace(
-        rung_index=index, limit_price=Decimal("68000"), quantity=Decimal("10")
+        rung_index=index,
+        limit_price=Decimal("68000"),
+        quantity=Decimal("10"),
+        created_at=datetime(2026, 11, 4, 9, 0, tzinfo=timezone(timedelta(hours=9))),
     )
 
 
@@ -295,7 +293,7 @@ async def test_fill_alert_carries_intent_and_slippage_through_downstream(
         fill_ingest, "fetch_fill_enrichment", AsyncMock(return_value=None)
     )
     monkeypatch.setattr(fill_intent_lookup, "AsyncSessionLocal", _NoopSession)
-    monkeypatch.setattr(fill_intent_lookup, "OrderProposalRepository", _RungRepo)
+    monkeypatch.setattr(fill_intent_lookup, "OrderProposalsService", _RungRepo)
 
     order = FillOrder(
         symbol="005930",

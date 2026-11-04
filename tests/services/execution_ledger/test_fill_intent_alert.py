@@ -6,6 +6,8 @@ lookup is driven through fake session/repository classes; no database is used.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -289,11 +291,21 @@ class _FakeSession:
         return False
 
 
-def _rung(rung_index: int, *, limit_price: str | None = "68000") -> SimpleNamespace:
+_KST = timezone(timedelta(hours=9))
+_CREATED = datetime(2026, 11, 4, 9, 0, tzinfo=_KST)
+
+
+def _rung(
+    rung_index: int,
+    *,
+    limit_price: str | None = "68000",
+    created_at: datetime = _CREATED,
+) -> SimpleNamespace:
     return SimpleNamespace(
         rung_index=rung_index,
         limit_price=Decimal(limit_price) if limit_price is not None else None,
         quantity=Decimal("10"),
+        created_at=created_at,
     )
 
 
@@ -314,7 +326,7 @@ def _proposal(
 
 
 class _RepoMatch:
-    """Fake repository: one matching rung, its proposal, and the proposal's rungs."""
+    """Fake OrderProposalsService: one matching rung, its proposal, and the ladder."""
 
     rung = _rung(1)
     proposal = _proposal()
@@ -324,25 +336,19 @@ class _RepoMatch:
     def __init__(self, session: object) -> None:
         self._session = session
 
-    async def find_rung_by_evidence(self, **kwargs: Any) -> tuple[object, Any]:
+    async def find_fill_intent_rows(self, **kwargs: Any) -> tuple[Any, Any, list[Any]]:
         type(self).calls.append(kwargs)
-        return ("00000000-0000-0000-0000-000000000001", type(self).rung)
-
-    async def get_group_by_proposal_id(self, proposal_id: object, **_: Any) -> Any:
-        return type(self).proposal
-
-    async def list_rungs(self, proposal_pk: int) -> list[Any]:
-        return type(self).rungs
+        return type(self).proposal, type(self).rung, type(self).rungs
 
 
 class _RepoNoMatch(_RepoMatch):
-    async def find_rung_by_evidence(self, **kwargs: Any) -> None:  # type: ignore[override]
+    async def find_fill_intent_rows(self, **kwargs: Any) -> None:  # type: ignore[override]
         type(self).calls.append(kwargs)
         return None
 
 
 class _RepoRaises(_RepoMatch):
-    async def find_rung_by_evidence(self, **kwargs: Any) -> None:  # type: ignore[override]
+    async def find_fill_intent_rows(self, **kwargs: Any) -> None:  # type: ignore[override]
         raise RuntimeError("db unavailable")
 
 
@@ -362,7 +368,7 @@ async def test_lookup_matches_rung_and_builds_limit_reference() -> None:
         broker_order_id="0001234567",
         account_mode="kis_live",
         session_factory=_fake_session_factory,
-        repository_cls=_RepoMatch,
+        service_cls=_RepoMatch,
     )
     assert intent.status == "matched"
     assert intent.strategy == "rsi_reversion"
@@ -371,11 +377,7 @@ async def test_lookup_matches_rung_and_builds_limit_reference() -> None:
     assert intent.reference_price == Decimal("68000")
     assert intent.reference_kind == "limit"
     assert _RepoMatch.calls == [
-        {
-            "correlation_id": None,
-            "broker_order_id": "0001234567",
-            "account_mode": "kis_live",
-        }
+        {"broker_order_id": "0001234567", "account_mode": "kis_live"}
     ]
 
 
@@ -385,7 +387,7 @@ async def test_lookup_no_rung_says_no_match() -> None:
     intent = await resolve_fill_intent(
         broker_order_id="0001234567",
         session_factory=_fake_session_factory,
-        repository_cls=_RepoNoMatch,
+        service_cls=_RepoNoMatch,
     )
     assert intent == NO_MATCH
 
@@ -396,7 +398,7 @@ async def test_lookup_exception_becomes_lookup_failed_and_never_raises() -> None
     intent = await resolve_fill_intent(
         broker_order_id="0001234567",
         session_factory=_fake_session_factory,
-        repository_cls=_RepoRaises,
+        service_cls=_RepoRaises,
     )
     assert intent == LOOKUP_FAILED
 
@@ -407,7 +409,7 @@ async def test_missing_broker_order_id_cannot_prove_absence() -> None:
     intent = await resolve_fill_intent(
         broker_order_id=None,
         session_factory=_fake_session_factory,
-        repository_cls=_RepoNoMatch,
+        service_cls=_RepoNoMatch,
     )
     assert intent == LOOKUP_FAILED
 
@@ -480,7 +482,7 @@ async def test_send_fill_notification_renders_lookup_failure_and_still_sends(
     from app.services.execution_ledger.fill_ingest import send_fill_notification
 
     monkeypatch.setattr(fill_intent_lookup, "AsyncSessionLocal", _fake_session_factory)
-    monkeypatch.setattr(fill_intent_lookup, "OrderProposalRepository", _RepoRaises)
+    monkeypatch.setattr(fill_intent_lookup, "OrderProposalsService", _RepoRaises)
 
     notify_fill = AsyncMock(return_value=True)
     notifier = SimpleNamespace(notify_fill=notify_fill)
@@ -501,3 +503,73 @@ async def test_send_fill_notification_renders_lookup_failure_and_still_sends(
         intent=notify_fill.call_args.kwargs["intent"],
     )
     assert "의도: 조회 실패" in rendered
+
+
+class _SlowRepo(_RepoMatch):
+    async def find_fill_intent_rows(self, **kwargs: Any) -> None:  # type: ignore[override]
+        await asyncio.sleep(5)
+
+
+class _MismatchedDateRepo(_RepoMatch):
+    rung = _rung(1, created_at=datetime(2026, 11, 3, 9, 0, tzinfo=_KST))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_lookup_times_out_to_lookup_failed() -> None:
+    intent = await resolve_fill_intent(
+        broker_order_id="0001234567",
+        session_factory=_fake_session_factory,
+        service_cls=_SlowRepo,
+        timeout_seconds=0.05,
+    )
+    assert intent == LOOKUP_FAILED
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rung_from_another_trading_date_is_not_attributed() -> None:
+    """A reused KIS order number must not borrow an older day's strategy."""
+    intent = await resolve_fill_intent(
+        broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00+09:00",
+        session_factory=_fake_session_factory,
+        service_cls=_MismatchedDateRepo,
+    )
+    assert intent == LOOKUP_FAILED
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_day_rung_is_attributed_with_fill_date() -> None:
+    intent = await resolve_fill_intent(
+        broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00+09:00",
+        session_factory=_fake_session_factory,
+        service_cls=_RepoMatch,
+    )
+    assert intent.status == "matched"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_fill_notification_passes_account_mode_to_the_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mock fill must not attribute the live rung with the same order number."""
+    from app.services.execution_ledger.fill_ingest import send_fill_notification
+
+    _reset(_RepoMatch)
+    monkeypatch.setattr(fill_intent_lookup, "AsyncSessionLocal", _fake_session_factory)
+    monkeypatch.setattr(fill_intent_lookup, "OrderProposalsService", _RepoMatch)
+
+    notify_fill = AsyncMock(return_value=True)
+    notifier = SimpleNamespace(notify_fill=notify_fill)
+    await send_fill_notification(
+        _kr_order(side="bid", price=67_500.0),
+        notifier_factory=lambda: notifier,
+        enrichment_fetcher=AsyncMock(return_value=None),
+        account_mode="mock",
+    )
+
+    assert _RepoMatch.calls[-1]["account_mode"] == "mock"

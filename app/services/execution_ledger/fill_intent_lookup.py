@@ -11,8 +11,10 @@ and says the intent is unknown rather than absent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -23,9 +25,11 @@ from app.services.fill_intent import (
     FillIntent,
     summarize_thesis,
 )
-from app.services.order_proposals.repository import OrderProposalRepository
+from app.services.order_proposals import OrderProposalsService
 
 logger = logging.getLogger(__name__)
+
+KST = timezone(timedelta(hours=9))
 
 
 def _positive_decimal(value: Any) -> Decimal | None:
@@ -102,38 +106,63 @@ def build_fill_intent(proposal: Any, rung: Any, rungs: Sequence[Any]) -> FillInt
     )
 
 
+#: Upper bound on the read so a blocked query cannot hold the fill alert.
+LOOKUP_TIMEOUT_SECONDS = 5.0
+
+
+def _kst_date(value: Any) -> date | None:
+    """KST calendar date of an aware datetime, or ``None`` when unknowable."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return None
+    return value.astimezone(KST).date()
+
+
 async def resolve_fill_intent(
     *,
     broker_order_id: str | None,
     account_mode: str | None = None,
+    filled_at: str | datetime | None = None,
     session_factory: Callable[[], Any] | None = None,
-    repository_cls: type[OrderProposalRepository] | None = None,
+    service_cls: type[OrderProposalsService] | None = None,
+    timeout_seconds: float = LOOKUP_TIMEOUT_SECONDS,
 ) -> FillIntent:
     """Describe the proposal rung behind a fill, or say why it could not.
 
     Never raises. Without a broker order id the absence of a rung cannot be
     established, so the answer is ``LOOKUP_FAILED``, not ``NO_MATCH``.
+
+    Broker order numbers are reused across trading days (KIS in particular), so
+    a rung created on a different KST date than the fill is not attributed: the
+    answer is ``LOOKUP_FAILED`` (unknown), never another day's strategy.
     """
     order_id = (broker_order_id or "").strip() or None
     if order_id is None:
         return LOOKUP_FAILED
     factory = session_factory or AsyncSessionLocal
-    repo_cls = repository_cls or OrderProposalRepository
+    svc_cls = service_cls or OrderProposalsService
+    fill_date = _kst_date(filled_at) if filled_at is not None else None
     try:
-        async with factory() as db:
-            repo = repo_cls(db)
-            found = await repo.find_rung_by_evidence(
-                correlation_id=None,
+        async with asyncio.timeout(timeout_seconds), factory() as db:
+            service = svc_cls(db)
+            found = await service.find_fill_intent_rows(
                 broker_order_id=order_id,
                 account_mode=account_mode,
             )
             if found is None:
                 return NO_MATCH
-            proposal_id, rung = found
-            proposal = await repo.get_group_by_proposal_id(proposal_id)
-            if proposal is None:
+            proposal, rung, rungs = found
+            if fill_date is not None and _kst_date(rung.created_at) != fill_date:
+                logger.info(
+                    "fill intent lookup: rung date differs from fill date; "
+                    "not attributed broker_order_id=%s",
+                    order_id,
+                )
                 return LOOKUP_FAILED
-            rungs = await repo.list_rungs(proposal.id)
         return build_fill_intent(proposal, rung, rungs)
     except Exception:  # noqa: BLE001 - the alert must still go out
         logger.warning(

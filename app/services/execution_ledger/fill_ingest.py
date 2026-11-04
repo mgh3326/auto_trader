@@ -153,6 +153,7 @@ async def send_fill_notification(
     *,
     correlation_id: str | None = None,
     proposal_rung_fill: bool = False,
+    account_mode: str | None = None,
     notifier_factory: Callable[[], Any] | None = None,
     enrichment_fetcher: Callable[[FillOrder], Awaitable[Any]] | None = None,
 ) -> bool:
@@ -187,7 +188,11 @@ async def send_fill_notification(
 
     detail_url = build_position_detail_url(order.symbol, order.market_type)
     # Read-only and never raises: a failed lookup still sends, marked 조회 실패.
-    intent = await resolve_fill_intent(broker_order_id=order.order_id)
+    intent = await resolve_fill_intent(
+        broker_order_id=order.order_id,
+        account_mode=account_mode,
+        filled_at=order.filled_at,
+    )
 
     logger.info(
         "Fill notification send start: correlation_id=%s symbol=%s account=%s amount=%s",
@@ -270,6 +275,7 @@ async def run_post_upsert_downstream(
     raw_event: dict[str, Any] | None,
     correlation_id: str | None = None,
     hooks: DownstreamHooks | None = None,
+    account_mode: str | None = None,
 ) -> PostUpsertOutcome:
     """Run the shared post-upsert work for exactly one committed fill.
 
@@ -349,10 +355,15 @@ async def run_post_upsert_downstream(
             duplicate=duplicate,
         )
 
+    # account_mode is passed only when known, so existing notify callers keep
+    # their exact keyword set.
+    mode_kwargs: dict[str, Any] = (
+        {"account_mode": account_mode} if account_mode is not None else {}
+    )
     if broker == "upbit":
-        await notify(fill_order, proposal_rung_fill=proposal_rung_fill)
+        await notify(fill_order, proposal_rung_fill=proposal_rung_fill, **mode_kwargs)
     else:
-        await notify(fill_order, correlation_id=correlation_id)
+        await notify(fill_order, correlation_id=correlation_id, **mode_kwargs)
     return PostUpsertOutcome(
         proposal_rung_fill=proposal_rung_fill,
         notification_attempted=True,
