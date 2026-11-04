@@ -579,3 +579,186 @@ def test_authorized_skips_never_include_lint_or_the_classifier() -> None:
 def test_a_malformed_classifier_payload_raises_rather_than_authorizing() -> None:
     with pytest.raises(AggregateError, match="no outputs"):
         pr_gate_authorized_skips("pull_request", {"change-classifier": "success"})
+
+
+# --------------------------------------------------------------------------
+# hk 2939: a superseded T-POST run is not a failure; a PR never is superseded
+# --------------------------------------------------------------------------
+
+
+def _run_superseded_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+    event: str,
+    *,
+    allow: bool = True,
+) -> tuple[int, str | None]:
+    """Run the gate CLI; return (exit code, the `superseded=` line it published)."""
+
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    results = tmp_path / "needs.json"
+    results.write_text(json.dumps(payload), encoding="utf-8")
+    argv = ["--results-file", str(results), "--pr-gate", "--event-name", event]
+    if allow:
+        argv.append("--allow-superseded")
+    for child in GATE_CHILDREN:
+        argv += ["--required", child]
+    code = main(argv)
+    lines = output.read_text(encoding="utf-8").splitlines() if output.exists() else []
+    published = [line for line in lines if line.startswith("superseded=")]
+    return code, (published[-1] if published else None)
+
+
+CANCELLED_SHARDS = {"test": "cancelled", "taskiq_smoke": "cancelled"}
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_t_post_run_with_only_cancelled_children_is_superseded_not_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event: str
+) -> None:
+    payload = _gate_payload(
+        run_all="true", affected_tests="skipped", **CANCELLED_SHARDS
+    )
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, event)
+    assert code == 0
+    assert published == "superseded=true"
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+@pytest.mark.parametrize(
+    "cancelled", ["lint", "test", "taskiq_smoke", "change_classifier"]
+)
+def test_any_single_cancelled_child_supersedes_a_t_post_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event: str, cancelled: str
+) -> None:
+    payload = _gate_payload(
+        run_all="true", affected_tests="skipped", **{cancelled: "cancelled"}
+    )
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, event)
+    assert (code, published) == (0, "superseded=true")
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_a_failure_next_to_cancellations_is_still_red_on_t_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event: str
+) -> None:
+    payload = _gate_payload(
+        run_all="true",
+        affected_tests="skipped",
+        lint="failure",
+        **CANCELLED_SHARDS,
+    )
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, event)
+    assert code == 1
+    assert published == "superseded=false"
+
+
+@pytest.mark.parametrize("bad", ["skipped", "failure", "neutral", None])
+def test_cancellations_do_not_excuse_an_unauthorized_skip_or_odd_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str | None
+) -> None:
+    """`lint` has no authorized skip; an unknown result string is `unexpected`."""
+
+    payload = _gate_payload(
+        run_all="true", affected_tests="skipped", **CANCELLED_SHARDS
+    )
+    payload["lint"] = {"result": bad, "outputs": {}}
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, "push")
+    assert (code, published) == (1, "superseded=false")
+
+
+def test_a_missing_child_is_not_a_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _gate_payload(
+        run_all="true", affected_tests="skipped", **CANCELLED_SHARDS
+    )
+    del payload["lint"]
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, "push")
+    assert (code, published) == (1, "superseded=false")
+
+
+def test_an_undeclared_child_is_not_a_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _gate_payload(
+        run_all="true", affected_tests="skipped", **CANCELLED_SHARDS
+    )
+    payload["extra"] = {"result": "success", "outputs": {}}
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, "push")
+    assert (code, published) == (1, "superseded=false")
+
+
+@pytest.mark.parametrize(
+    "payload_kwargs",
+    [
+        CANCELLED_SHARDS,
+        {"lint": "cancelled"},
+        {"affected_tests": "cancelled"},
+    ],
+    ids=["shards", "lint", "affected"],
+)
+def test_a_cancelled_child_on_a_pull_request_stays_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload_kwargs: dict[str, str]
+) -> None:
+    """`PR gate` is required: a skipped one would be a green merge button."""
+
+    kwargs = {"affected_tests": "skipped", **payload_kwargs}
+    payload = _gate_payload(run_all="true", **kwargs)
+    code, published = _run_superseded_gate(
+        tmp_path, monkeypatch, payload, "pull_request"
+    )
+    assert code == 1
+    assert published == "superseded=false"
+
+
+def test_without_the_flag_a_cancelled_t_post_run_is_still_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _gate_payload(
+        run_all="true", affected_tests="skipped", **CANCELLED_SHARDS
+    )
+    code, published = _run_superseded_gate(
+        tmp_path, monkeypatch, payload, "push", allow=False
+    )
+    assert code == 1
+    assert published is None
+
+
+def test_a_blank_event_name_cannot_supersede(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _gate_payload(
+        run_all="true", affected_tests="skipped", **CANCELLED_SHARDS
+    )
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, "")
+    assert (code, published) == (1, "superseded=false")
+
+
+def test_a_green_t_post_run_is_not_marked_superseded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _gate_payload(run_all="true", affected_tests="skipped")
+    code, published = _run_superseded_gate(tmp_path, monkeypatch, payload, "push")
+    assert (code, published) == (0, "superseded=false")
+
+
+def test_a_malformed_payload_publishes_not_superseded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    argv = [
+        "--results-json",
+        "not json",
+        "--pr-gate",
+        "--event-name",
+        "push",
+        "--allow-superseded",
+    ]
+    for child in GATE_CHILDREN:
+        argv += ["--required", child]
+    assert main(argv) == 1
+    assert output.read_text(encoding="utf-8").splitlines() == ["superseded=false"]

@@ -21,6 +21,15 @@ anything else       red (``unexpected``) -- includes ``""``, ``null``,
                     ``neutral`` and any future GitHub result string
 ==================  ==============================================
 
+Superseded runs (T-POST only): with ``--allow-superseded`` on an event that is
+not ``pull_request``, a verdict whose only non-passing children are ``cancelled``
+(no failure, no missing, no unauthorized skip, nothing undeclared or unexpected)
+is *superseded*, not failed. The script exits 0 and writes ``superseded=true`` to
+``$GITHUB_OUTPUT``; the workflow then skips the ``PR gate`` job, which mergewake
+reads as unknown and holds. On ``pull_request`` the flag has no effect and a
+cancelled child stays red: ``PR gate`` is a required check, and a skipped required
+check is a green merge button to GitHub.
+
 A child present in the input but not declared via ``--required`` is also red
 (``undeclared``): that means the workflow's ``needs:`` list and this script's
 required list have drifted apart, and drift is exactly what a stable gate
@@ -83,6 +92,13 @@ class AggregateVerdict:
     @property
     def passed(self) -> bool:
         return not self.failing
+
+    @property
+    def cancelled_only(self) -> bool:
+        """At least one cancelled child and nothing else wrong."""
+
+        failing = self.failing
+        return bool(failing) and all(c.status == "cancelled" for c in failing)
 
     @property
     def result(self) -> str:
@@ -338,6 +354,14 @@ def _summary_lines(report: Mapping[str, object]) -> list[str]:
     return lines
 
 
+def _write_github_output(key: str, value: str) -> None:
+    target = os.environ.get("GITHUB_OUTPUT")
+    if not target:
+        return
+    with open(target, "a", encoding="utf-8") as handle:
+        handle.write(f"{key}={value}\n")
+
+
 def _write_step_summary(lines: Iterable[str]) -> None:
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if not target:
@@ -380,6 +404,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--event-name", default="", help="github.event_name, read by --pr-gate"
+    )
+    parser.add_argument(
+        "--allow-superseded",
+        action="store_true",
+        help="on a non-pull_request event, a verdict whose only non-passing "
+        "children are `cancelled` exits 0 with result `superseded` and writes "
+        "superseded=true to $GITHUB_OUTPUT. Ignored on pull_request.",
     )
     parser.add_argument("--json-out", help="write the machine-readable report here")
     parser.add_argument(
@@ -428,7 +459,25 @@ def main(argv: list[str] | None = None) -> int:
         report["failing"] = [child.name for child in verdict.failing]
         report["result"] = verdict.result
         exit_code = 0 if verdict.passed else 1
-        if verdict.passed:
+        # Same event test as pr_gate_authorized_skips: exactly "pull_request" never
+        # supersedes, and a blank event name is an error elsewhere, not a free pass.
+        superseded = (
+            args.allow_superseded
+            and args.pr_gate
+            and bool(args.event_name.strip())
+            and args.event_name != "pull_request"
+            and verdict.cancelled_only
+        )
+        if superseded:
+            report["result"] = "superseded"
+            exit_code = 0
+            print(
+                "PR GATE: SUPERSEDED — only cancelled children ("
+                + ", ".join(child.name for child in verdict.failing)
+                + "); the gate job is skipped so the check stays unknown",
+                file=sys.stderr,
+            )
+        elif verdict.passed:
             print(
                 "PR GATE: PASS — "
                 f"{len(verdict.children)} child result(s) all acceptable"
@@ -444,6 +493,12 @@ def main(argv: list[str] | None = None) -> int:
         report["error"] = str(exc)
         exit_code = 1
         print(f"PR GATE: FAIL — {exc}", file=sys.stderr)
+
+    if args.allow_superseded:
+        # Always written, so a consumer never has to tell "false" from "absent".
+        _write_github_output(
+            "superseded", "true" if report["result"] == "superseded" else "false"
+        )
 
     serialized = json.dumps(report, indent=2, sort_keys=True)
     print(serialized)

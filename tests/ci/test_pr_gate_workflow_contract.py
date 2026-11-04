@@ -1,6 +1,6 @@
 """ROB-1454 — static contract on what `.github/workflows/test.yml` runs where.
 
-Three things must stay true and are easy to break by accident:
+Four things must stay true and are easy to break by accident:
 
 1. A push to main or a dispatch always runs the full suite. The `if:` on the
    full-suite jobs may only ever narrow a pull_request, and must keep running
@@ -8,6 +8,12 @@ Three things must stay true and are easy to break by accident:
 2. `PR gate` runs even when its children fail, and declares every job it needs.
 3. `.mergewake/policy.yaml` names checks this workflow really displays: a name
    nothing reports would leave a required check unknown forever.
+4. hk 2939, three tiers: T-PR (a pull_request) is light and never resolves a job to
+   a runner variable or a self-hosted label; T-POST (push, dispatch) runs the rest
+   on the newest main head only, and a superseded run ends with `PR gate` skipped.
+
+Expressions are evaluated with `tests/ci/gh_expr.py` instead of compared as text,
+so the tests pin what a workflow does, not how it is spelled.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from scripts.ci.aggregate_required import (
     CLASSIFIER_JOB,
     FULL_SUITE_ONLY_JOBS,
 )
+from tests.ci import gh_expr
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github/workflows/test.yml"
@@ -38,7 +45,36 @@ FULL_MAIN_CHECK_NAMES = (
     "test (3.13, 4)",
 )
 GATE_JOB_ID = "pr-gate"
+VERDICT_JOB_ID = "gate-verdict"
 GATE_CHECK_NAME = "PR gate"
+
+RUNNER_VAR = "AUTO_TRADER_POST_LINUX_RUNNER"
+HOSTED = "ubuntu-latest"
+SENTINEL_RUNNER = "desk-linux-sentinel"
+
+#: Jobs that exist only in T-POST: a pull_request must never run them.
+POST_ONLY_JOBS = (
+    "security",
+    "alpaca-track-fast-tests",
+    "intraday-harness-v2-tests",
+    "kiwoom-dual-surface-smoke",
+    "alpaca-track-walkforward-tests",
+)
+#: Jobs a pull_request may run (some only on a classifier verdict or one branch).
+PR_JOBS = frozenset(
+    {
+        "lint",
+        "write-fence-guard",
+        CLASSIFIER_JOB,
+        AFFECTED_JOB,
+        *FULL_SUITE_ONLY_JOBS,
+        "frontend",
+        VERDICT_JOB_ID,
+        GATE_JOB_ID,
+    }
+)
+#: PR-only jobs: they cannot run on push or dispatch, so they never read the runner var.
+PR_ONLY_JOBS = frozenset({"write-fence-guard", AFFECTED_JOB})
 
 #: The exact condition on both full-suite jobs. Pinned as a string because a
 #: reworded `if:` is exactly how main silently loses coverage.
@@ -211,22 +247,27 @@ def test_gate_has_a_constant_displayed_name(workflow: dict[str, Any]) -> None:
 
 
 def test_gate_runs_even_when_children_fail(workflow: dict[str, Any]) -> None:
-    """Without `always()` the gate is skipped on a child failure: unknown, not red."""
+    """Without `always()` the verdict job is skipped on a child failure: unknown, not red."""
 
-    assert workflow["jobs"][GATE_JOB_ID]["if"] == "always()"
+    assert workflow["jobs"][VERDICT_JOB_ID]["if"] == "always()"
+    assert "always()" in workflow["jobs"][GATE_JOB_ID]["if"]
 
 
-def test_gate_needs_every_job_that_decides_the_verdict(
+def test_verdict_needs_every_job_that_decides_the_verdict(
     workflow: dict[str, Any],
 ) -> None:
-    needs = set(workflow["jobs"][GATE_JOB_ID]["needs"])
+    needs = set(workflow["jobs"][VERDICT_JOB_ID]["needs"])
     assert needs == {"lint", CLASSIFIER_JOB, AFFECTED_JOB, *FULL_SUITE_ONLY_JOBS}
 
 
-def test_gate_required_flags_match_its_needs_list(workflow: dict[str, Any]) -> None:
+def test_gate_needs_only_the_verdict(workflow: dict[str, Any]) -> None:
+    assert workflow["jobs"][GATE_JOB_ID]["needs"] == [VERDICT_JOB_ID]
+
+
+def test_verdict_required_flags_match_its_needs_list(workflow: dict[str, Any]) -> None:
     """A `needs:` entry with no `--required` flag would be silently ignored."""
 
-    job = workflow["jobs"][GATE_JOB_ID]
+    job = workflow["jobs"][VERDICT_JOB_ID]
     tokens = _script(job).replace("\\\n", " ").split()
     declared = [
         tokens[index + 1]
@@ -236,14 +277,95 @@ def test_gate_required_flags_match_its_needs_list(workflow: dict[str, Any]) -> N
     assert sorted(declared) == sorted(job["needs"])
 
 
-def test_gate_derives_skips_only_from_the_classifier(
+def test_verdict_derives_skips_only_from_the_classifier(
     workflow: dict[str, Any],
 ) -> None:
-    script = _script(workflow["jobs"][GATE_JOB_ID])
+    script = _script(workflow["jobs"][VERDICT_JOB_ID])
     assert "scripts/ci/aggregate_required.py" in script
     assert "--pr-gate" in script
+    assert "--allow-superseded" in script
     assert "--authorize-skip" not in script
     assert "--allow-undeclared" not in script
+
+
+def test_verdict_publishes_the_superseded_output(workflow: dict[str, Any]) -> None:
+    job = workflow["jobs"][VERDICT_JOB_ID]
+    step = next(s for s in job["steps"] if s.get("id") == "verdict")
+    assert "aggregate_required.py" in step["run"]
+    assert job["outputs"]["superseded"] == "${{ steps.verdict.outputs.superseded }}"
+
+
+def _gate_context(
+    event: str, *, superseded: str = "", verdict_result: str = "success"
+) -> dict[str, Any]:
+    return {
+        "github": {"event_name": event},
+        "needs": {
+            VERDICT_JOB_ID: {
+                "result": verdict_result,
+                "outputs": {"superseded": superseded},
+            }
+        },
+    }
+
+
+def _gate_runs(workflow: dict[str, Any], context: dict[str, Any]) -> bool:
+    return gh_expr.truthy(
+        gh_expr.evaluate(workflow["jobs"][GATE_JOB_ID]["if"], context)
+    )
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_gate_is_skipped_when_a_t_post_run_is_superseded(
+    workflow: dict[str, Any], event: str
+) -> None:
+    """Skipped, not failed: mergewake reads a skipped check as unknown and holds."""
+
+    assert not _gate_runs(workflow, _gate_context(event, superseded="true"))
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_gate_is_skipped_when_the_verdict_job_was_cancelled_with_its_run(
+    workflow: dict[str, Any], event: str
+) -> None:
+    assert not _gate_runs(workflow, _gate_context(event, verdict_result="cancelled"))
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+@pytest.mark.parametrize("verdict_result", ["success", "failure", "skipped"])
+def test_gate_runs_on_t_post_whenever_the_run_was_not_superseded(
+    workflow: dict[str, Any], event: str, verdict_result: str
+) -> None:
+    assert _gate_runs(
+        workflow,
+        _gate_context(event, superseded="false", verdict_result=verdict_result),
+    )
+    assert _gate_runs(workflow, _gate_context(event, verdict_result=verdict_result))
+
+
+@pytest.mark.parametrize("superseded", ["", "false", "true"])
+@pytest.mark.parametrize(
+    "verdict_result", ["success", "failure", "cancelled", "skipped"]
+)
+def test_gate_never_skips_on_a_pull_request(
+    workflow: dict[str, Any], superseded: str, verdict_result: str
+) -> None:
+    """A skipped required check is a green merge button to GitHub."""
+
+    assert _gate_runs(
+        workflow,
+        _gate_context(
+            "pull_request", superseded=superseded, verdict_result=verdict_result
+        ),
+    )
+
+
+def test_gate_goes_red_unless_the_verdict_succeeded(workflow: dict[str, Any]) -> None:
+    job = workflow["jobs"][GATE_JOB_ID]
+    step = job["steps"][0]
+    assert "needs.gate-verdict.result" in step["env"]["VERDICT_RESULT"]
+    assert '[ "$VERDICT_RESULT" != "success" ]' in step["run"]
+    assert "exit 1" in step["run"]
 
 
 def test_classifier_job_checks_out_full_history(workflow: dict[str, Any]) -> None:
@@ -264,12 +386,70 @@ def test_classifier_job_publishes_every_output_the_workflow_reads(
         assert key in outputs
 
 
-def test_concurrency_block_is_unchanged(workflow: dict[str, Any]) -> None:
-    assert workflow["concurrency"] == {
-        "group": "${{ github.workflow }}-${{ github.event.pull_request.number "
-        "|| github.ref }}",
-        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+def _concurrency(
+    workflow: dict[str, Any], event_name: str, **github: Any
+) -> tuple[str, bool]:
+    block = workflow["concurrency"]
+    context = {"github": {"workflow": "Test", "event_name": event_name, **github}}
+    return (
+        str(gh_expr.evaluate(block["group"], context)),
+        gh_expr.truthy(gh_expr.evaluate(block["cancel-in-progress"], context)),
+    )
+
+
+def _pr_concurrency(workflow: dict[str, Any], number: int = 7) -> tuple[str, bool]:
+    return _concurrency(
+        workflow,
+        "pull_request",
+        ref=f"refs/pull/{number}/merge",
+        run_id=1,
+        event={"pull_request": {"number": number}},
+    )
+
+
+def _push_concurrency(
+    workflow: dict[str, Any], ref: str = "refs/heads/main"
+) -> tuple[str, bool]:
+    return _concurrency(workflow, "push", ref=ref, run_id=1, event={})
+
+
+def _dispatch_concurrency(workflow: dict[str, Any], run_id: int) -> tuple[str, bool]:
+    return _concurrency(
+        workflow, "workflow_dispatch", ref="refs/heads/main", run_id=run_id, event={}
+    )
+
+
+def test_pull_request_concurrency_is_unchanged(workflow: dict[str, Any]) -> None:
+    """One group per PR number, newest head wins."""
+
+    assert _pr_concurrency(workflow, 7) == ("Test-7", True)
+    assert _pr_concurrency(workflow, 8)[0] == "Test-8"
+
+
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/develop"])
+def test_a_push_cancels_the_previous_push_run_of_the_same_ref(
+    workflow: dict[str, Any], ref: str
+) -> None:
+    """T-POST tests only the newest head: same group per ref, cancel in progress."""
+
+    assert _push_concurrency(workflow, ref) == (f"Test-{ref}", True)
+
+
+def test_dispatch_is_never_cancelled_by_a_push_or_another_dispatch(
+    workflow: dict[str, Any],
+) -> None:
+    """Deploy-SHA and bisect dispatches must survive a newer push to main."""
+
+    first = _dispatch_concurrency(workflow, 101)
+    second = _dispatch_concurrency(workflow, 102)
+    assert first[1] is False
+    groups = {
+        first[0],
+        second[0],
+        _push_concurrency(workflow)[0],
+        _pr_concurrency(workflow)[0],
     }
+    assert len(groups) == 4
 
 
 # --------------------------------------------------------------------------
@@ -314,3 +494,171 @@ def test_policy_keeps_its_blocking_paths(policy: dict[str, Any], path: str) -> N
 
     blocking = {p for entry in policy["blocking"] for p in entry["paths"]}
     assert path in blocking
+
+
+# --------------------------------------------------------------------------
+# hk 2939: tiers and runner selection
+# --------------------------------------------------------------------------
+
+
+def _job_context(
+    event: str,
+    *,
+    run_all: str = "false",
+    run_affected: str = "true",
+    lanes: str = "app",
+    head_ref: str = "feature/x",
+) -> dict[str, Any]:
+    needs = {
+        name: {"result": "success", "outputs": {}}
+        for name in ("lint", AFFECTED_JOB, *FULL_SUITE_ONLY_JOBS)
+    }
+    needs[CLASSIFIER_JOB] = {
+        "result": "success",
+        "outputs": {
+            "run_all": run_all,
+            "run_affected_tests": run_affected,
+            "lanes": lanes,
+        },
+    }
+    return {
+        "github": {
+            "event_name": event,
+            "event": {"pull_request": {"head": {"ref": head_ref}}},
+        },
+        "needs": needs,
+    }
+
+
+def _classifier_verdicts(event: str) -> list[dict[str, Any]]:
+    return [
+        _job_context(
+            event,
+            run_all=run_all,
+            run_affected=run_affected,
+            lanes=lanes,
+            head_ref=head_ref,
+        )
+        for run_all in ("true", "false")
+        for run_affected in ("true", "false")
+        for lanes in ("app", "frontend", "docs,frontend", "ci_shared")
+        for head_ref in ("feature/x", "fix/j3a-write-fence-test")
+    ]
+
+
+def _runs_on_event(job: dict[str, Any], event: str) -> bool:
+    """Can this job run at all on `event`, under some classifier verdict?"""
+
+    if "if" not in job:
+        return True
+    return any(
+        gh_expr.truthy(gh_expr.evaluate(job["if"], context))
+        for context in _classifier_verdicts(event)
+    )
+
+
+def _runs_on_label(job: dict[str, Any], event: str, runner_var: str | None) -> Any:
+    context = _job_context(event)
+    context["vars"] = {} if runner_var is None else {RUNNER_VAR: runner_var}
+    runs_on = job["runs-on"]
+    if "${{" not in runs_on:
+        return runs_on  # a literal label
+    return gh_expr.evaluate(runs_on, context)
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_every_job_runs_on_t_post_except_the_pr_only_ones(
+    workflow: dict[str, Any], event: str
+) -> None:
+    runs = {
+        job_id for job_id, job in workflow["jobs"].items() if _runs_on_event(job, event)
+    }
+    assert runs == set(workflow["jobs"]) - PR_ONLY_JOBS
+
+
+def test_t_pr_runs_only_the_light_jobs(workflow: dict[str, Any]) -> None:
+    """The five T-POST research/smoke/security jobs are unreachable from a PR."""
+
+    on_pr = {
+        job_id
+        for job_id, job in workflow["jobs"].items()
+        if _runs_on_event(job, "pull_request")
+    }
+    assert on_pr == PR_JOBS
+    assert not on_pr & set(POST_ONLY_JOBS)
+
+
+@pytest.mark.parametrize("job_id", POST_ONLY_JOBS)
+def test_post_only_job_condition_is_a_non_pull_request_event(
+    workflow: dict[str, Any], job_id: str
+) -> None:
+    job = workflow["jobs"][job_id]
+    assert not _runs_on_event(job, "pull_request")
+    assert gh_expr.truthy(
+        gh_expr.evaluate(job["if"], _job_context("push"))
+    ) and gh_expr.truthy(gh_expr.evaluate(job["if"], _job_context("workflow_dispatch")))
+
+
+def test_frontend_runs_on_a_pull_request_only_when_frontend_changed(
+    workflow: dict[str, Any],
+) -> None:
+    condition = workflow["jobs"]["frontend"]["if"]
+    assert workflow["jobs"]["frontend"]["needs"] == CLASSIFIER_JOB
+    for lanes, expected in (
+        ("app,tests", False),
+        ("docs", False),
+        ("", False),
+        ("frontend", True),
+        ("app,frontend", True),
+    ):
+        context = _job_context("pull_request", lanes=lanes)
+        assert gh_expr.truthy(gh_expr.evaluate(condition, context)) is expected, lanes
+    for event in ("push", "workflow_dispatch"):
+        assert gh_expr.truthy(
+            gh_expr.evaluate(condition, _job_context(event, lanes=""))
+        )
+
+
+@pytest.mark.parametrize("runner_var", [None, "", SENTINEL_RUNNER, "self-hosted"])
+def test_no_pull_request_job_resolves_to_a_variable_or_a_self_hosted_label(
+    workflow: dict[str, Any], runner_var: str | None
+) -> None:
+    """The repo is public: PR code must never reach the desk's runners."""
+
+    for job_id, job in workflow["jobs"].items():
+        assert _runs_on_label(job, "pull_request", runner_var) == HOSTED, job_id
+
+
+def test_pull_request_reachable_jobs_name_no_self_hosted_label_or_runner_variable(
+    workflow: dict[str, Any],
+) -> None:
+    for job_id, job in workflow["jobs"].items():
+        runs_on = job["runs-on"]
+        assert isinstance(runs_on, str), job_id
+        assert "self-hosted" not in runs_on.lower(), job_id
+        assert "macos" not in runs_on.lower(), job_id
+        if job_id in PR_ONLY_JOBS:
+            assert runs_on == HOSTED, job_id
+        else:
+            assert f"vars.{RUNNER_VAR}" in runs_on, job_id
+            assert "github.event_name != 'pull_request'" in runs_on, job_id
+
+
+def test_runner_variable_is_read_only_by_runs_on(workflow: dict[str, Any]) -> None:
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    runs_on_lines = [line for line in text.splitlines() if "runs-on:" in line]
+    for line in text.splitlines():
+        if "vars." in line and not line.lstrip().startswith("#"):
+            assert line in runs_on_lines, line
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_t_post_jobs_use_the_runner_variable_and_fall_back_to_hosted(
+    workflow: dict[str, Any], event: str
+) -> None:
+    for job_id, job in workflow["jobs"].items():
+        if job_id in PR_ONLY_JOBS:
+            continue
+        assert _runs_on_label(job, event, SENTINEL_RUNNER) == SENTINEL_RUNNER, job_id
+        assert _runs_on_label(job, event, None) == HOSTED, job_id
+        assert _runs_on_label(job, event, "") == HOSTED, job_id
