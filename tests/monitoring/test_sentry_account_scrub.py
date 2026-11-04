@@ -296,3 +296,24 @@ def test_is_sensitive_key_masks_account_and_credential_keys(key: str):
 )
 def test_is_sensitive_key_keeps_non_secret_lookalikes(key: str):
     assert sentry_module._is_sensitive_key(key) is False
+
+
+def test_before_send_scrubs_krx_member_number_in_message():
+    # hk-2828 (Sentry AUTO_TRADER-2HK): defence in depth for a log line that
+    # still carries a KRX login response body.
+    event: Event = {
+        "message": (
+            'KRX 로그인 실패 (status=200, code=unknown): {"MDC_MBR_TP_CD":"P",'
+            '"MBR_NO":"9990001112","_error_code":"CD010"}'
+        ),
+        "extra": {"login_data": {"mbrId": "someone", "MBR_NO": "9990001112"}},
+    }
+
+    sanitized = sentry_module._before_send(event, {})
+
+    assert sanitized is not None
+    assert "9990001112" not in sanitized["message"]
+    assert '"_error_code":"CD010"' in sanitized["message"]
+    assert '"MDC_MBR_TP_CD":"P"' in sanitized["message"]
+    assert "9990001112" not in str(sanitized["extra"])
+    assert "someone" not in str(sanitized["extra"])

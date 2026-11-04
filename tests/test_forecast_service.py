@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
@@ -1379,3 +1381,54 @@ async def test_resolve_backfill_missing_false_skips_fetch(
     )
     assert called["n"] == 0
     assert result["status"] == "unresolved_no_data"
+
+
+def _http_status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.upbit.com/v1/candles/days")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
+
+
+class _RaisingSyncService:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.closed = False
+
+    async def sync_one(self, **_kwargs):
+        raise self._exc
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected_level"), [(404, logging.WARNING), (500, logging.ERROR)]
+)
+async def test_backfill_provider_404_is_a_warning_not_an_error(
+    monkeypatch, caplog, status, expected_level
+):
+    # hk-2828 (Sentry AUTO_TRADER-2GJ): a delisted Upbit market answers 404.
+    # That is expected for rejected/non-held symbols, so it must not reach
+    # Sentry as an error. Other HTTP failures stay errors.
+    from app.services.daily_candles import sync_service
+
+    fake = _RaisingSyncService(_http_status_error(status))
+
+    async def _build():
+        return fake
+
+    monkeypatch.setattr(sync_service, "_build_default_service", _build)
+    caplog.set_level(logging.WARNING, logger=svc.logger.name)
+
+    rows = await svc._backfill_daily_candles(
+        market="crypto",
+        symbol="KRW-BONK",
+        partition="crypto",
+        horizon_bars=200,
+    )
+
+    assert rows == 0
+    assert fake.closed is True
+    levels = [r.levelno for r in caplog.records if r.name == svc.logger.name]
+    assert levels == [expected_level]
