@@ -113,7 +113,20 @@ async def _enrich_consecutive_up_days(
             if base != 0:
                 row["week_change_rate"] = (closes[-1] - base) / base * 100.0
 
-    await asyncio.gather(*(_enrich_one(r) for r in rows))
+    # ROB-1487: up to ``limit * 5`` (capped 100) rows fan out here at concurrency
+    # 4 and each US row resolved its exchange with its own single-row SELECT.
+    # Resolve the whole set once so the fan-out is query-free for the universe.
+    from app.services.us_symbol_universe_service import us_exchange_prefetch
+
+    us_symbols = (
+        [s for s in (_streak_symbol(r) for r in rows) if s]
+        if market_type == "equity_us"
+        else []
+    )
+    # Reuse the caller's session when there is one, so the prefetch costs no
+    # extra pool checkout.
+    async with us_exchange_prefetch(us_symbols, db=session):
+        await asyncio.gather(*(_enrich_one(r) for r in rows))
 
 
 async def _hydrate_from_snapshots(

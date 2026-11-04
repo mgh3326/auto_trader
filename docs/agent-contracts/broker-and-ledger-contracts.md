@@ -318,6 +318,15 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   해외 구독·liveness 대체는 fillwire hk 2680 별건이고 `at-kis-ws` 은퇴는 보류다.
 - 🔴 **원장 커밋이 권한자.** 다운스트림(알림·rung 투영) 실패는 커밋된 fill 을 rejected 로
   세탁하거나 롤백/재삽입하지 않는다.
+- **체결 알림의 의도·슬리피지 줄 (hk 2834)**: 알림 직전 `resolve_fill_intent`(읽기 전용
+  3 SELECT, 커밋 0, never raises)가 `order_id` 로 rung 을 찾는다. 결과는 `matched` /
+  `no_match`(`의도: 기록 없음(직접 주문)`) / `lookup_failed`(`의도: 조회 실패`, 알림은 나간다)
+  셋 중 하나다. 기준가는 지정가 주문이면 `rung.limit_price`, 시장가 주문이면
+  `source_asof.auto_approved.eligibility[rung_index].current_price`(eligible 결정) 뿐이다.
+  수동 승인은 승인 시점가를 저장하지 않으므로 슬리피지 줄이 없다. 임의로 `notional` 등에서
+  가격을 역산하지 않는다. 알림 억제 규칙·50,000원/50 USD 임계값은 바뀌지 않는다.
+  `account_mode` 는 KIS 알림 경로에서 전달되지 않아 KIS 조회는 모드 필터 없이 `order_id` 만
+  쓴다(후속: 모의/실계좌 주문번호 충돌 가능성 — 보고서 참조).
 - reconcile 트리거는 **기존 커널만** 호출(KR=`kis_live_reconcile_orders_impl`,
   US/crypto=`live_reconcile_orders_impl`). `reason` 은 exact literal `"reconnect"`.
   `backfilled` 는 **실제 커밋된 booking**(`action=booked*`)만 세며 **dry-run 은 항상 0**.

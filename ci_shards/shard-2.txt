@@ -19,6 +19,7 @@ tests/brokers/kis/test_broker_order_id.py
 tests/ci/test_file_shard_plan_workflow_entrypoint.py
 tests/core/test_normalizers.py
 tests/integration/test_paper_positions_market_filter.py
+tests/mcp_server/test_analyze_batch_universe_prefetch.py
 tests/mcp_server/test_analyze_halted_suspect.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_analyze_stock_batch_earnings.py
@@ -162,6 +163,7 @@ tests/services/execution_intent_gateway/test_intent_schema.py
 tests/services/execution_ledger/test_cross_source_dedupe_db.py
 tests/services/execution_ledger/test_fill_event_sanitizer.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py
+tests/services/execution_ledger/test_fill_intent_alert.py
 tests/services/execution_ledger/test_kis_lots_us_mutants.py
 tests/services/execution_ledger/test_no_broker_mutation.py
 tests/services/execution_ledger/test_query_service_dedup.py

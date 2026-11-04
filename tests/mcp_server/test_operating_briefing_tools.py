@@ -629,6 +629,7 @@ async def test_latest_report_summary_skips_non_advisory_newer_report(
     from app.mcp_server.tooling import operating_briefing as ob
 
     advisory_report = SimpleNamespace(
+        id=42,
         report_uuid=uuid.UUID("11111111-1111-1111-1111-111111111111"),
         title="latest advisory",
         status="draft",
@@ -655,9 +656,10 @@ async def test_latest_report_summary_skips_non_advisory_newer_report(
             assert kwargs["exclude_statuses"] == {"superseded"}
             return advisory_report
 
-        async def get_bundle(self, report_uuid):
-            assert report_uuid == advisory_report.report_uuid
-            return {"items": [advisory_item]}
+        async def list_items_for_report(self, report_id):
+            # ROB-1487: the summary reads items only, never the ten-query bundle.
+            assert report_id == advisory_report.id
+            return [advisory_item]
 
     monkeypatch.setattr(ob, "InvestmentReportQueryService", FakeQueryService)
 
