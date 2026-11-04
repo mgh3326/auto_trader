@@ -58,6 +58,15 @@ class InvestMomentumEventSnapshot(Base):
             "order_type",
             "snapshot_at",
         ),
+        # ROB-1487: the partition probe ``max(snapshot_at) WHERE market = $1``
+        # had no usable index (market was not a leading column anywhere), so the
+        # read seq-scanned the table. A backward scan of (market, snapshot_at)
+        # answers the max directly.
+        Index(
+            "ix_invest_momentum_event_snapshots_market_snapshot_at",
+            "market",
+            "snapshot_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

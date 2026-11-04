@@ -304,7 +304,9 @@ tests/services/test_trade_journal_mirror_aggregates.py
 tests/services/test_trade_journal_write_service.py
 tests/services/test_tradingview_ingestion.py
 tests/services/test_tradingview_normalizer.py
+tests/services/test_us_symbol_universe_batch_lookup.py
 tests/services/test_us_symbol_universe_names.py
+tests/services/test_us_symbol_universe_pool_reuse.py
 tests/services/us_dual_paper/test_adapter_base.py
 tests/services/us_dual_paper/test_config_flag.py
 tests/services/us_dual_paper/test_kis_mock_preview.py
