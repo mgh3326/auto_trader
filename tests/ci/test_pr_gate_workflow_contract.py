@@ -325,6 +325,20 @@ def test_gate_is_skipped_when_a_t_post_run_is_superseded(
 
 
 @pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+@pytest.mark.parametrize("verdict_result", ["failure", "skipped"])
+def test_gate_runs_when_a_failed_verdict_still_wrote_superseded(
+    workflow: dict[str, Any], event: str, verdict_result: str
+) -> None:
+    """A verdict step that wrote superseded=true before a later step failed must
+    not turn the gate into a skip; the gate runs and goes red."""
+
+    assert _gate_runs(
+        workflow,
+        _gate_context(event, superseded="true", verdict_result=verdict_result),
+    )
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
 def test_gate_is_skipped_when_the_verdict_job_was_cancelled_with_its_run(
     workflow: dict[str, Any], event: str
 ) -> None:
@@ -599,7 +613,7 @@ def test_post_only_job_condition_is_a_non_pull_request_event(
     ) and gh_expr.truthy(gh_expr.evaluate(job["if"], _job_context("workflow_dispatch")))
 
 
-def test_frontend_runs_on_a_pull_request_only_when_frontend_changed(
+def test_frontend_runs_on_a_pull_request_when_frontend_changed_or_on_full_suite(
     workflow: dict[str, Any],
 ) -> None:
     condition = workflow["jobs"]["frontend"]["if"]
@@ -613,6 +627,11 @@ def test_frontend_runs_on_a_pull_request_only_when_frontend_changed(
     ):
         context = _job_context("pull_request", lanes=lanes)
         assert gh_expr.truthy(gh_expr.evaluate(condition, context)) is expected, lanes
+    # A full-suite fallback (rename/delete under frontend/, unknown path, a
+    # crashed classifier) runs the frontend job too, as it runs the shards.
+    for run_all in ("true", ""):
+        context = _job_context("pull_request", run_all=run_all, lanes="ci_shared")
+        assert gh_expr.truthy(gh_expr.evaluate(condition, context)), run_all
     for event in ("push", "workflow_dispatch"):
         assert gh_expr.truthy(
             gh_expr.evaluate(condition, _job_context(event, lanes=""))

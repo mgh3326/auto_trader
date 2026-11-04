@@ -340,13 +340,19 @@ PR 은 자기가 바꾼 것만 검사받고 `lint` + `PR gate` 로 머지된다.
   (failure·missing·미인가 skip 없음) `gate-verdict` 가 `superseded` 로 끝나고 `PR gate` 는
   **skipped** 가 된다 — mergewake 는 unknown 으로 보고 hold 한다. 🔴 `pull_request` 에서는
   적용하지 않는다: `cancelled` 는 그대로 red 다(skipped 필수 체크는 GitHub 에서 초록 병합 버튼).
-  취소된 `Test` run 에 대해서는 `deploy.yml` 의 자동 이미지 빌드도 skipped 다. 그래서
-  main run 이 취소된 SHA 를 배포하려면 먼저 `gh workflow run test.yml --ref <ref>` 로 그 SHA
-  의 전체 스위트를 돌려야 한다(bare SHA 는 임시 브랜치를 그 SHA 에 만들어 dispatch).
+  취소된 `Test` run 에 대해서는 `deploy.yml` 의 자동 이미지 빌드도 skipped 다(run 결론을 본다).
+  exact-SHA 게이트는 run 결론이 아니라 전체 스위트 job 6개의 결론을 본다 — 취소 전에 6개가
+  모두 초록이면 그 SHA 는 통과한다. 6개 중 하나라도 취소됐으면 먼저
+  `gh workflow run test.yml --ref <ref>` 로 그 SHA 의 전체 스위트를 돌려야 한다(bare SHA 는
+  임시 브랜치를 그 SHA 에 만들어 dispatch).
 - **러너 선택**: push/dispatch 에서 도는 모든 job 의 `runs-on` 은
   `vars.AUTO_TRADER_POST_LINUX_RUNNER` 를 읽고 없으면 `ubuntu-latest` 다. 🔴 public 레포이므로
   `pull_request` 에서 닿는 job 은 변수값이나 `self-hosted` 라벨로 풀리면 안 된다
-  (`github.event_name != 'pull_request'` 가드). 변수는 desk 가 설정하고, `services:`
+  (`github.event_name != 'pull_request'` 가드). 🔴 이 가드는 라우팅 기본값이지 보안 경계가
+  아니다 — `pull_request` 실행은 PR head 의 워크플로우 파일을 읽으므로 PR 이 가드를 지울 수
+  있다. 경계는 워크플로우 밖(외부 기여자 실행 승인, 러너가 이 레포의 PR 실행을 받지 않는 설정)
+  에서 강제하고, 그것을 확인하기 전에는 변수를 설정하지 않는다(런북 §0 Runner selection).
+  변수는 desk 가 설정하고, `services:`
   (Postgres, Redis) 를 쓰는 job 이 있어 Linux self-hosted 러너에는 Docker 가 필요하다.
   macOS job 은 없다.
 

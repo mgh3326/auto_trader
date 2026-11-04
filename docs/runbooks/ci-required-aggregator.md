@@ -30,7 +30,12 @@ A cancelled main run is **not** evidence about its SHA. Consequences:
 - `deploy.yml`'s automatic `workflow_run` build skips a `Test` run whose conclusion is
   `cancelled` (the job is skipped, not failed). Manual dispatch and release builds are
   unchanged, and so is the exact-SHA gate.
-- 🔴 To deploy or build a SHA whose main run was superseded, run the suite on it first:
+- A superseded run usually leaves its full-suite jobs cancelled, and then its SHA has no
+  full-suite evidence. The exact-SHA gate (`scripts/deploy_ci_gate.py`) and the §1 command read
+  the six full-suite **job** conclusions, not the run conclusion: if all six finished green before
+  the newer push cancelled the run, they count and the SHA passes. The automatic image build
+  still skips that run (it reads the run conclusion), so build it by manual dispatch.
+- 🔴 To deploy or build a SHA whose full-suite jobs were cancelled, run the suite on it first:
 
   ```bash
   gh workflow run test.yml --ref <sha>
@@ -53,10 +58,25 @@ Actions → Variables) to the label of a Linux self-hosted runner to move T-POST
 variable is one runner label; it has no effect on a pull request.
 
 🔴 The repository is public. A `pull_request` run executes unmerged code, so no job reachable
-from `pull_request` may resolve `runs-on` to a variable or a `self-hosted` label; the
-`github.event_name != 'pull_request'` guard in every `runs-on` is what enforces it, and
-`tests/ci/test_pr_gate_workflow_contract.py` evaluates every job's `runs-on` on a pull request
-with the variable set. PR-only jobs (`affected-tests`, `write-fence-guard`) keep the literal
+from `pull_request` may resolve `runs-on` to a variable or a `self-hosted` label. The
+`github.event_name != 'pull_request'` guard in every `runs-on` keeps this repository's own
+workflow on hosted runners for a PR, and `tests/ci/test_pr_gate_workflow_contract.py` evaluates
+every job's `runs-on` on a pull request with the variable set.
+
+🔴 The guard is a **routing default, not a security boundary.** A `pull_request` run reads the
+workflow files from the PR head, so a PR can delete the guard, write `runs-on: self-hosted`, or
+add a new workflow file. Before the desk sets `AUTO_TRADER_POST_LINUX_RUNNER`, enforce the
+boundary outside the workflow files and confirm each item:
+
+1. Actions settings: require approval for workflow runs from all outside contributors (fork
+   PRs), so no fork workflow starts without a maintainer.
+2. Runner settings: the self-hosted runner (or its runner group) must not run jobs for this
+   repository's `pull_request` events. If the runner group cannot express that, do not register
+   the runner on this public repository.
+3. Optionally put the T-POST jobs behind a protected environment whose deployment branch rule
+   allows only the default branch, so a `pull_request` run cannot start them.
+
+Until all of these hold, leave the variable unset; T-POST then runs on `ubuntu-latest`. PR-only jobs (`affected-tests`, `write-fence-guard`) keep the literal
 `ubuntu-latest`. There is no macOS job: the service runs on Linux.
 
 The `test` shards and `taskiq-smoke` declare `services:` (Postgres, Redis), which need
@@ -115,8 +135,10 @@ not count, because it tests a merge commit and not this SHA.
 commit, needs `gh workflow run test.yml --ref production` first. A PR's green `PR gate` is not
 this evidence, because the shards may have been skipped.
 
-A SHA whose main run was superseded (cancelled by a newer push) has no full-suite evidence:
-the command prints `DO NOT DEPLOY` for it. Run `gh workflow run test.yml --ref <sha>` first (see §0).
+A SHA whose main run was superseded (cancelled by a newer push) has full-suite evidence only if
+all six jobs above finished green before the cancel; the command checks job conclusions, not the
+run conclusion. If any of them was cancelled it prints `DO NOT DEPLOY`; dispatch the suite on the
+SHA first (see §0).
 
 This is a manual step today. Enforcing it in the deploy path is hk task 2586.
 

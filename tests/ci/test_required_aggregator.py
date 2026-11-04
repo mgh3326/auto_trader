@@ -614,6 +614,36 @@ def _run_superseded_gate(
 CANCELLED_SHARDS = {"test": "cancelled", "taskiq_smoke": "cancelled"}
 
 
+def test_allow_superseded_without_pr_gate_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The superseded branch lives under --pr-gate; the flag alone is a
+    precondition error, never a silently ignored option."""
+
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    report = tmp_path / "report.json"
+    results = tmp_path / "needs.json"
+    results.write_text(json.dumps({"lint": "cancelled"}), encoding="utf-8")
+    argv = [
+        "--results-file",
+        str(results),
+        "--event-name",
+        "push",
+        "--allow-superseded",
+        "--required",
+        "lint",
+        "--json-out",
+        str(report),
+    ]
+    assert main(argv) == 1
+    error = json.loads(report.read_text())["error"]
+    assert error is not None, "the flag alone must be refused, not ignored"
+    assert "requires --pr-gate" in error
+    lines = output.read_text().splitlines() if output.exists() else []
+    assert "superseded=true" not in lines
+
+
 @pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
 def test_t_post_run_with_only_cancelled_children_is_superseded_not_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event: str

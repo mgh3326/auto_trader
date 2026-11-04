@@ -21,8 +21,9 @@ anything else       red (``unexpected``) -- includes ``""``, ``null``,
                     ``neutral`` and any future GitHub result string
 ==================  ==============================================
 
-Superseded runs (T-POST only): with ``--allow-superseded`` on an event that is
-not ``pull_request``, a verdict whose only non-passing children are ``cancelled``
+Superseded runs (T-POST only): ``--allow-superseded`` requires ``--pr-gate``
+(the combination is checked before the payload is read). With both, on an event
+that is not ``pull_request``, a verdict whose only non-passing children are ``cancelled``
 (no failure, no missing, no unauthorized skip, nothing undeclared or unexpected)
 is *superseded*, not failed. The script exits 0 and writes ``superseded=true`` to
 ``$GITHUB_OUTPUT``; the workflow then skips the ``PR gate`` job, which mergewake
@@ -410,7 +411,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="on a non-pull_request event, a verdict whose only non-passing "
         "children are `cancelled` exits 0 with result `superseded` and writes "
-        "superseded=true to $GITHUB_OUTPUT. Ignored on pull_request.",
+        "superseded=true to $GITHUB_OUTPUT. Ignored on pull_request. "
+        "Requires --pr-gate.",
     )
     parser.add_argument("--json-out", help="write the machine-readable report here")
     parser.add_argument(
@@ -434,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
         validate_configuration(args.required, args.authorize_skip)
         if args.pr_gate and args.authorize_skip:
             raise AggregateError("--pr-gate and --authorize-skip are exclusive.")
+        if args.allow_superseded and not args.pr_gate:
+            raise AggregateError("--allow-superseded requires --pr-gate.")
         results = load_results(args)
         authorized = (
             pr_gate_authorized_skips(args.event_name, results)

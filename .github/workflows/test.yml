@@ -32,8 +32,11 @@ jobs:
   # Runner choice: a job that can run off a pull_request reads
   # vars.AUTO_TRADER_POST_LINUX_RUNNER and falls back to ubuntu-latest. The repo is
   # public, so a pull_request run must never resolve to that variable or to a
-  # self-hosted label; the `github.event_name != 'pull_request'` guard in every
-  # runs-on is what keeps PR code off the desk's machines.
+  # self-hosted label. The `github.event_name != 'pull_request'` guard in every
+  # runs-on is a routing default only, not a security boundary: a pull_request
+  # run reads this file from the PR head, so a PR can remove the guard. Keeping PR
+  # code off the desk's machines is enforced outside the workflow files (runner
+  # settings and fork-PR approval; docs/runbooks/ci-required-aggregator.md).
   lint:
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     env:
@@ -269,10 +272,14 @@ jobs:
     - name: Install dependencies
       run: uv sync --group test
     
+    # The postgres service's own health-cmd (pg_isready inside the container)
+    # already gates the job start. This loop only checks the mapped port, with
+    # bash's /dev/tcp, so the runner needs no PostgreSQL client: a self-hosted
+    # runner behind AUTO_TRADER_POST_LINUX_RUNNER need not install one.
     - name: Wait for PostgreSQL to be ready
       run: |
         for i in {1..30}; do
-          if pg_isready -h localhost -p 5432 -U postgres -d test_db; then
+          if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
             echo "PostgreSQL is ready!"
             exit 0
           fi
@@ -836,7 +843,10 @@ jobs:
   # the classifier job itself failed.
   frontend:
     needs: change-classifier
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || contains(needs.change-classifier.outputs.lanes, 'frontend')) }}
+    # On a pull_request: when the PR touches frontend/, and on every full-suite
+    # fallback (`run_all != 'false'`, like the shards), because a rename or delete
+    # under frontend/ falls back to run_all without a `frontend` lane.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false' || contains(needs.change-classifier.outputs.lanes, 'frontend')) }}
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
@@ -935,9 +945,11 @@ jobs:
 
   pr-gate:
     name: PR gate
-    # A pull_request never skips. Elsewhere the job is skipped when the verdict is
-    # superseded, or when gate-verdict itself was cancelled with its run.
-    if: ${{ always() && (github.event_name == 'pull_request' || (needs.gate-verdict.outputs.superseded != 'true' && needs.gate-verdict.result != 'cancelled')) }}
+    # A pull_request never skips. Elsewhere the job is skipped when gate-verdict
+    # succeeded with a superseded verdict, or when gate-verdict itself was cancelled
+    # with its run. A gate-verdict that failed after writing `superseded=true` (a
+    # later step failed) still runs this job, which then goes red.
+    if: ${{ always() && (github.event_name == 'pull_request' || (needs.gate-verdict.result != 'cancelled' && !(needs.gate-verdict.result == 'success' && needs.gate-verdict.outputs.superseded == 'true'))) }}
     needs: [gate-verdict]
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
