@@ -366,6 +366,7 @@ async def test_lookup_matches_rung_and_builds_limit_reference() -> None:
     _reset(_RepoMatch)
     intent = await resolve_fill_intent(
         broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00+09:00",
         account_mode="kis_live",
         session_factory=_fake_session_factory,
         service_cls=_RepoMatch,
@@ -386,6 +387,7 @@ async def test_lookup_matches_rung_and_builds_limit_reference() -> None:
 async def test_lookup_no_rung_says_no_match() -> None:
     intent = await resolve_fill_intent(
         broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00+09:00",
         session_factory=_fake_session_factory,
         service_cls=_RepoNoMatch,
     )
@@ -397,6 +399,7 @@ async def test_lookup_no_rung_says_no_match() -> None:
 async def test_lookup_exception_becomes_lookup_failed_and_never_raises() -> None:
     intent = await resolve_fill_intent(
         broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00+09:00",
         session_factory=_fake_session_factory,
         service_cls=_RepoRaises,
     )
@@ -408,6 +411,7 @@ async def test_lookup_exception_becomes_lookup_failed_and_never_raises() -> None
 async def test_missing_broker_order_id_cannot_prove_absence() -> None:
     intent = await resolve_fill_intent(
         broker_order_id=None,
+        filled_at="2026-11-04T10:00:00+09:00",
         session_factory=_fake_session_factory,
         service_cls=_RepoNoMatch,
     )
@@ -519,6 +523,7 @@ class _MismatchedDateRepo(_RepoMatch):
 async def test_lookup_times_out_to_lookup_failed() -> None:
     intent = await resolve_fill_intent(
         broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00+09:00",
         session_factory=_fake_session_factory,
         service_cls=_SlowRepo,
         timeout_seconds=0.05,
@@ -573,3 +578,41 @@ async def test_send_fill_notification_passes_account_mode_to_the_lookup(
     )
 
     assert _RepoMatch.calls[-1]["account_mode"] == "mock"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_naive_fill_time_is_read_as_kst_and_still_date_checked() -> None:
+    """A naive filled_at is KST; a rung from another KST day is still refused."""
+    intent = await resolve_fill_intent(
+        broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00",
+        session_factory=_fake_session_factory,
+        service_cls=_MismatchedDateRepo,
+    )
+    assert intent == LOOKUP_FAILED
+
+    intent = await resolve_fill_intent(
+        broker_order_id="0001234567",
+        filled_at="2026-11-04T10:00:00",
+        session_factory=_fake_session_factory,
+        service_cls=_RepoMatch,
+    )
+    assert intent.status == "matched"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filled_at", [None, "", "not-a-timestamp"])
+async def test_unreadable_fill_time_fails_closed_before_any_read(
+    filled_at: str | None,
+) -> None:
+    _reset(_RepoMatch)
+    intent = await resolve_fill_intent(
+        broker_order_id="0001234567",
+        filled_at=filled_at,
+        session_factory=_fake_session_factory,
+        service_cls=_RepoMatch,
+    )
+    assert intent == LOOKUP_FAILED
+    assert _RepoMatch.calls == []

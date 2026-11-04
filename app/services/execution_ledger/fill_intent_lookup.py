@@ -111,14 +111,20 @@ LOOKUP_TIMEOUT_SECONDS = 5.0
 
 
 def _kst_date(value: Any) -> date | None:
-    """KST calendar date of an aware datetime, or ``None`` when unknowable."""
+    """KST calendar date of a fill timestamp, or ``None`` when unknowable.
+
+    A naive timestamp is KST, the same convention the execution ledger uses
+    (``normalizers._parse_filled_at``), so the trading-date guard still applies.
+    """
     if isinstance(value, str):
         try:
-            value = datetime.fromisoformat(value)
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
         except ValueError:
             return None
-    if not isinstance(value, datetime) or value.tzinfo is None:
+    if not isinstance(value, datetime):
         return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=KST)
     return value.astimezone(KST).date()
 
 
@@ -126,7 +132,7 @@ async def resolve_fill_intent(
     *,
     broker_order_id: str | None,
     account_mode: str | None = None,
-    filled_at: str | datetime | None = None,
+    filled_at: str | datetime | None,
     session_factory: Callable[[], Any] | None = None,
     service_cls: type[OrderProposalsService] | None = None,
     timeout_seconds: float = LOOKUP_TIMEOUT_SECONDS,
@@ -138,14 +144,20 @@ async def resolve_fill_intent(
 
     Broker order numbers are reused across trading days (KIS in particular), so
     a rung created on a different KST date than the fill is not attributed: the
-    answer is ``LOOKUP_FAILED`` (unknown), never another day's strategy.
+    answer is ``LOOKUP_FAILED`` (unknown), never another day's strategy. A fill
+    without a readable ``filled_at`` cannot be date-checked, so it is also
+    ``LOOKUP_FAILED``; naive timestamps are read as KST.
     """
     order_id = (broker_order_id or "").strip() or None
     if order_id is None:
         return LOOKUP_FAILED
+    fill_date = _kst_date(filled_at)
+    if fill_date is None:
+        # Without the fill's trading date the rung cannot be checked against it,
+        # so attribution would skip the guard. Fail closed before any read.
+        return LOOKUP_FAILED
     factory = session_factory or AsyncSessionLocal
     svc_cls = service_cls or OrderProposalsService
-    fill_date = _kst_date(filled_at) if filled_at is not None else None
     try:
         async with asyncio.timeout(timeout_seconds), factory() as db:
             service = svc_cls(db)

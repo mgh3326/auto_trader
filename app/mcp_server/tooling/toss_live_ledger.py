@@ -251,6 +251,7 @@ async def _notify_toss_fill(
         intent = await resolve_fill_intent(
             broker_order_id=row.broker_order_id,
             account_mode=row.account_mode,
+            filled_at=order.filled_at,
         )
         return await get_trade_notifier().notify_fill(
             order,
