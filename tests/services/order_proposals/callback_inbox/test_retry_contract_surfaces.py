@@ -20,7 +20,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
-_CLAUDE = _REPO / "CLAUDE.md"
+_AGENTS = _REPO / "AGENTS.md"
 _RUNBOOK = _REPO / "docs/runbooks/telegram-callback-durable-inbox.md"
 _CONTRACTS = _REPO / "app/services/order_proposals/callback_inbox/contracts.py"
 
@@ -80,7 +80,7 @@ def _retry_verdict_lines(text: str) -> list[str]:
 
 @pytest.mark.parametrize(
     ("label", "path"),
-    [("CLAUDE.md", _CLAUDE), ("runbook", _RUNBOOK), ("contracts.py", _CONTRACTS)],
+    [("AGENTS.md", _AGENTS), ("runbook", _RUNBOOK), ("contracts.py", _CONTRACTS)],
 )
 def test_no_surface_says_a_handler_returned_flag_can_earn_a_retry(
     label: str, path: pathlib.Path
@@ -98,8 +98,8 @@ def test_the_runbook_states_the_worker_owned_rule() -> None:
         assert phrase in text, phrase
 
 
-def test_claude_md_states_the_worker_owned_rule() -> None:
-    text = _CLAUDE.read_text(encoding="utf-8")
+def test_agents_md_states_the_worker_owned_rule() -> None:
+    text = _AGENTS.read_text(encoding="utf-8")
     assert "PreCoreFailure" in text
     assert "handler_entered_at" in text
 
