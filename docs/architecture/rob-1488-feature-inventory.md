@@ -1,7 +1,7 @@
 # ROB-1488 — auto_trader feature and schema inventory toward a smaller core
 
 Status: decision draft for the operator (hk task 2709). Documents only — no code, no migration, no runtime change.
-Base: `origin/main` at `6097ac34e` (2026-11-02). Evidence read 2026-11-02/03.
+Base: `origin/main` at `6097ac34e` (2026-11-02). Evidence read 2026-11-02/03; 30-day tool calls re-checked in Sentry 2026-11-04.
 
 ## 0. What this is, and what it is not
 
@@ -41,8 +41,8 @@ Two limits are worth stating up front:
 | `research/` | 811 files, 226,913 LOC |
 | `scripts/` | 255 files, 74,103 LOC |
 | Registered MCP tool names (13 profiles) | **233** (217 on `default` with gates on, 151 with gates off) |
-| Tools called at least once in 30d | **79 of 233 (34%)** |
-| Tools with zero calls in 30d | **154 (66%)** |
+| Tools called at least once in 30d | **80 of 233 (34%)** (79 in the export + `get_earnings_calendar`) |
+| Tools with zero calls in 30d | **153 (66%)** |
 | Tools with 30 or fewer calls in 30d | **37 of 79** (26 of them 8 or fewer) |
 | Top 6 tools as a share of all 30d calls | **54%** (7,683 of ~14,200) (`get_quote`, `get_ohlcv`, `route_request`, `forecast_resolve`, `get_support_resistance`, `forecast_save`) |
 | HTTP router modules / route declarations | **57 / 231** (57 modules in `app/routers/`; `app.main` has 57 `include_router` calls and does not mount `execution_intent_gateway.py`) |
@@ -57,9 +57,9 @@ Two limits are worth stating up front:
 | Tables empty (0 rows) in prod | **95 of 207 (46%)** |
 | Real DB size | **4.4 GB**; 61% of it is 8 market-data snapshot tables |
 
-Proposals, at tool level: **69 keep, 37 keep-because-a-kept-flow-needs-it, 35 merge into another tool,
-81 retire, 11 keep-and-decide**. At table level: **93 keep (incl. 8 "keep, verify" and 6 "keep, fix"),
-11 restructure, 103 retire, 4 not in the prod DB**.
+Proposals, at tool level: **70 keep (incl. 1 typed read), 37 keep-because-a-kept-flow-needs-it, 35 merge into
+another tool, 81 retire, 10 keep-and-decide**. At table level: **101 keep (incl. 8 "keep, verify", 7 "keep, fix" and 7 "keep, dormant"),
+11 restructure, 95 retire, 4 not in the prod DB**.
 
 The load is small and I/O-bound: about **14,200 tool calls in 30 days** (counting each "1-8 calls" row as 8)
 is roughly **one call every three minutes**, and the top-latency tools (`analyze_stock_batch` p95 7.7 s, `get_operating_briefing` p95 45 s,
@@ -67,7 +67,7 @@ is roughly **one call every three minutes**, and the top-latency tools (`analyze
 brokers and HTTP. That is the same conclusion ROB-1436 reached for Go (`docs/plans/rob-1436-go-port-candidates.md`),
 and it is why the target architecture below moves **execution**, not computation.
 
-The real cost is not runtime, it is **surface area**: 154 registered tools nobody calls, 95 empty tables,
+The real cost is not runtime, it is **surface area**: 153 registered tools nobody calls, 95 empty tables,
 and — the finding that matters most — **a dozen kept features that are read every day but whose writer
 stopped**. Those are in $5.
 
@@ -86,6 +86,10 @@ the *actual* registrar output for all 13 profiles, in both gate states
   20-tool H3 closed worlds) have no audit row; their module was resolved from the registrar.
 - 30-day calls are the operator's Sentry table (`usage-30d.md`), which names 80 tool names; 79 resolve to a
   registered tool and one label is ambiguous. All 79 are on `default`.
+- The export collapses tools with 1-8 calls into one bucket; the tables print those cells as `1-8`, not `0`.
+  A direct Sentry query on 2026-11-04 (`span.op:mcp.server`, `tools/call <name>`, 30 days) named the 26 such
+  tools; none of them carries a `retire` proposal. `get_earnings_calendar` was missing from the export and is
+  counted from the same query ($3.1).
 
 ### 2.2 Routers, jobs, CLI, services
 
@@ -145,7 +149,7 @@ Reads of quotes, candles, orderbooks, fundamentals, news, calendars and index/cr
 | `get_analyst_consensus` | 22 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_company_profile` |
 | `get_fx_rate` | 17 | D+7 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep |
 | `get_holdings_news` | 11 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_news` |
-| `get_company_profile` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep |
+| `get_company_profile` | 1-8 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep |
 | `get_cost_basis_distribution` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | retire |
 | `get_crypto_catalysts` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | retire |
 | `get_crypto_funding_rate` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep (unused; decide) |
@@ -157,7 +161,7 @@ Reads of quotes, candles, orderbooks, fundamentals, news, calendars and index/cr
 | `get_crypto_top_movers` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | merge into `get_market_index` |
 | `get_earnings_calendar` | 40 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep |
 | `get_execution_strength` | 0 | D+6 | `market_data_quotes` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep (unused; decide) |
-| `get_financials` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_company_profile` |
+| `get_financials` | 1-8 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_company_profile` |
 | `get_indicators` | 0 | D+8 | `market_data_quotes` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep |
 | `get_insider_transactions` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_company_profile` |
 | `get_intraday_investor_flow` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep (unused; decide) |
@@ -165,9 +169,9 @@ Reads of quotes, candles, orderbooks, fundamentals, news, calendars and index/cr
 | `get_kimchi_premium` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep (unused; decide) |
 | `get_krx_session_health` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | retire |
 | `get_latest_market_brief` | 0 | D+6 | `market_brief_tools` | `stock_analysis_results`, `stock_info` | merge into `get_operating_briefing` |
-| `get_market_issues` | 0 | D+6 | `news_handlers` | `news_analysis_results`, `news_article_related_symbols`, `news_articles` **+1** | merge into `get_news` |
+| `get_market_issues` | 1-8 | D+6 | `news_handlers` | `news_analysis_results`, `news_article_related_symbols`, `news_articles` **+1** | merge into `get_news` |
 | `get_market_reports` | 0 | D+6 | `market_brief_tools` | `stock_analysis_results`, `stock_info` | merge into `get_latest_market_brief` |
-| `get_momentum_candidates` | 0 | D+7 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep |
+| `get_momentum_candidates` | 1-8 | D+7 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep |
 | `get_retail_sentiment` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_investment_opinions` |
 | `get_sector_peers` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_company_profile` |
 | `get_short_interest` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_company_profile` |
@@ -176,8 +180,8 @@ Reads of quotes, candles, orderbooks, fundamentals, news, calendars and index/cr
 | `get_toss_ai_signal` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | retire |
 | `get_toss_buy_balance` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | retire |
 | `get_upbit_index` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | merge into `get_market_index` |
-| `get_valuation` | 0 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep |
-| `market_quote_snapshot_ensure` | 0 | D+2 | `market_quote_snapshot_tools` | `kr_symbol_universe`, `market_quote_snapshots`, `upbit_symbol_universe` **+1** | keep |
+| `get_valuation` | 1-8 | D+6 | `fundamentals_handlers` | `market_event_ingestion_partitions` | keep |
+| `market_quote_snapshot_ensure` | 1-8 | D+2 | `market_quote_snapshot_tools` | `kr_symbol_universe`, `market_quote_snapshots`, `upbit_symbol_universe` **+1** | keep |
 | `market_quote_snapshot_latest` | 0 | D+1 | `market_quote_snapshot_tools` | `kr_symbol_universe`, `market_quote_snapshots`, `upbit_symbol_universe` **+1** | merge into `market_quote_snapshot_ensure` |
 | `search_symbol` | 0 | D+6 | `market_data_quotes` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | retire |
 
@@ -210,7 +214,7 @@ Screening, ranking, candidate discovery, analysis artifacts and the shadow exper
 | `get_top_stocks` | 21 | D+7 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep |
 | `discover_buy_candidates_fanout` | 12 | D+7 | `buy_candidate_fanout_registration` | `screener_pick_log` | keep |
 | `analyze_stock` | 10 | D+8 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep |
-| `analysis_artifact_list` | 0 | D+6 | `analysis_artifact_tools` | `analysis_artifacts` | keep |
+| `analysis_artifact_list` | 1-8 | D+6 | `analysis_artifact_tools` | `analysis_artifacts` | keep |
 | `analyze_portfolio` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep (unused; decide) |
 | `canonical_session_context_read` | 0 | D+1 | `shadow_replay_registration` | `paper_accounts`, `market_quote_snapshots` | retire |
 | `deterministic_replay_compare` | 0 | D+1 | `shadow_replay_registration` | `paper_accounts`, `market_quote_snapshots` | retire |
@@ -227,7 +231,7 @@ Screening, ranking, candidate discovery, analysis artifacts and the shadow exper
 | `research_session_list_recent` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | retire |
 | `research_summary_get` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | retire |
 | `screen_stocks_enrich` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep (unused; decide) |
-| `screen_stocks_snapshot` | 0 | D+8 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep |
+| `screen_stocks_snapshot` | 1-8 | D+8 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | keep |
 | `shadow_report_write` | 0 | D+1 | `shadow_replay_registration` | `paper_accounts`, `market_quote_snapshots` | retire |
 | `source_event_observe` | 0 | D+1 | `shadow_replay_registration` | `paper_accounts`, `market_quote_snapshots` | retire |
 | `stage_analysis_get` | 0 | D+6 | `analysis_registration` | `research_sessions`, `research_summaries`, `stage_analysis` | retire |
@@ -262,14 +266,14 @@ Proposal lifecycle, the approval card path, and per-venue order send/cancel/modi
 | `cancel_order` | 0 | D+1 | `orders_registration` | `paper_accounts`, `trade_journals` | keep (unused; kept flow needs it) |
 | `decision_table_apply` | 0 | D | `decision_table_apply_registration` | `analysis_artifacts`, `execution_ledger`, `execution_ledger_reconcile_runs` **+17** | retire |
 | `decision_table_validate` | 0 | D+6 | `decision_table_registration` | — | keep (unused; kept flow needs it) |
-| `get_order_history` | 0 | D+1 | `orders_registration` | `paper_accounts`, `trade_journals` | keep |
+| `get_order_history` | 1-8 | D+1 | `orders_registration` | `paper_accounts`, `trade_journals` | keep |
 | `kis_live_cancel_order` | 0 | D | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
 | `kis_live_get_order_history` | 0 | D | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
 | `kis_live_modify_order` | 0 | D | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
 | `kis_live_place_order` | 0 | D | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
 | `kis_live_reconcile_orders` | 0 | D | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
 | `kis_mock_cancel_order` | 0 | D+1 | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
-| `kis_mock_get_order_history` | 0 | D+1 | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep |
+| `kis_mock_get_order_history` | 1-8 | D+1 | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep |
 | `kis_mock_modify_order` | 0 | D+1 | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
 | `kis_mock_place_order` | 0 | D+1 | `orders_kis_variants` | `kis_live_order_ledger`, `live_order_ledger`, `order_proposal_rungs` | keep (unused; kept flow needs it) |
 | `kis_mock_reconciliation_run` | 0 | D+1 | `orders_registration` | `paper_accounts`, `trade_journals` | keep (unused; kept flow needs it) |
@@ -283,13 +287,13 @@ Proposal lifecycle, the approval card path, and per-venue order send/cancel/modi
 | `proposal_revalidate` | 0 | D+7 | `proposal_revalidate_registration` | — | merge into `order_proposal_get` |
 | `sell_ladder_fill_preview` | 0 | D+1 | `orders_registration` | `paper_accounts`, `trade_journals` | keep (unused; kept flow needs it) |
 | `toss_cancel_order` | 0 | D | `orders_toss_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `symbol_sectors` **+5** | keep (unused; kept flow needs it) |
-| `toss_detect_manual_activity` | 0 | D | `toss_manual_activity_tools` | `order_proposal_rungs`, `toss_manual_activity_alerts` | keep |
-| `toss_get_orderable_cash` | 0 | D | `orders_toss_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `symbol_sectors` **+5** | keep |
+| `toss_detect_manual_activity` | 1-8 | D | `toss_manual_activity_tools` | `order_proposal_rungs`, `toss_manual_activity_alerts` | keep |
+| `toss_get_orderable_cash` | 1-8 | D | `orders_toss_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `symbol_sectors` **+5** | keep |
 | `toss_get_positions` | 0 | D | `orders_toss_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `symbol_sectors` **+5** | keep (unused; kept flow needs it) |
 | `toss_modify_order` | 0 | D | `orders_toss_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `symbol_sectors` **+5** | keep (unused; kept flow needs it) |
 | `toss_place_order` | 0 | D | `orders_toss_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `symbol_sectors` **+5** | keep (unused; kept flow needs it) |
 | `toss_preview_order` | 0 | D | `orders_toss_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `symbol_sectors` **+5** | keep |
-| `toss_proposal_accounts` | 0 | D+1 | — | — | keep |
+| `toss_proposal_accounts` | 1-8 | D+1 | — | — | keep |
 | `watch_downside_register_sweep` | 0 | D+6 | `downside_watch_registration` | `trade_journals` | retire |
 
 Notes:
@@ -316,10 +320,10 @@ Holdings, capital, protected quantities, account routing and the fill-event read
 | `get_available_capital` | 207 | D+6 | `portfolio_holdings` | `broker_accounts`, `manual_holdings`, `upbit_symbol_universe` **+3** | keep |
 | `execution_ledger_fill_events_list_recent` | 113 | D+6 | `execution_ledger_events` | `execution_ledger`, `execution_ledger_quarantine_events`, `execution_ledger_reconcile_runs` | merge into `get_holdings` |
 | `get_holdings` | 76 | D+8 | `portfolio_holdings` | `broker_accounts`, `manual_holdings`, `upbit_symbol_universe` **+3** | keep |
-| `get_cash_balance` | 0 | D+6 | `portfolio_holdings` | `broker_accounts`, `manual_holdings`, `upbit_symbol_universe` **+3** | merge into `get_available_capital` |
+| `get_cash_balance` | 1-8 | D+6 | `portfolio_holdings` | `broker_accounts`, `manual_holdings`, `upbit_symbol_universe` **+3** | merge into `get_available_capital` |
 | `get_portfolio_allocation` | 0 | D+6 | `portfolio_allocation` | `broker_accounts`, `manual_holdings`, `upbit_symbol_universe` **+4** | merge into `get_holdings` |
 | `get_position` | 0 | D+6 | `portfolio_holdings` | `broker_accounts`, `manual_holdings`, `upbit_symbol_universe` **+3** | merge into `get_holdings` |
-| `get_protected_positions` | 0 | D+6 | `protected_positions` | `execution_ledger`, `protected_position_revisions`, `protected_positions` | keep |
+| `get_protected_positions` | 1-8 | D+6 | `protected_positions` | `execution_ledger`, `protected_position_revisions`, `protected_positions` | keep |
 | `suggest_order_account` | 0 | D+7 | `account_routing_registration` | `kr_symbol_universe`, `krx_after_market_eligibility`, `user_settings` | keep (unused; kept flow needs it) |
 | `update_manual_holdings` | 0 | D+6 | `portfolio_holdings` | `broker_accounts`, `manual_holdings`, `upbit_symbol_universe` **+3** | keep (unused; kept flow needs it) |
 
@@ -351,7 +355,7 @@ Kiwoom mock, KIS mock, Alpaca paper, the DB paper simulator, NHPLUG and the H3 c
 | `alpaca_paper_automated_submit_order` | 0 | D+1 | `alpaca_paper_automated_orders` | `market_quote_snapshots`, `alpaca_paper_order_ledger` | retire |
 | `alpaca_paper_cancel_order` | 0 | D+2 | `alpaca_paper_orders` | `market_quote_snapshots`, `alpaca_paper_order_ledger` | keep (unused; kept flow needs it) |
 | `alpaca_paper_execution_preflight_check` | 0 | D+2 | `alpaca_paper_ledger_read` | `alpaca_paper_order_ledger` | retire |
-| `alpaca_paper_get_account` | 0 | D+2 | `alpaca_paper` | — | keep |
+| `alpaca_paper_get_account` | 1-8 | D+2 | `alpaca_paper` | — | keep |
 | `alpaca_paper_get_cash` | 0 | D+2 | `alpaca_paper` | — | merge into `alpaca_paper_get_account` |
 | `alpaca_paper_get_order` | 0 | D+3 | `alpaca_paper` | — | merge into `alpaca_paper_list_orders` |
 | `alpaca_paper_ledger_get` | 0 | D+2 | `alpaca_paper_ledger_read` | `alpaca_paper_order_ledger` | retire |
@@ -360,20 +364,20 @@ Kiwoom mock, KIS mock, Alpaca paper, the DB paper simulator, NHPLUG and the H3 c
 | `alpaca_paper_list_assets` | 0 | D+2 | `alpaca_paper` | — | retire |
 | `alpaca_paper_list_fills` | 0 | D+2 | `alpaca_paper` | — | merge into `alpaca_paper_list_orders` |
 | `alpaca_paper_preview_order` | 0 | D+2 | `alpaca_paper_preview` | — | retire |
-| `alpaca_paper_reconcile_orders` | 0 | D+1 | `alpaca_paper_orders` | `market_quote_snapshots`, `alpaca_paper_order_ledger` | keep |
+| `alpaca_paper_reconcile_orders` | 1-8 | D+1 | `alpaca_paper_orders` | `market_quote_snapshots`, `alpaca_paper_order_ledger` | keep |
 | `alpaca_paper_roundtrip_report` | 0 | D+2 | `alpaca_paper_ledger_read` | `alpaca_paper_order_ledger` | retire |
-| `alpaca_paper_submit_order` | 0 | D+2 | `alpaca_paper_orders` | `market_quote_snapshots`, `alpaca_paper_order_ledger` | keep |
+| `alpaca_paper_submit_order` | 1-8 | D+2 | `alpaca_paper_orders` | `market_quote_snapshots`, `alpaca_paper_order_ledger` | keep |
 | `binance_demo_ledger_status` | 0 | D | `binance_demo_ledger_status_read` | `binance_demo_order_ledger`, `crypto_instruments` | retire |
 | `create_paper_account` | 0 | D+1 | `paper_account_registration` | `paper_accounts`, `paper_daily_snapshots`, `paper_positions` **+1** | retire |
 | `delete_paper_account` | 0 | D+1 | `paper_account_registration` | `paper_accounts`, `paper_daily_snapshots`, `paper_positions` **+1** | retire |
-| `get_mock_loop_retrospective` | 0 | D+6 | `mock_loop_retro_registration` | `investment_watch_alerts`, `investment_watch_events`, `trade_journal_counterfactuals` **+2** | merge into `get_trade_retrospectives` |
+| `get_mock_loop_retrospective` | 1-8 | D+6 | `mock_loop_retro_registration` | `investment_watch_alerts`, `investment_watch_events`, `trade_journal_counterfactuals` **+2** | merge into `get_trade_retrospectives` |
 | `kis_mock_ledger_expire_day_orders` | 0 | D+1 | — | — | keep (unused; kept flow needs it) |
 | `kis_mock_mirror_execute_report` | 0 | D+5 | `mirror_counterfactual_tools` | `investment_report_items`, `investment_reports`, `kis_mock_order_ledger` | merge into `get_trade_retrospectives` |
 | `kiwoom_mock_cancel_order` | 0 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep (unused; kept flow needs it) |
-| `kiwoom_mock_get_order_history` | 0 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep |
+| `kiwoom_mock_get_order_history` | 1-8 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep |
 | `kiwoom_mock_get_orderable_cash` | 0 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | retire |
 | `kiwoom_mock_modify_order` | 0 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep (unused; kept flow needs it) |
-| `kiwoom_mock_place_order` | 0 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep |
+| `kiwoom_mock_place_order` | 1-8 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | keep |
 | `kiwoom_mock_preview_order` | 0 | D+2 | `orders_kiwoom_variants` | `kr_symbol_universe`, `krx_after_market_eligibility`, `upbit_symbol_universe` **+1** | retire |
 | `kiwoom_mock_us_cancel_order` | 0 | D+1 | `orders_kiwoom_us_variants` | `us_symbol_universe` | retire |
 | `kiwoom_mock_us_get_order_history` | 0 | D+1 | `orders_kiwoom_us_variants` | `us_symbol_universe` | retire |
@@ -399,14 +403,15 @@ Kiwoom mock, KIS mock, Alpaca paper, the DB paper simulator, NHPLUG and the H3 c
 
 Notes:
 
-- 57 registrations (24% of the surface) serve venues that together produced **~200 calls in 30 days**:
-  Kiwoom mock 61, Alpaca paper 72, DB paper 171, KIS mock ≤16, NHPLUG 0, US dual paper 0, Binance demo 0.
+- 57 registrations (24% of the surface) serve venues that together produced **~300 calls in 30 days**:
+  Kiwoom mock 61, Alpaca paper 72, DB paper 171, KIS mock 1-8 (`kis_mock_get_order_history`), NHPLUG 0,
+  US dual paper 0, Binance demo 0 (MCP only; the Binance H5 lane runs as a CLI, see $3.11).
 - `review.kis_mock_order_ledger` last wrote 2026-08-12 (78 rows); `review.kis_mock_signal_ledger` 2 rows;
   `review.kis_mock_runner_control` is `ACTIVE` since 2026-08-08. The KIS mock venue is armed but idle.
 - The H3 closed worlds (`h3-crypto-paper`, `h3-us-paper`) are 20 tools each and are the *entire* MCP surface
   that two deployed units serve. They are in the 30d table (paper 171, alpaca 72) so they are real.
-- NHPLUG (9 tools, 0 calls, 0 rows everywhere, `NH_MOCK_MCP_ENABLED` unset) is the clearest full retire:
-  code, MCP surface and 7 empty tables.
+- NHPLUG (9 tools, 0 calls, `NH_MOCK_MCP_ENABLED` unset) is the clearest full retire: code, MCP surface and
+  seven tables (six empty, `review.nhplug_mock_key_version` with 1 row).
 - Alpaca paper keeps `list_orders` / `list_positions` / `get_account` / `submit_order` / `reconcile_orders` /
   `cancel_order` (used or needed); the 11 automated/ledger/preview/roundtrip tools go.
 
@@ -432,10 +437,10 @@ because they share `review.investment_report*`, `review.trade_forecasts`, `revie
 | `session_context_get_recent` | 21 | D+8 | `session_context_tools` | `operator_session_context` | keep |
 | `investment_watch_void` | 13 | D+6 | `investment_reports_handlers` | `investment_report_item_decisions`, `investment_report_items`, `investment_report_news_citations` **+4** | keep |
 | `session_bootstrap_pack` | 11 | D+8 | `session_bootstrap_registration` | — | keep |
-| `get_forecast_calibration` | 0 | D+6 | `forecast_tools` | `investment_report_items`, `investment_reports`, `sample_eligibility_decisions` **+1** | keep |
-| `get_retrospective_aggregate` | 0 | D+6 | `trade_retrospective_tools` | `paper_trades`, `alpaca_paper_order_ledger`, `kis_live_order_ledger` **+7** | keep |
-| `get_trade_journal` | 0 | D+6 | `trade_journal_tools` | `trade_journals` | keep |
-| `get_trade_retrospectives` | 0 | D+6 | `trade_retrospective_tools` | `paper_trades`, `alpaca_paper_order_ledger`, `kis_live_order_ledger` **+7** | keep |
+| `get_forecast_calibration` | 1-8 | D+6 | `forecast_tools` | `investment_report_items`, `investment_reports`, `sample_eligibility_decisions` **+1** | keep |
+| `get_retrospective_aggregate` | 1-8 | D+6 | `trade_retrospective_tools` | `paper_trades`, `alpaca_paper_order_ledger`, `kis_live_order_ledger` **+7** | keep |
+| `get_trade_journal` | 1-8 | D+6 | `trade_journal_tools` | `trade_journals` | keep |
+| `get_trade_retrospectives` | 1-8 | D+6 | `trade_retrospective_tools` | `paper_trades`, `alpaca_paper_order_ledger`, `kis_live_order_ledger` **+7** | keep |
 | `get_trading_scoreboard` | 0 | D+6 | `trading_scoreboard_tools` | `investment_report_items`, `kis_live_order_ledger`, `kis_mock_order_ledger` **+3** | retire |
 | `investment_report_activate_watch` | 0 | D+6 | `investment_reports_handlers` | `investment_report_item_decisions`, `investment_report_items`, `investment_report_news_citations` **+4** | keep (unused; kept flow needs it) |
 | `investment_report_add_items` | 0 | D+6 | `investment_reports_handlers` | `investment_report_item_decisions`, `investment_report_items`, `investment_report_news_citations` **+4** | retire |
@@ -459,7 +464,7 @@ because they share `review.investment_report*`, `review.trade_forecasts`, `revie
 | `investment_watch_expire` | 0 | D+6 | `investment_reports_handlers` | `investment_report_item_decisions`, `investment_report_items`, `investment_report_news_citations` **+4** | keep (unused; kept flow needs it) |
 | `investment_watch_recommend` | 0 | D+6 | `investment_reports_handlers` | `investment_report_item_decisions`, `investment_report_items`, `investment_report_news_citations` **+4** | keep (unused; kept flow needs it) |
 | `list_active_journals` | 0 | D+6 | `trade_journal_registration` | `trade_journals`, `trades` | merge into `session_context_get_recent` |
-| `list_active_watches` | 0 | D+7 | `operating_briefing` | `analysis_artifacts`, `investment_report_item_decisions`, `investment_report_items` **+12** | merge into `investment_watch_events_list_recent` |
+| `list_active_watches` | 1-8 | D+7 | `operating_briefing` | `analysis_artifacts`, `investment_report_item_decisions`, `investment_report_items` **+12** | merge into `investment_watch_events_list_recent` |
 | `modify_journal_entry` | 0 | D+6 | `trade_journal_registration` | `trade_journals`, `trades` | retire |
 | `save_position_intake_retrospective` | 0 | D | `trade_retrospective_tools` | `paper_trades`, `alpaca_paper_order_ledger`, `kis_live_order_ledger` **+7** | merge into `save_trade_retrospective` |
 | `save_trade_journal` | 0 | D+6 | `trade_journal_tools` | `trade_journals` | keep (unused; decide) |
@@ -472,7 +477,7 @@ Notes:
   `review.trade_forecasts`: 2,445 rows, 1,076 written in the last 30 days on all 31 days, 0 duplicate
   `forecast_id`, 459 rows (19%) with a NULL `decision_bucket` — that NULL rate is the known "unclassified"
   blind spot from ROB-1283, not a new defect.
-- `route_request` (1,460 calls) is the lane capability echo. It is 6% of all calls and returns no data — it is
+- `route_request` (1,460 calls) is the lane capability echo. It is 10% of all calls and returns no data — it is
   a *guard*, not a feature. In the target it becomes a core-API call, not a tool.
 - `get_operating_briefing` 101 calls at p95 **45 s** is the single slowest tool in the fleet. It assembles the
   briefing, the negative-class guard and the policy stamp. It is a batch job wearing a tool's clothes; the
@@ -509,7 +514,7 @@ router's guards and the tables it reads. Gate env values were read from the prod
 | `candidate_discovery.py` | /api/candidates | 1 | `/invest` / n8n | keep |
 | `dependencies.py` | — | 0 | — | keep |
 | `deprecated_pages.py` | — | 1 | deprecated redirect | keep |
-| `execution_intent_gateway.py` | /execution-intents | 5 | **NOT MOUNTED** — separate loopback process (ROB-1460) | keep (not mounted; separate process) |
+| `execution_intent_gateway.py` | /execution-intents | 5 | **NOT MOUNTED** — separate loopback process (ROB-1461) | keep (not mounted; separate process) |
 | `execution_ledger_ingest.py` | /trading | 2 | **fillwire token ingest** (hard rule 16) | keep (hard rule 16) |
 | `health.py` | — | 1 | liveness | keep |
 | `invest_api.py` | /invest/api | 34 | `/invest` SPA (session auth) | keep (largest SPA surface) |
@@ -571,13 +576,13 @@ any of it moves.
 ### 3.9 Scheduled jobs
 
 Three schedulers run in prod: one TaskIQ worker (`at-worker`, `--workers 1`) with an in-process scheduler, one
-`at-scheduler` container, and 30 desk-owned systemd timers on NCP. Prefect runs 7 flows in `at-prefect-server`
-and Dagu has 4 DAGs that are **not registered**.
+`at-scheduler` container, and 30 desk-owned systemd timers on NCP. The 7 Prefect flows exist in code but none
+is registered in `at-prefect-server`, and the 4 Dagu DAGs are **not registered** either.
 
 | job | kind | schedule | writes | 30d evidence | proposal |
 |---|---|---|---|---|---|
 | `analyst_consensus_snapshot_tasks.py` | TaskIQ | manual only (no schedule label) | `analyst_consensus_snapshots` | **table EMPTY** | retire (see $5) |
-| `binance_demo_root_reservation_reconcile_tasks.py` | TaskIQ | manual only | `binance_demo_order_ledger` | 43 write-days | keep, decide (venue idle) |
+| `binance_demo_root_reservation_reconcile_tasks.py` | TaskIQ | manual only | `binance_demo_order_ledger` | 13 write-days, 43 rows | keep (the H5 lane writes this ledger) |
 | `crypto_pending_order_alert_tasks.py` | TaskIQ | cron 08:30 / 22:00 KST | notifications | — | keep |
 | `daily_candles_tasks.py` | TaskIQ | cron 16:30 KR / 07:00 US / 09:00 crypto | `*_candles_1d` | 19-30 write-days | keep |
 | `daily_scan_tasks.py` | TaskIQ | manual only | scanner output | — | keep |
@@ -593,7 +598,7 @@ and Dagu has 4 DAGs that are **not registered**.
 | `kr_candles_tasks.py` | TaskIQ | cron */10 (gate on) | `public.kr_candles_1m` | 414k rows / 19 days | keep |
 | `kr_symbol_universe_tasks.py` | TaskIQ | cron 07:10 KST | `public.kr_symbol_universe` | 3,967 rows / 11 days | keep |
 | `live_reconcile_tasks.py` | TaskIQ | cron | `review.live_order_ledger` | 33 rows / 15 days | keep |
-| `market_quote_snapshot_tasks.py` | TaskIQ | manual only | `public.market_quote_snapshots` | **7 rows total** | retire (see $5) |
+| `market_quote_snapshot_tasks.py` | TaskIQ | manual only | `public.market_quote_snapshots` | **7 rows total** | keep, fix (see $5.1) |
 | `market_valuation_snapshot_tasks.py` | TaskIQ | cron (gate on) | `public.market_valuation_snapshots` | 419k rows / 25 days | keep, restructure (duplicates) |
 | `mechanical_loss_cut_tasks.py` | TaskIQ | manual only | `review.lot_exit_plans`, `..._decisions` | 75 + 22 rows, 1 day | keep (shadow, ROB-1460) |
 | `mock_roundtrip_journal_tasks.py` | TaskIQ | manual only | journal bridge | — | retire with the journal |
@@ -667,7 +672,7 @@ with their tables).
 
 | package | files | role | proposal |
 |---|---:|---|---|
-| `brokers` | 192 | 10 broker clients (binance 80, kis 46, kiwoom 18, toss 11, nhplug 10, alpaca 10, paper 5, upbit 4, yahoo 2) | keep KIS/Toss/Upbit/Yahoo/Alpaca/paper; drop binance(80 files, idle)+nhplug(10) → **-90 files** |
+| `brokers` | 192 | 10 broker clients (binance 80, kis 46, kiwoom 18, toss 11, nhplug 10, alpaca 10, paper 5, upbit 4, yahoo 2) | keep KIS/Toss/Upbit/Yahoo/Alpaca/paper; drop nhplug (10) → **-10 files**; binance (80): keep `h5/`, `futures_demo/`, `demo_strategy_loop/` (the H5 lane writes daily, $4.3), the spot-demo remainder is keep, decide |
 | `order_proposals` | 49 | proposal lifecycle, approval window, callback inbox, auto-approve | keep (core write path) |
 | `invest_view_model` | 48 | `/invest` read models for every SPA panel | keep; split by panel before moving |
 | `action_report` | 48 | snapshot-backed report generation | retire with the report pipeline |
@@ -709,7 +714,7 @@ with their tables).
 | *other 33 packages* | *354* | smaller services (disclosures, dots_history_export, execution_outcome intent gateway, analyst_consensus_snapshots, crypto_insight_snapshots, market_data_coverage, minute_candles, mock_integration, naver_stock, ops_task_kick, paper_evaluation, paper_validation, research_candles, research_reports, scalping_reviews, screener_evidence, shadow_replay, strategy_sleeves, toss_consumer, trader_page, …) | per-table proposal in $4 |
 
 Deleting the retired packages listed above removes roughly **295 of 1,058 service files** without touching
-`brokers` (except binance/nhplug), `order_proposals` or `execution_ledger`.
+`brokers` (except nhplug), `order_proposals` or `execution_ledger`.
 
 ## 4. Schema inventory
 
@@ -726,14 +731,22 @@ Columns:
 - **dupes** — measured, aggregate only.
 - **readers** — number of non-model, non-test `app/` + `scripts/` files that mention the model class or the
   table name (static; a `__init__` re-export is excluded).
-- **proposal** — keep / keep (evidence only) / keep, fix / restructure / retire.
+- **proposal** — keep / keep (evidence only) / keep, fix / keep, dormant (empty behind a default-off gate, kept
+  code writes it) / restructure / retire.
 
 `—` in a numeric cell means the table was empty and the value is not meaningful.
 
-### 4.1 Retire candidates (103 tables)
+### 4.1 Retire candidates (95 tables)
 
 
-103 tables. 73 of them are empty; the rest hold 16,450 rows that would need an export before a drop.
+95 tables. 66 of them are empty; the rest hold 16,443 rows that would need an export before a drop.
+
+Empty is not the same as dead. Eight tables first listed here moved to $4.3 after round-2 review: seven are
+empty only because a default-off gate keeps their kept writer idle (loss-cut scopes, Toss fill poll state,
+Toss manual-activity alerts, the three order-preview tables, `paper.paper_daily_snapshots`), and
+`public.market_quote_snapshots` is read by the kept Alpaca paper order path. **Before M1, every table below
+must pass a per-table check that no module kept in $3 imports its model**; start with the high reader counts
+(`public.instruments` 67, `public.pending_orders` 32, `review.investment_snapshots` 21, `public.exchanges` 15).
 
 | table | rows | last write | 30d d | readers | note |
 |---|---:|---|---:|---:|---|
@@ -759,7 +772,6 @@ Columns:
 | `public.profile_change_log` | 14 | 2026-03-13 | 0 | 0 | 0 writes since 2026-03-13 |
 | `public.asset_profiles` | 12 | 2026-03-13 | 0 | 0 | empty, trade_profile dead |
 | `public.research_reports` | 10 | 2026-05-25 | 0 | 20 | 0 writes in 30d; ingest is manual |
-| `public.market_quote_snapshots` | 7 | 2026-10-05 | 1 | 15 | 7 rows; no kept reader needs it |
 | `public.portfolio_decision_runs` | 3 | — | 0 | 0 | 3 rows, 0 writes in 30d |
 | `public.scalping_daily_reviews` | 2 | 2026-05-26 | 0 | 2 | 2 rows, 2026-05 |
 | `public.market_reports` | 1 | 2026-04-21 | 0 | 2 | 1 row |
@@ -767,7 +779,6 @@ Columns:
 | `public.research_runs` | 1 | 2026-04-28 | 0 | 11 | 1 row |
 | `public.sell_conditions` | 1 | 2026-04-16 | 0 | 3 | 1 row |
 | `review.nhplug_mock_key_version` | 1 | 2026-09-29 | 0 | 1 | nhplug venue unused |
-| `paper.paper_daily_snapshots` | 0 | — | — | 2 | empty |
 | `public.analyst_consensus_snapshots` | 0 | — | — | 7 | EMPTY; builder has no schedule, no reader |
 | `public.crypto_instrument_health` | 0 | — | — | 5 | empty |
 | `public.exchanges` | 0 | — | — | 15 | empty |
@@ -775,9 +786,6 @@ Columns:
 | `public.instruments` | 0 | — | — | 67 | empty |
 | `public.market_filters` | 0 | — | — | 1 | empty |
 | `public.news_analysis_results` | 0 | — | — | 4 | empty |
-| `public.order_execution_request` | 0 | — | — | 2 | empty |
-| `public.order_preview_leg` | 0 | — | — | 2 | empty |
-| `public.order_preview_session` | 0 | — | — | 3 | empty |
 | `public.pending_orders` | 0 | — | — | 32 | empty; live per-venue ledgers replaced it |
 | `public.research_run_pending_reconciliations` | 0 | — | — | 3 | 0 rows |
 | `public.scalping_review_actions` | 0 | — | — | 2 | empty |
@@ -829,11 +837,8 @@ Columns:
 | `review.nhplug_mock_order_ledger` | 0 | — | — | 1 | empty |
 | `review.nhplug_no_order_proof_code` | 0 | — | — | 1 | empty |
 | `review.nhplug_success_proof_code` | 0 | — | — | 1 | empty |
-| `review.order_proposal_loss_cut_scopes` | 0 | — | — | 2 | empty |
 | `review.pending_snapshots` | 0 | — | — | 2 | empty |
 | `review.quotes_trigger_firings` | 0 | — | — | 1 | empty |
-| `review.toss_fill_poll_state` | 0 | — | — | 1 | empty; TOSS_FILL_POLL_ENABLED unset |
-| `review.toss_manual_activity_alerts` | 0 | — | — | 1 | empty |
 | `review.trade_journal_counterfactuals` | 0 | — | — | 3 | 0 writes in 30d |
 | `review.trade_journal_reviews` | 0 | — | — | 3 | empty |
 | `review.trade_reviews` | 0 | — | — | 3 | empty |
@@ -849,7 +854,7 @@ The three retire families worth calling out:
    `scalping_daily_reviews`. Every one of them stopped writing on or before **2026-06-01**, and the MCP tools
    that read them (`research_session_*`, `stage_analysis_get`, `research_summary_get`) have 0 calls. This is the
    single biggest and cleanest drop: ~11 tables, ~11k rows.
-2. **Unused venues** — the 6 `review.nhplug_*` tables (all empty, `NH_MOCK_MCP_ENABLED` unset), the 6
+2. **Unused venues** — the 7 `review.nhplug_*` tables (six empty, one with 1 row; `NH_MOCK_MCP_ENABLED` unset), the 6
    `research.paper_cohort_*` + 5 `research.paper_validation_*` tables (all empty, `PAPER_COHORT_ENABLED`
    unset), `review.trade_journal_*` (0 rows/0 writes), `review.watch_*` and `review.trade_*review*` (0 rows).
 3. **The Hermes report write side** — `review.investment_reports` (68), `investment_report_items` (335),
@@ -857,7 +862,7 @@ The three retire families worth calling out:
    since **2026-07-28**, 0 tool calls. **This one needs an operator decision**, because the report schema is
    the contract Hermes writes into; see $5.3.
 
-Dropping all 103 would remove **73 tables that are already empty** and 30 that hold data. Ordering and
+Dropping all 95 would remove **66 tables that are already empty** and 29 that hold data. Ordering and
 export requirements are in $7.
 
 ### 4.2 Restructure candidates (11 tables)
@@ -890,7 +895,7 @@ Two structural notes:
   `(market, snapshot_date, symbol)`; each source run re-inserts. A unique key + upsert would cut 24% of the
   table and make the reader deterministic. `market_events` has the same disease on earnings (35% dupes).
 
-### 4.3 Keep (93 tables)
+### 4.3 Keep (101 tables)
 
 Kept tables with health columns. "30d d" is the number of distinct days in the last 30 with at least one write;
 compare it with **expected cadence** (shown per group).
@@ -909,7 +914,7 @@ compare it with **expected cadence** (shown per group).
 | `public.manual_holdings` | 22 | 2026-09-28 | 0 | 0 | — | 20 | keep, verify (0 writes in 30d) |
 | `public.broker_accounts` | 5 | 2026-06-25 | 0 | 0 | — | 9 | keep |
 | `public.naver_research_detail_cache` | 8,076 | 2026-10-30 | 18 | 810 | — | 1 | keep |
-| `public.binance_demo_order_ledger` | 484 | 2026-11-01 | 13 | 43 | — | 12 | keep (evidence/audit only) |
+| `public.binance_demo_order_ledger` | 484 | 2026-11-01 | 13 | 43 | — | 12 | keep (H5 lane, written in the last 30 days) |
 | **Market data — candles (expect daily)** | | | | | | | |
 | `public.kr_candles_1d` | 585,026 | 2026-11-02 | 19 | 205,382 | — | None | keep |
 | `public.kr_candles_1m` | 1,161,123 | 2026-11-02 | 19 | 414,797 | — | None | keep |
@@ -975,11 +980,11 @@ compare it with **expected cadence** (shown per group).
 | `public.news_issue_lab_results` | 24 | 2026-05-07 | 0 | 0 | — | — | keep, verify (no writes in 30d) |
 | `public.news_issue_lab_runs` | 2 | 2026-05-07 | 0 | 0 | — | — | keep, verify (no writes in 30d) |
 | `review.alpaca_paper_order_ledger` | 45 | 2026-10-05 | 1 | 7 | — | 15 | keep |
-| `review.binance_h5_intents` | 40 | 2026-11-01 | 16 | 40 | — | 1 | keep (evidence/audit only) |
-| `review.binance_h5_lane_state` | 1 | 2026-11-02 | 1 | 1 | — | 1 | keep (evidence/audit only) |
-| `review.binance_h5_nav_samples` | 22,831 | 2026-11-02 | 17 | 22,831 | — | 2 | keep (evidence/audit only) |
-| `review.binance_h5_opportunities` | 291 | 2026-11-02 | 17 | 291 | — | 2 | keep (evidence/audit only) |
-| `review.binance_h5_signals` | 102 | 2026-11-02 | 16 | 102 | — | 2 | keep (evidence/audit only) |
+| `review.binance_h5_intents` | 40 | 2026-11-01 | 16 | 40 | — | 1 | keep (H5 lane, written in the last 30 days) |
+| `review.binance_h5_lane_state` | 1 | 2026-11-02 | 1 | 1 | — | 1 | keep (H5 lane, written in the last 30 days) |
+| `review.binance_h5_nav_samples` | 22,831 | 2026-11-02 | 17 | 22,831 | — | 2 | keep (H5 lane, written in the last 30 days) |
+| `review.binance_h5_opportunities` | 291 | 2026-11-02 | 17 | 291 | — | 2 | keep (H5 lane, written in the last 30 days) |
+| `review.binance_h5_signals` | 102 | 2026-11-02 | 16 | 102 | — | 2 | keep (H5 lane, written in the last 30 days) |
 | `review.buy_gate_ab_collection_epoch` | 1 | 2026-08-30 | 0 | 0 | — | 1 | keep (evidence/audit only) |
 | `review.buy_gate_ab_collection_epoch_v2` | 0 | — | — | — | — | 0 | keep (evidence/audit only) |
 | `review.buy_gate_ab_experiment_registration` | 1 | 2026-09-07 | 0 | 0 | — | 0 | keep (evidence/audit only) |
@@ -997,6 +1002,14 @@ compare it with **expected cadence** (shown per group).
 | `review.kiwoom_coordination_lifecycle` | 0 | — | — | — | — | 1 | keep (evidence/audit only) |
 | `review.sample_eligibility_decisions` | 0 | — | — | — | — | 2 | keep (evidence/audit only) |
 | `review.telegram_callback_inbox` | 0 | — | — | — | — | 2 | keep (evidence/audit only) |
+| `public.market_quote_snapshots` | 7 | 2026-10-05 | 1 | — | — | 15 | keep, fix (writer: $5.1; Alpaca paper `quote_snapshot_id` and the h3-us-paper route read it) |
+| `paper.paper_daily_snapshots` | 0 | — | — | — | — | 2 | keep, dormant (dots export v2 `account_balance_daily` source; $5.13) |
+| `public.order_execution_request` | 0 | — | — | — | — | 2 | keep, dormant (kept `order_previews.py` router) |
+| `public.order_preview_leg` | 0 | — | — | — | — | 2 | keep, dormant (kept `order_previews.py` router) |
+| `public.order_preview_session` | 0 | — | — | — | — | 3 | keep, dormant (kept `order_previews.py` router, `order_preview_session_service`) |
+| `review.order_proposal_loss_cut_scopes` | 0 | — | — | — | — | 2 | keep, dormant (`order_proposals/loss_cut_approval.py`; loss-cut approval gate is off) |
+| `review.toss_fill_poll_state` | 0 | — | — | — | — | 1 | keep, dormant (state of the kept `toss_live_reconcile_tasks.py` poller; `TOSS_FILL_POLL_ENABLED` unset) |
+| `review.toss_manual_activity_alerts` | 0 | — | — | — | — | 1 | keep, dormant (kept `toss_detect_manual_activity` tool and job) |
 | `review.telegram_callback_recovery_cursor` | 0 | — | — | — | — | 1 | keep (evidence/audit only) |
 | `review.trade_journals` | 200 | 2026-10-31 | 9 | 22 | — | 21 | keep |
 
@@ -1023,14 +1036,15 @@ the table above and listed here so a drop review cannot mistake "0 reads" for "d
 `review.kiwoom_authority_cessation_receipts`, `review.kiwoom_coordination_lifecycle`,
 `review.trade_retrospective_actions`, `review.trade_retrospective_action_control`, `review.screener_pick_log`,
 `review.buy_gate_ab_collection_epoch` (+`_v2`, registration, termination),
-`review.binance_h5_signals`, `review.binance_h5_intents`, `review.binance_h5_nav_samples`,
-`review.binance_h5_opportunities`, `review.binance_h5_lane_state`, `public.binance_demo_order_ledger`,
 `review.mock_strategy_orders`, `review.telegram_callback_inbox`, `review.telegram_callback_recovery_cursor`,
 `review.invalid_sample_cleanup_bindings`, `review.invalid_sample_cleanup_lifecycle_events`,
 `review.sample_eligibility_decisions`.
 
 Rule applied: a table whose **only** purpose is to prove what a guarded system did (dispatch, expiry
 inference, authority cessation, quarantine, observation cohorts) stays, whatever its read count.
+
+The Binance H5 tables (`review.binance_h5_*`, `public.binance_demo_order_ledger`) are not on this list: the H5
+lane writes them on most days of the last 30 ($4.3), so they are live, not evidence-only.
 
 ## 5. Health: kept things that are used but silently not loading
 
@@ -1043,14 +1057,14 @@ answer.
 | 5.1 | `market_quote_snapshot_ensure` / `..._latest` | yes (≤8 calls) | `public.market_quote_snapshots`: **7 rows total**, last 2026-10-05 | "ensure" returns nothing durable; one row per call |
 | 5.2 | `get_analyst_consensus`, `get_financials`, `get_company_profile` | yes (live yfinance) | `analyst_consensus_snapshots`: **EMPTY**; `financial_fundamentals_snapshots`: **EMPTY** | live fetch only; the `/invest` snapshot panels read empty tables |
 | 5.3 | `investment_watch_events_list_recent` (245 calls) | yes | `investment_reports`/`_items`: no write since **2026-07-28**; `investment_watch_events`: 29 rows/30d | watches fire, but the report that should explain them is never written |
-| 5.4 | KRX after-market gate (`route_request`, Toss preflight) | yes | `krx_after_market_eligibility`: **last `list_asof` 2026-09-29** | by contract the list must be ≤7 days old, so **every KRX-after trade is refused** — silently, as `krx_after_capability_stale` |
+| 5.4 | KRX after-market gate (`route_request`, Toss preflight) | yes | `krx_after_market_eligibility`: **last `list_asof` 2026-09-29** | by contract the list must be ≤7 days old, so **after-hours orders for non-NXT symbols are refused** (`krx_after_capability_stale`); NXT-tradable symbols keep the unified after-market window. KR `get_operating_briefing` reports it under `staleness.krx_after_market_eligibility` |
 | 5.5 | `get_news` (193 calls) + relevance | yes | `news_article_related_symbols` and `news_ingestion_runs`: **0 writes in 30d** (last 2026-09-30); `symbol_news_relevance` still written (1,599/26d) | two relevance tables, one alive, one dead; news ingest run log stops a month ago |
 | 5.6 | `screen_stocks_enrich` sector column | yes | `symbol_sectors`: 137 rows, last write **2026-07-27** | sector labels are whatever was cached in July |
 | 5.7 | `research/selection` run refresh (`research_run.kr_preopen_refresh`, 8 crons) | schedules fire | `public.research_runs`: **1 row**, last 2026-04-28; `research_run_candidates`: 16 rows | 8 cron jobs per KR day produce nothing |
 | 5.8 | `get_forecasts` / retrospective | yes | `trade_retrospectives`: 659 rows but **378 NULL `realized_pnl` (57%)**, 355 NULL `pnl_pct` | P&L columns are mostly empty; only 437 of 659 are `filled` |
 | 5.9 | `mechanical_loss_cut` shadow (ROB-1460) | yes | `lot_exit_plans` 75 rows, `mechanical_loss_cut_decisions` 22 rows, **both written on 1 day** | the shadow evaluator has run once |
 | 5.10 | `protected_position_auto_follow` (#943) | yes | `protected_positions`: **2 rows**, `protected_position_revisions`: 2 rows, 0 writes in 30d | the rule-executed P follow has nothing to follow |
-| 5.11 | approval digest (ROB-1052) | yes | `order_proposal_approval_batch_members`: **0 rows since 2026-09-08** while `..._batches` keep updating (109 `idle`, 95 `sent`, last `sent` 2026-09-08) | digest batching stopped producing members a month ago |
+| 5.11 | approval digest (ROB-1052) | yes | `order_proposal_approval_batch_members`: **0 rows since 2026-09-08** while `..._batches` keep updating (109 `idle`, 95 `sent`, last `sent` 2026-09-08) | no members since 2026-09-08; the manual ROB-870 batch writer may be idle by design (the ROB-1052 auto digest does not write these tables) — check with `scripts.diagnose_approval_batch_health` |
 | 5.12 | `market_events` calendar | yes | `category=economic`: 5,065 rows, last write **2026-10-30**; `earnings` US: 303 rows/30d | economic calendar ingestion is manual (`ingest_market_events.py`) |
 | 5.13 | `paper_daily_snapshots` | no reader | **0 rows ever** | ROB-1450's export builds `account_balance_daily` from this table → it would emit nothing |
 | 5.14 | `trading_decision_actions` / `_counterfactuals` / `_outcomes` | not read by any tool | all **EMPTY** while `trading_decision_proposals` has 4,120 rows written nightly | the decision record is half-written: proposals yes, actions/outcomes no |
@@ -1058,16 +1072,19 @@ answer.
 | 5.16 | `crypto_candles_1m` (hypertable) | yes | **EMPTY**; `get_ohlcv` crypto silently falls back to Upbit HTTP | the DB read path is dead, the API path hides it |
 | 5.17 | `research.kr_candles_1m_toss` (#1086) | no reader yet | 1,171,860 rows, **last write 2026-09-29** | the collector is scheduleless by contract; data stops a month ago |
 
-Four of these are **safety relevant** and should be fixed before any retirement work:
+Three of these are **safety relevant** and should be fixed before any retirement work, and one needs a check:
 
-- **5.4 KRX after-market** — a live approval gate is silently refusing every after-market KR order because the
-  eligibility list is stale. Fail-closed is correct; the fact that nobody noticed for 34 days is not.
-- **5.11 approval digest** — the auto-approve digest stopped producing members while batches keep being
-  created. A card that never gets a member is a card the operator never sees.
+- **5.4 KRX after-market** — a live approval gate refuses after-hours orders for non-NXT KR symbols because the
+  eligibility list is stale. Fail-closed is correct; the list has been stale for 34 days even though the
+  briefing's `staleness` block reports it.
 - **5.3 investment report** — 245 reads of a watch-event feed whose companion report has not been written in
   3 months.
 - **5.8 retrospective P&L** — 57% of retros have no realized P&L, which is the number the whole retrospective
   loop is for.
+
+- **5.11 approval batches (check, not fix)** — no members since 2026-09-08. The repo contract (approval batch
+  health, ROB-1488) says a member-less batch after a manual or reconfirm send can be by design, so this is a
+  `review` signal, not proof that a writer stopped.
 
 The other thirteen are correctness debt: the reader returns a plausible empty answer.
 
@@ -1157,17 +1174,17 @@ A move is done when the named evidence exists, not when the code compiles.
 
 The operator's order — **retire, then move execution, then split research** — is correct, with one insertion
 before step 1: **fix the writers that silently stopped** ($5). Retiring while a live gate is quietly refusing
-every after-market order would destroy the evidence needed to judge the retirement.
+after-hours orders for non-NXT symbols would destroy the evidence needed to judge the retirement.
 
 ```
 0. (2 weeks) fix the $5 writers + add a "writer heartbeat" check (see 7.0)
 1. (6-8 PRs) retire dead tool surface / dead venues / dead routers / dead services     ← no schema change
-2. (1 PR)    schema migration M1: drop 73 empty tables                                 ← operator approval
-3. (2 PRs)   schema migration M2/M3: export+drop data-holding retires; dedupe + unique keys
+2. (1 PR)    schema migration M1: drop 66 empty tables                                 ← operator approval
+3. (3 PRs)   schema migrations M2, M3+M4: export+drop data-holding retires; dedupe + unique keys
 4. (N PRs)   execution core: proposal/approval state → guards → order send → ledger/fills
              (ledger last: it is the authority for everything else)
 5. (N PRs)   research split: snapshots become the only source; MCP tools read them
-6. (1 PR)    schema migration M4: hypertable + retention for the 8 snapshot tables
+6. (1 PR)    schema migration M5: hypertable + retention for the 8 snapshot tables
 ```
 
 Rationale for the order:
@@ -1188,8 +1205,8 @@ Not retirement, but they must land first so the retirement PRs are not deleting 
 
 | PR | change | blast radius |
 |---|---|---|
-| H1 | refresh `public.krx_after_market_eligibility` on a schedule or make the router refuse loudly | 1 table, 1 import script, the KRX-after gate in `approval_window` + `nxt_preflight` |
-| H2 | fix the approval digest member writer (0 rows since 2026-09-08) | `app/services/order_proposals/` digest path, ROB-1052 |
+| H1 | refresh `public.krx_after_market_eligibility` (operator import) and decide whether its existing `staleness` signal should page | 1 table, 1 import script, the KRX-after gate in `approval_window` + `nxt_preflight` |
+| H2 | run `scripts.diagnose_approval_batch_health` and fix the manual batch writer only if it reports `gap` (no members since 2026-09-08) | `app/services/order_proposals/` ROB-870 batch path; read-only first |
 | H3 | add a `writer heartbeat` guard: a table whose declared cadence is missed for N days should call `get_operating_briefing`'s attention section | `get_operating_briefing` + a new read-only diagnostic; **no writes** |
 | H4 | decide `investment_report_*`: restart the writer or retire it ($5.3) | 4 routers, 27 service files, 12 tables — operator decision |
 
@@ -1207,10 +1224,11 @@ Largest sub-groups: 26 fundamentals/market-data duplicates, 16 `investment_repor
 9 NHPLUG, 7 Kiwoom US, 11 Alpaca automated/ledger.
 
 **R2 — Retire the unused venues end-to-end.** NHPLUG (9 tools + `app/services/nhplug_mock` 9 files +
-`app/services/brokers/nhplug` 10 files + `scripts/nhplug_*` 4), Binance demo (80 `app/services/brokers/binance`
-files, 12 scripts, 1 table), `us_dual_paper` (7 files, 3 tools), Kiwoom US (7 tools). Blast radius: the
-`kiwoom` profile drops 7 names (152 -> 145); `h3-*` profile snapshots unchanged; the Binance demo
-ledger stays as evidence until M2.
+`app/services/brokers/nhplug` 10 files + `scripts/nhplug_*` 4), `us_dual_paper` (7 files, 3 tools), Kiwoom US
+(7 tools). **Binance is not in R2**: `app/services/brokers/binance/{h5,futures_demo,demo_strategy_loop}` and the
+`binance_h5_*` scripts run the live H5 lane ($4.3); retiring the spot-demo remainder is a separate operator
+decision after H5 ends. Blast radius: the
+`kiwoom` profile drops 7 names (152 -> 145); `h3-*` profile snapshots unchanged.
 **Operator approval required** — these are execution surfaces, and hard rule 4 says a venue's code is its
 permission to trade.
 
@@ -1245,8 +1263,8 @@ R1 so only surviving tools are merged.
 
 | id | migration | what | why it is safe | approval |
 |---|---|---|---|---|
-| **M1** | drop 73 empty tables | one `op.drop_table` per table, grouped by schema (public 30, review 30, research 13) | 0 rows in prod; verified by exact `count(*)` | **yes** — a drop is irreversible |
-| **M2** | export then drop 30 data-holding retire tables | `pg_dump --table` to an archive outside the repo, verify row counts, then drop | 16,450 rows total; the biggest is `news_ingestion_runs` 7,129 and `stock_analysis_results` 2,413 | **yes** |
+| **M1** | drop 66 empty tables | one `op.drop_table` per table, grouped by schema (public 16, review 25, research 25) | 0 rows in prod; verified by exact `count(*)`, and no kept module imports the model ($4.1 per-table check) | **yes** — a drop is irreversible |
+| **M2** | export then drop 29 data-holding retire tables | `pg_dump --table` to an archive outside the repo, verify row counts, then drop | 16,443 rows total; the biggest is `news_ingestion_runs` 7,129 and `stock_analysis_results` 2,413 | **yes** |
 | **M3** | `market_valuation_snapshots` dedupe + unique | keep the newest row per `(market,snapshot_date,symbol,source)`, add the unique key, switch the writer to upsert | removes 161,897 duplicate rows (24%); reads become deterministic | **yes** — deletes rows |
 | **M4** | `market_events` dedupe + unique on `(source,source_event_id)` | same pattern; 15,812 duplicate earnings rows | the event reader already assumes one row per event | **yes** |
 | **M5** | hypertable + retention for 8 snapshot tables | `create_hypertable` on the date column + `add_retention_policy` | TimescaleDB is already installed (8 hypertables exist); retention is the only way to bound 2.7 GB of growth | **yes** — retention deletes data |
@@ -1259,12 +1277,12 @@ the proof). None of them may ride along with a code PR that touches execution.
 | after | files removed | tables removed |
 |---|---|---|
 | R1 (81 tools) | ~90 tooling/test files | 0 (M1/M2 later) |
-| R2 (venues) | ~120 service + script files | 0 (M2 later) |
+| R2 (venues) | ~30 service + script files | 0 (M2 later) |
 | R3 (legacy research) | ~60 service + router + job files | 0 (M2 later) |
 | R4 (report pipeline, if approved) | ~94 service + router files | 0 (M2 later) |
 | R5 (merges) | ~20 handler files | 0 |
-| **total code** | **~380 of 1,638 app files (23%)** | — |
-| M1+M2 | — | **103 of 211 tables (49%)** |
+| **total code** | **~290 of 1,638 app files (18%)** | — |
+| M1+M2 | — | **95 of 211 tables (45%)** |
 | M3+M5 | — | 8 tables bounded, ~170k duplicate rows removed |
 
 ## 8. Appendix — queries used
