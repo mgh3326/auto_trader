@@ -243,6 +243,7 @@ class UnifiedWebSocketMonitor:
                     raw_event=order_data,
                     correlation_id=str(order_data.get("uuid") or "n/a"),
                     hooks=self._downstream_hooks(),
+                    account_mode=self._ledger_account_mode("upbit"),
                 )
             logger.info(
                 f"Upbit fill processed: {fill_order.symbol} {fill_order.side} "
@@ -345,6 +346,7 @@ class UnifiedWebSocketMonitor:
                     raw_event=event,
                     correlation_id=correlation_id,
                     hooks=self._downstream_hooks(),
+                    account_mode=self._ledger_account_mode("kis"),
                 )
             logger.info(
                 f"KIS fill processed: {fill_order.symbol} {fill_order.side} "
@@ -433,6 +435,11 @@ class UnifiedWebSocketMonitor:
         )
         return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) & 2_147_483_647
 
+    @staticmethod
+    def _ledger_account_mode(broker: str) -> str:
+        """The account mode the fill is recorded under (shared with the ledger row)."""
+        return "mock" if broker == "kis" and settings.kis_ws_is_mock else "live"
+
     async def _record_execution_ledger_fill(
         self,
         event: dict[str, Any],
@@ -469,9 +476,7 @@ class UnifiedWebSocketMonitor:
 
         fill = ExecutionLedgerUpsert(
             broker=broker,  # type: ignore[arg-type]
-            account_mode="mock"
-            if broker == "kis" and settings.kis_ws_is_mock
-            else "live",
+            account_mode=self._ledger_account_mode(broker),
             venue=venue,
             instrument_type=self._ledger_instrument_type(order),  # type: ignore[arg-type]
             symbol=self._ledger_symbol(order),
@@ -502,6 +507,7 @@ class UnifiedWebSocketMonitor:
                 fill_order=order,
                 raw_event=event,
                 correlation_id=correlation_id,
+                account_mode=fill.account_mode,
                 hooks=self._downstream_hooks(),
                 session_factory=AsyncSessionLocal,
                 repository_cls=ExecutionLedgerRepository,

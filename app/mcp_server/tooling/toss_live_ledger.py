@@ -34,6 +34,7 @@ from app.models.review import TossLiveOrderLedger
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError, TossRateLimitError
+from app.services.execution_ledger.fill_intent_lookup import resolve_fill_intent
 from app.services.fill_notification import (
     is_fill_notifiable,
     normalize_toss_fill,
@@ -247,10 +248,16 @@ async def _notify_toss_fill(
         return False
 
     try:
+        intent = await resolve_fill_intent(
+            broker_order_id=row.broker_order_id,
+            account_mode=row.account_mode,
+            filled_at=order.filled_at,
+        )
         return await get_trade_notifier().notify_fill(
             order,
             enrichment=None,
             detail_url=build_position_detail_url(row.symbol, row.market),
+            intent=intent,
         )
     except Exception:
         logger.warning(

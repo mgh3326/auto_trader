@@ -233,6 +233,7 @@ async def ingest_execution_ledger_fills(
                 fill_order=_rebuild_fill_order(fill),
                 raw_event=fill.raw_payload_json,
                 correlation_id=fill.correlation_id,
+                account_mode=fill.account_mode,
             )
         except Exception:  # noqa: BLE001 - the committed fill stands
             logger.error(

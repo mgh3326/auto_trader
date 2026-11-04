@@ -111,6 +111,7 @@ class SinkContext:
     fill_order: FillOrder | None = None
     raw_event: dict[str, Any] | None = None
     correlation_id: str | None = None
+    account_mode: str | None = None
     hooks: DownstreamHooks = field(default_factory=DownstreamHooks)
     session_factory: Callable[[], Any] | None = None
     repository_cls: type[ExecutionLedgerRepository] | None = None
@@ -162,6 +163,7 @@ class DirectDbFillSink:
                 raw_event=context.raw_event,
                 correlation_id=context.correlation_id,
                 hooks=context.hooks,
+                account_mode=context.account_mode,
             )
         return status
 

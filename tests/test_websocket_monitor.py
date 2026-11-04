@@ -222,7 +222,8 @@ class TestUnifiedWebSocketMonitor:
         monitor._project_upbit_proposal_fill.assert_awaited_once_with(event)
         assert monitor._send_fill_notification.await_args is not None
         assert monitor._send_fill_notification.await_args.kwargs == {
-            "proposal_rung_fill": True
+            "proposal_rung_fill": True,
+            "account_mode": "live",
         }
         assert call_order == ["ledger", "projection", "notify"]
 
