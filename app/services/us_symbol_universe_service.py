@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import io
 import logging
 import zipfile
+from collections.abc import AsyncIterator, Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,6 +62,25 @@ class _UniverseRow:
 
 def _normalize_symbol(value: str) -> str:
     return str(value or "").strip().upper()
+
+
+def _canonical_symbol(value: str) -> str:
+    """Canonical ``us_symbol_universe.symbol`` key for one caller symbol."""
+    return to_db_symbol(_normalize_symbol(value))
+
+
+# ROB-1487: request-scoped exchange map.
+#
+# Batch callers (analyze_stock_batch, the get_holdings price fan-out, the
+# screen_stocks streak enrichment) know their whole symbol set up front, so one
+# ``us_exchange_prefetch`` scope resolves all of them with a single query.
+# Without it every symbol issued its own single-row SELECT *and* its own
+# ``AsyncSessionLocal()`` checkout inside a concurrency-4/5 fan-out, which
+# pushed the MCP server past ``DB_POOL_SIZE`` and made the pool dial fresh
+# connections (Sentry ``connect`` spans, p95 877 ms) on every burst.
+_us_exchange_cache: ContextVar[dict[str, str] | None] = ContextVar(
+    "us_exchange_cache", default=None
+)
 
 
 async def _download_cod_lines(zip_name: str) -> list[str]:
@@ -255,6 +277,16 @@ async def get_us_exchange_by_symbol(
     symbol: str,
     db: AsyncSession | None = None,
 ) -> str:
+    # ROB-1487: a warm ``us_exchange_prefetch`` scope answers without a query and
+    # without opening a session. A symbol the scope did not resolve (unknown,
+    # inactive, or never requested) falls through to the single-row resolver
+    # below, so results and error types are unchanged.
+    cached = _us_exchange_cache.get()
+    if cached is not None:
+        canonical = _canonical_symbol(symbol)
+        if canonical in cached:
+            return cached[canonical]
+
     if db is not None:
         row = await _resolve_active_symbol_row(db, symbol)
         return row.exchange
@@ -262,6 +294,77 @@ async def get_us_exchange_by_symbol(
     async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
         row = await _resolve_active_symbol_row(session, symbol)
         return row.exchange
+
+
+async def get_us_exchanges_by_symbols(
+    symbols: Iterable[str],
+    db: AsyncSession | None = None,
+) -> dict[str, str]:
+    """Return ``{canonical_symbol: exchange}`` for active US symbols in ONE query.
+
+    Canonical keys come from ``to_db_symbol`` so ``BRK/B``, ``BRK-B`` and
+    ``BRK.B`` all resolve to ``BRK.B``. Symbols that are absent from the active
+    universe are simply omitted — the batched lookup is a prefetch, not an
+    authority: ``get_us_exchange_by_symbol`` still raises
+    ``USSymbolNotRegisteredError`` / ``USSymbolInactiveError`` /
+    ``USSymbolUniverseEmptyError`` for a caller that requires the row.
+    """
+    canonical: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        key = _canonical_symbol(raw)
+        if key and key not in seen:
+            seen.add(key)
+            canonical.append(key)
+    if not canonical:
+        return {}
+
+    async def _run(session: AsyncSession) -> dict[str, str]:
+        result = await session.execute(
+            select(USSymbolUniverse.symbol, USSymbolUniverse.exchange).where(
+                USSymbolUniverse.symbol.in_(canonical),
+                USSymbolUniverse.is_active.is_(True),
+            )
+        )
+        return dict(result.all())
+
+    if db is not None:
+        return await _run(db)
+
+    async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
+        return await _run(session)
+
+
+@contextlib.asynccontextmanager
+async def us_exchange_prefetch(
+    symbols: Iterable[str],
+    db: AsyncSession | None = None,
+) -> AsyncIterator[dict[str, str]]:
+    """Resolve a batch's US exchanges once for the enclosed block (ROB-1487).
+
+    Inside the block ``get_us_exchange_by_symbol`` answers from the prefetched
+    map, so a fan-out over N US symbols costs one query and zero extra sessions
+    instead of N queries and N session checkouts. The map is scoped to the
+    block (and to the tasks spawned inside it) and is always reset on exit.
+
+    Fail-open by contract: a prefetch is an optimization, so a failed batch read
+    yields an empty map and the enclosed code falls back to the per-symbol
+    resolver — exactly the behavior that existed before this helper. A prefetch
+    failure must never make a caller that would have degraded (e.g. to the
+    Yahoo quote arm) fail instead.
+    """
+    try:
+        resolved = await get_us_exchanges_by_symbols(list(symbols), db=db)
+    except Exception as exc:  # noqa: BLE001 — optimization only, never authoritative
+        logger.warning(
+            "us_exchange_prefetch failed; using per-symbol lookups instead: %s", exc
+        )
+        resolved = {}
+    token = _us_exchange_cache.set(resolved)
+    try:
+        yield resolved
+    finally:
+        _us_exchange_cache.reset(token)
 
 
 async def get_us_common_stock_flags(
@@ -482,7 +585,9 @@ __all__ = [
     "USSymbolNameAmbiguousError",
     "build_us_symbol_universe_snapshot",
     "get_us_exchange_by_symbol",
+    "get_us_exchanges_by_symbols",
     "get_us_symbol_by_name",
     "search_us_symbols",
     "sync_us_symbol_universe",
+    "us_exchange_prefetch",
 ]

@@ -1,0 +1,125 @@
+{
+ "account_scope": "kis_live",
+ "active_watches": {
+  "count": 1,
+  "watches": [
+   {
+    "symbol": "005930",
+    "watch_id": "w-1"
+   }
+  ]
+ },
+ "analysis_artifacts": {
+  "artifacts": [
+   {
+    "artifact": "a-1"
+   }
+  ],
+  "count": 1
+ },
+ "as_of": "2026-11-02T09:00:00Z",
+ "holdings": {
+  "accounts": [
+   {
+    "account": "kis",
+    "account_mode": "kis_live",
+    "account_name": "KIS",
+    "cost_profile": {
+     "commission_bps": 14.7,
+     "fx_spread_bps": 0.0,
+     "review_required": true,
+     "source": "default_seed"
+    },
+    "order_routable": true,
+    "position_count": 1
+   }
+  ],
+  "errors": [],
+  "filters": {
+   "market": "kr"
+  },
+  "summary": {
+   "total_value": 10
+  },
+  "top_movers": [],
+  "total_accounts": 1,
+  "total_positions": 1
+ },
+ "latest_report": {
+  "items": {
+   "total": 2
+  },
+  "report_uuid": "r-1",
+  "title": "latest"
+ },
+ "market": "kr",
+ "negative_class_recording": {
+  "market": "kr",
+  "status": "ok"
+ },
+ "pending_orders": {
+  "count": 1,
+  "orders": [
+   {
+    "order_id": "pending-1",
+    "symbol": "005930"
+   }
+  ],
+  "unavailable_reason": null
+ },
+ "policy_version": {
+  "version": "t"
+ },
+ "session_context": {
+  "constraints": {
+   "count": 1,
+   "entries": [
+    {
+     "note": "constraint-1"
+    }
+   ]
+  },
+  "count": 1,
+  "entries": [
+   {
+    "note": "ctx-1"
+   }
+  ]
+ },
+ "staleness": {
+  "active_watches": {
+   "as_of": "2026-11-02T09:00:00+00:00",
+   "freshness_status": "db_read"
+  },
+  "analysis_artifacts": {
+   "freshness_status": "db_read"
+  },
+  "holdings": {
+   "as_of": "2026-11-02T09:00:00+00:00",
+   "errors": [],
+   "freshness_status": "live_or_best_effort"
+  },
+  "krx_after_market_eligibility": {
+   "requires_attention": true,
+   "status": "unavailable",
+   "warning": "KRX after-market eligibility freshness could not be read."
+  },
+  "latest_report": {
+   "freshness_status": "db_read"
+  },
+  "pending_orders": {
+   "as_of": "2026-11-02T09:00:00+00:00",
+   "freshness_status": "fresh",
+   "unavailable_reason": null
+  },
+  "session_context": {
+   "freshness_status": "db_read"
+  }
+ },
+ "success": true,
+ "trading_scoreboards": {
+  "cohort": "live_gated",
+  "market": "kr",
+  "wins": 3
+ }
+}

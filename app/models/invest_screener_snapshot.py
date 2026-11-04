@@ -54,6 +54,17 @@ class InvestScreenerSnapshot(Base):
             "dist_to_support_pct",
             postgresql_where="dist_to_support_pct IS NOT NULL",
         ),
+        # ROB-1487: ``max(snapshot_date) WHERE market = $1 AND
+        # support_computed_at IS NOT NULL`` (support-proximity preset). The
+        # existing (market, snapshot_date) index cannot max-scan while also
+        # applying the support predicate, so the probe read the whole market
+        # partition. The partial index carries only support-computed rows.
+        Index(
+            "ix_invest_screener_snapshots_market_support_date",
+            "market",
+            "snapshot_date",
+            postgresql_where="support_computed_at IS NOT NULL",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

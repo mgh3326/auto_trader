@@ -893,9 +893,28 @@ async def _run_batch_analysis(
                     "provider_provenance": [],
                 }
 
-    analyze_results = await asyncio.gather(
-        *[_analyze_one(s) for s in normalized_symbols]
-    )
+    # ROB-1487: resolve every US symbol's exchange once for the whole batch.
+    # Each symbol's analyze pipeline otherwise issues two single-row
+    # ``us_symbol_universe`` SELECTs — one of them on its own AsyncSessionLocal
+    # inside this concurrency-5 gather, which overran DB_POOL_SIZE and made the
+    # pool dial fresh connections. One IN query here keeps the per-symbol path
+    # query-free and session-free.
+    from app.services.us_symbol_universe_service import us_exchange_prefetch
+
+    batch_us_symbols: list[str] = []
+    for sym in normalized_symbols:
+        try:
+            market_type, _canonical = analysis_screening._resolve_market_type(
+                sym, market
+            )
+        except Exception:  # noqa: BLE001 — a bad symbol must stay a per-symbol error
+            continue
+        if market_type == "equity_us":
+            batch_us_symbols.append(sym)
+    async with us_exchange_prefetch(batch_us_symbols):
+        analyze_results = await asyncio.gather(
+            *[_analyze_one(s) for s in normalized_symbols]
+        )
 
     success_count = 0
     fail_count = 0
