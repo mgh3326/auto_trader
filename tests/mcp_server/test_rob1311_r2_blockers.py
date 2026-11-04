@@ -7,7 +7,7 @@ Source of truth: herdr-inbox/jobs/ROB-1311-verify-20260820-1458/final.md.
   unnecessary — quick's current_price is a stale DB daily close.
 - B2: every quick field removed by PR #1915 relative to the pre-PR quick
   summary must be enumerated in the docs the hard invariant points at
-  (CLAUDE.md, MCP README).
+  (root AGENTS.md, MCP README).
 - B3: the batched decision_history read model must preserve five ROB-884 /
   ROB-711 invariants: real `overdue`, `open_actions_meta.count`,
   default-mode mock-counterfactual exclusion, `sql_is_learning_eligible()`
@@ -220,7 +220,7 @@ def test_quick_tool_description_states_stale_price_and_get_quote_guidance():
 
 # ---------------------------------------------------------------------------
 # B2 — every field removed from the quick contract must be enumerated in
-# CLAUDE.md and the MCP README (the hard invariant demands PR-body/doc
+# root AGENTS.md and the MCP README (the hard invariant demands PR-body/doc
 # enumeration, not silent removal).
 # ---------------------------------------------------------------------------
 
@@ -238,17 +238,17 @@ _REMOVED_QUICK_FIELDS = (
 )
 
 
-def test_claude_md_enumerates_removed_quick_fields():
+def test_agents_md_enumerates_removed_quick_fields():
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[2]
-    claude_md = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
-    section_start = claude_md.index("analyze quick fast projection (ROB-1311)")
-    section = claude_md[section_start : section_start + 4000]
+    agents_md = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+    section_start = agents_md.index("analyze quick fast projection (ROB-1311)")
+    section = agents_md[section_start : section_start + 4000]
 
     missing = [field for field in _REMOVED_QUICK_FIELDS if field not in section]
     assert not missing, (
-        f"CLAUDE.md ROB-1311 section is missing removed fields: {missing}"
+        f"AGENTS.md ROB-1311 section is missing removed fields: {missing}"
     )
     assert "get_quote" in section
 

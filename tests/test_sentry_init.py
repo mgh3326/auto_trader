@@ -1077,6 +1077,18 @@ class TestYfinanceNoiseFilter:
         }
         assert sentry_module._before_send(event, {}) is None
 
+    def test_before_send_drops_yfinance_generic_404(self):
+        """hk-2828 (Sentry AUTO_TRADER-2GR): Yahoo 404 for an unlisted
+        symbol (e.g. a US preferred share) is expected noise."""
+        event: Event = {
+            "logger": "yfinance",
+            "message": (
+                'HTTP Error 404: {"finance":{"result":null,"error":'
+                '{"code":"Not Found","description":"HTTP 404 Not Found"}}}'
+            ),
+        }
+        assert sentry_module._before_send(event, {}) is None
+
     def test_before_send_log_drops_yfinance_noise(self):
         sentry_log: Log = {
             "severity_text": "error",
