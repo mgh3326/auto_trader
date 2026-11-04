@@ -1534,3 +1534,34 @@ class TestKRXSessionExpired:
             "retryable": True,
             "authenticated": False,
         }
+
+
+@pytest.mark.asyncio
+async def test_login_failure_logs_krx_reason_not_raw_body(monkeypatch, caplog):
+    # hk-2828 (Sentry AUTO_TRADER-2HK): the KRX login response echoes the
+    # member number. The failure log must carry the code and KRX's own
+    # message only, never the raw body.
+    manager = KRXSessionManager()
+    monkeypatch.setattr("app.services.krx.settings", _mock_krx_settings())
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+    login_resp = MagicMock()
+    login_resp.status_code = 200
+    login_resp.text = (
+        '{"previousMemberYn":false,"MDC_MBR_TP_CD":"P","MBR_NO":"9990001112",'
+        '"_error_code":"CD010","_error_message":"패스워드 변경 필요"}'
+    )
+    login_resp.raise_for_status = MagicMock()
+    mock_client.post = AsyncMock(return_value=login_resp)
+    manager._client = mock_client
+
+    caplog.set_level("ERROR", logger="app.services.krx")
+    await manager._login()
+
+    assert manager._authenticated is False
+    assert manager._auth_failed is True
+    assert manager._last_login_code == "CD010"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("code=CD010" in m and "패스워드 변경 필요" in m for m in messages)
+    assert not any("9990001112" in m or "MBR_NO" in m for m in messages)

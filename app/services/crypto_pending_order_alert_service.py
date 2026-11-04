@@ -22,7 +22,11 @@ FAILURE_CHANNEL_ID = "1500722535678083102"
 SERVICE_NAME = "crypto_pending_order_alert"
 READ_ONLY_NOTICE = "읽기 전용 미체결 주문 리마인더입니다. 보유/취소 추천이 아닙니다."
 MAX_DISCORD_CONTENT_CHARS = 1900
-MAX_LISTED_ORDERS = 12
+# hk 2603 decision (2026-11-04): only symbols that need attention get a line.
+# A symbol is flagged when any of its orders is at least this old ...
+FLAG_MIN_AGE_DAYS = 3
+# ... or sits at least this far (absolute %) from the current price.
+FLAG_MIN_ABS_GAP_PCT = 10.0
 
 OrderLookup = Callable[[], Awaitable[dict[str, Any]]]
 PriceLookup = Callable[[list[str]], Awaitable[dict[str, float]]]
@@ -214,6 +218,98 @@ def normalize_pending_orders(
     return normalized
 
 
+@dataclass(frozen=True)
+class PendingSymbolSummary:
+    symbol: str
+    sides: tuple[str, ...]
+    order_count: int
+    nearest_gap_pct: float | None
+    max_abs_gap_pct: float | None
+    total_remaining_krw: float | None
+    oldest_age: str | None
+    flag_reasons: tuple[str, ...]
+
+    @property
+    def flagged(self) -> bool:
+        return bool(self.flag_reasons)
+
+
+def _age_days(ordered_at: str | None, *, now: datetime) -> float | None:
+    created = _parse_ordered_at(ordered_at)
+    if created is None:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return (now.astimezone(UTC) - created.astimezone(UTC)).total_seconds() / 86400
+
+
+def summarize_pending_orders_by_symbol(
+    orders: list[PendingCryptoOrder], *, now: datetime
+) -> list[PendingSymbolSummary]:
+    """Group pending orders per symbol and flag the ones that need attention.
+
+    Flagged symbols come first, largest absolute gap first; the rest follow in
+    symbol order. Boundaries are inclusive (exactly 3 days / exactly 10%).
+    """
+    grouped: dict[str, list[PendingCryptoOrder]] = {}
+    for order in orders:
+        grouped.setdefault(order.symbol, []).append(order)
+
+    summaries: list[PendingSymbolSummary] = []
+    for symbol, group in grouped.items():
+        gaps = [o.gap_pct for o in group if o.gap_pct is not None]
+        remaining = [
+            o.estimated_remaining_krw
+            for o in group
+            if o.estimated_remaining_krw is not None
+        ]
+        ages = [
+            (days, o.age)
+            for o in group
+            if (days := _age_days(o.ordered_at, now=now)) is not None
+        ]
+        reasons: list[str] = []
+        if any(days >= FLAG_MIN_AGE_DAYS for days, _ in ages):
+            reasons.append(f"age≥{FLAG_MIN_AGE_DAYS}d")
+        if any(abs(gap) >= FLAG_MIN_ABS_GAP_PCT for gap in gaps):
+            reasons.append(f"gap≥{FLAG_MIN_ABS_GAP_PCT:g}%")
+        summaries.append(
+            PendingSymbolSummary(
+                symbol=symbol,
+                sides=tuple(sorted({o.side.upper() for o in group})),
+                order_count=len(group),
+                nearest_gap_pct=min(gaps, key=abs) if gaps else None,
+                max_abs_gap_pct=max((abs(g) for g in gaps), default=None),
+                total_remaining_krw=sum(remaining) if remaining else None,
+                oldest_age=max(ages)[1] if ages else None,
+                flag_reasons=tuple(reasons),
+            )
+        )
+
+    flagged = sorted(
+        (s for s in summaries if s.flagged),
+        key=lambda s: (-(s.max_abs_gap_pct or 0.0), s.symbol),
+    )
+    rest = sorted((s for s in summaries if not s.flagged), key=lambda s: s.symbol)
+    return flagged + rest
+
+
+def _symbol_line(
+    idx: int, summary: PendingSymbolSummary, config: CryptoPendingOrderAlertConfig
+) -> str:
+    line = (
+        f"{idx}. `{summary.symbol}` {'/'.join(summary.sides)} ×{summary.order_count}"
+        f" · nearest {_fmt_pct(summary.nearest_gap_pct)}"
+        f" · remaining {_fmt_money(summary.total_remaining_krw)}"
+        f" · oldest {summary.oldest_age or 'n/a'}"
+        f" · ⚠️ {', '.join(summary.flag_reasons)}"
+    )
+    link = _position_url(config, summary.symbol)
+    if link:
+        line += f" — {link}"
+    return line
+
+
 def format_pending_order_message(
     orders: list[PendingCryptoOrder],
     *,
@@ -221,39 +317,43 @@ def format_pending_order_message(
     run_ts: datetime | None = None,
 ) -> str:
     run_ts = run_ts or datetime.now(UTC)
-    lines = [
-        f"🔔 **Crypto pending orders: {len(orders)} open**",
+    summaries = summarize_pending_orders_by_symbol(orders, now=run_ts)
+    flagged = [s for s in summaries if s.flagged]
+    rest = [s for s in summaries if not s.flagged]
+
+    head = [
+        f"🔔 **Crypto pending orders: {len(orders)} open** "
+        f"({len(summaries)} symbol(s), {len(flagged)} need attention)",
         READ_ONLY_NOTICE,
         f"Channel: <#{config.normal_channel_id}>",
         f"Run: {run_ts.isoformat()}",
         "",
     ]
-    omitted_count = max(len(orders) - MAX_LISTED_ORDERS, 0)
-    for idx, order in enumerate(orders[:MAX_LISTED_ORDERS], 1):
-        link = _position_url(config, order.symbol)
-        title = f"{idx}. `{order.symbol}` {order.side.upper()} ({order.status})"
-        if link:
-            title += f" — {link}"
-        lines.extend(
-            [
-                title,
-                f"   • order/current/gap: {_fmt_money(order.order_price)} / {_fmt_money(order.current_price)} / {_fmt_pct(order.gap_pct)}",
-                f"   • remaining/original: {_fmt_qty(order.remaining_qty)} / {_fmt_qty(order.ordered_qty)}",
-                f"   • remaining value: {_fmt_money(order.estimated_remaining_krw)}",
-                f"   • ordered_at/age/ref: {order.ordered_at or 'n/a'} / {order.age or 'n/a'} / `{order.order_ref}`",
-            ]
+    tail: list[str] = []
+    if rest:
+        tail.append(
+            f"Other {len(rest)} symbol(s) · {sum(s.order_count for s in rest)} order(s):"
+            f" resting normally (<{FLAG_MIN_AGE_DAYS}d old, <{FLAG_MIN_ABS_GAP_PCT:g}% gap)."
         )
-    if omitted_count:
-        lines.append(
-            f"…and {omitted_count} more pending order(s) omitted to fit Discord content limits."
+
+    body = [_symbol_line(i, s, config) for i, s in enumerate(flagged, 1)]
+    while body:
+        cut = len(flagged) - len(body)
+        note = (
+            [f"…{cut} flagged line(s) cut to fit Discord content limits."]
+            if cut
+            else []
         )
-    message = "\n".join(lines)
-    if len(message) > MAX_DISCORD_CONTENT_CHARS:
-        return (
-            message[: MAX_DISCORD_CONTENT_CHARS - 80].rstrip()
-            + "\n…truncated to fit Discord content limits."
-        )
-    return message
+        message = "\n".join(head + body + note + tail)
+        if len(message) <= MAX_DISCORD_CONTENT_CHARS:
+            return message
+        body.pop()
+    note = (
+        [f"…{len(flagged)} flagged line(s) cut to fit Discord content limits."]
+        if flagged
+        else []
+    )
+    return "\n".join(head + note + tail)[:MAX_DISCORD_CONTENT_CHARS]
 
 
 def format_failure_message(
