@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 import httpx
 
 from app.core.timezone import format_datetime
+from app.services.fill_intent import FillIntent
 from app.services.fill_notification import FillEnrichment, FillOrder
 from app.telegram_contract import (
     TelegramErrorClassification,
@@ -480,8 +481,13 @@ class TradeNotifier:
         *,
         enrichment: FillEnrichment | None = None,
         detail_url: str | None = None,
+        intent: FillIntent | None = None,
     ) -> bool:
-        """체결(fill) 알림. Discord 우선, Telegram fallback."""
+        """체결(fill) 알림. Discord 우선, Telegram fallback.
+
+        ``intent`` (hk 2834) adds the 의도/슬리피지 lines. ``None`` keeps the
+        message byte-identical to the pre-intent format.
+        """
         from app.services.fill_notification import resolve_display_name_db
 
         display_name = await resolve_display_name_db(order.market_type, order.symbol)
@@ -490,12 +496,14 @@ class TradeNotifier:
             display_name=display_name,
             detail_url=detail_url,
             enrichment=enrichment,
+            intent=intent,
         )
         telegram_msg = fmt_telegram.format_fill_notification_telegram(
             order,
             display_name=display_name,
             detail_url=detail_url,
             enrichment=enrichment,
+            intent=intent,
         )
         return await self._dispatch(
             embed, telegram_msg, order.market_type, telegram_destination="notices"

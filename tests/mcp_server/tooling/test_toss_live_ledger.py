@@ -14,6 +14,7 @@ from sqlalchemy import delete, select, text
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.review import TossLiveOrderLedger
+from app.services.fill_intent import NO_MATCH
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -1721,6 +1722,7 @@ async def test_reconcile_booked_fill_notifies_when_enabled(db_session):
         ),
         patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
         patch.object(mod, "get_trade_notifier", return_value=notifier),
+        patch.object(mod, "resolve_fill_intent", new=AsyncMock(return_value=NO_MATCH)),
     ):
         out = await mod._reconcile_one_toss_row(row, dry_run=False)
 
@@ -1733,6 +1735,7 @@ async def test_reconcile_booked_fill_notifies_when_enabled(db_session):
     assert order.currency == "USD"
     assert order.filled_qty == 2
     assert notifier.notify_fill.await_args.kwargs["enrichment"] is None
+    assert notifier.notify_fill.await_args.kwargs["intent"] is NO_MATCH
     assert notifier.notify_fill.await_args.kwargs["detail_url"].endswith(
         "/invest/stocks/us/AAPL"
     )

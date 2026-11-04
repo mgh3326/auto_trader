@@ -34,6 +34,7 @@ from typing import Any
 from app.core.db import AsyncSessionLocal
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services.execution_ledger.fill_intent_lookup import resolve_fill_intent
 from app.services.execution_ledger.repository import (
     ExecutionLedgerRepository,
     UpsertStatus,
@@ -185,6 +186,8 @@ async def send_fill_notification(
     from app.core.portfolio_links import build_position_detail_url
 
     detail_url = build_position_detail_url(order.symbol, order.market_type)
+    # Read-only and never raises: a failed lookup still sends, marked 조회 실패.
+    intent = await resolve_fill_intent(broker_order_id=order.order_id)
 
     logger.info(
         "Fill notification send start: correlation_id=%s symbol=%s account=%s amount=%s",
@@ -198,6 +201,7 @@ async def send_fill_notification(
             order,
             enrichment=enrichment,
             detail_url=detail_url,
+            intent=intent,
         )
         if ok:
             logger.info(
