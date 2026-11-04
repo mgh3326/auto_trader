@@ -7,6 +7,9 @@ Upbit small-fill proposal-rung recovery) are asserted here once.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -211,3 +214,109 @@ async def test_no_order_context_reports_no_notification() -> None:
 
     assert outcome.notification_attempted is False
     assert hooks.notify_calls == []
+
+
+class _RungRepo:
+    """Fake OrderProposalsService: one rung (2 of 3) of a limit-buy proposal."""
+
+    def __init__(self, session: object) -> None:
+        self._session = session
+
+    async def find_fill_intent_rows(self, **_: Any) -> tuple[Any, Any, list[Any]]:
+        return _PROPOSAL, _RUNG, [_rung_row(0), _RUNG, _rung_row(2)]
+
+
+class _NoopSession:
+    async def __aenter__(self) -> _NoopSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _rung_row(index: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        rung_index=index,
+        limit_price=Decimal("68000"),
+        quantity=Decimal("10"),
+        created_at=datetime(2026, 11, 4, 9, 0, tzinfo=timezone(timedelta(hours=9))),
+    )
+
+
+_RUNG = _rung_row(1)
+_PROPOSAL = SimpleNamespace(
+    id=7,
+    order_type="limit",
+    strategy="rsi_reversion",
+    thesis="눌림 후 반등 확인\n세부 근거",
+    source_asof=None,
+)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fill_alert_carries_intent_and_slippage_through_downstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real send_fill_notification looks up the rung and renders its intent."""
+    from unittest.mock import AsyncMock
+
+    from app.monitoring.trade_notifier.formatters_telegram import (
+        format_fill_notification_telegram,
+    )
+    from app.services.execution_ledger import fill_ingest, fill_intent_lookup
+
+    rendered: list[str] = []
+
+    class _Notifier:
+        async def notify_fill(
+            self,
+            order: FillOrder,
+            *,
+            enrichment: object = None,
+            detail_url: str | None = None,
+            intent: object = None,
+        ) -> bool:
+            rendered.append(
+                format_fill_notification_telegram(
+                    order,
+                    display_name="삼성전자",
+                    detail_url=detail_url,
+                    enrichment=None,
+                    intent=intent,  # type: ignore[arg-type]
+                )
+            )
+            return True
+
+    monkeypatch.setattr(fill_ingest, "get_trade_notifier", lambda: _Notifier())
+    monkeypatch.setattr(
+        fill_ingest, "fetch_fill_enrichment", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(fill_intent_lookup, "AsyncSessionLocal", _NoopSession)
+    monkeypatch.setattr(fill_intent_lookup, "OrderProposalsService", _RungRepo)
+
+    order = FillOrder(
+        symbol="005930",
+        side="bid",
+        filled_price=67_500.0,
+        filled_qty=10.0,
+        filled_amount=675_000.0,
+        filled_at="2026-11-04T10:00:00",
+        account="kis",
+        order_id="0001234567",
+        market_type="kr",
+        currency="KRW",
+    )
+    outcome = await run_post_upsert_downstream(
+        broker="kis",
+        upsert_status="inserted",
+        fill_order=order,
+        raw_event=None,
+        correlation_id="corr-2834",
+        hooks=DownstreamHooks(on_fill_committed=AsyncMock(return_value=None)),
+    )
+
+    assert outcome.notification_attempted is True
+    assert len(rendered) == 1
+    assert "의도: rsi\\_reversion · 눌림 후 반등 확인 · 래더 2/3" in rendered[0]
+    assert "슬리피지: 유리 -73.53bp · 총 -5,000원" in rendered[0]

@@ -12,6 +12,12 @@ if TYPE_CHECKING:
     from app.services.hermes_client import ReviewTriggerPayload
 
 from app.core.timezone import format_datetime
+from app.services.fill_intent import (
+    FillIntent,
+    compute_slippage,
+    render_intent_value,
+    render_slippage_value,
+)
 from app.services.fill_notification import (
     FillEnrichment,
     FillOrder,
@@ -340,12 +346,27 @@ def format_toss_price_recommendation_html(
     return "\n".join(lines)
 
 
+def _md_escape(text: str) -> str:
+    """Backslash-escape legacy-Markdown control characters in free text.
+
+    The fill message is sent with parse_mode=Markdown. A backslash before
+    underscore, asterisk, backtick or left bracket keeps it literal outside an
+    entity; an unescaped one in a strategy name or thesis would make Telegram
+    reject the whole message. The intent and slippage lines are plain text for
+    this reason, not bold entities.
+    """
+    for char in "_*`[":
+        text = text.replace(char, "\\" + char)
+    return text
+
+
 def format_fill_notification_telegram(
     order: FillOrder,
     *,
     display_name: str,
     detail_url: str | None = None,
     enrichment: FillEnrichment | None = None,
+    intent: FillIntent | None = None,
 ) -> str:
     """Telegram(legacy Markdown) 체결 메시지."""
     is_sell = order.side == "ask"
@@ -390,6 +411,12 @@ def format_fill_notification_telegram(
                 f"*보유:* {format_fill_quantity(enrichment.position_qty)} · 평단 "
                 f"{format_fill_money(enrichment.position_avg_price, is_usd=is_usd)}{approx}"
             )
+
+    if intent is not None:
+        lines.append(f"의도: {render_intent_value(intent, escape=_md_escape)}")
+        slippage = compute_slippage(order, intent)
+        if slippage is not None:
+            lines.append(f"슬리피지: {render_slippage_value(slippage, is_usd=is_usd)}")
 
     account_val = order.account
     if order.order_id:

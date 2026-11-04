@@ -11,6 +11,12 @@ if TYPE_CHECKING:
     from app.services.hermes_client import ReviewTriggerPayload
 
 from app.core.timezone import format_datetime
+from app.services.fill_intent import (
+    FillIntent,
+    compute_slippage,
+    render_intent_value,
+    render_slippage_value,
+)
 from app.services.fill_notification import (
     FillEnrichment,
     FillOrder,
@@ -562,6 +568,7 @@ def format_fill_notification(
     display_name: str,
     detail_url: str | None = None,
     enrichment: FillEnrichment | None = None,
+    intent: FillIntent | None = None,
 ) -> DiscordEmbed:
     is_sell = order.side == "ask"
     is_partial = order.fill_status == "partial"
@@ -617,6 +624,24 @@ def format_fill_notification(
                     "value": f"{format_fill_quantity(enrichment.position_qty)} · 평단 "
                     f"{format_fill_money(enrichment.position_avg_price, is_usd=is_usd)}{approx}",
                     "inline": True,
+                }
+            )
+
+    if intent is not None:
+        fields.append(
+            {
+                "name": "의도",
+                "value": render_intent_value(intent),
+                "inline": False,
+            }
+        )
+        slippage = compute_slippage(order, intent)
+        if slippage is not None:
+            fields.append(
+                {
+                    "name": "슬리피지",
+                    "value": render_slippage_value(slippage, is_usd=is_usd),
+                    "inline": False,
                 }
             )
 
