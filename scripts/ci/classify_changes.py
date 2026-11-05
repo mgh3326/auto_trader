@@ -15,7 +15,7 @@ by module name or repo path, plus the directory that mirrors it under
 merges the closure reached 1169 of 2024 files, which is the full suite with
 extra steps. What it misses is what the full suite on main is for.
 Top-level Python files use module references and must map to a test.
-Fixtures also select tests that name their basename as a string literal.
+Fixtures also select tests that mention their basename, including in paths.
 
 Fail-closed contract
 --------------------
@@ -426,8 +426,8 @@ def _tests_for_path(path: str, lane: str, universe: TestUniverse) -> set[str]:
         selected = _references(path, universe)
         if path.startswith("tests/fixtures/"):
             basename = re.escape(path.rsplit("/", 1)[-1])
-            literal = re.compile(rf"""(["']){basename}\1""")
-            selected |= {f for f in universe.files if literal.search(universe.text(f))}
+            mention = re.compile(rf"(?<![\w.-]){basename}(?![\w.-])")
+            selected |= {f for f in universe.files if mention.search(universe.text(f))}
         directory = path.rpartition("/")[0]
         # A helper or conftest serves its own directory. tests/ itself is not
         # a surface: the root conftest is ci_shared and forces run_all earlier.

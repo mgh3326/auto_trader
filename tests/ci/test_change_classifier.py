@@ -772,6 +772,15 @@ def test_fixture_basename_selects_consumer() -> None:
     assert result.affected_tests == tuple(tree)
 
 
+def test_nested_fixture_selects_path_and_basename_consumers() -> None:
+    tree = {
+        "tests/services/brokers/nhplug/test_order_evidence.py": 'Path("responses.json")\n',
+        "tests/services/brokers/nhplug/test_stage2_listing_client.py": 'Path("fixtures/nhplug_stage2/responses.json")\n',
+    }
+    result = _select(tree, "tests/fixtures/nhplug_stage2/responses.json")
+    assert result.affected_tests == tuple(sorted(tree))
+
+
 def test_fixture_and_unmapped_migration_force_run_all() -> None:
     tree = {"tests/test_a.py": 'Path("name.json")\n'}
     result = _select(tree, "tests/fixtures/name.json", "alembic/versions/new.py")

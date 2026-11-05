@@ -190,7 +190,7 @@ Lanes and what each one runs on a PR:
 | `root_python` | top-level `*.py` (except shared infrastructure) | same; none forces `run_all` |
 | `migrations` | `alembic/**` | same |
 | `config` | `config/**` | same |
-| `tests` | `tests/**` | the file itself; a helper or nested `conftest.py` selects its directory and importers; fixtures also select tests naming their basename as a string literal; none forces `run_all` |
+| `tests` | `tests/**` | the file itself; a helper or nested `conftest.py` selects its directory and importers; fixtures also select tests mentioning their basename, including in relative paths; none forces `run_all` |
 | `manifests` | `ci_shards/shard-N.txt` | none, but runs the exact-cover check in `affected-tests` |
 | `ci_shared` | `.github/**`, `scripts/ci/**`, `pyproject.toml`, `uv.lock`, `Makefile`, `.test_durations`, `tests/conftest.py`, `tests/_socket_guard*.py`, `env.example`, `scripts/setup-test-env.sh`, `alembic.ini`, `codecov.yml` | **forces `run_all`** |
 | `unknown` | anything unmatched, including `.mergewake/**` and `ci_shards/weights.json` | **forces `run_all`** |
