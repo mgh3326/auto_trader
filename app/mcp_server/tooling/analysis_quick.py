@@ -12,6 +12,7 @@ import datetime
 import json
 import logging
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from sqlalchemy import and_, case, select
@@ -21,9 +22,10 @@ from app.core.timezone import now_kst
 from app.mcp_server.tooling.earnings_context import _compact_earnings
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_fibonacci,
+    _calculate_volume_profile,
     _cluster_price_levels,
+    _collect_support_resistance_price_levels,
     _compute_indicators,
-    _format_fibonacci_source,
     _split_support_resistance_levels,
 )
 from app.models.investment_reports import InvestmentReportItem
@@ -135,36 +137,21 @@ def _build_support_resistance(
     if current_price <= 0:
         return [], []
     fib = _calculate_fibonacci(frame, current_price)
-    levels: list[tuple[float, str]] = []
-    for level_key, price in (fib.get("levels") or {}).items():
+    # Same level inputs as the standalone get_support_resistance tool
+    # (fibonacci + 20-bin volume profile + bollinger), computed from the frame
+    # that is already loaded. A frame without usable volume only drops the
+    # volume levels instead of failing the quick row.
+    volume_profile: dict[str, Any] | None = None
+    if "volume" in frame:
         try:
-            level_price = float(price)
-        except (TypeError, ValueError):
-            continue
-        if level_price > 0:
-            levels.append((level_price, _format_fibonacci_source(str(level_key))))
-
-    # The quick contract keeps the same deterministic level sources as the
-    # standalone S/R tool, but calculates them from the already-loaded frame.
-    close = frame["close"].astype(float)
-    volume = frame["volume"].astype(float) if "volume" in frame else None
-    if volume is not None and not volume.empty:
-        weighted = (close * volume).sum() / volume.sum() if volume.sum() else None
-        if weighted is not None and weighted > 0:
-            levels.append((float(weighted), "volume_poc"))
-    bollinger = _compute_indicators(frame, ["bollinger"]).get("bollinger") or {}
-    for key, source in (
-        ("upper", "bb_upper"),
-        ("middle", "bb_middle"),
-        ("lower", "bb_lower"),
-    ):
-        try:
-            level_price = float(bollinger.get(key))
-        except (TypeError, ValueError):
-            continue
-        if level_price > 0:
-            levels.append((level_price, source))
-
+            volume_profile = _calculate_volume_profile(frame, bins=20)
+        except (ValueError, OverflowError):
+            # OverflowError: a non-finite volume (Postgres numeric 'Infinity').
+            # One bad candle must not fail the whole quick batch.
+            volume_profile = None
+    levels = _collect_support_resistance_price_levels(
+        fib, volume_profile, _compute_indicators(frame, ["bollinger"])
+    )
     clustered = _cluster_price_levels(levels, tolerance_pct=0.02)
     return _split_support_resistance_levels(clustered, current_price)
 
@@ -653,6 +640,13 @@ async def _load_decision_history_batch(
     return contexts
 
 
+_US_EASTERN = ZoneInfo("America/New_York")
+
+
+def _now_us_eastern() -> datetime.datetime:
+    return datetime.datetime.now(_US_EASTERN)
+
+
 async def _load_earnings_batch(
     session: Any,
     symbols: list[tuple[str, str]],
@@ -665,17 +659,27 @@ async def _load_earnings_batch(
     }
     if not equity:
         return {}
-    today = datetime.date.today()
+    # Each market's window starts at its own exchange date: a US event is
+    # dated in New York, so a KST date would drop an after-close release
+    # dated the previous New York day before it happens.
+    today_by_market = {
+        "kr": now_kst().date(),
+        "us": _now_us_eastern().date(),
+    }
+    horizon = datetime.timedelta(days=30)
+    markets = set(equity.values())
+    window_start = min(today_by_market[m] for m in markets)
+    window_end = max(today_by_market[m] for m in markets) + horizon
     rows = (
         (
             await session.execute(
                 select(MarketEvent)
                 .where(MarketEvent.category == "earnings")
-                .where(MarketEvent.market.in_(tuple(set(equity.values()))))
+                .where(MarketEvent.market.in_(tuple(markets)))
                 .where(MarketEvent.symbol.in_(tuple(equity)))
-                .where(MarketEvent.event_date >= today)
-                .where(MarketEvent.event_date <= today + datetime.timedelta(days=30))
-                .order_by(MarketEvent.event_date.asc())
+                .where(MarketEvent.event_date >= window_start)
+                .where(MarketEvent.event_date <= window_end)
+                .order_by(MarketEvent.event_date.asc(), MarketEvent.id.asc())
             )
         )
         .scalars()
@@ -685,6 +689,12 @@ async def _load_earnings_batch(
     for row in rows:
         symbol = str(getattr(row, "symbol", "")).strip().upper()
         if symbol not in by_symbol:
+            continue
+        market_today = today_by_market[equity[symbol]]
+        event_date = getattr(row, "event_date", None)
+        if isinstance(event_date, datetime.date) and not (
+            market_today <= event_date <= market_today + horizon
+        ):
             continue
         by_symbol[symbol].append(
             {
@@ -712,7 +722,7 @@ async def _load_earnings_batch(
                 "source": "market_events",
                 "earnings": earnings,
             },
-            today=today,
+            today=today_by_market[market],
             freshness="stale",
             data_as_of=None,
         )

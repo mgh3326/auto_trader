@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     # ROB-1436 lazy-import MCP profiles.
     from pandas import DataFrame
 
+from app.core.timezone import now_kst, today_kst
+
 from . import constants
 from ._base_market_data import (
     MarketDataBase,
@@ -548,7 +550,7 @@ class DomesticMarketDataMixin(MarketDataBase):
         컬럼: date, open, high, low, close, volume, value
         """
         n = normalize_daily_chart_lookback(n)
-        end = end_date or datetime.date.today()
+        end = end_date or today_kst()
         rows: list[dict] = []
 
         while len(rows) < n:
@@ -667,7 +669,7 @@ class DomesticMarketDataMixin(MarketDataBase):
         if max_pages is not None and max_pages < 1:
             raise ValueError("max_pages must be greater than or equal to 1")
 
-        end = end_date or datetime.date.today()
+        end = end_date or today_kst()
         rows: list[dict] = []
         pages = 0
 
@@ -714,8 +716,9 @@ class DomesticMarketDataMixin(MarketDataBase):
         end_date: datetime.date | None = None,
         end_time: str | None = None,
     ) -> pd.DataFrame:
-        base_date = end_date or datetime.date.today()
-        current_time = end_time or datetime.datetime.now().strftime("%H%M%S")
+        now = now_kst()
+        base_date = end_date or now.date()
+        current_time = end_time or now.strftime("%H%M%S")
         params = {
             "FID_COND_MRKT_DIV_CODE": market,
             "FID_INPUT_ISCD": code.zfill(6),
@@ -789,14 +792,16 @@ class DomesticMarketDataMixin(MarketDataBase):
         컬럼: datetime, date, time, open, high, low, close, volume, value
         """
         # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 알려진 이슈가 있음
-        current_time = datetime.datetime.now().strftime("%H%M%S")
+        now = now_kst()
+        current_time = now.strftime("%H%M%S")
+        input_date = (end_date or now.date()).strftime("%Y%m%d")
 
         params = {
             "FID_COND_MRKT_DIV_CODE": market,
             "FID_INPUT_ISCD": code.zfill(6),
             "FID_INPUT_HOUR_1": current_time,
-            "FID_INPUT_DATE_1": (end_date or datetime.date.today()).strftime("%Y%m%d"),
-            "FID_INPUT_DATE_2": (end_date or datetime.date.today()).strftime("%Y%m%d"),
+            "FID_INPUT_DATE_1": input_date,
+            "FID_INPUT_DATE_2": input_date,
             "FID_INPUT_TIME_1": "01",
             "FID_INPUT_TIME_2": "01",
             "FID_PW_DATA_INCU_YN": "N",

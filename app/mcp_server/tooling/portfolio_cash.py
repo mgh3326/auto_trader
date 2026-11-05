@@ -33,6 +33,9 @@ from app.services.deployment_cap import (
     evaluate_deployment_cap,
     resolve_parking_balance_krw,
 )
+from app.services.exchange_rate_service import (
+    USD_KRW_FALLBACK_RATE,
+)
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.manual_cash_settings import (
     is_manual_cash_stale,
@@ -398,7 +401,7 @@ async def get_usd_krw_rate() -> float:
         return await _get_usd_krw_rate()
     except Exception as exc:
         logger.warning("Failed to fetch USD/KRW rate: %s", exc)
-        return 1300.0
+        return USD_KRW_FALLBACK_RATE
 
 
 def _is_stale_manual_cash(updated_at_iso: str | None) -> bool:
@@ -438,7 +441,7 @@ async def get_available_capital_impl(
         except Exception as exc:
             logger.warning("Failed to get exchange rate: %s", exc)
             errors.append({"source": "exchange_rate", "error": str(exc)})
-            exchange_rate = 1300.0
+            exchange_rate = USD_KRW_FALLBACK_RATE
 
     total_orderable_krw = 0.0
     manual_cash_excluded_krw = 0.0

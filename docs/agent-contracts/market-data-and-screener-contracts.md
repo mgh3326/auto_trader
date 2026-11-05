@@ -236,6 +236,14 @@ canonical을 읽지 못하면 provider 프레임 위에서 같은 Wilder 산식�
 프레임 행 수를 담는다. `end_date` 지정 또는 `day` 외 period는 canonical을 건드리지
 않는다. zero-loss 구간(avg_loss=0)은 quick과 마찬가지로 `null`이다.
 
+지지/저항 단일 원천: `get_support_resistance` 와 quick 의 레벨 입력(피보나치 +
+20-bin 거래량 프로파일 POC·value area + 볼린저)은
+`market_data_indicators._collect_support_resistance_price_levels` 하나에서 만든다.
+`volume_poc` 는 거래량 프로파일 POC 이며 거래량 가중 종가가 아니다. quick 은 같은
+60봉 창을 쓰고, 쓸 수 있는 거래량이 없으면 volume 레벨만 빠진다.
+`research/screener_bakeoff/indicators.support_resistance` 는 이 빌더의 미러이며
+`tests/research/test_screener_bakeoff_contract.py` 가 동일성을 고정한다.
+
 🔴 **`current_price`는 라이브 시세가 아니다.** quick의 `current_price`는
 `daily_candles`의 가장 최근 **마감된** 일봉 종가이며 `data_state="stale"`,
 `data_state_reason="db_only_projection"`로 항상 스탬프된다. 라이브 가격·세션

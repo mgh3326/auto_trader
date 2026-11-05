@@ -10,6 +10,7 @@ import pandas as pd
 
 from app.core.async_rate_limiter import RateLimitExceededError
 from app.core.log_sanitize import safe_log_value
+from app.core.market import market_instrument_type
 from app.core.timezone import KST, now_kst
 from app.services import naver_finance
 from app.services.brokers.kis.client import KISClient
@@ -55,19 +56,8 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_market(market: str) -> str:
-    normalized = str(market or "").strip().lower()
-    aliases = {
-        "kr": "equity_kr",
-        "kospi": "equity_kr",
-        "kosdaq": "equity_kr",
-        "us": "equity_us",
-        "nasdaq": "equity_us",
-        "nyse": "equity_us",
-        "crypto": "crypto",
-        "upbit": "crypto",
-    }
-    resolved = aliases.get(normalized, normalized)
-    if resolved not in {"equity_kr", "equity_us", "crypto"}:
+    resolved = market_instrument_type(market)
+    if resolved is None:
         raise ValidationError(f"Unsupported market: {market}")
     return resolved
 

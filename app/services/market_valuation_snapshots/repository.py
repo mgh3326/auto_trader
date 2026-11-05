@@ -238,6 +238,10 @@ class MarketValuationSnapshotsRepository:
                 metric_sparse.asc(),
                 MarketValuationSnapshot.snapshot_date.desc(),
                 MarketValuationSnapshot.computed_at.desc(),
+                # Bulk upserts share one computed_at; without these the
+                # DISTINCT ON winner between two metric-rich sources is arbitrary.
+                MarketValuationSnapshot.source.asc(),
+                MarketValuationSnapshot.id.asc(),
             )
             .distinct(MarketValuationSnapshot.symbol)
         )

@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from app.core.config import settings
+from app.core.timezone import today_kst
 
 # OpenDartReader imports pandas at module level. It is resolved on first use
 # instead of at import time so the ROB-1436 lazy-import MCP profiles do not
@@ -86,7 +87,7 @@ def _error_payload(symbol: str, message: str) -> dict[str, Any]:
 
 
 def _today(today: dt.date | None = None) -> dt.date:
-    return today or dt.date.today()
+    return today or today_kst()
 
 
 def _corp_codes_cache_dir() -> Path:

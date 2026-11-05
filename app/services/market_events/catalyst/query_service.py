@@ -40,7 +40,11 @@ def _orm_reader(session: AsyncSession) -> ReaderFn:
                 MarketEvent.event_date >= from_date,
                 MarketEvent.event_date <= to_date,
             )
-            .order_by(MarketEvent.event_date.asc(), MarketEvent.symbol.asc())
+            .order_by(
+                MarketEvent.event_date.asc(),
+                MarketEvent.symbol.asc(),
+                MarketEvent.id.asc(),
+            )
         )
         if symbols:
             stmt = stmt.where(MarketEvent.symbol.in_(list(symbols)))

@@ -8,6 +8,7 @@ import math
 import re
 from typing import TYPE_CHECKING, Any
 
+from app.core.market import market_instrument_type
 from app.core.symbol import to_db_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr
@@ -131,31 +132,12 @@ def normalize_symbol_input(symbol: str | int, market: str | None = None) -> str:
 
 
 def normalize_market(market: str | None) -> str | None:
-    if not market:
-        return None
-    normalized = market.strip().lower()
-    if not normalized:
-        return None
-    mapping = {
-        "crypto": "crypto",
-        "upbit": "crypto",
-        "krw": "crypto",
-        "usdt": "crypto",
-        "kr": "equity_kr",
-        "krx": "equity_kr",
-        "korea": "equity_kr",
-        "kospi": "equity_kr",
-        "kosdaq": "equity_kr",
-        "kis": "equity_kr",
-        "equity_kr": "equity_kr",
-        "us": "equity_us",
-        "usa": "equity_us",
-        "nyse": "equity_us",
-        "nasdaq": "equity_us",
-        "yahoo": "equity_us",
-        "equity_us": "equity_us",
-    }
-    return mapping.get(normalized)
+    """Map a free-form market alias to ``equity_kr`` / ``equity_us`` / ``crypto``.
+
+    The alias table is ``app.core.market`` (shared with services); unknown or
+    empty values return ``None``.
+    """
+    return market_instrument_type(market)
 
 
 def _strip_kr_a_prefix(symbol: str) -> str:

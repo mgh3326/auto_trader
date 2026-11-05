@@ -8,6 +8,11 @@ All market-related detection and normalization functions are gathered here.
 
 from __future__ import annotations
 
+from app.core.market import (
+    CRYPTO_MARKET_ALIASES,
+    KR_MARKET_ALIASES,
+    US_MARKET_ALIASES,
+)
 from app.mcp_server.tooling.shared import (
     is_crypto_market,
     is_korean_equity_code,
@@ -16,11 +21,10 @@ from app.mcp_server.tooling.shared import (
     resolve_market_type,
 )
 
-_KR_ALIASES = frozenset(
-    {"kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr", "naver"}
-)
-_US_ALIASES = frozenset({"us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"})
-_CRYPTO_ALIASES = frozenset({"crypto", "upbit", "krw", "usdt"})
+# Alias table lives in app.core.market so services and MCP tools agree.
+_KR_ALIASES = KR_MARKET_ALIASES
+_US_ALIASES = US_MARKET_ALIASES
+_CRYPTO_ALIASES = CRYPTO_MARKET_ALIASES
 
 
 def normalize_equity_market(market: str) -> str:

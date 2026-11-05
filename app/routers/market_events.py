@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.core.timezone import today_kst
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.calendar_freshness import CoverageMatrixResponse
@@ -46,7 +47,7 @@ async def get_today_market_events(
     market: str | None = None,
     source: str | None = None,
 ) -> MarketEventsDayResponse:
-    target = on_date or date.today()
+    target = on_date or today_kst()
     svc = MarketEventsQueryService(db)
     try:
         return await svc.list_for_date(
@@ -103,7 +104,7 @@ async def get_market_events_freshness(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="from_date and to_date must both be provided or both omitted",
         )
-    today = date.today()
+    today = today_kst()
     window_from = from_date or (today - timedelta(days=7))
     window_to = to_date or (today + timedelta(days=7))
     svc = MarketEventsFreshnessService(db)
@@ -136,7 +137,7 @@ async def get_discover_calendar(
         Query(description="UI tab filter"),
     ] = "all",
 ) -> DiscoverCalendarResponse:
-    target_today = today or date.today()
+    target_today = today or today_kst()
     query_service = MarketEventsQueryService(db)
     ctx = await get_user_event_context(db, user_id=current_user.id)
     svc = DiscoverCalendarService(query_service=query_service)

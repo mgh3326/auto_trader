@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import today_kst
 from app.schemas.invest_calendar import (
     Badge,
     CalendarCluster,
@@ -191,7 +192,7 @@ def _rank_calendar_event(
     if _is_high_impact_macro(event):
         score += 400
         reasons.append("high_impact")
-    ref_today = today or date.today()
+    ref_today = today or today_kst()
     if target_date in (ref_today, ref_today + timedelta(days=1)):
         score += 100
         reasons.append("near_term")

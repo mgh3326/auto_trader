@@ -4,6 +4,7 @@ import datetime as dt
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import today_kst
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.schemas.investor_flow import InvestorFlowItem, InvestorFlowResponse
 from app.services.investor_flow_snapshots.repository import (
@@ -86,7 +87,7 @@ async def latest_items_for_symbols(
     normalized_market = market.strip().lower()
     if normalized_market != "kr":
         raise ValueError("investor_flow only supports market=kr")
-    today = as_of or dt.date.today()
+    today = as_of or today_kst()
     normalized_symbols = [
         _normalize_symbol(symbol) for symbol in symbols if symbol.strip()
     ]
@@ -113,7 +114,7 @@ async def build_investor_flow_cards(
     normalized_market = market.strip().lower()
     if normalized_market != "kr":
         raise ValueError("investor_flow only supports market=kr")
-    today = as_of or dt.date.today()
+    today = as_of or today_kst()
     normalized_symbols = [
         _normalize_symbol(symbol) for symbol in symbols if symbol.strip()
     ]

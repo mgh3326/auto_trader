@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import re
-from datetime import date
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
 
 from app.core.number_utils import parse_korean_number as _parse_korean_number
+from app.core.timezone import today_kst
 
 # Base URLs for Naver Finance
 NAVER_FINANCE_BASE = "https://finance.naver.com"
@@ -66,10 +66,10 @@ def _parse_naver_date(date_str: str | None) -> str | None:
     # Month.day only format (assumes current year): 01.15 or 01-15
     match = re.match(r"(\d{1,2})[./-](\d{1,2})$", date_str)
     if match:
-        year = date.today().year
+        year = today_kst().year
         month, day = match.groups()
         parsed = f"{year}-{int(month):02d}-{int(day):02d}"
-        if parsed > date.today().isoformat():
+        if parsed > today_kst().isoformat():
             year -= 1
             parsed = f"{year}-{int(month):02d}-{int(day):02d}"
         return parsed

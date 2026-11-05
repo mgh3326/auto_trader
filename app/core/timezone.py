@@ -5,7 +5,7 @@ This module provides KST (Korea Standard Time) as the default timezone
 for all datetime operations throughout the application.
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 # KST (한국 표준시, UTC+9)
 KST = timezone(timedelta(hours=9))
@@ -19,6 +19,15 @@ def now_kst() -> datetime:
         datetime: Current datetime with KST timezone
     """
     return datetime.now(KST)
+
+
+def today_kst() -> date:
+    """Current calendar date in KST, independent of the host timezone.
+
+    Use instead of ``date.today()``: on a UTC host ``date.today()`` lags the
+    KST date from 00:00 to 09:00 KST.
+    """
+    return datetime.now(KST).date()
 
 
 def now_kst_naive() -> datetime:
