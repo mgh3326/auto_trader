@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 try:
@@ -552,3 +553,87 @@ def test_quick_projection_preserves_halted_suspect_semantics() -> None:
     assert result["resistances"] is None
     assert result["halt_suspect"]["suspected"] is True
     assert result["halt_suspect"]["frozen_sessions"] == 3
+
+
+@pytest.mark.asyncio
+async def test_quick_earnings_window_uses_each_markets_own_exchange_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hk-3054: 07:00 KST on 11-06 is still 11-05 in New York.
+
+    A US after-close release dated 11-05 (NY) is still upcoming; a KR event
+    dated 11-05 is already past in KST.
+    """
+    assert analysis_quick is not None
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    monkeypatch.setattr(
+        analysis_quick,
+        "now_kst",
+        lambda: datetime.datetime(2026, 11, 6, 7, 0, tzinfo=kst),
+    )
+    monkeypatch.setattr(
+        analysis_quick,
+        "_now_us_eastern",
+        lambda: datetime.datetime(
+            2026, 11, 5, 17, 0, tzinfo=analysis_quick._US_EASTERN
+        ),
+    )
+
+    def _event(symbol: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            symbol=symbol,
+            event_date=datetime.date(2026, 11, 5),
+            time_hint="amc",
+            fiscal_quarter=3,
+            fiscal_year=2026,
+            status="scheduled",
+            raw_payload_json={},
+        )
+
+    class Result:
+        def __init__(self, rows: list[object]) -> None:
+            self.rows = rows
+
+        def scalars(self) -> Result:
+            return self
+
+        def all(self) -> list[object]:
+            return self.rows
+
+    class Session:
+        async def execute(
+            self, statement: object, params: object | None = None
+        ) -> Result:
+            return Result([_event("AAPL"), _event("005930")])
+
+    earnings = await analysis_quick._load_earnings_batch(
+        Session(), [("AAPL", "equity_us"), ("005930", "equity_kr")]
+    )
+
+    assert earnings["AAPL"]["has_upcoming"] is True
+    assert earnings["AAPL"]["next_earnings"]["d_minus"] == 0
+    assert earnings["005930"]["has_upcoming"] is False
+
+
+# inf / inf in the profile is the condition under test, not noise.
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+def test_quick_support_resistance_survives_an_infinite_volume() -> None:
+    """hk-3054: one non-finite volume drops the volume levels, not the row."""
+    assert analysis_quick is not None
+    closes = [100.0 + (i % 7) for i in range(60)]
+    frame = pd.DataFrame(
+        {
+            "open": closes,
+            # The infinite-volume candle spans the whole range, so every bin
+            # is inf (not NaN) and the profile hits OverflowError, not
+            # ValueError.
+            "high": [c + 1 for c in closes[:-1]] + [max(closes) + 1],
+            "low": [c - 1 for c in closes[:-1]] + [min(closes) - 1],
+            "close": closes,
+            "volume": [1000.0] * 59 + [float("inf")],
+        }
+    )
+
+    supports, resistances = analysis_quick._build_support_resistance(frame, 103.0)
+
+    assert supports or resistances

@@ -12,6 +12,7 @@ import datetime
 import json
 import logging
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from sqlalchemy import and_, case, select
@@ -144,7 +145,9 @@ def _build_support_resistance(
     if "volume" in frame:
         try:
             volume_profile = _calculate_volume_profile(frame, bins=20)
-        except ValueError:
+        except (ValueError, OverflowError):
+            # OverflowError: a non-finite volume (Postgres numeric 'Infinity').
+            # One bad candle must not fail the whole quick batch.
             volume_profile = None
     levels = _collect_support_resistance_price_levels(
         fib, volume_profile, _compute_indicators(frame, ["bollinger"])
@@ -637,6 +640,13 @@ async def _load_decision_history_batch(
     return contexts
 
 
+_US_EASTERN = ZoneInfo("America/New_York")
+
+
+def _now_us_eastern() -> datetime.datetime:
+    return datetime.datetime.now(_US_EASTERN)
+
+
 async def _load_earnings_batch(
     session: Any,
     symbols: list[tuple[str, str]],
@@ -649,16 +659,26 @@ async def _load_earnings_batch(
     }
     if not equity:
         return {}
-    today = now_kst().date()
+    # Each market's window starts at its own exchange date: a US event is
+    # dated in New York, so a KST date would drop an after-close release
+    # dated the previous New York day before it happens.
+    today_by_market = {
+        "kr": now_kst().date(),
+        "us": _now_us_eastern().date(),
+    }
+    horizon = datetime.timedelta(days=30)
+    markets = set(equity.values())
+    window_start = min(today_by_market[m] for m in markets)
+    window_end = max(today_by_market[m] for m in markets) + horizon
     rows = (
         (
             await session.execute(
                 select(MarketEvent)
                 .where(MarketEvent.category == "earnings")
-                .where(MarketEvent.market.in_(tuple(set(equity.values()))))
+                .where(MarketEvent.market.in_(tuple(markets)))
                 .where(MarketEvent.symbol.in_(tuple(equity)))
-                .where(MarketEvent.event_date >= today)
-                .where(MarketEvent.event_date <= today + datetime.timedelta(days=30))
+                .where(MarketEvent.event_date >= window_start)
+                .where(MarketEvent.event_date <= window_end)
                 .order_by(MarketEvent.event_date.asc(), MarketEvent.id.asc())
             )
         )
@@ -669,6 +689,12 @@ async def _load_earnings_batch(
     for row in rows:
         symbol = str(getattr(row, "symbol", "")).strip().upper()
         if symbol not in by_symbol:
+            continue
+        market_today = today_by_market[equity[symbol]]
+        event_date = getattr(row, "event_date", None)
+        if isinstance(event_date, datetime.date) and not (
+            market_today <= event_date <= market_today + horizon
+        ):
             continue
         by_symbol[symbol].append(
             {
@@ -696,7 +722,7 @@ async def _load_earnings_batch(
                 "source": "market_events",
                 "earnings": earnings,
             },
-            today=today,
+            today=today_by_market[market],
             freshness="stale",
             data_as_of=None,
         )
