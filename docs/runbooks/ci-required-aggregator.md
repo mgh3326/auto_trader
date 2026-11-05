@@ -187,9 +187,10 @@ Lanes and what each one runs on a PR:
 | `research` | `research/**`, `research_contracts/**` | references + mirror directory; none is fine, because research suites run in their own jobs |
 | `app` | `app/**` | references + mirror directory; none forces `run_all` |
 | `scripts` | `scripts/**` (except `scripts/ci/**`) | same |
+| `root_python` | top-level `*.py` (except shared infrastructure) | same; none forces `run_all` |
 | `migrations` | `alembic/**` | same |
 | `config` | `config/**` | same |
-| `tests` | `tests/**` | the file itself; a helper or nested `conftest.py` selects its directory and importers; none forces `run_all` |
+| `tests` | `tests/**` | the file itself; a helper or nested `conftest.py` selects its directory and importers; fixtures also select tests naming their basename as a string literal; none forces `run_all` |
 | `manifests` | `ci_shards/shard-N.txt` | none, but runs the exact-cover check in `affected-tests` |
 | `ci_shared` | `.github/**`, `scripts/ci/**`, `pyproject.toml`, `uv.lock`, `Makefile`, `.test_durations`, `tests/conftest.py`, `tests/_socket_guard*.py`, `env.example`, `scripts/setup-test-env.sh`, `alembic.ini`, `codecov.yml` | **forces `run_all`** |
 | `unknown` | anything unmatched, including `.mergewake/**` and `ci_shards/weights.json` | **forces `run_all`** |
@@ -218,7 +219,7 @@ Design points that look over-conservative and are meant to be:
   `" docs"`, and it is emitted verbatim under `--name-status -z`; trimming it
   would answer "docs-only, no jobs needed" for a path that is not under
   `docs/` at all. Unmatched literals are `unknown` → `run_all`.
-- **The `*.md` suffix rule is top-level only.** It exists for `README.md`,
+- **The `*.md` and `*.py` suffix rules are top-level only.** The markdown rule exists for `README.md`,
   `CLAUDE.md`, `AGENTS.md`. A bare suffix rule would swallow every unmatched
   *nested* markdown path — including a fixture some test reads — and answer
   "docs". Nested markdown under a directory the prefix table does not know is

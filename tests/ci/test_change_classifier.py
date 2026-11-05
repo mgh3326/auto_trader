@@ -743,6 +743,42 @@ def _select(tree: dict[str, str], *paths: str) -> Classification:
     return select_affected_tests(classify_entries(_modified(*paths)), _universe(tree))
 
 
+def test_root_python_selects_module_reference() -> None:
+    tree = {
+        "tests/scripts/test_dockerfile_api_ships_websocket_monitor.py": 'assert "COPY websocket_monitor.py ./" in dockerfile\n'
+    }
+    result = _select(tree, "websocket_monitor.py")
+    assert result.reason == "classified"
+    assert result.affected_tests == tuple(tree)
+
+
+def test_unreferenced_root_python_forces_run_all() -> None:
+    result = _select({"tests/test_a.py": "x = 1\n"}, "websocket_monitor.py")
+    assert result.run_all and result.reason == "unmapped_path"
+
+
+def test_nested_unknown_python_stays_unknown() -> None:
+    result = _select({"tests/test_a.py": "import foo.bar\n"}, "foo/bar.py")
+    assert result.run_all and result.reason == "forcing_path"
+    assert result.path_lanes["foo/bar.py"] == "unknown"
+
+
+def test_fixture_basename_selects_consumer() -> None:
+    tree = {
+        "tests/mcp_server/test_operating_briefing_phase_spans.py": 'Path(__file__).parents[1] / "fixtures" / "operating_briefing_pre_rob1487.json"\n'
+    }
+    result = _select(tree, "tests/fixtures/operating_briefing_pre_rob1487.json")
+    assert result.reason == "classified"
+    assert result.affected_tests == tuple(tree)
+
+
+def test_fixture_and_unmapped_migration_force_run_all() -> None:
+    tree = {"tests/test_a.py": 'Path("name.json")\n'}
+    result = _select(tree, "tests/fixtures/name.json", "alembic/versions/new.py")
+    assert result.run_all and result.reason == "unmapped_path"
+    assert result.forcing_paths == ("alembic/versions/new.py",)
+
+
 def test_a_docs_only_change_runs_no_tests() -> None:
     result = _select({"tests/test_a.py": "import app.a\n"}, "docs/a.md", "README.md")
     assert result.run_all is False
