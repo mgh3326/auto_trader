@@ -316,3 +316,4 @@ research/us_universe/data_manifests/*.csv
 
 # ROB-1474 downloaded public bars, fitted models, and daily research outputs.
 research/stock_selection/.cache/
+dump.rdb
