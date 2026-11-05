@@ -17,6 +17,7 @@ tests/brokers/kis/mock_scalping_exec/test_ws_bridge.py
 tests/brokers/kis/mock_scalping_ws/test_quote_parsers.py
 tests/brokers/kis/test_broker_order_id.py
 tests/ci/test_file_shard_plan_workflow_entrypoint.py
+tests/core/test_market_aliases.py
 tests/core/test_normalizers.py
 tests/integration/test_paper_positions_market_filter.py
 tests/mcp_server/test_analyze_batch_universe_prefetch.py
@@ -36,6 +37,7 @@ tests/mcp_server/test_mirror_counterfactual_tool.py
 tests/mcp_server/test_session_bootstrap_pack.py
 tests/mcp_server/test_session_bootstrap_profile_sections.py
 tests/mcp_server/test_shadow_replay_profile.py
+tests/mcp_server/test_support_resistance_single_source.py
 tests/mcp_server/test_tool_call_observability.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
 tests/mcp_server/tooling/test_crypto_live_routing.py
