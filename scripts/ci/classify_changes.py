@@ -14,6 +14,8 @@ by module name or repo path, plus the directory that mirrors it under
 ``tests/``. This is deliberately not a transitive import closure: on recorded
 merges the closure reached 1169 of 2024 files, which is the full suite with
 extra steps. What it misses is what the full suite on main is for.
+Top-level Python files use module references and must map to a test.
+Fixtures also select tests that mention their basename, including in paths.
 
 Fail-closed contract
 --------------------
@@ -75,6 +77,7 @@ LANE_JOBS: dict[str, frozenset[str]] = {
     "tests": _NARROW_JOBS,
     "research": _NARROW_JOBS,
     "scripts": _NARROW_JOBS,
+    "root_python": _NARROW_JOBS,
     "frontend": frozenset(),
     "migrations": _NARROW_JOBS,
     "config": _NARROW_JOBS,
@@ -86,7 +89,7 @@ LANE_JOBS: dict[str, frozenset[str]] = {
 #: isolated from the runtime and its suites run in their own jobs. ``docs``,
 #: ``frontend`` and ``manifests`` select no test files by definition.
 _MUST_MAP_LANES: frozenset[str] = frozenset(
-    {"app", "tests", "scripts", "migrations", "config"}
+    {"app", "tests", "scripts", "root_python", "migrations", "config"}
 )
 
 #: A selection bigger than one shard (~500 files, 5-9 minutes) would not fit one
@@ -162,7 +165,10 @@ _PREFIX_RULES: tuple[tuple[str, str], ...] = (
 #: yet, or a directory whose name merely resembles a known one (git tracks
 #: ``" docs/only.md"``, with a leading space, as a *different* directory).
 #: Those must stay ``unknown`` and force ``run_all``.
-_TOP_LEVEL_SUFFIX_RULES: tuple[tuple[str, str], ...] = ((".md", "docs"),)
+_TOP_LEVEL_SUFFIX_RULES: tuple[tuple[str, str], ...] = (
+    (".md", "docs"),
+    (".py", "root_python"),
+)
 
 
 class ClassifierError(RuntimeError):
@@ -418,6 +424,10 @@ def _tests_for_path(path: str, lane: str, universe: TestUniverse) -> set[str]:
         if _is_collected_test_name(path):
             return set()
         selected = _references(path, universe)
+        if path.startswith("tests/fixtures/"):
+            basename = re.escape(path.rsplit("/", 1)[-1])
+            mention = re.compile(rf"(?<![\w.-]){basename}(?![\w.-])")
+            selected |= {f for f in universe.files if mention.search(universe.text(f))}
         directory = path.rpartition("/")[0]
         # A helper or conftest serves its own directory. tests/ itself is not
         # a surface: the root conftest is ci_shared and forces run_all earlier.
