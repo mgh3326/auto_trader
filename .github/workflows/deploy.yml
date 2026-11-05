@@ -25,8 +25,13 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     # Only trusted main pushes enter the automatic build; the gate judges the six full-suite jobs.
+    # hk 2939: a Test run cancelled by a newer main push is superseded, not a verdict
+    # on its SHA, so the automatic build skips it (the job is skipped, not failed).
+    # Deploying such a SHA needs `gh workflow run test.yml --ref <sha>` first; the
+    # exact-SHA gate below is unchanged. Dispatch and release never read this field.
     if: >-
       github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion != 'cancelled' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_branch == 'main' &&
         github.event.workflow_run.head_repository.full_name == github.repository

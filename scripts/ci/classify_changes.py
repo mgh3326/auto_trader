@@ -66,7 +66,8 @@ AFFECTED_JOB = "affected-tests"
 
 #: Lane -> jobs that lane needs on a PR. Lint runs on every PR regardless, so
 #: an empty set means "no test job": ``docs`` has nothing to test and
-#: ``frontend`` is covered by the unconditional ``frontend`` job.
+#: ``frontend`` is covered by the ``frontend`` job, which a PR runs when the
+#: ``lanes`` output contains this lane (hk 2939).
 _NARROW_JOBS = frozenset({"lint", AFFECTED_JOB})
 LANE_JOBS: dict[str, frozenset[str]] = {
     "docs": frozenset(),

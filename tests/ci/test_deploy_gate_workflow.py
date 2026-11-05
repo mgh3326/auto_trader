@@ -381,3 +381,60 @@ def test_resolve_rejects_non_full_sha(tmp_path: Path, bad_sha: str) -> None:
     )
     assert rc == 78
     assert reached == [RESOLVE_STEP]
+
+
+# ------------------------------------------------------------ hk 2939 superseded runs
+
+
+def _build_job_runs(event_name: str, **workflow_run: str) -> bool:
+    from tests.ci import gh_expr
+
+    run = {
+        "conclusion": "success",
+        "event": "push",
+        "head_branch": "main",
+        "head_repository": {"full_name": "mgh3326/auto_trader"},
+    } | workflow_run
+    context = {
+        "github": {
+            "event_name": event_name,
+            "repository": "mgh3326/auto_trader",
+            "event": {"workflow_run": run},
+            "ref": "refs/heads/main",
+        }
+    }
+    return gh_expr.truthy(
+        gh_expr.evaluate(_load()["jobs"]["build-and-push"]["if"], context)
+    )
+
+
+def test_automatic_build_skips_a_test_run_cancelled_by_a_newer_push() -> None:
+    """Skipped, not failed: a superseded run is no verdict on its SHA."""
+
+    assert _build_job_runs("workflow_run", conclusion="cancelled") is False
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", "skipped"])
+def test_automatic_build_still_runs_for_a_completed_test_run(conclusion: str) -> None:
+    """A red run still reaches the exact-SHA gate, which refuses it."""
+
+    assert _build_job_runs("workflow_run", conclusion=conclusion) is True
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"event": "pull_request"},
+        {"head_branch": "feature/x"},
+        {"head_repository": {"full_name": "someone/fork"}},
+    ],
+)
+def test_automatic_build_still_ignores_untrusted_runs(overrides: dict) -> None:
+    assert _build_job_runs("workflow_run", **overrides) is False
+
+
+@pytest.mark.parametrize("event_name", ["workflow_dispatch", "release"])
+def test_manual_and_release_builds_do_not_read_the_workflow_run(
+    event_name: str,
+) -> None:
+    assert _build_job_runs(event_name, conclusion="cancelled") is True

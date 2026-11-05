@@ -9,18 +9,36 @@ on:
   # gh workflow run test.yml --ref <branch>
   workflow_dispatch:
 
+# hk 2939: only the newest head of a ref runs. A push to main (T-POST) cancels the
+# previous push run of that ref, as a new commit cancels a PR's earlier run. A
+# workflow_dispatch run is a deliberate request for one SHA (deploy gate, mergewake
+# bisect), so it gets a group of its own by run id and is never cancelled by a push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id)) || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
-  # ROB-1454: a PR merges on `lint` + `PR gate`. It runs the classifier-selected
-  # tests, or the full suite only when the classifier says run_all. Main pushes
-  # and workflow_dispatch always run the full suite (lint, taskiq-smoke, test).
-  # security, research and frontend jobs stay unconditional and non-required.
-  # See docs/runbooks/ci-required-aggregator.md.
+  # hk 2939, three tiers (docs/runbooks/ci-required-aggregator.md):
+  #   T-PR    pull_request: lint, change-classifier, affected-tests, PR gate. The
+  #           full shards and taskiq-smoke run only when the classifier says
+  #           run_all. `frontend` runs only when the PR touches frontend/.
+  #   T-POST  push to main/develop and workflow_dispatch: the full suite plus
+  #           security, the research/smoke jobs and frontend.
+  #   T-DEPLOY the exact-SHA gate (scripts/deploy_ci_gate.py) before an image or a
+  #           forward deploy.
+  # ROB-1454: a PR merges on `lint` + `PR gate`. Main pushes and workflow_dispatch
+  # always run the full suite (lint, taskiq-smoke, test).
+  #
+  # Runner choice: a job that can run off a pull_request reads
+  # vars.AUTO_TRADER_POST_LINUX_RUNNER and falls back to ubuntu-latest. The repo is
+  # public, so a pull_request run must never resolve to that variable or to a
+  # self-hosted label. The `github.event_name != 'pull_request'` guard in every
+  # runs-on is a routing default only, not a security boundary: a pull_request
+  # run reads this file from the PR head, so a PR can remove the guard. Keeping PR
+  # code off the desk's machines is enforced outside the workflow files (runner
+  # settings and fork-PR approval; docs/runbooks/ci-required-aggregator.md).
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     env:
       PYTHON_VERSION: "3.13"
 
@@ -133,7 +151,7 @@ jobs:
   # malformed diff record turn this job RED instead of narrowing coverage.
   change-classifier:
     name: change-classifier
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -181,7 +199,7 @@ jobs:
     # outputs must leave this job running. `!cancelled()` because a plain `if`
     # would otherwise skip this job whenever the classifier job failed.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       matrix:
@@ -254,10 +272,14 @@ jobs:
     - name: Install dependencies
       run: uv sync --group test
     
+    # The postgres service's own health-cmd (pg_isready inside the container)
+    # already gates the job start. This loop only checks the mapped port, with
+    # bash's /dev/tcp, so the runner needs no PostgreSQL client: a self-hosted
+    # runner behind AUTO_TRADER_POST_LINUX_RUNNER need not install one.
     - name: Wait for PostgreSQL to be ready
       run: |
         for i in {1..30}; do
-          if pg_isready -h localhost -p 5432 -U postgres -d test_db; then
+          if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
             echo "PostgreSQL is ready!"
             exit 0
           fi
@@ -334,7 +356,7 @@ jobs:
     # outputs must leave this job running. `!cancelled()` because a plain `if`
     # would otherwise skip this job whenever the classifier job failed.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       PYTHON_VERSION: "3.13"
@@ -544,7 +566,9 @@ jobs:
         uv run pytest "${AFFECTED_FILES[@]}" -m "not live" -n 4 --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120
 
   security:
-    runs-on: ubuntu-latest
+    # T-POST only (hk 2939): not part of T-PR.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     env:
       PYTHON_VERSION: "3.13"
 
@@ -620,10 +644,12 @@ jobs:
           safety-report.json
 
   alpaca-track-fast-tests:
+    # T-POST only (hk 2939): not part of T-PR.
+    if: ${{ github.event_name != 'pull_request' }}
     # H1/H2/H3 are separate pytest invocations because they contain duplicate
     # test module basenames under prepend import mode. They share one job so
     # checkout/Python/uv/dependency setup is paid once instead of three times.
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -668,7 +694,9 @@ jobs:
         uv run pytest research/alpaca_track_signals/tests/ -q -ra --strict-markers
 
   intraday-harness-v2-tests:
-    runs-on: ubuntu-latest
+    # T-POST only (hk 2939): not part of T-PR.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -702,9 +730,11 @@ jobs:
       run: uv run pytest research/intraday_harness_v2/tests/ -v -ra --strict-markers
 
   kiwoom-dual-surface-smoke:
+    # T-POST only (hk 2939): not part of T-PR.
+    if: ${{ github.event_name != 'pull_request' }}
     # This is an orchestration smoke only: synthetic clients/pool are injected
     # by the test, so it performs zero broker HTTP, account access, or DB write.
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -738,6 +768,8 @@ jobs:
       run: uv run pytest tests/test_kiwoom_dual_surface.py -k 'dual_orchestrator' -v -ra --strict-markers
 
   alpaca-track-walkforward-tests:
+    # T-POST only (hk 2939): not part of T-PR.
+    if: ${{ github.event_name != 'pull_request' }}
     # ROB-1062 H4 remains a separate gate from the consolidated H1/H2/H3 job:
     # it has its own conftest.py sys.path wiring onto its three
     # producer siblings (research/alpaca_track, research/alpaca_track_seal,
@@ -752,7 +784,7 @@ jobs:
     # bypass), so this is a genuine, disclosed cost inherited from H3, not
     # an H4 inefficiency. `timeout-minutes` is set higher than the sibling
     # H1/H2/H3 jobs to give this comfortable headroom.
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -802,11 +834,20 @@ jobs:
   # (confirmed by both a static .github/ audit and the actual job list of
   # recent workflow runs). This job is intentionally non-required (not in the PR
   # gate's --required flags or needs list) so wiring it up carries zero risk to
-  # the merge gate. It runs unconditionally rather than being gated by the
-  # classifier, so a red run is always a real signal, never a skip laundered
-  # into green.
+  # the merge gate.
+  #
+  # hk 2939: on a pull_request it runs only when the classifier saw a path under
+  # frontend/ (the `frontend` lane; frontend/invest is the only directory there),
+  # so a red run is still a real signal and a skip means "no frontend change". On
+  # push and workflow_dispatch it always runs. `!cancelled()` keeps it running when
+  # the classifier job itself failed.
   frontend:
-    runs-on: ubuntu-latest
+    needs: change-classifier
+    # On a pull_request: when the PR touches frontend/, and on every full-suite
+    # fallback (`run_all != 'false'`, like the shards), because a rename or delete
+    # under frontend/ falls back to run_all without a `frontend` lane.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false' || contains(needs.change-classifier.outputs.lanes, 'frontend')) }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -836,29 +877,43 @@ jobs:
     - name: Run Vitest suite
       run: npm test
 
-  # ROB-1454: the one verdict a PR merges on, with `lint`. A skip is fine only
-  # when the classifier said the job was not needed (--pr-gate); on any other
-  # event the full suite must be green.
+  # ROB-1454: the verdict a PR merges on, with `lint`. A skip is fine only when
+  # the classifier said the job was not needed (--pr-gate); on any other event the
+  # full suite must be green.
   #
-  # `if: always()` is load-bearing: without it this job is skipped whenever a
+  # hk 2939 splits it in two so a superseded T-POST run can end "skipped":
+  #   gate-verdict  evaluates the children with scripts/ci/aggregate_required.py and
+  #                 is the only place the rule lives. On push/dispatch, when every
+  #                 non-passing child is `cancelled` (a newer push cancelled this
+  #                 run), it exits 0 and publishes superseded=true.
+  #   pr-gate       the stable `PR gate` check name. It is skipped when the verdict
+  #                 is superseded (mergewake reads a skipped check as unknown and
+  #                 holds). On a pull_request it always runs and is red unless
+  #                 gate-verdict succeeded: a cancelled child there stays red,
+  #                 because a skipped required check is a green merge button.
+  #
+  # `if: always()` on both is load-bearing: without it they are skipped whenever a
   # child fails, and a required check that vanishes on failure is unknown to
   # mergewake and a green merge button to GitHub. Red on child failure, child
-  # cancellation, classifier failure, an absent child result, or any
+  # cancellation (pull_request), classifier failure, an absent child result, or any
   # unrecognised result string.
-  pr-gate:
-    name: PR gate
+  gate-verdict:
+    name: gate-verdict
     if: always()
     needs: [lint, change-classifier, affected-tests, test, taskiq-smoke]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      superseded: ${{ steps.verdict.outputs.superseded }}
     steps:
     - uses: actions/checkout@v5
       with:
         persist-credentials: false
 
     - name: Evaluate the PR verdict
+      id: verdict
       env:
         # toJSON(needs) -> {"lint": {"result": "success", "outputs": {...}}, ...}.
         # For the matrix `test` job GitHub collapses all four shards into one
@@ -870,6 +925,7 @@ jobs:
         python3 scripts/ci/aggregate_required.py \
           --results-env CI_REQUIRED_NEEDS \
           --pr-gate \
+          --allow-superseded \
           --event-name "$GATE_EVENT_NAME" \
           --required lint \
           --required change-classifier \
@@ -886,3 +942,23 @@ jobs:
         name: pr-gate-report
         path: pr-gate-report.json
         if-no-files-found: warn
+
+  pr-gate:
+    name: PR gate
+    # A pull_request never skips. Elsewhere the job is skipped when gate-verdict
+    # succeeded with a superseded verdict, or when gate-verdict itself was cancelled
+    # with its run. A gate-verdict that failed after writing `superseded=true` (a
+    # later step failed) still runs this job, which then goes red.
+    if: ${{ always() && (github.event_name == 'pull_request' || (needs.gate-verdict.result != 'cancelled' && !(needs.gate-verdict.result == 'success' && needs.gate-verdict.outputs.superseded == 'true'))) }}
+    needs: [gate-verdict]
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+    - name: Require a passing verdict
+      env:
+        VERDICT_RESULT: ${{ needs.gate-verdict.result }}
+      run: |
+        if [ "$VERDICT_RESULT" != "success" ]; then
+          echo "::error::gate-verdict result is '$VERDICT_RESULT', not 'success'"
+          exit 1
+        fi
