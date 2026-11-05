@@ -122,6 +122,22 @@ DB Tables:
 - Upbit 심볼/마켓 해석도 DB 테이블(`upbit_symbol_universe`)을 단일 소스로 사용
 - 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
 
+### 시장 별칭·KST 날짜·정렬 단일 원천
+
+- **시장 별칭**: `app/core/market.py` 가 자유 입력 `market` 의 별칭 → `kr`/`us`/`crypto`
+  매핑을 정한다. `tooling/shared.normalize_market`, `tooling/market_normalization`,
+  `services/market_data/service._normalize_market` 은 이 표를 쓴다. 출력 어휘(`kr` vs
+  `equity_kr`)와 미지 값 처리(예외 vs `None`)는 호출자가 유지한다. 별칭을 모듈별로 다시
+  정의하지 마라(`tests/core/test_market_aliases.py`).
+- **오늘 날짜**: KST 기준 "오늘"은 `app.core.timezone.today_kst()` 를 쓴다. 호스트 시간대에
+  의존하는 `date.today()` 는 UTC 호스트에서 00–09시 KST 동안 하루 늦다.
+- **USD/KRW 폴백**: 모든 실시간 소스가 실패했을 때의 마지막 값은
+  `exchange_rate_service.USD_KRW_FALLBACK_RATE` 하나다. 시세가 아니며 쓰는 쪽은 경고/에러로
+  드러내야 한다.
+- **결정적 정렬**: `LIMIT`·`DISTINCT ON`·"최신 1행" 조회는 마지막 정렬 키로 `source`/`id`
+  같은 tiebreaker 를 둔다(같은 날짜·같은 `computed_at` 의 여러 소스 행이 실행마다 바뀌지
+  않게).
+
 ### Trading Policy YAML 단일 소스 (ROB-646)
 
 `config/trading_policy.yaml` = 매매 판단 임계값/decision rule 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**

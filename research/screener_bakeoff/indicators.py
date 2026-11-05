@@ -163,6 +163,96 @@ def source_families(sources: list[str]) -> set[str]:
     return families
 
 
+VOLUME_PROFILE_BINS = 20
+VOLUME_PROFILE_VALUE_AREA_RATIO = 0.70
+
+
+def _normalize_number(value: float, decimals: int = 6) -> float | int:
+    rounded = round(float(value), decimals)
+    if abs(rounded - round(rounded)) < 10 ** (-decimals):
+        return int(round(rounded))
+    return rounded
+
+
+def volume_profile_levels(
+    high: np.ndarray,
+    low: np.ndarray,
+    volume: np.ndarray,
+    bins: int = VOLUME_PROFILE_BINS,
+    value_area_ratio: float = VOLUME_PROFILE_VALUE_AREA_RATIO,
+) -> tuple[float, float, float] | None:
+    """Mirror of market_data_indicators._calculate_volume_profile.
+
+    Returns ``(poc, value_area_high, value_area_low)`` or ``None`` where the
+    production helper raises (no valid rows / zero total volume).
+    """
+    valid = ~(np.isnan(high) | np.isnan(low) | np.isnan(volume))
+    if not valid.any():
+        return None
+    candle_low = np.minimum(low[valid], high[valid]).astype(float)
+    candle_high = np.maximum(low[valid], high[valid]).astype(float)
+    candle_volume = volume[valid].astype(float)
+    price_low = float(candle_low.min())
+    price_high = float(candle_high.max())
+    if price_high <= price_low:
+        epsilon = max(abs(price_low) * 1e-6, 1e-6)
+        edges = np.linspace(price_low - epsilon / 2, price_high + epsilon / 2, bins + 1)
+    else:
+        edges = np.linspace(price_low, price_high, bins + 1)
+
+    bin_volumes = np.zeros(bins, dtype=float)
+    for low_i, high_i, vol_i in zip(
+        candle_low, candle_high, candle_volume, strict=False
+    ):
+        if vol_i <= 0:
+            continue
+        if high_i <= low_i:
+            idx = int(
+                np.clip(np.searchsorted(edges, low_i, side="right") - 1, 0, bins - 1)
+            )
+            bin_volumes[idx] += vol_i
+            continue
+        overlaps = np.clip(
+            np.minimum(edges[1:], high_i) - np.maximum(edges[:-1], low_i), 0.0, None
+        )
+        overlap_sum = float(overlaps.sum())
+        if overlap_sum <= 0:
+            mid = (low_i + high_i) / 2
+            idx = int(
+                np.clip(np.searchsorted(edges, mid, side="right") - 1, 0, bins - 1)
+            )
+            bin_volumes[idx] += vol_i
+            continue
+        bin_volumes += vol_i * (overlaps / overlap_sum)
+
+    total = float(bin_volumes.sum())
+    if total <= 0:
+        return None
+    poc_index = int(np.argmax(bin_volumes))
+    target = total * value_area_ratio
+    covered = float(bin_volumes[poc_index])
+    left = right = poc_index
+    while covered < target and (left > 0 or right < bins - 1):
+        left_vol = bin_volumes[left - 1] if left > 0 else -np.inf
+        right_vol = bin_volumes[right + 1] if right < bins - 1 else -np.inf
+        if right_vol > left_vol:
+            right += 1
+            covered += float(bin_volumes[right])
+        elif left > 0:
+            left -= 1
+            covered += float(bin_volumes[left])
+        elif right < bins - 1:
+            right += 1
+            covered += float(bin_volumes[right])
+        else:
+            break
+    return (
+        float(_normalize_number((edges[poc_index] + edges[poc_index + 1]) / 2)),
+        float(_normalize_number(edges[right + 1])),
+        float(_normalize_number(edges[left])),
+    )
+
+
 def support_resistance(
     high: np.ndarray,
     low: np.ndarray,
@@ -178,11 +268,15 @@ def support_resistance(
         for lvl, price in fibonacci_levels(high, low).items()
         if price > 0
     ]
-    vol_sum = float(volume.sum())
-    if vol_sum:
-        poc = float((close * volume).sum() / vol_sum)
-        if poc > 0:
-            levels.append((poc, "volume_poc"))
+    profile = volume_profile_levels(high, low, volume)
+    if profile is not None:
+        for value, name in zip(
+            profile,
+            ("volume_poc", "volume_value_area_high", "volume_value_area_low"),
+            strict=True,
+        ):
+            if value > 0:
+                levels.append((value, name))
     upper, middle, lower = bollinger(close)
     for value, name in (
         (upper, "bb_upper"),

@@ -37,7 +37,10 @@ from app.mcp_server.tooling.screening.tvscreener_support import (
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.monitoring import yfinance_tracing_session
-from app.services.exchange_rate_service import get_usd_krw_rate
+from app.services.exchange_rate_service import (
+    USD_KRW_FALLBACK_RATE,
+    get_usd_krw_rate,
+)
 from app.services.tvscreener_service import (
     TvScreenerError,
     TvScreenerService,
@@ -47,7 +50,7 @@ from app.services.us_symbol_universe_service import get_us_common_stock_flags
 
 logger = logging.getLogger(__name__)
 
-_US_SCREENING_USD_KRW_FALLBACK_RATE = 1300.0
+_US_SCREENING_USD_KRW_FALLBACK_RATE = USD_KRW_FALLBACK_RATE
 
 
 def _has_krw_valuation_filter(

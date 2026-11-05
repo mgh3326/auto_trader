@@ -110,7 +110,11 @@ class MarketEventsQueryService:
                 MarketEvent.event_date >= from_date,
                 MarketEvent.event_date <= to_date,
             )
-            .order_by(MarketEvent.event_date.asc(), MarketEvent.symbol.asc())
+            .order_by(
+                MarketEvent.event_date.asc(),
+                MarketEvent.symbol.asc(),
+                MarketEvent.id.asc(),
+            )
         )
         if category is not None:
             stmt = stmt.where(MarketEvent.category == category)

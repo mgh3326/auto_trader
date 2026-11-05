@@ -21,9 +21,10 @@ from app.core.timezone import now_kst
 from app.mcp_server.tooling.earnings_context import _compact_earnings
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_fibonacci,
+    _calculate_volume_profile,
     _cluster_price_levels,
+    _collect_support_resistance_price_levels,
     _compute_indicators,
-    _format_fibonacci_source,
     _split_support_resistance_levels,
 )
 from app.models.investment_reports import InvestmentReportItem
@@ -135,36 +136,19 @@ def _build_support_resistance(
     if current_price <= 0:
         return [], []
     fib = _calculate_fibonacci(frame, current_price)
-    levels: list[tuple[float, str]] = []
-    for level_key, price in (fib.get("levels") or {}).items():
+    # Same level inputs as the standalone get_support_resistance tool
+    # (fibonacci + 20-bin volume profile + bollinger), computed from the frame
+    # that is already loaded. A frame without usable volume only drops the
+    # volume levels instead of failing the quick row.
+    volume_profile: dict[str, Any] | None = None
+    if "volume" in frame:
         try:
-            level_price = float(price)
-        except (TypeError, ValueError):
-            continue
-        if level_price > 0:
-            levels.append((level_price, _format_fibonacci_source(str(level_key))))
-
-    # The quick contract keeps the same deterministic level sources as the
-    # standalone S/R tool, but calculates them from the already-loaded frame.
-    close = frame["close"].astype(float)
-    volume = frame["volume"].astype(float) if "volume" in frame else None
-    if volume is not None and not volume.empty:
-        weighted = (close * volume).sum() / volume.sum() if volume.sum() else None
-        if weighted is not None and weighted > 0:
-            levels.append((float(weighted), "volume_poc"))
-    bollinger = _compute_indicators(frame, ["bollinger"]).get("bollinger") or {}
-    for key, source in (
-        ("upper", "bb_upper"),
-        ("middle", "bb_middle"),
-        ("lower", "bb_lower"),
-    ):
-        try:
-            level_price = float(bollinger.get(key))
-        except (TypeError, ValueError):
-            continue
-        if level_price > 0:
-            levels.append((level_price, source))
-
+            volume_profile = _calculate_volume_profile(frame, bins=20)
+        except ValueError:
+            volume_profile = None
+    levels = _collect_support_resistance_price_levels(
+        fib, volume_profile, _compute_indicators(frame, ["bollinger"])
+    )
     clustered = _cluster_price_levels(levels, tolerance_pct=0.02)
     return _split_support_resistance_levels(clustered, current_price)
 
@@ -665,7 +649,7 @@ async def _load_earnings_batch(
     }
     if not equity:
         return {}
-    today = datetime.date.today()
+    today = now_kst().date()
     rows = (
         (
             await session.execute(
@@ -675,7 +659,7 @@ async def _load_earnings_batch(
                 .where(MarketEvent.symbol.in_(tuple(equity)))
                 .where(MarketEvent.event_date >= today)
                 .where(MarketEvent.event_date <= today + datetime.timedelta(days=30))
-                .order_by(MarketEvent.event_date.asc())
+                .order_by(MarketEvent.event_date.asc(), MarketEvent.id.asc())
             )
         )
         .scalars()

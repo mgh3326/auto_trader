@@ -18,6 +18,11 @@ _EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/USD"
 _CACHE_KEY = "usd_krw"
 _OPEN_ER_API_CACHE_TTL_SECONDS = 300.0
 _MIN_TOSS_CACHE_TTL_SECONDS = 1.0
+
+# Single last-resort USD/KRW value for callers that must degrade instead of
+# failing when every live source is down. Callers that use it must say so in
+# their output (warning/errors); it is not a quote.
+USD_KRW_FALLBACK_RATE = 1300.0
 _cache: dict[str, dict[str, object]] = {}
 _lock: asyncio.Lock | None = None
 _lock_loop: asyncio.AbstractEventLoop | None = None

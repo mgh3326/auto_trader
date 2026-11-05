@@ -414,8 +414,14 @@ async def load_fundamentals_preset_from_snapshots(
     # Cap the candidate universe by market_cap (prefer liquid names); ranking by the
     # preset's sort_by happens AFTER derive. Surface truncation honestly (no silent cap).
     _cand_cap = max(limit * 8, 200)
+    # Total order: market_cap ties (and one symbol per source) must not let the
+    # cut-off and the winning source change run to run. Same tiebreak as the
+    # high_yield_value / undervalued_breakout loaders.
     cand_stmt = cand_stmt.order_by(
-        MarketValuationSnapshot.market_cap.desc().nullslast()
+        MarketValuationSnapshot.market_cap.desc().nullslast(),
+        MarketValuationSnapshot.symbol.asc(),
+        MarketValuationSnapshot.source.asc(),
+        MarketValuationSnapshot.id.asc(),
     ).limit(_cand_cap)
     cand_mappings = list((await session.execute(cand_stmt)).mappings().all())
     if len(cand_mappings) >= _cand_cap:

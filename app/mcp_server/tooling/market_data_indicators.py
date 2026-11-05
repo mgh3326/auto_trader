@@ -925,6 +925,59 @@ def _split_support_resistance_levels(
     return supports, resistances
 
 
+def _collect_support_resistance_price_levels(
+    fibonacci: dict[str, Any] | None,
+    volume_profile: dict[str, Any] | None,
+    indicators: dict[str, Any] | None,
+) -> list[tuple[float, str]]:
+    """Single source of the (price, source) inputs for support/resistance.
+
+    ``get_support_resistance`` and ``analyze_stock_batch(quick=True)`` both
+    cluster these levels; building them here keeps ``volume_poc`` (the binned
+    volume-profile POC, not a volume-weighted close), the value-area bounds and
+    the Bollinger levels identical across the two tools.
+    """
+    levels: list[tuple[float, str]] = []
+
+    fib_levels = (fibonacci or {}).get("levels")
+    if isinstance(fib_levels, dict):
+        for level_key, price in fib_levels.items():
+            level_price = _to_optional_float(price)
+            if level_price is not None and level_price > 0:
+                levels.append((level_price, _format_fibonacci_source(str(level_key))))
+
+    profile = volume_profile or {}
+    poc_price = _to_optional_float((profile.get("poc") or {}).get("price"))
+    if poc_price is not None and poc_price > 0:
+        levels.append((poc_price, "volume_poc"))
+    value_area = profile.get("value_area") or {}
+    for key, source in (
+        ("high", "volume_value_area_high"),
+        ("low", "volume_value_area_low"),
+    ):
+        level_price = _to_optional_float(value_area.get(key))
+        if level_price is not None and level_price > 0:
+            levels.append((level_price, source))
+
+    indicator_result = indicators or {}
+    bollinger = indicator_result.get("bollinger")
+    if not isinstance(bollinger, dict):
+        nested = indicator_result.get("indicators")
+        bollinger = nested.get("bollinger") if isinstance(nested, dict) else None
+    if not isinstance(bollinger, dict):
+        bollinger = {}
+    for key, source in (
+        ("upper", "bb_upper"),
+        ("middle", "bb_middle"),
+        ("lower", "bb_lower"),
+    ):
+        level_price = _to_optional_float(bollinger.get(key))
+        if level_price is not None and level_price > 0:
+            levels.append((level_price, source))
+
+    return levels
+
+
 def _compute_rsi_weights(rsi_value: float | None, splits: int) -> list[float]:
     if rsi_value is None:
         return [1.0 / splits] * splits
