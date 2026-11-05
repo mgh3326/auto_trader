@@ -22,10 +22,12 @@ from app.mcp_server.tooling.shared import normalize_market
 from app.services.domain_errors import ValidationError
 from app.services.market_data.service import _normalize_market as service_market
 
+# sorted: frozenset order varies per process (hash seed), and xdist workers
+# must collect identical parametrize ids.
 _ALL = (
-    [(a, "kr") for a in KR_MARKET_ALIASES]
-    + [(a, "us") for a in US_MARKET_ALIASES]
-    + [(a, "crypto") for a in CRYPTO_MARKET_ALIASES]
+    [(a, "kr") for a in sorted(KR_MARKET_ALIASES)]
+    + [(a, "us") for a in sorted(US_MARKET_ALIASES)]
+    + [(a, "crypto") for a in sorted(CRYPTO_MARKET_ALIASES)]
 )
 _TYPE = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 
