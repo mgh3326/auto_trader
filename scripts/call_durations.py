@@ -121,8 +121,12 @@ def _no_duplicate_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return seen
 
 
-def _load_json_no_duplicates(path: Path) -> Any:
-    """Parse JSON, fail-closed on any duplicate key at any nesting level."""
+def load_json_no_duplicate_keys(path: Path) -> Any:
+    """Parse JSON, fail-closed on any duplicate key at any nesting level.
+
+    Public so the shard planner can read ``.test_durations`` with the same
+    duplicate-key rejection this module applies to its own artifacts.
+    """
     try:
         return json.loads(
             path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_pairs_hook
@@ -172,7 +176,7 @@ def _validate_schema_version(raw: Any, *, source: str) -> int:
 
 def _load_call_duration_shard(path: Path) -> tuple[dict[str, float], set[str]]:
     """Load one shard's ``{"durations": {...}, "not_called": [...]}`` output."""
-    raw: Any = _load_json_no_duplicates(path)
+    raw: Any = load_json_no_duplicate_keys(path)
     if not isinstance(raw, dict) or "durations" not in raw or "not_called" not in raw:
         raise ValueError(
             f"{path}: expected an object with 'durations' and 'not_called' keys"
@@ -270,7 +274,7 @@ def serialize_artifact(artifact: dict[str, Any]) -> str:
 
 
 def load_artifact(path: Path) -> dict[str, Any]:
-    raw = _load_json_no_duplicates(path)
+    raw = load_json_no_duplicate_keys(path)
 
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: expected a JSON object")

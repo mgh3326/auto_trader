@@ -365,20 +365,26 @@ jobs:
         if-no-files-found: error
 
     # ROB-1312: ci_shards/*.txt is a deterministic function of
-    # .call_durations.json (weight source) + the current authoritative
-    # collection -- if the weekly refresh rebuilt .call_durations.json but
+    # .test_durations (weight source) + the current authoritative
+    # collection -- if the weekly refresh rebuilt .test_durations but
     # never regenerated the manifests from it, LPT balance would silently
     # drift out of sync with reality with no duration-refresh workflow left
     # to correct it (exact-cover would still hold, since file membership is
     # unaffected by weight drift, but the "keep predicted shard weight spread
     # low" intent this planner exists for would quietly rot). Regenerate
-    # here from the same freshly-built artifact and authoritative capture
-    # against which this job already validated .call_durations.json, so both land in
-    # the same refresh PR in lockstep.
+    # here from the same freshly-merged artifact and authoritative capture
+    # against which this job already validated it, so both land in the same
+    # refresh PR in lockstep.
+    #
+    # hk-3336: the weight source is `.test_durations` (whole per-test
+    # protocol: setup + call + teardown), not `.call_durations.json` (call
+    # phase only). On the 2026-11-03 artifact the call phase missed 435.5 s
+    # (13.3 %) of real per-test time, and it cannot see the setup/teardown
+    # cost that bounds a `--dist=loadfile` shard at all.
     - name: Regenerate file-shard manifests
       run: |
         python3 -m scripts.ci.file_shard_plan generate \
-          --call-durations .call_durations.json \
+          --durations .test_durations \
           --collected duration-artifacts/authoritative-collected-nodes.txt \
           --manifest-dir ci_shards \
           --shard-count 4
@@ -511,12 +517,16 @@ jobs:
           `.call_durations.json` is a separate, additive call-phase-only
           duration record (excludes setup/teardown/fixture cost) with
           source-commit and collection-hash provenance, built and
-          self-validated by `scripts/call_durations.py`. It is also the
-          weight source this run's `python3 -m scripts.ci.file_shard_plan
-          generate` summed per file to rebuild `ci_shards/shard-{1..4}.txt` +
-          `ci_shards/weights.json` from the same fresh measurement and the
-          same authoritative capture, self-checked with `... check`
-          immediately after. This same run refreshes the shard balance alongside
+          self-validated by `scripts/call_durations.py`.
+          `.test_durations` (the whole per-test protocol: setup + call +
+          teardown) is the weight source this run's `python3 -m
+          scripts.ci.file_shard_plan generate` summed per file to rebuild
+          `ci_shards/shard-{1..4}.txt` + `ci_shards/weights.json` from the
+          same fresh measurement and the same authoritative capture,
+          self-checked with `... check` immediately after.
+          `ci_shards/weights.json` now also reports the predicted per-shard
+          pytest time under `-n 4 --dist=loadfile`, which is the number a job
+          actually realises. This same run refreshes the shard balance alongside
           the duration data; exact cover is unaffected either way. The workflow
           keeps the *balance*, not just membership correctness, current.
 
