@@ -95,6 +95,7 @@ tests/scripts/b0x/test_labels.py
 tests/scripts/test_binance_demo_strategy_loop.py
 tests/scripts/test_binance_h5_heartbeat_watch.py
 tests/scripts/test_binance_h5_scripts_mutants.py
+tests/scripts/test_deploy_ncp_pull_kis_ws_absent.py
 tests/scripts/test_deploy_ncp_pull_rollback.py
 tests/scripts/test_hermes_roundtrip_smoke_cli.py
 tests/scripts/test_invest_reports_us_schedule_cli.py
