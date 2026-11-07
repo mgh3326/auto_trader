@@ -65,6 +65,9 @@ env:
   # when this tier was added. The migration check starts from this commit until a
   # first-parent main ancestor carries a deploy-ok status.
   BOOTSTRAP_BASE_SHA: 0c416a3df
+  # The migrations require the TimescaleDB extension (>= 2.15), so the service is the
+  # image dev-kit.md pins for the same purpose, not plain postgres. Production runs
+  # timescaledb-ha 2.26.3; docs/runbooks/dev-kit.md §3 records why the version differs.
 
 # Hosted runners only: the deploy tier needs a Docker daemon and runs outside the
 # pull_request path, so it never reads AUTO_TRADER_POST_LINUX_RUNNER.
@@ -122,7 +125,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:15-alpine
+        image: timescale/timescaledb:2.22.1-pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -200,7 +203,7 @@ jobs:
       image_digest: ${{ steps.image.outputs.image_digest }}
     services:
       postgres:
-        image: postgres:15-alpine
+        image: timescale/timescaledb:2.22.1-pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

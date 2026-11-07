@@ -437,6 +437,14 @@ def test_the_base_is_selected_by_the_helper_from_first_parent_main(
 # --------------------------------------------------------------- install smoke
 
 
+def test_the_postgres_services_are_timescaledb(checks_wf: dict[str, Any]) -> None:
+    """Migrations raise `timescaledb extension is not installed` on plain postgres."""
+
+    for job_id in ("migration-path", "install-smoke"):
+        image = checks_wf["jobs"][job_id]["services"]["postgres"]["image"]
+        assert image.startswith("timescale/timescaledb:"), (job_id, image)
+
+
 def test_install_smoke_has_postgres_and_redis_and_no_secrets(
     checks_wf: dict[str, Any],
 ) -> None:
