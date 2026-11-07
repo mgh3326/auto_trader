@@ -47,6 +47,14 @@ not the tag again. A tag moving between inspection and pull cannot change
 the deployed commit. Both automatic failure recovery and explicit `--rollback`
 remain **unchecked emergency paths**, using their existing immutable targets.
 
+`deploy-ok` is evidence only (hk 3445). After a successful main-push `Test` run,
+`deploy.yml` also runs the deploy tier (`.github/workflows/deploy-checks.yml`) on the digest it pushed
+and posts the `deploy-ok` commit status on that SHA: deployed-schema -> candidate migration path and an
+install smoke of the image. `scripts/deploy_ci_gate.py` does **not** read it and is unchanged: a forward
+deploy still needs the six full-suite jobs above, a red or missing `deploy-ok` blocks nothing, and a red
+deploy tier never unpublishes an image. Reading `deploy-ok` at admission is mergewake's later
+`deploy_checks` switch. Details: `docs/runbooks/ci-required-aggregator.md` §0a.
+
 Break-glass forward deploy (operator decision; keep the reason in the incident
 record and do not put secrets in it):
 
