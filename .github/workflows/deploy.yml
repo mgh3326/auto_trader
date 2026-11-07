@@ -43,6 +43,8 @@ jobs:
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       short: ${{ steps.sha.outputs.short }}
+      # hk 3445: the deploy tier checks exactly this pushed digest (one matrix leg).
+      digest: ${{ steps.build.outputs.digest }}
     strategy:
       fail-fast: false
       matrix:
@@ -248,6 +250,27 @@ jobs:
             --tag "$IMAGE_REPOSITORY:main" \
             --tag "$IMAGE_REPOSITORY:latest" \
             "$IMAGE_REPOSITORY:sha-$SHORT_SHA"
+
+  # hk 3445: deploy tier (docs/runbooks/ci-required-aggregator.md). Runs only for
+  # a main-push Test run that succeeded (a cancelled or red Test run gets none),
+  # on the digest pushed above; it never rebuilds. One run per repository, never
+  # cancelled (deploy-checks.yml). It publishes `deploy-ok`; nothing reads it yet.
+  # A red deploy tier never unpublishes or untags an image, and promote-moving-tags
+  # and notify do not wait for it.
+  deploy-checks:
+    needs: build-and-push
+    if: >-
+      needs.build-and-push.result == 'success' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      packages: read
+      statuses: write
+    uses: ./.github/workflows/deploy-checks.yml
+    with:
+      sha: ${{ needs.build-and-push.outputs.sha }}
+      image: ghcr.io/${{ github.repository }}@${{ needs.build-and-push.outputs.digest }}
 
   notify:
     if: failure()

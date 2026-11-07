@@ -1,0 +1,342 @@
+name: Deploy checks
+
+# Deploy tier (hk 3445, decision/2026-11-07/fleet-ci-three-tiers-r2 §1).
+#
+# Called by deploy.yml (`workflow_call`) for the exact SHA of a successful main-push
+# Test run, on the image digest build-and-push just pushed. Also runnable on any
+# ref (`workflow_dispatch`, suite=deploy), where it builds the image locally (load,
+# no push) and never needs more than read access to packages.
+#
+# Checks:
+#   migration-path  deployed schema -> candidate: `alembic upgrade head` at the base
+#                   checkout, then the candidate's, on the same database
+#   install-smoke   the image boots against CI Postgres and Redis with placeholder
+#                   settings: migrations, /healthz, scheduler/worker/websocket imports
+#   deploy-ok       commit status `deploy-ok` + evidence artifact
+#
+# One run per repository at a time and never cancelled: GitHub keeps the newest
+# pending run. This PR publishes `deploy-ok` only; nothing reads it yet, and
+# scripts/deploy_ci_gate.py is unchanged. A red run never unpublishes an image.
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: "Full 40-hex SHA of the candidate commit (a main push)."
+        required: true
+        type: string
+      image:
+        description: "Pushed image by digest: ghcr.io/<repo>@sha256:<digest>."
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to check. Empty = the ref this run was dispatched on."
+        required: false
+        type: string
+        default: ""
+      suite:
+        description: "Only `deploy` exists."
+        required: true
+        type: choice
+        options:
+          - deploy
+        default: deploy
+
+concurrency:
+  group: deploy-tier-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Placeholder settings so the app boots; none of these is a credential.
+  SECRET_KEY: CiTest_StrongKey_20260216_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9
+  KIS_APP_KEY: DUMMY_KIS_APP_KEY
+  KIS_APP_SECRET: DUMMY_KIS_APP_SECRET
+  OPENDART_API_KEY: DUMMY_OPENDART_API_KEY
+  UPBIT_ACCESS_KEY: DUMMY_UPBIT_ACCESS_KEY
+  UPBIT_SECRET_KEY: DUMMY_UPBIT_SECRET_KEY
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/deploy_check
+  REDIS_URL: redis://127.0.0.1:6379/0
+  # Production ran sha-0c416a3 (deploy record deploy/auto_trader/20261106T230040Z)
+  # when this tier was added. The migration check starts from this commit until a
+  # first-parent main ancestor carries a deploy-ok status.
+  BOOTSTRAP_BASE_SHA: 0c416a3df
+
+# Hosted runners only: the deploy tier needs a Docker daemon and runs outside the
+# pull_request path, so it never reads AUTO_TRADER_POST_LINUX_RUNNER.
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: read
+    outputs:
+      sha: ${{ steps.candidate.outputs.sha }}
+      mode: ${{ steps.candidate.outputs.mode }}
+      base_sha: ${{ steps.base.outputs.base_sha }}
+      base_source: ${{ steps.base.outputs.base_source }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.sha || inputs.ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve the candidate
+        id: candidate
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --verify 'HEAD^{commit}')"
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::'$sha' is not a full 40-hex commit SHA"
+            exit 78
+          fi
+          # A called workflow always receives the pushed image; a dispatch never does.
+          if [ -n "$INPUT_IMAGE" ]; then mode=pushed; else mode=local; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "candidate $sha ($mode image)"
+
+      - name: Select the deployed-schema base
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          python3 scripts/ci/select_deploy_base.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --sha "$SHA" \
+            --bootstrap "$BOOTSTRAP_BASE_SHA" \
+            --main-ref origin/main
+
+  migration-path:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deploy_check
+        options: >-
+          --health-cmd "pg_isready -U postgres -d deploy_check"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Check out the base (deployed schema)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.base_sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Check out the candidate
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install UV
+        run: pip install uv
+
+      - name: Install the base environment
+        working-directory: base
+        run: uv sync --frozen --no-dev
+
+      - name: Install the candidate environment
+        working-directory: candidate
+        run: uv sync --frozen --no-dev
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in {1..30}; do
+            if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+              echo "PostgreSQL is ready"
+              exit 0
+            fi
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 1
+          done
+          echo "PostgreSQL failed to start"
+          exit 1
+
+      - name: "Base: alembic upgrade head (${{ needs.plan.outputs.base_source }} ${{ needs.plan.outputs.base_sha }})"
+        working-directory: base
+        run: |
+          uv run --frozen --no-dev alembic upgrade head
+          uv run --frozen --no-dev alembic current
+
+      - name: "Candidate: alembic upgrade head on the same database"
+        working-directory: candidate
+        run: |
+          uv run --frozen --no-dev alembic upgrade head
+          uv run --frozen --no-dev alembic current
+
+  install-smoke:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image_digest: ${{ steps.image.outputs.image_digest }}
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deploy_check
+        options: >-
+          --health-cmd "pg_isready -U postgres -d deploy_check"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      # Pushed image: pull the digest build-and-push produced. Nothing is rebuilt.
+      - name: Log in to Container Registry
+        if: ${{ needs.plan.outputs.mode == 'pushed' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull the pushed image by digest
+        if: ${{ needs.plan.outputs.mode == 'pushed' }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          case "$IMAGE" in
+            *@sha256:*) ;;
+            *) echo "::error::image '$IMAGE' is not a digest reference"; exit 78 ;;
+          esac
+          docker pull "$IMAGE"
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")"
+          if [ "$revision" != "$SHA" ]; then
+            echo "::error::image revision '$revision' is not the candidate $SHA"
+            exit 1
+          fi
+          echo "SMOKE_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "IMAGE_DIGEST=${IMAGE#*@}" >> "$GITHUB_ENV"
+
+      # Any-ref dispatch: build for the runner's platform and load it. No push, no
+      # registry login, no cache write.
+      - name: Set up Docker Buildx
+        if: ${{ needs.plan.outputs.mode == 'local' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the image locally (load, no push)
+        if: ${{ needs.plan.outputs.mode == 'local' }}
+        id: local_build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.api
+          build-args: |
+            VCS_REF=${{ needs.plan.outputs.sha }}
+            GITHUB_SHA=${{ needs.plan.outputs.sha }}
+          load: true
+          push: false
+          tags: auto-trader-deploy-check:local
+          cache-from: type=gha,scope=api
+          provenance: false
+
+      - name: Name the local image
+        if: ${{ needs.plan.outputs.mode == 'local' }}
+        run: |
+          set -euo pipefail
+          id="$(docker image inspect --format '{{ .Id }}' auto-trader-deploy-check:local)"
+          echo "SMOKE_IMAGE=auto-trader-deploy-check:local" >> "$GITHUB_ENV"
+          echo "IMAGE_DIGEST=local-build:$id" >> "$GITHUB_ENV"
+
+      - name: Record the image digest
+        id: image
+        run: echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Install smoke
+        run: bash scripts/ci/install_smoke.sh "$SMOKE_IMAGE"
+
+  deploy-ok:
+    needs: [plan, migration-path, install-smoke]
+    if: ${{ always() && (inputs.sha != '' || needs.plan.outputs.sha != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.sha || needs.plan.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # success only when every deploy-tier job reported success; the status is
+      # posted only for an ancestor of origin/main (a branch dispatch writes the
+      # evidence file and no status).
+      - name: Publish deploy-ok
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_NEEDS: ${{ toJSON(needs) }}
+          CANDIDATE_SHA: ${{ inputs.sha || needs.plan.outputs.sha }}
+          IMAGE_DIGEST: ${{ needs.install-smoke.outputs.image_digest }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ENVIRONMENT: github-actions/${{ runner.os }}-${{ runner.arch }}
+        run: |
+          python3 scripts/ci/deploy_ok.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --sha "$CANDIDATE_SHA" \
+            --needs-env DEPLOY_NEEDS \
+            --required plan \
+            --required migration-path \
+            --required install-smoke \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-url "$RUN_URL" \
+            --environment "$ENVIRONMENT" \
+            --image-digest "$IMAGE_DIGEST" \
+            --evidence-out deploy-evidence.json
+
+      - name: Upload deploy evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: deploy-evidence
+          path: deploy-evidence.json
+          if-no-files-found: warn

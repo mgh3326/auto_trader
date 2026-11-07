@@ -962,3 +962,37 @@ jobs:
           echo "::error::gate-verdict result is '$VERDICT_RESULT', not 'success'"
           exit 1
         fi
+
+  # hk 3445 (decision/2026-11-07/fleet-ci-three-tiers-r2): the main-tier verdict,
+  # `ci-ok`, over every job that runs on a main push or a dispatch. Same rule as
+  # auto_trader-operator ci-post.yml: a run whose only non-success results are
+  # cancellations (a newer main push superseded it) skips this job, so the check
+  # stays unknown for that head; any failure, skip or unknown result runs it red.
+  # The PR path never runs it. Not listed: affected-tests (PR only),
+  # write-fence-guard (one PR branch), gate-verdict and pr-gate (they aggregate
+  # the children below). The deploy tier is a separate workflow
+  # (.github/workflows/deploy-checks.yml, called from deploy.yml).
+  ci-ok:
+    name: ci-ok
+    needs:
+    - lint
+    - change-classifier
+    - test
+    - taskiq-smoke
+    - security
+    - alpaca-track-fast-tests
+    - intraday-harness-v2-tests
+    - kiwoom-dual-surface-smoke
+    - alpaca-track-walkforward-tests
+    - frontend
+    if: ${{ always() && github.event_name != 'pull_request' && (contains(needs.*.result, 'failure') || !contains(needs.*.result, 'cancelled')) }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+    - name: Check required jobs
+      env:
+        RESULTS: ${{ join(needs.*.result, ' ') }}
+      run: |
+        for r in $RESULTS; do
+          [ "$r" = success ] || { echo "a required job reported: $r"; exit 1; }
+        done
