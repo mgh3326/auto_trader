@@ -44,10 +44,26 @@ def _projection(symbol: str) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_quick_batch_read_models_attach_history_and_earnings_by_canonical_key() -> (
-    None
-):
+async def test_quick_batch_read_models_attach_history_and_earnings_by_canonical_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert analysis_quick is not None
+    # The earnings window is per market (US = New York date, hk-3054). Pin both
+    # clocks so the expected d_minus does not depend on the runner's UTC hour.
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    monkeypatch.setattr(
+        analysis_quick,
+        "now_kst",
+        lambda: datetime.datetime(2026, 11, 6, 7, 0, tzinfo=kst),
+    )
+    monkeypatch.setattr(
+        analysis_quick,
+        "_now_us_eastern",
+        lambda: datetime.datetime(
+            2026, 11, 5, 17, 0, tzinfo=analysis_quick._US_EASTERN
+        ),
+    )
+    us_today = datetime.date(2026, 11, 5)
 
     class Result:
         def __init__(self, rows: list[object]) -> None:
@@ -70,7 +86,7 @@ async def test_quick_batch_read_models_attach_history_and_earnings_by_canonical_
     )
     earnings_row = SimpleNamespace(
         symbol="AAPL",
-        event_date=datetime.date.today() + datetime.timedelta(days=3),
+        event_date=us_today + datetime.timedelta(days=3),
         time_hint="amc",
         fiscal_quarter=2,
         fiscal_year=2026,
