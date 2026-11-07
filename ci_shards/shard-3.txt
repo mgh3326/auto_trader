@@ -106,6 +106,7 @@ tests/scripts/test_backfill_kr_candles_1m_toss.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_deploy_ncp_pull_install_paths.py
+tests/scripts/test_deploy_ncp_pull_kis_ws_absent.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_invest_perf_report.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py

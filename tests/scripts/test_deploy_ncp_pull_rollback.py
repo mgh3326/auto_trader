@@ -60,6 +60,8 @@ def _run(
     active_mcp_color: str = "blue",
     both_mcp_colors_present: bool = False,
     deploy: Path | None = None,
+    fixed_date: str = "",
+    block_evidence_file: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -177,6 +179,16 @@ def _run(
         'if [[ "$*" == *--write-out* ]]; then echo 200; fi\n'
     )
     (bindir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n")
+    if fixed_date:
+        # Pin only the failure-evidence stamp; every other date call is real.
+        (bindir / "date").write_text(
+            "#!/usr/bin/env bash\n"
+            f'if [[ "$*" == "-u +%Y%m%dT%H%M%SZ" ]]; then echo {fixed_date}; exit 0; fi\n'
+            'PATH=/usr/bin:/bin exec date "$@"\n'
+        )
+    if block_evidence_file:
+        # A directory where the evidence file goes makes the redirect fail.
+        (run_dir / block_evidence_file).mkdir()
     (bindir / "nohup").write_text("#!/usr/bin/env bash\nexit 0\n")
     if fail_drain_arm:
         (bindir / "mv").write_text(

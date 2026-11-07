@@ -355,6 +355,31 @@ Without the flag, a stopped at-kis-ws still fails capture. Any other unit
 stopped at capture also fails before mutation; if it stops after promotion,
 digest verification fails and triggers the usual rollback.
 
+An at-kis-ws that is absent at capture is never created, with or without
+`--skip-kis-ws` (hk 3361). fillwire holds the KIS stream, and a second
+websocket session on the same app key is refused (`ALREADY IN USE appkey`), so
+a freshly created at-kis-ws can never become ready. The run prints
+`at-kis-ws absent at capture; not created (fillwire holds the KIS stream)` and
+the dry-run plan prints the same line. The digest table reports
+`at-kis-ws  ABSENT  ABSENT  MATCH`. A present at-kis-ws is unchanged: it is
+replaced without the flag and left alone with it. Pass `--skip-kis-ws` anyway
+while fillwire holds the stream and a unit exists; the installed copy at
+`/root/at-run/deploy-ncp-pull.sh` must be refreshed first (see "One-time host
+preparation"), and until it is, `--skip-kis-ws` stays required.
+
+### When a unit does not become ready
+
+`wait_worker` and `wait_ws` poll the container log 30 times, 2 s apart
+(`AT_HEALTHZ_ATTEMPTS`, `AT_HEALTHZ_SLEEP_SECONDS`). When one gives up it
+prints `<container> did not become ready after <N> attempts` and copies the
+last 60 lines of `docker logs --timestamps` for that container into
+`/root/at-run/deploy-failure-<container>-<UTC timestamp>.log` (mode 0600,
+container log lines only: no environment, no `docker inspect` output). The copy
+is made before the rollback removes the container and its logs. It is best
+effort: if the file cannot be written the script prints one warning and still
+returns 1, so the rollback and the exit code are the same either way. The file
+is not pruned; remove old ones by hand.
+
 ## Operator rollback
 
 To return to the prior healthy digest without selecting a tag, run only on the
