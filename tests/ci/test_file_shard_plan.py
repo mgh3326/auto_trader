@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.call_durations import compute_collection_hash
 from scripts.ci.file_shard_plan import (
+    DEFAULT_WORKERS_PER_SHARD,
     ShardPlanError,
     assign_files_to_shards,
     collected_files_from_nodes,
@@ -14,12 +17,16 @@ from scripts.ci.file_shard_plan import (
     file_of_node_id,
     load_all_shard_manifests,
     load_collected_node_manifest,
+    load_test_durations,
     main,
+    predict_shard_pytest_seconds,
     validate_exact_cover,
     write_shard_manifests,
 )
 
 pytestmark = pytest.mark.unit
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write(path: Path, text: str) -> Path:
@@ -29,6 +36,11 @@ def _write(path: Path, text: str) -> Path:
 
 def _write_nodes(path: Path, *node_ids: str) -> Path:
     return _write(path, "\n".join(node_ids) + "\n")
+
+
+def _write_durations(path: Path, durations: dict[str, float]) -> Path:
+    path.write_text(json.dumps(durations), encoding="utf-8")
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -81,7 +93,61 @@ def test_load_collected_node_manifest_rejects_empty_file(tmp_path: Path) -> None
 
 
 # --------------------------------------------------------------------------
-# compute_file_weights (fallback rules)
+# load_test_durations (strict whole-protocol artifact reader)
+# --------------------------------------------------------------------------
+
+
+def test_load_test_durations_reads_the_map(tmp_path: Path) -> None:
+    path = _write_durations(
+        tmp_path / ".test_durations",
+        {"tests/a.py::test_1": 1.5, "tests/a.py::test_2": 2},
+    )
+    assert load_test_durations(path) == {
+        "tests/a.py::test_1": 1.5,
+        "tests/a.py::test_2": 2.0,
+    }
+
+
+def test_load_test_durations_allows_an_empty_map(tmp_path: Path) -> None:
+    # A bootstrap artifact with no measurements yet is valid input; its nodes
+    # fall back to UNMEASURED_FALLBACK_DEFAULT_SECONDS.
+    path = _write_durations(tmp_path / ".test_durations", {})
+    assert load_test_durations(path) == {}
+
+
+def test_load_test_durations_rejects_duplicate_json_keys(tmp_path: Path) -> None:
+    # json.loads would silently keep the last value; a hand-edited or
+    # corrupted artifact must not be able to smuggle that past generate.
+    path = _write(
+        tmp_path / ".test_durations",
+        '{"tests/a.py::test_1": 1.0, "tests/a.py::test_1": 2.0}',
+    )
+    with pytest.raises(ValueError, match="duplicate key"):
+        load_test_durations(path)
+
+
+@pytest.mark.parametrize(
+    "text,error",
+    [
+        ("[1, 2, 3]", "expected a JSON object"),
+        ('{"tests/a.py::test_1": true}', "invalid duration"),
+        ('{"tests/a.py::test_1": "1.0"}', "invalid duration"),
+        ('{"tests/a.py::test_1": -1.0}', "invalid duration"),
+        ('{"tests/a.py::test_1": Infinity}', "invalid duration"),
+        ('{"tests/a.py::test_1": NaN}', "invalid duration"),
+        ('{"": 1.0}', "invalid node id"),
+    ],
+)
+def test_load_test_durations_rejects_malformed_entries(
+    tmp_path: Path, text: str, error: str
+) -> None:
+    path = _write(tmp_path / ".test_durations", text)
+    with pytest.raises(ValueError, match=error):
+        load_test_durations(path)
+
+
+# --------------------------------------------------------------------------
+# compute_file_weights
 # --------------------------------------------------------------------------
 
 
@@ -94,7 +160,6 @@ def test_compute_file_weights_sums_measured_durations() -> None:
             "tests/a.py::test_2": 2.5,
             "tests/b.py::test_1": 0.1,
         },
-        not_called=set(),
     )
     assert weights == {
         "tests/a.py": pytest.approx(3.5),
@@ -102,22 +167,11 @@ def test_compute_file_weights_sums_measured_durations() -> None:
     }
 
 
-def test_compute_file_weights_not_called_is_zero() -> None:
-    nodes = ["tests/a.py::test_1", "tests/a.py::test_2"]
-    weights = compute_file_weights(
-        collected_node_ids=nodes,
-        durations={"tests/a.py::test_1": 4.0},
-        not_called={"tests/a.py::test_2"},
-    )
-    assert weights == {"tests/a.py": pytest.approx(4.0)}
-
-
 def test_compute_file_weights_unmeasured_uses_mean_of_measured() -> None:
     nodes = ["tests/a.py::test_1", "tests/b.py::test_new"]
     weights = compute_file_weights(
         collected_node_ids=nodes,
         durations={"tests/a.py::test_1": 2.0, "tests/other.py::test_x": 6.0},
-        not_called=set(),
     )
     # mean of all measured durations in the artifact = (2.0 + 6.0) / 2 = 4.0
     assert weights["tests/b.py"] == pytest.approx(4.0)
@@ -125,27 +179,41 @@ def test_compute_file_weights_unmeasured_uses_mean_of_measured() -> None:
 
 def test_compute_file_weights_unmeasured_default_when_artifact_empty() -> None:
     nodes = ["tests/a.py::test_new"]
-    weights = compute_file_weights(
-        collected_node_ids=nodes, durations={}, not_called=set()
-    )
+    weights = compute_file_weights(collected_node_ids=nodes, durations={})
     assert weights["tests/a.py"] == pytest.approx(1.0)
 
 
-def test_compute_file_weights_is_order_independent_deterministic() -> None:
-    nodes_a = ["tests/a.py::test_1", "tests/a.py::test_2", "tests/b.py::test_1"]
-    nodes_b = list(reversed(nodes_a))
-    durations = {
+def test_compute_file_weights_include_setup_and_teardown_seconds() -> None:
+    # The artifact value is the whole per-test protocol (setup + call +
+    # teardown), so a node whose call phase was ~0 but whose setup paid the
+    # session bootstrap is weighted at its real cost. This is the assertion a
+    # "revert the weight input to the call phase" mutant breaks: it would see
+    # 0.001 s where this asserts 5.0 s.
+    nodes = ["tests/a.py::test_bootstraps_session"]
+    weights = compute_file_weights(
+        collected_node_ids=nodes,
+        durations={"tests/a.py::test_bootstraps_session": 5.0},
+    )
+    assert weights["tests/a.py"] == pytest.approx(5.0)
+    assert weights["tests/a.py"] != pytest.approx(0.001)
+
+
+def test_compute_file_weights_float_summation_order_is_sorted() -> None:
+    # The documented contract is "accumulate in sorted node-id order so float
+    # summation is reproducible". 0.1 + 0.2 + 0.3 is 0.6000000000000001 but
+    # 0.3 + 0.2 + 0.1 is 0.6, so a mutant that iterates the caller's list
+    # order (or an unsorted set) is red here rather than merely unstable.
+    values = {
         "tests/a.py::test_1": 0.1,
         "tests/a.py::test_2": 0.2,
-        "tests/b.py::test_1": 0.3,
+        "tests/a.py::test_3": 0.3,
     }
-    w1 = compute_file_weights(
-        collected_node_ids=nodes_a, durations=durations, not_called=set()
+    forward = compute_file_weights(collected_node_ids=list(values), durations=values)
+    reverse = compute_file_weights(
+        collected_node_ids=list(reversed(values)), durations=values
     )
-    w2 = compute_file_weights(
-        collected_node_ids=nodes_b, durations=durations, not_called=set()
-    )
-    assert w1 == w2
+    assert forward == reverse
+    assert forward["tests/a.py"] == 0.1 + 0.2 + 0.3
 
 
 # --------------------------------------------------------------------------
@@ -178,6 +246,46 @@ def test_assign_files_to_shards_regenerate_twice_is_identical() -> None:
 def test_assign_files_to_shards_rejects_invalid_shard_count() -> None:
     with pytest.raises(ShardPlanError):
         assign_files_to_shards({"a.py": 1.0}, shard_count=0)
+
+
+# --------------------------------------------------------------------------
+# predict_shard_pytest_seconds (--dist=loadfile makespan)
+# --------------------------------------------------------------------------
+
+
+def test_predict_shard_pytest_seconds_spreads_even_files_over_workers() -> None:
+    weights = {f"tests/f{i}.py": 1.0 for i in range(8)}
+    assert predict_shard_pytest_seconds(list(weights), weights) == pytest.approx(2.0)
+
+
+def test_predict_shard_pytest_seconds_is_never_below_the_largest_file() -> None:
+    # This is the whole reason `weights.json` reports a prediction: with
+    # --dist=loadfile one 301 s file bounds its shard at 301 s however
+    # balanced the four-worker totals are.
+    weights = {"tests/a.py": 301.0}
+    weights.update({f"tests/s{i:02d}.py": 1.0 for i in range(40)})
+    assert predict_shard_pytest_seconds(list(weights), weights) >= 301.0
+
+
+def test_predict_shard_pytest_seconds_single_file_shard_is_that_file() -> None:
+    weights = {"tests/a.py": 301.0}
+    assert predict_shard_pytest_seconds(["tests/a.py"], weights) == pytest.approx(301.0)
+
+
+def test_predict_shard_pytest_seconds_one_worker_is_the_sum() -> None:
+    weights = {"tests/a.py": 1.0, "tests/b.py": 2.0}
+    assert predict_shard_pytest_seconds(
+        list(weights), weights, workers=1
+    ) == pytest.approx(3.0)
+
+
+def test_predict_shard_pytest_seconds_rejects_invalid_worker_count() -> None:
+    with pytest.raises(ShardPlanError):
+        predict_shard_pytest_seconds([], {}, workers=0)
+
+
+def test_predict_shard_pytest_seconds_defaults_to_the_ci_worker_count() -> None:
+    assert DEFAULT_WORKERS_PER_SHARD == 4
 
 
 # --------------------------------------------------------------------------
@@ -288,21 +396,32 @@ def test_validate_exact_cover_reports_all_violations_together() -> None:
 # --------------------------------------------------------------------------
 
 
-def _call_durations_artifact(
-    durations: dict[str, float], not_called: list[str]
-) -> dict:
-    # ROB-1312 R1: source_commit_sha/collection_hash must now be well-formed
-    # and self-consistent (validate_artifact_provenance) even for fixtures
-    # that don't care about provenance for their own test's purpose --
-    # otherwise every caller of this helper would need its own boilerplate.
-    return {
-        "schema_version": 2,
-        "source_commit_sha": "deadbeef" * 5,
-        "collection_hash": compute_collection_hash(set(durations) | set(not_called)),
-        "node_count": len(durations) + len(not_called),
-        "durations": durations,
-        "not_called": not_called,
-    }
+def _run_generate(
+    tmp_path: Path,
+    *,
+    durations: object,
+    collected_nodes: list[str],
+    shard_count: int = 1,
+    manifest_dir: Path | None = None,
+) -> int:
+    durations_path = tmp_path / ".test_durations"
+    durations_path.write_text(json.dumps(durations), encoding="utf-8")
+    collected_path = _write_nodes(tmp_path / "collected.txt", *collected_nodes)
+    return main(
+        [
+            "generate",
+            "--durations",
+            str(durations_path),
+            "--collected",
+            str(collected_path),
+            "--manifest-dir",
+            str(manifest_dir or tmp_path / "ci_shards"),
+            "--repo-root",
+            str(tmp_path),
+            "--shard-count",
+            str(shard_count),
+        ]
+    )
 
 
 def test_cli_generate_then_check_round_trip(
@@ -315,27 +434,22 @@ def test_cli_generate_then_check_round_trip(
         "tests/c.py::test_1",
     ]
     collected_path = _write_nodes(tmp_path / "collected.txt", *nodes)
-    call_durations_path = tmp_path / "call_durations.json"
-    call_durations_path.write_text(
-        json.dumps(
-            _call_durations_artifact(
-                {
-                    "tests/a.py::test_1": 1.0,
-                    "tests/a.py::test_2": 1.0,
-                    "tests/b.py::test_1": 0.5,
-                },
-                ["tests/c.py::test_1"],
-            )
-        ),
-        encoding="utf-8",
+    durations_path = _write_durations(
+        tmp_path / ".test_durations",
+        {
+            "tests/a.py::test_1": 1.0,
+            "tests/a.py::test_2": 1.0,
+            "tests/b.py::test_1": 0.5,
+            "tests/c.py::test_1": 0.25,
+        },
     )
     manifest_dir = tmp_path / "ci_shards"
 
     exit_code = main(
         [
             "generate",
-            "--call-durations",
-            str(call_durations_path),
+            "--durations",
+            str(durations_path),
             "--collected",
             str(collected_path),
             "--manifest-dir",
@@ -365,19 +479,23 @@ def test_cli_generate_then_check_round_trip(
     weights = json.loads((manifest_dir / "weights.json").read_text(encoding="utf-8"))
     assert weights["authoritative_file_count"] == 3
     assert len(weights["shards"]) == 2
+    assert weights["weight_source"] == ".test_durations"
+    assert weights["prediction"]["workers_per_shard"] == DEFAULT_WORKERS_PER_SHARD
+    assert "not_called_seconds" not in weights["fallback"]
+    # The weight is the measured whole-protocol time, not a fallback constant.
+    # A mutant that weights the call phase instead (this artifact holds no
+    # call-phase values) reports the fallback for every node and is red here.
+    assert sum(s["total_weight_seconds"] for s in weights["shards"]) == pytest.approx(
+        2.75
+    )
 
 
 def test_cli_generate_twice_is_byte_identical(tmp_path: Path) -> None:
     nodes = [f"tests/f{i}.py::test_{i % 3}" for i in range(30)]
     collected_path = _write_nodes(tmp_path / "collected.txt", *nodes)
-    call_durations_path = tmp_path / "call_durations.json"
-    call_durations_path.write_text(
-        json.dumps(
-            _call_durations_artifact(
-                {node: float((i * 7) % 11) / 10 for i, node in enumerate(nodes)}, []
-            )
-        ),
-        encoding="utf-8",
+    durations_path = _write_durations(
+        tmp_path / ".test_durations",
+        {node: float((i * 7) % 11) / 10 for i, node in enumerate(nodes)},
     )
     manifest_dir_1 = tmp_path / "ci_shards_1"
     manifest_dir_2 = tmp_path / "ci_shards_2"
@@ -387,8 +505,8 @@ def test_cli_generate_twice_is_byte_identical(tmp_path: Path) -> None:
             main(
                 [
                     "generate",
-                    "--call-durations",
-                    str(call_durations_path),
+                    "--durations",
+                    str(durations_path),
                     "--collected",
                     str(collected_path),
                     "--manifest-dir",
@@ -410,26 +528,73 @@ def test_cli_generate_twice_is_byte_identical(tmp_path: Path) -> None:
     assert weights_a == weights_b
 
 
-def test_cli_generate_rejects_malformed_call_durations_artifact(
+def test_cli_generate_is_byte_identical_across_hash_seeds(tmp_path: Path) -> None:
+    # Cross-process determinism: an assignment built by iterating an unsorted
+    # set varies with PYTHONHASHSEED. Same inputs must give the same bytes.
+    nodes = [f"tests/f{i}.py::test_{i % 5}" for i in range(40)]
+    collected_path = _write_nodes(tmp_path / "collected.txt", *nodes)
+    durations_path = _write_durations(
+        tmp_path / ".test_durations",
+        {node: float((i * 13) % 17) / 10 for i, node in enumerate(nodes)},
+    )
+
+    outputs: list[dict[str, bytes]] = []
+    for seed in ("0", "1"):
+        manifest_dir = tmp_path / f"ci_shards_seed{seed}"
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        completed = subprocess.run(  # noqa: S603 - fixed argv, test-local dirs
+            [
+                sys.executable,
+                "-m",
+                "scripts.ci.file_shard_plan",
+                "generate",
+                "--durations",
+                str(durations_path),
+                "--collected",
+                str(collected_path),
+                "--manifest-dir",
+                str(manifest_dir),
+                "--shard-count",
+                "4",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        outputs.append(
+            {
+                name: (manifest_dir / name).read_bytes()
+                for name in (
+                    "shard-1.txt",
+                    "shard-2.txt",
+                    "shard-3.txt",
+                    "shard-4.txt",
+                    "weights.json",
+                )
+            }
+        )
+
+    assert outputs[0] == outputs[1]
+
+
+def test_cli_generate_rejects_malformed_durations_artifact(
     tmp_path: Path,
 ) -> None:
-    # Not routed through the strict call_durations.py loader would silently
-    # accept this (duplicate JSON key, last-key-wins) instead of failing
-    # closed.
     nodes = ["tests/a.py::test_1"]
     collected_path = _write_nodes(tmp_path / "collected.txt", *nodes)
-    call_durations_path = _write(
-        tmp_path / "call_durations.json",
-        '{"schema_version": 2, "source_commit_sha": "x", '
-        '"collection_hash": "y", "node_count": 1, "not_called": [], '
-        '"durations": {"tests/a.py::test_1": 1.0, "tests/a.py::test_1": 2.0}}',
+    durations_path = _write(
+        tmp_path / ".test_durations",
+        '{"tests/a.py::test_1": 1.0, "tests/a.py::test_1": 2.0}',
     )
 
     exit_code = main(
         [
             "generate",
-            "--call-durations",
-            str(call_durations_path),
+            "--durations",
+            str(durations_path),
             "--collected",
             str(collected_path),
             "--manifest-dir",
@@ -444,35 +609,15 @@ def test_cli_generate_rejects_malformed_call_durations_artifact(
 def test_cli_generate_fails_closed_when_files_fewer_than_shards(
     tmp_path: Path,
 ) -> None:
-    nodes = ["tests/a.py::test_1", "tests/b.py::test_1"]
-    collected_path = _write_nodes(tmp_path / "collected.txt", *nodes)
-    call_durations_path = tmp_path / "call_durations.json"
-    call_durations_path.write_text(
-        json.dumps(
-            _call_durations_artifact(
-                {"tests/a.py::test_1": 1.0, "tests/b.py::test_1": 1.0}, []
-            )
-        ),
-        encoding="utf-8",
-    )
-    manifest_dir = tmp_path / "ci_shards"
-
-    exit_code = main(
-        [
-            "generate",
-            "--call-durations",
-            str(call_durations_path),
-            "--collected",
-            str(collected_path),
-            "--manifest-dir",
-            str(manifest_dir),
-            "--shard-count",
-            "4",  # only 2 files for 4 shards -> at least 2 empty shards
-        ]
+    exit_code = _run_generate(
+        tmp_path,
+        durations={"tests/a.py::test_1": 1.0, "tests/b.py::test_1": 1.0},
+        collected_nodes=["tests/a.py::test_1", "tests/b.py::test_1"],
+        shard_count=4,  # only 2 files for 4 shards -> at least 2 empty shards
     )
     assert exit_code != 0
     # Nothing should have been written -- self-check runs before write.
-    assert not manifest_dir.exists()
+    assert not (tmp_path / "ci_shards").exists()
 
 
 def test_cli_check_fails_closed_on_new_file_mutant(tmp_path: Path) -> None:
@@ -552,122 +697,23 @@ def test_collected_files_from_nodes_projects_unique_files() -> None:
     assert files == {"tests/a.py", "tests/b.py"}
 
 
-# --- generate provenance gating (ROB-1312 R1, verifier BLOCKER) -----------
+# --- stale-artifact tolerance (positive control) ---------------------------
 #
-# validate_artifact_structure alone never checked source_commit_sha or
-# collection_hash at all, so `generate` exited 0 for a .call_durations.json
-# with a blank source_commit_sha or a collection_hash that did not describe
-# its own recorded durations/not_called. These prove `generate` itself (not
-# just validate_artifact_provenance in isolation, see
-# scripts/call_durations_test.py) is wired to reject that at the CLI layer.
+# `generate` must NOT require the artifact's node set to equal today's fresh
+# authoritative collection: a stale-but-well-formed map is valid input and a
+# brand-new node is covered by deterministic fallback weight. This is what a
+# normal PR's one-line manifest edit relies on between refreshes.
 
 
-def _run_generate(
-    tmp_path: Path, *, call_durations: dict, collected_nodes: list[str]
-) -> int:
-    call_durations_path = tmp_path / "call_durations.json"
-    call_durations_path.write_text(json.dumps(call_durations), encoding="utf-8")
-    collected_path = _write_nodes(tmp_path / "collected.txt", *collected_nodes)
-    return main(
-        [
-            "generate",
-            "--call-durations",
-            str(call_durations_path),
-            "--collected",
-            str(collected_path),
-            "--manifest-dir",
-            str(tmp_path / "ci_shards"),
-            "--shard-count",
-            "1",
-        ]
-    )
-
-
-@pytest.mark.parametrize(
-    "source_commit_sha",
-    ["", "   ", True, 123, None],
-    ids=["empty", "ws", "bool", "int", "none"],
-)
-def test_cli_generate_fails_closed_on_malformed_source_commit_sha(
-    tmp_path: Path, source_commit_sha: object
-) -> None:
-    node = "tests/a.py::test_1"
-    artifact = {
-        "schema_version": 2,
-        "source_commit_sha": source_commit_sha,
-        "collection_hash": compute_collection_hash({node}),
-        "node_count": 1,
-        "durations": {node: 1.0},
-        "not_called": [],
-    }
-    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
-    assert exit_code != 0
-
-
-@pytest.mark.parametrize(
-    "collection_hash",
-    ["", "   ", True, 123, None, "not-a-real-hash"],
-    ids=["empty", "ws", "bool", "int", "none", "bogus"],
-)
-def test_cli_generate_fails_closed_on_malformed_collection_hash(
-    tmp_path: Path, collection_hash: object
-) -> None:
-    node = "tests/a.py::test_1"
-    artifact = {
-        "schema_version": 2,
-        "source_commit_sha": "a" * 40,
-        "collection_hash": collection_hash,
-        "node_count": 1,
-        "durations": {node: 1.0},
-        "not_called": [],
-    }
-    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
-    assert exit_code != 0
-
-
-def test_cli_generate_fails_closed_on_hash_of_a_different_node_set(
+def test_cli_generate_tolerates_stale_but_well_formed_artifact(
     tmp_path: Path,
 ) -> None:
-    # A syntactically valid sha256 hex digest, but not of THIS artifact's
-    # own recorded durations/not_called -- must still fail closed.
-    node = "tests/a.py::test_1"
-    other_node = "tests/other.py::test_x"
-    artifact = {
-        "schema_version": 2,
-        "source_commit_sha": "a" * 40,
-        "collection_hash": compute_collection_hash({other_node}),
-        "node_count": 1,
-        "durations": {node: 1.0},
-        "not_called": [],
-    }
-    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
-    assert exit_code != 0
-
-
-def test_cli_generate_tolerates_stale_but_self_consistent_artifact(
-    tmp_path: Path,
-) -> None:
-    # Positive control (brief requirement 3): the file-shard planner must
-    # NOT require the artifact's own node set/hash to equal today's fresh
-    # authoritative collection -- a stale-but-internally-consistent artifact
-    # (well-formed source_commit_sha, collection_hash that correctly
-    # describes ITS OWN durations/not_called, just not today's tree) is
-    # valid input, and a brand-new node absent from the artifact is covered
-    # by deterministic fallback weight rather than rejected.
     old_node = "tests/a.py::test_1"
     new_node = "tests/b_new.py::test_1"
-    artifact = {
-        "schema_version": 2,
-        "source_commit_sha": "old" + "0" * 37,  # a real-looking but stale sha
-        "collection_hash": compute_collection_hash({old_node}),  # self-consistent
-        "node_count": 1,
-        "durations": {old_node: 1.0},
-        "not_called": [],
-    }
     exit_code = _run_generate(
         tmp_path,
-        call_durations=artifact,
-        collected_nodes=[old_node, new_node],  # today's tree has a new node
+        durations={old_node: 1.0},
+        collected_nodes=[old_node, new_node],
     )
     assert exit_code == 0
     manifest = (tmp_path / "ci_shards" / "shard-1.txt").read_text()
@@ -675,73 +721,25 @@ def test_cli_generate_tolerates_stale_but_self_consistent_artifact(
     assert "tests/b_new.py" in manifest
 
 
-@pytest.mark.parametrize(
-    "malformed_field,malformed_value",
-    [
-        ("source_commit_sha", ""),
-        ("source_commit_sha", "   "),
-        ("source_commit_sha", True),
-        ("collection_hash", ""),
-        ("collection_hash", "not-a-real-hash"),
-    ],
-    ids=["src-empty", "src-ws", "src-bool", "hash-empty", "hash-bogus"],
-)
-def test_cli_generate_writes_nothing_on_provenance_rejection(
-    tmp_path: Path, malformed_field: str, malformed_value: object
-) -> None:
-    # Fail-closed must mean *nothing written*, not "written then errored" --
-    # a partially-written ci_shards/ from a rejected generate would be worse
-    # than no ci_shards/ at all (a stale-looking but half-updated manifest
-    # set could pass a later `check` for the wrong reason).
-    node = "tests/a.py::test_1"
-    artifact = {
-        "schema_version": 2,
-        "source_commit_sha": "a" * 40,
-        "collection_hash": compute_collection_hash({node}),
-        "node_count": 1,
-        "durations": {node: 1.0},
-        "not_called": [],
-    }
-    artifact[malformed_field] = malformed_value
-    manifest_dir = tmp_path / "ci_shards"
-
-    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
-
-    assert exit_code != 0
-    assert not manifest_dir.exists() or not list(manifest_dir.iterdir())
-
-
 def test_cli_generate_stale_artifact_fallback_is_measured_mean_and_check_then_passes(
     tmp_path: Path,
 ) -> None:
-    # Strengthens the staleness-tolerance positive control: the fallback
-    # weight assigned to a brand-new node must be the ARTIFACT's own
-    # measured mean (not the UNMEASURED_FALLBACK_DEFAULT_SECONDS bootstrap
-    # constant), the new file must land in exactly one shard, and a
-    # subsequent `check` against the same today's-collection must pass --
-    # proving the regenerated manifests are usable, not just non-crashing.
     node_a = "tests/a.py::test_1"
     node_b = "tests/b.py::test_1"
     new_node = "tests/c_new.py::test_1"
-    artifact = {
-        "schema_version": 2,
-        "source_commit_sha": "old" + "0" * 37,
-        "collection_hash": compute_collection_hash({node_a, node_b}),
-        "node_count": 2,
-        "durations": {node_a: 2.0, node_b: 6.0},  # mean = 4.0
-        "not_called": [],
-    }
-    call_durations_path = tmp_path / "call_durations.json"
-    call_durations_path.write_text(json.dumps(artifact), encoding="utf-8")
     collected_nodes = [node_a, node_b, new_node]
     collected_path = _write_nodes(tmp_path / "collected.txt", *collected_nodes)
+    durations_path = _write_durations(
+        tmp_path / ".test_durations",
+        {node_a: 2.0, node_b: 6.0},  # mean = 4.0
+    )
     manifest_dir = tmp_path / "ci_shards"
 
     generate_exit = main(
         [
             "generate",
-            "--call-durations",
-            str(call_durations_path),
+            "--durations",
+            str(durations_path),
             "--collected",
             str(collected_path),
             "--manifest-dir",
@@ -774,3 +772,83 @@ def test_cli_generate_stale_artifact_fallback_is_measured_mean_and_check_then_pa
         ]
     )
     assert check_exit == 0
+
+
+def test_cli_generate_writes_nothing_on_rejection(tmp_path: Path) -> None:
+    # Fail-closed must mean *nothing written*, not "written then errored" --
+    # a partially-written ci_shards/ from a rejected generate would be worse
+    # than no ci_shards/ at all.
+    exit_code = _run_generate(
+        tmp_path,
+        durations={"tests/a.py::test_1": -1.0},
+        collected_nodes=["tests/a.py::test_1"],
+    )
+    assert exit_code != 0
+    assert not (tmp_path / "ci_shards").exists()
+
+
+# --- collection completeness (hk-3336) ------------------------------------
+#
+# A `pytest --collect-only` capture can lose a test file that the duration
+# artifact measured while the file is still in the tree: a module that refuses
+# to import under this environment raises a collection-time error, and
+# `2>/dev/null | grep '^tests/.*::'` throws the ERRORS block away. Packing that
+# capture drops the file from every manifest -- exact cover only notices later,
+# in CI. The working tree is what separates that from legitimate staleness.
+
+
+def _write_test_file(repo_root: Path, relative: str) -> Path:
+    path = repo_root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("def test_placeholder():\n    assert True\n", encoding="utf-8")
+    return path
+
+
+def test_cli_generate_fails_closed_when_collection_omits_a_measured_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    _write_test_file(tmp_path, "tests/services/research/test_uncollectable.py")
+    exit_code = _run_generate(
+        tmp_path,
+        durations={
+            "tests/services/research/test_uncollectable.py::test_x": 5.0,
+            "tests/collected.py::test_y": 1.0,
+        },
+        collected_nodes=["tests/collected.py::test_y"],
+    )
+    assert exit_code != 0
+    assert not (tmp_path / "ci_shards").exists()
+    stderr = capsys.readouterr().err
+    assert "missing 1 test file(s)" in stderr
+    assert "tests/services/research/test_uncollectable.py" in stderr
+
+
+def test_cli_generate_tolerates_a_measured_file_deleted_since_the_refresh(
+    tmp_path: Path,
+) -> None:
+    # The file the artifact measured is gone from the tree: legitimate
+    # staleness, absorbed by the mean-duration fallback, not a hard error.
+    exit_code = _run_generate(
+        tmp_path,
+        durations={
+            "tests/removed.py::test_x": 5.0,
+            "tests/collected.py::test_y": 1.0,
+        },
+        collected_nodes=["tests/collected.py::test_y"],
+    )
+    assert exit_code == 0
+    assert (
+        tmp_path / "ci_shards" / "shard-1.txt"
+    ).read_text() == "tests/collected.py\n"
+
+
+def test_cli_generate_accepts_a_collection_that_covers_every_measured_file(
+    tmp_path: Path,
+) -> None:
+    _write_test_file(tmp_path, "tests/present.py")
+    exit_code = _run_generate(
+        tmp_path,
+        durations={"tests/present.py::test_x": 5.0},
+        collected_nodes=["tests/present.py::test_x"],
+    )
+    assert exit_code == 0
