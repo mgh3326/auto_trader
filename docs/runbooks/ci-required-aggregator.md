@@ -15,6 +15,93 @@ green on the exact SHA before a deploy.
 `security` and the four research/smoke jobs are not part of any required or watched check, so
 moving them off the PR costs no gate. Their failures show on the main run.
 
+## 0a. Main tier verdict `ci-ok` and the deploy tier (hk 3445, decision 2026-11-07)
+
+`hk:doc decision/2026-11-07/fleet-ci-three-tiers-r2` keeps the PR tier as it is, makes the
+main tier (T-POST above) end in one verdict, and adds a heavy **deploy tier** that runs
+once the main tier is green. This change only *publishes* the two verdicts. The deploy path
+still reads the exact-SHA gate below (`scripts/deploy_ci_gate.py`, unchanged); nothing reads
+`ci-ok` or `deploy-ok` until mergewake's `main_checks` / `deploy_checks` switch lands.
+
+| tier | workflow | when | cancelled by a newer head? | verdict |
+|---|---|---|---|---|
+| PR | `test.yml` | `pull_request` | yes | `lint` + `PR gate` (unchanged) |
+| main | `test.yml` | push to main/develop, dispatch | yes | `ci-ok` |
+| deploy | `deploy.yml` -> `deploy-checks.yml` | after a **successful** main-push `Test` run | **never**; one run per repository, GitHub keeps the newest pending run | `deploy-ok` |
+
+### Main tier and `ci-ok`
+
+Nothing moved: the main tier is still every job that ran on a main push, with the six gate
+jobs (`lint`, `taskiq-smoke`, `test (3.13, 1..4)`) and their full-suite `if:` untouched. The
+move rule was: a job leaves the main tier only if it is none of the six gate jobs, is not a
+basic check (lint, types, security, frontend build) and the measured main wall time is above
+ten minutes. Measured on the last three green main runs, the wall time was 616 s, 577 s and
+593 s (median 593 s, two of three at or under ten minutes). The longest job in each run was a
+gate job (`test (3.13, 3)` 586 s, `test (3.13, 3)` 527 s, `test (3.13, 1)` 498 s). The only jobs that
+could move (`alpaca-track-walkforward-tests` 248-266 s, `alpaca-track-fast-tests`,
+`intraday-harness-v2-tests`, `kiwoom-dual-surface-smoke`) finish long before the shards, so moving
+them would not shorten the wall time. The decision also keeps regression mutants on main. If main grows past ten minutes, measure again and
+move a non-gate job to `deploy-checks.yml`; record the move and its measured time in the PR.
+
+`ci-ok` (job name `ci-ok`, `test.yml`) needs every main-tier job: `lint`, `change-classifier`,
+`test`, `taskiq-smoke`, `security`, `alpaca-track-fast-tests`, `intraday-harness-v2-tests`,
+`kiwoom-dual-surface-smoke`, `alpaca-track-walkforward-tests`, `frontend`. It is not listed in
+the PR path: `PR gate`, the classifier and `affected-tests` are unchanged, and `ci-ok` never runs
+on a `pull_request`. The rule is the one from `auto_trader-operator` `ci-post.yml` (hk 2924):
+
+| results of the needed jobs | `ci-ok` |
+|---|---|
+| all `success` | runs, green |
+| any `failure` (or a skipped / unknown result) | runs, red |
+| only `success` and `cancelled` (a newer push superseded the run) | **skipped**, so the check stays unknown for that head |
+
+A cancelled main run is "unknown", not green and not red (§0, "Only the newest main head runs").
+
+### Deploy tier
+
+`deploy.yml` calls `deploy-checks.yml` after `build-and-push`, for the same SHA, **only** when
+the triggering `Test` run's conclusion is `success` (a cancelled or red run gets no deploy tier)
+and passes the digest `build-and-push` pushed (`ghcr.io/<repo>@sha256:...`). Nothing is rebuilt.
+`build-and-push`, its tags, `promote-moving-tags` and `notify` behave as before and none of them
+waits for the deploy tier; a red deploy tier never unpublishes or untags an image.
+
+| job | what it checks |
+|---|---|
+| `plan` | resolves the candidate SHA and the deployed-schema base (below) |
+| `migration-path` | TimescaleDB service (`timescale/timescaledb:2.22.1-pg17`, the image `dev-kit.md` §3 pins; the migrations need the extension and fail on plain postgres): `alembic upgrade head` at the base checkout, then the candidate's `alembic upgrade head` on the same database |
+| `install-smoke` | `docker run` the image digest against the CI TimescaleDB and Redis services with placeholder settings (no secrets): `alembic upgrade head` from the image, `uvicorn app.main:app` answers `/healthz` 200 within 30 attempts x 2 s, the scheduler, TaskIQ worker and `websocket_monitor.py` entrypoints import; the last 60 container log lines print on failure |
+| `deploy-ok` | posts the `deploy-ok` commit status and uploads the evidence artifact |
+
+**Base revision.** The pinned commit production runs, `DEPLOYED_BASE_SHA` in `deploy-checks.yml`
+(`0c416a3df`, deploy record `deploy/auto_trader/20261106T230040Z`; `scripts/ci/select_deploy_base.py`).
+`deploy-ok` never moves it: that status says CI validated an image, and production deploys are run by an
+operator and publish nothing GitHub can read. Move the pin only in a PR that names the deploy record of
+the new production commit, never to make a run green. A pin older than production still runs every
+migration production has not applied. A pin that is not a commit, or not an ancestor of the candidate,
+fails the run; it never falls back to the candidate itself.
+
+**Trusted helpers.** `plan` and `deploy-ok` run `select_deploy_base.py` and `deploy_ok.py` from a sparse
+checkout of the workflow revision (`github.sha`, path `.deploy-tier-tools`), not from the candidate. The
+candidate may predate the helpers, and `deploy-ok` holds `statuses: write`, so candidate code never runs
+with it.
+
+**`deploy-ok`** (`scripts/ci/deploy_ok.py`, `statuses: write` on that job only) is `success` only when
+`plan`, `migration-path` and `install-smoke` all reported `success`; anything else (failure, cancelled,
+skipped, absent) is `failure`, with the run URL as the target. It is posted only for a commit that is an
+ancestor of `origin/main`. The evidence artifact `deploy-evidence` (JSON) holds `repo`, `sha`,
+`policy_revision` (git blob sha of `.mergewake/policy.yaml` at that SHA, `absent` if none), `suite`
+(`deploy`), `environment`, `run_id`, `result` and `image_digest`.
+
+**Any ref.** `gh workflow run deploy-checks.yml --ref <branch> -f ref=<ref> -f suite=deploy` (the only
+suite) builds the image locally (load, no push, no registry login, no cache write) and runs `plan`,
+`migration-path` and `install-smoke` on that ref. It posts `deploy-ok` only if the ref resolves to a main
+ancestor and writes the evidence either way. `deploy.yml`'s own dispatch (`allow_unverified`) is unchanged.
+`workflow_dispatch` only registers once the workflow file is on the default branch.
+
+**Concurrency.** `deploy-tier-<repo>` with `cancel-in-progress: false`, set once in `deploy-checks.yml`.
+Do not add a group with the same name to the calling job in `deploy.yml`: a caller and a callee that share a
+group deadlock.
+
 ### Only the newest main head runs
 
 `concurrency` groups a PR by its number and a push by its ref, and cancels in progress for
@@ -319,7 +406,11 @@ the concurrency groups, `runs-on` on every event with and without the runner var
 every check named in `.mergewake/policy.yaml` is one the workflow displays; it evaluates the
 workflow expressions with `tests/ci/gh_expr.py`. `tests/ci/test_required_aggregator.py` holds
 the gate's truth table and the superseded rule. `tests/ci/test_deploy_gate_workflow.py` pins
-that `deploy.yml` skips a cancelled `Test` run.
+that `deploy.yml` skips a cancelled `Test` run. `tests/ci/test_deploy_tier_workflow_contract.py`
+pins `ci-ok` (its `needs`, its `if:` and its step run as shell) and the deploy tier's wiring (called only
+after a successful main-push `Test`, on the pushed digest, never cancelled, never pushes, `deploy-ok` judged over
+every deploy-tier job); `tests/ci/test_deploy_tier_scripts.py` runs the three helpers under `scripts/ci/`
+against a throwaway git repository and fake `gh`, `docker` and `curl`.
 
 ## 5. Branch protection (operator-only)
 

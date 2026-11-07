@@ -3,9 +3,10 @@
 The workflow contract tests used to compare expression *strings*, which pins the
 spelling and not the behaviour. This module evaluates the expressions the CI
 workflows actually use (`||`, `&&`, `!`, `==`, `!=`, parentheses, string and number
-literals, dotted context lookups, `format`, `contains`, `always`, `cancelled`) against
-a context dict, so a test can ask "what does `runs-on` resolve to on a pull_request
-when the runner variable is set?".
+literals, dotted context lookups, the `*` object filter of `needs.*.result`,
+`format`, `contains`, `join`, `always`, `cancelled`) against a context dict, so a
+test can ask "what does `runs-on` resolve to on a pull_request when the runner
+variable is set?".
 
 Anything outside that grammar raises `ExpressionError` instead of guessing: a test
 must never pass because the evaluator silently ignored a construct.
@@ -33,7 +34,7 @@ _TOKEN = re.compile(
       (?P<string>'(?:[^']|'')*')
     | (?P<number>\d+(?:\.\d+)?)
     | (?P<op>\|\||&&|==|!=|!|\(|\)|,)
-    | (?P<name>[A-Za-z_][A-Za-z0-9_\-]*(?:\.[A-Za-z0-9_\-]+)*)
+    | (?P<name>[A-Za-z_][A-Za-z0-9_\-]*(?:\.(?:[A-Za-z0-9_\-]+|\*))*)
     )""",
     re.VERBOSE,
 )
@@ -172,6 +173,10 @@ class _Parser:
             for position, argument in enumerate(args[1:]):
                 template = template.replace(f"{{{position}}}", _stringify(argument))
             return template
+        if name == "join":
+            items = args[0] if isinstance(args[0], (list, tuple)) else [args[0]]
+            separator = _stringify(args[1]) if len(args) > 1 else ","
+            return separator.join(_stringify(item) for item in items)
         if name == "contains":
             haystack, needle = args
             if isinstance(haystack, (list, tuple)):
@@ -180,8 +185,16 @@ class _Parser:
         raise ExpressionError(f"unsupported function {name}()")
 
     def _lookup(self, dotted: str) -> Any:
-        value: Any = self.context
-        for part in dotted.split("."):
+        return self._walk(self.context, dotted.split("."))
+
+    def _walk(self, value: Any, parts: list[str]) -> Any:
+        for position, part in enumerate(parts):
+            if part == "*":
+                # Object filter: `needs.*.result` is the list of each entry's result.
+                if not isinstance(value, dict):
+                    return []
+                rest = parts[position + 1 :]
+                return [self._walk(entry, rest) for entry in value.values()]
             if isinstance(value, dict) and part in value:
                 value = value[part]
             else:
