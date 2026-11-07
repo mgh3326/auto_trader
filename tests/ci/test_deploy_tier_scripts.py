@@ -135,7 +135,7 @@ def test_a_deploy_ok_status_never_moves_the_base(
     """deploy-ok is CI validation, not a deployment (PR #2310 review, high)."""
 
     gh_log = bin_dir / "gh.log"
-    _executable(bin_dir / "gh", f"#!/bin/sh\necho \"$@\" >> {gh_log}\nexit 1\n")
+    _executable(bin_dir / "gh", f'#!/bin/sh\necho "$@" >> {gh_log}\nexit 1\n')
     done = _select(history, bin_dir, history["d"])
     assert done.returncode == 0, done.stderr
     assert _outputs(bin_dir)["base_sha"] == history["boot"]
