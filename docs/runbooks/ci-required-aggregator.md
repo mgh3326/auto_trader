@@ -68,8 +68,8 @@ waits for the deploy tier; a red deploy tier never unpublishes or untags an imag
 | job | what it checks |
 |---|---|
 | `plan` | resolves the candidate SHA and the deployed-schema base (below) |
-| `migration-path` | Postgres service: `alembic upgrade head` at the base checkout, then the candidate's `alembic upgrade head` on the same database |
-| `install-smoke` | `docker run` the image digest against CI Postgres and Redis with placeholder settings (no secrets): `alembic upgrade head` from the image, `uvicorn app.main:app` answers `/healthz` 200 within 30 attempts x 2 s, the scheduler, TaskIQ worker and `websocket_monitor.py` entrypoints import; the last 60 container log lines print on failure |
+| `migration-path` | TimescaleDB service (`timescale/timescaledb:2.22.1-pg17`, the image `dev-kit.md` §3 pins; the migrations need the extension and fail on plain postgres): `alembic upgrade head` at the base checkout, then the candidate's `alembic upgrade head` on the same database |
+| `install-smoke` | `docker run` the image digest against the CI TimescaleDB and Redis services with placeholder settings (no secrets): `alembic upgrade head` from the image, `uvicorn app.main:app` answers `/healthz` 200 within 30 attempts x 2 s, the scheduler, TaskIQ worker and `websocket_monitor.py` entrypoints import; the last 60 container log lines print on failure |
 | `deploy-ok` | posts the `deploy-ok` commit status and uploads the evidence artifact |
 
 **Base revision.** The newest first-parent main ancestor of the candidate that has a `deploy-ok`
