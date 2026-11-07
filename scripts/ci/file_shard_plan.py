@@ -30,8 +30,8 @@ Two subcommands, deliberately asymmetric:
 
 Why the whole protocol, not the call phase: ``.call_durations.json``
 (ROB-1295) records only the ``call`` phase. On the 2026-11-03 refresh
-artifact that is 3,268.2 s against 3,703.7 s of real per-test pytest time --
-**435.5 s (13.3 %) of setup/teardown cost the call-phase weight cannot see**,
+artifact that is 3,298.2 s against 3,735.2 s of real per-test pytest time --
+**437.0 s (13.3 %) of setup/teardown cost the call-phase weight cannot see**,
 mostly session/worker bootstrap (see ``docs/runbooks/ci-file-shard-manifests.md``
 §3). ``.test_durations`` is already produced by the same weekly refresh,
 already covers every authoritative node (including nodes whose ``setup``
@@ -188,6 +188,62 @@ def load_test_durations(path: Path) -> dict[str, float]:
             )
         durations[node_id] = value
     return durations
+
+
+def _measured_files(durations: dict[str, float]) -> set[str]:
+    """Project the artifact's node ids onto their `tests/**/*.py` file paths."""
+    files: set[str] = set()
+    for node_id in durations:
+        if "::" not in node_id:
+            continue
+        file_path = node_id.split("::", 1)[0]
+        if file_path.startswith("tests/") and file_path.endswith(".py"):
+            files.add(file_path)
+    return files
+
+
+def validate_collection_covers_measured_files(
+    *,
+    durations: dict[str, float],
+    collected_files: set[str],
+    repo_root: Path,
+    limit: int = 20,
+) -> None:
+    """Fail closed when the collection is narrower than the measurement.
+
+    A `pytest --collect-only` capture can silently omit a test file that the
+    duration artifact measured, even though the file is still in the tree: a
+    module that refuses to import under this environment raises a
+    collection-time error, and both the workflow's and the documented local
+    recipe's ``2>/dev/null | grep '^tests/.*::'`` discard the ERRORS block.
+    Generating manifests from that capture drops the file from **every**
+    shard -- exact cover only fails later, in CI, when it is too late.
+
+    The discriminator is the working tree, which is what makes this precise
+    instead of a freshness check: a file the artifact measured but that is
+    **gone** is legitimate staleness (the mean-duration fallback exists for
+    exactly that), while a file that is **still on disk** and was not
+    collected means the capture looked through a narrower window than the
+    measurement did.
+    """
+    missing = sorted(
+        file_path
+        for file_path in _measured_files(durations) - collected_files
+        if (repo_root / file_path).is_file()
+    )
+    if not missing:
+        return
+    raise ShardPlanError(
+        f"authoritative collection is missing {len(missing)} test file(s) that the "
+        f"duration artifact measured and that still exist under the repo root: "
+        f"{missing[:limit]!r}\n"
+        "The collection saw a narrower suite than the measurement (a collection-time "
+        "skip or import error -- e.g. a test module that refuses to import under this "
+        "DATABASE_URL -- or a different -m/--ignore filter). Regenerating from it would "
+        "drop those files from every manifest. Re-collect the full suite with the "
+        "duration-refresh workflow's command and check pytest's exit status "
+        "(docs/runbooks/ci-file-shard-manifests.md §4)."
+    )
 
 
 def _unmeasured_fallback_seconds(durations: dict[str, float]) -> float:
@@ -524,6 +580,16 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     collected_node_ids = load_collected_node_manifest(args.collected)
     authoritative_files = collected_files_from_nodes(collected_node_ids)
 
+    # A capture that silently lost a file (collection-time import error, a
+    # different marker/ignore filter) must never be packed into manifests:
+    # exact cover would only catch it downstream, in CI, after the bad
+    # manifests were written.
+    validate_collection_covers_measured_files(
+        durations=durations,
+        collected_files=authoritative_files,
+        repo_root=args.repo_root,
+    )
+
     file_weights = compute_file_weights(
         collected_node_ids=collected_node_ids,
         durations=durations,
@@ -615,6 +681,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="authoritative `pytest --collect-only -m 'not live'` node-id capture",
     )
     generate_parser.add_argument("--manifest-dir", type=Path, required=True)
+    generate_parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(),
+        help=(
+            "root used to tell 'deleted since the refresh' (tolerated) apart from "
+            "'still in the tree but not collected' (fail closed); default: cwd"
+        ),
+    )
     generate_parser.add_argument("--shard-count", type=int, default=DEFAULT_SHARD_COUNT)
     generate_parser.set_defaults(func=_cmd_generate)
 

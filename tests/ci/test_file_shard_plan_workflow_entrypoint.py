@@ -163,7 +163,7 @@ def test_duration_refresh_regenerate_feeds_whole_protocol_durations() -> None:
     """hk-3336: the weight input is ``.test_durations``, not the call phase.
 
     ``.call_durations.json`` records only the ``call`` phase, so it cannot see
-    the setup/teardown cost a ``--dist=loadfile`` shard actually pays (435.5 s
+    the setup/teardown cost a ``--dist=loadfile`` shard actually pays (437.0 s
     / 13.3 % of the suite on the 2026-11-03 artifact). A silent revert to the
     call-phase artifact would make the reported balance a number no job can
     realise, so the workflow wiring is pinned here.

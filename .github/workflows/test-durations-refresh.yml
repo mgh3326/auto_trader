@@ -378,7 +378,7 @@ jobs:
     #
     # hk-3336: the weight source is `.test_durations` (whole per-test
     # protocol: setup + call + teardown), not `.call_durations.json` (call
-    # phase only). On the 2026-11-03 artifact the call phase missed 435.5 s
+    # phase only). On the 2026-11-03 artifact the call phase missed 437.0 s
     # (13.3 %) of real per-test time, and it cannot see the setup/teardown
     # cost that bounds a `--dist=loadfile` shard at all.
     - name: Regenerate file-shard manifests

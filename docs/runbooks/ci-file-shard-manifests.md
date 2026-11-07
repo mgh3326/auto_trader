@@ -73,11 +73,11 @@ dict/set iteration order or Python version.
 
 Until hk-3336 the weight source was `.call_durations.json` (ROB-1295). That
 artifact records only the `call` phase, and on the 2026-11-03 refresh
-artifact (run `41556077676`) that is **3,268.2 s against 3,703.7 s of real
-per-test pytest time — 435.5 s (13.3 %) invisible to the weight**, almost all
-of it session/worker bootstrap landing on whichever test ran first
-(`whole ≈ 5.2–20.8 s`, `call ≈ 0.001 s`). A shard pays that time; only a
-whole-protocol measurement attributes it.
+artifact (run `41556077676`), over the 2,088 files this repo collects, that is
+**3,298.2 s against 3,735.2 s of real per-test pytest time — 437.0 s (13.3 %)
+invisible to the weight**, almost all of it session/worker bootstrap landing
+on whichever test ran first (`whole ≈ 5.2–20.8 s`, `call ≈ 0.001 s`). A shard
+pays that time; only a whole-protocol measurement attributes it.
 
 `.test_durations` also covers every authoritative node (including nodes whose
 `setup` skips, which is what `.call_durations.json` had to record separately
@@ -112,19 +112,20 @@ in another**) is not used.
 ### 3.3 Measured spread, before and after
 
 Same 2026-11-03 measurement run, same collection (this repo's
-`pytest --collect-only -m "not live" tests/`, 33,723 nodes / 2,084 files):
+`pytest --collect-only -m "not live" tests/`, 33,846 nodes / 2,088 files — the
+capture CI itself checks against, see §4.3):
 
 | assignment | shard 1 | shard 2 | shard 3 | shard 4 | predicted spread |
 |---|---|---|---|---|---|
-| committed manifests (not regenerated since 2026-10-19) | 344.0 | 229.9 | 309.8 | 271.7 | **49.65 %** |
-| `generate` on call-phase weights | 333.7 | 301.9 | 229.4 | 232.7 | **45.46 %** |
-| `generate` on whole-protocol weights (current) | 321.5 | 320.8 | 236.9 | 250.6 | **35.70 %** |
+| committed manifests (not regenerated since 2026-10-19) | 344.0 | 229.9 | 309.8 | 275.1 | **49.65 %** |
+| `generate` on call-phase weights | 335.3 | 299.7 | 231.8 | 232.3 | **44.70 %** |
+| `generate` on whole-protocol weights (current) | 324.3 | 320.4 | 238.7 | 248.6 | **35.87 %** |
 
 `Measure shard` on that run took 371 / 295 / 396 / 355 s. The residual
-35.7 % is close to the arithmetic floor for an equal-weight packing —
-`(301.0 − 231.5) / 231.5 = 30.0 %` — because the single 301 s file alone
-exceeds a worker's fair share; the extra ~5 points are the dispatch delay the
-two giant files pay in sorted order. Getting genuinely below the floor needs
+35.9 % is close to the arithmetic floor for an equal-weight packing —
+`(301.0 − 233.4) / 233.4 = 29.0 %` (3,735.2 s / 16 workers = 233.4 s) —
+because the single 301 s file alone exceeds a worker's fair share; the extra
+~6 points are the dispatch delay the two giant files pay in sorted order. Getting genuinely below the floor needs
 one of: splitting the four `tests/scripts/test_deploy_ncp_pull_*.py` files
 (≈1,010 s, 27 % of the suite) into smaller files, or dropping
 `--dist=loadfile` so one heavy file's tests can span workers. Both are out of
@@ -160,11 +161,14 @@ Choose the existing shard with the fewest entries and state that basis in the
 PR. Then verify the exact cover:
 
 ```bash
-uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
-  2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
-  > /tmp/collected.txt
+set -o pipefail
+AUTO_TRADER_TEST_DATABASE_URL=postgresql+asyncpg://nobody:x@localhost:1/test_db \
+  uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
+    2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
+    > /tmp/collected.txt
 
-# NOTE: `sort`, never `sort -u` — see §6.
+# NOTE: `sort`, never `sort -u` — see §6. NOTE: the `localhost` host is not
+# cosmetic — see §4.3 — and pipefail is what makes a collection error visible.
 
 uv run --no-sync python -m scripts.ci.file_shard_plan check \
   --collected /tmp/collected.txt \
@@ -222,6 +226,29 @@ reads a duration artifact at all, so none of this guards the runtime CI
 execution path (`test.yml`'s `test` matrix jobs just run whatever
 `ci_shards/*.txt` already says) — it guards only the manifest-*generation*
 path.
+
+### 4.3 The collection must be as wide as the measurement
+
+`generate` refuses to pack a capture that lost a file the duration artifact
+measured **and that still exists in the tree**
+(`validate_collection_covers_measured_files`, `--repo-root`, default cwd). It
+fails closed and writes nothing. The discriminator is the working tree: a file
+the artifact measured that is gone is legitimate staleness (the mean fallback
+in §3 exists for it), while a file that is still on disk and did not appear in
+the capture means the capture looked through a narrower window.
+
+That is not hypothetical — it produced hk-3336's first red CI run. The four
+`tests/services/research/test_*campaign_bridge*.py` / `test_rob944_*` modules
+raise at import unless `DATABASE_URL`'s host is literally `localhost`
+(`tests/services/research/_db_guard_test_policy.py`), so a capture taken with
+`127.0.0.1` dropped 123 nodes / 4 files; the regenerated manifests then missed
+them in every shard and `check` failed in CI. Two habits prevent a repeat:
+
+- use a `localhost` host in `AUTO_TRADER_TEST_DATABASE_URL` (an unreachable
+  loopback port is fine — collection opens no connection);
+- run the capture under `set -o pipefail` (or check pytest's exit status): the
+  `2>/dev/null | grep '^tests/.*::'` recipe discards pytest's ERRORS block, so
+  a collection-time import failure shows up only as quietly missing files.
 
 To only check (no write), e.g. to reproduce a CI failure locally:
 
@@ -341,11 +368,15 @@ condition, its `add-paths` list, and that the regenerate step is fed
 ## 7. Verifying locally
 
 ```bash
-uv run pytest tests/ci/test_file_shard_plan.py \
-  scripts/merge_test_durations_test.py \
-  scripts/call_durations_test.py \
-  tests/ci/test_file_shard_plan_workflow_entrypoint.py -q -ra
+AUTO_TRADER_TEST_DATABASE_URL=postgresql+asyncpg://nobody:x@localhost:1/test_db \
+  uv run pytest tests/ci/test_file_shard_plan.py \
+    scripts/merge_test_durations_test.py \
+    scripts/call_durations_test.py \
+    tests/ci/test_file_shard_plan_workflow_entrypoint.py -q -ra
 ```
+
+The `localhost` host keeps the unreachable-port target (`:1`) out of the
+research DB policy's way (§4.3) without touching a real server.
 
 Full-regeneration idempotence is locked by the unit tests listed above,
 including `test_cli_generate_twice_is_byte_identical`. The duration-refresh

@@ -416,6 +416,8 @@ def _run_generate(
             str(collected_path),
             "--manifest-dir",
             str(manifest_dir or tmp_path / "ci_shards"),
+            "--repo-root",
+            str(tmp_path),
             "--shard-count",
             str(shard_count),
         ]
@@ -783,3 +785,70 @@ def test_cli_generate_writes_nothing_on_rejection(tmp_path: Path) -> None:
     )
     assert exit_code != 0
     assert not (tmp_path / "ci_shards").exists()
+
+
+# --- collection completeness (hk-3336) ------------------------------------
+#
+# A `pytest --collect-only` capture can lose a test file that the duration
+# artifact measured while the file is still in the tree: a module that refuses
+# to import under this environment raises a collection-time error, and
+# `2>/dev/null | grep '^tests/.*::'` throws the ERRORS block away. Packing that
+# capture drops the file from every manifest -- exact cover only notices later,
+# in CI. The working tree is what separates that from legitimate staleness.
+
+
+def _write_test_file(repo_root: Path, relative: str) -> Path:
+    path = repo_root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("def test_placeholder():\n    assert True\n", encoding="utf-8")
+    return path
+
+
+def test_cli_generate_fails_closed_when_collection_omits_a_measured_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    _write_test_file(tmp_path, "tests/services/research/test_uncollectable.py")
+    exit_code = _run_generate(
+        tmp_path,
+        durations={
+            "tests/services/research/test_uncollectable.py::test_x": 5.0,
+            "tests/collected.py::test_y": 1.0,
+        },
+        collected_nodes=["tests/collected.py::test_y"],
+    )
+    assert exit_code != 0
+    assert not (tmp_path / "ci_shards").exists()
+    stderr = capsys.readouterr().err
+    assert "missing 1 test file(s)" in stderr
+    assert "tests/services/research/test_uncollectable.py" in stderr
+
+
+def test_cli_generate_tolerates_a_measured_file_deleted_since_the_refresh(
+    tmp_path: Path,
+) -> None:
+    # The file the artifact measured is gone from the tree: legitimate
+    # staleness, absorbed by the mean-duration fallback, not a hard error.
+    exit_code = _run_generate(
+        tmp_path,
+        durations={
+            "tests/removed.py::test_x": 5.0,
+            "tests/collected.py::test_y": 1.0,
+        },
+        collected_nodes=["tests/collected.py::test_y"],
+    )
+    assert exit_code == 0
+    assert (
+        tmp_path / "ci_shards" / "shard-1.txt"
+    ).read_text() == "tests/collected.py\n"
+
+
+def test_cli_generate_accepts_a_collection_that_covers_every_measured_file(
+    tmp_path: Path,
+) -> None:
+    _write_test_file(tmp_path, "tests/present.py")
+    exit_code = _run_generate(
+        tmp_path,
+        durations={"tests/present.py::test_x": 5.0},
+        collected_nodes=["tests/present.py::test_x"],
+    )
+    assert exit_code == 0

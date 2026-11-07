@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from app.core.timezone import today_kst
 from app.services.disclosures import dart as dart_service
 
 
@@ -158,8 +159,8 @@ class TestDARTService:
         assert capture == [
             {
                 "corp": "005930",
-                "start": (dt.date.today() - dt.timedelta(days=30)).isoformat(),
-                "end": dt.date.today().isoformat(),
+                "start": (today_kst() - dt.timedelta(days=30)).isoformat(),
+                "end": today_kst().isoformat(),
                 "kind": "",
                 "final": True,
             }
@@ -294,10 +295,8 @@ class TestDARTService:
             "20260310000001",
             "20260309000002",
         ]
-        assert (
-            capture[0]["start"] == (dt.date.today() - dt.timedelta(days=2)).isoformat()
-        )
-        assert capture[0]["end"] == dt.date.today().isoformat()
+        assert capture[0]["start"] == (today_kst() - dt.timedelta(days=2)).isoformat()
+        assert capture[0]["end"] == today_kst().isoformat()
 
     @pytest.mark.asyncio
     async def test_list_filings_returns_missing_api_key_error(
