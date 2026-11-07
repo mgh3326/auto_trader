@@ -1,118 +1,68 @@
 #!/usr/bin/env python3
-"""Pick the "deployed" schema revision for the deploy tier's migration check.
+"""Pick the deployed schema revision for the deploy tier's migration check.
 
-hk 3445 / decision/2026-11-07/fleet-ci-three-tiers-r2 §1: the deploy tier runs
+hk 3445 / decision/2026-11-07/fleet-ci-three-tiers-r2 §1: the deploy tier checks
+the migration path from the schema that is deployed to the candidate. It runs
 ``alembic upgrade head`` at a base checkout, then the candidate's
-``alembic upgrade head`` on the same database. The base is the newest
-first-parent main ancestor of the candidate that carries a ``deploy-ok`` commit
-status with state ``success``. Until the first ``deploy-ok`` exists the base is
-the pinned bootstrap commit (``--bootstrap``): production ran sha-0c416a3 (deploy
-record ``deploy/auto_trader/20261106T230040Z``) when the deploy tier was added.
+``alembic upgrade head`` on the same database.
 
-Fail-closed: a status read that errors, or a candidate that is older than the
-bootstrap and has no ``deploy-ok`` ancestor, exits non-zero. Nothing here
-falls back to the candidate itself.
+The base is the pinned production commit (``--deployed``). It is not derived
+from ``deploy-ok``: that status only says CI validated an image. Production
+deploys are run by an operator and publish nothing GitHub can read, so a commit
+with ``deploy-ok`` may never have been deployed. The pin moves forward only in a
+PR that names the deploy record of the new production commit. A pin older than
+production still runs every migration production has not applied yet.
 
-stdlib only. Network access is ``gh api`` (read-only).
+Fail-closed: the pin must be a commit and an ancestor of the candidate (or the
+candidate itself). Otherwise this exits non-zero. Nothing here falls back to
+the candidate.
+
+stdlib only. No network access.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable
 
-STATUS_CONTEXT = "deploy-ok"
-#: First-parent commits examined before giving up on finding the bootstrap.
-WALK_LIMIT = 100
+SOURCE = "pinned-deployed"
 
 
 class BaseSelectionError(RuntimeError):
     """No trustworthy base. The caller must go red, never guess."""
 
 
-def _git(*args: str) -> str:
-    done = subprocess.run(["git", *args], check=False, capture_output=True, text=True)
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], check=False, capture_output=True, text=True)
+
+
+def _commit(ref: str) -> str:
+    done = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
     if done.returncode != 0:
         raise BaseSelectionError(
-            f"git {' '.join(args)} failed: {done.stderr.strip() or done.returncode}"
+            f"{ref} is not a commit: {done.stderr.strip() or done.returncode}"
         )
     return done.stdout.strip()
 
 
-def _git_ok(*args: str) -> bool:
-    return (
-        subprocess.run(
-            ["git", *args], check=False, capture_output=True, text=True
-        ).returncode
-        == 0
-    )
+def select_base(*, sha: str, deployed: str) -> tuple[str, str]:
+    """Return ``(base_sha, source)``."""
 
-
-def has_deploy_ok(repo: str, sha: str) -> bool:
-    """True when the combined status of ``sha`` carries a successful deploy-ok."""
-
-    done = subprocess.run(
-        ["gh", "api", "--method", "GET", f"repos/{repo}/commits/{sha}/status"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    candidate = _commit(sha)
+    base = _commit(deployed)
+    done = _git("merge-base", "--is-ancestor", base, candidate)
+    if done.returncode == 1:
+        raise BaseSelectionError(
+            f"the deployed commit {base} is not an ancestor of {candidate}"
+        )
     if done.returncode != 0:
         raise BaseSelectionError(
-            f"cannot read the commit status of {sha}: "
+            f"cannot tell whether {base} is an ancestor of {candidate}: "
             f"{done.stderr.strip() or done.returncode}"
         )
-    try:
-        payload = json.loads(done.stdout)
-    except json.JSONDecodeError as exc:
-        raise BaseSelectionError(f"status of {sha} is not JSON: {exc}") from exc
-    statuses = payload.get("statuses") if isinstance(payload, dict) else None
-    if not isinstance(statuses, list):
-        raise BaseSelectionError(f"status of {sha} has no `statuses` list")
-    return any(
-        isinstance(item, dict)
-        and item.get("context") == STATUS_CONTEXT
-        and item.get("state") == "success"
-        for item in statuses
-    )
-
-
-def select_base(
-    *,
-    repo: str,
-    sha: str,
-    bootstrap: str,
-    main_ref: str,
-    status_probe: Callable[[str, str], bool] = has_deploy_ok,
-) -> tuple[str, str]:
-    """Return ``(base_sha, source)`` with source ``deploy-ok`` or ``bootstrap``."""
-
-    candidate = _git("rev-parse", "--verify", f"{sha}^{{commit}}")
-    boot = _git("rev-parse", "--verify", f"{bootstrap}^{{commit}}")
-    # Walk main, not the candidate's own branch: only main commits can carry a
-    # deploy-ok. A main-push candidate is its own merge-base, so skip it.
-    merge_base = _git("merge-base", candidate, main_ref)
-    chain = _git(
-        "rev-list", "--first-parent", f"--max-count={WALK_LIMIT}", merge_base
-    ).split()
-    if chain and chain[0] == candidate:
-        chain = chain[1:]
-    for commit in chain:
-        if status_probe(repo, commit):
-            return commit, STATUS_CONTEXT
-        if commit == boot:
-            return boot, "bootstrap"
-    if _git_ok("merge-base", "--is-ancestor", boot, candidate):
-        # Walk limit reached before the bootstrap: it is still a valid ancestor.
-        return boot, "bootstrap"
-    raise BaseSelectionError(
-        f"{candidate} has no deploy-ok first-parent ancestor on {main_ref} and "
-        f"the bootstrap {boot} is not its ancestor"
-    )
+    return base, SOURCE
 
 
 def _write_output(key: str, value: str) -> None:
@@ -125,22 +75,13 @@ def _write_output(key: str, value: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--sha", required=True, help="candidate commit")
     parser.add_argument(
-        "--bootstrap",
-        required=True,
-        help="pinned base used until a deploy-ok exists",
+        "--deployed", required=True, help="pinned commit that production runs"
     )
-    parser.add_argument("--main-ref", default="origin/main")
     args = parser.parse_args(argv)
     try:
-        base, source = select_base(
-            repo=args.repo,
-            sha=args.sha,
-            bootstrap=args.bootstrap,
-            main_ref=args.main_ref,
-        )
+        base, source = select_base(sha=args.sha, deployed=args.deployed)
     except BaseSelectionError as exc:
         print(f"::error::deploy base: {exc}", file=sys.stderr)
         return 1

@@ -5,6 +5,7 @@
 # runner's loopback, with placeholder settings only (no secrets):
 #   1. `alembic upgrade head` from the image applies every migration to an empty DB
 #   2. `uvicorn app.main:app` answers /healthz 200 within SMOKE_ATTEMPTS x SMOKE_SLEEP
+#      (3 s per request) and its container is still running afterwards
 #   3. the TaskIQ scheduler, TaskIQ worker and websocket_monitor.py entrypoints import
 # On any failure the failing container's last 60 log lines are printed.
 #
@@ -67,7 +68,8 @@ docker run -d --name smoke-api --network host "${env_args[@]}" "$image" \
   python -m uvicorn app.main:app --host 127.0.0.1 --port "$port" >/dev/null
 healthy=0
 for attempt in $(seq 1 "$attempts"); do
-  if curl -fsS -o /dev/null "http://127.0.0.1:${port}/healthz"; then
+  # --max-time: a stalled response is one failed attempt, not a hang until the job timeout.
+  if curl -fsS --max-time 3 -o /dev/null "http://127.0.0.1:${port}/healthz"; then
     echo "/healthz answered 200 on attempt $attempt"
     healthy=1
     break
@@ -76,6 +78,9 @@ for attempt in $(seq 1 "$attempts"); do
   sleep "$pause"
 done
 [ "$healthy" = 1 ] || fail smoke-api "/healthz did not answer 200 in $attempts attempts"
+# A 200 from another process on the port proves nothing: smoke-api must still be up.
+running="$(docker inspect --format '{{.State.Running}}' smoke-api 2>/dev/null || true)"
+[ "$running" = true ] || fail smoke-api "smoke-api is not running after /healthz answered"
 docker rm -f smoke-api >/dev/null 2>&1 || true
 
 run_once smoke-import-scheduler "scheduler entrypoint imports" \

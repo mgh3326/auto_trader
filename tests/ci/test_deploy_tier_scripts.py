@@ -72,29 +72,6 @@ def _env(bin_dir: Path, **extra: str) -> dict[str, str]:
 # ------------------------------------------------------- select_deploy_base
 
 
-def _fake_gh_status(bin_dir: Path, statuses: dict[str, list[dict[str, str]]]) -> Path:
-    """`gh api --method GET repos/R/commits/<sha>/status` from a table."""
-
-    table = bin_dir / "statuses.json"
-    table.write_text(json.dumps(statuses), encoding="utf-8")
-    log = bin_dir / "gh.log"
-    _executable(
-        bin_dir / "gh",
-        f"""\
-        #!{sys.executable}
-        import json, os, sys
-        open({str(log)!r}, "a").write(" ".join(sys.argv[1:]) + "\\n")
-        if os.environ.get("FAKE_GH_FAIL"):
-            sys.stderr.write("HTTP 502")
-            sys.exit(1)
-        sha = sys.argv[-1].split("/")[-2]
-        table = json.load(open({str(table)!r}))
-        print(json.dumps({{"statuses": table.get(sha, [])}}))
-        """,
-    )
-    return log
-
-
 @pytest.fixture
 def history(tmp_path: Path) -> dict[str, str]:
     """main: root <- boot <- a <- b <- c <- d, plus branch commit f on top of c."""
@@ -114,7 +91,7 @@ def history(tmp_path: Path) -> dict[str, str]:
 
 
 def _select(
-    history: dict[str, str], bin_dir: Path, sha: str, **env: str
+    history: dict[str, str], bin_dir: Path, sha: str, deployed: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     output = bin_dir / "github_output"
     output.write_text("", encoding="utf-8")
@@ -122,17 +99,13 @@ def _select(
         [
             sys.executable,
             str(SELECT),
-            "--repo",
-            REPO,
             "--sha",
             sha,
-            "--bootstrap",
-            history["boot"][:9],
-            "--main-ref",
-            "origin/main",
+            "--deployed",
+            (deployed or history["boot"])[:9],
         ],
         cwd=history["repo"],
-        env=_env(bin_dir, GITHUB_OUTPUT=str(output), **env),
+        env=_env(bin_dir, GITHUB_OUTPUT=str(output)),
         capture_output=True,
         text=True,
         check=False,
@@ -144,86 +117,47 @@ def _outputs(bin_dir: Path) -> dict[str, str]:
     return dict(line.split("=", 1) for line in lines)
 
 
-OK = [{"context": "deploy-ok", "state": "success"}]
-
-
-def test_base_is_the_newest_first_parent_ancestor_with_deploy_ok(
-    history: dict[str, str], bin_dir: Path
+@pytest.mark.parametrize("candidate", ["d", "f", "boot"])
+def test_the_base_is_always_the_pinned_deployed_commit(
+    history: dict[str, str], bin_dir: Path, candidate: str
 ) -> None:
-    _fake_gh_status(bin_dir, {history["a"]: OK, history["b"]: OK})
-    done = _select(history, bin_dir, history["d"])
-    assert done.returncode == 0, done.stderr
-    assert _outputs(bin_dir) == {"base_sha": history["b"], "base_source": "deploy-ok"}
-
-
-def test_the_candidate_itself_is_never_its_own_base(
-    history: dict[str, str], bin_dir: Path
-) -> None:
-    _fake_gh_status(bin_dir, {history["d"]: OK})
-    done = _select(history, bin_dir, history["d"])
-    assert done.returncode == 0, done.stderr
-    assert _outputs(bin_dir)["base_source"] == "bootstrap"
-    assert _outputs(bin_dir)["base_sha"] == history["boot"]
-
-
-def test_until_a_deploy_ok_exists_the_base_is_the_pinned_bootstrap(
-    history: dict[str, str], bin_dir: Path
-) -> None:
-    log = _fake_gh_status(bin_dir, {})
-    done = _select(history, bin_dir, history["d"])
+    done = _select(history, bin_dir, history[candidate])
     assert done.returncode == 0, done.stderr
     assert _outputs(bin_dir) == {
         "base_sha": history["boot"],
-        "base_source": "bootstrap",
+        "base_source": "pinned-deployed",
     }
-    # It stops at the bootstrap instead of walking the whole history.
-    probed = [line.split("/")[-2] for line in log.read_text().splitlines()]
-    assert probed == [history["c"], history["b"], history["a"], history["boot"]]
 
 
-def test_only_a_successful_deploy_ok_counts(
+def test_a_deploy_ok_status_never_moves_the_base(
     history: dict[str, str], bin_dir: Path
 ) -> None:
-    _fake_gh_status(
-        bin_dir,
-        {
-            history["c"]: [{"context": "deploy-ok", "state": "failure"}],
-            history["b"]: [{"context": "ci-ok", "state": "success"}],
-            history["a"]: [{"context": "deploy-ok", "state": "pending"}],
-        },
-    )
+    """deploy-ok is CI validation, not a deployment (PR #2310 review, high)."""
+
+    gh_log = bin_dir / "gh.log"
+    _executable(bin_dir / "gh", f"#!/bin/sh\necho \"$@\" >> {gh_log}\nexit 1\n")
     done = _select(history, bin_dir, history["d"])
     assert done.returncode == 0, done.stderr
-    assert _outputs(bin_dir)["base_source"] == "bootstrap"
+    assert _outputs(bin_dir)["base_sha"] == history["boot"]
+    assert not gh_log.exists()  # no status is read at all
 
 
-def test_a_branch_candidate_walks_main_from_its_merge_base(
+def test_a_candidate_older_than_the_deployed_commit_has_no_base(
     history: dict[str, str], bin_dir: Path
 ) -> None:
-    _fake_gh_status(bin_dir, {history["c"]: OK, history["d"]: OK})
-    done = _select(history, bin_dir, history["f"])
-    assert done.returncode == 0, done.stderr
-    # c is the merge-base and counts; d is not an ancestor of the branch.
-    assert _outputs(bin_dir) == {"base_sha": history["c"], "base_source": "deploy-ok"}
-
-
-def test_an_unreadable_status_is_an_error_not_a_bootstrap_fallback(
-    history: dict[str, str], bin_dir: Path
-) -> None:
-    _fake_gh_status(bin_dir, {})
-    done = _select(history, bin_dir, history["d"], FAKE_GH_FAIL="1")
+    done = _select(history, bin_dir, history["root"])
     assert done.returncode == 1
-    assert "cannot read the commit status" in done.stderr
+    assert "is not an ancestor" in done.stderr
     assert not _outputs(bin_dir)
 
 
-def test_a_candidate_older_than_the_bootstrap_has_no_base(
+def test_an_unknown_deployed_commit_is_an_error(
     history: dict[str, str], bin_dir: Path
 ) -> None:
-    _fake_gh_status(bin_dir, {})
-    done = _select(history, bin_dir, history["root"])
+    done = _select(history, bin_dir, history["d"], deployed="0" * 40)
     assert done.returncode == 1
-    assert "is not its ancestor" in done.stderr
+    assert "is not a commit" in done.stderr
+    assert not _outputs(bin_dir)
 
 
 # ----------------------------------------------------------------- deploy_ok
@@ -414,6 +348,7 @@ def _fake_runtime(bin_dir: Path) -> Path:
         echo "$@" >> {log}
         case "$1" in
           logs) echo "container log line"; exit 0 ;;
+          inspect) echo "${{FAKE_API_RUNNING:-true}}"; exit 0 ;;
           run)
             case "$*" in
               *"${{FAKE_DOCKER_FAIL:-@@never@@}}"*) exit 1 ;;
@@ -485,7 +420,10 @@ def test_install_smoke_migrates_boots_and_imports_the_entrypoints_in_order(
     for line in runs:
         assert "registry.invalid/app@sha256:" + "a" * 64 in line  # the given digest
         assert "--network host" in line
-    assert "curl -fsS -o /dev/null http://127.0.0.1:8000/healthz" in log.read_text()
+    assert (
+        "curl -fsS --max-time 3 -o /dev/null http://127.0.0.1:8000/healthz"
+        in log.read_text()
+    )
 
 
 def test_install_smoke_passes_settings_by_name_only(bin_dir: Path) -> None:
@@ -534,6 +472,17 @@ def test_a_failing_step_prints_its_containers_last_sixty_lines(
     assert done.returncode == 1
     assert f"logs --tail 60 {container}" in log.read_text()
     assert "container log line" in done.stdout
+
+
+def test_a_healthz_answer_without_a_running_smoke_api_fails(bin_dir: Path) -> None:
+    """Another process answering on the port must not pass the smoke."""
+
+    log = _fake_runtime(bin_dir)
+    done = _smoke(bin_dir, FAKE_API_RUNNING="false")
+    assert done.returncode == 1
+    assert "smoke-api is not running" in done.stdout
+    assert "logs --tail 60 smoke-api" in log.read_text()
+    assert not any("websocket_monitor" in run for run in _runs(log))
 
 
 def test_a_failed_migration_never_starts_the_app(bin_dir: Path) -> None:

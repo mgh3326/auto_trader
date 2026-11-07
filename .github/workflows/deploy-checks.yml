@@ -61,10 +61,11 @@ env:
   UPBIT_SECRET_KEY: DUMMY_UPBIT_SECRET_KEY
   DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/deploy_check
   REDIS_URL: redis://127.0.0.1:6379/0
-  # Production ran sha-0c416a3 (deploy record deploy/auto_trader/20261106T230040Z)
-  # when this tier was added. The migration check starts from this commit until a
-  # first-parent main ancestor carries a deploy-ok status.
-  BOOTSTRAP_BASE_SHA: 0c416a3df
+  # The commit production runs: sha-0c416a3 (deploy record
+  # deploy/auto_trader/20261106T230040Z). The migration check always starts here.
+  # deploy-ok does not move it (CI validation is not a deployment); move it only in
+  # a PR that names the deploy record of the new production commit.
+  DEPLOYED_BASE_SHA: 0c416a3df
   # The migrations require the TimescaleDB extension (>= 2.15), so the service is the
   # image dev-kit.md pins for the same purpose, not plain postgres. Production runs
   # timescaledb-ha 2.26.3; docs/runbooks/dev-kit.md §3 records why the version differs.
@@ -77,7 +78,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      statuses: read
     outputs:
       sha: ${{ steps.candidate.outputs.sha }}
       mode: ${{ steps.candidate.outputs.mode }}
@@ -88,6 +88,16 @@ jobs:
         with:
           ref: ${{ inputs.sha || inputs.ref || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      # The helpers come from the workflow revision, never from the candidate: a
+      # candidate may predate them or change them.
+      - name: Check out the deploy-tier helpers
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: .deploy-tier-tools
+          sparse-checkout: scripts/ci
           persist-credentials: false
 
       - name: Resolve the candidate
@@ -110,14 +120,11 @@ jobs:
       - name: Select the deployed-schema base
         id: base
         env:
-          GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.candidate.outputs.sha }}
         run: |
-          python3 scripts/ci/select_deploy_base.py \
-            --repo "$GITHUB_REPOSITORY" \
+          python3 .deploy-tier-tools/scripts/ci/select_deploy_base.py \
             --sha "$SHA" \
-            --bootstrap "$BOOTSTRAP_BASE_SHA" \
-            --main-ref origin/main
+            --deployed "$DEPLOYED_BASE_SHA"
 
   migration-path:
     needs: plan
@@ -311,6 +318,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # This job holds statuses: write, so the publisher runs from the workflow
+      # revision, not from the candidate checkout.
+      - name: Check out the deploy-tier helpers
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: .deploy-tier-tools
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
       # success only when every deploy-tier job reported success; the status is
       # posted only for an ancestor of origin/main (a branch dispatch writes the
       # evidence file and no status).
@@ -323,7 +340,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ENVIRONMENT: github-actions/${{ runner.os }}-${{ runner.arch }}
         run: |
-          python3 scripts/ci/deploy_ok.py \
+          python3 .deploy-tier-tools/scripts/ci/deploy_ok.py \
             --repo "$GITHUB_REPOSITORY" \
             --sha "$CANDIDATE_SHA" \
             --needs-env DEPLOY_NEEDS \

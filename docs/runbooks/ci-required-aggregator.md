@@ -72,12 +72,18 @@ waits for the deploy tier; a red deploy tier never unpublishes or untags an imag
 | `install-smoke` | `docker run` the image digest against the CI TimescaleDB and Redis services with placeholder settings (no secrets): `alembic upgrade head` from the image, `uvicorn app.main:app` answers `/healthz` 200 within 30 attempts x 2 s, the scheduler, TaskIQ worker and `websocket_monitor.py` entrypoints import; the last 60 container log lines print on failure |
 | `deploy-ok` | posts the `deploy-ok` commit status and uploads the evidence artifact |
 
-**Base revision.** The newest first-parent main ancestor of the candidate that has a `deploy-ok`
-status with state `success` (`scripts/ci/select_deploy_base.py`). Until one exists the base is the pinned
-bootstrap `0c416a3df`, the commit production ran when the tier was added (deploy record
-`deploy/auto_trader/20261106T230040Z`). A status that cannot be read, or a candidate older than the
-bootstrap with no `deploy-ok` ancestor, fails the run; it never falls back to the candidate itself.
-Move the pin only with a decision, not to make a run green.
+**Base revision.** The pinned commit production runs, `DEPLOYED_BASE_SHA` in `deploy-checks.yml`
+(`0c416a3df`, deploy record `deploy/auto_trader/20261106T230040Z`; `scripts/ci/select_deploy_base.py`).
+`deploy-ok` never moves it: that status says CI validated an image, and production deploys are run by an
+operator and publish nothing GitHub can read. Move the pin only in a PR that names the deploy record of
+the new production commit, never to make a run green. A pin older than production still runs every
+migration production has not applied. A pin that is not a commit, or not an ancestor of the candidate,
+fails the run; it never falls back to the candidate itself.
+
+**Trusted helpers.** `plan` and `deploy-ok` run `select_deploy_base.py` and `deploy_ok.py` from a sparse
+checkout of the workflow revision (`github.sha`, path `.deploy-tier-tools`), not from the candidate. The
+candidate may predate the helpers, and `deploy-ok` holds `statuses: write`, so candidate code never runs
+with it.
 
 **`deploy-ok`** (`scripts/ci/deploy_ok.py`, `statuses: write` on that job only) is `success` only when
 `plan`, `migration-path` and `install-smoke` all reported `success`; anything else (failure, cancelled,

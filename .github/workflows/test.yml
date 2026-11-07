@@ -985,7 +985,7 @@ jobs:
     - kiwoom-dual-surface-smoke
     - alpaca-track-walkforward-tests
     - frontend
-    if: ${{ always() && github.event_name != 'pull_request' && (contains(needs.*.result, 'failure') || !contains(needs.*.result, 'cancelled')) }}
+    if: ${{ always() && github.event_name != 'pull_request' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || !contains(needs.*.result, 'cancelled')) }}
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:

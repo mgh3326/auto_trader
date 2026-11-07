@@ -140,6 +140,9 @@ def _ci_ok_runs(test_wf: dict[str, Any], event: str, results: list[str]) -> bool
         (["success", "skipped", "success"], True),
         (["success", "cancelled", "success"], False),
         (["cancelled", "cancelled"], False),
+        # A skip next to a cancellation is not "only cancelled": it runs red.
+        (["success", "cancelled", "skipped"], True),
+        (["skipped", "cancelled"], True),
     ],
 )
 def test_ci_ok_runs_unless_the_run_was_only_cancelled(
@@ -397,7 +400,7 @@ def test_the_migration_path_runs_base_then_candidate_on_one_database(
 ) -> None:
     text = CHECKS_YML.read_text(encoding="utf-8")
     assert "0c416a3df" in text
-    assert "deploy/auto_trader/20261106T230040Z" in text  # the bootstrap's why
+    assert "deploy/auto_trader/20261106T230040Z" in text  # the pin's deploy record
 
     job = checks_wf["jobs"]["migration-path"]
     steps = job["steps"]
@@ -421,17 +424,40 @@ def test_the_migration_path_runs_base_then_candidate_on_one_database(
     assert checks_wf["env"]["DATABASE_URL"].endswith("/deploy_check")
 
 
-def test_the_base_is_selected_by_the_helper_from_first_parent_main(
+def test_the_base_is_the_pinned_deployed_commit_from_the_helper(
     checks_wf: dict[str, Any],
 ) -> None:
     plan = checks_wf["jobs"]["plan"]
     checkout = plan["steps"][0]
     assert checkout["with"]["fetch-depth"] == 0
     select = next(step for step in plan["steps"] if step.get("id") == "base")
-    assert "scripts/ci/select_deploy_base.py" in select["run"]
-    assert '--bootstrap "$BOOTSTRAP_BASE_SHA"' in select["run"]
-    assert "--main-ref origin/main" in select["run"]
-    assert plan["permissions"]["statuses"] == "read"
+    assert ".deploy-tier-tools/scripts/ci/select_deploy_base.py" in select["run"]
+    assert '--deployed "$DEPLOYED_BASE_SHA"' in select["run"]
+    assert checks_wf["env"]["DEPLOYED_BASE_SHA"] == "0c416a3df"
+    # The base no longer depends on any status, so plan reads none.
+    assert plan["permissions"] == {"contents": "read"}
+    assert "GH_TOKEN" not in str(select.get("env", {}))
+
+
+@pytest.mark.parametrize("job_id", ["plan", "deploy-ok"])
+def test_helpers_run_from_the_workflow_revision_not_the_candidate(
+    checks_wf: dict[str, Any], job_id: str
+) -> None:
+    steps = checks_wf["jobs"][job_id]["steps"]
+    tools = [
+        step
+        for step in steps
+        if step.get("with", {}).get("path") == ".deploy-tier-tools"
+    ]
+    assert len(tools) == 1
+    assert tools[0]["with"]["ref"] == "${{ github.sha }}"
+    assert tools[0]["with"]["persist-credentials"] is False
+    for step in steps:
+        run = step.get("run", "")
+        for helper in ("select_deploy_base.py", "deploy_ok.py"):
+            if helper in run:
+                assert f".deploy-tier-tools/scripts/ci/{helper}" in run, (job_id, run)
+                assert f"python3 scripts/ci/{helper}" not in run
 
 
 # --------------------------------------------------------------- install smoke
