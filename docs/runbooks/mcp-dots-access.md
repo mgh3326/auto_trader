@@ -57,11 +57,15 @@ checks, kis_mock attribution, W5 inbox, ROB-1340, NHPLUG, execution-ledger inges
 
 Names only below. Never write values into the repo, a ticket or a chat.
 
+Create the steps in this order. Step 2 must not exist before step 1 and its policy do: a
+tunnel route without the Access application forwards to the origin with no edge check.
+
 1. **Access application** (Cloudflare Zero Trust): self-hosted, domain `at-mcp.robinco.dev`,
    path `/` (covers `/mcp`, `/health` and `.well-known`), policy **Allow, Emails = the operator
    email, nothing else**. Turn on the MCP / OAuth ("managed OAuth") option the way the
-   `hk-mcp.robinco.dev` application has it. Copy the application **AUD tag** (64 hex).
-2. **Tunnel route**: public hostname `at-mcp.robinco.dev` → service `http://127.0.0.1:8765`
+   `hk-mcp.robinco.dev` application has it. Copy the application **AUD tag** (64 hex). Confirm
+   the saved policy lists only the operator email before going on.
+2. **Tunnel route** (only after step 1 is saved): public hostname `at-mcp.robinco.dev` → service `http://127.0.0.1:8765`
    (the DEFAULT HAProxy front, `ops/ncp/haproxy/haproxy.cfg.tmpl` `ft_mcp_loopback`), on a
    `cloudflared` that runs **on the NCP host** (loopback), or point it at the tailnet front
    `100.122.100.56:8765` from a host on the tailnet.
@@ -99,14 +103,26 @@ Do not place an order to verify. Use read tools only.
 
 ## 4. Rollback
 
-Reversible in minutes, no code change and no data change:
+Reversible in minutes, no code change and no data change. The order matters. Each step
+must finish before the next one starts.
 
-1. Remove the `at-mcp.robinco.dev` tunnel route (or the Access application): the endpoint stops
-   answering. This alone ends dots' access.
-2. Unset the three `MCP_CF_ACCESS_*` variables and redeploy: the unit then decides every request
-   exactly as before this change (bearer only).
+1. **Remove or disable the tunnel route first**: delete the public hostname
+   `at-mcp.robinco.dev` (or its ingress rule to `http://127.0.0.1:8765`) from the `cloudflared`
+   configuration that serves it, then reload that `cloudflared` (how it is managed is the open
+   item in §2). A route that still exists keeps forwarding every request to the origin, with
+   or without the edge policy.
+   Verify: `curl -si https://at-mcp.robinco.dev/mcp` gets **no answer from the origin**: no
+   `200`, no MCP JSON body, no `WWW-Authenticate` from the origin. A Cloudflare error page or a
+   connection failure is the expected result. The DEFAULT unit's access log must show no new
+   request for that host after the check.
+2. **Only then remove the Access application** (or its `at-mcp.robinco.dev` policy). Removing
+   the application while the route still exists leaves the origin reachable without an edge
+   check. That is the window step 1 closes.
+3. **Unset the three `MCP_CF_ACCESS_*` variables** in the DEFAULT unit's env and redeploy. The
+   unit then decides every request exactly as before this change (bearer only). The assertion
+   path is inactive from this point.
 
-The bearer path (`MCP_AUTH_TOKEN`, tailnet clients) is unaffected by both. The code can stay.
+The bearer path (`MCP_AUTH_TOKEN`, tailnet clients) is unaffected by all three steps. The code can stay.
 
 ## 5. Failure modes
 
