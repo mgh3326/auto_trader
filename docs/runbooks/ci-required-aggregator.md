@@ -233,6 +233,8 @@ What the any-ref path does **not** do, by design:
   ambiguous. The called jobs appear as `suite / <name>`.
 - A cancelled watched check plus a `success`/`failure` status of the same name reads as that status
   (`internal/github/client.go` `foldChecks`), so a status beats the cancelled push run's check.
+- Two dispatches of one commit do not cancel each other: `test-any-ref.yml`'s concurrency group is per
+  run and attempt (`test-any-ref-<run_id>-<run_attempt>`), so each run posts its own verdicts.
 - If the validation did not pass, nothing is recorded and nothing is posted. Mergewake then holds the
   commit as unknown, which is the safe outcome.
 
