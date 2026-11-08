@@ -117,15 +117,31 @@ def _script(job: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 
-def test_workflow_triggers_add_only_workflow_dispatch(
+def test_workflow_triggers_add_only_workflow_dispatch_and_the_any_ref_call(
     workflow: dict[str, Any],
 ) -> None:
     # PyYAML parses the bare key `on` as the boolean True.
+    # hk 3487: `workflow_call` is the one addition, so test-any-ref.yml can run this
+    # exact definition for a bisect commit. Its `ref` defaults to empty (event ref).
     triggers = workflow.get("on", workflow.get(True))
     assert triggers == {
         "push": {"branches": ["main", "develop"]},
         "pull_request": {"branches": ["main", "develop"]},
         "workflow_dispatch": None,
+        "workflow_call": {
+            "inputs": {
+                "ref": {
+                    "description": (
+                        "Exact 40-hex commit SHA to check out; empty uses the "
+                        "event ref."
+                    ),
+                    "required": False,
+                    "type": "string",
+                    "default": "",
+                }
+            },
+            "secrets": {"CODECOV_TOKEN": {"required": False}},
+        },
     }
 
 
@@ -452,11 +468,16 @@ def test_a_push_cancels_the_previous_push_run_of_the_same_ref(
 def test_dispatch_is_never_cancelled_by_a_push_or_another_dispatch(
     workflow: dict[str, Any],
 ) -> None:
-    """Deploy-SHA and bisect dispatches must survive a newer push to main."""
+    """Deploy-SHA and bisect dispatches must survive a newer push to main.
+
+    hk 3487: `cancel-in-progress` is the literal true now (mergewake ci-policy cannot
+    verify an expression). The protection moved into the group: a dispatch's group
+    is its own run id and attempt, so nothing else ever shares it.
+    """
 
     first = _dispatch_concurrency(workflow, 101)
     second = _dispatch_concurrency(workflow, 102)
-    assert first[1] is False
+    assert first[1] is True and second[1] is True
     groups = {
         first[0],
         second[0],
@@ -464,6 +485,30 @@ def test_dispatch_is_never_cancelled_by_a_push_or_another_dispatch(
         _pr_concurrency(workflow)[0],
     }
     assert len(groups) == 4
+
+
+def test_a_dispatch_rerun_attempt_does_not_cancel_the_attempt_it_reruns(
+    workflow: dict[str, Any],
+) -> None:
+    """A re-run keeps the run id; the attempt number keeps it out of the old group."""
+
+    first_attempt = _concurrency(
+        workflow,
+        "workflow_dispatch",
+        ref="refs/heads/main",
+        run_id=101,
+        run_attempt=1,
+        event={},
+    )
+    second_attempt = _concurrency(
+        workflow,
+        "workflow_dispatch",
+        ref="refs/heads/main",
+        run_id=101,
+        run_attempt=2,
+        event={},
+    )
+    assert first_attempt[0] != second_attempt[0]
 
 
 # --------------------------------------------------------------------------

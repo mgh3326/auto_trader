@@ -1,0 +1,138 @@
+name: Post any-ref statuses
+
+# hk 3487: posts the watched checks of a `Test (any ref)` run as commit statuses, for
+# mergewake's bisect (policy.any_ref_workflow). The point of this file is where it runs.
+#
+# A workflow_run workflow is loaded from the DEFAULT branch, whichever branch the
+# triggering run used, so a branch cannot change the code below or the permission it
+# is given. Only that code can hold `statuses: write`, and the any-ref run does not hold it.
+#
+# Only a run dispatched from main is posted: the triggering run's event must be
+# workflow_dispatch and its head_branch main, from this repository.
+#
+# Two runs may test one commit. Posting for one commit is serialised by the concurrency
+# group below. The helper posts nothing for a run that a newer main-dispatched run or attempt
+# for the same commit supersedes, but only once that newer one recorded a target (its
+# `validate ref` succeeded), so it will publish. Otherwise the older run posts its verdicts.
+# An unreadable newer run fails this run, so it can be retried.
+
+on:
+  workflow_run:
+    workflows: ["Test (any ref)"]
+    types: [completed]
+
+# Top level grants read only. The post job alone adds statuses: write.
+permissions:
+  contents: read
+
+jobs:
+  # Reads the commit the triggering run recorded. Holds no statuses permission.
+  resolve:
+    name: resolve any-ref target
+    if: >-
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      has_target: ${{ steps.target.outputs.has_target }}
+      sha: ${{ steps.target.outputs.sha }}
+    steps:
+      - name: Read the commit the run recorded
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          # The triggering run's own validation decides whether a target exists. A failed or
+          # absent validation records nothing, so there is nothing to post. A passed validation
+          # must have recorded one: if it cannot be read, fail (retry) rather than post nothing.
+          validate="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
+            --jq '[.jobs[] | select(.name == "validate ref")][0].conclusion // "none"')"
+          if [ "$validate" != "success" ]; then
+            echo "run $RUN_ID: validate ref was $validate; it recorded no target; nothing to post"
+            echo "has_target=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dir="$RUNNER_TEMP/any-ref-target"
+          if ! gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"; then
+            echo "run $RUN_ID passed validation but its any-ref-target could not be read; retry the run" >&2
+            exit 1
+          fi
+          sha="$(cat "$dir/sha.txt")"
+          if [[ ! "$sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "the recorded target is not an exact 40-hex SHA"
+            exit 1
+          fi
+          echo "has_target=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  post:
+    name: post any-ref statuses
+    needs: resolve
+    if: ${{ needs.resolve.outputs.has_target == 'true' }}
+    # One poster at a time per commit, so two runs of one commit never publish at once.
+    # The helper then decides, against the run list, whether this run is still the newest.
+    concurrency:
+      group: any-ref-status-${{ needs.resolve.outputs.sha }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      statuses: write
+    steps:
+      # The default branch, pinned by name, never the triggering run's ref. The helper
+      # is trusted code and runs from here.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Post each watched check as a status on the recorded commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/any-ref-target"
+          gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"
+
+          # The names this workflow publishes, written once here. The run's record
+          # must name the same ones, so a policy change cannot silently drop a check.
+          watched=(
+            'lint'
+            'taskiq-smoke'
+            'test (3.13, 1)'
+            'test (3.13, 2)'
+            'test (3.13, 3)'
+            'test (3.13, 4)'
+          )
+          published="$(printf '%s\n' "${watched[@]}" | sort)"
+          recorded="$(sort "$dir/expected-checks.txt")"
+          if [ "$published" != "$recorded" ]; then
+            echo "the recorded check names differ from the names this workflow publishes"
+            exit 1
+          fi
+
+          args=()
+          for name in "${watched[@]}"; do args+=(--watch "$name"); done
+          python3 .github/scripts/any_ref_statuses.py \
+            --repo "$REPO" \
+            --sha "$SHA" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --target-url "$RUN_URL" \
+            "${args[@]}"
