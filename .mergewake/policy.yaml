@@ -14,6 +14,9 @@ watch_checks:
   - 'test (3.13, 2)'
   - 'test (3.13, 3)'
   - 'test (3.13, 4)'
+# hk 3487: a cancelled main push run leaves its commit without a watched result;
+# bisect dispatches this workflow for that commit and reads the statuses it posts.
+any_ref_workflow: test-any-ref.yml
 blocking:
   - paths:
       - 'app/services/brokers/**'

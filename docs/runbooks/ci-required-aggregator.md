@@ -107,8 +107,23 @@ group deadlock.
 `concurrency` groups a PR by its number and a push by its ref, and cancels in progress for
 both. A newer push to main cancels the run of the previous push, so T-POST tests the newest
 head only. A `workflow_dispatch` run is a deliberate request for one SHA (the deploy gate, a
-mergewake bisect), so its group includes `github.run_id` and `cancel-in-progress` is false:
-a later push never cancels it.
+mergewake bisect), so its group includes `github.run_id` and `github.run_attempt`: a later push
+never shares its group, and a re-run never cancels the attempt it re-runs.
+
+The concurrency table, before and after hk 3487 (`cancel-in-progress` became the literal `true`,
+because mergewake `ci-policy` cannot verify an expression; the groups are the same except the
+dispatch key now carries the attempt):
+
+| Event | Group (before) | Cancels (before) | Group (after) | Cancels (after) |
+|---|---|---|---|---|
+| `push` to main | `Test-refs/heads/main` | older main push runs | same | same |
+| `push` to develop | `Test-refs/heads/develop` | older develop push runs | same | same |
+| `pull_request` #N | `Test-<N>` | older runs of PR N | same | same |
+| `workflow_dispatch` run R | `Test-dispatch-<R>` (`cancel-in-progress: false`) | nothing; a re-run of R queued behind the running attempt | `Test-dispatch-<R>-<A>` (literal `true`) | nothing: no other run shares the group; a re-run is attempt A+1 with its own group, so it runs beside A and does not cancel it |
+| `workflow_call` from `test-any-ref.yml` run R, attempt A | (did not exist) | — | `Test-dispatch-<R>-<A>` (the event is `workflow_dispatch`) | nothing (as for dispatch) |
+
+The one visible change: a re-run of a dispatch no longer waits for the running attempt of the same
+run; the two attempts run side by side. No push, PR or other dispatch is affected.
 
 A cancelled main run is **not** evidence about its SHA. Consequences:
 
@@ -169,6 +184,55 @@ Until all of these hold, leave the variable unset; T-POST then runs on `ubuntu-l
 The `test` shards and `taskiq-smoke` declare `services:` (Postgres, Redis), which need
 **Docker on the runner**. A self-hosted Linux runner must have
 Docker, one concurrent job per runner, and no other workload that binds ports 5432 or 6379.
+
+### Any-ref CI for a cancelled main commit (hk 3487)
+
+A main commit whose push run a newer push cancelled has no watched result. When main is red,
+mergewake's bisect needs a result for each commit it reads, so it dispatches
+`.github/workflows/test-any-ref.yml` for that commit (`policy.any_ref_workflow` in
+`.mergewake/policy.yaml`). The workflow:
+
+1. `validate` (first job, first steps): the input `ref` must be exactly 40 hex characters, and
+   `compare/main...<ref>` must report `behind` or `identical`. Anything else stops the run before a
+   checkout, so nothing is posted for a commit off main's history.
+2. `suite` calls `test.yml` with `ref`. Every checkout in `test.yml` reads `inputs.ref`, so the
+   jobs are the push run's jobs on that exact commit. Their names become `suite / <job>`, and
+   `if:` conditions are unchanged, so a dispatch runs what a push to main runs. Secrets are inherited.
+3. `post-status` (after `suite`, whatever its result) judges each watched check by its job
+   (`suite / lint`, `suite / taskiq-smoke`, `suite / test (3.13, N)`): one completed job with
+   conclusion `success` is green, anything else is red. It posts one commit status per watched
+   name (`lint`, `taskiq-smoke`, `test (3.13, 1..4)`) on the commit. The helper is
+   `.github/scripts/any_ref_statuses.py`, run from the default-branch checkout.
+
+What the any-ref run does **not** do, by design:
+
+- It posts no image, no `deploy-ok`, no `ci-ok`, and its name is not `Test`. `deploy.yml` builds
+  only on a `Test` `workflow_run` whose event is `push`, and `scripts/deploy_ci_gate.py` reads only
+  `Test` runs, so neither can take this run as evidence. A called workflow does not create a `Test`
+  run of its own; after the first dispatch, confirm it (`gh api repos/<repo>/actions/workflows/test.yml/runs?head_sha=<sha>`
+  lists only the runs that existed before the dispatch).
+- Its status job is the only job that can write statuses, and its name is not a watched check.
+  mergewake reads a same-name check run and status as ambiguous when their decisive verdicts
+  disagree; here the watched names are only statuses, and the called jobs are `suite / <name>`.
+- A cancelled watched check plus a `success`/`failure` status of the same name reads as that status
+  (`internal/github/client.go` `foldChecks`), so a status beats the cancelled push run's check.
+
+Known limit: the called `test.yml` is the **default branch's** definition, while the code under test
+is the commit's. For a commit whose own `test.yml` differed, the job definitions are main's. The
+watched names and job bodies match since the hk 2939 tiers.
+
+Verify with a known-green main commit, not a bisect result:
+
+```bash
+SHA=$(git ls-remote origin refs/heads/main | cut -f1)   # or a commit you have confirmed green
+gh workflow run test-any-ref.yml -f ref="$SHA"
+RUN=$(gh run list --workflow test-any-ref.yml --limit 1 --json databaseId -q '.[0].databaseId')
+gh run watch "$RUN" --exit-status
+gh api "repos/mgh3326/auto_trader/commits/$SHA/statuses" --jq '.[] | "\(.context) \(.state)"' | sort -u
+```
+
+Expect `lint`, `taskiq-smoke` and the four `test (3.13, N)` statuses, all `success`. A run that
+fails `validate` posts nothing; a run whose `suite` job fails posts `failure` for that job only.
 
 ## 1. What runs where
 
@@ -405,7 +469,10 @@ verdict job's `needs:` and `--required` lists, the tiers (which jobs a pull requ
 the concurrency groups, `runs-on` on every event with and without the runner variable) and that
 every check named in `.mergewake/policy.yaml` is one the workflow displays; it evaluates the
 workflow expressions with `tests/ci/gh_expr.py`. `tests/ci/test_required_aggregator.py` holds
-the gate's truth table and the superseded rule. `tests/ci/test_deploy_gate_workflow.py` pins
+the gate's truth table and the superseded rule. `tests/ci/test_any_ref_workflow_contract.py` (hk 3487)
+pins the literal `cancel-in-progress`, the groups per event kind, the ref validation that runs before
+any checkout (run under bash), the status job's name and its watched names, that only the status job
+writes statuses, and that the any-ref run posts no image or deploy-ok. `tests/ci/test_deploy_gate_workflow.py` pins
 that `deploy.yml` skips a cancelled `Test` run. `tests/ci/test_deploy_tier_workflow_contract.py`
 pins `ci-ok` (its `needs`, its `if:` and its step run as shell) and the deploy tier's wiring (called only
 after a successful main-push `Test`, on the pushed digest, never cancelled, never pushes, `deploy-ok` judged over

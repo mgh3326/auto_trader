@@ -8,14 +8,28 @@ on:
   # Full suite on any ref, e.g. to force it for a PR branch or a deploy SHA:
   # gh workflow run test.yml --ref <branch>
   workflow_dispatch:
+  # hk 3487: the any-ref run (test-any-ref.yml) calls this workflow for one exact
+  # commit. `ref` is that commit; empty means the event's own ref, as before. Every
+  # checkout below reads it, so a called run tests the same jobs a push run tests.
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact 40-hex commit SHA to check out; empty uses the event ref.
+        required: false
+        type: string
+        default: ''
 
 # hk 2939: only the newest head of a ref runs. A push to main (T-POST) cancels the
 # previous push run of that ref, as a new commit cancels a PR's earlier run. A
-# workflow_dispatch run is a deliberate request for one SHA (deploy gate, mergewake
-# bisect), so it gets a group of its own by run id and is never cancelled by a push.
+# workflow_dispatch run (or a workflow_call from test-any-ref.yml) is a deliberate
+# request for one SHA (deploy gate, mergewake bisect). It gets a group of its own by
+# run id AND run attempt, so no push can share it, and a re-run cannot cancel the
+# attempt it re-runs. `cancel-in-progress` is the literal true: a workflow-level
+# expression is not verifiable by mergewake ci-policy (docs/ci-policy.md), and the
+# group above already makes a dispatch alone in its group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id)) || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}', github.run_id, github.run_attempt)) || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # hk 2939, three tiers (docs/runbooks/ci-required-aggregator.md):
@@ -44,6 +58,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ inputs.ref }}
 
     - name: Set up pinned Python and uv
       id: py
@@ -113,6 +129,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # Full history: the base commit this fence diffs against must always
         # be locally resolvable without depending on the script's best-effort
         # runtime fetch fallback.
@@ -163,6 +180,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # Full history: the base commit must be locally resolvable. A shallow
         # checkout that hides it is a hard failure in the classifier, not a
         # reason to fall back to a narrower run.
@@ -246,6 +264,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # The context scope contract resolves the actual PR merge-base and
         # deliberately fails if it cannot be proven from local history.
         fetch-depth: 0
@@ -366,6 +385,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ inputs.ref }}
 
     - name: Set up pinned Python and uv
       id: py
@@ -492,6 +513,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # The context scope contract resolves the actual PR merge-base and
         # deliberately fails if it cannot be proven from local history.
         fetch-depth: 0
@@ -558,6 +580,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ inputs.ref }}
 
     - name: Set up pinned Python and uv
       id: py
@@ -639,6 +663,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
     - name: Set up pinned Python and uv
@@ -682,6 +707,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
     - name: Set up pinned Python and uv
@@ -716,6 +742,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
     - name: Set up pinned Python and uv
@@ -762,6 +789,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
     - name: Set up pinned Python and uv
@@ -822,6 +850,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
     # Node 22.x is pinned in .github/actions/setup-node-cached (the
@@ -870,6 +899,7 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
     - name: Evaluate the PR verdict

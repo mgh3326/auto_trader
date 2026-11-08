@@ -1,0 +1,115 @@
+name: Test (any ref)
+
+# hk 3487: the any-ref CI that mergewake dispatches (policy.any_ref_workflow) for a
+# bisect commit whose push run GitHub cancelled. It runs test.yml, called with that
+# exact commit, so the jobs are the push run's jobs; then it posts each watched check
+# as a commit status named like that check (see .github/scripts/any_ref_statuses.py).
+#
+# It posts nothing else: no image, no deploy-ok, no ci-ok. It is not named `Test`,
+# so deploy.yml's workflow_run (workflows: ["Test"]) and scripts/deploy_ci_gate.py
+# (Test runs by file) do not see it. A called workflow creates no run of its own;
+# docs/runbooks/ci-required-aggregator.md §any-ref checks that after a dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact 40-hex commit SHA to test. Must be on main's history.
+        required: true
+        type: string
+
+# Top level grants read only. The status job alone adds statuses: write.
+permissions:
+  contents: read
+
+concurrency:
+  group: test-any-ref-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # First job, first steps: the ref is judged before any checkout, and every other
+  # job needs this one. The value reaches the shell only through env, never through
+  # `${{ }}` interpolation inside the script.
+  validate:
+    name: validate ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require an exact 40-hex commit SHA
+        env:
+          TARGET_SHA: ${{ inputs.ref }}
+        run: |
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "ref must be an exact 40-hex commit SHA"
+            exit 1
+          fi
+
+      - name: Require the commit to be on main's history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.ref }}
+        run: |
+          status="$(gh api "repos/${REPO}/compare/main...${TARGET_SHA}" --jq .status)"
+          case "$status" in
+            behind|identical) echo "${TARGET_SHA} is on main's history" ;;
+            *)
+              echo "${TARGET_SHA} is not on main's history (compare status: ${status})"
+              exit 1
+              ;;
+          esac
+
+  # The full push-run definition, called with the exact commit. Its jobs keep their
+  # names (`suite / lint`, `suite / test (3.13, 1)`, ...) and its `if:` conditions,
+  # so a dispatch runs what a push to main runs. Secrets are inherited for the same
+  # reason: a push run gets them too.
+  suite:
+    name: suite
+    needs: validate
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ inputs.ref }}
+    secrets: inherit
+
+  # Runs after the suite whatever its result, so a cancelled or failed watched job
+  # is posted as failure rather than left without a status. Its name is not a
+  # watched check, and it is the only job with statuses: write.
+  post-status:
+    name: post any-ref statuses
+    needs: [validate, suite]
+    if: ${{ always() && needs.validate.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      statuses: write
+    steps:
+      # The default branch, never the tested commit: the helper is trusted code.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Post each watched check as a status on the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 .github/scripts/any_ref_statuses.py \
+            --repo "$REPO" \
+            --sha "$TARGET_SHA" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --target-url "$TARGET_URL" \
+            --watch 'lint' \
+            --watch 'taskiq-smoke' \
+            --watch 'test (3.13, 1)' \
+            --watch 'test (3.13, 2)' \
+            --watch 'test (3.13, 3)' \
+            --watch 'test (3.13, 4)'
