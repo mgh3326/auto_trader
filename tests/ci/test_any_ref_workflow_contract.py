@@ -306,10 +306,23 @@ def test_suite_calls_test_yml_for_the_exact_ref(any_ref: dict[str, Any]) -> None
     assert suite["secrets"] == "inherit"
 
 
-def test_any_ref_group_is_per_ref_and_cancels(any_ref: dict[str, Any]) -> None:
-    concurrency = any_ref["concurrency"]
-    assert concurrency["cancel-in-progress"] is True
-    assert "inputs.ref" in concurrency["group"]
+def _any_ref_group(any_ref: dict[str, Any], run_id: int, attempt: int) -> str:
+    context = {"github": {"run_id": run_id, "run_attempt": attempt}}
+    return str(gh_expr.evaluate(any_ref["concurrency"]["group"], context))
+
+
+def test_any_ref_group_is_per_dispatch_and_attempt(any_ref: dict[str, Any]) -> None:
+    """Two dispatches of one commit must not share a group: the second must not cancel the first.
+
+    A cancelled run's workflow_run poster could otherwise post failures after a newer
+    run's success on the same commit (PR #2317, r4506345303).
+    """
+
+    assert any_ref["concurrency"]["cancel-in-progress"] is True
+    same_commit_first = _any_ref_group(any_ref, 10, 1)
+    same_commit_second = _any_ref_group(any_ref, 11, 1)
+    rerun = _any_ref_group(any_ref, 10, 2)
+    assert len({same_commit_first, same_commit_second, rerun}) == 3
 
 
 def test_any_ref_workflow_is_not_named_test(any_ref: dict[str, Any]) -> None:

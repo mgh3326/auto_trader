@@ -26,8 +26,12 @@ on:
 permissions:
   contents: read
 
+# One group per dispatch and attempt, not per commit. Keyed by the commit, a second
+# dispatch for the same SHA would cancel the first, and the cancelled run's
+# post-any-ref-status.yml could then post failures after the newer run's success.
+# Each run completes with its own verdicts, as test.yml's dispatch groups do.
 concurrency:
-  group: test-any-ref-${{ inputs.ref }}
+  group: test-any-ref-${{ github.run_id }}-${{ github.run_attempt }}
   cancel-in-progress: true
 
 jobs:
