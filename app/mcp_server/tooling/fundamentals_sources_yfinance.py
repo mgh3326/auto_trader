@@ -318,6 +318,19 @@ async def _fetch_dividends_yfinance(symbol: str) -> dict[str, Any]:
     return {"symbol": symbol.upper(), "source": "yfinance", "data": data}
 
 
+def _partial_fetch_errors(
+    fetch_errors: list[tuple[str, Exception]],
+) -> list[dict[str, str]]:
+    """Non-silent record of sub-request failures kept beside usable results.
+
+    Only the field name and exception class are kept; provider messages are
+    not copied into the response.
+    """
+    return [
+        {"field": name, "error_class": type(exc).__name__} for name, exc in fetch_errors
+    ]
+
+
 async def _fetch_investment_opinions_yfinance(
     symbol: str,
     limit: int,
@@ -336,10 +349,10 @@ async def _fetch_investment_opinions_yfinance(
         Any,
         dict[str, Any] | None,
         bool,
-        list[Exception],
+        list[tuple[str, Exception]],
     ]:
         no_fundamentals = False
-        fetch_errors: list[Exception] = []
+        fetch_errors: list[tuple[str, Exception]] = []
         targets = None
         try:
             targets = ticker.analyst_price_targets
@@ -347,7 +360,7 @@ async def _fetch_investment_opinions_yfinance(
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
             else:
-                fetch_errors.append(exc)
+                fetch_errors.append(("analyst_price_targets", exc))
 
         recommendations = None
         try:
@@ -356,7 +369,7 @@ async def _fetch_investment_opinions_yfinance(
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
             else:
-                fetch_errors.append(exc)
+                fetch_errors.append(("recommendations", exc))
 
         ud = None
         try:
@@ -365,7 +378,7 @@ async def _fetch_investment_opinions_yfinance(
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
             else:
-                fetch_errors.append(exc)
+                fetch_errors.append(("upgrades_downgrades", exc))
 
         info = None
         try:
@@ -374,11 +387,11 @@ async def _fetch_investment_opinions_yfinance(
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
             else:
-                fetch_errors.append(exc)
+                fetch_errors.append(("info", exc))
         return targets, recommendations, ud, info, no_fundamentals, fetch_errors
 
     no_fundamentals = False
-    fetch_errors: list[Exception] = []
+    fetch_errors: list[tuple[str, Exception]] = []
     # Use pre-fetched snapshot if available
     if snapshot is not None:
         targets = snapshot.analyst_price_targets
@@ -405,8 +418,8 @@ async def _fetch_investment_opinions_yfinance(
         or (isinstance(ud, pd.DataFrame) and not ud.empty)
         or bool(info)
     )
-    if fetch_errors:
-        raise fetch_errors[0]
+    if fetch_errors and not has_source_data:
+        raise fetch_errors[0][1]
     if no_fundamentals and not has_source_data:
         return _missing_fundamentals_payload(
             symbol,
@@ -475,6 +488,8 @@ async def _fetch_investment_opinions_yfinance(
         result["warning"] = (
             f"Yahoo analyst consensus data unavailable for {symbol.upper()}."
         )
+    if fetch_errors:
+        result["partial_errors"] = _partial_fetch_errors(fetch_errors)
     return result
 
 
@@ -489,9 +504,11 @@ async def _fetch_investment_opinions_yfinance_screen(
         session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict[str, Any] | None, Any, bool, list[Exception]]:
+    def _collect() -> tuple[
+        dict[str, Any] | None, Any, bool, list[tuple[str, Exception]]
+    ]:
         no_fundamentals = False
-        fetch_errors: list[Exception] = []
+        fetch_errors: list[tuple[str, Exception]] = []
         targets = None
         try:
             targets = ticker.analyst_price_targets
@@ -499,7 +516,7 @@ async def _fetch_investment_opinions_yfinance_screen(
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
             else:
-                fetch_errors.append(exc)
+                fetch_errors.append(("analyst_price_targets", exc))
 
         recommendations = None
         try:
@@ -508,7 +525,7 @@ async def _fetch_investment_opinions_yfinance_screen(
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
             else:
-                fetch_errors.append(exc)
+                fetch_errors.append(("recommendations", exc))
 
         return targets, recommendations, no_fundamentals, fetch_errors
 
@@ -524,8 +541,8 @@ async def _fetch_investment_opinions_yfinance_screen(
         _build_yahoo_target_consensus(targets, fallback_current_price=None) is not None
         or _build_yahoo_count_consensus(trend) is not None
     )
-    if fetch_errors:
-        raise fetch_errors[0]
+    if fetch_errors and not has_source_data:
+        raise fetch_errors[0][1]
     if no_fundamentals and not has_source_data:
         return _missing_fundamentals_payload(
             symbol,
@@ -564,6 +581,8 @@ async def _fetch_investment_opinions_yfinance_screen(
         result["warning"] = (
             f"Yahoo analyst consensus data unavailable for {symbol.upper()}."
         )
+    if fetch_errors:
+        result["partial_errors"] = _partial_fetch_errors(fetch_errors)
     return result
 
 

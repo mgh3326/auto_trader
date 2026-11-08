@@ -97,7 +97,11 @@ quoteSummary response as missing fundamentals only when it is HTTP 404 and expli
 return `success=true`, `data_state="missing"`, and `reason="no_fundamentals"` with the
 symbol and `source="yfinance"`. Other HTTP statuses, timeouts, malformed responses, and
 404s without that provider message remain errors; a failed fetch must not be represented as
-missing data. US company profiles continue to use Finnhub.
+missing data. When such an error hits one opinion sub-request while another sub-request
+still returns usable data, the response keeps that data and lists the failed sub-request in
+`partial_errors` (`field` and `error_class` only, no provider message), so the gap is not
+silent. Only when no usable data remains is the error raised. US company profiles continue
+to use Finnhub.
 
 ### Runtime LLM ownership boundary
 

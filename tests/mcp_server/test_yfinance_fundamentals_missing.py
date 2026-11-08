@@ -361,7 +361,7 @@ async def test_analyst_fetch_failures_without_data_remain_errors(
     "failed_attribute",
     ["analyst_price_targets", "recommendations", "upgrades_downgrades", "info"],
 )
-async def test_analyst_partial_provider_failure_remains_error(
+async def test_analyst_partial_provider_failure_keeps_other_results(
     monkeypatch, allow_external_providers, failed_attribute
 ):
     class FakeTicker:
@@ -409,9 +409,20 @@ async def test_analyst_partial_provider_failure_remains_error(
 
     result = await _valuation.handle_get_investment_opinions("VOO", market="us")
 
-    assert result["error"]
-    assert result["source"] == "yfinance"
+    assert "error" not in result
     assert "data_state" not in result
+    assert result["source"] == "yfinance"
+    assert result["partial_errors"] == [
+        {"field": failed_attribute, "error_class": "TimeoutError"}
+    ]
+    if failed_attribute == "analyst_price_targets":
+        assert result["consensus"]["avg_target_price"] is None
+    else:
+        assert result["consensus"]["avg_target_price"] == pytest.approx(120)
+    if failed_attribute != "recommendations":
+        assert result["consensus"]["buy_count"] == 2
+    if failed_attribute != "upgrades_downgrades":
+        assert result["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -458,7 +469,7 @@ async def test_screen_analyst_404_preserves_other_successful_quote_summary_data(
 
 
 @pytest.mark.asyncio
-async def test_screen_analyst_partial_provider_failure_remains_error(
+async def test_screen_analyst_partial_provider_failure_keeps_other_results(
     monkeypatch, allow_external_providers
 ):
     class FakeTicker:
@@ -490,5 +501,9 @@ async def test_screen_analyst_partial_provider_failure_remains_error(
     )
     monkeypatch.setattr(yfinance_sources.asyncio, "to_thread", _run_sync)
 
-    with pytest.raises(TimeoutError, match="provider timed out"):
-        await yfinance_sources._fetch_investment_opinions_yfinance_screen("VOO")
+    result = await yfinance_sources._fetch_investment_opinions_yfinance_screen("VOO")
+
+    assert result["partial_errors"] == [
+        {"field": "analyst_price_targets", "error_class": "TimeoutError"}
+    ]
+    assert result["consensus"]["buy_count"] == 2
