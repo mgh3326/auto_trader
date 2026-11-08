@@ -12,6 +12,7 @@ tests/brokers/kis/mock_scalping_ws/test_market_stream.py
 tests/brokers/kis/mock_scalping_ws/test_smoke_cli.py
 tests/brokers/kis/test_client_facade.py
 tests/ci/test_change_classifier.py
+tests/ci/test_toolchain_cache_contract.py
 tests/core/test_cli.py
 tests/core/test_config_order_proposals.py
 tests/core/test_invest_deep_links.py
