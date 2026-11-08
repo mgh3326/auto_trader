@@ -310,6 +310,53 @@ async def test_analyst_404_preserves_other_successful_quote_summary_data(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("HTTP Error 401: Unauthorized"),
+        TimeoutError("provider timed out"),
+        RuntimeError("HTTP Error 404: symbol not found"),
+    ],
+)
+async def test_analyst_fetch_failures_without_data_remain_errors(
+    monkeypatch, allow_external_providers, failure
+):
+    class FakeTicker:
+        @property
+        def analyst_price_targets(self):
+            raise failure
+
+        @property
+        def recommendations(self):
+            raise failure
+
+        @property
+        def upgrades_downgrades(self):
+            raise failure
+
+        @property
+        def info(self):
+            raise failure
+
+    monkeypatch.setattr(
+        yfinance_sources.yf, "Ticker", lambda *args, **kwargs: FakeTicker()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "build_yfinance_tracing_session", lambda: object()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "close_yfinance_session", lambda _session: None
+    )
+    monkeypatch.setattr(yfinance_sources.asyncio, "to_thread", _run_sync)
+
+    result = await _valuation.handle_get_investment_opinions("VOO", market="us")
+
+    assert result["error"]
+    assert result["source"] == "yfinance"
+    assert "data_state" not in result
+
+
+@pytest.mark.asyncio
 async def test_screen_analyst_404_preserves_other_successful_quote_summary_data(
     monkeypatch, allow_external_providers
 ):

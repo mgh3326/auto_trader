@@ -331,15 +331,23 @@ async def _fetch_investment_opinions_yfinance(
         ticker = yf.Ticker(symbol, session=session)
 
     def _collect() -> tuple[
-        dict[str, Any] | None, Any, Any, dict[str, Any] | None, bool
+        dict[str, Any] | None,
+        Any,
+        Any,
+        dict[str, Any] | None,
+        bool,
+        list[Exception],
     ]:
         no_fundamentals = False
+        fetch_errors: list[Exception] = []
         targets = None
         try:
             targets = ticker.analyst_price_targets
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
+            else:
+                fetch_errors.append(exc)
 
         recommendations = None
         try:
@@ -347,6 +355,8 @@ async def _fetch_investment_opinions_yfinance(
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
+            else:
+                fetch_errors.append(exc)
 
         ud = None
         try:
@@ -354,6 +364,8 @@ async def _fetch_investment_opinions_yfinance(
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
+            else:
+                fetch_errors.append(exc)
 
         info = None
         try:
@@ -361,9 +373,12 @@ async def _fetch_investment_opinions_yfinance(
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
-        return targets, recommendations, ud, info, no_fundamentals
+            else:
+                fetch_errors.append(exc)
+        return targets, recommendations, ud, info, no_fundamentals, fetch_errors
 
     no_fundamentals = False
+    fetch_errors: list[Exception] = []
     # Use pre-fetched snapshot if available
     if snapshot is not None:
         targets = snapshot.analyst_price_targets
@@ -372,9 +387,14 @@ async def _fetch_investment_opinions_yfinance(
         info = snapshot.info
     else:
         try:
-            targets, trend, ud, info, no_fundamentals = await asyncio.to_thread(
-                _collect
-            )
+            (
+                targets,
+                trend,
+                ud,
+                info,
+                no_fundamentals,
+                fetch_errors,
+            ) = await asyncio.to_thread(_collect)
         finally:
             if owns_session and session is not None:
                 close_yfinance_session(session)
@@ -385,6 +405,8 @@ async def _fetch_investment_opinions_yfinance(
         or (isinstance(ud, pd.DataFrame) and not ud.empty)
         or bool(info)
     )
+    if fetch_errors and not has_source_data:
+        raise fetch_errors[0]
     if no_fundamentals and not has_source_data:
         return _missing_fundamentals_payload(
             symbol,
@@ -467,14 +489,17 @@ async def _fetch_investment_opinions_yfinance_screen(
         session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict[str, Any] | None, Any, bool]:
+    def _collect() -> tuple[dict[str, Any] | None, Any, bool, list[Exception]]:
         no_fundamentals = False
+        fetch_errors: list[Exception] = []
         targets = None
         try:
             targets = ticker.analyst_price_targets
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
+            else:
+                fetch_errors.append(exc)
 
         recommendations = None
         try:
@@ -482,11 +507,15 @@ async def _fetch_investment_opinions_yfinance_screen(
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
                 no_fundamentals = True
+            else:
+                fetch_errors.append(exc)
 
-        return targets, recommendations, no_fundamentals
+        return targets, recommendations, no_fundamentals, fetch_errors
 
     try:
-        targets, trend, no_fundamentals = await asyncio.to_thread(_collect)
+        targets, trend, no_fundamentals, fetch_errors = await asyncio.to_thread(
+            _collect
+        )
     finally:
         if owns_session:
             close_yfinance_session(session)
@@ -495,6 +524,8 @@ async def _fetch_investment_opinions_yfinance_screen(
         _build_yahoo_target_consensus(targets, fallback_current_price=None) is not None
         or _build_yahoo_count_consensus(trend) is not None
     )
+    if fetch_errors and not has_source_data:
+        raise fetch_errors[0]
     if no_fundamentals and not has_source_data:
         return _missing_fundamentals_payload(
             symbol,
