@@ -357,6 +357,64 @@ async def test_analyst_fetch_failures_without_data_remain_errors(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_attribute",
+    ["analyst_price_targets", "recommendations", "upgrades_downgrades", "info"],
+)
+async def test_analyst_partial_provider_failure_remains_error(
+    monkeypatch, allow_external_providers, failed_attribute
+):
+    class FakeTicker:
+        analyst_price_targets = {"mean": 120, "current": 100}
+        recommendations = pd.DataFrame(
+            [
+                {
+                    "period": "0m",
+                    "strongBuy": 0,
+                    "buy": 2,
+                    "hold": 1,
+                    "sell": 0,
+                    "strongSell": 0,
+                }
+            ]
+        )
+        upgrades_downgrades = pd.DataFrame(
+            [
+                {
+                    "Firm": "Example",
+                    "ToGrade": "Buy",
+                    "GradeDate": pd.Timestamp("2026-01-01"),
+                }
+            ]
+        )
+        info = {"currentPrice": 100}
+
+    setattr(
+        FakeTicker,
+        failed_attribute,
+        property(
+            lambda _self: (_ for _ in ()).throw(TimeoutError("provider timed out"))
+        ),
+    )
+    monkeypatch.setattr(
+        yfinance_sources.yf, "Ticker", lambda *args, **kwargs: FakeTicker()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "build_yfinance_tracing_session", lambda: object()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "close_yfinance_session", lambda _session: None
+    )
+    monkeypatch.setattr(yfinance_sources.asyncio, "to_thread", _run_sync)
+
+    result = await _valuation.handle_get_investment_opinions("VOO", market="us")
+
+    assert result["error"]
+    assert result["source"] == "yfinance"
+    assert "data_state" not in result
+
+
+@pytest.mark.asyncio
 async def test_screen_analyst_404_preserves_other_successful_quote_summary_data(
     monkeypatch, allow_external_providers
 ):
@@ -397,3 +455,40 @@ async def test_screen_analyst_404_preserves_other_successful_quote_summary_data(
 
     assert "data_state" not in result
     assert result["consensus"]["buy_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_screen_analyst_partial_provider_failure_remains_error(
+    monkeypatch, allow_external_providers
+):
+    class FakeTicker:
+        @property
+        def analyst_price_targets(self):
+            raise TimeoutError("provider timed out")
+
+        recommendations = pd.DataFrame(
+            [
+                {
+                    "period": "0m",
+                    "strongBuy": 0,
+                    "buy": 2,
+                    "hold": 1,
+                    "sell": 0,
+                    "strongSell": 0,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        yfinance_sources.yf, "Ticker", lambda *args, **kwargs: FakeTicker()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "build_yfinance_tracing_session", lambda: object()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "close_yfinance_session", lambda _session: None
+    )
+    monkeypatch.setattr(yfinance_sources.asyncio, "to_thread", _run_sync)
+
+    with pytest.raises(TimeoutError, match="provider timed out"):
+        await yfinance_sources._fetch_investment_opinions_yfinance_screen("VOO")

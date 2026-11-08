@@ -405,7 +405,7 @@ async def _fetch_investment_opinions_yfinance(
         or (isinstance(ud, pd.DataFrame) and not ud.empty)
         or bool(info)
     )
-    if fetch_errors and not has_source_data:
+    if fetch_errors:
         raise fetch_errors[0]
     if no_fundamentals and not has_source_data:
         return _missing_fundamentals_payload(
@@ -524,7 +524,7 @@ async def _fetch_investment_opinions_yfinance_screen(
         _build_yahoo_target_consensus(targets, fallback_current_price=None) is not None
         or _build_yahoo_count_consensus(trend) is not None
     )
-    if fetch_errors and not has_source_data:
+    if fetch_errors:
         raise fetch_errors[0]
     if no_fundamentals and not has_source_data:
         return _missing_fundamentals_payload(
