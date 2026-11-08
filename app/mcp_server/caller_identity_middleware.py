@@ -14,6 +14,11 @@ from app.mcp_server.caller_identity import (
     caller_argument_names_var,
     caller_source_var,
 )
+from app.mcp_server.cf_access import (
+    ACCESS_CALLER_SOURCE,
+    ACCESS_CONSUMER,
+    access_operator_from_scope,
+)
 
 if TYPE_CHECKING:
     import mcp.types as mt
@@ -40,7 +45,31 @@ def _caller_from_http_header() -> str | None:
     return _clean_agent_id(request.headers.get(CALLER_AGENT_ID_HEADER))
 
 
+def _caller_from_cf_access() -> str | None:
+    """Return the consumer for a request authenticated by a verified Access
+    assertion (hk 3592), else ``None``.
+
+    The identity comes from the auth backend's ``scope["user"]`` only, never from
+    a header the client controls.
+    """
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        return None
+    if access_operator_from_scope(getattr(request, "scope", None)) is None:
+        return None
+    return ACCESS_CONSUMER
+
+
 def _resolve_caller_identity() -> tuple[str | None, CallerSource]:
+    # An Access-authenticated caller is attributed to Access before the
+    # client-asserted agent-id header is read: ``x-paperclip-agent-id`` must not
+    # let that caller present as another agent (e.g. one on the loss_cut
+    # allowlist), so the header is ignored for these calls.
+    access_consumer = _caller_from_cf_access()
+    if access_consumer is not None:
+        return access_consumer, ACCESS_CALLER_SOURCE
+
     header_agent_id = _caller_from_http_header()
     if header_agent_id is not None:
         return header_agent_id, "http_header"

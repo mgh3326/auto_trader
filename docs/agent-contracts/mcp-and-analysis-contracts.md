@@ -83,6 +83,25 @@ crypto route 는 계속 차단한다. 레지스트리 분할(`STATUS_HELPER_TOOL
 `MCP_PROFILE` 은 DEFAULT 로 폴백하지 않고 기동을 거부한다(DEFAULT 는 `MCP_PROFILE=default` 로 명시). deploy 스크립트도
 배포 전 모든 유닛의 프로필이 비어 있지 않음을 검사한다. 레포 안 모든 서버 정의의 명시 프로필은
 `tests/mcp_server/test_mcp_profile_required.py` 가 목록으로 검증한다. 이 폴백을 되살리지 마라.
+**dots 외부 접속 (hk 3592, 운영자 결정 `hk:doc decision/2026-11-08/at-mcp-dots-all-tools`)**:
+ChatGPT 세션 dots 가 `https://at-mcp.robinco.dev/mcp` 로 **DEFAULT 표면 전체**(live 계좌 주문 도구 포함)를
+쓴다(운영자 답 A). 이 면에 한해 위 ROB-1436 의 "외부 읽기 세션이 필요해지면 새 리뷰로 추가한다" 문장을
+대체한다 — 읽기 전용 표면이 생긴 것이 아니다. Cloudflare Access(self-hosted 앱, MCP OAuth, 정책 = 운영자 이메일)가 엣지에서
+OAuth 발견 문서와 401 챌린지를 서빙하고 인증된 요청에 `Cf-Access-Jwt-Assertion` 을 붙여 원점으로 보낸다.
+원점이 받는 자격증명은 **정확히 둘**이다: (a) 기존 `MCP_AUTH_TOKEN` bearer(동작 불변), (b) 검증된 Access assertion
+(`app/mcp_server/cf_access.py`: RS256 서명을 `https://<team>/cdn-cgi/access/certs` 키로, `iss`·`aud`·`exp`·`nbf`(skew 30초),
+이메일 정확 일치 allowlist — 키는 10분 캐시, 모르는 `kid` 는 60초에 한 번만 갱신, 갱신 실패는 거부).
+결정 함수는 `DualCredentialAuth` 하나이고 streamable-http 와 sse 가 같은 provider 의 미들웨어를 쓴다. assertion 헤더가 있으면
+그것이 검증돼야 하며 옆에 유효한 bearer 가 있어도 우회되지 않는다. 🔴 `Cf-Access-Authenticated-User-Email` 등 다른 헤더는
+읽지 않는다. 설정은 `MCP_CF_ACCESS_TEAM_DOMAIN`·`MCP_CF_ACCESS_AUD`·`MCP_CF_ACCESS_ALLOWED_EMAILS` 셋 전부 미설정이면 꺼짐(동작은 이전과 같음),
+일부만 있거나 형식이 틀리거나 `MCP_AUTH_TOKEN` 이 비었으면 **기동 거부**. DEFAULT 가 아닌 프로필은 이 변수를 읽지 않고 bearer 전용으로
+남는다(고정 유닛들이 배포 env 파일을 공유하므로 거부가 아니라 무시).
+Access 인증 호출은 `caller_agent_id="dots"`·`caller_source="cf_access"` 로 귀속되고(Sentry consumer·제안의 `creator_agent_id`),
+클라이언트가 보낸 `x-paperclip-agent-id` 는 무시된다(loss_cut 허용 목록 사칭 방지). 운영자 이메일은 호출 로그 한 줄
+(`consumer=dots operator=operator:<email>`)에만 남고 Sentry·DB 에는 없다. 🔴 Access 신원은 live 주문 도구에 닿을 수 있다 — env 게이트, 호출별
+`dry_run`/`confirm`, `approval_hash`, 손실매도 가드, 정확 계좌 검사, kis_mock 귀속, W5 inbox, ROB-1340, NHPLUG, 체결 ingest 토큰은
+전부 그대로이며 이 변경은 어떤 게이트도 완화하지 않는다. 배포(터널 경로·Access 앱·운영 env)는 별도 운영자 승인 사항이고
+승인 전에는 아무것도 노출되지 않는다. 런북 `docs/runbooks/mcp-dots-access.md`, 테스트 `tests/mcp_server/test_cf_access_auth.py`.
 Task 881의 `kis_mock_ledger_expire_day_orders`는 별도 registrar로
 hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에는 없으며
 스냅샷과 과거 감사 예외 테스트가 이 물리적 경계를 검증한다. DB-only 도구여도

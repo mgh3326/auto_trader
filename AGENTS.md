@@ -242,6 +242,12 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    풀리며, per-order·daily 캡을 올리거나 건너뛰지 마라. 평단 아래라는 이유만으로
    자르지 말고, 기록된 손절가 이탈·상승 중 제외·stale 가격 불발을 완화하지 마라.
 
+20. **MCP dots 외부 접속 (hk 3592)**: DEFAULT MCP 는 기존 bearer `MCP_AUTH_TOKEN` 과 검증된
+    Cloudflare Access assertion(`app/mcp_server/cf_access.py`) 두 자격증명만 받는다. 이메일 헤더 단독 신뢰,
+    `MCP_CF_ACCESS_*` 부분 설정 허용, DEFAULT 아닌 프로필에서의 Access 활성화, Access 호출이 `x-paperclip-agent-id` 로
+    다른 에이전트를 사칭하게 두는 것을 금지한다. 이 접속은 어떤 도구 게이트도 완화하지 않는다.
+    상세·결정 근거는 `docs/agent-contracts/mcp-and-analysis-contracts.md` 의 "dots 외부 접속".
+
 ## 계약 찾아보기
 
 이 표는 작업 위치를 찾는 보조 수단이다. 표의 행 하나만 읽어도 된다는 뜻이 아니며, 위의 모든 파일을 읽은 뒤에만 사용한다.
