@@ -24,6 +24,7 @@ tests/integration/test_strategy_event_db_roundtrip.py
 tests/jobs/test_kis_market_adapters.py
 tests/jobs/test_kis_mock_expiry_race.py
 tests/mcp_server/test_analyze_stock_batch_us_quote_session.py
+tests/mcp_server/test_cf_access_auth.py
 tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_report_tool_descriptions.py
