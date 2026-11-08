@@ -30,9 +30,13 @@ NODE_COMPOSITE = GITHUB / "actions" / "setup-node-cached" / "action.yml"
 PY_USES = "./.github/actions/setup-python-uv"
 NODE_USES = "./.github/actions/setup-node-cached"
 
-SHA_RE = re.compile(r"^(?P<repo>[\w.-]+/[\w.-]+(?:/[\w.-]+)?)@(?P<sha>[0-9a-f]{40})(?P<rest>.*)$")
+SHA_RE = re.compile(
+    r"^(?P<repo>[\w.-]+/[\w.-]+(?:/[\w.-]+)?)@(?P<sha>[0-9a-f]{40})(?P<rest>.*)$"
+)
 EXACT_RE = re.compile(r"^\d+\.\d+\.\d+$")
-UV_INSTALL_RE = re.compile(r"\bpip\s+install\b[^\n]*\buv\b|\bpython\s+-m\s+pip\s+install\b[^\n]*\buv\b")
+UV_INSTALL_RE = re.compile(
+    r"\bpip\s+install\b[^\n]*\buv\b|\bpython\s+-m\s+pip\s+install\b[^\n]*\buv\b"
+)
 UV_USE_RE = re.compile(r"(^|\s|;|&|\|)uv\s+(sync|run|pip|tool|lock|export)\b", re.M)
 
 
@@ -113,11 +117,17 @@ def test_only_the_python_composite_calls_setup_python_or_installs_uv() -> None:
         for job, step in _steps(doc):
             uses = str(step.get("uses", ""))
             run = str(step.get("run", ""))
-            if uses.startswith("actions/setup-python@") or uses.startswith("actions/setup-node@"):
+            if uses.startswith("actions/setup-python@") or uses.startswith(
+                "actions/setup-node@"
+            ):
                 offenders.append(f"{path.name}:{job}: direct {uses.split('@')[0]}")
             if UV_INSTALL_RE.search(run):
-                offenders.append(f"{path.name}:{job}: installs uv outside the composite")
-    assert offenders == [], "Python/uv installed outside the composite: " + "; ".join(offenders)
+                offenders.append(
+                    f"{path.name}:{job}: installs uv outside the composite"
+                )
+    assert offenders == [], "Python/uv installed outside the composite: " + "; ".join(
+        offenders
+    )
 
 
 def test_every_job_that_runs_uv_sets_up_through_the_python_composite() -> None:
@@ -136,7 +146,9 @@ def test_every_job_that_runs_uv_sets_up_through_the_python_composite() -> None:
                 if UV_USE_RE.search(run) and not seen_setup:
                     missing.append(f"{path.name}:{job_name}")
                     break
-    assert missing == [], "jobs run uv before the pinned composite: " + "; ".join(missing)
+    assert missing == [], "jobs run uv before the pinned composite: " + "; ".join(
+        missing
+    )
 
 
 def test_python_composite_is_called_with_no_python_literal() -> None:
@@ -146,7 +158,9 @@ def test_python_composite_is_called_with_no_python_literal() -> None:
         for job_name, step in _steps(_load(path)):
             if str(step.get("uses", "")) == PY_USES and step.get("with"):
                 bad.append(f"{path.name}:{job_name}")
-    assert bad == [], "composite called with inputs (pins belong in action.yml): " + "; ".join(bad)
+    assert bad == [], (
+        "composite called with inputs (pins belong in action.yml): " + "; ".join(bad)
+    )
 
 
 def test_python_matrix_minor_matches_the_pinned_python() -> None:
@@ -156,7 +170,9 @@ def test_python_matrix_minor_matches_the_pinned_python() -> None:
     for path in WORKFLOWS.glob("*.yml"):
         doc = _load(path)
         for job_name, job in (doc.get("jobs") or {}).items():
-            for value in (job.get("strategy", {}).get("matrix", {}) or {}).get("python-version", []) or []:
+            for value in (job.get("strategy", {}).get("matrix", {}) or {}).get(
+                "python-version", []
+            ) or []:
                 if str(value) != minor:
                     mismatched.append(f"{path.name}:{job_name}={value}")
     assert mismatched == [], f"matrix Python differs from pinned {pinned}: {mismatched}"
@@ -212,14 +228,22 @@ def test_each_toolchain_is_restored_from_cache_before_its_setup_action() -> None
         (NODE_COMPOSITE, "actions/setup-node@"),
     ):
         steps = _load(composite)["runs"]["steps"]
-        first_setup = next(i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(setup_prefix))
+        first_setup = next(
+            i
+            for i, s in enumerate(steps)
+            if str(s.get("uses", "")).startswith(setup_prefix)
+        )
         cache_before = [
-            s for s in steps[:first_setup] if str(s.get("uses", "")).startswith("actions/cache@")
+            s
+            for s in steps[:first_setup]
+            if str(s.get("uses", "")).startswith("actions/cache@")
         ]
         assert cache_before, f"{composite.parent.name}: no actions/cache before setup"
         key = str(cache_before[0]["with"]["key"])
         assert "runner.os" in key and "runner.arch" in key, key
-        assert "inputs." in key, f"{composite.parent.name}: cache key not tied to the exact version: {key}"
+        assert "inputs." in key, (
+            f"{composite.parent.name}: cache key not tied to the exact version: {key}"
+        )
 
 
 def test_the_composite_restores_the_pinned_python_and_checks_it() -> None:
