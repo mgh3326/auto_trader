@@ -82,6 +82,14 @@ _SENSITIVE_KEYWORDS = (
     "webhook",
     "credential",
     "signature",
+    # hk 3592: the Cloudflare Access assertion is a replayable credential that
+    # the MCP ASGI integration captures as a request header, and Access sets its
+    # session cookie. Both spellings, because header and cookie names differ in
+    # case and separator.
+    "cf-access-jwt-assertion",
+    "cf_access_jwt_assertion",
+    "cf-authorization",
+    "cf_authorization",
     # #1103: broker account identifiers and order-approval capability
     # tokens. Substring-safe spellings only — see _SENSITIVE_KEY_TOKENS for
     # the tokens that need boundary matching.
@@ -147,6 +155,12 @@ _TELEGRAM_BOT_PATH_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _BEARER_TOKEN_RE = re.compile(r"(?P<prefix>\bBearer\s+)\S+", flags=re.IGNORECASE)
+# hk 3592: a signed JWT (Cloudflare Access assertion) is a credential wherever it
+# appears. Frame locals hold raw ASGI header pairs (``[b"cf-access-jwt-assertion",
+# b"eyJ..."]``), which key-name filtering never reaches, so match the value shape.
+_JWT_SHAPE_RE = re.compile(
+    r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+)
 _URL_BASIC_AUTH_RE = re.compile(
     r"(?P<prefix>https?://)[^\s/@\"']+:[^\s/@\"']+@", flags=re.IGNORECASE
 )
@@ -193,6 +207,7 @@ def _scrub_secret_shapes_in_string(value: str) -> str:
     scrubbed = _TELEGRAM_BOT_URL_RE.sub(r"\g<prefix>[REDACTED]", value)
     scrubbed = _TELEGRAM_BOT_PATH_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
     scrubbed = _BEARER_TOKEN_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
+    scrubbed = _JWT_SHAPE_RE.sub("[REDACTED]", scrubbed)
     scrubbed = _URL_BASIC_AUTH_RE.sub(r"\g<prefix>[REDACTED]@", scrubbed)
     scrubbed = _SECRET_QUERY_PARAM_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
     scrubbed = _JSON_SECRET_FIELD_RE.sub(r"\g<prefix>[Filtered]\g<suffix>", scrubbed)

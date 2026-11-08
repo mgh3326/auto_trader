@@ -15,6 +15,8 @@ query strings and serialized dict/JSON text — while generic containers
 from __future__ import annotations
 
 import pytest
+from sentry_sdk.envelope import Envelope
+from sentry_sdk.transport import Transport
 from sentry_sdk.types import Breadcrumb, Event
 
 import app.monitoring.sentry as sentry_module
@@ -252,6 +254,12 @@ def test_before_breadcrumb_and_transaction_mask_account_keys():
         "x-api-key",
         "mcp.request.argument.approval_hash",
         "mcp.request.argument.cano",
+        # hk 3592: Cloudflare Access assertion is a replayable credential; the
+        # Access session cookie is the same family under the cookie spelling.
+        "cf-access-jwt-assertion",
+        "Cf-Access-Jwt-Assertion",
+        "CF_Authorization",
+        "cf-authorization",
     ],
 )
 def test_is_sensitive_key_masks_account_and_credential_keys(key: str):
@@ -317,3 +325,104 @@ def test_before_send_scrubs_krx_member_number_in_message():
     assert '"MDC_MBR_TP_CD":"P"' in sanitized["message"]
     assert "9990001112" not in str(sanitized["extra"])
     assert "someone" not in str(sanitized["extra"])
+
+
+# hk 3592: a captured dots request must not leak its Cloudflare Access
+# assertion (a replayable credential) into any Sentry envelope. The test goes
+# through the real ``init_sentry`` hooks and a real ASGI request; only the
+# network transport is replaced by an in-memory recorder.
+
+_FAKE_ACCESS_ASSERTION = (
+    "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZha2Uta2lkIn0."
+    "eyJlbWFpbCI6ImZha2Utb3BlcmF0b3JAZXhhbXBsZS5jb20ifQ."
+    "fake-signature-bytes-for-scrub-test"
+)
+_FAKE_BEARER = "fake-mcp-bearer-for-scrub-test"
+
+
+class _RecordingTransport(Transport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.serialized: list[bytes] = []
+
+    def capture_envelope(self, envelope: Envelope) -> None:
+        self.serialized.append(envelope.serialize())
+
+
+@pytest.mark.unit
+def test_captured_dots_request_never_leaks_access_assertion(monkeypatch):
+    from sentry_sdk.integrations.asgi import SentryAsgiMiddleware
+    from starlette.testclient import TestClient
+
+    recorder = _RecordingTransport()
+    real_init = sentry_module.sentry_sdk.init
+
+    def init_with_recorder(*args, **kwargs):
+        kwargs["transport"] = recorder
+        # The default StdlibIntegration rewraps subprocess.Popen.__init__, which
+        # the ROB-1880 socket guard treats as an integrity failure. The explicit
+        # integrations init_sentry chooses (logging, MCP) are still in force.
+        kwargs["default_integrations"] = False
+        return real_init(*args, **kwargs)
+
+    def no_git(*args, **kwargs):
+        # init_sentry asks git for the release; the socket guard forbids
+        # spawning processes in unit tests, and the release is not under test.
+        raise OSError("git is not available to this test")
+
+    monkeypatch.setattr(sentry_module, "_initialized", False)
+    monkeypatch.setattr(sentry_module.subprocess, "run", no_git)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", init_with_recorder)
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_TRACES_SAMPLE_RATE", 1.0)
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_SEND_DEFAULT_PII", True)
+    monkeypatch.setattr(sentry_module.settings, "ENVIRONMENT", "development")
+
+    try:
+        assert sentry_module.init_sentry("auto-trader-mcp") is True
+
+        async def failing_mcp_app(scope, receive, send):
+            raise RuntimeError("mcp tool failed for captured dots request")
+
+        client = TestClient(
+            SentryAsgiMiddleware(failing_mcp_app), raise_server_exceptions=False
+        )
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={
+                "Cf-Access-Jwt-Assertion": _FAKE_ACCESS_ASSERTION,
+                "Authorization": f"Bearer {_FAKE_BEARER}",
+                "Cookie": f"CF_Authorization={_FAKE_ACCESS_ASSERTION}",
+            },
+        )
+        assert response.status_code == 500
+        sentry_module.sentry_sdk.flush()
+    finally:
+        sentry_module.sentry_sdk.get_global_scope().set_client(None)
+
+    blob = b"".join(recorder.serialized)
+    # Non-vacuous: the request really produced an error event.
+    assert b'"exception"' in blob
+    assert b"RuntimeError" in blob
+    assert _FAKE_ACCESS_ASSERTION.encode() not in blob
+    assert _FAKE_BEARER.encode() not in blob
+
+
+@pytest.mark.unit
+def test_scrub_redacts_access_assertion_shape_in_raw_header_repr():
+    # Frame locals carry the ASGI header pair as bytes reprs, where no key name
+    # is available to the key-based filter. The value shape must still go.
+    text = (
+        "[(b'cf-access-jwt-assertion', "
+        "b'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmYWtlLW9wZXIifQ.fake-signature-bytes')]"
+    )
+
+    scrubbed = sentry_module._scrub_secret_shapes_in_string(text)
+
+    assert "eyJhbGciOiJSUzI1NiJ9" not in scrubbed
+    assert "fake-signature-bytes" not in scrubbed
