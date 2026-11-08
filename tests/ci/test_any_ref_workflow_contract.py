@@ -702,27 +702,65 @@ def test_run_title_is_the_commit_the_run_tests(any_ref: dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize(
-    "runs, run_id, expected",
+    "runs, run_id, attempt, expected",
     [
-        ([], 5, None),
-        ([{"id": 9, "display_title": f"any-ref {VALID_SHA}"}], 5, 9),
-        ([{"id": 4, "display_title": f"any-ref {VALID_SHA}"}], 5, None),
-        ([{"id": 9, "display_title": "any-ref " + "f" * 40}], 5, None),
+        ([], 5, 1, None),
+        (
+            [{"id": 9, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1}],
+            5,
+            1,
+            9,
+        ),
+        (
+            [{"id": 4, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1}],
+            5,
+            1,
+            None,
+        ),
+        (
+            [{"id": 9, "display_title": "any-ref " + "f" * 40, "run_attempt": 1}],
+            5,
+            1,
+            None,
+        ),
         (
             [
-                {"id": 7, "display_title": f"any-ref {VALID_SHA}"},
-                {"id": 12, "display_title": f"any-ref {VALID_SHA}"},
-                {"id": 20, "display_title": "any-ref " + "f" * 40},
+                {"id": 7, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1},
+                {"id": 12, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1},
+                {"id": 20, "display_title": "any-ref " + "f" * 40, "run_attempt": 1},
             ],
             5,
+            1,
             12,
+        ),
+        # A re-run keeps the run id; the later attempt supersedes the earlier one.
+        (
+            [{"id": 5, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 2}],
+            5,
+            1,
+            5,
+        ),
+        (
+            [{"id": 5, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 2}],
+            5,
+            2,
+            None,
+        ),
+        (
+            [{"id": 5, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1}],
+            5,
+            2,
+            None,
         ),
     ],
 )
-def test_newest_run_for_the_commit_is_the_one_above_this_run(
-    runs: list[dict[str, Any]], run_id: int, expected: int | None
+def test_newest_run_for_the_commit_supersedes_this_run_or_attempt(
+    runs: list[dict[str, Any]], run_id: int, attempt: int, expected: int | None
 ) -> None:
-    assert helper.newer_run_id(runs, helper.run_title(VALID_SHA), run_id) == expected
+    assert (
+        helper.newer_run_id(runs, helper.run_title(VALID_SHA), run_id, attempt)
+        == expected
+    )
 
 
 def test_suite_secret_is_declared_by_test_yml(test_wf: dict[str, Any]) -> None:

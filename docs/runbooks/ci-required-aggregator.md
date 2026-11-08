@@ -235,7 +235,8 @@ What the any-ref path does **not** do, by design:
   the runs that existed before the dispatch).
 - Two runs of one commit: `post` is serialised per commit (`concurrency: any-ref-status-<sha>`, cancel
   off), and the helper posts nothing for a run that a newer main-dispatched run for the same commit
-  supersedes. The newer run is found by the run title `any-ref <sha>` (the caller's `run-name`). So the
+  supersedes. The newer run is found by the run title `any-ref <sha>` (the caller's `run-name`). A later run has a
+  higher id; a re-run keeps its id and raises the attempt, and a later attempt also supersedes. So the
   newest run's verdicts are the last ones written, whichever run finishes first.
 - A `ref` on a `pull_request` run is refused by the classifier (the step `Refuse a called ref on a
   pull_request`): the classifier would otherwise select tests from the PR diff for another commit.

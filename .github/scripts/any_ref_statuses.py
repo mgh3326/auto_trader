@@ -40,16 +40,26 @@ def run_title(sha: str) -> str:
     return f"any-ref {sha}"
 
 
-def newer_run_id(runs: list[dict], title: str, run_id: int) -> int | None:
-    """The newest run titled `title` with an id above `run_id`, or None.
+def newer_run_id(
+    runs: list[dict], title: str, run_id: int, run_attempt: int
+) -> int | None:
+    """The newest run titled `title` that supersedes (run_id, run_attempt), or None.
 
-    Run ids grow with creation, so a newer run for the same commit is one whose poster
-    must publish instead; an older run that is still in the list must publish nothing.
+    A later run has a higher id. A re-run keeps its id and raises `run_attempt`, so a later
+    attempt of the same run also supersedes. The run list reports each run id once, at its
+    latest attempt. An older attempt or run must publish nothing.
     """
     newer = [
         int(run["id"])
         for run in runs
-        if run.get("display_title") == title and int(run["id"]) > run_id
+        if run.get("display_title") == title
+        and (
+            int(run["id"]) > run_id
+            or (
+                int(run["id"]) == run_id
+                and int(run.get("run_attempt", 1)) > run_attempt
+            )
+        )
     ]
     return max(newer) if newer else None
 
@@ -168,7 +178,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("posting needs --run-id, --run-attempt, --target-url and --watch")
 
     newer = newer_run_id(
-        _dispatch_runs(args.repo), run_title(args.sha), int(args.run_id)
+        _dispatch_runs(args.repo),
+        run_title(args.sha),
+        int(args.run_id),
+        int(args.run_attempt),
     )
     if newer is not None:
         print(f"run {newer} is newer for {args.sha}; run {args.run_id} posts nothing")
