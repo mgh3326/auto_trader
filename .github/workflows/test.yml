@@ -43,22 +43,18 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group dev
@@ -115,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/j3a-write-fence-test'
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         # Full history: the base commit this fence diffs against must always
         # be locally resolvable without depending on the script's best-effort
@@ -135,7 +131,7 @@ jobs:
 
     - name: Upload write-fence report
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: write-fence-report
         path: write-fence-report.json
@@ -165,7 +161,7 @@ jobs:
       check_manifests: ${{ steps.classify.outputs.check_manifests }}
       affected_tests: ${{ steps.classify.outputs.affected_tests }}
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         # Full history: the base commit must be locally resolvable. A shallow
         # checkout that hides it is a hard failure in the classifier, not a
@@ -187,7 +183,7 @@ jobs:
 
     - name: Upload change classification
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: change-classification
         path: change-classification.json
@@ -248,26 +244,22 @@ jobs:
           - 127.0.0.1:6379:6379
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         # The context scope contract resolves the actual PR merge-base and
         # deliberately fails if it cannot be proven from local history.
         fetch-depth: 0
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -336,14 +328,14 @@ jobs:
 
     - name: Upload socket guard evidence
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: socket-guard-evidence-${{ matrix.python-version }}-shard${{ matrix.group }}
         path: .artifacts/socket-guard/summary-shard${{ matrix.group }}.json
         if-no-files-found: error
 
     - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v6
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: coverage.xml
@@ -373,22 +365,18 @@ jobs:
           - 6379:6379
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -431,7 +419,7 @@ jobs:
 
     - name: Upload authoritative collection manifest
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: authoritative-collected-nodes-pr
         path: authoritative-collected-nodes.txt
@@ -455,7 +443,7 @@ jobs:
 
     - name: Upload TaskIQ smoke logs
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: taskiq-smoke-logs-${{ env.PYTHON_VERSION }}
         path: |
@@ -502,27 +490,23 @@ jobs:
           - 127.0.0.1:6379:6379
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         # The context scope contract resolves the actual PR merge-base and
         # deliberately fails if it cannot be proven from local history.
         fetch-depth: 0
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -573,22 +557,18 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group dev
@@ -636,7 +616,7 @@ jobs:
 
     - name: Upload security reports
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: security-reports
         path: |
@@ -657,24 +637,20 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -704,24 +680,20 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -742,24 +714,20 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -792,24 +760,20 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -856,19 +820,15 @@ jobs:
         working-directory: frontend/invest
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v5
+    # Node 22.x is pinned in .github/actions/setup-node-cached (the
+    # @testing-library/jest-dom@7 engines floor is >=22, hence the 22 line).
+    - name: Set up pinned Node.js with npm cache
+      uses: ./.github/actions/setup-node-cached
       with:
-        # @testing-library/jest-dom@7 declares engines.node >=22 (package.json's
-        # own engines field says >=20.19.0, but that devDependency is stricter);
-        # pin to 22 to match what was verified locally and avoid an EBADENGINE
-        # warning on every run.
-        node-version: "22"
-        cache: npm
         cache-dependency-path: frontend/invest/package-lock.json
 
     - name: Install dependencies
@@ -908,7 +868,7 @@ jobs:
     outputs:
       superseded: ${{ steps.verdict.outputs.superseded }}
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
@@ -937,7 +897,7 @@ jobs:
 
     - name: Upload PR gate report
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: pr-gate-report
         path: pr-gate-report.json

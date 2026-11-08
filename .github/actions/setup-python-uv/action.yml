@@ -1,0 +1,143 @@
+name: Set up pinned Python and uv
+description: >-
+  Installs the exact Python and uv versions pinned below. Each toolchain
+  directory for that exact version is restored from and saved to the runner
+  tool cache, so a warm run skips the download. On a Python miss,
+  actions/setup-python runs up to three times with backoff so a transient 403
+  or 504 does not fail the job. uv is installed with pip into the same cache
+  directory layout. Callers check out the repository first and do not install
+  Python or uv themselves. Pins live only in this file; see
+  docs/runbooks/ci-required-aggregator.md "Toolchain cache".
+inputs:
+  python-version:
+    description: Exact Python patch version (x.y.z). Bump here only.
+    default: "3.13.18"
+  uv-version:
+    description: Exact uv version (x.y.z). Bump here only.
+    default: "0.13.7"
+outputs:
+  python-version:
+    description: The exact Python version this action set up.
+    value: ${{ inputs.python-version }}
+runs:
+  using: composite
+  steps:
+    - id: paths
+      shell: bash
+      env:
+        PY_VERSION: ${{ inputs.python-version }}
+        UV_VERSION: ${{ inputs.uv-version }}
+      run: |
+        set -euo pipefail
+        for v in "$PY_VERSION" "$UV_VERSION"; do
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "setup-python-uv: version must be exact x.y.z (got '$v')" >&2
+            exit 1
+          fi
+        done
+        arch=$(echo "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
+        echo "python-dir=$RUNNER_TOOL_CACHE/Python/$PY_VERSION/$arch" >> "$GITHUB_OUTPUT"
+        # setup-python also needs the sibling .complete marker of the tool-cache
+        # directory; without it a restored directory is treated as a miss.
+        echo "python-complete=$RUNNER_TOOL_CACHE/Python/$PY_VERSION/$arch.complete" >> "$GITHUB_OUTPUT"
+        # uv lives under RUNNER_TEMP, which is always writable, so a read-only
+        # tool cache on a self-hosted runner cannot block the uv install.
+        echo "uv-dir=$RUNNER_TEMP/uv/$UV_VERSION/$arch" >> "$GITHUB_OUTPUT"
+
+    # Restore first so setup-python finds the toolchain in the tool cache. The
+    # post step saves the directory only after a miss.
+    - id: python-cache
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: |
+          ${{ steps.paths.outputs.python-dir }}
+          ${{ steps.paths.outputs.python-complete }}
+        key: python-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version }}
+
+    - id: setup-python-1
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      continue-on-error: true
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Back off before setup-python attempt 2
+      if: steps.setup-python-1.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "setup-python attempt 1 failed; retrying in 30s" >&2
+        sleep 30
+
+    - id: setup-python-2
+      if: steps.setup-python-1.outcome == 'failure'
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      continue-on-error: true
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Back off before setup-python attempt 3
+      if: steps.setup-python-1.outcome == 'failure' && steps.setup-python-2.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "setup-python attempt 2 failed; retrying in 90s" >&2
+        sleep 90
+
+    - id: setup-python-3
+      if: steps.setup-python-1.outcome == 'failure' && steps.setup-python-2.outcome == 'failure'
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Confirm the pinned Python
+      shell: bash
+      env:
+        PY_VERSION: ${{ inputs.python-version }}
+      run: |
+        set -euo pipefail
+        actual=$(python -c 'import platform; print(platform.python_version())')
+        if [ "$actual" != "$PY_VERSION" ]; then
+          echo "setup-python-uv: expected Python $PY_VERSION, got $actual" >&2
+          exit 1
+        fi
+
+    - id: uv-cache
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ steps.paths.outputs.uv-dir }}
+        key: uv-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.uv-version }}
+
+    - name: Install uv (pinned, retried on miss)
+      shell: bash
+      env:
+        UV_VERSION: ${{ inputs.uv-version }}
+        UV_DIR: ${{ steps.paths.outputs.uv-dir }}
+      run: |
+        set -euo pipefail
+        if [ ! -x "$UV_DIR/bin/uv" ] || ! "$UV_DIR/bin/uv" --version | grep -q " $UV_VERSION "; then
+          rm -rf "$UV_DIR"
+          for attempt in 1 2 3; do
+            if python -m pip install --disable-pip-version-check --no-warn-script-location --target "$UV_DIR" "uv==$UV_VERSION"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "setup-python-uv: uv $UV_VERSION install failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "uv install attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 30))
+          done
+        else
+          echo "uv $UV_VERSION restored from the tool cache"
+        fi
+        echo "$UV_DIR/bin" >> "$GITHUB_PATH"
+
+    - name: Confirm the pinned uv
+      shell: bash
+      env:
+        UV_VERSION: ${{ inputs.uv-version }}
+      run: |
+        set -euo pipefail
+        actual=$(uv --version | awk '{print $2}')
+        if [ "$actual" != "$UV_VERSION" ]; then
+          echo "setup-python-uv: expected uv $UV_VERSION, got $actual" >&2
+          exit 1
+        fi
