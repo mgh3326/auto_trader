@@ -77,6 +77,7 @@ tests/models/test_symbol_news_relevance_model.py
 tests/models/test_trade_profile.py
 tests/models/test_user_settings.py
 tests/monitoring/test_sentry_account_scrub.py
+tests/monitoring/test_sentry_noise_filters.py
 tests/monitoring/test_trade_notifier_reply_markup.py
 tests/research/data_plane/test_data_plane_input_guards.py
 tests/research/eval_contract/test_eval_contract_types.py
