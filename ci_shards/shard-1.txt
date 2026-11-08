@@ -143,6 +143,7 @@ tests/services/brokers/binance/spot_demo/test_path_construction.py
 tests/services/brokers/binance/spot_demo/test_secret_redaction.py
 tests/services/brokers/binance/test_ingest.py
 tests/services/brokers/kis/test_live_order_expiry_krx_after.py
+tests/services/brokers/kis/test_market_data_throttle_retry.py
 tests/services/brokers/kis/test_selector_raw_evidence.py
 tests/services/brokers/kiwoom/test_credential_identity.py
 tests/services/brokers/nhplug/test_stage2_listing_client.py

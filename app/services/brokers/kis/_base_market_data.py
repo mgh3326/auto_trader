@@ -1,6 +1,9 @@
 # pyright: reportAttributeAccessIssue=false, reportMissingTypeArgument=false
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
 from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
@@ -23,6 +26,8 @@ _MINUTE_FRAME_COLUMNS = [
     "volume",
     "value",
 ]
+_MARKET_DATA_THROTTLE_BACKOFF_RANGES = ((0.2, 0.4), (0.4, 0.8))
+logger = logging.getLogger(__name__)
 
 
 def _empty_minute_frame() -> pd.DataFrame:
@@ -105,12 +110,15 @@ class MarketDataBase:
         timeout: float = 5.0,
         api_name: str = "unknown",
     ) -> dict[str, Any]:
-        """KIS API 요청 + 토큰 만료 시 1회 재시도.
+        """KIS market-data request with bounded token and gateway-throttle retries.
 
         토큰 만료 코드(EGW00123, EGW00121) 수신 시 토큰을 갱신하고
-        동일 요청을 최대 1회 재시도한다.
+        동일 요청을 최대 1회 재시도한다. 읽기 응답이 EGW00201이면 제한된
+        jitter backoff로 최대 2회 재시도한다.
         """
-        for attempt in range(2):
+        token_retry_used = False
+        throttle_retries = 0
+        while True:
             await self._parent._ensure_token()
             hdr = self._parent._hdr_base | {
                 "authorization": f"Bearer {self._settings.kis_access_token}",
@@ -125,20 +133,46 @@ class MarketDataBase:
                 timeout=timeout,
                 api_name=api_name,
                 tr_id=tr_id,
+                do_not_retry_rate_limit_msg_codes=(
+                    frozenset({"EGW00201"}) if method.upper() == "GET" else frozenset()
+                ),
             )
 
             if js.get("rt_cd") == "0":
                 return js
 
-            if attempt == 0 and js.get("msg_cd") in constants.TOKEN_EXPIRED_CODES:
+            if (
+                not token_retry_used
+                and js.get("msg_cd") in constants.TOKEN_EXPIRED_CODES
+            ):
+                token_retry_used = True
                 await self._parent._token_manager.clear_token()
                 continue
 
-            msg1 = js.get("msg1")
-            msg_cd = js.get("msg_cd", "unknown")
-            raise RuntimeError(msg1 or f"KIS API error (msg_cd={msg_cd})")
+            msg_cd = js.get("msg_cd")
+            if (
+                method.upper() == "GET"
+                and msg_cd == "EGW00201"
+                and throttle_retries < len(_MARKET_DATA_THROTTLE_BACKOFF_RANGES)
+            ):
+                low, high = _MARKET_DATA_THROTTLE_BACKOFF_RANGES[throttle_retries]
+                delay = random.uniform(low, high)
+                throttle_retries += 1
+                logger.warning(
+                    "retrying KIS market-data request after EGW00201",
+                    extra={
+                        "api_name": api_name,
+                        "tr_id": tr_id,
+                        "retry": throttle_retries,
+                        "retry_limit": len(_MARKET_DATA_THROTTLE_BACKOFF_RANGES),
+                        "delay_seconds": delay,
+                    },
+                )
+                await asyncio.sleep(delay)
+                continue
 
-        raise RuntimeError("KIS API token retry exhausted")
+            msg1 = js.get("msg1")
+            raise RuntimeError(msg1 or f"KIS API error (msg_cd={msg_cd or 'unknown'})")
 
     @staticmethod
     def _build_ohlcv_dataframe(
