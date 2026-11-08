@@ -12,6 +12,7 @@ tests/brokers/kis/mock_scalping_ws/test_quote_queue.py
 tests/brokers/kis/mock_scalping_ws/test_supervisor.py
 tests/brokers/kis/test_lean_execution_once.py
 tests/brokers/kis/test_vts_distributed_gate.py
+tests/ci/test_build_cache_registry_contract.py
 tests/ci/test_deploy_gate_workflow.py
 tests/ci/test_deploy_tier_scripts.py
 tests/ci/test_deploy_tier_workflow_contract.py
