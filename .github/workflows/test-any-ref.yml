@@ -1,5 +1,9 @@
 name: Test (any ref)
 
+# The run's title is the commit it tests. post-any-ref-status.yml matches runs by this
+# title to find the newest run for one commit.
+run-name: any-ref ${{ inputs.ref }}
+
 # hk 3487: the any-ref CI that mergewake dispatches (policy.any_ref_workflow) for a
 # bisect commit whose push run GitHub cancelled. It runs test.yml, called with that
 # exact commit, so the jobs are the push run's jobs. It records the commit and the
@@ -79,7 +83,10 @@ jobs:
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ inputs.ref }}
-    secrets: inherit
+    # Only the one secret the suite uses, not `inherit`: a branch can edit this file, so
+    # every secret passed here is one a branch dispatch can read.
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # Runs after the suite whatever its result. It writes what post-any-ref-status.yml
   # needs: the commit, and the watched check names it must publish. It is not a

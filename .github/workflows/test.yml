@@ -18,6 +18,10 @@ on:
         required: false
         type: string
         default: ''
+    secrets:
+      # The one secret the suite reads (coverage upload). A caller passes this by name.
+      CODECOV_TOKEN:
+        required: false
 
 # hk 2939: only the newest head of a ref runs. A push to main (T-POST) cancels the
 # previous push run of that ref, as a new commit cancels a PR's earlier run. A
@@ -186,6 +190,19 @@ jobs:
         # reason to fall back to a narrower run.
         fetch-depth: 0
         persist-credentials: false
+
+    # hk 3487: a called ref checks out that commit, but the classifier below selects tests from
+    # the PR's own diff. Only workflow_dispatch may pass a ref, so refuse it on a pull_request
+    # rather than run a partial suite for the wrong commit.
+    - name: Refuse a called ref on a pull_request
+      env:
+        CALLED_REF: ${{ inputs.ref }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        if [ -n "$CALLED_REF" ] && [ "$EVENT_NAME" = "pull_request" ]; then
+          echo "a called ref is for workflow_dispatch only; a pull_request tests its own head" >&2
+          exit 1
+        fi
 
     - name: Classify changed paths
       id: classify

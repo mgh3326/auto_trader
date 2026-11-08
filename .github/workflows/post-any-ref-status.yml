@@ -5,12 +5,14 @@ name: Post any-ref statuses
 #
 # A workflow_run workflow is loaded from the DEFAULT branch, whichever branch the
 # triggering run used, so a branch cannot change the code below or the permission it
-# is given. Only that code can hold `statuses: write`, and it is not given to the
-# any-ref run, whose files a branch controls.
+# is given. Only that code can hold `statuses: write`, and the any-ref run does not hold it.
 #
 # Only a run dispatched from main is posted: the triggering run's event must be
-# workflow_dispatch and its head_branch main, from this repository. A dispatch from any
-# other branch runs that branch's files, and its head_branch is that branch.
+# workflow_dispatch and its head_branch main, from this repository.
+#
+# Two runs may test one commit. Posting for one commit is serialised by the concurrency
+# group below, and the helper posts nothing for a run that a newer main-dispatched run for
+# the same commit supersedes. So the newest run's verdicts are the last ones written.
 
 on:
   workflow_run:
@@ -22,12 +24,53 @@ permissions:
   contents: read
 
 jobs:
-  post:
-    name: post any-ref statuses
+  # Reads the commit the triggering run recorded. Holds no statuses permission.
+  resolve:
+    name: resolve any-ref target
     if: >-
       github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      has_target: ${{ steps.target.outputs.has_target }}
+      sha: ${{ steps.target.outputs.sha }}
+    steps:
+      - name: Read the commit the run recorded
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/any-ref-target"
+          if ! gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"; then
+            echo "run $RUN_ID recorded no target (its validation did not pass); nothing to post"
+            echo "has_target=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sha="$(cat "$dir/sha.txt")"
+          if [[ ! "$sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "the recorded target is not an exact 40-hex SHA"
+            exit 1
+          fi
+          echo "has_target=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  post:
+    name: post any-ref statuses
+    needs: resolve
+    if: ${{ needs.resolve.outputs.has_target == 'true' }}
+    # One poster at a time per commit, so two runs of one commit never publish at once.
+    # The helper then decides, against the run list, whether this run is still the newest.
+    concurrency:
+      group: any-ref-status-${{ needs.resolve.outputs.sha }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -46,22 +89,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          SHA: ${{ needs.resolve.outputs.sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/any-ref-target"
-          if ! gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"; then
-            echo "run $RUN_ID recorded no target (its validation did not pass); nothing to post"
-            exit 0
-          fi
-
-          sha="$(cat "$dir/sha.txt")"
-          if [[ ! "$sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "the recorded target is not an exact 40-hex SHA"
-            exit 1
-          fi
+          gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"
 
           # The names this workflow publishes, written once here. The run's record
           # must name the same ones, so a policy change cannot silently drop a check.
@@ -84,7 +119,7 @@ jobs:
           for name in "${watched[@]}"; do args+=(--watch "$name"); done
           python3 .github/scripts/any_ref_statuses.py \
             --repo "$REPO" \
-            --sha "$sha" \
+            --sha "$SHA" \
             --run-id "$RUN_ID" \
             --run-attempt "$RUN_ATTEMPT" \
             --target-url "$RUN_URL" \

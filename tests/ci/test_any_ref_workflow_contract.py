@@ -45,6 +45,8 @@ VALIDATE_JOB = "validate"
 SUITE_JOB = "suite"
 RECORD_JOB = "record"
 POST_JOB = "post"
+RESOLVE_JOB = "resolve"
+REFUSE_STEP = "Refuse a called ref on a pull_request"
 VALID_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -303,7 +305,8 @@ def test_suite_calls_test_yml_for_the_exact_ref(any_ref: dict[str, Any]) -> None
     suite = any_ref["jobs"][SUITE_JOB]
     assert suite["uses"] == "./.github/workflows/test.yml"
     assert suite["with"] == {"ref": "${{ inputs.ref }}"}
-    assert suite["secrets"] == "inherit"
+    # Not `inherit`: a branch can edit this file, so only the one secret the suite reads.
+    assert suite["secrets"] == {"CODECOV_TOKEN": "${{ secrets.CODECOV_TOKEN }}"}
 
 
 def _any_ref_group(any_ref: dict[str, Any], run_id: int, attempt: int) -> str:
@@ -374,7 +377,7 @@ def test_post_workflow_is_a_workflow_run_of_the_any_ref_run(
 def test_post_workflow_gate_passes_only_a_dispatch_from_main(
     post: dict[str, Any],
 ) -> None:
-    expression = post["jobs"][POST_JOB]["if"]
+    expression = post["jobs"][RESOLVE_JOB]["if"]
     base = {
         "github": {
             "event": {
@@ -410,11 +413,74 @@ def test_post_checkout_pins_the_default_branch(post: dict[str, Any]) -> None:
     )
 
 
-def test_post_step_refuses_a_recorded_target_that_is_not_a_sha(
-    post: dict[str, Any],
+def _run_resolve(
+    tmp_path: Path, post: dict[str, Any], sha: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the resolve step with a stub `gh download` that writes `sha` as the record."""
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    gh = stub / "gh"
+    gh.write_text(
+        '#!/bin/bash\nmkdir -p "$9"\nprintf \'%s\\n\' "$FAKE_SHA" > "$9/sha.txt"\n',
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    script = _step_run(post["jobs"][RESOLVE_JOB], "any-ref-target")
+    return subprocess.run(
+        ["bash", "-c", script],
+        env={
+            "PATH": f"{stub}:/usr/bin:/bin",
+            "FAKE_SHA": sha,
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_OUTPUT": str(output),
+            "RUN_ID": "1",
+            "REPO": "mgh3326/auto_trader",
+            "GH_TOKEN": "x",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_resolve_accepts_a_recorded_sha_and_publishes_it(
+    post: dict[str, Any], tmp_path: Path
 ) -> None:
-    run = _step_run(post["jobs"][POST_JOB], "any-ref-target")
-    assert "40" in run and "exit 1" in run
+    result = _run_resolve(tmp_path, post, VALID_SHA)
+    assert result.returncode == 0, result.stderr
+    assert f"sha={VALID_SHA}" in (tmp_path / "github_output").read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("sha", ["main", "abc", "g" * 40, "0" * 39])
+def test_resolve_refuses_a_recorded_value_that_is_not_a_sha(
+    post: dict[str, Any], tmp_path: Path, sha: str
+) -> None:
+    result = _run_resolve(tmp_path, post, sha)
+    assert result.returncode != 0
+    assert "sha=" not in (tmp_path / "github_output").read_text(encoding="utf-8")
+
+
+def test_resolve_holds_no_statuses_permission(post: dict[str, Any]) -> None:
+    assert "statuses" not in post["jobs"][RESOLVE_JOB].get("permissions", {})
+
+
+def test_post_waits_for_resolve_and_serialises_per_commit(post: dict[str, Any]) -> None:
+    job = post["jobs"][POST_JOB]
+    assert job["needs"] == RESOLVE_JOB
+    assert job["concurrency"]["cancel-in-progress"] is False
+
+    def group(sha: str) -> str:
+        context = {"needs": {"resolve": {"outputs": {"sha": sha}}}}
+        return str(gh_expr.evaluate(job["concurrency"]["group"], context))
+
+    assert group(VALID_SHA) == group(VALID_SHA)
+    assert group(VALID_SHA) != group("f" * 40)
 
 
 def test_post_watch_list_matches_policy_and_the_record(
@@ -577,3 +643,70 @@ def test_helper_is_stdlib_only() -> None:
     text = HELPER_PATH.read_text(encoding="utf-8")
     imports = re.findall(r"^(?:import|from) (\w+)", text, flags=re.MULTILINE)
     assert set(imports) <= {"__future__", "argparse", "json", "subprocess", "sys"}
+
+
+# --------------------------------------------------------------------------
+# 5. newest run per commit, the run title, secret narrowing, the PR refusal
+# --------------------------------------------------------------------------
+
+
+def test_run_title_is_the_commit_the_run_tests(any_ref: dict[str, Any]) -> None:
+    """The poster finds runs by this title, so the caller's run-name must match the helper."""
+
+    assert any_ref["run-name"] == "any-ref ${{ inputs.ref }}"
+    assert helper.run_title(VALID_SHA) == f"any-ref {VALID_SHA}"
+
+
+@pytest.mark.parametrize(
+    "runs, run_id, expected",
+    [
+        ([], 5, None),
+        ([{"id": 9, "display_title": f"any-ref {VALID_SHA}"}], 5, 9),
+        ([{"id": 4, "display_title": f"any-ref {VALID_SHA}"}], 5, None),
+        ([{"id": 9, "display_title": "any-ref " + "f" * 40}], 5, None),
+        (
+            [
+                {"id": 7, "display_title": f"any-ref {VALID_SHA}"},
+                {"id": 12, "display_title": f"any-ref {VALID_SHA}"},
+                {"id": 20, "display_title": "any-ref " + "f" * 40},
+            ],
+            5,
+            12,
+        ),
+    ],
+)
+def test_newest_run_for_the_commit_is_the_one_above_this_run(
+    runs: list[dict[str, Any]], run_id: int, expected: int | None
+) -> None:
+    assert helper.newer_run_id(runs, helper.run_title(VALID_SHA), run_id) == expected
+
+
+def test_suite_secret_is_declared_by_test_yml(test_wf: dict[str, Any]) -> None:
+    declared = set(_triggers(test_wf)["workflow_call"].get("secrets", {}))
+    read = set(
+        re.findall(r"secrets\.([A-Z_]+)", TEST_WORKFLOW.read_text(encoding="utf-8"))
+    )
+    assert read <= declared
+
+
+def test_pull_request_refuses_a_called_ref(test_wf: dict[str, Any]) -> None:
+    step = next(
+        step
+        for step in test_wf["jobs"]["change-classifier"]["steps"]
+        if step.get("name") == REFUSE_STEP
+    )
+    script = step["run"]
+
+    def run(ref: str, event: str) -> int:
+        return subprocess.run(
+            ["bash", "-c", script],
+            env={"CALLED_REF": ref, "EVENT_NAME": event, "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=False,
+        ).returncode
+
+    assert run("", "pull_request") == 0
+    assert run("", "push") == 0
+    assert run(VALID_SHA, "workflow_dispatch") == 0
+    assert run(VALID_SHA, "pull_request") != 0

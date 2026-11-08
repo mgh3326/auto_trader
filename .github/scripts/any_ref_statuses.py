@@ -35,6 +35,25 @@ def job_matches(job_name: str, watched: str) -> bool:
     return job_name == watched or job_name.endswith(" / " + watched)
 
 
+def run_title(sha: str) -> str:
+    """The run-name test-any-ref.yml gives each run: the commit it tests."""
+    return f"any-ref {sha}"
+
+
+def newer_run_id(runs: list[dict], title: str, run_id: int) -> int | None:
+    """The newest run titled `title` with an id above `run_id`, or None.
+
+    Run ids grow with creation, so a newer run for the same commit is one whose poster
+    must publish instead; an older run that is still in the list must publish nothing.
+    """
+    newer = [
+        int(run["id"])
+        for run in runs
+        if run.get("display_title") == title and int(run["id"]) > run_id
+    ]
+    return max(newer) if newer else None
+
+
 def verdicts(jobs: list[dict], watched: list[str]) -> dict[str, tuple[str, str]]:
     """Map each watched check name to (commit status state, short reason).
 
@@ -79,6 +98,24 @@ def _fetch_jobs(repo: str, run_id: str, attempt: str) -> list[dict]:
         jobs.extend(batch)
         if len(batch) < JOBS_PAGE_SIZE:
             return jobs
+        page += 1
+
+
+def _dispatch_runs(repo: str) -> list[dict]:
+    """Runs of test-any-ref.yml dispatched from main. A branch's dispatch never supersedes."""
+    runs: list[dict] = []
+    page = 1
+    while True:
+        batch = _gh_json(
+            [
+                f"repos/{repo}/actions/workflows/test-any-ref.yml/runs"
+                f"?event=workflow_dispatch&branch={TARGET_BRANCH}"
+                f"&per_page={JOBS_PAGE_SIZE}&page={page}"
+            ]
+        ).get("workflow_runs", [])
+        runs.extend(batch)
+        if len(batch) < JOBS_PAGE_SIZE:
+            return runs
         page += 1
 
 
@@ -129,6 +166,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not (args.run_id and args.run_attempt and args.target_url and args.watch):
         parser.error("posting needs --run-id, --run-attempt, --target-url and --watch")
+
+    newer = newer_run_id(
+        _dispatch_runs(args.repo), run_title(args.sha), int(args.run_id)
+    )
+    if newer is not None:
+        print(f"run {newer} is newer for {args.sha}; run {args.run_id} posts nothing")
+        return 0
 
     plan = verdicts(_fetch_jobs(args.repo, args.run_id, args.run_attempt), args.watch)
     failed = []

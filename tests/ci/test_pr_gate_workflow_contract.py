@@ -139,7 +139,8 @@ def test_workflow_triggers_add_only_workflow_dispatch_and_the_any_ref_call(
                     "type": "string",
                     "default": "",
                 }
-            }
+            },
+            "secrets": {"CODECOV_TOKEN": {"required": False}},
         },
     }
 

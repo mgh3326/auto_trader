@@ -198,7 +198,9 @@ mergewake's bisect needs a result for each commit it reads, so it dispatches
      a checkout.
    - `suite` calls `test.yml` with `ref`. Every checkout in `test.yml` reads `inputs.ref`, so the
      jobs are the push run's jobs on that exact commit. Their names become `suite / <job>`; `if:`
-     conditions are unchanged. Secrets are inherited.
+     conditions are unchanged. It passes only `CODECOV_TOKEN`, the one secret the suite reads, not
+     `secrets: inherit`: a branch can edit this file, so anything passed here is readable by a branch
+     dispatch.
    - `record` (after `validate`): uploads the artifact `any-ref-target` with `sha.txt` (the commit)
      and `expected-checks.txt` (the watched names this run must have published). It holds no
      statuses permission.
@@ -207,8 +209,10 @@ mergewake's bisect needs a result for each commit it reads, so it dispatches
    - GitHub loads a `workflow_run` workflow from the **default branch**, whichever branch the
      triggering run used. The code that holds `statuses: write` is therefore main's, and a branch
      cannot change it.
-   - It posts only when the triggering run was a `workflow_dispatch` with `head_branch == main`, from
-     this repository. A dispatch from any other branch runs that branch's files, and its
+   - `resolve` reads the recorded commit and refuses a value that is not 40 hex. It holds no statuses
+     permission.
+   - `post` runs only when `resolve` found a target. It posts only when the triggering run was a
+     `workflow_dispatch` with `head_branch == main`, from this repository. A dispatch from any other branch runs that branch's files, and its
      `head_branch` is that branch, so it is skipped.
    - It checks out the default branch by name, downloads `any-ref-target`, refuses a non-SHA, and
      refuses if the recorded check names differ from the names it publishes. Then
@@ -229,6 +233,12 @@ What the any-ref path does **not** do, by design:
   only `Test` runs. A called workflow does not create a `Test` run of its own; after the first
   dispatch, confirm it (`gh api repos/<repo>/actions/workflows/test.yml/runs?head_sha=<sha>` lists only
   the runs that existed before the dispatch).
+- Two runs of one commit: `post` is serialised per commit (`concurrency: any-ref-status-<sha>`, cancel
+  off), and the helper posts nothing for a run that a newer main-dispatched run for the same commit
+  supersedes. The newer run is found by the run title `any-ref <sha>` (the caller's `run-name`). So the
+  newest run's verdicts are the last ones written, whichever run finishes first.
+- A `ref` on a `pull_request` run is refused by the classifier (the step `Refuse a called ref on a
+  pull_request`): the classifier would otherwise select tests from the PR diff for another commit.
 - The poster's job name is not a watched check, so a same-name check run and status cannot be read as
   ambiguous. The called jobs appear as `suite / <name>`.
 - A cancelled watched check plus a `success`/`failure` status of the same name reads as that status
