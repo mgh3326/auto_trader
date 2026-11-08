@@ -19,8 +19,10 @@ import subprocess
 import sys
 
 TARGET_BRANCH = "main"
-# The job that records a run's target; `resolve` in post-any-ref-status.yml reads it too.
+# A run records its target in two jobs: `validate ref` judges the ref, and `record any-ref
+# target` uploads the artifact `resolve` in post-any-ref-status.yml downloads. Both must succeed.
 VALIDATE_JOB = "validate ref"
+RECORD_JOB = "record any-ref target"
 # `compare/main...<sha>` reports "behind" or "identical" exactly when <sha> is an
 # ancestor of main (or main itself). "ahead", "diverged" and anything else refuse.
 ANCESTOR_STATUSES = frozenset({"behind", "identical"})
@@ -50,7 +52,7 @@ def newer_runs(
     A later run has a higher id. A re-run keeps its id and raises `run_attempt`, so a later
     attempt of the same run is newer too. The run list reports each run id once, at its
     latest attempt. Being listed does not make a run supersede this one: see
-    `validate_ref_green`. Newest first.
+    `records_target`. Newest first.
     """
     found = []
     for run in runs:
@@ -65,15 +67,20 @@ def newer_runs(
     return sorted(found, reverse=True)
 
 
-def validate_ref_green(jobs: list[dict]) -> bool:
-    """True only when the run's `validate ref` job concluded `success`, so the run recorded a target.
+def records_target(jobs: list[dict]) -> bool:
+    """True only when this run recorded a target: `validate ref` and `record any-ref target` both succeeded.
 
-    That is the check `resolve` in post-any-ref-status.yml makes. A run that passes it
-    publishes its verdicts, or fails visibly. A run that does not pass it records no target
-    and publishes nothing, so it must never suppress an older poster.
+    `record` uploads the `any-ref-target` artifact that `resolve` in post-any-ref-status.yml
+    downloads. `validate ref` alone is not enough: the upload can fail after a passed
+    validation, and then the run publishes nothing. A run that does not pass this check must
+    never suppress an older poster.
     """
-    found = [job for job in jobs if job.get("name") == VALIDATE_JOB]
-    return len(found) == 1 and found[0].get("conclusion") == "success"
+
+    def succeeded(name: str) -> bool:
+        found = [job for job in jobs if job.get("name") == name]
+        return len(found) == 1 and found[0].get("conclusion") == "success"
+
+    return succeeded(VALIDATE_JOB) and succeeded(RECORD_JOB)
 
 
 def verdicts(jobs: list[dict], watched: list[str]) -> dict[str, tuple[str, str]]:
@@ -199,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         int(args.run_attempt),
     ):
         try:
-            publishes = validate_ref_green(
+            publishes = records_target(
                 _fetch_jobs(args.repo, str(newer_id), str(newer_attempt))
             )
         except (

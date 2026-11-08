@@ -861,24 +861,58 @@ def _run_main(
     return helper.main(argv), stub.posted
 
 
+RECORD = "record any-ref target"
+
+
+def _recorded() -> list[dict[str, Any]]:
+    """Both jobs that prove a run recorded its target."""
+    return [_job("validate ref", "success"), _job(RECORD, "success")]
+
+
 @pytest.mark.parametrize(
     "jobs, expected",
     [
-        ([_job("validate ref", "success")], True),
-        ([_job("validate ref", None, status="queued")], False),
-        ([_job("validate ref", None, status="in_progress")], False),
-        ([_job("validate ref", "cancelled")], False),
-        ([_job("validate ref", "failure")], False),
-        ([_job("validate ref", "skipped")], False),
+        (_recorded(), True),
+        ([_job("validate ref", "success"), _job(RECORD, "failure")], False),
+        ([_job("validate ref", "success"), _job(RECORD, "cancelled")], False),
+        (
+            [_job("validate ref", "success"), _job(RECORD, None, status="in_progress")],
+            False,
+        ),
+        ([_job("validate ref", "success")], False),
+        ([_job(RECORD, "success")], False),
+        (
+            [
+                _job("validate ref", None, status="queued"),
+                _job(RECORD, None, status="queued"),
+            ],
+            False,
+        ),
+        ([_job("validate ref", "failure"), _job(RECORD, "success")], False),
+        (
+            [
+                _job("validate ref", "success"),
+                _job("validate ref", "success"),
+                _job(RECORD, "success"),
+            ],
+            False,
+        ),
+        (
+            [
+                _job(RECORD, "success"),
+                _job(RECORD, "success"),
+                _job("validate ref", "success"),
+            ],
+            False,
+        ),
         ([], False),
-        ([_job("validate ref", "success"), _job("validate ref", "success")], False),
         ([_job("lint", "success")], False),
     ],
 )
-def test_only_a_successful_validate_ref_job_marks_a_run_as_publishing(
+def test_only_a_run_whose_validation_and_record_both_succeeded_is_publishing(
     jobs: list[dict[str, Any]], expected: bool
 ) -> None:
-    assert helper.validate_ref_green(jobs) is expected
+    assert helper.records_target(jobs) is expected
 
 
 @pytest.mark.parametrize(
@@ -900,6 +934,13 @@ def test_only_a_successful_validate_ref_job_marks_a_run_as_publishing(
         pytest.param(
             {"attempt": 2, "validate": []},
             id="attempt-2-never-recorded-a-target",
+        ),
+        pytest.param(
+            {
+                "attempt": 2,
+                "validate": [_job("validate ref", "success"), _job(RECORD, "failure")],
+            },
+            id="attempt-2-validated-but-upload-failed",
         ),
     ],
 )
@@ -948,12 +989,33 @@ def test_a_newer_run_that_will_not_publish_does_not_suppress_this_poster(
     assert len(posted) == expected_posts
 
 
+@pytest.mark.parametrize(
+    "record_jobs",
+    [
+        pytest.param([_job(RECORD, "failure")], id="record-failed"),
+        pytest.param([_job(RECORD, "cancelled")], id="record-cancelled"),
+        pytest.param([_job(RECORD, None, status="in_progress")], id="record-running"),
+        pytest.param([], id="record-never-ran"),
+    ],
+)
+def test_a_newer_attempt_whose_target_upload_did_not_finish_does_not_suppress_this_poster(
+    monkeypatch: pytest.MonkeyPatch, record_jobs: list[dict[str, Any]]
+) -> None:
+    stub = _StubGh(
+        runs=[_listed(OUR_RUN, 2)],
+        attempts={(OUR_RUN, 2): [_job("validate ref", "success"), *record_jobs]},
+    )
+    status, posted = _run_main(monkeypatch, stub)
+    assert status == 0
+    assert sorted(posted) == sorted((name, "success") for name in WATCHED)
+
+
 def test_a_newer_run_that_recorded_a_target_supersedes_this_poster(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stub = _StubGh(
         runs=[_listed(OUR_RUN + 1, 1)],
-        attempts={(OUR_RUN + 1, 1): [_job("validate ref", "success")]},
+        attempts={(OUR_RUN + 1, 1): _recorded()},
     )
     status, posted = _run_main(monkeypatch, stub)
     assert status == 0
@@ -965,7 +1027,7 @@ def test_a_newer_attempt_that_recorded_a_target_supersedes_this_poster(
 ) -> None:
     stub = _StubGh(
         runs=[_listed(OUR_RUN, 2)],
-        attempts={(OUR_RUN, 2): [_job("validate ref", "success")]},
+        attempts={(OUR_RUN, 2): _recorded()},
     )
     status, posted = _run_main(monkeypatch, stub)
     assert status == 0
@@ -992,7 +1054,7 @@ def test_a_proven_newer_run_still_wins_over_an_unreadable_one(
         runs=[_listed(OUR_RUN + 2, 1), _listed(OUR_RUN + 1, 1)],
         attempts={
             (OUR_RUN + 2, 1): subprocess.CalledProcessError(1, "gh"),
-            (OUR_RUN + 1, 1): [_job("validate ref", "success")],
+            (OUR_RUN + 1, 1): _recorded(),
         },
     )
     status, posted = _run_main(monkeypatch, stub)
