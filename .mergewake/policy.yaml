@@ -179,6 +179,12 @@ deploy_approval:
       - 'app/middleware/auth.py'
     reason: Live broker transport, order mutation and approval authority can send or alter real orders.
   - paths:
+      - 'app/mcp_server/auth.py'
+      - 'app/mcp_server/cf_access.py'
+      - 'app/mcp_server/main.py'
+      - 'app/mcp_server/caller_identity*.py'
+    reason: MCP authentication and caller identity decide who can invoke live-order tools; a later change to them holds for human approval.
+  - paths:
       - 'alembic/versions/**'
       - 'alembic/env.py'
     reason: Production migrations change persistent schema or data and require operator coordination.
