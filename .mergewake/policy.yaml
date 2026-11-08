@@ -48,6 +48,10 @@ blocking:
       - 'config/mcp_profiles/**'
       - 'app/core/config.py'
       - 'app/middleware/auth.py'
+      - 'app/mcp_server/auth.py'
+      - 'app/mcp_server/cf_access.py'
+      - 'app/mcp_server/main.py'
+      - 'app/mcp_server/caller_identity*.py'
     reason: Trading policy, broker mutation gates, MCP surfaces and ingest auth change live authority.
   - paths:
       - 'app/tasks/**/*.py'

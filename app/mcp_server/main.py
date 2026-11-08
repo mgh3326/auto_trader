@@ -151,7 +151,13 @@ def _validate_profile_runtime_settings(profile: McpProfile) -> None:
 
 _validate_profile_auth_token(_mcp_profile, _auth_token, _mcp_type)
 _validate_profile_runtime_settings(_mcp_profile)
-auth_provider = build_auth_provider(_auth_token)
+# hk 3592: build_auth_provider reads MCP_CF_ACCESS_*; partial or malformed config
+# raises here, before FastMCP is built, so the unit refuses to boot. Only the
+# DEFAULT surface accepts an Access credential: the fixed-profile units share the
+# deploy env file, so they ignore these variables instead of refusing to start.
+auth_provider = build_auth_provider(
+    _auth_token, cf_access_enabled=_mcp_profile is McpProfile.DEFAULT
+)
 mcp = FastMCP(
     name="auto_trader-mcp",
     instructions=(
@@ -221,16 +227,18 @@ def main() -> None:
     mcp_path = _env("MCP_PATH", "/mcp")
     graceful_shutdown_timeout = get_mcp_graceful_shutdown_timeout()
     auth_enabled = bool(_auth_token and _auth_token.strip())
+    cf_access_enabled = getattr(auth_provider, "verifier", None) is not None
 
     logging.info(
         "mcp.lifecycle.starting type=%s host=%s port=%s path=%s "
-        "graceful_shutdown_timeout=%s auth_enabled=%s",
+        "graceful_shutdown_timeout=%s auth_enabled=%s cf_access_enabled=%s",
         mcp_type,
         mcp_host,
         mcp_port,
         mcp_path,
         graceful_shutdown_timeout,
         auth_enabled,
+        cf_access_enabled,
     )
 
     try:
