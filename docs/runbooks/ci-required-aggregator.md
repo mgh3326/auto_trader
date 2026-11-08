@@ -234,10 +234,13 @@ What the any-ref path does **not** do, by design:
   dispatch, confirm it (`gh api repos/<repo>/actions/workflows/test.yml/runs?head_sha=<sha>` lists only
   the runs that existed before the dispatch).
 - Two runs of one commit: `post` is serialised per commit (`concurrency: any-ref-status-<sha>`, cancel
-  off), and the helper posts nothing for a run that a newer main-dispatched run for the same commit
-  supersedes. The newer run is found by the run title `any-ref <sha>` (the caller's `run-name`). A later run has a
-  higher id; a re-run keeps its id and raises the attempt, and a later attempt also supersedes. So the
-  newest run's verdicts are the last ones written, whichever run finishes first.
+  off). The newer run is found by the run title `any-ref <sha>` (the caller's `run-name`). A later run has a
+  higher id; a re-run keeps its id and raises the attempt, and a later attempt is newer too. A newer run or
+  attempt suppresses the helper's post only when its `validate ref` job concluded `success` (it recorded a
+  target, so it will publish). A newer run or attempt that is queued, cancelled, failed `validate ref`, or
+  never uploaded its target suppresses nothing: the older run posts its verdicts, and the newer poster
+  overwrites them when it publishes. If a newer run's state cannot be read, the poster fails so it can be
+  retried, rather than posting nothing silently.
 - A `ref` on a `pull_request` run is refused by the classifier (the step `Refuse a called ref on a
   pull_request`): the classifier would otherwise select tests from the PR diff for another commit.
 - The poster's job name is not a watched check, so a same-name check run and status cannot be read as

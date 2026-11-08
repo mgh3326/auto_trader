@@ -704,24 +704,24 @@ def test_run_title_is_the_commit_the_run_tests(any_ref: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     "runs, run_id, attempt, expected",
     [
-        ([], 5, 1, None),
+        ([], 5, 1, []),
         (
             [{"id": 9, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1}],
             5,
             1,
-            9,
+            [(9, 1)],
         ),
         (
             [{"id": 4, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1}],
             5,
             1,
-            None,
+            [],
         ),
         (
             [{"id": 9, "display_title": "any-ref " + "f" * 40, "run_attempt": 1}],
             5,
             1,
-            None,
+            [],
         ),
         (
             [
@@ -731,36 +731,273 @@ def test_run_title_is_the_commit_the_run_tests(any_ref: dict[str, Any]) -> None:
             ],
             5,
             1,
-            12,
+            [(12, 1), (7, 1)],
         ),
-        # A re-run keeps the run id; the later attempt supersedes the earlier one.
+        # A re-run keeps the run id; the later attempt is newer than the earlier one.
         (
             [{"id": 5, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 2}],
             5,
             1,
-            5,
+            [(5, 2)],
         ),
         (
             [{"id": 5, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 2}],
             5,
             2,
-            None,
+            [],
         ),
         (
             [{"id": 5, "display_title": f"any-ref {VALID_SHA}", "run_attempt": 1}],
             5,
             2,
-            None,
+            [],
         ),
     ],
 )
-def test_newest_run_for_the_commit_supersedes_this_run_or_attempt(
-    runs: list[dict[str, Any]], run_id: int, attempt: int, expected: int | None
+def test_newer_runs_for_the_commit_are_listed_by_id_and_attempt(
+    runs: list[dict[str, Any]],
+    run_id: int,
+    attempt: int,
+    expected: list[tuple[int, int]],
 ) -> None:
     assert (
-        helper.newer_run_id(runs, helper.run_title(VALID_SHA), run_id, attempt)
+        helper.newer_runs(runs, helper.run_title(VALID_SHA), run_id, attempt)
         == expected
     )
+
+
+# A newer run or attempt suppresses an older poster only when it recorded a target. These
+# tests run the real `main` with the two gh seams stubbed: `_gh_json` (every read) and
+# `_post` (every status write). Any unrouted read fails the test.
+
+OUR_RUN = 5
+OUR_ATTEMPT = 1
+WATCHED = [
+    "lint",
+    "taskiq-smoke",
+    "test (3.13, 1)",
+    "test (3.13, 2)",
+    "test (3.13, 3)",
+    "test (3.13, 4)",
+]
+REPO = "mgh3326/auto_trader"
+
+
+def _job(
+    name: str, conclusion: str | None, status: str = "completed"
+) -> dict[str, Any]:
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+def _green_suite(names: list[str]) -> list[dict[str, Any]]:
+    return [_job(name, "success") for name in names]
+
+
+def _listed(run_id: int, attempt: int) -> dict[str, Any]:
+    return {
+        "id": run_id,
+        "display_title": f"any-ref {VALID_SHA}",
+        "run_attempt": attempt,
+    }
+
+
+class _StubGh:
+    """Answers the helper's gh reads from a table; records the status writes it makes."""
+
+    def __init__(
+        self,
+        runs: list[dict[str, Any]],
+        attempts: dict[tuple[int, int], list[dict[str, Any]] | Exception],
+    ) -> None:
+        self.runs = runs
+        self.attempts = attempts
+        self.posted: list[tuple[str, str]] = []
+
+    def gh_json(self, args: list[str]) -> dict[str, Any]:
+        path = args[0]
+        if "/compare/main..." in path:
+            return {"status": "behind"}
+        if "/actions/workflows/test-any-ref.yml/runs" in path:
+            return {"workflow_runs": self.runs}
+        match = re.search(r"/actions/runs/(\d+)/attempts/(\d+)/jobs", path)
+        if match:
+            key = (int(match.group(1)), int(match.group(2)))
+            if key == (OUR_RUN, OUR_ATTEMPT):
+                return {"jobs": _green_suite(WATCHED)}
+            if key not in self.attempts:
+                raise AssertionError(f"unrouted jobs read for run {key}")
+            answer = self.attempts[key]
+            if isinstance(answer, Exception):
+                raise answer
+            return {"jobs": answer}
+        raise AssertionError(f"unrouted gh read: {path}")
+
+    def post(
+        self, repo: str, sha: str, context: str, state: str, text: str, url: str
+    ) -> bool:
+        self.posted.append((context, state))
+        return True
+
+
+def _run_main(
+    monkeypatch: pytest.MonkeyPatch, stub: _StubGh
+) -> tuple[int, list[tuple[str, str]]]:
+    monkeypatch.setattr(helper, "_gh_json", stub.gh_json)
+    monkeypatch.setattr(helper, "_post", stub.post)
+    argv = [
+        "--repo",
+        REPO,
+        "--sha",
+        VALID_SHA,
+        "--run-id",
+        str(OUR_RUN),
+        "--run-attempt",
+        str(OUR_ATTEMPT),
+        "--target-url",
+        "https://example.invalid/run",
+    ]
+    for name in WATCHED:
+        argv += ["--watch", name]
+    return helper.main(argv), stub.posted
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        ([_job("validate ref", "success")], True),
+        ([_job("validate ref", None, status="queued")], False),
+        ([_job("validate ref", None, status="in_progress")], False),
+        ([_job("validate ref", "cancelled")], False),
+        ([_job("validate ref", "failure")], False),
+        ([_job("validate ref", "skipped")], False),
+        ([], False),
+        ([_job("validate ref", "success"), _job("validate ref", "success")], False),
+        ([_job("lint", "success")], False),
+    ],
+)
+def test_only_a_successful_validate_ref_job_marks_a_run_as_publishing(
+    jobs: list[dict[str, Any]], expected: bool
+) -> None:
+    assert helper.validate_ref_green(jobs) is expected
+
+
+@pytest.mark.parametrize(
+    "newer",
+    [
+        # A newer attempt that will never publish must not suppress this poster.
+        pytest.param(
+            {"attempt": 2, "validate": [_job("validate ref", None, status="queued")]},
+            id="attempt-2-queued",
+        ),
+        pytest.param(
+            {"attempt": 2, "validate": [_job("validate ref", "cancelled")]},
+            id="attempt-2-cancelled",
+        ),
+        pytest.param(
+            {"attempt": 2, "validate": [_job("validate ref", "failure")]},
+            id="attempt-2-validate-failed",
+        ),
+        pytest.param(
+            {"attempt": 2, "validate": []},
+            id="attempt-2-never-recorded-a-target",
+        ),
+    ],
+)
+def test_a_newer_attempt_that_will_not_publish_does_not_suppress_this_poster(
+    monkeypatch: pytest.MonkeyPatch, newer: dict[str, Any]
+) -> None:
+    stub = _StubGh(
+        runs=[_listed(OUR_RUN, newer["attempt"])],
+        attempts={(OUR_RUN, newer["attempt"]): newer["validate"]},
+    )
+    status, posted = _run_main(monkeypatch, stub)
+    assert status == 0
+    assert sorted(posted) == sorted((name, "success") for name in WATCHED)
+
+
+@pytest.mark.parametrize(
+    "newer_runs_jobs, expected_posts",
+    [
+        pytest.param(
+            [(OUR_RUN + 1, 1, [_job("validate ref", None, status="queued")])],
+            len(WATCHED),
+            id="newer-run-queued",
+        ),
+        pytest.param(
+            [(OUR_RUN + 1, 1, [_job("validate ref", "cancelled")])],
+            len(WATCHED),
+            id="newer-run-cancelled",
+        ),
+        pytest.param(
+            [(OUR_RUN + 1, 1, [_job("validate ref", "failure")])],
+            len(WATCHED),
+            id="newer-run-validate-failed",
+        ),
+    ],
+)
+def test_a_newer_run_that_will_not_publish_does_not_suppress_this_poster(
+    monkeypatch: pytest.MonkeyPatch,
+    newer_runs_jobs: list[tuple[int, int, list[dict[str, Any]]]],
+    expected_posts: int,
+) -> None:
+    runs = [_listed(run_id, attempt) for run_id, attempt, _ in newer_runs_jobs]
+    attempts = {(run_id, attempt): jobs for run_id, attempt, jobs in newer_runs_jobs}
+    stub = _StubGh(runs=runs, attempts=attempts)
+    status, posted = _run_main(monkeypatch, stub)
+    assert status == 0
+    assert len(posted) == expected_posts
+
+
+def test_a_newer_run_that_recorded_a_target_supersedes_this_poster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub = _StubGh(
+        runs=[_listed(OUR_RUN + 1, 1)],
+        attempts={(OUR_RUN + 1, 1): [_job("validate ref", "success")]},
+    )
+    status, posted = _run_main(monkeypatch, stub)
+    assert status == 0
+    assert posted == []
+
+
+def test_a_newer_attempt_that_recorded_a_target_supersedes_this_poster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub = _StubGh(
+        runs=[_listed(OUR_RUN, 2)],
+        attempts={(OUR_RUN, 2): [_job("validate ref", "success")]},
+    )
+    status, posted = _run_main(monkeypatch, stub)
+    assert status == 0
+    assert posted == []
+
+
+def test_an_unreadable_newer_run_fails_the_poster_instead_of_going_quiet(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stub = _StubGh(
+        runs=[_listed(OUR_RUN + 1, 1)],
+        attempts={(OUR_RUN + 1, 1): subprocess.CalledProcessError(1, "gh")},
+    )
+    status, posted = _run_main(monkeypatch, stub)
+    assert status == 1
+    assert posted == []
+    assert "failing so it can be retried" in capsys.readouterr().err
+
+
+def test_a_proven_newer_run_still_wins_over_an_unreadable_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub = _StubGh(
+        runs=[_listed(OUR_RUN + 2, 1), _listed(OUR_RUN + 1, 1)],
+        attempts={
+            (OUR_RUN + 2, 1): subprocess.CalledProcessError(1, "gh"),
+            (OUR_RUN + 1, 1): [_job("validate ref", "success")],
+        },
+    )
+    status, posted = _run_main(monkeypatch, stub)
+    assert status == 0
+    assert posted == []
 
 
 def test_suite_secret_is_declared_by_test_yml(test_wf: dict[str, Any]) -> None:

@@ -11,8 +11,10 @@ name: Post any-ref statuses
 # workflow_dispatch and its head_branch main, from this repository.
 #
 # Two runs may test one commit. Posting for one commit is serialised by the concurrency
-# group below, and the helper posts nothing for a run that a newer main-dispatched run for
-# the same commit supersedes. So the newest run's verdicts are the last ones written.
+# group below. The helper posts nothing for a run that a newer main-dispatched run or attempt
+# for the same commit supersedes, but only once that newer one recorded a target (its
+# `validate ref` succeeded), so it will publish. Otherwise the older run posts its verdicts.
+# An unreadable newer run fails this run, so it can be retried.
 
 on:
   workflow_run:

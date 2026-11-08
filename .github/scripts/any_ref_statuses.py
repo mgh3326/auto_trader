@@ -19,6 +19,8 @@ import subprocess
 import sys
 
 TARGET_BRANCH = "main"
+# The job that records a run's target; `resolve` in post-any-ref-status.yml reads it too.
+VALIDATE_JOB = "validate ref"
 # `compare/main...<sha>` reports "behind" or "identical" exactly when <sha> is an
 # ancestor of main (or main itself). "ahead", "diverged" and anything else refuse.
 ANCESTOR_STATUSES = frozenset({"behind", "identical"})
@@ -40,28 +42,38 @@ def run_title(sha: str) -> str:
     return f"any-ref {sha}"
 
 
-def newer_run_id(
+def newer_runs(
     runs: list[dict], title: str, run_id: int, run_attempt: int
-) -> int | None:
-    """The newest run titled `title` that supersedes (run_id, run_attempt), or None.
+) -> list[tuple[int, int]]:
+    """Every listed run titled `title` that is newer than (run_id, run_attempt), as (id, attempt).
 
     A later run has a higher id. A re-run keeps its id and raises `run_attempt`, so a later
-    attempt of the same run also supersedes. The run list reports each run id once, at its
-    latest attempt. An older attempt or run must publish nothing.
+    attempt of the same run is newer too. The run list reports each run id once, at its
+    latest attempt. Being listed does not make a run supersede this one: see
+    `validate_ref_green`. Newest first.
     """
-    newer = [
-        int(run["id"])
-        for run in runs
-        if run.get("display_title") == title
-        and (
-            int(run["id"]) > run_id
-            or (
-                int(run["id"]) == run_id
-                and int(run.get("run_attempt", 1)) > run_attempt
-            )
-        )
-    ]
-    return max(newer) if newer else None
+    found = []
+    for run in runs:
+        if run.get("display_title") != title:
+            continue
+        candidate_id = int(run["id"])
+        candidate_attempt = int(run.get("run_attempt", 1))
+        if candidate_id > run_id or (
+            candidate_id == run_id and candidate_attempt > run_attempt
+        ):
+            found.append((candidate_id, candidate_attempt))
+    return sorted(found, reverse=True)
+
+
+def validate_ref_green(jobs: list[dict]) -> bool:
+    """True only when the run's `validate ref` job concluded `success`, so the run recorded a target.
+
+    That is the check `resolve` in post-any-ref-status.yml makes. A run that passes it
+    publishes its verdicts, or fails visibly. A run that does not pass it records no target
+    and publishes nothing, so it must never suppress an older poster.
+    """
+    found = [job for job in jobs if job.get("name") == VALIDATE_JOB]
+    return len(found) == 1 and found[0].get("conclusion") == "success"
 
 
 def verdicts(jobs: list[dict], watched: list[str]) -> dict[str, tuple[str, str]]:
@@ -177,15 +189,43 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.run_id and args.run_attempt and args.target_url and args.watch):
         parser.error("posting needs --run-id, --run-attempt, --target-url and --watch")
 
-    newer = newer_run_id(
+    # A newer run or attempt suppresses this poster only if it recorded a target, so it will
+    # publish. An unreadable newer run is neither proof nor refusal: fail, so the run is retried.
+    unreadable = []
+    for newer_id, newer_attempt in newer_runs(
         _dispatch_runs(args.repo),
         run_title(args.sha),
         int(args.run_id),
         int(args.run_attempt),
-    )
-    if newer is not None:
-        print(f"run {newer} is newer for {args.sha}; run {args.run_id} posts nothing")
-        return 0
+    ):
+        try:
+            publishes = validate_ref_green(
+                _fetch_jobs(args.repo, str(newer_id), str(newer_attempt))
+            )
+        except (
+            subprocess.CalledProcessError,
+            OSError,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ) as error:
+            unreadable.append(
+                f"run {newer_id} attempt {newer_attempt} ({type(error).__name__})"
+            )
+            continue
+        if publishes:
+            print(
+                f"run {newer_id} attempt {newer_attempt} recorded a target for {args.sha}; "
+                f"run {args.run_id} posts nothing"
+            )
+            return 0
+    if unreadable:
+        print(
+            "could not read the state of a newer run, so this run cannot tell whether it is "
+            f"superseded; failing so it can be retried: {', '.join(unreadable)}",
+            file=sys.stderr,
+        )
+        return 1
 
     plan = verdicts(_fetch_jobs(args.repo, args.run_id, args.run_attempt), args.watch)
     failed = []
