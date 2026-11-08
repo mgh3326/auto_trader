@@ -330,5 +330,21 @@
   {
     "path": "app/services/brokers/kiwoom/live_market_data.py",
     "hold": true
+  },
+  {
+    "path": "app/mcp_server/auth.py",
+    "hold": true
+  },
+  {
+    "path": "app/mcp_server/cf_access.py",
+    "hold": true
+  },
+  {
+    "path": "app/mcp_server/main.py",
+    "hold": true
+  },
+  {
+    "path": "app/mcp_server/caller_identity_middleware.py",
+    "hold": true
   }
 ]

@@ -65,7 +65,10 @@ import logging
 import unicodedata
 from typing import TYPE_CHECKING, Any
 
+from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware
+
+from app.mcp_server.cf_access import ACCESS_CONSUMER, access_operator_from_scope
 
 if TYPE_CHECKING:
     import mcp.types as mt
@@ -78,6 +81,12 @@ logger = logging.getLogger(__name__)
 # because the container's formatter renders the message only. Keep the
 # ``key=value`` shape so Loki's logfmt parser can pick ``tool`` out directly.
 TOOL_CALL_MESSAGE = "mcp.tool.called tool=%s profile=%s"
+# hk 3592: only for a call authenticated by a verified Cloudflare Access
+# assertion, so dots activity is separable from tailnet sessions. Every other
+# call keeps ``TOOL_CALL_MESSAGE`` byte-for-byte.
+ACCESS_TOOL_CALL_MESSAGE = (
+    "mcp.tool.called tool=%s profile=%s consumer=%s operator=operator:%s"
+)
 
 # Used when the request shape or the profile is unexpected; keeps the line
 # emittable instead of silently losing the observation.
@@ -126,6 +135,13 @@ def sanitize_log_field(value: Any) -> str:
     return rendered
 
 
+def _access_operator() -> str | None:
+    try:
+        return access_operator_from_scope(getattr(get_http_request(), "scope", None))
+    except RuntimeError:
+        return None
+
+
 class ToolCallLogMiddleware(Middleware):
     """Emit one name-carrying log line per ``tools/call``.
 
@@ -151,10 +167,17 @@ class ToolCallLogMiddleware(Middleware):
     def _observe(self, context: Any) -> None:
         try:
             tool_name = getattr(getattr(context, "message", None), "name", None)
-            logger.info(
-                TOOL_CALL_MESSAGE,
-                sanitize_log_field(tool_name) if tool_name else UNKNOWN_TOOL_NAME,
-                self._profile,
-            )
+            name = sanitize_log_field(tool_name) if tool_name else UNKNOWN_TOOL_NAME
+            operator = _access_operator()
+            if operator is None:
+                logger.info(TOOL_CALL_MESSAGE, name, self._profile)
+            else:
+                logger.info(
+                    ACCESS_TOOL_CALL_MESSAGE,
+                    name,
+                    self._profile,
+                    ACCESS_CONSUMER,
+                    sanitize_log_field(operator),
+                )
         except Exception:  # noqa: BLE001 - observation never breaks a tool call
             pass

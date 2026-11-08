@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Literal
 
-CallerSource = Literal["http_header", "env_fallback", "none"]
+CallerSource = Literal["http_header", "env_fallback", "cf_access", "none"]
 
 caller_agent_id_var: ContextVar[str | None] = ContextVar(
     "mcp_caller_agent_id",
