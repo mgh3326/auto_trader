@@ -27,7 +27,13 @@ GITHUB = REPO_ROOT / ".github"
 WORKFLOWS = GITHUB / "workflows"
 PY_COMPOSITE = GITHUB / "actions" / "setup-python-uv" / "action.yml"
 NODE_COMPOSITE = GITHUB / "actions" / "setup-node-cached" / "action.yml"
-PY_USES = "./.github/actions/setup-python-uv"
+
+
+def _is_python_composite(uses: str) -> bool:
+    """The composite, from this checkout or from a folder that checks out the same file."""
+    return uses.startswith("./") and uses.endswith("/.github/actions/setup-python-uv")
+
+
 NODE_USES = "./.github/actions/setup-node-cached"
 
 SHA_RE = re.compile(
@@ -140,7 +146,7 @@ def test_every_job_that_runs_uv_sets_up_through_the_python_composite() -> None:
                 continue  # reusable-workflow caller job
             seen_setup = False
             for step in steps:
-                if str(step.get("uses", "")) == PY_USES:
+                if _is_python_composite(str(step.get("uses", ""))):
                     seen_setup = True
                 run = str(step.get("run", ""))
                 if UV_USE_RE.search(run) and not seen_setup:
@@ -156,7 +162,7 @@ def test_python_composite_is_called_with_no_python_literal() -> None:
     bad: list[str] = []
     for path in WORKFLOWS.glob("*.yml"):
         for job_name, step in _steps(_load(path)):
-            if str(step.get("uses", "")) == PY_USES and step.get("with"):
+            if _is_python_composite(str(step.get("uses", ""))) and step.get("with"):
                 bad.append(f"{path.name}:{job_name}")
     assert bad == [], (
         "composite called with inputs (pins belong in action.yml): " + "; ".join(bad)
@@ -220,6 +226,16 @@ def test_node_setup_retries_three_times_and_only_the_last_attempt_is_fatal() -> 
     assert attempts[0].get("continue-on-error") is True
     assert attempts[1].get("continue-on-error") is True
     assert not attempts[2].get("continue-on-error")
+
+
+def test_each_restored_path_includes_setup_actions_complete_marker() -> None:
+    """setup-python and setup-node treat a directory without its sibling .complete as a miss."""
+    for composite in (PY_COMPOSITE, NODE_COMPOSITE):
+        steps = _load(composite)["runs"]["steps"]
+        cache = next(
+            s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")
+        )
+        assert "-complete }}" in str(cache["with"]["path"]), composite.parent.name
 
 
 def test_each_toolchain_is_restored_from_cache_before_its_setup_action() -> None:

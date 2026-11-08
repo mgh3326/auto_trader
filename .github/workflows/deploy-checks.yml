@@ -159,9 +159,18 @@ jobs:
           path: candidate
           persist-credentials: false
 
+      # The workspace holds only base/ and candidate/, so the composite action
+      # is checked out from this workflow's own revision into its own folder.
+      - name: Check out the workflow's pinned action
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          sparse-checkout: .github/actions
+          path: workflow-actions
+          persist-credentials: false
+
       - name: Set up pinned Python and uv
         id: py
-        uses: ./.github/actions/setup-python-uv
+        uses: ./workflow-actions/.github/actions/setup-python-uv
 
       - name: Install the base environment
         working-directory: base

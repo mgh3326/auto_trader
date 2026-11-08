@@ -28,11 +28,14 @@ runs:
         fi
         arch=$(echo "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
         echo "node-dir=$RUNNER_TOOL_CACHE/node/$NODE_VERSION/$arch" >> "$GITHUB_OUTPUT"
+        echo "node-complete=$RUNNER_TOOL_CACHE/node/$NODE_VERSION/$arch.complete" >> "$GITHUB_OUTPUT"
 
     - id: node-cache
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
-        path: ${{ steps.paths.outputs.node-dir }}
+        path: |
+          ${{ steps.paths.outputs.node-dir }}
+          ${{ steps.paths.outputs.node-complete }}
         key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}
 
     - id: setup-node-1

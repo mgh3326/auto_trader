@@ -37,14 +37,21 @@ runs:
         done
         arch=$(echo "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
         echo "python-dir=$RUNNER_TOOL_CACHE/Python/$PY_VERSION/$arch" >> "$GITHUB_OUTPUT"
-        echo "uv-dir=$RUNNER_TOOL_CACHE/uv/$UV_VERSION/$arch" >> "$GITHUB_OUTPUT"
+        # setup-python also needs the sibling .complete marker of the tool-cache
+        # directory; without it a restored directory is treated as a miss.
+        echo "python-complete=$RUNNER_TOOL_CACHE/Python/$PY_VERSION/$arch.complete" >> "$GITHUB_OUTPUT"
+        # uv lives under RUNNER_TEMP, which is always writable, so a read-only
+        # tool cache on a self-hosted runner cannot block the uv install.
+        echo "uv-dir=$RUNNER_TEMP/uv/$UV_VERSION/$arch" >> "$GITHUB_OUTPUT"
 
     # Restore first so setup-python finds the toolchain in the tool cache. The
     # post step saves the directory only after a miss.
     - id: python-cache
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
-        path: ${{ steps.paths.outputs.python-dir }}
+        path: |
+          ${{ steps.paths.outputs.python-dir }}
+          ${{ steps.paths.outputs.python-complete }}
         key: python-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version }}
 
     - id: setup-python-1
