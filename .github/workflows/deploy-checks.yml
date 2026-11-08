@@ -291,7 +291,9 @@ jobs:
           load: true
           push: false
           tags: auto-trader-deploy-check:local
-          cache-from: type=gha,scope=api
+          # No cache-from (hk 3578): this any-ref path never logs in to GHCR, so an
+          # unauthenticated read of the `:buildcache` tag could fail instead of missing.
+          # Builds here are cold; the cache is written by deploy.yml only.
           provenance: false
 
       - name: Name the local image

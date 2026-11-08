@@ -437,4 +437,4 @@ by runner OS, arch and the exact version, and a miss retries the setup up to thr
 change that one default, then check that `tests/ci/test_toolchain_cache_contract.py` still passes (the Python
 matrix minor must match the pin). Pin every external `uses:` to a full commit SHA with the tag as a comment,
 and keep one SHA per action across the repo. The cache-hit proof is the `Cache restored from key:` line plus
-the setup action finding the version in the tool cache, read from a `lint` job log.
+the setup action finding the version in the tool cache, read from a `lint` job log. Docker image builds cache to the GHCR `:buildcache` tag (`type=registry`), never to the Actions cache (`type=gha`), because image layers there filled the 10GB cache and evicted these toolchain entries (hk 3578).

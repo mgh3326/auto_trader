@@ -146,8 +146,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # Build cache lives in GHCR (`:buildcache` tag of the image repository), never in
+          # the 10GB Actions cache: image layers there LRU-evict the toolchain caches (hk 3578).
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
           platforms: linux/amd64,linux/arm64
           provenance: false
 
