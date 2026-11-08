@@ -58,6 +58,7 @@ class KISClientProtocol(Protocol):
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        do_not_retry_rate_limit_msg_codes: frozenset[str] = frozenset(),
         pre_send_hook: PreSendHook | None = None,
         send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
@@ -77,6 +78,7 @@ class KISClientProtocol(Protocol):
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        do_not_retry_rate_limit_msg_codes: frozenset[str] = frozenset(),
         pre_send_hook: PreSendHook | None = None,
         send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:

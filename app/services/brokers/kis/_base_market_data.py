@@ -133,6 +133,9 @@ class MarketDataBase:
                 timeout=timeout,
                 api_name=api_name,
                 tr_id=tr_id,
+                do_not_retry_rate_limit_msg_codes=(
+                    frozenset({"EGW00201"}) if method.upper() == "GET" else frozenset()
+                ),
             )
 
             if js.get("rt_cd") == "0":

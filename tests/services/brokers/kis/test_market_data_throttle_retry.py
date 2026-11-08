@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import random
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from app.services.brokers.kis._base_market_data import MarketDataBase
@@ -25,9 +27,46 @@ def _market_data(responses: list[dict[str, str]]):
     return MarketDataBase(parent), parent
 
 
+def _real_market_data(monkeypatch, responses: list[dict[str, str]]):
+    from app.services.brokers.kis import base as base_module
+    from app.services.brokers.kis import client as client_module
+
+    settings = SimpleNamespace(
+        kis_app_key="test-key",
+        kis_app_secret="test-secret",
+        kis_access_token="test-token",
+        kis_rate_limit_rate=19,
+        kis_rate_limit_period=1.0,
+        kis_api_rate_limits={},
+        api_rate_limit_retry_429_max=2,
+        api_rate_limit_retry_429_base_delay=0.2,
+        kis_mock_base_url="",
+    )
+    monkeypatch.setattr(client_module, "settings", settings)
+    monkeypatch.setattr(
+        client_module, "assert_broker_credentials_allowed", lambda context: None
+    )
+    monkeypatch.setattr(
+        base_module, "assert_broker_credentials_allowed", lambda context: None
+    )
+
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    client._ensure_token = AsyncMock()
+    client._get_limiter = AsyncMock(return_value=SimpleNamespace(acquire=AsyncMock()))
+    client._ensure_client = AsyncMock(return_value=object())
+    client._execute_http_request = AsyncMock(
+        side_effect=[httpx.Response(200, json=body) for body in responses]
+    )
+    return client._market_data, client
+
+
 @pytest.mark.asyncio
 async def test_market_data_retries_egw00201_and_succeeds(monkeypatch, caplog):
-    client, parent = _market_data([_THROTTLE, _SUCCESS])
+    market_data, client = _real_market_data(
+        monkeypatch, [_THROTTLE, _THROTTLE, _SUCCESS]
+    )
     sleeps: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -39,28 +78,44 @@ async def test_market_data_retries_egw00201_and_succeeds(monkeypatch, caplog):
     with caplog.at_level(
         "WARNING", logger="app.services.brokers.kis._base_market_data"
     ):
-        result = await client._request_with_token_retry("TR", "https://host/read")
+        result = await market_data._request_with_token_retry("TR", "https://host/read")
 
-    assert result is _SUCCESS
-    assert parent._request_with_rate_limit.await_count == 2
-    assert len(sleeps) == 1
-    assert 0 < sleeps[0] < 3
+    assert result == _SUCCESS
+    assert client._execute_http_request.await_count == 3
+    assert len(sleeps) == 2
+    assert sum(sleeps) < 3
     assert "retrying KIS market-data request" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_market_data_throttle_retries_are_bounded(monkeypatch):
-    client, parent = _market_data([_THROTTLE] * 10)
+    # Nine responses expose a stacked inner (3) x outer (3) retry regression.
+    market_data, client = _real_market_data(monkeypatch, [_THROTTLE] * 9)
     sleep = AsyncMock()
     monkeypatch.setattr(asyncio, "sleep", sleep)
     monkeypatch.setattr(random, "uniform", lambda low, high: high)
 
     with pytest.raises(RuntimeError, match="초당 거래건수를"):
-        await client._request_with_token_retry("TR", "https://host/read")
+        await market_data._request_with_token_retry("TR", "https://host/read")
 
-    assert parent._request_with_rate_limit.await_count == 3
+    assert client._execute_http_request.await_count == 3
     assert sleep.await_count == 2
     assert sum(call.args[0] for call in sleep.await_args_list) < 3
+
+
+@pytest.mark.asyncio
+async def test_market_data_post_does_not_retry_egw00201(monkeypatch):
+    client, parent = _market_data([_THROTTLE, _SUCCESS])
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="초당 거래건수를"):
+        await client._request_with_token_retry(
+            "TR", "https://host/read", method="POST", json_body={"key": "value"}
+        )
+
+    assert parent._request_with_rate_limit.await_count == 1
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
