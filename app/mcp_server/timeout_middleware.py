@@ -16,8 +16,10 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+import sentry_sdk
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
+from sentry_sdk.consts import SPANSTATUS
 
 from app.mcp_server.env_utils import DEFAULT_MCP_TOOL_TIMEOUT_S
 
@@ -27,6 +29,16 @@ if TYPE_CHECKING:
     from fastmcp.tools.tool import ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+class McpToolDeadlineExceeded(ToolError):
+    """A tool exceeded its per-tool time budget and was cancelled.
+
+    Still a ToolError for the caller. Sentry drops the error event for this
+    class (app/monitoring/sentry.py) and records the outcome as a WARNING log
+    plus a ``deadline_exceeded`` span status instead.
+    """
+
 
 # Single source of truth lives in env_utils (used by get_mcp_tool_timeout_default).
 DEFAULT_TOOL_TIMEOUT_S = DEFAULT_MCP_TOOL_TIMEOUT_S
@@ -127,8 +139,16 @@ class ToolTimeoutMiddleware(Middleware):
                 # (which would also poison the mcp.tool.timeout metric used to tune
                 # budgets). cm.expired() is True only when OUR deadline fired.
                 raise
-            logger.warning("mcp.tool.timeout tool=%s budget_s=%.0f", tool_name, budget)
-            raise ToolError(
+            logger.warning(
+                "mcp.tool.timeout tool=%s budget_s=%.0f",
+                tool_name,
+                budget,
+                extra={"mcp.tool.name": tool_name, "mcp.tool.budget_s": budget},
+            )
+            span = sentry_sdk.get_current_span()
+            if span is not None:
+                span.set_status(SPANSTATUS.DEADLINE_EXCEEDED)
+            raise McpToolDeadlineExceeded(
                 f"Tool '{tool_name}' exceeded its {budget:.0f}s time budget "
                 "and was cancelled."
             ) from None

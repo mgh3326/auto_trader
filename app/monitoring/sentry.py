@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 
 _BUILD_VCS_REF_PATH = Path("/app/.build-vcs-ref")
 _INVEST_API_PREFIX = "/invest/api/"
+# hk-3589 size budget. The SDK default cap is 1000 spans per transaction. In the
+# synthetic worst case (every span carries a 5 KB attribute and an 800-char SQL)
+# 1000 spans serialize to ~6.2 MB, and 400 spans to ~0.9 MB, under the 1 MiB
+# payload limit (tests/monitoring/test_sentry_noise_filters.py size test).
+# The queue size is a judgement, not measured: 250 envelopes bounds the queue
+# at roughly 250 typical envelopes; the 7-day overflow count is the check.
+SENTRY_MAX_SPANS_PER_TRANSACTION = 400
+SENTRY_TRANSPORT_QUEUE_SIZE = 250
 
 _initialized = False
 # True only after this process installed ``_traces_sampler`` through a
@@ -336,6 +344,47 @@ def _is_yfinance_noise_log(logger_name: str | None, message: str | None) -> bool
     return any(pattern in message for pattern in _YFINANCE_NOISE_PATTERNS)
 
 
+# yfinance's multi-download summary ("1 Failed download:") carries only a count.
+# The per-symbol line that follows keeps the reason and is filtered (or kept)
+# by _YFINANCE_NOISE_PATTERNS on its own, so the summary alone is noise.
+_YFINANCE_FAILED_DOWNLOAD_SUMMARY_RE = re.compile(r"\d+ Failed downloads?:")
+
+
+def _is_yfinance_failed_download_summary(
+    logger_name: str | None, message: str | None
+) -> bool:
+    if logger_name != "yfinance" or not message:
+        return False
+    return _YFINANCE_FAILED_DOWNLOAD_SUMMARY_RE.fullmatch(message.strip()) is not None
+
+
+# 2CR: a tool that exceeds its per-tool time budget is not a server failure.
+# timeout_middleware raises McpToolDeadlineExceeded (a ToolError subclass) and
+# records the same outcome as a WARNING log plus a ``deadline_exceeded`` span
+# status, so the error event is dropped here to stop it flooding error issues.
+_MCP_DEADLINE_EXCEEDED_TYPE = "McpToolDeadlineExceeded"
+_MCP_DEADLINE_EXCEEDED_MESSAGE_RE = re.compile(
+    r"Tool '[^']*' exceeded its \d+s time budget and was cancelled\."
+)
+
+
+def _is_mcp_deadline_exceeded_log(logger_name: str | None, message: str | None) -> bool:
+    if logger_name != "fastmcp.server.server" or not message:
+        return False
+    return _MCP_DEADLINE_EXCEEDED_MESSAGE_RE.search(message) is not None
+
+
+def _is_mcp_deadline_exceeded_event(event: Event) -> bool:
+    exception = event.get("exception")
+    values = exception.get("values") if isinstance(exception, dict) else None
+    if not isinstance(values, list):
+        return False
+    return any(
+        isinstance(value, dict) and value.get("type") == _MCP_DEADLINE_EXCEEDED_TYPE
+        for value in values
+    )
+
+
 def _is_fastmcp_tool_validation_error(
     logger_name: str | None, message: str | None
 ) -> bool:
@@ -531,6 +580,12 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_yfinance_noise_log(logger_name, message):
         return None
+    if _is_yfinance_failed_download_summary(logger_name, message):
+        return None
+    if _is_mcp_deadline_exceeded_log(logger_name, message):
+        return None
+    if _is_mcp_deadline_exceeded_event(event):
+        return None
     if _is_fastmcp_tool_validation_error(logger_name, message):
         return None
     if _is_expected_mcp_argument_noise(logger_name, message, event):
@@ -559,6 +614,10 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     if _is_yfinance_crumb_error(logger_name, message):
         return None
     if _is_yfinance_noise_log(logger_name, message):
+        return None
+    if _is_yfinance_failed_download_summary(logger_name, message):
+        return None
+    if _is_mcp_deadline_exceeded_log(logger_name, message):
         return None
     if _is_fastmcp_tool_validation_error(logger_name, message):
         return None
@@ -609,6 +668,7 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     spans = event.get("spans", [])
     if not isinstance(spans, list):
         spans = []
+    _truncate_span_values_in_place(spans)
 
     found_mcp_span = False
     transaction_renamed = False
@@ -757,6 +817,8 @@ def init_sentry(
             before_breadcrumb=_before_breadcrumb,
             before_send_log=_before_send_log,
             before_send_transaction=_before_send_transaction,
+            transport_queue_size=SENTRY_TRANSPORT_QUEUE_SIZE,
+            _experiments={"max_spans": SENTRY_MAX_SPANS_PER_TRANSACTION},
             enable_logs=True,
         )
         sentry_sdk.set_tag("service", service_name)
@@ -818,6 +880,24 @@ def _truncate_for_sentry(value: Any) -> Any:
         return tuple(items) if is_tuple else items
 
     return value
+
+
+def _truncate_span_values_in_place(spans: list[Any]) -> None:
+    """Bound each span's description and every data value (2CR size budget).
+
+    Truncation is per value, never per dict key, so no span attribute is
+    dropped. The whole-event scrubber has already run by the time this runs.
+    """
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        description = span.get("description")
+        if isinstance(description, str):
+            span["description"] = _truncate_for_sentry(description)
+        data = span.get("data")
+        if isinstance(data, dict):
+            for key, value in list(data.items()):
+                data[key] = _truncate_for_sentry(value)
 
 
 _MISSING = object()
