@@ -426,3 +426,15 @@ A skipped matrix job does not report `test (3.13, N)`, so a narrow PR cannot mer
 names are required. The edit follows the landing of ROB-1454, not the other way round: `PR gate`
 does not report until the workflow is on main. An open PR reports `PR gate` only after it merges
 main. Keep `lint` required throughout so the enforced set is never empty.
+
+## 6. Toolchain cache (hk 3559, decision 2026-11-08)
+
+Every job that installs Python calls `./.github/actions/setup-python-uv`; the Node job calls
+`./.github/actions/setup-node-cached`. The exact versions are pinned once, in the `inputs` defaults of
+those two `action.yml` files: Python `3.13.18` and uv `0.13.7` in `setup-python-uv`, Node `22.23.4` in
+`setup-node-cached`. Each toolchain directory is restored from `actions/cache` before its setup action, keyed
+by runner OS, arch and the exact version, and a miss retries the setup up to three times. To bump a version,
+change that one default, then check that `tests/ci/test_toolchain_cache_contract.py` still passes (the Python
+matrix minor must match the pin). Pin every external `uses:` to a full commit SHA with the tag as a comment,
+and keep one SHA per action across the repo. The cache-hit proof is the `Cache restored from key:` line plus
+the setup action finding the version in the tool cache, read from a `lint` job log.
