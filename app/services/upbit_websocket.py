@@ -91,7 +91,14 @@ class UpbitMyOrderWebSocket:
                 break
             except Exception as e:
                 self.current_attempt += 1
-                logger.error(
+                # Only the attempt that exhausts the budget is an error; earlier
+                # attempts are expected reconnects and surface as WARNING.
+                log_reconnect_failure = (
+                    logger.error
+                    if self.current_attempt >= self.max_reconnect_attempts
+                    else logger.warning
+                )
+                log_reconnect_failure(
                     f"WebSocket 연결 실패 (시도 {self.current_attempt}/{self.max_reconnect_attempts}): {e}"
                 )
 
