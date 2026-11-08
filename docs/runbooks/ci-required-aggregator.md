@@ -190,32 +190,51 @@ Docker, one concurrent job per runner, and no other workload that binds ports 54
 A main commit whose push run a newer push cancelled has no watched result. When main is red,
 mergewake's bisect needs a result for each commit it reads, so it dispatches
 `.github/workflows/test-any-ref.yml` for that commit (`policy.any_ref_workflow` in
-`.mergewake/policy.yaml`). The workflow:
+`.mergewake/policy.yaml`). Two workflows and one artifact do the work:
 
-1. `validate` (first job, first steps): the input `ref` must be exactly 40 hex characters, and
-   `compare/main...<ref>` must report `behind` or `identical`. Anything else stops the run before a
-   checkout, so nothing is posted for a commit off main's history.
-2. `suite` calls `test.yml` with `ref`. Every checkout in `test.yml` reads `inputs.ref`, so the
-   jobs are the push run's jobs on that exact commit. Their names become `suite / <job>`, and
-   `if:` conditions are unchanged, so a dispatch runs what a push to main runs. Secrets are inherited.
-3. `post-status` (after `suite`, whatever its result) judges each watched check by its job
-   (`suite / lint`, `suite / taskiq-smoke`, `suite / test (3.13, N)`): one completed job with
-   conclusion `success` is green, anything else is red. It posts one commit status per watched
-   name (`lint`, `taskiq-smoke`, `test (3.13, 1..4)`) on the commit. The helper is
-   `.github/scripts/any_ref_statuses.py`, run from the default-branch checkout.
+1. **`test-any-ref.yml`** (`Test (any ref)`, `workflow_dispatch`, input `ref` only):
+   - `validate` (first job, first steps): `ref` must be exactly 40 hex characters, and
+     `compare/main...<ref>` must report `behind` or `identical`. Anything else stops the run before
+     a checkout.
+   - `suite` calls `test.yml` with `ref`. Every checkout in `test.yml` reads `inputs.ref`, so the
+     jobs are the push run's jobs on that exact commit. Their names become `suite / <job>`; `if:`
+     conditions are unchanged. Secrets are inherited.
+   - `record` (after `validate`): uploads the artifact `any-ref-target` with `sha.txt` (the commit)
+     and `expected-checks.txt` (the watched names this run must have published). It holds no
+     statuses permission.
+2. **`post-any-ref-status.yml`** (`Post any-ref statuses`, `workflow_run` of `Test (any ref)`,
+   completed): this is the only file that can post statuses (`statuses: write` on its `post` job).
+   - GitHub loads a `workflow_run` workflow from the **default branch**, whichever branch the
+     triggering run used. The code that holds `statuses: write` is therefore main's, and a branch
+     cannot change it.
+   - It posts only when the triggering run was a `workflow_dispatch` with `head_branch == main`, from
+     this repository. A dispatch from any other branch runs that branch's files, and its
+     `head_branch` is that branch, so it is skipped.
+   - It checks out the default branch by name, downloads `any-ref-target`, refuses a non-SHA, and
+     refuses if the recorded check names differ from the names it publishes. Then
+     `.github/scripts/any_ref_statuses.py` judges each watched check by its job (`suite / lint`,
+     `suite / taskiq-smoke`, `suite / test (3.13, N)`): one completed job with conclusion `success` is
+     green, anything else red, and it posts one commit status per name on the commit.
 
-What the any-ref run does **not** do, by design:
+Why the split: before hk 3487's review, the statuses were posted by a job in the dispatched file. A
+dispatch from a branch runs that branch's files, so such a job could be given `statuses: write` by
+the branch and post green statuses on a main ancestor. Now no branch-run workflow holds
+`statuses: write`; the only place that can is a default-branch workflow that refuses every run not
+dispatched from main.
 
-- It posts no image, no `deploy-ok`, no `ci-ok`, and its name is not `Test`. `deploy.yml` builds
-  only on a `Test` `workflow_run` whose event is `push`, and `scripts/deploy_ci_gate.py` reads only
-  `Test` runs, so neither can take this run as evidence. A called workflow does not create a `Test`
-  run of its own; after the first dispatch, confirm it (`gh api repos/<repo>/actions/workflows/test.yml/runs?head_sha=<sha>`
-  lists only the runs that existed before the dispatch).
-- Its status job is the only job that can write statuses, and its name is not a watched check.
-  mergewake reads a same-name check run and status as ambiguous when their decisive verdicts
-  disagree; here the watched names are only statuses, and the called jobs are `suite / <name>`.
+What the any-ref path does **not** do, by design:
+
+- It posts no image, no `deploy-ok`, no `ci-ok`, and neither workflow is named `Test`. `deploy.yml`
+  builds only on a `Test` `workflow_run` whose event is `push`, and `scripts/deploy_ci_gate.py` reads
+  only `Test` runs. A called workflow does not create a `Test` run of its own; after the first
+  dispatch, confirm it (`gh api repos/<repo>/actions/workflows/test.yml/runs?head_sha=<sha>` lists only
+  the runs that existed before the dispatch).
+- The poster's job name is not a watched check, so a same-name check run and status cannot be read as
+  ambiguous. The called jobs appear as `suite / <name>`.
 - A cancelled watched check plus a `success`/`failure` status of the same name reads as that status
   (`internal/github/client.go` `foldChecks`), so a status beats the cancelled push run's check.
+- If the validation did not pass, nothing is recorded and nothing is posted. Mergewake then holds the
+  commit as unknown, which is the safe outcome.
 
 Known limit: the called `test.yml` is the **default branch's** definition, while the code under test
 is the commit's. For a commit whose own `test.yml` differed, the job definitions are main's. The
@@ -228,11 +247,13 @@ SHA=$(git ls-remote origin refs/heads/main | cut -f1)   # or a commit you have c
 gh workflow run test-any-ref.yml -f ref="$SHA"
 RUN=$(gh run list --workflow test-any-ref.yml --limit 1 --json databaseId -q '.[0].databaseId')
 gh run watch "$RUN" --exit-status
+POST=$(gh run list --workflow post-any-ref-status.yml --limit 1 --json databaseId -q '.[0].databaseId')
+gh run watch "$POST" --exit-status
 gh api "repos/mgh3326/auto_trader/commits/$SHA/statuses" --jq '.[] | "\(.context) \(.state)"' | sort -u
 ```
 
-Expect `lint`, `taskiq-smoke` and the four `test (3.13, N)` statuses, all `success`. A run that
-fails `validate` posts nothing; a run whose `suite` job fails posts `failure` for that job only.
+Expect `lint`, `taskiq-smoke` and the four `test (3.13, N)` statuses, all `success`. A run that fails
+`validate` records nothing and posts nothing; a run whose `suite` job fails posts `failure` for that job.
 
 ## 1. What runs where
 
@@ -471,8 +492,10 @@ every check named in `.mergewake/policy.yaml` is one the workflow displays; it e
 workflow expressions with `tests/ci/gh_expr.py`. `tests/ci/test_required_aggregator.py` holds
 the gate's truth table and the superseded rule. `tests/ci/test_any_ref_workflow_contract.py` (hk 3487)
 pins the literal `cancel-in-progress`, the groups per event kind, the ref validation that runs before
-any checkout (run under bash), the status job's name and its watched names, that only the status job
-writes statuses, and that the any-ref run posts no image or deploy-ok. `tests/ci/test_deploy_gate_workflow.py` pins
+any checkout (run under bash), the record's watched names against the poster's, that no branch-run
+workflow holds `statuses: write` and that only `post-any-ref-status.yml`'s `post` job does, that its
+`workflow_run` gate passes only a dispatch from `main` (evaluated with `gh_expr`), its default-branch
+checkout, and that the any-ref path posts no image or deploy-ok. `tests/ci/test_deploy_gate_workflow.py` pins
 that `deploy.yml` skips a cancelled `Test` run. `tests/ci/test_deploy_tier_workflow_contract.py`
 pins `ci-ok` (its `needs`, its `if:` and its step run as shell) and the deploy tier's wiring (called only
 after a successful main-push `Test`, on the pushed digest, never cancelled, never pushes, `deploy-ok` judged over

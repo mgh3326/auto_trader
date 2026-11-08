@@ -1,20 +1,23 @@
 """hk 3487 — static and behavioural contract for the any-ref CI.
 
-mergewake dispatches `.github/workflows/test-any-ref.yml` for one bisect commit
-whose push run GitHub cancelled, and reads the commit statuses it posts. These
-tests pin what must stay true so that path can be trusted:
+mergewake dispatches `.github/workflows/test-any-ref.yml` for one bisect commit whose
+push run was cancelled, and reads the commit statuses it gets. These tests pin what
+must stay true so that path can be trusted:
 
-1. `test.yml` cancels with the literal true, and its concurrency groups keep a
-   dispatch out of every push's group (what cancels what, per event kind).
-2. The any-ref run validates its ref before any checkout, and only then calls
-   `test.yml` for that exact commit (every checkout there reads `inputs.ref`).
-3. Each watched check is posted as a commit status by a job whose name is not a
-   watched check, and the policy names the workflow file, which exists.
-4. The any-ref workflow posts nothing else (no image, no deploy-ok, no ci-ok), and
-   only its status job can write statuses.
+1. `test.yml` cancels with the literal true, and its concurrency groups keep a dispatch
+   out of every push's group (what cancels what, per event kind).
+2. The any-ref run validates its ref before any checkout, then calls `test.yml` for that
+   exact commit (every checkout there reads `inputs.ref`), then records the commit and the
+   watched check names.
+3. Statuses are posted only by `post-any-ref-status.yml`, a `workflow_run` workflow that
+   GitHub loads from the default branch, and only for a dispatch from `main`. No branch-run
+   workflow holds `statuses: write`.
+4. Each watched check is posted by a job whose name is not a watched check, the policy
+   names the any-ref workflow, and that file exists.
+5. Nothing else is posted (no image, no deploy-ok, no ci-ok).
 
-Expressions are evaluated with `tests/ci/gh_expr.py`, and the validation step is run
-under bash, so the tests check behaviour rather than spelling.
+Expressions are evaluated with `tests/ci/gh_expr.py`, and the validation step is run under
+bash, so the tests check behaviour rather than spelling.
 """
 
 from __future__ import annotations
@@ -33,13 +36,15 @@ from tests.ci import gh_expr
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_WORKFLOW = REPO_ROOT / ".github/workflows/test.yml"
 ANY_REF_WORKFLOW = REPO_ROOT / ".github/workflows/test-any-ref.yml"
+POST_WORKFLOW = REPO_ROOT / ".github/workflows/post-any-ref-status.yml"
 POLICY_PATH = REPO_ROOT / ".mergewake/policy.yaml"
 HELPER_PATH = REPO_ROOT / ".github/scripts/any_ref_statuses.py"
 
-STATUS_JOB = "post-status"
+ANY_REF_NAME = "Test (any ref)"
 VALIDATE_JOB = "validate"
 SUITE_JOB = "suite"
-WATCH_ARG = re.compile(r"--watch '([^']*)'")
+RECORD_JOB = "record"
+POST_JOB = "post"
 VALID_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -54,23 +59,32 @@ def _load_helper() -> Any:
 helper = _load_helper()
 
 
-@pytest.fixture(scope="module")
-def test_wf() -> dict[str, Any]:
-    return yaml.safe_load(TEST_WORKFLOW.read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="module")
-def any_ref() -> dict[str, Any]:
-    return yaml.safe_load(ANY_REF_WORKFLOW.read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="module")
-def policy() -> dict[str, Any]:
-    return yaml.safe_load(POLICY_PATH.read_text(encoding="utf-8"))
+def _load(path: Path) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _triggers(workflow: dict[str, Any]) -> dict[str, Any]:
     return workflow.get("on", workflow.get(True))
+
+
+@pytest.fixture(scope="module")
+def test_wf() -> dict[str, Any]:
+    return _load(TEST_WORKFLOW)
+
+
+@pytest.fixture(scope="module")
+def any_ref() -> dict[str, Any]:
+    return _load(ANY_REF_WORKFLOW)
+
+
+@pytest.fixture(scope="module")
+def post() -> dict[str, Any]:
+    return _load(POST_WORKFLOW)
+
+
+@pytest.fixture(scope="module")
+def policy() -> dict[str, Any]:
+    return _load(POLICY_PATH)
 
 
 def _group(workflow: dict[str, Any], event_name: str, **github: Any) -> tuple[str, bool]:
@@ -88,6 +102,25 @@ def _checkouts(job: dict[str, Any]) -> list[dict[str, Any]]:
         for step in job.get("steps", [])
         if str(step.get("uses", "")).startswith("actions/checkout")
     ]
+
+
+def _step_run(job: dict[str, Any], marker: str) -> str:
+    return next(
+        str(step["run"])
+        for step in job["steps"]
+        if marker in str(step.get("run", ""))
+    )
+
+
+def _watched_array(run: str) -> list[str]:
+    block = re.search(r"watched=\((.*?)\n\s*\)", run, flags=re.DOTALL)
+    assert block is not None, "post step must declare its watched list in one array"
+    return re.findall(r"'([^']*)'", block.group(1))
+
+
+def _recorded_names(run: str) -> list[str]:
+    # The printf format is '%s\n'; every other single-quoted token is a check name.
+    return [name for name in re.findall(r"'([^']*)'", run) if not name.startswith("%")]
 
 
 # --------------------------------------------------------------------------
@@ -139,8 +172,14 @@ def test_a_workflow_call_from_any_ref_has_its_own_dispatch_group(
     "event_kind, kwargs",
     [
         ("push", {"ref": "refs/heads/main", "run_id": 9, "event": {}}),
-        ("pull_request", {"ref": "refs/pull/4/merge", "run_id": 9, "event": {"pull_request": {"number": 4}}}),
-        ("workflow_dispatch", {"ref": "refs/heads/main", "run_id": 9, "run_attempt": 1, "event": {}}),
+        (
+            "pull_request",
+            {"ref": "refs/pull/4/merge", "run_id": 9, "event": {"pull_request": {"number": 4}}},
+        ),
+        (
+            "workflow_dispatch",
+            {"ref": "refs/heads/main", "run_id": 9, "run_attempt": 1, "event": {}},
+        ),
     ],
 )
 def test_no_push_group_collides_with_a_dispatch_group(
@@ -174,13 +213,12 @@ def test_called_ref_defaults_to_the_event_ref(test_wf: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------
-# 2. the any-ref run: validate first, then call test.yml for that commit
+# 2. the any-ref run: validate, then call test.yml, then record
 # --------------------------------------------------------------------------
 
 
 def _validation_script(any_ref: dict[str, Any]) -> str:
-    steps = any_ref["jobs"][VALIDATE_JOB]["steps"]
-    return steps[0]["run"]
+    return any_ref["jobs"][VALIDATE_JOB]["steps"][0]["run"]
 
 
 def _run_validation(script: str, value: str) -> subprocess.CompletedProcess[str]:
@@ -219,7 +257,7 @@ def test_validation_is_the_first_step_and_runs_before_any_checkout(
 def test_every_other_job_waits_for_validation(any_ref: dict[str, Any]) -> None:
     jobs = any_ref["jobs"]
     assert jobs[SUITE_JOB]["needs"] == VALIDATE_JOB
-    assert VALIDATE_JOB in jobs[STATUS_JOB]["needs"]
+    assert jobs[RECORD_JOB]["needs"] == VALIDATE_JOB
 
 
 def test_suite_calls_test_yml_for_the_exact_ref(any_ref: dict[str, Any]) -> None:
@@ -238,7 +276,7 @@ def test_any_ref_group_is_per_ref_and_cancels(any_ref: dict[str, Any]) -> None:
 def test_any_ref_workflow_is_not_named_test(any_ref: dict[str, Any]) -> None:
     """deploy.yml's workflow_run and deploy_ci_gate.py select runs named Test."""
 
-    assert any_ref["name"] != "Test"
+    assert any_ref["name"] == ANY_REF_NAME
 
 
 def test_any_ref_input_is_the_only_dispatch_input(any_ref: dict[str, Any]) -> None:
@@ -249,52 +287,99 @@ def test_any_ref_input_is_the_only_dispatch_input(any_ref: dict[str, Any]) -> No
     assert inputs["ref"]["required"] is True
 
 
-# --------------------------------------------------------------------------
-# 3. statuses: watched names, a differently named poster, policy wiring
-# --------------------------------------------------------------------------
-
-
-def test_policy_names_the_any_ref_workflow_and_the_file_exists(
-    policy: dict[str, Any],
-) -> None:
-    assert policy["any_ref_workflow"] == "test-any-ref.yml"
-    assert (REPO_ROOT / ".github/workflows" / policy["any_ref_workflow"]).is_file()
-
-
-def test_status_job_posts_exactly_the_watched_checks(
+def test_record_job_names_the_watched_checks_it_expects_published(
     any_ref: dict[str, Any], policy: dict[str, Any]
 ) -> None:
-    run = next(
-        step["run"]
-        for step in any_ref["jobs"][STATUS_JOB]["steps"]
-        if "any_ref_statuses.py" in str(step.get("run", ""))
+    run = _step_run(any_ref["jobs"][RECORD_JOB], "expected-checks.txt")
+    assert sorted(_recorded_names(run)) == sorted(policy["watch_checks"])
+
+
+def test_record_job_uploads_the_target_record(any_ref: dict[str, Any]) -> None:
+    upload = next(
+        step
+        for step in any_ref["jobs"][RECORD_JOB]["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
     )
-    posted = WATCH_ARG.findall(run)
-    assert sorted(posted) == sorted(policy["watch_checks"])
+    assert upload["with"]["name"] == "any-ref-target"
 
 
-def test_status_job_name_is_not_a_watched_check(
-    any_ref: dict[str, Any], policy: dict[str, Any]
+# --------------------------------------------------------------------------
+# 3. the post workflow: default-branch code, main-only gate, pinned checkout
+# --------------------------------------------------------------------------
+
+
+def test_post_workflow_is_a_workflow_run_of_the_any_ref_run(post: dict[str, Any]) -> None:
+    triggers = _triggers(post)
+    assert set(triggers) == {"workflow_run"}
+    assert triggers["workflow_run"] == {"workflows": [ANY_REF_NAME], "types": ["completed"]}
+
+
+def test_post_workflow_gate_passes_only_a_dispatch_from_main(
+    post: dict[str, Any],
+) -> None:
+    expression = post["jobs"][POST_JOB]["if"]
+    base = {
+        "github": {
+            "event": {
+                "workflow_run": {
+                    "event": "workflow_dispatch",
+                    "head_branch": "main",
+                    "head_repository": {"full_name": "mgh3326/auto_trader"},
+                }
+            },
+            "repository": "mgh3326/auto_trader",
+        }
+    }
+
+    def gate(**changes: Any) -> bool:
+        context = {"github": {**base["github"]}}
+        run = dict(base["github"]["event"]["workflow_run"])
+        for key, value in changes.items():
+            run[key] = value
+        context["github"]["event"] = {"workflow_run": run}
+        return gh_expr.truthy(gh_expr.evaluate(expression, context))
+
+    assert gate() is True
+    assert gate(head_branch="feature/x") is False
+    assert gate(event="push") is False
+    assert gate(head_repository={"full_name": "someone/fork"}) is False
+
+
+def test_post_checkout_pins_the_default_branch(post: dict[str, Any]) -> None:
+    checkouts = _checkouts(post["jobs"][POST_JOB])
+    assert len(checkouts) == 1
+    assert checkouts[0]["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+
+
+def test_post_step_refuses_a_recorded_target_that_is_not_a_sha(
+    post: dict[str, Any],
+) -> None:
+    run = _step_run(post["jobs"][POST_JOB], "any-ref-target")
+    assert "40" in run and "exit 1" in run
+
+
+def test_post_watch_list_matches_policy_and_the_record(
+    post: dict[str, Any], policy: dict[str, Any], any_ref: dict[str, Any]
+) -> None:
+    run = _step_run(post["jobs"][POST_JOB], "any_ref_statuses.py")
+    watched = _watched_array(run)
+    assert sorted(watched) == sorted(policy["watch_checks"])
+    recorded = _recorded_names(_step_run(any_ref["jobs"][RECORD_JOB], "expected-checks.txt"))
+    assert sorted(watched) == sorted(recorded)
+
+
+def test_post_job_name_is_not_a_watched_check(
+    post: dict[str, Any], policy: dict[str, Any]
 ) -> None:
     """mergewake reads a same-name check run and status as ambiguous when they disagree."""
 
-    name = any_ref["jobs"][STATUS_JOB]["name"]
+    name = post["jobs"][POST_JOB]["name"]
     assert name not in policy["watch_checks"]
     assert not any(name.endswith(" / " + watched) for watched in policy["watch_checks"])
 
 
-def test_each_watched_check_is_judged_from_the_suite_job(
-    policy: dict[str, Any],
-) -> None:
-    """The suite jobs appear as `suite / <check>`; the helper matches that form."""
-
-    jobs = [
-        {"name": f"suite / {name}", "status": "completed", "conclusion": "success"}
-        for name in policy["watch_checks"]
-    ]
-    plan = helper.verdicts(jobs, policy["watch_checks"])
-    assert set(plan) == set(policy["watch_checks"])
-    assert all(state == "success" for state, _ in plan.values())
+def test_post_workflow_is_not_named_test(post: dict[str, Any]) -> None:
+    assert post["name"] != "Test"
 
 
 @pytest.mark.parametrize(
@@ -304,6 +389,18 @@ def test_each_watched_check_is_judged_from_the_suite_job(
 def test_a_watched_job_is_green_only_on_success(conclusion: str, state: str) -> None:
     jobs = [{"name": "suite / lint", "status": "completed", "conclusion": conclusion}]
     assert helper.verdicts(jobs, ["lint"])["lint"][0] == state
+
+
+def test_each_watched_check_is_judged_from_the_suite_job(policy: dict[str, Any]) -> None:
+    """The suite jobs appear as `suite / <check>`; the helper matches that form."""
+
+    jobs = [
+        {"name": f"suite / {name}", "status": "completed", "conclusion": "success"}
+        for name in policy["watch_checks"]
+    ]
+    plan = helper.verdicts(jobs, policy["watch_checks"])
+    assert set(plan) == set(policy["watch_checks"])
+    assert all(state == "success" for state, _ in plan.values())
 
 
 def test_a_missing_or_duplicated_watched_job_is_never_green() -> None:
@@ -337,36 +434,53 @@ def test_status_description_stays_within_the_github_limit() -> None:
     assert len(helper.description("test (3.13, 4)", "x" * 500)) <= 140
 
 
-def test_post_status_job_is_the_guarded_status_job(any_ref: dict[str, Any]) -> None:
-    job = any_ref["jobs"][STATUS_JOB]
-    assert job["if"] == "${{ always() && needs.validate.result == 'success' }}"
-
-
 # --------------------------------------------------------------------------
-# 4. nothing else is posted; only the status job writes statuses
+# 4. the policy, and the rest of what each file may do
 # --------------------------------------------------------------------------
 
 
-def test_top_level_permissions_are_read_only(any_ref: dict[str, Any]) -> None:
+def test_policy_names_the_any_ref_workflow_and_the_file_exists(
+    policy: dict[str, Any],
+) -> None:
+    assert policy["any_ref_workflow"] == "test-any-ref.yml"
+    assert (REPO_ROOT / ".github/workflows" / policy["any_ref_workflow"]).is_file()
+
+
+def test_top_level_permissions_are_read_only(
+    any_ref: dict[str, Any], post: dict[str, Any]
+) -> None:
     assert any_ref["permissions"] == {"contents": "read"}
+    assert post["permissions"] == {"contents": "read"}
 
 
-def test_only_the_status_job_can_write_statuses(any_ref: dict[str, Any]) -> None:
-    writers = {
+def test_no_branch_run_workflow_can_write_statuses(any_ref: dict[str, Any]) -> None:
+    """A dispatch from any branch runs this file, so it must not be able to post."""
+
+    writers = [
         job_id
         for job_id, job in any_ref["jobs"].items()
         if str((job.get("permissions") or {}).get("statuses", "")) == "write"
+    ]
+    assert writers == []
+
+
+def test_only_the_post_job_can_write_statuses(post: dict[str, Any]) -> None:
+    writers = {
+        job_id
+        for job_id, job in post["jobs"].items()
+        if str((job.get("permissions") or {}).get("statuses", "")) == "write"
     }
-    assert writers == {STATUS_JOB}
+    assert writers == {POST_JOB}
 
 
 def test_any_ref_workflow_has_no_image_or_deploy_step(any_ref: dict[str, Any]) -> None:
+    allowed = ("actions/checkout", "actions/upload-artifact", "./.github/workflows/test.yml")
     for job_id, job in any_ref["jobs"].items():
         uses = [str(step["uses"]) for step in job.get("steps", []) if "uses" in step]
         if "uses" in job:
             uses.append(str(job["uses"]))
         for value in uses:
-            assert value.startswith(("actions/checkout", "./.github/workflows/test.yml")), (job_id, value)
+            assert value.startswith(allowed), (job_id, value)
         runs = " ".join(str(step.get("run", "")) for step in job.get("steps", []))
         for forbidden in ("docker", "ghcr", "deploy-ok", "deploy-partial", "ci-ok", "deploy.yml"):
             assert forbidden not in runs, (job_id, forbidden)

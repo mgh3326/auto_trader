@@ -1,0 +1,91 @@
+name: Post any-ref statuses
+
+# hk 3487: posts the watched checks of a `Test (any ref)` run as commit statuses, for
+# mergewake's bisect (policy.any_ref_workflow). The point of this file is where it runs.
+#
+# A workflow_run workflow is loaded from the DEFAULT branch, whichever branch the
+# triggering run used, so a branch cannot change the code below or the permission it
+# is given. Only that code can hold `statuses: write`, and it is not given to the
+# any-ref run, whose files a branch controls.
+#
+# Only a run dispatched from main is posted: the triggering run's event must be
+# workflow_dispatch and its head_branch main, from this repository. A dispatch from any
+# other branch runs that branch's files, and its head_branch is that branch.
+
+on:
+  workflow_run:
+    workflows: ["Test (any ref)"]
+    types: [completed]
+
+# Top level grants read only. The post job alone adds statuses: write.
+permissions:
+  contents: read
+
+jobs:
+  post:
+    name: post any-ref statuses
+    if: >-
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      statuses: write
+    steps:
+      # The default branch, pinned by name, never the triggering run's ref. The helper
+      # is trusted code and runs from here.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Post each watched check as a status on the recorded commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/any-ref-target"
+          if ! gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"; then
+            echo "run $RUN_ID recorded no target (its validation did not pass); nothing to post"
+            exit 0
+          fi
+
+          sha="$(cat "$dir/sha.txt")"
+          if [[ ! "$sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "the recorded target is not an exact 40-hex SHA"
+            exit 1
+          fi
+
+          # The names this workflow publishes, written once here. The run's record
+          # must name the same ones, so a policy change cannot silently drop a check.
+          watched=(
+            'lint'
+            'taskiq-smoke'
+            'test (3.13, 1)'
+            'test (3.13, 2)'
+            'test (3.13, 3)'
+            'test (3.13, 4)'
+          )
+          published="$(printf '%s\n' "${watched[@]}" | sort)"
+          recorded="$(sort "$dir/expected-checks.txt")"
+          if [ "$published" != "$recorded" ]; then
+            echo "the recorded check names differ from the names this workflow publishes"
+            exit 1
+          fi
+
+          args=()
+          for name in "${watched[@]}"; do args+=(--watch "$name"); done
+          python3 .github/scripts/any_ref_statuses.py \
+            --repo "$REPO" \
+            --sha "$sha" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --target-url "$RUN_URL" \
+            "${args[@]}"

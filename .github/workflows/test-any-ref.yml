@@ -2,13 +2,18 @@ name: Test (any ref)
 
 # hk 3487: the any-ref CI that mergewake dispatches (policy.any_ref_workflow) for a
 # bisect commit whose push run GitHub cancelled. It runs test.yml, called with that
-# exact commit, so the jobs are the push run's jobs; then it posts each watched check
-# as a commit status named like that check (see .github/scripts/any_ref_statuses.py).
+# exact commit, so the jobs are the push run's jobs. It records the commit and the
+# watched check names as an artifact. post-any-ref-status.yml, which runs from the
+# DEFAULT branch, reads that artifact and posts the commit statuses.
 #
-# It posts nothing else: no image, no deploy-ok, no ci-ok. It is not named `Test`,
-# so deploy.yml's workflow_run (workflows: ["Test"]) and scripts/deploy_ci_gate.py
-# (Test runs by file) do not see it. A called workflow creates no run of its own;
-# docs/runbooks/ci-required-aggregator.md §any-ref checks that after a dispatch.
+# This workflow holds no statuses permission. Whatever branch dispatches it, the code
+# here is that branch's, so it cannot post statuses. Posting is isolated in
+# post-any-ref-status.yml, which GitHub runs from the default branch and which posts
+# only for a dispatch from main (see that file).
+#
+# It is not named `Test`, so deploy.yml's workflow_run (workflows: ["Test"]) and
+# scripts/deploy_ci_gate.py (Test runs by file) do not see it. A called workflow
+# creates no run of its own; docs/runbooks/ci-required-aggregator.md §any-ref checks that.
 
 on:
   workflow_dispatch:
@@ -18,7 +23,6 @@ on:
         required: true
         type: string
 
-# Top level grants read only. The status job alone adds statuses: write.
 permissions:
   contents: read
 
@@ -73,43 +77,37 @@ jobs:
       ref: ${{ inputs.ref }}
     secrets: inherit
 
-  # Runs after the suite whatever its result, so a cancelled or failed watched job
-  # is posted as failure rather than left without a status. Its name is not a
-  # watched check, and it is the only job with statuses: write.
-  post-status:
-    name: post any-ref statuses
-    needs: [validate, suite]
+  # Runs after the suite whatever its result. It writes what post-any-ref-status.yml
+  # needs: the commit, and the watched check names it must publish. It is not a
+  # watched check, and it posts nothing.
+  record:
+    name: record any-ref target
+    needs: validate
     if: ${{ always() && needs.validate.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
-      actions: read
       contents: read
-      statuses: write
     steps:
-      # The default branch, never the tested commit: the helper is trusted code.
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-
-      - name: Post each watched check as a status on the commit
+      - name: Write the commit and the expected check names
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           TARGET_SHA: ${{ inputs.ref }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          python3 .github/scripts/any_ref_statuses.py \
-            --repo "$REPO" \
-            --sha "$TARGET_SHA" \
-            --run-id "$RUN_ID" \
-            --run-attempt "$RUN_ATTEMPT" \
-            --target-url "$TARGET_URL" \
-            --watch 'lint' \
-            --watch 'taskiq-smoke' \
-            --watch 'test (3.13, 1)' \
-            --watch 'test (3.13, 2)' \
-            --watch 'test (3.13, 3)' \
-            --watch 'test (3.13, 4)'
+          mkdir -p any-ref-target
+          printf '%s\n' "$TARGET_SHA" > any-ref-target/sha.txt
+          printf '%s\n' \
+            'lint' \
+            'taskiq-smoke' \
+            'test (3.13, 1)' \
+            'test (3.13, 2)' \
+            'test (3.13, 3)' \
+            'test (3.13, 4)' > any-ref-target/expected-checks.txt
+          cat any-ref-target/sha.txt any-ref-target/expected-checks.txt
+
+      - name: Upload the target record
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: any-ref-target
+          path: any-ref-target/
+          if-no-files-found: error
+          retention-days: 7
