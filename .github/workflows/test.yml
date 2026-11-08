@@ -370,7 +370,10 @@ jobs:
         path: .artifacts/socket-guard/summary-shard${{ matrix.group }}.json
         if-no-files-found: error
 
+    # hk 3487: a called ref (the any-ref run) is not uploaded. The action attributes coverage to
+    # the workflow's commit, which for a dispatch is main's head, not the commit under test.
     - name: Upload coverage reports to Codecov
+      if: ${{ !inputs.ref }}
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
       with:
         token: ${{ secrets.CODECOV_TOKEN }}

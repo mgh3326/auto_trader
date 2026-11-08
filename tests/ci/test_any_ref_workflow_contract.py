@@ -414,14 +414,27 @@ def test_post_checkout_pins_the_default_branch(post: dict[str, Any]) -> None:
 
 
 def _run_resolve(
-    tmp_path: Path, post: dict[str, Any], sha: str
+    tmp_path: Path,
+    post: dict[str, Any],
+    sha: str,
+    validate: str = "success",
+    download_ok: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run the resolve step with a stub `gh download` that writes `sha` as the record."""
+    """Run the resolve step against a stub `gh`.
+
+    The stub answers the triggering run's jobs query with `validate` (the validate job's
+    conclusion, or "none" when absent) and answers the artifact download with `sha` when
+    `download_ok`, else fails the way a missing or unreadable artifact does.
+    """
     stub = tmp_path / "bin"
     stub.mkdir()
     gh = stub / "gh"
     gh.write_text(
-        '#!/bin/bash\nmkdir -p "$9"\nprintf \'%s\\n\' "$FAKE_SHA" > "$9/sha.txt"\n',
+        "#!/bin/bash\n"
+        'if [ "$1" = api ]; then printf \'%s\' "$FAKE_VALIDATE"; exit 0; fi\n'
+        'if [ "$FAKE_DOWNLOAD_OK" != 1 ]; then exit 1; fi\n'
+        'mkdir -p "$9"\n'
+        'printf \'%s\\n\' "$FAKE_SHA" > "$9/sha.txt"\n',
         encoding="utf-8",
     )
     gh.chmod(0o755)
@@ -435,9 +448,12 @@ def _run_resolve(
         env={
             "PATH": f"{stub}:/usr/bin:/bin",
             "FAKE_SHA": sha,
+            "FAKE_VALIDATE": validate,
+            "FAKE_DOWNLOAD_OK": "1" if download_ok else "0",
             "RUNNER_TEMP": str(runner_temp),
             "GITHUB_OUTPUT": str(output),
             "RUN_ID": "1",
+            "RUN_ATTEMPT": "1",
             "REPO": "mgh3326/auto_trader",
             "GH_TOKEN": "x",
         },
@@ -447,14 +463,42 @@ def _run_resolve(
     )
 
 
+def _outputs(tmp_path: Path) -> str:
+    return (tmp_path / "github_output").read_text(encoding="utf-8")
+
+
 def test_resolve_accepts_a_recorded_sha_and_publishes_it(
     post: dict[str, Any], tmp_path: Path
 ) -> None:
     result = _run_resolve(tmp_path, post, VALID_SHA)
     assert result.returncode == 0, result.stderr
-    assert f"sha={VALID_SHA}" in (tmp_path / "github_output").read_text(
-        encoding="utf-8"
+    assert f"sha={VALID_SHA}" in _outputs(tmp_path)
+    assert "has_target=true" in _outputs(tmp_path)
+
+
+@pytest.mark.parametrize("validate", ["failure", "cancelled", "skipped", "none"])
+def test_a_run_whose_validation_did_not_pass_posts_nothing_quietly(
+    post: dict[str, Any], tmp_path: Path, validate: str
+) -> None:
+    """No target was recorded because validation did not pass: a successful no-op."""
+
+    result = _run_resolve(
+        tmp_path, post, VALID_SHA, validate=validate, download_ok=False
     )
+    assert result.returncode == 0, result.stderr
+    assert "has_target=false" in _outputs(tmp_path)
+
+
+def test_a_passed_validation_whose_target_cannot_be_read_fails(
+    post: dict[str, Any], tmp_path: Path
+) -> None:
+    """A retrieval error after a passed validation is a failure, so the run can be retried."""
+
+    result = _run_resolve(
+        tmp_path, post, VALID_SHA, validate="success", download_ok=False
+    )
+    assert result.returncode != 0
+    assert "has_target" not in _outputs(tmp_path)
 
 
 @pytest.mark.parametrize("sha", ["main", "abc", "g" * 40, "0" * 39])
@@ -463,7 +507,7 @@ def test_resolve_refuses_a_recorded_value_that_is_not_a_sha(
 ) -> None:
     result = _run_resolve(tmp_path, post, sha)
     assert result.returncode != 0
-    assert "sha=" not in (tmp_path / "github_output").read_text(encoding="utf-8")
+    assert "sha=" not in _outputs(tmp_path)
 
 
 def test_resolve_holds_no_statuses_permission(post: dict[str, Any]) -> None:
@@ -710,3 +754,18 @@ def test_pull_request_refuses_a_called_ref(test_wf: dict[str, Any]) -> None:
     assert run("", "push") == 0
     assert run(VALID_SHA, "workflow_dispatch") == 0
     assert run(VALID_SHA, "pull_request") != 0
+
+
+def test_coverage_upload_is_skipped_for_a_called_ref() -> None:
+    """The upload attributes coverage to the workflow's commit; a dispatch's is main's head."""
+
+    workflow = _load(TEST_WORKFLOW)
+    steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("codecov/codecov-action")
+    ]
+    assert steps
+    for step in steps:
+        assert step["if"] == "${{ !inputs.ref }}"

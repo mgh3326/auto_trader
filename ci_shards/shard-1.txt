@@ -11,6 +11,7 @@ tests/brokers/kis/mock_scalping_exec/test_pre_send_freshness.py
 tests/brokers/kis/mock_scalping_ws/test_market_stream.py
 tests/brokers/kis/mock_scalping_ws/test_smoke_cli.py
 tests/brokers/kis/test_client_facade.py
+tests/ci/test_any_ref_workflow_contract.py
 tests/ci/test_change_classifier.py
 tests/ci/test_toolchain_cache_contract.py
 tests/core/test_cli.py

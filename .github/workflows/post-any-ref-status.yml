@@ -46,13 +46,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -euo pipefail
-          dir="$RUNNER_TEMP/any-ref-target"
-          if ! gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"; then
-            echo "run $RUN_ID recorded no target (its validation did not pass); nothing to post"
+          # The triggering run's own validation decides whether a target exists. A failed or
+          # absent validation records nothing, so there is nothing to post. A passed validation
+          # must have recorded one: if it cannot be read, fail (retry) rather than post nothing.
+          validate="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
+            --jq '[.jobs[] | select(.name == "validate ref")][0].conclusion // "none"')"
+          if [ "$validate" != "success" ]; then
+            echo "run $RUN_ID: validate ref was $validate; it recorded no target; nothing to post"
             echo "has_target=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          dir="$RUNNER_TEMP/any-ref-target"
+          if ! gh run download "$RUN_ID" --repo "$REPO" --name any-ref-target --dir "$dir"; then
+            echo "run $RUN_ID passed validation but its any-ref-target could not be read; retry the run" >&2
+            exit 1
           fi
           sha="$(cat "$dir/sha.txt")"
           if [[ ! "$sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
