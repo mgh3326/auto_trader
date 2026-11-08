@@ -140,6 +140,25 @@ async def test_financials_yfinance_data_payload_is_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_quarterly_financials_do_not_fall_back_to_annual_data(
+    stub_yfinance, monkeypatch
+):
+    class FakeTicker:
+        income_stmt = pd.DataFrame({pd.Timestamp("2025-12-31"): {"Total Revenue": 42}})
+
+    monkeypatch.setattr(
+        yfinance_sources.yf, "Ticker", lambda *args, **kwargs: FakeTicker()
+    )
+
+    result = await _financials.handle_get_financials(
+        "AAPL", market="us", freq="quarterly"
+    )
+
+    assert result["error"]
+    assert "data_state" not in result
+
+
+@pytest.mark.asyncio
 async def test_empty_financial_statement_is_normal_missing_result(stub_yfinance):
     result = await _financials.handle_get_financials("QQQM", market="us")
     assert result["success"] is True
@@ -187,6 +206,31 @@ async def test_valuation_quote_summary_404_is_normal_missing_result(
 
 
 @pytest.mark.asyncio
+async def test_empty_valuation_info_is_not_classified_as_missing(
+    monkeypatch, allow_external_providers
+):
+    class FakeTicker:
+        info = {}
+
+    monkeypatch.setattr(
+        yfinance_sources.yf, "Ticker", lambda *args, **kwargs: FakeTicker()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "build_yfinance_tracing_session", lambda: object()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "close_yfinance_session", lambda _session: None
+    )
+    monkeypatch.setattr(yfinance_sources.asyncio, "to_thread", _run_sync)
+
+    result = await _valuation.handle_get_valuation("VOO", market="us")
+
+    assert "data_state" not in result
+    assert result["symbol"] == "VOO"
+    assert result["current_price"] is None
+
+
+@pytest.mark.asyncio
 async def test_analyst_quote_summary_404_is_normal_missing_result(
     monkeypatch, allow_external_providers
 ):
@@ -225,3 +269,84 @@ async def test_analyst_quote_summary_404_is_normal_missing_result(
     assert result["success"] is True
     assert result["data_state"] == "missing"
     assert result["reason"] == "no_fundamentals"
+
+
+@pytest.mark.asyncio
+async def test_analyst_404_preserves_other_successful_quote_summary_data(
+    monkeypatch, allow_external_providers
+):
+    class FakeTicker:
+        analyst_price_targets = {"mean": 120, "current": 100}
+
+        @property
+        def recommendations(self):
+            return None
+
+        @property
+        def upgrades_downgrades(self):
+            return None
+
+        @property
+        def info(self):
+            raise RuntimeError(
+                "HTTP Error 404: No fundamentals data found for symbol: VOO"
+            )
+
+    monkeypatch.setattr(
+        yfinance_sources.yf, "Ticker", lambda *args, **kwargs: FakeTicker()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "build_yfinance_tracing_session", lambda: object()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "close_yfinance_session", lambda _session: None
+    )
+    monkeypatch.setattr(yfinance_sources.asyncio, "to_thread", _run_sync)
+
+    result = await _valuation.handle_get_investment_opinions("VOO", market="us")
+
+    assert "data_state" not in result
+    assert result["consensus"]["avg_target_price"] == 120
+
+
+@pytest.mark.asyncio
+async def test_screen_analyst_404_preserves_other_successful_quote_summary_data(
+    monkeypatch, allow_external_providers
+):
+    class FakeTicker:
+        @property
+        def analyst_price_targets(self):
+            raise RuntimeError(
+                "HTTP Error 404: No fundamentals data found for symbol: VOO"
+            )
+
+        @property
+        def recommendations(self):
+            return pd.DataFrame(
+                [
+                    {
+                        "period": "0m",
+                        "strongBuy": 0,
+                        "buy": 2,
+                        "hold": 1,
+                        "sell": 0,
+                        "strongSell": 0,
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(
+        yfinance_sources.yf, "Ticker", lambda *args, **kwargs: FakeTicker()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "build_yfinance_tracing_session", lambda: object()
+    )
+    monkeypatch.setattr(
+        yfinance_sources, "close_yfinance_session", lambda _session: None
+    )
+    monkeypatch.setattr(yfinance_sources.asyncio, "to_thread", _run_sync)
+
+    result = await yfinance_sources._fetch_investment_opinions_yfinance_screen("VOO")
+
+    assert "data_state" not in result
+    assert result["consensus"]["buy_count"] == 2

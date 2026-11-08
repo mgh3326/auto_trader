@@ -244,7 +244,9 @@ async def _fetch_financials_yfinance(
 
         try:
             df = getattr(ticker, freq_attr)
-        except AttributeError:
+        except AttributeError as exc:
+            if freq == "quarterly":
+                raise ValueError(f"Failed to fetch {statement} data: {exc}") from exc
             try:
                 df = getattr(ticker, yf_stmt_name)
             except Exception as exc:
@@ -328,39 +330,40 @@ async def _fetch_investment_opinions_yfinance(
             session = build_yfinance_tracing_session()
         ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict[str, Any] | None, Any, Any, dict[str, Any] | None]:
-        missing_data_error: Exception | None = None
+    def _collect() -> tuple[
+        dict[str, Any] | None, Any, Any, dict[str, Any] | None, bool
+    ]:
+        no_fundamentals = False
         targets = None
         try:
             targets = ticker.analyst_price_targets
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
-                missing_data_error = exc
+                no_fundamentals = True
 
         recommendations = None
         try:
             recommendations = ticker.recommendations
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
-                missing_data_error = exc
+                no_fundamentals = True
 
         ud = None
         try:
             ud = ticker.upgrades_downgrades
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
-                missing_data_error = exc
+                no_fundamentals = True
 
         info = None
         try:
             info = ticker.info
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
-                missing_data_error = exc
-        if missing_data_error is not None:
-            raise NoFundamentalsDataError from None
-        return targets, recommendations, ud, info
+                no_fundamentals = True
+        return targets, recommendations, ud, info, no_fundamentals
 
+    no_fundamentals = False
     # Use pre-fetched snapshot if available
     if snapshot is not None:
         targets = snapshot.analyst_price_targets
@@ -369,15 +372,24 @@ async def _fetch_investment_opinions_yfinance(
         info = snapshot.info
     else:
         try:
-            targets, trend, ud, info = await asyncio.to_thread(_collect)
-        except NoFundamentalsDataError:
-            return _missing_fundamentals_payload(
-                symbol,
-                extra={"count": 0, "opinions": [], "consensus": None},
+            targets, trend, ud, info, no_fundamentals = await asyncio.to_thread(
+                _collect
             )
         finally:
             if owns_session and session is not None:
                 close_yfinance_session(session)
+
+    has_source_data = (
+        _build_yahoo_target_consensus(targets, fallback_current_price=None) is not None
+        or _build_yahoo_count_consensus(trend) is not None
+        or (isinstance(ud, pd.DataFrame) and not ud.empty)
+        or bool(info)
+    )
+    if no_fundamentals and not has_source_data:
+        return _missing_fundamentals_payload(
+            symbol,
+            extra={"count": 0, "opinions": [], "consensus": None},
+        )
 
     current_price = _normalize_yahoo_numeric((info or {}).get("currentPrice"))
     opinions: list[dict[str, Any]] = []
@@ -455,36 +467,39 @@ async def _fetch_investment_opinions_yfinance_screen(
         session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict[str, Any] | None, Any]:
-        missing_data_error: Exception | None = None
+    def _collect() -> tuple[dict[str, Any] | None, Any, bool]:
+        no_fundamentals = False
         targets = None
         try:
             targets = ticker.analyst_price_targets
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
-                missing_data_error = exc
+                no_fundamentals = True
 
         recommendations = None
         try:
             recommendations = ticker.recommendations
         except Exception as exc:
             if _is_no_fundamentals_error(exc):
-                missing_data_error = exc
+                no_fundamentals = True
 
-        if missing_data_error is not None:
-            raise NoFundamentalsDataError from None
-        return targets, recommendations
+        return targets, recommendations, no_fundamentals
 
     try:
-        targets, trend = await asyncio.to_thread(_collect)
-    except NoFundamentalsDataError:
+        targets, trend, no_fundamentals = await asyncio.to_thread(_collect)
+    finally:
+        if owns_session:
+            close_yfinance_session(session)
+
+    has_source_data = (
+        _build_yahoo_target_consensus(targets, fallback_current_price=None) is not None
+        or _build_yahoo_count_consensus(trend) is not None
+    )
+    if no_fundamentals and not has_source_data:
         return _missing_fundamentals_payload(
             symbol,
             extra={"count": 0, "opinions": [], "consensus": None},
         )
-    finally:
-        if owns_session:
-            close_yfinance_session(session)
 
     target_consensus = _build_yahoo_target_consensus(
         targets,
@@ -544,9 +559,6 @@ async def _fetch_valuation_yfinance(
         finally:
             if owns_session:
                 close_yfinance_session(session)
-
-    if not info:
-        return _missing_fundamentals_payload(symbol)
 
     current_price = info.get("currentPrice")
     high_52w = info.get("fiftyTwoWeekHigh")
