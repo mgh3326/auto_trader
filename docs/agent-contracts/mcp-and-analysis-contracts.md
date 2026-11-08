@@ -108,6 +108,20 @@ hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에�
 KIS_MOCK_ENABLED 및 기존 필수 설정 게이트, dry_run 기본 true와 쓰기 confirm
 true를 유지한다.
 
+### Fundamentals provider availability
+
+`get_financials`, `get_valuation`, and US `get_investment_opinions` treat a Yahoo Finance
+quoteSummary response as missing fundamentals only when it is HTTP 404 and explicitly says
+`No fundamentals data found`, or when the financial statement result is empty. These cases
+return `success=true`, `data_state="missing"`, and `reason="no_fundamentals"` with the
+symbol and `source="yfinance"`. Other HTTP statuses, timeouts, malformed responses, and
+404s without that provider message remain errors; a failed fetch must not be represented as
+missing data. When such an error hits one opinion sub-request while another sub-request
+still returns usable data, the response keeps that data and lists the failed sub-request in
+`partial_errors` (`field` and `error_class` only, no provider message), so the gap is not
+silent. Only when no usable data remains is the error raised. US company profiles continue
+to use Finnhub.
+
 ### Runtime LLM ownership boundary
 
 auto_trader runtime code must not import or instantiate in-process LLM providers
