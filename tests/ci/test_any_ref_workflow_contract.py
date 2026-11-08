@@ -87,7 +87,9 @@ def policy() -> dict[str, Any]:
     return _load(POLICY_PATH)
 
 
-def _group(workflow: dict[str, Any], event_name: str, **github: Any) -> tuple[str, bool]:
+def _group(
+    workflow: dict[str, Any], event_name: str, **github: Any
+) -> tuple[str, bool]:
     block = workflow["concurrency"]
     context = {"github": {"workflow": "Test", "event_name": event_name, **github}}
     return (
@@ -106,9 +108,7 @@ def _checkouts(job: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _step_run(job: dict[str, Any], marker: str) -> str:
     return next(
-        str(step["run"])
-        for step in job["steps"]
-        if marker in str(step.get("run", ""))
+        str(step["run"]) for step in job["steps"] if marker in str(step.get("run", ""))
     )
 
 
@@ -144,13 +144,28 @@ def test_a_push_group_is_per_ref(test_wf: dict[str, Any]) -> None:
 
 def test_a_dispatch_group_is_its_own_run_and_attempt(test_wf: dict[str, Any]) -> None:
     first = _group(
-        test_wf, "workflow_dispatch", ref="refs/heads/main", run_id=7, run_attempt=1, event={}
+        test_wf,
+        "workflow_dispatch",
+        ref="refs/heads/main",
+        run_id=7,
+        run_attempt=1,
+        event={},
     )
     second_run = _group(
-        test_wf, "workflow_dispatch", ref="refs/heads/main", run_id=8, run_attempt=1, event={}
+        test_wf,
+        "workflow_dispatch",
+        ref="refs/heads/main",
+        run_id=8,
+        run_attempt=1,
+        event={},
     )
     rerun = _group(
-        test_wf, "workflow_dispatch", ref="refs/heads/main", run_id=7, run_attempt=2, event={}
+        test_wf,
+        "workflow_dispatch",
+        ref="refs/heads/main",
+        run_id=7,
+        run_attempt=2,
+        event={},
     )
     assert first[0] == "Test-dispatch-7-1"
     assert len({first[0], second_run[0], rerun[0]}) == 3
@@ -162,7 +177,12 @@ def test_a_workflow_call_from_any_ref_has_its_own_dispatch_group(
     """The called run inherits event_name workflow_dispatch from test-any-ref.yml."""
 
     called = _group(
-        test_wf, "workflow_dispatch", ref="refs/heads/main", run_id=55, run_attempt=1, event={}
+        test_wf,
+        "workflow_dispatch",
+        ref="refs/heads/main",
+        run_id=55,
+        run_attempt=1,
+        event={},
     )
     push_main = _group(test_wf, "push", ref="refs/heads/main", run_id=56, event={})
     assert called[0] != push_main[0]
@@ -174,7 +194,11 @@ def test_a_workflow_call_from_any_ref_has_its_own_dispatch_group(
         ("push", {"ref": "refs/heads/main", "run_id": 9, "event": {}}),
         (
             "pull_request",
-            {"ref": "refs/pull/4/merge", "run_id": 9, "event": {"pull_request": {"number": 4}}},
+            {
+                "ref": "refs/pull/4/merge",
+                "run_id": 9,
+                "event": {"pull_request": {"number": 4}},
+            },
         ),
         (
             "workflow_dispatch",
@@ -188,7 +212,12 @@ def test_no_push_group_collides_with_a_dispatch_group(
     """A dispatch is never cancelled by a push, a PR, or another dispatch."""
 
     dispatch = _group(
-        test_wf, "workflow_dispatch", ref="refs/heads/main", run_id=100, run_attempt=1, event={}
+        test_wf,
+        "workflow_dispatch",
+        ref="refs/heads/main",
+        run_id=100,
+        run_attempt=1,
+        event={},
     )
     other = _group(test_wf, event_kind, **kwargs)
     assert other[0] != dispatch[0]
@@ -233,7 +262,15 @@ def _run_validation(script: str, value: str) -> subprocess.CompletedProcess[str]
 
 @pytest.mark.parametrize(
     "value",
-    ["", "main", "abc", VALID_SHA[:39], VALID_SHA + "0", "g" * 40, "../" + VALID_SHA[:37]],
+    [
+        "",
+        "main",
+        "abc",
+        VALID_SHA[:39],
+        VALID_SHA + "0",
+        "g" * 40,
+        "../" + VALID_SHA[:37],
+    ],
 )
 def test_ref_is_refused_unless_it_is_an_exact_40_hex_sha(
     any_ref: dict[str, Any], value: str
@@ -243,7 +280,9 @@ def test_ref_is_refused_unless_it_is_an_exact_40_hex_sha(
 
 def test_a_40_hex_sha_passes_the_format_check(any_ref: dict[str, Any]) -> None:
     assert _run_validation(_validation_script(any_ref), VALID_SHA).returncode == 0
-    assert _run_validation(_validation_script(any_ref), VALID_SHA.upper()).returncode == 0
+    assert (
+        _run_validation(_validation_script(any_ref), VALID_SHA.upper()).returncode == 0
+    )
 
 
 def test_validation_is_the_first_step_and_runs_before_any_checkout(
@@ -308,10 +347,15 @@ def test_record_job_uploads_the_target_record(any_ref: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_post_workflow_is_a_workflow_run_of_the_any_ref_run(post: dict[str, Any]) -> None:
+def test_post_workflow_is_a_workflow_run_of_the_any_ref_run(
+    post: dict[str, Any],
+) -> None:
     triggers = _triggers(post)
     assert set(triggers) == {"workflow_run"}
-    assert triggers["workflow_run"] == {"workflows": [ANY_REF_NAME], "types": ["completed"]}
+    assert triggers["workflow_run"] == {
+        "workflows": [ANY_REF_NAME],
+        "types": ["completed"],
+    }
 
 
 def test_post_workflow_gate_passes_only_a_dispatch_from_main(
@@ -348,7 +392,9 @@ def test_post_workflow_gate_passes_only_a_dispatch_from_main(
 def test_post_checkout_pins_the_default_branch(post: dict[str, Any]) -> None:
     checkouts = _checkouts(post["jobs"][POST_JOB])
     assert len(checkouts) == 1
-    assert checkouts[0]["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+    assert (
+        checkouts[0]["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+    )
 
 
 def test_post_step_refuses_a_recorded_target_that_is_not_a_sha(
@@ -364,7 +410,9 @@ def test_post_watch_list_matches_policy_and_the_record(
     run = _step_run(post["jobs"][POST_JOB], "any_ref_statuses.py")
     watched = _watched_array(run)
     assert sorted(watched) == sorted(policy["watch_checks"])
-    recorded = _recorded_names(_step_run(any_ref["jobs"][RECORD_JOB], "expected-checks.txt"))
+    recorded = _recorded_names(
+        _step_run(any_ref["jobs"][RECORD_JOB], "expected-checks.txt")
+    )
     assert sorted(watched) == sorted(recorded)
 
 
@@ -384,14 +432,21 @@ def test_post_workflow_is_not_named_test(post: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize(
     "conclusion, state",
-    [("success", "success"), ("failure", "failure"), ("cancelled", "failure"), ("skipped", "failure")],
+    [
+        ("success", "success"),
+        ("failure", "failure"),
+        ("cancelled", "failure"),
+        ("skipped", "failure"),
+    ],
 )
 def test_a_watched_job_is_green_only_on_success(conclusion: str, state: str) -> None:
     jobs = [{"name": "suite / lint", "status": "completed", "conclusion": conclusion}]
     assert helper.verdicts(jobs, ["lint"])["lint"][0] == state
 
 
-def test_each_watched_check_is_judged_from_the_suite_job(policy: dict[str, Any]) -> None:
+def test_each_watched_check_is_judged_from_the_suite_job(
+    policy: dict[str, Any],
+) -> None:
     """The suite jobs appear as `suite / <check>`; the helper matches that form."""
 
     jobs = [
@@ -424,9 +479,17 @@ def test_an_unfinished_job_is_not_green() -> None:
 
 @pytest.mark.parametrize(
     "compare_status, ancestor",
-    [("behind", True), ("identical", True), ("ahead", False), ("diverged", False), ("", False)],
+    [
+        ("behind", True),
+        ("identical", True),
+        ("ahead", False),
+        ("diverged", False),
+        ("", False),
+    ],
 )
-def test_only_commits_on_mains_history_are_posted(compare_status: str, ancestor: bool) -> None:
+def test_only_commits_on_mains_history_are_posted(
+    compare_status: str, ancestor: bool
+) -> None:
     assert helper.ancestor_of_main(compare_status) is ancestor
 
 
@@ -474,7 +537,11 @@ def test_only_the_post_job_can_write_statuses(post: dict[str, Any]) -> None:
 
 
 def test_any_ref_workflow_has_no_image_or_deploy_step(any_ref: dict[str, Any]) -> None:
-    allowed = ("actions/checkout", "actions/upload-artifact", "./.github/workflows/test.yml")
+    allowed = (
+        "actions/checkout",
+        "actions/upload-artifact",
+        "./.github/workflows/test.yml",
+    )
     for job_id, job in any_ref["jobs"].items():
         uses = [str(step["uses"]) for step in job.get("steps", []) if "uses" in step]
         if "uses" in job:
@@ -482,7 +549,14 @@ def test_any_ref_workflow_has_no_image_or_deploy_step(any_ref: dict[str, Any]) -
         for value in uses:
             assert value.startswith(allowed), (job_id, value)
         runs = " ".join(str(step.get("run", "")) for step in job.get("steps", []))
-        for forbidden in ("docker", "ghcr", "deploy-ok", "deploy-partial", "ci-ok", "deploy.yml"):
+        for forbidden in (
+            "docker",
+            "ghcr",
+            "deploy-ok",
+            "deploy-partial",
+            "ci-ok",
+            "deploy.yml",
+        ):
             assert forbidden not in runs, (job_id, forbidden)
 
 
