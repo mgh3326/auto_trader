@@ -7,6 +7,7 @@ in-process stub, so nothing here touches the network or a database.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -227,12 +228,20 @@ async def test_a_health_stays_unauthenticated_and_tools_list_is_gated() -> None:
         assert [t["name"] for t in listed.json()["result"]["tools"]] == ["probe"]
 
 
+async def _sse_status(h: Harness, headers: dict[str, str] | None = None) -> int:
+    """Status of GET /sse, or 0 if a stream opened and stayed open (auth passed)."""
+    try:
+        async with asyncio.timeout(5):
+            async with h.client.stream("GET", "/sse", headers=headers) as response:
+                return response.status_code
+    except TimeoutError:
+        return 0
+
+
 async def test_a_sse_transport_uses_the_same_decision() -> None:
     async with _harness(transport="sse") as h:
-        assert (await h.client.get("/sse")).status_code == 401
-        assert (
-            await h.client.get("/sse", headers=_access(assertion(aud="other-aud")))
-        ).status_code == 401
+        assert await _sse_status(h) == 401
+        assert await _sse_status(h, _access(assertion(aud="other-aud"))) == 401
         url = "/messages/?session_id=00000000000000000000000000000000"
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
         assert (await h.client.post(url, json=body)).status_code == 401
