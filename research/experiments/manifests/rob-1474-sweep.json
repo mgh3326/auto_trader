@@ -1,7 +1,7 @@
 {
   "manifest_format": "experiment-manifest/v1",
   "hypothesis_id": "ROB-1474-sweep",
-  "version": 4,
+  "version": 5,
   "title": "ROB-1474 multi-hypothesis sweep: seven simple rankers x five horizons x long-only/long-short, US and crypto",
   "question": "Does any simple price/volume ranker beat seeded random selection, the equal-weight eligible universe and buy-and-hold over the same dates, names, horizon and cost, in an exploration window, and does a pre-registered carry-forward set repeat in one later validation window? Candidates for a separate paper test only; no promotion or deployment claim.",
   "status": "sealed",
@@ -11,8 +11,8 @@
   ],
   "hashes": {
     "preregistration_text": "this manifest; grid, controls, windows, carry-forward rule and stopping rules below are fixed before any validation read",
-    "code_sha256": "1d17ee7c825166eedb19b36f4fa49345571467e45c0bcda9fc8de25b070823b0",
-    "supersedes_note": "v2 replaces v1 (dc2512f8...) before any validation read and before any look (k stays 0). The v1 exploration run checked only the entry and exit opens of a hold; a crypto token swap with missing sessions in between (price x1000) became a +144,000% outcome. v2 requires every session between entry and exit to exist. All v1 exploration rows stay in the trials ledger flagged superseded. v3 (before any look, k stays 0) changes only run hygiene found in review of the exploration PR: the ledger and carry files are write-once, and a US cache fetched for an earlier period is refused for a longer request (v4, same review: also a cache directory holding CSVs without a recorded request window is refused). The exploration results were produced by the v2 code (exploration_run_code_sha256) and a rerun with the v3 code reproduces every exploration cell metric exactly.",
+    "code_sha256": "b1f5023208592b323e570b3626bc44f0b6ea0ddf070b600c137e9ac60475aca9",
+    "supersedes_note": "v2 replaces v1 (dc2512f8...) before any validation read and before any look (k stays 0). The v1 exploration run checked only the entry and exit opens of a hold; a crypto token swap with missing sessions in between (price x1000) became a +144,000% outcome. v2 requires every session between entry and exit to exist. All v1 exploration rows stay in the trials ledger flagged superseded. v3 (before any look, k stays 0) changes only run hygiene found in review of the exploration PR: the ledger and carry files are write-once, and a US cache fetched for an earlier period is refused for a longer request (v4, same review: also a cache directory holding CSVs without a recorded request window is refused; v5: the version stamped on new ledger rows is read from this manifest instead of a hand-synced constant). The exploration results were produced by the v2 code (exploration_run_code_sha256) and a rerun with the v3 code reproduces every exploration cell metric exactly.",
     "exploration_run_code_sha256": "14bb4979ad969183cefba720e82b276f67ccd1512692f98e1ddfe5b84655274c",
     "code_note": "sha256 over the sorted (file name, bytes) of research/selection_sweep/*.py at registration",
     "us_name_list_sha256": "ce082e594e0ee4f96d86799a1a42f9d62150420b1dff6fe74d80ed224bc81712",

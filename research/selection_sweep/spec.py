@@ -6,11 +6,21 @@ manifest version, never an edit under an old hash.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
 
 SWEEP_ID = "ROB-1474-sweep"
-MANIFEST_VERSION = 3
+MANIFEST_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "experiments"
+    / "manifests"
+    / "rob-1474-sweep.json"
+)
+# Stamped on every new ledger row. Read from the registered manifest, never
+# hand-synced, so a rerun is attributed to the manifest version it ran under.
+MANIFEST_VERSION: int = json.loads(MANIFEST_PATH.read_text())["version"]
 MARKETS = ("us", "crypto")
 HORIZONS = (1, 3, 5, 10, 20)
 SIDES = ("long_only", "long_short")

@@ -327,3 +327,14 @@ def test_tables_check_compares_a_fresh_results_dir_with_the_committed_one(
         tables.main(["--results-dir", str(changed), "--check-against-committed"]) == 1
     )
     assert "False" in capsys.readouterr().out
+
+
+def test_runtime_version_and_code_hash_follow_the_registered_manifest():
+    import json
+
+    from research.selection_sweep import cli
+
+    manifest = json.loads(spec.MANIFEST_PATH.read_text())
+    assert spec.MANIFEST_VERSION == manifest["version"]
+    # editing the pinned modules without registering a new manifest version fails here
+    assert manifest["hashes"]["code_sha256"] == cli.code_digest()
