@@ -239,3 +239,50 @@ def test_validate_with_no_carried_cell_reads_nothing(tmp_path, monkeypatch, caps
     cli.cmd_validate(argparse.Namespace())
     assert "no validation read" in capsys.readouterr().out
     assert not (tmp_path / "validation_results.jsonl").exists()
+
+
+def test_us_cache_for_an_earlier_period_does_not_satisfy_a_longer_request(tmp_path):
+    rows = pd.DataFrame(
+        {
+            "date": pd.date_range("2023-11-01", "2023-12-29"),
+            **dict.fromkeys(data.BAR_COLUMNS, 1.0),
+        }
+    )
+    rows.to_csv(tmp_path / "AAA.csv", index=False)
+    rows.to_csv(tmp_path / "SPY.csv", index=False)
+    data.load_us(tmp_path, ["AAA"], end="2023-12-31")  # covers it
+    with pytest.raises(ValueError, match="cache ends before 2024-12-31"):
+        data.load_us(tmp_path, ["AAA"], end="2024-12-31")
+
+
+def test_fetch_us_refuses_to_mix_request_windows_in_one_cache(tmp_path):
+    class Resp:
+        status = 404
+        body = b""
+
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return Resp()
+
+    data.fetch_us(["AAA"], tmp_path, start="2019-06-03", end="2024-01-01", fetch=fake)
+    assert (tmp_path / "request.json").exists()
+    with pytest.raises(ValueError, match="different request window"):
+        data.fetch_us(
+            ["AAA"], tmp_path, start="2019-06-03", end="2025-01-01", fetch=fake
+        )
+    assert len(calls) == 2  # SPY + AAA once; the refused call fetched nothing
+
+
+def test_ledger_and_carry_files_are_write_once(tmp_path):
+    from research.selection_sweep import cli
+
+    path = tmp_path / "trials_ledger.jsonl"
+    cli._write_jsonl(path, [{"a": 1}])
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        cli._write_jsonl(path, [{"a": 2}])
+    assert path.read_text() == '{"a": 1}\n'
+    cli._write_once(tmp_path / "carry_forward.json", "x")
+    with pytest.raises(FileExistsError):
+        cli._write_once(tmp_path / "carry_forward.json", "y")

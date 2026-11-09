@@ -34,7 +34,25 @@ def code_digest() -> str:
     return h.hexdigest()
 
 
+def _results(args) -> Path:
+    given = getattr(args, "results_dir", None)
+    return Path(given) if given else RESULTS
+
+
+def _write_once(path: Path, text: str) -> None:
+    if path.exists():
+        raise FileExistsError(f"{path} exists; refusing to overwrite")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    """Write-once: an existing ledger or result file is never overwritten."""
+    if path.exists():
+        raise FileExistsError(
+            f"{path} exists; refusing to overwrite recorded trials "
+            "(reproduce with --results-dir <fresh directory>)"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows)
@@ -161,8 +179,9 @@ def cmd_explore(args) -> None:
             old["phase"] = f"superseded_{old['phase']}"
             old["manifest_version"] = args.supersede_version
             superseded.append(old)
-    _write_jsonl(RESULTS / "trials_ledger.jsonl", rows + extras + superseded)
-    (RESULTS / "carry_forward.json").write_text(
+    _write_jsonl(_results(args) / "trials_ledger.jsonl", rows + extras + superseded)
+    _write_once(
+        _results(args) / "carry_forward.json",
         json.dumps(
             {
                 "code_sha256": code_digest(),
@@ -177,16 +196,16 @@ def cmd_explore(args) -> None:
             },
             indent=1,
         )
-        + "\n"
+        + "\n",
     )
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out / "exploration_daily.npz", **daily)
-    print(f"grid={len(rows)} carried={len(carried)} -> {RESULTS}")
+    print(f"grid={len(rows)} carried={len(carried)} -> {_results(args)}")
 
 
 def cmd_validate(args) -> None:
-    carried = json.loads((RESULTS / "carry_forward.json").read_text())["carried"]
+    carried = json.loads((_results(args) / "carry_forward.json").read_text())["carried"]
     if not carried:
         print("no cell carried forward: no validation read, no test look")
         return
@@ -208,11 +227,11 @@ def cmd_validate(args) -> None:
             "note": "input coverage of the validation run, not a grid cell",
         }
     )
-    _write_jsonl(RESULTS / "validation_results.jsonl", rows)
+    _write_jsonl(_results(args) / "validation_results.jsonl", rows)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out / "validation_daily.npz", **daily)
-    print(f"validated {m} cells -> {RESULTS}")
+    print(f"validated {m} cells -> {_results(args)}")
 
 
 def main(argv=None) -> None:
@@ -232,6 +251,7 @@ def main(argv=None) -> None:
         s.add_argument("--crypto-root", required=True)
         s.add_argument("--crypto-pit", required=True)
         s.add_argument("--out-dir", required=True)
+        s.add_argument("--results-dir", help="default: the committed results directory")
         s.set_defaults(fn=fn)
         if name == "explore":
             s.add_argument("--supersede-ledger")

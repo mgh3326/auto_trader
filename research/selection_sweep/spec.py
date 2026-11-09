@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from itertools import product
 
 SWEEP_ID = "ROB-1474-sweep"
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 MARKETS = ("us", "crypto")
 HORIZONS = (1, 3, 5, 10, 20)
 SIDES = ("long_only", "long_short")

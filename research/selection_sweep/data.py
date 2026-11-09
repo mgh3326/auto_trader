@@ -19,6 +19,7 @@ import pandas as pd
 
 from . import spec
 
+COVERAGE_SLACK_DAYS = 7
 BAR_COLUMNS = ["open", "high", "low", "close", "volume", "traded_value"]
 
 
@@ -98,6 +99,16 @@ def fetch_us(
 
     fetch = fetch or make_public_fetch(timeout=20, attempts=3)
     out_dir.mkdir(parents=True, exist_ok=True)
+    request = {"start": start, "end_exclusive": end}
+    marker = out_dir / "request.json"
+    if marker.exists():
+        if json.loads(marker.read_text()) != request:
+            raise ValueError(
+                "cache already holds a different request window; "
+                "use a fresh directory for another period"
+            )
+    else:
+        marker.write_text(json.dumps(request))
     period = urlencode(
         {
             "period1": int(
@@ -162,6 +173,13 @@ def load_us(
             frames[symbol] = frame.set_index("date")[BAR_COLUMNS]
     bench = pd.read_csv(cache_dir / f"{spec.BENCHMARK['us']}.csv", parse_dates=["date"])
     bench = bench[bench.date <= stop].set_index("date")[BAR_COLUMNS]
+    # A cache fetched for an earlier period must not satisfy a longer request.
+    if bench.empty or bench.index.max() < stop - pd.Timedelta(days=COVERAGE_SLACK_DAYS):
+        last = None if bench.empty else bench.index.max().date()
+        raise ValueError(
+            f"US cache ends before {end} (benchmark last bar {last}); "
+            "fetch this period into a fresh directory"
+        )
     return (
         frames,
         bench,
