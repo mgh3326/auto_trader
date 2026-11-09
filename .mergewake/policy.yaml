@@ -31,7 +31,9 @@ blocking:
       - 'app/services/order_send_intent_service.py'
       - 'app/services/kis_trading_service.py'
       - 'app/services/nhplug_mock/**'
-    reason: Broker, order and approval code can send or alter real orders before a revert.
+      - 'app/services/mock_strategy/**'
+      - 'scripts/mock_strategy.py'
+    reason: Broker, order and approval code can send or alter real orders before a revert. The ROB-1474 mock strategy runner sends paper/demo orders and owns the one-send journal.
   - paths:
       - 'app/services/execution_ledger/**'
       - 'app/services/*ledger*.py'
