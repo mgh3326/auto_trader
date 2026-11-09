@@ -175,9 +175,8 @@ every other outcome maps to `unknown`, never inferred rejection. The manual
 reconciler now records exact-order native readback through
 `record_native_evidence`. Its guarded release path calls
 `release_with_recorded_terminal_evidence` only when the common terminal gate
-is satisfied. **No source in this implementation proves
-`account_position_reconciled`**, so the guard never permits release. Defining and
-reviewing real position proof is a separate activation precondition, hk 2690.
+is satisfied. The position proof amendment below defines what proves
+`account_position_reconciled`.
 Each event is unique on `(order_attempt_id, kind, broker_evidence_key)`; the
 broker evidence key is stored as a domain-separated digest. Same-key replay is
 a no-op only when the exact payload matches; conflicting evidence is refused.
@@ -213,15 +212,13 @@ require `dry_run=False, confirm=True, record_dispatch_evidence=True`; the last
 flag defaults to false. An unscoped holdings-only apply does not append dispatch
 evidence. An exact full fill with the explicit opt-in records a
 `terminal_reconciliation` event with `lane_native_terminal_evidence=True`,
-`remainder_known=True`, and **`account_position_reconciled=False`**. Its exact
-claim row ID is reported as `retained: position proof unavailable`. The current
-holdings baseline, holdings listing and mock order ledger are not position proof.
-The same evidence key is idempotent on repeat. No claim is released by this
-version, even on a fully terminal fill; missing ODNO is never guessed. There is
-no recovery schedule or automatic replay. Cancel, expiry, rejection and absence
-are not inferred as terminal from this reader. A future proof-backed release
-must append new complete evidence; the existing event cannot be upgraded in
-place. An empty claim result is reported as clear only after the actual mock
+`remainder_known=True`, and **`account_position_reconciled=False`**. Without a
+position proof its exact claim row ID is reported as
+`retained: position proof unavailable`. The current holdings baseline, holdings
+listing and mock order ledger are not position proof. The same evidence key is
+idempotent on repeat. Missing ODNO is never guessed. There is no recovery schedule
+or automatic replay. Absence is never inferred as terminal. A proof-backed release
+appends new complete evidence; the existing event cannot be upgraded in place. An empty claim result is reported as clear only after the actual mock
 client's fingerprint is checked against the configured physical account.
 
 `release_with_recorded_terminal_evidence` requires a committed

@@ -10,7 +10,15 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import (
+    TIMESTAMP,
+    BigInteger,
+    Column,
+    MetaData,
+    Table,
+    Text,
+    select,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +27,14 @@ from app.models.kis_mock_dispatch_evidence import (
     KISMockDispatchLineage,
 )
 from app.models.review import OrderSendIntent
+from app.services.kis_mock_runner.position_proof import (
+    MAX_BASELINE_AGE,
+    BalanceSnapshot,
+    KISMockPositionReader,
+    PositionProof,
+    PositionUnproven,
+    expected_quantity,
+)
 from app.services.kis_mock_runner.registry_binding import require_kis_mock_identity
 from app.services.kis_mock_runner.singleton import (
     KIS_MOCK_LANE_EVIDENCE_KINDS,
@@ -38,7 +54,18 @@ from app.services.mock_lane_registry import LaneRegistryEntry
 
 _DISPATCH_EVIDENCE_KEY = "dispatch"
 _ACK_ENVELOPE_KEY = "lineage-ack"
+_TERMINAL_FILL_KINDS = ("terminal_reconciliation", "cancel", "expiry", "reject")
 _KST = timezone(timedelta(hours=9))
+_POSITION_BASELINE = Table(
+    "kis_mock_position_baseline",
+    MetaData(),
+    Column("order_attempt_id", Text, primary_key=True),
+    Column("symbol", Text, nullable=False),
+    Column("quantity", BigInteger, nullable=False),
+    Column("read_digest", Text, nullable=False),
+    Column("created_at", TIMESTAMP(timezone=True)),
+    schema="review",
+)
 
 
 class KISMockEvidenceConflict(ValueError):
@@ -77,6 +104,8 @@ class NativeOrderEvidence:
     broker_order_id: str | None
     readback_order_id: str | None = None
     terminal: TerminalClaimEvidence = TerminalClaimEvidence()
+    filled_quantity: int | None = None
+    position_proof: PositionProof | None = None
 
 
 def _key(value: str) -> str:
@@ -126,8 +155,12 @@ class KISMockEvidenceStore:
     ) -> None:
         require_kis_mock_identity(entry)
         self._session_factory = session_factory
+        self._entry = entry
         self._identity = entry.physical_account_id
         self._scope = physical_account_scope_for_entry(entry).claim_account_scope
+
+    def position_reader(self) -> KISMockPositionReader:
+        return KISMockPositionReader(self._entry)
 
     def ports(self) -> KISMockLanePorts:
         return KISMockLanePorts(
@@ -326,8 +359,13 @@ class KISMockEvidenceStore:
             and evidence.terminal != TerminalClaimEvidence()
         ):
             raise KISMockEvidenceConflict("terminal_reconciliation_required")
+        if evidence.filled_quantity is not None and (
+            type(evidence.filled_quantity) is not int or evidence.filled_quantity < 0
+        ):
+            raise KISMockEvidenceConflict("filled_quantity_invalid")
         async with self._session_factory() as session:
             row = await self._lineage(session, envelope)
+            await self._verify_position_claim(session, row, envelope, evidence)
             odno = await self._attributed_odno(session, row.order_attempt_id)
             if (
                 evidence.kind not in {"unknown", "reject"}
@@ -339,18 +377,148 @@ class KISMockEvidenceStore:
                     or evidence.readback_order_id != odno
                 ):
                     raise KISMockEvidenceConflict("exact_attributed_readback_required")
+            payload: dict[str, Any] = {
+                "terminal": asdict(evidence.terminal),
+                "readback_order_id": evidence.readback_order_id,
+            }
+            if evidence.filled_quantity is not None:
+                payload["filled_quantity"] = evidence.filled_quantity
+            if evidence.position_proof is not None:
+                payload["position_proof"] = asdict(evidence.position_proof)
             await self._append(
                 session,
                 row,
                 kind=evidence.kind,
                 evidence_key=evidence.broker_evidence_key,
                 odno=evidence.broker_order_id,
-                payload={
-                    "terminal": asdict(evidence.terminal),
-                    "readback_order_id": evidence.readback_order_id,
-                },
+                payload=payload,
             )
             await session.commit()
+
+    async def _verify_position_claim(
+        self,
+        session: AsyncSession,
+        row: KISMockDispatchLineage,
+        envelope: LineageEnvelope,
+        evidence: NativeOrderEvidence,
+    ) -> None:
+        """No caller's boolean can assert position; the proof must recompute."""
+        proof = evidence.position_proof
+        if not evidence.terminal.account_position_reconciled:
+            if proof is not None:
+                raise KISMockEvidenceConflict("position_proof_not_claimed")
+            return
+        plan = envelope.execution_plan
+        baseline = (
+            await session.execute(
+                select(_POSITION_BASELINE).where(
+                    _POSITION_BASELINE.c.order_attempt_id == row.order_attempt_id
+                )
+            )
+        ).first()
+        if type(proof) is not PositionProof or baseline is None or plan is None:
+            raise KISMockEvidenceConflict("position_proof_required")
+        try:
+            expected = expected_quantity(
+                side=envelope.decision_intent.side,
+                baseline=baseline.quantity,
+                filled=proof.filled_quantity,
+            )
+        except PositionUnproven as exc:
+            raise KISMockEvidenceConflict("position_proof_mismatch") from exc
+        if (
+            baseline.symbol != plan.normalized_symbol
+            or proof.side != envelope.decision_intent.side
+            or proof.baseline_quantity != baseline.quantity
+            or proof.filled_quantity != evidence.filled_quantity
+            or proof.observed_quantity != expected
+        ):
+            raise KISMockEvidenceConflict("position_proof_mismatch")
+
+    async def record_position_baseline(
+        self, envelope: LineageEnvelope, snapshot: BalanceSnapshot
+    ) -> None:
+        """Commit the pre-send holding once; the caller must do this before reserving."""
+        plan = envelope.execution_plan
+        if (
+            type(snapshot) is not BalanceSnapshot
+            or plan is None
+            or snapshot.symbol != plan.normalized_symbol
+            or type(snapshot.quantity) is not int
+            or snapshot.quantity < 0
+        ):
+            raise KISMockEvidenceConflict("position_baseline_shape_rejected")
+        async with self._session_factory() as session:
+            row = await self._lineage(session, envelope)
+            values = {
+                "order_attempt_id": row.order_attempt_id,
+                "symbol": snapshot.symbol,
+                "quantity": snapshot.quantity,
+                "read_digest": snapshot.read_digest,
+            }
+            await session.execute(
+                insert(_POSITION_BASELINE).values(**values).on_conflict_do_nothing()
+            )
+            existing = (
+                await session.execute(
+                    select(_POSITION_BASELINE).where(
+                        _POSITION_BASELINE.c.order_attempt_id == row.order_attempt_id
+                    )
+                )
+            ).first()
+            if existing is None or any(
+                getattr(existing, key) != value for key, value in values.items()
+            ):
+                raise KISMockEvidenceConflict("position_baseline_conflict")
+            await session.commit()
+
+    async def load_position_baseline(self, lineage: KISMockRecoveryLineage) -> int:
+        """Return the holding committed before this exact claim, or refuse."""
+        envelope, plan = lineage.envelope, lineage.envelope.execution_plan
+        attempt = envelope.order_attempt
+        if plan is None or attempt is None:
+            raise PositionUnproven("position_baseline_unavailable")
+        async with self._session_factory() as session:
+            baseline = (
+                await session.execute(
+                    select(_POSITION_BASELINE).where(
+                        _POSITION_BASELINE.c.order_attempt_id
+                        == attempt.order_attempt_id
+                    )
+                )
+            ).first()
+        if baseline is None or baseline.symbol != plan.normalized_symbol:
+            raise PositionUnproven("position_baseline_unavailable")
+        if (
+            baseline.created_at > lineage.created_at
+            or lineage.created_at - baseline.created_at > MAX_BASELINE_AGE
+        ):
+            raise PositionUnproven("position_baseline_stale")
+        return int(baseline.quantity)
+
+    async def attributed_filled_quantity(self, claim: RediscoveredKISMockClaim) -> int:
+        """Return the one fill quantity committed for this exact attempt and ODNO."""
+        if claim.order_attempt_id is None or claim.broker_order_id is None:
+            raise PositionUnproven("attributed_fills_unavailable")
+        async with self._session_factory() as session:
+            events = await session.scalars(
+                select(KISMockDispatchEvidence).where(
+                    KISMockDispatchEvidence.order_attempt_id == claim.order_attempt_id,
+                    KISMockDispatchEvidence.broker_order_id == claim.broker_order_id,
+                    KISMockDispatchEvidence.kind.in_(_TERMINAL_FILL_KINDS),
+                )
+            )
+            values = {
+                event.payload["filled_quantity"]
+                for event in events
+                if type(event.payload) is dict and "filled_quantity" in event.payload
+            }
+        if len(values) != 1:
+            raise PositionUnproven("attributed_fills_unavailable")
+        quantity = values.pop()
+        if type(quantity) is not int or quantity < 0:
+            raise PositionUnproven("attributed_fills_unavailable")
+        return quantity
 
     async def _attributed_odno(
         self, session: AsyncSession, attempt_id: str

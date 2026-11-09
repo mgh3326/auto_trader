@@ -19,6 +19,7 @@ from app.services.kis_mock_runner.evidence_store import (
     RediscoveredKISMockClaim,
     _key,
 )
+from app.services.kis_mock_runner.position_proof import PositionUnproven
 from app.services.mock_integration.coordination import DurableClaim
 from tests.services.mock_integration.test_coordination import _attempt_envelope
 from tests.services.mock_integration.test_kis_mock_evidence_store import bound_entry
@@ -65,6 +66,9 @@ def recovery():
         assert existing == evidence
 
     store.record_native_evidence = AsyncMock(side_effect=record)
+    store.load_position_baseline = AsyncMock(
+        side_effect=PositionUnproven("position_baseline_unavailable")
+    )
     store.release_with_recorded_terminal_evidence = AsyncMock(
         side_effect=AssertionError("claim release is forbidden without position proof")
     )
@@ -109,6 +113,7 @@ async def test_exact_terminal_fill_is_recorded_but_retained_without_position_pro
             "disposition": "retained: position proof unavailable",
             "readback": "terminal_fill",
             "evidence": "recorded",
+            "position_reason": "position_baseline_unavailable",
         }
     ]
     recovery.reader.assert_awaited_once_with(ODNO, recovery.created)

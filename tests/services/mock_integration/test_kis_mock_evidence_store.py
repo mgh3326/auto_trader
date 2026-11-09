@@ -393,3 +393,15 @@ async def test_malformed_reserved_dispatch_cannot_crash_or_release_claim():
             claims=DurableSendClaimAdapter(intents),
         )
     intents.release_if_matches.assert_not_awaited()
+
+
+def test_position_baseline_migration_is_additive_and_refuses_retained_downgrade():
+    text = (
+        Path(__file__).resolve().parents[3]
+        / "alembic/versions/20261109_hk2690_kis_pos_base.py"
+    ).read_text()
+    upgrade, downgrade = text.split("def downgrade", 1)
+    assert "CREATE TABLE review.kis_mock_position_baseline" in upgrade
+    assert "ALTER TABLE" not in upgrade and "DROP " not in upgrade
+    assert "BEFORE UPDATE OR DELETE OR TRUNCATE" in upgrade
+    assert "kis_mock_position_baseline_retained" in downgrade
