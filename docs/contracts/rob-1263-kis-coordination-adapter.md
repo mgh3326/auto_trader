@@ -307,6 +307,41 @@ runtime canary, migration, broker request or scheduler. The implemented readback
 adapter alone does not authorize installation: hk 2690's independently verifiable
 account-position proof and review remain required before route installation.
 
+### Position proof amendment (hk 2690): what proves `account_position_reconciled`
+
+Operator decision `decision/2026-11-09/rob1474-mock-experiments-go` Q3. This replaces the
+statements above that no source proves position, for recovery run with the existing
+`record_dispatch_evidence=True` opt-in. The route provider stays uninstalled.
+
+**Baseline** is the exact-account holding of the plan symbol, read through the same complete
+balance reader, and committed once per order attempt to the append-only
+`review.kis_mock_position_baseline` **before** the claim row exists. It must be at most 300
+seconds older than the claim. The installed route must call
+`KISMockEvidenceStore.record_position_baseline` before reserving; until then no baseline exists
+and every claim is retained as `position_baseline_unavailable`. The ledger's
+`holdings_baseline_qty` is not a baseline.
+
+| # | Invariant | Input | Transition | Enforcement | Dependency | Observable result |
+|---|---|---|---|---|---|---|
+| I1 | A balance read is complete only if every page is `rt_cd=0` with list `output1` and a non-empty `output2`, and the last `tr_cont` header is present and `D`, `E` or empty | KIS mock `VTTC8434R` pages | continuation, page cap or missing header → unproven | `position_proof.parse_balance_pages` | KIS `tr_cont` signal (ROB-268) | `position_reason=position_read_truncated` / `position_read_malformed` |
+| I2 | A failed, missing, malformed, stale or duplicated read is unproven, never zero. Only a complete read that omits the symbol means 0, because KIS omits empty holdings | reader result | anything else → retained | `parse_balance_pages`, `reconcile_position`, `_prove_position` | I1 | claim retained with a closed `position_reason` |
+| I3 | The baseline predates the exact claim on one DB clock, matches the plan symbol, and is immutable | baseline row, claim `created_at` | otherwise → unproven | `load_position_baseline`, table triggers | caller records it before reserving | `position_baseline_unavailable` / `position_baseline_stale` |
+| I4 | Observed = baseline + fills (buy) or baseline − fills (sell), with fills read from committed events of this attempt | baseline, events, read | mismatch → retained | `reconcile_position`, `attributed_filled_quantity` | I2, I3 | `position_mismatch` |
+| I5 | Cancel is terminal only on the attributed row: `cncl_yn=Y`, `cncl_cfrm_qty` equals the unfilled quantity, `rmn_qty=0` | exact ODNO row | else `accepted`/`partial_fill`, or uncertain | `_classify_readback` | live-observed fields; mock unmeasured | `readback=terminal_cancel`, kind `cancel` |
+| I6 | Expiry needs the ROB-671 accept-session deadline passed **and** `rjct_qty` equal to the unfilled quantity with `rmn_qty=0`; time alone is nothing | exact ODNO row, clock | otherwise not terminal | `_classify_readback` | `kr_day_order_expiry` | `readback=terminal_expiry`, kind `expiry` |
+| I7 | Zero-fill terminal before the deadline needs `tot_ccld_qty=0`, `rjct_qty=ord_qty`, `rmn_qty=0`, and still needs position proof | exact ODNO row | else not terminal | `_classify_readback` | I9 | `readback=zero_fill_terminal`, kind `reject` |
+| I8 | Evidence binds the exact attributed ODNO on the claim's KST day inside the claim-to-ACK window; reuse on another day never matches, absence is never evidence | row, lineage | otherwise uncertain | `_classify_readback`, `readback_by_exact_odno` | ROB-1461 ODNO reuse rule | `readback_incomplete_or_inconsistent` |
+| I9 | Release = terminal evidence AND position proof AND the common AND gate AND exact claim owner, deleting exactly one row | all above | any miss → retained | `_recover_one`, `release_with_recorded_terminal_evidence`, `release_with_terminal_evidence` | existing gate unchanged | `status=released` only then |
+| I10 | Position proof is attributable only when this is the sole surviving claim on the account | rediscovered claims | otherwise retained | `recover_kis_mock_dispatch_claims` | account uncertainty gate | `position_other_claim_unresolved` |
+| I11 | The store refuses `account_position_reconciled=True` unless the attached proof recomputes against the stored baseline and the event's fills | evidence, baseline | otherwise conflict, no write | `record_native_evidence` | I3, I4 | `KISMockEvidenceConflict` |
+| I12 | Proof-backed release appends a new event; an earlier unproven event is never upgraded | evidence key | new key binds order and balance digests | `_append` uniqueness | existing append-only tables | one additional `terminal_reconciliation` |
+
+**Still not proof:** the ledger holdings baseline, `fetch_my_stocks` (it hides truncation and
+filters zero rows), a local or soft cancel, elapsed time, an absent order row, and a partial
+fill with a working remainder. Whether the KIS mock server populates `cncl_yn`,
+`cncl_cfrm_qty`, `rjct_qty` and the `tr_cont` header as the live server does is unmeasured; if it
+does not, claims stay retained.
+
 ## 7. Follow-up mutations
 
 `describe_claim_followup` reports **capability only**. A cancel or reduce is
