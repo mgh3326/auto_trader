@@ -32,6 +32,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 def _run_owned_database() -> None:
     validate_run_owned_database_url(engine.url)
 
+
 DAY = "2026-11-02"
 
 
