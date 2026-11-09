@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.core.timezone import KST
 from app.mcp_server.tooling.kis_live_daily_orders import (
     _load_system_facts,
@@ -23,8 +23,15 @@ from app.services.order_proposals.kis_leftover_inference import (
     EXPIRED_INFERENCE_VOID_REASON,
 )
 from app.services.order_proposals.service import RungInput
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+@pytest.fixture(autouse=True)
+def _run_owned_database() -> None:
+    validate_run_owned_database_url(engine.url)
+
 
 DAY = "2026-11-02"
 
