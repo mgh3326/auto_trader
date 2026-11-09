@@ -159,7 +159,8 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # DB tests run its exact DDL.
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
-SCHEMA_BOOTSTRAP_VERSION = 64
+# v65 (hk 2690): the position baseline uses separate Core metadata.
+SCHEMA_BOOTSTRAP_VERSION = 65
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -733,6 +734,28 @@ _PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
 _DDL_STATEMENTS: tuple[str, ...] = (
     *_PAPER_COHORT_TRIGGER_DDL,
     *_PAPER_EVALUATION_TRIGGER_DDL,
+    """
+    CREATE TABLE IF NOT EXISTS review.kis_mock_position_baseline (
+        order_attempt_id TEXT PRIMARY KEY REFERENCES review.kis_mock_dispatch_lineage(order_attempt_id),
+        symbol TEXT NOT NULL,
+        quantity BIGINT NOT NULL CHECK (quantity >= 0),
+        read_digest TEXT NOT NULL CHECK (read_digest ~ '^[0-9a-f]{64}$'),
+        observed_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE OR REPLACE FUNCTION review.kis_mock_dispatch_immutable() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN
+        RAISE EXCEPTION 'kis_mock_dispatch_append_only' USING ERRCODE = '23000';
+    END $$
+    """,
+    "DROP TRIGGER IF EXISTS kis_mock_position_baseline_immutable ON review.kis_mock_position_baseline",
+    """
+    CREATE TRIGGER kis_mock_position_baseline_immutable
+    BEFORE UPDATE OR DELETE OR TRUNCATE ON review.kis_mock_position_baseline
+    FOR EACH STATEMENT EXECUTE FUNCTION review.kis_mock_dispatch_immutable()
+    """,
     # ---- raw-SQL daily candle tables (logical schema only) ----
     # Production Alembic migrations turn these into Timescale hypertables.
     # Pytest runs on plain PostgreSQL, so mirror the table contract without

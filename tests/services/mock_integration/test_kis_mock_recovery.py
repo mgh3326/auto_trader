@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -19,6 +20,7 @@ from app.services.kis_mock_runner.evidence_store import (
     RediscoveredKISMockClaim,
     _key,
 )
+from app.services.kis_mock_runner.position_proof import PositionUnproven
 from app.services.mock_integration.coordination import DurableClaim
 from tests.services.mock_integration.test_coordination import _attempt_envelope
 from tests.services.mock_integration.test_kis_mock_evidence_store import bound_entry
@@ -52,7 +54,14 @@ def recovery():
         True,
     )
     store = KISMockEvidenceStore(MagicMock(), entry=bound_entry())
+
+    @asynccontextmanager
+    async def recovery_guard():
+        yield SimpleNamespace(session=MagicMock())
+
+    store.recovery_guard = recovery_guard
     store.rediscover_unreleased_claims = AsyncMock(return_value=(claim,))
+    store.has_unresolved_legacy_reservations = AsyncMock(return_value=False)
     store.load_recovery_lineage = AsyncMock(
         return_value=KISMockRecoveryLineage(
             envelope, created, row_time + timedelta(seconds=1)
@@ -65,6 +74,9 @@ def recovery():
         assert existing == evidence
 
     store.record_native_evidence = AsyncMock(side_effect=record)
+    store.load_position_baseline = AsyncMock(
+        side_effect=PositionUnproven("position_baseline_unavailable")
+    )
     store.release_with_recorded_terminal_evidence = AsyncMock(
         side_effect=AssertionError("claim release is forbidden without position proof")
     )
@@ -109,6 +121,7 @@ async def test_exact_terminal_fill_is_recorded_but_retained_without_position_pro
             "disposition": "retained: position proof unavailable",
             "readback": "terminal_fill",
             "evidence": "recorded",
+            "position_reason": "position_baseline_unavailable",
         }
     ]
     recovery.reader.assert_awaited_once_with(ODNO, recovery.created)
@@ -219,6 +232,7 @@ async def test_partial_fill_is_recorded_and_retained(recovery):
     result = await run_recovery(recovery)
     assert result["claims"][0]["readback"] == "partial_fill"
     assert next(iter(recovery.recorded.values())).kind == "partial_fill"
+    assert next(iter(recovery.recorded.values())).filled_quantity == 1
     assert result["account_blocked"] is True
     recovery.store.release_with_recorded_terminal_evidence.assert_not_awaited()
 

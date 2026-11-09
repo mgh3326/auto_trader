@@ -17,6 +17,7 @@ from app.services.kis_mock_runner.e3_activation import (
 from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceConflict,
     KISMockEvidenceStore,
+    KISMockRecoveryAuthority,
     NativeOrderEvidence,
     _dispatch_matches_claim,
     _key,
@@ -42,6 +43,7 @@ from app.services.mock_lane_registry import (
     assert_entry_execution_ready,
     assert_recurring_authorized,
 )
+from app.services.order_send_intent_service import OrderSendIntentService
 
 pytestmark = pytest.mark.unit
 FINGERPRINT = "kismock:v1:" + "a" * 64
@@ -382,7 +384,8 @@ async def test_malformed_reserved_dispatch_cannot_crash_or_release_claim():
     claim = DurableClaim(
         row_id=7, claim_account_scope=store._scope, idempotency_key="key", side="buy"
     )
-    intents = AsyncMock()
+    authority = KISMockRecoveryAuthority(store, session)
+    claims = DurableSendClaimAdapter(OrderSendIntentService(session))
     with pytest.raises(
         KISMockEvidenceConflict, match="terminal_claim_binding_mismatch"
     ):
@@ -390,6 +393,19 @@ async def test_malformed_reserved_dispatch_cannot_crash_or_release_claim():
             SimpleNamespace(decision_intent=SimpleNamespace(side="buy")),
             broker_evidence_key="terminal",
             claim=claim,
-            claims=DurableSendClaimAdapter(intents),
+            claims=claims,
+            authority=authority,
         )
-    intents.release_if_matches.assert_not_awaited()
+    session.execute.assert_not_awaited()
+
+
+def test_position_baseline_migration_is_additive_and_refuses_retained_downgrade():
+    text = (
+        Path(__file__).resolve().parents[3]
+        / "alembic/versions/20261109_hk2690_kis_pos_base.py"
+    ).read_text()
+    upgrade, downgrade = text.split("def downgrade", 1)
+    assert "CREATE TABLE review.kis_mock_position_baseline" in upgrade
+    assert "ALTER TABLE" not in upgrade and "DROP " not in upgrade
+    assert "BEFORE UPDATE OR DELETE OR TRUNCATE" in upgrade
+    assert "kis_mock_position_baseline_retained" in downgrade

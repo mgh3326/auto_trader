@@ -595,9 +595,23 @@ exact attributed ODNOs on the claim's KST dispatch day. A separate per-call
 to confirmed non-dry-run execution to append native evidence; every surviving
 claim blocks the account. No current source proves `account_position_reconciled`, so even a
 terminal full fill is reported as `retained: position proof unavailable` with
-its claim ID and is never released. A reviewed position-proof implementation
-(hk 2690) remains an activation gate. Contract:
+its claim ID unless a position proof exists. hk 2690 (`position_proof.py`,
+append-only `review.kis_mock_position_baseline`, operator-applied migration
+`20261109_hk2690_kis_pos_base`) releases a claim only on terminal order
+evidence for the exact ODNO and KST day (full fill, confirmed cancel, DAY expiry
+past the accept-session deadline with a positive reject read, zero-fill reject)
+AND baseline ± attributed fills equal to a complete exact-account balance read
+AND the common gate and claim owner. A truncated, missing, malformed, stale or
+ambiguous read is unproven, never zero. The route must commit the baseline before
+reserving; until a route does, every claim stays retained. Contract:
 `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
+Recovery holds the physical and legacy writer keys and treats any unresolved
+`kis_mock_scalping` reservation as blocking because it lacks an account fingerprint.
+Balance freshness starts before the first page and is checked by the database
+after the exact claim row lock; malformed holding identities or quantities never
+prove an omitted symbol is zero. Terminal cumulative fills cannot be below an
+earlier partial fill; an older partial event whose quantity is missing also blocks.
+After release, the attempt-bound gate still rejects the already dispatched key.
 
 ### kis_mock 귀속 사슬 — pre-submit 강제
 

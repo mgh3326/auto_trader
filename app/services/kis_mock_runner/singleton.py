@@ -949,11 +949,15 @@ async def coordinate_kis_mock_mutation(
         finally:
             _ACTIVE_WRITER_LEASE.reset(token)
 
+    uncertainty_gate = ports.uncertainty_gate
+    bind_attempt = getattr(uncertainty_gate, "for_attempt", None)
+    if bind_attempt is not None:
+        uncertainty_gate = bind_attempt(envelope)
     result = await coordinate_mock_order_mutation(
         envelope=envelope,
         persistence=ports.persistence,
         dispatch_evidence=ports.dispatch_evidence,
-        uncertainty_gate=ports.uncertainty_gate,
+        uncertainty_gate=uncertainty_gate,
         claims=claims,
         connection_factory=connection_factory,
         mutation=_callback,
