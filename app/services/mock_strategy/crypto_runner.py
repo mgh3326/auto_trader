@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import httpx
+
 from app.services.mock_strategy.crypto_brokers import (
     CryptoBroker,
     FillEvidence,
@@ -91,6 +93,19 @@ async def _send(
             "status": "rejected",
             "submitted": False,
             "reason_class": exc.reason_class,
+        }
+    except httpx.HTTPStatusError as exc:
+        try:
+            await recorder.update(order.client_order_id, status="uncertain")
+        except Exception:
+            raise exc
+        if order.side not in {"buy", "short"}:
+            raise
+        return {
+            "client_order_id": order.client_order_id,
+            "status": "uncertain",
+            "submitted": None,
+            "error_class": "HTTPStatusError",
         }
     except BaseException:
         # A committed sending fence survives even if this status update fails.

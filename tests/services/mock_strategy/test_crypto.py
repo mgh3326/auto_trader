@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.services.mock_strategy.crypto_brokers import FillEvidence, PreDispatchRefusal
@@ -863,3 +864,169 @@ async def test_futures_one_refusal_does_not_block_other_planned_symbols():
     assert result["orders"][0]["reason_class"] == "settings_open_orders"
     assert all(o["submitted"] for o in result["orders"][1:])
     assert not any(symbol == "COIN10USDT" for symbol, _ in client.calls)
+
+
+class ThreeEntryBroker(Broker):
+    def __init__(self, recorder, error):
+        super().__init__(recorder)
+        self.error = error
+
+    async def rules(self, symbol):
+        if symbol not in {"COIN0USDT", "COIN1USDT", "COIN2USDT"}:
+            raise ValueError("fixture excludes symbol")
+        return await super().rules(symbol)
+
+    async def submit(self, order, *, confirm):
+        if order.symbol == "COIN0USDT":
+            self.calls.append(order)
+            raise self.error
+        return await super().submit(order, confirm=confirm)
+
+
+def entry_args(recorder, broker):
+    return {
+        "venue": "binance_spot_demo",
+        "asof": ASOF,
+        "broker": broker,
+        "recorder": recorder,
+        "dry_run": False,
+        "confirm": True,
+        "now": DECISION,
+    }
+
+
+def http_status_error():
+    request = httpx.Request("POST", "https://example.invalid/order")
+    return httpx.HTTPStatusError(
+        "sensitive message",
+        request=request,
+        response=httpx.Response(400, request=request, text="secret body"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_status_continues_and_replay_does_not_resubmit():
+    recorder = Recorder()
+    broker = ThreeEntryBroker(recorder, http_status_error())
+    try:
+        result = await run_lists(signals(), **entry_args(recorder, broker))
+    except httpx.HTTPStatusError:
+        result = None
+    assert result is not None, "HTTP status error aborted the batch"
+    assert [o["status"] for o in result["orders"]] == ["uncertain", "filled", "filled"]
+    assert result["orders"][0] == {
+        "client_order_id": broker.calls[0].client_order_id,
+        "status": "uncertain",
+        "submitted": None,
+        "error_class": "HTTPStatusError",
+    }
+    assert [r.status for r in recorder.rows.values()] == [
+        "uncertain",
+        "filled",
+        "filled",
+    ]
+    replay = await run_lists(signals(), **entry_args(recorder, broker))
+    assert [o["status"] for o in replay["orders"]] == ["replayed"] * 3
+    assert len(broker.calls) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [httpx.ConnectError("transport"), CancelledError()])
+async def test_transport_or_cancel_aborts_remaining_entries(error):
+    recorder = Recorder()
+    broker = ThreeEntryBroker(recorder, error)
+    with pytest.raises(type(error)):
+        await run_lists(signals(), **entry_args(recorder, broker))
+    assert [r.status for r in recorder.rows.values()] == [
+        "uncertain",
+        "planned",
+        "planned",
+    ]
+    assert [c.symbol for c in broker.calls] == ["COIN0USDT"]
+
+
+@pytest.mark.asyncio
+async def test_http_status_update_fail_preserves_original_error_and_stops():
+    class BrokenRecorder(Recorder):
+        async def update(self, cid, **kwargs):
+            if kwargs["status"] == "uncertain":
+                raise RuntimeError("store unavailable")
+            return await super().update(cid, **kwargs)
+
+    recorder = BrokenRecorder()
+    error = http_status_error()
+    broker = ThreeEntryBroker(recorder, error)
+    caught = None
+    try:
+        await run_lists(signals(), **entry_args(recorder, broker))
+    except Exception as exc:
+        caught = exc
+    assert caught is error
+    assert [r.status for r in recorder.rows.values()] == [
+        "sending",
+        "planned",
+        "planned",
+    ]
+    assert [c.symbol for c in broker.calls] == ["COIN0USDT"]
+
+
+def test_http_status_cli_uncertain_returns_nonzero(monkeypatch, capsys):
+    from scripts import mock_strategy_crypto
+
+    async def execute(_args):
+        return {
+            "orders": [
+                {
+                    "status": "uncertain",
+                    "submitted": None,
+                    "error_class": "HTTPStatusError",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(mock_strategy_crypto, "execute", execute)
+    assert (
+        mock_strategy_crypto.main(
+            ["run", "--venue", "binance_spot_demo", "--asof", ASOF.isoformat()]
+        )
+        == 1
+    )
+    assert '"status": "uncertain"' in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_http_status_close_remains_unresolved():
+    class CloseErrorBroker(Broker):
+        async def submit(self, order, *, confirm):
+            if order.side == "sell":
+                self.calls.append(order)
+                raise http_status_error()
+            return await super().submit(order, confirm=confirm)
+
+        async def evidence(self, order):
+            if order.side == "sell":
+                raise AssertionError(
+                    "close evidence must not be queried after submit failure"
+                )
+            return await super().evidence(order)
+
+    recorder = Recorder()
+    broker = CloseErrorBroker(recorder)
+    await run_lists(signals(), **entry_args(recorder, broker))
+    result = await close_due(
+        venue="binance_spot_demo",
+        asof=DECISION + timedelta(days=3),
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+    )
+    assert all(
+        row["status"] == "unresolved" and row["error_class"] == "HTTPStatusError"
+        for row in result["orders"]
+    )
+    assert all(
+        row.status == "uncertain"
+        for row in recorder.rows.values()
+        if row.side == "sell"
+    )
