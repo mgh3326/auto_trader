@@ -118,7 +118,10 @@ the intent planned. The adapter repeats those checks immediately before its POST
 Only its typed pre-dispatch refusal proves that POST was never called: after a
 claim this records rejected with `no_order_sent=true`, and a close may later use
 a fresh indexed leg. Generic errors after entering the broker call remain
-ambiguous; their keys are never reused. One episode's unavailable evidence is
+ambiguous; their keys are never reused. Entry HTTP 4xx responses other than
+401, 403, 418 and 429 leave the row uncertain and continue the batch; those four
+statuses, statuses >= 500, and missing responses or statuses stop the batch.
+One episode's unavailable evidence is
 reported unresolved while other due episodes continue. Cancellation and process
 control exceptions propagate even if the best-effort outcome write fails.
 `opened_at` records the first observed fill time and is not replaced by refreshes.

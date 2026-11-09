@@ -895,19 +895,20 @@ def entry_args(recorder, broker):
     }
 
 
-def http_status_error():
+def http_status_error(status=400):
     request = httpx.Request("POST", "https://example.invalid/order")
     return httpx.HTTPStatusError(
         "sensitive message",
         request=request,
-        response=httpx.Response(400, request=request, text="secret body"),
+        response=httpx.Response(status, request=request, text="secret body"),
     )
 
 
 @pytest.mark.asyncio
-async def test_http_status_continues_and_replay_does_not_resubmit():
+@pytest.mark.parametrize("status", [400, 404, 409, 422])
+async def test_http_status_continues_and_replay_does_not_resubmit(status):
     recorder = Recorder()
-    broker = ThreeEntryBroker(recorder, http_status_error())
+    broker = ThreeEntryBroker(recorder, http_status_error(status))
     try:
         result = await run_lists(signals(), **entry_args(recorder, broker))
     except httpx.HTTPStatusError:
@@ -928,6 +929,35 @@ async def test_http_status_continues_and_replay_does_not_resubmit():
     replay = await run_lists(signals(), **entry_args(recorder, broker))
     assert [o["status"] for o in replay["orders"]] == ["replayed"] * 3
     assert len(broker.calls) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status", [401, 403, 418, 429, 500, 503, None, "missing_status"]
+)
+async def test_account_or_venue_http_error_stops_then_replays(status):
+    recorder = Recorder()
+    error = (
+        http_status_error(status) if isinstance(status, int) else http_status_error()
+    )
+    if status is None:
+        error.response = None
+    elif status == "missing_status":
+        error.response.status_code = None
+    broker = ThreeEntryBroker(recorder, error)
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        await run_lists(signals(), **entry_args(recorder, broker))
+    assert caught.value is error
+    assert [r.status for r in recorder.rows.values()] == [
+        "uncertain",
+        "planned",
+        "planned",
+    ]
+    assert [c.symbol for c in broker.calls] == ["COIN0USDT"]
+
+    replay = await run_lists(signals(), **entry_args(recorder, broker))
+    assert [o["status"] for o in replay["orders"]] == ["replayed", "filled", "filled"]
+    assert [c.symbol for c in broker.calls] == ["COIN0USDT", "COIN1USDT", "COIN2USDT"]
 
 
 @pytest.mark.asyncio

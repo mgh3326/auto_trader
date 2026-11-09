@@ -146,7 +146,7 @@ manifest와 signal provenance는 `stable_list`, `stable_peg_rule`,
 새 leg로 닫는다. dust는 열린 잔량이며 gross 실현 P&L은 청산 수량만이다.
 read-only preflight는 claim 전이며 전송 직전에도 반복한다. POST 전용 호출
 이전의 typed refusal만 no-order 증거로 rejected에 기록할 수 있다. generic
-전송/증거 오류는 uncertain 또는 unresolved로 남고 키를 재사용하지 않는다. 진입 주문의 거래소 HTTP 오류 응답은 해당 행을 uncertain으로 남기고 배치를 계속하며, 전송·시간 초과 및 기타 오류는 배치를 중단한다.
+전송/증거 오류는 uncertain 또는 unresolved로 남고 키를 재사용하지 않는다. 진입 주문의 HTTP 4xx 중 401·403·418·429를 제외한 응답만 해당 행을 uncertain으로 남기고 배치를 계속한다. 401·403·418·429, 500 이상, 응답 또는 상태 부재 및 전송·시간 초과 등 기타 오류는 배치를 중단한다.
 due 에피소드별 증거 실패는 다른 청산을 막지 않고, 프로세스 취소는 그대로
 전파한다. 최초 opened_at은 refresh로 덮어쓰지 않는다.
 `MOCK_STRATEGY_ENABLED`와 기존 venue gate·confirm은 기본 off/명시 조건이다.
