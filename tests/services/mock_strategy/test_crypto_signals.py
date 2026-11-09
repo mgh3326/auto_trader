@@ -117,7 +117,21 @@ def test_producer_and_signal_builder_share_the_crypto_exclusion_definition():
     )
     assert mock_data_sources.is_leveraged_token is exclusions.is_leveraged_token
 
-    def module_level_set_definitions(path):
+    def module_level_string_collection_definitions(path):
+        def is_string_collection(node):
+            if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                return all(
+                    isinstance(item, ast.Constant) and type(item.value) is str
+                    for item in node.elts
+                )
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                return node.func.id in {"list", "tuple", "set", "frozenset"}
+            if isinstance(node, ast.BinOp):
+                return is_string_collection(node.left) or is_string_collection(
+                    node.right
+                )
+            return False
+
         definitions = []
         for node in ast.parse(Path(path).read_text()).body:
             if isinstance(node, ast.Assign):
@@ -130,14 +144,18 @@ def test_producer_and_signal_builder_share_the_crypto_exclusion_definition():
                 names = [node.target.id] if isinstance(node.target, ast.Name) else []
             else:
                 continue
-            is_set = isinstance(value, ast.Set) or (
-                isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Name)
-                and value.func.id in {"set", "frozenset"}
-            )
-            if is_set:
+            if is_string_collection(value):
                 definitions.extend(names)
         return definitions
 
-    for module in (mock_data_sources, crypto_signals):
-        assert module_level_set_definitions(inspect.getsourcefile(module)) == []
+    expected_collections = {
+        "mock_data_sources.py": ["COLUMNS"],  # schema fields, not exclusion policy
+        "mock_data_refresh.py": [],
+        "crypto_signals.py": [],
+    }
+    for module in (mock_data_sources, mock_data_refresh, crypto_signals):
+        filename = Path(inspect.getsourcefile(module)).name
+        assert (
+            module_level_string_collection_definitions(inspect.getsourcefile(module))
+            == expected_collections[filename]
+        )
