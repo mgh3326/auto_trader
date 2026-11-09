@@ -35,6 +35,8 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, get_args
 
+from research.crypto_universe.exclusions import STABLE_BASES, is_leveraged_token
+
 VenueLiteral = Literal["binance_usdt_spot", "upbit_krw"]
 StatusLiteral = Literal["live", "delisted", "not_trading_other", "no_trades"]
 
@@ -45,52 +47,6 @@ STATUSES: tuple[str, ...] = get_args(StatusLiteral)
 # marker for a pair that the exchange no longer lists at all.
 DELISTED_EXCHANGE_STATES = frozenset({"BREAK", "ABSENT", "DELISTED"})
 LIVE_EXCHANGE_STATES = frozenset({"TRADING", "ACTIVE"})
-
-# Binance leveraged tokens existed only on these underlyings; a bare suffix
-# test would misflag real assets such as JUP or SYRUP.
-_LEVERAGED_UNDERLYINGS = frozenset(
-    {
-        "1INCH", "AAVE", "ADA", "BCH", "BNB", "BTC", "DOT", "EOS", "ETH", "FIL",
-        "LINK", "LTC", "SUSHI", "SXP", "TRX", "UNI", "XLM", "XRP", "XTZ", "YFI",
-    }
-)  # fmt: skip
-_LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
-STABLE_BASES = frozenset(
-    {
-        "BUSD",
-        "USDC",
-        "TUSD",
-        "USDP",
-        "PAX",
-        "FDUSD",
-        "DAI",
-        "USDS",
-        "USDSB",
-        "SUSD",
-        "UST",
-        "USTC",
-        "USD1",
-        "EUR",
-        "EURI",
-        "AEUR",
-        "GBP",
-        "AUD",
-        "TRY",
-        "BRL",
-        "RUB",
-        "UAH",
-        "NGN",
-        "ZAR",
-        "IDRT",
-        "BIDR",
-        "BKRW",
-        "XUSD",
-        "USDE",
-        "RLUSD",
-        "PAXG",
-    }
-)
-
 
 EPISODE_SPLIT_GAP_DAYS = 7
 
@@ -110,17 +66,6 @@ def classify_status(exchange_status: str, first_trade: date | None) -> StatusLit
     if exchange_status in DELISTED_EXCHANGE_STATES:
         return "delisted"
     return "not_trading_other"
-
-
-def is_leveraged_token(base_asset: str) -> bool:
-    """Binance leveraged tokens (``BTCUP``, ``ETHDOWN``, ``BNBBULL``, ``BULL``)."""
-    if base_asset in {"BULL", "BEAR"}:
-        return True
-    return any(
-        base_asset.endswith(suffix)
-        and base_asset[: -len(suffix)] in _LEVERAGED_UNDERLYINGS
-        for suffix in _LEVERAGED_SUFFIXES
-    )
 
 
 @dataclass(frozen=True)

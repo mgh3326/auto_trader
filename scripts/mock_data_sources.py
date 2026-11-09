@@ -11,6 +11,10 @@ import httpx
 import pandas as pd
 
 from app.core.symbol import to_db_symbol
+from research.crypto_universe.exclusions import (
+    STABLE_BASES,
+    WRAPPED_DUPLICATE_BASES,
+)
 from research.crypto_universe.universe import is_leveraged_token
 from research.stock_selection.dataset import decision_at
 
@@ -26,36 +30,6 @@ COLUMNS = [
     "available_at",
     "action",
 ]
-STABLE_BASES = frozenset(
-    {
-        "USDT",
-        "USDC",
-        "BUSD",
-        "TUSD",
-        "FDUSD",
-        "DAI",
-        "USDP",
-        "PAX",
-        "UST",
-        "USTC",
-        "EUR",
-        "EURC",
-        "AEUR",
-        "EURI",
-        "USD1",
-        "USDD",
-        "USDE",
-        "PYUSD",
-        "RLUSD",
-        "USDS",
-        "SUSD",
-        "GUSD",
-        "FRAX",
-        "LUSD",
-        "USDJ",
-        "VAI",
-    }
-)
 NON_COMMON = re.compile(
     r"\b(etf|etn|fund|warrants?|units?|preferred|depositary|depositary shares)\b",
     re.IGNORECASE,
@@ -122,11 +96,35 @@ def crypto_assets(info: dict) -> list[str]:
             if a.get("status") == "TRADING"
             and a.get("quoteAsset") == "USDT"
             and a.get("isSpotTradingAllowed") is True
-            and a["baseAsset"] not in STABLE_BASES
+            and (a["baseAsset"] == "PAXG" or a["baseAsset"] not in STABLE_BASES)
+            and a["baseAsset"] not in WRAPPED_DUPLICATE_BASES
             and not is_leveraged_token(a["baseAsset"])
             and re.fullmatch(r"[A-Z0-9]+USDT", a["symbol"])
         }
     )
+
+
+def crypto_static_exclusions(info: dict) -> dict[str, str]:
+    """Known static exclusions from the same exchangeInfo snapshot."""
+    excluded = {}
+    for asset in info["symbols"]:
+        if (
+            asset.get("status") != "TRADING"
+            or asset.get("quoteAsset") != "USDT"
+            or asset.get("isSpotTradingAllowed") is not True
+            or not re.fullmatch(r"[A-Z0-9]+USDT", asset.get("symbol", ""))
+        ):
+            continue
+        base = asset["baseAsset"]
+        if base == "PAXG":
+            continue
+        if base in STABLE_BASES:
+            excluded[asset["symbol"]] = "stable_list"
+        elif base in WRAPPED_DUPLICATE_BASES:
+            excluded[asset["symbol"]] = "wrapped_duplicate"
+        elif is_leveraged_token(base):
+            excluded[asset["symbol"]] = "leveraged_token"
+    return excluded
 
 
 class AlpacaSource:
@@ -222,11 +220,12 @@ class BinanceSource:
 
     def __init__(self, get: JsonGet):
         self.get = get
+        self.excluded_assets: dict[str, str] = {}
 
     def assets(self) -> list[str]:
-        return crypto_assets(
-            self.get.get("https://data-api.binance.vision/api/v3/exchangeInfo")
-        )
+        info = self.get.get("https://data-api.binance.vision/api/v3/exchangeInfo")
+        self.excluded_assets = crypto_static_exclusions(info)
+        return crypto_assets(info)
 
     def bars(self, symbols: list[str], start: date, end: date) -> pd.DataFrame:
         rows = []

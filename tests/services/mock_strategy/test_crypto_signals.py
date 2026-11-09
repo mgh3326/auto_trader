@@ -1,11 +1,16 @@
 """Actual research panel/list integration, with synthetic local Parquet files."""
 
+import ast
+import inspect
 import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 from app.services.mock_strategy.crypto_signals import daily_lists, load_binance_panel
+from research.crypto_universe import exclusions
+from scripts import mock_data_sources
 from tests.services.mock_strategy.crypto_fixture import build_fixture
 
 pytestmark = pytest.mark.unit
@@ -42,3 +47,25 @@ def test_hash_mismatch_refused_before_using_panel(panel):
     path.write_bytes(path.read_bytes() + b"tampered")
     with pytest.raises(ValueError, match="hash mismatch"):
         load_binance_panel(panel, date(2023, 12, 31))
+
+
+def test_producer_and_signal_builder_share_the_crypto_exclusion_definition():
+    from app.services.mock_strategy import crypto_signals
+    from scripts import mock_data_refresh
+
+    assert (
+        mock_data_refresh.crypto_exclusion_reason is exclusions.crypto_exclusion_reason
+    )
+    assert crypto_signals.crypto_exclusion_reason is exclusions.crypto_exclusion_reason
+    assert mock_data_sources.STABLE_BASES is exclusions.STABLE_BASES
+    assert "STABLE_BASES" not in {
+        target.id
+        for path in (
+            inspect.getsourcefile(mock_data_sources),
+            inspect.getsourcefile(crypto_signals),
+        )
+        for node in ast.walk(ast.parse(Path(path).read_text()))
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }

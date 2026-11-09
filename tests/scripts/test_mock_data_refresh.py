@@ -129,6 +129,58 @@ def test_rerun_no_network_no_writes_and_membership_never_backfilled(tmp_path):
     )
 
 
+def test_2026_11_08_ranking_fixture_excludes_stable_and_wrapped_names(tmp_path):
+    class RankingFixture(FakeSource):
+        def __init__(self):
+            names = [
+                "PAXGUSDT",
+                "JSTUSDT",
+                "BTCUSDT",
+                "BNBUSDT",
+                "WLFIUSDT",
+                "SOLUSDT",
+                "SHIBUSDT",
+                "PEGCOINUSDT",
+                *(f"COIN{i:02}USDT" for i in range(16)),
+            ]
+            super().__init__(count=0)
+            self.names = names
+            self.excluded_assets = {
+                "BFUSDUSDT": "stable_list",
+                "XUSDUSDT": "stable_list",
+                "WBTCUSDT": "wrapped_duplicate",
+            }
+
+        def bars(self, symbols, start, end):
+            frame = super().bars(symbols, start, end)
+            peg = frame.symbol == "PEGCOINUSDT"
+            for column in ("open", "high", "low", "close"):
+                frame.loc[peg, column] = 1.0
+            return frame
+
+    source = RankingFixture()
+    meta = producer.refresh(
+        tmp_path,
+        source,
+        now=datetime(2026, 11, 9, 12, tzinfo=UTC),
+        limit=24,
+        top_n=10,
+    )
+    assert meta["excluded"]["BFUSDUSDT"] == "stable_list"
+    assert meta["excluded"]["XUSDUSDT"] == "stable_list"
+    assert meta["excluded"]["WBTCUSDT"] == "wrapped_duplicate"
+    assert meta["excluded"]["PEGCOINUSDT"] == "stable_peg_rule"
+    payload = daily_lists(None, date(2026, 11, 8), cache_root=tmp_path)
+    picks = payload["horizons"]["3"]
+    selected = {
+        row["symbol"] for direction in ("up", "down") for row in picks[direction]
+    }
+    assert len(selected) == 20
+    assert not selected & {"BFUSDUSDT", "XUSDUSDT", "WBTCUSDT", "PEGCOINUSDT"}
+    assert "PAXGUSDT" in selected
+    assert payload["exclusion_reasons"]["PEGCOINUSDT"] == "stable_peg_rule"
+
+
 @pytest.mark.parametrize("failure", ["fetch", "write", "switch"])
 def test_partial_failure_preserves_complete_snapshot(tmp_path, monkeypatch, failure):
     source = FakeSource()
