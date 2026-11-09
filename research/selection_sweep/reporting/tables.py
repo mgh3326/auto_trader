@@ -51,7 +51,7 @@ def detail_table(rows: list[dict], *, validation: dict[str, dict] | None = None)
         m = r["metrics"]
         t = m["t_newey_west"]
         lines.append(
-            f"| {r['cell']} | {bps(m['net_primary_mean'])} | "
+            f"| {r['cell'].replace('|', ' / ')} | {bps(m['net_primary_mean'])} | "
             f"{bps(m['long_excess_vs_benchmark'])} | "
             f"{bps(m['random_mean'])} [{bps(m['random_p05'])}, {bps(m['random_p95'])}] | "
             f"{m['random_p']:.3f} | {'n/a' if t is None else f'{t:.2f}'} | "
