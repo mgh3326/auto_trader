@@ -28,7 +28,7 @@ import logging
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
@@ -63,6 +63,23 @@ _MIN_CRYPTO_KRW = Decimal(str(DEFAULT_MINIMUM_VALUES["crypto"]))
 
 _OHLCV_PAGE_SIZE = 200
 _UPBIT_DAY_START = dt.time(hour=9)
+_MAX_OHLCV_REQUESTS_PER_ORDER = 64
+
+
+class _OHLCVRequestBudgetExceeded(Exception):
+    """Raised before a scan would exceed its per-order request budget."""
+
+
+class _OHLCVRequestBudget:
+    __slots__ = ("remaining",)
+
+    def __init__(self) -> None:
+        self.remaining = _MAX_OHLCV_REQUESTS_PER_ORDER
+
+    def consume(self) -> None:
+        if self.remaining <= 0:
+            raise _OHLCVRequestBudgetExceeded
+        self.remaining -= 1
 
 
 def _quantize_fill_price(price: Decimal) -> Decimal:
@@ -84,7 +101,19 @@ def _upbit_day_start(ts: dt.datetime) -> dt.datetime:
     aware = _as_aware_kst(ts)
     assert aware is not None
     kst_time = aware.astimezone(KST)
-    return dt.datetime.combine(kst_time.date(), _UPBIT_DAY_START, tzinfo=KST)
+    bucket_date = (
+        kst_time.date()
+        if kst_time.timetz().replace(tzinfo=None) >= _UPBIT_DAY_START
+        else kst_time.date() - dt.timedelta(days=1)
+    )
+    return dt.datetime.combine(bucket_date, _UPBIT_DAY_START, tzinfo=KST)
+
+
+def _upbit_cursor(ts: dt.datetime) -> dt.datetime:
+    """Upbit treats offset-free `to` values as UTC; encode that explicitly."""
+    aware = _as_aware_kst(ts)
+    assert aware is not None
+    return aware.astimezone(dt.UTC).replace(tzinfo=None)
 
 
 def _daily_bar_start(bar: Any) -> dt.datetime | None:
@@ -93,6 +122,8 @@ def _daily_bar_start(bar: Any) -> dt.datetime | None:
         return None
     # get_ohlcv normalizes Upbit daily rows through their date column (midnight
     # KST); Upbit's actual daily candle boundary is 09:00 KST.
+    if ts.timetz().replace(tzinfo=None) == dt.time.min:
+        return dt.datetime.combine(ts.date(), _UPBIT_DAY_START, tzinfo=KST)
     return _upbit_day_start(ts)
 
 
@@ -143,14 +174,21 @@ def _first_crossing_bar_start(
 
 
 async def _fetch_daily_since_placement(
-    symbol: str, *, placed_at: dt.datetime, effective_now: dt.datetime
+    symbol: str,
+    *,
+    placed_at: dt.datetime,
+    effective_now: dt.datetime,
+    request_budget: _OHLCVRequestBudget,
 ) -> tuple[list[Any], bool]:
     """Fetch daily pages back to the placement day; false means scan incomplete."""
     placed_day = _upbit_day_start(placed_at)
     cursor = effective_now + dt.timedelta(seconds=1)
     daily: list[Any] = []
     while True:
-        page = await get_ohlcv(symbol, "crypto", "day", _OHLCV_PAGE_SIZE, end=cursor)
+        request_budget.consume()
+        page = await get_ohlcv(
+            symbol, "crypto", "day", _OHLCV_PAGE_SIZE, end=_upbit_cursor(cursor)
+        )
         if not page:
             return daily, False
         starts = [_daily_bar_start(bar) for bar in page]
@@ -173,6 +211,7 @@ async def _fetch_minute_day(
     day_end: dt.datetime,
     effective_now: dt.datetime,
     placed_at: dt.datetime,
+    request_budget: _OHLCVRequestBudget,
 ) -> tuple[list[Any], bool]:
     """Page one Upbit day, stopping only after reaching its required start."""
     required_start = (
@@ -183,16 +222,21 @@ async def _fetch_minute_day(
     end = min(day_end, effective_now + dt.timedelta(seconds=1))
     bars: list[Any] = []
     while end > required_start:
-        page = await get_ohlcv(symbol, "crypto", "1m", _OHLCV_PAGE_SIZE, end=end)
+        request_budget.consume()
+        page = await get_ohlcv(
+            symbol, "crypto", "1m", _OHLCV_PAGE_SIZE, end=_upbit_cursor(end)
+        )
         if not page:
-            return bars, True
+            return bars, False
         starts = [_as_aware_kst(getattr(bar, "timestamp", None)) for bar in page]
         if any(start is None for start in starts):
             return bars, False
         bars.extend(
             bar
             for bar, start in zip(page, starts, strict=True)
-            if start is not None and day_start <= start < day_end
+            if start is not None
+            and day_start <= start < day_end
+            and start <= effective_now
         )
         oldest = min(start for start in starts if start is not None)
         if oldest <= required_start:
@@ -561,6 +605,26 @@ class PaperLimitOrderService:
                 "error": f"Order {order_id} is {order.status}, cannot cancel",
             }
 
+        # Claim the transition before releasing cash. A reconcile fill uses the
+        # same pending-status compare-and-set, so exactly one path can win.
+        cancelled_at = now_kst()
+        claimed = await self.db.execute(
+            update(PaperPendingOrder)
+            .where(
+                PaperPendingOrder.id == order_id,
+                PaperPendingOrder.account_id == account_id,
+                PaperPendingOrder.status == "pending",
+            )
+            .values(status="cancelled", cancelled_at=cancelled_at)
+            .returning(PaperPendingOrder.id)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.scalar_one_or_none() is None:
+            await self.db.rollback()
+            return {
+                "success": False,
+                "error": f"Order {order_id} is no longer pending, cannot cancel",
+            }
         # Release reservation (buy side only carries a reservation)
         if order.side == "buy":
             account = await self.pts.get_account(account_id)
@@ -569,7 +633,7 @@ class PaperLimitOrderService:
                 Decimal(account.cash_krw) + Decimal(order.reserved_krw)
             )
         order.status = "cancelled"
-        order.cancelled_at = now_kst()
+        order.cancelled_at = cancelled_at
         await self.db.commit()
         await self.db.refresh(order)
         return {"success": True, **_serialize(order)}
@@ -615,8 +679,12 @@ class PaperLimitOrderService:
                 scan_incomplete += 1
                 continue
             try:
+                request_budget = _OHLCVRequestBudget()
                 daily_bars, complete = await _fetch_daily_since_placement(
-                    order.symbol, placed_at=placed_at, effective_now=effective_now
+                    order.symbol,
+                    placed_at=placed_at,
+                    effective_now=effective_now,
+                    request_budget=request_budget,
                 )
                 if not complete:
                     scan_incomplete += 1
@@ -642,6 +710,7 @@ class PaperLimitOrderService:
                         day_end=day_end,
                         effective_now=effective_now,
                         placed_at=placed_at,
+                        request_budget=request_budget,
                     )
                     if not complete:
                         raise RuntimeError("minute scan incomplete")
@@ -670,7 +739,21 @@ class PaperLimitOrderService:
             # Re-fetch after each possible rollback so the next order is not
             # read through an expired ORM identity map.
             order = await self.db.get(PaperPendingOrder, oid)
-            if order is None or order.status != "pending":
+            if order is None:
+                continue
+            claimed = await self.db.execute(
+                update(PaperPendingOrder)
+                .where(
+                    PaperPendingOrder.id == oid,
+                    PaperPendingOrder.account_id == account_id,
+                    PaperPendingOrder.status == "pending",
+                )
+                .values(status="filled", fill_price=fill_price, filled_at=trigger)
+                .returning(PaperPendingOrder.id)
+                .execution_options(synchronize_session=False)
+            )
+            if claimed.scalar_one_or_none() is None:
+                await self.db.rollback()
                 continue
             # Atomic fill: flip status BEFORE execute_order so its internal
             # commit persists status='filled' + the trade + the cash change in

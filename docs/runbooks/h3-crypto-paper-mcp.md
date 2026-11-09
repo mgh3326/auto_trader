@@ -102,7 +102,7 @@ The deploy refuses to start before any pull or container change when
 unit is skipped). The server itself refuses a blank or missing `MCP_PROFILE`
 (#1189), so this unit can never come up as DEFAULT.
 
-`paper_reconcile_orders`는 주문 배치 시점 이후의 일봉을 조회해 후보 날짜를 찾고, 해당 날짜의 1분봉을 확인해 첫 지정가 터치를 체결로 기록합니다. `filled_at`은 트리거 1분봉 시작 시각이며 결과의 `fill_basis`는 `simulated_bar_touch`입니다. 이 paper 체결은 시뮬레이션이고 스프레드·슬리피지·부분 체결은 반영하지 않습니다.
+`paper_reconcile_orders`는 주문 배치 시점 이후의 일봉을 조회해 후보 날짜를 찾고, 해당 날짜의 1분봉을 확인해 첫 지정가 터치를 체결로 기록합니다. 주문별 OHLCV 요청 상한은 64회이며, 상한 소진이나 불완전 조회는 주문을 pending으로 두고 `scan_incomplete`에 셉니다. `PaperPendingOrder.filled_at`과 결과의 `fill_bar_start`가 시뮬레이션 체결 시각의 기준이고 `fill_basis`는 `simulated_bar_touch`입니다. `PaperTrade.executed_at`은 거래 기록 시각이므로 재조정 시각이며 체결 봉 시각과 다를 수 있습니다. paper 체결에는 스프레드·슬리피지·부분 체결을 반영하지 않습니다.
 
 ## Enabling (operator only)
 
