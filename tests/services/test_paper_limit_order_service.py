@@ -19,6 +19,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from app.core.timezone import now_kst
@@ -123,6 +124,17 @@ def _scan_page(
     return _on_upbit_day_before_end(bars, end, side=side) if end is not None else []
 
 
+def _patch_ohlcv(monkeypatch: pytest.MonkeyPatch, fetcher: Any) -> None:
+    import app.services.paper_limit_order_service as paper_limit_service
+
+    monkeypatch.setattr(paper_limit_service, "get_ohlcv", fetcher)
+
+    async def _daily_page(symbol: str, end: dt.datetime) -> list[Any]:
+        return await fetcher(symbol, "crypto", "day", 200, end=end)
+
+    monkeypatch.setattr(paper_limit_service, "_fetch_upbit_daily_page", _daily_page)
+
+
 def test_first_crossing_bar_helper_ignores_touch_before_placement() -> None:
     placed_at = dt.datetime(2026, 11, 1, 12, 0, tzinfo=now_kst().tzinfo)
     day = _upbit_day_start(placed_at)
@@ -138,6 +150,47 @@ def test_first_crossing_bar_helper_ignores_touch_before_placement() -> None:
         current_day_start=day,
     )
     assert found is None
+
+
+@pytest.mark.asyncio
+async def test_daily_page_uses_end_aware_raw_fetcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.paper_limit_order_service as paper_limit_service
+
+    expected_end = dt.datetime(2026, 11, 6, 15, 0)
+    calls = []
+
+    async def _raw_fetch(**kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            [
+                {
+                    "date": dt.date(2026, 11, 6),
+                    "open": 1,
+                    "high": 2,
+                    "low": 1,
+                    "close": 2,
+                    "volume": 3,
+                    "value": 4,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(paper_limit_service, "_fetch_ohlcv_raw", _raw_fetch)
+    bars = await paper_limit_service._fetch_upbit_daily_page(
+        "KRW-BTC", end=expected_end
+    )
+    assert calls == [
+        {
+            "market": "KRW-BTC",
+            "days": 200,
+            "period": "day",
+            "end_date": expected_end,
+        }
+    ]
+    assert len(bars) == 1
+    assert bars[0].timestamp == dt.datetime(2026, 11, 6)
 
 
 @pytest.mark.asyncio
@@ -176,7 +229,7 @@ async def test_reconcile_fills_touch_three_days_before_call_at_bar_start(
             return _before_end(daily, end)
         return _on_upbit_day_before_end(minute, end) if end else []
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(
         account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
     )
@@ -229,7 +282,7 @@ async def test_reconcile_includes_placement_before_0900_kst(
             return _before_end(daily, end)
         return _on_upbit_day_before_end(minute, end) if end else []
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(account_id=acct.id, now=effective_now)
     detail = await svc.get_pending_order(
         account_id=acct.id, order_id=placed["order_id"]
@@ -269,7 +322,7 @@ async def test_reconcile_request_budget_exhaustion_is_incomplete(
         calls.append(period)
         return _before_end(daily, end) if period == "day" else []
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(account_id=acct.id)
     assert res["filled"] == 0
     assert res["scan_incomplete"] == 1
@@ -320,7 +373,7 @@ async def test_reconcile_minute_fetch_failure_isolated_and_counted(
             raise RuntimeError("fake OHLCV failure")
         return _on_upbit_day_before_end(minute, end) if end else []
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(account_id=acct.id)
     assert res["filled"] == 1
     assert res["scan_incomplete"] == 1
@@ -369,7 +422,7 @@ async def test_reconcile_applies_orders_in_trigger_bar_order(
         bars = [_dated_bar(Decimal("88000000"), Decimal("91000000"), trigger)]
         return _on_upbit_day_before_end(bars, end) if end else []
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     applied = []
     execute_order = svc.pts.execute_order
 
@@ -422,7 +475,7 @@ async def test_reconcile_no_touch_stays_pending_with_bounded_requests(
             )
         return []
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(
         account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
     )
@@ -522,7 +575,7 @@ async def test_reconcile_fills_when_market_crosses(
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
         return _scan_page([bar], period, end)
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(
         account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
     )
@@ -566,7 +619,7 @@ async def test_reconcile_no_cross_stays_pending(
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
         return _scan_page([bar], period, end)
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(account_id=acct.id)
     assert res["filled"] == 0
     pending = await svc.list_pending_orders(account_id=acct.id)
@@ -640,7 +693,7 @@ async def test_reconcile_does_not_fill_if_cancel_wins_during_scan(
         bars = daily if period == "day" else minute
         return _scan_page(bars, period, end)
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     result = await svc.reconcile_pending_orders(
         account_id=account_id, now=placed_at + dt.timedelta(hours=2)
     )
@@ -691,7 +744,7 @@ async def test_reconcile_sell_fills_when_high_touches(
         # dips enough to trigger the buy
         return _scan_page([bar], period, end)
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars_cross)
+    _patch_ohlcv(monkeypatch, _bars_cross)
     await svc.reconcile_pending_orders(
         account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
     )
@@ -712,7 +765,7 @@ async def test_reconcile_sell_fills_when_high_touches(
         # rises enough to trigger the sell
         return _scan_page([high_bar], period, end, side="sell")
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars_high)
+    _patch_ohlcv(monkeypatch, _bars_high)
     res = await svc.reconcile_pending_orders(
         account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
     )
@@ -750,7 +803,7 @@ async def test_reconcile_handles_tz_naive_upbit_timestamps(
             end,
         )
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(
         account_id=acct.id,
         now=(naive_after + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
@@ -783,7 +836,7 @@ async def test_reconcile_excludes_bars_before_placement(
             [_candle(Decimal("89000000"), Decimal("91000000"), naive_before)], end
         )
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(
         account_id=acct.id,
         now=now_kst(),
@@ -819,7 +872,7 @@ async def test_reconcile_isolates_failure_no_double_fill(
             [_candle(Decimal("89000000"), Decimal("91000000"), ts)], period, end
         )
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
     # Directly insert a crossing SELL pending order with no position -> execute_order raises.
     from app.models.paper_trading import PaperPendingOrder
 
@@ -989,7 +1042,7 @@ async def test_reconcile_failure_does_not_skip_later_orders(
             [_candle(Decimal("89000000"), Decimal("91000000"), ts)], period, end
         )  # buy crossed
 
-    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    _patch_ohlcv(monkeypatch, _bars)
 
     res = await svc.reconcile_pending_orders(
         account_id=acct.id,

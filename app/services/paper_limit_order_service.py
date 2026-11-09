@@ -47,7 +47,8 @@ from app.models.paper_trading import (
     PaperPendingOrder,
     PaperTrade,
 )
-from app.services.market_data.service import get_ohlcv
+from app.services.brokers.upbit.client import _fetch_ohlcv_raw
+from app.services.market_data.service import _to_candle_rows, get_ohlcv
 from app.services.paper_correlation import paper_correlation_id
 from app.services.paper_fills import limit_crossed, snap_limit_down
 from app.services.paper_trading_service import (
@@ -80,6 +81,23 @@ class _OHLCVRequestBudget:
         if self.remaining <= 0:
             raise _OHLCVRequestBudgetExceeded
         self.remaining -= 1
+
+
+async def _fetch_upbit_daily_page(symbol: str, end: dt.datetime) -> list[Any]:
+    """Fetch a paged daily slice without the latest-only closed-candle cache."""
+    frame = await _fetch_ohlcv_raw(
+        market=symbol,
+        days=_OHLCV_PAGE_SIZE,
+        period="day",
+        end_date=end,
+    )
+    return _to_candle_rows(
+        frame,
+        symbol=symbol,
+        market="crypto",
+        source="upbit",
+        period="day",
+    )
 
 
 def _quantize_fill_price(price: Decimal) -> Decimal:
@@ -186,9 +204,7 @@ async def _fetch_daily_since_placement(
     daily: list[Any] = []
     while True:
         request_budget.consume()
-        page = await get_ohlcv(
-            symbol, "crypto", "day", _OHLCV_PAGE_SIZE, end=_upbit_cursor(cursor)
-        )
+        page = await _fetch_upbit_daily_page(symbol, end=_upbit_cursor(cursor))
         if not page:
             return daily, False
         starts = [_daily_bar_start(bar) for bar in page]
