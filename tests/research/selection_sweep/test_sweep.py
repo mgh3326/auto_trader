@@ -89,9 +89,10 @@ def test_terminal_exit_uses_last_close_and_gap_stays_unknown():
     # entry already past the last bar: unknown, not filled
     assert np.isnan(ret[199, s00])
     s01 = panel.symbols.index("S01")
-    assert np.isnan(ret[149, s01])  # entry session 150 is the hole
-    assert np.isnan(ret[144, s01])  # exit session 150 is the hole
-    assert np.isfinite(ret[145, s01]) and np.isfinite(ret[148, s01])
+    # any hold that touches the hole at session 150 is unknown, entry/exit/inside
+    for i in (144, 146, 149):
+        assert np.isnan(ret[i, s01])
+    assert np.isfinite(ret[140, s01]) and np.isfinite(ret[150, s01])
 
 
 def test_features_do_not_read_the_future(world):
@@ -206,3 +207,17 @@ def test_carry_forward_requires_every_condition_and_caps():
     many = [_row(f"c{i:02d}", t_newey_west=2.0 + i / 10) for i in range(15)]
     got = sweep.carry_forward(many)
     assert len(got) == spec.CARRY_CAP and got[0] == "c14"
+
+
+def test_redenomination_across_a_gap_is_not_a_return():
+    # a 1000:1 token swap with missing sessions in between must not become +99,900%
+    frames, bench = _world(n_names=3)
+    swapped = frames["S00"].copy()
+    swapped.loc[DAYS[200:203], ["open", "high", "low", "close"]] = np.nan
+    swapped.loc[DAYS[203:], ["open", "high", "low", "close"]] *= 1000
+    frames["S00"] = swapped
+    panel = build_panel("us", frames, bench, start="2020-01-01", end="2021-08-31")
+    ret, _, _ = outcomes(panel, 5)
+    s00 = panel.symbols.index("S00")
+    assert np.isnan(ret[194:202, s00]).all()
+    assert np.nanmax(np.abs(ret[:, s00])) < 1.0

@@ -141,6 +141,7 @@ def cmd_explore(args) -> None:
     carried = carry_forward(rows)
     for row in rows:
         row["phase"] = "exploration"
+        row["manifest_version"] = spec.MANIFEST_VERSION
         row["carried"] = row["cell"] in carried
         row["carry_rank"] = carried.index(row["cell"]) + 1 if row["carried"] else None
     extras = [
@@ -151,7 +152,16 @@ def cmd_explore(args) -> None:
             "note": "input coverage of the exploration run, not a grid cell",
         }
     ]
-    _write_jsonl(RESULTS / "trials_ledger.jsonl", rows + extras)
+    for row in extras:
+        row["manifest_version"] = spec.MANIFEST_VERSION
+    superseded = []
+    if args.supersede_ledger:  # earlier manifest version's rows stay, flagged
+        for line in Path(args.supersede_ledger).read_text().splitlines():
+            old = json.loads(line)
+            old["phase"] = f"superseded_{old['phase']}"
+            old["manifest_version"] = args.supersede_version
+            superseded.append(old)
+    _write_jsonl(RESULTS / "trials_ledger.jsonl", rows + extras + superseded)
     (RESULTS / "carry_forward.json").write_text(
         json.dumps(
             {
@@ -185,6 +195,7 @@ def cmd_validate(args) -> None:
     for row in rows:
         mm = row["metrics"]
         row["phase"] = "validation"
+        row["manifest_version"] = spec.MANIFEST_VERSION
         row["bonferroni_alpha"] = spec.ALPHA / m
         row["pass_primary"] = bool(
             mm["net_primary_mean"] > 0 and mm["random_p"] <= spec.ALPHA / m
@@ -222,6 +233,9 @@ def main(argv=None) -> None:
         s.add_argument("--crypto-pit", required=True)
         s.add_argument("--out-dir", required=True)
         s.set_defaults(fn=fn)
+        if name == "explore":
+            s.add_argument("--supersede-ledger")
+            s.add_argument("--supersede-version", type=int, default=1)
     args = p.parse_args(argv)
     args.fn(args)
 

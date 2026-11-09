@@ -120,6 +120,9 @@ def outcomes(panel: Panel, horizon: int) -> tuple[np.ndarray, np.ndarray, np.nda
     """
     n, m = panel.n, len(panel.symbols)
     op, cl = panel.open.to_numpy(), panel.close.to_numpy()
+    cols = np.arange(m)
+    # observed[j] = number of sessions up to j with a close; a hold must be complete
+    seen = np.vstack([np.zeros((1, m), dtype=int), np.cumsum(np.isfinite(cl), axis=0)])
     ret = np.full((n, m), np.nan)
     bench = np.full(n, np.nan)
     exit_idx = np.full(n, -1)
@@ -131,11 +134,15 @@ def outcomes(panel: Panel, horizon: int) -> tuple[np.ndarray, np.ndarray, np.nda
         ended = (
             panel.terminated & (panel.last_idx < exit_i) & (panel.last_idx >= entry_i)
         )
+        last = np.clip(panel.last_idx, 0, n - 1)
         if ended.any():
-            terminal = cl[np.clip(panel.last_idx, 0, n - 1), np.arange(m)]
-            exit_px = np.where(ended, terminal, exit_px)
+            exit_px = np.where(ended, cl[last, cols], exit_px)
+        stop = np.where(ended, last, exit_i)
+        # every session from entry to the exit (or the last bar) must exist: a hole
+        # (halt, symbol swap, redenomination gap) leaves the outcome unknown
+        complete = seen[stop + 1, cols] - seen[entry_i, cols] == stop - entry_i + 1
         with np.errstate(invalid="ignore", divide="ignore"):
-            ret[i] = exit_px / entry - 1
+            ret[i] = np.where(complete, exit_px / entry - 1, np.nan)
         bench[i] = bopen[exit_i] / bopen[entry_i] - 1
         exit_idx[i] = exit_i
     ret[~np.isfinite(ret)] = np.nan

@@ -137,8 +137,10 @@
       "status": "sealed",
       "registered_at": "2026-11-09",
       "manifest": "research/experiments/manifests/rob-1474-sweep.json",
-      "manifest_sha256": "dc2512f84635fdeae8502740db0035129e8df3c866e9bea4ddd298614826a7bd",
-      "previous_manifest_sha256": [],
+      "manifest_sha256": "a48d80bcd2b6a7eb283e063454c83f6f216302568d836ae817328074e3880750",
+      "previous_manifest_sha256": [
+        "dc2512f84635fdeae8502740db0035129e8df3c866e9bea4ddd298614826a7bd"
+      ],
       "k": 0,
       "test_looks": []
     }
