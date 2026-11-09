@@ -18,6 +18,7 @@ from scripts.mock_data_sources import (
     JsonGet,
     canonical,
     crypto_assets,
+    crypto_static_exclusions,
     us_assets,
 )
 
@@ -130,6 +131,99 @@ def test_rerun_no_network_no_writes_and_membership_never_backfilled(tmp_path):
     )
 
 
+def test_2026_11_08_ranking_fixture_excludes_stable_and_wrapped_names(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("scripts.mock_data_sources.time.sleep", lambda _: None)
+    bases = [
+        "BFUSD",
+        "XUSD",
+        "PAXG",
+        "JST",
+        "WBTC",
+        "BTC",
+        "BNB",
+        "WLFI",
+        "SOL",
+        "SHIB",
+        "PEGCOIN",
+        *(f"COIN{i:02}" for i in range(16)),
+    ]
+    exchange_info = {
+        "symbols": [
+            {
+                "symbol": f"{base}USDT",
+                "baseAsset": base,
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "isSpotTradingAllowed": True,
+            }
+            for base in bases
+        ]
+    }
+
+    def handler(request):
+        if request.url.path.endswith("/exchangeInfo"):
+            return httpx.Response(200, json=exchange_info)
+        symbol = request.url.params["symbol"]
+        start_ms = int(request.url.params["startTime"])
+        end_ms = int(request.url.params["endTime"])
+        rank = int(symbol[4:6]) + 1 if symbol.startswith("COIN") else 30
+        bars = []
+        for stamp in range(start_ms, end_ms + 1, 86_400_000):
+            day_offset = (stamp - start_ms) // 86_400_000
+            close = (
+                1.0
+                if symbol == "PEGCOINUSDT"
+                else 20 + rank + day_offset * 0.01 + (day_offset % (rank + 1)) * 0.05
+            )
+            high, low = (
+                (1.01, 0.99) if symbol == "PEGCOINUSDT" else (close + 1, close - 1)
+            )
+            bars.append(
+                [
+                    stamp,
+                    str(close),
+                    str(high),
+                    str(low),
+                    str(close),
+                    str(rank * 100),
+                    stamp + 86_399_999,
+                    str(rank * 1000),
+                    rank,
+                    "0",
+                    "0",
+                    "0",
+                ]
+            )
+        return httpx.Response(200, json=bars)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        source = BinanceSource(JsonGet(client))
+        eligible_symbols = source.assets()
+        assert {"BFUSDUSDT", "XUSDUSDT", "WBTCUSDT"}.isdisjoint(eligible_symbols)
+        meta = producer.refresh(
+            tmp_path,
+            source,
+            now=datetime(2026, 11, 9, 12, tzinfo=UTC),
+            limit=24,
+            top_n=10,
+        )
+    assert meta["excluded"]["BFUSDUSDT"] == "stable_list"
+    assert meta["excluded"]["XUSDUSDT"] == "stable_list"
+    assert meta["excluded"]["WBTCUSDT"] == "wrapped_duplicate"
+    assert meta["excluded"]["PEGCOINUSDT"] == "stable_peg_rule"
+    payload = daily_lists(None, date(2026, 11, 8), cache_root=tmp_path)
+    picks = payload["horizons"]["3"]
+    selected = {
+        row["symbol"] for direction in ("up", "down") for row in picks[direction]
+    }
+    assert len(selected) == 20
+    assert not selected & {"BFUSDUSDT", "XUSDUSDT", "WBTCUSDT", "PEGCOINUSDT"}
+    assert "PAXGUSDT" in selected
+    assert payload["exclusion_reasons"]["PEGCOINUSDT"] == "stable_peg_rule"
+
+
 @pytest.mark.parametrize("failure", ["fetch", "write", "switch"])
 def test_partial_failure_preserves_complete_snapshot(tmp_path, monkeypatch, failure):
     source = FakeSource()
@@ -224,6 +318,33 @@ def test_asset_filters():
     assert crypto_assets(
         {"symbols": [pair, *bad, {**pair, "symbol": "ETHUSDT", "status": "BREAK"}]}
     ) == ["BTCUSDT"]
+    static_pairs = [
+        {**pair, "symbol": f"{base}USDT", "baseAsset": base}
+        for base in (
+            "BFUSD",
+            "XUSD",
+            "WBTC",
+            "PAXG",
+            "EURC",
+            "GUSD",
+            "FRAX",
+            "LUSD",
+            "USDJ",
+            "VAI",
+        )
+    ]
+    assert crypto_assets({"symbols": static_pairs}) == ["PAXGUSDT"]
+    assert crypto_static_exclusions({"symbols": static_pairs}) == {
+        "BFUSDUSDT": "stable_list",
+        "XUSDUSDT": "stable_list",
+        "WBTCUSDT": "wrapped_duplicate",
+        "EURCUSDT": "stable_list",
+        "GUSDUSDT": "stable_list",
+        "FRAXUSDT": "stable_list",
+        "LUSDUSDT": "stable_list",
+        "USDJUSDT": "stable_list",
+        "VAIUSDT": "stable_list",
+    }
 
 
 def test_alpaca_pagination_adjustment_feed_and_secret_errors(monkeypatch):
@@ -308,6 +429,34 @@ def test_successful_empty_candidate_is_reported(tmp_path):
     source.bars = omit
     meta = producer.refresh(tmp_path, source, now=NOW, limit=20)
     assert meta["excluded"][source.names[0]] == "refresh_data_unavailable"
+
+
+def test_unavailable_cached_peg_history_is_reported_as_unavailable(tmp_path):
+    source = FakeSource()
+    peg = "PEGCOINUSDT"
+    source.names.append(peg)
+    original_bars = source.bars
+
+    def peg_bars(symbols, start, end):
+        frame = original_bars(symbols, start, end)
+        mask = frame.symbol == peg
+        frame.loc[mask, "open"] = 1.0
+        frame.loc[mask, "high"] = 1.01
+        frame.loc[mask, "low"] = 0.99
+        frame.loc[mask, "close"] = 1.0
+        return frame
+
+    source.bars = peg_bars
+    first = producer.refresh(tmp_path, source, now=NOW, limit=20)
+    assert first["excluded"][peg] == "stable_peg_rule"
+
+    source.bars = lambda symbols, start, end: peg_bars(symbols, start, end).loc[
+        lambda frame: frame.symbol != peg
+    ]
+    later = NOW + timedelta(days=1) - timedelta(hours=11, minutes=59)
+    second = producer.refresh(tmp_path, source, now=later, limit=20)
+    assert first["data_cutoff"] == second["data_cutoff"]
+    assert second["excluded"][peg] == "refresh_data_unavailable"
 
 
 def test_reader_pins_generation_before_opening_metadata(tmp_path, monkeypatch):

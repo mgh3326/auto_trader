@@ -130,6 +130,16 @@ Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel
 `app/services/mock_strategy/crypto_*`와 `scripts.mock_strategy`의 crypto venue
 분기. Binance USDT spot delisted-complete 패널에서 고정
 `relative_volatility_20` top-10 long/short, 기본 3일·이름당 1,000 USDT다.
+Universe exclusion은 `research.crypto_universe.exclusions` 단일 정의를
+producer와 signal builder가 공유한다: 정적 stable list와 Binance USD-peg
+종가 규칙(최근 cutoff 이전 완료 일봉 30개가 모두 0.98–1.02 USDT), 그리고
+명시 wrapped duplicate(WBTC/BETH/WBETH). 부족하거나 빠진 세션은 peg 증거가
+아니며 정적 판정을 유지한다. PAXG는 real-asset token으로 유지한다. producer
+manifest와 signal provenance는 `stable_list`, `stable_peg_rule`,
+`wrapped_duplicate` 사유를 심볼별 기록한다. 근거 링크와 세부 정책은
+`docs/runbooks/rob1474-mock-data-refresh.md` 및
+`docs/runbooks/rob1474-crypto-paper.md`를 따른다. 과거 날짜 membership은
+재작성하지 않는다.
 공통 US PR의 `review.mock_strategy_orders`와 recorder만 쓴다.
 모든 쓰기는 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
 일자별 배치 membership·입력 해시를 고정하고 partial close는 자기 체결 잔량만

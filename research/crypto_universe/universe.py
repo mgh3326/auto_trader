@@ -29,32 +29,13 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, fields
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Literal, get_args
 
-VenueLiteral = Literal["binance_usdt_spot", "upbit_krw"]
-StatusLiteral = Literal["live", "delisted", "not_trading_other", "no_trades"]
-
-VENUES: tuple[str, ...] = get_args(VenueLiteral)
-STATUSES: tuple[str, ...] = get_args(StatusLiteral)
-
-# Exchange states that mean the pair no longer trades.  ``ABSENT`` is our own
-# marker for a pair that the exchange no longer lists at all.
-DELISTED_EXCHANGE_STATES = frozenset({"BREAK", "ABSENT", "DELISTED"})
-LIVE_EXCHANGE_STATES = frozenset({"TRADING", "ACTIVE"})
-
-# Binance leveraged tokens existed only on these underlyings; a bare suffix
-# test would misflag real assets such as JUP or SYRUP.
-_LEVERAGED_UNDERLYINGS = frozenset(
-    {
-        "1INCH", "AAVE", "ADA", "BCH", "BNB", "BTC", "DOT", "EOS", "ETH", "FIL",
-        "LINK", "LTC", "SUSHI", "SXP", "TRX", "UNI", "XLM", "XRP", "XTZ", "YFI",
-    }
-)  # fmt: skip
-_LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 STABLE_BASES = frozenset(
     {
         "BUSD",
@@ -87,10 +68,119 @@ STABLE_BASES = frozenset(
         "XUSD",
         "USDE",
         "RLUSD",
+        "BFUSD",
         "PAXG",
+        "PYUSD",
+        "USDD",
+        "USDG",
+        "U",
+        "EURC",
+        "GUSD",
+        "FRAX",
+        "LUSD",
+        "USDJ",
+        "VAI",
     }
 )
 
+# These bases duplicate exposure to included assets. Binance identifies WBTC
+# as Wrapped Bitcoin and BETH/WBETH as wrapped or staked ETH representations.
+WRAPPED_DUPLICATE_BASES = frozenset({"WBTC", "BETH", "WBETH"})
+
+PEG_SESSION_COUNT = 30
+PEG_MIN_CLOSE = 0.98
+PEG_MAX_CLOSE = 1.02
+_LEVERAGED_UNDERLYINGS = frozenset(
+    {
+        "1INCH",
+        "AAVE",
+        "ADA",
+        "BCH",
+        "BNB",
+        "BTC",
+        "DOT",
+        "EOS",
+        "ETH",
+        "FIL",
+        "LINK",
+        "LTC",
+        "SUSHI",
+        "SXP",
+        "TRX",
+        "UNI",
+        "XLM",
+        "XRP",
+        "XTZ",
+        "YFI",
+    }
+)
+_LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+
+
+def is_leveraged_token(base_asset: str) -> bool:
+    if base_asset in {"BULL", "BEAR"}:
+        return True
+    return any(
+        base_asset.endswith(suffix)
+        and base_asset[: -len(suffix)] in _LEVERAGED_UNDERLYINGS
+        for suffix in _LEVERAGED_SUFFIXES
+    )
+
+
+def crypto_exclusion_reason(
+    base_asset: str,
+    closes: Iterable[tuple[date, float]] = (),
+    *,
+    cutoff: date,
+) -> str | None:
+    """Return a stable reason when a base should be omitted at ``cutoff``.
+
+    A peg is proven only by exactly one valid close for every calendar session
+    in the final 30 completed days. Missing/duplicate/invalid observations do
+    not prove a peg and leave the static-list decision in force.
+    """
+    # Keep the historical PIT flag for schema compatibility, but this
+    # strategy explicitly retains gold-backed real-asset exposure.
+    if base_asset == "PAXG":
+        return None
+    if is_leveraged_token(base_asset):
+        return "leveraged_token"
+    if base_asset in STABLE_BASES:
+        return "stable_list"
+    if base_asset in WRAPPED_DUPLICATE_BASES:
+        return "wrapped_duplicate"
+
+    first_day = cutoff - timedelta(days=PEG_SESSION_COUNT - 1)
+    by_day: dict[date, float] = {}
+    for day, close in closes:
+        if first_day <= day <= cutoff:
+            if day in by_day:
+                return None
+            try:
+                value = float(close)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(value):
+                return None
+            by_day[day] = value
+    expected = {first_day + timedelta(days=i) for i in range(PEG_SESSION_COUNT)}
+    if by_day.keys() != expected:
+        return None
+    if all(PEG_MIN_CLOSE <= by_day[day] <= PEG_MAX_CLOSE for day in expected):
+        return "stable_peg_rule"
+    return None
+
+
+VenueLiteral = Literal["binance_usdt_spot", "upbit_krw"]
+StatusLiteral = Literal["live", "delisted", "not_trading_other", "no_trades"]
+
+VENUES: tuple[str, ...] = get_args(VenueLiteral)
+STATUSES: tuple[str, ...] = get_args(StatusLiteral)
+
+# Exchange states that mean the pair no longer trades.  ``ABSENT`` is our own
+# marker for a pair that the exchange no longer lists at all.
+DELISTED_EXCHANGE_STATES = frozenset({"BREAK", "ABSENT", "DELISTED"})
+LIVE_EXCHANGE_STATES = frozenset({"TRADING", "ACTIVE"})
 
 EPISODE_SPLIT_GAP_DAYS = 7
 
@@ -110,17 +200,6 @@ def classify_status(exchange_status: str, first_trade: date | None) -> StatusLit
     if exchange_status in DELISTED_EXCHANGE_STATES:
         return "delisted"
     return "not_trading_other"
-
-
-def is_leveraged_token(base_asset: str) -> bool:
-    """Binance leveraged tokens (``BTCUP``, ``ETHDOWN``, ``BNBBULL``, ``BULL``)."""
-    if base_asset in {"BULL", "BEAR"}:
-        return True
-    return any(
-        base_asset.endswith(suffix)
-        and base_asset[: -len(suffix)] in _LEVERAGED_UNDERLYINGS
-        for suffix in _LEVERAGED_SUFFIXES
-    )
 
 
 @dataclass(frozen=True)
@@ -317,8 +396,9 @@ class PitUniverse:
             )
             if _bool(row["is_leveraged_token"]) != listing.is_leveraged_token:
                 raise ValueError(f"{listing.symbol}: is_leveraged_token mismatch")
-            if _bool(row["is_stable_base"]) != listing.is_stable_base:
-                raise ValueError(f"{listing.symbol}: is_stable_base mismatch")
+            # This column is a materialized classification from the corpus build.
+            # Keep loading historical snapshots after the shared current exclusion
+            # floor grows; the current property is still derived from that floor.
             out.append(listing)
         return tuple(out)
 

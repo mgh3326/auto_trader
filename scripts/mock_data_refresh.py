@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 import pandas as pd
 
+from research.crypto_universe.universe import crypto_exclusion_reason
 from research.stock_selection.dataset import decision_at, sessions, validate_bars
 from research.stock_selection.io import digest, read_bars
 from scripts.mock_data_sources import AlpacaSource, BinanceSource, JsonGet
@@ -185,6 +186,7 @@ def refresh(
         merged = validated
         expected = {d.isoformat() for d in days}
         scores, excluded = [], dict.fromkeys(sorted(malformed), "malformed_bars")
+        excluded.update(getattr(source, "excluded_assets", {}))
         window = 20 if market == "us" else 30
         for symbol in symbols:
             if symbol in excluded:
@@ -192,6 +194,19 @@ def refresh(
             if symbol not in present:
                 excluded[symbol] = "refresh_data_unavailable"
                 continue
+            if market == "crypto" and symbol != source.benchmark:
+                history = merged[merged.symbol == symbol].sort_values("date")
+                reason = crypto_exclusion_reason(
+                    symbol.removesuffix("USDT"),
+                    (
+                        (date.fromisoformat(row.date), float(row.close))
+                        for row in history.itertuples()
+                    ),
+                    cutoff=date.fromisoformat(cutoff),
+                )
+                if reason:
+                    excluded[symbol] = reason
+                    continue
             history = merged[merged.symbol == symbol].sort_values("date")
             if set(history.date) != expected:
                 excluded[symbol] = "incomplete_feature_history"

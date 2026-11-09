@@ -11,10 +11,16 @@ from research.crypto_universe.universe import (
     OutsideCoverageError,
     PairListing,
     PitUniverse,
+    crypto_exclusion_reason,
     derive_listing,
 )
 
 COVERAGE_END = date(2026, 9, 30)
+
+
+def _peg_closes(count: int, *, cutoff: date, value: float = 1.0):
+    start = cutoff - timedelta(days=count - 1)
+    return [(start + timedelta(days=i), value) for i in range(count)]
 
 
 def _days(start: date, end: date) -> list[date]:
@@ -194,6 +200,43 @@ def test_assets_ending_in_up_are_not_leveraged_tokens(base: str) -> None:
     assert not listing.is_leveraged_token
 
 
+@pytest.mark.parametrize("close", [0.99, 1.01])
+def test_thirty_completed_daily_closes_prove_usd_peg(close):
+    cutoff = date(2026, 11, 8)
+    assert (
+        crypto_exclusion_reason(
+            "NEWUSD", _peg_closes(30, cutoff=cutoff, value=close), cutoff=cutoff
+        )
+        == "stable_peg_rule"
+    )
+
+
+def test_one_depeg_session_keeps_base():
+    cutoff = date(2026, 11, 8)
+    closes = _peg_closes(30, cutoff=cutoff)
+    closes[12] = (closes[12][0], 1.05)
+    assert crypto_exclusion_reason("NEWUSD", closes, cutoff=cutoff) is None
+
+
+def test_missing_session_does_not_prove_peg():
+    cutoff = date(2026, 11, 8)
+    assert (
+        crypto_exclusion_reason("NEWUSD", _peg_closes(29, cutoff=cutoff), cutoff=cutoff)
+        is None
+    )
+
+
+@pytest.mark.parametrize("base", ["BFUSD", "XUSD", "PYUSD", "USDD", "USDG", "U"])
+def test_known_usd_stable_bases_are_static_exclusions(base):
+    assert crypto_exclusion_reason(base, cutoff=date(2026, 11, 8)) == "stable_list"
+
+
+def test_wrapped_duplicate_is_excluded_but_paxg_is_kept():
+    cutoff = date(2026, 11, 8)
+    assert crypto_exclusion_reason("WBTC", cutoff=cutoff) == "wrapped_duplicate"
+    assert crypto_exclusion_reason("PAXG", cutoff=cutoff) is None
+
+
 def test_committed_tables_match_manifest_and_hold_delisted_pairs() -> None:
     """The committed build output: hashes match, delisted pairs carry a last trade."""
     import hashlib
@@ -205,12 +248,15 @@ def test_committed_tables_match_manifest_and_hold_delisted_pairs() -> None:
     for table in manifest["tables"].values():
         text = (data / Path(table["path"]).name).read_text(encoding="utf-8")
         assert hashlib.sha256(text.encode()).hexdigest() == table["sha256"]
-    binance = manifest["tables"]["binance_usdt_spot"]
-    universe = PitUniverse.load(
-        data / Path(binance["path"]).name,
-        date.fromisoformat(binance["coverage_start"]),
-        date.fromisoformat(binance["coverage_end"]),
-    )
+    universes = {
+        venue: PitUniverse.load(
+            data / Path(table["path"]).name,
+            date.fromisoformat(table["coverage_start"]),
+            date.fromisoformat(table["coverage_end"]),
+        )
+        for venue, table in manifest["tables"].items()
+    }
+    universe = universes["binance_usdt_spot"]
     delisted = [x for x in universe.listings if x.status == "delisted"]
     assert len(delisted) > 100
     assert all(x.last_trade_date is not None for x in delisted)
@@ -218,3 +264,6 @@ def test_committed_tables_match_manifest_and_hold_delisted_pairs() -> None:
     assert bcc.last_trade_date == date(2018, 11, 15)
     assert "BCCUSDT" in universe.universe_as_of(date(2018, 11, 15))
     assert "BCCUSDT" not in universe.universe_as_of(date(2018, 11, 16))
+    # The table's stable flag records the corpus build; current exclusions can
+    # grow without making this frozen PIT snapshot unloadable.
+    assert next(x for x in universe.listings if x.symbol == "BFUSDUSDT").is_stable_base

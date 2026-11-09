@@ -14,10 +14,19 @@ Paper results never select or tune a baseline. N is fixed at ten per direction.
 `--panel-root` is an operator-owned `research/crypto_universe` output root. It must
 contain `universe/manifest.json`, its hash-bound PIT table, candle index and
 Parquet files, including delisted history. The loader verifies hashes and row
-counts, preserves historical listing episodes, excludes stable/leveraged tokens,
-uses native USDT turnover, and uses BTCUSDT as the benchmark. It never fetches
-prices or extends the panel's declared coverage. Missing benchmark history,
-insufficient eligible names, corrupt files and dates past coverage fail closed.
+counts, preserves historical listing episodes, and applies the shared
+`research.crypto_universe.exclusions` policy at the requested completed-candle
+cutoff. It excludes known stable bases, any base whose last 30 completed daily
+closes all stayed within ±2% of 1.00 USDT, explicit wrapped duplicates (WBTC,
+BETH, WBETH), and leveraged tokens. Rule evaluation uses only closes at or
+before the cutoff; missing sessions do not prove a peg. `PAXG` stays eligible.
+`daily_lists` provenance records per-symbol reason codes (`stable_list`,
+`stable_peg_rule`, `wrapped_duplicate`, and `leveraged_token`). Static entries
+include BFUSD and XUSD; source citations and the detailed thresholds are in
+`docs/runbooks/rob1474-mock-data-refresh.md`. The loader uses native USDT
+turnover and BTCUSDT as the benchmark. It never fetches prices or extends the
+panel's declared coverage. Missing benchmark history, insufficient eligible
+names, corrupt files and dates past coverage fail closed.
 Update the panel with the existing research collector before invoking this CLI.
 
 For `run`, `--asof D` labels the completed UTC candle D. The existing research
