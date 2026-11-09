@@ -135,6 +135,9 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     # default profile only (behind ORDER_PROPOSALS_ENABLED), never on the
     # generic broad profiles.
     expected["default"].add("get_parking_exclusion")
+    # hk 3717: read-only all-symbol KIS KR daily orders for one KST date,
+    # registered with the typed kis_live_* tools on the default profile only.
+    expected["default"].add("kis_live_get_daily_orders")
     # #849: the NHPLUG Stage 2 mock tools register on the default profile only,
     # behind nh_mock_mcp_enabled (default off); no live profile lists them.
     from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
