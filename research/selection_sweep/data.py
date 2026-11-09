@@ -108,6 +108,11 @@ def fetch_us(
                 "use a fresh directory for another period"
             )
     else:
+        if any(out_dir.glob("*.csv")):
+            raise ValueError(
+                "cache holds CSVs without a request window; their period is "
+                "unverified, use a fresh directory"
+            )
         marker.write_text(json.dumps(request))
     period = urlencode(
         {

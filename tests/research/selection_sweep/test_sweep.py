@@ -286,3 +286,44 @@ def test_ledger_and_carry_files_are_write_once(tmp_path):
     cli._write_once(tmp_path / "carry_forward.json", "x")
     with pytest.raises(FileExistsError):
         cli._write_once(tmp_path / "carry_forward.json", "y")
+
+
+def test_fetch_us_refuses_a_markerless_cache_with_csvs(tmp_path):
+    (tmp_path / "AAA.csv").write_text("date\n")
+
+    def fake(url):
+        raise AssertionError("nothing may be fetched into an unverified cache")
+
+    with pytest.raises(ValueError, match="without a request window"):
+        data.fetch_us(
+            ["AAA"], tmp_path, start="2019-06-03", end="2025-01-01", fetch=fake
+        )
+    assert not (tmp_path / "request.json").exists()
+
+
+def test_tables_check_compares_a_fresh_results_dir_with_the_committed_one(
+    tmp_path, capsys
+):
+    import json
+
+    from research.selection_sweep.reporting import tables
+
+    rows = tables.load("trials_ledger.jsonl")
+    same = tmp_path / "same"
+    same.mkdir()
+    (same / "trials_ledger.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows)
+    )
+    assert tables.main(["--results-dir", str(same), "--check-against-committed"]) == 0
+    changed = tmp_path / "changed"
+    changed.mkdir()
+    bad = json.loads(json.dumps(rows))
+    first = next(r for r in bad if r["phase"] == "exploration")
+    first["metrics"]["net_primary_mean"] += 1e-6
+    (changed / "trials_ledger.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in bad)
+    )
+    assert (
+        tables.main(["--results-dir", str(changed), "--check-against-committed"]) == 1
+    )
+    assert "False" in capsys.readouterr().out

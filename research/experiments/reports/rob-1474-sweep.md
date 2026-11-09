@@ -3,7 +3,7 @@
 Experiment-Manifest-Sha256: a48d80bcd2b6a7eb283e063454c83f6f216302568d836ae817328074e3880750
 Experiment-Test-Look: no
 
-Hypothesis `ROB-1474-sweep`; results ran under manifest version 2 (hash above), now superseded by version 3 (see below); registry `k` before = 0, after = 0.
+Hypothesis `ROB-1474-sweep`; results ran under manifest version 2 (hash above), now superseded by version 4 (see below); registry `k` before = 0, after = 0.
 Research only: public data, no database, broker, credential, scheduler or `app/` change.
 Ratios and counts only. This report makes **no promotion or deployment claim**.
 
@@ -31,9 +31,9 @@ exploration run checked only the entry and exit opens of a hold; a crypto token 
 in between (price x1000) produced outcomes above +100,000%. v2 requires every session of the hold to exist.
 The 140 v1 rows stay in the ledger flagged `superseded_exploration`; no v1 number is used below.
 
-Manifest v3 (registered after review of this PR, before any look, `k` still 0) changes only run hygiene: the ledger and
-carry files are write-once, and a US cache fetched for an earlier period is refused for a longer request. The v2 code
-(`exploration_run_code_sha256` in the v3 manifest) produced the committed results; a rerun with the v3 code into a fresh
+Manifests v3 and v4 (registered after review of this PR, before any look, `k` still 0) change only run hygiene: the ledger and
+carry files are write-once, and a US cache fetched for an earlier period, or without a recorded request window, is refused. The v2 code
+(`exploration_run_code_sha256` in the v3 and v4 manifests) produced the committed results; a rerun with the v3 code into a fresh
 directory reproduces all 140 exploration cell metrics exactly and the same empty carry list.
 
 ## Design (fixed in the manifest)
@@ -107,8 +107,10 @@ uv run pytest tests/research/selection_sweep -q
 uv run python scripts/ci/experiment_registry_lint.py
 # explore refuses to overwrite the committed ledger; reproduce into a fresh results directory
 uv run python -m research.selection_sweep.cli explore --us-cache <dir> --crypto-root <dir> --crypto-pit <csv> --out-dir <dir> --results-dir <fresh dir>
-uv run python -m research.selection_sweep.reporting.tables
+uv run python -m research.selection_sweep.reporting.tables --results-dir <fresh dir> --check-against-committed
 ```
+
+The last command exits 1 unless every exploration cell metric in the fresh ledger equals the committed one.
 
 Tables: each cell is `primary bps / random rank p`; `*` would mark a carried cell (none). Primary bps = mean net excess per vintage.
 
