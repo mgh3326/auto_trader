@@ -282,7 +282,10 @@ async def _recover_one(
             }[state]
         )
         terminal_order = state in _TERMINAL_STATES
-        key = f"operator-recovery-v1:{digest}"
+        # v2: terminal events carry the fill quantity, so they must not collide
+        # with an earlier same-digest event recorded without one.
+        version = "v2" if terminal_order else "v1"
+        key = f"operator-recovery-{version}:{digest}"
         await store.record_native_evidence(
             lineage.envelope,
             NativeOrderEvidence(

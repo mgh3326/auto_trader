@@ -18,6 +18,7 @@ def upgrade() -> None:
             symbol TEXT NOT NULL,
             quantity BIGINT NOT NULL,
             read_digest TEXT NOT NULL,
+            observed_at TIMESTAMPTZ NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             CONSTRAINT ck_kis_mock_position_baseline_quantity CHECK (quantity >= 0),
             CONSTRAINT ck_kis_mock_position_baseline_digest CHECK (read_digest ~ '^[0-9a-f]{64}$')

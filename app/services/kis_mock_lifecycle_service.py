@@ -78,7 +78,7 @@ class KISMockLifecycleService:
         # Lazy: the client is built only if a claim reaches the balance read.
         position_reader = store.position_reader() if record_dispatch_evidence else None
         try:
-            return await recover_kis_mock_dispatch_claims(
+            result = await recover_kis_mock_dispatch_claims(
                 store=store,
                 claims=claims,
                 reader=reader,
@@ -88,8 +88,15 @@ class KISMockLifecycleService:
                 position_reader=position_reader,
             )
         finally:
+            close_failed = False
             if position_reader is not None:
-                await position_reader.close()
+                try:
+                    await position_reader.close()
+                except Exception:  # noqa: BLE001 - keep the claim-by-claim report
+                    close_failed = True
+        if close_failed:
+            result["position_reader_close"] = "failed"
+        return result
 
     async def list_open_orders(
         self,

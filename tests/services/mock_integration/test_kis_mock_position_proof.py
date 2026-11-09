@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
 from app.services.kis_mock_recovery import recover_kis_mock_dispatch_claims
 from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceConflict,
@@ -365,9 +366,15 @@ class _Result:
         return self._row
 
 
-def store_with_baseline(baseline):
+def store_with_baseline(baseline, committed_fills=(1,)):
     session = MagicMock()
     session.execute = AsyncMock(return_value=_Result(baseline))
+    session.scalars = AsyncMock(
+        return_value=[
+            SimpleNamespace(payload={"filled_quantity": value})
+            for value in committed_fills
+        ]
+    )
     session.commit = AsyncMock()
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=session)
@@ -437,18 +444,26 @@ def lineage():
     [
         (None, "position_baseline_unavailable"),
         (
-            SimpleNamespace(symbol="000660", quantity=1, created_at=ORDERED),
+            SimpleNamespace(
+                symbol="000660", quantity=1, created_at=ORDERED, observed_at=ORDERED
+            ),
             "position_baseline_unavailable",
         ),
         (
             SimpleNamespace(
-                symbol=SYMBOL, quantity=1, created_at=ORDERED + timedelta(seconds=1)
+                symbol=SYMBOL,
+                quantity=1,
+                created_at=ORDERED + timedelta(seconds=1),
+                observed_at=ORDERED,
             ),
             "position_baseline_stale",
         ),
         (
             SimpleNamespace(
-                symbol=SYMBOL, quantity=1, created_at=ORDERED - timedelta(seconds=301)
+                symbol=SYMBOL,
+                quantity=1,
+                created_at=ORDERED - timedelta(seconds=1),
+                observed_at=ORDERED - timedelta(seconds=301),
             ),
             "position_baseline_stale",
         ),
@@ -462,7 +477,10 @@ async def test_baseline_must_exactly_precede_the_claim(baseline, reason):
 
 async def test_baseline_committed_just_before_the_claim_is_returned():
     baseline = SimpleNamespace(
-        symbol=SYMBOL, quantity=4, created_at=ORDERED - timedelta(seconds=300)
+        symbol=SYMBOL,
+        quantity=4,
+        created_at=ORDERED - timedelta(seconds=1),
+        observed_at=ORDERED - timedelta(seconds=300),
     )
     assert await store_with_baseline(baseline).load_position_baseline(lineage()) == 4
 
@@ -473,3 +491,43 @@ async def test_baseline_rejects_a_snapshot_for_another_symbol():
     snapshot = BalanceSnapshot("000660", 1, DURING_SESSION, "d" * 64)
     with pytest.raises(KISMockEvidenceConflict):
         await store.record_position_baseline(envelope, snapshot)
+
+
+async def test_store_refuses_a_proof_that_contradicts_committed_fills():
+    _, envelope = _attempt_envelope()
+    store = store_with_baseline(
+        SimpleNamespace(symbol=SYMBOL, quantity=5), committed_fills=(5,)
+    )
+    with pytest.raises(KISMockEvidenceConflict, match="position_proof_mismatch"):
+        await store.record_native_evidence(
+            envelope, evidence(PositionProof("buy", 5, 1, 6, "d" * 64))
+        )
+    store._append.assert_not_awaited()
+
+
+async def test_reader_accepts_an_eight_digit_mock_account():
+    last = ({"output1": [], **OK_TAIL}, {"tr_cont": "D"})
+    client = balance_client([last])
+    client._settings.kis_account_no = "12345678"
+    await read_complete_domestic_balance(client)
+    params = client._request_with_rate_limit_with_headers.await_args.kwargs["params"]
+    assert (params["CANO"], params["ACNT_PRDT_CD"]) == ("12345678", "01")
+
+
+async def test_reader_close_failure_keeps_the_claim_report(ctx):
+    position_reader = MagicMock(close=AsyncMock(side_effect=RuntimeError("close")))
+    position_reader.side_effect = None
+    ctx.store.position_reader = MagicMock(return_value=position_reader)
+    ctx.store.load_position_baseline.side_effect = PositionUnproven(
+        "position_baseline_unavailable"
+    )
+    result = await KISMockLifecycleService(MagicMock()).recover_dispatch_claims(
+        store=ctx.store,
+        claims=MagicMock(),
+        reader=AsyncMock(return_value=ctx.row),
+        dry_run=False,
+        confirm=True,
+        record_dispatch_evidence=True,
+    )
+    assert result["position_reader_close"] == "failed"
+    assert result["claims"][0]["status"] == "retained"

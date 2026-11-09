@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.services.brokers.kis import constants
+from app.services.brokers.kis.account_no import parse_kis_account_parts
 
 MAX_BALANCE_PAGES = 10
 MAX_BASELINE_AGE = timedelta(seconds=300)
@@ -143,9 +144,9 @@ def reconcile_position(
 async def read_complete_domestic_balance(client: Any) -> list[tuple[dict, dict]]:
     """Fetch every VTTC8434R page; a page cap is a truncated read."""
     await client._ensure_token()
-    account_no = re.sub(r"\D", "", client._settings.kis_account_no)
-    if len(account_no) != 10:
-        raise PositionUnproven("position_read_malformed")
+    cano, product_code = parse_kis_account_parts(
+        client._settings.kis_account_no, is_mock=True
+    )
     pages: list[tuple[dict, dict]] = []
     fk, nk, request_cont = "", "", ""
     for _ in range(MAX_BALANCE_PAGES):
@@ -159,8 +160,8 @@ async def read_complete_domestic_balance(client: Any) -> list[tuple[dict, dict]]
                 "tr_cont": request_cont,
             },
             params={
-                "CANO": account_no[:8],
-                "ACNT_PRDT_CD": account_no[8:],
+                "CANO": cano,
+                "ACNT_PRDT_CD": product_code,
                 "AFHR_FLPR_YN": "N",
                 "OFL_YN": "",
                 "INQR_DVSN": "00",

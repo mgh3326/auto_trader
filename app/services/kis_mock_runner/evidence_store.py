@@ -63,6 +63,7 @@ _POSITION_BASELINE = Table(
     Column("symbol", Text, nullable=False),
     Column("quantity", BigInteger, nullable=False),
     Column("read_digest", Text, nullable=False),
+    Column("observed_at", TIMESTAMP(timezone=True), nullable=False),
     Column("created_at", TIMESTAMP(timezone=True)),
     schema="review",
 )
@@ -402,7 +403,11 @@ class KISMockEvidenceStore:
         envelope: LineageEnvelope,
         evidence: NativeOrderEvidence,
     ) -> None:
-        """No caller's boolean can assert position; the proof must recompute."""
+        """A position bit needs a proof that matches the stored baseline and fills.
+
+        Read freshness and completeness are the producer's checks; this one
+        stops a caller from asserting arithmetic the committed rows contradict.
+        """
         proof = evidence.position_proof
         if not evidence.terminal.account_position_reconciled:
             if proof is not None:
@@ -432,6 +437,10 @@ class KISMockEvidenceStore:
             or proof.baseline_quantity != baseline.quantity
             or proof.filled_quantity != evidence.filled_quantity
             or proof.observed_quantity != expected
+            or await self._committed_fills(
+                session, row.order_attempt_id, evidence.broker_order_id
+            )
+            != {proof.filled_quantity}
         ):
             raise KISMockEvidenceConflict("position_proof_mismatch")
 
@@ -455,6 +464,7 @@ class KISMockEvidenceStore:
                 "symbol": snapshot.symbol,
                 "quantity": snapshot.quantity,
                 "read_digest": snapshot.read_digest,
+                "observed_at": snapshot.observed_at,
             }
             await session.execute(
                 insert(_POSITION_BASELINE).values(**values).on_conflict_do_nothing()
@@ -491,28 +501,36 @@ class KISMockEvidenceStore:
             raise PositionUnproven("position_baseline_unavailable")
         if (
             baseline.created_at > lineage.created_at
-            or lineage.created_at - baseline.created_at > MAX_BASELINE_AGE
+            or baseline.observed_at > lineage.created_at
+            or lineage.created_at - baseline.observed_at > MAX_BASELINE_AGE
         ):
             raise PositionUnproven("position_baseline_stale")
         return int(baseline.quantity)
+
+    async def _committed_fills(
+        self, session: AsyncSession, attempt_id: str, odno: str | None
+    ) -> set[Any]:
+        events = await session.scalars(
+            select(KISMockDispatchEvidence).where(
+                KISMockDispatchEvidence.order_attempt_id == attempt_id,
+                KISMockDispatchEvidence.broker_order_id == odno,
+                KISMockDispatchEvidence.kind.in_(_TERMINAL_FILL_KINDS),
+            )
+        )
+        return {
+            event.payload["filled_quantity"]
+            for event in events
+            if type(event.payload) is dict and "filled_quantity" in event.payload
+        }
 
     async def attributed_filled_quantity(self, claim: RediscoveredKISMockClaim) -> int:
         """Return the one fill quantity committed for this exact attempt and ODNO."""
         if claim.order_attempt_id is None or claim.broker_order_id is None:
             raise PositionUnproven("attributed_fills_unavailable")
         async with self._session_factory() as session:
-            events = await session.scalars(
-                select(KISMockDispatchEvidence).where(
-                    KISMockDispatchEvidence.order_attempt_id == claim.order_attempt_id,
-                    KISMockDispatchEvidence.broker_order_id == claim.broker_order_id,
-                    KISMockDispatchEvidence.kind.in_(_TERMINAL_FILL_KINDS),
-                )
+            values = await self._committed_fills(
+                session, claim.order_attempt_id, claim.broker_order_id
             )
-            values = {
-                event.payload["filled_quantity"]
-                for event in events
-                if type(event.payload) is dict and "filled_quantity" in event.payload
-            }
         if len(values) != 1:
             raise PositionUnproven("attributed_fills_unavailable")
         quantity = values.pop()

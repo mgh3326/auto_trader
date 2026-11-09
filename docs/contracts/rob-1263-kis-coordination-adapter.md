@@ -312,7 +312,7 @@ statements above that no source proves position, for recovery run with the exist
 
 **Baseline** is the exact-account holding of the plan symbol, read through the same complete
 balance reader, and committed once per order attempt to the append-only
-`review.kis_mock_position_baseline` **before** the claim row exists. It must be at most 300
+`review.kis_mock_position_baseline` **before** the claim row exists. The read must be at most 300
 seconds older than the claim. The installed route must call
 `KISMockEvidenceStore.record_position_baseline` before reserving; until then no baseline exists
 and every claim is retained as `position_baseline_unavailable`. The ledger's
@@ -330,7 +330,7 @@ and every claim is retained as `position_baseline_unavailable`. The ledger's
 | I8 | Evidence binds the exact attributed ODNO on the claim's KST day inside the claim-to-ACK window; reuse on another day never matches, absence is never evidence | row, lineage | otherwise uncertain | `_classify_readback`, `readback_by_exact_odno` | ROB-1461 ODNO reuse rule | `readback_incomplete_or_inconsistent` |
 | I9 | Release = terminal evidence AND position proof AND the common AND gate AND exact claim owner, deleting exactly one row | all above | any miss → retained | `_recover_one`, `release_with_recorded_terminal_evidence`, `release_with_terminal_evidence` | existing gate unchanged | `status=released` only then |
 | I10 | Position proof is attributable only when this is the sole surviving claim on the account | rediscovered claims | otherwise retained | `recover_kis_mock_dispatch_claims` | account uncertainty gate | `position_other_claim_unresolved` |
-| I11 | The store refuses `account_position_reconciled=True` unless the attached proof recomputes against the stored baseline and the event's fills | evidence, baseline | otherwise conflict, no write | `record_native_evidence` | I3, I4 | `KISMockEvidenceConflict` |
+| I11 | The store refuses `account_position_reconciled=True` unless the attached proof recomputes against the stored baseline and the fills committed for this attempt; read freshness stays a producer check | evidence, baseline | otherwise conflict, no write | `record_native_evidence` | I3, I4 | `KISMockEvidenceConflict` |
 | I12 | Proof-backed release appends a new event; an earlier unproven event is never upgraded | evidence key | new key binds order and balance digests | `_append` uniqueness | existing append-only tables | one additional `terminal_reconciliation` |
 
 **Still not proof:** the ledger holdings baseline, `fetch_my_stocks` (it hides truncation and
