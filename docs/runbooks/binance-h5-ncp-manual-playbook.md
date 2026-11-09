@@ -327,8 +327,10 @@ flags and `--confirm-demo`.
    (its correlation id starts with `binance-h5:` and matches the held signal,
    see §6). Any other failing check, a root or position you cannot attribute
    to H5, foreign exposure or an uncertain state means stop and report.
-2. Run one manage-only tick. It exits after one tick; there is no `--loop`
-   variant and no container to name or remove.
+2. Run one manage-only tick. It exits after one tick and there is no container
+   to name or remove. H5 has no exchange-side stop (§7), so while the position
+   is open no process is watching its stops: this step is attended work that
+   continues without a gap until the gate in step 3 passes.
 
 ```bash
 docker run --rm --network host --env-file "$env_file" -e BINANCE_H5_DEMO_ENABLED=true -e BINANCE_FUTURES_DEMO_ENABLED=true "$image" /app/.venv/bin/python -m scripts.binance_h5_demo --once --manage-only --confirm-demo
@@ -337,8 +339,11 @@ docker run --rm --network host --env-file "$env_file" -e BINANCE_H5_DEMO_ENABLED
    `"event": "close_sent"` means the reduce-only close went out. Exit status 2
    (`blocked`, `close_uncertain`) means follow §9 and do not repeat the command
    until broker evidence resolves it. `"event": "entries_skipped_manage_only"`
-   means no exit rule fired on that tick: do not close by hand; report and
-   repeat the tick later.
+   means no exit rule fired on that tick: do not close by hand. Run the same
+   command again every minute (the runner's own polling interval) and stay on
+   it, handling any alert or exit status 2 by §9, until a tick reports
+   `close_sent` and step 3 passes. If you cannot stay on it, report to the
+   director rather than leaving the position unobserved.
 3. Run the truth gate again (§4). Retirement is done only when it passes:
    position flat, no open order, H5 state empty and no open ledger root. A partial close leaves the
    gate failing: run the manage-only tick again.
