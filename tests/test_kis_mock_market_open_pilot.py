@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -77,7 +78,7 @@ async def test_dry_run_calls_only_typed_kis_mock_place_order_with_forced_dry_run
         is_regular_session=lambda: False,
     )
 
-    assert result.status == "submitted"
+    assert result.status == "ready"
     assert result.dry_run is True
     assert result.response == {
         "ok": True,
@@ -99,6 +100,142 @@ async def test_dry_run_calls_only_typed_kis_mock_place_order_with_forced_dry_run
             "reason": "ROB-95 KIS mock market-open pilot dry-run",
         }
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"success": False, "error_code": "confirm_required", "mutation_sent": False},
+        {"success": True, "dry_run": True},
+        {"success": True, "mutation_sent": False},
+        {"success": False, "pre_send_blocked": True},
+        {"success": True, "status": "simulated", "order_id": "preview-only"},
+        {"success": True, "status": "not_sent", "order_id": "not-sent"},
+        {"success": True, "status": "rejected", "order_id": "rejected"},
+    ],
+)
+async def test_submit_refusal_or_not_sent_is_never_reported_submitted(response) -> None:
+    route = AsyncMock(return_value=response)
+    approval = expected_kis_mock_submit_approval_text(
+        symbol="005930", side="buy", quantity=1, price=Decimal("229500")
+    )
+    result = await run_kis_mock_market_open_pilot(
+        KisMockMarketOpenPilotRequest(
+            mode="submit-mock",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=Decimal("229500"),
+            approval_text=approval,
+        ),
+        kis_mock_place_order=route,
+        is_regular_session=lambda: True,
+    )
+    assert result.status == "blocked"
+    assert result.response == response
+    assert "confirm" not in route.await_args.kwargs
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_submit_unknown_outcome_is_not_reported_as_submitted_or_refused() -> None:
+    response = {"success": False, "outcome_unknown": True, "error": "timeout"}
+    route = AsyncMock(return_value=response)
+    approval = expected_kis_mock_submit_approval_text(
+        symbol="005930", side="buy", quantity=1, price=Decimal("229500")
+    )
+    result = await run_kis_mock_market_open_pilot(
+        KisMockMarketOpenPilotRequest(
+            mode="submit-mock",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=Decimal("229500"),
+            approval_text=approval,
+        ),
+        kis_mock_place_order=route,
+        is_regular_session=lambda: True,
+    )
+    assert result.status == "unknown"
+    assert result.response == response
+    assert "confirm" not in route.await_args.kwargs
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_submit_success_without_order_evidence_is_unknown() -> None:
+    response = {"success": True}
+    route = AsyncMock(return_value=response)
+    approval = expected_kis_mock_submit_approval_text(
+        symbol="005930", side="buy", quantity=1, price=Decimal("229500")
+    )
+    result = await run_kis_mock_market_open_pilot(
+        KisMockMarketOpenPilotRequest(
+            mode="submit-mock",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=Decimal("229500"),
+            approval_text=approval,
+        ),
+        kis_mock_place_order=route,
+        is_regular_session=lambda: True,
+    )
+    assert result.status == "unknown"
+    assert result.report_status is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_refusal_is_blocked_not_submitted() -> None:
+    response = {"success": False, "error": "preview unavailable"}
+    result = await run_kis_mock_market_open_pilot(
+        KisMockMarketOpenPilotRequest(
+            mode="dry-run",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=Decimal("229500"),
+        ),
+        kis_mock_place_order=AsyncMock(return_value=response),
+        is_regular_session=lambda: True,
+    )
+    assert result.status == "blocked"
+    assert result.response == response
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pilot_does_not_confirm_a_real_dedicated_mock_tool(monkeypatch) -> None:
+    from app.mcp_server.tooling import order_execution, orders_kis_variants
+    from tests._mcp_tooling_support import DummyMCP
+
+    mcp = DummyMCP()
+    orders_kis_variants.register_kis_mock_order_tools(mcp)
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    place = AsyncMock()
+    monkeypatch.setattr(order_execution, "_place_order_impl", place)
+    approval = expected_kis_mock_submit_approval_text(
+        symbol="005930", side="buy", quantity=1, price=Decimal("229500")
+    )
+    result = await run_kis_mock_market_open_pilot(
+        KisMockMarketOpenPilotRequest(
+            mode="submit-mock",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=Decimal("229500"),
+            approval_text=approval,
+        ),
+        kis_mock_place_order=mcp.tools["kis_mock_place_order"],
+        is_regular_session=lambda: True,
+    )
+    assert result.status == "blocked"
+    assert result.response is not None
+    assert result.response["error_code"] == "confirm_required"
+    place.assert_not_awaited()
 
 
 @pytest.mark.unit

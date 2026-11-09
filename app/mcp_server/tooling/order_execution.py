@@ -7,6 +7,7 @@ Business logic lives in order_validation and order_journal.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import time
 import uuid
@@ -91,6 +92,7 @@ from app.services.kis_mock_attribution import (
     KisMockAttribution,
     MissingAttribution,
     mark_signal_outcome,
+    mint_correlation_id,
     record_signal,
     resolve_attribution,
 )
@@ -2320,6 +2322,27 @@ async def _place_order_impl(
             else None
         )
 
+        # Public rung orders are separate decisions even when their terms match.
+        attribution_correlation_id = correlation_id
+        if (
+            is_mock
+            and reserve_mock_derived_idempotency
+            and correlation_id is None
+            and rung is not None
+            and str(rung)
+        ):
+            rung_discriminator = int.from_bytes(
+                hashlib.sha256(str(rung).encode("utf-8")).digest(), "big"
+            )
+            attribution_correlation_id = mint_correlation_id(
+                symbol=normalized_symbol,
+                side=side_lower,
+                price=_to_float(dry_run_result.get("price"), default=0.0),
+                quantity=_to_float(dry_run_result.get("quantity"), default=0.0),
+                kst_trade_day=now.astimezone(KST).strftime("%Y-%m-%d"),
+                rung=rung_discriminator,
+            )
+
         # Real execution
         execution_result = await _execute_and_record(
             normalized_symbol=normalized_symbol,
@@ -2345,7 +2368,7 @@ async def _place_order_impl(
             defensive_trim_ctx=defensive_trim_ctx,
             order_error_fn=_order_error,
             is_mock=is_mock,
-            correlation_id=correlation_id,
+            correlation_id=attribution_correlation_id,
             report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
             approval_hash_digest=approval_digest,
             idempotency_key=idempotency_key,
@@ -2390,25 +2413,28 @@ async def _place_order_impl(
             market_type,
             exc,
         )
-        await _record_order_history(
-            symbol=normalized_symbol,
-            side=side_lower,
-            order_type=order_type_lower,
-            quantity=quantity,
-            price=price,
-            amount=0,
-            reason=reason,
-            dry_run=True,
-            error=describe_exception(exc),
-            defensive_trim=defensive_trim_ctx is not None,
-            approval_issue_id=(
-                defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
-            ),
-            requester_agent_id=(
-                defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
-            ),
-            caller_source=get_caller_source() if defensive_trim_ctx else None,
-        )
+        if not (is_mock and dry_run):
+            await _record_order_history(
+                symbol=normalized_symbol,
+                side=side_lower,
+                order_type=order_type_lower,
+                quantity=quantity,
+                price=price,
+                amount=0,
+                reason=reason,
+                dry_run=True,
+                error=describe_exception(exc),
+                defensive_trim=defensive_trim_ctx is not None,
+                approval_issue_id=(
+                    defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+                ),
+                requester_agent_id=(
+                    defensive_trim_ctx.requester_agent_id
+                    if defensive_trim_ctx
+                    else None
+                ),
+                caller_source=get_caller_source() if defensive_trim_ctx else None,
+            )
         # ROB-645: a timed-out order send has an unknown outcome — tell the caller
         # to reconcile instead of re-sending (order retries are disabled).
         base_error = _order_error(describe_exception(exc))

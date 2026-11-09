@@ -496,6 +496,35 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _kis_mock_non_kis_market_error(
+    order_id: str, symbol: str | None, market: str | None
+) -> dict[str, Any] | None:
+    """Prevent KIS mock MCP requests from being routed to another broker."""
+    try:
+        market_type = _parse_holdings_market_filter(market)
+        if symbol:
+            try:
+                symbol_market, _ = _resolve_market_type(symbol.strip(), None)
+            except ValueError:
+                if market_type is None:
+                    raise
+            else:
+                if market_type is None or symbol_market == "crypto":
+                    market_type = symbol_market
+        elif market_type is None and "-" in order_id and len(order_id.strip()) == 36:
+            market_type = "crypto"
+    except ValueError:
+        market_type = "unsupported"
+    if market_type is None or market_type in ("equity_kr", "equity_us"):
+        return None
+    return {
+        "success": False,
+        "error_code": "kis_mock_non_kis_market",
+        "error": "KIS mock orders support only KR and US equity markets.",
+        "account_mode": "kis_mock",
+    }
+
+
 def _validate_cancel_inputs(
     order_id: str,
     symbol: str | None,
@@ -1718,9 +1747,16 @@ async def _modify_kis_domestic(
 ) -> dict[str, Any]:
     """Modify a KIS domestic (Korean equity) order."""
     if is_mock:
-        return await _modify_kis_mock_domestic(
-            order_id, normalized_symbol, market_type, new_price, new_quantity, dry_run
-        )
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external(market_type),
+            "error_code": "kis_mock_modify_unavailable",
+            "error": "KIS KR mock modification is unavailable pending hk 3745.",
+            "dry_run": dry_run,
+        }
     try:
         kis = _create_kis_client(is_mock=is_mock)
         try:

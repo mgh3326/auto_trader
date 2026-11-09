@@ -11,6 +11,7 @@ from app.mcp_server.tooling.account_modes import (
     normalize_account_mode,
 )
 from app.mcp_server.tooling.orders_modify_cancel import (
+    _kis_mock_non_kis_market_error,
     cancel_order_impl,
     modify_order_impl,
 )
@@ -499,6 +500,9 @@ def register_order_tools(mcp: FastMCP) -> None:
                 routing,
             )
         if routing.is_kis_mock:
+            market_error = _kis_mock_non_kis_market_error(order_id, symbol, market)
+            if market_error:
+                return apply_account_routing_metadata(market_error, routing)
             if _is_kr_order(symbol, market):
                 return apply_account_routing_metadata(
                     _use_dedicated_mock_tool("kis_mock_cancel_order"), routing
@@ -562,6 +566,9 @@ def register_order_tools(mcp: FastMCP) -> None:
                 routing,
             )
         if routing.is_kis_mock:
+            market_error = _kis_mock_non_kis_market_error(order_id, symbol, market)
+            if market_error:
+                return apply_account_routing_metadata(market_error, routing)
             if _is_kr_order(symbol, market):
                 return apply_account_routing_metadata(
                     _use_dedicated_mock_tool("kis_mock_modify_order"), routing

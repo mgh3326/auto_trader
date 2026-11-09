@@ -945,6 +945,99 @@ async def test_public_mock_same_content_different_rungs_send_twice(
         assert order_path["events"].count("broker_send") == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_public_mock_distinct_rungs_commit_distinct_strategy_signals(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch, market: str
+) -> None:
+    from app.services.kis_mock_attribution import record_signal
+
+    class SignalDB:
+        def __init__(self) -> None:
+            self.rows: dict[str, dict[str, Any]] = {}
+            self.committed: set[str] = set()
+            self.last_correlation = ""
+
+        async def execute(self, stmt: Any) -> Any:
+            values = {
+                getattr(key, "key", str(key)): value.value
+                for key, value in stmt._values.items()
+            }
+            self.last_correlation = values["correlation_id"]
+            if self.last_correlation in self.rows:
+                return SimpleNamespace(scalar_one_or_none=lambda: None)
+            values["id"] = len(self.rows) + 1
+            self.rows[self.last_correlation] = values
+            return SimpleNamespace(scalar_one_or_none=lambda: values["id"])
+
+        async def scalar(self, stmt: Any) -> int:
+            return self.rows[self.last_correlation]["id"]
+
+        async def commit(self) -> None:
+            self.committed = set(self.rows)
+
+    store = SignalDB()
+    wire_snapshots: list[set[str]] = []
+
+    @asynccontextmanager
+    async def session():
+        yield store
+
+    async def send(**kwargs: Any) -> dict[str, Any]:
+        wire_snapshots.append(set(store.committed))
+        return {"odno": "0000117058", "rt_cd": "0", "msg1": "ok"}
+
+    tool, params = _public_mock_place(monkeypatch, market)
+    monkeypatch.setattr(order_execution, "_order_session_factory", lambda: session)
+    monkeypatch.setattr(order_execution, "record_signal", record_signal)
+    monkeypatch.setattr(order_execution, "_execute_order", send)
+    params["strategy"] = "strategy-one"
+    first = await tool(**params, rung="one")
+    params["strategy"] = "strategy-two"
+    second = await tool(**params, rung="two")
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert len(store.rows) == 2
+    assert {row["strategy"] for row in store.rows.values()} == {
+        "strategy-one",
+        "strategy-two",
+    }
+    assert [len(snapshot) for snapshot in wire_snapshots] == [1, 2]
+    outcome_ids = [
+        call.kwargs["correlation_id"]
+        for call in order_execution.mark_signal_outcome.await_args_list
+    ]
+    assert len(set(outcome_ids)) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+@pytest.mark.parametrize("rung", [None, ""])
+async def test_public_mock_without_rung_keeps_original_attribution_identity(
+    order_path: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    market: str,
+    rung: str | None,
+) -> None:
+    from app.services import kis_mock_attribution
+
+    now = datetime.datetime(2026, 11, 9, tzinfo=datetime.UTC)
+    monkeypatch.setattr(order_execution, "now_kst", lambda: now)
+    monkeypatch.setattr(kis_mock_attribution, "now_kst", lambda: now)
+    tool, params = _public_mock_place(monkeypatch, market)
+    record = AsyncMock()
+    monkeypatch.setattr(order_execution, "record_signal", record)
+
+    result = await tool(**params, rung=rung)
+
+    assert result["success"] is True
+    expected = kis_mock_attribution.mint_correlation_id(
+        symbol=params["symbol"], side="buy", price=100.0, quantity=1.0
+    )
+    assert record.await_args.kwargs["attribution"].correlation_id == expected
+
+
 @pytest.fixture
 def kr_edge_path(
     order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch
@@ -1320,6 +1413,51 @@ async def test_kis_mock_modify_without_capability_reaches_domestic_wire(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["impl", "dedicated"])
+@pytest.mark.parametrize(("new_price", "new_quantity"), [(71000.0, None), (None, 1.0)])
+async def test_kr_mock_modify_is_unavailable_before_db_or_broker(
+    monkeypatch: pytest.MonkeyPatch,
+    caller: str,
+    new_price: float | None,
+    new_quantity: float | None,
+) -> None:
+    resolve = AsyncMock(return_value=_mock_ledger_order())
+    update = AsyncMock()
+    wire = AsyncMock(return_value={"odno": "new-order"})
+    client = SimpleNamespace(modify_korea_order=wire)
+    monkeypatch.setattr(kis_mock_ledger, "resolve_mock_order_for_cancel", resolve)
+    monkeypatch.setattr(kis_mock_ledger, "update_kis_mock_order_terms", update)
+    monkeypatch.setattr(
+        orders_modify_cancel, "_create_kis_client", lambda **kwargs: client
+    )
+    monkeypatch.setattr(
+        orders_modify_cancel, "_kr_security_type_or_none", AsyncMock(return_value=None)
+    )
+    kwargs = {
+        "order_id": "ORDER-1",
+        "symbol": "005930",
+        "market": "kr",
+        "new_price": new_price,
+        "new_quantity": new_quantity,
+        "dry_run": False,
+    }
+    if caller == "dedicated":
+        mcp = DummyMCP()
+        orders_kis_variants.register_kis_mock_order_tools(mcp)
+        monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+        result = await mcp.tools["kis_mock_modify_order"](**kwargs, confirm=True)
+    else:
+        result = await orders_modify_cancel.modify_order_impl(**kwargs, is_mock=True)
+
+    assert result["success"] is False
+    assert result["error_code"] == "kis_mock_modify_unavailable"
+    assert "3745" in result["error"]
+    resolve.assert_not_awaited()
+    update.assert_not_awaited()
+    wire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("filled", [4, 5])
 @pytest.mark.parametrize("new_quantity", [None, 3])
 async def test_kis_mock_partial_fill_modify_then_cancel_preserves_remainder(
@@ -1489,24 +1627,98 @@ async def test_mock_pre_send_release_does_not_delete_replacement_row(
         ),
     ],
 )
-@pytest.mark.parametrize(
-    ("dry_run", "confirm"), [(True, False), (True, True), (False, False)]
-)
-async def test_dedicated_mock_mutations_refuse_without_both_gates(
+async def test_dedicated_mock_mutations_refuse_unconfirmed_send(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
     args: dict[str, Any],
     delegate: str,
-    dry_run: bool,
-    confirm: bool,
 ) -> None:
     mcp = DummyMCP()
     orders_kis_variants.register_kis_mock_order_tools(mcp)
     call = AsyncMock(return_value={"success": True})
     monkeypatch.setattr(orders_kis_variants, delegate, call)
-    result = await mcp.tools[name](**args, dry_run=dry_run, confirm=confirm)
+    result = await mcp.tools[name](**args, dry_run=False, confirm=False)
     assert result["success"] is False
     call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirm", [False, True])
+async def test_dedicated_mock_place_preview_reads_without_order_or_ledger_write(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch, confirm: bool
+) -> None:
+    tool, params = _public_mock_place(monkeypatch, "kr")
+    params.update(dry_run=True, confirm=confirm)
+
+    result = await tool(**params)
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["quantity"] == 1.0
+    assert order_path["events"] == []
+    assert order_path["reservations"] == {}
+
+
+@pytest.mark.asyncio
+async def test_dedicated_mock_place_preview_error_does_not_write_history(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool, params = _public_mock_place(monkeypatch, "kr")
+    params.update(dry_run=True, confirm=False)
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(side_effect=ValueError("offline")),
+    )
+    history = AsyncMock()
+    monkeypatch.setattr(order_execution, "_record_order_history", history)
+
+    result = await tool(**params)
+
+    assert result["success"] is False
+    history.assert_not_awaited()
+    assert order_path["events"] == []
+    assert order_path["reservations"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirm", [False, True])
+async def test_dedicated_mock_modify_preview_never_calls_broker(
+    monkeypatch: pytest.MonkeyPatch, confirm: bool
+) -> None:
+    mcp = DummyMCP()
+    orders_kis_variants.register_kis_mock_order_tools(mcp)
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    client = AsyncMock()
+    monkeypatch.setattr(orders_modify_cancel, "_create_kis_client", client)
+    result = await mcp.tools["kis_mock_modify_order"](
+        order_id="ORDER-1",
+        symbol="005930",
+        new_price=70000,
+        dry_run=True,
+        confirm=confirm,
+    )
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["status"] == "simulated"
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dedicated_mock_cancel_preview_never_calls_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mcp = DummyMCP()
+    orders_kis_variants.register_kis_mock_order_tools(mcp)
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    cancel = AsyncMock()
+    monkeypatch.setattr(orders_kis_variants, "cancel_order_impl", cancel)
+    result = await mcp.tools["kis_mock_cancel_order"](
+        order_id="ORDER-1", market="kr", dry_run=True, confirm=False
+    )
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    cancel.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1659,3 +1871,92 @@ async def test_generic_us_mock_and_live_still_delegate(
     assert call.await_args.kwargs["is_mock"] is (account_mode == "kis_mock")
     if account_mode == "kis_live":
         assert "reserve_mock_derived_idempotency" not in call.await_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["dedicated", "generic"])
+@pytest.mark.parametrize(
+    ("order_id", "symbol", "market"),
+    [
+        ("ORDER-1", "KRW-BTC", "crypto"),
+        ("ORDER-1", "KRW-BTC", None),
+        ("ORDER-1", "KRW-BTC", "us"),
+        ("ORDER-1", "KRW-BTC", "kr"),
+        ("00000000-0000-0000-0000-000000000000", None, None),
+        ("ORDER-1", "005930", "forex"),
+    ],
+)
+async def test_mock_cancel_rejects_non_kis_market_before_upbit(
+    monkeypatch: pytest.MonkeyPatch,
+    caller: str,
+    order_id: str,
+    symbol: str | None,
+    market: str | None,
+) -> None:
+    mcp = DummyMCP()
+    orders_kis_variants.register_kis_mock_order_tools(mcp)
+    orders_registration.register_order_tools(mcp)
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    monkeypatch.setattr(orders_registration, "validate_kis_mock_config", lambda: [])
+    upbit = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(orders_modify_cancel, "_cancel_upbit", upbit)
+    delegate = AsyncMock(wraps=orders_modify_cancel.cancel_order_impl)
+    monkeypatch.setattr(orders_kis_variants, "cancel_order_impl", delegate)
+    monkeypatch.setattr(orders_registration, "cancel_order_impl", delegate)
+    if caller == "dedicated":
+        result = await mcp.tools["kis_mock_cancel_order"](
+            order_id=order_id, symbol=symbol, market=market, dry_run=False, confirm=True
+        )
+    else:
+        result = await mcp.tools["cancel_order"](
+            order_id=order_id, symbol=symbol, market=market, account_mode="kis_mock"
+        )
+    assert result["success"] is False
+    assert result["error_code"] == "kis_mock_non_kis_market"
+    delegate.assert_not_awaited()
+    upbit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["dedicated", "generic"])
+@pytest.mark.parametrize(
+    ("symbol", "market"),
+    [
+        ("KRW-BTC", "crypto"),
+        ("KRW-BTC", None),
+        ("KRW-BTC", "us"),
+        ("KRW-BTC", "kr"),
+        ("005930", "forex"),
+    ],
+)
+async def test_mock_modify_rejects_non_kis_market_before_upbit(
+    monkeypatch: pytest.MonkeyPatch,
+    caller: str,
+    symbol: str,
+    market: str | None,
+) -> None:
+    mcp = DummyMCP()
+    orders_kis_variants.register_kis_mock_order_tools(mcp)
+    orders_registration.register_order_tools(mcp)
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    monkeypatch.setattr(orders_registration, "validate_kis_mock_config", lambda: [])
+    upbit = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(orders_modify_cancel, "_modify_upbit", upbit)
+    delegate = AsyncMock(wraps=orders_modify_cancel.modify_order_impl)
+    monkeypatch.setattr(orders_kis_variants, "modify_order_impl", delegate)
+    monkeypatch.setattr(orders_registration, "modify_order_impl", delegate)
+    kwargs = {
+        "order_id": "ORDER-1",
+        "symbol": symbol,
+        "market": market,
+        "new_price": 100.0,
+        "dry_run": False,
+    }
+    if caller == "dedicated":
+        result = await mcp.tools["kis_mock_modify_order"](**kwargs, confirm=True)
+    else:
+        result = await mcp.tools["modify_order"](**kwargs, account_mode="kis_mock")
+    assert result["success"] is False
+    assert result["error_code"] == "kis_mock_non_kis_market"
+    delegate.assert_not_awaited()
+    upbit.assert_not_awaited()
