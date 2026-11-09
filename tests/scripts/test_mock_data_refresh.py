@@ -728,3 +728,23 @@ def test_missing_or_blank_bar_fields_parse_to_nan(monkeypatch):
             ["BTCUSDT"], date(2026, 11, 1), date(2026, 11, 1)
         )
     assert math.isnan(frame.iloc[0].close) and frame.iloc[0].volume == 100
+
+    truncated = [stamp, "10", "12", "9", "11", "100", stamp + 86400000 - 1]
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[truncated]))
+    ) as client:
+        frame = BinanceSource(JsonGet(client)).bars(
+            ["BTCUSDT"], date(2026, 11, 1), date(2026, 11, 1)
+        )
+    assert frame.iloc[0].close == 11 and math.isnan(frame.iloc[0].traded_value)
+
+    no_timestamp = [None, "10", "12", "9", "11", "100", stamp + 86400000 - 1]
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json=[no_timestamp])
+        )
+    ) as client:
+        with pytest.raises(ValueError, match="invalid Binance candle"):
+            BinanceSource(JsonGet(client)).bars(
+                ["BTCUSDT"], date(2026, 11, 1), date(2026, 11, 1)
+            )

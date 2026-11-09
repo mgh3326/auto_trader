@@ -70,6 +70,11 @@ def _number(value) -> float:
         return float("nan")
 
 
+def _field(row: list, index: int):
+    """Positional value, or None when a truncated row does not reach that position."""
+    return row[index] if index < len(row) else None
+
+
 def canonical(rows: list[dict], market: str) -> pd.DataFrame:
     frame = pd.DataFrame(rows, columns=COLUMNS)
     if not frame.empty:
@@ -264,8 +269,12 @@ class BinanceSource:
                 if not isinstance(page, list):
                     raise ValueError("invalid Binance klines")
                 for bar in page:
-                    stamp = int(bar[0])
-                    if stamp < cursor or stamp >= stop or int(bar[6]) >= stop:
+                    # Timestamps place the row on a date, so a missing one stays a contract error.
+                    try:
+                        stamp, close_time = int(bar[0]), int(bar[6])
+                    except (IndexError, TypeError, ValueError):
+                        raise ValueError("invalid Binance candle") from None
+                    if stamp < cursor or stamp >= stop or close_time >= stop:
                         raise ValueError("out-of-range Binance candle")
                     rows.append(
                         {
@@ -274,12 +283,12 @@ class BinanceSource:
                             .isoformat(),
                             "symbol": symbol,
                             **{
-                                k: _number(bar[i])
+                                k: _number(_field(bar, i))
                                 for i, k in enumerate(
                                     ("open", "high", "low", "close", "volume"), 1
                                 )
                             },
-                            "traded_value": _number(bar[7]),
+                            "traded_value": _number(_field(bar, 7)),
                             "action": False,
                         }
                     )
