@@ -99,7 +99,18 @@ async def _send(
             await recorder.update(order.client_order_id, status="uncertain")
         except Exception:
             raise exc
-        if order.side not in {"buy", "short"}:
+
+        def _continue_after_http_status(status_code: int | None) -> bool:
+            return (
+                status_code is not None
+                and 400 <= status_code < 500
+                and status_code not in {401, 403, 418, 429}
+            )
+
+        status_code = getattr(exc.response, "status_code", None)
+        if order.side not in {"buy", "short"} or not _continue_after_http_status(
+            status_code
+        ):
             raise
         return {
             "client_order_id": order.client_order_id,
