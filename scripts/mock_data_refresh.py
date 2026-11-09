@@ -15,7 +15,7 @@ from pathlib import Path
 import httpx
 import pandas as pd
 
-from research.crypto_universe.exclusions import crypto_exclusion_reason
+from research.crypto_universe.universe import crypto_exclusion_reason
 from research.stock_selection.dataset import decision_at, sessions, validate_bars
 from research.stock_selection.io import digest, read_bars
 from scripts.mock_data_sources import AlpacaSource, BinanceSource, JsonGet

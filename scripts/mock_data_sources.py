@@ -11,7 +11,7 @@ import httpx
 import pandas as pd
 
 from app.core.symbol import to_db_symbol
-from research.crypto_universe.exclusions import (
+from research.crypto_universe.universe import (
     STABLE_BASES,
     WRAPPED_DUPLICATE_BASES,
     is_leveraged_token,

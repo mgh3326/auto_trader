@@ -6,12 +6,12 @@ from datetime import date, timedelta
 
 import pytest
 
-from research.crypto_universe.exclusions import crypto_exclusion_reason
 from research.crypto_universe.universe import (
     EPISODE_SPLIT_GAP_DAYS,
     OutsideCoverageError,
     PairListing,
     PitUniverse,
+    crypto_exclusion_reason,
     derive_listing,
 )
 

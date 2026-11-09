@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from research.crypto_universe.exclusions import crypto_exclusion_reason
-from research.crypto_universe.universe import PitUniverse
+from research.crypto_universe.universe import PitUniverse, crypto_exclusion_reason
 from research.stock_selection.forward import make_lists
 
 BASELINE = "relative_volatility_20"

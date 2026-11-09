@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from app.services.mock_strategy.crypto_signals import daily_lists, load_binance_panel
-from research.crypto_universe import exclusions
+from research.crypto_universe import universe as crypto_universe
 from scripts import mock_data_sources
 from tests.services.mock_strategy.crypto_fixture import build_fixture
 
@@ -108,14 +108,19 @@ def test_producer_and_signal_builder_share_the_crypto_exclusion_definition():
     from scripts import mock_data_refresh
 
     assert (
-        mock_data_refresh.crypto_exclusion_reason is exclusions.crypto_exclusion_reason
+        mock_data_refresh.crypto_exclusion_reason
+        is crypto_universe.crypto_exclusion_reason
     )
-    assert crypto_signals.crypto_exclusion_reason is exclusions.crypto_exclusion_reason
-    assert mock_data_sources.STABLE_BASES is exclusions.STABLE_BASES
     assert (
-        mock_data_sources.WRAPPED_DUPLICATE_BASES is exclusions.WRAPPED_DUPLICATE_BASES
+        crypto_signals.crypto_exclusion_reason
+        is crypto_universe.crypto_exclusion_reason
     )
-    assert mock_data_sources.is_leveraged_token is exclusions.is_leveraged_token
+    assert mock_data_sources.STABLE_BASES is crypto_universe.STABLE_BASES
+    assert (
+        mock_data_sources.WRAPPED_DUPLICATE_BASES
+        is crypto_universe.WRAPPED_DUPLICATE_BASES
+    )
+    assert mock_data_sources.is_leveraged_token is crypto_universe.is_leveraged_token
 
     def module_level_string_collection_definitions(path):
         def is_string_collection(node):
