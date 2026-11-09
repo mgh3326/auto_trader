@@ -102,6 +102,8 @@ The deploy refuses to start before any pull or container change when
 unit is skipped). The server itself refuses a blank or missing `MCP_PROFILE`
 (#1189), so this unit can never come up as DEFAULT.
 
+`paper_reconcile_orders`는 주문 배치 시점 이후의 일봉을 조회해 후보 날짜를 찾고, 해당 날짜의 1분봉을 확인해 첫 지정가 터치를 체결로 기록합니다. `filled_at`은 트리거 1분봉 시작 시각이며 결과의 `fill_basis`는 `simulated_bar_touch`입니다. 이 paper 체결은 시뮬레이션이고 스프레드·슬리피지·부분 체결은 반영하지 않습니다.
+
 ## Enabling (operator only)
 
 1. Environment: the fixed units, this one included, run with both deploy env

@@ -22,7 +22,10 @@ from typing import Any
 import pytest
 
 from app.core.timezone import now_kst
-from app.services.paper_limit_order_service import PaperLimitOrderService
+from app.services.paper_limit_order_service import (
+    PaperLimitOrderService,
+    _first_crossing_bar_start,
+)
 from app.services.paper_trading_service import PaperTradingService
 
 
@@ -51,13 +54,267 @@ def _candle(low: Decimal, high: Decimal, timestamp: dt.datetime | None = None) -
     c = _C()
     c.low = low
     c.high = high
-    c.timestamp = timestamp
+    c.timestamp = timestamp or (now_kst() + dt.timedelta(minutes=2)).replace(
+        second=0, microsecond=0, tzinfo=None
+    )
     return c
 
 
 def _uniq(prefix: str) -> str:
     """Per-test unique account name (shared ``db_session`` does not rollback)."""
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _upbit_day_start(ts: dt.datetime) -> dt.datetime:
+    aware = ts.replace(tzinfo=now_kst().tzinfo) if ts.tzinfo is None else ts
+    aware = aware.astimezone(now_kst().tzinfo)
+    day = aware.date() if aware.hour >= 9 else aware.date() - dt.timedelta(days=1)
+    return dt.datetime.combine(day, dt.time(9), tzinfo=aware.tzinfo)
+
+
+def _dated_bar(low: Decimal, high: Decimal, timestamp: dt.datetime) -> Any:
+    return _candle(low, high, timestamp.replace(tzinfo=None))
+
+
+def _before_end(bars: list[Any], end: dt.datetime | None) -> list[Any]:
+    if end is None:
+        return bars
+    cutoff = end.replace(tzinfo=None)
+    return [bar for bar in bars if bar.timestamp < cutoff]
+
+
+def _on_upbit_day_before_end(bars: list[Any], end: dt.datetime) -> list[Any]:
+    day_start = _upbit_day_start(end - dt.timedelta(seconds=1))
+    return [
+        bar
+        for bar in _before_end(bars, end)
+        if _upbit_day_start(bar.timestamp) == day_start
+    ]
+
+
+def test_first_crossing_bar_helper_ignores_touch_before_placement() -> None:
+    placed_at = dt.datetime(2026, 11, 1, 12, 0, tzinfo=now_kst().tzinfo)
+    day = _upbit_day_start(placed_at)
+    daily = [_dated_bar(Decimal("1"), Decimal("3"), day)]
+    found = _first_crossing_bar_start(
+        side="buy",
+        limit_price=Decimal("2"),
+        daily_bars=daily,
+        minute_bars=[
+            _dated_bar(Decimal("1"), Decimal("3"), placed_at - dt.timedelta(minutes=1))
+        ],
+        placed_at=placed_at,
+        current_day_start=day,
+    )
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fills_touch_three_days_before_call_at_bar_start(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models.paper_trading import PaperPendingOrder
+
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("paper-old-touch"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    placed = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("90000000"),
+        amount=Decimal("100000"),
+    )
+    order = await db_session.get(PaperPendingOrder, placed["order_id"])
+    placed_at = now_kst() - dt.timedelta(days=4)
+    order.placed_at = placed_at
+    await db_session.commit()
+    trigger = _upbit_day_start(placed_at) + dt.timedelta(days=1, hours=2, minutes=15)
+    daily = [
+        _dated_bar(
+            Decimal("91000000"), Decimal("92000000"), _upbit_day_start(placed_at)
+        ),
+        _dated_bar(Decimal("89000000"), Decimal("91000000"), _upbit_day_start(trigger)),
+    ]
+    minute = [_dated_bar(Decimal("88000000"), Decimal("91000000"), trigger)]
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        if period == "day":
+            return _before_end(daily, end)
+        return _on_upbit_day_before_end(minute, end) if end else []
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
+    )
+    detail = await svc.get_pending_order(
+        account_id=acct.id, order_id=placed["order_id"]
+    )
+    assert res["filled"] == 1
+    assert detail["filled_at"] == trigger
+    assert detail["fill_basis"] == "simulated_bar_touch"
+    assert detail["fill_bar_start"] == trigger
+    assert res["filled_orders"][0]["fill_bar_start"] == trigger.isoformat()
+    all_orders = await svc.list_pending_orders(account_id=acct.id, status=None)
+    assert all_orders[0]["fill_basis"] == "simulated_bar_touch"
+    from app.mcp_server.tooling.paper_limit_order_handler import _serialize_order
+
+    assert _serialize_order(all_orders[0])["fill_bar_start"] == trigger.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_minute_fetch_failure_isolated_and_counted(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models.paper_trading import PaperPendingOrder
+
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("paper-incomplete"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    ids = {}
+    for symbol in ("KRW-ETH", "KRW-BTC"):
+        placed = await svc.place_limit_order(
+            account_id=acct.id,
+            symbol=symbol,
+            side="buy",
+            limit_price=Decimal("90000000"),
+            amount=Decimal("100000"),
+        )
+        ids[symbol] = placed["order_id"]
+        row = await db_session.get(PaperPendingOrder, placed["order_id"])
+        row.placed_at = now_kst() - dt.timedelta(days=2)
+    await db_session.commit()
+    placed_at = now_kst() - dt.timedelta(days=2)
+    trigger = _upbit_day_start(placed_at) + dt.timedelta(days=1, hours=3)
+    daily = [
+        _dated_bar(
+            Decimal("91000000"), Decimal("92000000"), _upbit_day_start(placed_at)
+        ),
+        _dated_bar(Decimal("89000000"), Decimal("91000000"), _upbit_day_start(trigger)),
+    ]
+    minute = [_dated_bar(Decimal("88000000"), Decimal("91000000"), trigger)]
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        if period == "day":
+            return _before_end(daily, end)
+        if symbol == "KRW-ETH":
+            raise RuntimeError("fake OHLCV failure")
+        return _on_upbit_day_before_end(minute, end) if end else []
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    res = await svc.reconcile_pending_orders(account_id=acct.id)
+    assert res["filled"] == 1
+    assert res["scan_incomplete"] == 1
+    assert (await svc.get_pending_order(account_id=acct.id, order_id=ids["KRW-ETH"]))[
+        "status"
+    ] == "pending"
+    assert (await svc.get_pending_order(account_id=acct.id, order_id=ids["KRW-BTC"]))[
+        "status"
+    ] == "filled"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_applies_orders_in_trigger_bar_order(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models.paper_trading import PaperPendingOrder
+
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("paper-trigger-order"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    day_start = _upbit_day_start(now_kst()) - dt.timedelta(days=1)
+    placed_early = day_start + dt.timedelta(hours=10)
+    placed_late = day_start + dt.timedelta(hours=11)
+    trigger_early = day_start + dt.timedelta(hours=12)
+    trigger_late = day_start + dt.timedelta(hours=13)
+    for symbol in ("KRW-BTC", "KRW-ETH"):
+        placed = await svc.place_limit_order(
+            account_id=acct.id,
+            symbol=symbol,
+            side="buy",
+            limit_price=Decimal("90000000"),
+            amount=Decimal("100000"),
+        )
+        row = await db_session.get(PaperPendingOrder, placed["order_id"])
+        row.placed_at = placed_early if symbol == "KRW-BTC" else placed_late
+    await db_session.commit()
+    effective_now = day_start + dt.timedelta(hours=14)
+    daily = [_dated_bar(Decimal("89000000"), Decimal("91000000"), day_start)]
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        if period == "day":
+            return _before_end(daily, end)
+        trigger = trigger_early if symbol == "KRW-ETH" else trigger_late
+        bars = [_dated_bar(Decimal("88000000"), Decimal("91000000"), trigger)]
+        return _on_upbit_day_before_end(bars, end) if end else []
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    applied = []
+    execute_order = svc.pts.execute_order
+
+    async def _tracked_execute_order(**kwargs):
+        applied.append(kwargs["symbol"])
+        return await execute_order(**kwargs)
+
+    monkeypatch.setattr(svc.pts, "execute_order", _tracked_execute_order)
+    res = await svc.reconcile_pending_orders(account_id=acct.id, now=effective_now)
+    assert res["filled"] == 2, res
+    assert applied == ["KRW-ETH", "KRW-BTC"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_no_touch_stays_pending_with_bounded_requests(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models.paper_trading import PaperPendingOrder
+
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("paper-no-touch-bound"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    placed = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("50000000"),
+        amount=Decimal("100000"),
+    )
+    row = await db_session.get(PaperPendingOrder, placed["order_id"])
+    row.placed_at = now_kst() - dt.timedelta(days=3)
+    await db_session.commit()
+    calls = 0
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        nonlocal calls
+        calls += 1
+        if period == "day":
+            return _before_end(
+                [
+                    _dated_bar(
+                        Decimal("89000000"),
+                        Decimal("91000000"),
+                        _upbit_day_start(row.placed_at),
+                    )
+                ],
+                end,
+            )
+        return []
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
+    )
+    assert res["filled"] == 0
+    assert await svc.list_pending_orders(account_id=acct.id)
+    # At most one daily request plus 8 one-minute pages for each edge day.
+    assert calls <= 17
 
 
 @pytest.mark.asyncio
@@ -145,11 +402,15 @@ async def test_reconcile_fills_when_market_crosses(
     )
     order_id = place["order_id"]
 
+    bar = _candle(Decimal("89000000"), Decimal("91000000"))
+
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
-        return [_candle(Decimal("89000000"), Decimal("91000000"))]
+        return _before_end([bar], end)
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
-    res = await svc.reconcile_pending_orders(account_id=acct.id)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
+    )
     assert res["success"]
     assert res["filled"] == 1
     assert res["reconciled"] == 1
@@ -185,8 +446,10 @@ async def test_reconcile_no_cross_stays_pending(
         amount=Decimal("100000"),
     )
 
+    bar = _candle(Decimal("89000000"), Decimal("91000000"))
+
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
-        return [_candle(Decimal("89000000"), Decimal("91000000"))]
+        return _before_end([bar], end)
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
     res = await svc.reconcile_pending_orders(account_id=acct.id)
@@ -256,12 +519,16 @@ async def test_reconcile_sell_fills_when_high_touches(
     )
     assert buy["success"]
 
+    bar = _candle(Decimal("89000000"), Decimal("91000000"))
+
     async def _bars_cross(symbol, market, period, count, end=None):  # noqa: ARG001
         # dips enough to trigger the buy
-        return [_candle(Decimal("89000000"), Decimal("91000000"))]
+        return _before_end([bar], end)
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars_cross)
-    await svc.reconcile_pending_orders(account_id=acct.id)
+    await svc.reconcile_pending_orders(
+        account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
+    )
     positions = await pts.get_positions(acct.id)
     btc_pos = next(p for p in positions if p["symbol"] == "KRW-BTC")
     sell = await svc.place_limit_order(
@@ -273,12 +540,16 @@ async def test_reconcile_sell_fills_when_high_touches(
     )
     assert sell["success"]
 
+    high_bar = _candle(Decimal("98000000"), Decimal("101000000"))
+
     async def _bars_high(symbol, market, period, count, end=None):  # noqa: ARG001
         # rises enough to trigger the sell
-        return [_candle(Decimal("98000000"), Decimal("101000000"))]
+        return _before_end([high_bar], end)
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars_high)
-    res = await svc.reconcile_pending_orders(account_id=acct.id)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
+    )
     assert res["filled"] == 1
     detail = await svc.get_pending_order(account_id=acct.id, order_id=sell["order_id"])
     assert detail["status"] == "filled"
@@ -307,10 +578,15 @@ async def test_reconcile_handles_tz_naive_upbit_timestamps(
     naive_after = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
 
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
-        return [_candle(Decimal("89000000"), Decimal("91000000"), naive_after)]
+        return _before_end(
+            [_candle(Decimal("89000000"), Decimal("91000000"), naive_after)], end
+        )
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
-    res = await svc.reconcile_pending_orders(account_id=acct.id, now=None)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id,
+        now=(naive_after + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+    )
     assert res["filled"] == 1, res  # must fill, not crash
 
 
@@ -335,10 +611,15 @@ async def test_reconcile_excludes_bars_before_placement(
     naive_before = now_kst().replace(tzinfo=None) - dt.timedelta(minutes=5)
 
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
-        return [_candle(Decimal("89000000"), Decimal("91000000"), naive_before)]
+        return _before_end(
+            [_candle(Decimal("89000000"), Decimal("91000000"), naive_before)], end
+        )
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
-    res = await svc.reconcile_pending_orders(account_id=acct.id, now=None)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id,
+        now=now_kst(),
+    )
     assert res["filled"] == 0, res
     assert len(await svc.list_pending_orders(account_id=acct.id)) == 1
 
@@ -366,7 +647,7 @@ async def test_reconcile_isolates_failure_no_double_fill(
     ts = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
 
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
-        return [_candle(Decimal("89000000"), Decimal("91000000"), ts)]
+        return _before_end([_candle(Decimal("89000000"), Decimal("91000000"), ts)], end)
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
     # Directly insert a crossing SELL pending order with no position -> execute_order raises.
@@ -386,14 +667,20 @@ async def test_reconcile_isolates_failure_no_double_fill(
     db_session.add(bad)
     await db_session.commit()
 
-    res = await svc.reconcile_pending_orders(account_id=acct_id, now=None)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct_id,
+        now=(ts + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+    )
     assert res["filled"] == 1, res  # A filled; the bad sell did not abort the batch
 
     # A must now be 'filled' and NOT re-fillable.
     trades1 = await pts.get_trade_history(acct_id, limit=50)
     btc_trades1 = [t for t in trades1 if t["symbol"] == "KRW-BTC"]
     assert len(btc_trades1) == 1, btc_trades1
-    await svc.reconcile_pending_orders(account_id=acct_id, now=None)
+    await svc.reconcile_pending_orders(
+        account_id=acct_id,
+        now=(ts + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+    )
     trades2 = await pts.get_trade_history(acct_id, limit=50)
     btc_trades2 = [t for t in trades2 if t["symbol"] == "KRW-BTC"]
     assert len(btc_trades2) == 1, f"double-fill: {btc_trades2}"
@@ -522,12 +809,19 @@ async def test_reconcile_failure_does_not_skip_later_orders(
         symbol: str, market: str, period: str, count: int, end: Any = None
     ) -> Any:
         if symbol == "KRW-ETH":  # sell limit 1_000_000 crossed by high 2_000_000
-            return [_candle(Decimal("500000"), Decimal("2000000"), ts)]
-        return [_candle(Decimal("89000000"), Decimal("91000000"), ts)]  # buy crossed
+            return _before_end(
+                [_candle(Decimal("500000"), Decimal("2000000"), ts)], end
+            )
+        return _before_end(
+            [_candle(Decimal("89000000"), Decimal("91000000"), ts)], end
+        )  # buy crossed
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
 
-    res = await svc.reconcile_pending_orders(account_id=acct.id, now=None)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id,
+        now=(ts + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+    )
     # bad sell fails, but the later good buy MUST still fill in this same pass
     assert res["filled"] == 1, res
     pending = await svc.list_pending_orders(account_id=acct.id)
