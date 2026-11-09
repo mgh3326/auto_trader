@@ -1,6 +1,7 @@
 """Offline acceptance tests for broad, atomic paper-runner data snapshots."""
 
 import json
+import math
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -740,3 +741,111 @@ def test_real_binance_failure_after_partial_fetch_preserves_snapshot(
     assert (tmp_path / "crypto").resolve() == generation
     assert before == {p.name: p.read_bytes() for p in generation.iterdir()}
     assert len(list((tmp_path / ".crypto-snapshots").iterdir())) == 1
+
+
+def corrupting(source, corrupt):
+    """Invalidate one mid-history field of each named symbol in the fetched bars."""
+    original = source.bars
+
+    def bars(symbols, start, end):
+        frame = original(symbols, start, end).copy()
+        for symbol, column, value in corrupt:
+            rows = frame.index[frame.symbol == symbol]
+            frame.loc[rows[len(rows) // 2], column] = value
+        return frame
+
+    source.bars = bars
+    return source
+
+
+@pytest.mark.parametrize("market", ["us", "crypto"])
+def test_malformed_symbols_are_excluded_and_publication_succeeds(tmp_path, market):
+    source = FakeSource(market, count=5)
+    # The two highest-volume names are malformed, so exclusion cannot hide behind ranking.
+    bad = source.names[-2:]
+    corrupting(source, [(bad[0], "close", float("nan")), (bad[1], "low", 0.0)])
+    meta = producer.refresh(tmp_path, source, now=NOW, limit=3, top_n=1)
+    assert {s: meta["excluded"][s] for s in bad} == dict.fromkeys(bad, "malformed_bars")
+    assert meta["symbols"] == 3 and meta["candidate_symbols"] == 5
+    bars, actual = read_bars(tmp_path, market)
+    candidates = pd.read_csv(
+        tmp_path / market / "candidates.csv", dtype={"symbol": str}
+    )
+    assert actual == meta
+    assert not set(bad) & (set(bars.symbol) | set(candidates.symbol))
+    assert set(bars.symbol) == set(source.names[:-2]) | {"__benchmark__"}
+    validate_bars(bars, market)
+
+
+@pytest.mark.parametrize("market", ["us", "crypto"])
+def test_malformed_benchmark_aborts_and_keeps_previous_snapshot(tmp_path, market):
+    source = FakeSource(market)
+    producer.refresh(tmp_path, source, now=NOW, limit=20)
+    before, meta = read_bars(tmp_path, market)
+    generation = (tmp_path / market).resolve()
+    corrupting(source, [(source.benchmark, "close", float("nan"))])
+    with pytest.raises(ValueError, match="benchmark"):
+        producer.refresh(tmp_path, source, now=NOW + timedelta(days=1), limit=20)
+    after, new_meta = read_bars(tmp_path, market)
+    pd.testing.assert_frame_equal(before, after)
+    assert meta == new_meta and (tmp_path / market).resolve() == generation
+    assert len(list((tmp_path / f".{market}-snapshots").iterdir())) == 1
+
+
+def test_validate_bars_still_rejects_a_nan_close():
+    rows = [
+        {
+            "date": "2026-11-02",
+            "symbol": "ABC",
+            "open": 10.0,
+            "high": 11.0,
+            "low": 9.0,
+            "close": float("nan"),
+            "volume": 1.0,
+            "traded_value": 1.0,
+            "action": False,
+        }
+    ]
+    with pytest.raises(ValueError, match="OHLC must be finite and positive"):
+        validate_bars(canonical(rows, "us"), "us")
+
+
+def test_missing_or_blank_bar_fields_parse_to_nan(monkeypatch):
+    monkeypatch.setenv("ALPACA_DATA_API_KEY_ID", "test-key")
+    monkeypatch.setenv("ALPACA_DATA_API_SECRET_KEY", "test-secret")
+    monkeypatch.setattr("scripts.mock_data_sources.time.sleep", lambda _: None)
+    alpaca_bar = {"t": "2026-10-30T04:00:00Z", "o": 10, "h": 12, "l": 9, "v": 100}
+    stamp = int(datetime(2026, 11, 1, tzinfo=UTC).timestamp() * 1000)
+    binance_row = [
+        stamp,
+        "10",
+        "12",
+        "9",
+        "",
+        "100",
+        stamp + 86400000 - 1,
+        "1234",
+        10,
+        "0",
+        "0",
+        "0",
+    ]
+
+    def alpaca(request):
+        return httpx.Response(
+            200, json={"bars": {"ABC": [alpaca_bar]}, "next_page_token": None}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(alpaca)) as client:
+        frame = AlpacaSource(JsonGet(client), "iex").bars(
+            ["ABC"], date(2026, 10, 30), date(2026, 10, 30)
+        )
+    assert math.isnan(frame.iloc[0].close) and math.isnan(frame.iloc[0].traded_value)
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[binance_row]))
+    ) as client:
+        frame = BinanceSource(JsonGet(client)).bars(
+            ["BTCUSDT"], date(2026, 11, 1), date(2026, 11, 1)
+        )
+    assert math.isnan(frame.iloc[0].close) and frame.iloc[0].volume == 100
