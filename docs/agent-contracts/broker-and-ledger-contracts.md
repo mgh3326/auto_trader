@@ -116,7 +116,7 @@ Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel
 - **실행 어댑터**: `app/services/brokers/binance/futures_demo/execution_client.BinanceFuturesDemoExecutionClient` — `demo-fapi.binance.com` only; mutation은 `submit_order(..., confirm=True)`만; close 주문에는 `reduce_only=True` 필수
 - **호스트 분리**: `FUTURES_DEMO_HOSTS = {demo-fapi.binance.com}`, Spot Demo (`demo-api.binance.com`)와 disjoint; live/testnet futures (`fapi.binance.com`, `testnet.binancefuture.com`) 차단
 - **env namespace**: `BINANCE_FUTURES_DEMO_*` 전용 (Spot Demo와 비공유)
-- **Leverage**: `1x` 강제 (`set_leverage` echo로 검증; mismatch → `BinanceFuturesDemoLeverageMismatch`)
+- **Leverage**: `1x` 강제 (`set_leverage` echo로 검증; mismatch → `BinanceFuturesDemoLeverageMismatch`). ROB-1474만 고정된 당일 short 배치에서 포지션·미체결이 없는 심볼을 확인 후 isolated와 1x로 설정할 수 있다. 해당 경로는 설정 후 재조회한다.
 - **Position mode**: One-way only (Hedge → `BinanceFuturesDemoHedgeModeBlocked`)
 - **Symbol allowlist**: `XRPUSDT` (default), `DOGEUSDT`, `SOLUSDT` (fallback). `BTCUSDT` 제외 (MIN_NOTIONAL=50 > cap=10). operator `--allow-symbol` override 시도해도 excluded list 우선
 - **Reconcile gate**: 클로즈 후 open orders empty AND position flat 둘 다 만족해야 `reconciled`. 둘 중 하나라도 dirty면 `anomaly` 기록
@@ -141,7 +141,7 @@ manifest와 signal provenance는 `stable_list`, `stable_peg_rule`,
 `docs/runbooks/rob1474-crypto-paper.md`를 따른다. 과거 날짜 membership은
 재작성하지 않는다.
 공통 US PR의 `review.mock_strategy_orders`와 recorder만 쓴다.
-모든 쓰기는 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
+주문 전송은 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
 일자별 배치 membership·입력 해시를 고정하고 partial close는 자기 체결 잔량만
 새 leg로 닫는다. dust는 열린 잔량이며 gross 실현 P&L은 청산 수량만이다.
 read-only preflight는 claim 전이며 전송 직전에도 반복한다. POST 전용 호출
@@ -151,7 +151,7 @@ due 에피소드별 증거 실패는 다른 청산을 막지 않고, 프로세�
 전파한다. 최초 opened_at은 refresh로 덮어쓰지 않는다.
 `MOCK_STRATEGY_ENABLED`와 기존 venue gate·confirm은 기본 off/명시 조건이다.
 기존 demo host·예상 credential fingerprint, Alpaca clean 예상 계정 검증을 유지한다.
-선물 isolated·1x·one-way 읽기 검증, cover reduceOnly 필수. 사이징 상한은
+선물은 배치 확정 후 해당 short 심볼이 isolated·1x가 아니면 one-way·BOTH, 포지션 없음과 미체결 없음을 확인하고 isolated 다음 1x로 설정할 수 있다. 기존 게이트·confirm을 유지하며 dry run은 변경하지 않는다. 변경 시도와 읽기 결과는 entry meta에 기록하고, 재조회 실패는 주문 전 거부다. position mode는 바꾸지 않는다. 선물 isolated·1x·one-way 읽기 검증, cover reduceOnly 필수. 사이징 상한은
 운영자 2026-11-02 결정의 이 경로만 제거하며 venue filter와 다른 전략 상수는
 유지한다. 스케줄 등록·실거래·배포 없음. 런북:
 `docs/runbooks/rob1474-crypto-paper.md`.

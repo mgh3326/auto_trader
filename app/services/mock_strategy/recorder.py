@@ -155,6 +155,23 @@ class MockStrategyRecorder:
             )
             return result.scalar_one_or_none() is not None
 
+    async def record_settings_event(self, client_order_id: str, event: dict) -> None:
+        async with self._sessions() as session, session.begin():
+            row = (
+                await session.scalars(
+                    select(MockStrategyOrder)
+                    .where(MockStrategyOrder.client_order_id == client_order_id)
+                    .with_for_update()
+                )
+            ).one()
+            if row.status != "planned":
+                raise ValueError("settings audit requires planned entry")
+            row.meta = {
+                **row.meta,
+                "settings_events": [*row.meta.get("settings_events", []), event],
+            }
+            await session.flush()
+
     async def update(
         self,
         client_order_id: str,

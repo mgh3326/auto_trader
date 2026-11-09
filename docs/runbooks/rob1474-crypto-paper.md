@@ -55,10 +55,15 @@ not replaced by lower-ranked names. ROB-993/H5/smoke strategy limits are unchang
   corresponding `BINANCE_SPOT_DEMO_EXPECTED_FINGERPRINT` or
   `BINANCE_FUTURES_DEMO_EXPECTED_FINGERPRINT` with the operator's expected
   `demo_credential_fingerprint` value. This binds credentials, not a new account.
-- Futures must already be isolated **1x**, one-way. The runner reads back all
-  three settings; missing or conflicting evidence blocks submission. It never
-  changes leverage, margin type or position mode. A preexisting long blocks it.
-  Covers always use `reduceOnly=true`, `positionSide=BOTH`.
+- Futures entries require isolated **1x**, one-way and `BOTH`. After fixing the
+  daily short batch, a confirmed run may set only its planned symbols to isolated
+  and then 1x, after proving the symbol has no position or open orders. It reads
+  back the settings before entry; missing or conflicting evidence refuses that
+  symbol. It never changes position mode. Attempts and observed settings are
+  recorded in entry metadata; successful changes appear in run output. A
+  broker-backed dry run with `--confirm` reports `would_set` without setters;
+  fixture-only runs cannot establish account settings. Covers always use
+  `reduceOnly=true`, `positionSide=BOTH`.
 - Alpaca uses the existing `clean` profile. Both configured expected account ID
   and account number suffixes are required and checked before broker operations.
   It also needs the Spot Demo gate/credentials/fingerprint for reference pricing.
