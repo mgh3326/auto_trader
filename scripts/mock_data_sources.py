@@ -62,6 +62,14 @@ NON_COMMON = re.compile(
 )
 
 
+def _number(value) -> float:
+    """Missing or unparseable numeric fields become NaN; validation excludes the symbol."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def canonical(rows: list[dict], market: str) -> pd.DataFrame:
     frame = pd.DataFrame(rows, columns=COLUMNS)
     if not frame.empty:
@@ -190,7 +198,7 @@ class AlpacaSource:
                                     "date": day.isoformat(),
                                     "symbol": to_db_symbol(symbol),
                                     **{
-                                        k: bar[v]
+                                        k: _number(bar.get(v))
                                         for k, v in (
                                             ("open", "o"),
                                             ("high", "h"),
@@ -199,7 +207,8 @@ class AlpacaSource:
                                             ("volume", "v"),
                                         )
                                     },
-                                    "traded_value": float(bar["c"]) * float(bar["v"]),
+                                    "traded_value": _number(bar.get("c"))
+                                    * _number(bar.get("v")),
                                     "action": False,
                                 }
                             )
@@ -265,12 +274,12 @@ class BinanceSource:
                             .isoformat(),
                             "symbol": symbol,
                             **{
-                                k: float(bar[i])
+                                k: _number(bar[i])
                                 for i, k in enumerate(
                                     ("open", "high", "low", "close", "volume"), 1
                                 )
                             },
-                            "traded_value": float(bar[7]),
+                            "traded_value": _number(bar[7]),
                             "action": False,
                         }
                     )

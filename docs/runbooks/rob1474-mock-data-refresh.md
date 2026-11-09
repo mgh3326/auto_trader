@@ -38,8 +38,7 @@ crypto top 150 by 30-complete-day summed quote volume, 400 days. `--limit`,
 `--lookback` and `--top-n` configure these. Minimum lookback is 260 US sessions /
 365 crypto days (the shared feature builder requires 364 crypto days). Require
 at least twice `top-n` complete symbols. A candidate with a missing session is
-reported in `excluded`, not forward filled. Successful empty symbol histories are also reported as excluded. Benchmark gaps,
-malformed bars, or insufficient complete symbols abort publication.
+reported in `excluded`, not forward filled. Successful empty symbol histories are also reported as excluded. A symbol with any malformed bar (non-finite or non-positive OHLC, inconsistent OHLC, negative or non-finite volume, or any other row `validate_bars` rejects) is excluded whole as `malformed_bars`: no repair, no forward fill, no partial history. Missing or blank numeric fields parse to NaN and fall into this case. Malformed or gapped benchmark bars (SPY, BTCUSDT) and insufficient complete symbols abort publication.
 
 Subsequent days fetch a seven-day overlap and append new bars to the candidate
 cache. Each successful fetch replaces the overlap only for symbols present in

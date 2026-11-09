@@ -564,3 +564,9 @@ present in the returned bars, including individual candle withdrawals. A request
 symbol absent from the response retains cached history but is reported as
 `refresh_data_unavailable` and excluded from current membership. HTTP/transport
 exceptions abort publication; older history and immutable generations remain.
+
+A symbol with any row that `validate_bars` rejects is excluded whole with reason
+`malformed_bars` before whole-frame validation; its rows reach neither `bars.csv`
+nor `candidates.csv`. Missing or blank numeric fields parse to NaN so they take
+this path. A malformed benchmark bar aborts publication. `validate_bars` itself is
+unchanged.
