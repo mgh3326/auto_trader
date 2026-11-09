@@ -321,9 +321,12 @@ opening order, whatever the market shows. The gates are unchanged: both demo
 flags and `--confirm-demo`.
 
 1. Stop any runner that is still up (§7) and run the truth gate (§4). Expect
-   FAIL on `positions_flat` and `h5_state_empty` only because of the H5
-   position; any other failing check, foreign exposure or an uncertain state
-   means stop and report.
+   FAIL on `positions_flat`, `h5_state_empty` and `demo_ledger_no_open_roots`
+   only because of the H5 position: its filled entry root stays open until the
+   close is reconciled. Before going on, confirm the open root belongs to H5
+   (its correlation id starts with `binance-h5:` and matches the held signal,
+   see §6). Any other failing check, a root or position you cannot attribute
+   to H5, foreign exposure or an uncertain state means stop and report.
 2. Run one manage-only tick. It exits after one tick; there is no `--loop`
    variant and no container to name or remove.
 
@@ -337,6 +340,6 @@ docker run --rm --network host --env-file "$env_file" -e BINANCE_H5_DEMO_ENABLED
    means no exit rule fired on that tick: do not close by hand; report and
    repeat the tick later.
 3. Run the truth gate again (§4). Retirement is done only when it passes:
-   position flat and no open order, H5 state empty. A partial close leaves the
+   position flat, no open order, H5 state empty and no open ledger root. A partial close leaves the
    gate failing: run the manage-only tick again.
 4. The lane is then retired. Do not start `--loop`.
