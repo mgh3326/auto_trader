@@ -17,6 +17,7 @@ from scripts.mock_data_sources import (
     JsonGet,
     canonical,
     crypto_assets,
+    crypto_static_exclusions,
     us_assets,
 )
 
@@ -275,6 +276,16 @@ def test_asset_filters():
     assert crypto_assets(
         {"symbols": [pair, *bad, {**pair, "symbol": "ETHUSDT", "status": "BREAK"}]}
     ) == ["BTCUSDT"]
+    static_pairs = [
+        {**pair, "symbol": f"{base}USDT", "baseAsset": base}
+        for base in ("BFUSD", "XUSD", "WBTC", "PAXG")
+    ]
+    assert crypto_assets({"symbols": static_pairs}) == ["PAXGUSDT"]
+    assert crypto_static_exclusions({"symbols": static_pairs}) == {
+        "BFUSDUSDT": "stable_list",
+        "XUSDUSDT": "stable_list",
+        "WBTCUSDT": "wrapped_duplicate",
+    }
 
 
 def test_alpaca_pagination_adjustment_feed_and_secret_errors(monkeypatch):

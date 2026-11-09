@@ -12,11 +12,12 @@ def _closes(count: int, *, cutoff: date, value: float = 1.0):
     return [(start + timedelta(days=i), value) for i in range(count)]
 
 
-def test_thirty_completed_daily_closes_prove_usd_peg():
+@pytest.mark.parametrize("close", [0.99, 1.01])
+def test_thirty_completed_daily_closes_prove_usd_peg(close):
     cutoff = date(2026, 11, 8)
     assert (
         crypto_exclusion_reason(
-            "NEWUSD", _closes(30, cutoff=cutoff, value=1.01), cutoff=cutoff
+            "NEWUSD", _closes(30, cutoff=cutoff, value=close), cutoff=cutoff
         )
         == "stable_peg_rule"
     )
