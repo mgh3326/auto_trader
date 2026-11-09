@@ -1,0 +1,377 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "ROB-1474-sweep",
+  "version": 1,
+  "title": "ROB-1474 multi-hypothesis sweep: seven simple rankers x five horizons x long-only/long-short, US and crypto",
+  "question": "Does any simple price/volume ranker beat seeded random selection, the equal-weight eligible universe and buy-and-hold over the same dates, names, horizon and cost, in an exploration window, and does a pre-registered carry-forward set repeat in one later validation window? Candidates for a separate paper test only; no promotion or deployment claim.",
+  "status": "sealed",
+  "markets": [
+    "us",
+    "crypto"
+  ],
+  "hashes": {
+    "preregistration_text": "this manifest; grid, controls, windows, carry-forward rule and stopping rules below are fixed before any validation read",
+    "code_sha256": "cab834639afcc5b3d36df4b5501f2d086a666825ba39cbe8a9840e6cf55ddaea",
+    "code_note": "sha256 over the sorted (file name, bytes) of research/selection_sweep/*.py at registration",
+    "us_name_list_sha256": "ce082e594e0ee4f96d86799a1a42f9d62150420b1dff6fe74d80ed224bc81712",
+    "us_pit_universe_csv_sha256": "e1578f21086f4ab51ee6894fdecb82d7f9a78cada970e2b2fad3a76067f7b77c",
+    "crypto_pit_universe_csv_sha256": "41659e788e490799cd61cec800e1b580c653895724e58f672a77432b8e45c715",
+    "crypto_candle_files_json_sha256": "8e68532a51f30ccedb4f3889bf927455da8a1aacce76ffdaf4b90093b3b27e6a",
+    "cost_table": "us=10,crypto=15 bps per side; long_only pays 2 sides, long_short pays 4 sides per vintage, no netting; identical for every control",
+    "grid_size": "140 = 2 markets x 7 rankers x 5 horizons x 2 sides"
+  },
+  "features": [
+    {
+      "name": "momentum_20, momentum_60 (adjusted close return over 20/60 sessions)",
+      "available_at": "decision at the close of session i (crypto: close of UTC day i, i.e. D+1 00:00); all rolling windows end at i; Yahoo adjusted vintage is current, so historical availability is diagnostic only",
+      "source": "Yahoo chart API adjusted OHLC (public); traded value = raw close*volume estimate; Binance USDT spot daily klines from crypto-universe-v1 exploration split; quote volume is actual"
+    },
+    {
+      "name": "reversal_5, reversal_1 (negative 5/1-session return)",
+      "available_at": "decision at the close of session i (crypto: close of UTC day i, i.e. D+1 00:00); all rolling windows end at i; Yahoo adjusted vintage is current, so historical availability is diagnostic only",
+      "source": "Yahoo chart API adjusted OHLC (public); traded value = raw close*volume estimate; Binance USDT spot daily klines from crypto-universe-v1 exploration split; quote volume is actual"
+    },
+    {
+      "name": "low_volatility_20 (negative sample std of 1-session returns over 20 sessions)",
+      "available_at": "decision at the close of session i (crypto: close of UTC day i, i.e. D+1 00:00); all rolling windows end at i; Yahoo adjusted vintage is current, so historical availability is diagnostic only",
+      "source": "Yahoo chart API adjusted OHLC (public); traded value = raw close*volume estimate; Binance USDT spot daily klines from crypto-universe-v1 exploration split; quote volume is actual"
+    },
+    {
+      "name": "high_distance_52w (close / rolling max high - 1; 252 US sessions, 364 crypto UTC days)",
+      "available_at": "decision at the close of session i (crypto: close of UTC day i, i.e. D+1 00:00); all rolling windows end at i; Yahoo adjusted vintage is current, so historical availability is diagnostic only",
+      "source": "Yahoo chart API adjusted OHLC (public); traded value = raw close*volume estimate; Binance USDT spot daily klines from crypto-universe-v1 exploration split; quote volume is actual"
+    },
+    {
+      "name": "volume_shock_20 (volume / mean of the preceding 20 sessions - 1)",
+      "available_at": "decision at the close of session i (crypto: close of UTC day i, i.e. D+1 00:00); all rolling windows end at i; Yahoo adjusted vintage is current, so historical availability is diagnostic only",
+      "source": "Yahoo chart API adjusted OHLC (public); traded value = raw close*volume estimate; Binance USDT spot daily klines from crypto-universe-v1 exploration split; quote volume is actual"
+    },
+    {
+      "name": "eligibility (all features known, positive volume today, top N by 20-session mean traded value; US N=100, crypto N=60; a date with fewer than 30 eligible names is skipped)",
+      "available_at": "decision at the close of session i (crypto: close of UTC day i, i.e. D+1 00:00); all rolling windows end at i; Yahoo adjusted vintage is current, so historical availability is diagnostic only",
+      "source": "same sources as above"
+    }
+  ],
+  "labels": [
+    {
+      "name": "open_to_open_return_h1",
+      "definition": "open of session i+1+1 over open of session i+1, minus 1; decision at close of session i; a series that ended before the exit session exits at its last close (terminal convention, counted); a hole inside a live series leaves the outcome unknown, never filled",
+      "horizon_sessions": 1
+    },
+    {
+      "name": "open_to_open_return_h3",
+      "definition": "open of session i+1+3 over open of session i+1, minus 1; decision at close of session i; a series that ended before the exit session exits at its last close (terminal convention, counted); a hole inside a live series leaves the outcome unknown, never filled",
+      "horizon_sessions": 3
+    },
+    {
+      "name": "open_to_open_return_h5",
+      "definition": "open of session i+1+5 over open of session i+1, minus 1; decision at close of session i; a series that ended before the exit session exits at its last close (terminal convention, counted); a hole inside a live series leaves the outcome unknown, never filled",
+      "horizon_sessions": 5
+    },
+    {
+      "name": "open_to_open_return_h10",
+      "definition": "open of session i+1+10 over open of session i+1, minus 1; decision at close of session i; a series that ended before the exit session exits at its last close (terminal convention, counted); a hole inside a live series leaves the outcome unknown, never filled",
+      "horizon_sessions": 10
+    },
+    {
+      "name": "open_to_open_return_h20",
+      "definition": "open of session i+1+20 over open of session i+1, minus 1; decision at close of session i; a series that ended before the exit session exits at its last close (terminal convention, counted); a hole inside a live series leaves the outcome unknown, never filled",
+      "horizon_sessions": 20
+    }
+  ],
+  "calendar": {
+    "us": "XNYS",
+    "crypto": "24/7"
+  },
+  "splits": {
+    "scheme": "no fitted parameter. Exploration = decision dates 2021-01-04..2023-12-31 with exit inside that window; features use history from 2019-06. Validation = decision dates 2024-02-01..2024-12-31 with exit inside that window, opened once. The window gap (all of January 2024) exceeds the longest horizon of 20 sessions.",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 20,
+    "gap_sessions": 20,
+    "folds": [
+      {
+        "train": [
+          "2019-06-03",
+          "2020-12-31"
+        ],
+        "validate": [
+          "2021-01-04",
+          "2023-12-31"
+        ]
+      }
+    ],
+    "test": {
+      "kind": "sealed_period",
+      "period": [
+        "2024-02-01",
+        "2024-12-31"
+      ],
+      "exposure_audit": "No registered experiment in this repository reads 2024 daily returns of these rankers: ROB-1474 diagnostics used 2022 samples, ROB-1441 is KR, the crypto and US universe packages store listings and candles but compute no returns. Unregistered work outside the repository cannot be ruled out. Crypto candles after 2024-12-31 (holdout files) are never opened, and the exploration command truncates every input at 2023-12-31.",
+      "seal_rule": "One look. A cell is validated only if the exploration run carried it forward under the rule in stopping_rules; the carry list is committed before any 2024 row is read. If no cell is carried forward there is no look and k does not change. The window is never reopened or extended."
+    }
+  },
+  "candidate_policies": [
+    {
+      "id": "random_selection",
+      "description": "200 seeded random draws of the same decile size from the same eligible names on the same dates (seed s, date index t -> numpy default_rng([s, t])); long_short draws disjoint long and short sets"
+    },
+    {
+      "id": "equal_weight_universe",
+      "description": "equal weight over the eligible names on the same dates, same horizon, same per-side cost"
+    },
+    {
+      "id": "benchmark_buy_and_hold",
+      "description": "SPY (US) or BTCUSDT (crypto) over the same open-to-open interval; the cost-matched excess equals the gross excess"
+    },
+    {
+      "id": "ranker_long_only",
+      "description": "long the top decile (ceil(10% of N)) by ranker score, equal weight, ties by symbol; excess reported over all three controls"
+    },
+    {
+      "id": "ranker_long_short",
+      "description": "long top decile and short bottom decile; reported as net spread, per-leg excess over equal-weight and benchmark (the legs add to the gross spread), and rank against the random long-short distribution"
+    }
+  ],
+  "costs_fills": {
+    "cost_table": "us=10,crypto=15 bps per side as in research/stock_selection; same cost on every control",
+    "fill_models": [
+      "fill at the next session open with the stated per-side cost, no slippage or capacity model, shorts assumed borrowable at no cost (diagnostic, not an executable NAV)",
+      "terminal exit at last close for a series that ended early; no payout is fabricated"
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 140,
+    "search": "none: the full grid is fixed and every cell is run once and logged in the trials ledger, including cells that fail or carry no information; no cell is added, dropped or re-parameterised after registration"
+  },
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200
+  ],
+  "metrics": {
+    "primary": "mean net excess per vintage: long_only = top-decile return minus equal-weight eligible-universe return; long_short = top minus bottom return minus 4 sides of cost",
+    "secondary": [
+      "long-only excess over benchmark",
+      "random-selection rank p = (1 + number of seeds whose mean >= observed) / 201",
+      "Newey-West t of the primary series with lags = horizon",
+      "per-year mean (2021-2023)",
+      "per-leg excess over equal-weight and benchmark",
+      "unknown-outcome share"
+    ],
+    "family": [
+      "140 exploration cells; at most 10 carried-forward validation cells, Bonferroni alpha 0.05 / m on the random-selection rank p"
+    ],
+    "alpha": "0.05",
+    "delta_min": "0.00"
+  },
+  "stopping_rules": [
+    "carry-forward rule (exploration only): net primary mean > 0 AND (long_short OR long-only excess over benchmark > 0) AND Newey-West t >= 2.0 AND random-selection rank p <= 0.05 AND primary mean positive in at least 2 of the 3 exploration years AND at least 100 measured vintages; if more than 10 cells qualify, the 10 with the largest t",
+    "validation pass flag per carried cell: net primary mean > 0 AND random-selection rank p <= 0.05 / m; a flag is not a promotion, deployment or live-gate verdict",
+    "if no cell is carried forward there is no validation look",
+    "any temporal leakage (a feature that reads past the decision close, a window that reads past its end) invalidates the run and needs a new manifest version",
+    "no policy, threshold or ranker change from interim results; paper results never select or tune these cells",
+    "survivor and point-in-time limits are stated in every report: the US names are a seeded sample of names listed at 2019-12-31 whose prices still exist on a public source, so late-delisted names are mostly absent; crypto includes delisted pairs but terminal exits are optimistic",
+    "no scheduling, DB, broker, account, credential, app/ change"
+  ],
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  }
+}
