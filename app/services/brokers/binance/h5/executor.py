@@ -573,7 +573,7 @@ class H5Executor:
         )
 
     async def run_tick(
-        self, *, now: dt.datetime, confirm: bool = False
+        self, *, now: dt.datetime, confirm: bool = False, manage_only: bool = False
     ) -> H5TickResult:
         self._guard(confirm=confirm)
         if now.tzinfo is None:
@@ -629,6 +629,13 @@ class H5Executor:
                     "blocked",
                     detail=f"forecast_recovery:{type(exc).__name__}",
                 )
+        if manage_only:
+            # Existing exposure is managed above; nothing below may open one.
+            return H5TickResult(
+                decision_ts,
+                "entries_skipped_manage_only",
+                detail="manage-only mode: no signal collection or entry",
+            )
         if await self.state.decision_processed(decision_ts):
             return H5TickResult(decision_ts, "already_processed")
         histories = {

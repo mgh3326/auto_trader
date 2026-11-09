@@ -215,6 +215,7 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   BinanceDemoLedgerService만 사용한다. H5 correlation과 signal_key는 DFC identity와
   독립이며 forecast는 실제 entry fill 후 저장하고 실제 held close 후 해소한다.
   predeclared 4h opportunity grid의 random control은 오프라인 계산만 수행한다.
+- **관리 전용 틱 (hk 3644)**: `scripts/binance_h5_demo.py --manage-only`(`--once`/`--loop` 공용)는 `H5Executor.run_tick(manage_only=True)`로 미해소 intent 정리·uncertain 차단·보유 포지션 관리(reduceOnly 청산)·forecast 복구까지만 실행하고 `entries_skipped_manage_only`로 끝난다. 신호 수집·사이징·진입 예약·개시 주문 전송에 도달하지 못하며 이 강제는 executor 안에 있다(기본값=기존 동작). 게이트·상수는 불변. H5 은퇴 시 마지막 포지션은 플레이북 §11 절차로만 닫는다(거래소 UI 수동 청산 금지 — H5 DB가 `holding`으로 남는다).
 - **권한**: 이 코드의 존재는 order permission이 아니다. 별도 operator contract의
   strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
   마이그레이션도 별도 운영 절차로 적용한다. 상세는

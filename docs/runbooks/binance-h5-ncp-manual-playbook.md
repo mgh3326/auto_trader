@@ -231,8 +231,10 @@ tmux kill-session -t h5-runner
 ```
 
 4. Run the truth gate (§4). If it shows an open H5 position the runner is the
-   only thing that can manage it: restart per §9, or close it by hand in the
-   demo UI. Do not leave it unattended.
+   only thing that can manage it: restart per §9, or, when the lane is being
+   retired, close it with the manage-only tick in §11. Never close it by hand in
+   the demo UI: H5 state would stay `holding` and every later close would fail
+   the broker-position check. Do not leave it unattended.
 
 Stopping the runner first leaves the watcher running; it will send one
 `heartbeat_missed` alert after 10 minutes. That is expected, not an incident.
@@ -307,3 +309,34 @@ tick.
   slip past its threshold (see [binance-h5-demo.md](binance-h5-demo.md)).
 - An exchange-side hard stop is tracked separately as #1076 (E2) and is not
   part of this playbook.
+
+## 11. Retire the lane: close the last position (manage-only)
+
+Use this only when the lane is being retired and an H5 position is still open.
+`--manage-only` runs the normal tick's management steps (reconcile unresolved
+orders, resolve uncertain state, apply the stop and exit rules to a holding
+position, recover forecasts) and then ends the tick with the event
+`entries_skipped_manage_only`. It never collects signals, sizes or sends an
+opening order, whatever the market shows. The gates are unchanged: both demo
+flags and `--confirm-demo`.
+
+1. Stop any runner that is still up (§7) and run the truth gate (§4). Expect
+   FAIL on `positions_flat` and `h5_state_empty` only because of the H5
+   position; any other failing check, foreign exposure or an uncertain state
+   means stop and report.
+2. Run one manage-only tick. It exits after one tick; there is no `--loop`
+   variant and no container to name or remove.
+
+```bash
+docker run --rm --network host --env-file "$env_file" -e BINANCE_H5_DEMO_ENABLED=true -e BINANCE_FUTURES_DEMO_ENABLED=true "$image" /app/.venv/bin/python -m scripts.binance_h5_demo --once --manage-only --confirm-demo
+```
+
+   `"event": "close_sent"` means the reduce-only close went out. Exit status 2
+   (`blocked`, `close_uncertain`) means follow §9 and do not repeat the command
+   until broker evidence resolves it. `"event": "entries_skipped_manage_only"`
+   means no exit rule fired on that tick: do not close by hand; report and
+   repeat the tick later.
+3. Run the truth gate again (§4). Retirement is done only when it passes:
+   position flat and no open order, H5 state empty. A partial close leaves the
+   gate failing: run the manage-only tick again.
+4. The lane is then retired. Do not start `--loop`.

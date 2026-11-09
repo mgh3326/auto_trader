@@ -49,6 +49,7 @@ HEALTHY_EVENTS = frozenset(
         "close_sent",
         "entry_filled",
         "entry_pending",
+        "entries_skipped_manage_only",
         "entry_sent",
         "no_complete_4h_bar",
         "no_entry",

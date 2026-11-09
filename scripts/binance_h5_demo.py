@@ -94,6 +94,11 @@ async def _report_stop(monitor: H5RunMonitor, *, operator: bool, reason: str) ->
         raise asyncio.CancelledError
 
 
+def _tick_kwargs(args: argparse.Namespace) -> dict[str, bool]:
+    """Default runs pass nothing extra, so they call run_tick exactly as before."""
+    return {"manage_only": True} if getattr(args, "manage_only", False) else {}
+
+
 async def _run_ticks(
     args: argparse.Namespace,
     *,
@@ -115,7 +120,9 @@ async def _run_ticks(
                 )
                 try:
                     result = await executor.run_tick(
-                        now=dt.datetime.now(dt.UTC), confirm=True
+                        now=dt.datetime.now(dt.UTC),
+                        confirm=True,
+                        **_tick_kwargs(args),
                     )
                     payload: dict[str, Any] = dataclasses.asdict(result)
                 except Exception as exc:
@@ -175,6 +182,11 @@ def main() -> None:
     mode.add_argument("--once", action="store_true")
     mode.add_argument("--loop", action="store_true")
     parser.add_argument("--confirm-demo", action="store_true")
+    parser.add_argument(
+        "--manage-only",
+        action="store_true",
+        help="manage existing positions only; never open a new entry",
+    )
     args = parser.parse_args()
     raise SystemExit(asyncio.run(_run(args)))
 
