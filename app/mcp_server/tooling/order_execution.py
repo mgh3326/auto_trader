@@ -954,6 +954,8 @@ async def _execute_and_record(
     approval_hash_digest: str | None = None,
     idempotency_key: str | None = None,
     reserve_mock_idempotency: bool = True,
+    mock_key_was_supplied: bool = True,
+    mock_rung: str | int | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
@@ -1127,8 +1129,8 @@ async def _execute_and_record(
     intent_account_scope: str | None = None
     intent_key: str | None = None
     intent_reserved = False
-    # The preview also derives a content key when no caller key was supplied.
-    # That generated key must not reserve distinct mock orders for the day.
+    # Internal callers may opt out of reserving the preview's derived key;
+    # public mock tools reserve it just as the live tools do.
     if (
         not is_mock
         and idempotency_key is not None
@@ -1321,7 +1323,7 @@ async def _execute_and_record(
             is_mock
             and market_type == "equity_kr"
             and submit_path == "edge"
-            and not reserve_mock_idempotency
+            and not mock_key_was_supplied
         ):
             edge_content = order_approval.build_order_canonical_payload(
                 market_type=market_type,
@@ -1331,8 +1333,14 @@ async def _execute_and_record(
                 quantity=None if order_quantity is None else str(order_quantity),
                 price=None if price is None else str(price),
             )
+            edge_components: dict[str, Any] = {
+                "correlation_id": correlation_id,
+                "order": edge_content,
+            }
+            if mock_rung is not None:
+                edge_components["rung"] = str(mock_rung)
             edge_identity = json.dumps(
-                {"correlation_id": correlation_id, "order": edge_content},
+                edge_components,
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -1912,6 +1920,7 @@ async def _place_order_impl(
     parking_sell_ctx: ParkingSellContext | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
+    reserve_mock_derived_idempotency: bool = False,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -2340,11 +2349,21 @@ async def _place_order_impl(
             report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
             approval_hash_digest=approval_digest,
             idempotency_key=idempotency_key,
-            reserve_mock_idempotency=client_order_id is not None,
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
             pre_send_hook=pre_send_hook,
             send_outcome=send_outcome,
+            **(
+                {
+                    "reserve_mock_idempotency": (
+                        client_order_id is not None or reserve_mock_derived_idempotency
+                    ),
+                    "mock_key_was_supplied": client_order_id is not None,
+                    "mock_rung": rung,
+                }
+                if is_mock
+                else {}
+            ),
         )
         # ROB-1460: a proposal-flow buy is recorded by revalidation, which has
         # the proposal's stated stop. A mock order has no plan.

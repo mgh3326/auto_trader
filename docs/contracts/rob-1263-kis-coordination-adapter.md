@@ -28,12 +28,14 @@ checks remain in force. Live paths are unchanged.
 
 The dedicated mock MCP place/cancel/modify tools require `dry_run=False` and
 `confirm=True` before delegation. Generic MCP KR mock mutations are refused
-with `kis_mock_use_dedicated_tool`; generic US mock and live routing and internal
-implementation callers retain their existing interfaces.
+with `kis_mock_use_dedicated_tool`. Public mock place calls reserve the same
+canonical-content, trading-day and `rung` key derived for live calls; the KR
+dedicated tool exposes an optional `rung`. Internal callers keep their existing
+keys, and live routing and the generic tool signatures remain unchanged.
 For KR mock edge submissions without an explicit client key, command identity
-is derived from the attribution correlation ID and canonical order content;
-the same correlation and content retain that ID across retries and trading
-days. An explicit client key remains the command ID.
+is derived from the attribution correlation ID, canonical order content and
+`rung`; the same values retain that ID across retries and trading days. An
+explicit client key remains the command ID.
 
 ---
 

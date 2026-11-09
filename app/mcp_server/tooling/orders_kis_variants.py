@@ -342,6 +342,11 @@ async def _place_order_variant(
             report_item_uuid=report_item_uuid,
             approval_hash=approval_hash,
             rung=rung,
+            **(
+                {"reserve_mock_derived_idempotency": True}
+                if _is_mock_mode(pinned_mode)
+                else {}
+            ),
         ),
         routing,
     )
@@ -825,6 +830,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
             "(KIS_MOCK_ENABLED, KIS_MOCK_APP_KEY, KIS_MOCK_APP_SECRET, "
             "KIS_MOCK_ACCOUNT_NO) is missing. "
             "Requires dry_run=False and confirm=True; otherwise no order is prepared. "
+            "Use distinct rung values for separate orders with identical terms. "
             "account_mode='kis_mock' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
@@ -851,6 +857,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
         report_item_uuid: str | None = None,
+        rung: str | int | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
         confirmation_error = _mock_mutation_confirmation_error(dry_run, confirm)
@@ -880,6 +887,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
             account_mode=account_mode,
             account_type=account_type,
             report_item_uuid=report_item_uuid,
+            rung=rung,
         )
 
     @mcp.tool(

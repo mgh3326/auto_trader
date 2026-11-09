@@ -374,6 +374,11 @@ def register_order_tools(mcp: FastMCP) -> None:
                 report_item_uuid=report_item_uuid,
                 approval_hash=approval_hash,
                 rung=rung,
+                **(
+                    {"reserve_mock_derived_idempotency": True}
+                    if routing.is_kis_mock
+                    else {}
+                ),
             ),
             routing,
         )

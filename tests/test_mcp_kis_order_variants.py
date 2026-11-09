@@ -371,6 +371,7 @@ class TestKisLivePlaceOrder:
             symbol="005930", side="buy", price=50000.0
         )
         assert captured.get("is_mock") is False
+        assert "reserve_mock_derived_idempotency" not in captured
 
     @pytest.mark.asyncio
     async def test_rejects_account_mode_kis_mock_argument(self) -> None:
@@ -810,6 +811,138 @@ async def test_kis_mock_identical_orders_reserve_only_explicit_keys(
             ("kis_mock", "item-2") in order_path["reservations"]
         ) is not explicit_key
     assert (("kis_mock", "client-key") in order_path["reservations"]) is explicit_key
+
+
+def _public_mock_place(
+    monkeypatch: pytest.MonkeyPatch, market: str
+) -> tuple[Any, dict[str, Any]]:
+    monkeypatch.setattr(
+        order_execution, "_fetch_current_price", AsyncMock(return_value=100.0)
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(
+            return_value={"price": 100.0, "quantity": 1.0, "estimated_value": 100.0}
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution, "_check_balance_and_warn", AsyncMock(return_value=(None, None))
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    monkeypatch.setattr(orders_registration, "validate_kis_mock_config", lambda: [])
+    mcp = DummyMCP()
+    orders_kis_variants.register_kis_mock_order_tools(mcp)
+    orders_registration.register_order_tools(mcp)
+    if market == "kr":
+        tool = mcp.tools["kis_mock_place_order"]
+        params = {"symbol": "005930", "confirm": True}
+    else:
+        tool = mcp.tools["place_order"]
+        params = {"symbol": "AAPL", "account_mode": "kis_mock"}
+    params.update(
+        side="buy", quantity=1, price=100.0, dry_run=False, strategy="test_strategy"
+    )
+    return tool, params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_public_mock_timeout_retry_never_sends_twice(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch, market: str
+) -> None:
+    sent: list[dict[str, Any]] = []
+    reservations_at_send: list[int] = []
+
+    async def timeout(**kwargs: Any) -> None:
+        reservations_at_send.append(len(order_path["reservations"]))
+        sent.append(kwargs)
+        raise httpx.ReadTimeout("test timeout")
+
+    tool, params = _public_mock_place(monkeypatch, market)
+    monkeypatch.setattr(order_execution, "_execute_order", timeout)
+
+    first = await tool(**params)
+    second = await tool(**params)
+
+    assert first.get("outcome_unknown") is True
+    assert second["success"] is False
+    assert len(sent) == 1
+    assert reservations_at_send == [1]
+    assert len(order_path["reservations"]) == 1
+    assert order_path["events"][0] == "signal_committed"
+    assert order_path["events"][1].startswith("reserve:")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_public_mock_same_content_same_rung_is_reserved_once(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch, market: str
+) -> None:
+    tool, params = _public_mock_place(monkeypatch, market)
+    first = await tool(**params, rung="same")
+    second = await tool(**params, rung="same")
+
+    assert first["success"] is True
+    assert second["success"] is False
+    assert len(order_path["reservations"]) == 1
+    assert order_path["events"].count("broker_send") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_public_mock_missing_strategy_stops_before_reserve_or_send(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch, market: str
+) -> None:
+    tool, params = _public_mock_place(monkeypatch, market)
+    params["strategy"] = None
+    result = await tool(**params)
+
+    assert result["error_code"] == "attribution_required"
+    assert order_path["reservations"] == {}
+    assert order_path["events"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market", "edge"), [("kr", False), ("kr", True), ("us", False)]
+)
+async def test_public_mock_same_content_different_rungs_send_twice(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch, market: str, edge: bool
+) -> None:
+    tool, params = _public_mock_place(monkeypatch, market)
+    commands: list[str] = []
+    if edge:
+
+        async def edge_send(*, command: Any, **kwargs: Any) -> dict[str, Any]:
+            commands.append(command.command_id)
+            return {"rt_cd": "0", "odno": "0000117058"}
+
+        monkeypatch.setattr(order_execution, "_execute_order", _real_execute_order)
+        monkeypatch.setattr(order_execution, "execute_kis_mock_command", edge_send)
+        monkeypatch.setattr(
+            order_execution, "get_kis_mock_edge_url", lambda: "http://127.0.0.1:1"
+        )
+        monkeypatch.setattr(
+            order_execution, "get_kr_security_type", AsyncMock(return_value=None)
+        )
+
+    first = await tool(**params, rung="one")
+    second = await tool(**params, rung="two")
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert len(order_path["reservations"]) == 2
+    if edge:
+        assert len(commands) == 2
+        assert commands[0] != commands[1]
+    else:
+        assert order_path["events"].count("broker_send") == 2
 
 
 @pytest.fixture
@@ -1524,3 +1657,5 @@ async def test_generic_us_mock_and_live_still_delegate(
     result = await mcp.tools[name](**args, account_mode=account_mode)
     assert result["success"] is True
     assert call.await_args.kwargs["is_mock"] is (account_mode == "kis_mock")
+    if account_mode == "kis_live":
+        assert "reserve_mock_derived_idempotency" not in call.await_args.kwargs

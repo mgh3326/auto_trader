@@ -35,6 +35,8 @@ def test_kis_mock_mutation_confirmation_defaults_snapshot() -> None:
     ):
         parameters = inspect.signature(mcp.tools[name]).parameters
         assert {key: parameters[key].default for key in expected} == expected
+    place_parameters = inspect.signature(mcp.tools["kis_mock_place_order"]).parameters
+    assert place_parameters["rung"].default is None
 
 
 @pytest.mark.parametrize("gates_enabled", [True, False], ids=["gates-on", "gates-off"])

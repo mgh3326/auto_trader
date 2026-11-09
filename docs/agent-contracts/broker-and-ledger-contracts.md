@@ -287,7 +287,7 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - amend/cancel 대상은 journal 의 idempotency key 로만 지정한다. Go 가 브로커 주문번호를 넘길 수 없으므로 같은 intent 가 보낸 주문에만 작용한다.
 - submit/amend 는 기존 `review.kis_mock_runner_control` 이 `ACTIVE` 일 때만 허용하고 읽기 실패는 차단이다. 🔴 cancel 은 kill·만료·상한을 보지 않는다(ROB-1440 운영자 계약). 이 예외는 gateway 경로에만 있고 runner 의 `mutation_permission` 표는 바뀌지 않았다. 단, 나중 child 가 `sending`/`uncertain` 이면 대상 주문번호를 믿을 수 없으므로 그 주문의 cancel 도 `target_superseded` 로 거부하고 reconcile 을 기다린다.
 - 체결은 여기에 기록하지 않는다. `accepted` 는 체결이 아니며, 기존 레저와 reconcile 이 그대로 권한자다.
-- 하위 가드는 우회하지 않는다. KR/US mock place 는 제공된 `idempotency_key` 를 `kis_mock` 범위로 전송 전에 예약하고, 귀속 신호 커밋과 기존 확인을 유지한다. KR mock 후속 작업은 자기 원장과 확인된 잔량을 요구하며 capability 나 coordinator lease 는 요구하지 않는다 (`hk:doc decision/2026-11-09/kis-mock-like-live`).
+- 하위 가드는 우회하지 않는다. KR/US mock place 는 제공된 `idempotency_key` 를 `kis_mock` 범위로 전송 전에 예약하고, 공개 MCP mock 주문은 live와 같은 주문 내용·거래일·`rung` 파생 키도 예약한다. 귀속 신호 커밋과 기존 확인은 유지한다. KR mock 후속 작업은 자기 원장과 확인된 잔량을 요구하며 capability 나 coordinator lease 는 요구하지 않는다 (`hk:doc decision/2026-11-09/kis-mock-like-live`).
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 
@@ -586,10 +586,13 @@ mock client·VTS host·자격증명 namespace 검사는 전송 전에 유지하�
 전용 MCP `kis_mock_place_order`/`kis_mock_cancel_order`/`kis_mock_modify_order` 는
 각각 `dry_run=False` AND `confirm=True` 가 아니면 네트워크·DB 쓰기 전에 거부한다.
 공용 MCP place/cancel/modify 의 KR mock 요청은 `kis_mock_use_dedicated_tool` 로
-해당 전용 도구를 안내하며, US mock·live 와 내부 impl 호출은 기존 경로를 유지한다.
+해당 전용 도구를 안내한다. 공개 KR/US mock place는 live와 같은 내용·거래일·
+`rung` 파생 키를 전송 전에 예약하므로 같은 날 동일 내용·`rung`의 재주문은 차단한다.
+KR 전용 place에도 선택적 `rung`이 있다. 내부 impl 호출자의 키와 live 경로는 유지한다.
 호출자가 `client_order_id` 를 주지 않은 KR mock edge 명령은 귀속 `correlation_id` 와
-정규화 주문 내용으로 안정적인 명령 ID를 만든다. 같은 귀속·내용의 재시도는 날짜가
-바뀌어도 같은 ID이고, 서로 다른 귀속이나 내용은 다른 ID다. 명시 ID는 변경하지 않는다.
+정규화 주문 내용 및 `rung`으로 안정적인 명령 ID를 만든다. 같은 귀속·내용·`rung`의
+재시도는 날짜가 바뀌어도 같은 ID이고, 서로 다른 귀속이나 내용·`rung`은 다른 ID다.
+명시 ID는 변경하지 않는다.
 
 KR mock only: `kis_mock_runner/evidence_store.py` provides durable lineage,
 dispatch evidence and restart uncertainty ports in two new append-only tables
