@@ -13,6 +13,7 @@ only the ``paper.paper_pending_orders`` / ``paper.paper_accounts`` /
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -44,6 +45,11 @@ def _serialize_order(order: dict[str, Any]) -> dict[str, Any]:
     """Coerce Decimal fields to float for the JSON MCP transport."""
     return {
         **order,
+        "fill_bar_start": (
+            order["fill_bar_start"].isoformat()
+            if isinstance(order.get("fill_bar_start"), dt.datetime)
+            else order.get("fill_bar_start")
+        ),
         "limit_price": _to_float(
             order.get("limit_price")
             if isinstance(order.get("limit_price"), Decimal)
@@ -210,12 +216,11 @@ def register_paper_limit_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="paper_reconcile_orders",
         description=(
-            "Reconcile all pending paper resting-limit orders for the "
-            "given account against the most-recent live Upbit OHLCV. Buys "
-            "fill when any bar's low <= limit; sells when any bar's high "
-            ">= limit. Fills release the reservation and book the trade "
-            "through PaperTradingService at the limit price (no live "
-            "re-fetch). Returns {success, reconciled, filled}."
+            "계정의 모든 대기 paper 지정가 주문을 배치 시점 이후 Upbit OHLCV로 "
+            "재조정합니다. 일봉으로 후보 날짜를 찾고 1분봉으로 첫 터치를 확인합니다. "
+            "매수는 저가 <= 지정가, 매도는 고가 >= 지정가일 때 체결됩니다. "
+            "예약금을 해제하고 지정가로 PaperTradingService 거래를 기록합니다. "
+            "체결 결과에는 fill_basis=simulated_bar_touch와 fill_bar_start가 포함됩니다."
         ),
     )
     async def paper_reconcile_orders(account_id: int) -> dict[str, Any]:
