@@ -130,43 +130,84 @@ def test_rerun_no_network_no_writes_and_membership_never_backfilled(tmp_path):
     )
 
 
-def test_2026_11_08_ranking_fixture_excludes_stable_and_wrapped_names(tmp_path):
-    class RankingFixture(FakeSource):
-        def __init__(self):
-            names = [
-                "PAXGUSDT",
-                "JSTUSDT",
-                "BTCUSDT",
-                "BNBUSDT",
-                "WLFIUSDT",
-                "SOLUSDT",
-                "SHIBUSDT",
-                "PEGCOINUSDT",
-                *(f"COIN{i:02}USDT" for i in range(16)),
-            ]
-            super().__init__(count=0)
-            self.names = names
-            self.excluded_assets = {
-                "BFUSDUSDT": "stable_list",
-                "XUSDUSDT": "stable_list",
-                "WBTCUSDT": "wrapped_duplicate",
+def test_2026_11_08_ranking_fixture_excludes_stable_and_wrapped_names(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("scripts.mock_data_sources.time.sleep", lambda _: None)
+    bases = [
+        "BFUSD",
+        "XUSD",
+        "PAXG",
+        "JST",
+        "WBTC",
+        "BTC",
+        "BNB",
+        "WLFI",
+        "SOL",
+        "SHIB",
+        "PEGCOIN",
+        *(f"COIN{i:02}" for i in range(16)),
+    ]
+    exchange_info = {
+        "symbols": [
+            {
+                "symbol": f"{base}USDT",
+                "baseAsset": base,
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "isSpotTradingAllowed": True,
             }
+            for base in bases
+        ]
+    }
 
-        def bars(self, symbols, start, end):
-            frame = super().bars(symbols, start, end)
-            peg = frame.symbol == "PEGCOINUSDT"
-            for column in ("open", "high", "low", "close"):
-                frame.loc[peg, column] = 1.0
-            return frame
+    def handler(request):
+        if request.url.path.endswith("/exchangeInfo"):
+            return httpx.Response(200, json=exchange_info)
+        symbol = request.url.params["symbol"]
+        start_ms = int(request.url.params["startTime"])
+        end_ms = int(request.url.params["endTime"])
+        rank = int(symbol[4:6]) + 1 if symbol.startswith("COIN") else 30
+        bars = []
+        for stamp in range(start_ms, end_ms + 1, 86_400_000):
+            day_offset = (stamp - start_ms) // 86_400_000
+            close = (
+                1.0
+                if symbol == "PEGCOINUSDT"
+                else 20 + rank + day_offset * 0.01 + (day_offset % (rank + 1)) * 0.05
+            )
+            high, low = (
+                (1.01, 0.99) if symbol == "PEGCOINUSDT" else (close + 1, close - 1)
+            )
+            bars.append(
+                [
+                    stamp,
+                    str(close),
+                    str(high),
+                    str(low),
+                    str(close),
+                    str(rank * 100),
+                    stamp + 86_399_999,
+                    str(rank * 1000),
+                    rank,
+                    "0",
+                    "0",
+                    "0",
+                ]
+            )
+        return httpx.Response(200, json=bars)
 
-    source = RankingFixture()
-    meta = producer.refresh(
-        tmp_path,
-        source,
-        now=datetime(2026, 11, 9, 12, tzinfo=UTC),
-        limit=24,
-        top_n=10,
-    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        source = BinanceSource(JsonGet(client))
+        eligible_symbols = source.assets()
+        assert {"BFUSDUSDT", "XUSDUSDT", "WBTCUSDT"}.isdisjoint(eligible_symbols)
+        meta = producer.refresh(
+            tmp_path,
+            source,
+            now=datetime(2026, 11, 9, 12, tzinfo=UTC),
+            limit=24,
+            top_n=10,
+        )
     assert meta["excluded"]["BFUSDUSDT"] == "stable_list"
     assert meta["excluded"]["XUSDUSDT"] == "stable_list"
     assert meta["excluded"]["WBTCUSDT"] == "wrapped_duplicate"
@@ -278,13 +319,30 @@ def test_asset_filters():
     ) == ["BTCUSDT"]
     static_pairs = [
         {**pair, "symbol": f"{base}USDT", "baseAsset": base}
-        for base in ("BFUSD", "XUSD", "WBTC", "PAXG")
+        for base in (
+            "BFUSD",
+            "XUSD",
+            "WBTC",
+            "PAXG",
+            "EURC",
+            "GUSD",
+            "FRAX",
+            "LUSD",
+            "USDJ",
+            "VAI",
+        )
     ]
     assert crypto_assets({"symbols": static_pairs}) == ["PAXGUSDT"]
     assert crypto_static_exclusions({"symbols": static_pairs}) == {
         "BFUSDUSDT": "stable_list",
         "XUSDUSDT": "stable_list",
         "WBTCUSDT": "wrapped_duplicate",
+        "EURCUSDT": "stable_list",
+        "GUSDUSDT": "stable_list",
+        "FRAXUSDT": "stable_list",
+        "LUSDUSDT": "stable_list",
+        "USDJUSDT": "stable_list",
+        "VAIUSDT": "stable_list",
     }
 
 

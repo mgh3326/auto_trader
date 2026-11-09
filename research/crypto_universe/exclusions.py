@@ -47,6 +47,12 @@ STABLE_BASES = frozenset(
         "USDD",
         "USDG",
         "U",
+        "EURC",
+        "GUSD",
+        "FRAX",
+        "LUSD",
+        "USDJ",
+        "VAI",
     }
 )
 

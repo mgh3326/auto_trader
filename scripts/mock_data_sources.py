@@ -14,8 +14,8 @@ from app.core.symbol import to_db_symbol
 from research.crypto_universe.exclusions import (
     STABLE_BASES,
     WRAPPED_DUPLICATE_BASES,
+    is_leveraged_token,
 )
-from research.crypto_universe.universe import is_leveraged_token
 from research.stock_selection.dataset import decision_at
 
 COLUMNS = [

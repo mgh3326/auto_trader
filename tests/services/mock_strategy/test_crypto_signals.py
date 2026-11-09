@@ -58,14 +58,32 @@ def test_producer_and_signal_builder_share_the_crypto_exclusion_definition():
     )
     assert crypto_signals.crypto_exclusion_reason is exclusions.crypto_exclusion_reason
     assert mock_data_sources.STABLE_BASES is exclusions.STABLE_BASES
-    assert "STABLE_BASES" not in {
-        target.id
-        for path in (
-            inspect.getsourcefile(mock_data_sources),
-            inspect.getsourcefile(crypto_signals),
-        )
-        for node in ast.walk(ast.parse(Path(path).read_text()))
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
+    assert (
+        mock_data_sources.WRAPPED_DUPLICATE_BASES is exclusions.WRAPPED_DUPLICATE_BASES
+    )
+    assert mock_data_sources.is_leveraged_token is exclusions.is_leveraged_token
+
+    def module_level_set_definitions(path):
+        definitions = []
+        for node in ast.parse(Path(path).read_text()).body:
+            if isinstance(node, ast.Assign):
+                value = node.value
+                names = [
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                ]
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                names = [node.target.id] if isinstance(node.target, ast.Name) else []
+            else:
+                continue
+            is_set = isinstance(value, ast.Set) or (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in {"set", "frozenset"}
+            )
+            if is_set:
+                definitions.extend(names)
+        return definitions
+
+    for module in (mock_data_sources, crypto_signals):
+        assert module_level_set_definitions(inspect.getsourcefile(module)) == []
