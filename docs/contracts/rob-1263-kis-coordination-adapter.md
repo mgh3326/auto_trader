@@ -12,6 +12,25 @@ J3B opens no socket of its own, signs nothing, loads no credential value,
 registers no scheduler. The ROB-1263 evidence amendment adds two lane-native
 append-only tables; operators alone apply its additive migration.
 
+## Amendment — hk 3741 (2026-11-09)
+
+The operator decision `decision/2026-11-09/kis-mock-like-live` supersedes the
+route, writer-lease and follow-up-capability requirements below for ordinary KR
+KIS mock place/cancel/modify. Those paths do not enter the coordinator; its
+evidence and recovery modules remain for existing coordinated claims. The
+gateway retains its own journal and follow-up checks. KR/US mock place reserves
+each supplied idempotency key in `kis_mock` before send, in addition to the
+existing mirror correlation reservation. Unknown send outcomes retain the
+reservations; a proven pre-send refusal releases only matching row IDs. Mock
+client, VTS host and mock settings identity remain checked before and at the
+send boundary. Attribution, configuration, confirmation and known-remainder
+checks remain in force. Live paths are unchanged.
+
+The dedicated mock MCP place/cancel/modify tools require `dry_run=False` and
+`confirm=True` before delegation. Generic MCP KR mock mutations are refused
+with `kis_mock_use_dedicated_tool`; generic US mock and live routing and internal
+implementation callers retain their existing interfaces.
+
 ---
 
 ## 1. What this lane owns, and what it must not touch

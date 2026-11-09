@@ -91,6 +91,19 @@ def _mock_config_error() -> dict[str, Any] | None:
     }
 
 
+def _mock_mutation_confirmation_error(
+    dry_run: bool, confirm: bool
+) -> dict[str, Any] | None:
+    if dry_run is False and confirm is True:
+        return None
+    return {
+        "success": False,
+        "error_code": "confirm_required",
+        "error": "KIS mock mutation requires dry_run=False and confirm=True",
+        "account_mode": ACCOUNT_MODE_KIS_MOCK,
+    }
+
+
 def _check_mode_arg(
     tool_name: str,
     pinned_mode: str,
@@ -811,7 +824,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
             "is_mock is hard-pinned to True. Fails closed if KIS mock config "
             "(KIS_MOCK_ENABLED, KIS_MOCK_APP_KEY, KIS_MOCK_APP_SECRET, "
             "KIS_MOCK_ACCOUNT_NO) is missing. "
-            "dry_run=True by default for safety. "
+            "Requires dry_run=False and confirm=True; otherwise no order is prepared. "
             "account_mode='kis_mock' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
@@ -838,7 +851,11 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
         report_item_uuid: str | None = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
+        confirmation_error = _mock_mutation_confirmation_error(dry_run, confirm)
+        if confirmation_error:
+            return confirmation_error
         return await _place_order_variant(
             tool_name="kis_mock_place_order",
             pinned_mode=_PINNED,
@@ -870,6 +887,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         description=(
             "Cancel a pending order on KIS official mock (paper) account. "
             "is_mock is hard-pinned to True. Fails closed if KIS mock config is missing. "
+            "Requires dry_run=False and confirm=True; otherwise no cancel is prepared. "
             "account_mode='kis_mock' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
@@ -880,7 +898,12 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         market: str | None = None,
         account_mode: str | None = None,
         account_type: str | None = None,
+        dry_run: bool = True,
+        confirm: bool = False,
     ) -> dict[str, Any]:
+        confirmation_error = _mock_mutation_confirmation_error(dry_run, confirm)
+        if confirmation_error:
+            return confirmation_error
         return await _cancel_order_variant(
             tool_name="kis_mock_cancel_order",
             pinned_mode=_PINNED,
@@ -896,7 +919,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         description=(
             "Modify a pending order (price/quantity) on KIS official mock (paper) account. "
             "is_mock is hard-pinned to True. Fails closed if KIS mock config is missing. "
-            "dry_run=True by default for safety. "
+            "Requires dry_run=False and confirm=True; otherwise no modification is prepared. "
             "account_mode='kis_mock' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
@@ -911,8 +934,12 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         reason: str = "",
         account_mode: str | None = None,
         account_type: str | None = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
         del reason
+        confirmation_error = _mock_mutation_confirmation_error(dry_run, confirm)
+        if confirmation_error:
+            return confirmation_error
         return await _modify_order_variant(
             tool_name="kis_mock_modify_order",
             pinned_mode=_PINNED,

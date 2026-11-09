@@ -1933,7 +1933,7 @@ async def test_place_order_kr_equity_balance_lookup_failure_blocks_real_order(
 
 @pytest.mark.asyncio
 async def test_place_order_kis_mock_sell_preview_uses_mock_holdings(monkeypatch):
-    """kis_mock sell dry-run preview must not fall back to live KIS holdings."""
+    """The generic tool redirects; the internal preview still uses mock holdings."""
     tools = build_tools()
     kis_calls: list[bool] = []
 
@@ -1970,9 +1970,20 @@ async def test_place_order_kis_mock_sell_preview_uses_mock_holdings(monkeypatch)
         account_mode="kis_mock",
     )
 
+    assert result["error_code"] == "kis_mock_use_dedicated_tool"
+    assert kis_calls == []
+    result = await order_execution._place_order_impl(
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        quantity=1,
+        price=229500.0,
+        dry_run=True,
+        is_mock=True,
+    )
+
     assert result["success"] is True
     assert result["dry_run"] is True
-    assert result["account_mode"] == "kis_mock"
     assert result["avg_buy_price"] == pytest.approx(227000.0)
     assert result["realized_pnl"] == pytest.approx(2500.0)
     assert kis_calls
@@ -1983,7 +1994,7 @@ async def test_place_order_kis_mock_sell_preview_uses_mock_holdings(monkeypatch)
 async def test_kis_mock_place_order_dry_run_warns_when_cash_lookup_unavailable(
     monkeypatch,
 ):
-    """KIS mock dry-run preview should not fail solely because cash read is flaky."""
+    """The tool refuses preview; the internal preview retains its cash warning."""
     tools = build_tools()
 
     class MockKISClient:
@@ -2013,9 +2024,19 @@ async def test_kis_mock_place_order_dry_run_warns_when_cash_lookup_unavailable(
         dry_run=True,
     )
 
+    assert result["error_code"] == "confirm_required"
+    result = await order_execution._place_order_impl(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=318500.0,
+        dry_run=True,
+        is_mock=True,
+    )
+
     assert result["success"] is True
     assert result["dry_run"] is True
-    assert result["account_mode"] == "kis_mock"
     assert result["estimated_value"] == pytest.approx(318500.0)
     assert "balance precheck unavailable" in result["warning"]
     assert "dry_run=True" in result["warning"]
@@ -2065,6 +2086,7 @@ async def test_kis_mock_place_order_real_order_blocks_when_cash_lookup_unavailab
         quantity=1,
         price=318500.0,
         dry_run=False,
+        confirm=True,
     )
 
     assert result["success"] is False

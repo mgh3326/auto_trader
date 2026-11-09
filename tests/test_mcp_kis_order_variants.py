@@ -77,7 +77,7 @@ class TestKisMockPlaceOrder:
             monkeypatch, ["KIS_MOCK_ENABLED", "KIS_MOCK_APP_KEY"]
         )
         result = await mcp.tools["kis_mock_place_order"](
-            symbol="005930", side="buy", price=50000.0
+            symbol="005930", side="buy", price=50000.0, dry_run=False, confirm=True
         )
         assert result["success"] is False
         assert result["account_mode"] == "kis_mock"
@@ -101,7 +101,7 @@ class TestKisMockPlaceOrder:
         monkeypatch.setattr(order_execution, "_place_order_impl", fake_place_order_impl)
 
         await mcp.tools["kis_mock_place_order"](
-            symbol="005930", side="buy", price=50000.0
+            symbol="005930", side="buy", price=50000.0, dry_run=False, confirm=True
         )
         assert captured.get("is_mock") is True
 
@@ -113,7 +113,12 @@ class TestKisMockPlaceOrder:
         _patch_mock_config_ok(monkeypatch)
 
         result = await mcp.tools["kis_mock_place_order"](
-            symbol="005930", side="buy", price=50000.0, account_mode="kis_live"
+            symbol="005930",
+            side="buy",
+            price=50000.0,
+            account_mode="kis_live",
+            dry_run=False,
+            confirm=True,
         )
         assert result["success"] is False
         assert "kis_mock" in result["error"]
@@ -136,7 +141,12 @@ class TestKisMockPlaceOrder:
         monkeypatch.setattr(order_execution, "_place_order_impl", fake_place_order_impl)
 
         result = await mcp.tools["kis_mock_place_order"](
-            symbol="005930", side="buy", price=50000.0, account_mode="kis_mock"
+            symbol="005930",
+            side="buy",
+            price=50000.0,
+            account_mode="kis_mock",
+            dry_run=False,
+            confirm=True,
         )
         assert result.get("success") is True
 
@@ -154,7 +164,9 @@ class TestKisMockCancelOrder:
         mcp = _build_mock_mcp()
         _patch_mock_config_missing(monkeypatch, ["KIS_MOCK_ENABLED"])
 
-        result = await mcp.tools["kis_mock_cancel_order"](order_id="ORD-001")
+        result = await mcp.tools["kis_mock_cancel_order"](
+            order_id="ORD-001", dry_run=False, confirm=True
+        )
         assert result["success"] is False
         assert result["account_mode"] == "kis_mock"
         assert "KIS_MOCK_ENABLED" in result["error"]
@@ -175,7 +187,9 @@ class TestKisMockCancelOrder:
 
         monkeypatch.setattr(orders_kis_variants, "cancel_order_impl", fake_cancel_impl)
 
-        await mcp.tools["kis_mock_cancel_order"](order_id="ORD-001")
+        await mcp.tools["kis_mock_cancel_order"](
+            order_id="ORD-001", dry_run=False, confirm=True
+        )
         assert captured.get("is_mock") is True
 
     @pytest.mark.asyncio
@@ -186,7 +200,7 @@ class TestKisMockCancelOrder:
         _patch_mock_config_ok(monkeypatch)
 
         result = await mcp.tools["kis_mock_cancel_order"](
-            order_id="ORD-001", account_mode="kis_live"
+            order_id="ORD-001", account_mode="kis_live", dry_run=False, confirm=True
         )
         assert result["success"] is False
         assert "kis_mock" in result["error"]
@@ -208,7 +222,11 @@ class TestKisMockModifyOrder:
         )
 
         result = await mcp.tools["kis_mock_modify_order"](
-            order_id="ORD-001", symbol="005930", new_price=51000.0
+            order_id="ORD-001",
+            symbol="005930",
+            new_price=51000.0,
+            dry_run=False,
+            confirm=True,
         )
         assert result["success"] is False
         assert result["account_mode"] == "kis_mock"
@@ -230,7 +248,11 @@ class TestKisMockModifyOrder:
         monkeypatch.setattr(orders_kis_variants, "modify_order_impl", fake_modify_impl)
 
         await mcp.tools["kis_mock_modify_order"](
-            order_id="ORD-001", symbol="005930", new_price=51000.0
+            order_id="ORD-001",
+            symbol="005930",
+            new_price=51000.0,
+            dry_run=False,
+            confirm=True,
         )
         assert captured.get("is_mock") is True
 
@@ -246,6 +268,8 @@ class TestKisMockModifyOrder:
             symbol="005930",
             new_price=51000.0,
             account_mode="kis_live",
+            dry_run=False,
+            confirm=True,
         )
         assert result["success"] is False
         assert "kis_mock" in result["error"]

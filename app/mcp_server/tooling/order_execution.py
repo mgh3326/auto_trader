@@ -93,7 +93,6 @@ from app.services.kis_mock_attribution import (
     record_signal,
     resolve_attribution,
 )
-from app.services.kis_mock_runner.singleton import run_kis_mock_send
 from app.services.kr_symbol_universe_service import get_kr_security_type
 from app.services.mechanical_loss_cut.plans import record_buy_exit_plan
 from app.services.order_proposals.cash_funding_exemption import (
@@ -1145,8 +1144,17 @@ async def _execute_and_record(
     ):
         intent_account_scope = "kis_mock"
         intent_key = correlation_id
+    elif (
+        is_mock
+        and idempotency_key is not None
+        and market_type in ("equity_kr", "equity_us")
+    ):
+        intent_account_scope = "kis_mock"
+        intent_key = idempotency_key
 
     intent_row_id: int | None = None
+    secondary_intent_key: str | None = None
+    secondary_intent_row_id: int | None = None
     try:
         if intent_account_scope is not None and intent_key is not None:
             async with _order_session_factory()() as intent_db:
@@ -1223,6 +1231,16 @@ async def _execute_and_record(
                         idempotency_key=intent_key,
                         side=side,
                     )
+                    if (
+                        secondary_intent_key is not None
+                        and secondary_intent_row_id is not None
+                    ):
+                        deleted += await service.release_if_matches(
+                            account_scope=intent_account_scope,
+                            row_id=secondary_intent_row_id,
+                            idempotency_key=secondary_intent_key,
+                            side=side,
+                        )
                 else:
                     deleted = await service.release(
                         account_scope=intent_account_scope,
@@ -1251,6 +1269,35 @@ async def _execute_and_record(
             )
             return True
         return False
+
+    # Mirrors retain their original correlation reservation as well as the
+    # caller's idempotency reservation. Neither key may reach the broker twice.
+    if (
+        is_mock
+        and intent_reserved
+        and mirror_cohort == "mock_counterfactual"
+        and idempotency_key is not None
+        and idempotency_key != intent_key
+    ):
+        try:
+            async with _order_session_factory()() as intent_db:
+                secondary_intent_row_id = await OrderSendIntentService(
+                    intent_db
+                ).reserve(
+                    account_scope="kis_mock",
+                    idempotency_key=idempotency_key,
+                    symbol=normalized_symbol,
+                    side=side,
+                )
+                secondary_intent_key = idempotency_key
+        except DuplicateOrderIntent as duplicate:
+            await _release_reserved_intent_after_send_failure(
+                duplicate, proven_not_sent=True
+            )
+            return order_error_fn(_duplicate_order_intent_message("kis_mock"))
+        except BaseException as exc:
+            await _release_reserved_intent_after_send_failure(exc, proven_not_sent=True)
+            raise
 
     async def _send_to_broker() -> Any:
         # The optional pre_send_hook is threaded to the broker transport and
@@ -1293,29 +1340,7 @@ async def _execute_and_record(
             broker_ms = (time.perf_counter() - broker_started_at) * 1000
 
     try:
-        if is_mock and market_type == "equity_kr":
-            # ROB-1263 r2 / B-1..B-4: the KIS mock lane's single production
-            # route into the merged J3A coordinator. When the lane has a
-            # coordinated route the *whole* send runs inside it, so it inherits
-            # J3A's ordering (lineage persist → lease → uncertainty gate →
-            # binary claim → re-assertion → callback → retained durable writes
-            # → conditional release). When it has none the lane is
-            # AUTO_READY_BLOCKED_BY_LIFECYCLE and the send is explicitly not
-            # AUTO evidence — but it still holds the wire-boundary authority
-            # taken in `_guard_kis_mock_writer`.
-            kis_mock_outcome = await run_kis_mock_send(
-                send=_send_to_broker,
-                symbol=normalized_symbol,
-                side=side,
-                order_type=order_type,
-                quantity=order_quantity,
-                price=price,
-                correlation_id=correlation_id,
-                strategy=strategy,
-            )
-            execution_result = kis_mock_outcome.result
-        else:
-            execution_result = await _send_to_broker()
+        execution_result = await _send_to_broker()
         if send_outcome is not None:
             # A transport response crossed the send boundary. Until the mock
             # result normalizer proves accepted/rejected, the outcome is unknown.

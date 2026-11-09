@@ -179,18 +179,15 @@ def ledger(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return state
 
 
-# The gate this PR leaves closed: no receipt means zero broker calls.
-
-
 @pytest.mark.asyncio
-async def test_without_a_minted_capability_the_guards_still_refuse(
+async def test_without_a_minted_capability_the_own_ledger_order_can_cancel(
     wire: _Kis, ledger: dict[str, Any]
 ) -> None:
     result = await orders_modify_cancel.cancel_order_impl(
         order_id=ORDER_ID, symbol="005930", market="kr", is_mock=True
     )
-    assert result["success"] is False
-    assert wire.calls == []
+    assert result["success"] is True
+    assert wire.calls == [("cancel", ORDER_ID)]
 
 
 # The positive path, through the real guards.

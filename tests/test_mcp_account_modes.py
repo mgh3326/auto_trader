@@ -123,7 +123,7 @@ async def test_cancel_order_db_simulated_is_not_supported(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_modify_order_kis_mock_fails_closed_when_config_missing(monkeypatch):
+async def test_modify_order_us_kis_mock_fails_closed_when_config_missing(monkeypatch):
     from app.mcp_server.tooling import orders_registration
 
     mcp = DummyMCP()
@@ -145,7 +145,7 @@ async def test_modify_order_kis_mock_fails_closed_when_config_missing(monkeypatc
 
     result = await mcp.tools["modify_order"](
         order_id="test-order",
-        symbol="005930",
+        symbol="AAPL",
         account_mode="kis_mock",
         new_price=70000.0,
     )
@@ -209,7 +209,7 @@ async def test_cancel_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_modify_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
+async def test_modify_order_us_kis_mock_passes_is_mock_to_impl(monkeypatch):
     from app.mcp_server.tooling import orders_registration
 
     mcp = DummyMCP()
@@ -231,7 +231,7 @@ async def test_modify_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
 
     result = await mcp.tools["modify_order"](
         order_id="test-order",
-        symbol="005930",
+        symbol="AAPL",
         account_mode="kis_mock",
         new_price=70000.0,
         dry_run=True,
@@ -241,7 +241,7 @@ async def test_modify_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
     assert captured == [
         {
             "order_id": "test-order",
-            "symbol": "005930",
+            "symbol": "AAPL",
             "market": None,
             "new_price": 70000.0,
             "new_quantity": None,

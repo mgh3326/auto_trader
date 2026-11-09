@@ -8,6 +8,7 @@ The initial commit retains the full audit baseline in Git history.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 from pathlib import Path
 
@@ -18,6 +19,22 @@ from tests.mcp_server._registration_recorder import collect_profile_tools
 
 pytestmark = pytest.mark.unit
 SNAPSHOT_PATH = Path(__file__).with_name("profile_tool_snapshot.json")
+
+
+def test_kis_mock_mutation_confirmation_defaults_snapshot() -> None:
+    from app.mcp_server.tooling.orders_kis_variants import register_kis_mock_order_tools
+    from tests._mcp_tooling_support import DummyMCP
+
+    mcp = DummyMCP()
+    register_kis_mock_order_tools(mcp)
+    expected = {"dry_run": True, "confirm": False}
+    for name in (
+        "kis_mock_place_order",
+        "kis_mock_cancel_order",
+        "kis_mock_modify_order",
+    ):
+        parameters = inspect.signature(mcp.tools[name]).parameters
+        assert {key: parameters[key].default for key in expected} == expected
 
 
 @pytest.mark.parametrize("gates_enabled", [True, False], ids=["gates-on", "gates-off"])
