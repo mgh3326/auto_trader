@@ -40,6 +40,7 @@ class Recorder:
     def __init__(self):
         self.rows = {}
         self.writes = 0
+        self.claims = 0
 
     async def get(self, cid):
         return self.rows.get(cid)
@@ -55,10 +56,14 @@ class Recorder:
             result.append(self.rows[intent.client_order_id])
         return result
 
+    async def record_settings_event(self, cid, event):
+        self.rows[cid].meta.setdefault("settings_events", []).append(event)
+
     async def record(self, intent):
         return (await self.record_many([intent]))[0]
 
     async def claim(self, cid):
+        self.claims += 1
         row = self.rows[cid]
         if row.status != "planned":
             return False
@@ -108,6 +113,15 @@ class Broker:
 
     async def rules(self, symbol):
         return MarketRules(Decimal("0.1"), Decimal("0.1"), Decimal("5"))
+
+    async def entry_rules(self, symbol):
+        return await self.rules(symbol)
+
+    async def inspect_entry_settings(self, symbol):
+        return None
+
+    async def prepare_entry_settings(self, symbol, *, confirm, audit):
+        return None
 
     async def price(self, symbol):
         return self.mark
@@ -633,3 +647,219 @@ async def test_cancellation_survives_uncertain_update_failure():
         )
     assert len(broker.calls) == 1
     assert recorder.rows[broker.calls[0].client_order_id].status == "sending"
+
+
+class FuturesSettingsClient:
+    credential_fingerprint = "fixture"
+
+    def __init__(self):
+        self.settings = {}
+        self.position = Decimal("0")
+        self.hedge = False
+        self.open_orders = False
+        self.mismatch = False
+        self.calls = []
+
+    async def get_symbol_info(self, *, symbol):
+        return {
+            "status": "TRADING",
+            "quoteAsset": "USDT",
+            "contractType": "PERPETUAL",
+            "filters": [
+                {
+                    "filterType": "LOT_SIZE",
+                    "stepSize": "0.1",
+                    "minQty": "0.1",
+                    "maxQty": "10000",
+                },
+                {"filterType": "MIN_NOTIONAL", "notional": "5"},
+            ],
+        }
+
+    async def get_ticker_price(self, *, symbol):
+        return Decimal("30")
+
+    async def get_preparation_state(self, *, symbol):
+        if self.hedge:
+            raise ValueError("hedge")
+        return SimpleNamespace(
+            symbol=symbol,
+            margin_type=self.settings.get(symbol, ("cross", 20))[0],
+            leverage=self.settings.get(symbol, ("cross", 20))[1],
+            position_amt=self.position,
+            require_position_side=lambda: "BOTH",
+        )
+
+    async def get_position_mode(self):
+        return SimpleNamespace(is_hedge_mode=self.hedge)
+
+    async def get_position(self, *, symbol):
+        return await self.get_preparation_state(symbol=symbol)
+
+    async def has_open_orders_for_preparation(self, *, symbol):
+        return self.open_orders
+
+    async def set_margin_type(self, *, symbol, margin_type, confirm):
+        assert margin_type == "ISOLATED" and confirm is True
+        self.calls.append((symbol, "margin"))
+        _, leverage = self.settings.get(symbol, ("cross", 20))
+        self.settings[symbol] = ("isolated", leverage)
+
+    async def set_leverage(self, *, symbol, leverage, require_symbol_echo):
+        assert leverage == 1 and require_symbol_echo is True
+        self.calls.append((symbol, "leverage"))
+        if not self.mismatch:
+            margin, _ = self.settings.get(symbol, ("cross", 20))
+            self.settings[symbol] = (margin, leverage)
+
+    async def submit_order(self, **kwargs):
+        self.calls.append((kwargs["symbol"], "order"))
+        return SimpleNamespace(
+            raw_response_redacted={
+                "symbol": kwargs["symbol"],
+                "side": "SELL",
+                "type": "MARKET",
+                "clientOrderId": kwargs["client_order_id"],
+                "origQty": str(kwargs["qty"]),
+                "executedQty": str(kwargs["qty"]),
+                "avgPrice": "30",
+                "orderId": "42",
+                "status": "FILLED",
+                "positionSide": "BOTH",
+                "reduceOnly": False,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_futures_settings_prepare_and_audit_before_entry():
+    from app.services.mock_strategy.crypto_brokers import BinanceCryptoDemo
+
+    client = FuturesSettingsClient()
+    recorder = Recorder()
+    broker = BinanceCryptoDemo(client, futures=True, expected_fingerprint="fixture")
+    result = await run_lists(
+        signals(),
+        venue="binance_futures_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    assert client.calls[:3] == [
+        ("COIN10USDT", "margin"),
+        ("COIN10USDT", "leverage"),
+        ("COIN10USDT", "order"),
+    ]
+    assert result["settings_changes"][0]["before"] == {
+        "margin_type": "cross",
+        "leverage": 20,
+    }
+    assert (
+        next(iter(recorder.rows.values())).meta["settings_events"][-1]["state"]
+        == "verified"
+    )
+    assert len([c for c in client.calls if c[1] == "margin"]) == 10
+    assert {s for s, _ in client.calls} == {f"COIN{i}USDT" for i in range(10, 20)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("condition", ["position", "open_orders", "hedge", "mismatch"])
+async def test_futures_unsafe_settings_refuse_before_order(condition):
+    from app.services.mock_strategy.crypto_brokers import BinanceCryptoDemo
+
+    client = FuturesSettingsClient()
+    setattr(client, condition, Decimal("1") if condition == "position" else True)
+    recorder = Recorder()
+    broker = BinanceCryptoDemo(client, futures=True, expected_fingerprint="fixture")
+    result = await run_lists(
+        signals(),
+        venue="binance_futures_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    assert all(o["status"] == "preflight_refused" for o in result["orders"])
+    assert not any(call[1] == "order" for call in client.calls)
+    assert recorder.claims == 0
+    if condition == "mismatch":
+        assert all(
+            o["reason_class"] == "settings_preparation_failed" for o in result["orders"]
+        )
+        assert result["settings_events"][-1]["after"] == {
+            "margin_type": "isolated",
+            "leverage": 20,
+        }
+    if condition != "mismatch":
+        assert client.calls == []
+    if condition == "open_orders":
+        assert all(
+            o["reason_class"] == "settings_open_orders" for o in result["orders"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_futures_dry_run_reports_changes_without_setters():
+    from app.services.mock_strategy.crypto_brokers import BinanceCryptoDemo
+
+    client = FuturesSettingsClient()
+    broker = BinanceCryptoDemo(client, futures=True, expected_fingerprint="fixture")
+    result = await run_lists(
+        signals(), venue="binance_futures_demo", asof=ASOF, broker=broker
+    )
+    assert len(result["would_set"]) == 10
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_futures_already_isolated_1x_does_not_call_setters():
+    from app.services.mock_strategy.crypto_brokers import BinanceCryptoDemo
+
+    client = FuturesSettingsClient()
+    client.settings = {f"COIN{i}USDT": ("isolated", 1) for i in range(10, 20)}
+    recorder = Recorder()
+    broker = BinanceCryptoDemo(client, futures=True, expected_fingerprint="fixture")
+    result = await run_lists(
+        signals(),
+        venue="binance_futures_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    assert all(kind == "order" for _, kind in client.calls)
+    assert len(client.calls) == 10
+    assert result["settings_changes"] == []
+
+
+@pytest.mark.asyncio
+async def test_futures_one_refusal_does_not_block_other_planned_symbols():
+    from app.services.mock_strategy.crypto_brokers import BinanceCryptoDemo
+
+    class OneOpenOrder(FuturesSettingsClient):
+        async def has_open_orders_for_preparation(self, *, symbol):
+            return symbol == "COIN10USDT"
+
+    client = OneOpenOrder()
+    recorder = Recorder()
+    broker = BinanceCryptoDemo(client, futures=True, expected_fingerprint="fixture")
+    result = await run_lists(
+        signals(),
+        venue="binance_futures_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    assert result["orders"][0]["reason_class"] == "settings_open_orders"
+    assert all(o["submitted"] for o in result["orders"][1:])
+    assert not any(symbol == "COIN10USDT" for symbol, _ in client.calls)

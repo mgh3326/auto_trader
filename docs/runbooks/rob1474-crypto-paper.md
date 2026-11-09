@@ -55,10 +55,15 @@ not replaced by lower-ranked names. ROB-993/H5/smoke strategy limits are unchang
   corresponding `BINANCE_SPOT_DEMO_EXPECTED_FINGERPRINT` or
   `BINANCE_FUTURES_DEMO_EXPECTED_FINGERPRINT` with the operator's expected
   `demo_credential_fingerprint` value. This binds credentials, not a new account.
-- Futures must already be isolated **1x**, one-way. The runner reads back all
-  three settings; missing or conflicting evidence blocks submission. It never
-  changes leverage, margin type or position mode. A preexisting long blocks it.
-  Covers always use `reduceOnly=true`, `positionSide=BOTH`.
+- Futures entries require isolated **1x**, one-way and `BOTH`. After fixing the
+  daily short batch, a confirmed run may set only its planned symbols to isolated
+  and then 1x, after proving the symbol has no position or open orders. It reads
+  back the settings before entry; missing or conflicting evidence refuses that
+  symbol. It never changes position mode. Attempts and observed settings are
+  recorded in entry metadata; successful changes appear in run output. A
+  broker-backed dry run with `--confirm` reports `would_set` without setters;
+  fixture-only runs cannot establish account settings. Covers always use
+  `reduceOnly=true`, `positionSide=BOTH`.
 - Alpaca uses the existing `clean` profile. Both configured expected account ID
   and account number suffixes are required and checked before broker operations.
   It also needs the Spot Demo gate/credentials/fingerprint for reference pricing.
@@ -132,3 +137,11 @@ proven residual. Step/min-notional dust stays open as `dust_remaining`, with
 fees/funding/FX, and is not a net-return claim. An unavailable/rejected close
 does not mark the entry closed. Review blocked/uncertain entries manually using
 the exact broker order/client ID; never reset their status to planned.
+| Invariant | Input | Transition | Enforcement location | Dependency | Observable result |
+|---|---|---|---|---|---|
+| Only planned futures shorts can be prepared | Fixed daily batch | Inspect each planned entry only | ROB-1474 runner | Frozen signal and batch identity | Other venues and symbols untouched |
+| Settings changes require existing gates | Confirmed run and expected account | Change only after gates pass | Runner and futures adapter | Enabled switches and fingerprint | Dry run reports intended changes, sends none |
+| No exposure or open orders when changing | Mode, position and open orders | Refuse before setters if unsafe | Futures adapter | Fresh broker reads | Typed refusal, no entry |
+| Only isolated margin and 1x | Symbol and settings | Set isolated then 1x | Demo client and adapter | Exact demo transport | Unsupported setter inputs rejected before HTTP |
+| Verify before entry | Setter results and readback | Require isolated, 1x, one-way and BOTH | Futures adapter and entry preflight | Fresh broker evidence | Mismatch refuses before claim/send |
+| Preserve audit | Before and after settings | Attach change to output and entry metadata | Runner and recorder | Successful readback | Per-symbol before/after evidence |

@@ -103,6 +103,7 @@ _OPEN_ORDERS_PATH: Final[str] = "/fapi/v1/openOrders"
 _POSITION_RISK_PATH: Final[str] = "/fapi/v2/positionRisk"
 _POSITION_SIDE_DUAL_PATH: Final[str] = "/fapi/v1/positionSide/dual"
 _LEVERAGE_PATH: Final[str] = "/fapi/v1/leverage"
+_MARGIN_TYPE_PATH: Final[str] = "/fapi/v1/marginType"
 
 ALLOWED_SIDES: Final[frozenset[str]] = frozenset({"BUY", "SELL"})
 ALLOWED_ORDER_TYPES: Final[frozenset[str]] = frozenset({"LIMIT", "MARKET"})
@@ -910,11 +911,105 @@ class BinanceFuturesDemoExecutionClient:
             is_hedge_mode=bool(body.get("dualSidePosition", False)),
         )
 
+    async def get_preparation_state(self, *, symbol: str) -> FuturesDemoPositionResult:
+        """Read strict one-way position evidence for a settings change."""
+        signed = _sign_request_params(
+            params={"recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS)},
+            api_secret=self._api_secret,
+        )
+        response = await self._client.get(_POSITION_SIDE_DUAL_PATH, params=signed)
+        response.raise_for_status()
+        mode = response.json()
+        if not isinstance(mode, dict) or mode.get("dualSidePosition") is not False:
+            raise ValueError("one-way position mode not proven")
+        signed = _sign_request_params(
+            params={
+                "symbol": symbol,
+                "recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS),
+            },
+            api_secret=self._api_secret,
+        )
+        response = await self._client.get(_POSITION_RISK_PATH, params=signed)
+        response.raise_for_status()
+        rows = response.json()
+        if (
+            not isinstance(rows, list)
+            or len(rows) != 1
+            or not isinstance(rows[0], dict)
+        ):
+            raise ValueError("position evidence unavailable")
+        row = rows[0]
+        if row.get("symbol") != symbol or row.get("positionSide") != "BOTH":
+            raise ValueError("position identity unavailable")
+        amount = Decimal(str(row["positionAmt"]))
+        leverage = Decimal(str(row["leverage"]))
+        margin = row["marginType"]
+        if (
+            not amount.is_finite()
+            or not leverage.is_finite()
+            or leverage <= 0
+            or leverage != int(leverage)
+            or margin not in {"cross", "isolated"}
+        ):
+            raise ValueError("invalid position evidence")
+        return FuturesDemoPositionResult(
+            symbol, amount, Decimal("0"), int(leverage), amount == 0, "BOTH", margin
+        )
+
+    async def has_open_orders_for_preparation(self, *, symbol: str) -> bool:
+        signed = _sign_request_params(
+            params={
+                "symbol": symbol,
+                "recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS),
+            },
+            api_secret=self._api_secret,
+        )
+        response = await self._client.get(_OPEN_ORDERS_PATH, params=signed)
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, list):
+            raise ValueError("open order evidence unavailable")
+        return bool(body)
+
+    async def set_margin_type(
+        self, *, symbol: str, margin_type: str, confirm: bool = False
+    ) -> None:
+        """Set only isolated margin, with a readback for Binance's no-op response."""
+        if (
+            not symbol
+            or not symbol.strip()
+            or margin_type != "ISOLATED"
+            or confirm is not True
+        ):
+            raise ValueError("confirmed isolated margin and symbol required")
+        signed = _sign_request_params(
+            params={
+                "symbol": symbol,
+                "marginType": margin_type,
+                "recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS),
+            },
+            api_secret=self._api_secret,
+        )
+        response = await self._client.post(_MARGIN_TYPE_PATH, params=signed)
+        if response.status_code == 400:
+            body = response.json()
+            if isinstance(body, dict) and body.get("code") == -4046:
+                if (
+                    await self.get_preparation_state(symbol=symbol)
+                ).margin_type != "isolated":
+                    raise ValueError("margin readback mismatch")
+                return
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict) or body.get("code") != 200:
+            raise ValueError("margin response mismatch")
+
     async def set_leverage(
         self,
         *,
         symbol: str,
         leverage: int,
+        require_symbol_echo: bool = False,
     ) -> FuturesDemoLeverageResult:
         """Set leverage for ``symbol`` via POST /fapi/v1/leverage.
 
@@ -947,6 +1042,10 @@ class BinanceFuturesDemoExecutionClient:
         resp.raise_for_status()
         body = resp.json()
         # Echo verification — Binance returns the now-set leverage.
+        if require_symbol_echo and body.get("symbol") != symbol:
+            raise BinanceFuturesDemoLeverageMismatch(
+                "Futures Demo leverage symbol echo mismatch"
+            )
         echoed_raw = body.get("leverage")
         try:
             echoed = int(Decimal(str(echoed_raw)))

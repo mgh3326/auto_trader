@@ -126,6 +126,97 @@ class BinanceCryptoDemo:
             await self._position(symbol)
         return binance_rules(await self.client.get_symbol_info(symbol=symbol))
 
+    async def entry_rules(self, symbol: str) -> MarketRules:
+        return binance_rules(await self.client.get_symbol_info(symbol=symbol))
+
+    async def inspect_entry_settings(self, symbol: str) -> dict | None:
+        position = await self.client.get_preparation_state(symbol=symbol)
+        before = {"margin_type": position.margin_type, "leverage": position.leverage}
+        if before == {"margin_type": "isolated", "leverage": 1}:
+            return None
+        if position.position_amt != 0:
+            raise PreDispatchRefusal("settings_position_open")
+        if await self.client.has_open_orders_for_preparation(symbol=symbol):
+            raise PreDispatchRefusal("settings_open_orders")
+        return {
+            "symbol": symbol,
+            "before": before,
+            "after": {"margin_type": "isolated", "leverage": 1},
+        }
+
+    async def prepare_entry_settings(
+        self, symbol: str, *, confirm: bool, audit: Any
+    ) -> dict | None:
+        require_enabled(self.venue, confirm=confirm)
+        change = None
+        try:
+            change = await self.inspect_entry_settings(symbol)
+            if change is None:
+                return None
+            await audit(
+                {
+                    "symbol": symbol,
+                    "before": change["before"],
+                    "target": change["after"],
+                    "state": "attempting",
+                }
+            )
+            await self.client.set_margin_type(
+                symbol=symbol, margin_type="ISOLATED", confirm=confirm
+            )
+            interim = await self.client.get_preparation_state(symbol=symbol)
+            if interim.margin_type != "isolated" or interim.position_amt != 0:
+                raise ValueError("margin readback mismatch")
+            if await self.client.has_open_orders_for_preparation(symbol=symbol):
+                raise ValueError("open orders appeared during preparation")
+            await audit(
+                {
+                    "symbol": symbol,
+                    "before": change["before"],
+                    "after": {
+                        "margin_type": interim.margin_type,
+                        "leverage": interim.leverage,
+                    },
+                    "state": "observed",
+                }
+            )
+            await self.client.set_leverage(
+                symbol=symbol, leverage=1, require_symbol_echo=True
+            )
+            position = await self.client.get_preparation_state(symbol=symbol)
+            if (
+                position.margin_type != "isolated"
+                or position.leverage != 1
+                or position.position_amt != 0
+            ):
+                raise ValueError("settings readback mismatch")
+            await audit({**change, "state": "verified"})
+            return change
+        except PreDispatchRefusal:
+            raise
+        except Exception:
+            if change is not None:
+                try:
+                    position = await self.client.get_preparation_state(symbol=symbol)
+                    observed = {
+                        "margin_type": position.margin_type,
+                        "leverage": position.leverage,
+                    }
+                except Exception:
+                    observed = None
+                try:
+                    await audit(
+                        {
+                            "symbol": symbol,
+                            "before": change["before"],
+                            "after": observed,
+                            "state": "refused",
+                        }
+                    )
+                except Exception:
+                    pass
+            raise PreDispatchRefusal("settings_preparation_failed") from None
+
     async def price(self, symbol: str) -> Decimal:
         return positive(await self.client.get_ticker_price(symbol=symbol))
 
