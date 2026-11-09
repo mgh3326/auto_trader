@@ -28,7 +28,7 @@ import logging
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
@@ -47,7 +47,8 @@ from app.models.paper_trading import (
     PaperPendingOrder,
     PaperTrade,
 )
-from app.services.market_data.service import get_ohlcv
+from app.services.brokers.upbit.client import _fetch_ohlcv_raw
+from app.services.market_data.service import _to_candle_rows, get_ohlcv
 from app.services.paper_correlation import paper_correlation_id
 from app.services.paper_fills import limit_crossed, snap_limit_down
 from app.services.paper_trading_service import (
@@ -61,7 +62,42 @@ logger = logging.getLogger(__name__)
 # Upbit reserves 5000 KRW as the minimum order notional for crypto.
 _MIN_CRYPTO_KRW = Decimal(str(DEFAULT_MINIMUM_VALUES["crypto"]))
 
-_OHLCV_LOOKBACK_BARS = 200
+_OHLCV_PAGE_SIZE = 200
+_UPBIT_DAY_START = dt.time(hour=9)
+_MAX_OHLCV_REQUESTS_PER_ORDER = 64
+
+
+class _OHLCVRequestBudgetExceeded(Exception):
+    """Raised before a scan would exceed its per-order request budget."""
+
+
+class _OHLCVRequestBudget:
+    __slots__ = ("remaining",)
+
+    def __init__(self) -> None:
+        self.remaining = _MAX_OHLCV_REQUESTS_PER_ORDER
+
+    def consume(self) -> None:
+        if self.remaining <= 0:
+            raise _OHLCVRequestBudgetExceeded
+        self.remaining -= 1
+
+
+async def _fetch_upbit_daily_page(symbol: str, end: dt.datetime) -> list[Any]:
+    """Fetch a paged daily slice without the latest-only closed-candle cache."""
+    frame = await _fetch_ohlcv_raw(
+        market=symbol,
+        days=_OHLCV_PAGE_SIZE,
+        period="day",
+        end_date=end,
+    )
+    return _to_candle_rows(
+        frame,
+        symbol=symbol,
+        market="crypto",
+        source="upbit",
+        period="day",
+    )
 
 
 def _quantize_fill_price(price: Decimal) -> Decimal:
@@ -76,7 +112,156 @@ def _as_aware_kst(ts: dt.datetime | None) -> dt.datetime | None:
         return None
     if ts.tzinfo is None:
         return ts.replace(tzinfo=KST)
-    return ts
+    return ts.astimezone(KST)
+
+
+def _upbit_day_start(ts: dt.datetime) -> dt.datetime:
+    aware = _as_aware_kst(ts)
+    assert aware is not None
+    kst_time = aware.astimezone(KST)
+    bucket_date = (
+        kst_time.date()
+        if kst_time.timetz().replace(tzinfo=None) >= _UPBIT_DAY_START
+        else kst_time.date() - dt.timedelta(days=1)
+    )
+    return dt.datetime.combine(bucket_date, _UPBIT_DAY_START, tzinfo=KST)
+
+
+def _upbit_cursor(ts: dt.datetime) -> dt.datetime:
+    """Upbit treats offset-free `to` values as UTC; encode that explicitly."""
+    aware = _as_aware_kst(ts)
+    assert aware is not None
+    return aware.astimezone(dt.UTC).replace(tzinfo=None)
+
+
+def _daily_bar_start(bar: Any) -> dt.datetime | None:
+    ts = _as_aware_kst(getattr(bar, "timestamp", None))
+    if ts is None:
+        return None
+    # get_ohlcv normalizes Upbit daily rows through their date column (midnight
+    # KST); Upbit's actual daily candle boundary is 09:00 KST.
+    if ts.timetz().replace(tzinfo=None) == dt.time.min:
+        return dt.datetime.combine(ts.date(), _UPBIT_DAY_START, tzinfo=KST)
+    return _upbit_day_start(ts)
+
+
+def _bar_crosses(side: str, limit_price: Decimal, bar: Any) -> bool:
+    return (
+        limit_crossed(
+            side,
+            limit_price,
+            [(Decimal(str(bar.low)), Decimal(str(bar.high)))],
+        )
+        is not None
+    )
+
+
+def _first_crossing_bar_start(
+    *,
+    side: str,
+    limit_price: Decimal,
+    daily_bars: list[Any],
+    minute_bars: list[Any],
+    placed_at: dt.datetime,
+    current_day_start: dt.datetime,
+) -> dt.datetime | None:
+    """Purely select the first eligible 1m touch using daily bars as candidates."""
+    placed = _as_aware_kst(placed_at)
+    if placed is None:
+        return None
+    candidate_days = {_upbit_day_start(placed), current_day_start}
+    candidate_days.update(
+        start
+        for bar in daily_bars
+        if (start := _daily_bar_start(bar)) is not None
+        and start >= _upbit_day_start(placed)
+        and _bar_crosses(side, limit_price, bar)
+    )
+    eligible = []
+    for bar in minute_bars:
+        start = _as_aware_kst(getattr(bar, "timestamp", None))
+        if (
+            start is None
+            or start < placed
+            or _upbit_day_start(start) not in candidate_days
+        ):
+            continue
+        if _bar_crosses(side, limit_price, bar):
+            eligible.append(start)
+    return min(eligible) if eligible else None
+
+
+async def _fetch_daily_since_placement(
+    symbol: str,
+    *,
+    placed_at: dt.datetime,
+    effective_now: dt.datetime,
+    request_budget: _OHLCVRequestBudget,
+) -> tuple[list[Any], bool]:
+    """Fetch daily pages back to the placement day; false means scan incomplete."""
+    placed_day = _upbit_day_start(placed_at)
+    cursor = effective_now + dt.timedelta(seconds=1)
+    daily: list[Any] = []
+    while True:
+        request_budget.consume()
+        page = await _fetch_upbit_daily_page(symbol, end=_upbit_cursor(cursor))
+        if not page:
+            return daily, False
+        starts = [_daily_bar_start(bar) for bar in page]
+        if any(start is None for start in starts):
+            return daily, False
+        daily.extend(page)
+        oldest = min(start for start in starts if start is not None)
+        if oldest <= placed_day:
+            return daily, True
+        next_cursor = oldest - dt.timedelta(seconds=1)
+        if next_cursor >= cursor:
+            return daily, False
+        cursor = next_cursor
+
+
+async def _fetch_minute_day(
+    symbol: str,
+    *,
+    day_start: dt.datetime,
+    day_end: dt.datetime,
+    effective_now: dt.datetime,
+    placed_at: dt.datetime,
+    request_budget: _OHLCVRequestBudget,
+) -> tuple[list[Any], bool]:
+    """Page one Upbit day, stopping only after reaching its required start."""
+    required_start = (
+        max(day_start, placed_at)
+        if day_start == _upbit_day_start(placed_at)
+        else day_start
+    )
+    end = min(day_end, effective_now + dt.timedelta(seconds=1))
+    bars: list[Any] = []
+    while end > required_start:
+        request_budget.consume()
+        page = await get_ohlcv(
+            symbol, "crypto", "1m", _OHLCV_PAGE_SIZE, end=_upbit_cursor(end)
+        )
+        if not page:
+            return bars, False
+        starts = [_as_aware_kst(getattr(bar, "timestamp", None)) for bar in page]
+        if any(start is None for start in starts):
+            return bars, False
+        bars.extend(
+            bar
+            for bar, start in zip(page, starts, strict=True)
+            if start is not None
+            and day_start <= start < day_end
+            and start <= effective_now
+        )
+        oldest = min(start for start in starts if start is not None)
+        if oldest <= required_start:
+            return bars, True
+        next_end = oldest - dt.timedelta(seconds=1)
+        if next_end >= end:
+            return bars, False
+        end = next_end
+    return bars, True
 
 
 async def _latest_trade_id(
@@ -118,6 +303,8 @@ def _serialize(order: PaperPendingOrder) -> dict[str, Any]:
         "paper_trade_id": order.paper_trade_id,
         "placed_at": order.placed_at,
         "filled_at": order.filled_at,
+        "fill_basis": "simulated_bar_touch" if order.status == "filled" else None,
+        "fill_bar_start": order.filled_at if order.status == "filled" else None,
         "cancelled_at": order.cancelled_at,
     }
 
@@ -434,6 +621,26 @@ class PaperLimitOrderService:
                 "error": f"Order {order_id} is {order.status}, cannot cancel",
             }
 
+        # Claim the transition before releasing cash. A reconcile fill uses the
+        # same pending-status compare-and-set, so exactly one path can win.
+        cancelled_at = now_kst()
+        claimed = await self.db.execute(
+            update(PaperPendingOrder)
+            .where(
+                PaperPendingOrder.id == order_id,
+                PaperPendingOrder.account_id == account_id,
+                PaperPendingOrder.status == "pending",
+            )
+            .values(status="cancelled", cancelled_at=cancelled_at)
+            .returning(PaperPendingOrder.id)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.scalar_one_or_none() is None:
+            await self.db.rollback()
+            return {
+                "success": False,
+                "error": f"Order {order_id} is no longer pending, cannot cancel",
+            }
         # Release reservation (buy side only carries a reservation)
         if order.side == "buy":
             account = await self.pts.get_account(account_id)
@@ -442,7 +649,7 @@ class PaperLimitOrderService:
                 Decimal(account.cash_krw) + Decimal(order.reserved_krw)
             )
         order.status = "cancelled"
-        order.cancelled_at = now_kst()
+        order.cancelled_at = cancelled_at
         await self.db.commit()
         await self.db.refresh(order)
         return {"success": True, **_serialize(order)}
@@ -453,10 +660,10 @@ class PaperLimitOrderService:
         account_id: int,
         now: dt.datetime | None = None,
     ) -> dict[str, Any]:
-        """Walk pending ``PaperPendingOrder`` rows and fill any whose limit
-        was crossed by the most-recent live Upbit OHLCV.
+        """Reconcile each order against the first Upbit 1m touch since placement.
 
-        Returns ``{"success": True, "reconciled": N, "filled": M}``.
+        Daily bars bound the history search; minute pages are fetched only for
+        the placement day, current day, and daily-crossing days.
         """
         effective_now = now or now_kst()
         stmt = (
@@ -474,39 +681,96 @@ class PaperLimitOrderService:
         if not order_ids:
             return {"success": True, "reconciled": 0, "filled": 0}
 
-        filled = 0
+        effective_now = _as_aware_kst(effective_now)
+        assert effective_now is not None
+        current_day_start = _upbit_day_start(effective_now)
+        triggers: list[tuple[dt.datetime, int, Decimal]] = []
+        scan_incomplete = 0
         for oid in order_ids:
-            # Re-fetch each order fresh inside the loop: a mid-batch rollback
-            # (e.g. from an oversell) expires the identity map, so reading
-            # attributes off a pre-loaded ORM list would raise on the next
-            # iteration. Loading by id avoids that poisoning entirely.
             order = await self.db.get(PaperPendingOrder, oid)
             if order is None or order.status != "pending":
                 continue
-            try:
-                candles = await get_ohlcv(
-                    order.symbol,
-                    "crypto",
-                    "1m",
-                    _OHLCV_LOOKBACK_BARS,
-                    end=None,
-                )
-            except Exception:
-                # data unavailable -> leave pending
-                continue
             placed_at = _as_aware_kst(order.placed_at)
-            bars: list[tuple[Decimal, Decimal]] = []
-            for c in candles:
-                c_ts = _as_aware_kst(getattr(c, "timestamp", None))
-                if c_ts is not None and placed_at is not None and c_ts < placed_at:
+            if placed_at is None:
+                scan_incomplete += 1
+                continue
+            try:
+                request_budget = _OHLCVRequestBudget()
+                daily_bars, complete = await _fetch_daily_since_placement(
+                    order.symbol,
+                    placed_at=placed_at,
+                    effective_now=effective_now,
+                    request_budget=request_budget,
+                )
+                if not complete:
+                    scan_incomplete += 1
                     continue
-                bars.append((Decimal(str(c.low)), Decimal(str(c.high))))
-            if not bars:
+                limit_price = Decimal(order.limit_price)
+                candidate_days = {
+                    _upbit_day_start(placed_at),
+                    current_day_start,
+                    *(
+                        start
+                        for bar in daily_bars
+                        if (start := _daily_bar_start(bar)) is not None
+                        and start >= _upbit_day_start(placed_at)
+                        and _bar_crosses(order.side, limit_price, bar)
+                    ),
+                }
+                trigger = None
+                for day_start in sorted(candidate_days):
+                    day_end = day_start + dt.timedelta(days=1)
+                    bars, complete = await _fetch_minute_day(
+                        order.symbol,
+                        day_start=day_start,
+                        day_end=day_end,
+                        effective_now=effective_now,
+                        placed_at=placed_at,
+                        request_budget=request_budget,
+                    )
+                    if not complete:
+                        raise RuntimeError("minute scan incomplete")
+                    trigger = _first_crossing_bar_start(
+                        side=order.side,
+                        limit_price=limit_price,
+                        daily_bars=daily_bars,
+                        minute_bars=bars,
+                        placed_at=placed_at,
+                        current_day_start=current_day_start,
+                    )
+                    if trigger is not None:
+                        break
+            except Exception:
+                # Any data failure is an incomplete scan, never a fill.
+                scan_incomplete += 1
                 continue
-            fill_price = limit_crossed(order.side, Decimal(order.limit_price), bars)
-            if fill_price is None:
-                continue
+            if trigger is not None:
+                triggers.append((trigger, oid, limit_price))
 
+        filled = 0
+        filled_orders: list[dict[str, Any]] = []
+        for trigger, oid, fill_price in sorted(
+            triggers, key=lambda item: (item[0], item[1])
+        ):
+            # Re-fetch after each possible rollback so the next order is not
+            # read through an expired ORM identity map.
+            order = await self.db.get(PaperPendingOrder, oid)
+            if order is None:
+                continue
+            claimed = await self.db.execute(
+                update(PaperPendingOrder)
+                .where(
+                    PaperPendingOrder.id == oid,
+                    PaperPendingOrder.account_id == account_id,
+                    PaperPendingOrder.status == "pending",
+                )
+                .values(status="filled", fill_price=fill_price, filled_at=trigger)
+                .returning(PaperPendingOrder.id)
+                .execution_options(synchronize_session=False)
+            )
+            if claimed.scalar_one_or_none() is None:
+                await self.db.rollback()
+                continue
             # Atomic fill: flip status BEFORE execute_order so its internal
             # commit persists status='filled' + the trade + the cash change in
             # ONE transaction. A raise before that commit (e.g. oversell) rolls
@@ -521,7 +785,7 @@ class PaperLimitOrderService:
                     )
                 order.status = "filled"
                 order.fill_price = fill_price
-                order.filled_at = effective_now
+                order.filled_at = trigger
                 await self.pts.execute_order(
                     account_id=account_id,
                     symbol=order.symbol,
@@ -539,6 +803,13 @@ class PaperLimitOrderService:
             # commit. Count it, then link the trade id best-effort -- a failure
             # here loses only the (nullable) FK link, never the fill or count.
             filled += 1
+            filled_orders.append(
+                {
+                    "order_id": oid,
+                    "fill_basis": "simulated_bar_touch",
+                    "fill_bar_start": trigger.isoformat(),
+                }
+            )
             try:
                 trade_id = await _latest_trade_id(
                     self.db,
@@ -591,6 +862,8 @@ class PaperLimitOrderService:
             "success": True,
             "reconciled": len(order_ids),
             "filled": filled,
+            "scan_incomplete": scan_incomplete,
+            "filled_orders": filled_orders,
         }
 
 
