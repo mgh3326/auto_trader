@@ -41,7 +41,7 @@ def grid_table(rows: list[dict], market: str, side: str) -> str:
 
 def detail_table(rows: list[dict], *, validation: dict[str, dict] | None = None) -> str:
     head = (
-        "| cell | primary bps | vs benchmark bps | random mean [p05, p95] bps | "
+        "| cell | primary bps | long leg vs benchmark bps | random mean [p05, p95] bps | "
         "random p | NW t | years + | dates |"
     )
     lines = [head, "|---|---|---|---|---|---|---|---|"]
@@ -60,18 +60,27 @@ def detail_table(rows: list[dict], *, validation: dict[str, dict] | None = None)
     return "\n".join(lines)
 
 
-def main() -> None:
-    ledger = load("trials_ledger.jsonl")
+def main(argv: list[str] | None = None) -> None:
+    ledger = [r for r in load("trials_ledger.jsonl") if r.get("phase") == "exploration"]
     for market in spec.MARKETS:
         for side in spec.SIDES:
-            print(f"\n### {market} {side} (primary bps / random p)\n")
+            print(f"\n#### {market} {side}\n")
             print(grid_table(ledger, market, side))
-    carried = [r for r in ledger if r.get("carried")]
-    print("\n### carried forward (exploration)\n")
-    print(detail_table(carried))
+    near = [
+        r
+        for r in ledger
+        if r["metrics"]["random_p"] <= spec.CARRY_MAX_RANDOM_P
+        and r["metrics"]["net_primary_mean"] > 0
+    ]
+    print(
+        f"\n#### random p <= {spec.CARRY_MAX_RANDOM_P} and primary > 0: {len(near)} cells\n"
+    )
+    print(detail_table(near))
+    print("\n#### every cell\n")
+    print(detail_table(ledger))
     validation = load("validation_results.jsonl")
     if validation:
-        print("\n### validation (2024-02-01..2024-12-31)\n")
+        print("\n#### validation (2024-02-01..2024-12-31)\n")
         print(detail_table(validation))
 
 

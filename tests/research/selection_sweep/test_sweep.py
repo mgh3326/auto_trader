@@ -221,3 +221,21 @@ def test_redenomination_across_a_gap_is_not_a_return():
     s00 = panel.symbols.index("S00")
     assert np.isnan(ret[194:202, s00]).all()
     assert np.nanmax(np.abs(ret[:, s00])) < 1.0
+
+
+def test_validate_with_no_carried_cell_reads_nothing(tmp_path, monkeypatch, capsys):
+    import argparse
+    import json
+
+    from research.selection_sweep import cli
+
+    monkeypatch.setattr(cli, "RESULTS", tmp_path)
+    (tmp_path / "carry_forward.json").write_text(json.dumps({"carried": []}))
+
+    def boom(*a, **k):
+        raise AssertionError("validation data must not be loaded")
+
+    monkeypatch.setattr(cli, "_panels", boom)
+    cli.cmd_validate(argparse.Namespace())
+    assert "no validation read" in capsys.readouterr().out
+    assert not (tmp_path / "validation_results.jsonl").exists()
