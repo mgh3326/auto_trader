@@ -1994,7 +1994,7 @@ async def test_place_order_kis_mock_sell_preview_uses_mock_holdings(monkeypatch)
 async def test_kis_mock_place_order_dry_run_warns_when_cash_lookup_unavailable(
     monkeypatch,
 ):
-    """The tool refuses preview; the internal preview retains its cash warning."""
+    """The dedicated preview retains its warning when the cash lookup fails."""
     tools = build_tools()
 
     class MockKISClient:
@@ -2022,17 +2022,6 @@ async def test_kis_mock_place_order_dry_run_warns_when_cash_lookup_unavailable(
         quantity=1,
         price=318500.0,
         dry_run=True,
-    )
-
-    assert result["error_code"] == "confirm_required"
-    result = await order_execution._place_order_impl(
-        symbol="005930",
-        side="buy",
-        order_type="limit",
-        quantity=1,
-        price=318500.0,
-        dry_run=True,
-        is_mock=True,
     )
 
     assert result["success"] is True

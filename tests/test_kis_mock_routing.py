@@ -304,7 +304,7 @@ async def test_cancel_order_kis_mock_kr_without_symbol_no_ledger_row_not_found(
 
 
 @pytest.mark.asyncio
-async def test_modify_order_kis_mock_kr_no_ledger_row_not_found(monkeypatch):
+async def test_modify_order_kis_mock_kr_refuses_before_ledger_lookup(monkeypatch):
     from app.mcp_server.tooling import orders_modify_cancel
 
     monkeypatch.setattr(
@@ -321,8 +321,7 @@ async def test_modify_order_kis_mock_kr_no_ledger_row_not_found(monkeypatch):
     )
 
     assert result["success"] is False
-    assert result.get("mock_unsupported") is not True
-    assert "not found in kis_mock_order_ledger" in result["error"]
+    assert result["error_code"] == "kis_mock_modify_unavailable"
 
 
 @pytest.mark.asyncio

@@ -493,14 +493,16 @@ async def test_modify_unknown_basis_fails_open(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_modify_kis_mock_domestic_skips_floor(monkeypatch) -> None:
-    # Mock modifies delegate before the live guard (ROB-461 practice semantics).
+async def test_modify_kis_mock_domestic_refuses_before_live_floor_or_wire(
+    monkeypatch,
+) -> None:
     delegate = AsyncMock(return_value={"success": True, "status": "modified"})
     monkeypatch.setattr(orders_modify_cancel, "_modify_kis_mock_domestic", delegate)
     holdings_mock = _patch_modify_holdings(monkeypatch, avg_price=90400.0)
     result = await orders_modify_cancel._modify_kis_domestic(
         "0007", "375500", "equity_kr", 68000.0, None, False, is_mock=True
     )
-    assert result["success"] is True
-    delegate.assert_called_once()
+    assert result["success"] is False
+    assert result["error_code"] == "kis_mock_modify_unavailable"
+    delegate.assert_not_awaited()
     holdings_mock.assert_not_called()

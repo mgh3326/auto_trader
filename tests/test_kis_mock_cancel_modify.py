@@ -262,21 +262,20 @@ class _FakeKisModifyUnsupported:
 
 
 @pytest.mark.asyncio
-async def test_mock_modify_success_updates_ledger(
+async def test_mock_modify_wire_helper_success_updates_ledger(
     db_session: AsyncSession, monkeypatch
 ):
     row = await _seed(db_session, orgno="00950", price="70000", quantity="10")
     fake = _FakeKisModifyOK()
     monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: fake)
 
-    result = await omc._modify_kis_domestic(
+    result = await omc._modify_kis_mock_domestic(
         row.order_no,
         "005930",
         "equity_kr",
         new_price=71000.0,
         new_quantity=8.0,
         dry_run=False,
-        is_mock=True,
     )
 
     assert result["success"] is True
@@ -287,7 +286,7 @@ async def test_mock_modify_success_updates_ledger(
 
 
 @pytest.mark.asyncio
-async def test_mock_modify_unsupported_fails_closed(
+async def test_mock_modify_wire_helper_unsupported_fails_closed(
     db_session: AsyncSession, monkeypatch
 ):
     row = await _seed(db_session, orgno="00950")
@@ -295,14 +294,13 @@ async def test_mock_modify_unsupported_fails_closed(
         omc, "_create_kis_client", lambda *, is_mock: _FakeKisModifyUnsupported()
     )
 
-    result = await omc._modify_kis_domestic(
+    result = await omc._modify_kis_mock_domestic(
         row.order_no,
         "005930",
         "equity_kr",
         new_price=71000.0,
         new_quantity=None,
         dry_run=False,
-        is_mock=True,
     )
 
     assert result["success"] is False
