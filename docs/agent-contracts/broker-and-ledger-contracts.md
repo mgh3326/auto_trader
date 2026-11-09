@@ -276,9 +276,9 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - 🔴 `app.main` 에 마운트하지 마라 — 공개 프록시 뒤에 있다. 라우트는 별도 프로세스(`app/execution_intent_gateway_server.py`)만 서빙하고, `scripts/run_execution_intent_gateway.py` 는 숫자 loopback 주소가 아닌 호스트(`localhost` 이름 포함)를 exit 2 로 거부한다. 운영자가 수동으로 띄운다(스케줄러·유닛·재시작 정책 없음).
 - 🔴 게이트 순서: `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED`(기본 false, 꺼지면 DB 접근 전 404) → 토큰(미설정 403, 오류 401) → 본문 검증(`parse_child_request`, 미지 필드 거부) → E1 `handle`. confirm 헤더가 본문 `idempotency_key` 와 정확히 같을 때만 `confirm=True` 이고 그 외는 E1 의 `confirm_required` 다. E1 env 게이트 `EXECUTION_INTENT_GATEWAY_ENABLED` 는 별도로 유지된다.
 - 🔴 조회는 `READ ONLY` 트랜잭션이고 쓰기·잠금·브로커 호출이 없다. 저널과 레저 증거만 읽으며 `uncertain`/`sending` 은 양성 증거가 없으면 `view: null` 이다. 레저 행 부재를 "주문 없음"으로 답하지 마라(레저 행은 전송 후 기록된다). soft cancel 은 종결 증거가 아니다. 🔴 lineage 의 주문을 말하는 곳은 `lineage_orders` 하나뿐이다 — 리더가 체결을 읽는 주문과 종결이 읽는 주문이 같은 목록에서 나온다. 주문은 (선행 0 제거한 번호, KST 거래일)이고 submit/amend 만 주문을 만든다. 이 키를 번호만으로 줄이거나 정규화를 빼지 마라 — 재사용 번호의 과거 체결이 살아 있는 주문을 종료로 보고하거나 체결이 누락된다. 🔴 `filled_qty` 는 `execution_ledger` 체결의 lineage 누적이고, 종결은 마지막 submit/amend 가 만든 주문의 자기 체결을 저널 수량과 비교해서만 판정한다. 🔴 `attributed_fill_qty` 는 종목 전체 보유 변화를 나눈 추정치라 주문 증거가 아니다 — 종결·`filled_qty` 에 쓰지 말고, 실행 원장보다 크거나 판독 불가면 `fill_evidence_conflict` 로 `view: null` 이다(`_derive_shadow_fill` 은 값이 없으면 전량 체결로 답하므로 여기서 쓰지 않는다). 저널과 레저가 한 주문을 말하지 못하면(재사용 번호·미설명 번호·번호 공유) `order_identity_ambiguous` 다. 🔴 레저가 따라오지 않은 unknown amend 는 이전 주문의 체결·만료·취소 증거로 닫지 마라 — 대체 주문이 살아 있을 수 있다. 불변식 표 J1~J12 와 테스트는 `docs/design/1440-intent-gateway-contract.md`.
-- 🔴 **후속 capability 범위**: `KisMockForwarder` 가 amend/cancel 마다 게이트웨이 저널 행을 durable claim 으로 capability 를 발급한다. 게이트웨이가 보낸 kis_mock 주문에만 해당한다(계좌·intent·대상 키·브로커 주문번호·레저 correlation `intent-gateway:<root>`). 그 밖의 출처(J2B·coordinated·mirror·운영자)와 비모의 주문은 발급되지 않고 ROB-1263 §7 폐쇄를 유지한다. 근거는 `docs/contracts/rob-1263-kis-coordination-adapter.md` §7 Amendment. 이 바인딩을 완화하지 마라.
-- 🔴 **코디네이션 라우트는 미설치다**: 이 PR 은 `set_kis_mock_coordination_route_provider` 를 호출하지 않는다. 설치 전에는 submit 이 전부 `uncertain`(주문 없음)이고 amend/cancel 은 `target_not_working` 이다. 설치는 별도 승인 사항이다.
-- cancel 은 `broker_cancel_confirmed` 가 true 일 때만 `accepted` 다. KIS mock 정정은 새 주문번호를 받으므로 `update_order_terms(order_no=...)` 로 레저 행의 번호를 옮기고 이전 번호는 `modified_from_order_no` 로 남긴다.
+- 🔴 **게이트웨이 후속 검사**: `KisMockForwarder` 는 amend/cancel 마다 게이트웨이 저널 행을 확인하고 capability 를 발급한다. 이 발급 경로와 게이트웨이의 계좌·intent·대상 키·브로커 주문번호·레저 correlation 바인딩은 유지된다. hk 3741 결정 이후 하위 KIS mock 주문 경로는 capability 를 요구하지 않는다.
+- 🔴 **코디네이션 라우트는 미설치다**: `set_kis_mock_coordination_route_provider` 호출자는 없다. hk 3741 이후 일반 KR mock submit/cancel 은 이 라우트에 의존하지 않는다. 코디네이터·증거 저장소와 기존 claim 복구는 남아 있다.
+- cancel 은 `broker_cancel_confirmed` 가 true 일 때만 `accepted` 다. KR mock amend 는 hk 3745까지 차단된다. E1은 기존대로 child 를 먼저 저널에 기록한 다음 `kis_mock_modify_unavailable`을 받으며 이를 `uncertain`으로 기록할 수 있다. E1 변경은 hk 3745에 미룬다(은퇴 검토 hk 3742).
 
 **계약**:
 - 🔴 `EXECUTION_INTENT_GATEWAY_ENABLED` 정확히 `true` + 호출별 `confirm is True` 이중 게이트. 둘 다 DB 접근 전에 거부한다.
@@ -287,7 +287,7 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - amend/cancel 대상은 journal 의 idempotency key 로만 지정한다. Go 가 브로커 주문번호를 넘길 수 없으므로 같은 intent 가 보낸 주문에만 작용한다.
 - submit/amend 는 기존 `review.kis_mock_runner_control` 이 `ACTIVE` 일 때만 허용하고 읽기 실패는 차단이다. 🔴 cancel 은 kill·만료·상한을 보지 않는다(ROB-1440 운영자 계약). 이 예외는 gateway 경로에만 있고 runner 의 `mutation_permission` 표는 바뀌지 않았다. 단, 나중 child 가 `sending`/`uncertain` 이면 대상 주문번호를 믿을 수 없으므로 그 주문의 cancel 도 `target_superseded` 로 거부하고 reconcile 을 기다린다.
 - 체결은 여기에 기록하지 않는다. `accepted` 는 체결이 아니며, 기존 레저와 reconcile 이 그대로 권한자다.
-- 하위 가드는 우회하지 않는다. 현재 KR mock 전송은 coordinated route 와 follow-up capability 없이는 하위 계층에서 거부되므로, 실제 주문은 E3 결정 전까지 나가지 않는다.
+- 하위 가드는 우회하지 않는다. KR/US mock place 는 제공된 `idempotency_key` 를 `kis_mock` 범위로 전송 전에 예약하고, 공개 MCP mock 주문은 live와 같은 주문 내용·거래일·`rung` 파생 키도 예약한다. 귀속 신호 커밋과 기존 확인은 유지한다. KR mock 취소는 자기 원장과 확인된 잔량을 요구하며 capability 나 coordinator lease 는 요구하지 않는다. KR mock 정정은 hk 3745까지 거부한다 (`hk:doc decision/2026-11-09/kis-mock-like-live`).
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 
@@ -574,6 +574,30 @@ allowlist change exists because `get_holdings` is already live-kr core.
 - **이벤트 태깅**: `app/services/kis_websocket_internal/events.py::build_lifecycle_event` (ROB-100 `OrderLifecycleEvent`)
 
 ### KIS mock dispatch evidence (ROB-1263)
+
+**hk 3741 운영자 결정** (`hk:doc decision/2026-11-09/kis-mock-like-live`):
+일반 KR mock place/cancel 은 아래 coordinated route 또는 writer lease 를
+요구하지 않는다. 제공된 place `idempotency_key` 는 KR/US 모두 `kis_mock` 범위에
+전송 전 커밋하고, mirror 는 기존 correlation 예약도 유지한다. 전송 결과가 불명확하면
+예약을 보존하고 재전송하지 않는다. 사전 미전송이 증명되었을 때만 해당 행 id 로
+해제한다. 기존 coordinator/evidence/E3/position-proof 모듈과 기존 claim 의 복구
+계약은 유지하지만, 이 일반 경로의 전송을 coordinated evidence 로 표시하지 않는다.
+mock client·VTS host·자격증명 namespace 검사는 전송 전에 유지하며 live 분기는 불변이다.
+전용 MCP `kis_mock_place_order`/`kis_mock_cancel_order`/`kis_mock_modify_order` 는
+`dry_run=True`에서 읽기 전용 미리보기를 반환한다. `dry_run=False`에서
+`confirm=True`가 없으면 네트워크·DB 쓰기 전에 거부한다. KR mock 정정 실행은
+가격·수량 모두 `kis_mock_modify_unavailable`로 거부하며 hk 3745에서 다룬다.
+전용·공용 MCP 모의 취소/정정은 KIS 외 시장을 `kis_mock_non_kis_market`으로
+브로커 호출·DB 쓰기 전에 거부한다.
+공용 MCP place/cancel/modify 의 KR mock 요청은 `kis_mock_use_dedicated_tool` 로
+해당 전용 도구를 안내한다. 공개 KR/US mock place는 live와 같은 내용·거래일·
+`rung` 파생 키를 전송 전에 예약하므로 같은 날 동일 내용·`rung`의 재주문은 차단한다.
+KR 전용 place에도 선택적 `rung`이 있다. 서로 다른 `rung`은 서로 다른 귀속 신호를
+기록하며 `rung`이 없으면 기존 귀속 ID를 쓴다. 내부 impl 호출자의 키와 live 경로는 유지한다.
+호출자가 `client_order_id` 를 주지 않은 KR mock edge 명령은 귀속 `correlation_id` 와
+정규화 주문 내용 및 `rung`으로 안정적인 명령 ID를 만든다. 같은 귀속·내용·`rung`의
+재시도는 날짜가 바뀌어도 같은 ID이고, 서로 다른 귀속이나 내용·`rung`은 다른 ID다.
+명시 ID는 변경하지 않는다.
 
 KR mock only: `kis_mock_runner/evidence_store.py` provides durable lineage,
 dispatch evidence and restart uncertainty ports in two new append-only tables

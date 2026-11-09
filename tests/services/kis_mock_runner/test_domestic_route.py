@@ -18,10 +18,16 @@ def _make_client():
     from app.services.brokers.kis.domestic_orders import DomesticOrderClient
 
     parent = MagicMock()
+    parent._is_mock_client = True
+    parent._kis_url.side_effect = lambda path: (
+        f"https://openapivts.koreainvestment.com:29443{path}"
+    )
     parent._hdr_base = {"content-type": "application/json"}
     parent._ensure_token = AsyncMock()
     parent._token_manager = AsyncMock()
     settings = MagicMock()
+    settings._is_mock = True
+    settings.kis_base_url = "https://openapivts.koreainvestment.com:29443"
     settings.kis_account_no = "1234567890"
     settings.kis_access_token = "test-token"
     parent._settings = settings

@@ -12,6 +12,39 @@ J3B opens no socket of its own, signs nothing, loads no credential value,
 registers no scheduler. The ROB-1263 evidence amendment adds two lane-native
 append-only tables; operators alone apply its additive migration.
 
+## Amendment — hk 3741 (2026-11-09)
+
+The operator decision `decision/2026-11-09/kis-mock-like-live` supersedes the
+route, writer-lease and follow-up-capability requirements below for ordinary KR
+KIS mock place/cancel. Those paths do not enter the coordinator; its
+evidence and recovery modules remain for existing coordinated claims. The
+gateway retains its own journal and follow-up checks. KR/US mock place reserves
+each supplied idempotency key in `kis_mock` before send, in addition to the
+existing mirror correlation reservation. Unknown send outcomes retain the
+reservations; a proven pre-send refusal releases only matching row IDs. Mock
+client, VTS host and mock settings identity remain checked before and at the
+send boundary. Attribution, configuration, confirmation and known-remainder
+checks remain in force. Live paths are unchanged.
+
+The dedicated mock MCP place/cancel/modify tools return a read-only preview for
+`dry_run=True`. A non-preview request without `confirm=True` is refused before
+network or DB writes. KR mock modify is refused with
+`kis_mock_modify_unavailable` until hk 3745, including at `modify_order_impl`.
+E1 retains journal-first ordering: an amend is journaled before that refusal and
+may be recorded as uncertain; E1 changes are deferred to hk 3745 (retirement
+review hk 3742). Mock cancel/modify MCP requests for non-KIS markets are refused
+with `kis_mock_non_kis_market` before broker calls or DB writes. Generic MCP KR
+mock mutations are refused with `kis_mock_use_dedicated_tool`. Public mock place calls reserve the same
+canonical-content, trading-day and `rung` key derived for live calls; the KR
+dedicated tool exposes an optional `rung`. Distinct rungs have distinct
+attribution signal IDs; without a rung the existing attribution ID is retained.
+Internal callers keep their existing keys, and live routing and the generic tool
+signatures remain unchanged.
+For KR mock edge submissions without an explicit client key, command identity
+is derived from the attribution correlation ID, canonical order content and
+`rung`; the same values retain that ID across retries and trading days. An
+explicit client key remains the command ID.
+
 ---
 
 ## 1. What this lane owns, and what it must not touch

@@ -179,18 +179,15 @@ def ledger(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return state
 
 
-# The gate this PR leaves closed: no receipt means zero broker calls.
-
-
 @pytest.mark.asyncio
-async def test_without_a_minted_capability_the_guards_still_refuse(
+async def test_without_a_minted_capability_the_own_ledger_order_can_cancel(
     wire: _Kis, ledger: dict[str, Any]
 ) -> None:
     result = await orders_modify_cancel.cancel_order_impl(
         order_id=ORDER_ID, symbol="005930", market="kr", is_mock=True
     )
-    assert result["success"] is False
-    assert wire.calls == []
+    assert result["success"] is True
+    assert wire.calls == [("cancel", ORDER_ID)]
 
 
 # The positive path, through the real guards.
@@ -215,43 +212,9 @@ async def test_gateway_cancel_mints_and_reaches_the_broker_once(
 
 
 @pytest.mark.asyncio
-async def test_gateway_amend_mints_and_returns_the_replacement_order(
+async def test_gateway_amend_is_unavailable_without_touching_wire_or_ledger(
     wire: _Kis, ledger: dict[str, Any]
 ) -> None:
-    intent = intent_snapshot()
-    forwarder = KisMockForwarder(
-        journal=_seeded(intent, _child()), lease_factory=_Lease
-    )
-
-    forwarded = await forwarder.amend(intent, _amend(intent), broker_order_id=ORDER_ID)
-
-    assert (forwarded.accepted, forwarded.broker_order_id) == (True, "0001002")
-    assert wire.calls == [("modify", ORDER_ID)]
-
-
-@pytest.mark.asyncio
-async def test_amend_repoints_the_ledger_row_so_the_next_follow_up_finds_it(
-    wire: _Kis, ledger: dict[str, Any]
-) -> None:
-    intent = intent_snapshot()
-    forwarder = KisMockForwarder(
-        journal=_seeded(intent, _child()), lease_factory=_Lease
-    )
-    await forwarder.amend(intent, _amend(intent), broker_order_id=ORDER_ID)
-    kind, written = ledger["writes"][0]
-    assert kind == "terms"
-    assert written["order_no"] == "0001002"
-    assert written["detail"]["modified_from_order_no"] == ORDER_ID
-
-
-@pytest.mark.asyncio
-async def test_amend_without_a_replacement_number_fails_and_leaves_the_ledger_alone(
-    wire: _Kis, ledger: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async def no_number(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"ord_tmd": "100000"}
-
-    monkeypatch.setattr(wire, "modify_korea_order", no_number)
     intent = intent_snapshot()
     forwarder = KisMockForwarder(
         journal=_seeded(intent, _child()), lease_factory=_Lease
@@ -260,7 +223,8 @@ async def test_amend_without_a_replacement_number_fails_and_leaves_the_ledger_al
     forwarded = await forwarder.amend(intent, _amend(intent), broker_order_id=ORDER_ID)
 
     assert forwarded.accepted is False
-    assert forwarded.result["error"] == "kis_mock modify returned no order number"
+    assert forwarded.result["error_code"] == "kis_mock_modify_unavailable"
+    assert wire.calls == []
     assert ledger["writes"] == []
 
 

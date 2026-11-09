@@ -7,33 +7,13 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import pytest_asyncio
 
 from tests._mcp_tooling_support import build_tools
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _kis_mock_coordinated_route():
-    """ROB-1263 r4 §3: a KIS mock send needs a coordinated route to be authorized.
-
-    These tests are about lifecycle reconciliation, not about coordination, so they install the
-    route the adapter now requires. The route-less refusal itself is unchanged
-    and is covered by `test_without_a_route_the_lane_sends_nothing_at_all`.
-    (orch approved this file's fence entry in r6 after CI confirmed the failures
-    are this branch's regressions.)
-    """
-
-    from tests.services.mock_integration.test_kis_coordination_adapter import (
-        installed_kis_mock_route,
-    )
-
-    async with installed_kis_mock_route():
-        yield
-
-
 @pytest.mark.asyncio
 async def test_full_reconciliation_cycle_acceptance(monkeypatch, db_session):
-    """place_order (kis_mock) captures baseline → reconciler detects fill via MCP tool.
+    """kis_mock_place_order captures baseline → reconciler detects fill via MCP tool.
 
     ``db_session`` is required even though the ledger insert is mocked: the
     pre-submit attribution gate writes a real signal row before the send and
@@ -41,6 +21,10 @@ async def test_full_reconciliation_cycle_acceptance(monkeypatch, db_session):
     """
     from app.mcp_server.tooling import kis_mock_ledger, order_execution
 
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_kis_variants.validate_kis_mock_config",
+        lambda: [],
+    )
     monkeypatch.setattr(
         "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
         lambda: [],
@@ -122,14 +106,15 @@ async def test_full_reconciliation_cycle_acceptance(monkeypatch, db_session):
 
     tools = build_tools()
 
-    # Step A: place_order writes ledger row with baseline + lifecycle_state.
-    place_res = await tools["place_order"](
+    # Step A: the dedicated mock tool writes the ledger row with its baseline.
+    place_res = await tools["kis_mock_place_order"](
         symbol="005930",
         side="buy",
         quantity=10,
         price=100.0,
         account_mode="kis_mock",
         dry_run=False,
+        confirm=True,
         strategy="posture-v1",
     )
     assert place_res["success"] is True

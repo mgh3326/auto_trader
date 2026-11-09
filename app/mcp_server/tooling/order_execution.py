@@ -7,6 +7,8 @@ Business logic lives in order_validation and order_journal.
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -90,10 +92,10 @@ from app.services.kis_mock_attribution import (
     KisMockAttribution,
     MissingAttribution,
     mark_signal_outcome,
+    mint_correlation_id,
     record_signal,
     resolve_attribution,
 )
-from app.services.kis_mock_runner.singleton import run_kis_mock_send
 from app.services.kr_symbol_universe_service import get_kr_security_type
 from app.services.mechanical_loss_cut.plans import record_buy_exit_plan
 from app.services.order_proposals.cash_funding_exemption import (
@@ -908,8 +910,8 @@ def _build_dry_run_blocked_response(
     }
 
 
-def _duplicate_order_intent_message(account_scope: str) -> str:
-    if account_scope == "kis_mock":
+def _duplicate_order_intent_message(account_scope: str, *, is_mirror: bool) -> str:
+    if account_scope == "kis_mock" and is_mirror:
         return (
             "이 미러 아이템은 이미 KIS mock 미러 전송 intent가 있어 "
             "중복 전송을 차단했습니다 "
@@ -953,6 +955,9 @@ async def _execute_and_record(
     report_item_uuid: uuid.UUID | None = None,
     approval_hash_digest: str | None = None,
     idempotency_key: str | None = None,
+    reserve_mock_idempotency: bool = True,
+    mock_key_was_supplied: bool = True,
+    mock_rung: str | int | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
@@ -1126,6 +1131,8 @@ async def _execute_and_record(
     intent_account_scope: str | None = None
     intent_key: str | None = None
     intent_reserved = False
+    # Internal callers may opt out of reserving the preview's derived key;
+    # public mock tools reserve it just as the live tools do.
     if (
         not is_mock
         and idempotency_key is not None
@@ -1145,8 +1152,18 @@ async def _execute_and_record(
     ):
         intent_account_scope = "kis_mock"
         intent_key = correlation_id
+    elif (
+        is_mock
+        and reserve_mock_idempotency
+        and idempotency_key is not None
+        and market_type in ("equity_kr", "equity_us")
+    ):
+        intent_account_scope = "kis_mock"
+        intent_key = idempotency_key
 
     intent_row_id: int | None = None
+    secondary_intent_key: str | None = None
+    secondary_intent_row_id: int | None = None
     try:
         if intent_account_scope is not None and intent_key is not None:
             async with _order_session_factory()() as intent_db:
@@ -1173,7 +1190,10 @@ async def _execute_and_record(
                     if protection_lease is not None:
                         await protection_lease.release()
                     return order_error_fn(
-                        _duplicate_order_intent_message(intent_account_scope)
+                        _duplicate_order_intent_message(
+                            intent_account_scope,
+                            is_mirror=mirror_cohort == "mock_counterfactual",
+                        )
                     )
     except BaseException:
         if protection_lease is not None:
@@ -1223,6 +1243,16 @@ async def _execute_and_record(
                         idempotency_key=intent_key,
                         side=side,
                     )
+                    if (
+                        secondary_intent_key is not None
+                        and secondary_intent_row_id is not None
+                    ):
+                        deleted += await service.release_if_matches(
+                            account_scope=intent_account_scope,
+                            row_id=secondary_intent_row_id,
+                            idempotency_key=secondary_intent_key,
+                            side=side,
+                        )
                 else:
                     deleted = await service.release(
                         account_scope=intent_account_scope,
@@ -1252,12 +1282,77 @@ async def _execute_and_record(
             return True
         return False
 
+    # Mirrors retain their original correlation reservation as well as the
+    # caller's idempotency reservation. Neither key may reach the broker twice.
+    if (
+        is_mock
+        and intent_reserved
+        and mirror_cohort == "mock_counterfactual"
+        and reserve_mock_idempotency
+        and idempotency_key is not None
+        and idempotency_key != intent_key
+    ):
+        try:
+            async with _order_session_factory()() as intent_db:
+                secondary_intent_row_id = await OrderSendIntentService(
+                    intent_db
+                ).reserve(
+                    account_scope="kis_mock",
+                    idempotency_key=idempotency_key,
+                    symbol=normalized_symbol,
+                    side=side,
+                )
+                secondary_intent_key = idempotency_key
+        except DuplicateOrderIntent as duplicate:
+            await _release_reserved_intent_after_send_failure(
+                duplicate, proven_not_sent=True
+            )
+            return order_error_fn(
+                _duplicate_order_intent_message("kis_mock", is_mirror=True)
+            )
+        except BaseException as exc:
+            await _release_reserved_intent_after_send_failure(exc, proven_not_sent=True)
+            raise
+
     async def _send_to_broker() -> Any:
         # The optional pre_send_hook is threaded to the broker transport and
         # fired immediately before each real mutation HTTP attempt (including
         # eligible token/rate-limit re-sends). Callers without a hook retain
         # the existing execution behavior.
         nonlocal broker_ms, protection_lease_cleanup_warning
+        edge_idempotency_key = idempotency_key
+        if (
+            is_mock
+            and market_type == "equity_kr"
+            and submit_path == "edge"
+            and not mock_key_was_supplied
+        ):
+            edge_content = order_approval.build_order_canonical_payload(
+                market_type=market_type,
+                symbol=normalized_symbol,
+                side=side,
+                order_type=order_type,
+                quantity=None if order_quantity is None else str(order_quantity),
+                price=None if price is None else str(price),
+            )
+            edge_components: dict[str, Any] = {
+                "correlation_id": correlation_id,
+                "order": edge_content,
+            }
+            if mock_rung is not None:
+                edge_components["rung"] = str(mock_rung)
+            edge_identity = json.dumps(
+                edge_components,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            edge_idempotency_key = (
+                "km-"
+                + uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"kis_mock_edge:{edge_identity}",
+                ).hex
+            )
         broker_started_at = time.perf_counter()
         try:
             broker_result = await _execute_order(
@@ -1271,7 +1366,7 @@ async def _execute_and_record(
                 identifier=idempotency_key if market_type == "crypto" else None,
                 pre_send_hook=pre_send_hook,
                 send_outcome=send_outcome,
-                idempotency_key=idempotency_key,
+                idempotency_key=edge_idempotency_key,
             )
         except BaseException:
             if protection_lease is not None:
@@ -1293,29 +1388,7 @@ async def _execute_and_record(
             broker_ms = (time.perf_counter() - broker_started_at) * 1000
 
     try:
-        if is_mock and market_type == "equity_kr":
-            # ROB-1263 r2 / B-1..B-4: the KIS mock lane's single production
-            # route into the merged J3A coordinator. When the lane has a
-            # coordinated route the *whole* send runs inside it, so it inherits
-            # J3A's ordering (lineage persist → lease → uncertainty gate →
-            # binary claim → re-assertion → callback → retained durable writes
-            # → conditional release). When it has none the lane is
-            # AUTO_READY_BLOCKED_BY_LIFECYCLE and the send is explicitly not
-            # AUTO evidence — but it still holds the wire-boundary authority
-            # taken in `_guard_kis_mock_writer`.
-            kis_mock_outcome = await run_kis_mock_send(
-                send=_send_to_broker,
-                symbol=normalized_symbol,
-                side=side,
-                order_type=order_type,
-                quantity=order_quantity,
-                price=price,
-                correlation_id=correlation_id,
-                strategy=strategy,
-            )
-            execution_result = kis_mock_outcome.result
-        else:
-            execution_result = await _send_to_broker()
+        execution_result = await _send_to_broker()
         if send_outcome is not None:
             # A transport response crossed the send boundary. Until the mock
             # result normalizer proves accepted/rejected, the outcome is unknown.
@@ -1849,6 +1922,7 @@ async def _place_order_impl(
     parking_sell_ctx: ParkingSellContext | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
+    reserve_mock_derived_idempotency: bool = False,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -2248,6 +2322,27 @@ async def _place_order_impl(
             else None
         )
 
+        # Public rung orders are separate decisions even when their terms match.
+        attribution_correlation_id = correlation_id
+        if (
+            is_mock
+            and reserve_mock_derived_idempotency
+            and correlation_id is None
+            and rung is not None
+            and str(rung)
+        ):
+            rung_discriminator = int.from_bytes(
+                hashlib.sha256(str(rung).encode("utf-8")).digest(), "big"
+            )
+            attribution_correlation_id = mint_correlation_id(
+                symbol=normalized_symbol,
+                side=side_lower,
+                price=_to_float(dry_run_result.get("price"), default=0.0),
+                quantity=_to_float(dry_run_result.get("quantity"), default=0.0),
+                kst_trade_day=now.astimezone(KST).strftime("%Y-%m-%d"),
+                rung=rung_discriminator,
+            )
+
         # Real execution
         execution_result = await _execute_and_record(
             normalized_symbol=normalized_symbol,
@@ -2273,7 +2368,7 @@ async def _place_order_impl(
             defensive_trim_ctx=defensive_trim_ctx,
             order_error_fn=_order_error,
             is_mock=is_mock,
-            correlation_id=correlation_id,
+            correlation_id=attribution_correlation_id,
             report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
             approval_hash_digest=approval_digest,
             idempotency_key=idempotency_key,
@@ -2281,6 +2376,17 @@ async def _place_order_impl(
             mirror_source_bucket=mirror_source_bucket,
             pre_send_hook=pre_send_hook,
             send_outcome=send_outcome,
+            **(
+                {
+                    "reserve_mock_idempotency": (
+                        client_order_id is not None or reserve_mock_derived_idempotency
+                    ),
+                    "mock_key_was_supplied": client_order_id is not None,
+                    "mock_rung": rung,
+                }
+                if is_mock
+                else {}
+            ),
         )
         # ROB-1460: a proposal-flow buy is recorded by revalidation, which has
         # the proposal's stated stop. A mock order has no plan.
@@ -2307,25 +2413,28 @@ async def _place_order_impl(
             market_type,
             exc,
         )
-        await _record_order_history(
-            symbol=normalized_symbol,
-            side=side_lower,
-            order_type=order_type_lower,
-            quantity=quantity,
-            price=price,
-            amount=0,
-            reason=reason,
-            dry_run=True,
-            error=describe_exception(exc),
-            defensive_trim=defensive_trim_ctx is not None,
-            approval_issue_id=(
-                defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
-            ),
-            requester_agent_id=(
-                defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
-            ),
-            caller_source=get_caller_source() if defensive_trim_ctx else None,
-        )
+        if not (is_mock and dry_run):
+            await _record_order_history(
+                symbol=normalized_symbol,
+                side=side_lower,
+                order_type=order_type_lower,
+                quantity=quantity,
+                price=price,
+                amount=0,
+                reason=reason,
+                dry_run=True,
+                error=describe_exception(exc),
+                defensive_trim=defensive_trim_ctx is not None,
+                approval_issue_id=(
+                    defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+                ),
+                requester_agent_id=(
+                    defensive_trim_ctx.requester_agent_id
+                    if defensive_trim_ctx
+                    else None
+                ),
+                caller_source=get_caller_source() if defensive_trim_ctx else None,
+            )
         # ROB-645: a timed-out order send has an unknown outcome — tell the caller
         # to reconcile instead of re-sending (order retries are disabled).
         base_error = _order_error(describe_exception(exc))

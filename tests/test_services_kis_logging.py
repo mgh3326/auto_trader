@@ -3,6 +3,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _configure_mock_profile(settings):
+    settings.kis_mock_base_url = "https://openapivts.koreainvestment.com:29443"
+    settings.kis_mock_account_no = "1234567890"
+    settings.kis_mock_app_key = "test_mock_key"
+    settings.kis_mock_app_secret = "test_mock_secret"
+    settings.kis_mock_access_token = "test_token"
+
+
+async def _admit_test_vts(_scope, *, freshness_hook=None, **kwargs):
+    if freshness_hook is not None:
+        await freshness_hook()
+
+
 @pytest.fixture(autouse=True)
 def _kis_mock_wire_authority(monkeypatch):
     """ROB-1263: an `is_mock=True` mutation now holds writer authority at the wire.
@@ -336,6 +349,7 @@ class TestKISFailureLogging:
         mock_settings.kis_app_key = "test_key"
         mock_settings.kis_app_secret = "test_secret"
         mock_settings.kis_access_token = "test_token"
+        _configure_mock_profile(mock_settings)
 
         mock_client = AsyncMock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -350,7 +364,8 @@ class TestKISFailureLogging:
         }
         mock_client.post.return_value = mock_response
 
-        client = KISClient()
+        client = KISClient(is_mock=is_mock)
+        client._await_vts_gate = AsyncMock(side_effect=_admit_test_vts)
         client._token_manager = AsyncMock()
         client._token_manager.get_token = AsyncMock(return_value="test_token")
 
@@ -394,6 +409,7 @@ class TestKISFailureLogging:
         mock_settings.kis_app_key = "test_key"
         mock_settings.kis_app_secret = "test_secret"
         mock_settings.kis_access_token = "test_token"
+        _configure_mock_profile(mock_settings)
 
         mock_client = AsyncMock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -408,7 +424,8 @@ class TestKISFailureLogging:
         }
         mock_client.post.return_value = mock_response
 
-        client = KISClient()
+        client = KISClient(is_mock=is_mock)
+        client._await_vts_gate = AsyncMock(side_effect=_admit_test_vts)
         client._token_manager = AsyncMock()
         client._token_manager.get_token = AsyncMock(return_value="test_token")
 
@@ -459,6 +476,7 @@ class TestKISFailureLogging:
         mock_settings.kis_app_key = "test_key"
         mock_settings.kis_app_secret = "test_secret"
         mock_settings.kis_access_token = "test_token"
+        _configure_mock_profile(mock_settings)
 
         mock_client = AsyncMock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -473,7 +491,8 @@ class TestKISFailureLogging:
         }
         mock_client.post.return_value = mock_response
 
-        client = KISClient()
+        client = KISClient(is_mock=is_mock)
+        client._await_vts_gate = AsyncMock(side_effect=_admit_test_vts)
         client._token_manager = AsyncMock()
         client._token_manager.get_token = AsyncMock(return_value="test_token")
         client.inquire_korea_orders = AsyncMock(
