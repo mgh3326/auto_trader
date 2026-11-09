@@ -38,6 +38,7 @@ from app.core.timezone import KST, today_kst
 from app.models.order_proposals import OrderProposalRung
 from app.models.review import KISLiveOrderLedger
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.kis.live_order_expiry import row_has_cancel_evidence
 from app.services.order_proposals.kis_leftover_inference import (
     EXPIRED_INFERENCE_VOID_REASON,
 )
@@ -195,8 +196,10 @@ def normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
     order_id = _text(_field(row, "odno"))
     original = _order_id_key(_text(_field(row, "orgn_odno")))
     original_id = _text(_field(row, "orgn_odno")) if original else None
-    is_cancel_confirmation = original_id is not None
-    cancelled = (_text(_field(row, "cncl_yn")) or "").upper() == "Y"
+    # orgn_odno links BOTH modification and cancellation confirmation rows; only
+    # real cancel evidence (cncl_yn, a '취소' side name) means cancelled.
+    cancelled = row_has_cancel_evidence(dict(row))
+    is_cancel_confirmation = original_id is not None and cancelled
 
     ord_qty = _num(_field(row, "ord_qty"))
     tot_qty = _num(_field(row, "tot_ccld_qty"))
@@ -360,7 +363,12 @@ async def _load_system_facts(
                     OrderProposalRung.correlation_id,
                 ).where(
                     OrderProposalRung.void_reason == EXPIRED_INFERENCE_VOID_REASON,
-                    OrderProposalRung.broker_order_id.in_([f.order_no for f in ledger]),
+                    OrderProposalRung.broker_order_id.in_(
+                        _padded_variants(
+                            {k for f in ledger if (k := _order_id_key(f.order_no))}
+                        )
+                        + [f.order_no for f in ledger]
+                    ),
                 )
             )
         ).all()

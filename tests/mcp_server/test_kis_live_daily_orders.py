@@ -287,6 +287,32 @@ def test_cancel_confirmation_row_is_its_own_row_linked_to_the_original() -> None
     assert plain["original_order_id"] is None
 
 
+def test_modification_confirmation_row_is_not_reported_cancelled() -> None:
+    # KIS links modification confirmations through orgn_odno too.
+    modify = normalize_row(
+        _row(
+            "0000000888",
+            orgn_odno="0000000555",
+            sll_buy_dvsn_cd_name="매수정정",
+            rmn_qty="10",
+        )
+    )
+    assert modify["original_order_id"] == "0000000555"
+    assert modify["is_cancel_confirmation"] is False
+    assert modify["cancelled"] is False
+    assert modify["broker_status"] == "working"
+    filled = normalize_row(
+        _row(
+            "0000000889",
+            orgn_odno="0000000555",
+            sll_buy_dvsn_cd_name="매수정정",
+            tot_ccld_qty="10",
+            rmn_qty="0",
+        )
+    )
+    assert filled["broker_status"] == "filled"
+
+
 def test_row_fields_and_basis() -> None:
     row = normalize_row(
         _row("1", tot_ccld_qty="10", tot_ccld_amt="700000", rmn_qty="0")

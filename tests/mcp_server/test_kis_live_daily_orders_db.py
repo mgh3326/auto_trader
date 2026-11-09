@@ -53,8 +53,9 @@ class _Kis:
         ]
 
 
-async def _seed(*, ledger_day: int, marked: bool) -> str:
+async def _seed(*, ledger_day: int, marked: bool, rung_stripped: bool = False) -> str:
     order_no = f"00{uuid.uuid4().int % 10**8:08d}"
+    rung_order_no = order_no.lstrip("0") if rung_stripped else order_no
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
         group = await service.create_proposal(
@@ -73,7 +74,7 @@ async def _seed(*, ledger_day: int, marked: bool) -> str:
         await service.record_resting(
             group.proposal_id,
             0,
-            broker_order_id=order_no,
+            broker_order_id=rung_order_no,
             correlation_id=f"corr-{order_no}",
             idempotency_key=f"idem-{order_no}",
             approval_hash_digest="digest",
@@ -83,7 +84,7 @@ async def _seed(*, ledger_day: int, marked: bool) -> str:
             rung = (
                 await session.execute(
                     select(OrderProposalRung).where(
-                        OrderProposalRung.broker_order_id == order_no
+                        OrderProposalRung.broker_order_id == rung_order_no
                     )
                 )
             ).scalar_one()
@@ -146,3 +147,11 @@ async def test_reused_order_number_from_another_date_is_not_joined() -> None:
     (row,) = out["orders"]
     assert row["system_status"] is None
     assert row["system_status_basis"] is None
+
+
+async def test_marked_rung_stored_without_zero_padding_still_marks_inference() -> None:
+    order_no = await _seed(ledger_day=2, marked=True, rung_stripped=True)
+    out = await kis_live_get_daily_orders_impl(
+        trade_date=DAY, client_factory=lambda: _Kis(order_no)
+    )
+    assert out["orders"][0]["system_status_basis"] == "inference"

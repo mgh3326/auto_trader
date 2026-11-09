@@ -714,7 +714,7 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
   exhaustive 기본값(ROB-903 display fast-path 아님). 페이지 중복 행은 `odno` 로 dedupe.
   취소확인 행(`orgn_odno` 설정, `original_order_id` 로 원주문 링크)과 `rjct_qty > 0` 행도 전부 반환한다.
 - **`broker_status`**(`broker_status_basis="broker_fields"`): 브로커 필드만으로 `filled`(`tot_ccld_qty == ord_qty > 0` 일 때만) /
-  `partially_filled` / `working` / `cancelled`(취소확인 행 또는 `cncl_yn=Y`) / `rejected_or_expired_eod` / `unknown`.
+  `partially_filled` / `working` / `cancelled`(실제 취소 증거 — `cncl_yn=Y` 또는 측면명의 '취소' 토큰, `live_order_expiry.row_has_cancel_evidence`; `orgn_odno` 는 정정확인 행도 가리키므로 링크일 뿐 취소 증거가 아니다) / `rejected_or_expired_eod` / `unknown`.
 - **`system_status`**: `review.kis_live_order_ledger` 의 같은 주문번호 **AND 그 행 `trade_date` 의 KST 날짜가 요청일**일 때만
   `{status, lifecycle_state}` 를 붙인다(주문번호는 날짜를 넘어 재사용되며 원장 `order_no` 는 UNIQUE). 행이 없으면 null.
   `system_status_basis="inference"` 는 같은 주문번호이고 같은 주문 인스턴스(idempotency key 또는 correlation id 일치)인
