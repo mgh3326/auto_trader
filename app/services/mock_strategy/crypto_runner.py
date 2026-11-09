@@ -11,6 +11,7 @@ from app.services.mock_strategy.crypto_brokers import (
     CryptoBroker,
     FillEvidence,
     PreDispatchRefusal,
+    SettingsPreviewUnavailable,
     require_enabled,
 )
 from app.services.mock_strategy.crypto_orders import (
@@ -206,6 +207,9 @@ async def run_lists(
             )
             price = await broker.price(symbol)
             qty = rules.floor(notional / price, price)
+        except PreDispatchRefusal as exc:
+            skipped.append({"symbol": symbol, "reason": exc.reason_class})
+            continue
         except (ValueError, StopAsyncIteration, StopIteration):
             skipped.append(
                 {"symbol": symbol, "reason": "venue_sizing_or_listing_unavailable"}
@@ -237,6 +241,7 @@ async def run_lists(
     if dry_run:
         would_set = []
         eligible = []
+        settings_unverified = []
         if venue == "binance_futures_demo":
             for plan in plans:
                 try:
@@ -244,6 +249,9 @@ async def run_lists(
                     if change is not None:
                         would_set.append(change)
                     eligible.append(plan)
+                except SettingsPreviewUnavailable:
+                    eligible.append(plan)
+                    settings_unverified.append(plan.symbol)
                 except PreDispatchRefusal as exc:
                     skipped.append({"symbol": plan.symbol, "reason": exc.reason_class})
                 except Exception:
@@ -261,6 +269,7 @@ async def run_lists(
             ],
             "skipped": skipped,
             "would_set": would_set,
+            "settings_unverified": settings_unverified,
         }
     planned_symbols = [p.symbol for p in plans] + [r.symbol for r in existing]
     plans = [

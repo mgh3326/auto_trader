@@ -32,6 +32,10 @@ class PreDispatchRefusal(Exception):
         super().__init__("crypto_pre_dispatch_refused")
 
 
+class SettingsPreviewUnavailable(Exception):
+    """Offline fixture cannot establish the broker's account settings."""
+
+
 @dataclass(frozen=True)
 class FillEvidence:
     broker_order_id: str
@@ -127,11 +131,19 @@ class BinanceCryptoDemo:
         return binance_rules(await self.client.get_symbol_info(symbol=symbol))
 
     async def entry_rules(self, symbol: str) -> MarketRules:
+        try:
+            position = await self.client.get_preparation_state(symbol=symbol)
+        except Exception:
+            raise PreDispatchRefusal("settings_evidence_unavailable") from None
+        if position.position_amt > 0:
+            raise PreDispatchRefusal("settings_position_open")
         return binance_rules(await self.client.get_symbol_info(symbol=symbol))
 
     async def inspect_entry_settings(self, symbol: str) -> dict | None:
         position = await self.client.get_preparation_state(symbol=symbol)
         before = {"margin_type": position.margin_type, "leverage": position.leverage}
+        if position.position_amt > 0:
+            raise PreDispatchRefusal("settings_position_open")
         if before == {"margin_type": "isolated", "leverage": 1}:
             return None
         if position.position_amt != 0:

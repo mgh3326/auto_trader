@@ -62,7 +62,8 @@ not replaced by lower-ranked names. ROB-993/H5/smoke strategy limits are unchang
   symbol. It never changes position mode. Attempts and observed settings are
   recorded in entry metadata; successful changes appear in run output. A
   broker-backed dry run with `--confirm` reports `would_set` without setters;
-  fixture-only runs cannot establish account settings. Covers always use
+  fixture-only runs list indicative orders and report their symbols in
+  `settings_unverified` because they cannot establish account settings. Covers always use
   `reduceOnly=true`, `positionSide=BOTH`.
 - Alpaca uses the existing `clean` profile. Both configured expected account ID
   and account number suffixes are required and checked before broker operations.

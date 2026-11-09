@@ -784,7 +784,20 @@ async def test_futures_unsafe_settings_refuse_before_order(condition):
         confirm=True,
         now=DECISION,
     )
-    assert all(o["status"] == "preflight_refused" for o in result["orders"])
+    if condition in {"position", "hedge"}:
+        assert result["orders"] == []
+        assert len(result["skipped"]) == 10
+        assert all(
+            item["reason"]
+            == (
+                "settings_position_open"
+                if condition == "position"
+                else "settings_evidence_unavailable"
+            )
+            for item in result["skipped"]
+        )
+    else:
+        assert all(o["status"] == "preflight_refused" for o in result["orders"])
     assert not any(call[1] == "order" for call in client.calls)
     assert recorder.claims == 0
     if condition == "mismatch":
@@ -863,3 +876,77 @@ async def test_futures_one_refusal_does_not_block_other_planned_symbols():
     assert result["orders"][0]["reason_class"] == "settings_open_orders"
     assert all(o["submitted"] for o in result["orders"][1:])
     assert not any(symbol == "COIN10USDT" for symbol, _ in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_futures_dry_run_refuses_existing_opposing_long():
+    from app.services.mock_strategy.crypto_brokers import BinanceCryptoDemo
+
+    client = FuturesSettingsClient()
+    client.settings = {f"COIN{i}USDT": ("isolated", 1) for i in range(10, 20)}
+    client.position = Decimal("1")
+    broker = BinanceCryptoDemo(client, futures=True, expected_fingerprint="fixture")
+    result = await run_lists(
+        signals(), venue="binance_futures_demo", asof=ASOF, broker=broker
+    )
+    assert result["orders"] == []
+    assert len(result["skipped"]) == 10
+    assert all(item["reason"] == "settings_position_open" for item in result["skipped"])
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_fixture_futures_dry_run_reports_orders_with_unknown_account_settings(
+    tmp_path,
+):
+    import json
+
+    from scripts.mock_strategy_crypto import FixtureMarket
+
+    path = tmp_path / "markets.json"
+    path.write_text(
+        json.dumps(
+            {
+                f"COIN{i}USDT": {
+                    "step": "0.1",
+                    "min_qty": "0.1",
+                    "min_notional": "5",
+                    "price": "30",
+                }
+                for i in range(10, 20)
+            }
+        )
+    )
+    result = await run_lists(
+        signals(), venue="binance_futures_demo", asof=ASOF, broker=FixtureMarket(path)
+    )
+    assert len(result["orders"]) == 10
+    assert result["skipped"] == []
+    assert result["would_set"] == []
+    assert result["settings_unverified"] == [f"COIN{i}USDT" for i in range(10, 20)]
+
+
+@pytest.mark.asyncio
+async def test_futures_opposing_long_excluded_before_batch_record():
+    from app.services.mock_strategy.crypto_brokers import BinanceCryptoDemo
+
+    client = FuturesSettingsClient()
+    client.settings = {f"COIN{i}USDT": ("isolated", 1) for i in range(10, 20)}
+    client.position = Decimal("1")
+    recorder = Recorder()
+    broker = BinanceCryptoDemo(client, futures=True, expected_fingerprint="fixture")
+    result = await run_lists(
+        signals(),
+        venue="binance_futures_demo",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    assert recorder.rows == {}
+    assert result["orders"] == []
+    assert len(result["skipped"]) == 10
+    assert all(item["reason"] == "settings_position_open" for item in result["skipped"])
+    assert client.calls == []

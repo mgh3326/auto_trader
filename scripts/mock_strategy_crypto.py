@@ -9,7 +9,11 @@ from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from app.services.mock_strategy.crypto_brokers import VENUES, build_broker
+from app.services.mock_strategy.crypto_brokers import (
+    VENUES,
+    SettingsPreviewUnavailable,
+    build_broker,
+)
 from app.services.mock_strategy.crypto_orders import MarketRules, positive
 from app.services.mock_strategy.crypto_runner import close_due, run_lists
 from app.services.mock_strategy.crypto_signals import HORIZONS, daily_lists
@@ -39,7 +43,7 @@ class FixtureMarket:
         return await self.rules(symbol)
 
     async def inspect_entry_settings(self, symbol: str) -> None:
-        raise ValueError("fixture has no account settings evidence")
+        raise SettingsPreviewUnavailable("fixture has no account settings evidence")
 
     async def price(self, symbol: str) -> Decimal:
         return positive(self.markets[symbol]["price"])
