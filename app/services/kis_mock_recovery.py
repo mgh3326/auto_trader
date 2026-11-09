@@ -9,11 +9,13 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 from app.services.brokers.kis.live_order_expiry import kr_day_order_expiry
 from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceConflict,
     KISMockEvidenceStore,
+    KISMockRecoveryAuthority,
     KISMockRecoveryLineage,
     NativeOrderEvidence,
     RediscoveredKISMockClaim,
@@ -28,6 +30,7 @@ from app.services.mock_integration.coordination import (
     DurableSendClaimAdapter,
     TerminalClaimEvidence,
 )
+from app.services.order_send_intent_service import OrderSendIntentService
 
 KST = timezone(timedelta(hours=9))
 RecoveryReader = Callable[[str, datetime], Awaitable[dict[str, Any]]]
@@ -193,8 +196,57 @@ async def recover_kis_mock_dispatch_claims(
         raise ValueError("confirm_required")
     if record_dispatch_evidence and (dry_run or confirm is not True):
         raise ValueError("record_dispatch_evidence_requires_confirmed_apply")
+    if record_dispatch_evidence:
+        try:
+            async with store.recovery_guard() as authority:
+                guarded_claims = DurableSendClaimAdapter(
+                    OrderSendIntentService(authority.session)
+                )
+                return await _recover_claims(
+                    store=store,
+                    claims=guarded_claims,
+                    reader=reader,
+                    dry_run=dry_run,
+                    record_dispatch_evidence=record_dispatch_evidence,
+                    position_reader=position_reader,
+                    clock=clock,
+                    authority=authority,
+                )
+        except Exception:  # noqa: BLE001 - loss of authority must retain claims
+            return {
+                "status": "uncertain",
+                "account_blocked": True,
+                "reason": "recovery_authority_unavailable",
+                "claims": [],
+                "dry_run": dry_run,
+                "record_dispatch_evidence": record_dispatch_evidence,
+            }
+    return await _recover_claims(
+        store=store,
+        claims=claims,
+        reader=reader,
+        dry_run=dry_run,
+        record_dispatch_evidence=record_dispatch_evidence,
+        position_reader=position_reader,
+        clock=clock,
+        authority=None,
+    )
+
+
+async def _recover_claims(
+    *,
+    store: KISMockEvidenceStore,
+    claims: DurableSendClaimAdapter,
+    reader: RecoveryReader,
+    dry_run: bool,
+    record_dispatch_evidence: bool,
+    position_reader: PositionReader | None,
+    clock: Clock,
+    authority: KISMockRecoveryAuthority | None,
+) -> dict[str, Any]:
     try:
         discovered = await store.rediscover_unreleased_claims()
+        legacy_blocked = await store.has_unresolved_legacy_reservations()
     except Exception:  # noqa: BLE001 - account uncertainty is fail-closed
         return {
             "status": "uncertain",
@@ -214,11 +266,12 @@ async def recover_kis_mock_dispatch_claims(
             reader=reader,
             record_dispatch_evidence=record_dispatch_evidence,
             position_reader=position_reader,
-            sole_claim=len(discovered) == 1,
+            sole_claim=len(discovered) == 1 and not legacy_blocked,
             clock=clock,
+            authority=authority,
         )
         results.append(result)
-    blocked = any(item["status"] != "released" for item in results)
+    blocked = legacy_blocked or any(item["status"] != "released" for item in results)
     return {
         "status": "blocked"
         if blocked
@@ -240,6 +293,7 @@ async def _recover_one(
     position_reader: PositionReader | None,
     sole_claim: bool,
     clock: Clock,
+    authority: KISMockRecoveryAuthority | None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "claim_id": item.claim.row_id,
@@ -263,7 +317,8 @@ async def _recover_one(
             return await reader(odno, lineage.created_at)
 
         row = await store.readback_by_exact_odno(item, read_exact)
-        classified = _classify_readback(row, lineage, now=clock())
+        readback_observed_at = clock()
+        classified = _classify_readback(row, lineage, now=readback_observed_at)
         if classified is None:
             result["readback_reason"] = "readback_incomplete_or_inconsistent"
             return result
@@ -284,8 +339,10 @@ async def _recover_one(
         terminal_order = state in _TERMINAL_STATES
         # v2: terminal events carry the fill quantity, so they must not collide
         # with an earlier same-digest event recorded without one.
-        version = "v2" if terminal_order else "v1"
+        version = "v2" if terminal_order or state == "partial_fill" else "v1"
         key = f"operator-recovery-{version}:{digest}"
+        if state == "partial_fill":
+            key = f"operator-recovery-partial-v3:{digest}:{uuid4().hex}"
         await store.record_native_evidence(
             lineage.envelope,
             NativeOrderEvidence(
@@ -300,7 +357,7 @@ async def _recover_one(
                 )
                 if state == "terminal_fill"
                 else TerminalClaimEvidence(),
-                filled if terminal_order else None,
+                filled if terminal_order or state == "partial_fill" else None,
             ),
         )
         result["evidence"] = "recorded"
@@ -317,8 +374,13 @@ async def _recover_one(
         )
         if proof is None:
             return result
+        if authority is None:
+            return result
         # A new event: the unproven one above is never upgraded in place.
-        proven_key = f"operator-recovery-position-v1:{digest}:{proof.read_digest}"
+        proven_key = (
+            f"operator-recovery-position-v2:{digest}:{proof.read_digest}:"
+            f"{proof.observed_at.isoformat()}"
+        )
         terminal = TerminalClaimEvidence(
             lane_native_terminal_evidence=True,
             account_position_reconciled=True,
@@ -341,10 +403,11 @@ async def _recover_one(
             broker_evidence_key=proven_key,
             claim=item.claim,
             claims=claims,
+            authority=authority,
         )
         result["position"] = "proven"
         if released != 1:
-            result["position_reason"] = "claim_owner_changed"
+            result["position_reason"] = "position_stale_or_claim_changed"
             return result
         result.update(
             status="released",

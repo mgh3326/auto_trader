@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,6 +21,7 @@ from app.services.kis_mock_runner.evidence_store import (
 )
 from app.services.kis_mock_runner.position_proof import (
     BalanceSnapshot,
+    KISMockPositionReader,
     PositionProof,
     PositionUnproven,
     parse_balance_pages,
@@ -29,6 +32,11 @@ from app.services.mock_integration.coordination import (
     TerminalClaimEvidence,
 )
 from tests.services.mock_integration.test_coordination import _attempt_envelope
+from tests.services.mock_integration.test_kis_coordination_adapter import (
+    _coordinate,
+    _ready_ports,
+    _stack,
+)
 from tests.services.mock_integration.test_kis_mock_evidence_store import bound_entry
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -59,7 +67,14 @@ def ctx():
         True,
     )
     store = KISMockEvidenceStore(MagicMock(), entry=bound_entry())
+
+    @asynccontextmanager
+    async def recovery_guard():
+        yield SimpleNamespace(session=MagicMock())
+
+    store.recovery_guard = recovery_guard
     store.rediscover_unreleased_claims = AsyncMock(return_value=(claim,))
+    store.has_unresolved_legacy_reservations = AsyncMock(return_value=False)
     store.load_recovery_lineage = AsyncMock(
         return_value=KISMockRecoveryLineage(
             envelope, ORDERED - timedelta(minutes=1), ORDERED + timedelta(seconds=1)
@@ -214,12 +229,102 @@ async def test_another_surviving_claim_prevents_attribution(ctx):
     assert claim["position_reason"] == "position_other_claim_unresolved"
 
 
+async def test_legacy_reservation_prevents_position_attribution(ctx):
+    ctx.store.has_unresolved_legacy_reservations = AsyncMock(return_value=True)
+    result, claim = await run(ctx)
+    assert_retained(ctx, result, claim)
+    assert claim["position_reason"] == "position_other_claim_unresolved"
+
+
+async def test_released_attempt_is_still_blocked_before_reservation(ctx):
+    _, envelope = _attempt_envelope()
+    ctx.store.has_unresolved_account_uncertainty = AsyncMock(return_value=False)
+    ctx.store.has_consumed_attempt = AsyncMock(return_value=True)
+    gate = ctx.store.for_attempt(envelope)
+    assert await gate.has_unresolved_account_uncertainty(claim_account_scope="scope")
+    ctx.store.has_consumed_attempt.assert_awaited_once_with(envelope)
+
+
+async def test_coordinator_cannot_resend_a_released_attempt(ctx):
+    _, envelope = _attempt_envelope()
+    stack = _stack()
+    ctx.store.has_unresolved_account_uncertainty = AsyncMock(return_value=False)
+    ctx.store.has_consumed_attempt = AsyncMock(return_value=True)
+    ports = _ready_ports(
+        persistence=stack["persistence"],
+        dispatch_evidence=stack["evidence"],
+        uncertainty_gate=ctx.store,
+    )
+    mutation = AsyncMock()
+    try:
+        await _coordinate(envelope, stack, mutation, ports=ports)
+    except Exception as exc:
+        assert "durable_claim_conflict" in str(exc)
+    assert mutation.await_count == 0
+    assert stack["intents"].reserve_calls == []
+
+
+async def test_unidentifiable_holding_cannot_prove_zero_position(ctx):
+    ctx.store.load_position_baseline.return_value = 0
+    cancelled(ctx)
+    ctx.pages = [balance_page({"pdno": "", "hldg_qty": "1"})]
+    result, claim = await run(ctx)
+    assert_retained(ctx, result, claim)
+    assert claim["position_reason"] == "position_read_malformed"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"pdno": " ", "hldg_qty": "0"},
+        {"pdno": "???", "hldg_qty": "1"},
+        {"pdno": "000660", "hldg_qty": "?"},
+    ],
+)
+async def test_any_malformed_holding_row_invalidates_the_read(row):
+    with pytest.raises(PositionUnproven, match="position_read_malformed"):
+        parse_balance_pages(
+            [balance_page(row)], symbol=SYMBOL, observed_at=DURING_SESSION
+        )
+
+
+async def test_recovery_authority_unavailable_keeps_account_blocked(ctx):
+    @asynccontextmanager
+    async def unavailable():
+        raise RuntimeError("lock unavailable")
+        yield
+
+    ctx.store.recovery_guard = unavailable
+    result = await recover_kis_mock_dispatch_claims(
+        store=ctx.store,
+        claims=MagicMock(),
+        reader=AsyncMock(),
+        dry_run=False,
+        confirm=True,
+        record_dispatch_evidence=True,
+    )
+    assert result["account_blocked"] is True
+    assert result["reason"] == "recovery_authority_unavailable"
+    ctx.store.release_with_recorded_terminal_evidence.assert_not_awaited()
+
+
 async def test_release_of_no_exact_row_is_not_reported_as_released(ctx):
     ctx.store.release_with_recorded_terminal_evidence.return_value = 0
     result, claim = await run(ctx)
     assert claim["status"] == "retained"
-    assert claim["position_reason"] == "claim_owner_changed"
+    assert claim["position_reason"] == "position_stale_or_claim_changed"
     assert result["account_blocked"] is True
+
+
+async def test_later_fresh_read_gets_new_proof_key_after_failed_release(ctx):
+    ctx.store.release_with_recorded_terminal_evidence.side_effect = [0, 1]
+    _, first = await run(ctx)
+    assert first["status"] == "retained"
+    _, second = await run(ctx, now=DURING_SESSION + timedelta(seconds=1))
+    assert second["status"] == "released"
+    proofs = [event for event in ctx.events if event.position_proof is not None]
+    assert len(proofs) == 2
+    assert proofs[0].broker_evidence_key != proofs[1].broker_evidence_key
 
 
 async def test_confirmed_cancel_with_unchanged_position_is_released(ctx):
@@ -333,7 +438,7 @@ def balance_client(responses):
 
 async def test_reader_follows_continuation_to_the_end():
     first = (
-        {"CTX_AREA_FK100": "f", "CTX_AREA_NK100": "n1", **OK_TAIL, "output1": []},
+        {"ctx_area_fk100": "f", "ctx_area_nk100": "n1", **OK_TAIL, "output1": []},
         {"tr_cont": "F"},
     )
     last = ({"output1": [holding(2)], **OK_TAIL}, {"tr_cont": "D"})
@@ -341,17 +446,54 @@ async def test_reader_follows_continuation_to_the_end():
     pages = await read_complete_domestic_balance(client)
     assert pages == [first, last]
     second = client._request_with_rate_limit_with_headers.await_args_list[1].kwargs
-    assert second["params"]["CTX_AREA_NK100"] == "n1"
+    assert (second["params"]["CTX_AREA_FK100"], second["params"]["CTX_AREA_NK100"]) == (
+        "f",
+        "n1",
+    )
     assert second["headers"]["tr_cont"] == "N"
     assert second["tr_id"] == "VTTC8434R"
 
 
+async def test_reader_timestamps_the_start_of_the_balance_read(monkeypatch):
+    import app.services.kis_mock_runner.position_proof as module
+
+    current = [DURING_SESSION]
+
+    class ClockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current[0]
+
+    async def slow_response(*args, **kwargs):
+        current[0] += timedelta(seconds=61)
+        return balance_page(holding(6))
+
+    client = balance_client([])
+    client._request_with_rate_limit_with_headers.side_effect = slow_response
+    reader = KISMockPositionReader(bound_entry())
+    monkeypatch.setattr(reader, "_checked_client", lambda: client)
+    monkeypatch.setattr(module, "datetime", ClockDateTime)
+    snapshot = await reader(SYMBOL)
+    assert snapshot.observed_at == DURING_SESSION
+
+
 async def test_reader_treats_repeated_cursor_and_page_cap_as_truncated():
-    page = ({"CTX_AREA_NK100": "same", "output1": [], **OK_TAIL}, {"tr_cont": "M"})
+    page = (
+        {"ctx_area_fk100": "f", "ctx_area_nk100": "same", "output1": [], **OK_TAIL},
+        {"tr_cont": "M"},
+    )
     with pytest.raises(PositionUnproven, match="position_read_truncated"):
         await read_complete_domestic_balance(balance_client([page, page]))
     endless = [
-        ({"CTX_AREA_NK100": f"n{i}", "output1": [], **OK_TAIL}, {"tr_cont": "M"})
+        (
+            {
+                "ctx_area_fk100": "f",
+                "ctx_area_nk100": f"n{i}",
+                "output1": [],
+                **OK_TAIL,
+            },
+            {"tr_cont": "M"},
+        )
         for i in range(11)
     ]
     with pytest.raises(PositionUnproven, match="position_read_truncated"):
@@ -371,7 +513,9 @@ def store_with_baseline(baseline, committed_fills=(1,)):
     session.execute = AsyncMock(return_value=_Result(baseline))
     session.scalars = AsyncMock(
         return_value=[
-            SimpleNamespace(payload={"filled_quantity": value})
+            SimpleNamespace(
+                kind="terminal_reconciliation", payload={"filled_quantity": value}
+            )
             for value in committed_fills
         ]
     )
@@ -410,9 +554,9 @@ async def test_store_refuses_a_position_bit_without_proof():
 @pytest.mark.parametrize(
     "proof",
     [
-        PositionProof("buy", 5, 1, 7, "d" * 64),
-        PositionProof("buy", 4, 1, 5, "d" * 64),
-        PositionProof("sell", 5, 1, 4, "d" * 64),
+        PositionProof("buy", 5, 1, 7, "d" * 64, DURING_SESSION),
+        PositionProof("buy", 4, 1, 5, "d" * 64, DURING_SESSION),
+        PositionProof("sell", 5, 1, 4, "d" * 64, DURING_SESSION),
     ],
 )
 async def test_store_recomputes_the_proof_against_the_stored_baseline(proof):
@@ -427,7 +571,7 @@ async def test_store_accepts_a_proof_that_recomputes():
     _, envelope = _attempt_envelope()
     store = store_with_baseline(SimpleNamespace(symbol=SYMBOL, quantity=5))
     await store.record_native_evidence(
-        envelope, evidence(PositionProof("buy", 5, 1, 6, "d" * 64))
+        envelope, evidence(PositionProof("buy", 5, 1, 6, "d" * 64, DURING_SESSION))
     )
     payload = store._append.await_args.kwargs["payload"]
     assert payload["position_proof"]["observed_quantity"] == 6
@@ -500,9 +644,80 @@ async def test_store_refuses_a_proof_that_contradicts_committed_fills():
     )
     with pytest.raises(KISMockEvidenceConflict, match="position_proof_mismatch"):
         await store.record_native_evidence(
-            envelope, evidence(PositionProof("buy", 5, 1, 6, "d" * 64))
+            envelope, evidence(PositionProof("buy", 5, 1, 6, "d" * 64, DURING_SESSION))
         )
     store._append.assert_not_awaited()
+
+
+@pytest.mark.parametrize("partial", [{"filled_quantity": 1}, {}])
+async def test_terminal_quantity_below_committed_partial_cannot_prove_position(partial):
+    _, envelope = _attempt_envelope()
+    store = store_with_baseline(SimpleNamespace(symbol=SYMBOL, quantity=5))
+    session = store._session_factory().__aenter__.return_value
+    session.scalars.return_value = [
+        SimpleNamespace(kind="partial_fill", payload=partial),
+        SimpleNamespace(kind="terminal_reconciliation", payload={"filled_quantity": 0}),
+    ]
+    with pytest.raises(KISMockEvidenceConflict, match="position_proof_mismatch"):
+        await store.record_native_evidence(
+            envelope,
+            evidence(PositionProof("buy", 5, 0, 5, "d" * 64, DURING_SESSION), filled=0),
+        )
+    store._append.assert_not_awaited()
+
+
+async def test_regressing_partial_observations_remain_unproven():
+    _, envelope = _attempt_envelope()
+    store = store_with_baseline(SimpleNamespace(symbol=SYMBOL, quantity=5))
+    session = store._session_factory().__aenter__.return_value
+    session.scalars.return_value = [
+        SimpleNamespace(kind="partial_fill", payload={"filled_quantity": 2}),
+        SimpleNamespace(kind="partial_fill", payload={"filled_quantity": 1}),
+        SimpleNamespace(kind="terminal_reconciliation", payload={"filled_quantity": 2}),
+    ]
+    with pytest.raises(KISMockEvidenceConflict, match="position_proof_mismatch"):
+        await store.record_native_evidence(
+            envelope,
+            evidence(PositionProof("buy", 5, 2, 7, "d" * 64, DURING_SESSION), filled=2),
+        )
+    store._append.assert_not_awaited()
+
+
+async def test_partial_after_terminal_readback_remains_unproven():
+    _, envelope = _attempt_envelope()
+    store = store_with_baseline(SimpleNamespace(symbol=SYMBOL, quantity=5))
+    session = store._session_factory().__aenter__.return_value
+    session.scalars.return_value = [
+        SimpleNamespace(kind="terminal_reconciliation", payload={"filled_quantity": 2}),
+        SimpleNamespace(kind="partial_fill", payload={"filled_quantity": 1}),
+    ]
+    with pytest.raises(KISMockEvidenceConflict, match="position_proof_mismatch"):
+        await store.record_native_evidence(
+            envelope,
+            evidence(PositionProof("buy", 5, 2, 7, "d" * 64, DURING_SESSION), filled=2),
+        )
+    store._append.assert_not_awaited()
+
+
+async def test_repeated_partial_readbacks_keep_their_observation_order(ctx):
+    _, envelope = _attempt_envelope(plan_overrides={"quantity": Decimal("3")})
+    claim = RediscoveredKISMockClaim(
+        DurableClaim(7, "scope", envelope.order_attempt.idempotency_key, "buy"),
+        envelope.order_attempt.order_attempt_id,
+        ODNO,
+        True,
+    )
+    ctx.store.rediscover_unreleased_claims.return_value = (claim,)
+    ctx.store.load_recovery_lineage.return_value = KISMockRecoveryLineage(
+        envelope, ORDERED - timedelta(minutes=1), ORDERED + timedelta(seconds=1)
+    )
+    for filled in (1, 2, 1):
+        ctx.row.update(ord_qty="3", tot_ccld_qty=str(filled), rmn_qty=str(3 - filled))
+        _, result = await run(ctx)
+        assert result["status"] == "retained"
+    partials = [event for event in ctx.events if event.kind == "partial_fill"]
+    assert [event.filled_quantity for event in partials] == [1, 2, 1]
+    assert len({event.broker_evidence_key for event in partials}) == 3
 
 
 async def test_reader_accepts_an_eight_digit_mock_account():

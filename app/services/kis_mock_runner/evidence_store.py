@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -17,6 +18,7 @@ from sqlalchemy import (
     MetaData,
     Table,
     Text,
+    func,
     select,
 )
 from sqlalchemy.dialects.postgresql import insert
@@ -29,6 +31,7 @@ from app.models.kis_mock_dispatch_evidence import (
 from app.models.review import OrderSendIntent
 from app.services.kis_mock_runner.position_proof import (
     MAX_BASELINE_AGE,
+    MAX_READ_AGE,
     BalanceSnapshot,
     KISMockPositionReader,
     PositionProof,
@@ -39,6 +42,7 @@ from app.services.kis_mock_runner.registry_binding import require_kis_mock_ident
 from app.services.kis_mock_runner.singleton import (
     KIS_MOCK_LANE_EVIDENCE_KINDS,
     KISMockLanePorts,
+    kis_mock_advisory_keyset,
 )
 from app.services.mock_integration.coordination import (
     DispatchEvidence,
@@ -51,6 +55,10 @@ from app.services.mock_integration.coordination import (
 )
 from app.services.mock_integration.lineage import LineageEnvelope
 from app.services.mock_lane_registry import LaneRegistryEntry
+from app.services.order_send_intent_service import (
+    KIS_MOCK_SCALPING_SCOPE,
+    OrderSendIntentService,
+)
 
 _DISPATCH_EVIDENCE_KEY = "dispatch"
 _ACK_ENVELOPE_KEY = "lineage-ack"
@@ -82,6 +90,13 @@ class RediscoveredKISMockClaim:
     attribution_error: str | None = None
 
 
+@dataclass(slots=True)
+class KISMockRecoveryAuthority:
+    store: KISMockEvidenceStore
+    session: AsyncSession
+    active: bool = True
+
+
 @dataclass(frozen=True, slots=True)
 class KISMockRecoveryLineage:
     envelope: LineageEnvelope
@@ -107,6 +122,19 @@ class NativeOrderEvidence:
     terminal: TerminalClaimEvidence = TerminalClaimEvidence()
     filled_quantity: int | None = None
     position_proof: PositionProof | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptUncertaintyGate:
+    store: KISMockEvidenceStore
+    envelope: LineageEnvelope
+
+    async def has_unresolved_account_uncertainty(
+        self, *, claim_account_scope: str
+    ) -> bool:
+        return await self.store.has_unresolved_account_uncertainty(
+            claim_account_scope=claim_account_scope
+        ) or await self.store.has_consumed_attempt(self.envelope)
 
 
 def _key(value: str) -> str:
@@ -163,6 +191,22 @@ class KISMockEvidenceStore:
     def position_reader(self) -> KISMockPositionReader:
         return KISMockPositionReader(self._entry)
 
+    @asynccontextmanager
+    async def recovery_guard(self):
+        """Keep both writer scopes quiescent through readback and claim release."""
+        async with self._session_factory() as session, session.begin():
+            for key in kis_mock_advisory_keyset(self._entry):
+                if (
+                    await session.scalar(select(func.pg_try_advisory_xact_lock(key)))
+                    is not True
+                ):
+                    raise KISMockEvidenceConflict("recovery_authority_unavailable")
+            authority = KISMockRecoveryAuthority(self, session)
+            try:
+                yield authority
+            finally:
+                authority.active = False
+
     def ports(self) -> KISMockLanePorts:
         return KISMockLanePorts(
             persistence=self,
@@ -170,6 +214,34 @@ class KISMockEvidenceStore:
             uncertainty_gate=self,
             evidence_kinds=KIS_MOCK_LANE_EVIDENCE_KINDS,
         )
+
+    def for_attempt(self, envelope: LineageEnvelope) -> _AttemptUncertaintyGate:
+        _payload(envelope)
+        return _AttemptUncertaintyGate(self, envelope)
+
+    async def has_consumed_attempt(self, envelope: LineageEnvelope) -> bool:
+        attempt = _payload(envelope)["order_attempt"]
+        async with self._session_factory() as session:
+            found = await session.scalar(
+                select(KISMockDispatchEvidence.id)
+                .join(
+                    KISMockDispatchLineage,
+                    KISMockDispatchLineage.order_attempt_id
+                    == KISMockDispatchEvidence.order_attempt_id,
+                )
+                .where(
+                    KISMockDispatchLineage.order_attempt_id
+                    == attempt["order_attempt_id"],
+                    KISMockDispatchLineage.physical_account_id == self._identity,
+                    KISMockDispatchLineage.claim_account_scope == self._scope,
+                    KISMockDispatchLineage.idempotency_key
+                    == attempt["idempotency_key"],
+                    KISMockDispatchEvidence.broker_evidence_key
+                    == _key(_DISPATCH_EVIDENCE_KEY),
+                )
+                .limit(1)
+            )
+        return found is not None
 
     async def _lineage(
         self, session: AsyncSession, envelope: LineageEnvelope
@@ -386,6 +458,9 @@ class KISMockEvidenceStore:
                 payload["filled_quantity"] = evidence.filled_quantity
             if evidence.position_proof is not None:
                 payload["position_proof"] = asdict(evidence.position_proof)
+                payload["position_proof"]["observed_at"] = (
+                    evidence.position_proof.observed_at.isoformat()
+                )
             await self._append(
                 session,
                 row,
@@ -433,6 +508,8 @@ class KISMockEvidenceStore:
             raise KISMockEvidenceConflict("position_proof_mismatch") from exc
         if (
             baseline.symbol != plan.normalized_symbol
+            or type(proof.observed_at) is not datetime
+            or proof.observed_at.utcoffset() is None
             or proof.side != envelope.decision_intent.side
             or proof.baseline_quantity != baseline.quantity
             or proof.filled_quantity != evidence.filled_quantity
@@ -511,17 +588,34 @@ class KISMockEvidenceStore:
         self, session: AsyncSession, attempt_id: str, odno: str | None
     ) -> set[Any]:
         events = await session.scalars(
-            select(KISMockDispatchEvidence).where(
+            select(KISMockDispatchEvidence)
+            .where(
                 KISMockDispatchEvidence.order_attempt_id == attempt_id,
                 KISMockDispatchEvidence.broker_order_id == odno,
-                KISMockDispatchEvidence.kind.in_(_TERMINAL_FILL_KINDS),
+                KISMockDispatchEvidence.kind.in_(
+                    (*_TERMINAL_FILL_KINDS, "partial_fill")
+                ),
             )
+            .order_by(KISMockDispatchEvidence.id)
         )
-        return {
-            event.payload["filled_quantity"]
-            for event in events
-            if type(event.payload) is dict and "filled_quantity" in event.payload
-        }
+        terminal: set[int] = set()
+        previous = 0
+        for event in events:
+            partial = event.kind == "partial_fill"
+            if (
+                type(event.payload) is not dict
+                or "filled_quantity" not in event.payload
+            ):
+                if partial:
+                    return set()
+                continue
+            value = event.payload["filled_quantity"]
+            if type(value) is not int or value < previous or (partial and terminal):
+                return set()
+            previous = value
+            if not partial:
+                terminal.add(value)
+        return terminal
 
     async def attributed_filled_quantity(self, claim: RediscoveredKISMockClaim) -> int:
         """Return the one fill quantity committed for this exact attempt and ODNO."""
@@ -679,9 +773,20 @@ class KISMockEvidenceStore:
     ) -> bool:
         if claim_account_scope != self._scope:
             raise KISMockEvidenceConflict("claim_scope_mismatch")
-        return any(
+        return await self.has_unresolved_legacy_reservations() or any(
             claim.blocks_account for claim in await self.rediscover_unreleased_claims()
         )
+
+    async def has_unresolved_legacy_reservations(self) -> bool:
+        """Legacy rows have no account fingerprint, so none can be excluded."""
+        async with self._session_factory() as session:
+            return (
+                await session.scalar(
+                    select(OrderSendIntent.id)
+                    .where(OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE)
+                    .limit(1)
+                )
+            ) is not None
 
     async def readback_by_exact_odno(
         self,
@@ -706,7 +811,17 @@ class KISMockEvidenceStore:
         broker_evidence_key: str,
         claim: DurableClaim,
         claims: DurableSendClaimAdapter,
+        authority: KISMockRecoveryAuthority,
     ) -> int:
+        if (
+            type(authority) is not KISMockRecoveryAuthority
+            or authority.store is not self
+            or not authority.active
+            or type(claims) is not DurableSendClaimAdapter
+            or type(claims._intents) is not OrderSendIntentService
+            or claims._intents._db is not authority.session
+        ):
+            raise KISMockEvidenceConflict("recovery_authority_unavailable")
         async with self._session_factory() as session:
             row = await self._lineage(session, envelope)
             event = await session.scalar(
@@ -739,4 +854,20 @@ class KISMockEvidenceStore:
             ):
                 raise KISMockEvidenceConflict("terminal_claim_binding_mismatch")
             terminal = TerminalClaimEvidence(**event.payload["terminal"])
-        return await claims.release_with_terminal_evidence(claim, terminal)
+            if not terminal.authorizes_release:
+                return await claims.release_with_terminal_evidence(claim, terminal)
+            try:
+                observed_at = datetime.fromisoformat(
+                    event.payload["position_proof"]["observed_at"]
+                )
+                if observed_at.utcoffset() is None:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError) as exc:
+                raise KISMockEvidenceConflict("position_proof_required") from exc
+        from app.services.kis_mock_runner.fresh_claim_release import (
+            release_fresh_claim,
+        )
+
+        return await release_fresh_claim(
+            claims, claim, terminal, observed_at=observed_at, max_age=MAX_READ_AGE
+        )

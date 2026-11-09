@@ -43,6 +43,7 @@ class PositionProof:
     filled_quantity: int
     observed_quantity: int
     read_digest: str
+    observed_at: datetime
 
 
 def _tr_cont(headers: object) -> str | None:
@@ -93,8 +94,13 @@ def parse_balance_pages(
         last_cont = _tr_cont(headers)
     if last_cont not in _FINAL_TR_CONT:
         raise PositionUnproven("position_read_truncated")
-    if any(type(row.get("pdno")) is not str for row in rows):
-        raise PositionUnproven("position_read_malformed")
+    for row in rows:
+        if (
+            type(row.get("pdno")) is not str
+            or re.fullmatch(r"[A-Z0-9]{6}", row["pdno"]) is None
+        ):
+            raise PositionUnproven("position_read_malformed")
+        _holding(row.get("hldg_qty"))
     matching = [row for row in rows if row["pdno"] == symbol]
     if len(matching) > 1:
         raise PositionUnproven("position_read_ambiguous")
@@ -137,7 +143,12 @@ def reconcile_position(
     ):
         raise PositionUnproven("position_mismatch")
     return PositionProof(
-        side, baseline, filled, snapshot.quantity, snapshot.read_digest
+        side,
+        baseline,
+        filled,
+        snapshot.quantity,
+        snapshot.read_digest,
+        snapshot.observed_at,
     )
 
 
@@ -180,10 +191,13 @@ async def read_complete_domestic_balance(client: Any) -> list[tuple[dict, dict]]
         cont = _tr_cont(headers)
         if cont not in _CONTINUE_TR_CONT:
             return pages
-        new_nk = payload.get("CTX_AREA_NK100") if type(payload) is dict else None
+        new_nk = payload.get("ctx_area_nk100") if type(payload) is dict else None
         if type(new_nk) is not str or not new_nk.strip() or new_nk == nk:
             raise PositionUnproven("position_read_truncated")
-        fk, nk, request_cont = payload.get("CTX_AREA_FK100") or "", new_nk, "N"
+        new_fk = payload.get("ctx_area_fk100")
+        if type(new_fk) is not str:
+            raise PositionUnproven("position_read_truncated")
+        fk, nk, request_cont = new_fk, new_nk, "N"
     raise PositionUnproven("position_read_truncated")
 
 
@@ -217,8 +231,9 @@ class KISMockPositionReader:
         return client
 
     async def __call__(self, symbol: str) -> BalanceSnapshot:
+        observed_at = datetime.now(UTC)
         pages = await read_complete_domestic_balance(self._checked_client())
-        return parse_balance_pages(pages, symbol=symbol, observed_at=datetime.now(UTC))
+        return parse_balance_pages(pages, symbol=symbol, observed_at=observed_at)
 
     async def close(self) -> None:
         if self._client is not None:

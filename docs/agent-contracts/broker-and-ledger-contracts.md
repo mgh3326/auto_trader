@@ -594,6 +594,13 @@ AND the common gate and claim owner. A truncated, missing, malformed, stale or
 ambiguous read is unproven, never zero. The route must commit the baseline before
 reserving; until a route does, every claim stays retained. Contract:
 `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
+Recovery holds the physical and legacy writer keys and treats any unresolved
+`kis_mock_scalping` reservation as blocking because it lacks an account fingerprint.
+Balance freshness starts before the first page and is checked by the database
+after the exact claim row lock; malformed holding identities or quantities never
+prove an omitted symbol is zero. Terminal cumulative fills cannot be below an
+earlier partial fill; an older partial event whose quantity is missing also blocks.
+After release, the attempt-bound gate still rejects the already dispatched key.
 
 ### kis_mock 귀속 사슬 — pre-submit 강제
 

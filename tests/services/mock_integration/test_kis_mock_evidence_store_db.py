@@ -1,7 +1,8 @@
 """PostgreSQL acceptance: CI only under the fleet's host safety policy."""
 
 from dataclasses import replace
-from datetime import timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from app.services.kis_mock_runner.evidence_store import (
     KISMockEvidenceStore,
     NativeOrderEvidence,
 )
+from app.services.kis_mock_runner.position_proof import BalanceSnapshot, PositionProof
 from app.services.kis_mock_runner.singleton import KIS_MOCK_LANE_EVIDENCE_KINDS
 from app.services.mock_integration.coordination import (
     DispatchEvidence,
@@ -37,7 +39,7 @@ ODNO = "0007"
 
 
 @pytest_asyncio.fixture
-async def evidence_lane(db_session):
+async def evidence_lane(db_session, request):
     # Service commits remain inside this test's outer transaction. No migration
     # or broker calls; the test-schema bootstrap creates the model tables in CI.
     connection = await db_session.connection()
@@ -47,9 +49,20 @@ async def evidence_lane(db_session):
     entry = bound_entry()
     store = KISMockEvidenceStore(sessions, entry=entry)
     factory, envelope = _attempt_envelope(
-        attempt_overrides={"cycle_id": f"kis-evidence-{uuid4().hex}"}
+        attempt_overrides={"cycle_id": f"kis-evidence-{uuid4().hex}"},
+        plan_overrides={"quantity": Decimal("2")}
+        if getattr(request, "param", False)
+        else None,
     )
     await store.persist(envelope)
+    if getattr(request, "param", False):
+        observed_at = await db_session.scalar(select(func.now())) - timedelta(seconds=1)
+        await store.record_position_baseline(
+            envelope,
+            BalanceSnapshot(
+                envelope.execution_plan.normalized_symbol, 5, observed_at, "a" * 64
+            ),
+        )
     scope = physical_account_scope_for_entry(entry).claim_account_scope
     async with sessions() as session:
         row_id = await OrderSendIntentService(session).reserve(
@@ -97,6 +110,17 @@ async def ack(store, factory, envelope, claim):
     await store.persist(acknowledged)
     await store.persist_dispatch_evidence(dispatch(acknowledged, claim))
     return acknowledged
+
+
+async def release(store, envelope, claim, key):
+    async with store.recovery_guard() as authority:
+        return await store.release_with_recorded_terminal_evidence(
+            envelope,
+            broker_evidence_key=key,
+            claim=claim,
+            claims=DurableSendClaimAdapter(OrderSendIntentService(authority.session)),
+            authority=authority,
+        )
 
 
 @pytest.mark.parametrize("kind", KIS_MOCK_LANE_EVIDENCE_KINDS)
@@ -167,30 +191,39 @@ async def test_restart_missing_and_unknown_hold_and_exact_odno_readback(evidence
     assert own.blocks_account
 
 
-async def test_release_requires_committed_terminal_and_exact_claim(evidence_lane):
+@pytest.mark.parametrize("evidence_lane", [True], indirect=True)
+async def test_release_requires_committed_terminal_and_exact_claim(
+    evidence_lane, db_session
+):
     store, sessions, factory, envelope, claim = evidence_lane
     await ack(store, factory, envelope, claim)
-    intents = AsyncMock()
-    intents.release_if_matches.return_value = 1
-    claims = DurableSendClaimAdapter(intents)
     for kind in ("partial_fill", "cancel", "expiry", "reject"):
         await store.record_native_evidence(
-            envelope, NativeOrderEvidence(kind, kind, ODNO, ODNO)
+            envelope,
+            NativeOrderEvidence(
+                kind,
+                kind,
+                ODNO,
+                ODNO,
+                filled_quantity=1 if kind == "partial_fill" else None,
+            ),
         )
         with pytest.raises(KISMockEvidenceConflict, match="terminal_claim_binding"):
-            await store.release_with_recorded_terminal_evidence(
-                envelope, broker_evidence_key=kind, claim=claim, claims=claims
-            )
+            await release(store, envelope, claim, kind)
     await store.record_native_evidence(
         envelope,
         NativeOrderEvidence("terminal_reconciliation", "incomplete", ODNO, ODNO),
     )
     with pytest.raises(Exception) as error:
-        await store.release_with_recorded_terminal_evidence(
-            envelope, broker_evidence_key="incomplete", claim=claim, claims=claims
-        )
+        await release(store, envelope, claim, "incomplete")
     assert "terminal_evidence_required" in str(error.value)
-    intents.release_if_matches.assert_not_awaited()
+    assert await db_session.get(OrderSendIntent, claim.row_id) is not None
+    await store.record_native_evidence(
+        envelope,
+        NativeOrderEvidence(
+            "terminal_reconciliation", "fill", ODNO, ODNO, filled_quantity=2
+        ),
+    )
     terminal = NativeOrderEvidence(
         "terminal_reconciliation",
         "terminal",
@@ -201,22 +234,55 @@ async def test_release_requires_committed_terminal_and_exact_claim(evidence_lane
             account_position_reconciled=True,
             remainder_known=True,
         ),
+        2,
+        PositionProof("buy", 5, 2, 7, "b" * 64, datetime.now(UTC)),
     )
     await store.record_native_evidence(envelope, terminal)
     with pytest.raises(KISMockEvidenceConflict, match="terminal_claim_binding"):
-        await store.release_with_recorded_terminal_evidence(
-            envelope,
-            broker_evidence_key="terminal",
-            claim=replace(claim, row_id=claim.row_id + 1),
-            claims=claims,
+        await release(
+            store, envelope, replace(claim, row_id=claim.row_id + 1), "terminal"
         )
-    assert (
-        await store.release_with_recorded_terminal_evidence(
-            envelope, broker_evidence_key="terminal", claim=claim, claims=claims
-        )
-        == 1
+    assert await release(store, envelope, claim, "terminal") == 1
+    assert await db_session.get(OrderSendIntent, claim.row_id) is None
+    assert not await store.has_unresolved_account_uncertainty(
+        claim_account_scope=claim.claim_account_scope
     )
-    assert intents.release_if_matches.await_args.kwargs["row_id"] == claim.row_id
+    assert await store.for_attempt(envelope).has_unresolved_account_uncertainty(
+        claim_account_scope=claim.claim_account_scope
+    )
+
+
+@pytest.mark.parametrize("evidence_lane", [True], indirect=True)
+async def test_stale_position_proof_cannot_release_claim(evidence_lane, db_session):
+    store, _, factory, envelope, claim = evidence_lane
+    await ack(store, factory, envelope, claim)
+    await store.record_native_evidence(
+        envelope,
+        NativeOrderEvidence(
+            "terminal_reconciliation", "fill", ODNO, ODNO, filled_quantity=2
+        ),
+    )
+    terminal = TerminalClaimEvidence(
+        lane_native_terminal_evidence=True,
+        account_position_reconciled=True,
+        remainder_known=True,
+    )
+    await store.record_native_evidence(
+        envelope,
+        NativeOrderEvidence(
+            "terminal_reconciliation",
+            "stale",
+            ODNO,
+            ODNO,
+            terminal,
+            2,
+            PositionProof(
+                "buy", 5, 2, 7, "b" * 64, datetime.now(UTC) - timedelta(seconds=61)
+            ),
+        ),
+    )
+    assert await release(store, envelope, claim, "stale") == 0
+    assert await db_session.get(OrderSendIntent, claim.row_id) is not None
 
 
 async def test_cross_account_and_wrong_odno_never_attach(evidence_lane):
@@ -280,15 +346,8 @@ async def test_native_dispatch_key_cannot_clear_missing_dispatch_uncertainty(
             )
             == 1
         )
-    intents = AsyncMock()
     with pytest.raises(KISMockEvidenceConflict, match="terminal_claim_binding"):
-        await store.release_with_recorded_terminal_evidence(
-            envelope,
-            broker_evidence_key="dispatch",
-            claim=claim,
-            claims=DurableSendClaimAdapter(intents),
-        )
-    intents.release_if_matches.assert_not_awaited()
+        await release(store, envelope, claim, "dispatch")
 
 
 async def test_operator_recovery_retains_terminal_claim_and_deduplicates(evidence_lane):

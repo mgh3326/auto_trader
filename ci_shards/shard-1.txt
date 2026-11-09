@@ -192,6 +192,7 @@ tests/services/mechanical_loss_cut/test_live_gate.py
 tests/services/mechanical_loss_cut/test_store_db.py
 tests/services/mock_integration/test_kis_mock_evidence_store.py
 tests/services/mock_integration/test_kis_mock_evidence_store_db.py
+tests/services/mock_integration/test_kis_mock_position_proof.py
 tests/services/mock_integration/test_lineage.py
 tests/services/mock_strategy/test_crypto.py
 tests/services/mock_strategy/test_crypto_brokers.py
