@@ -1,0 +1,11 @@
+{
+ "code_sha256": "14bb4979ad969183cefba720e82b276f67ccd1512692f98e1ddfe5b84655274c",
+ "rule": {
+  "min_newey_west_t": 2.0,
+  "max_random_p": 0.05,
+  "min_positive_years": 2,
+  "cap": 10
+ },
+ "grid_cells": 140,
+ "carried": []
+}

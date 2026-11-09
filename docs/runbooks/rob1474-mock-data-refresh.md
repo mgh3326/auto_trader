@@ -21,8 +21,26 @@ See [Alpaca historical bars](https://docs.alpaca.markets/us/reference/stockbars)
 
 Crypto uses unauthenticated Binance spot exchangeInfo/klines on the data-only
 host, UTC daily boundaries, actual kline quote volume and BTCUSDT benchmark.
-TRADING USDT spot pairs exclude known stable bases and UP/DOWN/BULL/BEAR tokens.
-See [Binance public market data](https://github.com/binance/binance-spot-api-docs/blob/master/faqs/market_data_only.md).
+The shared `research.crypto_universe.exclusions` definition applies the static
+stable list, the explicit wrapped-duplicate list (WBTC, BETH, WBETH), and a
+cutoff-only USD-peg rule: every one of the last 30 completed daily closes must
+be in `[0.98, 1.02]` USDT. Missing, duplicate, invalid, or depegged sessions do
+not prove a peg. `PAXG` remains eligible as a real-asset token. The generation
+manifest's `excluded` map records `stable_list`, `stable_peg_rule`,
+`wrapped_duplicate`, or the existing leveraged-token reason per symbol.
+BFUSD, XUSD, PYUSD, USDD, USDG and U are included in the static floor alongside
+the prior stable/fiat bases; Binance identifies BFUSD as a USD stablecoin, lists
+StraitsX USD (XUSD) against USDT, and catalogs PYUSD, USDD, USDG and U as
+stablecoin tokens. Binance describes
+WBTC as Wrapped Bitcoin, BETH as a wrapped ETH token, and WBETH as a wrapped,
+reward-bearing representation of staked ETH:
+[BFUSD](https://www.binance.com/en/support/announcement/detail/724d348354b349bc9c0630a2184ee80b),
+[XUSD](https://www.binance.com/en/support/announcement/detail/65af5039eae04563b47e424b9cae77ed),
+[Binance stablecoin catalog](https://www.binance.com/en/altcoins/stablecoin),
+[WBTC](https://www.binance.com/en/academy/articles/what-are-wrapped-tokens),
+[BETH](https://www.binance.com/en/support/faq/detail/2caf153380ff445ea5e587563be03f59),
+[WBETH](https://www.binance.com/en/support/faq/detail/e252366155174ba6887f6b32e3798273).
+See also [Binance public market data](https://github.com/binance/binance-spot-api-docs/blob/master/faqs/market_data_only.md).
 No trading credentials are needed for crypto refresh.
 
 ```bash
@@ -38,8 +56,7 @@ crypto top 150 by 30-complete-day summed quote volume, 400 days. `--limit`,
 `--lookback` and `--top-n` configure these. Minimum lookback is 260 US sessions /
 365 crypto days (the shared feature builder requires 364 crypto days). Require
 at least twice `top-n` complete symbols. A candidate with a missing session is
-reported in `excluded`, not forward filled. Successful empty symbol histories are also reported as excluded. Benchmark gaps,
-malformed bars, or insufficient complete symbols abort publication.
+reported in `excluded`, not forward filled. Successful empty symbol histories are also reported as excluded. A symbol with any malformed bar (non-finite or non-positive OHLC, inconsistent OHLC, negative or non-finite volume, or any other row `validate_bars` rejects) is excluded whole as `malformed_bars`: no repair, no forward fill, no partial history. Missing or blank numeric fields parse to NaN and fall into this case. Malformed or gapped benchmark bars (SPY, BTCUSDT) and insufficient complete symbols abort publication.
 
 Subsequent days fetch a seven-day overlap and append new bars to the candidate
 cache. Each successful fetch replaces the overlap only for symbols present in

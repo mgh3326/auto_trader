@@ -1,6 +1,7 @@
 """Offline acceptance tests for broad, atomic paper-runner data snapshots."""
 
 import json
+import math
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -17,6 +18,7 @@ from scripts.mock_data_sources import (
     JsonGet,
     canonical,
     crypto_assets,
+    crypto_static_exclusions,
     us_assets,
 )
 
@@ -129,6 +131,99 @@ def test_rerun_no_network_no_writes_and_membership_never_backfilled(tmp_path):
     )
 
 
+def test_2026_11_08_ranking_fixture_excludes_stable_and_wrapped_names(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("scripts.mock_data_sources.time.sleep", lambda _: None)
+    bases = [
+        "BFUSD",
+        "XUSD",
+        "PAXG",
+        "JST",
+        "WBTC",
+        "BTC",
+        "BNB",
+        "WLFI",
+        "SOL",
+        "SHIB",
+        "PEGCOIN",
+        *(f"COIN{i:02}" for i in range(16)),
+    ]
+    exchange_info = {
+        "symbols": [
+            {
+                "symbol": f"{base}USDT",
+                "baseAsset": base,
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "isSpotTradingAllowed": True,
+            }
+            for base in bases
+        ]
+    }
+
+    def handler(request):
+        if request.url.path.endswith("/exchangeInfo"):
+            return httpx.Response(200, json=exchange_info)
+        symbol = request.url.params["symbol"]
+        start_ms = int(request.url.params["startTime"])
+        end_ms = int(request.url.params["endTime"])
+        rank = int(symbol[4:6]) + 1 if symbol.startswith("COIN") else 30
+        bars = []
+        for stamp in range(start_ms, end_ms + 1, 86_400_000):
+            day_offset = (stamp - start_ms) // 86_400_000
+            close = (
+                1.0
+                if symbol == "PEGCOINUSDT"
+                else 20 + rank + day_offset * 0.01 + (day_offset % (rank + 1)) * 0.05
+            )
+            high, low = (
+                (1.01, 0.99) if symbol == "PEGCOINUSDT" else (close + 1, close - 1)
+            )
+            bars.append(
+                [
+                    stamp,
+                    str(close),
+                    str(high),
+                    str(low),
+                    str(close),
+                    str(rank * 100),
+                    stamp + 86_399_999,
+                    str(rank * 1000),
+                    rank,
+                    "0",
+                    "0",
+                    "0",
+                ]
+            )
+        return httpx.Response(200, json=bars)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        source = BinanceSource(JsonGet(client))
+        eligible_symbols = source.assets()
+        assert {"BFUSDUSDT", "XUSDUSDT", "WBTCUSDT"}.isdisjoint(eligible_symbols)
+        meta = producer.refresh(
+            tmp_path,
+            source,
+            now=datetime(2026, 11, 9, 12, tzinfo=UTC),
+            limit=24,
+            top_n=10,
+        )
+    assert meta["excluded"]["BFUSDUSDT"] == "stable_list"
+    assert meta["excluded"]["XUSDUSDT"] == "stable_list"
+    assert meta["excluded"]["WBTCUSDT"] == "wrapped_duplicate"
+    assert meta["excluded"]["PEGCOINUSDT"] == "stable_peg_rule"
+    payload = daily_lists(None, date(2026, 11, 8), cache_root=tmp_path)
+    picks = payload["horizons"]["3"]
+    selected = {
+        row["symbol"] for direction in ("up", "down") for row in picks[direction]
+    }
+    assert len(selected) == 20
+    assert not selected & {"BFUSDUSDT", "XUSDUSDT", "WBTCUSDT", "PEGCOINUSDT"}
+    assert "PAXGUSDT" in selected
+    assert payload["exclusion_reasons"]["PEGCOINUSDT"] == "stable_peg_rule"
+
+
 @pytest.mark.parametrize("failure", ["fetch", "write", "switch"])
 def test_partial_failure_preserves_complete_snapshot(tmp_path, monkeypatch, failure):
     source = FakeSource()
@@ -223,6 +318,33 @@ def test_asset_filters():
     assert crypto_assets(
         {"symbols": [pair, *bad, {**pair, "symbol": "ETHUSDT", "status": "BREAK"}]}
     ) == ["BTCUSDT"]
+    static_pairs = [
+        {**pair, "symbol": f"{base}USDT", "baseAsset": base}
+        for base in (
+            "BFUSD",
+            "XUSD",
+            "WBTC",
+            "PAXG",
+            "EURC",
+            "GUSD",
+            "FRAX",
+            "LUSD",
+            "USDJ",
+            "VAI",
+        )
+    ]
+    assert crypto_assets({"symbols": static_pairs}) == ["PAXGUSDT"]
+    assert crypto_static_exclusions({"symbols": static_pairs}) == {
+        "BFUSDUSDT": "stable_list",
+        "XUSDUSDT": "stable_list",
+        "WBTCUSDT": "wrapped_duplicate",
+        "EURCUSDT": "stable_list",
+        "GUSDUSDT": "stable_list",
+        "FRAXUSDT": "stable_list",
+        "LUSDUSDT": "stable_list",
+        "USDJUSDT": "stable_list",
+        "VAIUSDT": "stable_list",
+    }
 
 
 def test_alpaca_pagination_adjustment_feed_and_secret_errors(monkeypatch):
@@ -307,6 +429,34 @@ def test_successful_empty_candidate_is_reported(tmp_path):
     source.bars = omit
     meta = producer.refresh(tmp_path, source, now=NOW, limit=20)
     assert meta["excluded"][source.names[0]] == "refresh_data_unavailable"
+
+
+def test_unavailable_cached_peg_history_is_reported_as_unavailable(tmp_path):
+    source = FakeSource()
+    peg = "PEGCOINUSDT"
+    source.names.append(peg)
+    original_bars = source.bars
+
+    def peg_bars(symbols, start, end):
+        frame = original_bars(symbols, start, end)
+        mask = frame.symbol == peg
+        frame.loc[mask, "open"] = 1.0
+        frame.loc[mask, "high"] = 1.01
+        frame.loc[mask, "low"] = 0.99
+        frame.loc[mask, "close"] = 1.0
+        return frame
+
+    source.bars = peg_bars
+    first = producer.refresh(tmp_path, source, now=NOW, limit=20)
+    assert first["excluded"][peg] == "stable_peg_rule"
+
+    source.bars = lambda symbols, start, end: peg_bars(symbols, start, end).loc[
+        lambda frame: frame.symbol != peg
+    ]
+    later = NOW + timedelta(days=1) - timedelta(hours=11, minutes=59)
+    second = producer.refresh(tmp_path, source, now=later, limit=20)
+    assert first["data_cutoff"] == second["data_cutoff"]
+    assert second["excluded"][peg] == "refresh_data_unavailable"
 
 
 def test_reader_pins_generation_before_opening_metadata(tmp_path, monkeypatch):
@@ -619,3 +769,111 @@ def test_real_binance_failure_after_partial_fetch_preserves_snapshot(
     assert (tmp_path / "crypto").resolve() == generation
     assert before == {p.name: p.read_bytes() for p in generation.iterdir()}
     assert len(list((tmp_path / ".crypto-snapshots").iterdir())) == 1
+
+
+def corrupting(source, corrupt):
+    """Invalidate one mid-history field of each named symbol in the fetched bars."""
+    original = source.bars
+
+    def bars(symbols, start, end):
+        frame = original(symbols, start, end).copy()
+        for symbol, column, value in corrupt:
+            rows = frame.index[frame.symbol == symbol]
+            frame.loc[rows[len(rows) // 2], column] = value
+        return frame
+
+    source.bars = bars
+    return source
+
+
+@pytest.mark.parametrize("market", ["us", "crypto"])
+def test_malformed_symbols_are_excluded_and_publication_succeeds(tmp_path, market):
+    source = FakeSource(market, count=5)
+    # The two highest-volume names are malformed, so exclusion cannot hide behind ranking.
+    bad = source.names[-2:]
+    corrupting(source, [(bad[0], "close", float("nan")), (bad[1], "low", 0.0)])
+    meta = producer.refresh(tmp_path, source, now=NOW, limit=3, top_n=1)
+    assert {s: meta["excluded"][s] for s in bad} == dict.fromkeys(bad, "malformed_bars")
+    assert meta["symbols"] == 3 and meta["candidate_symbols"] == 5
+    bars, actual = read_bars(tmp_path, market)
+    candidates = pd.read_csv(
+        tmp_path / market / "candidates.csv", dtype={"symbol": str}
+    )
+    assert actual == meta
+    assert not set(bad) & (set(bars.symbol) | set(candidates.symbol))
+    assert set(bars.symbol) == set(source.names[:-2]) | {"__benchmark__"}
+    validate_bars(bars, market)
+
+
+@pytest.mark.parametrize("market", ["us", "crypto"])
+def test_malformed_benchmark_aborts_and_keeps_previous_snapshot(tmp_path, market):
+    source = FakeSource(market)
+    producer.refresh(tmp_path, source, now=NOW, limit=20)
+    before, meta = read_bars(tmp_path, market)
+    generation = (tmp_path / market).resolve()
+    corrupting(source, [(source.benchmark, "close", float("nan"))])
+    with pytest.raises(ValueError, match="benchmark"):
+        producer.refresh(tmp_path, source, now=NOW + timedelta(days=1), limit=20)
+    after, new_meta = read_bars(tmp_path, market)
+    pd.testing.assert_frame_equal(before, after)
+    assert meta == new_meta and (tmp_path / market).resolve() == generation
+    assert len(list((tmp_path / f".{market}-snapshots").iterdir())) == 1
+
+
+def test_validate_bars_still_rejects_a_nan_close():
+    rows = [
+        {
+            "date": "2026-11-02",
+            "symbol": "ABC",
+            "open": 10.0,
+            "high": 11.0,
+            "low": 9.0,
+            "close": float("nan"),
+            "volume": 1.0,
+            "traded_value": 1.0,
+            "action": False,
+        }
+    ]
+    with pytest.raises(ValueError, match="OHLC must be finite and positive"):
+        validate_bars(canonical(rows, "us"), "us")
+
+
+def test_missing_or_blank_bar_fields_parse_to_nan(monkeypatch):
+    monkeypatch.setenv("ALPACA_DATA_API_KEY_ID", "test-key")
+    monkeypatch.setenv("ALPACA_DATA_API_SECRET_KEY", "test-secret")
+    monkeypatch.setattr("scripts.mock_data_sources.time.sleep", lambda _: None)
+    alpaca_bar = {"t": "2026-10-30T04:00:00Z", "o": 10, "h": 12, "l": 9, "v": 100}
+    stamp = int(datetime(2026, 11, 1, tzinfo=UTC).timestamp() * 1000)
+    binance_row = [
+        stamp,
+        "10",
+        "12",
+        "9",
+        "",
+        "100",
+        stamp + 86400000 - 1,
+        "1234",
+        10,
+        "0",
+        "0",
+        "0",
+    ]
+
+    def alpaca(request):
+        return httpx.Response(
+            200, json={"bars": {"ABC": [alpaca_bar]}, "next_page_token": None}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(alpaca)) as client:
+        frame = AlpacaSource(JsonGet(client), "iex").bars(
+            ["ABC"], date(2026, 10, 30), date(2026, 10, 30)
+        )
+    assert math.isnan(frame.iloc[0].close) and math.isnan(frame.iloc[0].traded_value)
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[binance_row]))
+    ) as client:
+        frame = BinanceSource(JsonGet(client)).bars(
+            ["BTCUSDT"], date(2026, 11, 1), date(2026, 11, 1)
+        )
+    assert math.isnan(frame.iloc[0].close) and frame.iloc[0].volume == 100

@@ -54,6 +54,7 @@ tests/research/kr_corpus/d3_engine/test_d3_calibration_guard.py
 tests/research/kr_corpus/d3_engine/test_d3_engine_acceptance.py
 tests/research/kr_corpus/d3_engine/test_d3_primary.py
 tests/research/rob1391_us_resubmit_shadow/test_r1_regressions.py
+tests/research/selection_sweep/test_sweep.py
 tests/research/stock_selection/test_harness.py
 tests/research/test_adjacent_window_predicate.py
 tests/research/test_event_coverage_artifact_paths.py
