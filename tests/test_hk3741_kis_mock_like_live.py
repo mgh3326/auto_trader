@@ -23,6 +23,8 @@ from tests.services.mock_integration.test_kis_coordination_adapter import (
     _execute_kwargs,
 )
 
+_real_execute_order = order_execution._execute_order
+
 
 def _mock_ledger_order(**overrides: Any) -> dict[str, Any]:
     return {
@@ -191,6 +193,32 @@ async def test_kis_mock_kr_without_provider_reaches_broker(
     )
     assert result["success"] is True
     assert order_path["events"].count("broker_send") == 1
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_place_reserves_before_real_domestic_client_wire(
+    order_path: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, parent = _domestic_client()
+
+    async def wire(method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        assert ("kis_mock", "client-key") in order_path["reservations"]
+        await kwargs["pre_send_hook"]()
+        parent.requests.append({"method": method, "url": url, **kwargs})
+        return {"rt_cd": "0", "output": {"ODNO": "0000117058"}}
+
+    monkeypatch.setattr(order_execution, "_execute_order", _real_execute_order)
+    monkeypatch.setattr(order_execution, "_create_kis_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        order_execution, "get_kr_security_type", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(parent, "_request_with_rate_limit", wire)
+
+    result = await order_execution._execute_and_record(
+        **_execute_kwargs(mirror_cohort=None, idempotency_key="client-key")
+    )
+    assert result["success"] is True
+    assert len(parent.requests) == 1
 
 
 @pytest.mark.asyncio
