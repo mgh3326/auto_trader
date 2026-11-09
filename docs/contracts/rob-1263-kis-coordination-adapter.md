@@ -30,6 +30,10 @@ The dedicated mock MCP place/cancel/modify tools require `dry_run=False` and
 `confirm=True` before delegation. Generic MCP KR mock mutations are refused
 with `kis_mock_use_dedicated_tool`; generic US mock and live routing and internal
 implementation callers retain their existing interfaces.
+For KR mock edge submissions without an explicit client key, command identity
+is derived from the attribution correlation ID and canonical order content;
+the same correlation and content retain that ID across retries and trading
+days. An explicit client key remains the command ID.
 
 ---
 

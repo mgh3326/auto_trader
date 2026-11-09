@@ -7,6 +7,7 @@ Business logic lives in order_validation and order_journal.
 from __future__ import annotations
 
 import datetime
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -907,8 +908,8 @@ def _build_dry_run_blocked_response(
     }
 
 
-def _duplicate_order_intent_message(account_scope: str) -> str:
-    if account_scope == "kis_mock":
+def _duplicate_order_intent_message(account_scope: str, *, is_mirror: bool) -> str:
+    if account_scope == "kis_mock" and is_mirror:
         return (
             "이 미러 아이템은 이미 KIS mock 미러 전송 intent가 있어 "
             "중복 전송을 차단했습니다 "
@@ -952,6 +953,7 @@ async def _execute_and_record(
     report_item_uuid: uuid.UUID | None = None,
     approval_hash_digest: str | None = None,
     idempotency_key: str | None = None,
+    reserve_mock_idempotency: bool = True,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
@@ -1125,6 +1127,8 @@ async def _execute_and_record(
     intent_account_scope: str | None = None
     intent_key: str | None = None
     intent_reserved = False
+    # The preview also derives a content key when no caller key was supplied.
+    # That generated key must not reserve distinct mock orders for the day.
     if (
         not is_mock
         and idempotency_key is not None
@@ -1146,6 +1150,7 @@ async def _execute_and_record(
         intent_key = correlation_id
     elif (
         is_mock
+        and reserve_mock_idempotency
         and idempotency_key is not None
         and market_type in ("equity_kr", "equity_us")
     ):
@@ -1181,7 +1186,10 @@ async def _execute_and_record(
                     if protection_lease is not None:
                         await protection_lease.release()
                     return order_error_fn(
-                        _duplicate_order_intent_message(intent_account_scope)
+                        _duplicate_order_intent_message(
+                            intent_account_scope,
+                            is_mirror=mirror_cohort == "mock_counterfactual",
+                        )
                     )
     except BaseException:
         if protection_lease is not None:
@@ -1276,6 +1284,7 @@ async def _execute_and_record(
         is_mock
         and intent_reserved
         and mirror_cohort == "mock_counterfactual"
+        and reserve_mock_idempotency
         and idempotency_key is not None
         and idempotency_key != intent_key
     ):
@@ -1294,7 +1303,9 @@ async def _execute_and_record(
             await _release_reserved_intent_after_send_failure(
                 duplicate, proven_not_sent=True
             )
-            return order_error_fn(_duplicate_order_intent_message("kis_mock"))
+            return order_error_fn(
+                _duplicate_order_intent_message("kis_mock", is_mirror=True)
+            )
         except BaseException as exc:
             await _release_reserved_intent_after_send_failure(exc, proven_not_sent=True)
             raise
@@ -1305,6 +1316,33 @@ async def _execute_and_record(
         # eligible token/rate-limit re-sends). Callers without a hook retain
         # the existing execution behavior.
         nonlocal broker_ms, protection_lease_cleanup_warning
+        edge_idempotency_key = idempotency_key
+        if (
+            is_mock
+            and market_type == "equity_kr"
+            and submit_path == "edge"
+            and not reserve_mock_idempotency
+        ):
+            edge_content = order_approval.build_order_canonical_payload(
+                market_type=market_type,
+                symbol=normalized_symbol,
+                side=side,
+                order_type=order_type,
+                quantity=None if order_quantity is None else str(order_quantity),
+                price=None if price is None else str(price),
+            )
+            edge_identity = json.dumps(
+                {"correlation_id": correlation_id, "order": edge_content},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            edge_idempotency_key = (
+                "km-"
+                + uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"kis_mock_edge:{edge_identity}",
+                ).hex
+            )
         broker_started_at = time.perf_counter()
         try:
             broker_result = await _execute_order(
@@ -1318,7 +1356,7 @@ async def _execute_and_record(
                 identifier=idempotency_key if market_type == "crypto" else None,
                 pre_send_hook=pre_send_hook,
                 send_outcome=send_outcome,
-                idempotency_key=idempotency_key,
+                idempotency_key=edge_idempotency_key,
             )
         except BaseException:
             if protection_lease is not None:
@@ -2302,6 +2340,7 @@ async def _place_order_impl(
             report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
             approval_hash_digest=approval_digest,
             idempotency_key=idempotency_key,
+            reserve_mock_idempotency=client_order_id is not None,
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
             pre_send_hook=pre_send_hook,

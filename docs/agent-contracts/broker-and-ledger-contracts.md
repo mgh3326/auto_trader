@@ -587,6 +587,9 @@ mock client·VTS host·자격증명 namespace 검사는 전송 전에 유지하�
 각각 `dry_run=False` AND `confirm=True` 가 아니면 네트워크·DB 쓰기 전에 거부한다.
 공용 MCP place/cancel/modify 의 KR mock 요청은 `kis_mock_use_dedicated_tool` 로
 해당 전용 도구를 안내하며, US mock·live 와 내부 impl 호출은 기존 경로를 유지한다.
+호출자가 `client_order_id` 를 주지 않은 KR mock edge 명령은 귀속 `correlation_id` 와
+정규화 주문 내용으로 안정적인 명령 ID를 만든다. 같은 귀속·내용의 재시도는 날짜가
+바뀌어도 같은 ID이고, 서로 다른 귀속이나 내용은 다른 ID다. 명시 ID는 변경하지 않는다.
 
 KR mock only: `kis_mock_runner/evidence_store.py` provides durable lineage,
 dispatch evidence and restart uncertainty ports in two new append-only tables

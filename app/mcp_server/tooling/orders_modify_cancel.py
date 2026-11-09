@@ -1587,6 +1587,21 @@ async def _modify_kis_mock_domestic(
             "dry_run": dry_run,
         }
 
+    try:
+        ledger_quantity = Decimal(str(resolved["quantity"]))
+    except (KeyError, InvalidOperation, TypeError, ValueError):
+        ledger_quantity = Decimal("NaN")
+    if not ledger_quantity.is_finite() or ledger_quantity < original_quantity:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "error": "kis_mock modify refused: unknown broker remainder",
+            "market": market,
+            "dry_run": dry_run,
+        }
+
     orgno = resolved["krx_fwdg_ord_orgno"]
     side = resolved["side"]
     original_price = int(resolved["price"])
@@ -1663,7 +1678,7 @@ async def _modify_kis_mock_domestic(
     await update_kis_mock_order_terms(
         ledger_id=resolved["ledger_id"],
         price=Decimal(str(final_price)),
-        quantity=Decimal(str(final_quantity)),
+        quantity=ledger_quantity - original_quantity + final_quantity,
         detail={
             "modified_from_order_no": order_id,
             "modified_to_order_no": result.get("odno"),
