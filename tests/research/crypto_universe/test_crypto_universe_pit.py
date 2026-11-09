@@ -205,12 +205,15 @@ def test_committed_tables_match_manifest_and_hold_delisted_pairs() -> None:
     for table in manifest["tables"].values():
         text = (data / Path(table["path"]).name).read_text(encoding="utf-8")
         assert hashlib.sha256(text.encode()).hexdigest() == table["sha256"]
-    binance = manifest["tables"]["binance_usdt_spot"]
-    universe = PitUniverse.load(
-        data / Path(binance["path"]).name,
-        date.fromisoformat(binance["coverage_start"]),
-        date.fromisoformat(binance["coverage_end"]),
-    )
+    universes = {
+        venue: PitUniverse.load(
+            data / Path(table["path"]).name,
+            date.fromisoformat(table["coverage_start"]),
+            date.fromisoformat(table["coverage_end"]),
+        )
+        for venue, table in manifest["tables"].items()
+    }
+    universe = universes["binance_usdt_spot"]
     delisted = [x for x in universe.listings if x.status == "delisted"]
     assert len(delisted) > 100
     assert all(x.last_trade_date is not None for x in delisted)
@@ -218,3 +221,6 @@ def test_committed_tables_match_manifest_and_hold_delisted_pairs() -> None:
     assert bcc.last_trade_date == date(2018, 11, 15)
     assert "BCCUSDT" in universe.universe_as_of(date(2018, 11, 15))
     assert "BCCUSDT" not in universe.universe_as_of(date(2018, 11, 16))
+    # The table's stable flag records the corpus build; current exclusions can
+    # grow without making this frozen PIT snapshot unloadable.
+    assert next(x for x in universe.listings if x.symbol == "BFUSDUSDT").is_stable_base

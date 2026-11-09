@@ -6,6 +6,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from app.services.mock_strategy.crypto_signals import daily_lists, load_binance_panel
@@ -47,6 +48,59 @@ def test_hash_mismatch_refused_before_using_panel(panel):
     path.write_bytes(path.read_bytes() + b"tampered")
     with pytest.raises(ValueError, match="hash mismatch"):
         load_binance_panel(panel, date(2023, 12, 31))
+
+
+def test_peg_check_uses_completed_candles_inside_listing_episode_gap(
+    panel, monkeypatch
+):
+    from app.services.mock_strategy import crypto_signals
+
+    real_load = crypto_signals.PitUniverse.load
+    target_gap: set[date] = set()
+
+    # Replace only the target listing's tradeability predicate with a gap
+    # covering five of the final thirty completed candles.
+    class ListingProxy:
+        def __init__(self, listing):
+            self.listing = listing
+            self.symbol = listing.symbol
+            self.base_asset = listing.base_asset
+
+        def tradeable_on(self, day):
+            return self.listing.tradeable_on(day) and day not in target_gap
+
+    class GapUniverse:
+        def __init__(self, universe):
+            self.universe = universe
+
+        def universe_as_of(self, asof, venue):
+            return self.universe.universe_as_of(asof, venue)
+
+        def for_venue(self, venue):
+            return tuple(
+                ListingProxy(listing) if listing.symbol == "COIN0USDT" else listing
+                for listing in self.universe.for_venue(venue)
+            )
+
+    monkeypatch.setattr(
+        crypto_signals.PitUniverse,
+        "load",
+        staticmethod(lambda *args, **kwargs: GapUniverse(real_load(*args, **kwargs))),
+    )
+    real_read_parquet = pd.read_parquet
+
+    def read_peg_history(path, *args, **kwargs):
+        frame = real_read_parquet(path, *args, **kwargs)
+        if Path(path).stem == "COIN0USDT":
+            final = frame.tail(30)
+            target_gap.update(pd.to_datetime(final.day.iloc[:5]).dt.date)
+            frame.loc[final.index, "close"] = "1.0"
+        return frame
+
+    monkeypatch.setattr(pd, "read_parquet", read_peg_history)
+    bars = load_binance_panel(panel, date(2023, 12, 31))
+    assert bars.attrs["exclusion_reasons"]["COIN0USDT"] == "stable_peg_rule"
+    assert "COIN0USDT" not in set(bars.symbol)
 
 
 def test_producer_and_signal_builder_share_the_crypto_exclusion_definition():

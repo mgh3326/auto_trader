@@ -55,20 +55,19 @@ def load_binance_panel(root: Path, asof: date) -> pd.DataFrame:
         if len(frame) != record["rows"]:
             raise ValueError("panel row count mismatch")
         frame["date"] = pd.to_datetime(frame.day)
-        frame = frame[
-            (frame.date.dt.date <= asof) & frame.date.dt.date.map(listing.tradeable_on)
-        ].copy()
+        completed = frame[frame.date.dt.date <= asof].copy()
         reason = crypto_exclusion_reason(
             listing.base_asset,
             (
                 (stamp.date(), float(close))
-                for stamp, close in zip(frame.date, frame.close, strict=True)
+                for stamp, close in zip(completed.date, completed.close, strict=True)
             ),
             cutoff=asof,
         )
         if reason:
             exclusion_reasons[symbol] = reason
             continue
+        frame = completed[completed.date.dt.date.map(listing.tradeable_on)].copy()
         frame["symbol"] = symbol
         frames.append(frame)
     if not frames:

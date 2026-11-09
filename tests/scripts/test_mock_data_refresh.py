@@ -431,6 +431,34 @@ def test_successful_empty_candidate_is_reported(tmp_path):
     assert meta["excluded"][source.names[0]] == "refresh_data_unavailable"
 
 
+def test_unavailable_cached_peg_history_is_reported_as_unavailable(tmp_path):
+    source = FakeSource()
+    peg = "PEGCOINUSDT"
+    source.names.append(peg)
+    original_bars = source.bars
+
+    def peg_bars(symbols, start, end):
+        frame = original_bars(symbols, start, end)
+        mask = frame.symbol == peg
+        frame.loc[mask, "open"] = 1.0
+        frame.loc[mask, "high"] = 1.01
+        frame.loc[mask, "low"] = 0.99
+        frame.loc[mask, "close"] = 1.0
+        return frame
+
+    source.bars = peg_bars
+    first = producer.refresh(tmp_path, source, now=NOW, limit=20)
+    assert first["excluded"][peg] == "stable_peg_rule"
+
+    source.bars = lambda symbols, start, end: peg_bars(symbols, start, end).loc[
+        lambda frame: frame.symbol != peg
+    ]
+    later = NOW + timedelta(days=1) - timedelta(hours=11, minutes=59)
+    second = producer.refresh(tmp_path, source, now=later, limit=20)
+    assert first["data_cutoff"] == second["data_cutoff"]
+    assert second["excluded"][peg] == "refresh_data_unavailable"
+
+
 def test_reader_pins_generation_before_opening_metadata(tmp_path, monkeypatch):
     source = FakeSource()
     producer.refresh(tmp_path, source, now=NOW, limit=20)

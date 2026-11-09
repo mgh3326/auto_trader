@@ -262,8 +262,9 @@ class PitUniverse:
             )
             if _bool(row["is_leveraged_token"]) != listing.is_leveraged_token:
                 raise ValueError(f"{listing.symbol}: is_leveraged_token mismatch")
-            if _bool(row["is_stable_base"]) != listing.is_stable_base:
-                raise ValueError(f"{listing.symbol}: is_stable_base mismatch")
+            # This column is a materialized classification from the corpus build.
+            # Keep loading historical snapshots after the shared current exclusion
+            # floor grows; the current property is still derived from that floor.
             out.append(listing)
         return tuple(out)
 

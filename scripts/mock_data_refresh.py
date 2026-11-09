@@ -191,6 +191,9 @@ def refresh(
         for symbol in symbols:
             if symbol in excluded:
                 continue
+            if symbol not in present:
+                excluded[symbol] = "refresh_data_unavailable"
+                continue
             if market == "crypto" and symbol != source.benchmark:
                 history = merged[merged.symbol == symbol].sort_values("date")
                 reason = crypto_exclusion_reason(
@@ -204,9 +207,6 @@ def refresh(
                 if reason:
                     excluded[symbol] = reason
                     continue
-            if symbol not in present:
-                excluded[symbol] = "refresh_data_unavailable"
-                continue
             history = merged[merged.symbol == symbol].sort_values("date")
             if set(history.date) != expected:
                 excluded[symbol] = "incomplete_feature_history"
