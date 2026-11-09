@@ -273,13 +273,14 @@ def test_partition_is_total_at_default_settings():
 
 
 def test_harness_denied_tools_partition_is_exact_and_registered():
-    # hk #678 / #828: the four harness-denied tools stay DEFAULT-registered for
+    # hk #678 / #828: the harness-denied tools stay DEFAULT-registered for
     # non-route consumers, but the route contract carries them as a disjoint
     # denied bucket — still classified (partition stays total), never read-only.
     assert HARNESS_DENIED_TOOLS == {
         "decision_table_validate",
         "get_intraday_investor_flow",
         "get_upbit_altseason",
+        "kis_live_get_daily_orders",
         "kis_live_get_order_history",
     }
     assert HARNESS_DENIED_TOOLS <= MUTATION_TOOLS

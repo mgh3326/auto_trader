@@ -36,6 +36,8 @@ tests/mcp_server/test_binance_demo_ledger_status_tool.py
 tests/mcp_server/test_investment_hermes_tools.py
 tests/mcp_server/test_investment_report_context_get_description.py
 tests/mcp_server/test_investment_snapshots_tools.py
+tests/mcp_server/test_kis_live_daily_orders.py
+tests/mcp_server/test_kis_live_daily_orders_db.py
 tests/mcp_server/test_kis_live_place_order_routing_surface.py
 tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_kis_live_status_lifecycle.py

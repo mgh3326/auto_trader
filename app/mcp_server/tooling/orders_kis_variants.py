@@ -44,6 +44,7 @@ KIS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "kis_live_cancel_order",
     "kis_live_modify_order",
     "kis_live_get_order_history",
+    "kis_live_get_daily_orders",
     "kis_live_reconcile_orders",
 }
 
@@ -671,6 +672,37 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             limit=limit,
             account_mode=account_mode,
             account_type=account_type,
+        )
+
+    @mcp.tool(
+        name="kis_live_get_daily_orders",
+        description=(
+            "Read-only: list EVERY KIS live (real-money) KR order of ONE KST "
+            "trade_date (YYYY-MM-DD, not in the future; no ranges) across all "
+            "symbols, optional side='buy'|'sell'|'all'. Exhaustive broker paging, "
+            "duplicate rows removed; includes cancel-confirmation rows "
+            "(original_order_id set) and rows with rejected_qty > 0. "
+            "broker_status (filled|partially_filled|working|cancelled|"
+            "rejected_or_expired_eod|unknown) is derived from broker fields only "
+            "(broker_status_basis='broker_fields'). system_status is the local "
+            "order-ledger status for the same order number on that date, with "
+            "system_status_basis='ledger' or 'inference' (#1112 expired[inference] "
+            "rung). A truncated day (broker paging hit max_pages) returns NO rows: "
+            "complete=false, orders=[], pages=max_pages, error_class. The REST "
+            "API has no fill time. No writes, no reconcile."
+        ),
+    )
+    async def kis_live_get_daily_orders(
+        trade_date: str,
+        side: Literal["buy", "sell", "all"] | None = None,
+    ) -> dict[str, Any]:
+        from app.mcp_server.tooling.kis_live_daily_orders import (
+            kis_live_get_daily_orders_impl,
+        )
+
+        return apply_account_routing_metadata(
+            await kis_live_get_daily_orders_impl(trade_date=trade_date, side=side),
+            _pinned_routing(_PINNED),
         )
 
     @mcp.tool(

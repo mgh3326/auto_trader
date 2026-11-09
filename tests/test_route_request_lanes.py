@@ -95,6 +95,7 @@ def test_action_taxonomy_is_disjoint_and_total():
         "decision_table_validate",
         "get_intraday_investor_flow",
         "get_upbit_altseason",
+        "kis_live_get_daily_orders",
         "kis_live_get_order_history",
     }
 

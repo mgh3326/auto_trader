@@ -22,6 +22,7 @@
 - kis_mock 귀속 사슬 — pre-submit 강제
 - kis_mock 4행 Q-46 expired[inference] (#1250)
 - KIS Live Order Fill-Evidence Gate (ROB-395)
+- KIS live 일별 주문 조회 — 하루 전 종목 (hk 3717)
 - KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 - 7-D stale blocker night sweep + KIS expired[inference] (#1112)
 - US & Crypto Live Order Fill-Evidence Gate (ROB-407)
@@ -700,6 +701,34 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
 - **MCP 도구**: `kis_live_reconcile_orders` (dry_run-default)
 - **런북**: `docs/runbooks/kis-live-order-reconcile.md`
 - **스코프**: KR live only; US/crypto live unchanged (follow-up)
+
+### KIS live 일별 주문 조회 — `kis_live_get_daily_orders` (hk 3717)
+
+외부 리서치 세션(dots)용 읽기 전용 MCP 도구. **DEFAULT 프로필에만** 등록된다
+(`register_kis_live_order_tools`). 쓰기·reconcile·원장/제안 갱신 없음.
+
+- **구현**: `app/mcp_server/tooling/kis_live_daily_orders.py` — 주문·정정·취소·원장 writer import 없음
+  (`tests/mcp_server/test_kis_live_daily_orders.py` 가 AST 로 고정)
+- **입력**: `trade_date`(KST 하루 `YYYY-MM-DD`, 미래·범위·malformed 는 브로커 호출 전 거부), 선택 `side`(`buy`/`sell`/`all`)
+- **조회**: `inquire_daily_order_domestic(start=end=그날, stock_code="", max_pages=100)` — reconcile 과 같은
+  exhaustive 기본값(ROB-903 display fast-path 아님). 페이지 중복 행은 `odno` 로 dedupe.
+  취소확인 행(`orgn_odno` 설정, `original_order_id` 로 원주문 링크)과 `rjct_qty > 0` 행도 전부 반환한다.
+- **`broker_status`**(`broker_status_basis="broker_fields"`): 브로커 필드만으로 `filled`(`tot_ccld_qty == ord_qty > 0` 일 때만) /
+  `partially_filled` / `working` / `cancelled`(실제 취소 증거 — `cncl_yn=Y` 또는 측면명의 '취소' 토큰, `live_order_expiry.row_has_cancel_evidence`; `orgn_odno` 는 정정확인 행도 가리키므로 링크일 뿐 취소 증거가 아니다) / `rejected_or_expired_eod` / `unknown`.
+- **`system_status`**: `review.kis_live_order_ledger` 의 같은 주문번호 **AND 그 행 `trade_date` 의 KST 날짜가 요청일**일 때만
+  `{status, lifecycle_state}` 를 붙인다(주문번호는 날짜를 넘어 재사용되며 원장 `order_no` 는 UNIQUE). 행이 없으면 null.
+  `system_status_basis="inference"` 는 같은 주문번호이고 같은 주문 인스턴스(idempotency key 또는 correlation id 일치)인
+  `order_proposal_rungs` 행이 #1112 마커(`expired_inference:kis_regular_day_order_no_broker_original`)를 가질 때만이고,
+  그 외 원장 행은 `"ledger"`. 🔴 이 마커는 원장 행이 아니라 rung 의 `void_reason` 에만 있다(운영자 답, hk 3717).
+  DB 읽기 실패는 도구를 실패시키지 않고 `system_status=null` + `system_status_error`(클래스명).
+- **`complete`**: 브로커 페이징이 정상 종료됐을 때만 `true`. `max_pages` 에 닿으면 클라이언트가 부분 행을 버리고 예외를 던지므로
+  도구는 `complete=false, orders=[], pages=max_pages, error_class` 를 반환한다 — **잘린 날은 행을 돌려주지 않는다.**
+  그 밖의 오류는 닫힌 모양 `{error_code, error_class}`(브로커 원문 메시지 없음).
+- 🔴 REST 에는 체결 시각이 없다 — 반환하지 않는다(`fill_time_available=false`).
+- 🔴 **#678 불변**: 이 도구는 `HARNESS_DENIED_TOOLS`(basis `live_session_harness_denied_678`)에 들어 있어 어떤 live 레인
+  route 계약에도 광고되지 않고, 레인 allowlist·robin-prefect `LIVE_ALLOWED_TOOLS` 에 추가하지 않는다.
+  `kis_live_get_order_history` 와 `inquire_daily_order_domestic` 은 변경 없음.
+- **테스트**: `test_kis_live_daily_orders.py`(순수·fake client), `test_kis_live_daily_orders_db.py`(테스트 DB 로더)
 
 ### KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 
