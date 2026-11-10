@@ -96,6 +96,7 @@ tests/scripts/test_binance_futures_demo_smoke.py
 tests/scripts/test_binance_h5_runner_alerts.py
 tests/scripts/test_binance_h5_scripts_mutants.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
+tests/scripts/test_deploy_ncp_pull_gate_python.py
 tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_diagnose_investment_reports.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
