@@ -1,0 +1,16 @@
+operation: retro_positions
+request:
+  path: /trading/api/retro/v1/retro_positions
+  query: {}
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 0
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns: []
+  data: []

@@ -1,0 +1,8 @@
+operation: retro_day
+request:
+  path: /trading/api/retro/v1/retro_day
+  query: {}
+status: 401
+response:
+  code: auth_missing
+  message: Authentication required.

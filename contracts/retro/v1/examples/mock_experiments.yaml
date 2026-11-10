@@ -1,0 +1,28 @@
+operation: mock_experiments
+request:
+  path: /trading/api/retro/v1/mock_experiments
+  query:
+    strategy_id: SYN_STRATEGY
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns: []
+  data:
+  - strategy_id: SYN_STRATEGY
+    experiment_ref: ref_synthetic_experiment
+    environment: synthetic
+    planned_count: 1
+    sent_count: 0
+    filled_count: 0
+    uncertain_count: 0
+    episode_pnl_amount: null
+    currency: XSY
+    unit: currency
+    basis: unknown

@@ -1,0 +1,30 @@
+operation: retro_day
+request:
+  path: /trading/api/retro/v1/retro_day
+  query:
+    market: XSYN
+    date: '2026-01-02'
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns: []
+  data:
+  - symbol: SYN001
+    stage: candidate
+    event_at: null
+    event_ref: ref_synthetic_1
+    linked_ref: null
+    status: considered
+    reason: null
+    quantity: '9007199254740993.0000'
+    price: '12.3400'
+    currency: XSY
+    unit: shares
+    basis: inference

@@ -17,6 +17,7 @@ tests/brokers/kis/mock_scalping_ws/test_state.py
 tests/brokers/kis/test_broker_order_id.py
 tests/ci/test_call_durations_workflow_entrypoint.py
 tests/ci/test_experiment_registry_lint.py
+tests/contracts/test_retro_v1_contract.py
 tests/core/test_exceptions.py
 tests/core/test_market_aliases.py
 tests/core/test_money.py
