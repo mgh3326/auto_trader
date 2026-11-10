@@ -120,6 +120,7 @@ tests/services/account_value/test_market_return.py
 tests/services/account_value/test_postgres_integration.py
 tests/services/account_value/test_readers.py
 tests/services/account_value/test_report.py
+tests/services/account_value/test_retro_scoreboard.py
 tests/services/account_value/test_returns.py
 tests/services/account_value/test_snapshot.py
 tests/services/action_report/common/test_generator_constraints.py

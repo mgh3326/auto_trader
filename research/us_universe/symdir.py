@@ -42,13 +42,32 @@ MIN_ROWS = 1000
 
 _FOOTER_RE = re.compile(r"^File Creation Time: (\d{2})(\d{2})(\d{4})(\d{2}):(\d{2})")
 
-# otherlisted ``Exchange`` codes (NASDAQ Trader symbol directory definitions).
+# otherlisted ``Exchange`` codes. A/N/P/Z/V are in the NASDAQ Trader symbol
+# directory definitions page (https://www.nasdaqtrader.com/trader.aspx?id=symboldirdefs).
+# That page does NOT list F or M (checked 2026-11-10; it names neither the Texas
+# Stock Exchange nor NYSE Texas). F and M are mapped from the live
+# otherlisted.txt rows (file created 2026-11-10 03:02 ET): code F carries Texas
+# Stock Exchange listings (``TXCP``, ``TXS``, ``OILT``, ``ZZZTA|TXSE Test Stk 1``)
+# and code M carries ``MTEST|NYSE Texas, Inc. TEST Common Stock``.
 OTHER_EXCHANGE_CODES = {
     "A": "NYSE American",
     "N": "NYSE",
     "P": "NYSE Arca",
     "Z": "Cboe BZX",
     "V": "IEX",
+    "F": "Texas Stock Exchange",
+    "M": "NYSE Texas",
+}
+
+# Venue labels an earlier build of this parser wrote that the vendor has since
+# relabelled. Before F was mapped, the Texas Stock Exchange rows were read under
+# the vendor's then-current code ``TXSE`` and stored as ``UNKNOWN:TXSE``; the
+# vendor now sends F. The universe shrink guard folds an old label into its new
+# one on the previous partition's counts so a relabel is not read as a venue
+# going to zero. Reviewed additions only: an entry here is a claim that both
+# labels name the same venue.
+LEGACY_VENUE_ALIASES = {
+    "UNKNOWN:TXSE": "Texas Stock Exchange",
 }
 
 # Common-stock heuristic, kept byte-identical to
