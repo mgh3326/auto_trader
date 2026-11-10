@@ -1,0 +1,73 @@
+operation: retro_trades
+request:
+  path: /trading/api/retro/v1/retro_trades
+  query:
+    from: '2026-01-01'
+    to: '2026-01-31'
+status: 200
+response:
+  as_of: '2026-11-10T21:21:53.402162Z'
+  data_as_of: '2026-01-05T00:00:00Z'
+  timezone: KST
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.strategy
+    reason: missing_data
+  - field: data.0.exit_reason
+    reason: missing_data
+  - field: data.0.reviews.0.trigger_type
+    reason: missing_data
+  - field: data.0.reviews.0.root_cause_class
+    reason: missing_data
+  - field: data.0.reviews.0.result_summary
+    reason: missing_data
+  - field: data.0.reviews.0.rationale
+    reason: missing_data
+  - field: data.0.reviews.0.next_strategy
+    reason: missing_data
+  data:
+  - trade_ref: trade-f0f26855ac7a4999ec27
+    symbol: SAMPLE
+    market: kr
+    side: buy
+    strategy: null
+    entry_at: '2026-01-05T00:00:00Z'
+    exit_at: '2026-01-05T00:00:00Z'
+    quantity: '2'
+    entry_price: '10'
+    exit_price: '12'
+    currency: KRW
+    return_rate: '2.5'
+    realized_amount: '100'
+    realized_currency: KRW
+    exit_reason: null
+    basis: inference
+    reviews:
+    - review_ref: review-8fbcaa34bf0336be8716
+      outcome: filled
+      trigger_type: null
+      root_cause_class: null
+      pnl_status: recorded
+      pnl_class: recorded
+      realized_pnl: '100'
+      realized_pnl_currency: KRW
+      fill_evidence_available: true
+      created_at: '2026-01-05T00:00:00Z'
+      lesson: Keep the plan
+      result_summary: null
+      rationale: null
+      next_strategy: null
+  summary:
+    trade_count: 1
+    return_rate_count: 1
+    realized_by_currency:
+      KRW: '100'
+    pnl_coverage:
+      recorded: 1
+      not_applicable: 0
+      unknown: 0
+      missing: 0

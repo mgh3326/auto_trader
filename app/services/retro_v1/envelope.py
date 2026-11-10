@@ -40,6 +40,7 @@ MAX_SOURCE_ROWS: Final = 5000
 
 UNKNOWN_REASONS: Final = frozenset(
     {
+        "redacted",
         "not_read",
         "unavailable",
         "unsupported",

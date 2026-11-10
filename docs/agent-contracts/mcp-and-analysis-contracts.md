@@ -309,7 +309,7 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 
 retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unavailable` 항목을 요구한다. 행의 null 값은 같은 행의 `reason`/`missing_reason` 또는 envelope `unknowns`의 해당 필드 경로로 사유를 표시한다. `as_of` 응답은 생성 시각이며 보유 조회 입력은 `cutoff_date`다.
 
-**retro/v1 읽기 모델 (hk 3816)**: `retro_scoreboard`를 뺀 7개 operation의 reader가 `app/services/retro_v1/`에 있다. `read_<operation>(session, **계약 쿼리 이름)`가 계약 응답 본문 dict를 그대로 돌려준다. `retro_scoreboard`는 hk 3817이다. HTTP route는 hk 3818에서 이 reader와 별도 scoreboard reader를 호출한다. MCP 도구와 스케줄러 연결은 없다.
+**retro/v1 읽기 모델 (hk 3816)**: `retro_scoreboard`를 뺀 8개 operation의 reader가 `app/services/retro_v1/`에 있다. `read_<operation>(session, **계약 쿼리 이름)`가 계약 응답 본문 dict를 그대로 돌려준다. `retro_scoreboard`는 hk 3817이다. HTTP route는 hk 3818에서 이 reader와 별도 scoreboard reader를 호출한다. MCP 도구와 스케줄러 연결은 없다.
 
 - **읽기 전용은 구조다**: reader마다 자기 `REPEATABLE READ READ ONLY` 트랜잭션(statement timeout 8초)을 열어 count와 행이 한 스냅샷을 쓴다. 이미 트랜잭션 중인 세션은 `validation_error`로 거부한다(호출자 트랜잭션을 롤백하는 것도 부작용이다). SELECT 외 문장·브로커 클라이언트·주문·제안·recorder·reconcile·refresh·lazy-fill·MCP·router·스케줄러 import는 `tests/services/retro_v1/test_guards.py`가 직접 import, 정적 transitive closure, 쓰기/commit 호출, 실제 발행 SQL 네 겹으로 막는다. `account_value` 패키지(hk 3817)도 import하지 않는다.
 - **unknown은 0이 아니다**: 하위 읽기는 SAVEPOINT 안에서 돌고 실패하면 `unknowns`(`upstream_error`/`unavailable`)와 `total: null` + `count_unavailable`이 된다. 소스당 5,000행(렛저 이력 20,000행) 상한에 닿아도 같다. 행의 null은 행 `reason`/`missing_reason` 또는 `data.<i>.<field>` unknown으로 설명한다(계약 테스트와 같은 규칙).
@@ -325,7 +325,7 @@ retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unava
 
 `/trading/api/retro/v1`은 기본 비활성(`RETRO_API_ENABLED=false`) 읽기 전용 HTTP 표면이다.
 DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 403,
-고정 헤더 `X-Retro-Read-Token` 누락·불일치 401, 허용된 8개 GET 외 403을 적용한다.
+고정 헤더 `X-Retro-Read-Token` 누락·불일치 401, 허용된 9개 GET 외 403을 적용한다.
 세션 쿠키나 다른 머신 토큰은 대체하지 못한다. 각 라우트는 대응 reader 하나만 호출하며
 스케줄러·MCP 연결은 없다.
 
@@ -333,7 +333,20 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 
 `retro/v1` 공급자 변경은 고정된 외부 소비자(`github.com/mgh3326/factortrail` 커밋 `4e111bf`)의 실제 Go 클라이언트 검증 게이트를 통과해야 한다.
 - **소비자 고정**: `contracts/retro/v1/consumers.lock`이 지원 소비자 repo, 커밋 SHA, Go 버전, 대상 패키지를 정의한다.
-- **검증 하네스**: `tools/retro-consumer-check/main.go`가 8개 엔드포인트의 envelope 스키마, decimal/int 정밀도, 계좌/주문 식별자 비노출(개인정보 보호), unknown/사유 규약, 인증 경계(401/403)를 실제 HTTP 호출로 검증한다.
+- **검증 하네스**: `tools/retro-consumer-check/main.go`가 기존 고정 소비자의 8개 엔드포인트의 envelope 스키마, decimal/int 정밀도, 계좌/주문 식별자 비노출(개인정보 보호), unknown/사유 규약, 인증 경계(401/403)를 실제 HTTP 호출로 검증한다.
 - **실행 러너 및 CI 게이트**: `scripts/ci/run_retro_consumer_gate.py`가 루프백 서버를 띄워 하네스를 실행하며, `classify_changes.py`가 retro 경로 변경 시 `retro-consumer-gate` CI 작업을 트리거한다. `aggregate_required.py`는 게이트 누락 시 fail-closed로 거부한다.
 - **운영 런북**: 소비자 핀 갱신 절차(호환 확장 → 소비자 커밋 → 핀 갱신 → 구버전 퇴역) 및 비호환 변경(v2 병행 배포 후 이전) 규약은 `docs/runbooks/retro-consumer-pin.md`를 따른다.
 
+
+
+### retro/v1 청산 거래와 회고 (hk 3869)
+
+`retro_trades`는 KST 종료일 범위의 `status=closed`, `account_type=live` journal과
+`journal_id`로 연결된 `kis_live`, `toss_live`, `upbit_live` 회고만 읽는다.
+`entry_at`은 journal 생성 시각이며 `return_rate`는 기록된 `pnl_pct`의 퍼센트다.
+금액은 `total_pnl_krw`, `security_pnl_usd`, `security_pnl_krw` 순서로 기록된
+값 하나를 선택하고 통화를 함께 제공한다. 수치는 세션 기록이므로 `basis=inference`다.
+전체 필터 집계는 페이지와 무관하며 값이 없거나 읽기가 불완전하면 null과 사유를
+반환한다. 회고 prose는 민감 패턴을 검사한 뒤 1,000자로 제한하고 차단 시 `redacted`를
+기록한다. JSONB와 원본 식별자는 공개하지 않는다. 기존 consumer pin과 8개 호출
+하네스는 호환 확장 순서에 따라 유지한다.

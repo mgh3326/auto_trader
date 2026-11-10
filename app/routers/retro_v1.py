@@ -21,6 +21,7 @@ OPERATIONS = {
     "retro_funnel": ("market", "from", "to"),
     "retro_scoreboard": ("from", "to"),
     "retro_positions": ("cutoff_date",),
+    "retro_trades": ("from", "to"),
     "mock_experiments": (),
     "get_bars": ("symbol", "tf", "from", "to"),
     "data_gaps": (),
@@ -31,6 +32,7 @@ READERS = {
     "retro_funnel": readers.read_retro_funnel,
     "retro_scoreboard": retro_scoreboard.read_retro_scoreboard,
     "retro_positions": readers.read_retro_positions,
+    "retro_trades": readers.read_retro_trades,
     "mock_experiments": readers.read_mock_experiments,
     "get_bars": readers.read_get_bars,
     "data_gaps": readers.read_data_gaps,
@@ -46,6 +48,8 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
     params = request.query_params
     required = OPERATIONS[operation]
     allowed = {*required, "limit", "cursor"}
+    if operation == "retro_trades":
+        allowed.update(("market", "strategy"))
     if operation == "mock_experiments":
         allowed.add("strategy_id")
     if set(params) - allowed or any(k not in params for k in required):
