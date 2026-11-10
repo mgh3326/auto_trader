@@ -13,6 +13,7 @@ from app.auth.web_router import get_current_user_from_session
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.routers.deprecated_pages import LEGACY_PREFIXES
+from app.routers.retro_v1 import OPERATIONS, PREFIX, error
 
 
 class AuthMiddleware:
@@ -190,6 +191,23 @@ class AuthMiddleware:
                     status_code=401,
                     content={"detail": "Invalid research reports ingest token"},
                 )
+            return None
+
+        if path == PREFIX or path.startswith(PREFIX + "/"):
+            if settings.RETRO_API_ENABLED is not True:
+                return error("feature_off", "Feature unavailable.", 404)
+            expected = settings.RETRO_API_READ_TOKEN
+            if not expected:
+                return error("scope_denied", "Scope denied.", 403)
+            supplied = request.headers.get("X-Retro-Read-Token", "")
+            if not supplied:
+                return error("auth_missing", "Authentication required.", 401)
+            if not hmac.compare_digest(supplied.encode(), expected.encode()):
+                return error("auth_invalid", "Authentication invalid.", 401)
+            if request.method != "GET" or path not in {
+                f"{PREFIX}/{op}" for op in OPERATIONS
+            }:
+                return error("scope_denied", "Scope denied.", 403)
             return None
 
         # ROB-287 — Hermes-initiated HTTP ingest family. Same shape as the

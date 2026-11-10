@@ -305,11 +305,11 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 
 ### Factortrail retro/v1 공급자 계약 (hk 3815)
 
-`contracts/retro/v1/openapi.yaml`은 Factortrail 소비자를 위한 auto_trader 소유 HTTP 계약의 정본이다. 현재 이 계약만 있으며 retro route나 MCP 도구는 아직 없다. 응답은 닫힌 projection이며 계좌번호, 브로커 주문번호, 원문 payload와 예외를 내보내지 않는다. 연결에는 불투명한 ref만 쓴다. 조회하지 못했거나 실패한 값과 count는 0으로 바꾸지 않고 null과 사유로 표시한다. 생성 시각과 데이터 cutoff를 분리하고 count는 페이지 길이가 아닌 각 작업의 전체 모집단을 뜻한다. 금액·수량·가격은 정확한 decimal 문자열이다. 계좌 수익률의 외부 흐름 완전성은 서버 측 사실이며 호출자가 선언하지 않는다. 공개 예제는 전부 합성이다.
+`contracts/retro/v1/openapi.yaml`은 Factortrail 소비자를 위한 auto_trader 소유 HTTP 계약의 정본이다. retro HTTP route는 hk 3818에서 제공하며 MCP 도구는 없다. 응답은 닫힌 projection이며 계좌번호, 브로커 주문번호, 원문 payload와 예외를 내보내지 않는다. 연결에는 불투명한 ref만 쓴다. 조회하지 못했거나 실패한 값과 count는 0으로 바꾸지 않고 null과 사유로 표시한다. 생성 시각과 데이터 cutoff를 분리하고 count는 페이지 길이가 아닌 각 작업의 전체 모집단을 뜻한다. 금액·수량·가격은 정확한 decimal 문자열이다. 계좌 수익률의 외부 흐름 완전성은 서버 측 사실이며 호출자가 선언하지 않는다. 공개 예제는 전부 합성이다.
 
 retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unavailable` 항목을 요구한다. 행의 null 값은 같은 행의 `reason`/`missing_reason` 또는 envelope `unknowns`의 해당 필드 경로로 사유를 표시한다. `as_of` 응답은 생성 시각이며 보유 조회 입력은 `cutoff_date`다.
 
-**retro/v1 읽기 모델 (hk 3816)**: `retro_scoreboard`를 뺀 7개 operation의 reader가 `app/services/retro_v1/`에 있다. `read_<operation>(session, **계약 쿼리 이름)`가 계약 응답 본문 dict를 그대로 돌려준다. `retro_scoreboard`는 hk 3817이다. 🔴 HTTP route, MCP 도구, 스케줄러, env 변수는 아직 없다(route는 hk 3818). 아직 이 reader를 호출하는 코드는 없다.
+**retro/v1 읽기 모델 (hk 3816)**: `retro_scoreboard`를 뺀 7개 operation의 reader가 `app/services/retro_v1/`에 있다. `read_<operation>(session, **계약 쿼리 이름)`가 계약 응답 본문 dict를 그대로 돌려준다. `retro_scoreboard`는 hk 3817이다. HTTP route는 hk 3818에서 이 reader와 별도 scoreboard reader를 호출한다. MCP 도구와 스케줄러 연결은 없다.
 
 - **읽기 전용은 구조다**: reader마다 자기 `REPEATABLE READ READ ONLY` 트랜잭션(statement timeout 8초)을 열어 count와 행이 한 스냅샷을 쓴다. 이미 트랜잭션 중인 세션은 `validation_error`로 거부한다(호출자 트랜잭션을 롤백하는 것도 부작용이다). SELECT 외 문장·브로커 클라이언트·주문·제안·recorder·reconcile·refresh·lazy-fill·MCP·router·스케줄러 import는 `tests/services/retro_v1/test_guards.py`가 직접 import, 정적 transitive closure, 쓰기/commit 호출, 실제 발행 SQL 네 겹으로 막는다. `account_value` 패키지(hk 3817)도 import하지 않는다.
 - **unknown은 0이 아니다**: 하위 읽기는 SAVEPOINT 안에서 돌고 실패하면 `unknowns`(`upstream_error`/`unavailable`)와 `total: null` + `count_unavailable`이 된다. 소스당 5,000행(렛저 이력 20,000행) 상한에 닿아도 같다. 행의 null은 행 `reason`/`missing_reason` 또는 `data.<i>.<field>` unknown으로 설명한다(계약 테스트와 같은 규칙).
@@ -320,3 +320,11 @@ retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unava
 - **`get_bars`**: 일봉(kr/us/crypto)과 1분봉(kr/us/crypto) 테이블만 읽는다. 5m·60m은 `unsupported` unknown이다(빈 성공이 아니다). kr/us 분봉 테이블은 provider 열이 없어 `source=null`+`unavailable`이고(crypto 분봉은 저장된 source를 낸다), KR 일봉은 조정 여부를 저장하지 않아 `adjusted=null`+`unavailable`이다. 한 행 안에서 소스를 섞지 않는다.
 - **`data_gaps`**: 새 probe 없이 기존 점검만 쓴다 — KRX 애프터마켓 적격 목록 신선도(`load_krx_after_market_health`), KIS reconcile 신선도(`compute_freshness` 90분 규칙), 시장별 음성 클래스 기록 건강(`load_negative_class_health`). fresh이면 행이 없고, 점검 자체가 실패하면 `unknowns`와 `total: null`이다.
 - **테스트**: `tests/services/retro_v1/`(가짜 세션 + 계약 응답 스키마 검증). DB 왕복은 CI 몫이며 로컬에서는 돌리지 않았다.
+
+### retro/v1 HTTP 라우트 (hk 3818)
+
+`/trading/api/retro/v1`은 기본 비활성(`RETRO_API_ENABLED=false`) 읽기 전용 HTTP 표면이다.
+DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 403,
+고정 헤더 `X-Retro-Read-Token` 누락·불일치 401, 허용된 8개 GET 외 403을 적용한다.
+세션 쿠키나 다른 머신 토큰은 대체하지 못한다. 각 라우트는 대응 reader 하나만 호출하며
+스케줄러·MCP 연결은 없다.

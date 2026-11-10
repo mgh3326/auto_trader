@@ -829,6 +829,9 @@ class Settings(BaseSettings):
     # gates the entire ``/trading/api/investment-reports/hermes/*`` family.
     # Required by the AuthMiddleware token branch; if unset, all four HTTP
     # endpoints respond ``403 "token not configured"`` regardless of body.
+    RETRO_API_ENABLED: bool = False
+    RETRO_API_READ_TOKEN: str = ""
+
     HERMES_INGEST_TOKEN: str = ""
     HERMES_INGEST_TOKEN_HEADER: str = "X-Hermes-Ingest-Token"
 

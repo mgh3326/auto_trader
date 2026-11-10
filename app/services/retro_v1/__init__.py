@@ -3,8 +3,8 @@
 One module per operation of ``contracts/retro/v1/openapi.yaml`` (except
 ``retro_scoreboard``, which is a separate reader). Each ``read_<operation>``
 takes an idle ``AsyncSession`` plus the contract's query parameters and returns
-the exact response body. No HTTP route, MCP tool or scheduler exists for them
-yet.
+the exact response body. The retro/v1 HTTP route calls them; no MCP tool or
+scheduler is connected.
 """
 
 from app.services.retro_v1.data_gaps import read_data_gaps
