@@ -82,6 +82,7 @@ LANE_JOBS: dict[str, frozenset[str]] = {
     "migrations": _NARROW_JOBS,
     "config": _NARROW_JOBS,
     "manifests": _NARROW_JOBS,
+    "retro_contract": _NARROW_JOBS,
 }
 
 #: Lanes where a path that selects no test means "we do not know what this
@@ -89,7 +90,7 @@ LANE_JOBS: dict[str, frozenset[str]] = {
 #: isolated from the runtime and its suites run in their own jobs. ``docs``,
 #: ``frontend`` and ``manifests`` select no test files by definition.
 _MUST_MAP_LANES: frozenset[str] = frozenset(
-    {"app", "tests", "scripts", "root_python", "migrations", "config"}
+    {"app", "tests", "scripts", "root_python", "migrations", "config", "retro_contract"}
 )
 
 #: A selection bigger than one shard (~500 files, 5-9 minutes) would not fit one
@@ -148,6 +149,7 @@ _EXACT_RULES: tuple[tuple[str, str], ...] = (
 _PREFIX_RULES: tuple[tuple[str, str], ...] = (
     (".github/", "ci_shared"),
     ("scripts/ci/", "ci_shared"),
+    ("contracts/retro/", "retro_contract"),
     ("docs/", "docs"),
     ("app/", "app"),
     ("tests/", "tests"),
@@ -415,6 +417,9 @@ def _is_collected_test_name(path: str) -> bool:
 
 
 def _tests_for_path(path: str, lane: str, universe: TestUniverse) -> set[str]:
+    if lane == "retro_contract":
+        test = "tests/contracts/test_retro_v1_contract.py"
+        return {test} if test in universe.files else set()
     if lane == "tests":
         if path in universe.files:
             return {path}

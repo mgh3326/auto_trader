@@ -1102,3 +1102,12 @@ def test_cli_is_red_when_base_and_head_share_no_history(
     code, report = _run_cli(repo, tmp_path, "--base-sha", base, "--head-sha", head)
     assert code == 1
     assert report["result"] == "error"
+
+
+def test_retro_contract_selects_contract_test_without_full_suite() -> None:
+    result = select_affected_tests(
+        classify_entries(_modified("contracts/retro/v1/openapi.yaml")),
+        TestUniverse.from_manifests(REPO_ROOT),
+    )
+    assert not result.run_all
+    assert result.affected_tests == ("tests/contracts/test_retro_v1_contract.py",)
