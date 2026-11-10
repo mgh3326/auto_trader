@@ -16,8 +16,8 @@ from app.services.retro_v1 import (
     read_retro_day,
     read_retro_funnel,
     read_retro_positions,
-    read_retro_trades,
     read_retro_symbol,
+    read_retro_trades,
 )
 from app.services.retro_v1.envelope import dec, read_snapshot
 from tests.services.retro_v1.support import FakeSession, kr_day_session, validate
