@@ -294,18 +294,32 @@ async def test_get_bars_explicit_crypto_shape_and_legacy_us_inference() -> None:
             to=CUTOFF,
         )
     assert "market" in err.value.safe_message.lower()
-    from app.services.retro_v1.market import select_market
-
-    assert select_market("BRK-B", "us").key == "us"
     us = FakeSession(
         {
             "FROM public.us_candles_1d": [
-                bar_row("BTC", datetime(2026, 1, 5, tzinfo=UTC), "5")
+                bar_row("BTC", datetime(2026, 1, 5, tzinfo=UTC), "5"),
+                bar_row("BAC.PL", datetime(2026, 1, 5, tzinfo=UTC), "40"),
             ]
         }
     )
     response = await read_get_bars(us, symbol="BTC", tf="1d", from_=CUTOFF, to=CUTOFF)
     assert response["data"][0]["market"] == "us"
+    preferred = await read_get_bars(
+        FakeSession(
+            {
+                "FROM public.us_candles_1d": [
+                    bar_row("BAC.PL", datetime(2026, 1, 5, tzinfo=UTC), "40")
+                ]
+            }
+        ),
+        symbol="BAC-PL",
+        market="us",
+        tf="1d",
+        from_=CUTOFF,
+        to=CUTOFF,
+    )
+    assert preferred["data"][0]["symbol"] == "BAC.PL"
+    assert preferred["data"][0]["market"] == "us"
 
 
 @pytest.mark.asyncio

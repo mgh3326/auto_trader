@@ -27,6 +27,7 @@ MARKETS: Final = {
 
 _CRYPTO_SYMBOL = re.compile(r"^[A-Z0-9]{2,10}-[A-Z0-9]{2,10}$")
 _KR_SYMBOL = re.compile(r"^[0-9A-Z]{6}$")
+_CRYPTO_QUOTE_PREFIXES: Final = frozenset({"KRW", "BTC", "USDT"})
 
 
 def resolve_market(value: str) -> MarketInfo:
@@ -65,7 +66,10 @@ def select_market(symbol: str, market: str | None) -> MarketInfo:
     ):
         raise RetroReadError("validation_error", message="Invalid market parameter.")
     if info.key == "us" and (
-        _CRYPTO_SYMBOL.fullmatch(text)
+        (
+            _CRYPTO_SYMBOL.fullmatch(text)
+            and text.split("-", maxsplit=1)[0] in _CRYPTO_QUOTE_PREFIXES
+        )
         or (_KR_SYMBOL.fullmatch(text) and any(c.isdigit() for c in text))
     ):
         raise RetroReadError("validation_error", message="Invalid market parameter.")

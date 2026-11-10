@@ -40,7 +40,7 @@ The gate executes the pinned consumer's actual contract assertions against a liv
 
 ### v1의 호환 확장: 시장 선택과 응답 출처
 
-`get_bars`와 `retro_symbol`은 선택적 `market=kr|us|crypto`를 받습니다. 생략하면 기존 심볼 추론을 유지합니다. 명시 시장에서 심볼 형식이 맞지 않으면 `market` 파라미터 오류로 거부합니다. `get_bars` 행의 `market`은 실제 읽은 시장을 나타내며, 명시값 또는 기존 추론에서 결정됩니다. `retro_positions` 행의 `market`은 레저 instrument type에서, `broker`는 브로커 코드에서 옵니다. 새 필드와 선택 파라미터는 기존 소비자 pin을 갱신하지 않는 additive v1 확장입니다.
+`get_bars`와 `retro_symbol`은 선택적 `market=kr|us|crypto`를 받습니다. 생략하면 기존 심볼 추론을 유지합니다. 명확히 호환되지 않는 심볼 형태는 `market` 파라미터 오류로 거부합니다. US에서는 `KRW-`, `BTC-`, `USDT-` crypto quote 형식을 거부하고, `BAC-PL` 같은 하이픈 US 심볼은 허용합니다. `get_bars` 행의 `market`은 실제 읽은 시장을 나타내며, 명시값 또는 기존 추론에서 결정됩니다. `retro_positions` 행의 `market`은 레저 instrument type에서, `broker`는 브로커 코드에서 옵니다. 새 필드와 선택 파라미터는 기존 소비자 pin을 갱신하지 않는 additive v1 확장입니다.
 
 When upgrading the pinned consumer version (e.g. updating factortrail to consume new additive retro fields):
 

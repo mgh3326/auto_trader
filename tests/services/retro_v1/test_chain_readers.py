@@ -179,7 +179,7 @@ async def test_retro_symbol_explicit_market_and_inference(monkeypatch) -> None:
     seen = []
 
     async def load(_session, _unknowns, info, **_kwargs):
-        seen.append(info.key)
+        seen.append((info.key, _kwargs["symbols"]))
         return ChainData()
 
     monkeypatch.setattr(module, "load_chain", load)
@@ -188,15 +188,19 @@ async def test_retro_symbol_explicit_market_and_inference(monkeypatch) -> None:
         explicit, symbol="KRW-BTC", market="crypto", from_=DAY, to=DAY
     )
     validate(response, "RetroSymbolResponse")
-    assert seen == ["crypto"]
+    assert seen == [("crypto", ["KRW-BTC"])]
     inferred = FakeSession()
     await read_retro_symbol(inferred, symbol="BTC", from_=DAY, to=DAY)
-    assert seen == ["crypto", "us"]
+    assert seen == [("crypto", ["KRW-BTC"]), ("us", ["BTC"])]
     with pytest.raises(RetroReadError) as err:
         await read_retro_symbol(
             FakeSession(), symbol="KRW-BTC", market="us", from_=DAY, to=DAY
         )
     assert "market" in err.value.safe_message.lower()
+    await read_retro_symbol(
+        FakeSession(), symbol="AGM-PA", market="us", from_=DAY, to=DAY
+    )
+    assert seen[-1] == ("us", ["AGM.PA"])
 
 
 @pytest.mark.asyncio
