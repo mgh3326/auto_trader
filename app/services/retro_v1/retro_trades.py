@@ -58,11 +58,15 @@ def filter_prose(value: str | None) -> tuple[str | None, bool]:
     if value is None:
         return None, False
     tokens = re.findall(r"[A-Za-z0-9_-]+", value.lower())
-    normalized = (re.sub(r"[_-]", "", token) for token in tokens)
+    normalized = [re.sub(r"[_-]", "", token) for token in tokens]
     if (
         re.search(r"\d{7,}", value)
         or re.search(r"\d{2,}[- ]\d{2,}[- ]\d{2,}", value)
-        or any(token in _FORBIDDEN for token in normalized)
+        or any(
+            "".join(normalized[i : i + width]) in _FORBIDDEN
+            for i in range(len(normalized))
+            for width in (1, 2, 3)
+        )
     ):
         return None, True
     return value.strip()[:1000], False

@@ -212,5 +212,10 @@ def test_filter_tokens_without_false_substrings():
         "raw_payload",
         "account-number",
         "order_no",
+        "broker order id a1b2c3d4-e5f6-4789-a012-3456789abcde",
+        "raw payload secret",
+        "order no ABC123XYZ",
+        "account number AB12CD34",
+        "stack trace details",
     ):
         assert filter_prose(text) == (None, True)
