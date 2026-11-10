@@ -908,11 +908,16 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 `scripts/account_value_snapshot.py`는 허용된 조회 메서드만 노출하는 broker view를
 사용하며 기본은 미리보기다. `--commit`은 서비스 레이어를 통해 계좌 전체와 각 시장의
 불변 일별 관측 또는 운영자 외부 흐름을 추가한다. 계좌·시장·날짜 중복은 기존 행을
-바꾸지 않는다. 보유 수량·가격 출처와 시각·통화별 현금·환율 출처와 시각·미측정 사유를
+바꾸지 않고 CLI는 `already_present`와 실제 저장된 행을 표시한다. 외부 흐름은 운영자가
+`--flow-id` UUID를 지정해 재시도 시 재사용한다. 같은 ID의 다른 내용은 거부하고,
+동일 금액의 별도 흐름은 다른 ID를 쓴다. 잘못된 흐름은 원래 날짜의 반대 금액과
+새 UUID로 상쇄한 뒤 필요한 정정 흐름을 별도 UUID로 추가한다. 보유 수량·가격 출처와 시각·통화별 현금·환율 출처와 시각·미측정 사유를
 보존한다. 새 writer·CLI는 주문 모듈을 직접 import하지 않지만 기존 KIS 읽기 클라이언트의
 전이 import에는 주문 전송 관련 모듈이 있다. 설정된 계좌 식별자와 자격증명으로 프로세스
-안에서 HMAC 지문을 만들며 원문은 저장·출력하지 않는다. 지문이 바뀌면 별개 시리즈이며
-`series_break`로 표시한다. 지문이 없으면 `account_identity_unknown`이다.
+안에서 HMAC 지문을 만들며 원문은 저장·출력하지 않는다. 지문이 바뀌면 별개 시리즈다.
+계좌 전체의 `series_break`는 보고 기간 안의 지문 변경만 표시한다. 이전 지문 변경으로
+원장의 물리 계좌 귀속이 불확실한 시장 행은 미측정이다(운영자 #408205). 지문이 없으면
+`account_identity_unknown`이다.
 
 `scripts/account_value_report.py`는 수동 기간 조회다. 계좌 행은 KRW 환산 보유 전체와
 현금을 Modified Dietz로 평가한다. 외부 입출금은 별도 기록하고 기간 전체 입력을

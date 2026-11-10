@@ -361,3 +361,123 @@ async def test_known_account_without_any_period_snapshot_is_unmeasured(monkeypat
     )
     assert row.return_rate is None
     assert "missing_snapshot_day" in row.reasons
+
+
+@pytest.mark.asyncio
+async def test_account_series_break_only_when_window_contains_multiple_identities(
+    monkeypatch,
+):
+    from datetime import date, timedelta
+    from types import SimpleNamespace
+
+    from app.services.account_value import load_report
+
+    start = date(2026, 1, 1)
+    old, new = "upbit:upbit:" + "a" * 64, "upbit:upbit:" + "b" * 64
+    snapshots = [
+        SimpleNamespace(
+            account=new,
+            market="account",
+            day=start + timedelta(days=i),
+            holdings=[],
+            cash={"KRW": "100"},
+            reasons=[],
+        )
+        for i in range(2)
+    ]
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.value
+
+    class Session:
+        def __init__(self):
+            self.values = iter([snapshots, [], [(old, "account"), (new, "account")]])
+
+        async def execute(self, query):
+            return Result(next(self.values))
+
+    async def no_sleeves(*args):
+        return []
+
+    async def benchmark(*args):
+        return None, None
+
+    monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
+    monkeypatch.setattr(load_report, "_benchmark", benchmark)
+    rows = await load_report.load_weekly_report(
+        Session(), start, start + timedelta(days=1), flows_complete=True
+    )
+    current = next(row for row in rows if row.account == new)
+    assert current.return_rate == 0
+    assert "series_break" not in current.reasons
+    previous = next(row for row in rows if row.account == old)
+    assert previous.return_rate is None
+    assert "missing_snapshot_day" in previous.reasons
+
+
+@pytest.mark.asyncio
+async def test_account_series_break_blocks_returns_even_if_old_series_has_endpoints(
+    monkeypatch,
+):
+    from datetime import date, timedelta
+    from types import SimpleNamespace
+
+    from app.services.account_value import load_report
+
+    start = date(2026, 1, 1)
+    old, new = "upbit:upbit:" + "a" * 64, "upbit:upbit:" + "b" * 64
+    snapshots = [
+        SimpleNamespace(
+            account=account,
+            market="account",
+            day=day,
+            holdings=[],
+            cash={"KRW": "100"},
+            reasons=[],
+        )
+        for account, day in [
+            (old, start),
+            (old, start + timedelta(days=1)),
+            (new, start + timedelta(days=1)),
+        ]
+    ]
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.value
+
+    class Session:
+        def __init__(self):
+            self.values = iter([snapshots, [], [(old, "account"), (new, "account")]])
+
+        async def execute(self, query):
+            return Result(next(self.values))
+
+    async def no_sleeves(*args):
+        return []
+
+    async def benchmark(*args):
+        return None, None
+
+    monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
+    monkeypatch.setattr(load_report, "_benchmark", benchmark)
+    rows = await load_report.load_weekly_report(
+        Session(), start, start + timedelta(days=1), flows_complete=True
+    )
+    prior = next(row for row in rows if row.account == old)
+    assert "series_break" in prior.reasons
+    assert prior.return_rate is None
+    assert prior.flows is None

@@ -2,9 +2,11 @@
 
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import BigInteger, Date, Numeric, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -39,6 +41,9 @@ class AccountExternalFlow(Base):
     __table_args__ = {"schema": "review"}
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    flow_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), unique=True, nullable=False
+    )
     account: Mapped[str] = mapped_column(Text, nullable=False)
     market: Mapped[str] = mapped_column(Text, nullable=False)
     currency: Mapped[str] = mapped_column(Text, nullable=False)

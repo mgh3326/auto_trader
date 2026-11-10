@@ -8,6 +8,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol
 
+from sqlalchemy import select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,12 +111,46 @@ async def capture(
     identities = [(row["account"], row["market"], row["day"]) for row in rows]
     if len(identities) != len(set(identities)):
         raise ValueError("duplicate snapshot identity")
-    if commit and rows:
-        statement = (
-            insert(AccountValueSnapshot)
-            .values(rows)
-            .on_conflict_do_nothing(index_elements=["account", "market", "day"])
+    if not commit or not rows:
+        return [{**row, "write_status": "preview"} for row in rows]
+
+    statement = (
+        insert(AccountValueSnapshot)
+        .values(rows)
+        .on_conflict_do_nothing(index_elements=["account", "market", "day"])
+        .returning(
+            AccountValueSnapshot.account,
+            AccountValueSnapshot.market,
+            AccountValueSnapshot.day,
         )
-        await session.execute(statement)
-        await session.commit()
-    return rows
+    )
+    inserted = {tuple(item) for item in (await session.execute(statement)).all()}
+    query = select(AccountValueSnapshot).where(
+        tuple_(
+            AccountValueSnapshot.account,
+            AccountValueSnapshot.market,
+            AccountValueSnapshot.day,
+        ).in_(identities)
+    )
+    stored = {
+        (item.account, item.market, item.day): item
+        for item in (await session.execute(query)).scalars().all()
+    }
+    if len(stored) != len(identities):
+        raise RuntimeError("snapshot readback incomplete")
+    await session.commit()
+    return [
+        {
+            "account": item.account,
+            "market": item.market,
+            "day": item.day,
+            "observed_at": item.observed_at,
+            "holdings": item.holdings,
+            "cash": item.cash,
+            "reasons": item.reasons,
+            "fx": item.fx,
+            "write_status": "inserted" if identity in inserted else "already_present",
+        }
+        for identity in identities
+        for item in (stored[identity],)
+    ]

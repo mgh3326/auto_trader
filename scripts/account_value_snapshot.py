@@ -7,6 +7,7 @@ import json
 import sys
 from datetime import date
 from decimal import Decimal
+from uuid import UUID
 
 from app.services.account_value.flows import ExternalFlow, record_flow
 from app.services.account_value.readers import CompleteBrokerReader
@@ -19,6 +20,7 @@ def parser():
     result.add_argument(
         "--flow", nargs=4, metavar=("ACCOUNT", "CURRENCY", "AMOUNT", "DATE")
     )
+    result.add_argument("--flow-id", type=UUID, help="재시도에 재사용할 흐름 UUID")
     result.add_argument(
         "--commit", action="store_true", help="미리보기가 아닌 실제 기록"
     )
@@ -36,13 +38,25 @@ async def run(args):
         if args.flow:
             account, currency, amount, day = args.flow
             market = "account"
+            if args.flow_id is None:
+                raise ValueError("--flow-id가 필요합니다")
             flow = ExternalFlow(
-                account, market, currency, Decimal(amount), date.fromisoformat(day)
+                account,
+                market,
+                currency,
+                Decimal(amount),
+                date.fromisoformat(day),
+                args.flow_id,
             )
-            await record_flow(session, flow, commit=args.commit)
+            status = await record_flow(session, flow, commit=args.commit)
             print(
                 json.dumps(
-                    {"mode": "commit" if args.commit else "preview", "flow": args.flow},
+                    {
+                        "mode": "commit" if args.commit else "preview",
+                        "flow": args.flow,
+                        "flow_id": str(args.flow_id),
+                        "write_status": status,
+                    },
                     ensure_ascii=False,
                 )
             )

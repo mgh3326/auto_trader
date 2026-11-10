@@ -170,7 +170,9 @@ async def load_weekly_report(session, start, end, *, flows_complete=False):
         identities = {
             candidate
             for candidate, candidate_market in known
-            if candidate_market == market and candidate.rsplit(":", 1)[0] == prefix
+            if candidate_market == market
+            and candidate.rsplit(":", 1)[0] == prefix
+            and (market != "account" or bool(groups[(candidate, candidate_market)]))
         }
         if len(identities) > 1 or account.endswith(":identity_unknown"):
             broken.add((account, market))
@@ -195,7 +197,10 @@ async def load_weekly_report(session, start, end, *, flows_complete=False):
             )
             if (account, market) in broken:
                 row = replace(
-                    row, reasons=tuple(sorted(set(row.reasons) | {"series_break"}))
+                    row,
+                    return_rate=None,
+                    flows=None,
+                    reasons=tuple(sorted(set(row.reasons) | {"series_break"})),
                 )
         else:
             ledger_fills = []

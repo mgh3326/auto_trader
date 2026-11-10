@@ -126,3 +126,26 @@ async def test_report_cli_builds_golden_from_fixture_snapshots(monkeypatch, caps
         "account | market | sleeve | start | end | flows | return | benchmark | excess | basis | fx | unmeasured\n"
         f"{account} | account | - | 100 | 100 | 0 | 0.00% | unknown | unknown | modified_dietz_account_krw | - | account_benchmark_unavailable\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_flow_preview_requires_stable_id_and_does_not_write(monkeypatch, capsys):
+    from uuid import uuid4
+
+    session = Session()
+    monkeypatch.setattr(
+        account_value_snapshot, "session_factory", lambda: SessionContext(session)
+    )
+    account = "upbit:upbit:" + "a" * 64
+    key = uuid4()
+    args = account_value_snapshot.parser().parse_args(
+        ["--flow", account, "KRW", "10", "2026-01-01", "--flow-id", str(key)]
+    )
+    await account_value_snapshot.run(args)
+    assert session.calls == session.commits == 0
+    assert '"write_status": "preview"' in capsys.readouterr().out
+    missing = account_value_snapshot.parser().parse_args(
+        ["--flow", account, "KRW", "10", "2026-01-01"]
+    )
+    with pytest.raises(ValueError, match="--flow-id"):
+        await account_value_snapshot.run(missing)
