@@ -132,6 +132,13 @@ class FakeSession:
                 if isinstance(value, BaseException):
                     raise value
                 rows = value(sql) if callable(value) else value
+                if (
+                    fragment == "FROM review.execution_ledger"
+                    and "quarantined_at IS NULL" in sql
+                ):
+                    rows = [
+                        r for r in rows if getattr(r, "quarantined_at", None) is None
+                    ]
                 return FakeResult(list(rows))
         return FakeResult([])
 
