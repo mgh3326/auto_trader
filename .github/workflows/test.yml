@@ -920,7 +920,7 @@ jobs:
 
     - name: Run retro consumer contract gate
       run: |
-        python3 scripts/ci/run_retro_consumer_gate.py
+        uv run python scripts/ci/run_retro_consumer_gate.py
 
   # ROB-1454: the verdict a PR merges on, with `lint`. A skip is fine only when
   # the classifier said the job was not needed (--pr-gate); on any other event the
