@@ -523,6 +523,7 @@ tests/test_us_action_report_account_snapshot.py
 tests/test_us_action_report_action_classifier.py
 tests/test_us_common_stock_classifier.py
 tests/test_us_fundamentals_builder_rob441.py
+tests/test_us_fundamentals_numeric_overflow_at3846.py
 tests/test_websocket_healthcheck.py
 tests/test_websocket_monitor.py
 tests/test_websocket_monitor_ledger_sink.py
