@@ -219,3 +219,10 @@ def test_filter_tokens_without_false_substrings():
         "stack trace details",
     ):
         assert filter_prose(text) == (None, True)
+
+
+def test_filter_allows_dates_and_short_number_groups():
+    for text in ("stopped out on 2026-01-05", "sold 10 20 30 shares"):
+        assert filter_prose(text) == (text, False)
+    for text in ("account 123-45-678901", "123 45 678", "2026-99-99"):
+        assert filter_prose(text) == (None, True)

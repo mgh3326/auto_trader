@@ -2,7 +2,7 @@
 
 import re
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -54,6 +54,20 @@ _FORBIDDEN = (
 )
 
 
+def _account_number_like(value: str) -> bool:
+    for match in re.finditer(r"(?<!\d)\d{2,}[- ]\d{2,}[- ]\d{2,}(?!\d)", value):
+        candidate = match.group()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+            try:
+                date.fromisoformat(candidate)
+                continue
+            except ValueError:
+                pass
+        if "-" in candidate or sum(char.isdigit() for char in candidate) >= 7:
+            return True
+    return False
+
+
 def filter_prose(value: str | None) -> tuple[str | None, bool]:
     if value is None:
         return None, False
@@ -61,7 +75,7 @@ def filter_prose(value: str | None) -> tuple[str | None, bool]:
     normalized = [re.sub(r"[_-]", "", token) for token in tokens]
     if (
         re.search(r"\d{7,}", value)
-        or re.search(r"\d{2,}[- ]\d{2,}[- ]\d{2,}", value)
+        or _account_number_like(value)
         or any(
             "".join(normalized[i : i + width]) in _FORBIDDEN
             for i in range(len(normalized))
