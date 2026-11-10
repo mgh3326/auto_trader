@@ -45,6 +45,10 @@ def test_flow_is_not_registered_via_deployment_yaml() -> None:
     for yf in yaml_files:
         if ".venv" in str(yf) or ".git" in str(yf):
             continue
+        # Dagu proposals (hk 3848) name the script module; they are not Prefect
+        # deployments and are registered only via docs/runbooks/dagu-batch1-cutover.md.
+        if yf.is_relative_to(project_root / "deploy" / "dagu"):
+            continue
         content = yf.read_text()
         if "invest_crypto_screener_snapshots" in content:
             pytest.fail(
