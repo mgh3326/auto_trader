@@ -1,7 +1,9 @@
 operation: retro_day
 request:
   path: /trading/api/retro/v1/retro_day
-  query: {}
+  query:
+    market: XSYN
+    date: '2026-01-02'
 status: 200
 response:
   as_of: '2026-01-03T00:00:00Z'
@@ -12,7 +14,13 @@ response:
   limit: 1
   cursor: null
   next_cursor: synthetic_cursor
-  unknowns: []
+  unknowns:
+  - field: data.0.event_at
+    reason: missing_data
+  - field: data.0.linked_ref
+    reason: missing_data
+  - field: data.0.reason
+    reason: missing_data
   data:
   - symbol: SYN001
     stage: candidate

@@ -8,8 +8,7 @@ paths:
   /trading/api/retro/v1/retro_day:
     get:
       operationId: retro_day
-      description: 'Maximum date span: 366 days inclusive. Count and rows share one
-        read-only snapshot. '
+      description: 'Count and rows share one read-only snapshot. '
       parameters:
       - name: market
         in: query
@@ -35,6 +34,9 @@ paths:
         required: false
         schema: &id001
           type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
       responses:
         '200':
           description: Read-only result
@@ -289,10 +291,9 @@ paths:
   /trading/api/retro/v1/retro_positions:
     get:
       operationId: retro_positions
-      description: 'Maximum date span: 366 days inclusive. Count and rows share one
-        read-only snapshot. '
+      description: 'Count and rows share one read-only snapshot. '
       parameters:
-      - name: as_of
+      - name: cutoff_date
         in: query
         required: true
         schema:
@@ -350,8 +351,7 @@ paths:
   /trading/api/retro/v1/mock_experiments:
     get:
       operationId: mock_experiments
-      description: 'Maximum date span: 366 days inclusive. Count and rows share one
-        read-only snapshot. '
+      description: 'Count and rows share one read-only snapshot. '
       parameters:
       - name: strategy_id
         in: query
@@ -492,8 +492,7 @@ paths:
   /trading/api/retro/v1/data_gaps:
     get:
       operationId: data_gaps
-      description: 'Maximum date span: 366 days inclusive. Count and rows share one
-        read-only snapshot. '
+      description: 'Count and rows share one read-only snapshot. '
       parameters:
       - name: limit
         in: query
@@ -584,6 +583,10 @@ components:
         reason:
           $ref: '#/components/schemas/UnknownReason'
     Envelope:
+      description: >-
+        A null total requires a total/count_unavailable unknown. Every null row
+        value requires a row reason or missing_reason, or an unknown entry with
+        its dotted data path. Never include raw exceptions or broker messages.
       type: object
       required:
       - as_of
@@ -620,11 +623,34 @@ components:
           type:
           - string
           - 'null'
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
         next_cursor: *id002
         unknowns:
           type: array
           items:
             $ref: '#/components/schemas/Unknown'
+      allOf:
+      - if:
+          properties:
+            total:
+              type: 'null'
+          required:
+          - total
+        then:
+          properties:
+            unknowns:
+              contains:
+                type: object
+                properties:
+                  field:
+                    const: total
+                  reason:
+                    const: count_unavailable
+                required:
+                - field
+                - reason
     Error:
       type: object
       additionalProperties: false
@@ -1052,3 +1078,10 @@ components:
       description: total counts matching gap records before pagination, or null with
         count_unavailable. Page length is never total.
       unevaluatedProperties: false
+  securitySchemes:
+    RetroReadToken:
+      type: apiKey
+      in: header
+      name: X-Retro-Read-Token
+security:
+- RetroReadToken: []

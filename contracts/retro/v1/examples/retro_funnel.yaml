@@ -15,7 +15,9 @@ response:
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns: []
+  unknowns:
+  - field: data.0.fill_rate
+    reason: missing_data
   data:
   - stage: fill
     cohort: synthetic

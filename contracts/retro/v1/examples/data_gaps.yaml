@@ -12,7 +12,9 @@ response:
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns: []
+  unknowns:
+  - field: data.0.last_updated_at
+    reason: missing_data
   data:
   - dataset: synthetic
     symbol: SYN001

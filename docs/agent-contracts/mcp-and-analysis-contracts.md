@@ -306,3 +306,5 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 ### Factortrail retro/v1 공급자 계약 (hk 3815)
 
 `contracts/retro/v1/openapi.yaml`은 Factortrail 소비자를 위한 auto_trader 소유 HTTP 계약의 정본이다. 현재 이 계약만 있으며 retro route나 MCP 도구는 아직 없다. 응답은 닫힌 projection이며 계좌번호, 브로커 주문번호, 원문 payload와 예외를 내보내지 않는다. 연결에는 불투명한 ref만 쓴다. 조회하지 못했거나 실패한 값과 count는 0으로 바꾸지 않고 null과 사유로 표시한다. 생성 시각과 데이터 cutoff를 분리하고 count는 페이지 길이가 아닌 각 작업의 전체 모집단을 뜻한다. 금액·수량·가격은 정확한 decimal 문자열이다. 계좌 수익률의 외부 흐름 완전성은 서버 측 사실이며 호출자가 선언하지 않는다. 공개 예제는 전부 합성이다.
+
+retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unavailable` 항목을 요구한다. 행의 null 값은 같은 행의 `reason`/`missing_reason` 또는 envelope `unknowns`의 해당 필드 경로로 사유를 표시한다. `as_of` 응답은 생성 시각이며 보유 조회 입력은 `cutoff_date`다.

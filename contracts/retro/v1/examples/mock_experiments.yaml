@@ -13,7 +13,9 @@ response:
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns: []
+  unknowns:
+  - field: data.0.episode_pnl_amount
+    reason: missing_data
   data:
   - strategy_id: SYN_STRATEGY
     experiment_ref: ref_synthetic_experiment

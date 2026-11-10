@@ -16,7 +16,9 @@ response:
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns: []
+  unknowns:
+  - field: data.0.missing_reason
+    reason: missing_data
   data:
   - symbol: SYN001
     time: '2026-01-02T00:00:00Z'

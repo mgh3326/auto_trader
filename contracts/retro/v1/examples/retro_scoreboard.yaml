@@ -14,7 +14,15 @@ response:
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns: []
+  unknowns:
+  - field: data.0.return_rate
+    reason: missing_data
+  - field: data.0.flow_amount
+    reason: missing_data
+  - field: data.0.benchmark.return_rate
+    reason: missing_data
+  - field: data.0.benchmark.source
+    reason: missing_data
   data:
   - scope: account
     subject_ref: ref_synthetic_account

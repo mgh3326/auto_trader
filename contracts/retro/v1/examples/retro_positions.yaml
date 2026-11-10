@@ -2,7 +2,7 @@ operation: retro_positions
 request:
   path: /trading/api/retro/v1/retro_positions
   query:
-    as_of: '2026-01-02'
+    cutoff_date: '2026-01-02'
 status: 200
 response:
   as_of: '2026-01-03T00:00:00Z'
@@ -13,7 +13,9 @@ response:
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns: []
+  unknowns:
+  - field: data.0.missing_reason
+    reason: missing_data
   data:
   - symbol: SYN001
     position_ref: ref_synthetic_position
