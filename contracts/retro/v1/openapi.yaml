@@ -85,6 +85,13 @@ paths:
         required: true
         schema:
           type: string
+      - name: market
+        in: query
+        required: false
+        description: Explicit market selection; when omitted, inferred from symbol.
+        schema:
+          type: string
+          enum: [kr, us, crypto]
       - name: from
         in: query
         required: true
@@ -418,6 +425,13 @@ paths:
         required: true
         schema:
           type: string
+      - name: market
+        in: query
+        required: false
+        description: Explicit market selection; when omitted, inferred from symbol.
+        schema:
+          type: string
+          enum: [kr, us, crypto]
       - name: tf
         in: query
         required: true
@@ -678,6 +692,7 @@ components:
           - Scope denied.
           - Feature unavailable.
           - Request invalid.
+          - Invalid market parameter.
           - Request timed out.
           - Upstream unavailable.
           - Schema mismatch.
@@ -832,7 +847,9 @@ components:
       additionalProperties: false
       required:
       - symbol
+      - market
       - position_ref
+      - broker
       - quantity
       - average_price
       - unrealized_amount
@@ -843,7 +860,15 @@ components:
       - missing_reason
       properties:
         symbol: *id001
+        market:
+          type: string
+          description: Market derived from the ledger instrument type.
+          enum: [kr, us, crypto]
         position_ref: *id001
+        broker:
+          description: Broker code, never an account identifier.
+          type: string
+          pattern: '^[a-z][a-z0-9_]{0,31}$'
         quantity:
           $ref: '#/components/schemas/DecimalValue'
         average_price:
@@ -913,6 +938,7 @@ components:
       additionalProperties: false
       required:
       - symbol
+      - market
       - time
       - open_price
       - high_price
@@ -928,6 +954,10 @@ components:
       - basis
       properties:
         symbol: *id001
+        market:
+          type: string
+          description: Market actually read, selected explicitly or inferred from symbol.
+          enum: [kr, us, crypto]
         time: *id004
         open_price:
           $ref: '#/components/schemas/DecimalValue'

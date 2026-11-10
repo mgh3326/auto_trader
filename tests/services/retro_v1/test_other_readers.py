@@ -37,6 +37,7 @@ async def test_retro_positions_matches_contract_and_excludes_phantoms() -> None:
     validate(response, "RetroPositionsResponse")
     assert response["total"] == 1
     row = response["data"][0]
+    assert (row["market"], row["broker"]) == ("kr", "kis")
     # quarantined phantom and websocket duplicate do not inflate the position
     assert (row["quantity"], row["average_price"]) == ("3", "70000")
     assert row["unrealized_amount"] == "3000"  # (71000 - 70000) * 3 at the cutoff close
@@ -47,6 +48,20 @@ async def test_retro_positions_matches_contract_and_excludes_phantoms() -> None:
     )
     assert "123456" not in json.dumps(response)
     assert any("quarantined_at IS NULL" in s for s in session.statements)
+
+
+@pytest.mark.asyncio
+async def test_retro_positions_distinguishes_same_symbol_by_broker() -> None:
+    rows = [ledger(3001, FILL_AT), ledger(3002, FILL_AT, broker="toss")]
+    response = await read_retro_positions(
+        FakeSession({"FROM review.execution_ledger": rows}), cutoff_date=CUTOFF
+    )
+    validate(response, "RetroPositionsResponse")
+    assert [(row["broker"], row["market"]) for row in response["data"]] == [
+        ("kis", "kr"),
+        ("toss", "kr"),
+    ]
+    assert "account" not in json.dumps(response).lower()
 
 
 @pytest.mark.asyncio
@@ -197,6 +212,7 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
         "NASD",
         None,
     )
+    assert row["market"] == "us"
     crypto = FakeSession(
         {
             "FROM public.crypto_candles_1m": [
@@ -211,7 +227,7 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
         }
     )
     response = await read_get_bars(
-        crypto, symbol="KRW-BTC", tf="1m", from_=CUTOFF, to=CUTOFF
+        crypto, symbol="KRW-BTC", market="crypto", tf="1m", from_=CUTOFF, to=CUTOFF
     )
     validate(response, "GetBarsResponse")
     row = response["data"][0]
@@ -221,6 +237,7 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
         "upbit_ws",
         None,
     )
+    assert row["market"] == "crypto"
     assert "c.source" in crypto.statements[-1] or "source" in crypto.statements[-1]
     kr_minute = FakeSession(
         {
@@ -241,6 +258,41 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
     # kr/us minute tables carry no provider column
     assert response["data"][0]["source"] is None
     assert response["data"][0]["missing_reason"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_get_bars_explicit_crypto_shape_and_legacy_us_inference() -> None:
+    crypto = FakeSession(
+        {
+            "FROM public.crypto_candles_1d": [
+                bar_row("KRW-BTC", datetime(2026, 1, 5, tzinfo=UTC), "95000000")
+            ]
+        }
+    )
+    response = await read_get_bars(
+        crypto, symbol="KRW-BTC", market="crypto", tf="1d", from_=CUTOFF, to=CUTOFF
+    )
+    assert response["data"][0]["market"] == "crypto"
+    assert "public.crypto_candles_1d" in crypto.statements[-1]
+    with pytest.raises(RetroReadError) as err:
+        await read_get_bars(
+            FakeSession(),
+            symbol="BTC",
+            market="crypto",
+            tf="1d",
+            from_=CUTOFF,
+            to=CUTOFF,
+        )
+    assert "market" in err.value.safe_message.lower()
+    us = FakeSession(
+        {
+            "FROM public.us_candles_1d": [
+                bar_row("BTC", datetime(2026, 1, 5, tzinfo=UTC), "5")
+            ]
+        }
+    )
+    response = await read_get_bars(us, symbol="BTC", tf="1d", from_=CUTOFF, to=CUTOFF)
+    assert response["data"][0]["market"] == "us"
 
 
 @pytest.mark.asyncio

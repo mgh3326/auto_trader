@@ -21,7 +21,7 @@ The gate executes the pinned consumer's actual contract assertions against a liv
 ## 2. Gate Architecture and Tooling
 
 - **Consumer lock file**: `contracts/retro/v1/consumers.lock` pins the consumer repository, commit SHA, Go toolchain version, and tested package paths.
-- **Verification harness**: `tools/retro-consumer-check/main.go` runs all 8 retro operations (`retro_day`, `retro_candidates`, `retro_proposals`, `retro_orders`, `retro_fills`, `retro_markouts`, `retro_positions`, `retro_funnel`) using the pinned consumer client, validating:
+- **Verification harness**: `tools/retro-consumer-check/main.go` runs all 8 retro operations (`retro_day`, `retro_symbol`, `retro_funnel`, `retro_scoreboard`, `retro_positions`, `mock_experiments`, `get_bars`, `data_gaps`) using the pinned consumer client, validating:
   - Exact envelope structure and pagination semantics.
   - Required field presence and non-zero counts.
   - Precision discipline (financial quantities, prices, amounts encoded as exact decimal strings; integer counts).
@@ -37,6 +37,10 @@ The gate executes the pinned consumer's actual contract assertions against a liv
 ---
 
 ## 3. Consumer Pin Update Procedure
+
+### v1의 호환 확장: 시장 선택과 응답 출처
+
+`get_bars`와 `retro_symbol`은 선택적 `market=kr|us|crypto`를 받습니다. 생략하면 기존 심볼 추론을 유지합니다. 명시 시장에서 심볼 형식이 맞지 않으면 `market` 파라미터 오류로 거부합니다. `get_bars` 행의 `market`은 실제 읽은 시장을 나타내며, 명시값 또는 기존 추론에서 결정됩니다. `retro_positions` 행의 `market`은 레저 instrument type에서, `broker`는 브로커 코드에서 옵니다. 새 필드와 선택 파라미터는 기존 소비자 pin을 갱신하지 않는 additive v1 확장입니다.
 
 When upgrading the pinned consumer version (e.g. updating factortrail to consume new additive retro fields):
 
