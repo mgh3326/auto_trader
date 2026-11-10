@@ -29,6 +29,7 @@ from scripts.ci.aggregate_required import (
     AFFECTED_JOB,
     CLASSIFIER_JOB,
     FULL_SUITE_ONLY_JOBS,
+    RETRO_CONSUMER_GATE_JOB,
 )
 from tests.ci import gh_expr
 
@@ -69,6 +70,7 @@ PR_JOBS = frozenset(
         AFFECTED_JOB,
         *FULL_SUITE_ONLY_JOBS,
         "frontend",
+        "retro-consumer-gate",
         VERDICT_JOB_ID,
         GATE_JOB_ID,
     }
@@ -273,7 +275,13 @@ def test_verdict_needs_every_job_that_decides_the_verdict(
     workflow: dict[str, Any],
 ) -> None:
     needs = set(workflow["jobs"][VERDICT_JOB_ID]["needs"])
-    assert needs == {"lint", CLASSIFIER_JOB, AFFECTED_JOB, *FULL_SUITE_ONLY_JOBS}
+    assert needs == {
+        "lint",
+        CLASSIFIER_JOB,
+        AFFECTED_JOB,
+        *FULL_SUITE_ONLY_JOBS,
+        RETRO_CONSUMER_GATE_JOB,
+    }
 
 
 def test_gate_needs_only_the_verdict(workflow: dict[str, Any]) -> None:

@@ -57,6 +57,7 @@ PASSING_RESULTS: frozenset[str] = frozenset({"success"})
 #: Job ids in ``.github/workflows/test.yml`` that the PR gate reasons about.
 CLASSIFIER_JOB = "change-classifier"
 AFFECTED_JOB = "affected-tests"
+RETRO_CONSUMER_GATE_JOB = "retro-consumer-gate"
 FULL_SUITE_ONLY_JOBS: tuple[str, ...] = ("test", "taskiq-smoke")
 
 #: Results we recognise but treat as red unless authorized.
@@ -291,9 +292,12 @@ def pr_gate_authorized_skips(
         )
     if _classifier_flag(outputs, "run_all"):
         return (AFFECTED_JOB,)
-    if _classifier_flag(outputs, "run_affected_tests"):
-        return FULL_SUITE_ONLY_JOBS
-    return (*FULL_SUITE_ONLY_JOBS, AFFECTED_JOB)
+    skips: list[str] = list(FULL_SUITE_ONLY_JOBS)
+    if not _classifier_flag(outputs, "run_affected_tests"):
+        skips.append(AFFECTED_JOB)
+    if not _classifier_flag(outputs, "run_retro_consumer_gate"):
+        skips.append(RETRO_CONSUMER_GATE_JOB)
+    return tuple(skips)
 
 
 def load_results(args: argparse.Namespace) -> Mapping[str, object]:

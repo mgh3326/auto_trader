@@ -1111,3 +1111,39 @@ def test_retro_contract_selects_contract_test_without_full_suite() -> None:
     )
     assert not result.run_all
     assert result.affected_tests == ("tests/contracts/test_retro_v1_contract.py",)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "contracts/retro/v1/openapi.yaml",
+        "contracts/retro/v1/consumers.lock",
+        "app/routers/retro_v1.py",
+        "app/services/retro_v1/service.py",
+        "app/services/account_value/retro_scoreboard.py",
+        "app/middleware/auth.py",
+        "tools/retro-consumer-check/main.go",
+    ],
+)
+def test_retro_paths_trigger_run_retro_consumer_gate(path: str) -> None:
+    classification = classify_entries(_modified(path))
+    assert classification.run_retro_consumer_gate is True
+    outputs = build_outputs(classification)
+    assert outputs["run_retro_consumer_gate"] == "true"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/runbooks/something.md",
+        "app/services/halt_detection.py",
+        "tests/test_symbol_conversion.py",
+        "scripts/policy_table/adapters/kr.py",
+        "frontend/invest/src/desktop/screener/x.tsx",
+    ],
+)
+def test_unrelated_paths_do_not_trigger_run_retro_consumer_gate(path: str) -> None:
+    classification = classify_entries(_modified(path))
+    assert classification.run_retro_consumer_gate is False
+    outputs = build_outputs(classification)
+    assert outputs["run_retro_consumer_gate"] == "false"

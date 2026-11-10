@@ -379,13 +379,21 @@ def test_a_malformed_declaration_is_rejected_before_the_payload_is_read(
 # ROB-1454 — PR gate truth table, through the CLI the workflow runs
 # --------------------------------------------------------------------------
 
-GATE_CHILDREN = ("lint", "change-classifier", "affected-tests", "test", "taskiq-smoke")
+GATE_CHILDREN = (
+    "lint",
+    "change-classifier",
+    "affected-tests",
+    "test",
+    "taskiq-smoke",
+    "retro-consumer-gate",
+)
 
 
 def _gate_payload(
     *,
     run_all: object,
     run_affected_tests: object = "false",
+    run_retro_consumer_gate: object = "false",
     **overrides: str,
 ) -> dict[str, object]:
     results = dict.fromkeys(GATE_CHILDREN, "success") | {
@@ -394,9 +402,14 @@ def _gate_payload(
     payload: dict[str, object] = {
         name: {"result": result, "outputs": {}} for name, result in results.items()
     }
+    outputs = {"run_all": run_all}
+    if run_affected_tests is not None:
+        outputs["run_affected_tests"] = run_affected_tests
+    if run_retro_consumer_gate is not None:
+        outputs["run_retro_consumer_gate"] = run_retro_consumer_gate
     payload["change-classifier"] = {
         "result": results["change-classifier"],
-        "outputs": {"run_all": run_all, "run_affected_tests": run_affected_tests},
+        "outputs": outputs,
     }
     return payload
 
@@ -412,7 +425,11 @@ def _run_gate(
     return main(argv)
 
 
-SKIPPED_SHARDS = {"test": "skipped", "taskiq_smoke": "skipped"}
+SKIPPED_SHARDS = {
+    "test": "skipped",
+    "taskiq_smoke": "skipped",
+    "retro_consumer_gate": "skipped",
+}
 
 
 @pytest.mark.parametrize(
@@ -524,6 +541,42 @@ SKIPPED_SHARDS = {"test": "skipped", "taskiq_smoke": "skipped"}
             ),
             1,
         ),
+        (
+            "retro changed, gate ran green, shards skipped",
+            _gate_payload(
+                run_all="false",
+                run_affected_tests="true",
+                run_retro_consumer_gate="true",
+                retro_consumer_gate="success",
+                test="skipped",
+                taskiq_smoke="skipped",
+            ),
+            0,
+        ),
+        (
+            "retro changed, gate skipped unauthorized",
+            _gate_payload(
+                run_all="false",
+                run_affected_tests="true",
+                run_retro_consumer_gate="true",
+                retro_consumer_gate="skipped",
+                test="skipped",
+                taskiq_smoke="skipped",
+            ),
+            1,
+        ),
+        (
+            "retro not changed, gate skipped authorized",
+            _gate_payload(
+                run_all="false",
+                run_affected_tests="true",
+                run_retro_consumer_gate="false",
+                retro_consumer_gate="skipped",
+                test="skipped",
+                taskiq_smoke="skipped",
+            ),
+            0,
+        ),
     ],
     ids=lambda value: value if isinstance(value, str) else "",
 )
@@ -579,6 +632,23 @@ def test_authorized_skips_never_include_lint_or_the_classifier() -> None:
 def test_a_malformed_classifier_payload_raises_rather_than_authorizing() -> None:
     with pytest.raises(AggregateError, match="no outputs"):
         pr_gate_authorized_skips("pull_request", {"change-classifier": "success"})
+
+
+def test_retro_consumer_gate_skip_authorization() -> None:
+    # When run_retro_consumer_gate is "false", retro-consumer-gate is authorized to be skipped
+    payload_false = _gate_payload(run_all="false", run_retro_consumer_gate="false")
+    skips_false = pr_gate_authorized_skips("pull_request", payload_false)
+    assert "retro-consumer-gate" in skips_false
+
+    # When run_retro_consumer_gate is "true", retro-consumer-gate is NOT authorized to be skipped
+    payload_true = _gate_payload(run_all="false", run_retro_consumer_gate="true")
+    skips_true = pr_gate_authorized_skips("pull_request", payload_true)
+    assert "retro-consumer-gate" not in skips_true
+
+    # When run_all is "true", retro-consumer-gate is NOT authorized to be skipped
+    payload_all = _gate_payload(run_all="true", run_retro_consumer_gate="false")
+    skips_all = pr_gate_authorized_skips("pull_request", payload_all)
+    assert "retro-consumer-gate" not in skips_all
 
 
 # --------------------------------------------------------------------------
