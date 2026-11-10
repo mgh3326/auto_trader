@@ -1,0 +1,297 @@
+"""Shared fixtures for the retro/v1 reader tests: fake session + contract validator."""
+
+from __future__ import annotations
+
+import importlib.util
+from collections.abc import Callable
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import jsonschema
+from referencing import Registry, Resource
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import OperationalError
+
+from app.models.execution_ledger import ExecutionLedger
+from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.models.review import TradeForecast
+from app.models.screener_pick_log import ScreenerPickLog
+
+_CONTRACT_TEST = (
+    Path(__file__).resolve().parents[2] / "contracts" / "test_retro_v1_contract.py"
+)
+_spec = importlib.util.spec_from_file_location(
+    "retro_v1_contract_loader", _CONTRACT_TEST
+)
+assert _spec and _spec.loader
+_loader = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_loader)
+
+SPEC = _loader.document()
+_REGISTRY = Registry().with_resource(
+    "urn:retro",
+    Resource.from_contents(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", **SPEC}
+    ),
+)
+
+
+def validate(response: dict[str, Any], schema_name: str) -> None:
+    """Validate a reader response against the contract's response schema.
+
+    The same checks the contract test applies to its examples: schema validation
+    with date-time format checking, plus "every null row value is explained by a
+    row reason or by an unknown entry with its dotted path".
+    """
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": f"#/components/schemas/{schema_name}"},
+        registry=_REGISTRY,
+        _resolver=_REGISTRY.resolver("urn:retro"),
+        format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER,
+    )
+    validator.validate(response)
+    unknowns = {item["field"] for item in response["unknowns"]}
+    for index, row in enumerate(response["data"]):
+        for path in _loader.null_paths(row, f"data.{index}"):
+            assert row.get("reason") or row.get("missing_reason") or path in unknowns, (
+                path
+            )
+
+
+class FakeResult:
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> FakeResult:
+        return self
+
+    def mappings(self) -> FakeResult:
+        return self
+
+    def all(self) -> list[Any]:
+        return list(self._rows)
+
+    def one(self) -> Any:
+        return self._rows[0]
+
+    def first(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+    def scalar_one_or_none(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+
+def operational_error() -> OperationalError:
+    return OperationalError("SELECT 1", {}, Exception("raw driver text must not leak"))
+
+
+class FakeSession:
+    """Routes each SELECT by the table it reads; records every statement.
+
+    ``routes`` maps a ``FROM <table>`` fragment to rows, a callable
+    ``(sql) -> rows`` or an exception instance to raise. Unrouted statements
+    (``SET TRANSACTION``, ``set_config``) return nothing.
+    """
+
+    def __init__(self, routes: dict[str, Any] | None = None) -> None:
+        self.routes = routes or {}
+        self.statements: list[str] = []
+        self._in_tx = False
+        self.begun = 0
+        self.nested = 0
+
+    def in_transaction(self) -> bool:
+        return self._in_tx
+
+    @asynccontextmanager
+    async def begin(self):
+        self._in_tx = True
+        self.begun += 1
+        try:
+            yield
+        finally:
+            self._in_tx = False
+
+    @asynccontextmanager
+    async def begin_nested(self):
+        self.nested += 1
+        yield
+
+    async def execute(self, statement: Any, params: Any = None) -> FakeResult:
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        self.statements.append(sql)
+        for fragment, value in self.routes.items():
+            if fragment in sql:
+                if isinstance(value, BaseException):
+                    raise value
+                rows = value(sql) if callable(value) else value
+                return FakeResult(list(rows))
+        return FakeResult([])
+
+
+UTC_NOW = datetime(2026, 1, 20, 3, 0, tzinfo=UTC)
+
+
+def pick(id_: int, symbol: str, at: datetime, **kw: Any) -> ScreenerPickLog:
+    values: dict[str, Any] = {
+        "id": id_,
+        "symbol": symbol,
+        "recorded_at": at,
+        "market": "kr",
+        "admission": "admitted",
+        "admission_reason": "round_robin",
+        "decision_price_text": "70000",
+    }
+    values.update(kw)
+    return ScreenerPickLog(**values)
+
+
+def forecast(id_: int, symbol: str, at: datetime, **kw: Any) -> TradeForecast:
+    values: dict[str, Any] = {
+        "id": id_,
+        "symbol": symbol,
+        "created_at": at,
+        "decision_bucket": "deferred_no_action",
+    }
+    values.update(kw)
+    return TradeForecast(**values)
+
+
+def proposal(id_: int, symbol: str, at: datetime, **kw: Any) -> OrderProposal:
+    values: dict[str, Any] = {
+        "id": id_,
+        "symbol": symbol,
+        "created_at": at,
+        "lifecycle_state": "filled",
+        "void_reason": None,
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+    }
+    values.update(kw)
+    return OrderProposal(**values)
+
+
+def rung(id_: int, proposal_pk: int, **kw: Any) -> OrderProposalRung:
+    values: dict[str, Any] = {
+        "id": id_,
+        "proposal_pk": proposal_pk,
+        "rung_index": 0,
+        "side": "buy",
+        "quantity": Decimal("3"),
+        "limit_price": Decimal("70000"),
+        "state": "filled",
+        "broker_order_id": "0000123456",
+        "idempotency_key": f"idem-{id_}",
+        "created_at": datetime(2026, 1, 5, 1, 5, tzinfo=UTC),
+        "validated_at": datetime(2026, 1, 5, 1, 10, tzinfo=UTC),
+        "void_reason": None,
+        "void_reason_group": None,
+    }
+    values.update(kw)
+    return OrderProposalRung(**values)
+
+
+def ledger(id_: int, at: datetime, **kw: Any) -> ExecutionLedger:
+    values: dict[str, Any] = {
+        "id": id_,
+        "broker": "kis",
+        "account_mode": "live",
+        "venue": "krx",
+        "instrument_type": "equity_kr",
+        "symbol": "005930",
+        "raw_symbol": "005930",
+        "side": "buy",
+        "broker_order_id": "0000123456",
+        "fill_seq": 0,
+        "filled_qty": Decimal("3"),
+        "filled_price": Decimal("70000"),
+        "filled_notional": Decimal("210000"),
+        "filled_at": at,
+        "currency": "KRW",
+        "source": "reconciler",
+        "quarantined_at": None,
+    }
+    values.update(kw)
+    return ExecutionLedger(**values)
+
+
+def bar_row(symbol: str, at: datetime, close: str, **kw: Any) -> dict[str, Any]:
+    row = {
+        "time": at,
+        "symbol": symbol,
+        "venue": "KRX",
+        "open": Decimal(close),
+        "high": Decimal(close),
+        "low": Decimal(close),
+        "close": Decimal(close),
+        "volume": Decimal("1000"),
+        "source": "kis",
+    }
+    row.update(kw)
+    return row
+
+
+def ns(**kw: Any) -> SimpleNamespace:
+    return SimpleNamespace(**kw)
+
+
+Route = Callable[[str], list[Any]]
+
+
+FILL_AT = datetime(2026, 1, 5, 2, 0, tzinfo=UTC)  # 11:00 KST on 2026-01-05
+
+
+def kr_day_session(**extra_routes: Any) -> FakeSession:
+    """One KR trading day, 005930: pick, rejected forecast, proposal → rung →
+    order → fill, a superseded websocket duplicate and a quarantined phantom."""
+    fills = [
+        ledger(1000, FILL_AT),
+        # websocket duplicate of the reconciled order (ROB-1379): superseded.
+        ledger(
+            1001,
+            FILL_AT.replace(second=1),
+            source="websocket",
+            fill_seq=7,
+            venue="krx",
+        ),
+        # quarantined accept-notice phantom (#1175): not a fill.
+        ledger(
+            1002,
+            FILL_AT.replace(minute=5),
+            source="websocket",
+            broker_order_id="0000999999",
+            quarantined_at=FILL_AT,
+        ),
+    ]
+    bars = [
+        bar_row("005930", datetime(2026, 1, 5, 0, 0, tzinfo=UTC), "71000"),
+        *[
+            bar_row(
+                "005930",
+                datetime(2026, 1, 6, tzinfo=UTC) + timedelta(days=i),
+                str(72000 + i),
+            )
+            for i in range(25)
+        ],
+    ]
+    routes: dict[str, Any] = {
+        "FROM review.screener_pick_log": [
+            pick(1, "005930", datetime(2026, 1, 5, 0, 30, tzinfo=UTC))
+        ],
+        "FROM review.trade_forecasts": [
+            forecast(2, "000660", datetime(2026, 1, 5, 0, 40, tzinfo=UTC))
+        ],
+        "FROM review.order_proposals ": [
+            proposal(10, "005930", datetime(2026, 1, 5, 1, 0, tzinfo=UTC))
+        ],
+        "FROM review.order_proposal_rungs": [rung(100, 10)],
+        "FROM review.order_send_intents": [("idem-100", FILL_AT - timedelta(hours=1))],
+        "FROM review.execution_ledger": fills,
+        "FROM public.kr_candles_1d": bars,
+    }
+    routes.update(extra_routes)
+    return FakeSession(routes)
