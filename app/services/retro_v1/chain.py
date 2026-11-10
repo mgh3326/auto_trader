@@ -97,6 +97,9 @@ def _in_effect(rows: list[Any]) -> list[Any]:
     return [r for r in rows if getattr(r, "quarantined_at", None) is None]
 
 
+#: Keys are unique only within an ``account_scope`` (kis_mock and others share
+#: the table); a live order's send evidence is its ``kis_live`` reservation only.
+KIS_LIVE_SEND_SCOPE: Final = "kis_live"
 _SEED_ORDER_ID_PREFIX: Final = "SEED-"
 _BROKER_BY_ACCOUNT_MODE: Final = {
     "kis_live": "kis",
@@ -288,11 +291,16 @@ async def load_chain(
             )
             data.rungs = rungs
             track("rungs", rungs, rung_ok, MAX_SOURCE_ROWS * 4)
+            kis_proposals = {
+                p.id for p in proposals if p.account_mode == KIS_LIVE_SEND_SCOPE
+            }
             keys = sorted(
                 {
                     r.idempotency_key
                     for r in rungs
-                    if r.idempotency_key and r.broker_order_id
+                    if r.idempotency_key
+                    and r.broker_order_id
+                    and r.proposal_pk in kis_proposals
                 }
             )
             if rung_ok and keys:
@@ -300,7 +308,10 @@ async def load_chain(
                 async def read_send_intents() -> list[Any]:
                     stmt = select(
                         OrderSendIntent.idempotency_key, OrderSendIntent.created_at
-                    ).where(OrderSendIntent.idempotency_key.in_(keys))
+                    ).where(
+                        OrderSendIntent.account_scope == KIS_LIVE_SEND_SCOPE,
+                        OrderSendIntent.idempotency_key.in_(keys),
+                    )
                     return list((await session.execute(stmt)).all())
 
                 intents, intent_ok = await guarded(

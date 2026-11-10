@@ -16,6 +16,7 @@ from app.services.retro_v1 import (
 )
 from app.services.retro_v1.envelope import make_ref
 from tests.services.retro_v1.support import (
+    FILL_AT,
     FakeSession,
     kr_day_session,
     operational_error,
@@ -443,3 +444,22 @@ async def test_kis_order_without_send_evidence_has_unknown_identity_and_fill_cou
     by_stage = {r["stage"]: r for r in funnel["data"]}
     assert by_stage["order"]["count"] == 1
     assert by_stage["fill"]["count"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_evidence_is_read_from_the_kis_live_scope_only() -> None:
+    session = kr_day_session()
+    await read_retro_day(session, market="kr", date=DAY)
+    reads = [s for s in session.statements if "FROM review.order_send_intents" in s]
+    assert len(reads) == 1
+    assert "account_scope =" in reads[0]
+    # a same-key kis_mock row is outside the query, so it neither makes the live
+    # key ambiguous nor stands in for a missing live reservation
+    live_only = [("idem-100", FILL_AT - timedelta(hours=1))]
+    response = await read_retro_day(
+        kr_day_session(**{"FROM review.order_send_intents": live_only}),
+        market="kr",
+        date=DAY,
+    )
+    fill = next(r for r in response["data"] if r["stage"] == "fill")
+    assert fill["linked_ref"] == make_ref("order", 100)
