@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import today_kst
 from app.schemas.market_events import IngestionRunResult
 from app.services.market_events.finnhub_helpers import fetch_earnings_calendar_finnhub
 from app.services.market_events.forexfactory_helpers import ForexFactoryFetchError
@@ -31,10 +32,23 @@ from app.services.market_events.session_calendar import trading_session_status
 logger = logging.getLogger(__name__)
 
 
-def _require_legitimate_dart_zero(target_date: date, event_count: int) -> None:
-    """Reject an empty DART result unless XKRX confirms the date was closed."""
+def _require_legitimate_dart_zero(
+    target_date: date,
+    event_count: int,
+    *,
+    may_be_pending: bool = False,
+) -> bool:
+    """Reject an empty DART result unless the day is legitimately empty or unfiled.
+
+    Returns ``True`` when the zero result is *pending*: the caller said the day is
+    not complete yet (``may_be_pending``) and XKRX confirms it is a trading
+    session, so DART simply has not published the list. The caller must not record
+    the partition as complete. Returns ``False`` when the result is usable (rows
+    present, or XKRX confirms a non-session). Every other zero raises, including
+    the unknown-calendar branch, which ``may_be_pending`` never relaxes.
+    """
     if event_count > 0:
-        return
+        return False
 
     session_status = trading_session_status("kr", target_date)
     if session_status == "closed":
@@ -42,8 +56,15 @@ def _require_legitimate_dart_zero(target_date: date, event_count: int) -> None:
             "DART returned zero filings on confirmed XKRX non-session %s",
             target_date,
         )
-        return
+        return False
     if session_status == "open":
+        if may_be_pending:
+            logger.info(
+                "DART returned zero filings for %s, which is not complete yet in "
+                "KST; leaving the partition pending for a later run",
+                target_date,
+            )
+            return True
         raise RuntimeError(
             f"DART returned zero filings on confirmed XKRX trading session "
             f"{target_date}"
@@ -268,12 +289,20 @@ async def ingest_kr_disclosures_for_date(
     db: AsyncSession,
     target_date: date,
     fetch_rows: Callable[[date], Awaitable[list[dict[str, Any]]]] | None = None,
+    *,
+    today: date | None = None,
 ) -> IngestionRunResult:
     """Ingest KR DART disclosures for one day.
 
     `fetch_rows` is an optional injection point: an async callable taking a date and
     returning a list of dart-row dicts. Default uses
     `app.services.market_events.dart_helpers.fetch_dart_filings_for_date`.
+
+    `today` (default: today in Asia/Seoul) injects the clock. A date on or after
+    `today` is not complete yet: DART publishes the day's list during the day, so
+    a zero-row fetch on an XKRX trading session returns status ``pending`` and
+    leaves the partition ``pending`` (never ``succeeded``) so a later run fetches
+    it again. Dates before `today` keep the fail-closed zero-filings guard.
     """
     if fetch_rows is None:
         from app.services.market_events.dart_helpers import (
@@ -306,7 +335,19 @@ async def ingest_kr_disclosures_for_date(
             await repo.upsert_event_with_values(event_dict, value_dicts)
             upserted += 1
 
-        _require_legitimate_dart_zero(target_date, upserted)
+        day_incomplete = not rows and target_date >= (today or today_kst())
+        if _require_legitimate_dart_zero(
+            target_date, upserted, may_be_pending=day_incomplete
+        ):
+            await repo.mark_partition_pending(partition)
+            return IngestionRunResult(
+                source=source,
+                category=partition_category,
+                market=market,
+                partition_date=target_date,
+                status="pending",
+                event_count=0,
+            )
         await repo.mark_partition_succeeded(partition, event_count=upserted)
         return IngestionRunResult(
             source=source,

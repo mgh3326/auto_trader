@@ -11,6 +11,7 @@ import logging
 from datetime import date
 from typing import Any
 
+from app.core.timezone import today_kst
 from app.services.disclosures.dart import _get_client
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,14 @@ async def fetch_dart_filings_for_date(
     Backfill-style callers pass ``use_cache=False`` so every attempt is a
     real network call: a cached error page would otherwise be re-served to
     every retry of the same date.
+
+    A date on or after today (Asia/Seoul) never uses the cache, whatever
+    ``use_cache`` says. OpenDartReader writes each scraped page to
+    ``docs_cache/<url>`` once and serves it forever, so an early "no filings
+    found" page for a day DART has not finished publishing would hide the later
+    filings from every subsequent run.
     """
+    use_cache = use_cache and target_date < today_kst()
     client = await _get_client()
     if client is None:
         logger.warning("DART client unavailable; skipping fetch for %s", target_date)
