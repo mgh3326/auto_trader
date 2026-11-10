@@ -231,6 +231,7 @@ async def run_ingest(
 
     succeeded = 0
     failed = 0
+    pending = 0
     for d in iter_partition_dates(from_date, to_date):
         if dry_run:
             logger.info(
@@ -258,6 +259,15 @@ async def run_ingest(
                 market,
                 d,
             )
+        elif result.status == "pending":
+            pending += 1
+            logger.info(
+                "partition pending (day not complete yet) for %s/%s/%s on %s",
+                source,
+                category,
+                market,
+                d,
+            )
         else:
             failed += 1
             logger.error(
@@ -277,6 +287,7 @@ async def run_ingest(
         "dry_run": dry_run,
         "succeeded": succeeded,
         "failed": failed,
+        "pending": pending,
     }
     import json as _json
 

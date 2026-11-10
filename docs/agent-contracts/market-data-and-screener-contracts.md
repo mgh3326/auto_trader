@@ -47,6 +47,20 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 
 **안전 경계**: read-mostly 마켓 데이터, 브로커/주문/감시 mutation 없음. `raw_payload_json` 은 저장 전 `_redact_sensitive_keys` 적용. 모든 DB 쓰기는 `MarketEventsRepository` 경유. Prefect 배포는 후속 작업.
 
+**DART 공시 — 아직 끝나지 않은 날 (hk 3845)**: 07:00 KST 실행은 대상 날짜가 오늘이고 DART 가 오늘
+목록을 아직 올리지 않아 0건이 정상이다. 규칙은 하나: 대상 날짜 ≥ 실행 시점의 KST 오늘(`today_kst()`, 테스트는
+`today=` 주입)이면 "미완료"다.
+- 🔴 미완료 날짜가 **행 0건**이고 XKRX 가 **거래 세션**으로 확정한 경우만 실패가 아니다.
+  `ingest_kr_disclosures_for_date` 는 `status="pending"` 을 반환하고 파티션을 `pending` 으로 남긴다
+  (`mark_partition_pending`; `succeeded` 도 `failed` 도 아니다). 다음 실행(18:30, 다음 07:00)이 그 날을 다시 받는다.
+- 🔴 지난 날짜의 확정 세션 0건은 지금처럼 `RuntimeError`(failed)다. 캘린더 unknown 분기도 오늘에 대해서 그대로 실패한다.
+  행이 있었지만 전부 파싱 불가인 경우(#1085)는 오늘이어도 pending 이 아니다. 확정 비세션 0건은 오늘이어도 `succeeded` 다.
+- 🔴 `fetch_dart_filings_for_date` 는 대상 날짜 ≥ 오늘이면 `use_cache` 값과 무관하게 `list_date_ex(cache=False)` 로 받는다.
+  OpenDartReader 는 페이지 URL 마다 `docs_cache/` 에 한 번 쓰고 계속 되돌려 주므로, 이른 "검색된 자료가 없습니다" 페이지가
+  이후 실행에서 늦게 올라온 공시를 가린다.
+- CLI 요약 JSON 은 기존 키를 그대로 두고 `pending`(미완료 파티션 수)을 추가한다. `failed == 0` 이면 pending 이 있어도 종료 코드 0이다.
+  `pending` 키는 날짜 단위 루프 경로(dart 등)에만 있고 finnhub 범위 경로는 바뀌지 않았다.
+
 ### Research Reports Integration (ROB-140)
 
 브로커 리서치 리포트 (Naver Research / KIS Research 등) `research-reports.v1` 페이로드의 thin ingest/read-layer 통합.
