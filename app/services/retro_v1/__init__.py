@@ -15,6 +15,7 @@ from app.services.retro_v1.retro_day import read_retro_day
 from app.services.retro_v1.retro_funnel import read_retro_funnel
 from app.services.retro_v1.retro_positions import read_retro_positions
 from app.services.retro_v1.retro_symbol import read_retro_symbol
+from app.services.retro_v1.retro_trades import read_retro_trades
 
 __all__ = [
     "RetroReadError",
@@ -25,4 +26,5 @@ __all__ = [
     "read_retro_funnel",
     "read_retro_positions",
     "read_retro_symbol",
+    "read_retro_trades",
 ]

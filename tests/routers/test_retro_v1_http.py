@@ -73,7 +73,8 @@ async def test_gates_before_session(client, app, monkeypatch):
         assert (await client.get(f"{retro_v1.PREFIX}/{op}")).status_code == 404
     monkeypatch.setattr(settings, "RETRO_API_ENABLED", True)
     monkeypatch.setattr(settings, "RETRO_API_READ_TOKEN", "")
-    assert (await client.get(f"{retro_v1.PREFIX}/data_gaps")).status_code == 403
+    for op in ("data_gaps", "retro_trades"):
+        assert (await client.get(f"{retro_v1.PREFIX}/{op}")).status_code == 403
     monkeypatch.setattr(settings, "RETRO_API_READ_TOKEN", "retro-secret")
     for headers in (
         {},
@@ -91,6 +92,7 @@ async def test_gates_before_session(client, app, monkeypatch):
         assert (
             await client.get(f"{retro_v1.PREFIX}/data_gaps", headers=headers)
         ).status_code == 401
+    assert (await client.get(f"{retro_v1.PREFIX}/retro_trades")).status_code == 401
     headers = {"X-Retro-Read-Token": "retro-secret"}
     assert (
         await client.get(f"{retro_v1.PREFIX}/unknown", headers=headers)

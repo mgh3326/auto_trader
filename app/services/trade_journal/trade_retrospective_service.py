@@ -42,6 +42,39 @@ from app.services.alpaca_paper_ledger_service import (
     RECORD_KIND_RECONCILE as _ALPACA_PAPER_RECORD_KIND_RECONCILE,
 )
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_BUY_LEG as PNL_STATUS_BUY_LEG,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_CLASS as PNL_STATUS_CLASS,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_MISSING_REALIZED_PNL as PNL_STATUS_MISSING_REALIZED_PNL,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_NO_FILL_EVIDENCE as PNL_STATUS_NO_FILL_EVIDENCE,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_NO_FILL_OUTCOME as PNL_STATUS_NO_FILL_OUTCOME,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_POSITION_INTAKE as PNL_STATUS_POSITION_INTAKE,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_RECORDED as PNL_STATUS_RECORDED,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_RECORDED_OTHER_PNL as PNL_STATUS_RECORDED_OTHER_PNL,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_UNKNOWN_OUTCOME as PNL_STATUS_UNKNOWN_OUTCOME,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_UNKNOWN_SIDE as PNL_STATUS_UNKNOWN_SIDE,
+)
+from app.services.trade_journal.pnl_status import (
+    classify_pnl_status as classify_pnl_status,
+)
 from app.services.trade_journal.retrospective_action_repository import (
     ActionControlError,
     RetrospectiveActionRepository,
@@ -98,71 +131,6 @@ _VALID_OUTCOMES = {
     "cancelled",
 }
 _KST = ZoneInfo("Asia/Seoul")
-
-# ROB-1488 — why `realized_pnl` is NULL. A closed vocabulary derived at read
-# time so a genuinely non-applicable value is not confused with a filled sell
-# whose realized P&L was not recorded. This classification never fabricates a
-# P&L and never writes a row; it only labels evidence the row already carries.
-PNL_STATUS_RECORDED = "recorded"
-PNL_STATUS_RECORDED_OTHER_PNL = "recorded_other_pnl"
-PNL_STATUS_POSITION_INTAKE = "position_intake"
-PNL_STATUS_NO_FILL_EVIDENCE = "no_fill_evidence"
-PNL_STATUS_NO_FILL_OUTCOME = "no_fill_outcome"
-PNL_STATUS_UNKNOWN_OUTCOME = "unknown_outcome"
-PNL_STATUS_BUY_LEG = "buy_leg"
-PNL_STATUS_UNKNOWN_SIDE = "unknown_side"
-PNL_STATUS_MISSING_REALIZED_PNL = "missing_realized_pnl"
-
-PNL_STATUS_CLASS: dict[str, str] = {
-    PNL_STATUS_RECORDED: "recorded",
-    PNL_STATUS_RECORDED_OTHER_PNL: "recorded",
-    PNL_STATUS_POSITION_INTAKE: "not_applicable",
-    PNL_STATUS_NO_FILL_EVIDENCE: "unknown",
-    PNL_STATUS_NO_FILL_OUTCOME: "not_applicable",
-    PNL_STATUS_UNKNOWN_OUTCOME: "unknown",
-    PNL_STATUS_BUY_LEG: "not_applicable",
-    PNL_STATUS_UNKNOWN_SIDE: "unknown",
-    PNL_STATUS_MISSING_REALIZED_PNL: "missing",
-}
-
-_FILLED_OUTCOMES = frozenset({"filled", "partially_filled"})
-_NO_FILL_OUTCOMES = frozenset({"unfilled", "rejected", "cancelled"})
-
-
-def classify_pnl_status(row: TradeRetrospective) -> str:
-    """Label existing P&L evidence without converting or inventing a value.
-
-    ``recorded_other_pnl`` means another P&L field is present, not that the
-    absolute realized amount is known. ``missing_realized_pnl`` is reserved
-    for evidenced filled sells with no P&L field populated; cause is not inferred.
-    Position intake is not an execution and has no realized-P&L obligation.
-    """
-    if is_intake_retrospective(row):
-        return PNL_STATUS_POSITION_INTAKE
-    if row.realized_pnl is not None:
-        return PNL_STATUS_RECORDED
-    if any(
-        value is not None
-        for value in (
-            row.pnl_pct,
-            row.total_pnl_krw,
-            row.fx_pnl_krw,
-            row.security_pnl_usd,
-            row.security_pnl_krw,
-        )
-    ):
-        return PNL_STATUS_RECORDED_OTHER_PNL
-    if not row.fill_evidence_available:
-        return PNL_STATUS_NO_FILL_EVIDENCE
-    if row.outcome in _NO_FILL_OUTCOMES:
-        return PNL_STATUS_NO_FILL_OUTCOME
-    if row.outcome not in _FILLED_OUTCOMES:
-        return PNL_STATUS_UNKNOWN_OUTCOME
-    if row.side == "buy":
-        return PNL_STATUS_BUY_LEG
-    if row.side is None:
-        return PNL_STATUS_UNKNOWN_SIDE
-    return PNL_STATUS_MISSING_REALIZED_PNL
 
 
 def _pnl_status_counts(items: list[TradeRetrospective]) -> dict[str, int]:

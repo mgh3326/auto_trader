@@ -309,7 +309,7 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 
 retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unavailable` 항목을 요구한다. 행의 null 값은 같은 행의 `reason`/`missing_reason` 또는 envelope `unknowns`의 해당 필드 경로로 사유를 표시한다. `as_of` 응답은 생성 시각이며 보유 조회 입력은 `cutoff_date`다.
 
-**retro/v1 읽기 모델 (hk 3816)**: `retro_scoreboard`를 뺀 7개 operation의 reader가 `app/services/retro_v1/`에 있다. `read_<operation>(session, **계약 쿼리 이름)`가 계약 응답 본문 dict를 그대로 돌려준다. `retro_scoreboard`는 hk 3817이다. HTTP route는 hk 3818에서 이 reader와 별도 scoreboard reader를 호출한다. MCP 도구와 스케줄러 연결은 없다.
+**retro/v1 읽기 모델 (hk 3816)**: `retro_scoreboard`를 뺀 8개 operation의 reader가 `app/services/retro_v1/`에 있다. `read_<operation>(session, **계약 쿼리 이름)`가 계약 응답 본문 dict를 그대로 돌려준다. `retro_scoreboard`는 hk 3817이다. HTTP route는 hk 3818에서 이 reader와 별도 scoreboard reader를 호출한다. MCP 도구와 스케줄러 연결은 없다.
 
 `stage=order`는 세 live 주문 레저를 원천으로 하며 직접 주문도 포함한다. 번호와 멱등키 또는 correlation ID 및 거래일이 일치하는 유일한 rung만 연결하고, fill은 거래일이 일치하는 레저 주문에 연결한다. 상태는 `filled`, `partially_filled`, `working`, `cancelled`, `expired`, `rejected`, `unresolved`로 닫혀 있다. 유효한 권위 fill이 우선하고, 다음으로 브로커 terminal 상태, #1112 rung 추론을 사용한다. 당일 미종결은 `working`, 과거 미종결은 `unresolved`다. 거절 사유는 `rate_limited`, `price_limit`, `insufficient_balance`, `market_closed`, `invalid_order`, `broker_other`다. 만료는 `day_order_expired` 또는 `expired_inference_no_broker_original`, 취소는 `cancelled`, 미해결은 `no_terminal_evidence`다. 원본 브로커 메시지와 코드는 노출하지 않는다. funnel의 order와 fill은 chain과 같은 행을 센다.
 
@@ -329,7 +329,7 @@ retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unava
 
 `/trading/api/retro/v1`은 기본 비활성(`RETRO_API_ENABLED=false`) 읽기 전용 HTTP 표면이다.
 DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 403,
-고정 헤더 `X-Retro-Read-Token` 누락·불일치 401, 허용된 8개 GET 외 403을 적용한다.
+고정 헤더 `X-Retro-Read-Token` 누락·불일치 401, 허용된 9개 GET 외 403을 적용한다.
 세션 쿠키나 다른 머신 토큰은 대체하지 못한다. 각 라우트는 대응 reader 하나만 호출하며
 스케줄러·MCP 연결은 없다.
 
@@ -337,7 +337,21 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 
 `retro/v1` 공급자 변경은 고정된 외부 소비자(`github.com/mgh3326/factortrail` 커밋 `4e111bf`)의 실제 Go 클라이언트 검증 게이트를 통과해야 한다.
 - **소비자 고정**: `contracts/retro/v1/consumers.lock`이 지원 소비자 repo, 커밋 SHA, Go 버전, 대상 패키지를 정의한다.
-- **검증 하네스**: `tools/retro-consumer-check/main.go`가 8개 엔드포인트의 envelope 스키마, decimal/int 정밀도, 계좌/주문 식별자 비노출(개인정보 보호), unknown/사유 규약, 인증 경계(401/403)를 실제 HTTP 호출로 검증한다.
+- **검증 하네스**: `tools/retro-consumer-check/main.go`가 기존 고정 소비자의 8개 엔드포인트의 envelope 스키마, decimal/int 정밀도, 계좌/주문 식별자 비노출(개인정보 보호), unknown/사유 규약, 인증 경계(401/403)를 실제 HTTP 호출로 검증한다.
 - **실행 러너 및 CI 게이트**: `scripts/ci/run_retro_consumer_gate.py`가 루프백 서버를 띄워 하네스를 실행하며, `classify_changes.py`가 retro 경로 변경 시 `retro-consumer-gate` CI 작업을 트리거한다. `aggregate_required.py`는 게이트 누락 시 fail-closed로 거부한다.
 - **운영 런북**: 소비자 핀 갱신 절차(호환 확장 → 소비자 커밋 → 핀 갱신 → 구버전 퇴역) 및 비호환 변경(v2 병행 배포 후 이전) 규약은 `docs/runbooks/retro-consumer-pin.md`를 따른다.
 
+
+
+### retro/v1 청산 거래와 회고 (hk 3869)
+
+`retro_trades`는 KST 종료일 범위의 `status=closed`, `account_type=live` journal과
+`journal_id`로 연결된 `kis_live`, `toss_live`, `upbit_live` 회고만 읽는다.
+`entry_at`은 journal 생성 시각이며 `return_rate`는 기록된 `pnl_pct`의 퍼센트다.
+지원 시장 외 instrument도 행을 보존하며 시장·통화는 null과 `unsupported`로 표시한다.
+금액은 `total_pnl_krw`, `security_pnl_usd`, `security_pnl_krw` 순서로 기록된
+값 하나를 선택하고 통화를 함께 제공한다. 수치는 세션 기록이므로 `basis=inference`다.
+전체 필터 집계는 페이지와 무관하며 값이 없거나 읽기가 불완전하면 null과 사유를
+반환한다. 회고 prose는 민감 패턴을 검사한 뒤 1,000자로 제한하고 차단 시 `redacted`를
+기록한다. JSONB와 원본 식별자는 공개하지 않는다. 기존 consumer pin과 8개 호출
+하네스는 호환 확장 순서에 따라 유지한다.

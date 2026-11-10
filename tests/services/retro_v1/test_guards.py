@@ -17,6 +17,7 @@ from app.services.retro_v1 import (
     read_retro_funnel,
     read_retro_positions,
     read_retro_symbol,
+    read_retro_trades,
 )
 from app.services.retro_v1.envelope import dec, read_snapshot
 from tests.services.retro_v1.support import FakeSession, kr_day_session, validate
@@ -188,6 +189,7 @@ async def test_every_reader_runs_in_a_read_only_repeatable_read_snapshot_with_se
         ),
         (read_retro_funnel, {"market": "kr", "from_": day, "to": day}, kr_day_session),
         (read_retro_positions, {"cutoff_date": day}, kr_day_session),
+        (read_retro_trades, {"from_": day, "to": day}, FakeSession),
         (read_mock_experiments, {}, FakeSession),
         (
             read_get_bars,
@@ -196,7 +198,7 @@ async def test_every_reader_runs_in_a_read_only_repeatable_read_snapshot_with_se
         ),
         (read_data_gaps, {}, gap_session),
     ]
-    assert len(calls) == 7
+    assert len(calls) == 8
     for reader, kwargs, make in calls:
         session = make()
         response = await reader(session, **kwargs)

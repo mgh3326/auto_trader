@@ -557,6 +557,96 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_trades:
+    get:
+      operationId: retro_trades
+      description: Closed live journals (account_type=live) and linked live reviews
+        (account_mode=kis_live, toss_live, upbit_live). Dates are KST, inclusive, at
+        most 366 days. return_rate is pnl_pct in percent. entry_at is journal creation
+        time. Journal realized P&L prefers total_pnl_krw, then security_pnl_usd, then
+        security_pnl_krw. Values are session-recorded inference.
+      parameters:
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: market
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - kr
+          - us
+          - crypto
+      - name: strategy
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 64
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroTradesResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     DecimalValue:
@@ -586,6 +676,7 @@ components:
       - flows_not_confirmed
       - source_mixed
       - incomplete_evidence
+      - redacted
     Unknown:
       type: object
       additionalProperties: false
@@ -1128,6 +1219,173 @@ components:
               $ref: '#/components/schemas/GapRow'
       description: total counts matching gap records before pagination, or null with
         count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    TradeReviewRow:
+      type: object
+      additionalProperties: false
+      required:
+      - review_ref
+      - outcome
+      - trigger_type
+      - root_cause_class
+      - pnl_status
+      - pnl_class
+      - realized_pnl
+      - realized_pnl_currency
+      - fill_evidence_available
+      - created_at
+      - lesson
+      - result_summary
+      - rationale
+      - next_strategy
+      properties:
+        review_ref: &trade001
+          type:
+          - string
+          - 'null'
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 64
+        outcome: *trade001
+        trigger_type: *trade001
+        root_cause_class: *trade001
+        pnl_status: *trade001
+        pnl_class:
+          type: string
+          enum:
+          - recorded
+          - not_applicable
+          - unknown
+          - missing
+        realized_pnl:
+          $ref: '#/components/schemas/DecimalValue'
+        realized_pnl_currency: *trade001
+        fill_evidence_available:
+          type: boolean
+        created_at: &trade003
+          type:
+          - string
+          - 'null'
+          format: date-time
+        lesson: &trade002
+          type:
+          - string
+          - 'null'
+          pattern: (?s)^.{0,1000}$
+        result_summary: *trade002
+        rationale: *trade002
+        next_strategy: *trade002
+    TradeRow:
+      type: object
+      additionalProperties: false
+      required:
+      - trade_ref
+      - symbol
+      - market
+      - side
+      - strategy
+      - entry_at
+      - exit_at
+      - quantity
+      - entry_price
+      - exit_price
+      - currency
+      - return_rate
+      - realized_amount
+      - realized_currency
+      - exit_reason
+      - basis
+      - reviews
+      properties:
+        trade_ref: *trade001
+        symbol: *trade001
+        market:
+          type: [string, 'null']
+          enum: [kr, us, crypto, null]
+        side: *trade001
+        strategy: *trade001
+        entry_at: *trade003
+        exit_at: *trade003
+        quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        entry_price:
+          $ref: '#/components/schemas/DecimalValue'
+        exit_price:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *trade001
+        return_rate:
+          $ref: '#/components/schemas/DecimalValue'
+        realized_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        realized_currency: *trade001
+        exit_reason: *trade001
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+        reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/TradeReviewRow'
+    TradeSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - trade_count
+      - return_rate_count
+      - realized_by_currency
+      - pnl_coverage
+      properties:
+        trade_count: &trade004
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        return_rate_count: *trade004
+        realized_by_currency:
+          type:
+          - object
+          - 'null'
+          propertyNames:
+            enum:
+            - KRW
+            - USD
+          additionalProperties:
+            $ref: '#/components/schemas/DecimalValue'
+        pnl_coverage:
+          anyOf:
+          - type: object
+            additionalProperties: false
+            required:
+            - recorded
+            - not_applicable
+            - unknown
+            - missing
+            properties:
+              recorded:
+                type: integer
+                minimum: 0
+              not_applicable:
+                type: integer
+                minimum: 0
+              unknown:
+                type: integer
+                minimum: 0
+              missing:
+                type: integer
+                minimum: 0
+          - type: 'null'
+    RetroTradesResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        - summary
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/TradeRow'
+          summary:
+            $ref: '#/components/schemas/TradeSummary'
       unevaluatedProperties: false
   securitySchemes:
     RetroReadToken:
