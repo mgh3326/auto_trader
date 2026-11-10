@@ -111,3 +111,103 @@ def test_migration_creates_both_indexes_idempotently() -> None:
     assert _MOMENTUM_INDEX in text
     assert _SCREENER_INDEX in text
     assert "WHERE support_computed_at IS NOT NULL" in text
+
+
+def test_head_replay_fixtures_exclude_account_value_tables():
+    """Current metadata tables must be dropped after create_all before head replay."""
+    root = pathlib.Path(__file__).resolve().parent / "services"
+    fixtures = []
+    for path in root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if "metadata.create_all" not in source or '"upgrade", "head"' not in source:
+            continue
+        fixtures.append(path)
+        tree = ast.parse(source)
+        post_parent_tables = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == "_POST_PARENT_TABLES"
+                and node.value is not None
+            ):
+                post_parent_tables.update(_assigned_strings(node.value))
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and any(
+                isinstance(child, ast.Attribute) and child.attr == "create_all"
+                for child in ast.walk(node)
+            )
+        ]
+        assert len(functions) == 1, path
+        function = functions[0]
+        create = next(
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Attribute) and node.attr == "create_all"
+        )
+        boundaries = [
+            node.lineno
+            for node in ast.walk(function)
+            if (
+                isinstance(node, (ast.Yield, ast.YieldFrom))
+                or (isinstance(node, ast.Constant) and node.value == "stamp")
+            )
+            and node.lineno > create.lineno
+        ]
+        assert boundaries, path
+        boundary = min(boundaries)
+        awaited = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Await)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "execute"
+            and create.lineno < node.lineno < boundary
+        ]
+        direct = {
+            child.value
+            for node in awaited
+            for child in ast.walk(node)
+            if isinstance(child, ast.Constant) and isinstance(child.value, str)
+        }
+        loop_drops = False
+        for loop in ast.walk(function):
+            if (
+                not isinstance(loop, (ast.For, ast.AsyncFor))
+                or loop.lineno <= create.lineno
+                or not isinstance(loop.iter, ast.Name)
+                or loop.iter.id != "_POST_PARENT_TABLES"
+                or not isinstance(loop.target, ast.Name)
+            ):
+                continue
+            for node in awaited:
+                if node not in set(ast.walk(loop)):
+                    continue
+                for child in ast.walk(node):
+                    if not isinstance(child, ast.JoinedStr):
+                        continue
+                    prefix = "".join(
+                        v.value
+                        for v in child.values
+                        if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                    )
+                    names = {
+                        v.value.id
+                        for v in child.values
+                        if isinstance(v, ast.FormattedValue)
+                        and isinstance(v.value, ast.Name)
+                    }
+                    if "DROP TABLE" in prefix and loop.target.id in names:
+                        loop_drops = True
+        for table in (
+            "review.account_value_snapshots",
+            "review.account_external_flows",
+        ):
+            assert f"DROP TABLE {table}" in direct or (
+                loop_drops and table in post_parent_tables
+            ), (path, table)
+    assert len(fixtures) >= 3
