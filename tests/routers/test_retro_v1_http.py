@@ -182,3 +182,34 @@ async def test_real_app_gates_and_dispatch(monkeypatch):
             mock.assert_awaited_once()
     finally:
         real_app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_oversized_limit_is_validation_error(client):
+    response = await client.get(
+        f"{retro_v1.PREFIX}/data_gaps",
+        params={"limit": "9" * 5000},
+        headers={"X-Retro-Read-Token": "retro-secret"},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_scoreboard_database_timeout_is_safe(client, monkeypatch):
+    from sqlalchemy.exc import DBAPIError
+
+    class QueryCanceled(Exception):
+        sqlstate = "57014"
+
+    failure = DBAPIError("secret query", {}, QueryCanceled("secret detail"))
+    monkeypatch.setitem(
+        retro_v1.READERS, "retro_scoreboard", AsyncMock(side_effect=failure)
+    )
+    response = await client.get(
+        f"{retro_v1.PREFIX}/retro_scoreboard",
+        params={"from": "2026-01-01", "to": "2026-01-02"},
+        headers={"X-Retro-Read-Token": "retro-secret"},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"code": "timeout", "message": "Request timed out."}

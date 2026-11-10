@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -68,12 +69,13 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
     ):
         raise RetroReadError("validation_error")
     if "limit" in result:
-        if (
-            not re.fullmatch(r"[0-9]+", result["limit"])
-            or not 1 <= int(result["limit"]) <= 500
-        ):
+        value = result["limit"]
+        if not re.fullmatch(r"[0-9]+", value):
             raise RetroReadError("validation_error")
-        result["limit"] = int(result["limit"])
+        significant = value.lstrip("0")
+        if len(significant) > 3 or not significant or int(significant) > 500:
+            raise RetroReadError("validation_error")
+        result["limit"] = int(significant)
     if "cursor" in result and not re.fullmatch(
         r"[A-Za-z0-9_.:\-]{1,128}", result["cursor"]
     ):
@@ -100,6 +102,14 @@ def _endpoint(operation: str):
                 exc.safe_message,
                 422 if exc.code == "validation_error" else 503,
             )
+        except DBAPIError as exc:
+            original = exc.orig
+            code = getattr(original, "sqlstate", None) or getattr(
+                original, "pgcode", None
+            )
+            if code == "57014":
+                return error("timeout", "Request timed out.", 503)
+            return error("upstream_unavailable", "Upstream unavailable.", 503)
         except Exception:
             return error("upstream_unavailable", "Upstream unavailable.", 503)
 
