@@ -12,6 +12,7 @@ Read-only projection of ``load_weekly_report`` into the closed
 """
 
 import hashlib
+import hmac
 import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -90,8 +91,15 @@ def _decimal_text(value: Decimal | None) -> str | None:
 
 
 def _ref(*parts: str) -> str:
-    digest = hashlib.sha256("\0".join(("retro-v1-subject", *parts)).encode())
-    return _REF_PREFIX + digest.hexdigest()[:_REF_HEX_CHARS]
+    """Keyed digest: the server secret keeps guessable inputs (broker names,
+    sleeve keys, ``identity_unknown`` accounts) from being matched offline."""
+    from app.core.config import settings
+
+    key = hmac.new(
+        settings.SECRET_KEY.encode(), b"retro-v1-subject-ref", hashlib.sha256
+    ).digest()
+    digest = hmac.new(key, "\0".join(parts).encode(), hashlib.sha256).hexdigest()
+    return _REF_PREFIX + digest[:_REF_HEX_CHARS]
 
 
 def _code(reason: str) -> str:
@@ -168,9 +176,15 @@ def _score_row(row: ReportRow) -> tuple[dict, dict[str, str]]:
         "benchmark": benchmark,
     }
     if row.return_rate is None:
-        reason = ".".join(own_codes) or "missing_data"
-        if len(reason) > _REASON_MAX:
-            reason = own_codes[0]
+        # flows_not_confirmed leads so it survives; whole codes are dropped
+        # from the tail when the joined text would exceed the field cap.
+        ordered = sorted(own_codes, key=lambda code: code != "flows_not_confirmed")
+        kept = ordered[:1]
+        for code in ordered[1:]:
+            if len(".".join([*kept, code])) > _REASON_MAX:
+                break
+            kept.append(code)
+        reason = ".".join(kept) or "missing_data"
         result["unmeasured_reason"] = reason
         primary = (
             "flows_not_confirmed"

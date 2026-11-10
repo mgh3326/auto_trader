@@ -89,7 +89,17 @@ def snapshots():
     ]
 
 
-async def build(monkeypatch, **kwargs):
+def external_flow(day_offset=3):
+    return SimpleNamespace(
+        account=ACCOUNT,
+        market="account",
+        day=START + timedelta(days=day_offset),
+        currency="KRW",
+        amount=Decimal("50"),
+    )
+
+
+async def build(monkeypatch, flows=(), **kwargs):
     async def no_sleeves(_session):
         return []
 
@@ -98,7 +108,7 @@ async def build(monkeypatch, **kwargs):
 
     monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
     monkeypatch.setattr(load_report, "_benchmark", no_prices)
-    database = Database([snapshots(), [], [(ACCOUNT, "account")], OBSERVED])
+    database = Database([snapshots(), list(flows), [(ACCOUNT, "account")], OBSERVED])
     result = await read_retro_scoreboard(
         database, **{"from": START, "to": END}, **kwargs
     )
@@ -245,7 +255,7 @@ def test_validator_rejects_missing_as_of_and_float_rate():
 async def test_unmeasured_account_row_carries_reason_and_server_side_flag(
     monkeypatch,
 ):
-    _, response = await build(monkeypatch)
+    _, response = await build(monkeypatch, flows=[external_flow()])
     (row,) = response["data"]
     assert row["scope"] == "account" and row["basis"] == "modified_dietz"
     assert row["return_rate"] is None
@@ -467,3 +477,47 @@ async def test_operator_cli_render_is_unchanged(monkeypatch, capsys, synthetic_l
         assert capsys.readouterr().out == expected + "\n"
     assert seen == [{"flows_complete": False}, {"flows_complete": True}]
     assert synthetic_rows() == rows
+
+
+@pytest.mark.asyncio
+async def test_flows_not_confirmed_survives_a_long_reason_list(monkeypatch):
+    async def load(session, start, end, **kwargs):
+        reasons = tuple(
+            f"{name}_{'x' * 20}" for name in ("account_identity_unknown", "cash_dup")
+        ) + ("a_" + "y" * 30, "b_" + "z" * 30, "flows_not_confirmed", "zz_" + "q" * 40)
+        return [
+            ReportRow(
+                ACCOUNT,
+                "account",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                reasons,
+                "modified_dietz_account_krw",
+            )
+        ]
+
+    monkeypatch.setattr(retro_scoreboard, "load_weekly_report", load)
+    response = await read_retro_scoreboard(
+        Database([None]), **{"from": START, "to": END}
+    )
+    VALIDATOR.validate(response)
+    reason = response["data"][0]["unmeasured_reason"]
+    assert len(reason) <= 128
+    assert reason.split(".")[0] == "flows_not_confirmed"
+    assert len(reason.split(".")) < 6
+
+
+@pytest.mark.asyncio
+async def test_subject_ref_is_keyed(monkeypatch, synthetic_loader):
+    from app.core.config import settings
+
+    first = await read_retro_scoreboard(Database([None]), **{"from": START, "to": END})
+    monkeypatch.setattr(settings, "SECRET_KEY", "another-key-for-the-test")
+    second = await read_retro_scoreboard(Database([None]), **{"from": START, "to": END})
+    assert [r["subject_ref"] for r in first["data"]] != [
+        r["subject_ref"] for r in second["data"]
+    ]
