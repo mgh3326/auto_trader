@@ -851,18 +851,22 @@ components:
           type:
           - integer
           - 'null'
+          minimum: 0
         sent_count:
           type:
           - integer
           - 'null'
+          minimum: 0
         filled_count:
           type:
           - integer
           - 'null'
+          minimum: 0
         uncertain_count:
           type:
           - integer
           - 'null'
+          minimum: 0
         episode_pnl_amount:
           $ref: '#/components/schemas/DecimalValue'
         currency: *id001

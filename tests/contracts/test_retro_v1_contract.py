@@ -1,7 +1,9 @@
+import copy
 import re
 from pathlib import Path
 
 import jsonschema
+import pytest
 import yaml
 from referencing import Registry, Resource
 
@@ -87,3 +89,24 @@ def test_examples_validate():
         )
         validator.validate(example["response"])
     assert seen == OPERATIONS
+
+
+def test_experiment_counts_reject_negative_values():
+    spec = document()
+    example = yaml.safe_load((EXAMPLES / "mock_experiments.yaml").read_text())
+    registry = Registry().with_resource(
+        "urn:retro",
+        Resource.from_contents(
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **spec}
+        ),
+    )
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": "#/components/schemas/MockExperimentsResponse"},
+        registry=registry,
+        _resolver=registry.resolver("urn:retro"),
+    )
+    for field in ("planned_count", "sent_count", "filled_count", "uncertain_count"):
+        response = copy.deepcopy(example["response"])
+        response["data"][0][field] = -1
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(response)
