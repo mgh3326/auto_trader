@@ -25,10 +25,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import uvicorn
@@ -168,122 +165,6 @@ def acquire_consumer_checkout(
         shutil.rmtree(temp_parent, ignore_errors=True)
 
 
-def build_gate_session():
-    from tests.services.retro_v1.support import (
-        FakeSession,
-        bar_row,
-        forecast,
-        kr_day_session,
-    )
-
-    now = datetime.now(UTC)
-    stale_run = SimpleNamespace(
-        run_id="00000000-0000-0000-0000-000000000001",
-        broker="kis",
-        window_start=now - timedelta(days=1),
-        window_end=now,
-        started_at=now - timedelta(hours=5, minutes=1),
-        finished_at=now - timedelta(hours=5),
-        dry_run=False,
-        would_insert=0,
-        would_update=0,
-        unchanged=0,
-        committed_insert=0,
-        committed_update=0,
-        error_summary=None,
-        notes=None,
-    )
-    experiment = SimpleNamespace(
-        strategy_id="S_ALPHA",
-        venue="alpaca_paper",
-        total=4,
-        sent=3,
-        filled=2,
-        unresolved=1,
-        closed_count=2,
-        closed_unpriced=0,
-        pnl_sum=Decimal("12.50"),
-        last_at=datetime(2026, 1, 4, tzinfo=UTC),
-    )
-    account_id = "upbit:upbit:" + "a" * 64
-    snapshots = [
-        SimpleNamespace(
-            account=account_id,
-            market="account",
-            day=date(2026, 1, 1) + timedelta(days=i),
-            holdings=[],
-            cash={"KRW": "100"},
-            reasons=[],
-            observed_at=datetime(2026, 1, 8, 9, 30, tzinfo=UTC),
-        )
-        for i in range(8)
-    ]
-    bars = [
-        bar_row(
-            "005930",
-            datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
-            "71000",
-            partition="KRX",
-            adj_close=None,
-            value=Decimal("71000000"),
-        ),
-        *[
-            bar_row(
-                "005930",
-                datetime(2026, 1, 6, tzinfo=UTC) + timedelta(days=i),
-                str(72000 + i),
-                partition="KRX",
-                adj_close=None,
-                value=Decimal("72000000"),
-            )
-            for i in range(25)
-        ],
-    ]
-
-    def account_snapshots_route(sql: str):
-        if "max(" in sql:
-            return [datetime(2026, 1, 8, 9, 30, tzinfo=UTC)]
-        if "DISTINCT" in sql or "distinct" in sql:
-            return [(account_id, "account")]
-        return snapshots
-
-    def trade_forecast_route(sql: str):
-        if "max(" in sql or "min(" in sql:
-            return [None]
-        return [forecast(2, "000660", datetime(2026, 1, 5, 0, 40, tzinfo=UTC))]
-
-    routes = {
-        "SHOW transaction_read_only": ["on"],
-        "FROM review.execution_ledger_reconcile_runs": [stale_run],
-        "execution_ledger_reconcile_runs": [stale_run],
-        "krx_after_market_eligibility": [(0, None, None)],
-        "investment_report_items": [None],
-        "FROM review.mock_strategy_orders": [experiment],
-        "FROM strategy_sleeves": [],
-        "max(account_value_snapshots.observed_at)": [
-            datetime(2026, 1, 8, 9, 30, tzinfo=UTC)
-        ],
-        "account_value_snapshots": account_snapshots_route,
-        "account_external_flows": [],
-        "FROM public.kr_candles_1d": bars,
-    }
-
-    base_session = FakeSession()
-    kr_session = kr_day_session()
-    full_routes = dict(routes)
-    for k, v in kr_session.routes.items():
-        if k == "FROM review.execution_ledger":
-            full_routes["FROM review.execution_ledger "] = v
-        elif k == "FROM review.trade_forecasts":
-            full_routes[k] = trade_forecast_route
-        elif k == "FROM public.kr_candles_1d":
-            pass
-        else:
-            full_routes[k] = v
-    base_session.routes = full_routes
-    return base_session
-
-
 class CandidateServerThread(threading.Thread):
     def __init__(
         self,
@@ -316,6 +197,7 @@ class CandidateServerThread(threading.Thread):
             from app.core.db import get_db
             from app.middleware.auth import AuthMiddleware
             from app.routers import retro_v1
+            from tests.services.retro_v1.support import build_gate_session
 
             app = FastAPI()
 
