@@ -186,6 +186,20 @@ def test_rounding_up_to_the_limit_counts_as_overflow() -> None:
 
 
 @pytest.mark.unit
+def test_extreme_provider_values_are_overflow_not_exceptions() -> None:
+    for raw in ("1E+100", "-1E+100", "1E+400", "123456789" * 20):
+        fixed, counts = bound_numeric_fields(
+            _row(revenue=Decimal(raw), payout_ratio=Decimal(raw))
+        )
+        assert fixed.revenue is None and fixed.payout_ratio is None
+        assert counts == {"revenue": 1, "payout_ratio": 1}
+    # a vanishingly small value is not an overflow (rounds to 0 at the column scale)
+    keep, counts = bound_numeric_fields(_row(payout_ratio=Decimal("1E-100")))
+    assert keep.payout_ratio == Decimal("1E-100")
+    assert counts == {}
+
+
+@pytest.mark.unit
 def test_cli_prints_overflow_counts_in_summary(capsys) -> None:
     from scripts.build_us_fundamentals_snapshots import _print_result
 

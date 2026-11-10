@@ -47,6 +47,11 @@ def fits_column(field: str, value: Decimal) -> bool:
     _, scale = _NUMERIC_COLUMNS[field]
     if not value.is_finite():
         return False
+    # Beyond the bound already (rounding never moves a value below an exactly
+    # representable limit). Checked first: quantize() raises InvalidOperation for a
+    # value like 1E+100 that needs more digits than the context allows.
+    if abs(value) >= column_limit(field):
+        return False
     # PostgreSQL rounds to the column scale first, so 9999.9999996 → 10000.000000.
     rounded = value.quantize(Decimal(1).scaleb(-scale), context=_CTX)
     return abs(rounded) < column_limit(field)
