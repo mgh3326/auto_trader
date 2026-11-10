@@ -232,6 +232,7 @@ tests/services/market_close_digest/test_formatter_flags.py
 tests/services/market_close_digest/test_mutation_and_queries.py
 tests/services/market_close_digest/test_service.py
 tests/services/market_events/test_coverage_gate.py
+tests/services/market_events/test_dart_today_pending.py
 tests/services/market_events/test_us_earnings_coverage.py
 tests/services/market_valuation_snapshots/test_normalized_market_cap.py
 tests/services/mechanical_loss_cut/test_direct_buy_hook.py
