@@ -284,6 +284,19 @@ async def test_get_bars_explicit_crypto_shape_and_legacy_us_inference() -> None:
             to=CUTOFF,
         )
     assert "market" in err.value.safe_message.lower()
+    with pytest.raises(RetroReadError) as err:
+        await read_get_bars(
+            FakeSession(),
+            symbol="KRW-BTC",
+            market="us",
+            tf="1d",
+            from_=CUTOFF,
+            to=CUTOFF,
+        )
+    assert "market" in err.value.safe_message.lower()
+    from app.services.retro_v1.market import select_market
+
+    assert select_market("BRK-B", "us").key == "us"
     us = FakeSession(
         {
             "FROM public.us_candles_1d": [

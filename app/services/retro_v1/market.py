@@ -64,10 +64,9 @@ def select_market(symbol: str, market: str | None) -> MarketInfo:
         _KR_SYMBOL.fullmatch(text) and any(c.isdigit() for c in text)
     ):
         raise RetroReadError("validation_error", message="Invalid market parameter.")
-    if (
-        info.key == "us"
-        and _KR_SYMBOL.fullmatch(text)
-        and any(c.isdigit() for c in text)
+    if info.key == "us" and (
+        _CRYPTO_SYMBOL.fullmatch(text)
+        or (_KR_SYMBOL.fullmatch(text) and any(c.isdigit() for c in text))
     ):
         raise RetroReadError("validation_error", message="Invalid market parameter.")
     return info

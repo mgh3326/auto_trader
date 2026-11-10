@@ -192,6 +192,11 @@ async def test_retro_symbol_explicit_market_and_inference(monkeypatch) -> None:
     inferred = FakeSession()
     await read_retro_symbol(inferred, symbol="BTC", from_=DAY, to=DAY)
     assert seen == ["crypto", "us"]
+    with pytest.raises(RetroReadError) as err:
+        await read_retro_symbol(
+            FakeSession(), symbol="KRW-BTC", market="us", from_=DAY, to=DAY
+        )
+    assert "market" in err.value.safe_message.lower()
 
 
 @pytest.mark.asyncio
