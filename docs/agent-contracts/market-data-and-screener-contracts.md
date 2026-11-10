@@ -493,6 +493,7 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 - **health**: 기한(`봉 가용 시각 + grace`)이 지난 세션 파티션이 빠지면 `gap`/`stale`, 해시 불일치 `corrupt`,
   커버리지 미달 `low_coverage` → exit 1. ping URL 은 출력하지 않는다.
 - **Dagu 제안**: `deploy/dagu/data-plane/*.yaml` — 🔴 **등록 안 됨**(운영자 승인 대상). 새 명령만 참조.
+- **Dagu 제안 (배치 1, hk 3848)**: `deploy/dagu/at-batch/*.yaml` 11개 — Prefect 배치 11개의 이전 후보. 🔴 **등록 안 됨**: 등록·Prefect pause 는 `docs/runbooks/dagu-batch1-cutover.md` 를 잡별로 따를 때만, 8·10·11번은 hk 3846/3845 수정 배포 후. 정적 검사 `tests/scripts/test_dagu_at_batch_dags.py`.
 - 기존 `*_candles_1d`·`*_symbol_universe`·뉴스 테이블은 서빙용으로 유지하되 덮어쓰기라 학습 입력으로 쓰지 않는다.
 
 ### KR 부스팅 베이스라인·동결 대조군 (ROB-1441)

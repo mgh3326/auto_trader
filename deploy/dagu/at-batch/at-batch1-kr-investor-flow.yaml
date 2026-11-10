@@ -1,0 +1,37 @@
+# 제안(PROPOSAL, hk 3848) — 어디에도 등록되어 있지 않다.
+# registered only via the runbook below: docs/runbooks/dagu-batch1-cutover.md
+# (잡별로: 이 파일 복사 → 수동 1회 실행 → Prefect 최근 실행과 결과 대조 → Prefect 스케줄 pause. 이 순서를 건너뛰지 않는다.)
+# 근거: 운영자 결정 hk:doc decision/2026-11-10/ncp-schedules-dagu-fillwire §3.
+#
+# 기계가 읽는 줄(tests/scripts/test_dagu_at_batch_dags.py 가 검사한다):
+# prefect_deployment: KR Investor Flow Snapshots/daily-freshness
+# prefect_schedule: cron 10 18 * * 1-5 Asia/Seoul
+# dagu_shift_minutes: 0
+# dagu_schedule_kst: 18:10
+# cutover_gate: none
+#
+# Prefect 파라미터: dry_run=False, all_symbols=True, days=5, batch_size=100, concurrency=4 → 항상 --commit.
+#
+# 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다).
+# 환경: dotenv 파일에서만 읽는다(이름만 런북에). 값은 이 파일과 레포에 없다.
+#   AT_BATCH_PING_URL_KR_INVESTOR_FLOW (실패/성공 핑 URL)
+# 실패 경로: handler_on 이 healthchecks 핑(성공은 URL, 실패는 URL/fail)을 보낸다. Prefect 래퍼의 Discord 알림은 이 파일에 없다(런북 §알려진 차이).
+description: "KR Investor Flow Snapshots (KIS 읽기, DB 쓰기)"
+schedule: "10 9 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: ncp
+dotenv: /root/at-secrets/.env.dagu-at-batch
+steps:
+  - name: build
+    command: docker run --rm --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.build_investor_flow_snapshots --market kr --days 5 --batch-size 100 --concurrency 4 --all --commit
+    timeout_sec: 1800
+    retry_policy:
+      limit: 1
+      interval_sec: 60
+handler_on:
+  success:
+    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_KR_INVESTOR_FLOW}"
+  failure:
+    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_KR_INVESTOR_FLOW}/fail"
