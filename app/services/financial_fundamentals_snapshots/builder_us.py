@@ -22,12 +22,16 @@ import asyncio
 import datetime as dt
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import sqlalchemy as sa
 
+from app.services.financial_fundamentals_snapshots.numeric_bounds import (
+    bound_rows,
+    overflow_warnings,
+)
 from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsUpsert,
 )
@@ -353,6 +357,8 @@ class UsFundamentalsBuildResult:
     committed: bool
     samples: tuple[dict[str, Any], ...] = ()
     warnings: tuple[str, ...] = ()
+    # AT-3846: derived values that did not fit their NUMERIC column, per field.
+    numeric_overflow_counts: dict[str, int] = field(default_factory=dict)
 
 
 async def resolve_us_symbols(
@@ -451,6 +457,12 @@ async def build_us_fundamentals_for_symbols(
 
     gathered = await asyncio.gather(*[_one(s) for s in symbols])
     payloads: list[FinancialFundamentalsUpsert] = [p for rows in gathered for p in rows]
+    # AT-3846: a value that cannot fit its NUMERIC column would abort the whole upsert
+    # chunk; exclude it (None) instead and count it per field.
+    payloads, overflow_counts, overflow_details = bound_rows(payloads)
+    for detail in overflow_details:
+        logger.warning("US fundamentals numeric overflow: %s", detail)
+    warnings.extend(overflow_warnings(overflow_counts))
 
     committed = False
     if commit and payloads:
@@ -469,4 +481,5 @@ async def build_us_fundamentals_for_symbols(
         committed=committed,
         samples=tuple(_sample(p) for p in payloads[:5]),
         warnings=tuple(warnings),
+        numeric_overflow_counts=overflow_counts,
     )
