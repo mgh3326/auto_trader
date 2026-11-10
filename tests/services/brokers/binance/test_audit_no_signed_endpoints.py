@@ -108,6 +108,11 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # in app/models/__init__.py (already allow-listed above).
         "app/models/binance_h5.py",
         "app/models/__init__.py",
+        # hk 3816 — retro/v1 mock_experiments read model maps the closed
+        # mock venue literals (binance_spot_demo/binance_futures_demo) to their
+        # quote currency. Read-only projection over review.mock_strategy_orders;
+        # no HTTP/WS client, signing, credential or endpoint.
+        "app/services/retro_v1/mock_experiments.py",
         # ROB-850 — paper evaluation references "Binance" as a view/source
         # identifier (ViewName.BINANCE_BROKER, ViewSource.BINANCE_DEMO_LEDGER).
         # No Binance HTTP/WS client or signed path is defined here.
