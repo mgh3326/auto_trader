@@ -49,6 +49,10 @@ from app.services.market_close_digest import queries as digest_queries
 from app.services.mechanical_loss_cut.positions import load_held_lots
 from app.services.order_proposals import kis_leftover_inference_service as inference
 from app.services.quotes_consumer import repository as quotes_repository
+from app.services.retro_v1 import chain as retro_chain
+from app.services.retro_v1 import retro_positions
+from app.services.retro_v1.envelope import Unknowns
+from app.services.retro_v1.market import MARKETS
 from tests.services.execution_ledger._quarantine_fixtures import (
     purge_test_ledger_rows,
     row_kwargs,
@@ -548,6 +552,59 @@ async def _quotes_own_fill(db, s: Scenario) -> bool:
     return s.phantom_id in {int(f.ledger_id) for f in fills}
 
 
+async def _retro_chain_fills_stmt(db, s: Scenario) -> bool:
+    stmt = retro_chain.fills_stmt(
+        market=MARKETS["kr"],
+        symbols=[s.symbol],
+        start=NOW - timedelta(days=1),
+        end=NOW + timedelta(days=1),
+        cap=100,
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+    return s.phantom_id in {int(r.id) for r in rows}
+
+
+async def _retro_chain_load_chain(db, s: Scenario) -> bool:
+    data = await retro_chain.load_chain(
+        db,
+        Unknowns(),
+        MARKETS["kr"],
+        symbols=[s.symbol],
+        lo=NOW - timedelta(days=1),
+        hi=NOW + timedelta(days=1),
+        include_lots=False,
+    )
+    return any(f.broker_order_id == s.phantom_order_no for f in data.fills)
+
+
+async def _retro_chain_read_history(db, s: Scenario) -> bool:
+    rows = await retro_chain.read_history(
+        session=db,
+        market=MARKETS["kr"],
+        hi=NOW + timedelta(days=1),
+        fill_symbols=[s.symbol],
+    )
+    return s.phantom_id in {int(r.id) for r in rows}
+
+
+async def _retro_positions_read_ledger(db, s: Scenario) -> bool:
+    rows = await retro_positions.read_ledger(
+        session=db,
+        cutoff_end=NOW + timedelta(days=1),
+    )
+    return s.phantom_id in {int(r.id) for r in rows}
+
+
+async def _retro_positions_read_positions(db, s: Scenario) -> bool:
+    resp = await retro_positions.read_retro_positions(
+        session=db,
+        cutoff_date=NOW.date(),
+        limit=100,
+    )
+    match = [r for r in resp["data"] if r.get("symbol") == s.symbol]
+    return bool(match and match[0].get("quantity") is None)
+
+
 READERS: dict[str, tuple[Probe, Any, str]] = {
     # name: (probe answering "is the phantom counted?", module to mutate, side)
     "broker_risk.list_fills_for_order": (_broker_risk_fills, broker_risk, "buy"),
@@ -570,6 +627,19 @@ READERS: dict[str, tuple[Probe, Any, str]] = {
     "protected_quantity._net_execution_quantity_since": (_protected_drift, pq, "buy"),
     "market_close_digest._execution_fills": (_digest, digest_queries, "buy"),
     "quotes_consumer.fills_after": (_quotes_own_fill, quotes_repository, "buy"),
+    "retro_v1.chain.fills_stmt": (_retro_chain_fills_stmt, retro_chain, "buy"),
+    "retro_v1.chain.load_chain": (_retro_chain_load_chain, retro_chain, "buy"),
+    "retro_v1.chain.read_history": (_retro_chain_read_history, retro_chain, "buy"),
+    "retro_v1.retro_positions.read_ledger": (
+        _retro_positions_read_ledger,
+        retro_positions,
+        "buy",
+    ),
+    "retro_v1.retro_positions.read_retro_positions": (
+        _retro_positions_read_positions,
+        retro_positions,
+        "buy",
+    ),
 }
 
 

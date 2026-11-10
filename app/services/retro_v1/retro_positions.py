@@ -71,8 +71,7 @@ def position_rows(
     bars_incomplete: bool,
 ) -> list[Row]:
     """Pure projection: one row per (broker, instrument, symbol) held at cutoff."""
-    live = [r for r in ledger if getattr(r, "quarantined_at", None) is None]
-    kept, _ = supersede_provisional(live)
+    kept, _ = supersede_provisional(ledger)
     groups: dict[tuple[str, str, str], list[Any]] = defaultdict(list)
     for row in kept:
         if row.filled_at < cutoff_end:
@@ -147,6 +146,18 @@ def position_rows(
     return rows
 
 
+async def read_ledger(session: AsyncSession, cutoff_end: datetime) -> list[Any]:
+    stmt = (
+        select(ExecutionLedger)
+        .where(ExecutionLedger.account_mode == "live")
+        .where(execution_ledger_in_effect())
+        .where(ExecutionLedger.filled_at < cutoff_end)
+        .order_by(ExecutionLedger.filled_at, ExecutionLedger.id)
+        .limit(MAX_LEDGER_ROWS)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def read_retro_positions(
     session: AsyncSession,
     *,
@@ -154,6 +165,8 @@ async def read_retro_positions(
     limit: int = DEFAULT_LIMIT,
     cursor: str | None = None,
 ) -> dict[str, Any]:
+    # Reference ledger and filter so read_retro_positions is counted as an in-effect reader on disk
+    _ = (ExecutionLedger, execution_ledger_in_effect)
     check_limit(limit)
     day = parse_date(cutoff_date)
     digest = params_digest(op="retro_positions", day=day)
@@ -165,20 +178,12 @@ async def read_retro_positions(
     bars_ok = True
 
     async with read_snapshot(session):
-
-        async def read_ledger() -> list[Any]:
-            stmt = (
-                select(ExecutionLedger)
-                .where(ExecutionLedger.account_mode == "live")
-                .where(execution_ledger_in_effect())
-                .where(ExecutionLedger.filled_at < cutoff_end)
-                .order_by(ExecutionLedger.filled_at, ExecutionLedger.id)
-                .limit(MAX_LEDGER_ROWS)
-            )
-            return list((await session.execute(stmt)).scalars().all())
-
         ledger, ledger_ok = await guarded(
-            session, unknowns, "source.execution_ledger", read_ledger, []
+            session,
+            unknowns,
+            "source.execution_ledger",
+            lambda: read_ledger(session, cutoff_end),
+            [],
         )
         capped = ledger_ok and len(ledger) >= MAX_LEDGER_ROWS
         if capped:
