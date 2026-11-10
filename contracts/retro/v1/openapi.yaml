@@ -1257,11 +1257,8 @@ components:
         trade_ref: *trade001
         symbol: *trade001
         market:
-          type: string
-          enum:
-          - kr
-          - us
-          - crypto
+          type: [string, 'null']
+          enum: [kr, us, crypto, null]
         side: *trade001
         strategy: *trade001
         entry_at: *trade003

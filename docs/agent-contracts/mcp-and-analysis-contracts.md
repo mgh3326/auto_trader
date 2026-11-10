@@ -344,6 +344,7 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 `retro_trades`는 KST 종료일 범위의 `status=closed`, `account_type=live` journal과
 `journal_id`로 연결된 `kis_live`, `toss_live`, `upbit_live` 회고만 읽는다.
 `entry_at`은 journal 생성 시각이며 `return_rate`는 기록된 `pnl_pct`의 퍼센트다.
+지원 시장 외 instrument도 행을 보존하며 시장·통화는 null과 `unsupported`로 표시한다.
 금액은 `total_pnl_krw`, `security_pnl_usd`, `security_pnl_krw` 순서로 기록된
 값 하나를 선택하고 통화를 함께 제공한다. 수치는 세션 기록이므로 `basis=inference`다.
 전체 필터 집계는 페이지와 무관하며 값이 없거나 읽기가 불완전하면 null과 사유를

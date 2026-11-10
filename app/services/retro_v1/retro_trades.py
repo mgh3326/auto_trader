@@ -57,11 +57,12 @@ _FORBIDDEN = (
 def filter_prose(value: str | None) -> tuple[str | None, bool]:
     if value is None:
         return None, False
-    normalized = re.sub(r"[_\-\s]", "", value.lower())
+    tokens = re.findall(r"[A-Za-z0-9_-]+", value.lower())
+    normalized = (re.sub(r"[_-]", "", token) for token in tokens)
     if (
         re.search(r"\d{7,}", value)
         or re.search(r"\d{2,}[- ]\d{2,}[- ]\d{2,}", value)
-        or any(x in normalized for x in _FORBIDDEN)
+        or any(token in _FORBIDDEN for token in normalized)
     ):
         return None, True
     return value.strip()[:1000], False
@@ -168,14 +169,14 @@ async def read_retro_trades(
     infos = {info.instrument_type: info for info in MARKETS.values()}
     for journal in journals:
         kind = str(getattr(journal.instrument_type, "value", journal.instrument_type))
-        info = infos[kind]
+        info = infos.get(kind)
         amount, currency = _amount(journal)
         if amount is not None and currency:
             amounts[currency] = amounts.get(currency, Decimal(0)) + amount
         row = {
             "trade_ref": make_ref("trade", journal.id),
             "symbol": journal.symbol,
-            "market": info.key,
+            "market": info.key if info else None,
             "side": journal.side,
             "strategy": safe_code(journal.strategy),
             "entry_at": iso(journal.created_at),
@@ -183,7 +184,7 @@ async def read_retro_trades(
             "quantity": dec(journal.quantity),
             "entry_price": dec(journal.entry_price),
             "exit_price": dec(journal.exit_price),
-            "currency": info.currency,
+            "currency": info.currency if info else None,
             "return_rate": dec(journal.pnl_pct),
             "realized_amount": dec(amount),
             "realized_currency": currency,
@@ -210,7 +211,7 @@ async def read_retro_trades(
                 if redacted:
                     item.setdefault("_redacted", []).append(field)
             row["reviews"].append(item)
-        rows.append((row, {}))
+        rows.append((row, {"market": "unsupported", "currency": "unsupported"}))
     response = build_response(
         as_of=as_of,
         data_as_of=latest(j.exit_date for j in journals),

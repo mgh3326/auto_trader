@@ -175,3 +175,42 @@ async def test_query_filters_and_failed_reviews_are_unknown():
     assert {"field": "summary.pnl_coverage", "reason": "incomplete_evidence"} in result[
         "unknowns"
     ]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_instruments_keep_rows_and_counts():
+    rows = [
+        journal(101, InstrumentType.equity_kr),
+        journal(202, InstrumentType.forex),
+        journal(303, InstrumentType.index),
+    ]
+    result = await read_retro_trades(
+        session(rows, []), from_="2026-01-01", to="2026-01-31"
+    )
+    validate(result, "RetroTradesResponse")
+    assert (
+        len(result["data"]) == result["total"] == result["summary"]["trade_count"] == 3
+    )
+    for i in (1, 2):
+        assert result["data"][i]["market"] is None
+        assert result["data"][i]["currency"] is None
+        assert {"field": f"data.{i}.market", "reason": "unsupported"} in result[
+            "unknowns"
+        ]
+        assert {"field": f"data.{i}.currency", "reason": "unsupported"} in result[
+            "unknowns"
+        ]
+
+
+def test_filter_tokens_without_false_substrings():
+    assert filter_prose("an exceptional move at the border no one expected") == (
+        "an exceptional move at the border no one expected",
+        False,
+    )
+    for text in (
+        "an exception to the rule",
+        "raw_payload",
+        "account-number",
+        "order_no",
+    ):
+        assert filter_prose(text) == (None, True)
