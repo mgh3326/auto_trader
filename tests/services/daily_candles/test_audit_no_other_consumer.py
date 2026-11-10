@@ -35,6 +35,11 @@ ALLOWED = {
     # crypto daily closes inside one READ ONLY snapshot transaction. No write,
     # broker call or schedule; output is the retrospective read contract only.
     "app/services/retro_v1/daily_bars.py",
+    # ROB-3873: data_gaps reads only MAX(time) of the completed crypto daily
+    # closes, inside the same one READ ONLY snapshot as the other retro/v1
+    # readers, to say whether the last closed day is present. No write, broker
+    # call or schedule; the output is one data_gaps row or nothing.
+    "app/services/retro_v1/data_gaps.py",
 }
 
 

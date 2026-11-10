@@ -92,12 +92,20 @@ def operational_error() -> OperationalError:
     return OperationalError("SELECT 1", {}, Exception("raw driver text must not leak"))
 
 
+class WithParams:
+    """A route that also receives the statement's compiled bind parameters."""
+
+    def __init__(self, fn: Callable[[str, dict[str, Any]], list[Any]]) -> None:
+        self.fn = fn
+
+
 class FakeSession:
     """Routes each SELECT by the table it reads; records every statement.
 
     ``routes`` maps a ``FROM <table>`` fragment to rows, a callable
-    ``(sql) -> rows`` or an exception instance to raise. Unrouted statements
-    (``SET TRANSACTION``, ``set_config``) return nothing.
+    ``(sql) -> rows``, a ``WithParams`` callable ``(sql, params) -> rows`` or an
+    exception instance to raise. Unrouted statements (``SET TRANSACTION``,
+    ``set_config``) return nothing.
     """
 
     def __init__(self, routes: dict[str, Any] | None = None) -> None:
@@ -125,13 +133,17 @@ class FakeSession:
         yield
 
     async def execute(self, statement: Any, params: Any = None) -> FakeResult:
-        sql = str(statement.compile(dialect=postgresql.dialect()))
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
         self.statements.append(sql)
         for fragment, value in self.routes.items():
             if fragment in sql:
                 if isinstance(value, BaseException):
                     raise value
-                rows = value(sql) if callable(value) else value
+                if isinstance(value, WithParams):
+                    rows = value.fn(sql, dict(compiled.params))
+                else:
+                    rows = value(sql) if callable(value) else value
                 if (
                     fragment == "FROM review.execution_ledger"
                     and "quarantined_at IS NULL" in sql

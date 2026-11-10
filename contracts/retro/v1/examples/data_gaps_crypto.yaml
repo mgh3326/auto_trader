@@ -1,0 +1,32 @@
+operation: data_gaps
+request:
+  path: /trading/api/retro/v1/data_gaps
+  query: {}
+status: 200
+response:
+  as_of: '2026-11-11T00:00:00Z'
+  data_as_of: '2026-09-02T00:00:00Z'
+  timezone: KST
+  total: 2
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns: []
+  data:
+  - dataset: crypto_insight.fear_greed
+    symbol: null
+    last_updated_at: '2026-09-02T00:00:00Z'
+    source: alternative_me
+    venue: null
+    adjusted: null
+    missing_reason: stale
+    basis: inference
+  - dataset: crypto_insight.aggregate_oi
+    symbol: null
+    last_updated_at: null
+    source: coinglass
+    venue: null
+    adjusted: null
+    missing_reason: unsupported
+    basis: inference
