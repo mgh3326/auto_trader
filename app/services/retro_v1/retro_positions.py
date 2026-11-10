@@ -103,6 +103,8 @@ def position_rows(
         currency = fills[-1].currency
         base = {
             "symbol": fills[-1].symbol,
+            "market": info.key,
+            "broker": broker,
             "position_ref": make_ref("position", f"{broker}|{instrument}|{symbol}"),
             "currency": currency,
             "unit": info.quantity_unit,

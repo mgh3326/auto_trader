@@ -74,15 +74,16 @@ class RetroReadError(Exception):
         "schema_mismatch": "Schema mismatch.",
     }
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, message: str | None = None) -> None:
         if code not in self.MESSAGES:
             raise ValueError("unknown retro read error code")
         self.code = code
-        super().__init__(self.MESSAGES[code])
+        self._message = message or self.MESSAGES[code]
+        super().__init__(self._message)
 
     @property
     def safe_message(self) -> str:
-        return self.MESSAGES[self.code]
+        return self._message
 
 
 # --------------------------------------------------------------------------

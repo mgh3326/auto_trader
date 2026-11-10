@@ -27,6 +27,8 @@ MARKETS: Final = {
 
 _CRYPTO_SYMBOL = re.compile(r"^[A-Z0-9]{2,10}-[A-Z0-9]{2,10}$")
 _KR_SYMBOL = re.compile(r"^[0-9A-Z]{6}$")
+_SYMBOL_PAIR = re.compile(r"^([A-Z0-9]{2,10})[-/.]([A-Z0-9]{1,10})$")
+_CRYPTO_QUOTE_SYMBOLS: Final = frozenset({"KRW", "BTC", "USDT", "USD"})
 
 
 def resolve_market(value: str) -> MarketInfo:
@@ -50,3 +52,27 @@ def infer_market(symbol: str) -> MarketInfo:
     if _KR_SYMBOL.match(text) and any(ch.isdigit() for ch in text):
         return MARKETS["kr"]
     return MARKETS["us"]
+
+
+def select_market(symbol: str, market: str | None) -> MarketInfo:
+    """Select an explicit market, validating only shapes that cannot fit it."""
+    if market is None:
+        return infer_market(symbol)
+    info = resolve_market(market)
+    text = symbol.strip().upper()
+    if info.key == "crypto" and not _CRYPTO_SYMBOL.fullmatch(text):
+        raise RetroReadError("validation_error", message="Invalid market parameter.")
+    if info.key == "kr" and not (
+        _KR_SYMBOL.fullmatch(text) and any(c.isdigit() for c in text)
+    ):
+        raise RetroReadError("validation_error", message="Invalid market parameter.")
+    pair = _SYMBOL_PAIR.fullmatch(text) if info.key == "us" else None
+    is_crypto_pair = pair is not None and (
+        pair.group(1) in _CRYPTO_QUOTE_SYMBOLS
+        or pair.group(2) in _CRYPTO_QUOTE_SYMBOLS
+        or len(pair.group(2)) >= 3
+    )
+    is_kr_symbol = _KR_SYMBOL.fullmatch(text) and any(c.isdigit() for c in text)
+    if info.key == "us" and (is_crypto_pair or is_kr_symbol):
+        raise RetroReadError("validation_error", message="Invalid market parameter.")
+    return info

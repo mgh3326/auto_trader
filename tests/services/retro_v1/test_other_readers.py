@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -15,9 +16,11 @@ from app.services.retro_v1 import (
     read_mock_experiments,
     read_retro_positions,
 )
+from app.services.retro_v1.envelope import KST
 from tests.services.retro_v1.support import (
     FILL_AT,
     FakeSession,
+    WithParams,
     bar_row,
     kr_day_session,
     ledger,
@@ -37,6 +40,7 @@ async def test_retro_positions_matches_contract_and_excludes_phantoms() -> None:
     validate(response, "RetroPositionsResponse")
     assert response["total"] == 1
     row = response["data"][0]
+    assert (row["market"], row["broker"]) == ("kr", "kis")
     # quarantined phantom and websocket duplicate do not inflate the position
     assert (row["quantity"], row["average_price"]) == ("3", "70000")
     assert row["unrealized_amount"] == "3000"  # (71000 - 70000) * 3 at the cutoff close
@@ -47,6 +51,20 @@ async def test_retro_positions_matches_contract_and_excludes_phantoms() -> None:
     )
     assert "123456" not in json.dumps(response)
     assert any("quarantined_at IS NULL" in s for s in session.statements)
+
+
+@pytest.mark.asyncio
+async def test_retro_positions_distinguishes_same_symbol_by_broker() -> None:
+    rows = [ledger(3001, FILL_AT), ledger(3002, FILL_AT, broker="toss")]
+    response = await read_retro_positions(
+        FakeSession({"FROM review.execution_ledger": rows}), cutoff_date=CUTOFF
+    )
+    validate(response, "RetroPositionsResponse")
+    assert [(row["broker"], row["market"]) for row in response["data"]] == [
+        ("kis", "kr"),
+        ("toss", "kr"),
+    ]
+    assert "account" not in json.dumps(response).lower()
 
 
 @pytest.mark.asyncio
@@ -197,6 +215,7 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
         "NASD",
         None,
     )
+    assert row["market"] == "us"
     crypto = FakeSession(
         {
             "FROM public.crypto_candles_1m": [
@@ -211,7 +230,7 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
         }
     )
     response = await read_get_bars(
-        crypto, symbol="KRW-BTC", tf="1m", from_=CUTOFF, to=CUTOFF
+        crypto, symbol="KRW-BTC", market="crypto", tf="1m", from_=CUTOFF, to=CUTOFF
     )
     validate(response, "GetBarsResponse")
     row = response["data"][0]
@@ -221,6 +240,7 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
         "upbit_ws",
         None,
     )
+    assert row["market"] == "crypto"
     assert "c.source" in crypto.statements[-1] or "source" in crypto.statements[-1]
     kr_minute = FakeSession(
         {
@@ -241,6 +261,79 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
     # kr/us minute tables carry no provider column
     assert response["data"][0]["source"] is None
     assert response["data"][0]["missing_reason"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_get_bars_explicit_crypto_shape_and_legacy_us_inference() -> None:
+    crypto = FakeSession(
+        {
+            "FROM public.crypto_candles_1d": [
+                bar_row("KRW-BTC", datetime(2026, 1, 5, tzinfo=UTC), "95000000")
+            ]
+        }
+    )
+    response = await read_get_bars(
+        crypto, symbol="KRW-BTC", market="crypto", tf="1d", from_=CUTOFF, to=CUTOFF
+    )
+    assert response["data"][0]["market"] == "crypto"
+    assert "public.crypto_candles_1d" in crypto.statements[-1]
+    with pytest.raises(RetroReadError) as err:
+        await read_get_bars(
+            FakeSession(),
+            symbol="BTC",
+            market="crypto",
+            tf="1d",
+            from_=CUTOFF,
+            to=CUTOFF,
+        )
+    assert "market" in err.value.safe_message.lower()
+    with pytest.raises(RetroReadError) as err:
+        await read_get_bars(
+            FakeSession(),
+            symbol="KRW-BTC",
+            market="us",
+            tf="1d",
+            from_=CUTOFF,
+            to=CUTOFF,
+        )
+    assert "market" in err.value.safe_message.lower()
+    for symbol in ("ETH-USD", "SOL-USDT", "KRW/BTC", "KRW.BTC"):
+        with pytest.raises(RetroReadError) as err:
+            await read_get_bars(
+                FakeSession(),
+                symbol=symbol,
+                market="us",
+                tf="1d",
+                from_=CUTOFF,
+                to=CUTOFF,
+            )
+        assert "market" in err.value.safe_message.lower()
+    us = FakeSession(
+        {
+            "FROM public.us_candles_1d": [
+                bar_row("BTC", datetime(2026, 1, 5, tzinfo=UTC), "5"),
+                bar_row("BAC.PL", datetime(2026, 1, 5, tzinfo=UTC), "40"),
+            ]
+        }
+    )
+    response = await read_get_bars(us, symbol="BTC", tf="1d", from_=CUTOFF, to=CUTOFF)
+    assert response["data"][0]["market"] == "us"
+    preferred = await read_get_bars(
+        FakeSession(
+            {
+                "FROM public.us_candles_1d": [
+                    bar_row("BAC.PL", datetime(2026, 1, 5, tzinfo=UTC), "40")
+                ]
+            }
+        ),
+        symbol="BAC-PL",
+        market="us",
+        tf="1d",
+        from_=CUTOFF,
+        to=CUTOFF,
+    )
+    assert preferred["data"][0]["symbol"] == "BAC.PL"
+    assert preferred["data"][0]["market"] == "us"
 
 
 @pytest.mark.asyncio
@@ -294,8 +387,90 @@ def gap_session(**extra):
         "review.trade_forecasts": [None],
         "investment_report_items": [None],
     }
+    routes.update(fresh_source_routes(now))
     routes.update(extra)
     return FakeSession(routes)
+
+
+def _flat(params: dict) -> set:
+    out: set = set()
+    for value in params.values():
+        out.update(value if isinstance(value, (list, tuple, set)) else [value])
+    return out
+
+
+def crypto_snapshot(metric, provider, **kw):
+    values = {
+        "metric": metric,
+        "provider": provider,
+        "symbol": None,
+        "freshness_seconds": None,
+        "snapshot_at": datetime.now(UTC),
+    }
+    values.update(kw)
+    return ns(**values)
+
+
+def fresh_source_routes(now: datetime) -> dict:
+    """Fresh rows for every ROB-3873 dataset, so the base fixture has no gaps there.
+
+    A test that wants a gap overrides one fragment through ``gap_session(**extra)``.
+    """
+    snapshots = [
+        crypto_snapshot("fear_greed", "alternative_me"),
+        crypto_snapshot("stablecoin_supply", "defillama"),
+        crypto_snapshot("tv_crypto_breadth", "tradingview"),
+        crypto_snapshot("tvl", "defillama", symbol="bitcoin"),
+    ]
+
+    def crypto_route(sql: str, params: dict) -> list:
+        wanted = _flat(params)
+        return [r for r in snapshots if r.metric in wanted and r.provider in wanted]
+
+    today = now.astimezone(KST).date()
+    partitions = [
+        ns(
+            source=source,
+            category=category,
+            market=market,
+            partition_date=today,
+            status="succeeded",
+            finished_at=now,
+            last_error=None,
+            event_count=1,
+        )
+        for source, category, market in (
+            ("dart", "disclosure", "kr"),
+            ("finnhub", "earnings", "us"),
+            ("forexfactory", "economic", "global"),
+            ("wisefn", "earnings", "kr"),
+        )
+    ]
+    bar_latest = ns(latest=now)
+    return {
+        "crypto_insight_snapshots": WithParams(crypto_route),
+        "FROM public.kr_candles_1m": [bar_latest],
+        "FROM public.us_candles_1m": [bar_latest],
+        "FROM public.kr_candles_1d": [bar_latest],
+        "FROM public.us_candles_1d": [bar_latest],
+        "FROM public.crypto_candles_1d": [bar_latest],
+        "FROM market_event_ingestion_partitions": partitions,
+        "FROM market_events": [(p.source, p.category, p.market, 1) for p in partitions],
+        "FROM research_report_ingestion_runs": [
+            ns(
+                run_uuid=str(uuid.UUID(int=1)),
+                started_at=now,
+                finished_at=now,
+                received_at=now,
+                inserted_count=1,
+                skipped_count=0,
+                report_count=1,
+            )
+        ],
+        "FROM market_valuation_snapshots": [
+            ns(fresh=4, stale=0, latest_date=today, latest_at=now, total=4)
+        ],
+    }
 
 
 @pytest.mark.asyncio
@@ -314,7 +489,9 @@ async def test_data_gaps_reports_existing_staleness_signals() -> None:
         "negative_class_recording.us",
         "negative_class_recording.crypto",
     }
-    assert response["total"] == 5
+    # The 5 existing rows plus crypto_insight.aggregate_oi, which is disabled
+    # by design and therefore always a row. Every other new source is fresh here.
+    assert response["total"] == 6
 
 
 @pytest.mark.asyncio

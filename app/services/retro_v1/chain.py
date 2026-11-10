@@ -18,23 +18,30 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Final
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
-from app.models.review import OrderSendIntent, TradeForecast
+from app.models.review import (
+    KISLiveOrderLedger,
+    LiveOrderLedger,
+    OrderSendIntent,
+    TossLiveOrderLedger,
+    TradeForecast,
+)
 from app.models.screener_pick_log import ScreenerPickLog
 from app.services.execution_ledger.kis_lots import LedgerFill, fifo_position
 from app.services.execution_ledger.supersede import (
     AUTHORITATIVE_SOURCES,
     OrderIdentity,
     order_identity,
+    order_trading_day,
     supersede_provisional,
 )
 from app.services.retro_v1 import daily_bars
@@ -76,9 +83,14 @@ class ChainData:
     forecasts: list[Any] = field(default_factory=list)
     proposals: list[Any] = field(default_factory=list)
     rungs: list[Any] = field(default_factory=list)
+    link_rungs: list[Any] = field(default_factory=list)
+    link_proposals: list[Any] = field(default_factory=list)
     #: rung idempotency key -> when its KIS send was reserved (``None`` = the
     #: key matched several intent rows, so the day is not established).
     send_times: dict[str, datetime | None] = field(default_factory=dict)
+    orders: list[tuple[str, Any]] = field(default_factory=list)
+    link_orders: list[tuple[str, Any]] = field(default_factory=list)
+    evidence_fills: list[Any] = field(default_factory=list)
     fills: list[Any] = field(default_factory=list)
     history: list[Any] = field(default_factory=list)
     bars: list[daily_bars.Bar] = field(default_factory=list)
@@ -333,11 +345,128 @@ async def load_chain(
                 for key, created in intents:
                     data.send_times[key] = None if key in data.send_times else created
 
+    for name, model in (
+        ("kis_orders", KISLiveOrderLedger),
+        ("live_orders", LiveOrderLedger),
+        ("toss_orders", TossLiveOrderLedger),
+    ):
+
+        async def read_orders(model: Any = model) -> list[Any]:
+            stmt = select(model).where(
+                model.trade_date >= lo - _AUTHORITY_PAD,
+                model.trade_date < hi + _AUTHORITY_PAD,
+            )
+            stmt = stmt.where(*_symbol_filter(model.symbol, symbols))
+            if model is KISLiveOrderLedger:
+                stmt = stmt.where(
+                    model.account_mode == "kis_live",
+                    model.instrument_type == market.instrument_type,
+                )
+            elif model is LiveOrderLedger:
+                stmt = stmt.where(
+                    model.market == market.key,
+                    model.account_scope.in_(("kis_live", "upbit_live")),
+                )
+            else:
+                stmt = stmt.where(
+                    model.market == market.key,
+                    model.account_mode == "toss_live",
+                    model.operation_kind == "place",
+                )
+            stmt = stmt.order_by(model.trade_date, model.id).limit(MAX_SOURCE_ROWS)
+            return list((await session.execute(stmt)).scalars().all())
+
+        orders, order_ok = await guarded(
+            session, unknowns, f"source.{name}", read_orders, []
+        )
+        track(name, orders, order_ok, MAX_SOURCE_ROWS)
+        data.orders.extend(
+            (name, order) for order in orders if lo <= order.trade_date < hi
+        )
+        data.link_orders.extend(
+            (name, order) for order in orders if not lo <= order.trade_date < hi
+        )
+
+    keys = {
+        getattr(o, "idempotency_key", None) or getattr(o, "client_order_id", None)
+        for _, o in data.orders
+    } - {None, ""}
+    correlations = {getattr(o, "correlation_id", None) for _, o in data.orders} - {
+        None,
+        "",
+    }
+    if keys or correlations:
+
+        async def read_link_rungs() -> list[Any]:
+            stmt = (
+                select(OrderProposalRung)
+                .where(
+                    or_(
+                        OrderProposalRung.idempotency_key.in_(keys),
+                        OrderProposalRung.correlation_id.in_(correlations),
+                    )
+                )
+                .order_by(OrderProposalRung.id)
+                .limit(MAX_SOURCE_ROWS * 4)
+            )
+            return list((await session.execute(stmt)).scalars().all())
+
+        found, link_ok = await guarded(
+            session, unknowns, "source.link_rungs", read_link_rungs, []
+        )
+        track("link_rungs", found, link_ok, MAX_SOURCE_ROWS * 4)
+        seen = {r.id for r in data.rungs}
+        data.link_rungs = [r for r in found if r.id not in seen]
+        proposal_ids = {r.proposal_pk for r in data.link_rungs} - {
+            p.id for p in data.proposals
+        }
+        if proposal_ids:
+
+            async def read_link_proposals() -> list[Any]:
+                stmt = (
+                    select(OrderProposal)
+                    .where(
+                        OrderProposal.id.in_(proposal_ids),
+                        OrderProposal.market == market.instrument_type,
+                        OrderProposal.account_mode.in_(LIVE_PROPOSAL_ACCOUNT_MODES),
+                    )
+                    .order_by(OrderProposal.id)
+                    .limit(MAX_SOURCE_ROWS)
+                )
+                return list((await session.execute(stmt)).scalars().all())
+
+            linked, linked_ok = await guarded(
+                session, unknowns, "source.link_proposals", read_link_proposals, []
+            )
+            track("link_proposals", linked, linked_ok, MAX_SOURCE_ROWS)
+            data.link_proposals = linked
+        extra_keys = {
+            r.idempotency_key for r in data.link_rungs if r.idempotency_key
+        } - data.send_times.keys()
+        if extra_keys:
+
+            async def read_link_intents() -> list[Any]:
+                stmt = select(
+                    OrderSendIntent.idempotency_key, OrderSendIntent.created_at
+                ).where(
+                    OrderSendIntent.account_scope == KIS_LIVE_SEND_SCOPE,
+                    OrderSendIntent.idempotency_key.in_(extra_keys),
+                )
+                return list((await session.execute(stmt)).all())
+
+            intents, intent_ok = await guarded(
+                session, unknowns, "source.link_intents", read_link_intents, []
+            )
+            track("link_intents", intents, intent_ok, MAX_SOURCE_ROWS * 4)
+            for key, created in intents:
+                data.send_times[key] = None if key in data.send_times else created
+
     fills, ok = await guarded(session, unknowns, "source.fills", read_fills, [])
     track("fills", fills, ok, MAX_SOURCE_ROWS)
     if ok:
         kept, dropped = supersede_provisional(fills)
         data.superseded = dropped
+        data.evidence_fills = [r for r in kept if not is_opening_seed(r)]
         data.fills = [
             r for r in kept if lo <= r.filled_at < hi and not is_opening_seed(r)
         ]
@@ -469,15 +598,11 @@ def _match_candidate(proposal: Any, candidates: list[Any]) -> Any | None:
     return max(earlier, key=lambda c: (c.recorded_at, c.id), default=None)
 
 
-def proposal_rung_order_rows(
+def proposal_rung_rows(
     data: ChainData, market: MarketInfo
-) -> tuple[list[tuple[datetime | None, Row]], dict[OrderIdentity, str | None]]:
-    """Proposal, rung and order rows, plus ``order identity -> order ref``.
-
-    An identity two rungs share maps to ``None``: the link is ambiguous.
-    """
+) -> list[tuple[datetime | None, Row]]:
+    """Build proposal and rung rows."""
     out: list[tuple[datetime | None, Row]] = []
-    order_refs: dict[OrderIdentity, str | None] = {}
     rungs_by_proposal: dict[int, list[Any]] = defaultdict(list)
     for rung in data.rungs:
         rungs_by_proposal[rung.proposal_pk].append(rung)
@@ -533,32 +658,163 @@ def proposal_rung_order_rows(
                     ),
                 )
             )
-            if r.broker_order_id:
-                order_ref = make_ref("order", r.id)
-                # The broker order number is only part of a join identity here;
-                # it never reaches a row or a ref.
-                identity = rung_identity(p, r, market, data.send_times)
-                if identity is not None:
-                    order_refs[identity] = None if identity in order_refs else order_ref
-                out.append(
-                    (
-                        r.validated_at,
-                        _row(
-                            symbol=p.symbol,
-                            stage="order",
-                            event_at=r.validated_at,
-                            event_ref=order_ref,
-                            linked_ref=rung_ref,
-                            status=safe_code(r.state) or "unclassified",
-                            reason=None,
-                            quantity=Decimal(str(r.quantity)),
-                            price=limit_price,
-                            market=market,
-                            hints=price_hint,
-                        ),
-                    )
+    return out
+
+
+_INFERENCE_MARKER = "expired_inference:kis_regular_day_order_no_broker_original"
+
+
+def reject_reason(*values: Any) -> str:
+    text = " ".join(str(v or "").lower() for v in values)
+    rules = (
+        ("rate_limited", ("rate limit", "too many", "초당", "요청 횟수")),
+        ("price_limit", ("price limit", "상한가", "하한가", "가격제한")),
+        (
+            "insufficient_balance",
+            ("insufficient", "잔고 부족", "잔액 부족", "주문가능금액"),
+        ),
+        ("market_closed", ("market closed", "장 마감", "거래시간", "장운영시간")),
+        (
+            "invalid_order",
+            ("invalid order", "invalid_order", "주문 오류", "주문수량 오류"),
+        ),
+    )
+    return next(
+        (reason for reason, terms in rules if any(term in text for term in terms)),
+        "broker_other",
+    )
+
+
+def _day(broker: str, market: MarketInfo, when: datetime) -> Any:
+    return order_trading_day("kis", market.instrument_type, when)
+
+
+def _order_identity(order: Any, market: MarketInfo) -> OrderIdentity | None:
+    number = getattr(order, "order_no", None) or getattr(order, "broker_order_id", None)
+    if not number:
+        return None
+    return order_identity(
+        SimpleNamespace(
+            broker=order.broker,
+            account_mode="live",
+            instrument_type=market.instrument_type,
+            symbol=order.symbol,
+            side=order.side,
+            currency=order.currency or market.currency,
+            broker_order_id=number,
+            filled_at=order.trade_date,
+        )
+    )
+
+
+def order_rows(
+    data: ChainData, market: MarketInfo
+) -> tuple[list[tuple[datetime | None, Row]], dict[Any, str | None]]:
+    out = []
+    refs: dict[Any, str | None] = {}
+    proposals = {p.id: p for p in [*data.proposals, *data.link_proposals]}
+    linked_ids = {(source, order.id) for source, order in data.link_orders}
+    totals: dict[Any, Decimal] = defaultdict(Decimal)
+    for fill in data.evidence_fills:
+        if fill.source in AUTHORITATIVE_SOURCES:
+            fill_key = (order_identity(fill), _day(fill.broker, market, fill.filled_at))
+            totals[fill_key] += Decimal(str(fill.filled_qty))
+    rungs_by_identity: dict[Any, list[Any]] = defaultdict(list)
+    for rung in [*data.rungs, *data.link_rungs]:
+        proposal = proposals.get(rung.proposal_pk)
+        if proposal is None:
+            continue
+        identity = rung_identity(proposal, rung, market, data.send_times)
+        broker = _BROKER_BY_ACCOUNT_MODE.get(proposal.account_mode)
+        sent = (
+            data.send_times.get(rung.idempotency_key)
+            if broker == "kis"
+            else rung.created_at
+        )
+        if identity is not None and sent is not None and broker is not None:
+            rungs_by_identity[(identity, _day(broker, market, sent))].append(rung)
+    for source, order in [*data.orders, *data.link_orders]:
+        identity = _order_identity(order, market)
+        day = _day(order.broker, market, order.trade_date)
+        key = (identity, day) if identity else None
+        ref = make_ref("order", f"{source}:{order.id}")
+        if key is not None:
+            refs[key] = None if key in refs else ref
+        if (source, order.id) in linked_ids:
+            continue
+        matches = []
+        for rung in rungs_by_identity.get(key, []):
+            same_key = bool(
+                getattr(rung, "idempotency_key", None)
+                and rung.idempotency_key
+                == (
+                    getattr(order, "idempotency_key", None)
+                    or getattr(order, "client_order_id", None)
                 )
-    return out, order_refs
+            )
+            same_correlation = bool(
+                getattr(rung, "correlation_id", None)
+                and rung.correlation_id == getattr(order, "correlation_id", None)
+            )
+            if same_key or same_correlation:
+                matches.append(rung)
+        rung = matches[0] if len(matches) == 1 else None
+        total = totals.get(key, Decimal(0))
+        quantity = Decimal(str(order.quantity)) if order.quantity is not None else None
+        terminal = (
+            order.status
+            if order.status in {"filled", "rejected", "expired", "cancelled"}
+            else None
+        )
+        reason = None
+        if quantity and total == quantity:
+            status, basis = "filled", "broker"
+        elif quantity and 0 < total < quantity and not terminal:
+            status, basis = "partially_filled", "broker"
+        elif terminal:
+            status, basis = terminal, "broker"
+            if status == "rejected":
+                reason = reject_reason(
+                    getattr(order, "response_code", None),
+                    getattr(order, "response_message", None),
+                    getattr(order, "broker_status", None),
+                )
+            elif status == "expired":
+                reason = "day_order_expired"
+            elif status == "cancelled":
+                reason = "cancelled"
+        elif rung and getattr(rung, "void_reason", None) == _INFERENCE_MARKER:
+            status, basis, reason = (
+                "expired",
+                "inference",
+                "expired_inference_no_broker_original",
+            )
+        elif order.status in {"accepted", "pending", "partial"} and day == _day(
+            order.broker, market, datetime.now(UTC)
+        ):
+            status, basis = "working", "broker"
+        else:
+            status, basis, reason = "unresolved", "unknown", "no_terminal_evidence"
+        out.append(
+            (
+                order.trade_date,
+                _row(
+                    symbol=order.symbol,
+                    stage="order",
+                    event_at=order.trade_date,
+                    event_ref=ref,
+                    linked_ref=make_ref("rung", rung.id) if rung else None,
+                    status=status,
+                    reason=reason,
+                    quantity=quantity,
+                    price=order.price,
+                    market=market,
+                    currency=order.currency,
+                    basis=basis,
+                ),
+            )
+        )
+    return out, refs
 
 
 def fill_rows(
@@ -568,7 +824,9 @@ def fill_rows(
 ) -> list[tuple[datetime | None, Row]]:
     out: list[tuple[datetime | None, Row]] = []
     for f in data.fills:
-        order_ref = order_refs.get(order_identity(f))
+        order_ref = order_refs.get(
+            (order_identity(f), _day(f.broker, market, f.filled_at))
+        )
         out.append(
             (
                 f.filled_at,
@@ -731,8 +989,9 @@ def build_chain(
     """All chain rows of the cohort, in a stable (time, stage, ref) order."""
     stage_rank = {name: i for i, name in enumerate(STAGE_ORDER)}
     rows = candidate_rows(data, market)
-    chain_rows, order_refs = proposal_rung_order_rows(data, market)
-    rows += chain_rows
+    rows += proposal_rung_rows(data, market)
+    orders, order_refs = order_rows(data, market)
+    rows += orders
     rows += fill_rows(data, market, order_refs)
     rows += markout_rows(data, market)
     if include_lots:
@@ -754,5 +1013,6 @@ def data_as_of(data: ChainData) -> datetime | None:
     times += [f.created_at for f in data.forecasts]
     times += [p.created_at for p in data.proposals]
     times += [f.filled_at for f in data.fills]
+    times += [o.trade_date for _, o in data.orders]
     aware = [t for t in times if t is not None and t.tzinfo is not None]
     return max(aware) if aware else None

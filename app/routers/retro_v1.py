@@ -52,6 +52,8 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
         allowed.update(("market", "strategy"))
     if operation == "mock_experiments":
         allowed.add("strategy_id")
+    if operation in {"retro_symbol", "get_bars"}:
+        allowed.add("market")
     if set(params) - allowed or any(k not in params for k in required):
         raise RetroReadError("validation_error")
     if any(len(params.getlist(k)) != 1 for k in params):
@@ -88,6 +90,12 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
         if not re.fullmatch(r"o[0-9]{1,11}", result["cursor"]):
             raise RetroReadError("validation_error")
     if "tf" in result and result["tf"] not in {"1m", "5m", "60m", "1d"}:
+        raise RetroReadError("validation_error")
+    if (
+        operation in {"retro_symbol", "get_bars"}
+        and "market" in result
+        and result["market"] not in {"kr", "us", "crypto"}
+    ):
         raise RetroReadError("validation_error")
     return result
 

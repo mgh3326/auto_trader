@@ -172,6 +172,44 @@ async def test_retro_symbol_matches_contract_and_accepts_the_from_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retro_symbol_explicit_market_and_inference(monkeypatch) -> None:
+    from app.services.retro_v1 import retro_symbol as module
+    from app.services.retro_v1.chain import ChainData
+
+    seen = []
+
+    async def load(_session, _unknowns, info, **_kwargs):
+        seen.append((info.key, _kwargs["symbols"]))
+        return ChainData()
+
+    monkeypatch.setattr(module, "load_chain", load)
+    explicit = FakeSession()
+    response = await read_retro_symbol(
+        explicit, symbol="KRW-BTC", market="crypto", from_=DAY, to=DAY
+    )
+    validate(response, "RetroSymbolResponse")
+    assert seen == [("crypto", ["KRW-BTC"])]
+    inferred = FakeSession()
+    await read_retro_symbol(inferred, symbol="BTC", from_=DAY, to=DAY)
+    assert seen == [("crypto", ["KRW-BTC"]), ("us", ["BTC"])]
+    with pytest.raises(RetroReadError) as err:
+        await read_retro_symbol(
+            FakeSession(), symbol="KRW-BTC", market="us", from_=DAY, to=DAY
+        )
+    assert "market" in err.value.safe_message.lower()
+    await read_retro_symbol(
+        FakeSession(), symbol="AGM-PA", market="us", from_=DAY, to=DAY
+    )
+    assert seen[-1] == ("us", ["AGM.PA"])
+    for symbol in ("ETH-USD", "SOL-USDT", "KRW/BTC", "KRW.BTC"):
+        with pytest.raises(RetroReadError) as err:
+            await read_retro_symbol(
+                FakeSession(), symbol=symbol, market="us", from_=DAY, to=DAY
+            )
+        assert "market" in err.value.safe_message.lower()
+
+
+@pytest.mark.asyncio
 async def test_lot_is_unknown_not_zero_when_history_has_unverified_provisional_rows() -> (
     None
 ):
@@ -211,7 +249,7 @@ async def test_funnel_rate_needs_a_known_denominator() -> None:
     assert rows["proposal"]["count"] is None
     assert rows["proposal"]["fill_rate"] is None
     assert rows["proposal"]["missing_reason"] == "incomplete_evidence"
-    assert rows["fill"]["fill_rate"] is None  # denominator (order) not known
+    assert rows["fill"]["fill_rate"] == "1.0000"  # ledger order count remains known
 
 
 @pytest.mark.asyncio
@@ -286,7 +324,7 @@ async def test_opening_seed_is_not_a_fill_or_markout_but_still_sizes_the_lot() -
 
 @pytest.mark.asyncio
 async def test_reused_order_number_on_another_day_does_not_link_or_count() -> None:
-    from tests.services.retro_v1.support import FILL_AT, ledger
+    from tests.services.retro_v1.support import FILL_AT, ledger, live_order
 
     # same symbol and KIS order number, two trading days; only the rung of the
     # second day exists. The day-1 fill must not link to it (nor count in funnel).
@@ -301,6 +339,10 @@ async def test_reused_order_number_on_another_day_does_not_link_or_count() -> No
     session = kr_day_session(
         **{
             "FROM review.execution_ledger": [day1, day2],
+            "FROM review.kis_live_order_ledger": [
+                live_order(100),
+                live_order(101, FILL_AT - timedelta(days=1)),
+            ],
             "FROM review.order_proposal_rungs": [rung(100, 10), earlier_rung],
             "FROM review.order_send_intents": [
                 ("idem-100", FILL_AT - timedelta(hours=1)),
@@ -316,8 +358,12 @@ async def test_reused_order_number_on_another_day_does_not_link_or_count() -> No
     orders = {r["event_ref"] for r in response["data"] if r["stage"] == "order"}
     assert len(fills) == 2 and len(orders) == 2
     # each fill links to the order of its own trading day
-    assert fills[make_ref("fill", 901)]["linked_ref"] == make_ref("order", 100)
-    assert fills[make_ref("fill", 900)]["linked_ref"] == make_ref("order", 101)
+    assert fills[make_ref("fill", 901)]["linked_ref"] == make_ref(
+        "order", "kis_orders:100"
+    )
+    assert fills[make_ref("fill", 900)]["linked_ref"] == make_ref(
+        "order", "kis_orders:101"
+    )
     # two rungs sharing one identity are ambiguous: link unknown, never overwritten
     same_day = rung(102, 10, validated_at=FILL_AT, broker_order_id="0000123456")
     intents = [
@@ -334,7 +380,7 @@ async def test_reused_order_number_on_another_day_does_not_link_or_count() -> No
     response = await read_retro_day(ambiguous, market="kr", date=DAY)
     validate(response, "RetroDayResponse")
     fill = next(r for r in response["data"] if r["stage"] == "fill")
-    assert fill["linked_ref"] is None and fill["reason"] == "no_linked_order"
+    assert fill["linked_ref"] == make_ref("order", "kis_orders:100")
     funnel = await read_retro_funnel(
         kr_day_session(
             **{
@@ -349,8 +395,7 @@ async def test_reused_order_number_on_another_day_does_not_link_or_count() -> No
     )
     validate(funnel, "RetroFunnelResponse")
     by_stage = {r["stage"]: r for r in funnel["data"]}
-    assert by_stage["fill"]["count"] is None  # identities not unique: unknown
-    assert by_stage["fill"]["missing_reason"] == "incomplete_evidence"
+    assert by_stage["fill"]["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -397,7 +442,7 @@ async def test_markout_counts_sessions_on_one_venue_and_marks_mixed_venues_unkno
 
 @pytest.mark.asyncio
 async def test_order_day_is_the_send_time_not_the_overwritten_validated_at() -> None:
-    from tests.services.retro_v1.support import FILL_AT, ledger
+    from tests.services.retro_v1.support import FILL_AT, ledger, live_order
 
     # a day-1 order partially filled day 1 and cancelled today: cancel/fill
     # transitions overwrite rung.validated_at with today. The identity must still
@@ -411,6 +456,9 @@ async def test_order_day_is_the_send_time_not_the_overwritten_validated_at() -> 
     session = kr_day_session(
         **{
             "FROM review.execution_ledger": [day1_fill, today_fill],
+            "FROM review.kis_live_order_ledger": [
+                live_order(100, FILL_AT - timedelta(days=1))
+            ],
             "FROM review.order_proposal_rungs": [cancelled],
             "FROM review.order_send_intents": [
                 ("idem-100", FILL_AT - timedelta(days=1, minutes=30))
@@ -422,7 +470,9 @@ async def test_order_day_is_the_send_time_not_the_overwritten_validated_at() -> 
     )
     validate(response, "RetroSymbolResponse")
     fills = {r["event_ref"]: r for r in response["data"] if r["stage"] == "fill"}
-    assert fills[make_ref("fill", 910)]["linked_ref"] == make_ref("order", 100)
+    assert fills[make_ref("fill", 910)]["linked_ref"] == make_ref(
+        "order", "kis_orders:100"
+    )
     assert fills[make_ref("fill", 911)]["linked_ref"] is None
 
 
@@ -434,7 +484,7 @@ async def test_kis_order_without_send_evidence_has_unknown_identity_and_fill_cou
     response = await read_retro_day(session, market="kr", date=DAY)
     validate(response, "RetroDayResponse")
     fill = next(r for r in response["data"] if r["stage"] == "fill")
-    assert fill["linked_ref"] is None
+    assert fill["linked_ref"] == make_ref("order", "kis_orders:100")
     funnel = await read_retro_funnel(
         kr_day_session(**{"FROM review.order_send_intents": []}),
         market="kr",
@@ -443,7 +493,7 @@ async def test_kis_order_without_send_evidence_has_unknown_identity_and_fill_cou
     )
     by_stage = {r["stage"]: r for r in funnel["data"]}
     assert by_stage["order"]["count"] == 1
-    assert by_stage["fill"]["count"] is None
+    assert by_stage["fill"]["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -462,4 +512,4 @@ async def test_send_evidence_is_read_from_the_kis_live_scope_only() -> None:
         date=DAY,
     )
     fill = next(r for r in response["data"] if r["stage"] == "fill")
-    assert fill["linked_ref"] == make_ref("order", 100)
+    assert fill["linked_ref"] == make_ref("order", "kis_orders:100")

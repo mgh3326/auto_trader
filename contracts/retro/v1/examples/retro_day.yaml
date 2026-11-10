@@ -9,28 +9,34 @@ response:
   as_of: '2026-01-03T00:00:00Z'
   data_as_of: '2026-01-02T00:00:00Z'
   timezone: UTC
-  total: 1
+  total: 2
   truncated: false
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns:
-  - field: data.0.event_at
-    reason: missing_data
-  - field: data.0.linked_ref
-    reason: missing_data
-  - field: data.0.reason
-    reason: missing_data
+  unknowns: []
   data:
   - symbol: SYN001
-    stage: candidate
-    event_at: null
+    stage: order
+    event_at: '2026-01-02T00:00:00Z'
     event_ref: ref_synthetic_1
     linked_ref: null
-    status: considered
-    reason: null
-    quantity: '9007199254740993.0000'
-    price: '12.3400'
+    status: rejected
+    reason: rate_limited
+    quantity: '1'
+    price: '12.34'
     currency: XSY
     unit: shares
-    basis: inference
+    basis: broker
+  - symbol: SYN002
+    stage: order
+    event_at: '2026-01-02T00:00:00Z'
+    event_ref: ref_synthetic_2
+    linked_ref: null
+    status: unresolved
+    reason: no_terminal_evidence
+    quantity: '1'
+    price: '12.34'
+    currency: XSY
+    unit: shares
+    basis: unknown

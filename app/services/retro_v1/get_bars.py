@@ -28,7 +28,7 @@ from app.services.retro_v1.envelope import (
     read_snapshot,
     resolve_from,
 )
-from app.services.retro_v1.market import MarketInfo, infer_market, normalize_symbol
+from app.services.retro_v1.market import MarketInfo, normalize_symbol, select_market
 
 TIMEFRAMES = ("1m", "5m", "60m", "1d")
 
@@ -56,6 +56,7 @@ def bar_row(bar: daily_bars.Bar, market: MarketInfo) -> Row:
         missing = "unavailable"
     row = {
         "symbol": bar.symbol,
+        "market": market.key,
         "time": iso(bar.time),
         "open_price": dec(bar.open),
         "high_price": dec(bar.high),
@@ -83,6 +84,7 @@ async def read_get_bars(
     from_: Any = None,
     limit: int = DEFAULT_LIMIT,
     cursor: str | None = None,
+    market: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
     """Contract ``get_bars``; ``from`` is accepted as ``from_`` or ``**{"from": d}``."""
@@ -93,9 +95,12 @@ async def read_get_bars(
     if tf not in TIMEFRAMES:
         raise RetroReadError("validation_error")
     clean = check_symbol(symbol)
-    market = infer_market(clean)
-    normalized = normalize_symbol(clean, market)
-    digest = params_digest(symbol=normalized, tf=tf, start=start, end=end)
+    market_info = select_market(clean, market)
+    normalized = normalize_symbol(clean, market_info)
+    digest_values = {"symbol": normalized, "tf": tf, "start": start, "end": end}
+    if market is not None:
+        digest_values["market"] = market_info.key
+    digest = params_digest(**digest_values)
     offset = decode_cursor(cursor, digest)
     lo, hi = kst_window(start, end)
     unknowns = Unknowns()
@@ -104,14 +109,14 @@ async def read_get_bars(
     total: int | None = None
 
     async with read_snapshot(session):
-        if not daily_bars.supports(market, tf):
+        if not daily_bars.supports(market_info, tf):
             unknowns.note("data", "unsupported")
         else:
 
             async def read() -> list[daily_bars.Bar]:
                 return await daily_bars.load_bars(
                     session,
-                    market,
+                    market_info,
                     tf,
                     [normalized],
                     lo=lo,
@@ -125,7 +130,7 @@ async def read_get_bars(
             elif ok:
                 total = len(bars)
 
-    rows = [bar_row(bar, market) for bar in bars]
+    rows = [bar_row(bar, market_info) for bar in bars]
     data_as_of = max((bar.time for bar in bars), default=None)
     return build_response(
         as_of=as_of,

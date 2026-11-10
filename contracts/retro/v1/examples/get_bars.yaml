@@ -2,7 +2,8 @@ operation: get_bars
 request:
   path: /trading/api/retro/v1/get_bars
   query:
-    symbol: SYN001
+    symbol: KRW-BTC
+    market: crypto
     tf: 1d
     from: '2026-01-02'
     to: '2026-01-02'
@@ -27,8 +28,9 @@ response:
     low_price: '1.1000'
     close_price: '1.2500'
     quantity: '100.0000'
-    currency: XSY
-    unit: shares
+    currency: KRW
+    unit: base_asset
+    market: crypto
     source: synthetic
     venue: XSYN
     adjusted: false

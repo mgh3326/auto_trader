@@ -92,12 +92,20 @@ def operational_error() -> OperationalError:
     return OperationalError("SELECT 1", {}, Exception("raw driver text must not leak"))
 
 
+class WithParams:
+    """A route that also receives the statement's compiled bind parameters."""
+
+    def __init__(self, fn: Callable[[str, dict[str, Any]], list[Any]]) -> None:
+        self.fn = fn
+
+
 class FakeSession:
     """Routes each SELECT by the table it reads; records every statement.
 
     ``routes`` maps a ``FROM <table>`` fragment to rows, a callable
-    ``(sql) -> rows`` or an exception instance to raise. Unrouted statements
-    (``SET TRANSACTION``, ``set_config``) return nothing.
+    ``(sql) -> rows``, a ``WithParams`` callable ``(sql, params) -> rows`` or an
+    exception instance to raise. Unrouted statements (``SET TRANSACTION``,
+    ``set_config``) return nothing.
     """
 
     def __init__(self, routes: dict[str, Any] | None = None) -> None:
@@ -125,13 +133,17 @@ class FakeSession:
         yield
 
     async def execute(self, statement: Any, params: Any = None) -> FakeResult:
-        sql = str(statement.compile(dialect=postgresql.dialect()))
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
         self.statements.append(sql)
         for fragment, value in self.routes.items():
             if fragment in sql:
                 if isinstance(value, BaseException):
                     raise value
-                rows = value(sql) if callable(value) else value
+                if isinstance(value, WithParams):
+                    rows = value.fn(sql, dict(compiled.params))
+                else:
+                    rows = value(sql) if callable(value) else value
                 if (
                     fragment == "FROM review.execution_ledger"
                     and "quarantined_at IS NULL" in sql
@@ -255,6 +267,27 @@ Route = Callable[[str], list[Any]]
 FILL_AT = datetime(2026, 1, 5, 2, 0, tzinfo=UTC)  # 11:00 KST on 2026-01-05
 
 
+def live_order(id_: int = 100, at: datetime = FILL_AT, **kw: Any) -> Any:
+    values = {
+        "id": id_,
+        "trade_date": at,
+        "broker": "kis",
+        "symbol": "005930",
+        "side": "buy",
+        "currency": "KRW",
+        "order_no": "0000123456",
+        "quantity": Decimal("3"),
+        "price": Decimal("70000"),
+        "status": "accepted",
+        "idempotency_key": f"idem-{id_}",
+        "correlation_id": None,
+        "response_code": None,
+        "response_message": None,
+    }
+    values.update(kw)
+    return ns(**values)
+
+
 def kr_day_session(**extra_routes: Any) -> FakeSession:
     """One KR trading day, 005930: pick, rejected forecast, proposal → rung →
     order → fill, a superseded websocket duplicate and a quarantined phantom."""
@@ -301,6 +334,7 @@ def kr_day_session(**extra_routes: Any) -> FakeSession:
         "FROM review.order_proposal_rungs": [rung(100, 10)],
         "FROM review.order_send_intents": [("idem-100", FILL_AT - timedelta(hours=1))],
         "FROM review.execution_ledger": fills,
+        "FROM review.kis_live_order_ledger": [live_order()],
         "FROM public.kr_candles_1d": bars,
     }
     routes.update(extra_routes)
