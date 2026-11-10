@@ -113,6 +113,15 @@ tests/scripts/test_ncp_job_timers_golden.py
 tests/scripts/test_nhplug_collect_period.py
 tests/scripts/test_policy_table_halt_suspect.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
+tests/services/account_value/test_broker_views.py
+tests/services/account_value/test_cli.py
+tests/services/account_value/test_flows.py
+tests/services/account_value/test_market_return.py
+tests/services/account_value/test_postgres_integration.py
+tests/services/account_value/test_readers.py
+tests/services/account_value/test_report.py
+tests/services/account_value/test_returns.py
+tests/services/account_value/test_snapshot.py
 tests/services/action_report/common/test_generator_constraints.py
 tests/services/action_report/common/test_jsonable.py
 tests/services/action_report/common/test_stale_gate.py

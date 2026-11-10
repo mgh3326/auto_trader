@@ -1,0 +1,124 @@
+"""Postgres-only checks, run by CI against its isolated migrated database."""
+
+import importlib.util
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
+
+from app.models.account_value import AccountExternalFlow, AccountValueSnapshot
+from app.services.account_value.flows import ExternalFlow, record_flow
+from app.services.account_value.snapshot import Observation, capture
+
+pytestmark = pytest.mark.integration
+
+
+class Reader:
+    def __init__(self, account):
+        self.account = account
+
+    async def read(self):
+        return [
+            Observation(
+                self.account,
+                "crypto",
+                date(2026, 1, 1),
+                datetime(2026, 1, 1, tzinfo=UTC),
+                (),
+                {"KRW": None},
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_preview_commit_and_repeat_noop(db_session):
+    account = "upbit:upbit:" + uuid4().hex * 2
+    reader = Reader(account)
+    await capture(reader, db_session)
+    query = (
+        select(func.count())
+        .select_from(AccountValueSnapshot)
+        .where(AccountValueSnapshot.account == account)
+    )
+    assert (await db_session.scalar(query)) == 0
+    inserted = await capture(reader, db_session, commit=True)
+    assert inserted[0]["write_status"] == "inserted"
+
+    class ChangedReader:
+        async def read(self):
+            return [
+                Observation(
+                    account,
+                    "crypto",
+                    date(2026, 1, 1),
+                    datetime(2026, 1, 1, tzinfo=UTC),
+                    (),
+                    {"KRW": Decimal(99)},
+                )
+            ]
+
+    repeated = await capture(ChangedReader(), db_session, commit=True)
+    assert repeated[0]["write_status"] == "already_present"
+    assert repeated[0]["cash"] == {"KRW": None}
+    assert (await db_session.scalar(query)) == 1
+
+
+@pytest.mark.asyncio
+async def test_downgrade_refuses_retained_rows(db_session):
+    await capture(Reader("upbit:upbit:" + uuid4().hex * 2), db_session, commit=True)
+    path = Path("alembic/versions/20261110_hk3800_account_value.py")
+    spec = importlib.util.spec_from_file_location("account_value_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def downgrade(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            module.downgrade()
+
+    with pytest.raises(DBAPIError, match="account_value_rows_retained"):
+        async with db_session.begin_nested():
+            connection = await db_session.connection()
+            await connection.run_sync(downgrade)
+
+
+@pytest.mark.asyncio
+async def test_flow_retry_conflict_distinct_equal_and_reversal(db_session):
+    account = "upbit:upbit:" + uuid4().hex * 2
+    key = uuid4()
+    flow = ExternalFlow(account, "account", "KRW", Decimal("10"), date(2026, 1, 2), key)
+    assert await record_flow(db_session, flow) == "preview"
+    assert await record_flow(db_session, flow, commit=True) == "inserted"
+    assert await record_flow(db_session, flow, commit=True) == "already_present"
+    with pytest.raises(ValueError, match="different flow"):
+        await record_flow(
+            db_session,
+            ExternalFlow(account, "account", "KRW", Decimal("11"), flow.day, key),
+            commit=True,
+        )
+    same_amount = ExternalFlow(
+        account, "account", "KRW", Decimal("10"), flow.day, uuid4()
+    )
+    reversal = ExternalFlow(
+        account, "account", "KRW", Decimal("-10"), flow.day, uuid4()
+    )
+    assert await record_flow(db_session, same_amount, commit=True) == "inserted"
+    assert await record_flow(db_session, reversal, commit=True) == "inserted"
+    rows = (
+        (
+            await db_session.execute(
+                select(AccountExternalFlow).where(
+                    AccountExternalFlow.account == account
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 3
+    assert sum(row.amount for row in rows) == Decimal("10")
