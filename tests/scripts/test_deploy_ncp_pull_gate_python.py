@@ -29,7 +29,9 @@ def _exec(path: Path, body: str) -> Path:
     return path
 
 
-def _run(tmp_path: Path, *, env_extra: dict[str, str], bindir: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    tmp_path: Path, *, env_extra: dict[str, str], bindir: Path
+) -> subprocess.CompletedProcess[str]:
     snippet = tmp_path / "snippet.sh"
     snippet.write_text(
         _gate_python_source()
@@ -53,7 +55,9 @@ def _old_python(path: Path) -> Path:
 def test_explicit_interpreter_wins(tmp_path: Path) -> None:
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    result = _run(tmp_path, env_extra={"AT_DEPLOY_GATE_PYTHON": sys.executable}, bindir=bindir)
+    result = _run(
+        tmp_path, env_extra={"AT_DEPLOY_GATE_PYTHON": sys.executable}, bindir=bindir
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == sys.executable
 
@@ -62,7 +66,9 @@ def test_old_explicit_interpreter_refuses_78(tmp_path: Path) -> None:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     old = _old_python(tmp_path / "py36")
-    result = _run(tmp_path, env_extra={"AT_DEPLOY_GATE_PYTHON": str(old)}, bindir=bindir)
+    result = _run(
+        tmp_path, env_extra={"AT_DEPLOY_GATE_PYTHON": str(old)}, bindir=bindir
+    )
     assert result.returncode == 78
     assert "requires Python >= 3.11" in result.stderr
 
