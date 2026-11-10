@@ -94,56 +94,78 @@ def acquire_consumer_checkout(
             base_repo = cache_dir
 
     # 2. Check if base_repo is a git repository
-    if (base_repo / ".git").exists():
-        # Ensure target_commit is present
-        verify = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", f"{target_commit}^{{commit}}"],
-            cwd=str(base_repo),
-            capture_output=True,
-        )
-        if verify.returncode != 0:
-            print(f"[gate] Fetching commit {target_commit[:10]} in {base_repo}...")
+    if not (base_repo / ".git").exists():
+        if explicit_dir:
+            raise RuntimeError(
+                f"explicit consumer dir {explicit_dir} is not a valid git repository"
+            )
+        cache_dir = REPO_ROOT / ".cache" / "consumers" / consumer_info["name"]
+        if base_repo == cache_dir:
+            print(f"[gate] Corrupted cache {cache_dir}; re-cloning...")
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            cache_dir.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run(
-                ["git", "fetch", "origin", target_commit],
-                cwd=str(base_repo),
+                ["git", "clone", consumer_info["repo_url"], str(cache_dir)],
                 check=True,
-                capture_output=True,
+            )
+            base_repo = cache_dir
+        else:
+            raise RuntimeError(
+                f"consumer repository at {base_repo} is not a valid git repository"
             )
 
-        # Create an isolated temporary git worktree at the pinned commit
-        temp_worktree = Path(tempfile.mkdtemp(prefix=f"{consumer_info['name']}-gate-"))
-        try:
-            subprocess.run(
-                [
-                    "git",
-                    "worktree",
-                    "add",
-                    "--detach",
-                    str(temp_worktree),
-                    target_commit,
-                ],
-                cwd=str(base_repo),
-                check=True,
-                capture_output=True,
-            )
-            head = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=str(temp_worktree), text=True
-            ).strip()
-            print(
-                f"[gate] Prepared isolated worktree at {temp_worktree} (HEAD: {head[:10]})"
-            )
-            yield temp_worktree
-        finally:
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", str(temp_worktree)],
-                cwd=str(base_repo),
-                check=False,
-                capture_output=True,
-            )
-            shutil.rmtree(temp_worktree, ignore_errors=True)
-    else:
-        # Fallback if base_repo is not a git repository
-        yield base_repo
+    if not (base_repo / ".git").exists():
+        raise RuntimeError(
+            f"unable to establish a valid git repository for consumer at {base_repo}"
+        )
+
+    # Ensure target_commit is present
+    verify = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target_commit}^{{commit}}"],
+        cwd=str(base_repo),
+        capture_output=True,
+    )
+    if verify.returncode != 0:
+        print(f"[gate] Fetching commit {target_commit[:10]} in {base_repo}...")
+        subprocess.run(
+            ["git", "fetch", "origin", target_commit],
+            cwd=str(base_repo),
+            check=True,
+            capture_output=True,
+        )
+
+    # Create an isolated temporary git worktree at the pinned commit
+    temp_parent = Path(tempfile.mkdtemp(prefix=f"{consumer_info['name']}-gate-"))
+    temp_worktree = temp_parent / "checkout"
+    try:
+        subprocess.run(
+            [
+                "git",
+                "worktree",
+                "add",
+                "--detach",
+                str(temp_worktree),
+                target_commit,
+            ],
+            cwd=str(base_repo),
+            check=True,
+            capture_output=True,
+        )
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(temp_worktree), text=True
+        ).strip()
+        print(
+            f"[gate] Prepared isolated worktree at {temp_worktree} (HEAD: {head[:10]})"
+        )
+        yield temp_worktree
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(temp_worktree)],
+            cwd=str(base_repo),
+            check=False,
+            capture_output=True,
+        )
+        shutil.rmtree(temp_parent, ignore_errors=True)
 
 
 class CandidateServerThread(threading.Thread):
