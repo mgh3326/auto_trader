@@ -481,3 +481,75 @@ async def test_account_series_break_blocks_returns_even_if_old_series_has_endpoi
     assert "series_break" in prior.reasons
     assert prior.return_rate is None
     assert prior.flows is None
+
+
+@pytest.mark.asyncio
+async def test_market_ledger_query_uses_authoritative_sources_and_in_effect(
+    monkeypatch,
+):
+    from datetime import UTC, date, datetime, timedelta
+    from types import SimpleNamespace
+
+    from app.services.account_value import load_report
+
+    start = date(2026, 1, 1)
+    account = "kis:kis_live:" + "a" * 64
+    snapshots = [
+        SimpleNamespace(
+            account=account,
+            market="kr",
+            day=start + timedelta(days=i),
+            observed_at=datetime(2026, 1, 1 + i, tzinfo=UTC),
+            holdings=[],
+            cash={"KRW": "0"},
+            reasons=[],
+        )
+        for i in range(2)
+    ]
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.value
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+            self.ledger_query = None
+
+        async def execute(self, query):
+            self.calls += 1
+            if self.calls == 1:
+                return Result(snapshots)
+            if self.calls == 2:
+                return Result([])
+            if self.calls == 3:
+                return Result([(account, "kr")])
+            self.ledger_query = query
+            return Result([])
+
+    async def no_sleeves(*args):
+        return []
+
+    async def benchmark(*args):
+        return None, None
+
+    monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
+    monkeypatch.setattr(load_report, "_benchmark", benchmark)
+    session = Session()
+    await load_report.load_weekly_report(
+        session, start, start + timedelta(days=1), flows_complete=True
+    )
+    compiled = session.ledger_query.compile()
+    assert "execution_ledger.quarantined_at IS NULL" in str(compiled)
+    assert "execution_ledger.source IN" in str(compiled)
+    assert any(
+        set(value) == {"reconciler", "manual_import"}
+        for value in compiled.params.values()
+        if isinstance(value, (list, tuple, set, frozenset))
+    )

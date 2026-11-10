@@ -288,6 +288,11 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
 
 #: (path, function) -> why it deliberately reads every row (EXEMPT).
 EXEMPT_READERS: dict[tuple[str, str], str] = {
+    ("app/services/account_value/load_report.py", "load_weekly_report"): (
+        "reads only AUTHORITATIVE_SOURCES (reconciler/manual_import); the quarantine "
+        "scope CHECK allows quarantine only for websocket rows. The in-effect "
+        "predicate is still ANDed in the query."
+    ),
     ("app/services/execution_intent_gateway/query.py", "read_fills"): (
         "mock-only journal fill reader still ANDs execution_ledger_in_effect; "
         "test_intent_fills_db tests committed quarantined/superseded exclusion"
