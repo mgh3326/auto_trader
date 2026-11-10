@@ -363,7 +363,8 @@ def main() -> int:
                 str(consumer_lock_path),
             ]
             print(f"[gate] Executing: {' '.join(cmd)}")
-            res = subprocess.run(cmd, cwd=str(consumer_dir))
+            env = {**os.environ, "GOTOOLCHAIN": "auto"}
+            res = subprocess.run(cmd, cwd=str(consumer_dir), env=env)
             return res.returncode
         finally:
             server_thread.stop()

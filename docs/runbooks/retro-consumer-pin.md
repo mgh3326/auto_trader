@@ -12,7 +12,7 @@ Currently supported consumer combination:
 
 | Consumer | Repository | Pinned Commit | Go Version | Scope |
 |---|---|---|---|---|
-| **Factortrail** | `github.com/mgh3326/factortrail` | `4e111bfe3346c4052b0e9cae588411e5b809c017` | `1.24` | `internal/providers/autotrader` |
+| **Factortrail** | `github.com/mgh3326/factortrail` | `4e111bfe3346c4052b0e9cae588411e5b809c017` | `1.27` | `internal/providers/autotrader` |
 
 The gate executes the pinned consumer's actual contract assertions against a live, candidate loopback instance of `auto_trader` running the exact candidate provider code.
 

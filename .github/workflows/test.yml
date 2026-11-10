@@ -915,10 +915,12 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
       with:
-        go-version: '1.24'
+        go-version: '1.27'
         cache: true
 
     - name: Run retro consumer contract gate
+      env:
+        GOTOOLCHAIN: auto
       run: |
         uv run python scripts/ci/run_retro_consumer_gate.py
 
