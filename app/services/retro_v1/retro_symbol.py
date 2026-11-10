@@ -22,7 +22,7 @@ from app.services.retro_v1.envelope import (
     read_snapshot,
     resolve_from,
 )
-from app.services.retro_v1.market import infer_market, normalize_symbol
+from app.services.retro_v1.market import normalize_symbol, select_market
 
 
 async def read_retro_symbol(
@@ -33,6 +33,7 @@ async def read_retro_symbol(
     from_: Any = None,
     limit: int = DEFAULT_LIMIT,
     cursor: str | None = None,
+    market: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
     """Contract ``retro_symbol``; ``from`` is ``from_`` or the literal ``from`` key."""
@@ -41,9 +42,17 @@ async def read_retro_symbol(
     check_span(start, end)
     check_limit(limit)
     clean = check_symbol(symbol)
-    info = infer_market(clean)
+    info = select_market(clean, market)
     normalized = normalize_symbol(clean, info)
-    digest = params_digest(op="retro_symbol", symbol=normalized, start=start, end=end)
+    digest_values = {
+        "op": "retro_symbol",
+        "symbol": normalized,
+        "start": start,
+        "end": end,
+    }
+    if market is not None:
+        digest_values["market"] = info.key
+    digest = params_digest(**digest_values)
     offset = decode_cursor(cursor, digest)
     lo, hi = kst_window(start, end)
     unknowns = Unknowns()

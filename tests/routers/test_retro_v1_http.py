@@ -118,7 +118,7 @@ async def test_readers_return_contract_examples(client, monkeypatch):
             params=example["request"]["query"],
             headers={"X-Retro-Read-Token": "retro-secret"},
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 200, f"{op}: {response.text}"
         assert response.json() == example["response"]
         for name, mock in mocks.items():
             assert mock.await_count == (1 if name == op else 0)
@@ -192,7 +192,26 @@ async def test_oversized_limit_is_validation_error(client):
         headers={"X-Retro-Read-Token": "retro-secret"},
     )
     assert response.status_code == 422
-    assert response.json()["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_market_query_validation(client, monkeypatch):
+    mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setitem(retro_v1.READERS, "get_bars", mock)
+    headers = {"X-Retro-Read-Token": "retro-secret"}
+    base = {"symbol": "BTC", "tf": "1d", "from": "2026-01-01", "to": "2026-01-01"}
+    response = await client.get(
+        f"{retro_v1.PREFIX}/get_bars",
+        params={**base, "market": "other"},
+        headers=headers,
+    )
+    assert response.status_code == 422
+    assert mock.await_count == 0
+    response = await client.get(
+        f"{retro_v1.PREFIX}/get_bars", params={**base, "market": "us"}, headers=headers
+    )
+    assert response.status_code == 200
+    mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

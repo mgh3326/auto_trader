@@ -172,6 +172,44 @@ async def test_retro_symbol_matches_contract_and_accepts_the_from_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retro_symbol_explicit_market_and_inference(monkeypatch) -> None:
+    from app.services.retro_v1 import retro_symbol as module
+    from app.services.retro_v1.chain import ChainData
+
+    seen = []
+
+    async def load(_session, _unknowns, info, **_kwargs):
+        seen.append((info.key, _kwargs["symbols"]))
+        return ChainData()
+
+    monkeypatch.setattr(module, "load_chain", load)
+    explicit = FakeSession()
+    response = await read_retro_symbol(
+        explicit, symbol="KRW-BTC", market="crypto", from_=DAY, to=DAY
+    )
+    validate(response, "RetroSymbolResponse")
+    assert seen == [("crypto", ["KRW-BTC"])]
+    inferred = FakeSession()
+    await read_retro_symbol(inferred, symbol="BTC", from_=DAY, to=DAY)
+    assert seen == [("crypto", ["KRW-BTC"]), ("us", ["BTC"])]
+    with pytest.raises(RetroReadError) as err:
+        await read_retro_symbol(
+            FakeSession(), symbol="KRW-BTC", market="us", from_=DAY, to=DAY
+        )
+    assert "market" in err.value.safe_message.lower()
+    await read_retro_symbol(
+        FakeSession(), symbol="AGM-PA", market="us", from_=DAY, to=DAY
+    )
+    assert seen[-1] == ("us", ["AGM.PA"])
+    for symbol in ("ETH-USD", "SOL-USDT", "KRW/BTC", "KRW.BTC"):
+        with pytest.raises(RetroReadError) as err:
+            await read_retro_symbol(
+                FakeSession(), symbol=symbol, market="us", from_=DAY, to=DAY
+            )
+        assert "market" in err.value.safe_message.lower()
+
+
+@pytest.mark.asyncio
 async def test_lot_is_unknown_not_zero_when_history_has_unverified_provisional_rows() -> (
     None
 ):
