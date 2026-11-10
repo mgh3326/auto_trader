@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from research.us_universe.store import code_commit
+from research.us_universe.symdir import LEGACY_VENUE_ALIASES
 
 from . import bar_sources, sources
 from .bar_sources import (
@@ -449,11 +450,20 @@ def _build_universe(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         for e in entries
     ]
     floor_meta = _universe_floor(run, entries)
-    return rows, {
+    meta: dict[str, Any] = {
         "source_files": fetched_files,
         "instruments": len(rows),
         **floor_meta,
     }
+    # A venue code the parser does not know stays UNKNOWN:<code>; report it so a
+    # new vendor code is seen in the manifest, not only as a silent venue label.
+    unmapped: dict[str, int] = {}
+    for e in entries:
+        if e.venue.startswith("UNKNOWN:"):
+            unmapped[e.venue] = unmapped.get(e.venue, 0) + 1
+    if unmapped:
+        meta["unmapped_venues"] = dict(sorted(unmapped.items()))
+    return rows, meta
 
 
 def _universe_floor(run: _Run, entries: list[sources.UniverseEntry]) -> dict[str, Any]:
@@ -465,10 +475,19 @@ def _universe_floor(run: _Run, entries: list[sources.UniverseEntry]) -> dict[str
     previous: dict[str, int] = {}
     for row in read_partition(run.root, DATASET_UNIVERSE, run.market, earlier[-1]):
         previous[row["venue"]] = previous.get(row["venue"], 0) + 1
+    # Compare under current labels: fold a relabelled venue's old counts into
+    # its new name. Only the comparison is aliased; ``previous`` stays raw.
+    compared: dict[str, int] = {}
+    aliased: dict[str, str] = {}
+    for venue, count in previous.items():
+        target = LEGACY_VENUE_ALIASES.get(venue, venue)
+        if target != venue:
+            aliased[venue] = target
+        compared[target] = compared.get(target, 0) + count
     current: dict[str, int] = {}
     for e in entries:
         current[e.venue] = current.get(e.venue, 0) + 1
-    for venue, before in sorted(previous.items()):
+    for venue, before in sorted(compared.items()):
         now = current.get(venue, 0)
         lost = before - now
         if lost > UNIVERSE_DROP_SLACK and lost > before * run.max_universe_drop:
@@ -478,13 +497,14 @@ def _universe_floor(run: _Run, entries: list[sources.UniverseEntry]) -> dict[str
                 f"{run.max_universe_drop:.0%}); a truncated source is refused, "
                 f"nothing written"
             )
-    return {
-        "universe_floor": {
-            "compared_to": earlier[-1].isoformat(),
-            "max_drop": run.max_universe_drop,
-            "previous": previous,
-        }
+    floor: dict[str, Any] = {
+        "compared_to": earlier[-1].isoformat(),
+        "max_drop": run.max_universe_drop,
+        "previous": previous,
     }
+    if aliased:
+        floor["venue_aliases_applied"] = aliased
+    return {"universe_floor": floor}
 
 
 # --------------------------------------------------------------------------

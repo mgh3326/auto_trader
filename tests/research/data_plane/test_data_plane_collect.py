@@ -537,6 +537,108 @@ def test_truncated_universe_is_refused_and_writes_nothing(tmp_path):
     assert results[0].action == "written"
 
 
+def _us_other(count: int, code: str, prefix: str = "TX") -> dict[str, str]:
+    return {f"{prefix}{i:02d}": code for i in range(count)}
+
+
+@pytest.mark.unit
+def test_vendor_relabel_of_a_venue_is_not_a_truncated_source(tmp_path):
+    # The vendor changed its otherlisted code for the Texas Stock Exchange
+    # (previously read as UNKNOWN:TXSE, now F): same 22 symbols, new label.
+    day1, day2 = date(2026, 11, 9), date(2026, 11, 10)
+    symbols = _us_other(22, "TXSE")
+    _run(
+        tmp_path,
+        "us",
+        day1,
+        FakeSources(other_listed=symbols),
+        datasets=[DATASET_UNIVERSE],
+    )
+    previous = {r["venue"] for r in read_partition(tmp_path, "universe", "us", day1)}
+    assert "UNKNOWN:TXSE" in previous
+
+    relabelled = _us_other(22, "F")
+    results = _run(
+        tmp_path,
+        "us",
+        day2,
+        FakeSources(other_listed=relabelled),
+        datasets=[DATASET_UNIVERSE],
+    )
+
+    assert results[0].action == "written"
+    rows = read_partition(tmp_path, "universe", "us", day2)
+    venues = {r["venue"] for r in rows}
+    assert "Texas Stock Exchange" in venues
+    assert not any(v.startswith("UNKNOWN:") for v in venues)
+
+
+@pytest.mark.unit
+def test_real_drop_of_a_relabelled_venue_is_still_refused(tmp_path):
+    day1, day2 = date(2026, 11, 9), date(2026, 11, 10)
+    _run(
+        tmp_path,
+        "us",
+        day1,
+        FakeSources(other_listed=_us_other(22, "TXSE")),
+        datasets=[DATASET_UNIVERSE],
+    )
+    before = tree_state(tmp_path)
+    # 22 -> 10 under the new label: a real 12-instrument loss, not a relabel
+    with pytest.raises(CollectError, match="Texas Stock Exchange has 10 instruments"):
+        _run(
+            tmp_path,
+            "us",
+            day2,
+            FakeSources(other_listed=_us_other(10, "F")),
+            datasets=[DATASET_UNIVERSE],
+        )
+    assert tree_state(tmp_path) == before
+
+
+@pytest.mark.unit
+def test_known_venue_losing_more_than_allowed_is_still_refused(tmp_path):
+    day1, day2 = date(2026, 11, 9), date(2026, 11, 10)
+    both = {**_us_other(30, "F", "TA"), **_us_other(30, "M", "TB")}
+    _run(
+        tmp_path,
+        "us",
+        day1,
+        FakeSources(other_listed=both),
+        datasets=[DATASET_UNIVERSE],
+    )
+    with pytest.raises(CollectError, match="NYSE Texas has 5 instruments"):
+        _run(
+            tmp_path,
+            "us",
+            day2,
+            FakeSources(
+                other_listed={**_us_other(30, "F", "TA"), **_us_other(5, "M", "TB")}
+            ),
+            datasets=[DATASET_UNIVERSE],
+        )
+
+
+@pytest.mark.unit
+def test_unmapped_exchange_code_stays_visible_in_rows_and_manifest(tmp_path):
+    day = date(2026, 11, 10)
+    _run(
+        tmp_path,
+        "us",
+        day,
+        FakeSources(other_listed=_us_other(3, "Q")),
+        datasets=[DATASET_UNIVERSE],
+    )
+    rows = read_partition(tmp_path, "universe", "us", day)
+    assert {r["venue"] for r in rows if r["instrument"].startswith("TX")} == {
+        "UNKNOWN:Q"
+    }
+    manifest = json.loads(
+        manifest_path(tmp_path, DATASET_UNIVERSE, "us").read_text().splitlines()[-1]
+    )
+    assert manifest["unmapped_venues"] == {"UNKNOWN:Q": 3}
+
+
 @pytest.mark.unit
 def test_repair_restores_run_metadata_from_the_sidecar(tmp_path):
     day = date(2026, 10, 30)

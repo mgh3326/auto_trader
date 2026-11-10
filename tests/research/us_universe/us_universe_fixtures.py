@@ -44,12 +44,20 @@ def nasdaq_body(
     return "\r\n".join(lines) + "\r\n"
 
 
-def other_body(day: date, symbols: tuple[str, ...], *, old: bool = False) -> str:
+def other_body(
+    day: date,
+    symbols: tuple[str, ...],
+    *,
+    old: bool = False,
+    codes: dict[str, str] | None = None,
+) -> str:
+    """``codes`` maps a symbol to its ``Exchange`` column value (default ``N``)."""
+    codes = codes or {}
     header = OTHER_HEADER_2008 if old else OTHER_HEADER_2026
     ncols = header.count("|") + 1
     lines = [header]
     for s in sorted(set(symbols) | {f"O{f}" for f in FILLER}):
-        row = f"{s}|{s} Corp Common Stock|N|{s}|N|100|N"
+        row = f"{s}|{s} Corp Common Stock|{codes.get(s, 'N')}|{s}|N|100|N"
         lines.append(row if old else row + f"|{s}")
     lines.append(footer(day, ncols))
     return "\n".join(lines) + "\n"
