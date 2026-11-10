@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Factortrail retro provider contract
   version: 1.0.0
-  description: Read-only closed projections; max 500 rows/page, 366 days inclusive.
+  description: Read-only closed projections; max 500 rows/page.
     Unknown is never zero. Opaque refs carry no raw identifiers.
 paths:
   /trading/api/retro/v1/retro_day:
@@ -671,7 +671,16 @@ components:
           - schema_mismatch
         message:
           type: string
-          description: Safe message; no raw exception or sensitive data.
+          description: Fixed safe message; no raw exception or broker message.
+          enum:
+          - Authentication required.
+          - Authentication invalid.
+          - Scope denied.
+          - Feature unavailable.
+          - Request invalid.
+          - Request timed out.
+          - Upstream unavailable.
+          - Schema mismatch.
     ChainRow:
       type: object
       additionalProperties: false

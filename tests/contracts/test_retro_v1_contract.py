@@ -76,17 +76,16 @@ def test_operations_and_envelopes():
 
 def test_closed_projection_and_decimal_types():
     spec = document()
-    for component, definition in spec["components"]["schemas"].items():
+    for definition in spec["components"]["schemas"].values():
         for node in walk(definition):
             for name, schema in node.get("properties", {}).items():
                 assert normalized(name) not in FORBIDDEN
                 if schema.get("type") == "string" or (
                     isinstance(schema.get("type"), list) and "string" in schema["type"]
                 ):
-                    if (component, name) != ("Error", "message"):
-                        assert any(
-                            k in schema for k in ("enum", "pattern", "format", "const")
-                        ), name
+                    assert any(
+                        k in schema for k in ("enum", "pattern", "format", "const")
+                    ), name
                 if re.search(r"(money|amount|quantity|qty|price)", name):
                     assert schema.get("$ref") == "#/components/schemas/DecimalValue", (
                         name
@@ -196,3 +195,34 @@ def test_null_total_requires_count_unknown():
     example["response"]["unknowns"] = []
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(example["response"])
+
+
+def test_datetime_format_and_error_message_reject_unsafe_values():
+    spec = document()
+    registry = Registry().with_resource(
+        "urn:retro",
+        Resource.from_contents(
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **spec}
+        ),
+    )
+    checker = jsonschema.Draft202012Validator.FORMAT_CHECKER
+    assert "date-time" in checker.checkers
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": "#/components/schemas/RetroDayResponse"},
+        registry=registry,
+        _resolver=registry.resolver("urn:retro"),
+        format_checker=checker,
+    )
+    example = yaml.safe_load((EXAMPLES / "retro_day.yaml").read_text())
+    example["response"]["as_of"] = "garbage"
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(example["response"])
+    error = jsonschema.Draft202012Validator(
+        {"$ref": "#/components/schemas/Error"},
+        registry=registry,
+        _resolver=registry.resolver("urn:retro"),
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        error.validate(
+            {"code": "upstream_unavailable", "message": "raw broker details"}
+        )
