@@ -47,11 +47,11 @@ def _rate(count: int | None, denominator: int | None) -> Decimal | None:
 def stage_counts(data: ChainData) -> list[tuple[str, int | None]]:
     """``(stage, count)``; ``None`` when that stage's source was not fully read."""
     inc = data.incomplete
+    symbol_by_proposal = {p.id: p.symbol.upper() for p in data.proposals}
     order_ids = {
-        (p.symbol.upper(), normalize_order_id(r.broker_order_id))
-        for p in data.proposals
+        (symbol_by_proposal[r.proposal_pk], normalize_order_id(r.broker_order_id))
         for r in data.rungs
-        if r.proposal_pk == p.id and r.broker_order_id
+        if r.broker_order_id and r.proposal_pk in symbol_by_proposal
     }
     filled = {
         (f.symbol.upper(), normalize_order_id(f.broker_order_id)) for f in data.fills
