@@ -886,6 +886,42 @@ jobs:
     - name: Run Vitest suite
       run: npm test
 
+  # hk 3819: gate retro/v1 API contract against the pinned Go consumer (factortrail).
+  retro-consumer-gate:
+    name: retro-consumer-gate
+    needs: change-classifier
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false' || needs.change-classifier.outputs.run_retro_consumer_gate == 'true') }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ inputs.ref }}
+
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group dev
+
+    - name: Set up Go
+      uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+      with:
+        go-version: '1.24'
+        cache: true
+
+    - name: Run retro consumer contract gate
+      run: |
+        python3 scripts/ci/run_retro_consumer_gate.py
+
   # ROB-1454: the verdict a PR merges on, with `lint`. A skip is fine only when
   # the classifier said the job was not needed (--pr-gate); on any other event the
   # full suite must be green.
@@ -909,7 +945,7 @@ jobs:
   gate-verdict:
     name: gate-verdict
     if: always()
-    needs: [lint, change-classifier, affected-tests, test, taskiq-smoke]
+    needs: [lint, change-classifier, affected-tests, test, taskiq-smoke, retro-consumer-gate]
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
@@ -942,6 +978,7 @@ jobs:
           --required affected-tests \
           --required test \
           --required taskiq-smoke \
+          --required retro-consumer-gate \
           --summary \
           --json-out pr-gate-report.json
 
@@ -995,6 +1032,7 @@ jobs:
     - kiwoom-dual-surface-smoke
     - alpaca-track-walkforward-tests
     - frontend
+    - retro-consumer-gate
     if: ${{ always() && github.event_name != 'pull_request' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || !contains(needs.*.result, 'cancelled')) }}
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
