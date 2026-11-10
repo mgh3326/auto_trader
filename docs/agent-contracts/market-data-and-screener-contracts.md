@@ -492,7 +492,8 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
   (`available_at` = 처음 본 시각, `fact_hash` 로 중복 제거).
 - **health**: 기한(`봉 가용 시각 + grace`)이 지난 세션 파티션이 빠지면 `gap`/`stale`, 해시 불일치 `corrupt`,
   커버리지 미달 `low_coverage` → exit 1. ping URL 은 출력하지 않는다.
-- **Dagu 제안**: `deploy/dagu/data-plane/*.yaml` — 🔴 **등록 안 됨**(운영자 승인 대상). 새 명령만 참조.
+- **Dagu**: `deploy/dagu/data-plane/*.yaml` — data-plane-kr/-us/-crypto 는 OCI Dagu coordinator 에 **등록되어 있고** NCP worker 에서 실행된다(hk:doc `report/2026-11-10/ncp-schedule-inventory` §4; 등록 시점은 그 인벤토리에 날짜 없음). DAG 등록·수정은 운영자만 호스트에서 하며, 레포의 YAML 은 사본이라 어떤 deploy 단계도 적용하지 않는다. 새 명령만 참조.
+- **venue 라벨 relabel (hk 3847)**: US 유니버스의 `otherlisted` 거래소 코드 `F`=Texas Stock Exchange, `M`=NYSE Texas 는 NASDAQ Trader 정의 페이지에 없어(A/N/P/Z/V 만 기재) 실제 파일 행에서 매핑했다. 축소 가드는 이전 파티션 카운트에 `symdir.LEGACY_VENUE_ALIASES`(검토된 옛 라벨→새 라벨, 현재 `UNKNOWN:TXSE`→Texas Stock Exchange)만 접어 비교한다 — 임계값·slack 불변, 알려진 venue 의 실제 감소는 그대로 거부한다. 미매핑 코드는 `UNKNOWN:<code>` 로 남고 universe manifest 의 `unmapped_venues` 로 보고된다.
 - **Dagu 제안 (배치 1, hk 3848)**: `deploy/dagu/at-batch/*.yaml` 11개 — Prefect 배치 11개의 이전 후보. 🔴 **등록 안 됨**: 등록·Prefect pause 는 `docs/runbooks/dagu-batch1-cutover.md` 를 잡별로 따를 때만, 8·10·11번은 hk 3846/3845 수정 배포 후. 정적 검사 `tests/scripts/test_dagu_at_batch_dags.py`.
 - 기존 `*_candles_1d`·`*_symbol_universe`·뉴스 테이블은 서빙용으로 유지하되 덮어쓰기라 학습 입력으로 쓰지 않는다.
 
