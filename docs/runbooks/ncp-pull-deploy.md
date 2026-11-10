@@ -125,7 +125,13 @@ repository:
 printf '%s' "$GHCR_PAT" | docker login ghcr.io -u mgh3326 --password-stdin
 ```
 
-The host also needs Python 3 (stdlib only), Docker's Buildx plugin, and GitHub
+The gate runs on Python >= 3.11 (stdlib only). The script picks, in order,
+`AT_DEPLOY_GATE_PYTHON` (an interpreter path), an installed Python >= 3.11 found
+by `uv` (on `PATH` or `~/.local/bin/uv`, `--no-python-downloads`), then `python3`,
+and refuses with exit 78 if the chosen one is older. NCP (Rocky 8) has
+`python3` = 3.6 and `/usr/bin/python3.11` + `/root/.local/bin/uv`, so uv selects 3.11
+without changing the host's default `python3` (hk 3862).
+The host also needs Docker's Buildx plugin, and GitHub
 CLI `gh` with authenticated read access to this repository's Actions runs/jobs.
 Use the operator's established `gh` authentication or inherited `GH_TOKEN`;
 the gate never reads runtime env files for GitHub credentials. Verify access
