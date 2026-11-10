@@ -281,6 +281,7 @@ tests/services/research/test_rob984_cp4_replay_state_machine.py
 tests/services/retro_v1/test_chain_readers.py
 tests/services/retro_v1/test_guards.py
 tests/services/retro_v1/test_other_readers.py
+tests/services/retro_v1/test_retro_trades.py
 tests/services/scalping_reviews/test_service.py
 tests/services/screener_pick_log/test_recorder.py
 tests/services/spike_attribution/test_attribute.py
