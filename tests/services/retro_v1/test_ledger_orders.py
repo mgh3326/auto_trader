@@ -311,3 +311,87 @@ async def test_rung_requires_matching_key_even_when_order_number_matches():
 
     order = next(r for r in response["data"] if r["stage"] == "order")
     assert order["linked_ref"] == make_ref("rung", 100)
+
+
+@pytest.mark.asyncio
+async def test_toss_only_place_operations_count_as_orders():
+    from tests.services.retro_v1.support import FakeSession, ns
+
+    def toss(id_, operation):
+        return ns(
+            id=id_,
+            operation_kind=operation,
+            trade_date=FILL_AT,
+            broker="toss",
+            symbol="005930",
+            side="buy",
+            currency="KRW",
+            broker_order_id=f"order-{id_}",
+            client_order_id=f"client-{id_}",
+            quantity=Decimal("3"),
+            price=Decimal("10"),
+            status="accepted",
+            response_code=None,
+            response_message=None,
+            broker_status=None,
+            correlation_id=None,
+        )
+
+    source = [toss(1, "place"), toss(2, "cancel"), toss(3, "modify")]
+
+    class FilteringSession(FakeSession):
+        async def execute(self, statement, params=None):
+            if "FROM review.toss_live_order_ledger" in str(statement):
+                compiled = statement.compile()
+                assert "toss_live_order_ledger.operation_kind =" in str(compiled)
+                assert "place" in compiled.params.values()
+                self.routes["FROM review.toss_live_order_ledger"] = [
+                    r for r in source if r.operation_kind == "place"
+                ]
+            return await super().execute(statement, params)
+
+    session = FilteringSession()
+    day = await read_retro_day(session, market="kr", date=FILL_AT.date())
+    assert sum(r["stage"] == "order" for r in day["data"]) == 1
+    funnel = await read_retro_funnel(
+        FilteringSession(), market="kr", from_=FILL_AT.date(), to=FILL_AT.date()
+    )
+    assert next(r for r in funnel["data"] if r["stage"] == "order")["count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["replaced", "anomaly"])
+async def test_unclassified_ledger_state_remains_unresolved(status):
+    from tests.services.retro_v1.support import ns
+
+    toss = ns(
+        id=42,
+        trade_date=FILL_AT,
+        broker="toss",
+        symbol="005930",
+        side="buy",
+        currency="KRW",
+        broker_order_id="x",
+        client_order_id="direct",
+        quantity=Decimal("3"),
+        price=Decimal("10"),
+        status=status,
+        response_code=None,
+        response_message=None,
+        broker_status=None,
+        correlation_id=None,
+    )
+    routes = {
+        "FROM review.kis_live_order_ledger": [],
+        "FROM review.toss_live_order_ledger": [toss],
+        "FROM review.execution_ledger": [],
+    }
+    response = await read_retro_day(
+        kr_day_session(**routes), market="kr", date=FILL_AT.date()
+    )
+    order = next(r for r in response["data"] if r["stage"] == "order")
+    assert (order["status"], order["basis"], order["reason"]) == (
+        "unresolved",
+        "unknown",
+        "no_terminal_evidence",
+    )

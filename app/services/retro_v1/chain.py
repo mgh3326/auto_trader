@@ -371,6 +371,7 @@ async def load_chain(
                 stmt = stmt.where(
                     model.market == market.key,
                     model.account_mode == "toss_live",
+                    model.operation_kind == "place",
                 )
             stmt = stmt.order_by(model.trade_date, model.id).limit(MAX_SOURCE_ROWS)
             return list((await session.execute(stmt)).scalars().all())
@@ -718,6 +719,20 @@ def order_rows(
         if fill.source in AUTHORITATIVE_SOURCES:
             fill_key = (order_identity(fill), _day(fill.broker, market, fill.filled_at))
             totals[fill_key] += Decimal(str(fill.filled_qty))
+    rungs_by_identity: dict[Any, list[Any]] = defaultdict(list)
+    for rung in [*data.rungs, *data.link_rungs]:
+        proposal = proposals.get(rung.proposal_pk)
+        if proposal is None:
+            continue
+        identity = rung_identity(proposal, rung, market, data.send_times)
+        broker = _BROKER_BY_ACCOUNT_MODE.get(proposal.account_mode)
+        sent = (
+            data.send_times.get(rung.idempotency_key)
+            if broker == "kis"
+            else rung.created_at
+        )
+        if identity is not None and sent is not None and broker is not None:
+            rungs_by_identity[(identity, _day(broker, market, sent))].append(rung)
     for source, order in [*data.orders, *data.link_orders]:
         identity = _order_identity(order, market)
         day = _day(order.broker, market, order.trade_date)
@@ -728,16 +743,7 @@ def order_rows(
         if (source, order.id) in linked_ids:
             continue
         matches = []
-        for rung in [*data.rungs, *data.link_rungs]:
-            proposal = proposals.get(rung.proposal_pk)
-            if proposal is None or not identity:
-                continue
-            rung_id = rung_identity(proposal, rung, market, data.send_times)
-            sent = (
-                data.send_times.get(rung.idempotency_key)
-                if order.broker == "kis"
-                else rung.created_at
-            )
+        for rung in rungs_by_identity.get(key, []):
             same_key = bool(
                 getattr(rung, "idempotency_key", None)
                 and rung.idempotency_key
@@ -750,12 +756,7 @@ def order_rows(
                 getattr(rung, "correlation_id", None)
                 and rung.correlation_id == getattr(order, "correlation_id", None)
             )
-            if (
-                rung_id == identity
-                and sent
-                and _day(order.broker, market, sent) == day
-                and (same_key or same_correlation)
-            ):
+            if same_key or same_correlation:
                 matches.append(rung)
         rung = matches[0] if len(matches) == 1 else None
         total = totals.get(key, Decimal(0))
