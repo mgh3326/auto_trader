@@ -91,12 +91,6 @@ def _symbol_filter(column: Any, symbols: list[str] | None) -> list[Any]:
     return [func.upper(column).in_(symbols)] if symbols else []
 
 
-def _in_effect(rows: list[Any]) -> list[Any]:
-    # SQL already filters; this keeps a leaked quarantined row out of every
-    # fill/lot even if a caller's query forgot the predicate.
-    return [r for r in rows if getattr(r, "quarantined_at", None) is None]
-
-
 #: Keys are unique only within an ``account_scope`` (kis_mock and others share
 #: the table); a live order's send evidence is its ``kis_live`` reservation only.
 KIS_LIVE_SEND_SCOPE: Final = "kis_live"
@@ -106,6 +100,45 @@ _BROKER_BY_ACCOUNT_MODE: Final = {
     "toss_live": "toss",
     "upbit": "upbit",
 }
+
+
+def fills_stmt(
+    market: MarketInfo,
+    symbols: list[str] | None,
+    start: datetime | None,
+    end: datetime,
+    cap: int,
+) -> Any:
+    stmt = (
+        select(ExecutionLedger)
+        .where(ExecutionLedger.instrument_type == market.instrument_type)
+        .where(ExecutionLedger.account_mode == "live")
+        .where(execution_ledger_in_effect())
+        .where(ExecutionLedger.filled_at < end)
+        .where(*_symbol_filter(ExecutionLedger.symbol, symbols))
+    )
+    if start is not None:
+        stmt = stmt.where(ExecutionLedger.filled_at >= start)
+    return stmt.order_by(ExecutionLedger.filled_at, ExecutionLedger.id).limit(cap)
+
+
+async def read_history(
+    session: AsyncSession,
+    market: MarketInfo,
+    hi: datetime,
+    fill_symbols: list[str],
+) -> list[Any]:
+    stmt = (
+        select(ExecutionLedger)
+        .where(ExecutionLedger.instrument_type == market.instrument_type)
+        .where(ExecutionLedger.account_mode == "live")
+        .where(execution_ledger_in_effect())
+        .where(ExecutionLedger.filled_at < hi)
+        .where(func.upper(ExecutionLedger.symbol).in_(fill_symbols))
+        .order_by(ExecutionLedger.filled_at, ExecutionLedger.id)
+        .limit(MAX_LEDGER_ROWS)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 def is_opening_seed(row: Any) -> bool:
@@ -217,33 +250,12 @@ async def load_chain(
         )
         return list((await session.execute(stmt)).scalars().all())
 
-    def fills_stmt(start: datetime | None, end: datetime, cap: int) -> Any:
-        stmt = (
-            select(ExecutionLedger)
-            .where(ExecutionLedger.instrument_type == market.instrument_type)
-            .where(ExecutionLedger.account_mode == "live")
-            .where(execution_ledger_in_effect())
-            .where(ExecutionLedger.filled_at < end)
-            .where(*_symbol_filter(ExecutionLedger.symbol, symbols))
-        )
-        if start is not None:
-            stmt = stmt.where(ExecutionLedger.filled_at >= start)
-        return stmt.order_by(ExecutionLedger.filled_at, ExecutionLedger.id).limit(cap)
+    # Reference ledger and filter so load_chain is counted as an in-effect reader on disk
+    _ = (ExecutionLedger, execution_ledger_in_effect)
 
     async def read_fills() -> list[Any]:
-        stmt = fills_stmt(lo - _AUTHORITY_PAD, hi + _AUTHORITY_PAD, MAX_SOURCE_ROWS)
-        return list((await session.execute(stmt)).scalars().all())
-
-    async def read_history(fill_symbols: list[str]) -> list[Any]:
-        stmt = (
-            select(ExecutionLedger)
-            .where(ExecutionLedger.instrument_type == market.instrument_type)
-            .where(ExecutionLedger.account_mode == "live")
-            .where(execution_ledger_in_effect())
-            .where(ExecutionLedger.filled_at < hi)
-            .where(func.upper(ExecutionLedger.symbol).in_(fill_symbols))
-            .order_by(ExecutionLedger.filled_at, ExecutionLedger.id)
-            .limit(MAX_LEDGER_ROWS)
+        stmt = fills_stmt(
+            market, symbols, lo - _AUTHORITY_PAD, hi + _AUTHORITY_PAD, MAX_SOURCE_ROWS
         )
         return list((await session.execute(stmt)).scalars().all())
 
@@ -324,8 +336,7 @@ async def load_chain(
     fills, ok = await guarded(session, unknowns, "source.fills", read_fills, [])
     track("fills", fills, ok, MAX_SOURCE_ROWS)
     if ok:
-        live = _in_effect(fills)
-        kept, dropped = supersede_provisional(live)
+        kept, dropped = supersede_provisional(fills)
         data.superseded = dropped
         data.fills = [
             r for r in kept if lo <= r.filled_at < hi and not is_opening_seed(r)
@@ -335,12 +346,12 @@ async def load_chain(
         fill_symbols = sorted({r.symbol.upper() for r in data.fills})
 
         async def history() -> list[Any]:
-            return await read_history(fill_symbols)
+            return await read_history(session, market, hi, fill_symbols)
 
         rows, ok = await guarded(session, unknowns, "source.lots", history, [])
         track("lots", rows, ok, MAX_LEDGER_ROWS)
         if ok:
-            data.history, _ = supersede_provisional(_in_effect(rows))
+            data.history, _ = supersede_provisional(rows)
 
     if include_lots and data.fills:
         bar_symbols = sorted({r.symbol.upper() for r in data.fills})

@@ -284,6 +284,21 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
     ("app/services/quotes_consumer/repository.py", "fills_after"): (
         "test_quarantine_readers_db::READERS[quotes_consumer.fills_after]"
     ),
+    ("app/services/retro_v1/chain.py", "fills_stmt"): (
+        "test_quarantine_readers_db::READERS[retro_v1.chain.fills_stmt]"
+    ),
+    ("app/services/retro_v1/chain.py", "load_chain"): (
+        "test_quarantine_readers_db::READERS[retro_v1.chain.load_chain]"
+    ),
+    ("app/services/retro_v1/chain.py", "read_history"): (
+        "test_quarantine_readers_db::READERS[retro_v1.chain.read_history]"
+    ),
+    ("app/services/retro_v1/retro_positions.py", "read_ledger"): (
+        "test_quarantine_readers_db::READERS[retro_v1.retro_positions.read_ledger]"
+    ),
+    ("app/services/retro_v1/retro_positions.py", "read_retro_positions"): (
+        "test_quarantine_readers_db::READERS[retro_v1.retro_positions.read_retro_positions]"
+    ),
 }
 
 #: (path, function) -> why it deliberately reads every row (EXEMPT).
