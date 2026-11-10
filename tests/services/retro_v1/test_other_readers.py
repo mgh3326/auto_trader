@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -15,9 +16,11 @@ from app.services.retro_v1 import (
     read_mock_experiments,
     read_retro_positions,
 )
+from app.services.retro_v1.envelope import KST
 from tests.services.retro_v1.support import (
     FILL_AT,
     FakeSession,
+    WithParams,
     bar_row,
     kr_day_session,
     ledger,
@@ -294,8 +297,90 @@ def gap_session(**extra):
         "review.trade_forecasts": [None],
         "investment_report_items": [None],
     }
+    routes.update(fresh_source_routes(now))
     routes.update(extra)
     return FakeSession(routes)
+
+
+def _flat(params: dict) -> set:
+    out: set = set()
+    for value in params.values():
+        out.update(value if isinstance(value, (list, tuple, set)) else [value])
+    return out
+
+
+def crypto_snapshot(metric, provider, **kw):
+    values = {
+        "metric": metric,
+        "provider": provider,
+        "symbol": None,
+        "freshness_seconds": None,
+        "snapshot_at": datetime.now(UTC),
+    }
+    values.update(kw)
+    return ns(**values)
+
+
+def fresh_source_routes(now: datetime) -> dict:
+    """Fresh rows for every ROB-3873 dataset, so the base fixture has no gaps there.
+
+    A test that wants a gap overrides one fragment through ``gap_session(**extra)``.
+    """
+    snapshots = [
+        crypto_snapshot("fear_greed", "alternative_me"),
+        crypto_snapshot("stablecoin_supply", "defillama"),
+        crypto_snapshot("tv_crypto_breadth", "tradingview"),
+        crypto_snapshot("tvl", "defillama", symbol="bitcoin"),
+    ]
+
+    def crypto_route(sql: str, params: dict) -> list:
+        wanted = _flat(params)
+        return [r for r in snapshots if r.metric in wanted and r.provider in wanted]
+
+    today = now.astimezone(KST).date()
+    partitions = [
+        ns(
+            source=source,
+            category=category,
+            market=market,
+            partition_date=today,
+            status="succeeded",
+            finished_at=now,
+            last_error=None,
+            event_count=1,
+        )
+        for source, category, market in (
+            ("dart", "disclosure", "kr"),
+            ("finnhub", "earnings", "us"),
+            ("forexfactory", "economic", "global"),
+            ("wisefn", "earnings", "kr"),
+        )
+    ]
+    bar_latest = ns(latest=now)
+    return {
+        "crypto_insight_snapshots": WithParams(crypto_route),
+        "FROM public.kr_candles_1m": [bar_latest],
+        "FROM public.us_candles_1m": [bar_latest],
+        "FROM public.kr_candles_1d": [bar_latest],
+        "FROM public.us_candles_1d": [bar_latest],
+        "FROM public.crypto_candles_1d": [bar_latest],
+        "FROM market_event_ingestion_partitions": partitions,
+        "FROM market_events": [(p.source, p.category, p.market, 1) for p in partitions],
+        "FROM research_report_ingestion_runs": [
+            ns(
+                run_uuid=str(uuid.UUID(int=1)),
+                started_at=now,
+                finished_at=now,
+                received_at=now,
+                inserted_count=1,
+                skipped_count=0,
+                report_count=1,
+            )
+        ],
+        "FROM market_valuation_snapshots": [
+            ns(fresh=4, stale=0, latest_date=today, latest_at=now, total=4)
+        ],
+    }
 
 
 @pytest.mark.asyncio
@@ -314,7 +399,9 @@ async def test_data_gaps_reports_existing_staleness_signals() -> None:
         "negative_class_recording.us",
         "negative_class_recording.crypto",
     }
-    assert response["total"] == 5
+    # The 5 existing rows plus crypto_insight.aggregate_oi, which is disabled
+    # by design and therefore always a row. Every other new source is fresh here.
+    assert response["total"] == 6
 
 
 @pytest.mark.asyncio

@@ -319,6 +319,7 @@ retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unava
 - **작은 약속**: 응답 `timezone`은 `KST`다(계약 패턴이 IANA 이름의 `/`를 허용하지 않는다). 요청 날짜는 KST 달력일, 시각은 UTC RFC 3339다. 계약 쿼리 이름 `from`은 파이썬 예약어라 `from_=` 또는 `**{"from": ...}`로 받는다. 커서는 쿼리 파라미터에 묶인 불투명 오프셋이다.
 - **`get_bars`**: 일봉(kr/us/crypto)과 1분봉(kr/us/crypto) 테이블만 읽는다. 5m·60m은 `unsupported` unknown이다(빈 성공이 아니다). kr/us 분봉 테이블은 provider 열이 없어 `source=null`+`unavailable`이고(crypto 분봉은 저장된 source를 낸다), KR 일봉은 조정 여부를 저장하지 않아 `adjusted=null`+`unavailable`이다. 한 행 안에서 소스를 섞지 않는다.
 - **`data_gaps`**: 새 probe 없이 기존 점검만 쓴다 — KRX 애프터마켓 적격 목록 신선도(`load_krx_after_market_health`), KIS reconcile 신선도(`compute_freshness` 90분 규칙), 시장별 음성 클래스 기록 건강(`load_negative_class_health`). fresh이면 행이 없고, 점검 자체가 실패하면 `unknowns`와 `total: null`이다.
+  ROB-3873 데이터셋: 각 소스는 자기 guarded 하위 읽기로 돈다. 실패는 그 데이터셋의 `unknowns` 항목과 `total: null`이 되고 다른 행은 유지된다. `crypto_insight.fear_greed`·`.stablecoin_supply`·`.breadth`·`.defi_tvl`은 레짐 뷰 신선도 규칙(`_crypto_regime.py`에서 복사, 테스트로 고정)을 쓴다. `crypto_insight.aggregate_oi`는 레짐 뷰가 disabled로 보고하므로 항상 `unsupported` 행이다. `candles_1m.kr|us`·`candles_1d.kr|us|crypto`는 최신 봉 날짜를 마지막으로 확정된 세션과 비교한다(crypto는 마지막으로 닫힌 UTC 일봉). `market_events.<source>.<category>.<market>`는 신선도 서비스 행과, 7일 창에 파티션이 없는 기대 소스를 포함한다. `latest_failed_error` 텍스트는 내보내지 않는다. `research_reports`, `valuation_snapshots.kr|us`도 포함한다. 사유는 닫힌 어휘만 쓰며 헬퍼의 오류·예외 문자열은 행에 들어가지 않는다.
 - **테스트**: `tests/services/retro_v1/`(가짜 세션 + 계약 응답 스키마 검증). DB 왕복은 CI 몫이며 로컬에서는 돌리지 않았다.
 
 ### retro/v1 HTTP 라우트 (hk 3818)
