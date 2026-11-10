@@ -276,3 +276,55 @@ def test_the_disabled_open_interest_fact_is_the_regime_views_fact() -> None:
     assert re.search(r'"aggregate_oi":\s*\{\s*"state":\s*"disabled"', REGIME_SOURCE), (
         "the regime view no longer reports aggregate_oi as disabled"
     )
+
+
+# --------------------------------------------------------------------------
+# trading-day rule: exchange-local dates and completion (review r1)
+# --------------------------------------------------------------------------
+from datetime import date  # noqa: E402
+
+from app.services.retro_v1 import data_gaps as dg  # noqa: E402
+
+
+def test_a_korean_tuesday_morning_expects_the_new_york_monday_close() -> None:
+    # Tue 2026-11-10 08:00 KST = Mon 2026-11-09 18:00 ET, after the 16:00 ET close.
+    as_of = datetime(2026, 11, 9, 23, 0, tzinfo=UTC)
+    assert dg.expected_bar_day("us", as_of, completed=True) == date(2026, 11, 9)
+
+
+def test_daily_bars_expect_the_last_closed_session_and_minute_bars_the_open_one() -> (
+    None
+):
+    # Wed 2026-11-11 09:00 KST. KR's Wednesday session has opened but not closed;
+    # NY is still on Tuesday, whose session has closed.
+    as_of = datetime(2026, 11, 11, 0, 0, tzinfo=UTC)
+    assert dg.expected_bar_day("kr", as_of, completed=True) == date(2026, 11, 10)
+    assert dg.expected_bar_day("us", as_of, completed=True) == date(2026, 11, 10)
+    assert dg.expected_bar_day("kr", as_of, completed=False) == date(2026, 11, 11)
+    assert dg.expected_bar_day("us", as_of, completed=False) == date(2026, 11, 10)
+
+
+def test_crypto_expects_the_last_closed_utc_day() -> None:
+    as_of = datetime(2026, 11, 11, 0, 30, tzinfo=UTC)
+    assert dg.expected_bar_day("crypto", as_of, completed=True) == date(2026, 11, 10)
+
+
+def test_a_calendar_that_cannot_classify_the_day_raises_instead_of_guessing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(dg, "trading_session_status", lambda market, day: "unknown")
+    with pytest.raises(LookupError):
+        dg.expected_bar_day("us", datetime(2026, 11, 11, tzinfo=UTC), completed=True)
+
+
+def test_daily_bars_are_compared_on_their_utc_session_date() -> None:
+    # Daily bars are stored at UTC midnight of their session date. In New York
+    # that instant is still the previous evening, so only the UTC date is right.
+    bar = datetime(2026, 11, 9, 0, 0, tzinfo=UTC)
+    row, _ = dg._bar_gap(
+        dataset="candles_1d.us",
+        latest_time=bar,
+        trading_day=date(2026, 11, 9),
+        day_zone=UTC,
+    )
+    assert row is None

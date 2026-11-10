@@ -11,8 +11,9 @@ never "no gap", and does not hide the rows of the other signals.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any, Final, Literal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +27,11 @@ from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.krx_after_market_health import load_krx_after_market_health
 from app.services.market_events.expected_sources import EXPECTED_SOURCES
 from app.services.market_events.freshness_service import MarketEventsFreshnessService
-from app.services.market_events.session_calendar import Market, trading_session_status
+from app.services.market_events.session_calendar import (
+    Market,
+    regular_session_bounds,
+    trading_session_status,
+)
 from app.services.market_valuation_snapshots.freshness import valuation_state
 from app.services.market_valuation_snapshots.repository import (
     MarketValuationSnapshotsRepository,
@@ -282,29 +287,50 @@ def crypto_oi_gap() -> Row:
 # --------------------------------------------------------------------------
 # candles and valuation: trading-day rule
 # --------------------------------------------------------------------------
-def expected_bar_day(market: Market | Literal["crypto"], as_of: datetime) -> date:
-    """The last day whose bars must exist.
+_EXCHANGE_ZONE: Final[dict[Market, tzinfo]] = {
+    "kr": KST,
+    "us": ZoneInfo("America/New_York"),
+}
 
-    Exchange markets: the latest confirmed session on or before today (KST). A
-    calendar that cannot classify a day raises, so the caller reports unknown
-    instead of guessing a session. Crypto trades every day; its last closed daily
-    bar is the UTC day before today.
+
+def expected_bar_day(
+    market: Market | Literal["crypto"], as_of: datetime, *, completed: bool
+) -> date:
+    """The last session whose bars should already exist at ``as_of``.
+
+    Exchange markets use the exchange's own local date, not KST: a Tuesday
+    morning in Seoul is still Monday in New York. ``completed=True`` (daily bars,
+    valuation snapshots) requires the session to have closed; ``completed=False``
+    (minute bars) requires only that it has opened. A calendar that cannot
+    classify a day, or cannot give its bounds, raises so the caller reports
+    unknown. Crypto trades every day; its last closed daily bar is the UTC day
+    before ``as_of``.
     """
     if market == "crypto":
         return as_of.astimezone(UTC).date() - timedelta(days=1)
-    today = as_of.astimezone(KST).date()
+    local_today = as_of.astimezone(_EXCHANGE_ZONE[market]).date()
     for back in range(_MAX_SESSION_LOOKBACK_DAYS):
-        day = today - timedelta(days=back)
+        day = local_today - timedelta(days=back)
         status = trading_session_status(market, day)
-        if status == "open":
-            return day
         if status == "unknown":
             raise LookupError("exchange calendar cannot classify the day")
+        if status != "open":
+            continue
+        bounds = regular_session_bounds(market, day)
+        if bounds is None:
+            raise LookupError("exchange calendar gave no session bounds")
+        open_utc, close_utc = bounds
+        if (close_utc if completed else open_utc) <= as_of:
+            return day
     raise LookupError("no confirmed session in the lookback window")
 
 
 def _bar_gap(
-    *, dataset: str, latest_time: datetime | None, trading_day: date
+    *,
+    dataset: str,
+    latest_time: datetime | None,
+    trading_day: date,
+    day_zone: tzinfo,
 ) -> tuple[Row | None, datetime | None]:
     if latest_time is None:
         return (
@@ -320,7 +346,7 @@ def _bar_gap(
         )
     if latest_time.tzinfo is None:
         raise ValueError("bar time without a timezone is not an instant")
-    if latest_time.astimezone(KST).date() >= trading_day:
+    if latest_time.astimezone(day_zone).date() >= trading_day:
         return None, latest_time
     return (
         gap_row(
@@ -550,7 +576,7 @@ async def read_data_gaps(
             dataset = f"candles_1m.{market}"
 
             async def minute(market: str = market) -> Any:
-                trading_day = expected_bar_day(market, as_of)
+                trading_day = expected_bar_day(market, as_of, completed=False)
                 return trading_day, await _latest_bar_time(
                     session, f"candles_1m.{market}"
                 )
@@ -558,8 +584,13 @@ async def read_data_gaps(
             await add_source(
                 dataset,
                 minute,
-                lambda v, d=dataset: _one(
-                    _bar_gap(dataset=d, latest_time=v[1], trading_day=v[0])
+                lambda v, d=dataset, zone=_EXCHANGE_ZONE[market]: _one(
+                    _bar_gap(
+                        dataset=d,
+                        latest_time=v[1],
+                        trading_day=v[0],
+                        day_zone=zone,
+                    )
                 ),
             )
 
@@ -567,7 +598,7 @@ async def read_data_gaps(
             dataset = f"candles_1d.{market}"
 
             async def daily(market: str = market) -> Any:
-                trading_day = expected_bar_day(market, as_of)
+                trading_day = expected_bar_day(market, as_of, completed=True)
                 return trading_day, await _latest_bar_time(
                     session, f"candles_1d.{market}"
                 )
@@ -576,7 +607,12 @@ async def read_data_gaps(
                 dataset,
                 daily,
                 lambda v, d=dataset: _one(
-                    _bar_gap(dataset=d, latest_time=v[1], trading_day=v[0])
+                    _bar_gap(
+                        dataset=d,
+                        latest_time=v[1],
+                        trading_day=v[0],
+                        day_zone=UTC,
+                    )
                 ),
             )
 
@@ -621,7 +657,7 @@ async def read_data_gaps(
             dataset = f"valuation_snapshots.{market}"
 
             async def valuation(market: str = market) -> Any:
-                trading_day = expected_bar_day(market, as_of)
+                trading_day = expected_bar_day(market, as_of, completed=True)
                 counts = await MarketValuationSnapshotsRepository(
                     session
                 ).coverage_counts(market, fresh_date=trading_day)
