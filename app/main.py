@@ -72,6 +72,7 @@ from app.routers import (
     research_reports,
     research_retrospective,
     research_run_decision_sessions,
+    retro_v1,
     screener,
     strategy_events,
     symbol_settings,
@@ -205,6 +206,7 @@ def create_app() -> FastAPI:
     app.include_router(order_previews.router)
     app.include_router(investment_reports.router)
     app.include_router(investment_hermes_http.router)
+    app.include_router(retro_v1.router)
     app.include_router(news_relevance.router)
     app.include_router(ops_task_kick.router)
     app.include_router(investment_stage_runs.router)
