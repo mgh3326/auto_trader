@@ -69,7 +69,7 @@ def _chain() -> tuple[dict[str, list[str]], set[str]]:
 def test_migration_chain_has_a_single_head_and_this_revision_is_on_it() -> None:
     revisions, heads = _chain()
 
-    assert heads == {"20261109_hk2690_kis_pos_base"}
+    assert heads == {"20261110_hk3800_account_value"}
     assert revisions[_NEW_REVISION] == [_PREVIOUS_HEAD]
 
 
