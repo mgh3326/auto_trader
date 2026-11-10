@@ -14,12 +14,10 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.execution_ledger.supersede import order_identity
 from app.services.retro_v1.chain import (
     ChainData,
     data_as_of,
     load_chain,
-    rung_identity,
 )
 from app.services.retro_v1.envelope import (
     DEFAULT_LIMIT,
@@ -52,21 +50,9 @@ def _rate(count: int | None, denominator: int | None) -> Decimal | None:
 def stage_counts(data: ChainData, market: MarketInfo) -> list[tuple[str, int | None]]:
     """``(stage, count)``; ``None`` when that stage's source was not fully read.
 
-    Orders are rungs the broker accepted. A fill is matched to its order by the
-    canonical order identity (broker, symbol, side, number AND trading day), so a
-    reused KIS order number on another day never counts. When any order's
-    identity cannot be established or two share one, the fill count is unknown.
+    Orders and fills count the same ledger and fill rows as the chain.
     """
     inc = data.incomplete
-    proposal_by_id = {p.id: p for p in data.proposals}
-    order_rungs = [
-        (proposal_by_id[r.proposal_pk], r)
-        for r in data.rungs
-        if r.broker_order_id and r.proposal_pk in proposal_by_id
-    ]
-    identities = [rung_identity(p, r, market, data.send_times) for p, r in order_rungs]
-    unique = None not in identities and len(set(identities)) == len(identities)
-    filled = {order_identity(f) for f in data.fills} & {i for i in identities if i}
 
     def known(name: str, value: int, *depends: str) -> int | None:
         return None if inc & {name, *depends} else value
@@ -75,11 +61,8 @@ def stage_counts(data: ChainData, market: MarketInfo) -> list[tuple[str, int | N
         ("candidate", known("candidates", len(data.candidates))),
         ("proposal", known("proposals", len(data.proposals))),
         ("rung", known("rungs", len(data.rungs), "proposals")),
-        ("order", known("rungs", len(order_rungs), "proposals")),
-        (
-            "fill",
-            known("fills", len(filled), "rungs", "proposals") if unique else None,
-        ),
+        ("order", known("kis_orders", len(data.orders), "live_orders", "toss_orders")),
+        ("fill", known("fills", len(data.fills))),
     ]
 
 
