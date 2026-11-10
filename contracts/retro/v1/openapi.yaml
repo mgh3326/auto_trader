@@ -682,6 +682,17 @@ components:
           - Upstream unavailable.
           - Schema mismatch.
     ChainRow:
+      description: >-
+        Order rows originate from live broker order ledgers, including direct orders.
+        An unambiguous order links to its rung; fills link to their ledger order.
+        Order statuses are filled, partially_filled, working, cancelled, expired,
+        rejected, and unresolved. Authoritative fills take precedence, followed
+        by broker terminal status, then the linked rung expiry inference; a
+        current-day open order is working and an older one without terminal
+        evidence is unresolved. Rejection reasons are rate_limited, price_limit,
+        insufficient_balance, market_closed, invalid_order, or broker_other.
+        Expiry reasons are day_order_expired or expired_inference_no_broker_original;
+        cancellation uses cancelled and unresolved uses no_terminal_evidence.
       type: object
       additionalProperties: false
       required:
@@ -723,6 +734,7 @@ components:
         basis:
           $ref: '#/components/schemas/EvidenceBasis'
     FunnelRow:
+      description: Order and fill counts use the same ledger orders and fill rows as the chain.
       type: object
       additionalProperties: false
       required:
