@@ -248,6 +248,7 @@ def is_retro_path(path: str) -> bool:
         or path == "app/routers/retro_v1.py"
         or path.startswith("app/services/retro_v1/")
         or path == "app/services/account_value/retro_scoreboard.py"
+        or path == "app/middleware/auth.py"
         or path.startswith("tools/retro-consumer-check/")
     )
 

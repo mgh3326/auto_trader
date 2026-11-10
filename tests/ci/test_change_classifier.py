@@ -1121,6 +1121,7 @@ def test_retro_contract_selects_contract_test_without_full_suite() -> None:
         "app/routers/retro_v1.py",
         "app/services/retro_v1/service.py",
         "app/services/account_value/retro_scoreboard.py",
+        "app/middleware/auth.py",
         "tools/retro-consumer-check/main.go",
     ],
 )
