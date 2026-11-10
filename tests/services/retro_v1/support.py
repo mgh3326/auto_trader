@@ -185,6 +185,7 @@ def rung(id_: int, proposal_pk: int, **kw: Any) -> OrderProposalRung:
         "limit_price": Decimal("70000"),
         "state": "filled",
         "broker_order_id": "0000123456",
+        "idempotency_key": f"idem-{id_}",
         "created_at": datetime(2026, 1, 5, 1, 5, tzinfo=UTC),
         "validated_at": datetime(2026, 1, 5, 1, 10, tzinfo=UTC),
         "void_reason": None,
@@ -288,6 +289,7 @@ def kr_day_session(**extra_routes: Any) -> FakeSession:
             proposal(10, "005930", datetime(2026, 1, 5, 1, 0, tzinfo=UTC))
         ],
         "FROM review.order_proposal_rungs": [rung(100, 10)],
+        "FROM review.order_send_intents": [("idem-100", FILL_AT - timedelta(hours=1))],
         "FROM review.execution_ledger": fills,
         "FROM public.kr_candles_1d": bars,
     }

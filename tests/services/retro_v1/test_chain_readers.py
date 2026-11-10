@@ -301,6 +301,10 @@ async def test_reused_order_number_on_another_day_does_not_link_or_count() -> No
         **{
             "FROM review.execution_ledger": [day1, day2],
             "FROM review.order_proposal_rungs": [rung(100, 10), earlier_rung],
+            "FROM review.order_send_intents": [
+                ("idem-100", FILL_AT - timedelta(hours=1)),
+                ("idem-101", FILL_AT - timedelta(days=1, minutes=10)),
+            ],
         }
     )
     response = await read_retro_symbol(
@@ -315,10 +319,15 @@ async def test_reused_order_number_on_another_day_does_not_link_or_count() -> No
     assert fills[make_ref("fill", 900)]["linked_ref"] == make_ref("order", 101)
     # two rungs sharing one identity are ambiguous: link unknown, never overwritten
     same_day = rung(102, 10, validated_at=FILL_AT, broker_order_id="0000123456")
+    intents = [
+        ("idem-100", FILL_AT - timedelta(hours=1)),
+        ("idem-102", FILL_AT - timedelta(hours=1)),
+    ]
     ambiguous = kr_day_session(
         **{
             "FROM review.execution_ledger": [day2],
             "FROM review.order_proposal_rungs": [rung(100, 10), same_day],
+            "FROM review.order_send_intents": intents,
         }
     )
     response = await read_retro_day(ambiguous, market="kr", date=DAY)
@@ -330,6 +339,7 @@ async def test_reused_order_number_on_another_day_does_not_link_or_count() -> No
             **{
                 "FROM review.execution_ledger": [day2],
                 "FROM review.order_proposal_rungs": [rung(100, 10), same_day],
+                "FROM review.order_send_intents": intents,
             }
         ),
         market="kr",
@@ -382,3 +392,54 @@ async def test_markout_counts_sessions_on_one_venue_and_marks_mixed_venues_unkno
     validate(mixed, "RetroDayResponse")
     row = next(r for r in mixed["data"] if r["stage"] == "markout")
     assert (row["price"], row["reason"]) == (None, "source_mixed")
+
+
+@pytest.mark.asyncio
+async def test_order_day_is_the_send_time_not_the_overwritten_validated_at() -> None:
+    from tests.services.retro_v1.support import FILL_AT, ledger
+
+    # a day-1 order partially filled day 1 and cancelled today: cancel/fill
+    # transitions overwrite rung.validated_at with today. The identity must still
+    # use the send reservation (day 1) so the day-1 fill keeps its link, and a
+    # different order reusing the number today is not linked to it.
+    day1_fill = ledger(910, FILL_AT - timedelta(days=1), broker_order_id="0000123456")
+    today_fill = ledger(911, FILL_AT, broker_order_id="0000123456")
+    cancelled = rung(
+        100, 10, state="cancelled", validated_at=FILL_AT + timedelta(hours=3)
+    )
+    session = kr_day_session(
+        **{
+            "FROM review.execution_ledger": [day1_fill, today_fill],
+            "FROM review.order_proposal_rungs": [cancelled],
+            "FROM review.order_send_intents": [
+                ("idem-100", FILL_AT - timedelta(days=1, minutes=30))
+            ],
+        }
+    )
+    response = await read_retro_symbol(
+        session, symbol="005930", from_=date(2026, 1, 1), to=DAY
+    )
+    validate(response, "RetroSymbolResponse")
+    fills = {r["event_ref"]: r for r in response["data"] if r["stage"] == "fill"}
+    assert fills[make_ref("fill", 910)]["linked_ref"] == make_ref("order", 100)
+    assert fills[make_ref("fill", 911)]["linked_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_kis_order_without_send_evidence_has_unknown_identity_and_fill_count() -> (
+    None
+):
+    session = kr_day_session(**{"FROM review.order_send_intents": []})
+    response = await read_retro_day(session, market="kr", date=DAY)
+    validate(response, "RetroDayResponse")
+    fill = next(r for r in response["data"] if r["stage"] == "fill")
+    assert fill["linked_ref"] is None
+    funnel = await read_retro_funnel(
+        kr_day_session(**{"FROM review.order_send_intents": []}),
+        market="kr",
+        from_=DAY,
+        to=DAY,
+    )
+    by_stage = {r["stage"]: r for r in funnel["data"]}
+    assert by_stage["order"]["count"] == 1
+    assert by_stage["fill"]["count"] is None

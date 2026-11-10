@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
-from app.models.review import TradeForecast
+from app.models.review import OrderSendIntent, TradeForecast
 from app.models.screener_pick_log import ScreenerPickLog
 from app.services.execution_ledger.kis_lots import LedgerFill, fifo_position
 from app.services.execution_ledger.supersede import (
@@ -76,6 +76,9 @@ class ChainData:
     forecasts: list[Any] = field(default_factory=list)
     proposals: list[Any] = field(default_factory=list)
     rungs: list[Any] = field(default_factory=list)
+    #: rung idempotency key -> when its KIS send was reserved (``None`` = the
+    #: key matched several intent rows, so the day is not established).
+    send_times: dict[str, datetime | None] = field(default_factory=dict)
     fills: list[Any] = field(default_factory=list)
     history: list[Any] = field(default_factory=list)
     bars: list[daily_bars.Bar] = field(default_factory=list)
@@ -117,17 +120,33 @@ def is_opening_seed(row: Any) -> bool:
     )
 
 
-def rung_identity(proposal: Any, rung: Any, market: MarketInfo) -> OrderIdentity | None:
+def rung_identity(
+    proposal: Any,
+    rung: Any,
+    market: MarketInfo,
+    send_times: dict[str, datetime | None],
+) -> OrderIdentity | None:
     """The canonical ROB-1379 order identity of the order a rung sent.
 
     The same tuple a ledger row gets from ``order_identity`` (broker, mode,
     instrument, symbol, side, currency, normalized order number, trading day),
-    so a reused KIS order number on another day or broker cannot match. ``None``
-    when the proposal lacks the evidence (unknown broker, no accept time): the
-    link is then unknown rather than guessed.
+    so a reused KIS order number on another day or broker cannot match.
+
+    Only KIS identities carry a trading day, and the rung's own ``validated_at``
+    is not evidence of it (cancel and fill transitions overwrite it). The day
+    comes from ``review.order_send_intents.created_at``, inserted once right
+    before the POST under the rung's idempotency key. ``None`` when that
+    evidence is missing or ambiguous (or the broker is unknown): the link and
+    the funnel's fill count are then unknown rather than guessed.
     """
     broker = _BROKER_BY_ACCOUNT_MODE.get(proposal.account_mode)
-    if broker is None or rung.validated_at is None or not rung.broker_order_id:
+    if broker is None or not rung.broker_order_id:
+        return None
+    if broker == "kis":
+        sent_at = send_times.get(rung.idempotency_key) if rung.idempotency_key else None
+    else:
+        sent_at = rung.created_at  # the identity of non-KIS brokers has no day
+    if sent_at is None:
         return None
     return order_identity(
         SimpleNamespace(
@@ -138,7 +157,7 @@ def rung_identity(proposal: Any, rung: Any, market: MarketInfo) -> OrderIdentity
             side=rung.side,
             broker_order_id=rung.broker_order_id,
             currency=market.currency,
-            filled_at=rung.validated_at,
+            filled_at=sent_at,
         )
     )
 
@@ -269,6 +288,27 @@ async def load_chain(
             )
             data.rungs = rungs
             track("rungs", rungs, rung_ok, MAX_SOURCE_ROWS * 4)
+            keys = sorted(
+                {
+                    r.idempotency_key
+                    for r in rungs
+                    if r.idempotency_key and r.broker_order_id
+                }
+            )
+            if rung_ok and keys:
+
+                async def read_send_intents() -> list[Any]:
+                    stmt = select(
+                        OrderSendIntent.idempotency_key, OrderSendIntent.created_at
+                    ).where(OrderSendIntent.idempotency_key.in_(keys))
+                    return list((await session.execute(stmt)).all())
+
+                intents, intent_ok = await guarded(
+                    session, unknowns, "source.send_intents", read_send_intents, []
+                )
+                track("send_intents", intents, intent_ok, MAX_SOURCE_ROWS * 4)
+                for key, created in intents:
+                    data.send_times[key] = None if key in data.send_times else created
 
     fills, ok = await guarded(session, unknowns, "source.fills", read_fills, [])
     track("fills", fills, ok, MAX_SOURCE_ROWS)
@@ -475,7 +515,7 @@ def proposal_rung_order_rows(
                 order_ref = make_ref("order", r.id)
                 # The broker order number is only part of a join identity here;
                 # it never reaches a row or a ref.
-                identity = rung_identity(p, r, market)
+                identity = rung_identity(p, r, market, data.send_times)
                 if identity is not None:
                     order_refs[identity] = None if identity in order_refs else order_ref
                 out.append(

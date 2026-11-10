@@ -64,7 +64,7 @@ def stage_counts(data: ChainData, market: MarketInfo) -> list[tuple[str, int | N
         for r in data.rungs
         if r.broker_order_id and r.proposal_pk in proposal_by_id
     ]
-    identities = [rung_identity(p, r, market) for p, r in order_rungs]
+    identities = [rung_identity(p, r, market, data.send_times) for p, r in order_rungs]
     unique = None not in identities and len(set(identities)) == len(identities)
     filled = {order_identity(f) for f in data.fills} & {i for i in identities if i}
 
