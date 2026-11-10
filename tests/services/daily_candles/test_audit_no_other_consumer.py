@@ -31,6 +31,10 @@ ALLOWED = {
     # definitional references to the same read-only use above.
     "app/services/dots_history_export/projection.py",
     "app/services/dots_history_export/spec.py",
+    # hk 3816: the retro/v1 get_bars/chain/positions readers read completed
+    # crypto daily closes inside one READ ONLY snapshot transaction. No write,
+    # broker call or schedule; output is the retrospective read contract only.
+    "app/services/retro_v1/daily_bars.py",
 }
 
 
