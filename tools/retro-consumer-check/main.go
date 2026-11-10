@@ -264,9 +264,9 @@ func runChecks(baseURL, token string) error {
 		{
 			name: "retro_day",
 			path: "/trading/api/retro/v1/retro_day",
-			rawQuery: "?market=XSYN&date=2026-01-02",
+			rawQuery: "?market=kr&date=2026-01-05",
 			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				return p.RetroDay(ctx, &autotrader.RetroDayParams{Market: "XSYN", Date: d("2026-01-02")})
+				return p.RetroDay(ctx, &autotrader.RetroDayParams{Market: "kr", Date: d("2026-01-05")})
 			},
 			rowKeys:    []string{"symbol", "stage", "event_at", "event_ref", "linked_ref", "status", "reason", "quantity", "price", "currency", "unit", "basis"},
 			rowDecimal: []string{"quantity", "price"},
@@ -274,9 +274,9 @@ func runChecks(baseURL, token string) error {
 		{
 			name: "retro_symbol",
 			path: "/trading/api/retro/v1/retro_symbol",
-			rawQuery: "?symbol=SYN001&from=2026-01-01&to=2026-01-02",
+			rawQuery: "?symbol=005930&from=2026-01-01&to=2026-01-10",
 			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				return p.RetroSymbol(ctx, &autotrader.RetroSymbolParams{Symbol: "SYN001", From: d("2026-01-01"), To: d("2026-01-02")})
+				return p.RetroSymbol(ctx, &autotrader.RetroSymbolParams{Symbol: "005930", From: d("2026-01-01"), To: d("2026-01-10")})
 			},
 			rowKeys:    []string{"symbol", "stage", "event_at", "event_ref", "linked_ref", "status", "reason", "quantity", "price", "currency", "unit", "basis"},
 			rowDecimal: []string{"quantity", "price"},
@@ -284,9 +284,9 @@ func runChecks(baseURL, token string) error {
 		{
 			name: "retro_funnel",
 			path: "/trading/api/retro/v1/retro_funnel",
-			rawQuery: "?market=XSYN&from=2026-01-01&to=2026-01-02",
+			rawQuery: "?market=kr&from=2026-01-01&to=2026-01-10",
 			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				return p.RetroFunnel(ctx, &autotrader.RetroFunnelParams{Market: "XSYN", From: d("2026-01-01"), To: d("2026-01-02")})
+				return p.RetroFunnel(ctx, &autotrader.RetroFunnelParams{Market: "kr", From: d("2026-01-01"), To: d("2026-01-10")})
 			},
 			rowKeys:    []string{"stage", "cohort", "count", "denominator", "fill_rate", "unit", "basis", "missing_reason"},
 			rowDecimal: []string{"fill_rate"},
@@ -295,9 +295,9 @@ func runChecks(baseURL, token string) error {
 		{
 			name: "retro_scoreboard",
 			path: "/trading/api/retro/v1/retro_scoreboard",
-			rawQuery: "?from=2026-01-01&to=2026-01-02",
+			rawQuery: "?from=2026-01-01&to=2026-01-08",
 			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				return p.RetroScoreboard(ctx, &autotrader.RetroScoreboardParams{From: d("2026-01-01"), To: d("2026-01-02")})
+				return p.RetroScoreboard(ctx, &autotrader.RetroScoreboardParams{From: d("2026-01-01"), To: d("2026-01-08")})
 			},
 			rowKeys:    []string{"scope", "subject_ref", "market", "basis", "evidence_basis", "return_rate", "unmeasured_reason", "flows_complete", "start_amount", "end_amount", "flow_amount", "currency", "unit", "benchmark"},
 			rowDecimal: []string{"return_rate", "start_amount", "end_amount", "flow_amount"},
@@ -305,9 +305,9 @@ func runChecks(baseURL, token string) error {
 		{
 			name: "retro_positions",
 			path: "/trading/api/retro/v1/retro_positions",
-			rawQuery: "?cutoff_date=2026-01-02",
+			rawQuery: "?cutoff_date=2026-01-05",
 			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				return p.RetroPositions(ctx, &autotrader.RetroPositionsParams{CutoffDate: d("2026-01-02")})
+				return p.RetroPositions(ctx, &autotrader.RetroPositionsParams{CutoffDate: d("2026-01-05")})
 			},
 			rowKeys:    []string{"symbol", "position_ref", "quantity", "average_price", "unrealized_amount", "currency", "unit", "basis", "lot_state", "missing_reason"},
 			rowDecimal: []string{"quantity", "average_price", "unrealized_amount"},
@@ -315,9 +315,9 @@ func runChecks(baseURL, token string) error {
 		{
 			name: "mock_experiments",
 			path: "/trading/api/retro/v1/mock_experiments",
-			rawQuery: "?strategy_id=SYN_STRATEGY",
+			rawQuery: "?strategy_id=S_ALPHA",
 			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				strat := "SYN_STRATEGY"
+				strat := "S_ALPHA"
 				return p.MockExperiments(ctx, &autotrader.MockExperimentsParams{StrategyId: &strat})
 			},
 			rowKeys:    []string{"strategy_id", "experiment_ref", "environment", "planned_count", "sent_count", "filled_count", "uncertain_count", "episode_pnl_amount", "currency", "unit", "basis"},
@@ -327,9 +327,9 @@ func runChecks(baseURL, token string) error {
 		{
 			name: "get_bars",
 			path: "/trading/api/retro/v1/get_bars",
-			rawQuery: "?symbol=SYN001&tf=1d&from=2026-01-01&to=2026-01-02",
+			rawQuery: "?symbol=005930&tf=1d&from=2026-01-01&to=2026-01-10",
 			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				return p.GetBars(ctx, &autotrader.GetBarsParams{Symbol: "SYN001", Tf: autotrader.N1d, From: d("2026-01-01"), To: d("2026-01-02")})
+				return p.GetBars(ctx, &autotrader.GetBarsParams{Symbol: "005930", Tf: autotrader.N1d, From: d("2026-01-01"), To: d("2026-01-10")})
 			},
 			rowKeys:    []string{"symbol", "time", "open_price", "high_price", "low_price", "close_price", "quantity", "currency", "unit", "source", "venue", "adjusted", "missing_reason", "basis"},
 			rowDecimal: []string{"open_price", "high_price", "low_price", "close_price", "quantity"},

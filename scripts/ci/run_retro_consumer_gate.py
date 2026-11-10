@@ -14,7 +14,6 @@ Supports testing mutants:
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import shutil
@@ -26,12 +25,13 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
 import uvicorn
-import yaml
 from fastapi import FastAPI
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -168,6 +168,122 @@ def acquire_consumer_checkout(
         shutil.rmtree(temp_parent, ignore_errors=True)
 
 
+def build_gate_session():
+    from tests.services.retro_v1.support import (
+        FakeSession,
+        bar_row,
+        forecast,
+        kr_day_session,
+    )
+
+    now = datetime.now(UTC)
+    stale_run = SimpleNamespace(
+        run_id="00000000-0000-0000-0000-000000000001",
+        broker="kis",
+        window_start=now - timedelta(days=1),
+        window_end=now,
+        started_at=now - timedelta(hours=5, minutes=1),
+        finished_at=now - timedelta(hours=5),
+        dry_run=False,
+        would_insert=0,
+        would_update=0,
+        unchanged=0,
+        committed_insert=0,
+        committed_update=0,
+        error_summary=None,
+        notes=None,
+    )
+    experiment = SimpleNamespace(
+        strategy_id="S_ALPHA",
+        venue="alpaca_paper",
+        total=4,
+        sent=3,
+        filled=2,
+        unresolved=1,
+        closed_count=2,
+        closed_unpriced=0,
+        pnl_sum=Decimal("12.50"),
+        last_at=datetime(2026, 1, 4, tzinfo=UTC),
+    )
+    account_id = "upbit:upbit:" + "a" * 64
+    snapshots = [
+        SimpleNamespace(
+            account=account_id,
+            market="account",
+            day=date(2026, 1, 1) + timedelta(days=i),
+            holdings=[],
+            cash={"KRW": "100"},
+            reasons=[],
+            observed_at=datetime(2026, 1, 8, 9, 30, tzinfo=UTC),
+        )
+        for i in range(8)
+    ]
+    bars = [
+        bar_row(
+            "005930",
+            datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+            "71000",
+            partition="KRX",
+            adj_close=None,
+            value=Decimal("71000000"),
+        ),
+        *[
+            bar_row(
+                "005930",
+                datetime(2026, 1, 6, tzinfo=UTC) + timedelta(days=i),
+                str(72000 + i),
+                partition="KRX",
+                adj_close=None,
+                value=Decimal("72000000"),
+            )
+            for i in range(25)
+        ],
+    ]
+
+    def account_snapshots_route(sql: str):
+        if "max(" in sql:
+            return [datetime(2026, 1, 8, 9, 30, tzinfo=UTC)]
+        if "DISTINCT" in sql or "distinct" in sql:
+            return [(account_id, "account")]
+        return snapshots
+
+    def trade_forecast_route(sql: str):
+        if "max(" in sql or "min(" in sql:
+            return [None]
+        return [forecast(2, "000660", datetime(2026, 1, 5, 0, 40, tzinfo=UTC))]
+
+    routes = {
+        "SHOW transaction_read_only": ["on"],
+        "FROM review.execution_ledger_reconcile_runs": [stale_run],
+        "execution_ledger_reconcile_runs": [stale_run],
+        "krx_after_market_eligibility": [(0, None, None)],
+        "investment_report_items": [None],
+        "FROM review.mock_strategy_orders": [experiment],
+        "FROM strategy_sleeves": [],
+        "max(account_value_snapshots.observed_at)": [
+            datetime(2026, 1, 8, 9, 30, tzinfo=UTC)
+        ],
+        "account_value_snapshots": account_snapshots_route,
+        "account_external_flows": [],
+        "FROM public.kr_candles_1d": bars,
+    }
+
+    base_session = FakeSession()
+    kr_session = kr_day_session()
+    full_routes = dict(routes)
+    for k, v in kr_session.routes.items():
+        if k == "FROM review.execution_ledger":
+            full_routes["FROM review.execution_ledger "] = v
+        elif k == "FROM review.trade_forecasts":
+            full_routes[k] = trade_forecast_route
+        elif k == "FROM public.kr_candles_1d":
+            pass
+        else:
+            full_routes[k] = v
+    base_session.routes = full_routes
+    return base_session
+
+
 class CandidateServerThread(threading.Thread):
     def __init__(
         self,
@@ -181,6 +297,7 @@ class CandidateServerThread(threading.Thread):
         self.mutant = mutant
         self.server: uvicorn.Server | None = None
         self.error: Exception | None = None
+        self.original_retro_day = None
 
     def run(self) -> None:
         try:
@@ -196,49 +313,45 @@ class CandidateServerThread(threading.Thread):
             settings.RETRO_API_ENABLED = True
             settings.RETRO_API_READ_TOKEN = self.read_token
 
+            from app.core.db import get_db
             from app.middleware.auth import AuthMiddleware
             from app.routers import retro_v1
 
-            # Load contract examples
-            examples = {}
-            for p in EXAMPLES_DIR.glob("*.yaml"):
-                doc = yaml.safe_load(p.read_text(encoding="utf-8"))
-                if doc.get("status") == 200:
-                    examples[doc["operation"]] = doc["response"]
-
             app = FastAPI()
 
-            # Install mock readers for candidate endpoints
-            for op in retro_v1.OPERATIONS:
-                resp_data = copy.deepcopy(
-                    examples.get(
-                        op,
-                        {
-                            "data": [],
-                            "as_of": "2026-11-06T00:00:00Z",
-                            "cutoff_date": "2026-11-06",
-                            "next_cursor": None,
-                            "timezone": "KST",
-                            "total": 0,
-                            "unknowns": [],
-                        },
-                    )
-                )
+            # Dependency override to inject deterministic test DB session
+            async def get_test_db():
+                yield build_gate_session()
 
-                if self.mutant == "delete_field" and op == "retro_day":
-                    # Mutant: delete required field 'event_ref' from data rows
-                    if "data" in resp_data and isinstance(resp_data["data"], list):
-                        for row in resp_data["data"]:
+            app.dependency_overrides[get_db] = get_test_db
+
+            # Real readers are used directly without static mocking.
+            # Mutants wrap real readers rather than replacing them with static fixtures.
+            if self.mutant == "delete_field":
+                real_retro_day = retro_v1.READERS["retro_day"]
+                self.original_retro_day = real_retro_day
+
+                async def mutated_retro_day(session, **query):
+                    resp = await real_retro_day(session, **query)
+                    if "data" in resp and isinstance(resp["data"], list):
+                        for row in resp["data"]:
                             row.pop("event_ref", None)
+                    return resp
 
-                if self.mutant == "float_integer" and op == "retro_day":
-                    # Mutant: serialize decimal price as a float number
-                    if "data" in resp_data and isinstance(resp_data["data"], list):
-                        for row in resp_data["data"]:
+                retro_v1.READERS["retro_day"] = mutated_retro_day
+
+            elif self.mutant == "float_integer":
+                real_retro_day = retro_v1.READERS["retro_day"]
+                self.original_retro_day = real_retro_day
+
+                async def mutated_retro_day(session, **query):
+                    resp = await real_retro_day(session, **query)
+                    if "data" in resp and isinstance(resp["data"], list):
+                        for row in resp["data"]:
                             row["price"] = 100.5
+                    return resp
 
-                mock = AsyncMock(return_value=resp_data)
-                retro_v1.READERS[op] = mock
+                retro_v1.READERS["retro_day"] = mutated_retro_day
 
             app.include_router(retro_v1.router)
 
@@ -258,6 +371,10 @@ class CandidateServerThread(threading.Thread):
             self.error = exc
 
     def stop(self) -> None:
+        if self.original_retro_day is not None:
+            from app.routers import retro_v1
+
+            retro_v1.READERS["retro_day"] = self.original_retro_day
         if self.server:
             self.server.should_exit = True
 

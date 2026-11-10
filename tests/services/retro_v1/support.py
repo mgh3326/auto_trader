@@ -78,6 +78,9 @@ class FakeResult:
     def one(self) -> Any:
         return self._rows[0]
 
+    def scalar_one(self) -> Any:
+        return self._rows[0]
+
     def first(self) -> Any:
         return self._rows[0] if self._rows else None
 

@@ -180,6 +180,7 @@ jobs:
       jobs: ${{ steps.classify.outputs.jobs }}
       run_affected_tests: ${{ steps.classify.outputs.run_affected_tests }}
       check_manifests: ${{ steps.classify.outputs.check_manifests }}
+      run_retro_consumer_gate: ${{ steps.classify.outputs.run_retro_consumer_gate }}
       affected_tests: ${{ steps.classify.outputs.affected_tests }}
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -893,10 +894,13 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false' || needs.change-classifier.outputs.run_retro_consumer_gate == 'true') }}
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         ref: ${{ inputs.ref }}
+        persist-credentials: false
 
     - name: Set up pinned Python and uv
       id: py
