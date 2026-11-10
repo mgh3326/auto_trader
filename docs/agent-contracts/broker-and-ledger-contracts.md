@@ -932,3 +932,13 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 VOO는 조정종가 출처 혼합으로 배당 포함 총수익을 입증할 수 없어 unknown이다.
 sleeve는 기존 book의 기간 귀속 손익을 해당 기간의 변하지 않은 예산으로 나눈 별도
 basis를 쓰며 예산을 실제 현금으로 간주하지 않는다. 스케줄러·MCP 도구·주문 연결은 없다.
+
+retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_scoreboard.py`의
+`read_retro_scoreboard(session, **params)`가 위 기간 성과 로더를 `RetroScoreboardResponse`
+(`contracts/retro/v1/openapi.yaml`)로 투영한다. `flows_complete`는 서버 측 사실일 뿐이며
+인자·헤더·요청 필드로 선언할 수 없다. 모듈 상수 `SERVER_FLOWS_COMPLETE=False`가 로더에
+항상 전달되고(지속적인 서버 측 확인 기록은 아직 없다), 계좌 행은 `flows_not_confirmed` 사유와
+함께 미측정이며 행의 `flows_complete`는 그 값을 보고한다. 계좌·sleeve 식별은 불투명한
+`ref_` 다이제스트뿐이고 금액·수익률은 정확한 decimal 문자열이다. `REPEATABLE READ READ ONLY`
+트랜잭션과 문장 timeout 안에서만 읽으며 스냅샷·흐름 writer를 import하거나 호출하지 않는다.
+아직 HTTP route는 없다(hk 3818). 운영자 CLI 출력은 바뀌지 않았다.
