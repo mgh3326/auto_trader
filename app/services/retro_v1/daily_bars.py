@@ -43,8 +43,9 @@ _CRYPTO_DAILY: Final = """
     ORDER BY ci.venue_symbol, c.time, ci.venue
     LIMIT :cap
 """
-# The minute tables carry no provider column (kr_candles_1m documents that its
-# venue is not provenance), so source is reported unknown for them.
+# kr/us minute tables carry no provider column (kr_candles_1m documents that its
+# venue is not provenance), so source is reported unknown for them; the crypto
+# minute table stores its source.
 _KR_MINUTE: Final = """
     SELECT time, symbol, venue AS venue, open, high, low, close, volume,
            NULL::text AS source
@@ -63,8 +64,7 @@ _US_MINUTE: Final = """
 """
 _CRYPTO_MINUTE: Final = """
     SELECT c.time, ci.venue_symbol AS symbol, ci.venue AS venue,
-           c.open, c.high, c.low, c.close, c.base_volume AS volume,
-           NULL::text AS source
+           c.open, c.high, c.low, c.close, c.base_volume AS volume, c.source
     FROM public.crypto_candles_1m AS c
     JOIN public.crypto_instruments AS ci ON ci.id = c.instrument_id
     WHERE ci.venue_symbol IN :symbols AND c.time >= :lo AND c.time < :hi

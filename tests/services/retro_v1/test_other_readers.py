@@ -205,7 +205,7 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
                     datetime(2026, 1, 5, 0, 1, tzinfo=UTC),
                     "95000000",
                     venue="upbit",
-                    source=None,
+                    source="upbit_ws",
                 )
             ]
         }
@@ -215,10 +215,32 @@ async def test_get_bars_us_daily_is_raw_and_crypto_uses_its_own_table() -> None:
     )
     validate(response, "GetBarsResponse")
     row = response["data"][0]
-    assert row["currency"] == "KRW" and row["source"] is None
-    assert (
-        row["missing_reason"] == "unavailable"
-    )  # minute tables carry no provider column
+    # the crypto minute table stores its provider, so it is reported
+    assert (row["currency"], row["source"], row["missing_reason"]) == (
+        "KRW",
+        "upbit_ws",
+        None,
+    )
+    assert "c.source" in crypto.statements[-1] or "source" in crypto.statements[-1]
+    kr_minute = FakeSession(
+        {
+            "FROM public.kr_candles_1m": [
+                bar_row(
+                    "005930",
+                    datetime(2026, 1, 5, 0, 1, tzinfo=UTC),
+                    "71000",
+                    source=None,
+                )
+            ]
+        }
+    )
+    response = await read_get_bars(
+        kr_minute, symbol="005930", tf="1m", from_=CUTOFF, to=CUTOFF
+    )
+    validate(response, "GetBarsResponse")
+    # kr/us minute tables carry no provider column
+    assert response["data"][0]["source"] is None
+    assert response["data"][0]["missing_reason"] == "unavailable"
 
 
 @pytest.mark.asyncio

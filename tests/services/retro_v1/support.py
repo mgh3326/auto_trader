@@ -180,6 +180,7 @@ def rung(id_: int, proposal_pk: int, **kw: Any) -> OrderProposalRung:
         "id": id_,
         "proposal_pk": proposal_pk,
         "rung_index": 0,
+        "side": "buy",
         "quantity": Decimal("3"),
         "limit_price": Decimal("70000"),
         "state": "filled",

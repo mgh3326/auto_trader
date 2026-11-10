@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -19,6 +20,7 @@ from tests.services.retro_v1.support import (
     kr_day_session,
     operational_error,
     pick,
+    rung,
     validate,
 )
 
@@ -242,3 +244,141 @@ async def test_symbol_in_any_broker_spelling_is_normalised_by_the_symbol_module(
     assert uppercase  # symbol filter is applied case-insensitively
     with pytest.raises(RetroReadError):
         await read_retro_symbol(session, symbol="005930; DROP", from_=DAY, to=DAY)
+
+
+def _seed_row(id_: int):
+    from tests.services.retro_v1.support import FILL_AT, ledger
+
+    return ledger(
+        id_,
+        FILL_AT.replace(hour=0, minute=0),
+        source="manual_import",
+        broker_order_id="SEED-20260105-kis-krx-005930",
+        raw_payload_json={"seed_kind": "opening_lot"},
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("65000"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_opening_seed_is_not_a_fill_or_markout_but_still_sizes_the_lot() -> None:
+    from tests.services.retro_v1.support import ledger  # noqa: F401
+
+    rows = [_seed_row(500), *kr_day_session().routes["FROM review.execution_ledger"]]
+    session = kr_day_session(**{"FROM review.execution_ledger": rows})
+    response = await read_retro_day(session, market="kr", date=DAY)
+    validate(response, "RetroDayResponse")
+    blob = json.dumps(response)
+    assert make_ref("fill", 500) not in blob and make_ref("markout", 500) not in blob
+    assert len([r for r in response["data"] if r["stage"] == "fill"]) == 1
+    # FIFO history still carries the seed: 10 seeded + 3 bought = 13 at the lot
+    lot = next(r for r in response["data"] if r["stage"] == "lot")
+    assert (lot["status"], lot["quantity"]) == ("open", "13")
+    funnel = await read_retro_funnel(
+        kr_day_session(**{"FROM review.execution_ledger": rows}),
+        market="kr",
+        from_=DAY,
+        to=DAY,
+    )
+    assert {r["stage"]: r["count"] for r in funnel["data"]}["fill"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reused_order_number_on_another_day_does_not_link_or_count() -> None:
+    from tests.services.retro_v1.support import FILL_AT, ledger
+
+    # same symbol and KIS order number, two trading days; only the rung of the
+    # second day exists. The day-1 fill must not link to it (nor count in funnel).
+    day1 = ledger(900, FILL_AT - timedelta(days=1), broker_order_id="0000123456")
+    day2 = ledger(901, FILL_AT, broker_order_id="0000123456")
+    earlier_rung = rung(
+        101,
+        10,
+        validated_at=FILL_AT - timedelta(days=1, minutes=5),
+        broker_order_id="0000123456",
+    )
+    session = kr_day_session(
+        **{
+            "FROM review.execution_ledger": [day1, day2],
+            "FROM review.order_proposal_rungs": [rung(100, 10), earlier_rung],
+        }
+    )
+    response = await read_retro_symbol(
+        session, symbol="005930", from_=date(2026, 1, 1), to=DAY
+    )
+    validate(response, "RetroSymbolResponse")
+    fills = {r["event_ref"]: r for r in response["data"] if r["stage"] == "fill"}
+    orders = {r["event_ref"] for r in response["data"] if r["stage"] == "order"}
+    assert len(fills) == 2 and len(orders) == 2
+    # each fill links to the order of its own trading day
+    assert fills[make_ref("fill", 901)]["linked_ref"] == make_ref("order", 100)
+    assert fills[make_ref("fill", 900)]["linked_ref"] == make_ref("order", 101)
+    # two rungs sharing one identity are ambiguous: link unknown, never overwritten
+    same_day = rung(102, 10, validated_at=FILL_AT, broker_order_id="0000123456")
+    ambiguous = kr_day_session(
+        **{
+            "FROM review.execution_ledger": [day2],
+            "FROM review.order_proposal_rungs": [rung(100, 10), same_day],
+        }
+    )
+    response = await read_retro_day(ambiguous, market="kr", date=DAY)
+    validate(response, "RetroDayResponse")
+    fill = next(r for r in response["data"] if r["stage"] == "fill")
+    assert fill["linked_ref"] is None and fill["reason"] == "no_linked_order"
+    funnel = await read_retro_funnel(
+        kr_day_session(
+            **{
+                "FROM review.execution_ledger": [day2],
+                "FROM review.order_proposal_rungs": [rung(100, 10), same_day],
+            }
+        ),
+        market="kr",
+        from_=DAY,
+        to=DAY,
+    )
+    validate(funnel, "RetroFunnelResponse")
+    by_stage = {r["stage"]: r for r in funnel["data"]}
+    assert by_stage["fill"]["count"] is None  # identities not unique: unknown
+    assert by_stage["fill"]["missing_reason"] == "incomplete_evidence"
+
+
+@pytest.mark.asyncio
+async def test_markout_counts_sessions_on_one_venue_and_marks_mixed_venues_unknown() -> (
+    None
+):
+    from tests.services.retro_v1.support import bar_row
+
+    krx = [
+        bar_row(
+            "005930",
+            datetime(2026, 1, 6, tzinfo=UTC) + timedelta(days=i),
+            str(72000 + i),
+        )
+        for i in range(25)
+    ]
+    ntx = [
+        bar_row(
+            "005930",
+            datetime(2026, 1, 6, tzinfo=UTC) + timedelta(days=i),
+            "1",
+            venue="NTX",
+        )
+        for i in range(25)
+    ]
+    session = kr_day_session(**{"FROM public.kr_candles_1d": [*ntx, *krx]})
+    response = await read_retro_day(session, market="kr", date=DAY)
+    markout = next(r for r in response["data"] if r["stage"] == "markout")
+    # 20th KRX session, not the 10th date counted twice, and never an NTX price
+    assert markout["price"] == "72019"
+    us = kr_day_session(
+        **{
+            "FROM public.kr_candles_1d": [
+                bar_row("005930", datetime(2026, 1, 6, tzinfo=UTC), "1", venue="NTX"),
+                bar_row("005930", datetime(2026, 1, 6, tzinfo=UTC), "2", venue="OTHER"),
+            ]
+        }
+    )
+    mixed = await read_retro_day(us, market="kr", date=DAY)
+    validate(mixed, "RetroDayResponse")
+    row = next(r for r in mixed["data"] if r["stage"] == "markout")
+    assert (row["price"], row["reason"]) == (None, "source_mixed")

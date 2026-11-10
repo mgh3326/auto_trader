@@ -14,8 +14,13 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.execution_ledger.supersede import normalize_order_id
-from app.services.retro_v1.chain import ChainData, data_as_of, load_chain
+from app.services.execution_ledger.supersede import order_identity
+from app.services.retro_v1.chain import (
+    ChainData,
+    data_as_of,
+    load_chain,
+    rung_identity,
+)
 from app.services.retro_v1.envelope import (
     DEFAULT_LIMIT,
     Row,
@@ -44,18 +49,24 @@ def _rate(count: int | None, denominator: int | None) -> Decimal | None:
     )
 
 
-def stage_counts(data: ChainData) -> list[tuple[str, int | None]]:
-    """``(stage, count)``; ``None`` when that stage's source was not fully read."""
+def stage_counts(data: ChainData, market: MarketInfo) -> list[tuple[str, int | None]]:
+    """``(stage, count)``; ``None`` when that stage's source was not fully read.
+
+    Orders are rungs the broker accepted. A fill is matched to its order by the
+    canonical order identity (broker, symbol, side, number AND trading day), so a
+    reused KIS order number on another day never counts. When any order's
+    identity cannot be established or two share one, the fill count is unknown.
+    """
     inc = data.incomplete
-    symbol_by_proposal = {p.id: p.symbol.upper() for p in data.proposals}
-    order_ids = {
-        (symbol_by_proposal[r.proposal_pk], normalize_order_id(r.broker_order_id))
+    proposal_by_id = {p.id: p for p in data.proposals}
+    order_rungs = [
+        (proposal_by_id[r.proposal_pk], r)
         for r in data.rungs
-        if r.broker_order_id and r.proposal_pk in symbol_by_proposal
-    }
-    filled = {
-        (f.symbol.upper(), normalize_order_id(f.broker_order_id)) for f in data.fills
-    } & order_ids
+        if r.broker_order_id and r.proposal_pk in proposal_by_id
+    ]
+    identities = [rung_identity(p, r, market) for p, r in order_rungs]
+    unique = None not in identities and len(set(identities)) == len(identities)
+    filled = {order_identity(f) for f in data.fills} & {i for i in identities if i}
 
     def known(name: str, value: int, *depends: str) -> int | None:
         return None if inc & {name, *depends} else value
@@ -64,13 +75,16 @@ def stage_counts(data: ChainData) -> list[tuple[str, int | None]]:
         ("candidate", known("candidates", len(data.candidates))),
         ("proposal", known("proposals", len(data.proposals))),
         ("rung", known("rungs", len(data.rungs), "proposals")),
-        ("order", known("rungs", len(order_ids), "proposals")),
-        ("fill", known("fills", len(filled), "rungs", "proposals")),
+        ("order", known("rungs", len(order_rungs), "proposals")),
+        (
+            "fill",
+            known("fills", len(filled), "rungs", "proposals") if unique else None,
+        ),
     ]
 
 
-def funnel_rows(data: ChainData, cohort: str) -> list[Row]:
-    counts = stage_counts(data)
+def funnel_rows(data: ChainData, market: MarketInfo, cohort: str) -> list[Row]:
+    counts = stage_counts(data, market)
     rows: list[Row] = []
     previous: int | None = None
     for index, (stage, count) in enumerate(counts):
@@ -154,7 +168,7 @@ async def read_retro_funnel(
         data = await load_chain(
             session, unknowns, info, symbols=None, lo=lo, hi=hi, include_lots=False
         )
-    rows = funnel_rows(data, _cohort(info, start, end))
+    rows = funnel_rows(data, info, _cohort(info, start, end))
     return build_response(
         as_of=as_of,
         data_as_of=data_as_of(data),

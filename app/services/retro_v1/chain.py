@@ -20,6 +20,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Final
 
 from sqlalchemy import func, select
@@ -32,7 +33,8 @@ from app.models.screener_pick_log import ScreenerPickLog
 from app.services.execution_ledger.kis_lots import LedgerFill, fifo_position
 from app.services.execution_ledger.supersede import (
     AUTHORITATIVE_SOURCES,
-    normalize_order_id,
+    OrderIdentity,
+    order_identity,
     supersede_provisional,
 )
 from app.services.retro_v1 import daily_bars
@@ -90,6 +92,55 @@ def _in_effect(rows: list[Any]) -> list[Any]:
     # SQL already filters; this keeps a leaked quarantined row out of every
     # fill/lot even if a caller's query forgot the predicate.
     return [r for r in rows if getattr(r, "quarantined_at", None) is None]
+
+
+_SEED_ORDER_ID_PREFIX: Final = "SEED-"
+_BROKER_BY_ACCOUNT_MODE: Final = {
+    "kis_live": "kis",
+    "toss_live": "toss",
+    "upbit": "upbit",
+}
+
+
+def is_opening_seed(row: Any) -> bool:
+    """A ``manual_import`` opening-lot seed: a position snapshot, not an execution.
+
+    Same rule as ``kis_lots._is_opening_seed`` (``SEED-*`` order id), plus the
+    ``seed_kind=opening_lot`` marker the seed writer stores. Seeds stay in the
+    FIFO history that sizes lots; they are never a fill event or a markout.
+    """
+    if row.source != "manual_import":
+        return False
+    raw = getattr(row, "raw_payload_json", None)
+    return str(row.broker_order_id).startswith(_SEED_ORDER_ID_PREFIX) or (
+        isinstance(raw, dict) and raw.get("seed_kind") == "opening_lot"
+    )
+
+
+def rung_identity(proposal: Any, rung: Any, market: MarketInfo) -> OrderIdentity | None:
+    """The canonical ROB-1379 order identity of the order a rung sent.
+
+    The same tuple a ledger row gets from ``order_identity`` (broker, mode,
+    instrument, symbol, side, currency, normalized order number, trading day),
+    so a reused KIS order number on another day or broker cannot match. ``None``
+    when the proposal lacks the evidence (unknown broker, no accept time): the
+    link is then unknown rather than guessed.
+    """
+    broker = _BROKER_BY_ACCOUNT_MODE.get(proposal.account_mode)
+    if broker is None or rung.validated_at is None or not rung.broker_order_id:
+        return None
+    return order_identity(
+        SimpleNamespace(
+            broker=broker,
+            account_mode="live",
+            instrument_type=market.instrument_type,
+            symbol=proposal.symbol,
+            side=rung.side,
+            broker_order_id=rung.broker_order_id,
+            currency=market.currency,
+            filled_at=rung.validated_at,
+        )
+    )
 
 
 async def load_chain(
@@ -225,7 +276,9 @@ async def load_chain(
         live = _in_effect(fills)
         kept, dropped = supersede_provisional(live)
         data.superseded = dropped
-        data.fills = [r for r in kept if lo <= r.filled_at < hi]
+        data.fills = [
+            r for r in kept if lo <= r.filled_at < hi and not is_opening_seed(r)
+        ]
 
     if include_lots and data.fills:
         fill_symbols = sorted({r.symbol.upper() for r in data.fills})
@@ -356,10 +409,13 @@ def _match_candidate(proposal: Any, candidates: list[Any]) -> Any | None:
 
 def proposal_rung_order_rows(
     data: ChainData, market: MarketInfo
-) -> tuple[list[tuple[datetime | None, Row]], dict[tuple[str, str], str]]:
-    """Proposal, rung and order rows, plus ``(symbol, order id) -> order ref``."""
+) -> tuple[list[tuple[datetime | None, Row]], dict[OrderIdentity, str | None]]:
+    """Proposal, rung and order rows, plus ``order identity -> order ref``.
+
+    An identity two rungs share maps to ``None``: the link is ambiguous.
+    """
     out: list[tuple[datetime | None, Row]] = []
-    order_refs: dict[tuple[str, str], str] = {}
+    order_refs: dict[OrderIdentity, str | None] = {}
     rungs_by_proposal: dict[int, list[Any]] = defaultdict(list)
     for rung in data.rungs:
         rungs_by_proposal[rung.proposal_pk].append(rung)
@@ -417,11 +473,11 @@ def proposal_rung_order_rows(
             )
             if r.broker_order_id:
                 order_ref = make_ref("order", r.id)
-                # The broker order number is only a join key here; it never
-                # reaches a row or a ref.
-                order_refs[
-                    (p.symbol.upper(), normalize_order_id(r.broker_order_id))
-                ] = order_ref
+                # The broker order number is only part of a join identity here;
+                # it never reaches a row or a ref.
+                identity = rung_identity(p, r, market)
+                if identity is not None:
+                    order_refs[identity] = None if identity in order_refs else order_ref
                 out.append(
                     (
                         r.validated_at,
@@ -446,13 +502,11 @@ def proposal_rung_order_rows(
 def fill_rows(
     data: ChainData,
     market: MarketInfo,
-    order_refs: dict[tuple[str, str], str],
+    order_refs: dict[OrderIdentity, str | None],
 ) -> list[tuple[datetime | None, Row]]:
     out: list[tuple[datetime | None, Row]] = []
     for f in data.fills:
-        order_ref = order_refs.get(
-            (f.symbol.upper(), normalize_order_id(f.broker_order_id))
-        )
+        order_ref = order_refs.get(order_identity(f))
         out.append(
             (
                 f.filled_at,
@@ -477,6 +531,23 @@ def fill_rows(
     return out
 
 
+def _one_venue(
+    bars: list[daily_bars.Bar], market: MarketInfo
+) -> list[daily_bars.Bar] | None:
+    """One venue's bars, so a session is counted once and one price is used.
+
+    The daily tables are keyed by (symbol, venue); KR can hold both KRX and NTX
+    rows for a date. KRX is the primary venue; any other multi-venue symbol is
+    ambiguous (``None``), never an arbitrary pick.
+    """
+    venues = {b.venue for b in bars}
+    if len(venues) <= 1:
+        return bars
+    if market.key == "kr" and "KRX" in venues:
+        return [b for b in bars if b.venue == "KRX"]
+    return None
+
+
 def markout_rows(
     data: ChainData, market: MarketInfo
 ) -> list[tuple[datetime | None, Row]]:
@@ -484,17 +555,25 @@ def markout_rows(
 
     A fill without that bar still gets a row: the missing bar is the unknown.
     """
-    bars: dict[str, list[daily_bars.Bar]] = defaultdict(list)
+    by_symbol: dict[str, list[daily_bars.Bar]] = defaultdict(list)
     for bar in data.bars:
-        bars[bar.symbol.upper()].append(bar)
-    for series in bars.values():
-        series.sort(key=lambda b: b.time)
+        by_symbol[bar.symbol.upper()].append(bar)
+    series: dict[str, list[daily_bars.Bar] | None] = {}
+    for symbol, found in by_symbol.items():
+        chosen = _one_venue(found, market)
+        series[symbol] = (
+            sorted(chosen, key=lambda b: b.time) if chosen is not None else None
+        )
     out: list[tuple[datetime | None, Row]] = []
     for f in data.fills:
-        later = [b for b in bars.get(f.symbol.upper(), []) if b.time > f.filled_at]
+        symbol = f.symbol.upper()
+        bars = series.get(symbol, [])
+        mixed = bars is None
+        later = [b for b in bars or [] if b.time > f.filled_at]
         horizon = (
             later[MARKOUT_SESSIONS - 1] if len(later) >= MARKOUT_SESSIONS else None
         )
+        miss = "source_mixed" if mixed else "missing_data"
         out.append(
             (
                 horizon.time if horizon else f.filled_at,
@@ -505,7 +584,7 @@ def markout_rows(
                     event_ref=make_ref("markout", f.id),
                     linked_ref=make_ref("fill", f.id),
                     status=f"markout_{MARKOUT_SESSIONS}_sessions",
-                    reason=None if horizon else "missing_data",
+                    reason=None if horizon else miss,
                     quantity=f.filled_qty,
                     price=horizon.close if horizon else None,
                     market=market,
