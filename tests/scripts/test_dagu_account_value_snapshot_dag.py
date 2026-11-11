@@ -172,7 +172,7 @@ def test_no_url_value_secret_or_env_value_in_the_dag_or_runbook():
 
 
 def test_runbook_registers_the_dag_and_covers_rollback_and_gaps():
-    runbook = RUNBOOK.read_text()
+    runbook = _flat(RUNBOOK.read_text())
     assert f"deploy/dagu/at-daily/{STEM}.yaml" in runbook
     assert "dagu validate" in runbook
     assert "dagu start" in runbook
@@ -182,6 +182,21 @@ def test_runbook_registers_the_dag_and_covers_rollback_and_gaps():
     assert "## 알려진 격차" in runbook
     assert "--flows-complete" in runbook
     assert "전일 종가" in runbook
+
+
+def test_runbook_requires_the_toss_identity_and_distinguishes_the_flows_flag():
+    """Two doc corrections from the bot review on PR 2359, both checked in code:
+    without ``TOSS_API_ACCOUNT_SEQ`` the toss row still commits but carries
+    ``account_identity_unknown`` (``readers.py:144-171``), and
+    ``--flows-complete`` is a per-query flag on the report CLI while
+    ``retro_scoreboard`` hard-codes ``SERVER_FLOWS_COMPLETE`` (line 271)."""
+    runbook = _flat(RUNBOOK.read_text())
+    assert "TOSS_API_ACCOUNT_SEQ" in runbook
+    assert "account_identity_unknown" in runbook
+    assert "toss:toss_live:identity_unknown" in runbook
+    assert "SERVER_FLOWS_COMPLETE" in runbook
+    assert "조회 시 플래그" in runbook
+    assert "흐름을 만들거나 기록하지 않는다" in runbook
 
 
 def test_permanent_unmeasured_rows_and_what_the_success_ping_means_are_documented():

@@ -35,8 +35,12 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
 - **도구**: `docker`(root), `curl`. 각 step 이 `docker run` 으로 auto_trader 이미지를 띄운다.
 - **이미지 포인터**: `/root/at-run/deployed-digest` (deploy 스크립트가 쓰는 전체 이미지 참조).
 - **컨테이너 env 파일**: `/root/at-secrets/.env.api` — 배치 1 과 같은 파일이다. 계좌별 브로커
-  자격증명(KIS·Toss·Upbit)이 그 안에 있어야 한다. 하나라도 없으면 그 계좌 step 만 `실패: <class>` 로
-  끝나고 DAG 는 `failed` 다.
+  자격증명(KIS·Toss·Upbit)이 그 안에 있어야 한다. 🔴 **Toss 는 `TOSS_API_ACCOUNT_SEQ` 도 필수다**:
+  그 값이 없거나 실제 계좌 목록에 없는 값이면 `app/services/account_value/readers.py:144-171` 이
+  지문을 만들지 못해 toss 행이 `account_identity_unknown` 사유로 저장되고, 기간 보고서는 그 시리즈를
+  끊긴 것으로 본다(`account:identity_unknown`). 사유는 예외가 아니라서 step 은 성공한다 — 즉 env 가
+  빠져도 DAG 는 초록이고 그날 행만 쓸모없어진다. 자격증명이 아예 없어 조회가 던지면 그 계좌 step 만
+  `실패: <class>` 로 끝나고 DAG 는 `failed` 다.
 - **DAG 용 dotenv**: `/root/at-secrets/.env.dagu-at-batch` (권한 `0600`, 배치 1 과 공유). 이름만:
 
   | 이름 | 용도 |
@@ -55,6 +59,10 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
    Dagu 스케줄이 살아난다(쓰기는 멱등이지만 브로커 읽기 호출이 한 번 더 나간다).
 2. **복사**: `deploy/dagu/at-daily/at-account-value-snapshot.yaml` 을 OCI coordinator 의 Dagu DAGs
    디렉터리(`~/.config/dagu/dags`)에 복사한다. 복사 직후 `dagu validate <파일>` 로 문법을 확인한다.
+   🔴 복사 **전에** 컨테이너에서 `--account toss` 미리보기(`--commit` 없이)를 한 번 돌려, 그 행의
+   `account` 가 `toss:toss_live:identity_unknown` 이 아니고 `reasons` 에 `account_identity_unknown` 이
+   없는지 확인한다. 있으면 `TOSS_API_ACCOUNT_SEQ` 를 먼저 채우고 나서 복사한다(그 상태로 복사하면
+   매일 쓸모없는 행이 쌓인다).
 3. **수동 1회 실행**: `dagu start at-account-value-snapshot`(= 파일명에서 `.yaml` 제외). Dagu 로그에서
    확인할 것:
    - 세 step 이 모두 `docker run` 으로 끝났는가(종료 코드 0).
@@ -77,9 +85,13 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
 
 ## 알려진 격차
 
-- **흐름(flows) 없음**: DAG 는 `--commit` 만 준다. `--flow`/`--flows-complete` 는 운영자 수동 기록이고
-  자동화하지 않았다. 그래서 기간 수익률은 계속 미측정(`flows_not_confirmed`)이다 — 스냅샷 행이 쌓여도
-  `--flows-complete` 는 false 다. 외부 입출금이 있는 날은 운영자가 `--flow-id` 로 직접 남긴다.
+- **흐름(flows) 없음**: DAG 는 `--commit` 만 주고 `--flow` 를 자동화하지 않는다. `--flows-complete` 는
+  `scripts/account_value_report.py` 의 **조회 시 플래그**(`store_true`, "해당 기간의 외부 흐름 입력을
+  확인함")이지 저장되는 흐름 기록이 아니다 — 운영자가 그 기간 외부 흐름 입력을 확인했으면 수동 보고서에
+  직접 준다. 반대로 retro/v1 `retro_scoreboard` 는 `SERVER_FLOWS_COMPLETE=False` 를 하드코딩해
+  전달하므로(`app/services/account_value/retro_scoreboard.py:271`) 스냅샷 행이 쌓여도 retro 쪽
+  `flows_complete` 는 false 이고 계좌 행은 `flows_not_confirmed` 로 미측정이다. 이 플래그는 흐름을
+  만들거나 기록하지 않는다 — 외부 입출금이 있는 날은 운영자가 `--flow-id` 로 직접 남긴다.
 - **KR 가격은 전일 종가**: 07:40 KST 는 KRX 개장 전이라 kr 행의 평가 가격은 직전 거래일 종가다.
   같은 날 15:30 종가가 아니다. US 행도 마지막 마감 세션 기준이다.
 - 🔴 **미측정은 그날 행에 영구히 남는다(성공 핑은 "행이 쓰였다"는 뜻)**: 07:40 KST 에 DB 일봉
