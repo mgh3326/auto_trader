@@ -82,9 +82,20 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
   `--flows-complete` 는 false 다. 외부 입출금이 있는 날은 운영자가 `--flow-id` 로 직접 남긴다.
 - **KR 가격은 전일 종가**: 07:40 KST 는 KRX 개장 전이라 kr 행의 평가 가격은 직전 거래일 종가다.
   같은 날 15:30 종가가 아니다. US 행도 마지막 마감 세션 기준이다.
-- **미측정 사유가 붙을 수 있다**: 첫 미리보기에서 account 행에 `cash_unknown`, 일부 종목에
-  `mark_unknown` 이 관측됐다(`hk:doc decision/2026-11-11/factortrail-p1` §T5). 사유가 붙은 행도
-  저장된다 — 미측정은 값이 아니라 이유로 남는다.
+- 🔴 **미측정은 그날 행에 영구히 남는다(성공 핑은 "행이 쓰였다"는 뜻)**: 07:40 KST 에 DB 일봉
+  (직전 세션 종가)이 아직 적재되지 않았으면 `app/services/account_value/readers.py::_marks` 가
+  가격을 못 찾고 `app/services/account_value/snapshot.py` 가 `mark_unknown:<심볼>` 사유를 붙여
+  그대로 커밋한다. fx 조회 실패도 `fx_unknown` 으로 같은 경로다. 사유는 예외가 아니므로 step 은
+  **exit 0** 이고 retry 가 돌지 않으며 healthchecks 는 **성공** 핑을 받는다. 같은 날 재실행은
+  `capture()` 의 `ON CONFLICT DO NOTHING` 때문에 `already_present` 만 내므로 그날 행은 고칠 수
+  없다 — 이 제안에는 그날 행을 다시 쓰는 경로가 없다. 성공 핑은 "그날 8행이 쓰였다"는 뜻이지
+  "평가가 완전하다"는 뜻이 아니다.
+  스케줄을 일봉 적재 뒤로 옮기는 것은 이 제안 범위 밖이다 — 07:40 은 운영자 결정 §5 의 값이고
+  DAG 의 `schedule` 은 정적 테스트가 고정한다. 이 구멍을 줄이려면 일봉 적재 시각을 먼저 확인해
+  별도 결정으로 스케줄을 옮긴다.
+- 첫 미리보기 관측: account 행에 `cash_unknown`, 일부 종목(SGOV·SPYM·crypto 3종)에 `mark_unknown`
+  이 있었다(`hk:doc decision/2026-11-11/factortrail-p1` §T5). 사유가 붙은 행도 저장된다 —
+  미측정은 값이 아니라 이유로 남는다.
 - **알림**: healthchecks 핑(성공은 URL, 실패는 URL/`fail`)뿐이다. 실행이 아예 안 온 경우도
   healthchecks 기대 주기로 잡힌다. Discord 알림은 없다.
 - **한 계좌 실패 = 실행 실패**: 나머지 계좌는 계속 돌지만 DAG 는 `failed` 로 끝나 `/fail` 핑을 보낸다.

@@ -20,6 +20,13 @@
 #
 # 재시도 1회는 안전하다: capture 는 (account, market, day) ON CONFLICT DO NOTHING 이고 같은 날
 # 재실행은 already_present 인 no-op 이다(중복 행 0).
+#
+# 🔴 성공 핑은 "그날 행이 쓰였다"는 뜻이고 "평가가 완전하다"는 뜻이 아니다. 07:40 KST 에 DB 일봉이
+# 아직 없으면 readers._marks 가 가격을 못 찾아 mark_unknown:<심볼> 사유가 붙은 채 행이 커밋되고
+# step 은 exit 0 이다(fx 실패도 fx_unknown 으로 같은 경로). 사유는 예외가 아니라 retry 가 돌지
+# 않으며, 같은 날 재실행은 ON CONFLICT DO NOTHING 이라 already_present 만 내므로 그날 행은 고칠 수
+# 없다. 이 영구 미측정과 핑의 의미는 런북 §알려진 격차에 있다. 스케줄을 일봉 적재 뒤로 옮기는 것은
+# 이 제안의 범위 밖이다(07:40 은 운영자 결정 §5 의 값).
 description: "PROPOSAL: daily account value snapshot (kis/toss/upbit, DB write)"
 schedule: "40 22 * * *"
 max_active_runs: 1

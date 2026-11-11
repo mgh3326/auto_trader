@@ -48,6 +48,11 @@ def _header(text: str) -> str:
     return text.split("description:", 1)[0]
 
 
+def _flat(text: str) -> str:
+    """Collapse line wrapping so a documented sentence can be pinned as written."""
+    return " ".join(text.split())
+
+
 def test_the_directory_holds_exactly_this_dag():
     assert sorted(p.stem for p in DAG_DIR.glob("*.yaml")) == [STEM]
 
@@ -177,3 +182,24 @@ def test_runbook_registers_the_dag_and_covers_rollback_and_gaps():
     assert "## 알려진 격차" in runbook
     assert "--flows-complete" in runbook
     assert "전일 종가" in runbook
+
+
+def test_permanent_unmeasured_rows_and_what_the_success_ping_means_are_documented():
+    """A missing daily bar is a reason, not an exception: the row commits, the
+    step exits 0 and the success ping fires, and the same-day rerun is
+    ``already_present``, so that day's row cannot be repaired. Moving the
+    schedule is out of this proposal's scope, so the runbook must state it and
+    the test pins that choice (mergewake finding on PR 2359)."""
+    text, _ = _load()
+    runbook = _flat(RUNBOOK.read_text())
+    header = _flat(_header(text))
+    for body in (header, runbook):
+        assert "mark_unknown" in body
+        assert "already_present" in body
+    assert "fx_unknown" in runbook
+    assert "exit 0" in runbook
+    assert "성공 핑" in runbook
+    assert "고칠 수 없다" in runbook
+    assert "범위 밖" in runbook
+    # The DAG header says the success ping does not mean a complete evaluation.
+    assert "평가가 완전하다" in header
