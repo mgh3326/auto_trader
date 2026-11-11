@@ -108,6 +108,7 @@ tests/scripts/b0x/us/test_alpaca_lab_mutation_seam.py
 tests/scripts/test_at_job_runner.py
 tests/scripts/test_backfill_kr_candles_1m_toss.py
 tests/scripts/test_binance_futures_demo_sizing.py
+tests/scripts/test_dagu_account_value_snapshot_dag.py
 tests/scripts/test_dagu_at_batch_dags.py
 tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_deploy_ncp_pull_install_paths.py

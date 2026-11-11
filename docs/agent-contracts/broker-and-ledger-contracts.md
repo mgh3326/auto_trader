@@ -933,6 +933,8 @@ VOO는 조정종가 출처 혼합으로 배당 포함 총수익을 입증할 수
 sleeve는 기존 book의 기간 귀속 손익을 해당 기간의 변하지 않은 예산으로 나눈 별도
 basis를 쓰며 예산을 실제 현금으로 간주하지 않는다. 스케줄러·MCP 도구·주문 연결은 없다.
 
+일별 계좌 가치 스냅샷 DAG 제안(`deploy/dagu/at-daily/at-account-value-snapshot.yaml`, 런북 `docs/runbooks/account-value-snapshot-daily.md`)이 있으나 **등록되지 않았다** — 레포는 어떤 스케줄러도 등록하지 않는다.
+
 retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_scoreboard.py`의
 `read_retro_scoreboard(session, **params)`가 위 기간 성과 로더를 `RetroScoreboardResponse`
 (`contracts/retro/v1/openapi.yaml`)로 투영한다. `flows_complete`는 서버 측 사실일 뿐이며
