@@ -1,5 +1,5 @@
 // Package main implements the Go contract gate harness for auto_trader retro/v1.
-// It uses the pinned factortrail Go consumer client to invoke all eight retro/v1
+// It uses the pinned factortrail Go consumer client to invoke all nine retro/v1
 // operations on a candidate provider and asserts schema, authorization, privacy,
 // precision, and unknown/gap contract invariants.
 package main
@@ -333,6 +333,16 @@ func runChecks(baseURL, token string) error {
 			},
 			rowKeys:    []string{"symbol", "time", "open_price", "high_price", "low_price", "close_price", "quantity", "currency", "unit", "source", "venue", "adjusted", "missing_reason", "basis"},
 			rowDecimal: []string{"open_price", "high_price", "low_price", "close_price", "quantity"},
+		},
+		{
+			name: "retro_trades",
+			path: "/trading/api/retro/v1/retro_trades",
+			rawQuery: "?from=2026-01-01&to=2026-01-10",
+			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
+				return p.RetroTrades(ctx, &autotrader.RetroTradesParams{From: d("2026-01-01"), To: d("2026-01-10")})
+			},
+			rowKeys:    []string{"trade_ref", "symbol", "market", "side", "strategy", "entry_at", "exit_at", "quantity", "entry_price", "exit_price", "currency", "return_rate", "realized_amount", "realized_currency", "exit_reason", "basis", "reviews"},
+			rowDecimal: []string{"quantity", "entry_price", "exit_price", "return_rate", "realized_amount"},
 		},
 		{
 			name: "data_gaps",
