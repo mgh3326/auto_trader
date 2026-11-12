@@ -458,6 +458,18 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - 🔴 **나중 배치의 seed 는 증분이 아니라 전체 보유량이다**: `net_quantity_by_match_key_since` 는 seed 행을 빼고 그 실행의 cutover 이후 체결만 세므로, 2026-09-29 배치 6행은 그 시점 보유량 전체를 담는다. 이 패키지는 해당 종목 보유량을 그 값으로 재설정한다. seed 행을 합산하는 리더는 첫 배치 위에 이 행을 이중으로 더하게 된다
 - **테스트**: `tests/research/trade_retro/`
 
+### 회고와 판단 근거 연결 (hk 4187 L6)
+
+`review.trade_retrospectives.decision_id`는 nullable UUID이며, 새 컬럼은 과거 행을
+채우지 않는다. 연결 행이 남아 있으면 downgrade는 이 데이터를 잃지 않도록 거부한다.
+유일 writer인 `TradeRetrospectiveRepository.upsert`와 MCP
+`save_trade_retrospective(decision_id=...)`는 호출자가 제공한 ID만 저장한다. 저장 전
+`review.decision_evidence`의 ID가 존재하고 정규화된 심볼·시장·계좌 모드가 회고와
+일치하는지 확인한다(시장 별칭은 `app/core/market.py` 규칙, `upbit_live`는 판단 근거의
+`upbit`와 대응). 불일치·미존재 ID는 거부한다. ID가 생략되면 correlation ID 등으로
+판단을 추론하거나 새 연결을 저장하지 않는다. 기존 연결은 부분 upsert에서 보존되며,
+호출자가 명시적으로 null을 보내면 지운다.
+
 ### 전략 조정 증거 묶음 (ROB-1458)
 
 ROB-1439 의 정규화 체결·주문·포지션·현금 하한을 그대로 재사용해 물타기(tier 자체 `underwater-d20-v1` 규칙)·손절 반사실·매수 주문 방식·파킹·코인 매도 래더·유휴 현금과, 같은 신호에 다시 돌린 처음부터 짠 규칙 세트(낙폭 포함)를 잰다. 결과는 운영자용 선택지 표다. 🔴 연구 전용 — DB·브로커·자격증명·스케줄러 없음, `app/`·`config/` 변경 없음, 종목·금액 권고 없음.
