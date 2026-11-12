@@ -138,7 +138,12 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    ROB-1474의 명시 운영자 결정(2026-11-02 mock-trading-all-venues-no-caps)은
    Alpaca paper 크기 상한 제거만 예외다. endpoint·예상 계정·이중 게이트는 유지한다.
    ROB-1474 전략 CLI도 기본 off 이중 게이트와 예상 계좌 검증을 유지하며,
-   `mock_strategy_orders`의 sending/uncertain을 재전송하거나 journal을 지우지 않는다. KIS live KR 주문 원장 대사의 무인 실행을 expiry/cancel 전이(terminal_only)로 한정해 KIS_LIVE_AUTO_RECONCILE_ENABLED 하나로 허용하는 것만 예외다.
+   `mock_strategy_orders`의 sending/uncertain을 재전송하거나 journal을 지우지 않는다.
+   hk 4177의 명시 운영자 결정(2026-11-12, `decision/2026-11-12/at-b02-reconcile-and-3792`)은
+   KIS live KR 주문 원장 대사의 무인 실행을 expiry/cancel 전이(terminal_only)로 한정해
+   `KIS_LIVE_AUTO_RECONCILE_ENABLED` 하나로 허용하는 것만 예외다. fill booking(체결·저널·실현손익)은
+   `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED`를 포함한 두 플래그 게이트를 유지하며,
+   브로커 주문·정정·취소 경로는 바뀌지 않는다.
 5. **레저 쓰기는 서비스 레이어 경유만**: `alpaca_paper_order_ledger`,
    `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
    `toss_live_order_ledger` 등 주문 레저에 직접 SQL INSERT/UPDATE/DELETE 금지.
