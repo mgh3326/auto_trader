@@ -67,8 +67,10 @@ def _is_stale(
 
 
 def _non_session_days(market: str | None, finished_at: datetime, now: datetime) -> int:
-    """Count closed exchange days after the last success, up to today (local).
+    """Count closed exchange days after the last success and before today (local).
 
+    Today is never counted: counting it would add 24 hours right after local
+    midnight and hide a missed run on the trading day that just ended.
     An `unknown` calendar answer counts as open, so a calendar failure keeps
     the plain hour rule instead of extending the threshold.
     """
@@ -80,7 +82,7 @@ def _non_session_days(market: str | None, finished_at: datetime, now: datetime) 
     day = _ensure_aware(finished_at).astimezone(zone).date() + timedelta(days=1)
     last = _ensure_aware(now).astimezone(zone).date()
     count = 0
-    while day <= last:
+    while day < last:
         if trading_session_status(calendar_market, day) == "closed":
             count += 1
         day += timedelta(days=1)

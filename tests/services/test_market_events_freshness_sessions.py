@@ -199,3 +199,30 @@ def test_no_successful_partition_is_stale(
     _patch_calendar(monkeypatch, _all_open)
 
     assert _row_stale(partitions, market="kr", now=MON_MORNING_KST) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("now", "expected_days"),
+    [
+        # Sat 00:01: Fri was a trading day and its run is missing; Sat is today
+        # and must not add 24 h just after midnight.
+        (dt.datetime(2026, 1, 10, 0, 1, tzinfo=KST), 0),
+        # Sun 10:00: only Sat (closed, before today) counts; 64 h > 54 h.
+        (dt.datetime(2026, 1, 11, 10, 0, tzinfo=KST), 1),
+    ],
+)
+def test_today_is_not_counted_so_a_missed_trading_day_stays_stale(
+    monkeypatch: pytest.MonkeyPatch, now: dt.datetime, expected_days: int
+) -> None:
+    _patch_calendar(monkeypatch, _weekend_closed)
+    finished = dt.datetime(2026, 1, 8, 18, 0, tzinfo=KST)  # Thu
+
+    assert fs._non_session_days("kr", finished, now) == expected_days
+    assert _row_stale([_succeeded(finished)], market="kr", now=now) is True
+    # The 36 h per-day rule uses the same allowance: stale exactly when the age
+    # exceeds 36 h plus 24 h per counted closed day.
+    age_hours = (now - finished).total_seconds() / 3600
+    assert _is_stale(finished, now=now, market="kr") is (
+        age_hours > fs.STALE_AFTER_HOURS + 24 * expected_days
+    )
