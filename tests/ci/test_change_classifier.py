@@ -19,6 +19,7 @@ from scripts.ci.classify_changes import (
     AFFECTED_JOB,
     ALL_JOBS,
     MAX_AFFECTED_TEST_FILES,
+    MIGRATION_CHAIN_TEST,
     ChangeEntry,
     Classification,
     ClassifierError,
@@ -1147,3 +1148,22 @@ def test_unrelated_paths_do_not_trigger_run_retro_consumer_gate(path: str) -> No
     assert classification.run_retro_consumer_gate is False
     outputs = build_outputs(classification)
     assert outputs["run_retro_consumer_gate"] == "false"
+
+
+def test_a_referenced_migration_also_selects_the_single_head_check() -> None:
+    tree = {
+        "tests/services/x/test_migration_db.py": 'Path("alembic/versions/20261112_x.py")\n',
+        MIGRATION_CHAIN_TEST: "x = 1\n",
+    }
+    result = _select(tree, "alembic/versions/20261112_x.py")
+    assert result.run_all is False
+    assert result.affected_tests == tuple(sorted(tree))
+
+
+def test_an_unmapped_migration_still_forces_run_all_with_the_chain_test_present() -> (
+    None
+):
+    tree = {"tests/test_a.py": "x = 1\n", MIGRATION_CHAIN_TEST: "x = 1\n"}
+    result = _select(tree, "alembic/versions/untested.py")
+    assert result.run_all is True
+    assert result.reason == "unmapped_path"
