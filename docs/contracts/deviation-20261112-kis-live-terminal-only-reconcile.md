@@ -3,7 +3,7 @@
 ```yaml
 freeze_epoch_id: UNKNOWN
 change_id: kis-live-terminal-only-reconcile-20261112
-pr_number: TBD
+pr_number: 2363
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: hk:doc decision/2026-11-12/at-b02-reconcile-and-3792
 market: kr
