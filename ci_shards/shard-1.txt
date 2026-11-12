@@ -106,6 +106,7 @@ tests/scripts/test_protected_positions.py
 tests/scripts/test_r4_p0_manifest_cli.py
 tests/scripts/test_r4_p0_readiness.py
 tests/scripts/test_record_strategy_learning_event.py
+tests/scripts/test_shiftgate_services_at.py
 tests/services/action_report/common/test_critical_kinds_alignment.py
 tests/services/action_report/common/test_source_kind_mapping.py
 tests/services/action_report/remote_debug_audit/test_cdp_client.py
