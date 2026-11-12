@@ -1,4 +1,6 @@
+import json
 import logging
+import time
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -1889,3 +1891,44 @@ class TestKISOverseasPrice:
 
         assert not result.empty
         assert result.iloc[0]["quote_asof"] is None
+
+
+@pytest.mark.asyncio
+async def test_late_expiry_keeps_token_published_by_another_process(monkeypatch):
+    from app.services.brokers.kis.client import KISClient
+    from app.services.redis_token_manager import RedisTokenManager
+    from tests.test_redis_token_manager import fake_redis_with_lua
+
+    redis = fake_redis_with_lua()
+    manager = RedisTokenManager()
+    manager.redis_client = redis
+    await manager.save_token("old", 3600)
+    client = KISClient()
+    client._token_manager = manager
+    mock_settings = MagicMock()
+    mock_settings.kis_access_token = "old"
+    monkeypatch.setattr(
+        KISClient, "_settings", PropertyMock(return_value=mock_settings)
+    )
+
+    async def ensure():
+        mock_settings.kis_access_token = await manager.get_token(force_redis_check=True)
+
+    async def request(*args, **kwargs):
+        if kwargs["headers"]["authorization"] == "Bearer old":
+            await redis.set(
+                manager._token_key,
+                json.dumps({"access_token": "new", "expires_at": time.time() + 3600}),
+            )
+            mock_settings.kis_access_token = "new"
+            return {"rt_cd": "1", "msg_cd": "EGW00123"}
+        assert kwargs["headers"]["authorization"] == "Bearer new"
+        return {"rt_cd": "0"}
+
+    monkeypatch.setattr(client, "_ensure_token", ensure)
+    monkeypatch.setattr(client, "_request_with_rate_limit", request)
+    assert (
+        await client._market_data._request_with_token_retry("TR", "https://example.com")
+    )["rt_cd"] == "0"
+    assert await manager.get_token(force_redis_check=True) == "new"
+    await redis.aclose()

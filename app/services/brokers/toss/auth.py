@@ -33,6 +33,7 @@ from app.services.brokers.toss.rate_limiter import (
     get_shared_rate_limiter,
 )
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
+from app.services.redis_token_manager import RedisTokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ class TossOAuthTokenManager:
     async def _ensure_token_from_gatewayd(
         self, *, force_reissue: bool, failed_token: str | None
     ) -> str:
-        """Request gatewayd issuance without touching Toss's issuer lock/key.
+        """Request gatewayd issuance without acquiring Toss's issuer lock.
 
         gatewayd owns both the OAuth leg and the Redis issuance lock. Python
         only rechecks and reads the token cache around the ensure call. For a
@@ -252,6 +253,11 @@ class TossOAuthTokenManager:
             not force_reissue or failed_token is not None and cached != failed_token
         ):
             return cached
+
+        if force_reissue and failed_token is not None:
+            manager = RedisTokenManager()
+            manager.redis_client = await _get_redis_client()
+            await manager.invalidate_if_current(self.token_key, failed_token)
 
         await ensure_gatewayd_token("toss", settings_obj=settings)
         published = await self._wait_for_cached_token(
