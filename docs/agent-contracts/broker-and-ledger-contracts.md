@@ -294,6 +294,8 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 체결 수집 Go 데몬 `fillwire` 로의 이관을 위한 **P0 계약**. Go 는 DB 에 직접 쓰지 않고
 auto_trader 의 토큰 인증 HTTP 표면으로 원장에 넣는다. 이 단계는 계약 + Python 모니터
 sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 · 마이그레이션 0건**이다.
+- hk 4186 운영자 결정(2026-11-12, `decision/2026-11-12/at-operator-merge-rule16-q22`)은 `execution_ledger`의 `filled_at_basis`·`fee_basis`·`tax_amount` 추가형 마이그레이션과 writer 값 채우기만 예외로 허용한다. 멱등키·외부 ingest `source=websocket` 강제·항목별 savepoint·원장 커밋 권한·기존 재전송 갱신 동작은 유지한다.
+  새 행은 `fee_basis`로 실측 수수료와 미제공을 구분하며 Toss 수수료와 세금을 분리한다. `filled_at_basis`는 확인된 체결·주문·관측 시각을 구분하고 fillwire는 서버에서 프레임 시각 일치 시에만 체결 시각으로 기록한다. 과거 행은 `fee_basis IS NULL`로 식별하며 같은 키 재전송 시 수수료·통화와 세 새 열을 보존하되 다른 열의 기존 갱신 동작은 유지한다.
 
 - **엔드포인트**: `POST /trading/api/execution-ledger/fills/ingest` (배치 1..200),
   `POST /trading/api/execution-ledger/reconcile/trigger` (dry_run 기본 true)

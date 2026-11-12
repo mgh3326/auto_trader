@@ -18,7 +18,7 @@ def _stable_int32_hash(seed: str) -> int:
     return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) & MAX_SQL_INT32
 
 
-def _parse_toss_fill_time(raw_order: dict[str, Any]) -> datetime:
+def _parse_toss_fill_time(raw_order: dict[str, Any]) -> tuple[datetime, str]:
     execution = dict(raw_order.get("execution") or {})
     for key in ("filledAt", "lastFilledAt", "filled_at", "last_filled_at"):
         value = execution.get(key)
@@ -28,7 +28,8 @@ def _parse_toss_fill_time(raw_order: dict[str, Any]) -> datetime:
                 return (
                     parsed.astimezone(KST)
                     if parsed.tzinfo
-                    else parsed.replace(tzinfo=KST)
+                    else parsed.replace(tzinfo=KST),
+                    "broker_fill_time",
                 )
             except ValueError:
                 pass
@@ -37,11 +38,12 @@ def _parse_toss_fill_time(raw_order: dict[str, Any]) -> datetime:
         try:
             parsed = datetime.fromisoformat(str(ordered_at).replace("Z", "+00:00"))
             return (
-                parsed.astimezone(KST) if parsed.tzinfo else parsed.replace(tzinfo=KST)
+                parsed.astimezone(KST) if parsed.tzinfo else parsed.replace(tzinfo=KST),
+                "broker_order_time",
             )
         except ValueError:
             pass
-    return datetime.now(tz=KST)
+    return datetime.now(tz=KST), "observed_at"
 
 
 def _venue_for_market(market: str) -> str:
@@ -67,6 +69,7 @@ def build_toss_execution_ledger_upsert(
     )
     currency = row.currency or ("KRW" if row.market == "kr" else "USD")
     raw_order = dict(evidence.raw_order or {})
+    filled_at, filled_at_basis = _parse_toss_fill_time(raw_order)
     return ExecutionLedgerUpsert(
         broker="toss",
         account_mode="live",
@@ -80,9 +83,14 @@ def build_toss_execution_ledger_upsert(
         filled_qty=delta,
         filled_price=avg_price,
         filled_notional=delta * avg_price,
-        fee_amount=evidence.fee_total,
+        fee_amount=evidence.commission,
+        tax_amount=evidence.tax,
+        fee_basis="broker_reported"
+        if evidence.commission is not None
+        else "not_provided",
         fee_currency=currency,
-        filled_at=_parse_toss_fill_time(raw_order),
+        filled_at=filled_at,
+        filled_at_basis=filled_at_basis,
         currency=currency,
         correlation_id=getattr(row, "correlation_id", None),
         source="reconciler",

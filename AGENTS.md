@@ -226,6 +226,7 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
     을 유지한다. `WS_LEDGER_SINK` 기본 `db` 유지, `http` 실패는 DB fail-open(유실 0),
     `WS_LEDGER_SINK_URL` 의 loopback/exact-path/no-userinfo 검증과
     `follow_redirects=False` 를 완화하지 마라. 마이그레이션·스케줄러 추가 금지.
+    hk 4186 의 명시 운영자 결정(2026-11-12, decision/2026-11-12/at-operator-merge-rule16-q22)은 execution_ledger 에 filled_at_basis·fee_basis·tax_amount 를 더하는 추가형 마이그레이션과 writer 의 값 채우기만 예외로 허용한다. 멱등키·외부 ingest 행의 source=websocket 강제·항목별 savepoint·원장 커밋 권한·기존 재전송 갱신 동작은 바뀌지 않는다.
 
 17. **MCP 레인 계약**: `config/mcp_lane_allowlists/`의 `tool<TAB>basis`를 보존하고,
     등록 변경은 `tests/mcp_server/test_lane_allowlist_contract.py`와

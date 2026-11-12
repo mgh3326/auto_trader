@@ -195,6 +195,15 @@ async def scratch_database() -> AsyncIterator[str]:
                 )
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                # hk 4186 (L5) execution_ledger basis columns are later than
+                # this boundary; their CHECKs drop with them.
+                for column in ("filled_at_basis", "fee_basis", "tax_amount"):
+                    await connection.execute(
+                        text(
+                            "ALTER TABLE review.execution_ledger "
+                            f"DROP COLUMN IF EXISTS {column}"
+                        )
+                    )
                 # #1175 quarantine columns are later than this boundary;
                 # their CHECKs drop with them and the migration adds all back.
                 for column in (
