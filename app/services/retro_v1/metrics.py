@@ -130,6 +130,8 @@ def calculate_risk_amount(
         )
     if side != "buy":
         raise ValueError("side must be buy or sell")
+    if stop is not None and stop < 0:
+        raise ValueError("stop_price must not be negative")
     if budget is not None and budget <= 0:
         raise ValueError("budget_cap must be positive")
     if stop is None or stop_basis is None:
@@ -208,6 +210,8 @@ def calculate_mfe_mae(
     if entry_session is None:
         empty = _empty_excursion("unknown", "missing_entry_session")
         return MfeMae(empty, empty, None, "inference")
+    if exit_session is not None and exit_session < entry_session:
+        raise ValueError("exit_session must not precede entry_session")
     if horizon_sessions != "to_exit" and horizon_sessions <= 0:
         raise ValueError("horizon_sessions must be positive or to_exit")
     if horizon_sessions == "to_exit" and exit_session is None:

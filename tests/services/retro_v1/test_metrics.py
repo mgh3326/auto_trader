@@ -76,6 +76,16 @@ def test_risk_amount_rejects_invalid_budget_even_when_stop_is_missing() -> None:
         )
 
 
+def test_risk_amount_rejects_negative_stop_price() -> None:
+    with pytest.raises(ValueError, match="stop_price must not be negative"):
+        calculate_risk_amount(
+            side="buy",
+            stop_price=Decimal("-5"),
+            stop_basis="recorded",
+            rungs=[RiskRung(Decimal("1"), Decimal("5"), "limit", "recorded")],
+        )
+
+
 @pytest.mark.parametrize(
     ("side", "stop", "stop_basis", "rungs", "reason"),
     [
@@ -205,6 +215,28 @@ def test_daily_mfe_mae_has_no_complete_session_when_entry_and_exit_are_adjacent(
     assert result.mfe.reason == result.mae.reason == "no_complete_session"
     assert result.adjusted is None
     assert result.basis == "inference"
+
+
+def test_daily_mfe_mae_allows_same_session_exit_without_contained_bars() -> None:
+    result = calculate_mfe_mae(
+        entry_price=Decimal("100"),
+        entry_session=date(2026, 1, 5),
+        exit_session=date(2026, 1, 5),
+        bars=[],
+    )
+
+    assert result.mfe.amount is None
+    assert result.mfe.reason == "no_complete_session"
+
+
+def test_daily_mfe_mae_rejects_exit_before_entry_session() -> None:
+    with pytest.raises(ValueError, match="exit_session must not precede entry_session"):
+        calculate_mfe_mae(
+            entry_price=Decimal("100"),
+            entry_session=date(2026, 1, 6),
+            exit_session=date(2026, 1, 5),
+            bars=[],
+        )
 
 
 @pytest.mark.parametrize(
