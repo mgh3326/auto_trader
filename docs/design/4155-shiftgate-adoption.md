@@ -198,7 +198,7 @@ services:
 | # | 공백 | 처리 |
 |---|---|---|
 | 7 | `follow` 가 CI 게이트·승인 보류를 우회한다(`shiftgate@847ed56 README.md:228-244`) | AT 에 `follow` 를 스케줄하지 않는다(원칙 3). 직접 호출은 root 운영자 경로이고 지금의 `docker run` 직접 호출과 같은 신뢰 수준이라 새 경계가 아니다. 게이트 훅(`follow --gate-cmd`)은 만들지 않는다 |
-| 8 | 드레인이 CLI 를 막는다: `drainAndStop` 대기 루프는 ctx 취소를 확인하지 않고 `drain_timeout` 까지 돈다(`shiftgate@847ed56 internal/deploy/deploy.go:544-562`, `docs/design.md:205-208`). `at-mcp` 는 1시간이고 그동안 서비스 잠금이 잡혀 `rollback` 이 exit 75 가 된다. 더 근본적으로 지금의 상태는 커밋된 op 를 식별하지 못한다: `state.last_op` 는 `deploy`/`rollback` 문자열이고 의도의 `op_id` 는 `pending` 이 지워질 때 버려지며, `status --json` 최상위 `last_op` 는 드레인이 끝난 뒤에 쓰이는 `swaps.log` 줄이다(`shiftgate@847ed56 internal/state/state.go:48-86`, `internal/deploy/deploy.go:532-538`, `docs/monitoring.md:84-85`) | **요구사항**(구현 절차는 SG-5 가 정해진 뒤 AT-4b 에서 쓴다): 어댑터는 자기가 시작한 op 의 커밋/실패를 `op_id` 로 확정할 수 있어야 하며, 확정 전에는 다른 컴포넌트를 롤백하지 않고 사람 보류로 멈춘다. `at-mcp` 는 이 요구사항 때문에 마지막 단계에서 배포한다. 상태 폴링으로 커밋을 추정하는 규정은 이 문서에서 쓰지 않는다. 전제는 SG-5(커밋된 `op_id`·결과를 상태에 남기고 노출)이고, 드레인 중 롤백은 SG-3 이 정리한다 |
+| 8 | 드레인이 CLI 를 막는다: `drainAndStop` 대기 루프는 ctx 취소를 확인하지 않고 `drain_timeout` 까지 돈다(`shiftgate@847ed56 internal/deploy/deploy.go:544-562`, `docs/design.md:205-208`). `at-mcp` 는 1시간이고 그동안 서비스 잠금이 잡혀 `rollback` 이 exit 75 가 된다. 더 근본적으로 지금의 상태는 커밋된 op 를 식별하지 못한다: `state.last_op` 는 `deploy`/`rollback` 문자열이고 의도의 `op_id` 는 `pending` 이 지워질 때 버려지며, `status --json` 최상위 `last_op` 는 드레인이 끝난 뒤에 쓰이는 `swaps.log` 줄이다(`shiftgate@847ed56 internal/state/state.go:48-86`, `internal/deploy/deploy.go:532-538`, `docs/monitoring.md:84-85`) | **요구사항**(구현 절차는 SG-5 가 정해진 뒤 AT-4b 에서 쓴다): 어댑터는 자기가 시작한 op 의 커밋/실패를 `op_id` 로 확정할 수 있어야 하며, 확정 전에는 다른 컴포넌트를 롤백하지 않고 사람 보류로 멈춘다. 어댑터는 커밋이 확정되지 않은 자식을 남긴 채 종료하지 않고, 롤백이 필요하면 `at-mcp` 를 먼저 되돌릴 수 있는 상태(드레인 종료 또는 SG-3)를 만든 뒤 진행하며, 릴리스 전체 보류를 롤백 검증 전까지 유지한다(9절). `at-mcp` 는 이 요구사항 때문에 마지막 단계에서 배포한다. 상태 폴링으로 커밋을 추정하는 규정은 이 문서에서 쓰지 않는다. 전제는 SG-5(커밋된 `op_id`·결과를 상태에 남기고 노출)이고, 드레인 중 롤백은 SG-3 이 정리한다 |
 | 9 | `pre_deploy` 는 서비스의 `env_files` 를 그대로 쓴다. #789 이후 마이그레이션 DSN 은 앱 입력에 넣을 수 없다(`docs/runbooks/db-role-cutover.md:310-316` `:322-323`, `AGENTS.md:402-409`) | 마이그레이션을 `pre_deploy` 가 아니라 어댑터 단계로 실행한다(6절). SG-1 이 `pre_deploy.env_files` 를 만들면 옮길 수 있다 |
 | 10 | `prune` 은 서비스별로 자기 keep 집합만 본다. AT 서비스는 모두 같은 이미지 저장소를 쓴다(`shiftgate@847ed56 internal/deploy/ops.go:126-210`) | #934 prune 을 어댑터에 유지하고 `shiftgate prune` 은 스케줄하지 않는다(7절 G35). SG-2 가 합집합 keep 을 만든다 |
 | 11 | 로그 드라이버: shiftgate 는 기본으로 `json-file` 10m×3 을 고정한다(`README.md:169-178`). 지금 AT 컨테이너는 데몬 기본값이고 Loki 가 컨테이너 이름으로 수집한다(`app/mcp_server/README.md:60`) | `log: {driver: daemon}` 으로 시작(D8). **[live check]**: 데몬의 로그 드라이버와 수집기가 이름 변경 `shiftgate-at-*` 를 받는지 |
@@ -367,8 +367,8 @@ flowchart TD
 | `at-api deploy` 실패(shiftgate exit 1) | shiftgate 가 이전 색 서비스 유지 | 중단 | 1 |
 | worker/싱글톤/고정 유닛 실패 | `at-api` 는 커밋됨 | 싱글톤·고정 유닛을 캡처한 이전 digest 로 복원 + `shiftgate rollback at-api` | 1 |
 | 라우트 프로브 실패(`at-mcp` 앞) | 위와 같음 | 위와 같음 | 1 |
-| `at-mcp` 의 커밋/실패를 자기 `op_id` 로 확정할 수 없음(자식 비정상 종료, 시간 초과, 상태 읽기 실패 등) | 커밋 여부 미확정 | **다른 컴포넌트를 롤백하지 않고 사람 보류로 멈춘다.** 상태를 그대로 두고 `shiftgate recover at-mcp` 와 `status --json` 확인을 안내한다 | 3 |
-| `at-mcp` 커밋이 `op_id` 로 확정된 뒤 검증 표·프로브 실패 | 새 색이 서비스 중이고 드레인 중이면 서비스 잠금이 잡혀 있음 | 나머지를 복원하고 `shiftgate rollback at-mcp` 를 시도한다. 잠금 때문에 exit 75 이면 롤백하지 않고 사람 보류(SG-3 이 병합되면 드레인 중단 후 롤백) | 1(보류 시 3) |
+| `at-mcp` 의 커밋/실패를 자기 `op_id` 로 확정할 수 없음(자식 비정상 종료, 시간 초과, 상태 읽기 실패 등) | 커밋 여부 미확정 | 릴리스 보류 파일을 쓰고(위 규칙), 자식을 정리한 뒤 `shiftgate recover at-mcp` 를 실행하고 SG-5 의 `op_id`·결과로 다시 판정한다. 확정되면 아래 해당 행으로, 확정 불가면 **다른 컴포넌트를 롤백하지 않고** 사람 보류로 멈춘다 | 3 |
+| `at-mcp` 커밋이 `op_id` 로 확정된 뒤 검증 표·프로브 실패 | 새 색이 서비스 중이고 드레인 중이면 서비스 잠금이 잡혀 있음 | 릴리스 보류 파일을 먼저 쓴다. **`at-mcp` 를 먼저 되돌릴 수 있게 만든다**: SG-3 이 있으면 드레인을 중단시키고, 없으면 자식이 끝날 때까지(`drain_timeout` + 여유) 기다린다. 그다음 `shiftgate rollback at-mcp`, 이어서 역순으로 고정 유닛·싱글톤·`at-api` 를 복원하고 digest 표로 전체 롤백을 검증한 뒤에만 보류를 해제한다. `at-mcp` 를 되돌릴 수 없으면 **나머지도 복원하지 않고**(새 릴리스 전체로 남겨 분열 릴리스를 만들지 않는다) 보류로 멈춘다 | 1(보류 시 3) |
 | `shiftgate` exit 3 또는 복원 불완전 | 사람이 판단해야 함 | 출력에 `shiftgate recover <svc>` 안내 | 3 |
 | 다른 릴리스 실행 중 | — | 거부 | 75 |
 
@@ -378,6 +378,7 @@ flowchart TD
 - `--rollback`(수동): 목표 = `deployed-digest.previous`. CI 게이트·마이그레이션은 하지 않는다. 서비스별 위 규칙으로 되돌리고 `deployed-digest` 를 회전한다(`docs/runbooks/ncp-pull-deploy.md:403-411`).
 - 어댑터는 `follow` 의 `hold` 를 쓰지 않으므로 롤백한 digest 를 재배포하는 것을 막는 장치는 CI 게이트 통과 + 운영자 명령이다(자동 재배포가 없음).
 - 어댑터 스크립트 자체의 롤백(스크립트 버전 문제)은 호스트의 이전 설치본 `deploy-ncp-pull.sh.pre-shiftgate` 로 한다(S4 에서 교체 설치할 때 보존). 단 S1 이후에는 이전 스크립트가 `haproxy.cfg` 를 덮어쓰므로 쓰기 전에 단계 되돌림(10절)이 먼저다.
+- **릴리스 보류**: 실패 처리가 한 번이라도 시작되거나 `at-mcp` 결과를 확정하지 못한 채 끝나는 모든 경로는 `/root/at-run/release-hold`(모드 0600, 영수증 id·사유·시각만)를 **롤백보다 먼저** 쓴다. 사전 점검이 이 파일이 있으면 전진 배포를 exit 78 로 거부하고, 파일은 완전한 롤백 또는 완료가 컨테이너별 digest 표와 `status --json` 으로 검증된 뒤에만 어댑터(또는 운영자의 `--clear-hold`)가 지운다. 어댑터는 **커밋이 `op_id` 로 확정되지 않은** `at-mcp` 자식을 남긴 채 종료하지 않는다: 확정이 불가능하면 자식을 정리(SIGKILL)하고 `shiftgate recover at-mcp` 를 실행한 뒤 SG-5 의 커밋된 `op_id`·결과로 다시 판정하며, 그래도 불가능하면 보류 파일을 남기고 exit 3 이다. 그래서 어댑터가 종료한 뒤 자식이 몰래 커밋하는 경우가 없다. 커밋이 확정되고 검증을 통과해 `deployed-digest` 를 쓴 뒤 드레인만 남은 자식은 예외로 두고 PID 를 영수증에 기록한다. 그 자식이 서비스 잠금을 잡고 있는 동안 다음 릴리스의 사전 점검(서비스 잠금 점유 검사, AT-4a)이 전진 배포를 거부한다. 보류 중 `deployed-digest` 는 마지막으로 검증된 릴리스를 가리킨 채 바뀌지 않는다(소비자 처리: D14).
 
 ### 영수증
 
@@ -455,6 +456,7 @@ S2 와 같은 순서(`at-api` 를 임시 바인드에 추가 → `deploy` → `/
 11. **D11 — shiftgate 운영 작업(`check --heal`, 지표 텍스트파일, 알림)의 스케줄러.** 새 스케줄 등록은 명시 승인이 필요하다(하드룰 6). 권고: handoffkeep 의 shiftgate 가 이미 쓰는 스케줄러를 그대로 쓴다. **[live check]**: 그 스케줄러가 무엇인지(이 문서는 알지 못함). 없으면 `ops/ncp/systemd/` 의 타이머를 쓰되 등록은 운영자가 한다. `shiftgate prune` 은 스케줄하지 않는다(공백 10).
 12. **D12 — 마이그레이션을 `pre_deploy` 로 옮길지.** (A) 어댑터 단계로 유지, SG-1 병합 뒤 재검토. (B) SG-1 이후 마이그레이션만 `at-api` 의 `pre_deploy`(전용 env 파일)로 이동, 백업은 어댑터에 남음. **권고 A**: 백업은 호스트 systemd 작업이라 어차피 `pre_deploy` 안에 들어갈 수 없고, 마이그레이션만 옮기면 단계가 둘로 갈라져 영수증이 복잡해진다.
 13. **D13 — #789 Stage 4 적용 여부**(마이그레이션 입력 분리). 코드로는 확인되지 않는다(**[live check]**). 권고: 어댑터는 `AT_MIGRATION_ENV_FILE` 을 필수로 요구하고 앱 env 로 폴백하지 않는다. Stage 4 이전이면 운영자가 기존 입력 파일을 명시한다.
+14. **D14 — 릴리스 보류 중 `deployed-digest` 소비자(`at-job.sh`, 킥오프·fill-handoff 서비스).** (A) 보류 중에도 마지막으로 **검증된** digest 를 계속 읽게 둔다(펜스 없음). 보류는 전진 배포와 `deployed-digest` 쓰기만 막는다. (B) 보류 파일이 있으면 `at-job.sh` 가 시작을 거부하고(exit 75 계열) 소비자를 펜스한다. **권고 A**: 보류는 모호한 상태의 해소를 기다리는 동안이고 소비자 25개 중 다수가 체결 처리·킥오프 같은 라이브 경로라 전부 멈추는 비용이 크다. 마지막 검증 digest 는 롤백 일관 상태라 알려진 안전 쪽이고, 새 MCP 와의 버전 차이는 expand-contract 가 허용한다. 보류는 영수증과 알림으로 즉시 드러난다. 소비자 펜스는 B 를 고르면 AT-4a 에 `at-job.sh` 변경을 더한다.
 
 ## 티켓 분해
 
@@ -470,15 +472,15 @@ Tier 는 제안이다(T1 = 문서·테스트만, T2 = 호스트 설치물이나 
 | AT-1 | auto_trader | T2 | `ops/ncp/shiftgate/services.at.yaml`(S1 변형 포함), `haproxy-check.sh`(폐쇄 모양 + `stats socket` 한 줄 허용 + 필수 바인드), 저장소 린트 테스트(비어 있지 않은 `MCP_PROFILE`, 허용 주소만, 와일드카드 없음, 색 포트 규칙, 은퇴 포트 미사용) | — |
 | AT-2 | auto_trader | T2 | 릴리스 pre-deploy 스크립트(`ops/ncp/bin/`): head 비교, 백업 트리거와 `systemctl show` 판정(`InvocationID` 변경·시작/종료 시각·`Result`·`ExecMainCode`·`ExecMainStatus`·새 체크섬 파일), `--migrate`, 입력 env 요구, 영수증 조각. 가짜 `docker`/`systemctl` 으로 테스트: 이전 실행의 status 3 이 남은 상태에서 시작 실패, 신호 3 으로 종료, 시작 시각 이전 체크섬만 있는 경우가 모두 거부되는지 | — |
 | AT-3 | auto_trader | T2 | `scripts/ncp_mcp_watchdog.py`: **레거시 출처 감시가 기본 동작이고 그대로 유지**된다(`mcp-active-color` 가 있으면 `at-mcp-<color>` 와 `mcp-<color>.json`, 현재 동작 불변). shiftgate 출처는 `shiftgate status --json` 에 `at-mcp` 활성 색이 있을 때만 **추가로** 감시한다(`shiftgate-at-mcp-<color>` 와 `mcp-sg-<color>.json`). 그래서 S1~S2 동안 레거시 MCP 감시에 공백이 없다. shiftgate 상태가 없으면 조용히 건너뛰고, 읽기 실패나 파싱 오류는 그 출처만 건너뛰며 로그를 남긴다. 폴백으로 다른 출처의 컨테이너를 재시작하지 않는다 | — |
-| AT-4a | auto_trader | T2 | 어댑터 리팩터 1: 릴리스 잠금, 사전 점검(토큰 줄 모양·설치본 일치), 영수증, 라우트 프로브 분리. 동작은 레거시 유지. `tests/scripts/test_deploy_ncp_pull_*` 유지 | AT-1 |
-| AT-4b | auto_trader | T3 | 어댑터 리팩터 2: `at-api`/`at-mcp` 를 shiftgate 로, 고정 유닛·싱글톤은 제자리, 교차 롤백, `at-mcp` 는 마지막에 배포하고 커밋/실패를 `op_id` 로 확정(공백 8), 정적 미러가 남아 있으면 전진 배포 거부(동결). 가드 표 G01~G44 의 테스트 이동·갱신 | AT-1, AT-2, AT-3, AT-4a, **SG-5** (SG-3 은 선택) |
+| AT-4a | auto_trader | T2 | 어댑터 리팩터 1: 릴리스 잠금, 사전 점검(토큰 줄 모양·설치본 일치, **릴리스 보류 파일 부재, 모든 shiftgate 서비스의 `pending` 과 서비스 잠금 점유 없음**), 영수증, 라우트 프로브 분리. 동작은 레거시 유지. `tests/scripts/test_deploy_ncp_pull_*` 유지 | AT-1 |
+| AT-4b | auto_trader | T3 | 어댑터 리팩터 2: `at-api`/`at-mcp` 를 shiftgate 로, 고정 유닛·싱글톤은 제자리, `at-mcp` 는 마지막에 배포하고 커밋/실패를 `op_id` 로 확정(공백 8), 교차 롤백은 `at-mcp` 를 먼저 되돌린 뒤 역순으로 나머지(9절), **릴리스 보류 파일**(9절)의 기록·확인·해제, 정적 미러가 남아 있으면 전진 배포 거부(동결). 가드 표 G01~G44 의 테스트 이동·갱신. 테스트: 커밋 뒤 검증 실패 + 드레인 중, 자식 살아 있는 채 상태 읽기 실패, 보류 중 재실행 | AT-1, AT-2, AT-3, AT-4a, **SG-5** (SG-3 은 선택) |
 | AT-5 | auto_trader | T1 | `docs/runbooks/shiftgate-cutover.md`(10절 번호 절차), `ncp-pull-deploy.md`·`ncp-mcp.md` 갱신, `app/mcp_server/README.md:60` 의 컨테이너 라벨 갱신, 컨트랙트 문서 해당 절 갱신 | AT-4b |
 | AT-6 | auto_trader | T2 | (선택) expand-contract 린트: 마이그레이션에 `drop`/이름 변경/`NOT NULL` 강화가 있으면 계약 단계 표식 없이는 CI 실패 | — |
 | AT-7 | auto_trader | T3 | 레거시 정리: 템플릿·`render_haproxy`·색 파일·드레인 코드·`--haproxy-template` 삭제, 관련 테스트 정리 | S4 관찰 창 종료 |
 | AT-8 | auto_trader | T3 | (D2 = B 일 때만) 고정 유닛 blue/green 전환, 유닛별 env 파일 | AT-7 |
 | 운영자 작업(PR 아님) | — | — | shiftgate 버전 확인(`v0.1.0` 이상), `/etc/shiftgate/at.yaml` 설치, `state_dir` 생성, 토큰 줄 모양 정규화, 스케줄 등록 승인(D11), 단계 S0~S6 실행 | 각 단계 선행 PR |
 
-선행 순서: SG-1·SG-2·SG-3·SG-4·SG-5·AT-1·AT-2·AT-3·AT-6 은 서로 독립 → AT-4a → AT-4b(SG-5 필요) → AT-5 → (S0~S4 호스트 실행) → AT-7 → AT-8. SG-3 은 AT-4b 의 차단 조건이 아니다. SG-5 는 차단 조건이다: 어댑터가 자기 op 의 커밋을 `op_id` 로 확정할 수 없으면 `at-mcp` 배포 규정을 쓸 수 없다.
+선행 순서: SG-1·SG-2·SG-3·SG-4·SG-5·AT-1·AT-2·AT-3·AT-6 은 서로 독립 → AT-4a → AT-4b(SG-5 필요) → AT-5 → (S0~S4 호스트 실행) → AT-7 → AT-8. SG-5 는 차단 조건이다: 어댑터가 자기 op 의 커밋을 `op_id` 로 확정할 수 없으면 `at-mcp` 배포 규정을 쓸 수 없다. SG-3 은 차단 조건이 아니다: 없으면 드레인 중 롤백은 드레인 종료까지 기다린다(9절).
 
 티켓으로 만들지 않는 것:
 
