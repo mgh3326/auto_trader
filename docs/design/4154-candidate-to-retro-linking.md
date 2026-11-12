@@ -26,9 +26,10 @@ hk 3718(후보→전략→주문→체결→회고 전향 연결)과 hk 3871(Fac
 
 **소급(backfill) 없음.** 새 키와 새 컬럼은 이 설계가 구현된 시점 이후에 생기는 행에만 쓴다.
 
-- 과거 행의 NULL은 그대로 둔다. 어떤 writer도 과거 행을 UPDATE하지 않는다. 마이그레이션은 컬럼 추가(nullable)만 하고 값을 채우지 않는다.
+- 과거 행의 NULL은 그대로 둔다. 이 설계가 새로 만드는 쓰기(새 키·새 컬럼의 값 채움, 마이그레이션 backfill)는 과거 행을 UPDATE하지 않는다. 마이그레이션은 컬럼 추가(nullable)만 하고 값을 채우지 않는다.
+- 기존 reconcile·재전송이 이미 하는 갱신(기존 컬럼의 값이 달라졌을 때의 `updated`)은 이 설계가 넓히지도 바꾸지도 않는다. 과거 행을 재전송으로도 전혀 바꾸지 않게 하는 것은 기존 동작 변경이므로 Q22에서 운영자가 정한다.
 - reader는 새 키가 없는 과거 행을 `unknown` 또는 `inference`로 표시하고, 추론에 성공했다는 이유로 값을 만들어 저장하지 않는다.
-- `execution_ledger`의 같은 키 재전송이 과거 행을 `updated`로 바꾸지 못하도록 §6.5의 비교 규칙을 둔다.
+- `execution_ledger`의 같은 키 재전송이 과거 행의 **새 컬럼과 수수료 열**을 바꾸지 못하도록 §6.5의 규칙을 둔다.
 
 ### 1.3 범위 밖
 
@@ -107,7 +108,7 @@ hk 3718(후보→전략→주문→체결→회고 전향 연결)과 hk 3871(Fac
 | 1 | candidate | decision evidence | `candidate_ref = (candidate_call_id, candidate_symbol)` | 신규: `review.decision_evidence.candidate_call_id`, `candidate_symbol`, `candidate_link_basis`. 후보 쪽은 기존 `review.screener_pick_log.call_id`(`app/models/screener_pick_log.py:121`)이고 불변 | 신규 `DecisionEvidenceService.record`(링크 컬럼). 후보 writer는 기존 `maybe_record_fanout_picks` | 판단 기록 시점. 브로커 전송보다 앞서고, 제안 INSERT와 같은 트랜잭션이다 | 세션이 넘긴 ref는 `recorded`. 서버가 쓰기 시점에 같은 KST 거래일의 `admission='admitted'` 후보로 보강한 ref는 `inference`이고 컬럼 `candidate_link_basis`에 저장한다. 둘 다 없으면 링크 없음(`no_candidate_ref`) |
 | 2 | decision evidence | proposal/rung | `decision_id`. rung은 `(proposal_id, rung_index)` | 신규 컬럼 `review.order_proposals.decision_id`(nullable uuid, 인덱스, INSERT 때만 설정). rung은 기존 `(proposal_pk, rung_index)` 유니크(`app/models/order_proposals.py:184-190`) | 기존 `OrderProposalsService`(제안 생성 서비스) | 제안 INSERT와 같은 트랜잭션. 판단 행이 먼저 INSERT되고 제안이 `decision_id`를 담는다 | `recorded` |
 | 3 | decision evidence | order(직접 주문, 제안 없음) | `decision_id` + `attempt_id` + `(account_scope, send_key)` | 신규 `review.decision_order_links`의 `attempt_id`, `decision_id`, `account_scope`, `send_key`, `proposal_id=NULL`, `rung_index=NULL` | 신규 `DecisionEvidenceService.link_order`, `place_order`/`toss_place_order`가 호출 | 브로커 POST **전**. 별도 짧은 트랜잭션으로 커밋한 뒤 전송한다. 전송 안 됨이 증명되면 `review.decision_order_link_outcomes`에 추가한다 | `recorded`(아래 "전송 시도 해소 규칙"을 통과할 때만) |
-| 4 | proposal/rung | order | `attempt_id` + `(account_scope, send_key)` | 신규 `review.decision_order_links.(attempt_id, account_scope, send_key, proposal_id, rung_index)`와 `review.decision_order_link_outcomes`. 주문 쪽은 기존 원장 `idempotency_key`(`app/models/review.py:504`) 또는 `client_order_id`(`app/models/review.py:733`) | 시도 행은 `place_order`/`toss_place_order` 안의 `link_order`(전송 전), 결과 행은 같은 함수의 `proven_not_sent` 분기. 원장 행은 기존 `_record_kis_live_order`·`_record_live_order`·`TossLiveOrderLedgerService.record_send`(전송 후) | 시도 행은 POST 전, 원장 행은 POST 후 | 해소 규칙으로 그 `send_key`의 살아 있는 시도가 **한 판단에만** 속하고 키가 원장 키와 정확히 일치하면 `recorded`. 살아 있는 시도가 둘 이상의 판단에 걸치면 링크 없음(`ambiguous_attempts`). 링크 행이 없는 과거 행은 기존 규칙인 rung `idempotency_key` = 원장 키 일치(`recorded`), correlation만 일치(`inference`)다 |
+| 4 | proposal/rung | order | `attempt_id` + `(account_scope, send_key)` | 신규 `review.decision_order_links.(attempt_id, account_scope, send_key, proposal_id, rung_index)`와 `review.decision_order_link_outcomes`. 주문 쪽은 기존 원장 `idempotency_key`(`app/models/review.py:504`) 또는 `client_order_id`(`app/models/review.py:733`) | 시도 행은 `place_order`/`toss_place_order` 안의 `link_order`(전송 전), 결과 행(`proven_not_sent`·`sent`)은 같은 함수의 해당 분기. 원장 행은 기존 `_record_kis_live_order`·`_record_live_order`·`TossLiveOrderLedgerService.record_send`(전송 후) | 시도 행은 POST 전, `sent` 결과 행은 브로커 수락 직후, 원장 행은 그 뒤 | 해소 규칙으로 살아 있는 시도가 **한 판단에만** 속하고 그 시도 중 하나에 `sent` 결과 행이 있으며 키가 원장 키와 정확히 일치하면 `recorded`. 살아 있는 시도가 둘 이상의 판단에 걸치면 링크 없음(`ambiguous_attempts`). 시도는 하나인데 `sent` 증거가 없으면 `inference`(`attempt_unconfirmed`). 링크 행이 없는 과거 행은 기존 규칙인 rung `idempotency_key` = 원장 키 일치(`recorded`), correlation만 일치(`inference`)다 |
 | 5 | order | fill | order identity | 기존 `review.execution_ledger`의 `broker`, `account_mode`, `instrument_type`, `symbol`, `side`, `currency`, `broker_order_id`, 날짜(`filled_at`에서 유도)(`app/models/execution_ledger.py:88-108`) | 기존: reconciler, websocket 모니터, fillwire ingest | 체결 후(전송보다 늦다) | 정확한 identity 일치는 `recorded`. 일치하는 주문이 없으면 `linked_ref=null`, `no_linked_order`. 값 basis는 기존 규칙을 유지한다(`app/services/retro_v1/chain.py:847`) |
 | 6 | fill(매수) | fill(매도, 청산 짝) | 브로커 lot id가 없으므로 authoritative 행의 FIFO | 읽기 시 계산만 한다. 저장 없음. 기존 `kis_lots.fifo_position` 규칙 | 없음(reader) | 읽기 시점 | `inference` |
 | 7 | decision evidence(및 fill) | retrospective | `decision_id`(호출자 제공). 기존 `(correlation_id, account_mode)`·`journal_id`는 그대로 | 신규 컬럼 `review.trade_retrospectives.decision_id`(nullable uuid, 인덱스). 기존 `app/models/review.py:1194-1197`, `app/models/review.py:1253-1254` | 기존 `TradeRetrospectiveRepository.upsert`(`app/services/trade_journal/trade_retrospective_service.py:321-389`)에 `decision_id` 필드 추가 | 회고 작성 시점(사후). 과거 회고는 쓰지 않는다 | 호출자가 준 `decision_id`가 저장돼 있고 판단 행의 `symbol`·`market`·`account_mode`와 회고가 일치하면 `recorded`. 저장돼 있지 않으면 reader가 `correlation_id` → 원장 → 링크 행으로 유도할 수 있어도 `inference`이고 저장하지 않는다. 유도가 둘 이상의 판단이나 여러 원장 행에 걸치면 링크 없음(`ambiguous_decision`). KIS 원장 correlation은 `rung=0`으로 다시 만들어지고 send key는 rung을 구분하므로(`app/mcp_server/tooling/kis_live_ledger.py:288-296`, `app/mcp_server/tooling/order_execution.py:2241-2246`) correlation 일치는 판단 귀속의 증거가 아니다 |
@@ -115,8 +116,8 @@ hk 3718(후보→전략→주문→체결→회고 전향 연결)과 hk 3871(Fac
 표 아래의 약속:
 
 - 링크 행은 **시도(attempt) 단위**로 append-only이며 `attempt_id`가 유니크이고 `(account_scope, send_key)`는 유니크가 아니다. 같은 키에 다른 판단의 시도가 생길 수 있기 때문이다. KIS 전송 키는 내용·거래일·rung 해시라 같은 내용의 두 제안이 같은 키를 얻고(`app/mcp_server/tooling/order_execution.py:2232-2247`), 전송 직전 신선도 차단은 예약을 풀고 주문을 보내지 않는다(`app/mcp_server/tooling/order_execution.py:1219-1259`, `app/mcp_server/tooling/order_execution.py:1396-1400`). 첫 시도가 키를 계속 점유하면 같은 키로 나중에 실제 전송된 다른 제안의 주문이 첫 판단으로 읽힌다.
-- **전송 시도 해소 규칙.** 전송 안 됨이 증명된 시도는 `review.decision_order_link_outcomes`(append-only, `attempt_id`당 한 행, 값은 `proven_not_sent`뿐)에 쓴다. 쓰는 곳은 위 신선도 차단과 같은 `proven_not_sent=True` 분기다. reader는 한 `send_key`에 대해 `proven_not_sent`가 없는 시도의 `decision_id` 집합을 만든다. 크기 1이면 `recorded`, 2 이상이면 링크 없음(`ambiguous_attempts`), 0이면 링크 행이 없는 것으로 취급한다. 결과 기록이 유실된 시도는 해소되지 않은 채 남으므로 보수적으로 모호함이 된다. 같은 판단의 재시도(Toss·Upbit의 결정적 키)는 판단이 하나라 모호하지 않다.
-- L4 테스트: 같은 내용의 제안 A·B에서 A의 시도가 신선도 차단되고 B가 전송되는 순서를 재현해 reader가 B의 판단을 `recorded`로 읽는지, 결과 기록이 유실되면 `ambiguous_attempts`가 되는지 확인한다.
+- **전송 시도 해소 규칙.** 결과 행은 두 값을 가진다. `proven_not_sent`는 전송 안 됨이 증명된 분기(신선도 차단 등)에서, `sent`는 브로커가 주문을 수락한 직후 같은 함수에서 쓴다. 둘 다 `attempt_id`당 한 행, append-only다. reader는 한 `send_key`에 대해 `proven_not_sent`가 없는 시도의 `decision_id` 집합을 만든다. 크기 2 이상이면 링크 없음(`ambiguous_attempts`), 0이면 링크 행이 없는 것으로 취급한다. 크기 1이면 그 시도 중 `sent` 결과 행이 있는 경우에만 `recorded`이고, 없으면 `inference`(`attempt_unconfirmed`)다. 시도 행과 결과 행이 모두 fail-open이므로 결과 행이 유실돼도 주문은 그대로 나가고, 증거 없는 생존 시도는 `recorded`가 되지 못한다. 같은 판단의 재시도(Toss·Upbit의 결정적 키)는 판단이 하나라 모호하지 않다.
+- L4 테스트: (a) 같은 내용의 제안 A·B에서 A가 신선도 차단되고 B가 전송되는 순서에서 reader가 B의 판단을 `recorded`로 읽는다. (b) A의 `proven_not_sent` 쓰기가 실패해도 B의 링크·`sent`가 있으면 `ambiguous_attempts`다. (c) **결합 실패**: A의 `proven_not_sent` 쓰기와 B의 링크 쓰기가 모두 실패하고 B가 전송되면 생존 시도 A에 `sent`가 없으므로 `recorded`가 아니라 `inference`(`attempt_unconfirmed`)다. 세 경우 모두 주문 동작은 바이트 동일해야 한다.
 - 4행에서 `send_key`가 어떻게 정해지는지 때문에 링크 행은 `place_order` 안에서 쓴다. 제안 경로가 미리보기에서 받은 키는 자정을 넘기면 실제 전송 키와 다를 수 있다(`app/mcp_server/tooling/order_execution.py:2240-2247`은 호출 시점의 `now_kst()`로 키를 만든다). 실제 전송 키는 전송 직전에만 확정된다.
 - KR 6행(FIFO)의 `inference`는 브로커가 lot id를 주지 않는 한 바뀌지 않는다. 같은 한계가 저널 청산에도 있다(`app/mcp_server/tooling/kis_live_ledger.py:997-1008`).
 
@@ -152,7 +153,7 @@ flowchart LR
 1. 세션이 후보를 본다(후보 행 기록, 응답에 `call_id` 포함: Q2).
 2. 세션이 `order_proposal_create`를 `candidate_ref`·판단 시점 가격·손절과 함께 호출한다. 한 트랜잭션에서 `decision_evidence` INSERT → `order_proposals`(+`decision_id`) INSERT → rung INSERT가 커밋된다.
 3. 승인 후 revalidation이 `submitting`으로 전이하고 `place_order`를 호출한다. `place_order`가 `send_key`를 확정한 직후, 브로커 POST **전에** 시도 행(`attempt_id`)을 `decision_order_links`에 커밋한다. 신선도 차단처럼 전송 안 됨이 증명되면 같은 분기에서 `decision_order_link_outcomes`에 `proven_not_sent`를 추가한다.
-4. 브로커 응답 후 기존 writer가 rung(`record_ack` 등)과 주문 원장을 쓴다.
+4. 브로커가 수락하면 직후 같은 함수가 `sent` 결과 행을 쓰고(fail-open), 기존 writer가 rung(`record_ack` 등)과 주문 원장을 쓴다.
 5. 체결 후 reconciler·ingest가 `execution_ledger`를 쓴다.
 6. 사후 회고가 `decision_id`를 담아 쓰인다.
 
@@ -259,7 +260,7 @@ INDEX (proposal_id, rung_index) WHERE proposal_id IS NOT NULL
 decision_order_link_outcomes
 id          bigserial PK
 attempt_id  uuid NOT NULL UNIQUE REFERENCES review.decision_order_links(attempt_id)
-outcome     text NOT NULL CHECK (outcome = 'proven_not_sent')
+outcome     text NOT NULL CHECK (outcome IN ('proven_not_sent','sent'))
 recorded_at timestamptz NOT NULL DEFAULT now()
 ```
 
@@ -422,11 +423,11 @@ MAE = max(0, entry_price − min(low over window))   (≥ 0, 같은 단위; 손�
 
 1. 레거시 표지: 기존 행의 `fee_basis IS NULL`(모든 새 행은 채운다. §5.3).
 2. 기존 행이 레거시이면 비교에서 `fee_amount`, `fee_currency`, `filled_at_basis`, `fee_basis`, `tax_amount`를 제외한다. 나머지 열이 같으면 `unchanged`다.
-3. 나머지 열이 달라 `updated`가 되더라도 conflict 갱신 payload에서 위 5개 열을 뺀다. 과거 행의 수수료 0과 새 컬럼의 NULL은 그대로 남는다.
+3. 나머지 열이 달라 `updated`가 되는 것은 **기존 동작 그대로**다(이 설계가 새로 만드는 쓰기가 아니다). 다만 conflict 갱신 payload에서 위 5개 열은 뺀다. 과거 행의 수수료 0과 새 컬럼의 NULL은 그대로 남는다. 레거시 행을 재전송으로도 전혀 바꾸지 않게 하는 선택은 Q22다.
 4. 기존 행이 새 행(`fee_basis`가 채워짐)이면 일반 규칙으로 비교하고 갱신한다.
 5. 이 규칙은 `upsert_fill`이 갱신 payload를 만드는 한 곳에서 구현해 모든 재전송 경로(reconciler, websocket 모니터 sink, HTTP ingest)에 적용한다.
 
-L5 테스트 둘: (a) 레거시 행에 경제 필드가 같은 재전송을 하면 `unchanged`이고 행이 바이트 단위로 같다. (b) 레거시 행에 다른 열(예: 가격)이 다른 재전송을 하면 그 열만 갱신되고 위 5개 열은 그대로다.
+L5 테스트 둘: (a) 레거시 행에 경제 필드가 같은 재전송을 하면 `unchanged`이고 행이 바이트 단위로 같다. (b) 레거시 행에 기존 컬럼(예: 가격)이 다른 재전송을 하면 기존 동작대로 그 컬럼만 갱신되고 위 5개 열은 그대로다.
 
 ## 7. 연구 반사실 입력 (hk 3737용)
 
@@ -540,6 +541,7 @@ pin은 `contracts/retro/v1/consumers.lock`이 정하고(`docs/runbooks/retro-con
 19. **포지션 합산 위험.** add·다중 lot의 포지션 전체 위험은 범위 밖이다. **권고: 별도 설계**(`lot_exit_plans` 버전 이력이 입력이다).
 20. **기존 추론의 상한.** 새 키가 없는 제안에 대한 후보→제안 추론이 지금은 무제한이다(§2.2-3). **권고: 읽기 규칙을 같은 KST 거래일로 제한하고 넘는 경우는 링크 없음.** 기존 출력이 바뀌므로 소비자 영향을 확인한 뒤 적용한다.
 21. **기각(negative class) 판단 연결.** 기각은 `forecast_save(decision_bucket=...)`가 정본이다(`app/models/review.py:1548-1554`). **권고: `decision_kind='declined'` 판단 행이 `forecast_ids`로 forecast를 가리키고 `trade_forecasts` 스키마는 바꾸지 않는다.**
+22. **레거시 행의 재전송 갱신.** 지금은 과거 행에 기존 컬럼이 다른 재전송이 오면 갱신한다(`app/services/execution_ledger/repository.py:229-241`). 이 설계는 그것을 바꾸지 않고 새 컬럼·수수료 열만 보호한다. 과거 행을 재전송으로도 전혀 바꾸지 않게 하면 reconcile이 과거 체결을 정정하지 못한다. **권고: 바꾸지 않는다**(기존 동작 변경은 이 설계 범위 밖). 운영자가 완전 동결을 원하면 §1.2·§6.5와 L5를 그에 맞춰 고친다.
 
 ## 10. 티켓 분해
 
@@ -551,7 +553,7 @@ pin은 `contracts/retro/v1/consumers.lock`이 정하고(`docs/runbooks/retro-con
 | L1 | 판단 근거·주문 링크 테이블과 서비스 | T2 | L0 | `review.decision_evidence`, `review.decision_evidence_rungs`, `review.decision_reference_prices`, `review.decision_order_links`, `review.decision_order_link_outcomes` 마이그레이션(추가형, 트리거, 조건부 GRANT), `DecisionEvidenceService`(호출자 없음). 단위 테스트: 불변 트리거·유니크·hash. 소급 없음 |
 | L2 | 후보 id 노출과 pick log 호출 id | T2 | L0 | fanout wrapper가 `pick_log_call_id`를 선택 키로 반환(게이트 on·기록 성공 시). impl의 무쓰기 계약 유지(정적 가드 테스트 통과). 운영: `SCREENER_PICK_LOG_ENABLED` 켜는 일은 운영자 몫(별도 기록) |
 | L3 | 제안 생성에 판단 근거 기록 | T2 | L1, (L2 선택) | `order_proposals.decision_id` 컬럼(set-once 트리거), `order_proposal_create`가 `candidate_ref`·판단 시점 가격·`exit_plan`을 받아 같은 트랜잭션에서 기록. 기각용 `forecast_save` 경로 연결. 서버 보강(`candidate_link_basis='inference'`)은 같은 거래일 admitted 한정 |
-| L4 | 전송 전 주문 링크 기록 | T3 | L1, L3 | `place_order`(KIS·Upbit)·`toss_place_order`가 `send_key` 확정 직후·POST 전에 시도 행을 커밋하고, 전송 안 됨이 증명된 분기에서 outcome 행을 추가. fail-open. 테스트: 링크 쓰기 실패 시 주문이 그대로 나간다, 같은 키의 A 차단·B 전송 순서에서 reader가 B로 해소한다, outcome 유실 시 `ambiguous_attempts`, 주문 동작 바이트 동일 |
+| L4 | 전송 전 주문 링크 기록 | T3 | L1, L3 | `place_order`(KIS·Upbit)·`toss_place_order`가 `send_key` 확정 직후·POST 전에 시도 행을 커밋하고, 전송 안 됨이 증명된 분기에서 `proven_not_sent`, 브로커 수락 직후 `sent` 결과 행을 추가. 모두 fail-open. 테스트: §3의 L4 테스트 (a)(b)(c) 세 순서(결합 실패 포함), 링크 쓰기 실패 시 주문이 그대로 나간다, 주문 동작 바이트 동일 |
 | L5 | `execution_ledger` 시각·비용 basis | T3 | L0 | `filled_at_basis`·`fee_basis`·`tax_amount` 컬럼. writer(normalizers·Toss·모니터·ingest 도출) 변경. `upsert_fill` 갱신 payload의 레거시 보호(§6.5): 레거시 행 재전송이 `unchanged`, 다른 열이 달라도 5개 열 불변. KIS REST 새 행은 `fee_amount=NULL`. 선행 확인: fillwire 소스에서 `filled_at` 파생 |
 | L6 | 회고에 `decision_id` | T2 | L1 | `trade_retrospectives.decision_id` 컬럼, `TradeRetrospectiveRepository.upsert`와 저장 도구 인자. 호출자 제공만 저장하고 판단 행과 일치를 검증 |
 | L7 | retro/v1 reader: 링크 basis·판단 ref | T2 | L1, L3, L4, L6 | chain의 `link_basis`/`decision_ref`(선택 필드), `retro_trades` 확장. 후보→제안 기존 추론 상한(Q20). `trade_retrospectives.decision_id`를 읽으므로 L6 이후에만 배포. 소비자 게이트(`retro-consumer-gate`) 통과, pin 갱신은 별도(소비자 repo) |
