@@ -369,6 +369,12 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 await connection.execute(
                     text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")
                 )
+            # hk 4187 (L6) trade_retrospectives.decision_id is later too and
+            # already in Base.metadata; drop it (its index goes with it) so the
+            # migration adds it back.
+            await connection.execute(
+                text("ALTER TABLE review.trade_retrospectives DROP COLUMN decision_id")
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

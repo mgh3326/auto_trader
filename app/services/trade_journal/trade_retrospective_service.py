@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.market import market_instrument_type
-from app.core.symbol import to_db_symbol
+from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
@@ -438,8 +438,13 @@ class TradeRetrospectiveRepository:
             raise RetrospectiveValidationError(
                 "decision_id does not reference a decision"
             )
+        decision_symbol = decision["symbol"]
+        if decision_market == "crypto":
+            symbol_matches = to_upbit_symbol(decision_symbol) == to_upbit_symbol(symbol)
+        else:
+            symbol_matches = decision_symbol == symbol
         if (
-            decision["symbol"] != symbol
+            not symbol_matches
             or decision["market"] != decision_market
             or decision["account_mode"] != retrospective_account_mode
         ):
