@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
 from app.mcp_server.tooling.buy_candidate_fanout import (
@@ -56,8 +57,11 @@ def register_buy_candidate_fanout_tools(mcp: FastMCP) -> None:
         market: Literal["kr", "us"] = "kr",
     ) -> dict[str, Any]:
         result = await discover_buy_candidates_fanout_impl(market=market)
-        await maybe_record_fanout_picks(result)
+        call_id = uuid.uuid4()
+        recorded_call_id = await maybe_record_fanout_picks(result, call_id=call_id)
         await maybe_record_buy_gate_ab_shadow(result)
+        if recorded_call_id is not None:
+            return {**result, "pick_log_call_id": str(recorded_call_id)}
         return result
 
 

@@ -6,6 +6,7 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -1018,7 +1019,7 @@ def test_registration_is_read_only_and_observation_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_registration_records_outside_fanout(
+async def test_registration_records_outside_fanout_without_mutating_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.mcp_server.tooling import buy_candidate_fanout_registration as reg
@@ -1053,7 +1054,59 @@ async def test_registration_records_outside_fanout(
     register_buy_candidate_fanout_tools(mcp)  # type: ignore[arg-type]
     returned = await mcp.handlers["discover_buy_candidates_fanout"]()
     assert returned is payload
+    assert "pick_log_call_id" not in returned
     assert recorded == [payload]
+
+
+@pytest.mark.asyncio
+async def test_registration_returns_successful_pick_log_call_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import buy_candidate_fanout_registration as reg
+    from app.mcp_server.tooling.buy_candidate_fanout_registration import (
+        register_buy_candidate_fanout_tools,
+    )
+
+    payload = {"success": True, "market": "kr", "candidates": [{"symbol": "005930"}]}
+    call_ids: list[UUID] = []
+
+    async def fake_impl(**_: Any) -> dict[str, Any]:
+        return payload
+
+    async def fake_record(result: dict[str, Any], *, call_id: UUID) -> UUID:
+        assert result is payload
+        call_ids.append(call_id)
+        return call_id
+
+    async def fake_shadow_record(_: dict[str, Any]) -> None:
+        return None
+
+    monkeypatch.setattr(reg, "discover_buy_candidates_fanout_impl", fake_impl)
+    monkeypatch.setattr(reg, "maybe_record_fanout_picks", fake_record)
+    monkeypatch.setattr(reg, "maybe_record_buy_gate_ab_shadow", fake_shadow_record)
+
+    class _FakeMCP:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def tool(self, *, name: str, description: str, **_: Any) -> Any:
+            def decorate(function: Any) -> Any:
+                self.handlers[name] = function
+                return function
+
+            return decorate
+
+    mcp = _FakeMCP()
+    register_buy_candidate_fanout_tools(mcp)  # type: ignore[arg-type]
+    returned = await mcp.handlers["discover_buy_candidates_fanout"]()
+
+    assert len(call_ids) == 1
+    assert returned == {**payload, "pick_log_call_id": str(call_ids[0])}
+    assert payload == {
+        "success": True,
+        "market": "kr",
+        "candidates": [{"symbol": "005930"}],
+    }
 
 
 def test_no_broker_or_order_surface_imported_by_fanout_module() -> None:
