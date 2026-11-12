@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.mcp_server.tooling import trade_retrospective_tools as tools
 from app.models.review import TradeRetrospective
@@ -22,7 +23,7 @@ class _Result:
         return self.row
 
     def scalar_one_or_none(self):
-        return None
+        return self.row
 
 
 class _NestedTransaction:
@@ -34,20 +35,43 @@ class _NestedTransaction:
 
 
 class _Session:
-    def __init__(self, decision):
+    def __init__(
+        self,
+        decision,
+        *,
+        retrospectives=(),
+        fail_first_insert=False,
+    ):
         self.decision = decision
+        self.retrospectives = list(retrospectives)
+        self.fail_first_insert = fail_first_insert
+        self.flush_count = 0
         self.queries = []
         self.added = None
 
     async def execute(self, statement, params=None):
-        self.queries.append((str(statement), params))
-        return _Result(self.decision)
+        statement_text = str(statement)
+        self.queries.append((statement_text, params))
+        if "FROM review.decision_evidence" in statement_text:
+            return _Result(self.decision)
+        if "FROM review.trade_retrospectives" in statement_text:
+            row = self.retrospectives.pop(0) if self.retrospectives else None
+            return _Result(row)
+        raise AssertionError(f"unexpected query: {statement_text}")
 
     def add(self, row):
         self.added = row
 
     async def flush(self):
-        pass
+        self.flush_count += 1
+        if self.fail_first_insert and self.flush_count == 1:
+            raise IntegrityError(
+                "insert retrospective",
+                {},
+                SimpleNamespace(
+                    constraint_name="uq_trade_retrospectives_correlation_account"
+                ),
+            )
 
     def begin_nested(self):
         return _NestedTransaction()
@@ -84,7 +108,7 @@ async def test_repository_accepts_upbit_market_alias_for_decision_identity():
 
     _, row = await service.TradeRetrospectiveRepository(db).upsert(
         {
-            "symbol": "BTC",
+            "symbol": "KRW-BTC",
             "instrument_type": "crypto",
             "market": "upbit",
             "account_mode": "upbit_live",
@@ -94,6 +118,80 @@ async def test_repository_accepts_upbit_market_alias_for_decision_identity():
     )
 
     assert row.decision_id == decision_id
+
+
+@pytest.mark.asyncio
+async def test_partial_upsert_rejects_changed_identity_without_mutating_existing_row():
+    decision_id = uuid4()
+    existing = SimpleNamespace(
+        decision_id=decision_id,
+        symbol="AAPL",
+        market="us",
+        account_mode="toss_live",
+        outcome="filled",
+        evidence_snapshot=None,
+    )
+    db = _Session(
+        {"symbol": "AAPL", "market": "equity_us", "account_mode": "toss_live"},
+        retrospectives=[existing],
+    )
+
+    with pytest.raises(
+        service.RetrospectiveValidationError,
+        match="does not match retrospective",
+    ):
+        await service.TradeRetrospectiveRepository(db).upsert(
+            {
+                "symbol": "MSFT",
+                "account_mode": "toss_live",
+                "correlation_id": "existing-retrospective",
+                "outcome": "partially_filled",
+            }
+        )
+
+    assert existing.symbol == "AAPL"
+    assert existing.outcome == "filled"
+    assert existing.decision_id == decision_id
+    assert db.flush_count == 0
+
+
+@pytest.mark.asyncio
+async def test_integrity_error_recovery_rejects_mismatched_inherited_link():
+    decision_id = uuid4()
+    existing = SimpleNamespace(
+        decision_id=decision_id,
+        symbol="005930",
+        market="kr",
+        account_mode="kis_live",
+        outcome="unfilled",
+        evidence_snapshot=None,
+    )
+    db = _Session(
+        {"symbol": "005930", "market": "equity_kr", "account_mode": "kis_live"},
+        retrospectives=[None, existing],
+        fail_first_insert=True,
+    )
+
+    with pytest.raises(
+        service.RetrospectiveValidationError,
+        match="does not match retrospective",
+    ):
+        await service.TradeRetrospectiveRepository(db).upsert(
+            {
+                "symbol": "000660",
+                "instrument_type": "equity_kr",
+                "market": "kr",
+                "account_mode": "kis_live",
+                "outcome": "filled",
+                "correlation_id": "racing-retrospective",
+            }
+        )
+
+    assert existing.symbol == "005930"
+    assert existing.outcome == "unfilled"
+    assert existing.decision_id == decision_id
+    assert db.flush_count == 1
+    assert sum("FROM review.decision_evidence" in query for query, _ in db.queries) == 1
 
 
 @pytest.mark.asyncio

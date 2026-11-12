@@ -464,7 +464,8 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 `save_trade_retrospective(decision_id=...)`는 호출자가 제공한 ID만 저장한다. 저장 전
 `review.decision_evidence`의 ID가 존재하고 정규화된 심볼·시장·계좌 모드가 회고와
 일치하는지 확인한다(시장 별칭은 `app/core/market.py` 규칙, `upbit_live`는 판단 근거의
-`upbit`와 대응). 불일치·미존재 ID는 거부한다. ID가 생략되면 correlation ID 등으로
+`upbit`와 대응). crypto 심볼은 `to_upbit_symbol` 규칙으로 비교해 `BTC`와 `KRW-BTC`를
+동일 자산으로 본다. 불일치·미존재 ID는 거부한다. ID가 생략되면 correlation ID 등으로
 판단을 추론하거나 새 연결을 저장하지 않는다. 기존 연결은 부분 upsert에서 보존되며,
 호출자가 명시적으로 null을 보내면 지운다.
 
