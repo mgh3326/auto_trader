@@ -755,6 +755,12 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
   `kis_live_get_order_history` 와 `inquire_daily_order_domestic` 은 변경 없음.
 - **테스트**: `test_kis_live_daily_orders.py`(순수·fake client), `test_kis_live_daily_orders_db.py`(테스트 DB 로더)
 
+### KIS 체결별 실현 수수료·세금 출처 (L11, hk 4192)
+
+저장소에서 확인되는 국내 `TTTC8001R`(`app/services/brokers/kis/constants.py:85-88`) 및 해외 `TTTS3035R`(`app/services/brokers/kis/constants.py:138-141`) 조회는 GET 체결/주문 히스토리다(`app/services/brokers/kis/domestic_orders.py:850-857`, `app/services/brokers/kis/overseas_orders.py:762-770`). 현행 저장소 코드와 포함 문서는 이들이 체결별 실현 수수료와 세금을 제공한다고 입증하지 않는다. 외부 KIS API에 해당 endpoint가 없다는 뜻은 아니다(`[INFERENCE]`). 확인 근거와 제한은 `docs/research/4192-kis-realized-cost-source.md`에 둔다.
+
+출처가 확인될 때까지 KIS 실현 비용은 `not_provided`로 취급하고 연구 reader는 이를 추정치(`estimated`)와 분리한다. REST normalizer의 fee 필드 누락 시 0 대체(`app/services/execution_ledger/normalizers.py:309-310`, `339-340`)는 관측된 수수료 0의 증거가 아니다. L11은 조사 문서 변경만이며 client, writer, 과거 행, 게이트, scheduler를 바꾸지 않는다.
+
 ### KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 
 `kis_live_place_order` 응답의 `expected_expiry`/`expiry_reason` 및
