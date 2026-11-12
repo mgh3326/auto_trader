@@ -994,6 +994,7 @@ class OrderProposalsService:
             market=market,
             account_mode=account_mode,
             side=side,
+            action=normalized_action,
             proposer=proposer,
             strategy=strategy,
             sleeve_id=sleeve_id,

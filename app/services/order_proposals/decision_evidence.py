@@ -18,6 +18,7 @@ from app.services.decision_evidence import (
     DecisionEvidenceService,
     DecisionRung,
     ReferencePrice,
+    _check_decimals,
 )
 from app.services.mechanical_loss_cut.rules import parse_exit_plan_input
 
@@ -43,6 +44,7 @@ async def record_proposal_decision(
     market: str,
     account_mode: str,
     side: str,
+    action: str,
     proposer: str,
     strategy: str | None,
     sleeve_id: int | None,
@@ -77,7 +79,7 @@ async def record_proposal_decision(
         call_id = UUID(str(candidate_ref["call_id"]))
         basis = "recorded"
         query = query.where(ScreenerPickLog.call_id == call_id)
-    else:
+    elif side == "buy" and action == "place":
         start = datetime.combine(now.astimezone(KST).date(), time.min, tzinfo=KST)
         query = query.where(
             ScreenerPickLog.admission == "admitted",
@@ -85,10 +87,14 @@ async def record_proposal_decision(
             ScreenerPickLog.recorded_at <= now,
             ScreenerPickLog.recorded_at < start + timedelta(days=1),
         )
-    query = query.order_by(
-        ScreenerPickLog.recorded_at.desc(), ScreenerPickLog.id.desc()
-    ).limit(1)
-    pick = (await session.execute(query)).scalar_one_or_none()
+    pick = None
+    if candidate_ref is not None or (side == "buy" and action == "place"):
+        query = query.order_by(
+            ScreenerPickLog.recorded_at.desc(), ScreenerPickLog.id.desc()
+        ).limit(1)
+        pick = (await session.execute(query)).scalar_one_or_none()
+    if candidate_ref is not None and pick is None:
+        raise ValueError("candidate_ref does not identify a candidate")
     if candidate_ref is None and pick is not None:
         call_id, basis = pick.call_id, "inference"
     prices = [
@@ -99,7 +105,11 @@ async def record_proposal_decision(
     if (quote := _price(decision_price_text)) is not None:
         prices.append(ReferencePrice(kind="quote_at_decision", price=quote, asof=now))
     if pick is not None and pick.decision_price_text is not None:
-        candidate_price = _price(pick.decision_price_text)
+        try:
+            candidate_price = _price(pick.decision_price_text)
+            _check_decimals(candidate_price)
+        except ValueError:
+            candidate_price = None
         if candidate_price is not None:
             prices.append(
                 ReferencePrice(

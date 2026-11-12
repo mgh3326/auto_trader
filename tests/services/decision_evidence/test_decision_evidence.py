@@ -172,6 +172,7 @@ async def test_proposal_records_explicit_candidate_and_prices_in_same_session(
         market="equity_us",
         account_mode="kis_live",
         side="buy",
+        action="place",
         proposer="session",
         strategy="test",
         sleeve_id=None,
@@ -216,6 +217,7 @@ async def test_server_candidate_inference_is_admitted_and_bounded_by_kst_day(
         market="equity_us",
         account_mode="kis_live",
         side="buy",
+        action="place",
         proposer="session",
         strategy=None,
         sleeve_id=None,
@@ -281,6 +283,7 @@ async def test_no_candidate_leaves_link_empty_and_price_must_be_exact(monkeypatc
         "market": "equity_us",
         "account_mode": "kis_live",
         "side": "buy",
+        "action": "place",
         "proposer": "session",
         "strategy": None,
         "sleeve_id": None,
@@ -358,3 +361,155 @@ async def test_numeric_precision_accepts_twelve_places_and_rejects_unrepresentab
                 replace(sample(), stop_price=invalid), [], []
             )
         untouched.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_explicit_candidate_is_rejected_before_evidence(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.order_proposals import decision_evidence as module
+    from app.services.order_proposals.service import RungInput
+
+    session = AsyncMock()
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: None)
+    record = AsyncMock()
+    monkeypatch.setattr(module.DecisionEvidenceService, "record", record)
+    with pytest.raises(ValueError, match="does not identify a candidate"):
+        await module.record_proposal_decision(
+            session,
+            symbol="TEST",
+            market="equity_us",
+            account_mode="kis_live",
+            side="buy",
+            action="place",
+            proposer="test",
+            strategy=None,
+            sleeve_id=None,
+            rungs=[RungInput(0, "buy", Decimal("1"), None, None)],
+            source_asof={},
+            candidate_ref={"call_id": str(uuid4()), "symbol": "TEST"},
+            decision_price_text=None,
+            now=datetime(2026, 11, 12, tzinfo=UTC),
+        )
+    record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "action"), [("sell", "place"), ("buy", "cancel"), ("buy", "replace")]
+)
+async def test_inference_excludes_exit_and_target_actions(monkeypatch, side, action):
+    from app.services.order_proposals import decision_evidence as module
+    from app.services.order_proposals.service import RungInput
+
+    session = AsyncMock()
+    record = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(module.DecisionEvidenceService, "record", record)
+    await module.record_proposal_decision(
+        session,
+        symbol="TEST",
+        market="equity_us",
+        account_mode="kis_live",
+        side=side,
+        action=action,
+        proposer="test",
+        strategy=None,
+        sleeve_id=None,
+        rungs=[RungInput(0, side, Decimal("1"), None, None)],
+        source_asof={},
+        candidate_ref=None,
+        decision_price_text=None,
+        now=datetime(2026, 11, 12, tzinfo=UTC),
+    )
+    session.execute.assert_not_awaited()
+    evidence, _, prices = record.await_args.args
+    assert evidence.candidate_call_id is None and evidence.candidate_link_basis is None
+    assert not any(price.kind == "candidate_price" for price in prices)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_price", ["0", "-1", "0.0000000000001", "100000000000000000000000000"]
+)
+async def test_invalid_candidate_observation_preserves_link_without_price(
+    monkeypatch, bad_price
+):
+    from types import SimpleNamespace
+
+    from app.services.order_proposals import decision_evidence as module
+    from app.services.order_proposals.service import RungInput
+
+    now = datetime(2026, 11, 12, tzinfo=UTC)
+    candidate_id = uuid4()
+    pick = SimpleNamespace(
+        call_id=candidate_id, decision_price_text=bad_price, recorded_at=now
+    )
+    session = AsyncMock()
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: pick)
+    record = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(module.DecisionEvidenceService, "record", record)
+    await module.record_proposal_decision(
+        session,
+        symbol="TEST",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        action="place",
+        proposer="test",
+        strategy=None,
+        sleeve_id=None,
+        rungs=[RungInput(0, "buy", Decimal("1"), None, None)],
+        source_asof={},
+        candidate_ref=None,
+        decision_price_text=None,
+        now=now,
+    )
+    evidence, _, prices = record.await_args.args
+    assert (
+        evidence.candidate_call_id == candidate_id
+        and evidence.candidate_link_basis == "inference"
+    )
+    assert not any(price.kind == "candidate_price" for price in prices)
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_is_honoured_for_sell(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.order_proposals import decision_evidence as module
+    from app.services.order_proposals.service import RungInput
+
+    now = datetime(2026, 11, 12, tzinfo=UTC)
+    candidate_id = uuid4()
+    pick = SimpleNamespace(
+        call_id=candidate_id, decision_price_text="5", recorded_at=now
+    )
+    session = AsyncMock()
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: pick)
+    record = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(module.DecisionEvidenceService, "record", record)
+    await module.record_proposal_decision(
+        session,
+        symbol="TEST",
+        market="equity_us",
+        account_mode="kis_live",
+        side="sell",
+        action="place",
+        proposer="test",
+        strategy=None,
+        sleeve_id=None,
+        rungs=[RungInput(0, "sell", Decimal("1"), None, None)],
+        source_asof={},
+        candidate_ref={"call_id": str(candidate_id), "symbol": "TEST"},
+        decision_price_text=None,
+        now=now,
+    )
+    evidence, _, prices = record.await_args.args
+    assert (
+        evidence.candidate_call_id == candidate_id
+        and evidence.candidate_link_basis == "recorded"
+    )
+    assert any(
+        price.kind == "candidate_price" and price.price == Decimal("5")
+        for price in prices
+    )

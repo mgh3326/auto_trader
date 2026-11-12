@@ -421,7 +421,11 @@ async def test_negative_forecasts_outside_decision_markets_keep_existing_respons
     from app.mcp_server.tooling import forecast_tools
 
     row = SimpleNamespace(
-        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+        symbol="TEST",
+        forecast_id=uuid4(),
+        report_item_uuid=None,
+        policy_version=None,
+        decision_bucket="deferred_no_action",
     )
     db = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
 
@@ -470,7 +474,11 @@ async def test_negative_forecast_records_decision_before_commit(monkeypatch):
     from app.mcp_server.tooling import forecast_tools
 
     row = SimpleNamespace(
-        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+        symbol="TEST",
+        forecast_id=uuid4(),
+        report_item_uuid=None,
+        policy_version=None,
+        decision_bucket="deferred_no_action",
     )
     events = []
     db = SimpleNamespace(
@@ -500,7 +508,7 @@ async def test_negative_forecast_records_decision_before_commit(monkeypatch):
         forecast_target={},
         probability=0.5,
         review_date="2026-11-12",
-        decision_bucket="deferred_no_action",
+        decision_bucket=" deferred_no_action ",
     )
     assert result["success"]
     assert events == ["decision", "commit"]
@@ -520,7 +528,11 @@ async def test_negative_forecast_evidence_failure_does_not_commit(monkeypatch):
     from app.mcp_server.tooling import forecast_tools
 
     row = SimpleNamespace(
-        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+        symbol="TEST",
+        forecast_id=uuid4(),
+        report_item_uuid=None,
+        policy_version=None,
+        decision_bucket="deferred_no_action",
     )
     db = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
 
@@ -559,7 +571,11 @@ async def test_updated_forecast_does_not_backfill_decision(monkeypatch):
     from app.mcp_server.tooling import forecast_tools
 
     row = SimpleNamespace(
-        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+        symbol="TEST",
+        forecast_id=uuid4(),
+        report_item_uuid=None,
+        policy_version=None,
+        decision_bucket="deferred_no_action",
     )
     db = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
 

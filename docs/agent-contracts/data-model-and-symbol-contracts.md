@@ -187,8 +187,10 @@ DELETE · TRUNCATE를 거부하며 downgrade는 행이 하나라도 있으면 �
 시도당 최대 한 행이다. rung·가격·시도는 존재하는 판단을 참조하고 rung 인덱스는
 0 이상이다. 가격 관측 시각은 시간대가 있어야 한다. 제안 생성은 판단 행과 rung·참조
 가격을 같은 트랜잭션에 기록하고 `order_proposals.decision_id`를 INSERT 때만 설정한다.
-세션의 후보 참조는 `recorded`, 같은 KST 날짜의 admitted 후보를 서버가 찾은 경우는
-`inference`다. 기각 forecast의 판단 근거 연결은 세 시장(`equity_kr`, `equity_us`,
+세션의 후보 참조는 실제 후보를 확인한 뒤 `recorded`로 기록한다. 매수 place에 한해
+같은 KST 날짜의 admitted 후보를 서버가 찾은 경우는 `inference`다. 후보의 관측 가격이
+양수이면서 저장 가능한 정확한 decimal이 아니면 연결은 유지하고 가격은 생략한다.
+기각 forecast의 판단 근거 연결은 세 시장(`equity_kr`, `equity_us`,
 `crypto`)만이며, `forex`·`index` forecast는 연결 없이 기존대로 저장한다. 기존 행
 소급은 없다. 판단의 stop·target 가격, rung의 수량·금액·지정가, 참조 가격은
 `numeric(38,12)`로 원래 제안의 정밀도를 보존한다. 이 정밀도는 downgrade에서도 좁히지 않는다.

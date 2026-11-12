@@ -97,7 +97,7 @@ async def forecast_save(
             )
             if (
                 action == "created"
-                and decision_bucket == "deferred_no_action"
+                and row.decision_bucket == "deferred_no_action"
                 and instrument_type in {"equity_kr", "equity_us", "crypto"}
             ):
                 await DecisionEvidenceService(db).record(
