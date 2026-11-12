@@ -50,9 +50,16 @@ for required_bind in '127.0.0.1:8000' '100.122.100.56:8000'; do
   fi
 done
 
-if ! command -v haproxy >/dev/null 2>&1; then
-  printf 'haproxy is required to validate the candidate config\n' >&2
+# Validate with the same pinned image the deploy script runs HAProxy from
+# (scripts/deploy-ncp-pull.sh HAPROXY_IMAGE); the NCP host has no haproxy
+# binary. No network, config mounted read-only.
+readonly HAPROXY_IMAGE="haproxy:3.1-alpine"
+if ! command -v docker >/dev/null 2>&1; then
+  printf 'docker is required to validate the candidate config\n' >&2
   exit 127
 fi
 
-exec haproxy -c -f "$config"
+config_dir=$(cd "$(dirname "$config")" && pwd)
+config_path="$config_dir/$(basename "$config")"
+exec docker run --rm --network none -v "$config_dir:$config_dir:ro" \
+  "$HAPROXY_IMAGE" haproxy -c -f "$config_path"
