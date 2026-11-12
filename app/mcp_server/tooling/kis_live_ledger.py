@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 from typing import cast as typing_cast
 
 from sqlalchemy import func, or_, select, update
@@ -849,7 +849,10 @@ async def _repair_terminal_kis_proposal_projections(
 
 
 async def _reconcile_one_ledger_row(
-    row: KISLiveOrderLedger, *, dry_run: bool
+    row: KISLiveOrderLedger,
+    *,
+    dry_run: bool,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
     """Classify one accepted/pending order and apply journal mutation if filled.
 
@@ -936,6 +939,12 @@ async def _reconcile_one_ledger_row(
     avg_price = evidence.avg_price or Decimal("0")
     new_status = "filled" if evidence.verdict == FillVerdict.FILLED else "partial"
     base["delta_qty"] = float(delta_qty)
+
+    if scope == "terminal_only":
+        base["action"] = "deferred_fill_booking"
+        base["requires_session_reconcile"] = True
+        base["new_status"] = new_status
+        return base
 
     if delta_qty <= 0:
         base["action"] = "noop_already_booked"
@@ -1045,6 +1054,7 @@ async def kis_live_reconcile_orders_impl(
     order_id: str | None = None,
     dry_run: bool = True,
     limit: int = 100,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
     """Reconcile accepted/pending live KR orders against broker fill evidence."""
     projection_repair = {
@@ -1077,13 +1087,14 @@ async def kis_live_reconcile_orders_impl(
             "success": False,
             "error": str(exc) or exc.__class__.__name__,
             "account_mode": "kis_live",
+            "scope": scope,
         }
 
     reconciled: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     for row in rows:
         try:
-            outcome = await _reconcile_one_ledger_row(row, dry_run=dry_run)
+            outcome = await _reconcile_one_ledger_row(row, dry_run=dry_run, scope=scope)
         except Exception as exc:
             logger.warning("reconcile failed for order_no=%s: %s", row.order_no, exc)
             outcome = {
@@ -1095,6 +1106,8 @@ async def kis_live_reconcile_orders_impl(
         reconciled.append(outcome)
         verdict = str(outcome.get("verdict", "anomaly"))
         counts[verdict] = counts.get(verdict, 0) + 1
+        if outcome.get("action") == "deferred_fill_booking":
+            counts["deferred_fill_booking"] = counts.get("deferred_fill_booking", 0) + 1
 
     if rows:
         message = (
@@ -1110,6 +1123,7 @@ async def kis_live_reconcile_orders_impl(
         "success": True,
         "account_mode": "kis_live",
         "dry_run": dry_run,
+        "scope": scope,
         "counts": counts,
         "reconciled": reconciled,
         "proposal_projection_repair": projection_repair,

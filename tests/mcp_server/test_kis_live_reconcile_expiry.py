@@ -272,3 +272,106 @@ async def test_cancel_confirm_row_marks_cancelled_via_orgn_odno():
     # ROB-719 gap C: cancel evidence converges the rung in the same pass.
     conv.assert_awaited_once()
     assert conv.await_args.kwargs["ledger_status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("booked", [Decimal("0"), Decimal("2")])
+async def test_terminal_only_defers_fill_without_writers(booked):
+    row = _ledger_row()
+    row.filled_qty = booked
+    fill = _broker_row(tot_ccld_qty="2", rmn_qty="0", avg_prvs="126000")
+    with (
+        patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[fill])),
+        patch.object(mod, "_update_ledger_outcome", AsyncMock()) as update,
+        patch.object(mod, "_save_order_fill", AsyncMock(return_value=107)) as save,
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            AsyncMock(return_value={"journal_id": 64}),
+        ) as buy,
+        patch.object(mod, "_link_journal_to_fill", AsyncMock()),
+        patch.object(mod, "_close_journals_on_sell", AsyncMock()) as sell,
+        patch.object(mod, "_converge_kis_proposal_rung", AsyncMock()) as converge,
+    ):
+        out = await mod._reconcile_one_ledger_row(
+            row, dry_run=False, scope="terminal_only"
+        )
+    assert out["action"] == "deferred_fill_booking"
+    assert out["requires_session_reconcile"] is True
+    assert out["delta_qty"] == float(Decimal("2") - booked)
+    assert out["new_status"] == "filled"
+    for writer in (update, save, buy, sell, converge):
+        writer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["full", "terminal_only"])
+async def test_scope_expiry_writes_and_converges(scope):
+    rows = [_broker_row(rjct_qty="2", rmn_qty="0")]
+    now = datetime.datetime(2026, 6, 9, 20, 5, tzinfo=KST)
+    with (
+        patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=rows)),
+        patch.object(mod, "now_kst", return_value=now),
+        patch.object(mod, "_update_ledger_outcome", AsyncMock()) as update,
+        patch.object(mod, "_converge_kis_proposal_rung", AsyncMock()) as converge,
+    ):
+        out = await mod._reconcile_one_ledger_row(
+            _ledger_row(), dry_run=False, scope=scope
+        )
+    assert out["action"] == "marked_expired"
+    update.assert_awaited_once_with(ledger_id=19, status="expired")
+    converge.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "booked,action",
+    [(Decimal("0"), "booked_filled"), (Decimal("2"), "noop_already_booked")],
+)
+async def test_full_scope_preserves_fill_booking(booked, action):
+    row = _ledger_row()
+    row.filled_qty = booked
+    fill = _broker_row(tot_ccld_qty="2", rmn_qty="0", avg_prvs="126000")
+    with (
+        patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[fill])),
+        patch.object(mod, "_update_ledger_outcome", AsyncMock()) as update,
+        patch.object(mod, "_save_order_fill", AsyncMock(return_value=107)) as save,
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            AsyncMock(return_value={"journal_id": 64}),
+        ) as buy,
+        patch.object(mod, "_link_journal_to_fill", AsyncMock()),
+        patch.object(mod, "_converge_kis_proposal_rung", AsyncMock()),
+    ):
+        out = await mod._reconcile_one_ledger_row(row, dry_run=False, scope="full")
+    assert out["action"] == action
+    update.assert_awaited_once()
+    assert save.await_count == (1 if booked == 0 else 0)
+    assert buy.await_count == (1 if booked == 0 else 0)
+
+
+@pytest.mark.asyncio
+async def test_terminal_only_kernel_reports_deferral_and_runs_prepasses():
+    row = _ledger_row()
+    fill = _broker_row(tot_ccld_qty="2", rmn_qty="0", avg_prvs="126000")
+    with (
+        patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[fill])),
+        patch.object(mod, "_list_open_ledger_rows", AsyncMock(return_value=[row])),
+        patch.object(mod, "_count_open_ledger_rows", AsyncMock(return_value=1)),
+        patch.object(mod, "_count_beyond_reach_ledger_rows", AsyncMock(return_value=0)),
+        patch.object(
+            mod, "_repair_terminal_kis_proposal_projections", AsyncMock(return_value={})
+        ) as repair,
+        patch.object(
+            mod, "run_resting_rung_sweep", AsyncMock(return_value={})
+        ) as sweep,
+    ):
+        out = await mod.kis_live_reconcile_orders_impl(
+            dry_run=False, scope="terminal_only"
+        )
+    assert out["scope"] == "terminal_only"
+    assert out["counts"]["deferred_fill_booking"] == 1
+    assert out["reconciled"][0]["action"] == "deferred_fill_booking"
+    repair.assert_awaited_once()
+    sweep.assert_awaited_once_with(dry_run=False)
