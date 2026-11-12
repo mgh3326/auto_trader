@@ -180,6 +180,10 @@ async def test_db_and_http_sinks_receive_the_same_normalized_upsert(
     posted = transport.requests[0]["json"]["fills"][0]
     assert posted == recorder.fills[0].model_dump(mode="json")
     assert posted["source"] == "websocket"
+    assert posted["fee_basis"] == "not_provided"
+    assert posted["filled_at_basis"] == (
+        "observed_at" if broker == "kis" else "broker_fill_time"
+    )
 
 
 @pytest.mark.unit
@@ -336,3 +340,21 @@ def test_sink_stats_failure_never_breaks_the_heartbeat(
 
     data = json.loads((tmp_path / "heartbeat.json").read_text())
     assert data["ledger_sink"] == {"mode": "db"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_monitor_does_not_claim_fill_time_for_clock_without_date(
+    ledger_settings: None,
+) -> None:
+    from app.services.fill_notification import normalize_kis_fill
+    from websocket_monitor import UnifiedWebSocketMonitor
+
+    frame = kis_domestic_fill_frame(exec_time="001500")
+    monitor = UnifiedWebSocketMonitor()
+    recorder = _RecordingSink()
+    monitor._ledger_sink = recorder
+    await monitor._record_execution_ledger_fill(
+        frame, normalize_kis_fill(frame), broker="kis", correlation_id=None
+    )
+    assert recorder.fills[0].filled_at_basis is None

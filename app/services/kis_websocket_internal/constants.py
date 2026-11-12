@@ -1,4 +1,6 @@
-APPROVAL_KEY_CACHE_KEY = "kis:websocket:approval_key"
+from app.services.brokers.token_keys import kis_websocket_approval_keys
+
+APPROVAL_KEY_CACHE_KEY = kis_websocket_approval_keys(account_mode="kis_live")[0]
 APPROVAL_KEY_TTL_SECONDS = 82800
 # Codes that mean "the approval key we sent was rejected; reissue may recover".
 # OPSP8996 ("ALREADY IN USE appkey") is deliberately NOT here: it signals
@@ -12,16 +14,16 @@ RECOVERABLE_APPROVAL_MSG_CODES = {"OPSP0011"}
 # Live keeps the historical key (== APPROVAL_KEY_CACHE_KEY); mock is isolated so
 # a mock approval key can never satisfy a live cache lookup or vice versa.
 APPROVAL_KEY_CACHE_KEYS = {
-    "kis_live": "kis:websocket:approval_key",
-    "kis_mock": "kis_mock:websocket:approval_key",
+    account_mode: kis_websocket_approval_keys(account_mode=account_mode)[0]
+    for account_mode in ("kis_live", "kis_mock")
 }
 
 # Single-flight issuance lock (ROB-262). Only the lock holder may call the KIS
 # approval endpoint during a cold-issuance window; contenders wait briefly and
 # reuse the cached key. Namespaced per account mode so live/mock never contend.
 APPROVAL_KEY_LOCK_CACHE_KEYS = {
-    "kis_live": "kis:websocket:approval_key:lock",
-    "kis_mock": "kis_mock:websocket:approval_key:lock",
+    account_mode: kis_websocket_approval_keys(account_mode=account_mode)[1]
+    for account_mode in ("kis_live", "kis_mock")
 }
 # Lock TTL must outlast the approval HTTP round-trip (10s client timeout) + the
 # cache write, yet be short enough to self-heal if the holder process dies.

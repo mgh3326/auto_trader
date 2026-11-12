@@ -66,6 +66,14 @@ class ExecutionLedger(Base):
             "source IN ('reconciler','websocket','manual_import')",
             name="execution_ledger_source",
         ),
+        CheckConstraint(
+            "filled_at_basis IN ('broker_fill_time','broker_order_time','observed_at')",
+            name="execution_ledger_filled_at_basis",
+        ),
+        CheckConstraint(
+            "fee_basis IN ('broker_reported','not_provided')",
+            name="execution_ledger_fee_basis",
+        ),
         CheckConstraint("fill_seq >= 0", name="execution_ledger_fill_seq_nonnegative"),
         CheckConstraint("filled_qty > 0", name="execution_ledger_filled_qty_positive"),
         CheckConstraint(
@@ -102,6 +110,9 @@ class ExecutionLedger(Base):
     filled_notional: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
     fee_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     fee_currency: Mapped[str | None] = mapped_column(Text)
+    fee_basis: Mapped[str | None] = mapped_column(Text)
+    tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    filled_at_basis: Mapped[str | None] = mapped_column(Text)
     filled_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False
     )

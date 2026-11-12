@@ -291,7 +291,9 @@ class AccountClient:
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
                 error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
@@ -479,7 +481,9 @@ class AccountClient:
                     "EGW00123",
                     "EGW00121",
                 ]:
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
 
@@ -598,7 +602,9 @@ class AccountClient:
                 msg1=msg1,
             )
             if msg_cd in ["EGW00123", "EGW00121"]:
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.inquire_domestic_cash_balance(is_mock)
             raise RuntimeError(f"{msg_cd} {msg1}")
@@ -690,7 +696,9 @@ class AccountClient:
         )
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.inquire_overseas_margin(is_mock)
             raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
@@ -876,7 +884,9 @@ class AccountClient:
             )
             # 토큰 만료 시 재발급 후 재시도
             if msg_cd in ["EGW00123", "EGW00121"]:
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.inquire_integrated_margin(
                     is_mock=is_mock,

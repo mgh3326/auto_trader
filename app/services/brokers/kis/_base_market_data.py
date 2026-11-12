@@ -146,7 +146,9 @@ class MarketDataBase:
                 and js.get("msg_cd") in constants.TOKEN_EXPIRED_CODES
             ):
                 token_retry_used = True
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 continue
 
             msg_cd = js.get("msg_cd")

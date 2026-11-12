@@ -262,7 +262,9 @@ class DomesticOrderClient:
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
 
@@ -457,7 +459,9 @@ class DomesticOrderClient:
                     stock_code,
                     order_type,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 # ROB-843 P1: re-thread the hook so the token-refresh re-send
                 # re-checks freshness immediately before its own HTTP mutation.
@@ -704,7 +708,9 @@ class DomesticOrderClient:
                     order_number,
                     stock_code,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.cancel_korea_order(
                     order_number,
@@ -864,7 +870,9 @@ class DomesticOrderClient:
                         error_msg = f"{js.get('msg_cd')} {js.get('msg1')} (token retry limit exceeded)"
                         logging.error(f"국내주식 체결조회 실패: {error_msg}")
                         raise RuntimeError(error_msg)
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
 
@@ -1060,7 +1068,9 @@ class DomesticOrderClient:
                     order_number,
                     stock_code,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 # ROB-1263 r2: re-thread the hook so the token-refresh re-send
                 # re-proves the boundary before its own HTTP mutation, exactly
