@@ -284,6 +284,7 @@ tests/services/test_market_events_discover_calendar.py
 tests/services/test_market_events_expected_sources.py
 tests/services/test_market_events_finnhub_helpers.py
 tests/services/test_market_events_forexfactory_helpers.py
+tests/services/test_market_events_freshness_sessions.py
 tests/services/test_market_events_schemas.py
 tests/services/test_mirror_counterfactual_execution.py
 tests/services/test_mirror_counterfactual_plans.py
@@ -291,6 +292,7 @@ tests/services/test_mock_auto_read_model.py
 tests/services/test_news_payload_normalizer.py
 tests/services/test_nxt_classifier_service_safety.py
 tests/services/test_nxt_preflight.py
+tests/services/test_ohlcv_freshness_savepoint.py
 tests/services/test_paper_approval_packet_rob842.py
 tests/services/test_paper_correlation.py
 tests/services/test_paper_limit_order_service.py

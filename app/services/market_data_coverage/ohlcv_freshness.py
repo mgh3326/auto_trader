@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.invest_coverage import CoverageState
+
+logger = logging.getLogger(__name__)
 
 
 async def _candles_freshness(
@@ -16,27 +19,28 @@ async def _candles_freshness(
     expected_symbols: int | None = None,
 ) -> tuple[CoverageState, dt.datetime | None, dt.date | None, int, int]:
     try:
-        row = (
-            await db.execute(
-                sa.text(
-                    f"""
-                    SELECT MAX(time) AS latest_time,
-                           MAX(time::date) AS latest_date,
-                           COUNT(DISTINCT symbol) FILTER (
-                             WHERE time::date >= :trading_day
-                           ) AS fresh_symbols,
-                           COUNT(DISTINCT symbol) FILTER (
-                             WHERE time::date < :trading_day
-                           ) AS stale_symbols
-                    FROM public.{table_name}
-                    """
-                ),
-                {"trading_day": trading_day},
-            )
-        ).one()
-    except Exception:  # noqa: BLE001 - coverage must fail closed/read-only
-        await db.rollback()
-        return "missing", None, None, 0, 0
+        async with db.begin_nested():
+            row = (
+                await db.execute(
+                    sa.text(
+                        f"""
+                        SELECT MAX(time) AS latest_time,
+                               MAX(time::date) AS latest_date,
+                               COUNT(DISTINCT symbol) FILTER (
+                                 WHERE time::date >= :trading_day
+                               ) AS fresh_symbols,
+                               COUNT(DISTINCT symbol) FILTER (
+                                 WHERE time::date < :trading_day
+                               ) AS stale_symbols
+                        FROM public.{table_name}
+                        """
+                    ),
+                    {"trading_day": trading_day},
+                )
+            ).one()
+    except Exception as exc:  # noqa: BLE001 - coverage must fail closed/read-only
+        logger.warning("ohlcv freshness read failed: %s", type(exc).__name__)
+        return "error", None, None, 0, 0
 
     fresh = int(row.fresh_symbols or 0)
     stale = int(row.stale_symbols or 0)
