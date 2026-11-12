@@ -1,16 +1,16 @@
 {
   "inputs": {
     "kis_mock_netloc": "openapivts.koreainvestment.com:29443",
-    "kis_mock_app_key": "fake-kis-app-key-for-golden",
-    "toss_client_id": "fake-toss-client-id-for-golden"
+    "kis_mock_app_key": "synthetic-kis-app-key-golden-87",
+    "toss_client_id": "synthetic-toss-client-id-golden-18"
   },
   "expected": {
     "kis_live_access_token": "kis:access_token",
     "kis_live_lock": "kis:token:lock",
-    "kis_mock_access_token": "kis_mock:openapivts.koreainvestment.com:29443:4fcdfa1c39e87651:access_token",
-    "kis_mock_lock": "kis_mock:openapivts.koreainvestment.com:29443:4fcdfa1c39e87651:token:lock",
-    "toss_access_token": "toss:oauth:884e31546f20ca97:access_token",
-    "toss_lock": "toss:oauth:884e31546f20ca97:lock",
+    "kis_mock_access_token": "kis_mock:openapivts.koreainvestment.com:29443:599f2c2499498229:access_token",
+    "kis_mock_lock": "kis_mock:openapivts.koreainvestment.com:29443:599f2c2499498229:token:lock",
+    "toss_access_token": "toss:oauth:9a454564473447aa:access_token",
+    "toss_lock": "toss:oauth:9a454564473447aa:lock",
     "kis_websocket_live_approval_key": "kis:websocket:approval_key",
     "kis_websocket_live_lock": "kis:websocket:approval_key:lock",
     "kis_websocket_mock_approval_key": "kis_mock:websocket:approval_key",
