@@ -3,7 +3,7 @@
 from alembic import op
 
 revision = "20261112_hk4187_retro_decision"
-down_revision = "20261112_hk4182_decision"
+down_revision = "20261112_hk4184_proposal_dec"
 branch_labels = None
 depends_on = None
 
