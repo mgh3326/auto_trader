@@ -16,6 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger("ncp_mcp_watchdog")
 COLORS = ("blue", "green")
+SHIFTGATE_CONFIG_PATH = "/etc/shiftgate/at.yaml"
 
 
 def read_heartbeat(path):
@@ -50,7 +51,13 @@ def shiftgate_active_color():
     """Return at-mcp's active shiftgate color, or None when it is unavailable."""
     try:
         result = subprocess.run(
-            ["shiftgate", "status", "--json"],
+            [
+                "shiftgate",
+                "--config",
+                SHIFTGATE_CONFIG_PATH,
+                "status",
+                "--json",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
@@ -63,7 +70,9 @@ def shiftgate_active_color():
         )
         return None
     if result.returncode:
-        logger.error("mcp.watchdog.shiftgate_status_failed returncode=%s", result.returncode)
+        logger.error(
+            "mcp.watchdog.shiftgate_status_failed returncode=%s", result.returncode
+        )
         return None
 
     try:
@@ -92,11 +101,7 @@ def shiftgate_active_color():
         if any(not isinstance(item, dict) for item in services):
             logger.error("mcp.watchdog.shiftgate_status_parse_failed")
             return None
-        matches = [
-            item
-            for item in services
-            if item.get("name") == "at-mcp"
-        ]
+        matches = [item for item in services if item.get("name") == "at-mcp"]
         if len(matches) > 1:
             logger.error("mcp.watchdog.shiftgate_status_parse_failed")
             return None
@@ -210,8 +215,6 @@ def check_color(
     try:
         heartbeat = read_heartbeat(heartbeat_path)
     except UnicodeError:
-        if source != "shiftgate":
-            raise
         logger.error(
             "mcp.watchdog.heartbeat_unavailable source=%s color=%s",
             source,
