@@ -55,6 +55,8 @@ from typing import TypedDict
 
 import pytest
 import pytest_asyncio
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
 
 from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
@@ -72,7 +74,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20261110_hk3800_account_value"
+# The current single head, read from the migration scripts so that adding a
+# migration does not require editing this test.
+HEAD_REVISION = ScriptDirectory.from_config(
+    AlembicConfig(str(_REPO / "alembic.ini"))
+).get_current_head()
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
