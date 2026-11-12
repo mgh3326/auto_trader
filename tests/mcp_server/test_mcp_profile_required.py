@@ -71,6 +71,9 @@ def test_lenient_resolver_is_unchanged_for_non_server_callers() -> None:
 # A new launcher must be added here with its explicit-profile check.
 REVIEWED_LAUNCHERS = {
     "docker-compose.prod.yml",
+    # shiftgate services for at-mcp (AT-1, hk 4194); its explicit, non-empty
+    # MCP_PROFILE is checked in tests/scripts/test_shiftgate_services_at.py.
+    "ops/ncp/shiftgate/services.at.yaml",
     "scripts/deploy-ncp-pull.sh",
     "scripts/mcp_server.sh",
     "scripts/mock_session_mcp.py",
