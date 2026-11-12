@@ -94,7 +94,7 @@ class ExecutionLedgerRead(BaseModel):
     filled_notional: Decimal
     fee_amount: Decimal | None = None
     fee_currency: str | None = None
-    fee_basis: Literal["broker_reported", "not_provided"] = "not_provided"
+    fee_basis: Literal["broker_reported", "not_provided"] | None = None
     tax_amount: Decimal | None = Field(default=None, ge=0)
     filled_at_basis: (
         Literal["broker_fill_time", "broker_order_time", "observed_at"] | None

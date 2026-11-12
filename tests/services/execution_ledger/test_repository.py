@@ -12,7 +12,11 @@ from sqlalchemy import delete
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.trading import InstrumentType
-from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
+from app.schemas.execution_ledger import (
+    ExecutionLedgerRead,
+    ExecutionLedgerUpsert,
+    ReconcileRunRecord,
+)
 from app.services.execution_ledger.repository import (
     SUPERSEDE_LOOKBACK,
     ExecutionLedgerRepository,
@@ -845,3 +849,16 @@ async def test_new_row_replay_updates_cost_and_basis(db_session) -> None:
             delete(ExecutionLedger).where(ExecutionLedger.id == row_id)
         )
         await db_session.commit()
+
+
+def test_read_legacy_row_with_null_fee_basis() -> None:
+    row = _row(_fill())
+    row.fee_basis = None
+    result = ExecutionLedgerRead.model_validate(row)
+    assert result.fee_basis is None
+    assert result.model_dump(mode="json")["fee_basis"] is None
+
+
+def test_new_upsert_rejects_null_fee_basis() -> None:
+    with pytest.raises(ValidationError):
+        _fill(fee_basis=None)
