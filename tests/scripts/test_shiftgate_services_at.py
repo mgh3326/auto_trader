@@ -127,7 +127,7 @@ def _haproxy_check(tmp_path: Path, config_text: str) -> subprocess.CompletedProc
 VALID_HAPROXY = """global
     log stdout format raw local0
     master-worker
-    stats socket /var/run/haproxy/admin.sock mode 600 level admin
+    stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin
 
 defaults
     log global
@@ -162,13 +162,23 @@ def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(tmp_path: 
     )
 
 
+def test_haproxy_check_rejects_unsubstituted_socket_placeholder(tmp_path: Path) -> None:
+    candidate = VALID_HAPROXY.replace(
+        "/var/run/haproxy/admin_socket.sock",
+        "/__LIVE_CHECK_HAPROXY_SOCKET_IN_CONFIG__",
+    )
+    result = _haproxy_check(tmp_path, candidate)
+    assert result.returncode == 78
+    assert not (tmp_path / "haproxy-call.log").exists()
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda text: text.replace("stats socket /var/run/haproxy/admin.sock mode 600 level admin\n", ""),
+        lambda text: text.replace("stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin\n", ""),
         lambda text: text.replace(
-            "stats socket /var/run/haproxy/admin.sock mode 600 level admin\n",
-            "stats socket /var/run/haproxy/admin.sock mode 600 level admin\n"
+            "stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin\n",
+            "stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin\n"
             "    stats socket /tmp/second.sock mode 600 level admin\n",
         ),
         lambda text: text.replace(
@@ -180,10 +190,18 @@ def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(tmp_path: 
             "    server api_blue 203.0.113.10:18000 check",
         ),
         lambda text: text.replace(
+            "    log stdout format raw local0",
+            "    log 203.0.113.10:514 local0",
+        ),
+        lambda text: text.replace(
+            "    server api_blue 127.0.0.1:18000 check",
+            "    server api_blue 127.0.0.1:18000 check addr 203.0.113.10",
+        ),
+        lambda text: text.replace(
             "defaults\n", "listen unexpected\n    bind 127.0.0.1:8001\n\ndefaults\n"
         ),
     ],
-    ids=["missing-socket", "extra-socket", "wildcard-bind", "missing-required-bind", "public-server", "open-section"],
+    ids=["missing-socket", "extra-socket", "wildcard-bind", "missing-required-bind", "public-server", "remote-log", "server-extra-arguments", "open-section"],
 )
 def test_haproxy_check_rejects_outside_closed_shape(tmp_path: Path, mutation) -> None:
     result = _haproxy_check(tmp_path, mutation(VALID_HAPROXY))
