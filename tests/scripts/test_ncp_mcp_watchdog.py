@@ -136,6 +136,20 @@ def test_shiftgate_heartbeat_invalid_utf8_logs_and_skips_that_source(
     assert restarts == []
 
 
+def test_missing_shiftgate_heartbeat_logs_and_keeps_legacy_source_active(
+    tmp_path, monkeypatch, caplog
+):
+    run_dir = tmp_path
+    (run_dir / "mcp-active-color").write_text("blue\n", encoding="utf-8")
+    _heartbeat(run_dir / "mcp-heartbeat/mcp-blue.json", updated_at=NOW)
+    _, restarts = _install_command_fakes(monkeypatch, _shiftgate_status("green"))
+
+    assert ncp_mcp_watchdog.check_once(run_dir, stale_threshold_s=45, now=NOW) == "healthy"
+
+    assert "heartbeat_unavailable source=shiftgate color=green" in caplog.text
+    assert restarts == []
+
+
 @pytest.mark.parametrize(
     ("stdout", "error"),
     [("{invalid", None), ("", FileNotFoundError("shiftgate unavailable"))],
