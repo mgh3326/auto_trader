@@ -303,6 +303,39 @@ def test_costs_treat_unprovided_cost_as_null_and_explain_missing_estimate_input(
     assert result.estimated_reason == "missing_notional"
 
 
+def test_costs_ignore_fee_placeholder_when_basis_says_not_provided() -> None:
+    result = calculate_costs(
+        fee=Decimal("0"),
+        tax=None,
+        currency="KRW",
+        fee_basis="not_provided",
+        notional=None,
+        round_trip_cost_bps=None,
+        policy_version=None,
+        policy_content_hash=None,
+    )
+
+    assert result.recorded is None
+    assert result.recorded_reason == "not_provided"
+
+
+def test_costs_keep_tax_when_fee_basis_says_not_provided() -> None:
+    result = calculate_costs(
+        fee=Decimal("0"),
+        tax=Decimal("2.5"),
+        currency="KRW",
+        fee_basis="not_provided",
+        notional=None,
+        round_trip_cost_bps=None,
+        policy_version=None,
+        policy_content_hash=None,
+    )
+
+    assert result.recorded is not None
+    assert result.recorded.fee is None
+    assert result.recorded.tax == Decimal("2.5")
+
+
 def test_costs_report_missing_rate_without_inventing_an_estimate() -> None:
     result = calculate_costs(
         fee=None,

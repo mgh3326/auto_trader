@@ -284,6 +284,8 @@ def calculate_costs(
     tax_value = _decimal(tax, name="tax")
     amount = _decimal(notional, name="notional")
     bps = _decimal(round_trip_cost_bps, name="round_trip_cost_bps")
+    if fee_basis == "not_provided":
+        fee_value = None
 
     recorded: RecordedCosts | None = None
     recorded_reason: MetricReason | None = None
