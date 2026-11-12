@@ -175,3 +175,13 @@ DB Tables:
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.
+
+### 판단 근거와 주문 시도 연결 (hk 4182)
+
+`review.decision_evidence`, `decision_evidence_rungs`, `decision_reference_prices`,
+`decision_order_links`, `decision_order_link_outcomes`는 전향 기록 전용이다.
+`DecisionEvidenceService`만 쓰며 호출자가 트랜잭션을 소유한다. 판단 입력의 정규화
+JSON SHA-256을 저장하고, 금액에는 정확한 decimal을 쓴다. 다섯 테이블은 UPDATE ·
+DELETE · TRUNCATE를 거부하며 downgrade는 행이 하나라도 있으면 거부한다. 시도는
+`attempt_id`마다 별도 행이고 `(account_scope, send_key)`는 유니크가 아니다. 결과는
+시도당 최대 한 행이다. 기존 데이터 소급과 호출자 연결은 이 변경 범위 밖이다.
