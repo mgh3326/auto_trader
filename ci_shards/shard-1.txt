@@ -151,6 +151,7 @@ tests/services/brokers/kiwoom/test_credential_identity.py
 tests/services/brokers/nhplug/test_stage2_listing_client.py
 tests/services/brokers/paper/test_capabilities.py
 tests/services/brokers/test_credential_firewall.py
+tests/services/brokers/test_token_keys.py
 tests/services/brokers/toss/test_auth_single_flight.py
 tests/services/brokers/toss/test_config.py
 tests/services/brokers/toss/test_transport.py
