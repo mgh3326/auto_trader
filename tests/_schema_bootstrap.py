@@ -160,7 +160,7 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
 # v65 (hk 2690): the position baseline uses separate Core metadata.
-SCHEMA_BOOTSTRAP_VERSION = 65
+SCHEMA_BOOTSTRAP_VERSION = 66
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2717,6 +2717,39 @@ async def apply_test_schema(conn) -> None:
     await _rebuild_legacy_paper_evaluation_schema(conn)
     await _ensure_evaluation_assignment_identity_index(conn)
     await conn.run_sync(Base.metadata.create_all)
+
+    # The decision tables are migration-owned and have no ORM models. Install
+    # their actual migrations so proposal tests exercise the same writer schema.
+    def install_decision_schema(sync_conn):
+        import importlib.util
+        from pathlib import Path
+
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        versions = Path(__file__).resolve().parents[1] / "alembic/versions"
+        with Operations.context(MigrationContext.configure(sync_conn)):
+            for filename, probe in (
+                (
+                    "20261112_hk4182_decision_evidence.py",
+                    "SELECT to_regclass('review.decision_evidence') IS NOT NULL",
+                ),
+                (
+                    "20261112_hk4184_proposal_decision.py",
+                    "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_proposals_decision_id' AND conrelid = 'review.order_proposals'::regclass)",
+                ),
+            ):
+                if sync_conn.execute(text(probe)).scalar():
+                    continue
+                spec = importlib.util.spec_from_file_location(
+                    filename, versions / filename
+                )
+                assert spec is not None and spec.loader is not None
+                migration = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(migration)
+                migration.upgrade()
+
+    await conn.run_sync(install_decision_schema)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog
     # probes that don't take AccessExclusive unless the column is genuinely

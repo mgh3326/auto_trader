@@ -407,3 +407,186 @@ async def test_list_and_calibration_envelope(_clean):
     assert agg["success"] is True
     assert agg["group_by"] == "created_by"
     assert "groups" in agg
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("instrument_type", ["forex", "index"])
+async def test_negative_forecasts_outside_decision_markets_keep_existing_response(
+    monkeypatch, instrument_type
+):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import forecast_tools
+
+    row = SimpleNamespace(
+        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+    )
+    db = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(forecast_tools, "_session_factory", lambda: session)
+    monkeypatch.setattr(
+        forecast_tools, "save_forecast", AsyncMock(return_value=("created", row))
+    )
+    monkeypatch.setattr(
+        forecast_tools,
+        "serialize_forecast",
+        lambda _: {"decision_bucket": "deferred_no_action"},
+    )
+    record = AsyncMock()
+    monkeypatch.setattr(forecast_tools.DecisionEvidenceService, "record", record)
+    result = await forecast_tools.forecast_save(
+        created_by="session",
+        symbol="TEST",
+        instrument_type=instrument_type,
+        forecast_target={},
+        probability=0.5,
+        review_date="2026-11-12",
+        decision_bucket="deferred_no_action",
+    )
+    assert result == {
+        "success": True,
+        "action": "created",
+        "data": {"decision_bucket": "deferred_no_action"},
+        "warnings": forecast_tools.negative_class_warnings(
+            {"decision_bucket": "deferred_no_action"}
+        ),
+    }
+    record.assert_not_awaited()
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_negative_forecast_records_decision_before_commit(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import forecast_tools
+
+    row = SimpleNamespace(
+        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+    )
+    events = []
+    db = SimpleNamespace(
+        commit=AsyncMock(side_effect=lambda: events.append("commit")),
+        refresh=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(forecast_tools, "_session_factory", lambda: session)
+    monkeypatch.setattr(
+        forecast_tools, "save_forecast", AsyncMock(return_value=("created", row))
+    )
+    monkeypatch.setattr(
+        forecast_tools,
+        "serialize_forecast",
+        lambda _: {"decision_bucket": "deferred_no_action"},
+    )
+    record = AsyncMock(side_effect=lambda *args: events.append("decision"))
+    monkeypatch.setattr(forecast_tools.DecisionEvidenceService, "record", record)
+    result = await forecast_tools.forecast_save(
+        created_by="session",
+        symbol="TEST",
+        instrument_type="equity_us",
+        forecast_target={},
+        probability=0.5,
+        review_date="2026-11-12",
+        decision_bucket="deferred_no_action",
+    )
+    assert result["success"]
+    assert events == ["decision", "commit"]
+    evidence, rungs, _ = record.await_args.args
+    assert evidence.decision_kind == "declined" and evidence.forecast_ids == (
+        row.forecast_id,
+    )
+    assert rungs[0].rung_index == 0
+
+
+@pytest.mark.asyncio
+async def test_negative_forecast_evidence_failure_does_not_commit(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import forecast_tools
+
+    row = SimpleNamespace(
+        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+    )
+    db = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(forecast_tools, "_session_factory", lambda: session)
+    monkeypatch.setattr(
+        forecast_tools, "save_forecast", AsyncMock(return_value=("created", row))
+    )
+    monkeypatch.setattr(
+        forecast_tools.DecisionEvidenceService,
+        "record",
+        AsyncMock(side_effect=RuntimeError("write failed")),
+    )
+    result = await forecast_tools.forecast_save(
+        created_by="session",
+        symbol="TEST",
+        instrument_type="equity_us",
+        forecast_target={},
+        probability=0.5,
+        review_date="2026-11-12",
+        decision_bucket="deferred_no_action",
+    )
+    assert result["success"] is False
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_updated_forecast_does_not_backfill_decision(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import forecast_tools
+
+    row = SimpleNamespace(
+        symbol="TEST", forecast_id=uuid4(), report_item_uuid=None, policy_version=None
+    )
+    db = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(forecast_tools, "_session_factory", lambda: session)
+    monkeypatch.setattr(
+        forecast_tools, "save_forecast", AsyncMock(return_value=("updated", row))
+    )
+    monkeypatch.setattr(
+        forecast_tools,
+        "serialize_forecast",
+        lambda _: {"decision_bucket": "deferred_no_action"},
+    )
+    record = AsyncMock()
+    monkeypatch.setattr(forecast_tools.DecisionEvidenceService, "record", record)
+    result = await forecast_tools.forecast_save(
+        created_by="session",
+        symbol="TEST",
+        instrument_type="equity_us",
+        forecast_target={},
+        probability=0.5,
+        review_date="2026-11-12",
+        decision_bucket="deferred_no_action",
+    )
+    assert result["success"] and result["action"] == "updated"
+    record.assert_not_awaited()
+    db.commit.assert_awaited_once()

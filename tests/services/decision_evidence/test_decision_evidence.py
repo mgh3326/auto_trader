@@ -146,3 +146,170 @@ async def test_naive_reference_timestamp_is_rejected_before_any_write():
     with pytest.raises(ValueError, match="timezone-aware"):
         await service.add_reference_price(uuid4(), price)
     session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_proposal_records_explicit_candidate_and_prices_in_same_session(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app.services.order_proposals import decision_evidence as proposal_evidence
+    from app.services.order_proposals.service import RungInput
+
+    now = datetime(2026, 11, 12, 2, tzinfo=UTC)
+    candidate_id = uuid4()
+    pick = SimpleNamespace(
+        call_id=candidate_id, decision_price_text="12.30", recorded_at=now
+    )
+    session = AsyncMock()
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: pick)
+    record = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(proposal_evidence.DecisionEvidenceService, "record", record)
+    result = await proposal_evidence.record_proposal_decision(
+        session,
+        symbol="BRK.B",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        proposer="session",
+        strategy="test",
+        sleeve_id=None,
+        rungs=[RungInput(0, "buy", Decimal("2"), Decimal("13"), None)],
+        source_asof={"exit_plan": {"stop_price": "10", "stop_basis": "support"}},
+        candidate_ref={"call_id": str(candidate_id), "symbol": "BRK.B"},
+        decision_price_text="12.5",
+        now=now,
+    )
+    evidence, rungs, prices = record.await_args.args
+    assert result == record.return_value
+    assert evidence.candidate_call_id == candidate_id
+    assert evidence.candidate_link_basis == "recorded"
+    assert evidence.stop_price == Decimal("10") and evidence.stop_source == "exit_plan"
+    assert rungs[0].planned_quantity == Decimal("2")
+    assert {p.kind: p.price for p in prices} == {
+        "limit": Decimal("13"),
+        "quote_at_decision": Decimal("12.5"),
+        "candidate_price": Decimal("12.30"),
+    }
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_server_candidate_inference_is_admitted_and_bounded_by_kst_day(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app.services.order_proposals import decision_evidence as proposal_evidence
+    from app.services.order_proposals.service import RungInput
+
+    now = datetime(2026, 11, 12, 2, tzinfo=UTC)
+    session = AsyncMock()
+    pick = SimpleNamespace(call_id=uuid4(), decision_price_text=None, recorded_at=now)
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: pick)
+    record = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(proposal_evidence.DecisionEvidenceService, "record", record)
+    await proposal_evidence.record_proposal_decision(
+        session,
+        symbol="TEST",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        proposer="session",
+        strategy=None,
+        sleeve_id=None,
+        rungs=[RungInput(0, "buy", Decimal("1"), None, None)],
+        source_asof={},
+        candidate_ref=None,
+        decision_price_text=None,
+        now=now,
+    )
+    query = session.execute.await_args.args[0]
+    params = query.compile().params
+    assert "admitted" in params.values()
+    assert now in params.values()
+    assert (
+        datetime(2026, 11, 12, tzinfo=timezone(timedelta(hours=9))) in params.values()
+    )
+    assert record.await_args.args[0].candidate_link_basis == "inference"
+    assert record.await_args.args[0].candidate_call_id == pick.call_id
+
+
+@pytest.mark.asyncio
+async def test_proposal_evidence_failure_prevents_proposal_insert(monkeypatch):
+    from app.services.order_proposals import service as module
+
+    session = AsyncMock()
+    service = module.OrderProposalsService(session)
+    service._repo = AsyncMock()
+    monkeypatch.setattr(service, "_validate_exit_binding", AsyncMock())
+    monkeypatch.setattr(
+        module,
+        "record_proposal_decision",
+        AsyncMock(side_effect=RuntimeError("failed")),
+    )
+    with pytest.raises(RuntimeError, match="failed"):
+        await service.create_proposal(
+            symbol="TEST",
+            market="equity_us",
+            account_mode="kis_live",
+            side="buy",
+            order_type="limit",
+            proposer="session",
+            rungs=[module.RungInput(0, "buy", Decimal("1"), Decimal("12"), None)],
+            now=datetime(2026, 11, 12, tzinfo=UTC),
+        )
+    service._repo.insert_group.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_candidate_leaves_link_empty_and_price_must_be_exact(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.order_proposals import decision_evidence as proposal_evidence
+    from app.services.order_proposals.service import RungInput
+
+    session = AsyncMock()
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: None)
+    record = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(proposal_evidence.DecisionEvidenceService, "record", record)
+    kwargs = {
+        "session": session,
+        "symbol": "TEST",
+        "market": "equity_us",
+        "account_mode": "kis_live",
+        "side": "buy",
+        "proposer": "session",
+        "strategy": None,
+        "sleeve_id": None,
+        "rungs": [RungInput(0, "buy", Decimal("1"), None, None)],
+        "source_asof": {},
+        "candidate_ref": None,
+        "now": datetime(2026, 11, 12, tzinfo=UTC),
+    }
+    await proposal_evidence.record_proposal_decision(**kwargs, decision_price_text=None)
+    evidence = record.await_args.args[0]
+    assert evidence.candidate_call_id is None and evidence.candidate_link_basis is None
+    with pytest.raises(ValueError, match="decimal string"):
+        await proposal_evidence.record_proposal_decision(
+            **kwargs, decision_price_text=1.5
+        )
+    assert record.await_count == 1
+
+
+def test_proposal_decision_migration_is_additive_and_immutable(monkeypatch):
+    path = Path("alembic/versions/20261112_hk4184_proposal_decision.py")
+    spec = spec_from_file_location("migration_4184", path)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    statements = []
+    monkeypatch.setattr(module.op, "execute", statements.append)
+    module.upgrade()
+    sql = "\n".join(statements)
+    assert "FOREIGN KEY (decision_id)" in sql
+    assert "OLD.decision_id IS DISTINCT FROM NEW.decision_id" in sql
+    assert "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')" in sql
+    assert "GRANT EXECUTE" in sql
+    assert "UPDATE review.order_proposals SET" not in sql

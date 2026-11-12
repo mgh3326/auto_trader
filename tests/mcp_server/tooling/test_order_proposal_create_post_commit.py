@@ -173,3 +173,38 @@ async def test_pre_commit_create_error_remains_caller_visible(monkeypatch) -> No
     assert result == {"success": False, "error": "proposal_validation_failed"}
     session.commit.assert_not_awaited()
     recorder.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_create_forwards_candidate_and_decision_price_to_transaction(monkeypatch):
+    session = SimpleNamespace(commit=AsyncMock())
+
+    @contextlib.asynccontextmanager
+    async def session_factory():
+        yield session
+
+    service = SimpleNamespace(
+        create_proposal=AsyncMock(return_value=_committed_group()),
+        get_proposal=AsyncMock(return_value=(_committed_group(), [_saved_rung()])),
+    )
+    monkeypatch.setattr(order_proposal_tools, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        order_proposal_tools, "OrderProposalsService", lambda _: service
+    )
+    monkeypatch.setattr(
+        order_proposal_tools, "_link_funding_provenance_fail_open", AsyncMock()
+    )
+    monkeypatch.setattr(
+        order_proposal_tools,
+        "_complete_committed_proposal_create",
+        AsyncMock(return_value={"success": True}),
+    )
+    candidate = {"call_id": str(uuid.uuid4()), "symbol": "005930"}
+    result = await order_proposal_tools.order_proposal_create(
+        **_create_kwargs(), candidate_ref=candidate, decision_price_text="12.34"
+    )
+    assert result["success"] is True
+    assert service.create_proposal.await_args.kwargs["candidate_ref"] == candidate
+    assert service.create_proposal.await_args.kwargs["decision_price_text"] == "12.34"
+    session.commit.assert_awaited_once()
