@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -122,9 +123,9 @@ def _haproxy_check(
     config_file.write_text(config_text)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake_haproxy = bin_dir / "haproxy"
-    fake_haproxy.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" > "$HAPROXY_CALL_LOG"\n')
-    fake_haproxy.chmod(0o755)
+    fake_docker = bin_dir / "docker"
+    fake_docker.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" > "$HAPROXY_CALL_LOG"\n')
+    fake_docker.chmod(0o755)
     env = os.environ | {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HAPROXY_CALL_LOG": str(tmp_path / "haproxy-call.log"),
@@ -174,9 +175,22 @@ def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(
 ) -> None:
     result = _haproxy_check(tmp_path, VALID_HAPROXY)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "haproxy-call.log").read_text().strip() == "-c -f " + str(
-        tmp_path / "candidate.cfg"
+    config_dir = tmp_path.resolve()
+    assert (tmp_path / "haproxy-call.log").read_text().strip() == (
+        f"run --rm --network none -v {config_dir}:{config_dir}:ro "
+        f"haproxy:3.1-alpine haproxy -c -f {config_dir / 'candidate.cfg'}"
     )
+
+
+def test_haproxy_check_validates_with_the_deploy_scripts_pinned_image() -> None:
+    deploy = (ROOT / "scripts" / "deploy-ncp-pull.sh").read_text()
+    check = CHECK_SCRIPT.read_text()
+    match = re.search(r'^readonly HAPROXY_IMAGE="([^"]+)"$', deploy, re.MULTILINE)
+    assert match is not None
+    assert f'readonly HAPROXY_IMAGE="{match.group(1)}"' in check
+    # The NCP host has no haproxy binary; the check must not depend on one.
+    assert "exec haproxy" not in check
+    assert "command -v haproxy" not in check
 
 
 def test_haproxy_check_rejects_unsubstituted_socket_placeholder(tmp_path: Path) -> None:
