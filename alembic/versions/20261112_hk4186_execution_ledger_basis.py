@@ -34,14 +34,6 @@ def upgrade() -> None:
         "ADD CONSTRAINT ck_execution_ledger_execution_ledger_fee_basis "
         "CHECK (fee_basis IN ('broker_reported','not_provided')) NOT VALID"
     )
-    op.execute(
-        "ALTER TABLE review.execution_ledger "
-        "VALIDATE CONSTRAINT ck_execution_ledger_execution_ledger_filled_at_basis"
-    )
-    op.execute(
-        "ALTER TABLE review.execution_ledger "
-        "VALIDATE CONSTRAINT ck_execution_ledger_execution_ledger_fee_basis"
-    )
     op.execute("""DO $$ BEGIN
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
             GRANT SELECT (filled_at_basis, fee_basis, tax_amount), INSERT (filled_at_basis, fee_basis, tax_amount), UPDATE (filled_at_basis, fee_basis, tax_amount) ON review.execution_ledger TO at_app;
