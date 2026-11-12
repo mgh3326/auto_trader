@@ -406,8 +406,12 @@ class TradeRetrospectiveRepository:
         if not isinstance(decision_id, UUID):
             raise RetrospectiveValidationError("decision_id must be a UUID")
 
-        symbol = payload.get("symbol", existing.symbol if existing is not None else None)
-        market = payload.get("market", existing.market if existing is not None else None)
+        symbol = payload.get(
+            "symbol", existing.symbol if existing is not None else None
+        )
+        market = payload.get(
+            "market", existing.market if existing is not None else None
+        )
         account_mode = payload.get(
             "account_mode", existing.account_mode if existing is not None else None
         )
@@ -431,7 +435,9 @@ class TradeRetrospectiveRepository:
         )
         decision = result.mappings().one_or_none()
         if decision is None:
-            raise RetrospectiveValidationError("decision_id does not reference a decision")
+            raise RetrospectiveValidationError(
+                "decision_id does not reference a decision"
+            )
         if (
             decision["symbol"] != symbol
             or decision["market"] != decision_market

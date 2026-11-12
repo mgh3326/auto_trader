@@ -10,8 +10,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute(
-        "ALTER TABLE review.trade_retrospectives "
-        "ADD COLUMN decision_id uuid NULL"
+        "ALTER TABLE review.trade_retrospectives ADD COLUMN decision_id uuid NULL"
     )
     op.create_index(
         "ix_trade_retrospectives_decision_id",
@@ -50,6 +49,4 @@ def downgrade() -> None:
         table_name="trade_retrospectives",
         schema="review",
     )
-    op.execute(
-        "ALTER TABLE review.trade_retrospectives DROP COLUMN decision_id"
-    )
+    op.execute("ALTER TABLE review.trade_retrospectives DROP COLUMN decision_id")

@@ -80,9 +80,7 @@ async def test_repository_stores_matching_caller_decision_id():
 @pytest.mark.asyncio
 async def test_repository_accepts_upbit_market_alias_for_decision_identity():
     decision_id = uuid4()
-    db = _Session(
-        {"symbol": "BTC", "market": "crypto", "account_mode": "upbit"}
-    )
+    db = _Session({"symbol": "BTC", "market": "crypto", "account_mode": "upbit"})
 
     _, row = await service.TradeRetrospectiveRepository(db).upsert(
         {
@@ -142,7 +140,9 @@ async def test_repository_rejects_mismatched_decision_identity(
 @pytest.mark.asyncio
 async def test_repository_rejects_unknown_decision_id():
     db = _Session(None)
-    with pytest.raises(service.RetrospectiveValidationError, match="does not reference"):
+    with pytest.raises(
+        service.RetrospectiveValidationError, match="does not reference"
+    ):
         await service.TradeRetrospectiveRepository(db).upsert(
             {
                 "symbol": "005930",
@@ -158,7 +158,9 @@ async def test_repository_rejects_unknown_decision_id():
 
 @pytest.mark.asyncio
 async def test_repository_does_not_infer_a_decision_when_id_is_omitted():
-    db = _Session({"symbol": "005930", "market": "equity_kr", "account_mode": "kis_live"})
+    db = _Session(
+        {"symbol": "005930", "market": "equity_kr", "account_mode": "kis_live"}
+    )
     _, row = await service.TradeRetrospectiveRepository(db).upsert(
         {
             "symbol": "005930",
@@ -229,11 +231,14 @@ def test_model_and_migration_add_nullable_indexed_column_without_backfill():
         for index in TradeRetrospective.__table__.indexes
     )
 
-    migration = Path(
-        "alembic/versions/20261112_hk4187_retro_decision_id.py"
-    ).read_text(encoding="utf-8")
+    migration = Path("alembic/versions/20261112_hk4187_retro_decision_id.py").read_text(
+        encoding="utf-8"
+    )
     assert "ADD COLUMN decision_id uuid NULL" in migration
-    assert "GRANT SELECT (decision_id), INSERT (decision_id), UPDATE (decision_id)" in migration
+    assert (
+        "GRANT SELECT (decision_id), INSERT (decision_id), UPDATE (decision_id)"
+        in migration
+    )
     assert "WHERE decision_id IS NOT NULL" in migration
     assert "cannot downgrade: trade retrospective decision links exist" in migration
     assert "UPDATE review.trade_retrospectives" not in migration
