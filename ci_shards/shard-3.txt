@@ -329,6 +329,7 @@ tests/services/test_trade_retrospective_mirror_correlation.py
 tests/services/test_trading_decision_service_committee.py
 tests/services/test_us_regular_session_raw_capture.py
 tests/services/test_us_symbol_universe_batch_lookup.py
+tests/services/trade_journal/test_decision_id.py
 tests/services/us_dual_paper/test_alpaca_adapter.py
 tests/services/us_dual_paper/test_packet_orchestrator.py
 tests/services/us_dual_paper/test_smoke_cli_preflight.py

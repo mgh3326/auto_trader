@@ -252,7 +252,10 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     # "stale" when no peer suite committed a fresh kr quote, "partial" when one
     # did; both are the same actionability branch.
     assert by_surface[("quotes", "kr")].state in {"stale", "partial"}
-    assert by_surface[("ohlcv", "kr")].state == "missing"
+    # hk 3945 (#2365): the test DB has no kr_candles_1m table, so the OHLCV read
+    # fails; a failed read is reported as "error" (not "missing" data) and no
+    # longer rolls back the caller's transaction.
+    assert by_surface[("ohlcv", "kr")].state == "error"
     assert by_surface[("valuation_fundamentals", "kr")].state != "provider_unwired"
     assert by_surface[("screener_snapshots", "kr")].actionability.priority == "medium"
     assert (
