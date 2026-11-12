@@ -717,6 +717,8 @@ async def order_proposal_create(
     source_funding_advisory_id: str | None = None,
     exit_plan: dict | None = None,
     sleeve_id: int | None = None,
+    candidate_ref: dict | None = None,
+    decision_price_text: str | None = None,
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
 
@@ -772,6 +774,8 @@ async def order_proposal_create(
                 its budget; otherwise it goes to the approval card with the
                 sleeve reason. A revision inherits the superseded proposal's
                 sleeve. Omit it for every untagged flow.
+        candidate_ref: optional {"call_id": UUID string, "symbol": DB symbol}.
+        decision_price_text: optional exact decimal quote at decision time.
     """
     try:
         market = _normalize_order_proposal_market(market)
@@ -857,6 +861,8 @@ async def order_proposal_create(
                     else None
                 ),
                 sleeve_id=sleeve_id,
+                candidate_ref=candidate_ref,
+                decision_price_text=decision_price_text,
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
             if sup is not None:

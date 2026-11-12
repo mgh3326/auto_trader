@@ -89,6 +89,7 @@ class OrderProposal(Base):
         Index("ix_order_proposals_state", "lifecycle_state"),
         Index("ix_order_proposals_symbol", "symbol"),
         Index("ix_order_proposals_sleeve_id", "sleeve_id"),
+        Index("ix_order_proposals_decision_id", "decision_id"),
         {"schema": "review"},
     )
 
@@ -119,6 +120,7 @@ class OrderProposal(Base):
     proposer: Mapped[str] = mapped_column(Text, nullable=False)
     thesis: Mapped[str | None] = mapped_column(Text)
     strategy: Mapped[str | None] = mapped_column(Text)
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     # ROB-1470: the strategy sleeve this proposal's orders belong to. NULL for
     # every existing flow. Set once at create; a DB trigger refuses a change.
     sleeve_id: Mapped[int | None] = mapped_column(

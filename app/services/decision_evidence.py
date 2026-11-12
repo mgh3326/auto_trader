@@ -61,7 +61,10 @@ def _normalized(value: object) -> object:
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise ValueError("decimal must be finite")
-        return format(value.normalize(), "f") if value else "0"
+        if not value:
+            return "0"
+        rendered = format(value, "f")
+        return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, datetime):
@@ -89,10 +92,18 @@ def evidence_hash(evidence: DecisionEvidence) -> str:
 
 def _check_decimals(*values: Decimal | None) -> None:
     for value in values:
-        if value is not None and (
-            not isinstance(value, Decimal) or not value.is_finite()
-        ):
+        if value is None:
+            continue
+        if not isinstance(value, Decimal) or not value.is_finite():
             raise ValueError("prices and quantities must be finite Decimal values")
+        if not value:
+            continue
+        _, digits, exponent = value.as_tuple()
+        while exponent < 0 and digits[-1] == 0:
+            digits = digits[:-1]
+            exponent += 1
+        if max(-exponent, 0) > 12 or max(len(digits) + exponent, 0) > 26:
+            raise ValueError("prices and quantities must fit numeric(38,12)")
 
 
 def _check_reference_price(price: ReferencePrice) -> None:
