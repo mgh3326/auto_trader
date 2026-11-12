@@ -49,7 +49,10 @@ def register_trade_retrospective_tools(
         description=(
             "Store a structured trade retrospective (outcome, absolute realized_pnl, "
             "fill/plan price, pnl_pct, rationale/result/lesson/next_strategy) for a "
-            "trade. outcome in {filled, partially_filled, unfilled, rejected, "
+            "trade. Optional decision_id is stored only when its decision has matching "
+            "symbol, market, and account_mode. Correlation inference is never persisted. "
+            "판정 ID는 심볼·시장·계좌 모드가 일치할 때만 저장하며, 상관관계 추론으로 연결하지 않습니다. "
+            "outcome in {filled, partially_filled, unfilled, rejected, "
             "cancelled}. account_mode in {kis_mock, kiwoom_mock, kis_live, toss_live, "
             "alpaca_paper, upbit_live}. Idempotent per correlation_id (omit it to "
             "append). "
