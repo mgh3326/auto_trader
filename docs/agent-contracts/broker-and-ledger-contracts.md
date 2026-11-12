@@ -459,7 +459,8 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 ### 회고와 판단 근거 연결 (hk 4187 L6)
 
 `review.trade_retrospectives.decision_id`는 nullable UUID이며, 새 컬럼은 과거 행을
-채우지 않는다. 유일 writer인 `TradeRetrospectiveRepository.upsert`와 MCP
+채우지 않는다. 연결 행이 남아 있으면 downgrade는 이 데이터를 잃지 않도록 거부한다.
+유일 writer인 `TradeRetrospectiveRepository.upsert`와 MCP
 `save_trade_retrospective(decision_id=...)`는 호출자가 제공한 ID만 저장한다. 저장 전
 `review.decision_evidence`의 ID가 존재하고 정규화된 심볼·시장·계좌 모드가 회고와
 일치하는지 확인한다(시장 별칭은 `app/core/market.py` 규칙, `upbit_live`는 판단 근거의

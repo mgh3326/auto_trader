@@ -234,4 +234,6 @@ def test_model_and_migration_add_nullable_indexed_column_without_backfill():
     ).read_text(encoding="utf-8")
     assert "ADD COLUMN decision_id uuid NULL" in migration
     assert "GRANT SELECT (decision_id), INSERT (decision_id), UPDATE (decision_id)" in migration
+    assert "WHERE decision_id IS NOT NULL" in migration
+    assert "cannot downgrade: trade retrospective decision links exist" in migration
     assert "UPDATE review.trade_retrospectives" not in migration

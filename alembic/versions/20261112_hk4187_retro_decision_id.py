@@ -29,6 +29,17 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("""
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT 1 FROM review.trade_retrospectives
+                WHERE decision_id IS NOT NULL
+            ) THEN
+                RAISE EXCEPTION
+                    'cannot downgrade: trade retrospective decision links exist';
+            END IF;
+        END $$
+    """)
+    op.execute("""
         DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
             REVOKE SELECT (decision_id), INSERT (decision_id), UPDATE (decision_id)
             ON review.trade_retrospectives FROM at_app;
