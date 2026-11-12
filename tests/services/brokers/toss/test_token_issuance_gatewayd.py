@@ -40,7 +40,8 @@ class _FakeRedis:
 
     async def eval(self, *_args: object) -> int:
         key, token = _args[-2:]
-        if self.strings.get(str(key)) == token:
+        value = self.strings.get(str(key))
+        if value and json.loads(value).get("access_token") == token:
             self.strings.pop(str(key))
             return 1
         return 0
@@ -112,7 +113,7 @@ async def test_gatewayd_failure_propagates_without_toss_oauth_fallback(
 
 
 @pytest.mark.asyncio
-async def test_gatewayd_force_reissue_keeps_python_read_only_until_gateway_publishes(
+async def test_gatewayd_force_reissue_invalidates_before_gateway_publishes(
     fake_redis: _FakeRedis,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -126,7 +127,7 @@ async def test_gatewayd_force_reissue_keeps_python_read_only_until_gateway_publi
     async def ensure_gatewayd(provider: str, *, settings_obj: object) -> None:
         assert provider == "toss"
         assert settings_obj is settings
-        assert fake_redis.strings[manager.token_key]
+        assert manager.token_key not in fake_redis.strings
         assert manager.lock_key not in fake_redis.strings
         fake_redis.strings[manager.token_key] = json.dumps(
             {"access_token": "gatewayd-fresh-token", "expires_at": time.time() + 3600}
@@ -162,3 +163,26 @@ async def test_self_mode_keeps_existing_toss_oauth_issuer(
 
     oauth.assert_awaited_once()
     ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gatewayd_failed_token_still_published_fails_closed(
+    fake_redis: _FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "broker_token_issuance_mode", "gatewayd")
+    monkeypatch.setattr(auth, "TOKEN_WAIT_TIMEOUT_SECONDS", 0.01)
+    manager = _manager()
+    failed = "old"
+    payload = json.dumps({"access_token": failed, "expires_at": time.time() + 3600})
+    fake_redis.strings[manager.token_key] = payload
+
+    async def ensure_gatewayd(provider: str, *, settings_obj: object) -> None:
+        assert manager.token_key not in fake_redis.strings
+        fake_redis.strings[manager.token_key] = payload
+
+    monkeypatch.setattr(auth, "ensure_gatewayd_token", ensure_gatewayd)
+    oauth = AsyncMock(side_effect=AssertionError("self issuance forbidden"))
+    monkeypatch.setattr(manager, "_issue_token", oauth)
+    with pytest.raises(TokenIssuanceUnavailable):
+        await manager.get_access_token(force_reissue=True, failed_token=failed)
+    oauth.assert_not_awaited()

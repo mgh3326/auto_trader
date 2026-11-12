@@ -356,15 +356,31 @@ class RedisTokenManager:
             "gatewayd acknowledged token ensure without publishing a usable token"
         )
 
-    async def clear_token(self) -> None:
+    async def invalidate_if_current(self, key: str, failed_token: str) -> bool:
+        """Atomically remove a cached token only if it is the one that failed."""
+        redis_client = await self._get_redis_client()
+        script = """
+        local value = redis.call('GET', KEYS[1])
+        if not value then return 0 end
+        local ok, data = pcall(cjson.decode, value)
+        if ok and type(data) == 'table' and data.access_token == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+        """
+        return bool(await redis_client.eval(script, 1, key, failed_token))
+
+    async def clear_token(self, failed_token: str | None = None) -> None:
         """Redis에서 토큰 삭제"""
         self._clear_local_cache()
         try:
-            redis_client = await self._get_redis_client()
-            await redis_client.delete(self._token_key)
-            logging.info("Redis에서 토큰 삭제 완료")
-        except Exception as e:
-            logging.error(f"Redis에서 토큰 삭제 실패: {e}")
+            if failed_token is None:
+                redis_client = await self._get_redis_client()
+                await redis_client.delete(self._token_key)
+            else:
+                await self.invalidate_if_current(self._token_key, failed_token)
+        except Exception:
+            logging.error("Redis 토큰 무효화 실패")
 
     async def close(self) -> None:
         """Redis 연결 종료"""
