@@ -15,7 +15,7 @@ def setup_fakes(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "calls"
-    fake = '''#!/usr/bin/env python3
+    fake = """#!/usr/bin/env python3
 import os, sys
 from pathlib import Path
 with open(os.environ["CALLS"], "a") as f:
@@ -24,13 +24,17 @@ with open(os.environ["CALLS"], "a") as f:
 if Path(sys.argv[0]).name == "docker":
     cmd = sys.argv[sys.argv.index("alembic") + 1:]
     if cmd[0] == "current":
-        print("new (head)" if Path(os.environ["UPGRADED"]).exists() or os.environ.get("EQUAL") else "old")
-    elif cmd[0] == "heads": print("new (head)")
-    elif cmd[0] == "history": print("old -> new (head), migration")
+        print(("new (label) (head) (mergepoint)" if os.environ.get("ANNOTATED") else "new (head)") if Path(os.environ["UPGRADED"]).exists() or os.environ.get("EQUAL") else "old (branchpoint)" if os.environ.get("ANNOTATED") else "old")
+    elif cmd[0] == "heads": print("new (label) (head)" if os.environ.get("ANNOTATED") else "new (head)")
+    elif cmd[0] == "history": print("old, other -> new (head) (mergepoint), migration\\nbase -> old (branchpoint), old migration" if os.environ.get("ANNOTATED") else "old -> new (head), migration\\nbase -> old, old migration")
     elif cmd[0] == "upgrade":
-        if os.environ.get("MIGRATE_FAIL"): sys.exit(1)
+        if os.environ.get("MIGRATE_FAIL"):
+            print("RuntimeError: migration role identity mismatch", file=sys.stderr)
+            print("SECRET_SENTINEL", file=sys.stderr)
+            sys.exit(1)
         Path(os.environ["UPGRADED"]).touch()
     sys.exit(0)
+if "show" in sys.argv and os.environ.get("REQUIRE_UTC") and "--timestamp=us+utc" not in sys.argv: sys.exit(1)
 if "start" in sys.argv:
     if not os.environ.get("START_FAIL"):
         Path(os.environ["STARTED"]).touch()
@@ -41,18 +45,30 @@ started = Path(os.environ["STARTED"]).exists()
 props = {"InvocationID": "new" if started else "old", "Result": "exit-code" if os.environ.get("STATUS3") else "success", "ExecMainCode": "killed" if os.environ.get("KILLED") else "exited", "ExecMainStatus": "3" if os.environ.get("STATUS3") or os.environ.get("KILLED") else "0", "ExecMainStartTimestamp": "2000-01-01 00:00:00 UTC" if os.environ.get("OLD_START") else "2099-01-01 00:00:00 UTC", "ExecMainExitTimestamp": "2000-01-01 00:00:00 UTC" if os.environ.get("OLD_EXIT") else "2099-01-01 00:00:01 UTC"}
 for i, arg in enumerate(sys.argv):
     if arg == "-p": print(sys.argv[i+1] + "=" + props[sys.argv[i+1]])
-'''
+"""
     for name in ("docker", "systemctl"):
         path = bindir / name
         path.write_text(fake)
         path.chmod(0o755)
     env = os.environ.copy()
-    env.update(PATH=f"{bindir}:{env['PATH']}", CALLS=str(calls), BACKUP=str(tmp_path),
-               PG_BACKUP_DIRECTORY=str(tmp_path), AT_MIGRATION_ENV_FILE="FAKE_INPUT",
-               STARTED=str(tmp_path / "started"), UPGRADED=str(tmp_path / "upgraded"))
+    env.update(
+        PATH=f"{bindir}:{env['PATH']}",
+        CALLS=str(calls),
+        BACKUP=str(tmp_path),
+        PG_BACKUP_DIRECTORY=str(tmp_path),
+        AT_MIGRATION_ENV_FILE="FAKE_INPUT",
+        STARTED=str(tmp_path / "started"),
+        UPGRADED=str(tmp_path / "upgraded"),
+    )
 
     def run(*args, **extra):
-        result = subprocess.run([str(SCRIPT), IMAGE, *args], env={**env, **extra}, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            [str(SCRIPT), IMAGE, *args],
+            env={**env, **extra},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         return result, calls.read_text() if calls.exists() else ""
 
     return tmp_path, run
@@ -84,7 +100,13 @@ def test_dry_run_only_compares_and_reports_plan(setup_fakes):
 
 def test_previous_status_three_and_failed_start_refused(setup_fakes):
     _, run = setup_fakes
-    result, _ = run("--migrate", "--accept-backup-remote-failure", "reason", STATUS3="1", START_FAIL="1")
+    result, _ = run(
+        "--migrate",
+        "--accept-backup-remote-failure",
+        "reason",
+        STATUS3="1",
+        START_FAIL="1",
+    )
     assert result.returncode == 1
 
 
@@ -107,7 +129,14 @@ def test_successful_backup_and_migration_record_names_and_followup(setup_fakes):
     _, run = setup_fakes
     result, _ = run("--migrate")
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"backup_file": "auto_trader-new.dump", "checksum_file": "backup-new.sha256", "migration": "applied", "revision_before": ["old"], "revision_after": ["new"], "operator_followup": "symbol_sync"}
+    assert json.loads(result.stdout) == {
+        "backup_file": "auto_trader-new.dump",
+        "checksum_file": "backup-new.sha256",
+        "migration": "applied",
+        "revision_before": ["old"],
+        "revision_after": ["new"],
+        "operator_followup": "symbol_sync",
+    }
 
 
 def test_remote_failure_requires_reason_and_records_ping(setup_fakes):
@@ -118,7 +147,9 @@ def test_remote_failure_requires_reason_and_records_ping(setup_fakes):
 
 def test_remote_failure_with_reason_can_migrate(setup_fakes):
     _, run = setup_fakes
-    result, _ = run("--migrate", "--accept-backup-remote-failure", "approved", STATUS3="1")
+    result, _ = run(
+        "--migrate", "--accept-backup-remote-failure", "approved", STATUS3="1"
+    )
     assert result.returncode == 0
     receipt = json.loads(result.stdout)
     assert receipt["backup_remote_failure_accepted"] == "approved"
@@ -132,11 +163,16 @@ def test_missing_migration_input_fails_before_docker(setup_fakes):
     assert not calls
 
 
-def test_migration_failure_stops_before_receipt(setup_fakes):
+def test_migration_failure_reports_safe_stage_and_partial_receipt(setup_fakes):
     _, run = setup_fakes
     result, _ = run("--migrate", MIGRATE_FAIL="1")
     assert result.returncode == 1
-    assert not result.stdout
+    receipt = json.loads(result.stdout)
+    assert receipt["backup_file"] == "auto_trader-new.dump"
+    assert receipt["revision_before"] == ["old"]
+    assert receipt["revision_after"] == "unknown"
+    assert "migration role identity mismatch" in result.stderr
+    assert "SECRET_SENTINEL" not in result.stderr
 
 
 @pytest.mark.parametrize("old_timestamp", ["OLD_START", "OLD_EXIT"])
@@ -154,7 +190,7 @@ def test_blank_remote_failure_reason_is_refused(setup_fakes):
     assert "docker upgrade" not in calls
 
 
-def test_migration_timeout_is_30_minutes_and_removes_container(monkeypatch):
+def test_migration_timeout_is_30_minutes_and_removes_container(monkeypatch, capsys):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("pre_deploy", SCRIPT)
@@ -166,7 +202,13 @@ def test_migration_timeout_is_30_minutes_and_removes_container(monkeypatch):
         calls.append((args, timeout))
         if "upgrade" in args:
             raise subprocess.TimeoutExpired(args, timeout)
-        output = "old\n" if "current" in args else "new (head)\n" if "heads" in args else "old -> new (head), migration\n"
+        output = (
+            "old\n"
+            if "current" in args
+            else "new (head)\n"
+            if "heads" in args
+            else "old -> new (head), migration\n"
+        )
         return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
 
     monkeypatch.setattr(module, "command", fake_command)
@@ -178,3 +220,43 @@ def test_migration_timeout_is_30_minutes_and_removes_container(monkeypatch):
     upgrade = next(item for item in calls if "upgrade" in item[0])
     assert upgrade[1] == 1800
     assert any(item[0][:3] == ["docker", "rm", "-f"] for item in calls)
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["revision_before"] == ["old"]
+    assert receipt["revision_after"] == "unknown"
+
+
+def test_annotated_alembic_current_and_heads_compare_equal(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run(EQUAL="1", ANNOTATED="1")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["migration"] == "none"
+
+
+def test_annotated_history_excludes_current_revision(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run("--migrate", "--dry-run", ANNOTATED="1")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["pending_revisions"] == ["new"]
+
+
+def test_systemd_timestamps_are_requested_in_utc(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run("--migrate", REQUIRE_UTC="1")
+    assert result.returncode == 0
+
+
+def test_default_command_timeout_is_bounded(monkeypatch):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pre_deploy_timeout", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    timeouts = []
+
+    def fake_run(args, *, capture_output, text, timeout, check):
+        timeouts.append(timeout)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    module.command(["systemctl", "show"])
+    assert timeouts == [1800]

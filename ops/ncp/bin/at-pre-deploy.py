@@ -19,17 +19,29 @@ SERVICE = "at-pg-backup.service"
 REVISION = re.compile(r"^[A-Za-z0-9_]+$")
 
 
-def command(args, *, timeout=None, check=True):
-    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+def command(args, *, timeout=1800, check=True):
+    result = subprocess.run(
+        args, capture_output=True, text=True, timeout=timeout, check=False
+    )
     if check and result.returncode:
-        raise RuntimeError(f"{args[0]} failed")
+        stage = args[args.index("alembic") + 1] if "alembic" in args else args[0]
+        message = f"{stage} failed"
+        safe_errors = {
+            "RuntimeError: AT_MIGRATION_SET_ROLE must be at_migration_owner",
+            "RuntimeError: migration role identity mismatch",
+            "RuntimeError: migration runner requires AT_MIGRATION_SET_ROLE",
+        }
+        for line in result.stderr.splitlines():
+            if line in safe_errors:
+                message += ": " + line
+        raise RuntimeError(message)
     return result
 
 
 def revisions(output):
     result = set()
     for line in output.splitlines():
-        match = re.fullmatch(r"\s*([A-Za-z0-9_]+)(?:\s+\(head\))?\s*", line)
+        match = re.fullmatch(r"\s*([A-Za-z0-9_]+)(?:\s+\([^()]+\))*\s*", line)
         if not match:
             raise RuntimeError("invalid Alembic revision output")
         result.add(match.group(1))
@@ -37,7 +49,7 @@ def revisions(output):
 
 
 def properties(*names):
-    args = ["systemctl", "show", "--timestamp=us"]
+    args = ["systemctl", "show", "--timestamp=us+utc"]
     for name in names:
         args.extend(["-p", name])
     lines = command([*args, SERVICE]).stdout.splitlines()
@@ -58,11 +70,21 @@ def backup(start_ns, reason):
     old = properties("InvocationID")["InvocationID"]
     # systemctl returns nonzero for a completed oneshot whose process failed.
     command(["systemctl", "start", SERVICE], check=False)
-    names = ("InvocationID", "Result", "ExecMainCode", "ExecMainStatus", "ExecMainStartTimestamp", "ExecMainExitTimestamp")
+    names = (
+        "InvocationID",
+        "Result",
+        "ExecMainCode",
+        "ExecMainStatus",
+        "ExecMainStartTimestamp",
+        "ExecMainExitTimestamp",
+    )
     status = properties(*names)
-    if (not status["InvocationID"] or status["InvocationID"] == old
-            or timestamp_ns(status["ExecMainStartTimestamp"]) <= start_ns
-            or timestamp_ns(status["ExecMainExitTimestamp"]) <= start_ns):
+    if (
+        not status["InvocationID"]
+        or status["InvocationID"] == old
+        or timestamp_ns(status["ExecMainStartTimestamp"]) <= start_ns
+        or timestamp_ns(status["ExecMainExitTimestamp"]) <= start_ns
+    ):
         raise RuntimeError("backup invocation not confirmed")
     outcome = (status["Result"], status["ExecMainCode"], status["ExecMainStatus"])
     if outcome == ("success", "exited", "0"):
@@ -83,7 +105,10 @@ def backup(start_ns, reason):
                 if re.fullmatch(r"auto_trader-[A-Za-z0-9_-]+\.dump", name):
                     receipt = {"backup_file": name, "checksum_file": checksum.name}
                     if outcome[2] == "3":
-                        receipt.update(backup_remote_failure_accepted=reason, backup_healthcheck_ping="not_sent")
+                        receipt.update(
+                            backup_remote_failure_accepted=reason,
+                            backup_healthcheck_ping="not_sent",
+                        )
                     return receipt
     raise RuntimeError("new backup checksum not found")
 
@@ -112,7 +137,15 @@ def main():
     if not heads:
         raise RuntimeError("no image head")
     if current == heads:
-        print(json.dumps({"migration": "none", "revision_before": sorted(current), "revision_after": sorted(heads)}))
+        print(
+            json.dumps(
+                {
+                    "migration": "none",
+                    "revision_before": sorted(current),
+                    "revision_after": sorted(heads),
+                }
+            )
+        )
         return 0
     if len(current) > 1 or len(heads) > 1:
         raise RuntimeError("multiple migration branches require operator review")
@@ -121,29 +154,51 @@ def main():
     pending_output = alembic("history", "--rev-range", f"{start}:{end}")
     pending = []
     for line in pending_output.splitlines():
-        match = re.match(r"^.*?\s+->\s+([A-Za-z0-9_]+)(?:\s+\(head\))?,", line)
+        match = re.match(r"^.*?\s+->\s+([A-Za-z0-9_]+)(?:\s+\([^()]+\))*,", line)
         if not match or not REVISION.fullmatch(match.group(1)):
             raise RuntimeError("invalid migration history")
-        pending.append(match.group(1))
+        if match.group(1) != start:
+            pending.append(match.group(1))
     if not pending or end not in pending:
         raise RuntimeError("cannot determine pending revisions")
     if not args.migrate:
         print("pending revisions: " + ", ".join(pending))
         return 78
     if args.dry_run:
-        print(json.dumps({"pending_revisions": pending, "backup": "planned", "migration": "planned"}))
+        print(
+            json.dumps(
+                {
+                    "pending_revisions": pending,
+                    "backup": "planned",
+                    "migration": "planned",
+                }
+            )
+        )
         return 0
     receipt = backup(start_ns, args.accept_backup_remote_failure)
     name = "at-pre-deploy-" + uuid.uuid4().hex
+    receipt.update(
+        migration="failed",
+        revision_before=sorted(current),
+        revision_after="unknown",
+        operator_followup="symbol_sync",
+    )
     try:
-        command([*base, "--name", name, args.image, "alembic", "upgrade", "head"], timeout=1800)
-    except subprocess.TimeoutExpired:
-        command(["docker", "rm", "-f", name], check=False)
-        raise RuntimeError("migration timed out") from None
-    after = revisions(alembic("current"))
-    if after != heads:
-        raise RuntimeError("migration did not reach image head")
-    receipt.update(migration="applied", revision_before=sorted(current), revision_after=sorted(after), operator_followup="symbol_sync")
+        try:
+            command(
+                [*base, "--name", name, args.image, "alembic", "upgrade", "head"],
+                timeout=1800,
+            )
+        except subprocess.TimeoutExpired:
+            command(["docker", "rm", "-f", name], check=False)
+            raise RuntimeError("migration timed out") from None
+        after = revisions(alembic("current"))
+        if after != heads:
+            raise RuntimeError("migration did not reach image head")
+    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
+        print(json.dumps(receipt))
+        raise
+    receipt.update(migration="applied", revision_after=sorted(after))
     print(json.dumps(receipt))
     return 0
 
@@ -151,6 +206,9 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
-        print("pre-deploy failed", file=sys.stderr)
+    except RuntimeError as exc:
+        print(f"pre-deploy failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        print("pre-deploy failed: command or input error", file=sys.stderr)
         sys.exit(1)
