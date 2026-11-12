@@ -50,8 +50,12 @@ def test_mcp_workloads_have_nonempty_profile_in_steady_config() -> None:
     assert mcp_workloads[0].get("env", {}).get("MCP_PROFILE", "").strip()
 
 
-@pytest.mark.parametrize(("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30])
-def test_all_service_binds_use_only_committed_private_addresses(variant, config) -> None:
+@pytest.mark.parametrize(
+    ("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30]
+)
+def test_all_service_binds_use_only_committed_private_addresses(
+    variant, config
+) -> None:
     del variant
     for service in config["services"]:
         for bind in service.get("binds", []):
@@ -60,7 +64,9 @@ def test_all_service_binds_use_only_committed_private_addresses(variant, config)
             assert 1 <= int(port) <= 65535
 
 
-@pytest.mark.parametrize(("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30])
+@pytest.mark.parametrize(
+    ("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30]
+)
 def test_no_wildcard_bind_is_allowed(variant, config) -> None:
     del variant
     for service in config["services"]:
@@ -69,7 +75,9 @@ def test_no_wildcard_bind_is_allowed(variant, config) -> None:
             assert address not in {"0.0.0.0", "::", "*", ""}
 
 
-@pytest.mark.parametrize(("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30])
+@pytest.mark.parametrize(
+    ("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30]
+)
 def test_colour_ports_are_bind_port_plus_10000_and_20000(variant, config) -> None:
     del variant
     for service in config["services"]:
@@ -84,13 +92,17 @@ def test_colour_ports_are_bind_port_plus_10000_and_20000(variant, config) -> Non
         }
 
 
-@pytest.mark.parametrize(("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30])
+@pytest.mark.parametrize(
+    ("variant", "config"), _all_configs(), ids=lambda v: str(v)[:30]
+)
 def test_retired_ports_are_unused(variant, config) -> None:
     del variant
     assert RETIRED_PORTS.isdisjoint(_ports_in_config(config))
 
 
-@pytest.mark.parametrize("config_path", [STEADY_CONFIG, S1_CONFIG], ids=["steady", "s1"])
+@pytest.mark.parametrize(
+    "config_path", [STEADY_CONFIG, S1_CONFIG], ids=["steady", "s1"]
+)
 def test_live_check_values_remain_documented_placeholders(config_path: Path) -> None:
     text = config_path.read_text()
     config = yaml.safe_load(text)
@@ -103,13 +115,15 @@ def test_live_check_values_remain_documented_placeholders(config_path: Path) -> 
     assert text.count("docs/design/4155-shiftgate-adoption.md") >= 3
 
 
-def _haproxy_check(tmp_path: Path, config_text: str) -> subprocess.CompletedProcess[str]:
+def _haproxy_check(
+    tmp_path: Path, config_text: str
+) -> subprocess.CompletedProcess[str]:
     config_file = tmp_path / "candidate.cfg"
     config_file.write_text(config_text)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_haproxy = bin_dir / "haproxy"
-    fake_haproxy.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HAPROXY_CALL_LOG\"\n")
+    fake_haproxy.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" > "$HAPROXY_CALL_LOG"\n')
     fake_haproxy.chmod(0o755)
     env = os.environ | {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -154,7 +168,9 @@ backend api_backend
 """
 
 
-def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(tmp_path: Path) -> None:
+def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(
+    tmp_path: Path,
+) -> None:
     result = _haproxy_check(tmp_path, VALID_HAPROXY)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "haproxy-call.log").read_text().strip() == "-c -f " + str(
@@ -175,15 +191,15 @@ def test_haproxy_check_rejects_unsubstituted_socket_placeholder(tmp_path: Path) 
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda text: text.replace("stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin\n", ""),
+        lambda text: text.replace(
+            "stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin\n", ""
+        ),
         lambda text: text.replace(
             "stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin\n",
             "stats socket /var/run/haproxy/admin_socket.sock mode 600 level admin\n"
             "    stats socket /tmp/second.sock mode 600 level admin\n",
         ),
-        lambda text: text.replace(
-            "bind 127.0.0.1:8000", "bind 0.0.0.0:8000"
-        ),
+        lambda text: text.replace("bind 127.0.0.1:8000", "bind 0.0.0.0:8000"),
         lambda text: text.replace("bind 100.122.100.56:8000\n", ""),
         lambda text: text.replace(
             "    server api_blue 127.0.0.1:18000 check",
@@ -201,7 +217,16 @@ def test_haproxy_check_rejects_unsubstituted_socket_placeholder(tmp_path: Path) 
             "defaults\n", "listen unexpected\n    bind 127.0.0.1:8001\n\ndefaults\n"
         ),
     ],
-    ids=["missing-socket", "extra-socket", "wildcard-bind", "missing-required-bind", "public-server", "remote-log", "server-extra-arguments", "open-section"],
+    ids=[
+        "missing-socket",
+        "extra-socket",
+        "wildcard-bind",
+        "missing-required-bind",
+        "public-server",
+        "remote-log",
+        "server-extra-arguments",
+        "open-section",
+    ],
 )
 def test_haproxy_check_rejects_outside_closed_shape(tmp_path: Path, mutation) -> None:
     result = _haproxy_check(tmp_path, mutation(VALID_HAPROXY))
