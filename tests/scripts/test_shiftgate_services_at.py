@@ -164,7 +164,8 @@ backend api_backend
     option httpchk GET /healthz
     http-check expect status 200
     default-server inter 5s fall 2 rise 1
-    server api_blue 127.0.0.1:18000 check
+    server blue 127.0.0.1:18000 check
+    server green 127.0.0.1:28000 check disabled
 """
 
 
@@ -202,16 +203,20 @@ def test_haproxy_check_rejects_unsubstituted_socket_placeholder(tmp_path: Path) 
         lambda text: text.replace("bind 127.0.0.1:8000", "bind 0.0.0.0:8000"),
         lambda text: text.replace("bind 100.122.100.56:8000\n", ""),
         lambda text: text.replace(
-            "    server api_blue 127.0.0.1:18000 check",
-            "    server api_blue 203.0.113.10:18000 check",
+            "    server blue 127.0.0.1:18000 check",
+            "    server blue 203.0.113.10:18000 check",
         ),
         lambda text: text.replace(
             "    log stdout format raw local0",
             "    log 203.0.113.10:514 local0",
         ),
         lambda text: text.replace(
-            "    server api_blue 127.0.0.1:18000 check",
-            "    server api_blue 127.0.0.1:18000 check addr 203.0.113.10",
+            "    server blue 127.0.0.1:18000 check",
+            "    server blue 127.0.0.1:18000 check addr 203.0.113.10",
+        ),
+        lambda text: text.replace(
+            "    server green 127.0.0.1:28000 check disabled",
+            "    server green 127.0.0.1:28000 check backup",
         ),
         lambda text: text.replace(
             "defaults\n", "listen unexpected\n    bind 127.0.0.1:8001\n\ndefaults\n"
@@ -225,6 +230,7 @@ def test_haproxy_check_rejects_unsubstituted_socket_placeholder(tmp_path: Path) 
         "public-server",
         "remote-log",
         "server-extra-arguments",
+        "unknown-server-suffix",
         "open-section",
     ],
 )

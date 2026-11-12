@@ -36,7 +36,7 @@ if ! awk '
   $1 == "option" && !((section == "defaults" && NF == 2 && $2 == "dontlognull") || (section == "backend" && NF == 4 && $2 == "httpchk" && $3 == "GET" && $4 ~ /^\/[A-Za-z0-9._~!$&\047()*+,;=:@%\/-]*$/)) { bad = 1 }
   $1 == "http-check" && (section != "backend" || NF != 4 || $2 != "expect" || $3 != "status" || $4 != "200") { bad = 1 }
   $1 == "default-server" && (section != "backend" || NF != 7 || $2 != "inter" || $4 != "fall" || $6 != "rise" || $3 !~ /^[1-9][0-9]*(ms|s|m|h|d)$/ || $5 !~ /^[1-9][0-9]*$/ || $7 !~ /^[1-9][0-9]*$/) { bad = 1 }
-  $1 == "server" && (section != "backend" || NF != 4 || $2 !~ /^[A-Za-z][A-Za-z0-9_.-]*$/ || $3 !~ /^127\.0\.0\.1:[0-9]+$/ || $4 != "check") { bad = 1 }
+  $1 == "server" && (section != "backend" || (NF != 4 && NF != 5) || $2 !~ /^[A-Za-z][A-Za-z0-9_.-]*$/ || $3 !~ /^127\.0\.0\.1:[0-9]+$/ || $4 != "check" || (NF == 5 && $5 != "disabled")) { bad = 1 }
   END { if (stats != 1) bad = 1; exit bad }
 ' "$config"; then
   printf 'HAProxy config violates the closed private-listener shape\n' >&2
