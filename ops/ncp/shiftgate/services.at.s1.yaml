@@ -3,11 +3,11 @@
 # of the currently active legacy colours. See docs/design/4155-shiftgate-adoption.md.
 state_dir: /var/lib/shiftgate-at
 keep_digests: 3
-log: {driver: daemon} # [live check] confirm the host daemon driver and collector.
+log: {driver: __LIVE_CHECK_LOG_DRIVER__} # [live check] See docs/design/4155-shiftgate-adoption.md.
 haproxy:
   config: /root/at-run/haproxy.cfg
-  socket: /root/at-run/haproxy-run/admin.sock # [live check] confirm socket directory.
-  socket_in_config: /var/run/haproxy/admin.sock # [live check] confirm container path.
+  socket: /__LIVE_CHECK_HAPROXY_SOCKET__ # [live check] See docs/design/4155-shiftgate-adoption.md.
+  socket_in_config: /__LIVE_CHECK_HAPROXY_SOCKET_IN_CONFIG__ # [live check] See docs/design/4155-shiftgate-adoption.md.
   check: ["/root/at-run/ops/ncp/shiftgate/haproxy-check.sh", "{config}"]
   reload: ["docker", "kill", "-s", "HUP", "at-haproxy"]
   allowed_binds: ["127.0.0.1", "100.122.100.56"]

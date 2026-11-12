@@ -90,6 +90,19 @@ def test_retired_ports_are_unused(variant, config) -> None:
     assert RETIRED_PORTS.isdisjoint(_ports_in_config(config))
 
 
+@pytest.mark.parametrize("config_path", [STEADY_CONFIG, S1_CONFIG], ids=["steady", "s1"])
+def test_live_check_values_remain_documented_placeholders(config_path: Path) -> None:
+    text = config_path.read_text()
+    config = yaml.safe_load(text)
+    assert config["log"]["driver"] == "__LIVE_CHECK_LOG_DRIVER__"
+    assert config["haproxy"]["socket"] == "/__LIVE_CHECK_HAPROXY_SOCKET__"
+    assert (
+        config["haproxy"]["socket_in_config"]
+        == "/__LIVE_CHECK_HAPROXY_SOCKET_IN_CONFIG__"
+    )
+    assert text.count("docs/design/4155-shiftgate-adoption.md") >= 3
+
+
 def _haproxy_check(tmp_path: Path, config_text: str) -> subprocess.CompletedProcess[str]:
     config_file = tmp_path / "candidate.cfg"
     config_file.write_text(config_text)
