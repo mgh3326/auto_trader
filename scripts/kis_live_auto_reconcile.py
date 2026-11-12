@@ -9,7 +9,8 @@ no new mutation path. Prints the counts/summary; never prints secrets.
 Exit codes:
     0  - success
     1  - kernel reported success=False
-    2  - --apply blocked by the ROB-487 activation gates
+    2  - activation gate blocked
+    3  - success but reconciliation work remains
 
 Usage:
     uv run python -m scripts.kis_live_auto_reconcile            # dry-run
@@ -27,20 +28,54 @@ from app.core.config import settings
 from app.mcp_server.tooling.kis_live_ledger import kis_live_reconcile_orders_impl
 
 
-async def _run(*, dry_run: bool) -> int:
-    result = await kis_live_reconcile_orders_impl(dry_run=dry_run)
+async def _run(*, dry_run: bool, terminal_only: bool = False) -> int:
+    if terminal_only:
+        result = await kis_live_reconcile_orders_impl(
+            dry_run=False, scope="terminal_only"
+        )
+    else:
+        result = await kis_live_reconcile_orders_impl(dry_run=dry_run)
     print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
-    return 0 if result.get("success") else 1
+    if not result.get("success"):
+        return 1
+    actions = (row.get("action", "") for row in result.get("reconciled", []))
+    if terminal_only and any(action == "deferred_fill_booking" for action in actions):
+        return 3
+    if dry_run and any(action.startswith("would_") for action in actions):
+        return 3
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="KIS live auto-reconcile (ROB-475)")
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "--apply",
         action="store_true",
         help="book fills/journals (dry_run=False). Default is dry-run preview.",
     )
+    group.add_argument(
+        "--apply-terminal-only",
+        action="store_true",
+        help="apply expiry/cancellation only; defer fill booking",
+    )
     args = parser.parse_args()
+    if (
+        args.apply_terminal_only
+        and settings.KIS_LIVE_AUTO_RECONCILE_ENABLED is not True
+    ):
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "status": "paused",
+                    "message": "--apply-terminal-only requires KIS_LIVE_AUTO_RECONCILE_ENABLED",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 2
     if args.apply and not (
         settings.KIS_LIVE_AUTO_RECONCILE_ENABLED
         and settings.KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED
@@ -64,7 +99,12 @@ def main() -> int:
             )
         )
         return 2
-    return asyncio.run(_run(dry_run=not args.apply))
+    return asyncio.run(
+        _run(
+            dry_run=not (args.apply or args.apply_terminal_only),
+            terminal_only=args.apply_terminal_only,
+        )
+    )
 
 
 if __name__ == "__main__":

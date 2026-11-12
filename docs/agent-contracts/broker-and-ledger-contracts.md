@@ -725,6 +725,7 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
 - **MCP 도구**: `kis_live_reconcile_orders` (dry_run-default)
 - **런북**: `docs/runbooks/kis-live-order-reconcile.md`
 - **스코프**: KR live only; US/crypto live unchanged (follow-up)
+- **종료 상태 전용**: `--apply-terminal-only`는 만료·취소만 반영하고 체결 부기는 보류한다. 자동 체결 부기는 `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` 게이트 뒤에 남는다.
 
 ### KIS live 일별 주문 조회 — `kis_live_get_daily_orders` (hk 3717)
 
