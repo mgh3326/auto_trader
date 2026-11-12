@@ -24,17 +24,23 @@ def upgrade() -> None:
     op.add_column(
         "execution_ledger", sa.Column("tax_amount", sa.Numeric(20, 4)), schema="review"
     )
-    op.create_check_constraint(
-        op.f("ck_execution_ledger_execution_ledger_filled_at_basis"),
-        "execution_ledger",
-        "filled_at_basis IN ('broker_fill_time','broker_order_time','observed_at')",
-        schema="review",
+    op.execute(
+        "ALTER TABLE review.execution_ledger "
+        "ADD CONSTRAINT ck_execution_ledger_execution_ledger_filled_at_basis "
+        "CHECK (filled_at_basis IN ('broker_fill_time','broker_order_time','observed_at')) NOT VALID"
     )
-    op.create_check_constraint(
-        op.f("ck_execution_ledger_execution_ledger_fee_basis"),
-        "execution_ledger",
-        "fee_basis IN ('broker_reported','not_provided')",
-        schema="review",
+    op.execute(
+        "ALTER TABLE review.execution_ledger "
+        "ADD CONSTRAINT ck_execution_ledger_execution_ledger_fee_basis "
+        "CHECK (fee_basis IN ('broker_reported','not_provided')) NOT VALID"
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger "
+        "VALIDATE CONSTRAINT ck_execution_ledger_execution_ledger_filled_at_basis"
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger "
+        "VALIDATE CONSTRAINT ck_execution_ledger_execution_ledger_fee_basis"
     )
     op.execute("""DO $$ BEGIN
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
