@@ -6,7 +6,7 @@ import copy
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -101,30 +101,35 @@ async def test_gate_off_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     async def writer(rows: list[ScreenerPickRow]) -> None:
         writes.append(list(rows))
 
-    await maybe_record_fanout_picks(
+    recorded_call_id = await maybe_record_fanout_picks(
         _fanout_result(),
         write_rows=writer,
         now=_NOW,
         code_sha256=_CODE_SHA,
     )
+    assert recorded_call_id is None
     assert writes == []
 
 
 @pytest.mark.asyncio
 async def test_gate_on_writes_extracted_rows() -> None:
     writes: list[list[ScreenerPickRow]] = []
+    call_id = uuid4()
 
     async def writer(rows: list[ScreenerPickRow]) -> None:
         writes.append(list(rows))
 
-    await maybe_record_fanout_picks(
+    recorded_call_id = await maybe_record_fanout_picks(
         _fanout_result(price="100.10"),
         enabled=True,
         write_rows=writer,
+        call_id=call_id,
         now=_NOW,
         code_sha256=_CODE_SHA,
     )
+    assert recorded_call_id == call_id
     assert len(writes) == 1
+    assert writes[0][0].call_id == call_id
     assert writes[0][0].decision_price_text == "100.10"
 
 
@@ -133,13 +138,31 @@ async def test_fail_open_swallows_writer_errors() -> None:
     async def writer(_rows: list[ScreenerPickRow]) -> None:
         raise RuntimeError("db down")
 
-    await maybe_record_fanout_picks(
+    recorded_call_id = await maybe_record_fanout_picks(
         _fanout_result(),
         enabled=True,
         write_rows=writer,
         now=_NOW,
         code_sha256=_CODE_SHA,
     )
+    assert recorded_call_id is None
+
+
+@pytest.mark.asyncio
+async def test_empty_rows_return_no_call_id() -> None:
+    writes: list[list[ScreenerPickRow]] = []
+
+    async def writer(rows: list[ScreenerPickRow]) -> None:
+        writes.append(list(rows))
+
+    call_id = await maybe_record_fanout_picks(
+        {"success": True, "market": "kr", "candidates": []},
+        enabled=True,
+        write_rows=writer,
+    )
+
+    assert call_id is None
+    assert writes == []
 
 
 @pytest.mark.asyncio
