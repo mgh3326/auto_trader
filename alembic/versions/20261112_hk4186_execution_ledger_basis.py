@@ -1,7 +1,7 @@
 """Add forward-only fill time and cost provenance to execution ledger.
 
 Revision ID: 20261112_hk4186_basis
-Revises: 20261110_hk3800_account_value
+Revises: 20261112_hk4184_proposal_dec
 """
 
 import sqlalchemy as sa
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261112_hk4186_basis"
-down_revision = "20261110_hk3800_account_value"
+down_revision = "20261112_hk4184_proposal_dec"
 branch_labels = None
 depends_on = None
 
