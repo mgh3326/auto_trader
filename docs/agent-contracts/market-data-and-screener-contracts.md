@@ -586,3 +586,7 @@ A symbol with any row that `validate_bars` rejects is excluded whole with reason
 nor `candidates.csv`. Missing or blank numeric fields parse to NaN so they take
 this path. A malformed benchmark bar aborts publication. `validate_bars` itself is
 unchanged.
+
+### US 지정가 깊이 연구 shadow 설계 (hk 3737)
+
+`docs/design/3737-us-limit-depth-shadow.md`는 후속 연구의 제안이며 구현·실험 활성화가 아니다. ROB-1474의 기록된 US 매수 진입 episode를 읽기 전용으로 비교하고, 1분봉 GET 파일의 불변 세대와 출처를 고정한다. 매수 반사실은 `low < limit`일 때만 체결 가정, 동등 접촉은 별도 계수하며 결과는 journal·브로커 체결과 별도 라벨이다. 사전등록·미결 설계 확정 후에만 후속 구현한다. 주문·원장 쓰기·소급·스케줄러 및 기존 시장가 실험 변경은 없다.
