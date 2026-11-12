@@ -66,7 +66,7 @@ def timestamp_ns(value):
     return int(output)
 
 
-def backup(start_ns, reason):
+def backup(start_ns, reason, receipt):
     old = properties("InvocationID")["InvocationID"]
     # systemctl returns nonzero for a completed oneshot whose process failed.
     command(["systemctl", "start", SERVICE], check=False)
@@ -87,15 +87,14 @@ def backup(start_ns, reason):
     ):
         raise RuntimeError("backup invocation not confirmed")
     outcome = (status["Result"], status["ExecMainCode"], status["ExecMainStatus"])
-    if outcome == ("success", "exited", "0"):
-        pass
-    elif outcome == ("exit-code", "exited", "3") and reason and reason.strip():
-        pass
-    else:
-        raise RuntimeError("backup failed")
     # The actual PG_BACKUP_DIRECTORY is a live check; see design §pre_deploy.
     directory = Path(os.environ.get("PG_BACKUP_DIRECTORY", "/var/backups/ncp-pg"))
-    for checksum in sorted(directory.glob("backup-*.sha256")):
+    checksums = sorted(
+        directory.glob("backup-*.sha256"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for checksum in checksums:
         if not checksum.is_file() or checksum.stat().st_mtime_ns <= start_ns:
             continue
         for line in checksum.read_text().splitlines():
@@ -103,14 +102,21 @@ def backup(start_ns, reason):
             if match:
                 name = Path(match.group(1)).name
                 if re.fullmatch(r"auto_trader-[A-Za-z0-9_-]+\.dump", name):
-                    receipt = {"backup_file": name, "checksum_file": checksum.name}
-                    if outcome[2] == "3":
-                        receipt.update(
-                            backup_remote_failure_accepted=reason,
-                            backup_healthcheck_ping="not_sent",
-                        )
-                    return receipt
-    raise RuntimeError("new backup checksum not found")
+                    receipt.update(backup_file=name, checksum_file=checksum.name)
+                    break
+        if "backup_file" in receipt:
+            break
+    if outcome == ("success", "exited", "0"):
+        pass
+    elif outcome == ("exit-code", "exited", "3"):
+        receipt["backup_healthcheck_ping"] = "not_sent"
+        if not reason or not reason.strip():
+            raise RuntimeError("backup remote failure not accepted")
+        receipt["backup_remote_failure_accepted"] = reason
+    else:
+        raise RuntimeError("backup failed")
+    if "backup_file" not in receipt:
+        raise RuntimeError("new backup checksum not found")
 
 
 def main():
@@ -175,7 +181,16 @@ def main():
             )
         )
         return 0
-    receipt = backup(start_ns, args.accept_backup_remote_failure)
+    receipt = {
+        "migration": "not_run",
+        "revision_before": sorted(current),
+        "revision_after": sorted(current),
+    }
+    try:
+        backup(start_ns, args.accept_backup_remote_failure, receipt)
+    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
+        print(json.dumps(receipt))
+        raise
     name = "at-pre-deploy-" + uuid.uuid4().hex
     receipt.update(
         migration="failed",
@@ -190,9 +205,22 @@ def main():
                 timeout=1800,
             )
         except subprocess.TimeoutExpired:
-            command(["docker", "rm", "-f", name], check=False)
+            try:
+                removed = command(["docker", "rm", "-f", name], timeout=30, check=False)
+                confirmed = removed.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                confirmed = False
+            receipt["migration_container_cleanup"] = (
+                "confirmed" if confirmed else "unconfirmed"
+            )
+            if not confirmed:
+                receipt["migration_container"] = name
+                raise RuntimeError(
+                    "migration timed out; container removal unconfirmed; migration may still be running"
+                ) from None
             raise RuntimeError("migration timed out") from None
         after = revisions(alembic("current"))
+        receipt["revision_after"] = sorted(after)
         if after != heads:
             raise RuntimeError("migration did not reach image head")
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
