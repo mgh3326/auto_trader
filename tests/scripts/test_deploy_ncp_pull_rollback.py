@@ -175,7 +175,7 @@ def _run(
     install_gate_fakes(bindir, docker, NEW)
     (bindir / "curl").write_text(
         "#!/bin/sh\n"
-        'for url do :; done\n'
+        "for url do :; done\n"
         'case "$FAKE_FAIL_HEALTH_NAME:$url" in at-api-green*:8002/healthz) echo 500; exit 0;; esac\n'
         'case "$FAKE_FAIL_HEALTH_NAME:$url" in at-mcp-green*:8767/health) echo 500; exit 0;; esac\n'
         '[ -z "$FAKE_FAIL_HEALTH_PORT" ] || [ "$url" != "http://127.0.0.1:${FAKE_FAIL_HEALTH_PORT}/health" ] || { echo 500; exit 0; }\n'

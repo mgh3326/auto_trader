@@ -6,14 +6,14 @@ fakes keep the existing front end and executable behavior.
 
 from __future__ import annotations
 
-import json
 import atexit
 import builtins
 import hashlib
 import io
+import json
 import os
-import shutil
 import shlex
+import shutil
 import socketserver
 import stat
 import tempfile
@@ -78,7 +78,6 @@ _SERVER_THREAD = None
 _SERVER_DIRECTORY: Path | None = None
 _SERVER_LOCK = threading.Lock()
 _COMPILED_BACKENDS: dict[str, types.CodeType] = {}
-_RESPONSE_FILES: list[Path] = []
 
 
 def _serve_python_docker_fakes() -> str | None:
@@ -95,9 +94,16 @@ def _serve_python_docker_fakes() -> str | None:
 
         class Handler(socketserver.StreamRequestHandler):
             def handle(self) -> None:
-                while _RESPONSE_FILES:
-                    _RESPONSE_FILES.pop().unlink(missing_ok=True)
-                fields = self.rfile.read().split(b"\0")
+                request = bytearray()
+                end_marker = b"--END--\0"
+                while not request.endswith(end_marker):
+                    chunk = self.rfile.read1(4096)
+                    if not chunk:
+                        raise ConnectionError(
+                            "fake Docker request ended before its frame"
+                        )
+                    request.extend(chunk)
+                fields = bytes(request[: -len(end_marker)]).split(b"\0")
                 if fields and fields[-1] == b"":
                     fields.pop()
                 backend, gate_log, manifest, config, stderr_path, status_path = (
@@ -129,8 +135,12 @@ def _serve_python_docker_fakes() -> str | None:
                     for index, line in enumerate(source_lines):
                         if line.startswith("import "):
                             imports = [name.strip() for name in line[7:].split(",")]
-                            kept = [name for name in imports if name not in {"os", "sys"}]
-                            source_lines[index] = "import " + ", ".join(kept) if kept else ""
+                            kept = [
+                                name for name in imports if name not in {"os", "sys"}
+                            ]
+                            source_lines[index] = (
+                                "import " + ", ".join(kept) if kept else ""
+                            )
                     body = "\n".join(source_lines)
                     digest = hashlib.sha256(body.encode()).hexdigest()
                     code = _COMPILED_BACKENDS.get(digest)
@@ -171,7 +181,6 @@ def _serve_python_docker_fakes() -> str | None:
                     output, error = stdout.getvalue(), error or stderr.getvalue()
                 Path(stderr_path).write_text(error)
                 Path(status_path).write_text(str(status))
-                _RESPONSE_FILES.extend((Path(stderr_path), Path(status_path)))
                 self.wfile.write(output.encode())
 
         class Server(socketserver.UnixStreamServer):
@@ -193,13 +202,15 @@ def _serve_python_docker_fakes() -> str | None:
         return str(socket_path)
 
 
-def _python_docker_client(socket_path: str, backend: Path, bindir: Path, digest: str) -> str:
+def _python_docker_client(
+    socket_path: str, backend: Path, bindir: Path, digest: str
+) -> str:
     manifest = json.dumps({"digest": digest.split("@", 1)[1]})
     config = json.dumps(
         {"config": {"Labels": {"org.opencontainers.image.revision": GATE_SHA}}}
     )
     env_list = " ".join(_FAKE_ENV_NAMES)
-    return f'''#!/bin/sh
+    return f"""#!/bin/sh
 tmp={shlex.quote(str(Path(socket_path).parent))}/response.$$
 err="$tmp.err"
 status="$tmp.status"
@@ -209,12 +220,13 @@ status="$tmp.status"
     eval "value=\\${{${{key}}-}}"
     printf '%s\\0%s\\0' "$key" "$value"
   done
-  printf '%s\\0' --ARGS-- "$@"
+  printf '%s\\0' --ARGS-- "$@" --END--
 }} | {shlex.quote(shutil.which("nc") or "nc")} -U {shlex.quote(socket_path)}
 IFS= read -r code < "$status"
 if [ -s "$err" ]; then cat "$err" >&2; fi
+rm -f "$err" "$status"
 exit "$code"
-'''
+"""
 
 
 def _write_exec(path: Path, text: str) -> None:
@@ -227,7 +239,9 @@ def install_gate_fakes(bindir: Path, docker_script: str, digest: str) -> None:
     backend = bindir / "_docker_backend"
     _write_exec(backend, docker_script)
     log = shlex.quote(str(bindir / "gate-calls.log"))
-    is_python = docker_script.startswith("#!") and "python" in docker_script.splitlines()[0]
+    is_python = (
+        docker_script.startswith("#!") and "python" in docker_script.splitlines()[0]
+    )
     socket_path = _serve_python_docker_fakes() if is_python else None
     if socket_path is not None:
         client = _python_docker_client(socket_path, backend, bindir, digest)
