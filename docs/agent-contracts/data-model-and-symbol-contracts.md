@@ -190,4 +190,5 @@ DELETE · TRUNCATE를 거부하며 downgrade는 행이 하나라도 있으면 �
 세션의 후보 참조는 `recorded`, 같은 KST 날짜의 admitted 후보를 서버가 찾은 경우는
 `inference`다. 기각 forecast의 판단 근거 연결은 세 시장(`equity_kr`, `equity_us`,
 `crypto`)만이며, `forex`·`index` forecast는 연결 없이 기존대로 저장한다. 기존 행
-소급은 없다.
+소급은 없다. 판단의 stop·target 가격, rung의 수량·금액·지정가, 참조 가격은
+`numeric(38,12)`로 원래 제안의 정밀도를 보존한다. 이 정밀도는 downgrade에서도 좁히지 않는다.

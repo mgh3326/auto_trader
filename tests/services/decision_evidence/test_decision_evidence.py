@@ -313,3 +313,48 @@ def test_proposal_decision_migration_is_additive_and_immutable(monkeypatch):
     assert "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')" in sql
     assert "GRANT EXECUTE" in sql
     assert "UPDATE review.order_proposals SET" not in sql
+    for column in (
+        "stop_price",
+        "target_price",
+        "planned_quantity",
+        "planned_notional",
+        "limit_price",
+        "price",
+    ):
+        assert f"ALTER COLUMN {column} TYPE numeric(38,12)" in sql
+    statements.clear()
+    module.downgrade()
+    assert "EXISTS (SELECT 1 FROM review.decision_evidence)" in statements[0]
+    assert all("TYPE numeric" not in statement for statement in statements)
+
+
+@pytest.mark.asyncio
+async def test_numeric_precision_accepts_twelve_places_and_rejects_unrepresentable_values():
+    session = AsyncMock()
+    service = DecisionEvidenceService(session)
+    exact = Decimal("12345678901234567890123456.123456789012")
+    evidence = replace(sample(), stop_price=exact)
+    await service.record(
+        evidence,
+        [
+            DecisionRung(
+                rung_index=0,
+                side="buy",
+                planned_quantity=Decimal("0.000000000001"),
+                limit_price=exact,
+            )
+        ],
+        [ReferencePrice(kind="quote_at_decision", price=exact)],
+    )
+    assert session.execute.await_args_list[0].args[1]["stop_price"] == exact
+    adjacent = Decimal("12345678901234567890123456.123456789013")
+    assert evidence_hash(evidence) != evidence_hash(
+        replace(evidence, stop_price=adjacent)
+    )
+    for invalid in (Decimal("0.0000000000001"), Decimal("100000000000000000000000000")):
+        untouched = AsyncMock()
+        with pytest.raises(ValueError, match=r"numeric\(38,12\)"):
+            await DecisionEvidenceService(untouched).record(
+                replace(sample(), stop_price=invalid), [], []
+            )
+        untouched.execute.assert_not_awaited()

@@ -7,8 +7,28 @@ down_revision = "20261112_hk4182_decision"
 branch_labels = None
 depends_on = None
 
+NUMERIC_EXPANSIONS = (
+    """
+        ALTER TABLE review.decision_evidence
+            ALTER COLUMN stop_price TYPE numeric(38,12),
+            ALTER COLUMN target_price TYPE numeric(38,12)
+    """,
+    """
+        ALTER TABLE review.decision_evidence_rungs
+            ALTER COLUMN planned_quantity TYPE numeric(38,12),
+            ALTER COLUMN planned_notional TYPE numeric(38,12),
+            ALTER COLUMN limit_price TYPE numeric(38,12)
+    """,
+    """
+        ALTER TABLE review.decision_reference_prices
+            ALTER COLUMN price TYPE numeric(38,12)
+    """,
+)
+
 
 def upgrade() -> None:
+    for statement in NUMERIC_EXPANSIONS:
+        op.execute(statement)
     op.execute("""
         ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS decision_id uuid
     """)
@@ -42,7 +62,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("""
         DO $$ BEGIN IF EXISTS (SELECT 1 FROM review.order_proposals WHERE decision_id IS NOT NULL)
-        THEN RAISE EXCEPTION 'order proposals contain decision links'; END IF; END $$
+            OR EXISTS (SELECT 1 FROM review.decision_evidence)
+            OR EXISTS (SELECT 1 FROM review.decision_evidence_rungs)
+            OR EXISTS (SELECT 1 FROM review.decision_reference_prices)
+        THEN RAISE EXCEPTION 'decision evidence exists'; END IF; END $$
     """)
     op.execute(
         "DROP TRIGGER order_proposals_decision_immutable ON review.order_proposals"

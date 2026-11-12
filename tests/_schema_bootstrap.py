@@ -160,7 +160,7 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
 # v65 (hk 2690): the position baseline uses separate Core metadata.
-SCHEMA_BOOTSTRAP_VERSION = 66
+SCHEMA_BOOTSTRAP_VERSION = 67
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2739,7 +2739,8 @@ async def apply_test_schema(conn) -> None:
                     "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_proposals_decision_id' AND conrelid = 'review.order_proposals'::regclass)",
                 ),
             ):
-                if sync_conn.execute(text(probe)).scalar():
+                present = sync_conn.execute(text(probe)).scalar()
+                if present and "4182" in filename:
                     continue
                 spec = importlib.util.spec_from_file_location(
                     filename, versions / filename
@@ -2747,7 +2748,11 @@ async def apply_test_schema(conn) -> None:
                 assert spec is not None and spec.loader is not None
                 migration = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(migration)
-                migration.upgrade()
+                if present:
+                    for statement in migration.NUMERIC_EXPANSIONS:
+                        sync_conn.execute(text(statement))
+                else:
+                    migration.upgrade()
 
     await conn.run_sync(install_decision_schema)
 

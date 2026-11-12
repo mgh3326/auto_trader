@@ -191,3 +191,72 @@ async def test_candidate_inference_excludes_other_days_and_unadmitted(db_session
         assert price == Decimal("11.25")
     finally:
         await db_session.rollback()
+
+
+async def test_decision_numeric_values_round_trip_without_rounding(db_session):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.services.decision_evidence import (
+        DecisionEvidence,
+        DecisionEvidenceService,
+        DecisionRung,
+        ReferencePrice,
+    )
+
+    value = Decimal("12345678901234567890123456.123456789012")
+    tiny = Decimal("0.000000000001")
+    try:
+        decision_id = await DecisionEvidenceService(db_session).record(
+            DecisionEvidence(
+                decision_kind="proposal",
+                decided_by="test",
+                market="equity_us",
+                symbol="TEST",
+                decided_at=datetime.now(UTC),
+                stop_price=value,
+                stop_source="exit_plan",
+                target_price=tiny,
+            ),
+            [
+                DecisionRung(
+                    rung_index=0,
+                    side="buy",
+                    planned_quantity=tiny,
+                    planned_notional=value,
+                    limit_price=value,
+                )
+            ],
+            [ReferencePrice(kind="quote_at_decision", price=value)],
+        )
+        row = (
+            await db_session.execute(
+                text("""
+            SELECT d.stop_price, d.target_price, r.planned_quantity, r.planned_notional,
+                   r.limit_price, p.price
+              FROM review.decision_evidence d
+              JOIN review.decision_evidence_rungs r USING (decision_id)
+              JOIN review.decision_reference_prices p USING (decision_id)
+             WHERE d.decision_id = :id
+        """),
+                {"id": decision_id},
+            )
+        ).one()
+        assert tuple(row) == (value, tiny, tiny, value, value, value)
+        spec = importlib.util.spec_from_file_location(
+            "migration_4184_db",
+            Path("alembic/versions/20261112_hk4184_proposal_decision.py"),
+        )
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+
+        def downgrade(connection):
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.downgrade()
+
+        with pytest.raises(DBAPIError):
+            async with db_session.begin_nested():
+                connection = await db_session.connection()
+                await connection.run_sync(downgrade)
+    finally:
+        await db_session.rollback()
