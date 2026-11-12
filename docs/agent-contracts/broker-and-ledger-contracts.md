@@ -294,6 +294,8 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 체결 수집 Go 데몬 `fillwire` 로의 이관을 위한 **P0 계약**. Go 는 DB 에 직접 쓰지 않고
 auto_trader 의 토큰 인증 HTTP 표면으로 원장에 넣는다. 이 단계는 계약 + Python 모니터
 sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 · 마이그레이션 0건**이다.
+- hk 4186 운영자 결정(2026-11-12, `decision/2026-11-12/at-operator-merge-rule16-q22`)은 `execution_ledger`의 `filled_at_basis`·`fee_basis`·`tax_amount` 추가형 마이그레이션과 writer 값 채우기만 예외로 허용한다. 멱등키·외부 ingest `source=websocket` 강제·항목별 savepoint·원장 커밋 권한·기존 재전송 갱신 동작은 유지한다.
+  새 행은 `fee_basis`로 실측 수수료와 미제공을 구분하며 Toss 수수료와 세금을 분리한다. `filled_at_basis`는 확인된 체결·주문·관측 시각을 구분하고 fillwire는 서버에서 프레임 시각 일치 시에만 체결 시각으로 기록한다. 과거 행은 `fee_basis IS NULL`로 식별하며 같은 키 재전송 시 수수료·통화와 세 새 열을 보존하되 다른 열의 기존 갱신 동작은 유지한다.
 
 - **엔드포인트**: `POST /trading/api/execution-ledger/fills/ingest` (배치 1..200),
   `POST /trading/api/execution-ledger/reconcile/trigger` (dry_run 기본 true)
@@ -455,6 +457,19 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - 🔴 **`superseded_duplicate=false` 만으로 중복이 걸러지지 않는다**: 하루 일찍 찍힌 KIS websocket 행은 다음 날의 동일한 reconciler 행과 날짜 키가 달라 flag 를 통과한다. 이 패키지는 그런 행을 지우고, 그 행을 흡수한 seed 도 같은 수량만큼 줄이며, 주문 수량을 넘는 합계 중 주문 수량과 같은 행이 있으면 그 행만 남긴다. export 의 다른 소비자도 같은 함정을 만난다. 반대로 경제 필드가 같은 행이 곧 중복은 아니다: export 에 `fill_seq` 가 없고 시각이 분 단위로 잘려 한 주문의 별개 체결이 같아 보일 수 있으므로, 합계를 주문 수량과 대조한 뒤 판단한다
 - 🔴 **나중 배치의 seed 는 증분이 아니라 전체 보유량이다**: `net_quantity_by_match_key_since` 는 seed 행을 빼고 그 실행의 cutover 이후 체결만 세므로, 2026-09-29 배치 6행은 그 시점 보유량 전체를 담는다. 이 패키지는 해당 종목 보유량을 그 값으로 재설정한다. seed 행을 합산하는 리더는 첫 배치 위에 이 행을 이중으로 더하게 된다
 - **테스트**: `tests/research/trade_retro/`
+
+### 회고와 판단 근거 연결 (hk 4187 L6)
+
+`review.trade_retrospectives.decision_id`는 nullable UUID이며, 새 컬럼은 과거 행을
+채우지 않는다. 연결 행이 남아 있으면 downgrade는 이 데이터를 잃지 않도록 거부한다.
+유일 writer인 `TradeRetrospectiveRepository.upsert`와 MCP
+`save_trade_retrospective(decision_id=...)`는 호출자가 제공한 ID만 저장한다. 저장 전
+`review.decision_evidence`의 ID가 존재하고 정규화된 심볼·시장·계좌 모드가 회고와
+일치하는지 확인한다(시장 별칭은 `app/core/market.py` 규칙, `upbit_live`는 판단 근거의
+`upbit`와 대응). crypto 심볼은 `to_upbit_symbol` 규칙으로 비교해 `BTC`와 `KRW-BTC`를
+동일 자산으로 본다. 불일치·미존재 ID는 거부한다. ID가 생략되면 correlation ID 등으로
+판단을 추론하거나 새 연결을 저장하지 않는다. 기존 연결은 부분 upsert에서 보존되며,
+호출자가 명시적으로 null을 보내면 지운다.
 
 ### 전략 조정 증거 묶음 (ROB-1458)
 
@@ -754,6 +769,12 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
   route 계약에도 광고되지 않고, 레인 allowlist·robin-prefect `LIVE_ALLOWED_TOOLS` 에 추가하지 않는다.
   `kis_live_get_order_history` 와 `inquire_daily_order_domestic` 은 변경 없음.
 - **테스트**: `test_kis_live_daily_orders.py`(순수·fake client), `test_kis_live_daily_orders_db.py`(테스트 DB 로더)
+
+### KIS 체결별 실현 수수료·세금 출처 (L11, hk 4192)
+
+저장소에서 확인되는 국내 `TTTC8001R`(`app/services/brokers/kis/constants.py:85-88`) 및 해외 `TTTS3035R`(`app/services/brokers/kis/constants.py:138-141`) 조회는 GET 체결/주문 히스토리다(`app/services/brokers/kis/domestic_orders.py:850-857`, `app/services/brokers/kis/overseas_orders.py:762-770`). 현행 저장소 코드와 포함 문서는 이들이 체결별 실현 수수료와 세금을 제공한다고 입증하지 않는다. 외부 KIS API에 해당 endpoint가 없다는 뜻은 아니다(`[INFERENCE]`). 확인 근거와 제한은 `docs/research/4192-kis-realized-cost-source.md`에 둔다.
+
+출처가 확인될 때까지 KIS 실현 비용은 `not_provided`로 취급하고 연구 reader는 이를 추정치(`estimated`)와 분리한다. REST normalizer의 fee 필드 누락 시 0 대체(`app/services/execution_ledger/normalizers.py:309-310`, `339-340`)는 관측된 수수료 0의 증거가 아니다. L11은 조사 문서 변경만이며 client, writer, 과거 행, 게이트, scheduler를 바꾸지 않는다.
 
 ### KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 

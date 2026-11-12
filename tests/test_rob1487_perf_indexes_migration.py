@@ -69,8 +69,20 @@ def _chain() -> tuple[dict[str, list[str]], set[str]]:
 def test_migration_chain_has_a_single_head_and_this_revision_is_on_it() -> None:
     revisions, heads = _chain()
 
-    assert heads == {"20261110_hk3800_account_value"}
+    # One head, and this revision is an ancestor of it. Later migrations move
+    # the head, so the head itself is not pinned here.
+    assert len(heads) == 1, heads
     assert revisions[_NEW_REVISION] == [_PREVIOUS_HEAD]
+    (head,) = heads
+    seen: set[str] = set()
+    stack = [head]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(revisions.get(current, []))
+    assert _NEW_REVISION in seen
 
 
 def test_momentum_snapshot_model_declares_the_market_snapshot_index() -> None:

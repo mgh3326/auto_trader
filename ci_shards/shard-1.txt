@@ -103,6 +103,7 @@ tests/scripts/test_diagnose_investment_reports.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_mock_session_mcp.py
 tests/scripts/test_native_retirement.py
+tests/scripts/test_ncp_mcp_watchdog.py
 tests/scripts/test_protected_positions.py
 tests/scripts/test_r4_p0_manifest_cli.py
 tests/scripts/test_r4_p0_readiness.py
@@ -156,6 +157,8 @@ tests/services/brokers/toss/test_config.py
 tests/services/brokers/toss/test_transport.py
 tests/services/buy_gate_ab_shadow/test_rob1351_lifecycle.py
 tests/services/buy_gate_ab_shadow/test_spec_freeze.py
+tests/services/decision_evidence/test_decision_evidence.py
+tests/services/decision_evidence/test_migration_db.py
 tests/services/dots_history_export/test_export_contract.py
 tests/services/dots_history_export/test_export_db.py
 tests/services/dots_history_export/test_export_real.py

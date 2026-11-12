@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from typing import Any, cast
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -118,6 +119,7 @@ async def save_trade_retrospective(
     market: str | None = None,
     strategy_key: str | None = None,
     correlation_id: str | None = None,
+    decision_id: UUID | None = None,
     journal_id: int | None = None,
     report_uuid: str | None = None,
     report_item_uuid: str | None = None,
@@ -183,6 +185,7 @@ async def save_trade_retrospective(
         "market": market,
         "strategy_key": strategy_key,
         "correlation_id": correlation_id,
+        "decision_id": decision_id,
         "journal_id": journal_id,
         "report_uuid": report_uuid,
         "report_item_uuid": report_item_uuid,

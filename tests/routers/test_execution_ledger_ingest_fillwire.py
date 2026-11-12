@@ -283,3 +283,47 @@ async def test_route_keeps_commit_and_reports_raw_identity_mismatch(
     else:
         downstream.assert_awaited_once()
         assert downstream.call_args.kwargs["fill_order"].symbol == "005930"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("match", "broker_fill_time"),
+        ("missing", None),
+        ("mismatch", None),
+        ("invalid", None),
+    ],
+)
+async def test_ingest_derives_fillwire_time_basis_from_frame(
+    monkeypatch, case, expected
+) -> None:
+    raw = fillwire_kis_domestic_frame()
+    fill = _fill(None if case == "missing" else raw)
+    if case == "mismatch":
+        fill.filled_at += timedelta(seconds=1)
+    if case == "invalid":
+        raw["fields"][11] = "bad"
+    payload = fill.model_dump(mode="json")
+    payload["filled_at_basis"] = "broker_fill_time"
+    repository = MagicMock()
+    repository.upsert_fill = AsyncMock(return_value=("inserted", 1))
+    monkeypatch.setattr(
+        ingest_module, "ExecutionLedgerRepository", lambda db: repository
+    )
+    monkeypatch.setattr(ingest_module, "run_post_upsert_downstream", AsyncMock())
+    db = MagicMock()
+    db.begin_nested.return_value.__aenter__ = AsyncMock()
+    db.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
+    db.commit = AsyncMock()
+    before = ingest_module.fillwire_time_basis_counts["unverified"]
+    response = await ingest_module.ingest_execution_ledger_fills(
+        ExecutionLedgerFillIngestRequest(fills=[payload], source="fillwire"), db
+    )
+    stored = repository.upsert_fill.call_args.args[0]
+    assert response.accepted == 1
+    assert stored.filled_at_basis == expected
+    assert stored.fee_basis == "not_provided"
+    assert ingest_module.fillwire_time_basis_counts["unverified"] == before + (
+        expected is None
+    )
