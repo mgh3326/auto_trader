@@ -325,6 +325,8 @@ retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unava
   ROB-3873 데이터셋: 각 소스는 자기 guarded 하위 읽기로 돈다. 실패는 그 데이터셋의 `unknowns` 항목과 `total: null`이 되고 다른 행은 유지된다. `crypto_insight.fear_greed`·`.stablecoin_supply`·`.breadth`·`.defi_tvl`은 레짐 뷰 신선도 규칙(`_crypto_regime.py`에서 복사, 테스트로 고정)을 쓴다. `crypto_insight.aggregate_oi`는 레짐 뷰가 disabled로 보고하므로 항상 `unsupported` 행이다. `candles_1m.kr|us`·`candles_1d.kr|us|crypto`는 최신 봉 날짜를 마지막으로 확정된 세션과 비교한다(crypto는 마지막으로 닫힌 UTC 일봉). `market_events.<source>.<category>.<market>`는 신선도 서비스 행과, 7일 창에 파티션이 없는 기대 소스를 포함한다. `latest_failed_error` 텍스트는 내보내지 않는다. `research_reports`, `valuation_snapshots.kr|us`도 포함한다. 사유는 닫힌 어휘만 쓰며 헬퍼의 오류·예외 문자열은 행에 들어가지 않는다.
 - **테스트**: `tests/services/retro_v1/`(가짜 세션 + 계약 응답 스키마 검증). DB 왕복은 CI 몫이며 로컬에서는 돌리지 않았다.
 
+**회고 지표 순수 계산 (L8, hk 4189)**: `app/services/retro_v1/metrics.py`는 판단 rung 입력으로 매수 위험 금액을 rung별 합산하고, 입력이 하나라도 빠지면 부분합 대신 `null`과 닫힌 사유를 반환한다. 일봉 MFE/MAE는 진입 세션과 청산 세션을 제외한 완전한 세션만 사용하고 0 아래로 내려가지 않는다. 완전한 세션이 없으면 `no_complete_session`이다. 기업행위 조정 여부는 `adjusted=null`, 값 basis는 `inference`로 둔다. 기록 비용과 `round_trip_cost_bps` 기반 추정 비용은 별도 결과이며 추정에는 `rate_source`와 정책 버전/hash를 보존한다. 이 모듈은 전달받은 `Decimal`·날짜·일봉만 계산하며 DB, 파일, 네트워크, 브로커, writer를 import하거나 호출하지 않는다. 동작은 `tests/services/retro_v1/test_metrics.py`에서 고정한다.
+
 ### retro/v1 HTTP 라우트 (hk 3818)
 
 `/trading/api/retro/v1`은 기본 비활성(`RETRO_API_ENABLED=false`) 읽기 전용 HTTP 표면이다.
