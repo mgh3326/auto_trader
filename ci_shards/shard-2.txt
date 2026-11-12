@@ -282,6 +282,7 @@ tests/services/retro_v1/test_chain_readers.py
 tests/services/retro_v1/test_data_gaps_sources.py
 tests/services/retro_v1/test_guards.py
 tests/services/retro_v1/test_ledger_orders.py
+tests/services/retro_v1/test_metrics.py
 tests/services/retro_v1/test_other_readers.py
 tests/services/retro_v1/test_retro_trades.py
 tests/services/scalping_reviews/test_service.py
