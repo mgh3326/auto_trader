@@ -143,7 +143,9 @@ def test_daily_mfe_and_mae_clamp_below_zero_excursions_to_zero() -> None:
     assert up.mae.amount == Decimal("0")
 
 
-def test_daily_mfe_mae_measures_only_contained_bars_and_returns_amount_pct_and_r() -> None:
+def test_daily_mfe_mae_measures_only_contained_bars_and_returns_amount_pct_and_r() -> (
+    None
+):
     result = calculate_mfe_mae(
         entry_price=Decimal("100"),
         entry_session=date(2026, 1, 5),
@@ -163,7 +165,9 @@ def test_daily_mfe_mae_measures_only_contained_bars_and_returns_amount_pct_and_r
     assert result.mae.r == Decimal("1.2")
 
 
-def test_daily_mfe_mae_has_no_complete_session_when_entry_and_exit_are_adjacent() -> None:
+def test_daily_mfe_mae_has_no_complete_session_when_entry_and_exit_are_adjacent() -> (
+    None
+):
     result = calculate_mfe_mae(
         entry_price=Decimal("100"),
         entry_session=date(2026, 1, 5),
@@ -182,8 +186,14 @@ def test_daily_mfe_mae_has_no_complete_session_when_entry_and_exit_are_adjacent(
 @pytest.mark.parametrize(
     ("kwargs", "reason"),
     [
-        ({"entry_price": None, "entry_session": date(2026, 1, 5)}, "missing_entry_price"),
-        ({"entry_price": Decimal("100"), "entry_session": None}, "missing_entry_session"),
+        (
+            {"entry_price": None, "entry_session": date(2026, 1, 5)},
+            "missing_entry_price",
+        ),
+        (
+            {"entry_price": Decimal("100"), "entry_session": None},
+            "missing_entry_session",
+        ),
     ],
 )
 def test_daily_mfe_mae_missing_inputs_return_null_with_reason(
@@ -249,7 +259,9 @@ def test_costs_keep_recorded_values_separate_from_policy_estimate() -> None:
     assert result.estimated.basis == "inference"
 
 
-def test_costs_treat_unprovided_cost_as_null_and_explain_missing_estimate_input() -> None:
+def test_costs_treat_unprovided_cost_as_null_and_explain_missing_estimate_input() -> (
+    None
+):
     result = calculate_costs(
         fee=None,
         tax=None,

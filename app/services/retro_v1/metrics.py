@@ -124,7 +124,9 @@ def calculate_risk_amount(
     budget = _decimal(budget_cap, name="budget_cap")
     kinds = tuple(rung.reference_price_kind for rung in rungs)
     if side == "sell":
-        return RiskAmount(None, None, None, "not_applicable", kinds, None, "not_applicable")
+        return RiskAmount(
+            None, None, None, "not_applicable", kinds, None, "not_applicable"
+        )
     if side != "buy":
         raise ValueError("side must be buy or sell")
     if stop is None or stop_basis is None:
@@ -137,7 +139,9 @@ def calculate_risk_amount(
         quantity = _decimal(rung.planned_quantity, name="planned_quantity")
         price = _decimal(rung.reference_price, name="reference_price")
         if quantity is None:
-            return RiskAmount(None, None, None, None, kinds, None, "no_planned_quantity")
+            return RiskAmount(
+                None, None, None, None, kinds, None, "no_planned_quantity"
+            )
         if price is None or rung.reference_price_kind is None:
             return RiskAmount(None, None, None, None, kinds, None, "no_reference_price")
         if quantity <= 0 or price <= 0:
@@ -165,7 +169,9 @@ def calculate_risk_amount(
         raise ValueError("budget_cap must be positive")
     pct_budget = risk / budget if budget is not None else None
     budget_reason = None if budget is not None else "no_budget_cap"
-    return RiskAmount(risk, risk / notional, pct_budget, budget_reason, kinds, basis, None)
+    return RiskAmount(
+        risk, risk / notional, pct_budget, budget_reason, kinds, basis, None
+    )
 
 
 def _empty_excursion(
@@ -220,9 +226,7 @@ def calculate_mfe_mae(
         contained = contained[:horizon_sessions]
     if not contained:
         reason: MetricReason = (
-            "no_complete_session"
-            if exit_session is not None
-            else "window_open"
+            "no_complete_session" if exit_session is not None else "window_open"
         )
         status: Literal["unknown", "pending"] = (
             "unknown" if exit_session is not None else "pending"
