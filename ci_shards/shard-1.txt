@@ -127,6 +127,7 @@ tests/scripts/test_news_relevance_judge_smoke.py
 tests/scripts/test_nhplug_bhost_deploy.py
 tests/scripts/test_post_watch_triage_reply.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
+tests/scripts/test_shiftgate_services_at.py
 tests/services/account_value/test_cli.py
 tests/services/account_value/test_returns.py
 tests/services/action_report/common/test_diagnostics.py
