@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 import math
@@ -13,6 +12,7 @@ import redis.asyncio as redis
 
 from app.core.config import settings
 from app.services.brokers.token_issuance import TokenIssuanceUnavailable
+from app.services.brokers.token_keys import kis_live_token_keys, kis_mock_token_keys
 
 GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS = 3.0
 GATEWAYD_TOKEN_POLL_INTERVAL_SECONDS = 0.05
@@ -26,10 +26,19 @@ class RedisTokenManager:
         namespace: str = "kis",
         *,
         lock_wait_timeout_seconds: float = 3.0,
+        token_keys: tuple[str, str] | None = None,
     ):
         self.redis_client: redis.Redis | None = None
-        self._lock_key = f"{namespace}:token:lock"
-        self._token_key = f"{namespace}:access_token"
+        if token_keys is None:
+            token_key, lock_key = (
+                kis_live_token_keys()
+                if namespace == "kis"
+                else (f"{namespace}:access_token", f"{namespace}:token:lock")
+            )
+        else:
+            token_key, lock_key = token_keys
+        self._token_key = token_key
+        self._lock_key = lock_key
         self._lock_timeout = 30  # 락 타임아웃 (초)
         self._lock_wait_timeout_seconds = lock_wait_timeout_seconds
         self._token_expiry_buffer = 60  # 토큰 만료 전 버퍼 (초)
@@ -389,26 +398,34 @@ class RedisTokenManager:
             self.redis_client = None
 
 
-def _kis_mock_token_namespace(*, base_url: str, app_key: str) -> str:
-    """Build a non-secret Redis namespace for one VTS credential scope."""
+def _kis_mock_token_manager_keys(*, base_url: str, app_key: str) -> tuple[str, str]:
+    """Build non-secret Redis keys for one VTS credential scope."""
     host = urlsplit(base_url.rstrip("/")).netloc.lower()
     if not host:
         raise ValueError("KIS mock base URL must include a host")
-    app_key_fingerprint = hashlib.sha256(app_key.encode()).hexdigest()[:16]
-    return f"kis_mock:{host}:{app_key_fingerprint}"
+    return kis_mock_token_keys(netloc=host, app_key=app_key)
+
+
+def _kis_mock_token_namespace(*, base_url: str, app_key: str) -> str:
+    """Return the non-secret namespace used by one VTS credential scope."""
+    token_key, _ = _kis_mock_token_manager_keys(base_url=base_url, app_key=app_key)
+    return token_key.removesuffix(":access_token")
 
 
 @cache
-def _get_kis_mock_token_manager(namespace: str) -> RedisTokenManager:
+def _get_kis_mock_token_manager(token_keys: tuple[str, str]) -> RedisTokenManager:
     # VTS OAuth calls commonly take 4-6 seconds and may use the full 10-second
     # request budget. Waiters must outlive the lock owner's request.
-    return RedisTokenManager(namespace=namespace, lock_wait_timeout_seconds=11.0)
+    return RedisTokenManager(
+        lock_wait_timeout_seconds=11.0,
+        token_keys=token_keys,
+    )
 
 
 def get_kis_mock_token_manager(*, base_url: str, app_key: str) -> RedisTokenManager:
     """Return the process-shared VTS manager for a normalized host/appkey pair."""
-    namespace = _kis_mock_token_namespace(base_url=base_url, app_key=app_key)
-    return _get_kis_mock_token_manager(namespace)
+    token_keys = _kis_mock_token_manager_keys(base_url=base_url, app_key=app_key)
+    return _get_kis_mock_token_manager(token_keys)
 
 
 # 전역 인스턴스

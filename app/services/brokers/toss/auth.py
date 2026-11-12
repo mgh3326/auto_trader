@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import random
@@ -21,6 +20,10 @@ from app.services.brokers.token_issuance import (
     TokenIssuanceUnavailable,
     ensure_gatewayd_token,
     is_gatewayd_token_issuance,
+)
+from app.services.brokers.token_keys import (
+    toss_client_fingerprint,
+    toss_oauth_token_keys,
 )
 from app.services.brokers.toss.errors import (
     TossApiDisabled,
@@ -73,7 +76,7 @@ async def close_toss_token_redis() -> None:
 
 
 def _client_fingerprint(client_id: str) -> str:
-    return hashlib.sha256(client_id.encode("utf-8")).hexdigest()[:16]
+    return toss_client_fingerprint(client_id)
 
 
 class TossOAuthTokenManager:
@@ -96,9 +99,8 @@ class TossOAuthTokenManager:
         self._client_secret = client_secret
         self._base_url = base_url
         self._rate_limiter = rate_limiter or TossRateLimiter()
-        self._namespace = f"toss:oauth:{_client_fingerprint(client_id)}"
-        self.token_key = f"{self._namespace}:access_token"
-        self.lock_key = f"{self._namespace}:lock"
+        self.token_key, self.lock_key = toss_oauth_token_keys(client_id=client_id)
+        self._namespace = self.token_key.removesuffix(":access_token")
 
     def __repr__(self) -> str:
         return (
