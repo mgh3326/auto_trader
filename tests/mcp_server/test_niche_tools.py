@@ -7,6 +7,7 @@ import inspect
 import logging
 from pathlib import Path
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 import sentry_sdk
@@ -163,8 +164,9 @@ async def test_actual_fanout_preserves_multi_source_result_and_emits_one_warning
         assert sentry_sdk.get_current_span()._tags["mcp.niche"] == "true"
         return result
 
-    async def record(payload):
+    async def record(payload, *, call_id):
         assert payload is result
+        assert isinstance(call_id, UUID)
         calls.append("record")
 
     monkeypatch.setattr(fanout, "discover_buy_candidates_fanout_impl", discover)
