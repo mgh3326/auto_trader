@@ -37,7 +37,7 @@ if Path(sys.argv[0]).name == "docker":
             sys.exit(1)
         Path(os.environ["UPGRADED"]).touch()
     sys.exit(0)
-if "show" in sys.argv and os.environ.get("REQUIRE_UTC") and "--timestamp=us+utc" not in sys.argv: sys.exit(1)
+if "show" in sys.argv and any(a.startswith("--timestamp=") for a in sys.argv): sys.exit(1)
 if "start" in sys.argv:
     if not os.environ.get("START_FAIL"):
         Path(os.environ["STARTED"]).touch()
@@ -49,7 +49,7 @@ if "start" in sys.argv:
             Path(os.environ["BACKUP"], "backup-new.sha256").write_text("a"*64 + "  /backup/auto_trader-new.dump\\n")
     sys.exit(1 if os.environ.get("START_FAIL") or os.environ.get("STATUS3") else 0)
 started = Path(os.environ["STARTED"]).exists()
-props = {"InvocationID": "new" if started else "old", "Result": "exit-code" if os.environ.get("STATUS3") else "success", "ExecMainCode": "killed" if os.environ.get("KILLED") else "exited", "ExecMainStatus": "3" if os.environ.get("STATUS3") or os.environ.get("KILLED") else "0", "ExecMainStartTimestamp": "2000-01-01 00:00:00 UTC" if os.environ.get("OLD_START") else "2099-01-01 00:00:00 UTC", "ExecMainExitTimestamp": "2000-01-01 00:00:00 UTC" if os.environ.get("OLD_EXIT") else "2099-01-01 00:00:01 UTC"}
+props = {"InvocationID": "new" if started else "old", "Result": "exit-code" if os.environ.get("STATUS3") else "success", "ExecMainCode": "killed" if os.environ.get("KILLED") else "exited", "ExecMainStatus": "3" if os.environ.get("STATUS3") or os.environ.get("KILLED") else "0", "ExecMainStartTimestampMonotonic": "invalid" if os.environ.get("INVALID_START") else "1" if os.environ.get("OLD_START") else str(time.monotonic_ns() // 1000 + 1000000), "ExecMainExitTimestampMonotonic": "invalid" if os.environ.get("INVALID_EXIT") else "1" if os.environ.get("OLD_EXIT") else str(time.monotonic_ns() // 1000 + 2000000)}
 for i, arg in enumerate(sys.argv):
     if arg == "-p": print(sys.argv[i+1] + "=" + props[sys.argv[i+1]])
 """
@@ -267,9 +267,9 @@ def test_annotated_history_excludes_current_revision(setup_fakes):
     assert json.loads(result.stdout)["pending_revisions"] == ["new"]
 
 
-def test_systemd_timestamps_are_requested_in_utc(setup_fakes):
+def test_systemd_monotonic_timestamps_need_no_format_option(setup_fakes):
     _, run = setup_fakes
-    result, _ = run("--migrate", REQUIRE_UTC="1")
+    result, _ = run("--migrate")
     assert result.returncode == 0
 
 
@@ -304,3 +304,11 @@ def test_migration_mismatch_records_measured_revision(setup_fakes):
     receipt = json.loads(result.stdout)
     assert receipt["revision_after"] == ["intermediate"]
     assert receipt["migration"] == "failed"
+
+
+@pytest.mark.parametrize("invalid_timestamp", ["INVALID_START", "INVALID_EXIT"])
+def test_invalid_monotonic_backup_timestamp_is_refused(setup_fakes, invalid_timestamp):
+    _, run = setup_fakes
+    result, calls = run("--migrate", **{invalid_timestamp: "1"})
+    assert result.returncode == 1
+    assert "docker upgrade" not in calls

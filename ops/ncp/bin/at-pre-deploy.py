@@ -49,7 +49,7 @@ def revisions(output):
 
 
 def properties(*names):
-    args = ["systemctl", "show", "--timestamp=us+utc"]
+    args = ["systemctl", "show"]
     for name in names:
         args.extend(["-p", name])
     lines = command([*args, SERVICE]).stdout.splitlines()
@@ -59,14 +59,7 @@ def properties(*names):
     return result
 
 
-def timestamp_ns(value):
-    output = command(["date", "-d", value, "+%s%N"]).stdout.strip()
-    if not output.isdecimal():
-        raise RuntimeError("invalid backup timestamp")
-    return int(output)
-
-
-def backup(start_ns, reason, receipt):
+def backup(start_ns, start_monotonic_ns, reason, receipt):
     old = properties("InvocationID")["InvocationID"]
     # systemctl returns nonzero for a completed oneshot whose process failed.
     command(["systemctl", "start", SERVICE], check=False)
@@ -75,15 +68,17 @@ def backup(start_ns, reason, receipt):
         "Result",
         "ExecMainCode",
         "ExecMainStatus",
-        "ExecMainStartTimestamp",
-        "ExecMainExitTimestamp",
+        "ExecMainStartTimestampMonotonic",
+        "ExecMainExitTimestampMonotonic",
     )
     status = properties(*names)
     if (
         not status["InvocationID"]
         or status["InvocationID"] == old
-        or timestamp_ns(status["ExecMainStartTimestamp"]) <= start_ns
-        or timestamp_ns(status["ExecMainExitTimestamp"]) <= start_ns
+        or not status["ExecMainStartTimestampMonotonic"].isdecimal()
+        or not status["ExecMainExitTimestampMonotonic"].isdecimal()
+        or int(status["ExecMainStartTimestampMonotonic"]) * 1000 <= start_monotonic_ns
+        or int(status["ExecMainExitTimestampMonotonic"]) * 1000 <= start_monotonic_ns
     ):
         raise RuntimeError("backup invocation not confirmed")
     outcome = (status["Result"], status["ExecMainCode"], status["ExecMainStatus"])
@@ -127,6 +122,7 @@ def main():
     parser.add_argument("--accept-backup-remote-failure", metavar="REASON")
     args = parser.parse_args()
     start_ns = time.time_ns()
+    start_monotonic_ns = time.monotonic_ns()
     env_file = os.environ.get("AT_MIGRATION_ENV_FILE")
     if not env_file:
         raise RuntimeError("AT_MIGRATION_ENV_FILE is required")
@@ -187,7 +183,7 @@ def main():
         "revision_after": sorted(current),
     }
     try:
-        backup(start_ns, args.accept_backup_remote_failure, receipt)
+        backup(start_ns, start_monotonic_ns, args.accept_backup_remote_failure, receipt)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
         print(json.dumps(receipt))
         raise
