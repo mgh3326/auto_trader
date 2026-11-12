@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -17,6 +18,7 @@ from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.market import market_instrument_type
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
@@ -352,16 +354,18 @@ class TradeRetrospectiveRepository:
 
         cid = payload.get("correlation_id")
         account_mode = payload.get("account_mode")
+        existing: TradeRetrospective | None = None
         if cid is not None:
             existing = await self.get_by_correlation_id(
                 cid, account_mode, for_update=True
             )
-            if existing is not None:
-                _assert_type_boundary(existing)
-                for key, value in payload.items():
-                    setattr(existing, key, value)
-                await self.db.flush()
-                return "updated", existing
+        await self._validate_decision_link(payload, existing)
+        if existing is not None:
+            _assert_type_boundary(existing)
+            for key, value in payload.items():
+                setattr(existing, key, value)
+            await self.db.flush()
+            return "updated", existing
         create_payload = dict(create_defaults or {})
         create_payload.update(payload)
         _assert_type_boundary(None)
@@ -382,11 +386,66 @@ class TradeRetrospectiveRepository:
             if existing is None:
                 raise
             _assert_type_boundary(existing)
+            await self._validate_decision_link(payload, existing)
             for key, value in payload.items():
                 setattr(existing, key, value)
             await self.db.flush()
             return "updated", existing
         return "created", row
+
+    async def _validate_decision_link(
+        self,
+        payload: dict[str, Any],
+        existing: TradeRetrospective | None,
+    ) -> None:
+        decision_id = payload.get(
+            "decision_id", existing.decision_id if existing is not None else None
+        )
+        if decision_id is None:
+            return
+        if not isinstance(decision_id, UUID):
+            raise RetrospectiveValidationError("decision_id must be a UUID")
+
+        symbol = payload.get(
+            "symbol", existing.symbol if existing is not None else None
+        )
+        market = payload.get(
+            "market", existing.market if existing is not None else None
+        )
+        account_mode = payload.get(
+            "account_mode", existing.account_mode if existing is not None else None
+        )
+        decision_market = market_instrument_type(market)
+        retrospective_account_mode = {
+            "kis_live": "kis_live",
+            "toss_live": "toss_live",
+            "upbit_live": "upbit",
+        }.get(account_mode)
+        if decision_market is None or retrospective_account_mode is None:
+            raise RetrospectiveValidationError(
+                "decision_id requires a supported matching market and live account_mode"
+            )
+
+        result = await self.db.execute(
+            text(
+                "SELECT symbol, market, account_mode "
+                "FROM review.decision_evidence WHERE decision_id = :decision_id"
+            ),
+            {"decision_id": decision_id},
+        )
+        decision = result.mappings().one_or_none()
+        if decision is None:
+            raise RetrospectiveValidationError(
+                "decision_id does not reference a decision"
+            )
+        if (
+            decision["symbol"] != symbol
+            or decision["market"] != decision_market
+            or decision["account_mode"] != retrospective_account_mode
+        ):
+            raise RetrospectiveValidationError(
+                "decision_id does not match retrospective symbol, market, and account_mode"
+            )
 
 
 def _integrity_constraint_name(exc: IntegrityError) -> str:
@@ -436,6 +495,7 @@ async def save_retrospective(
     market: Any = _UNSET,
     strategy_key: Any = _UNSET,
     correlation_id: str | None = None,
+    decision_id: Any = _UNSET,
     journal_id: Any = _UNSET,
     report_uuid: Any = _UNSET,
     report_item_uuid: Any = _UNSET,
@@ -628,6 +688,7 @@ async def save_retrospective(
         "fill_evidence_available": fill_evidence_available,
     }
     raw_optional_payload = {
+        "decision_id": decision_id,
         "side": side,
         "market": market,
         "strategy_key": strategy_key,
