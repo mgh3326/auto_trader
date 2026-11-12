@@ -110,6 +110,9 @@ def test_migration_adds_immutable_tables_unique_keys_and_conditional_grants(
         assert f"GRANT SELECT, INSERT ON review.{table} TO at_app" in sql
         assert f"review.{table}_id_seq" in sql
     assert "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')" in sql
+    assert "GRANT USAGE ON SCHEMA review TO at_app" in sql
+    assert sql.count("REFERENCES review.decision_evidence(decision_id)") == 3
+    assert sql.count("CHECK (rung_index >= 0)") == 3
     assert "decision_id uuid NOT NULL UNIQUE" in sql
     assert "UNIQUE (decision_id, rung_index)" in sql
     assert "(decision_id, COALESCE(rung_index, -1), kind)" in sql
@@ -128,4 +131,18 @@ async def test_float_reference_price_is_rejected_before_any_write():
         await service.record(
             sample(), [], [ReferencePrice(kind="candidate_price", price=1.25)]
         )
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_naive_reference_timestamp_is_rejected_before_any_write():
+    session = AsyncMock()
+    service = DecisionEvidenceService(session)
+    price = ReferencePrice(
+        kind="quote_at_decision", price=Decimal("1"), asof=datetime(2026, 1, 1)
+    )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await service.record(sample(), [], [price])
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await service.add_reference_price(uuid4(), price)
     session.execute.assert_not_awaited()

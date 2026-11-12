@@ -41,7 +41,7 @@ def upgrade() -> None:
     """)
     op.execute("""
         CREATE TABLE review.decision_evidence_rungs (
-            id bigserial PRIMARY KEY, decision_id uuid NOT NULL, rung_index integer NOT NULL,
+            id bigserial PRIMARY KEY, decision_id uuid NOT NULL REFERENCES review.decision_evidence(decision_id), rung_index integer NOT NULL CHECK (rung_index >= 0),
             side text NOT NULL CHECK (side IN ('buy','sell')),
             planned_quantity numeric(24,8) CHECK (planned_quantity > 0),
             planned_notional numeric(28,8), limit_price numeric(24,8) CHECK (limit_price > 0),
@@ -50,7 +50,7 @@ def upgrade() -> None:
     """)
     op.execute("""
         CREATE TABLE review.decision_reference_prices (
-            id bigserial PRIMARY KEY, decision_id uuid NOT NULL, rung_index integer,
+            id bigserial PRIMARY KEY, decision_id uuid NOT NULL REFERENCES review.decision_evidence(decision_id), rung_index integer CHECK (rung_index >= 0),
             kind text NOT NULL CHECK (kind IN ('limit','approval_price','quote_at_decision','candidate_price')),
             price numeric(24,8) NOT NULL CHECK (price > 0), asof timestamptz,
             recorded_at timestamptz NOT NULL DEFAULT now()
@@ -61,9 +61,9 @@ def upgrade() -> None:
     )
     op.execute("""
         CREATE TABLE review.decision_order_links (
-            id bigserial PRIMARY KEY, attempt_id uuid NOT NULL UNIQUE, decision_id uuid NOT NULL,
+            id bigserial PRIMARY KEY, attempt_id uuid NOT NULL UNIQUE, decision_id uuid NOT NULL REFERENCES review.decision_evidence(decision_id),
             account_scope text NOT NULL CHECK (account_scope IN ('kis_live','toss_live','upbit_live')),
-            send_key text NOT NULL, proposal_id uuid, rung_index integer,
+            send_key text NOT NULL, proposal_id uuid, rung_index integer CHECK (rung_index >= 0),
             linked_at timestamptz NOT NULL DEFAULT now(),
             CHECK ((proposal_id IS NULL) = (rung_index IS NULL))
         )
@@ -98,6 +98,7 @@ def upgrade() -> None:
         op.execute(f"REVOKE UPDATE, DELETE, TRUNCATE ON review.{table} FROM PUBLIC")
         op.execute(f"""
             DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
+                GRANT USAGE ON SCHEMA review TO at_app;
                 GRANT SELECT, INSERT ON review.{table} TO at_app;
                 GRANT USAGE, SELECT ON SEQUENCE review.{table}_id_seq TO at_app;
             END IF; END $$

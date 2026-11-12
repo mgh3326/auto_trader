@@ -95,6 +95,12 @@ def _check_decimals(*values: Decimal | None) -> None:
             raise ValueError("prices and quantities must be finite Decimal values")
 
 
+def _check_reference_price(price: ReferencePrice) -> None:
+    _check_decimals(price.price)
+    if price.asof is not None and price.asof.utcoffset() is None:
+        raise ValueError("asof must be timezone-aware")
+
+
 def account_scope(account_mode: Literal["kis_live", "toss_live", "upbit"]) -> str:
     return {"kis_live": "kis_live", "toss_live": "toss_live", "upbit": "upbit_live"}[
         account_mode
@@ -117,7 +123,7 @@ class DecisionEvidenceService:
                 rung.planned_quantity, rung.planned_notional, rung.limit_price
             )
         for price in prices:
-            _check_decimals(price.price)
+            _check_reference_price(price)
         decision_id = uuid4()
         values = asdict(evidence)
         values.update(decision_id=decision_id, evidence_hash=evidence_hash(evidence))
@@ -140,7 +146,7 @@ class DecisionEvidenceService:
     async def add_reference_price(
         self, decision_id: UUID, price: ReferencePrice
     ) -> None:
-        _check_decimals(price.price)
+        _check_reference_price(price)
         await self._insert(
             "decision_reference_prices", {"decision_id": decision_id, **asdict(price)}
         )

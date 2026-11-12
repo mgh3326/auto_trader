@@ -43,6 +43,18 @@ def _exercise(connection):
         for statement in inserts:
             with pytest.raises(DBAPIError), connection.begin_nested():
                 connection.execute(text(statement))
+        missing = "44444444-4444-4444-8444-444444444444"
+        invalid = [
+            f"INSERT INTO review.decision_evidence_rungs (decision_id, rung_index, side) VALUES ('{missing}', 0, 'buy')",
+            f"INSERT INTO review.decision_reference_prices (decision_id, kind, price) VALUES ('{missing}', 'limit', 1)",
+            f"INSERT INTO review.decision_order_links (attempt_id, decision_id, account_scope, send_key) VALUES ('{missing}', '{missing}', 'kis_live', 'key')",
+            f"INSERT INTO review.decision_evidence_rungs (decision_id, rung_index, side) VALUES ('{decision}', -1, 'buy')",
+            f"INSERT INTO review.decision_reference_prices (decision_id, rung_index, kind, price) VALUES ('{decision}', -1, 'limit', 1)",
+            f"INSERT INTO review.decision_order_links (attempt_id, decision_id, account_scope, send_key, proposal_id, rung_index) VALUES ('{missing}', '{decision}', 'kis_live', 'key', '{missing}', -1)",
+        ]
+        for statement in invalid:
+            with pytest.raises(DBAPIError), connection.begin_nested():
+                connection.execute(text(statement))
         # A reused send key is legal for a distinct attempt.
         connection.execute(
             text(
