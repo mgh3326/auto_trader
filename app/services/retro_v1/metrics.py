@@ -24,6 +24,7 @@ MetricReason = Literal[
     "no_complete_session",
     "window_open",
     "missing_notional",
+    "missing_currency",
     "rate_unavailable",
     "not_provided",
 ]
@@ -81,7 +82,7 @@ class MfeMae:
 class RecordedCosts:
     fee: Decimal | None
     tax: Decimal | None
-    currency: str
+    currency: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,8 @@ def calculate_risk_amount(
         )
     if side != "buy":
         raise ValueError("side must be buy or sell")
+    if budget is not None and budget <= 0:
+        raise ValueError("budget_cap must be positive")
     if stop is None or stop_basis is None:
         return RiskAmount(None, None, None, None, kinds, None, "no_stop_recorded")
     if not rungs:
@@ -165,8 +168,6 @@ def calculate_risk_amount(
         and all(rung.reference_price_basis == "recorded" for rung in rungs)
         else "inference"
     )
-    if budget is not None and budget <= 0:
-        raise ValueError("budget_cap must be positive")
     pct_budget = risk / budget if budget is not None else None
     budget_reason = None if budget is not None else "no_budget_cap"
     return RiskAmount(
@@ -222,6 +223,8 @@ def calculate_mfe_mae(
         ),
         key=lambda bar: bar.session,
     )
+    if len({bar.session for bar in contained}) != len(contained):
+        raise ValueError("daily bars must have one bar per session")
     if horizon_sessions != "to_exit":
         contained = contained[:horizon_sessions]
     if not contained:
@@ -285,9 +288,9 @@ def calculate_costs(
     recorded: RecordedCosts | None = None
     recorded_reason: MetricReason | None = None
     if fee_basis == "broker_reported" or fee_value is not None or tax_value is not None:
-        if currency is None:
-            raise ValueError("currency is required for recorded costs")
         recorded = RecordedCosts(fee_value, tax_value, currency)
+        if currency is None:
+            recorded_reason = "missing_currency"
     else:
         recorded_reason = "not_provided"
 

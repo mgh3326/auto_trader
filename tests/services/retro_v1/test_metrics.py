@@ -65,6 +65,17 @@ def test_risk_amount_does_not_return_a_partial_sum_when_a_rung_lacks_price() -> 
     assert result.reason == "no_reference_price"
 
 
+def test_risk_amount_rejects_invalid_budget_even_when_stop_is_missing() -> None:
+    with pytest.raises(ValueError, match="budget_cap must be positive"):
+        calculate_risk_amount(
+            side="buy",
+            stop_price=None,
+            stop_basis=None,
+            rungs=[],
+            budget_cap=Decimal("0"),
+        )
+
+
 @pytest.mark.parametrize(
     ("side", "stop", "stop_basis", "rungs", "reason"),
     [
@@ -123,6 +134,19 @@ def test_daily_mfe_mae_excludes_entry_and_exit_sessions() -> None:
     assert result.mfe.status == result.mae.status == "complete"
     assert result.adjusted is None
     assert result.basis == "inference"
+
+
+def test_daily_mfe_mae_rejects_duplicate_sessions() -> None:
+    with pytest.raises(ValueError, match="one bar per session"):
+        calculate_mfe_mae(
+            entry_price=Decimal("100"),
+            entry_session=date(2026, 1, 5),
+            bars=[
+                DailyBar(date(2026, 1, 6), Decimal("108"), Decimal("95")),
+                DailyBar(date(2026, 1, 6), Decimal("109"), Decimal("94")),
+            ],
+            horizon_sessions=1,
+        )
 
 
 def test_daily_mfe_and_mae_clamp_below_zero_excursions_to_zero() -> None:
@@ -308,3 +332,21 @@ def test_costs_preserve_reported_zero_fee_as_a_recorded_value() -> None:
     )
 
     assert result.recorded == type(result.recorded)(Decimal("0"), None, "KRW")
+
+
+def test_costs_preserve_reported_amount_when_currency_is_missing() -> None:
+    result = calculate_costs(
+        fee=Decimal("1.25"),
+        tax=None,
+        currency=None,
+        fee_basis="broker_reported",
+        notional=None,
+        round_trip_cost_bps=None,
+        policy_version=None,
+        policy_content_hash=None,
+    )
+
+    assert result.recorded is not None
+    assert result.recorded.fee == Decimal("1.25")
+    assert result.recorded.currency is None
+    assert result.recorded_reason == "missing_currency"
