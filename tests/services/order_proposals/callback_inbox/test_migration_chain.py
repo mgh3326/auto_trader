@@ -208,6 +208,15 @@ async def scratch_database() -> AsyncIterator[str]:
                             f"DROP COLUMN IF EXISTS {column}"
                         )
                     )
+                # hk 4187 (L6) trade_retrospectives.decision_id is later than
+                # this boundary; its index drops with it and the migration adds
+                # both back.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "DROP COLUMN IF EXISTS decision_id"
+                    )
+                )
                 # ROB-s257 E-2 is later than this reconstructed boundary.
                 # Current metadata already contains its nullable observation
                 # column, so drop it and let the migration add it back.
