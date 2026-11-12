@@ -96,7 +96,7 @@ shiftgate 가 제공하지 않는 것은 5절의 여섯 가지 공백과, 이번
 | `at-haproxy` | 이 스크립트가 없으면 `docker run`, 있으면 SIGHUP. 템플릿을 `sed` 로 치환해 `haproxy.cfg` 를 씀 | **컨테이너 이름과 이미지 유지**, 설정 파일의 작성자·플립 권한이 shiftgate 로 이동(`render` + 런타임 API). 컨테이너 생성은 일회성 호스트 설정(관리자 소켓 디렉터리 마운트 추가) | 컨테이너가 없을 때 만드는 코드는 삭제(호스트 설정 runbook 으로 이동), `haproxy.check` 훅(폐쇄 모양·필수 바인드), 라우트 프로브 | `scripts/deploy-ncp-pull.sh:80` `:517-525`, `shiftgate@847ed56 docs/design.md:142` `:164` |
 | 은퇴 컨테이너 7개(`at-mcp-analysis-readonly`, `-account-read`, `-tradingcodex-execution`, `-paper-001`, `-live-kr`, `-live-us`, `-live-crypto`) | 전진 배포 전에 부재 또는 (정지 + restart `no`)여야 하고 아니면 exit 78. 롤백은 검사하지 않음. 스크립트가 직접 정지하지 않음 | 변경 없음. 포트 8768-8771, 8773-8775 는 새 검토 없이 재사용 금지 | 검사를 그대로 유지(같은 메시지, 같은 exit 78, 변경 전 시점) | `scripts/deploy-ncp-pull.sh:106-115` `:260-283` `:817`, `docs/agent-contracts/mcp-and-analysis-contracts.md:23` |
 | 레거시 `at-api`(단일), 레거시 색 컨테이너 `at-api-blue/green`, `at-mcp-blue/green` | 현재 운영 형태이거나(색) 첫 도입용 부트스트랩(단일 `at-api`) | 컷오버 동안 유지하다가 관찰 창이 끝나면 정지 후 제거(8절). 새 컨테이너는 `shiftgate-*` 이름이라 충돌하지 않는다 | 컷오버 runbook 의 일회성 절차(공백 6) | `scripts/deploy-ncp-pull.sh:537-540` `:359` |
-| 호스트 소비자: `deployed-digest` 읽는 25개 파일, 워치독, pg-backup, Loki 질의 | 위 3절 표 | `deployed-digest(.previous)` 는 **어댑터가 계속 쓴다**(소비자 25개를 건드리지 않음). 워치독은 `shiftgate status --json` 에서 활성 색을 읽고 `shiftgate-at-mcp-<color>` 를 재시작하도록 수정. pg-backup 타이머는 그대로, 릴리스가 `systemctl start` 로 한 번 더 호출 | 위 파일 기록, 워치독 대상 수정(AT-3), Loki 질의 라벨 갱신(AT-5) | `ops/ncp/bin/at-job.sh:8`, `scripts/ncp_mcp_watchdog.py:83-93`, `ops/ncp/systemd/at-pg-backup.service:7-10` |
+| 호스트 소비자: `deployed-digest` 읽는 25개 파일, 워치독, pg-backup, Loki 질의 | 위 3절 표 | `deployed-digest(.previous)` 는 **어댑터가 계속 쓴다**(소비자 25개를 건드리지 않음). 워치독은 **두 출처를 모두** 본다: 레거시(`mcp-active-color` + `at-mcp-<color>` + `mcp-<color>.json`)와 shiftgate(`shiftgate status --json` 의 활성 색 + `shiftgate-at-mcp-<color>` + 별도 하트비트 `mcp-sg-<color>.json`). 각 출처는 자기 이름공간만 판단한다. pg-backup 타이머는 그대로, 릴리스가 `systemctl start` 로 한 번 더 호출 | 위 파일 기록, 워치독 대상 수정(AT-3), Loki 질의 라벨 갱신(AT-5) | `ops/ncp/bin/at-job.sh:8`, `scripts/ncp_mcp_watchdog.py:83-93`, `ops/ncp/systemd/at-pg-backup.service:7-10` |
 
 ### `services.at.yaml` 초안
 
@@ -140,7 +140,7 @@ services:
       MCP_PATH: /mcp
       MCP_USER_ID: "1"
       AUTO_TRADER_COLOR: "{color}"
-      MCP_HEARTBEAT_PATH: /var/run/auto-trader/mcp-heartbeat/mcp-{color}.json
+      MCP_HEARTBEAT_PATH: /var/run/auto-trader/mcp-heartbeat/mcp-sg-{color}.json   # 레거시 mcp-<color>.json 과 이름공간 분리
     run_args: ["-v", "/root/at-run/mcp-heartbeat:/var/run/auto-trader/mcp-heartbeat", "-v", "/etc/machine-id:/etc/machine-id:ro"]
     args: ["python", "-m", "app.mcp_server.main"]
     health: {http: /health, timeout: 60s, interval: 2s}
@@ -198,7 +198,7 @@ services:
 | # | 공백 | 처리 |
 |---|---|---|
 | 7 | `follow` 가 CI 게이트·승인 보류를 우회한다(`shiftgate@847ed56 README.md:228-244`) | AT 에 `follow` 를 스케줄하지 않는다(원칙 3). 직접 호출은 root 운영자 경로이고 지금의 `docker run` 직접 호출과 같은 신뢰 수준이라 새 경계가 아니다. 게이트 훅(`follow --gate-cmd`)은 만들지 않는다 |
-| 8 | 드레인이 CLI 를 막는다: `drainAndStop` 대기 루프는 ctx 취소를 확인하지 않고 `drain_timeout` 까지 돈다(`shiftgate@847ed56 internal/deploy/deploy.go:544-562`, `docs/design.md:205-208`). `at-mcp` 는 1시간이고 그동안 서비스 잠금이 잡혀 `rollback` 이 exit 75 가 된다 | 어댑터가 `at-mcp` 배포를 **마지막 단계**에서 백그라운드 자식으로 실행하고 `status --json` 의 `active.digest` 변화와 `pending` 소멸(커밋)을 폴링한다. 드레인 중 롤백이 필요하면 자식 프로세스(PID 를 영수증에 기록)를 SIGKILL 한 뒤 `shiftgate rollback`. 커밋 후 SIGKILL 이 안전하다는 것은 코드 읽기에서 나온 추론이다 **[INFERENCE]**(`flock` 은 커널이 해제, 상태는 이미 커밋). SG-3 이 정리한다 |
+| 8 | 드레인이 CLI 를 막는다: `drainAndStop` 대기 루프는 ctx 취소를 확인하지 않고 `drain_timeout` 까지 돈다(`shiftgate@847ed56 internal/deploy/deploy.go:544-562`, `docs/design.md:205-208`). `at-mcp` 는 1시간이고 그동안 서비스 잠금이 잡혀 `rollback` 이 exit 75 가 된다 | 어댑터가 `at-mcp` 배포를 **마지막 단계**에서 백그라운드 자식으로 실행한다. **커밋 판정**: 자식을 시작하기 전에 `status --json` 에서 `generation` 과 `active.digest` 를 읽어 두고, (a) `generation` 이 시작값보다 크고 (b) `active.digest` 가 목표이며 (c) `pending` 이 비어 있고 (d) `last_op` 가 이 자식의 `deploy` 일 때만 커밋으로 본다. 같은 digest 재배포에서도 `generation` 이 오르므로 구분된다. 시작 전의 "pending 없음 + 목표 digest" 는 커밋이 아니다. 자식이 커밋 전에 비정상 종료하면 즉시 실패로 처리한다. 커밋 후 자식의 최종 종료 코드는 영수증에 따로 기록하고 0 이 아니면 알린다. 실패·시간 초과 처리는 9절 표(자식을 먼저 정리한 뒤 판정). 드레인 중 롤백이 필요하면 자식 프로세스(PID 를 영수증에 기록)를 SIGKILL 한 뒤 `shiftgate rollback`. 커밋 후 SIGKILL 이 안전하다는 것은 코드 읽기에서 나온 추론이다 **[INFERENCE]**(`flock` 은 커널이 해제, 상태는 이미 커밋). SG-3 이 정리한다 |
 | 9 | `pre_deploy` 는 서비스의 `env_files` 를 그대로 쓴다. #789 이후 마이그레이션 DSN 은 앱 입력에 넣을 수 없다(`docs/runbooks/db-role-cutover.md:310-316` `:322-323`, `AGENTS.md:402-409`) | 마이그레이션을 `pre_deploy` 가 아니라 어댑터 단계로 실행한다(6절). SG-1 이 `pre_deploy.env_files` 를 만들면 옮길 수 있다 |
 | 10 | `prune` 은 서비스별로 자기 keep 집합만 본다. AT 서비스는 모두 같은 이미지 저장소를 쓴다(`shiftgate@847ed56 internal/deploy/ops.go:126-210`) | #934 prune 을 어댑터에 유지하고 `shiftgate prune` 은 스케줄하지 않는다(7절 G35). SG-2 가 합집합 keep 을 만든다 |
 | 11 | 로그 드라이버: shiftgate 는 기본으로 `json-file` 10m×3 을 고정한다(`README.md:169-178`). 지금 AT 컨테이너는 데몬 기본값이고 Loki 가 컨테이너 이름으로 수집한다(`app/mcp_server/README.md:60`) | `log: {driver: daemon}` 으로 시작(D8). **[live check]**: 데몬의 로그 드라이버와 수집기가 이름 변경 `shiftgate-at-*` 를 받는지 |
@@ -211,7 +211,7 @@ services:
 
 1. (사전 점검, 변경 없음) 이미지가 가진 head 리비전과 DB 의 현재 리비전을 읽기 전용으로 비교한다: 마이그레이션 입력으로 `alembic current` 와 `alembic heads`(`docker-compose.migration.yml:14-20` 와 같은 이미지·같은 호스트 네트워크). 같으면 2~3 을 건너뛰고 영수증에 `migration: none` 을 쓴다(멱등).
 2. 다르면 **`--migrate` 가 없을 때 exit 78 로 거부**하고 대기 중 리비전 목록을 출력한다(결정 D3). 마이그레이션은 지금도 배포 스크립트 밖의 운영자 절차이고(`docker-compose.migration.yml:1-2` 마이그레이션 전용 compose, `docs/runbooks/db-role-cutover.md:322` "호스트 배포 스크립트는 Alembic 을 호출하지 않는다") `alembic/versions/**` 변경은 mergewake `deploy_approval` 보류 대상이다(`.mergewake/policy.yaml:196-197`). `--migrate` 는 그 승인이 있었음을 운영자가 명시하는 스위치다.
-3. DB 백업: `systemctl start at-pg-backup.service`(oneshot, 자체 `EnvironmentFile`, 종료 코드를 그대로 받는다: `ops/ncp/systemd/at-pg-backup.service:7-10`). 성공 조건은 종료 코드 0 이다. 종료 코드 3(`remote_failed`: 로컬 덤프와 체크섬은 있으나 원격 미러 실패, `ops/ncp/pg-backup.sh:218-221`)은 기본 거부하고 `--accept-backup-remote-failure REASON`(`--allow-unverified` 와 같은 로깅 방식)으로만 통과한다(결정 D4). 백업 자격증명은 앱·마이그레이션 입력과 분리한다는 규칙을 그대로 지킨다(`docs/runbooks/db-role-cutover.md:323`).
+3. DB 백업: `systemctl start at-pg-backup.service` 를 실행한 뒤 **`systemctl show -p Result -p ExecMainStatus -p ExecMainExitTimestamp at-pg-backup.service`** 로 결과를 읽는다. `systemctl start` 자체의 종료 코드는 스크립트의 종료 코드가 아니라 작업 성공 여부이므로 3 과 다른 실패를 구분하지 못한다. 성공 조건은 `Result=success` 이고 `ExecMainStatus=0` 이며 `ExecMainExitTimestamp` 가 시작 시각 이후(이번 실행의 결과)인 것이다. `ExecMainStatus=3`(`remote_failed`: 로컬 덤프와 체크섬은 있으나 원격 미러 실패, `ops/ncp/pg-backup.sh:218-221`)은 기본 거부하고 `--accept-backup-remote-failure REASON`(`--allow-unverified` 와 같은 로깅 방식)으로만 통과한다(결정 D4). 그 밖의 값과 읽기 실패는 실패다. oneshot 의 `ExecStart` 가 0 이 아니면 `ExecStartPost`(헬스체크 핑)는 실행되지 않으므로 3 일 때 핑이 가지 않는다는 점도 영수증에 남긴다 **[INFERENCE: systemd 동작, AT-2 의 가짜 `systemctl` 테스트와 S0 실행으로 확인]**. 자체 `EnvironmentFile`(`ops/ncp/systemd/at-pg-backup.service:7-10`)을 쓰는 점은 그대로이며, 백업 자격증명은 앱·마이그레이션 입력과 분리한다는 규칙을 지킨다(`docs/runbooks/db-role-cutover.md:323`).
 4. 마이그레이션: 이미지 digest 로 `alembic upgrade head` 를 일회성 컨테이너에서 실행한다. 입력 env 는 `AT_MIGRATION_ENV_FILE`(앱 env 와 다른 파일)이고, 분리 전(#789 Stage 4 이전)에는 기존 기본값을 쓰며 이후에는 `AT_MIGRATION_SET_ROLE=at_migration_owner` 가 필수다. `alembic/env.py:58-77` 이 역할을 확인하고 불일치면 `RuntimeError` 로 실패한다. 어댑터는 그 실패를 그대로 전달하고 역할 값을 만들거나 완화하지 않는다. Stage 4 이후에는 심볼 유니버스 동기화 3개(KR·US·Upbit)가 마이그레이션 직후 **앱 로그인으로 별도 실행**되어야 하는데(`docs/runbooks/db-role-cutover.md:319-321`) 지금처럼 운영자 절차로 남기고 어댑터는 자동 실행하지 않는다. 대신 영수증에 `operator_followup: symbol_sync` 를 남긴다. **[live check]**: Stage 4 가 적용되었는지.
 5. 한 단계라도 실패하면 어떤 서비스도 건드리지 않고 exit 1 이다. 자동 다운그레이드는 없다. 마이그레이션 전후 리비전과 백업 파일 이름·체크섬 파일 이름(경로 아님, 값 아님)을 영수증에 기록한다.
 
@@ -273,7 +273,7 @@ grep -n '^readonly\|^declare\|^[A-Z_]*=' scripts/deploy-ncp-pull.sh      # 상�
 | G26 | 리로드 후 라우트 준비 대기: 루프백 `:8000/healthz`, `:8765/health` 를 20회 × 0.5초 | `:86-87` `:484-495` `:517-525` | adopter hook(라우트 프로브, 공백 3) | `render` 가 프런트엔드를 호출하지 않는다 |
 | G27 | `h3-crypto-paper`·`h3-us-paper` tailnet `/health` 를 MCP 승격 뒤 프로브 | `:122` `:501-515` `:570` | adopter hook(유지) | 컨트랙트 h3 프로필 절 `docs/agent-contracts/mcp-and-analysis-contracts.md:41` `:64`(tailnet 라우트 probe). `tests/scripts/test_deploy_ncp_pull_h3_us_paper.py` |
 | G28 | DEFAULT MCP 만 `/etc/machine-id` 읽기 전용 마운트(B-HOST) | `:561` | shiftgate 설정(`at-mcp` 의 `run_args -v`) | 마운트는 `run_args` 의 허용 대상(`README.md:164-167`). `tests/scripts/test_nhplug_bhost_deploy.py` 의 `MOUNT`·`DEFAULT_COLORS` 를 새 컨테이너 이름으로 갱신 |
-| G29 | 하트비트 디렉터리 `mkdir -p` + `chmod 1777`, `MCP_HEARTBEAT_PATH` | `:83` `:561` `:565` | adopter hook(디렉터리 준비) + shiftgate 설정(`env`, `run_args -v`) | 컨테이너 사용자가 `appuser` 라 쓰기 권한이 필요(`Dockerfile.api:102`) |
+| G29 | 하트비트 디렉터리 `mkdir -p` + `chmod 1777`, `MCP_HEARTBEAT_PATH` | `:83` `:561` `:565` | adopter hook(디렉터리 준비) + shiftgate 설정(`env`, `run_args -v`; shiftgate 쪽 파일 이름은 `mcp-sg-<color>.json`) | 컨테이너 사용자가 `appuser` 라 쓰기 권한이 필요(`Dockerfile.api:102`). 레거시와 같은 `mcp-<color>.json` 을 쓰면 S2 관찰 창에 레거시 blue 가 파일을 계속 갱신해 shiftgate 쪽 정체를 가린다 |
 | G30 | 이전 색의 지연 제거: 컨테이너 ID 를 잡고 detached sleeper 가 드레인 뒤 `docker rm -f`, 롤백이 가드 파일을 지워 취소 | `:81-82` `:530` `:587-601` | **삭제**(대체: `drain_timeout`) | 사유: shiftgate 는 이전 색을 **삭제하지 않고 정지만** 하므로(`shiftgate@847ed56 docs/design.md:163`) 취소할 지연 삭제가 없다. 대기는 `drain_timeout` 이 대신한다. 대가로 CLI 가 막히는 문제(공백 8)는 어댑터 백그라운드 실행으로 처리 |
 | G31 | 컨테이너별 기대 digest 와 실행 중 digest 비교 표, 불일치는 비정상 종료와 롤백 | `:328-351` `:626-631` | adopter hook(유지, `shiftgate status --json` 의 활성 색 digest 를 표에 포함) | 같은 표 형식 유지(`docs/runbooks/ncp-pull-deploy.md:276-280`) |
 | G32 | 실패 시 교체한 유닛을 역순으로 이전 digest 로 복원 | `:353-413` `:612-618` | adopter hook(유지: 싱글톤·고정 유닛) + shiftgate 설정(blue/green 은 `rollback`) | 공백 5, 9절 표 |
@@ -282,7 +282,7 @@ grep -n '^readonly\|^declare\|^[A-Z_]*=' scripts/deploy-ncp-pull.sh      # 상�
 | G35 | 이미지 prune(#934): 방금 배포한 digest·`.previous`·모든 컨테이너가 쓰는 이미지 보존, 저장소가 정확히 일치하는 이미지만 후보, 성공 경로에서만 실행, 읽을 수 없는 입력이면 전부 보존, 경고만, `AT_IMAGE_PRUNE_ENABLED` | `:100` `:672-815` `:817` | adopter hook(유지) | `docs/contracts/task-934-image-prune.md`. `shiftgate prune` 은 서비스별 keep 이라 같은 저장소를 쓰는 AT 서비스에서 서로의 이력 이미지를 후보로 본다(공백 10)며 스케줄하지 않는다. `tests/scripts/test_deploy_ncp_pull_image_prune.py` |
 | G36 | `--dry-run`: 읽기 전용 계획(풀·변경·파일 쓰기 없음), 은퇴 상태·prune 계획 포함, CI 게이트 강제 | `:822-903` | adopter hook(유지 + 마이그레이션 비교·`shiftgate render --dry-run`·`status --json` 포함) | `docs/runbooks/ncp-pull-deploy.md:341-348` |
 | G37 | 레거시 단일 `at-api` 부트스트랩(색 파일이 없으면 제거 후 색 컨테이너로) | `:359` `:537-540` | **삭제**(대체: 컷오버 runbook 의 일회성 절차, 공백 6) | 사유: 한 번만 필요한 경로이고 이전 뒤에는 도달할 수 없다. 컷오버 S3 가 끝나고 레거시 정리 PR(AT-7)에서 코드를 지운다 |
-| G38 | 활성 색 파일 `api-active-color`, `mcp-active-color` 읽기·원자적 쓰기 | `:63-65` `:231-233` `:404-407` | **삭제**(대체: `<state_dir>/<svc>/state.json`) | 사유: 활성 색의 정본이 shiftgate 상태 파일이 된다. 유일한 외부 소비자 `scripts/ncp_mcp_watchdog.py:83` 는 AT-3 에서 `shiftgate status --json` 으로 바꾼다(두 정본을 병행하지 않는다) |
+| G38 | 활성 색 파일 `api-active-color`, `mcp-active-color` 읽기·원자적 쓰기 | `:63-65` `:231-233` `:404-407` | **삭제**(대체: `<state_dir>/<svc>/state.json`) | 사유: 라우팅의 활성 색 정본이 shiftgate 상태 파일이 된다. 어댑터는 이 파일을 더 쓰지 않는다. 외부 소비자 `scripts/ncp_mcp_watchdog.py:83` 는 AT-3 에서 두 출처(레거시 파일이 존재하면 그것, shiftgate 상태에 활성 색이 있으면 그것)를 각자 자기 이름공간으로 감시하도록 바꾼다. 관찰 창 동안 레거시 색 파일은 마지막 값에서 갱신되지 않고(전진 배포 동결), 레거시 출처는 S5 의 AT-7 에서 제거 |
 | G39 | `ORIGINAL_HAPROXY_*` 설정·컨테이너 복원(없었으면 컨테이너 제거) | `:130-132` `:313-316` `:386-403` | shiftgate 설정(`render` 가 `haproxy.cfg.previous` 를 유효할 때만 갱신) + adopter hook(S1 롤백 절차) | 설정 복원은 `services.at.yaml` 되돌리기 + `render`. 컨테이너가 처음부터 없던 경우의 제거는 컷오버 runbook 에만 존재 |
 | G40 | 입력 경로 출력(env 파일·템플릿 경로, 내용 없음) | `:661-665` | adopter hook(유지, 템플릿 대신 `services.at.yaml` 경로·해시와 `shiftgate version` 출력) | 운영자가 호스트 배치와 비교하기 위함 |
 | G41 | 드레인·헬스 노브 `API_DRAIN_SECONDS`, `MCP_DRAIN_SECONDS`, `MCP_HEALTH_*`, `AT_HEALTHZ_*`, `HAPROXY_READY_*` | `:81-90` | shiftgate 설정(`drain_timeout`, `health`) / adopter hook(`HAPROXY_READY_*` 프로브) | 노브는 서비스 파일의 값이 된다. 환경 변수로 바꾸는 경로는 삭제(사유: 배포마다 변하는 값이 아니고 `services.at.yaml` 이 리뷰된 정본) |
@@ -367,7 +367,7 @@ flowchart TD
 | `at-api deploy` 실패(shiftgate exit 1) | shiftgate 가 이전 색 서비스 유지 | 중단 | 1 |
 | worker/싱글톤/고정 유닛 실패 | `at-api` 는 커밋됨 | 싱글톤·고정 유닛을 캡처한 이전 digest 로 복원 + `shiftgate rollback at-api` | 1 |
 | 라우트 프로브 실패(`at-mcp` 앞) | 위와 같음 | 위와 같음 | 1 |
-| `at-mcp deploy` 실패(shiftgate exit 1) 또는 커밋 폴링 시간 초과 | 이전 색 서비스 유지 | 위 복원 + `at-api` 롤백 | 1 |
+| `at-mcp deploy` 실패(shiftgate exit 1), 자식 비정상 종료, 또는 커밋 폴링 시간 초과 | **커밋 여부 미확정일 수 있음**(자식이 flip·커밋 경로에 있거나 마지막 폴링 직후 커밋할 수 있음) | 먼저 자식을 정리한다: 제한 시간(헬스 60초 + flip 30초 + 여유) 동안 종료를 기다리고 남아 있으면 SIGKILL, 이어서 `shiftgate recover at-mcp`(남은 `pending` 해소: `shiftgate@847ed56 docs/design.md:75-88`). 그다음 `status --json` 으로 실제 활성 색·digest·HAProxy 서버 상태를 읽어 판정한다. **이전 색이 서비스 중**이면 위 복원 + `at-api` 롤백. **새 색이 서비스 중**(커밋됨)이면 바로 아래 행 절차(자식은 이미 정리됨). `recover` 가 exit 3 이면 롤백하지 않고 중단 | 1(복구 불가 시 3) |
 | `at-mcp` 커밋 뒤 검증 표·프로브 실패 | 드레인 자식이 서비스 잠금을 잡고 있음 | 자식 PID 를 SIGKILL 한 뒤 `shiftgate rollback at-mcp`, 나머지 복원(공백 8) | 1 |
 | `shiftgate` exit 3 또는 복원 불완전 | 사람이 판단해야 함 | 출력에 `shiftgate recover <svc>` 안내 | 3 |
 | 다른 릴리스 실행 중 | — | 거부 | 75 |
@@ -431,7 +431,7 @@ flowchart TD
 3. `shiftgate deploy at-mcp --digest <지금 실행 중인 digest>`. `blue` 가 뜨고 헬스가 통과한다.
 4. 임시 바인드로 `/health`, 무토큰 `/mcp` 401, 자기 토큰 200 을 확인한다(값 출력 없음).
 5. `at-mcp-legacy` 항목을 지우고 `at-mcp` 의 바인드를 실제 주소로 옮겨 `render`. 라우트 프로브. 레거시 `at-mcp-blue/green` 은 계속 실행한다.
-6. 워치독이 새 컨테이너를 보는지 확인한다(`ncp_mcp_watchdog` 로그의 `mcp.watchdog.skip color=… status=healthy`).
+6. 워치독이 두 출처를 모두 감시하는지 확인한다: 레거시 로그 `mcp.watchdog.skip color=… status=healthy` 와 shiftgate 출처의 같은 형식 로그(`mcp-sg-<color>.json`)가 둘 다 나온다.
 7. 관찰 창을 시작한다. 창이 끝나고 트리거가 없으면 레거시 `at-mcp-blue/green` 을 정지하고 `docker update --restart=no` 한다.
 
 **S3 — `at-api`**
@@ -447,7 +447,7 @@ S2 와 같은 순서(`at-api` 를 임시 바인드에 추가 → `deploy` → `/
 3. **D3 — 마이그레이션 실행 조건.** (A) `--migrate` 가 있을 때만 실행하고 없으면 대기 리비전을 알리며 exit 78. (B) head 가 다르면 자동 실행. **권고 A**: 마이그레이션은 지금도 사람이 승인한 운영자 절차이고 `alembic/versions/**` 가 `deploy_approval` 대상이다(`.mergewake/policy.yaml:196`). 순서(백업 → 마이그레이션 → 배포)만 어댑터가 강제한다.
 4. **D4 — 백업 실패 처리.** (A) 종료 코드 0 만 통과, 3(원격 미러 실패)은 `--accept-backup-remote-failure REASON` 으로만. (B) 3 도 통과. **권고 A**: 로컬 덤프는 있으나 오프호스트 사본이 없는 상태에서의 스키마 변경은 복구 선택지를 줄인다. 오버라이드는 `--allow-unverified` 처럼 사유를 영수증에 남긴다. 마이그레이션 제한 시간(30분)도 이 결정과 함께 확인한다.
 5. **D5 — `at-mcp` 드레인 1시간 처리.** (A) 어댑터가 `at-mcp` 를 마지막에 백그라운드 자식으로 실행하고 커밋을 폴링(공백 8). (B) 포그라운드로 기다림(릴리스당 약 1시간). (C) `at-mcp` 의 `drain_timeout` 단축(동작 변경). **권고 A** + SG-3. B 는 릴리스마다 1시간 점유, C 는 MCP 세션을 더 일찍 끊는다.
-6. **D6 — 워치독.** (A) 활성 색을 `shiftgate status --json` 에서 읽도록 수정(15초 하트비트 정체 규칙 유지). (B) 워치독을 폐기하고 `shiftgate check --heal`(매분, 헬스 기반)로 대체. **권고 A**: 하트비트 정체 판정과 15초 주기를 바꾸지 않는다. `/health` 가 이벤트 루프 생존 프로브이지만(`app/mcp_server/lifecycle.py:44-52`) heal 은 분당 한 번이라 반응이 느리다. 관찰 후 B 를 재평가한다.
+6. **D6 — 워치독.** (A) 두 출처(레거시 파일 + shiftgate 상태)를 각자의 이름공간으로 감시하도록 수정하고 15초 하트비트 정체 규칙을 유지한다. 전환 선택 스위치는 두지 않는다. (B) 워치독을 폐기하고 `shiftgate check --heal`(매분, 헬스 기반)로 대체. **권고 A**: 하트비트 정체 판정과 15초 주기를 바꾸지 않는다. `/health` 가 이벤트 루프 생존 프로브이지만(`app/mcp_server/lifecycle.py:44-52`) heal 은 분당 한 번이라 반응이 느리다. 두 출처 감시는 S1~S2 동안 레거시 MCP 가 감시 밖이 되는 공백과 S2 에서 새 컨테이너가 감시 밖이 되는 공백을 모두 없앤다(트래픽을 받지 않는 쪽이 재시작되어도 무해). 관찰 후 B 를 재평가한다.
 7. **D7 — `shiftgate follow` 금지.** 이 설계는 AT 서비스에 `follow` 를 스케줄하지 않는다(원칙 3, 공백 7). **권고: 동의**. 예외를 두려면 `follow` 앞에 CI 게이트와 승인 보류를 끼우는 shiftgate 변경이 먼저 필요하다.
 8. **D8 — 컨테이너 로그 드라이버.** (A) `log: {driver: daemon}` 으로 시작해 지금과 같은 수집 경로를 유지. (B) shiftgate 기본(`json-file` 10m×3). **권고 A**, **[live check]** 로 데몬 드라이버와 수집기가 `shiftgate-at-*` 이름을 받는지 확인한 뒤 B 를 검토. Loki 질의 라벨은 AT-5 에서 갱신.
 9. **D9 — 서비스 이름과 색 포트.** 서비스 `at-api`, `at-mcp`(컨테이너 `shiftgate-at-api-<color>`), 색 포트 = 바인드 포트 + 10000 / + 20000(18000/28000, 18765/28765). 은퇴 포트 8768-8771, 8773-8775 는 재사용하지 않는다. **권고: 동의**, **[live check]**: `ss -ltn` 으로 충돌 없음, 기존 shiftgate 서비스(handoffkeep 8800 대, factortrail 8820 대와 색 포트)와 겹치지 않음. 레거시 포트와 다르게 해야 공존할 수 있다(공백 6).
@@ -468,7 +468,7 @@ Tier 는 제안이다(T1 = 문서·테스트만, T2 = 호스트 설치물이나 
 | SG-4 | shiftgate | T1 | (선택) `render --probe`: 렌더 후 프런트엔드 응답 확인(공백 3) | — |
 | AT-1 | auto_trader | T2 | `ops/ncp/shiftgate/services.at.yaml`(S1 변형 포함), `haproxy-check.sh`(폐쇄 모양 + `stats socket` 한 줄 허용 + 필수 바인드), 저장소 린트 테스트(비어 있지 않은 `MCP_PROFILE`, 허용 주소만, 와일드카드 없음, 색 포트 규칙, 은퇴 포트 미사용) | — |
 | AT-2 | auto_trader | T2 | 릴리스 pre-deploy 스크립트(`ops/ncp/bin/`): head 비교, 백업 트리거·종료 코드 해석, `--migrate`, 입력 env 요구, 영수증 조각. 가짜 `docker`/`systemctl` 으로 테스트 | — |
-| AT-3 | auto_trader | T2 | `scripts/ncp_mcp_watchdog.py` 가 `shiftgate status --json` 에서 활성 색을 읽고 `shiftgate-at-mcp-<color>` 를 재시작. 폴백 없음: 상태를 읽지 못하면 재시작하지 않고(기존 `invalid_or_missing_active_color` 와 같은 의미) 로그만 남긴다 | — |
+| AT-3 | auto_trader | T2 | `scripts/ncp_mcp_watchdog.py` 가 두 출처를 감시: (1) 레거시: `mcp-active-color` 가 있으면 `at-mcp-<color>` 와 `mcp-<color>.json`(현재 동작 그대로), (2) shiftgate: `shiftgate status --json` 에 `at-mcp` 활성 색이 있으면 `shiftgate-at-mcp-<color>` 와 `mcp-sg-<color>.json`. 한 출처의 부재(상태 없음)는 조용히 건너뛰고, 읽기 실패나 파싱 오류는 그 출처만 건너뛰며 로그를 남긴다(다른 출처 감시는 계속). 폴백으로 다른 출처의 컨테이너를 재시작하지 않는다 | — |
 | AT-4a | auto_trader | T2 | 어댑터 리팩터 1: 릴리스 잠금, 사전 점검(토큰 줄 모양·설치본 일치), 영수증, 라우트 프로브 분리. 동작은 레거시 유지. `tests/scripts/test_deploy_ncp_pull_*` 유지 | AT-1 |
 | AT-4b | auto_trader | T3 | 어댑터 리팩터 2: `at-api`/`at-mcp` 를 shiftgate 로, 고정 유닛·싱글톤은 제자리, 교차 롤백, 백그라운드 `at-mcp` + 커밋 폴링, 정적 미러가 남아 있으면 전진 배포 거부(동결). 가드 표 G01~G44 의 테스트 이동·갱신 | AT-1, AT-2, AT-3, AT-4a (SG-3 은 선택: 없으면 SIGKILL 절차) |
 | AT-5 | auto_trader | T1 | `docs/runbooks/shiftgate-cutover.md`(10절 번호 절차), `ncp-pull-deploy.md`·`ncp-mcp.md` 갱신, `app/mcp_server/README.md:60` 의 컨테이너 라벨 갱신, 컨트랙트 문서 해당 절 갱신 | AT-4b |
