@@ -4,11 +4,18 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any, cast
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.services.decision_evidence import (
+    DecisionEvidence,
+    DecisionEvidenceService,
+    DecisionRung,
+)
 from app.services.invalid_sample_eligibility.cohort import (
     COMPATIBILITY_CALIBRATION_COHORT,
 )
@@ -88,6 +95,30 @@ async def forecast_save(
                 correlation_id=correlation_id,
                 decision_bucket=decision_bucket,
             )
+            if (
+                action == "created"
+                and row.decision_bucket == "deferred_no_action"
+                and instrument_type in {"equity_kr", "equity_us", "crypto"}
+            ):
+                await DecisionEvidenceService(db).record(
+                    DecisionEvidence(
+                        decision_kind="declined",
+                        decided_by=created_by.strip(),
+                        market=cast(Any, instrument_type),
+                        symbol=row.symbol,
+                        decided_at=datetime.now(UTC),
+                        side="buy",
+                        forecast_ids=(row.forecast_id,),
+                        report_item_uuid=(
+                            UUID(str(row.report_item_uuid))
+                            if row.report_item_uuid is not None
+                            else None
+                        ),
+                        policy_version=row.policy_version,
+                    ),
+                    [DecisionRung(rung_index=0, side="buy")],
+                    [],
+                )
             await db.commit()
             await db.refresh(row)
             data = serialize_forecast(row)
