@@ -102,6 +102,7 @@ tests/scripts/test_diagnose_investment_reports.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_mock_session_mcp.py
 tests/scripts/test_native_retirement.py
+tests/scripts/test_ncp_mcp_watchdog.py
 tests/scripts/test_protected_positions.py
 tests/scripts/test_r4_p0_manifest_cli.py
 tests/scripts/test_r4_p0_readiness.py
