@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261112_hk4186_basis"
-down_revision = "20261110_hk3800_account_value"
+down_revision = "20261112_hk4187_retro_decision"
 branch_labels = None
 depends_on = None
 
