@@ -72,10 +72,27 @@ def properties(*names):
     return result
 
 
+def backup_timeout(receipt, stage):
+    receipt.update(
+        backup_exec_main_status="unknown",
+        backup_result="unknown",
+        backup_outcome="unknown",
+        backup_healthcheck_ping="unknown",
+        backup_timeout_lock_warning=TIMEOUT_LOCK_WARNING,
+    )
+    raise RuntimeError(stage + ". " + TIMEOUT_LOCK_WARNING) from None
+
+
 def backup(start_ns, start_monotonic_ns, reason, receipt):
-    old = properties("InvocationID")["InvocationID"]
+    try:
+        old = properties("InvocationID")["InvocationID"]
+    except subprocess.TimeoutExpired:
+        backup_timeout(receipt, "백업 이전 상태 확인 시간 초과")
     # systemctl returns nonzero for a completed oneshot whose process failed.
-    command(["systemctl", "start", SERVICE], check=False)
+    try:
+        command(["systemctl", "start", SERVICE], check=False)
+    except subprocess.TimeoutExpired:
+        backup_timeout(receipt, "백업 시작 요청 시간 초과")
     names = (
         "InvocationID",
         "Result",
@@ -84,7 +101,10 @@ def backup(start_ns, start_monotonic_ns, reason, receipt):
         "ExecMainStartTimestampMonotonic",
         "ExecMainExitTimestampMonotonic",
     )
-    status = properties(*names)
+    try:
+        status = properties(*names)
+    except subprocess.TimeoutExpired:
+        backup_timeout(receipt, "백업 결과 확인 시간 초과")
     if (
         not status["InvocationID"]
         or status["InvocationID"] == old

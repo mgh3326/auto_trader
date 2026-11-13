@@ -244,6 +244,58 @@ def test_main_failure_stays_fail_closed_with_acceptance_reason(setup_fakes):
     assert receipt["accept_backup_remote_failure_used"] is True
 
 
+@pytest.mark.parametrize("timeout_stage", ["preflight", "start", "status"])
+def test_backup_systemctl_timeouts_record_unknown_state_and_lock_warning(
+    monkeypatch, capsys, timeout_stage
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pre_deploy_backup_timeout", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    property_calls = 0
+
+    def fake_properties(*names):
+        nonlocal property_calls
+        property_calls += 1
+        if timeout_stage == "preflight" or (
+            timeout_stage == "status" and property_calls == 2
+        ):
+            raise subprocess.TimeoutExpired(["systemctl", "show"], 1800)
+        return {"InvocationID": "old"}
+
+    def fake_command(args, *, timeout=1800, check=True):
+        if "systemctl" in args:
+            if timeout_stage == "start":
+                raise subprocess.TimeoutExpired(args, timeout)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if "current" in args:
+            output = "old\n"
+        elif "heads" in args:
+            output = "new (head)\n"
+        elif "history" in args:
+            output = "old -> new (head), migration\n"
+        else:
+            raise AssertionError(args)
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(module, "properties", fake_properties)
+    monkeypatch.setattr(module, "command", fake_command)
+    monkeypatch.setattr(module.sys, "argv", [str(SCRIPT), IMAGE, "--migrate"])
+    monkeypatch.setenv("AT_MIGRATION_ENV_FILE", "FAKE_INPUT")
+    with pytest.raises(RuntimeError, match="시간 초과") as raised:
+        module.main()
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["backup_exec_main_status"] == "unknown"
+    assert receipt["backup_result"] == "unknown"
+    assert receipt["backup_outcome"] == "unknown"
+    assert receipt["backup_healthcheck_ping"] == "unknown"
+    assert receipt["backup_timeout_lock_warning"] in str(raised.value)
+    assert "client_connection_check_interval=0" in str(raised.value)
+    assert "잠금을 보유" in str(raised.value)
+
+
 def test_missing_migration_input_fails_before_docker(setup_fakes):
     _, run = setup_fakes
     result, calls = run(AT_MIGRATION_ENV_FILE="")
