@@ -7,6 +7,19 @@ import pytest
 
 from app.services import decision_evidence as de
 
+_real_observation_session = de.observation_session
+
+
+@pytest.fixture(autouse=True)
+def forbid_unmocked_order_databases(monkeypatch):
+    from app.mcp_server.tooling import order_execution
+
+    def forbidden():
+        raise AssertionError("unit test attempted an unmocked database session")
+
+    monkeypatch.setattr(order_execution, "_order_session_factory", forbidden)
+    monkeypatch.setattr(de, "observation_session", forbidden)
+
 
 class Store:
     def __init__(self):
@@ -30,7 +43,9 @@ class Session:
     async def __aexit__(self, *args):
         self.store.events.append("close")
 
-    async def execute(self, sql, values):
+    async def execute(self, sql, values=None):
+        if str(sql).startswith("SELECT set_config"):
+            return
         table = str(sql).split("INSERT INTO review.")[1].split(" ")[0]
         if self.store.fail == table:
             raise RuntimeError("sensitive exception must not be logged")
@@ -43,6 +58,14 @@ class Session:
 
 def rows(store, table):
     return [value for name, value in store.rows if name == table]
+
+
+async def drain_observations():
+    import asyncio
+
+    while pending := list(de._observation_tasks):
+        await asyncio.gather(*pending)
+        await asyncio.sleep(0)
 
 
 async def begin(store, decision_id=None, proposal_id=None):
@@ -165,7 +188,14 @@ async def test_two_decisions_first_refused_then_second_sent(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    [None, "decision_evidence", "decision_order_links", "decision_order_link_outcomes"],
+    [
+        None,
+        "decision_evidence",
+        "decision_order_links",
+        "decision_order_link_outcomes",
+        "setup",
+        "schedule",
+    ],
 )
 async def test_toss_direct_write_failures_preserve_broker_payload_and_response(
     monkeypatch, failure
@@ -188,6 +218,7 @@ async def test_toss_direct_write_failures_preserve_broker_payload_and_response(
     monkeypatch.setattr(toss, "record_buy_exit_plan", AsyncMock())
 
     original_begin = de.begin_order_attempt
+    original_schedule = de.schedule_order_attempt_outcome
 
     async def run(fail):
         monkeypatch.setattr(
@@ -195,7 +226,16 @@ async def test_toss_direct_write_failures_preserve_broker_payload_and_response(
             "begin_order_attempt",
             AsyncMock(return_value=None)
             if fail == "no-link-baseline"
+            else AsyncMock(side_effect=RuntimeError("synthetic setup failure"))
+            if fail == "setup"
             else original_begin,
+        )
+        monkeypatch.setattr(
+            de,
+            "schedule_order_attempt_outcome",
+            MagicMock(side_effect=RuntimeError("synthetic schedule failure"))
+            if fail == "schedule"
+            else original_schedule,
         )
         store = Store()
         store.fail = fail
@@ -214,6 +254,7 @@ async def test_toss_direct_write_failures_preserve_broker_payload_and_response(
             strategy="swing",
             client_order_id_override="same-key",
         )
+        await drain_observations()
         return (
             json.dumps(result, sort_keys=True, default=str),
             client.placed_payloads,
@@ -234,7 +275,14 @@ async def test_toss_direct_write_failures_preserve_broker_payload_and_response(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    [None, "decision_evidence", "decision_order_links", "decision_order_link_outcomes"],
+    [
+        None,
+        "decision_evidence",
+        "decision_order_links",
+        "decision_order_link_outcomes",
+        "setup",
+        "schedule",
+    ],
 )
 async def test_upbit_write_failures_preserve_broker_arguments_and_return(
     monkeypatch, failure
@@ -286,6 +334,7 @@ async def test_upbit_write_failures_preserve_broker_arguments_and_return(
     )
 
     original_begin = de.begin_order_attempt
+    original_schedule = de.schedule_order_attempt_outcome
 
     async def run(fail):
         monkeypatch.setattr(
@@ -293,7 +342,16 @@ async def test_upbit_write_failures_preserve_broker_arguments_and_return(
             "begin_order_attempt",
             AsyncMock(return_value=None)
             if fail == "no-link-baseline"
+            else AsyncMock(side_effect=RuntimeError("synthetic setup failure"))
+            if fail == "setup"
             else original_begin,
+        )
+        monkeypatch.setattr(
+            de,
+            "schedule_order_attempt_outcome",
+            MagicMock(side_effect=RuntimeError("synthetic schedule failure"))
+            if fail == "schedule"
+            else original_schedule,
         )
         store = Store()
         store.fail = fail
@@ -303,7 +361,8 @@ async def test_upbit_write_failures_preserve_broker_arguments_and_return(
 
         async def broker(**kwargs):
             hook = kwargs.pop("pre_send_hook")
-            await hook()
+            if hook is not None:
+                await hook()
             calls.append(kwargs)
             return {"uuid": "broker-1", "market": "KRW-BTC"}
 
@@ -319,6 +378,7 @@ async def test_upbit_write_failures_preserve_broker_arguments_and_return(
             strategy="swing",
             client_order_id="same-key",
         )
+        await drain_observations()
         return json.dumps(result, sort_keys=True, default=str), calls, store
 
     baseline, baseline_calls, _ = await run("no-link-baseline")
@@ -335,7 +395,14 @@ async def test_upbit_write_failures_preserve_broker_arguments_and_return(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    [None, "decision_evidence", "decision_order_links", "decision_order_link_outcomes"],
+    [
+        None,
+        "decision_evidence",
+        "decision_order_links",
+        "decision_order_link_outcomes",
+        "setup",
+        "schedule",
+    ],
 )
 async def test_kis_write_failures_preserve_broker_arguments_and_return(
     monkeypatch, failure
@@ -381,6 +448,7 @@ async def test_kis_write_failures_preserve_broker_arguments_and_return(
     )
 
     original_begin = de.begin_order_attempt
+    original_schedule = de.schedule_order_attempt_outcome
 
     async def run(fail):
         monkeypatch.setattr(
@@ -388,7 +456,16 @@ async def test_kis_write_failures_preserve_broker_arguments_and_return(
             "begin_order_attempt",
             AsyncMock(return_value=None)
             if fail == "no-link-baseline"
+            else AsyncMock(side_effect=RuntimeError("synthetic setup failure"))
+            if fail == "setup"
             else original_begin,
+        )
+        monkeypatch.setattr(
+            de,
+            "schedule_order_attempt_outcome",
+            MagicMock(side_effect=RuntimeError("synthetic schedule failure"))
+            if fail == "schedule"
+            else original_schedule,
         )
         store = Store()
         store.fail = fail
@@ -398,7 +475,8 @@ async def test_kis_write_failures_preserve_broker_arguments_and_return(
 
         async def broker(**kwargs):
             hook = kwargs.pop("pre_send_hook")
-            await hook()
+            if hook is not None:
+                await hook()
             calls.append(kwargs)
             return {"odno": "broker-1", "rt_cd": "0"}
 
@@ -414,6 +492,7 @@ async def test_kis_write_failures_preserve_broker_arguments_and_return(
             strategy="swing",
             client_order_id="same-key",
         )
+        await drain_observations()
         return json.dumps(result, sort_keys=True, default=str), calls, store
 
     baseline, baseline_calls, _ = await run("no-link-baseline")
@@ -496,6 +575,7 @@ async def test_toss_proposals_refused_then_sent_with_failures(
         result = await toss._toss_place_order_impl(**args)
     assert result["success"] is True
     assert len(client.placed_payloads) == 1
+    await drain_observations()
     outcome = {
         r["attempt_id"]: r["outcome"]
         for r in rows(store, "decision_order_link_outcomes")
@@ -681,7 +761,7 @@ async def test_timeout_keeps_background_write_and_logs_late_exception(
     monkeypatch.setattr(de, "_OBSERVATION_TIMEOUT", 0.01)
 
     class SlowSession(Session):
-        async def execute(self, sql, values):
+        async def execute(self, sql, values=None):
             await release.wait()
             raise RuntimeError("sensitive late failure")
 
@@ -842,7 +922,7 @@ async def test_toss_proceeds_before_slow_link_finishes_and_late_error_is_redacte
     store = Store()
 
     class SlowSession(Session):
-        async def execute(self, sql, values):
+        async def execute(self, sql, values=None):
             if "review.decision_evidence " in str(sql):
                 await release.wait()
                 raise RuntimeError("late sensitive text")
@@ -1004,7 +1084,7 @@ async def test_non_live_execution_surfaces_do_not_write_live_evidence(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_late_attempt_commit_after_lost_outcome_stays_unconfirmed(monkeypatch):
+async def test_late_attempt_commit_precedes_deferred_sent_outcome(monkeypatch):
     import asyncio
 
     release = asyncio.Event()
@@ -1012,7 +1092,9 @@ async def test_late_attempt_commit_after_lost_outcome_stays_unconfirmed(monkeypa
     monkeypatch.setattr(de, "_OBSERVATION_TIMEOUT", 0.01)
 
     class DelayedLinkSession(Session):
-        async def execute(self, sql, values):
+        async def execute(self, sql, values=None):
+            if str(sql).startswith("SELECT set_config"):
+                return
             table = str(sql).split("INSERT INTO review.")[1].split(" ")[0]
             if table == "decision_order_links":
                 await release.wait()
@@ -1038,11 +1120,10 @@ async def test_late_attempt_commit_after_lost_outcome_stays_unconfirmed(monkeypa
     assert attempt is not None
     assert rows(store, "decision_order_links") == []
     await de.finish_order_attempt(lambda: DelayedLinkSession(store), attempt, "sent")
-    pending = list(de._observation_tasks)
     release.set()
-    await asyncio.gather(*pending)
+    await drain_observations()
     assert len(rows(store, "decision_order_links")) == 1
-    assert rows(store, "decision_order_link_outcomes") == []
+    assert rows(store, "decision_order_link_outcomes")[0]["outcome"] == "sent"
 
 
 @pytest.mark.asyncio
@@ -1052,9 +1133,10 @@ async def test_stalled_observation_does_not_accumulate_connections(monkeypatch, 
     release = asyncio.Event()
     store = Store()
     monkeypatch.setattr(de, "_OBSERVATION_TIMEOUT", 0.01)
+    monkeypatch.setattr(de, "_MAX_OBSERVATION_TASKS", 2)
 
     class HeldSession(Session):
-        async def execute(self, sql, values):
+        async def execute(self, sql, values=None):
             await release.wait()
             await super().execute(sql, values)
 
@@ -1085,13 +1167,27 @@ async def test_stalled_observation_does_not_accumulate_connections(monkeypatch, 
         decision_id=None,
         proposal_flow=False,
     )
-    assert second is None
-    assert store.events == ["open"]
+    assert second is not None
+    third = await de.begin_order_attempt(
+        lambda: HeldSession(store),
+        account_mode="kis_live",
+        market="equity_kr",
+        symbol="005006",
+        side="buy",
+        strategy=None,
+        send_key="c",
+        proposal_id=None,
+        rung_index=None,
+        decision_id=None,
+        proposal_flow=False,
+    )
+    assert third is None
+    assert store.events == ["open", "open"]
     assert "reason=writer_busy" in caplog.text
     pending = list(de._observation_tasks)
     release.set()
     await asyncio.gather(*pending)
-    assert len(rows(store, "decision_order_links")) == 1
+    assert len(rows(store, "decision_order_links")) == 2
 
 
 def test_observation_uses_dedicated_nonpooled_engine(monkeypatch):
@@ -1109,8 +1205,387 @@ def test_observation_uses_dedicated_nonpooled_engine(monkeypatch):
     maker = MagicMock(return_value=factory)
     monkeypatch.setattr(de, "create_async_engine", constructor)
     monkeypatch.setattr(de, "async_sessionmaker", maker)
-    assert de.observation_session() == "fake-session"
+    assert _real_observation_session() == "fake-session"
     constructor.assert_called_once_with(
-        "postgresql+asyncpg://unused.invalid/test", poolclass=NullPool
+        "postgresql+asyncpg://unused.invalid/test",
+        poolclass=NullPool,
+        connect_args={"timeout": 5.0, "command_timeout": 5.0},
     )
     maker.assert_called_once_with(engine, expire_on_commit=False)
+
+
+@pytest.mark.asyncio
+async def test_toss_ledger_is_not_delayed_by_blocked_sent_observation(monkeypatch):
+    import asyncio
+
+    from app.core.config import settings
+    from app.mcp_server.tooling import orders_toss_variants as toss
+    from tests.test_mcp_toss_order_variants import MockTossClient
+
+    release = asyncio.Event()
+    outcome_started = asyncio.Event()
+    store = Store()
+
+    class BlockedOutcomeSession(Session):
+        async def execute(self, sql, values=None):
+            if "INSERT INTO review.decision_order_link_outcomes " in str(sql):
+                outcome_started.set()
+                await release.wait()
+            await super().execute(sql, values)
+
+    monkeypatch.setattr(de, "observation_session", lambda: BlockedOutcomeSession(store))
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(settings, "toss_approval_hash_mode", "off")
+    monkeypatch.setattr(toss, "validate_toss_api_config", lambda: [])
+    ledger = AsyncMock(return_value={"ledger_id": 1, "broker_status": "accepted"})
+    monkeypatch.setattr(toss, "record_toss_place_order", ledger)
+    monkeypatch.setattr(toss, "record_buy_exit_plan", AsyncMock())
+    client = MockTossClient(monkeypatch)
+    try:
+        result = await asyncio.wait_for(
+            toss._toss_place_order_impl(
+                symbol="AAPL",
+                side="buy",
+                quantity="2",
+                price="190",
+                market="us",
+                dry_run=False,
+                confirm=True,
+                account_mode="toss_live",
+                thesis="entry",
+                strategy="swing",
+                client_order_id_override="same-key",
+            ),
+            timeout=0.5,
+        )
+        assert result["success"] is True
+        assert len(client.placed_payloads) == 1
+        ledger.assert_awaited_once()
+        await asyncio.wait_for(outcome_started.wait(), timeout=0.5)
+        assert rows(store, "decision_order_link_outcomes") == []
+    finally:
+        release.set()
+        await drain_observations()
+    assert rows(store, "decision_order_link_outcomes")[0]["outcome"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_observation_sets_transaction_local_database_timeouts():
+    store = Store()
+
+    class InspectSession(Session):
+        async def execute(self, sql, values=None):
+            if str(sql).startswith("SELECT set_config"):
+                store.events.append(str(sql))
+            await super().execute(sql, values)
+
+    attempt = await de.begin_order_attempt(
+        lambda: InspectSession(store),
+        account_mode="kis_live",
+        market="equity_kr",
+        symbol="005930",
+        side="buy",
+        strategy=None,
+        send_key="key",
+        proposal_id=None,
+        rung_index=None,
+        decision_id=None,
+        proposal_flow=False,
+    )
+    await de.finish_order_attempt(lambda: InspectSession(store), attempt, "sent")
+    commands = [
+        event for event in store.events if event.startswith("SELECT set_config")
+    ]
+    assert len(commands) == 2
+    assert all("'lock_timeout', '1000ms', true" in sql for sql in commands)
+    assert all("'statement_timeout', '5000ms', true" in sql for sql in commands)
+
+
+@pytest.mark.asyncio
+async def test_upbit_transport_wrapper_preserves_original_order_arguments(monkeypatch):
+    from app.mcp_server.tooling import order_execution as order
+
+    broker = AsyncMock(return_value={"uuid": "fake"})
+    monkeypatch.setattr(order.upbit_service, "place_buy_order", broker)
+    monkeypatch.setattr(
+        order.upbit_service, "adjust_price_to_upbit_unit", lambda value: value
+    )
+    await order._execute_crypto_order(
+        "KRW-BTC", "buy", "limit", 1.0, 100.0, identifier="same", pre_send_hook=None
+    )
+    baseline = broker.await_args
+    hook = de.AttemptSendHook(None)
+    await order._execute_crypto_order(
+        "KRW-BTC", "buy", "limit", 1.0, 100.0, identifier="same", pre_send_hook=hook
+    )
+    observed = broker.await_args
+    assert baseline.args == observed.args
+    assert baseline.kwargs == {"identifier": "same", "pre_send_hook": None}
+    assert observed.kwargs == {"identifier": "same", "pre_send_hook": hook}
+    assert await hook() is None
+    assert hook.post_count == 1
+
+
+@pytest.mark.asyncio
+async def test_proposal_context_import_failure_does_not_block_submission(
+    monkeypatch, caplog
+):
+    import builtins
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.order_proposals.revalidation import revalidate_and_submit
+    from tests.services.order_proposals.test_approval_window import (
+        _allowed_window_evaluator,
+        _FakeRevalidationService,
+    )
+
+    now = datetime(2026, 7, 22, 14, tzinfo=UTC)
+    service = _FakeRevalidationService(valid_until=now + timedelta(hours=1))
+    calls = []
+
+    async def place(**kwargs):
+        calls.append(kwargs["dry_run"])
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "100",
+                "quantity": "1",
+            }
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "broker-1",
+            "correlation_id": "corr-1",
+            "idempotency_key": "idem-1",
+            "approval_hash_digest": "digest-1",
+        }
+
+    original = builtins.__import__
+
+    def fail_context(name, *args, **kwargs):
+        if name == "app.mcp_server.tooling.orders_toss_variants":
+            raise ImportError("sensitive detail")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_context)
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=service.group.proposal_id,
+        now=now,
+        place_order_fn=place,
+        correlation_mint=lambda **kwargs: "corr-1",
+        window_evaluator=_allowed_window_evaluator,
+        now_fn=lambda: now,
+        expected_policy_stamp=(
+            await _allowed_window_evaluator(service.group, now=now)
+        ).policy_stamp,
+    )
+    assert calls == [True, False]
+    assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
+    assert "reason=context_unavailable" in caplog.text
+    assert "sensitive detail" not in caplog.text
+
+
+@pytest.mark.parametrize("phase", ["enter", "exit"])
+def test_context_binding_errors_do_not_replace_submission_result(
+    monkeypatch, caplog, phase
+):
+    from app.mcp_server.tooling import orders_toss_variants as toss
+    from app.services.order_proposals.revalidation import _optional_order_link_context
+
+    class BrokenBinding:
+        def __enter__(self):
+            if phase == "enter":
+                raise RuntimeError("private context detail")
+
+        def __exit__(self, *args):
+            if phase == "exit":
+                raise RuntimeError("private context detail")
+
+    monkeypatch.setattr(
+        toss, "_bind_order_proposal_context", lambda **kwargs: BrokenBinding()
+    )
+    calls = []
+    with _optional_order_link_context():
+        calls.append("submit")
+    assert calls == ["submit"]
+    assert "private context detail" not in caplog.text
+    assert "reason=context_" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_toss_outcome_setup_exception_preserves_freshness_refusal(
+    monkeypatch, caplog
+):
+    from app.core.config import settings
+    from app.mcp_server.tooling import orders_toss_variants as toss
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+    from tests.test_mcp_toss_order_variants import MockTossClient
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(settings, "toss_approval_hash_mode", "off")
+    monkeypatch.setattr(toss, "validate_toss_api_config", lambda: [])
+    monkeypatch.setattr(de, "begin_order_attempt", AsyncMock(return_value=uuid4()))
+    monkeypatch.setattr(
+        de,
+        "finish_order_attempt",
+        AsyncMock(side_effect=RuntimeError("private outcome detail")),
+    )
+    client = MockTossClient(monkeypatch)
+    error = PreSendFreshnessError(("stale",))
+
+    async def blocked():
+        raise error
+
+    with (
+        toss._bind_toss_pre_send_hook(blocked),
+        pytest.raises(PreSendFreshnessError) as caught,
+    ):
+        await toss._toss_place_order_impl(
+            symbol="AAPL",
+            side="buy",
+            quantity="2",
+            price="190",
+            market="us",
+            dry_run=False,
+            confirm=True,
+            account_mode="toss_live",
+            thesis="entry",
+            strategy="swing",
+            client_order_id_override="same-key",
+        )
+    assert caught.value is error
+    assert client.placed_payloads == []
+    assert "reason=outcome_setup_failed" in caplog.text
+    assert "private outcome detail" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_kis_ledger_is_not_delayed_by_blocked_sent_observation(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import kis_live_ledger
+    from app.mcp_server.tooling import order_execution as order
+    from tests.services.protected_quantity.test_guard_wiring import _execute_kwargs
+
+    release = asyncio.Event()
+    outcome_started = asyncio.Event()
+    store = Store()
+
+    class BlockedOutcomeSession(Session):
+        async def execute(self, sql, values=None):
+            if "INSERT INTO review.decision_order_link_outcomes " in str(sql):
+                outcome_started.set()
+                await release.wait()
+            await super().execute(sql, values)
+
+    monkeypatch.setattr(de, "observation_session", lambda: BlockedOutcomeSession(store))
+    monkeypatch.setattr(order, "_order_session_factory", lambda: store.session)
+    reservation = AsyncMock(return_value=1)
+    monkeypatch.setattr(
+        order, "OrderSendIntentService", lambda _: SimpleNamespace(reserve=reservation)
+    )
+    hook = de.AttemptSendHook(None)
+    hook.attempt_id = uuid4()
+
+    async def broker(**kwargs):
+        await kwargs["pre_send_hook"]()
+        return {"rt_cd": "0", "odno": "fake-order"}
+
+    monkeypatch.setattr(order, "_execute_order", broker)
+    monkeypatch.setattr(order, "_record_order_history", AsyncMock())
+    ledger = AsyncMock(return_value={"success": True, "broker_status": "accepted"})
+    monkeypatch.setattr(kis_live_ledger, "_record_kis_live_order", ledger)
+    kwargs = _execute_kwargs()
+    kwargs.update(side="buy", order_quantity=1.0, is_mock=False, pre_send_hook=hook)
+    try:
+        result = await asyncio.wait_for(
+            order._execute_and_record(**kwargs), timeout=0.5
+        )
+        assert result["success"] is True
+        reservation.assert_awaited_once()
+        ledger.assert_awaited_once()
+        await asyncio.wait_for(outcome_started.wait(), timeout=0.5)
+        assert rows(store, "decision_order_link_outcomes") == []
+    finally:
+        release.set()
+        await drain_observations()
+    assert rows(store, "decision_order_link_outcomes")[0]["outcome"] == "sent"
+
+
+def test_observation_context_preserves_submit_exception_and_resets_binding():
+    from app.mcp_server.tooling.orders_toss_variants import _order_proposal_context
+    from app.services.order_proposals.revalidation import _optional_order_link_context
+
+    original = RuntimeError("original submit error")
+    with pytest.raises(RuntimeError) as captured:
+        with _optional_order_link_context(
+            client_order_id="test",
+            correlation_id=None,
+            rung=0,
+            proposal_id=uuid4(),
+            rung_index=0,
+            decision_id=uuid4(),
+        ):
+            assert _order_proposal_context.get() is not None
+            raise original
+    assert captured.value is original
+    assert _order_proposal_context.get() is None
+
+
+@pytest.mark.asyncio
+async def test_upbit_outcome_setup_exception_preserves_approval_refusal(
+    monkeypatch, caplog
+):
+    from types import SimpleNamespace
+
+    from app.core.config import settings
+    from app.mcp_server.tooling import order_execution as order
+
+    monkeypatch.setattr(settings, "order_approval_hash_mode", "required")
+    monkeypatch.setattr(de, "begin_order_attempt", AsyncMock(return_value=uuid4()))
+    monkeypatch.setattr(
+        de,
+        "finish_order_attempt",
+        AsyncMock(side_effect=RuntimeError("private outcome detail")),
+    )
+    monkeypatch.setattr(
+        order,
+        "_get_crypto_trade_cooldown_service",
+        lambda: SimpleNamespace(is_in_cooldown=AsyncMock(return_value=False)),
+    )
+    monkeypatch.setattr(order, "_fetch_current_price", AsyncMock(return_value=100.0))
+    monkeypatch.setattr(
+        order,
+        "_build_preview",
+        AsyncMock(
+            return_value={"price": 100.0, "quantity": 1.0, "estimated_value": 100.0}
+        ),
+    )
+    monkeypatch.setattr(
+        order, "_check_balance_and_warn", AsyncMock(return_value=(None, None))
+    )
+    monkeypatch.setattr(
+        order, "evaluate_sector_concentration", AsyncMock(return_value={})
+    )
+    broker = AsyncMock()
+    monkeypatch.setattr(order, "_execute_order", broker)
+    result = await order._place_order_impl(
+        symbol="KRW-BTC",
+        side="buy",
+        market="crypto",
+        quantity=1.0,
+        price=100.0,
+        dry_run=False,
+        thesis="entry",
+        strategy="swing",
+        client_order_id="same-key",
+    )
+    assert result["error_code"] == "approval_hash_required"
+    broker.assert_not_awaited()
+    assert "reason=outcome_setup_failed" in caplog.text
+    assert "private outcome detail" not in caplog.text

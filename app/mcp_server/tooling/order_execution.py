@@ -394,8 +394,8 @@ async def _execute_kr_order(
 
     assert kis is not None
 
-    # ROB-843 P1: only thread the hook when present (mock scalping). The live /
-    # normal path passes no callback at all → byte-for-byte identical behavior.
+    # The live observation wrapper preserves the original hook and counts sends.
+    # Mock paths keep their original hook behavior.
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if send_outcome is not None:
         hook_kw["send_outcome"] = send_outcome
@@ -491,7 +491,7 @@ async def _execute_us_order(
     kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
-    # ROB-843 P1: pass the hook only when present (live/normal path unchanged).
+    # Pass the live observation wrapper or the original mock hook when present.
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if side == "buy":
         return await _call_kis(
@@ -1493,25 +1493,33 @@ async def _execute_and_record(
 
     observed_attempt_id = getattr(pre_send_hook, "attempt_id", None)
     if observed_attempt_id is not None:
-        from app.mcp_server.tooling.kis_live_ledger import _derive_live_send_status
-        from app.services.decision_evidence import (
-            finish_order_attempt,
-            observation_session,
-        )
-
-        if market_type == "crypto":
-            accepted = bool(execution_result.get("uuid"))
-        else:
-            order_no = execution_result.get("odno") or execution_result.get("ord_no")
-            accepted = (
-                _derive_live_send_status(
-                    rt_cd=str(execution_result.get("rt_cd", "")) or None,
-                    order_no=str(order_no) if order_no else None,
-                )
-                == "accepted"
+        try:
+            from app.mcp_server.tooling.kis_live_ledger import _derive_live_send_status
+            from app.services.decision_evidence import (
+                observation_session,
+                schedule_order_attempt_outcome,
             )
-        if accepted:
-            await finish_order_attempt(observation_session, observed_attempt_id, "sent")
+
+            if market_type == "crypto":
+                accepted = bool(execution_result.get("uuid"))
+            else:
+                order_no = execution_result.get("odno") or execution_result.get(
+                    "ord_no"
+                )
+                accepted = (
+                    _derive_live_send_status(
+                        rt_cd=str(execution_result.get("rt_cd", "")) or None,
+                        order_no=str(order_no) if order_no else None,
+                    )
+                    == "accepted"
+                )
+            if accepted:
+                schedule_order_attempt_outcome(
+                    observation_session, observed_attempt_id, "sent"
+                )
+
+        except Exception:  # noqa: BLE001 - observation setup never gates orders
+            logger.error("decision_order_evidence reason=outcome_setup_failed")
 
     await _record_order_history(
         symbol=normalized_symbol,
@@ -2298,32 +2306,37 @@ async def _place_order_impl(
             preview_resp["idempotency_key"] = idempotency_key
             return preview_resp
 
-        from app.mcp_server.tooling.orders_toss_variants import _order_proposal_context
-        from app.services.decision_evidence import (
-            AttemptSendHook,
-            begin_order_attempt,
-            finish_order_attempt,
-            observation_session,
-        )
-
         attempt_hook = None
-        if not is_mock:
-            context = _order_proposal_context.get()
-            attempt_id = await begin_order_attempt(
-                observation_session,
-                account_mode="upbit" if market_type == "crypto" else "kis_live",
-                market=market_type,
-                symbol=normalized_symbol,
-                side=side_lower,
-                strategy=strategy,
-                send_key=idempotency_key,
-                proposal_id=context.proposal_id if context else None,
-                rung_index=context.rung_index if context else None,
-                decision_id=context.decision_id if context else None,
-                proposal_flow=proposal_flow,
+        try:
+            from app.mcp_server.tooling.orders_toss_variants import (
+                _order_proposal_context,
             )
-            attempt_hook = AttemptSendHook(pre_send_hook)
-            attempt_hook.attempt_id = attempt_id
+            from app.services.decision_evidence import (
+                AttemptSendHook,
+                begin_order_attempt,
+                finish_order_attempt,
+                observation_session,
+            )
+
+            if not is_mock:
+                context = _order_proposal_context.get()
+                attempt_id = await begin_order_attempt(
+                    observation_session,
+                    account_mode="upbit" if market_type == "crypto" else "kis_live",
+                    market=market_type,
+                    symbol=normalized_symbol,
+                    side=side_lower,
+                    strategy=strategy,
+                    send_key=idempotency_key,
+                    proposal_id=context.proposal_id if context else None,
+                    rung_index=context.rung_index if context else None,
+                    decision_id=context.decision_id if context else None,
+                    proposal_flow=proposal_flow,
+                )
+                attempt_hook = AttemptSendHook(pre_send_hook)
+                attempt_hook.attempt_id = attempt_id
+        except Exception:  # noqa: BLE001 - observation setup never gates orders
+            logger.error("decision_order_evidence reason=attempt_setup_failed")
         try:
             # Live send — approval-hash gate (valid hash = confirm).
             mode = getattr(settings, "order_approval_hash_mode", "optional")
@@ -2479,11 +2492,14 @@ async def _place_order_impl(
                 and attempt_hook.attempt_id is not None
                 and attempt_hook.post_count == 0
             ):
-                await finish_order_attempt(
-                    observation_session,
-                    attempt_hook.attempt_id,
-                    "proven_not_sent",
-                )
+                try:
+                    await finish_order_attempt(
+                        observation_session,
+                        attempt_hook.attempt_id,
+                        "proven_not_sent",
+                    )
+                except Exception:  # noqa: BLE001 - keep the original refusal
+                    logger.error("decision_order_evidence reason=outcome_setup_failed")
     except Exception as exc:
         logger.exception(
             "place_order execution failed (symbol=%s side=%s market=%s): %s",

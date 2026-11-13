@@ -29,6 +29,7 @@ import logging
 import re
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -626,6 +627,29 @@ def _adapt_live_submit_response(
     # existing ambiguous-response fallback (`record_unverified`) still
     # applies to whatever shape falls through here.
     return submit
+
+
+@contextmanager
+def _optional_order_link_context(**kwargs: Any):
+    """Bind observational identity without making it a submission gate."""
+    try:
+        from app.mcp_server.tooling.orders_toss_variants import (
+            _bind_order_proposal_context,
+        )
+
+        binding = _bind_order_proposal_context(**kwargs)
+        binding.__enter__()
+    except Exception:  # noqa: BLE001 - observation must not gate submission
+        logger.error("decision_order_evidence reason=context_unavailable")
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            binding.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001 - observation must not replace the result
+            logger.error("decision_order_evidence reason=context_cleanup_failed")
 
 
 async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
@@ -1460,10 +1484,8 @@ async def _revalidate_place_rung(
         ),
     )
 
-    from app.mcp_server.tooling.orders_toss_variants import _bind_order_proposal_context
-
     try:
-        with _bind_order_proposal_context(
+        with _optional_order_link_context(
             client_order_id=str(proposal_client_order_id or ""),
             correlation_id=corr,
             rung=rung_index,
@@ -2137,10 +2159,8 @@ async def _revalidate_replace_rung(
         expected_policy_stamp=expected_policy_stamp,
         now_fn=now_fn,
     )
-    from app.mcp_server.tooling.orders_toss_variants import _bind_order_proposal_context
-
     try:
-        with _bind_order_proposal_context(
+        with _optional_order_link_context(
             client_order_id=str(proposal_client_order_id or ""),
             correlation_id=corr,
             rung=rung_index,

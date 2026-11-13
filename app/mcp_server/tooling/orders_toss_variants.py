@@ -1657,30 +1657,34 @@ async def _toss_place_order_impl(
     client_order_id = client_order_id_override or derive_client_order_id(
         canonical, market=mkt, now=now, rung=rung
     )
-    from app.services.decision_evidence import (
-        AttemptSendHook,
-        begin_order_attempt,
-        finish_order_attempt,
-        observation_session,
-    )
-
     attempt_id = None
     attempt_hook = None
-    if not dry_run:
-        attempt_id = await begin_order_attempt(
+    try:
+        from app.services.decision_evidence import (
+            AttemptSendHook,
+            begin_order_attempt,
+            finish_order_attempt,
             observation_session,
-            account_mode="toss_live",
-            market=f"equity_{mkt}",
-            symbol=symbol,
-            side=side,
-            strategy=strategy,
-            send_key=client_order_id,
-            proposal_id=proposal_context.proposal_id if proposal_context else None,
-            rung_index=proposal_context.rung_index if proposal_context else None,
-            decision_id=proposal_context.decision_id if proposal_context else None,
-            proposal_flow=proposal_context is not None,
+            schedule_order_attempt_outcome,
         )
-        attempt_hook = AttemptSendHook(_toss_pre_send_hook.get())
+
+        if not dry_run:
+            attempt_id = await begin_order_attempt(
+                observation_session,
+                account_mode="toss_live",
+                market=f"equity_{mkt}",
+                symbol=symbol,
+                side=side,
+                strategy=strategy,
+                send_key=client_order_id,
+                proposal_id=proposal_context.proposal_id if proposal_context else None,
+                rung_index=proposal_context.rung_index if proposal_context else None,
+                decision_id=proposal_context.decision_id if proposal_context else None,
+                proposal_flow=proposal_context is not None,
+            )
+            attempt_hook = AttemptSendHook(None)
+    except Exception:  # noqa: BLE001 - observation setup never gates orders
+        logger.error("decision_order_evidence reason=attempt_setup_failed")
     try:
         ledger_approval_hash = derive_approval_digest(canonical)
 
@@ -2028,7 +2032,10 @@ async def _toss_place_order_impl(
                         "error_code": "sell_quantity_required",
                     }
 
-            pre_send_hook = attempt_hook
+            pre_send_hook = _toss_pre_send_hook.get()
+            if attempt_hook is not None:
+                attempt_hook.hook = pre_send_hook
+                pre_send_hook = attempt_hook
 
             res = None
             response: dict[str, Any] | None = None
@@ -2048,7 +2055,14 @@ async def _toss_place_order_impl(
                         pre_send_hook=pre_send_hook,
                     )
                 if attempt_id is not None:
-                    await finish_order_attempt(observation_session, attempt_id, "sent")
+                    try:
+                        schedule_order_attempt_outcome(
+                            observation_session, attempt_id, "sent"
+                        )
+                    except Exception:  # noqa: BLE001 - never gate accepted orders
+                        logger.error(
+                            "decision_order_evidence reason=outcome_setup_failed"
+                        )
                 if side == "sell":
                     await _invalidate_sellable_after_sell_mutation(symbol)
                 raw_response = {
@@ -2158,9 +2172,12 @@ async def _toss_place_order_impl(
             and attempt_hook is not None
             and attempt_hook.post_count == 0
         ):
-            await finish_order_attempt(
-                observation_session, attempt_id, "proven_not_sent"
-            )
+            try:
+                await finish_order_attempt(
+                    observation_session, attempt_id, "proven_not_sent"
+                )
+            except Exception:  # noqa: BLE001 - keep the original refusal
+                logger.error("decision_order_evidence reason=outcome_setup_failed")
 
 
 async def toss_place_order(

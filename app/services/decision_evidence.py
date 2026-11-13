@@ -204,7 +204,9 @@ class DecisionEvidenceService:
 
 
 _OBSERVATION_TIMEOUT = 1.0
+_MAX_OBSERVATION_TASKS = 8
 _observation_tasks: set[asyncio.Task] = set()
+_pending_attempts: dict[UUID, asyncio.Task] = {}
 _observation_sessions = None
 
 
@@ -214,13 +216,17 @@ def observation_session():
     if _observation_sessions is None:
         from app.core.config import settings
 
-        engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+        engine = create_async_engine(
+            settings.DATABASE_URL,
+            poolclass=NullPool,
+            connect_args={"timeout": 5.0, "command_timeout": 5.0},
+        )
         _observation_sessions = async_sessionmaker(engine, expire_on_commit=False)
     return _observation_sessions()
 
 
 def _start_observation(coro):
-    if any(not task.done() for task in _observation_tasks):
+    if sum(not task.done() for task in _observation_tasks) >= _MAX_OBSERVATION_TASKS:
         coro.close()
         logging.getLogger(__name__).error("decision_order_evidence reason=writer_busy")
         return None
@@ -228,6 +234,15 @@ def _start_observation(coro):
     _observation_tasks.add(task)
     task.add_done_callback(_observation_tasks.discard)
     return task
+
+
+async def _set_observation_timeouts(session):
+    await session.execute(
+        text(
+            "SELECT set_config('lock_timeout', '1000ms', true), "
+            "set_config('statement_timeout', '5000ms', true)"
+        )
+    )
 
 
 async def begin_order_attempt(
@@ -252,6 +267,7 @@ async def begin_order_attempt(
         try:
             nonlocal reason
             async with session_factory() as session:
+                await _set_observation_timeouts(session)
                 service = DecisionEvidenceService(session)
                 resolved = decision_id
                 if not proposal_flow:
@@ -291,6 +307,8 @@ async def begin_order_attempt(
     task = _start_observation(write())
     if task is None:
         return None
+    _pending_attempts[attempt_id] = task
+    task.add_done_callback(lambda completed: _pending_attempts.pop(attempt_id, None))
     done, _ = await asyncio.wait({task}, timeout=_OBSERVATION_TIMEOUT)
     if not done:
         logging.getLogger(__name__).error(
@@ -300,10 +318,22 @@ async def begin_order_attempt(
     return attempt_id if task.result() else None
 
 
-async def finish_order_attempt(session_factory, attempt_id, outcome):
+def schedule_order_attempt_outcome(session_factory, attempt_id, outcome):
+    """Schedule an outcome without inserting an await after broker acceptance."""
+    dependency = _pending_attempts.get(attempt_id)
+    if dependency is not None and not dependency.done():
+
+        def after_begin(completed):
+            if not completed.cancelled() and completed.result():
+                schedule_order_attempt_outcome(session_factory, attempt_id, outcome)
+
+        dependency.add_done_callback(after_begin)
+        return None
+
     async def write():
         try:
             async with session_factory() as session:
+                await _set_observation_timeouts(session)
                 await DecisionEvidenceService(session).record_outcome(
                     attempt_id, outcome
                 )
@@ -313,7 +343,11 @@ async def finish_order_attempt(session_factory, attempt_id, outcome):
                 "decision_order_evidence reason=outcome_write_failed"
             )
 
-    task = _start_observation(write())
+    return _start_observation(write())
+
+
+async def finish_order_attempt(session_factory, attempt_id, outcome):
+    task = schedule_order_attempt_outcome(session_factory, attempt_id, outcome)
     if task is None:
         return
     done, _ = await asyncio.wait({task}, timeout=_OBSERVATION_TIMEOUT)
