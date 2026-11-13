@@ -816,6 +816,9 @@ evidence-first / fail-closed.
 - **테스트**: `tests/services/order_proposals/test_kis_leftover_inference.py`(조건별 단독 실패), `test_kis_leftover_inference_mutants.py`(디스크 카운트 mutant + 주문경로 import 가드), `test_night_sweep_unit.py`, `test_night_sweep_db.py`(A1 브로커 트랩·A5 멱등).
 
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
+
+**KIS US 종료 상태 전용 (hk 4179)**: `scripts.kis_us_auto_reconcile --apply-terminal-only`는 기본 false인 `KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED` 하나로 KIS US 원장의 증거 기반 만료·취소만 반영하고 체결 부기는 보류한다. 자동 체결·저널·실현손익은 기존 게이트 뒤에 남으며, 브로커 주문·정정·취소 경로는 바뀌지 않는다 (운영자 결정 `decision/2026-11-12/at-b02-reconcile-and-3792` 항목 2). dry-run에서 닫을 행이 있으면 경고와 exit 3이다.
+terminal-only는 기존 분류·전처리·scan과 같은 `limit` 상한을 쓰고 체결 부기만 보류한다. 미확인 행·오류·잘린 scan은 CLI에서 경고와 exit 3이다. 불완전 수량 및 기록 체결과 브로커 무체결 증거의 모순을 두 모드에 함께 적용할 공통 가드는 hk 4541 후속이다.
 ...
 시장가 crypto 주문의 경우 전송 즉시 inline으로 Reconcile을 자동 수행하여 체결 장부를 확정합니다.
 
@@ -899,6 +902,9 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 - **Existing Stage 1 boundary**: the vendor nhplug SDK and NHPLUG_BASE_URL/NHPLUG_AUTH_URL overrides remain forbidden. The old read smoke is still limited to its operator-created three-key file, and the live same-key risk remains. No real order smoke is run by builders or testers; operator-desk performs it after merge.
 
 ### 토스증권 Open API (ROB-529)
+
+**종료 상태 전용 (hk 4179)**: `scripts.toss_live_auto_reconcile --apply-terminal-only`는 기본 false인 `TOSS_TERMINAL_AUTO_RECONCILE_ENABLED` 하나로 Toss 원장의 증거 기반 만료·취소·거절만 반영하고 체결 부기는 보류한다. 자동 체결·저널·실현손익은 기존 두 플래그 게이트 뒤에 남으며, 브로커 주문·정정·취소 경로는 바뀌지 않는다 (운영자 결정 `decision/2026-11-12/at-b02-reconcile-and-3792` 항목 2). dry-run에서 닫을 행이 있으면 경고와 exit 3이다.
+terminal-only는 기존 분류·전처리·scan과 같은 `limit` 상한과 취소 요청·교체 행 처리를 쓰고 체결 부기만 보류한다. 미확인 행·오류·잘린 scan은 CLI에서 경고와 exit 3이다. 두 모드의 공통 증거 경계 강화는 hk 4541 후속이다.
 
 토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
 

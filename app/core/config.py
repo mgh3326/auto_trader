@@ -955,6 +955,10 @@ class Settings(BaseSettings):
     LIVE_AUTO_RECONCILE_ENABLED: bool = False
     LIVE_AUTO_RECONCILE_DRY_RUN: bool = True
 
+    # hk 4179: terminal-only unattended reconciliation, independently disabled.
+    KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED: bool = False
+    TOSS_TERMINAL_AUTO_RECONCILE_ENABLED: bool = False
+
     # ROB-757 — Toss REST fill poller. Default off; read-only broker scan plus
     # evidence-gated local booking only after operator activation.
     TOSS_FILL_POLL_ENABLED: bool = False
