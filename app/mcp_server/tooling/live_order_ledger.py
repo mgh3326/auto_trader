@@ -9,14 +9,18 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, func, or_, select
 
+from app.core.config import settings
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory, _to_float
-from app.mcp_server.tooling.live_order_evidence import get_evidence_adapter
+from app.mcp_server.tooling.live_order_evidence import (
+    UsOverseasEvidenceAdapter,
+    get_evidence_adapter,
+)
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
@@ -383,7 +387,7 @@ async def _converge_proposal_rung(
 
 
 async def _reconcile_one_live_row(
-    row: LiveOrderLedger, *, dry_run: bool
+    row: LiveOrderLedger, *, dry_run: bool, terminal_only: bool = False
 ) -> dict[str, Any]:
     base: dict[str, Any] = {
         "ledger_id": row.id,
@@ -393,7 +397,12 @@ async def _reconcile_one_live_row(
         "symbol": row.symbol,
     }
     adapter = get_evidence_adapter(row.broker)
-    evidence = await adapter.fetch_evidence(row)
+    if terminal_only:
+        evidence = await cast(UsOverseasEvidenceAdapter, adapter).fetch_evidence(
+            row, terminal_only=True
+        )
+    else:
+        evidence = await adapter.fetch_evidence(row)
     base["verdict"] = evidence.verdict.value
 
     if evidence.verdict == FillVerdict.PENDING:
@@ -447,6 +456,11 @@ async def _reconcile_one_live_row(
         base["reason"] = evidence.detail or (
             "no broker fill evidence; ledger left open instead of marking cancelled"
         )
+        return base
+
+    if terminal_only:
+        base["action"] = "deferred_fill_booking"
+        base["requires_session_reconcile"] = True
         return base
 
     # FILLED / PARTIAL — broker 확정값. 델타 멱등 booking.
@@ -640,13 +654,22 @@ async def live_reconcile_orders_impl(
     order_id: str | None = None,
     dry_run: bool = True,
     limit: int = 100,
+    terminal_only: bool = False,
 ) -> dict[str, Any]:
+    if terminal_only:
+        if market != "us" or broker != "kis":
+            return {"success": False, "error": "terminal-only requires KIS US"}
+        if not dry_run and settings.KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED is not True:
+            return {
+                "success": False,
+                "error": "terminal-only requires KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED",
+            }
     # ROB-1284: this path had NO proposal-rung repair pre-pass at all (KIS and
     # Toss each grew one; US/crypto never did), so a rung whose ledger row went
     # terminal without its projection landing stayed `resting` forever. The
     # rung-driven sweep is untruncated and evidence-first, and makes no broker
     # call — see proposal_rung_convergence.
-    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
+    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run or terminal_only)
     try:
         open_total = await _count_open_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id
@@ -666,7 +689,12 @@ async def live_reconcile_orders_impl(
     counts: dict[str, int] = {}
     for row in rows:
         try:
-            outcome = await _reconcile_one_live_row(row, dry_run=dry_run)
+            if terminal_only:
+                outcome = await _reconcile_one_live_row(
+                    row, dry_run=dry_run, terminal_only=True
+                )
+            else:
+                outcome = await _reconcile_one_live_row(row, dry_run=dry_run)
         except Exception as exc:
             logger.warning("live reconcile failed order_no=%s: %s", row.order_no, exc)
             outcome = {

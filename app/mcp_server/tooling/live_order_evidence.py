@@ -76,7 +76,9 @@ def _row_order_date(row: Any) -> datetime.date | None:
 class UsOverseasEvidenceAdapter:
     broker = "kis"
 
-    async def fetch_evidence(self, row: Any) -> FillEvidence:
+    async def fetch_evidence(
+        self, row: Any, *, terminal_only: bool = False
+    ) -> FillEvidence:
         kis = _create_live_kis_client()
         candidates = await _build_us_exchange_candidates(row.symbol)
         # ROB-719 gap A: anchor the TTTS3035R inquiry on the row's order date
@@ -99,6 +101,41 @@ class UsOverseasEvidenceAdapter:
                 "not_found",
                 f"order {row.order_no} not in anchored overseas order history",
             )
+
+        if terminal_only:
+            fields = {str(k).lower(): v for k, v in order.items()}
+            ordered = _to_decimal(fields.get("ft_ord_qty"))
+            filled = _to_decimal(fields.get("ft_ccld_qty"))
+            remaining = _to_decimal(fields.get("nccs_qty"))
+            if (
+                ordered is None
+                or filled is None
+                or remaining is None
+                or not all(
+                    v.is_finite() and v >= 0 for v in (ordered, filled, remaining)
+                )
+            ):
+                return FillEvidence(
+                    FillVerdict.NONE,
+                    None,
+                    None,
+                    EvidenceCategory.DATA_PRECONDITION,
+                    "missing_order_quantities",
+                    "incomplete broker order quantities",
+                )
+            if (
+                ordered <= 0
+                or filled + remaining > ordered
+                or any(v != v.to_integral_value() for v in (ordered, filled, remaining))
+            ):
+                return FillEvidence(
+                    FillVerdict.NONE,
+                    None,
+                    None,
+                    EvidenceCategory.DATA_PRECONDITION,
+                    "invalid_order_quantities",
+                    "invalid broker order quantities",
+                )
 
         # Reuse the same normalizer as order-history / proposal target
         # preflight.  It consumes KIS ``nccs_qty`` and direct cancellation

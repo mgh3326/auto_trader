@@ -425,6 +425,7 @@ async def _reconcile_one_toss_row(
     evidence_source: Any | None = None,
     fallback_client: Any | None = None,
     project_proposal_rungs: bool = True,
+    terminal_only: bool = False,
 ) -> dict[str, Any]:
     base = {
         "ledger_id": row.id,
@@ -446,6 +447,39 @@ async def _reconcile_one_toss_row(
     base["verdict"] = evidence.verdict
     base["broker_status"] = evidence.broker_status
     base["local_status"] = evidence.local_status
+
+    if terminal_only:
+        execution = evidence.raw_order.get("execution")
+        quantity = (
+            execution.get("filledQuantity") if isinstance(execution, dict) else None
+        )
+        try:
+            confirmed_qty = Decimal(str(quantity))
+        except (ValueError, ArithmeticError):
+            confirmed_qty = None
+        if confirmed_qty is None or not confirmed_qty.is_finite() or confirmed_qty < 0:
+            base["action"] = "noop_no_evidence"
+            return base
+        if confirmed_qty > 0:
+            base["action"] = "deferred_fill_booking"
+            base["requires_session_reconcile"] = True
+            return base
+        if evidence.local_status not in {"expired", "cancelled", "rejected"}:
+            base["action"] = "noop_pending"
+            return base
+        base["action"] = (
+            f"{'would_mark' if dry_run else 'marked'}_{evidence.local_status}"
+        )
+        if not dry_run:
+            async with _order_session_factory()() as db:
+                await TossLiveOrderLedgerService(db).update_reconcile_outcome(
+                    ledger_id=row.id,
+                    status=evidence.local_status,
+                    broker_status=evidence.broker_status,
+                    raw_response=evidence.raw_order,
+                    expired_at=evidence.expired_at,
+                )
+        return base
 
     if evidence.verdict == "pending":
         if (
@@ -823,9 +857,19 @@ async def toss_reconcile_orders_impl(
     dry_run: bool = True,
     limit: int = 100,
     project_proposal_rungs: bool = True,
+    terminal_only: bool = False,
 ) -> dict[str, Any]:
+    if (
+        terminal_only
+        and not dry_run
+        and settings.TOSS_TERMINAL_AUTO_RECONCILE_ENABLED is not True
+    ):
+        return {
+            "success": False,
+            "error": "terminal-only requires TOSS_TERMINAL_AUTO_RECONCILE_ENABLED",
+        }
     projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
-    if not dry_run and project_proposal_rungs:
+    if not dry_run and project_proposal_rungs and not terminal_only:
         projection_repair = await _repair_terminal_toss_proposal_projections(
             symbol=symbol,
             order_id=order_id,
@@ -835,15 +879,19 @@ async def toss_reconcile_orders_impl(
     # ROB-1284: rung-driven guaranteed-convergence sweep (untruncated,
     # evidence-first, no broker call) — closes the rungs the ledger-driven
     # repair above structurally cannot reach.
-    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
+    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run or terminal_only)
 
     # Self-healing reopen + list_open run in ONE session block so both the
     # recoverable-anomaly rows and the open rows are live-session ORM objects that
     # detach together at block exit (matching the existing detached-row loop).
     async with _order_session_factory()() as db:
         service = TossLiveOrderLedgerService(db)
-        reopen_report = await service.reopen_anomalies_for_reconcile(
-            dry_run=dry_run, market=market, symbol=symbol, limit=limit
+        reopen_report = (
+            {"rows": [], "skipped": "terminal_only"}
+            if terminal_only
+            else await service.reopen_anomalies_for_reconcile(
+                dry_run=dry_run, market=market, symbol=symbol, limit=limit
+            )
         )
         reopened_rows = reopen_report.pop("rows")  # ORM rows, not echoed
         open_rows = await service.list_open(
@@ -935,15 +983,27 @@ async def toss_reconcile_orders_impl(
     try:
         for row in rows:
             try:
-                outcome = await _reconcile_one_toss_row(
-                    row,
-                    dry_run=dry_run,
-                    evidence_source=evidence_source,
-                    fallback_client=shared_client,
-                    project_proposal_rungs=project_proposal_rungs,
-                )
+                if terminal_only:
+                    outcome = await _reconcile_one_toss_row(
+                        row,
+                        dry_run=dry_run,
+                        evidence_source=evidence_source,
+                        fallback_client=shared_client,
+                        project_proposal_rungs=project_proposal_rungs,
+                        terminal_only=True,
+                    )
+                else:
+                    outcome = await _reconcile_one_toss_row(
+                        row,
+                        dry_run=dry_run,
+                        evidence_source=evidence_source,
+                        fallback_client=shared_client,
+                        project_proposal_rungs=project_proposal_rungs,
+                    )
             except Exception as exc:  # noqa: BLE001 — classified in the handler
-                outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)
+                outcome = await _handle_reconcile_row_error(
+                    row, exc, dry_run=dry_run or terminal_only
+                )
             reconciled.append(outcome)
             verdict = str(outcome.get("verdict", "anomaly"))
             counts[verdict] = counts.get(verdict, 0) + 1
