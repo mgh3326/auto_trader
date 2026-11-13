@@ -357,8 +357,9 @@ def main() -> int:
 
     # Copy / stage tools/retro-consumer-check/main.go into isolated consumer workspace
     harness_src = REPO_ROOT / "tools" / "retro-consumer-check" / "main.go"
-    if not harness_src.exists():
-        print(f"error: harness {harness_src} not found", file=sys.stderr)
+    harness_test_src = REPO_ROOT / "tools" / "retro-consumer-check" / "main_test.go"
+    if not harness_src.exists() or not harness_test_src.exists():
+        print(f"error: harness {harness_src} or its tests not found", file=sys.stderr)
         return 2
 
     with acquire_consumer_checkout(consumer_info, args.consumer_dir) as consumer_dir:
@@ -368,6 +369,9 @@ def main() -> int:
         staged_main = staged_cmd_dir / "main.go"
         main_existed_before = staged_main.exists()
         shutil.copyfile(harness_src, staged_main)
+        staged_test = staged_cmd_dir / "main_test.go"
+        test_existed_before = staged_test.exists()
+        shutil.copyfile(harness_test_src, staged_test)
 
         port = args.port or find_free_port()
         print(
@@ -380,6 +384,18 @@ def main() -> int:
         server_thread.start()
 
         try:
+            # Harness unit tests (validator, mutant-shape rejections) run against the
+            # same staged package, so they are executed by CI and not only locally.
+            env = {**os.environ, "GOTOOLCHAIN": "auto"}
+            test_res = subprocess.run(
+                ["go", "test", "-count=1", "./cmd/retro-consumer-check"],
+                cwd=str(consumer_dir),
+                env=env,
+            )
+            if test_res.returncode != 0:
+                print("error: harness unit tests failed", file=sys.stderr)
+                return test_res.returncode
+
             if not wait_for_server(port, args.read_token, timeout=10.0):
                 print(
                     "error: candidate server did not start within timeout",
@@ -410,7 +426,6 @@ def main() -> int:
                 str(consumer_lock_path),
             ]
             print(f"[gate] Executing: {' '.join(cmd)}")
-            env = {**os.environ, "GOTOOLCHAIN": "auto"}
             res = subprocess.run(cmd, cwd=str(consumer_dir), env=env)
             return res.returncode
         finally:
@@ -418,6 +433,8 @@ def main() -> int:
             # Clean up staged files without deleting pre-existing consumer files
             if not main_existed_before and staged_main.exists():
                 staged_main.unlink(missing_ok=True)
+            if not test_existed_before and staged_test.exists():
+                staged_test.unlink(missing_ok=True)
             if not cmd_dir_existed_before and staged_cmd_dir.exists():
                 shutil.rmtree(staged_cmd_dir, ignore_errors=True)
 
