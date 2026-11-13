@@ -177,9 +177,16 @@ def test_lint_stays_unconditional(workflow: dict[str, Any]) -> None:
 
 
 def test_expand_contract_lint_runs_for_pull_requests(workflow: dict[str, Any]) -> None:
+    lint = workflow["jobs"]["lint"]
+    checkout = next(
+        step
+        for step in lint["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
+    assert checkout["with"]["fetch-depth"] == 0
     steps = [
         step
-        for step in workflow["jobs"]["lint"]["steps"]
+        for step in lint["steps"]
         if step.get("name") == "Expand-contract migration lint"
     ]
     assert len(steps) == 1
@@ -191,8 +198,10 @@ def test_expand_contract_lint_runs_for_pull_requests(workflow: dict[str, Any]) -
     )
     assert (
         "python3 scripts/ci/migration_expand_contract_lint.py "
-        "--base-ref FETCH_HEAD --head-ref HEAD"
+        "--base-ref FETCH_HEAD --head-ref HEAD --task-id"
     ) in step["run"]
+    assert "GITHUB_EVENT_PATH" in step["run"]
+    assert "Mergewake-Task" in step["run"]
 
 
 def test_taskiq_smoke_still_owns_the_exact_cover_check(

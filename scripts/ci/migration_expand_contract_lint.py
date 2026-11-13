@@ -9,110 +9,265 @@ import subprocess
 import sys
 from pathlib import Path
 
-CONTRACT_MARKER_RE = re.compile(r"^\s*# expand-contract: contract-step [0-9]+\s*$")
+CONTRACT_MARKER_RE = re.compile(r"^\s*# expand-contract: contract-step ([0-9]+)\s*$")
+TASK_ID_RE = re.compile(r"[0-9]+")
 RAW_SQL_RE = re.compile(
-    r"\bDROP\s+(?:TABLE|COLUMN)\b|\bRENAME\b|\bSET\s+NOT\s+NULL\b", re.I
+    r"\bDROP\s+TABLE\b"
+    r"|\bDROP\s+COLUMN\b"
+    r"|\bALTER\s+TABLE\b[\s\S]*?\bDROP\s+(?:COLUMN\s+)?"
+    r"(?!CONSTRAINT\b|INDEX\b|PRIMARY\b|FOREIGN\b|UNIQUE\b|CHECK\b)"
+    r"[\"`A-Z_][\w$\"`]*"
+    r"|\bRENAME\b"
+    r"|\bSET\s+NOT\s+NULL\b"
+    r"|\bALTER\s+TABLE\b[\s\S]*?\bALTER\s+(?:COLUMN\s+)?"
+    r"[\"`A-Z_][\w$\"`]*\s+TYPE\b",
+    re.I,
+)
+DESTRUCTIVE_OPS = frozenset(
+    {"drop_table", "drop_column", "rename_table", "alter_column"}
 )
 
 
-def _is_op_call(call: ast.Call, method: str) -> bool:
-    return (
-        isinstance(call.func, ast.Attribute)
-        and call.func.attr == method
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "op"
-    )
+def _string_value(node: ast.AST, constants: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return node.value
+        return None
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _string_value(node.left, constants)
+        right = _string_value(node.right, constants)
+        return left + right if left is not None and right is not None else None
+    if isinstance(node, ast.JoinedStr):
+        chunks: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                chunks.append(str(value.value))
+            elif isinstance(value, ast.FormattedValue):
+                if isinstance(value.value, ast.Constant):
+                    chunks.append(str(value.value.value))
+                elif isinstance(value.value, ast.Name):
+                    resolved = constants.get(value.value.id)
+                    if resolved is None:
+                        return None
+                    chunks.append(resolved)
+                else:
+                    return None
+            else:
+                return None
+        return "".join(chunks)
+    return None
 
 
-def _string_values(node: ast.AST) -> list[str]:
-    return [
-        child.value
-        for child in ast.walk(node)
-        if isinstance(child, ast.Constant) and isinstance(child.value, str)
-    ]
-
-
-def _upgrade_calls(tree: ast.Module) -> list[ast.Call]:
-    calls: list[ast.Call] = []
-    for node in tree.body:
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "upgrade"
-        ):
-            calls.extend(
-                child for child in ast.walk(node) if isinstance(child, ast.Call)
+def _static_sql_expression(node: ast.AST, constants: dict[str, str]) -> bool:
+    if _string_value(node, constants) is not None:
+        return True
+    if isinstance(node, ast.Call):
+        function = node.func
+        is_text_wrapper = (
+            isinstance(function, ast.Name) and function.id == "text"
+        ) or (
+            isinstance(function, ast.Attribute)
+            and function.attr == "text"
+            and isinstance(function.value, ast.Name)
+            and function.value.id in {"sa", "sqlalchemy"}
+        )
+        return (
+            is_text_wrapper
+            and bool(node.args)
+            and all(
+                _static_sql_expression(argument, constants) for argument in node.args
             )
-    return calls
+        )
+    return False
 
 
-def _upgrade_string_assignments(tree: ast.Module) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for node in tree.body:
-        if not (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "upgrade"
-        ):
+def _target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for element in target.elts for name in _target_names(element)]
+    return []
+
+
+def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+    constants: dict[str, str] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        else:
             continue
-        for child in ast.walk(node):
-            if (
-                isinstance(child, (ast.Assign, ast.AnnAssign))
-                and isinstance(child.value, ast.Constant)
-                and isinstance(child.value.value, str)
-            ):
-                targets = (
-                    child.targets if isinstance(child, ast.Assign) else [child.target]
-                )
-                for target in targets:
-                    if isinstance(target, ast.Name):
-                        values[target.id] = child.value.value
-    return values
+        if value is None:
+            continue
+        resolved = _string_value(value, constants)
+        if resolved is not None:
+            for target in targets:
+                for name in _target_names(target):
+                    constants[name] = resolved
+    return constants
 
 
-def violations(source: str) -> list[str]:
-    """Return line-specific unsafe upgrade operations, unless explicitly marked."""
+def _function_string_constants(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    module_constants: dict[str, str],
+) -> dict[str, str]:
+    constants = module_constants.copy()
+    assignments = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+    ]
+    # A short fixed-point pass resolves simple local aliases independent of the
+    # AST walk order, while keeping SQL evaluation intentionally static.
+    for _ in range(len(assignments) + 1):
+        changed = False
+        for assignment in assignments:
+            value = assignment.value
+            if value is None:
+                continue
+            resolved = _string_value(value, constants)
+            if resolved is None:
+                continue
+            targets = (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else [assignment.target]
+            )
+            for target in targets:
+                for name in _target_names(target):
+                    if constants.get(name) != resolved:
+                        constants[name] = resolved
+                        changed = True
+        if not changed:
+            break
+    return constants
 
-    if any(CONTRACT_MARKER_RE.fullmatch(line) for line in source.splitlines()):
+
+def _reachable_upgrade_functions(
+    tree: ast.Module,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if "upgrade" not in functions:
         return []
+
+    reachable: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    pending = ["upgrade"]
+    visited: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        function = functions.get(name)
+        if function is None:
+            continue
+        reachable.append(function)
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in functions
+                and node.func.id not in visited
+            ):
+                pending.append(node.func.id)
+    return reachable
+
+
+def _sql_strings(node: ast.AST, constants: dict[str, str]) -> list[str]:
+    resolved = _string_value(node, constants)
+    if resolved is not None:
+        return [resolved]
+    if isinstance(node, ast.Call):
+        children = [*node.args, *(keyword.value for keyword in node.keywords)]
+    elif isinstance(node, ast.BinOp):
+        children = [node.left, node.right]
+    elif isinstance(node, ast.JoinedStr):
+        children = node.values
+    elif isinstance(node, ast.FormattedValue):
+        children = [node.value]
+    else:
+        children = []
+    return [value for child in children for value in _sql_strings(child, constants)]
+
+
+def _has_contract_marker(source_lines: list[str], call: ast.Call, task_id: str) -> bool:
+    marker_line = call.lineno - 2
+    if marker_line < 0:
+        return False
+    match = CONTRACT_MARKER_RE.fullmatch(source_lines[marker_line])
+    return match is not None and match.group(1) == task_id
+
+
+def violations(source: str, task_id: str) -> list[str]:
+    """Return unsafe upgrade operations lacking their matching local marker."""
 
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
         return [f"line {exc.lineno or 1}: migration is not valid Python: {exc.msg}"]
 
+    source_lines = source.splitlines()
+    module_constants = _module_string_constants(tree)
     found: list[str] = []
-    assigned_strings = _upgrade_string_assignments(tree)
-    for call in _upgrade_calls(tree):
-        message: str | None = None
-        if _is_op_call(call, "drop_table"):
-            message = "op.drop_table removes a table"
-        elif _is_op_call(call, "drop_column"):
-            message = "op.drop_column removes a column"
-        elif _is_op_call(call, "rename_table"):
-            message = "op.rename_table renames a table"
-        elif _is_op_call(call, "alter_column"):
-            keywords = {keyword.arg: keyword.value for keyword in call.keywords}
-            if "new_column_name" in keywords:
-                message = "op.alter_column renames a column"
-            elif (
-                isinstance(keywords.get("nullable"), ast.Constant)
-                and keywords["nullable"].value is False
-            ):
-                message = "op.alter_column tightens a column to NOT NULL"
-        elif _is_op_call(call, "execute"):
-            values = _string_values(call)
-            values.extend(
-                assigned_strings[node.id]
-                for node in ast.walk(call)
-                if isinstance(node, ast.Name) and node.id in assigned_strings
-            )
-            for value in values:
-                match = RAW_SQL_RE.search(value)
-                if match:
-                    message = f"op.execute contains destructive SQL ({match.group(0)})"
-                    break
+    for function in _reachable_upgrade_functions(tree):
+        constants = _function_string_constants(function, module_constants)
+        for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+            method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+            message: str | None = None
+            if method in DESTRUCTIVE_OPS:
+                keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+                if method == "alter_column":
+                    if "new_column_name" in keywords:
+                        message = "alter_column renames a column"
+                    elif "type_" in keywords:
+                        message = "alter_column changes a column type"
+                    elif (
+                        isinstance(keywords.get("nullable"), ast.Constant)
+                        and keywords["nullable"].value is False
+                    ):
+                        message = "alter_column tightens a column to NOT NULL"
+                elif method == "drop_table":
+                    message = "drop_table removes a table"
+                elif method == "drop_column":
+                    message = "drop_column removes a column"
+                elif method == "rename_table":
+                    message = "rename_table renames a table"
+            elif method == "execute":
+                if call.args and not _static_sql_expression(call.args[0], constants):
+                    message = "execute uses SQL that cannot be checked statically"
+                else:
+                    sql = [
+                        value
+                        for arg in call.args
+                        for value in _sql_strings(arg, constants)
+                    ]
+                    sql.extend(
+                        value
+                        for keyword in call.keywords
+                        for value in _sql_strings(keyword.value, constants)
+                    )
+                    match = next(
+                        (
+                            match
+                            for value in sql
+                            if (match := RAW_SQL_RE.search(value)) is not None
+                        ),
+                        None,
+                    )
+                    if match:
+                        message = f"execute contains destructive SQL ({match.group(0)})"
 
-        if message:
-            found.append(f"line {call.lineno}: {message}")
+            if message and not _has_contract_marker(source_lines, call, task_id):
+                found.append(f"line {call.lineno}: {message}")
     return found
 
 
@@ -135,7 +290,7 @@ def changed_migrations(root: Path, base_ref: str, head_ref: str) -> list[Path]:
     return [root / name for name in result.stdout.splitlines() if name]
 
 
-def check_paths(paths: list[Path]) -> list[str]:
+def check_paths(paths: list[Path], task_id: str) -> list[str]:
     errors: list[str] = []
     for path in paths:
         try:
@@ -143,7 +298,7 @@ def check_paths(paths: list[Path]) -> list[str]:
         except (OSError, UnicodeError) as exc:
             errors.append(f"{path}: cannot read migration: {exc}")
             continue
-        errors.extend(f"{path}: {problem}" for problem in violations(source))
+        errors.extend(f"{path}: {problem}" for problem in violations(source, task_id))
     return errors
 
 
@@ -155,8 +310,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--head-ref", default="HEAD", help="head commit/ref (default: HEAD)"
     )
+    parser.add_argument(
+        "--task-id", required=True, help="Mergewake-Task PR trailer value"
+    )
     parser.add_argument("--root", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if not TASK_ID_RE.fullmatch(args.task_id):
+        parser.error("--task-id must contain only decimal digits")
     try:
         paths = changed_migrations(args.root, args.base_ref, args.head_ref)
     except subprocess.CalledProcessError as exc:
@@ -167,12 +327,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    errors = check_paths(paths)
+    errors = check_paths(paths, args.task_id)
     if errors:
         print("migration expand-contract lint failed:")
         print("\n".join(errors))
         print(
-            "Add the documented contract-step marker only for an approved contract migration."
+            "Place the matching contract-step marker directly above each approved contract operation."
         )
         return 1
     print(f"migration expand-contract lint passed ({len(paths)} changed migration(s))")

@@ -64,6 +64,7 @@ jobs:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         ref: ${{ inputs.ref }}
+        fetch-depth: 0
 
     - name: Set up pinned Python and uv
       id: py
@@ -92,7 +93,21 @@ jobs:
       run: |
         set -euo pipefail
         git fetch --no-tags --depth=1 origin "refs/heads/${BASE_REF}"
-        python3 scripts/ci/migration_expand_contract_lint.py --base-ref FETCH_HEAD --head-ref HEAD
+        task_id="$(python3 - <<'PY'
+        import json
+        import os
+        import re
+        from pathlib import Path
+
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        body = event["pull_request"].get("body") or ""
+        task_ids = re.findall(r"(?m)^Mergewake-Task: ([0-9]+)\s*$", body)
+        if len(task_ids) != 1:
+            raise SystemExit("expected exactly one numeric Mergewake-Task trailer")
+        print(task_ids[0])
+        PY
+        )"
+        python3 scripts/ci/migration_expand_contract_lint.py --base-ref FETCH_HEAD --head-ref HEAD --task-id "${task_id}"
 
     - name: Run ty
       run: uv run ty check app/ --error-on-warning
