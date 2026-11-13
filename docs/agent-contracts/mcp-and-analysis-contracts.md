@@ -357,3 +357,38 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 반환한다. 회고 prose는 민감 패턴을 검사한 뒤 1,000자로 제한하고 차단 시 `redacted`를
 기록한다. JSONB와 원본 식별자는 공개하지 않는다. 기존 consumer pin과 8개 호출
 하네스는 호환 확장 순서에 따라 유지한다.
+
+### retro/v1 판단 연결 읽기 (L7, hk 4188)
+
+설계 `docs/design/4154-candidate-to-retro-linking.md` §3·§8.1의 reader 규칙이다. 계약에는 선택 필드만 더했다
+(기존 필드·열거는 그대로, 값이 없으면 키를 내보내지 않는다). 소비자 pin(`consumers.lock`)은 L10이 갱신한다.
+
+- **ChainRow**: `link_basis`(`recorded`\|`inference`, `linked_ref`를 만든 방식 — 기존 `basis`는 값 basis이고 그대로),
+  `decision_ref`(proposal·rung·order 행이 내려오는 판단의 불투명 ref), `decision_link_basis`, `link_reason`(닫힌 코드:
+  `ambiguous_attempts`·`attempt_unconfirmed`·`no_candidate_ref`·`candidate_outside_trading_day`·`candidate_ref_unresolved`).
+  `decision_link_basis`·`link_reason`은 설계 §8.1의 두 필드에 더한 보조 필드다(한 행에서 후보 링크는 추론이고 판단 링크는
+  기록일 수 있고, 행의 `reason`은 주문 상태 사유가 쓴다). rung→proposal·fill→order·markout→fill은 `recorded`, lot은 FIFO라 `inference`다.
+- **주문→판단 (§3 4행)**: `links.resolve_attempts`. 한 `send_key`의 시도 중 `proven_not_sent`가 없는 것의 판단 집합이
+  둘 이상이면 링크 없음(`ambiguous_attempts`, 레거시 rung 매칭도 쓰지 않는다), 하나이고 그 시도 중 `sent` 결과가 있으면
+  `recorded`, 없으면 `inference`(`attempt_unconfirmed`)다. 살아 있는 시도가 없으면 레거시 규칙: rung `idempotency_key`가
+  원장 키와 같으면 `recorded`, correlation만 같으면 `inference`이고 판단은 그 rung 제안에 저장된 `decision_id`다.
+  결과 행 유실은 `recorded`를 막을 뿐 만들지 않는다. 링크·결과 읽기 실패는 `unknowns`(`source.decision_links`,
+  `source.decision_link_outcomes`)이며 모집단·`total`에는 영향이 없다.
+- **후보→제안 (§3 1행, Q20)**: 제안에 저장된 판단의 후보 ref(`candidate_call_id`+심볼)가 있으면 그 writer 라벨(`recorded`/서버 보강
+  `inference`)을 그대로 쓰고 reader가 다시 추론하지 않는다. 판단이 없는 제안의 기존 추론(같은 심볼의 가장 늦은 이전 후보)은
+  제안과 **같은 KST 날짜**의 후보로 제한되며 넘으면 링크 없음(`candidate_outside_trading_day`, 이전 후보 자체가 없으면
+  `no_candidate_ref`)이다. 판단 행이나 후보 행을 찾지 못하면 `candidate_ref_unresolved`이고 추측하지 않는다.
+- **TradeRow**: `decision_ref`·`decision_link_basis`·`link_reason`·`fill_time_basis`·`costs`. 회고에 저장된 `decision_id`는
+  `recorded`(L6 writer가 판단 행과 일치를 검증), 서로 다른 둘이면 `ambiguous_decision`. 저장된 것이 없으면 회고 `correlation_id`
+  → 그 원장 주문 하나 → 시도 규칙으로 유도하고 항상 `inference`이며 저장하지 않는다(주문이 여럿이면 `ambiguous_decision`, 시도가
+  갈리면 `ambiguous_attempts`, 못 찾으면 `no_decision_link`). 주문 읽기가 실패하면 링크 부재를 주장하지 않는다.
+- **체결 시각·비용 (L5 열, §5.3·§6.2)**: 거래의 주문(저널·회고 correlation의 라이브 원장 주문)에 정확한 order identity로 붙은
+  체결(`execution_ledger_in_effect()`, ROB-1379 supersede, opening seed 제외)만 쓴다. `fill_time_basis`는 체결 중 가장 약한 basis
+  (`filled_at_basis` NULL인 과거 행은 KIS reconciler만 `broker_order_time`, 그 밖은 unknown이라 값을 내지 않는다).
+  `costs.recorded`는 브로커가 준 수수료·세금뿐이고 `fee_basis=not_provided`와 과거 KIS reconciler의 `fee=0`은 기록된 0이 아니다.
+  한 체결이라도 수수료를 주지 않았으면 부분합을 내지 않고 `recorded=null`(`recorded_reason`)이다. 과거 Toss 수수료는
+  commission+tax 합이라 `fee_includes_tax=true`다. `costs.estimated`는 `metrics.calculate_costs`가 정책
+  `round_trip_cost_bps`를 진입(매수) 체결 notional에 곱한 값이며 `rate_source`·정책 버전·hash를 싣고 `recorded`와 섞지 않는다.
+- 🔴 이 reader는 쓰지 않는다: 새 읽기는 SELECT뿐이고 체결은 `chain.fills_stmt`를 재사용한다. 마이그레이션·writer 변경 없음. `retro_funnel`은
+  링크 테이블을 읽지 않는다. 동작은 `tests/services/retro_v1/test_decision_links.py`·`test_trade_evidence.py`가 고정하고,
+  링크 필드가 없는 행은 main 골든(`tests/services/retro_v1/golden/`)과 선택 필드만 다르다.

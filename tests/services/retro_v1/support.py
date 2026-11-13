@@ -10,6 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import jsonschema
 from referencing import Registry, Resource
@@ -469,6 +470,13 @@ def build_gate_session() -> FakeSession:
             return [None]
         return [forecast(2, "000660", datetime(2026, 1, 5, 0, 40, tzinfo=UTC))]
 
+    # hk 4188: the gate trade carries a stored decision and an order recorded by
+    # correlation, so the consumer gate sees the new optional TradeRow fields.
+    gate_journal = gate_trade_journal()
+    gate_journal.correlation_id = "gate-corr"
+    gate_review = gate_trade_review()
+    gate_review.decision_id = UUID(int=0xD4188)
+
     routes = {
         "SHOW transaction_read_only": ["on"],
         "FROM review.execution_ledger_reconcile_runs": [stale_run],
@@ -483,8 +491,8 @@ def build_gate_session() -> FakeSession:
         "account_value_snapshots": account_snapshots_route,
         "account_external_flows": [],
         "FROM public.kr_candles_1d": bars,
-        "FROM review.trade_journals": [gate_trade_journal()],
-        "FROM review.trade_retrospectives": [gate_trade_review()],
+        "FROM review.trade_journals": [gate_journal],
+        "FROM review.trade_retrospectives": [gate_review],
     }
 
     base_session = FakeSession()
@@ -499,5 +507,8 @@ def build_gate_session() -> FakeSession:
             pass
         else:
             full_routes[k] = v
+    full_routes["FROM review.kis_live_order_ledger"] = [
+        live_order(correlation_id="gate-corr")
+    ]
     base_session.routes = full_routes
     return base_session

@@ -662,6 +662,38 @@ components:
       - broker
       - inference
       - unknown
+    LinkBasis:
+      description: >-
+        How a link was made. recorded is an exact key a writer stored at its
+        own event; inference is a heuristic, or a stored key without proof that
+        the order was sent.
+      type:
+      - string
+      - 'null'
+      enum:
+      - recorded
+      - inference
+      - null
+    LinkReason:
+      description: >-
+        Closed code for a missing or weakened link. ambiguous_attempts - the live
+        send attempts of one order key belong to several decisions.
+        attempt_unconfirmed - one decision, but no sent outcome was recorded.
+        no_candidate_ref, candidate_outside_trading_day, candidate_ref_unresolved
+        - why a proposal has no candidate link. ambiguous_decision,
+        no_decision_link - why a trade has no decision link.
+      type:
+      - string
+      - 'null'
+      enum:
+      - ambiguous_attempts
+      - attempt_unconfirmed
+      - no_candidate_ref
+      - candidate_outside_trading_day
+      - candidate_ref_unresolved
+      - ambiguous_decision
+      - no_decision_link
+      - null
     UnknownReason:
       type: string
       enum:
@@ -799,6 +831,16 @@ components:
         insufficient_balance, market_closed, invalid_order, or broker_other.
         Expiry reasons are day_order_expired or expired_inference_no_broker_original;
         cancellation uses cancelled and unresolved uses no_terminal_evidence.
+        The optional link fields are present only with a value. link_basis says
+        how linked_ref was made; decision_ref is the decision a proposal, rung or
+        order descends from and decision_link_basis how that was made.
+        An order whose send key has attempts of one decision links to that
+        decision (recorded with a sent outcome, otherwise inference with
+        attempt_unconfirmed); attempts of several decisions give no link
+        (ambiguous_attempts); with no attempt the rung match applies (idempotency
+        key recorded, correlation only inference). A proposal links to the
+        candidate its decision names; one without a decision links to an earlier
+        candidate of the same KST day only (inference).
       type: object
       additionalProperties: false
       required:
@@ -839,6 +881,13 @@ components:
         unit: *id001
         basis:
           $ref: '#/components/schemas/EvidenceBasis'
+        link_basis:
+          $ref: '#/components/schemas/LinkBasis'
+        decision_ref: *id002
+        decision_link_basis:
+          $ref: '#/components/schemas/LinkBasis'
+        link_reason:
+          $ref: '#/components/schemas/LinkReason'
     FunnelRow:
       description: Order and fill counts use the same ledger orders and fill rows as the chain.
       type: object
@@ -1274,7 +1323,75 @@ components:
         result_summary: *trade002
         rationale: *trade002
         next_strategy: *trade002
+    TradeCosts:
+      description: >-
+        Costs of the ledger fills of the orders recorded for the trade. recorded
+        is what the broker reported and is null (with recorded_reason) when any
+        fill did not provide it; a fee of a fill with fee_basis not_provided is
+        never a recorded zero. fee_includes_tax is true when a fill predates the
+        split of Toss commission and tax and its fee is their sum. estimated is
+        policy round_trip_cost_bps over the entry notional, never mixed into
+        recorded. The reasons are present only when their side is null.
+      type: object
+      additionalProperties: false
+      required:
+      - recorded
+      - estimated
+      properties:
+        recorded:
+          anyOf:
+          - type: object
+            additionalProperties: false
+            required:
+            - fee
+            - tax
+            - currency
+            - fee_includes_tax
+            properties:
+              fee:
+                $ref: '#/components/schemas/DecimalValue'
+              tax:
+                $ref: '#/components/schemas/DecimalValue'
+              currency: *trade001
+              fee_includes_tax:
+                type: boolean
+          - type: 'null'
+        recorded_reason:
+          type: [string, 'null']
+          enum: [not_provided, missing_currency, null]
+        estimated:
+          anyOf:
+          - type: object
+            additionalProperties: false
+            required:
+            - amount
+            - rate_source
+            - policy_version
+            - policy_content_hash
+            - basis
+            properties:
+              amount:
+                $ref: '#/components/schemas/DecimalValue'
+              rate_source: *trade001
+              policy_version: *trade001
+              policy_content_hash: *trade001
+              basis:
+                type: string
+                enum: [inference]
+          - type: 'null'
+        estimated_reason:
+          type: [string, 'null']
+          enum: [missing_notional, rate_unavailable, null]
     TradeRow:
+      description: >-
+        The optional decision_ref, decision_link_basis, link_reason,
+        fill_time_basis and costs are present only with a value. decision_ref is
+        the decision stored on the trade's retrospectives (recorded), or, with
+        none stored, the one derived through the retrospective's correlation and
+        the order's send attempts (inference, never stored); several decisions
+        or orders give no link (ambiguous_decision, ambiguous_attempts).
+        fill_time_basis and costs describe the ledger fills of the orders
+        recorded for the trade.
       type: object
       additionalProperties: false
       required:
@@ -1324,6 +1441,23 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TradeReviewRow'
+        decision_ref: *trade001
+        decision_link_basis:
+          $ref: '#/components/schemas/LinkBasis'
+        link_reason:
+          $ref: '#/components/schemas/LinkReason'
+        fill_time_basis:
+          description: >-
+            Weakest time basis among the ledger fills of the trade's recorded
+            orders: broker_fill_time, broker_order_time (the order time stood in
+            for the fill time) or observed_at. Absent when no fill is found or a
+            fill's basis is unknown.
+          type: [string, 'null']
+          enum: [broker_fill_time, broker_order_time, observed_at, null]
+        costs:
+          anyOf:
+          - $ref: '#/components/schemas/TradeCosts'
+          - type: 'null'
     TradeSummary:
       type: object
       additionalProperties: false

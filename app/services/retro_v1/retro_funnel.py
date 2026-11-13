@@ -149,7 +149,14 @@ async def read_retro_funnel(
     as_of = datetime.now(UTC)
     async with read_snapshot(session):
         data = await load_chain(
-            session, unknowns, info, symbols=None, lo=lo, hi=hi, include_lots=False
+            session,
+            unknowns,
+            info,
+            symbols=None,
+            lo=lo,
+            hi=hi,
+            include_lots=False,
+            include_links=False,
         )
     rows = funnel_rows(data, info, _cohort(info, start, end))
     return build_response(
