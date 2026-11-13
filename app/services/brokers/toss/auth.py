@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import random
@@ -19,8 +18,14 @@ from app.services.brokers.credential_firewall import (
 )
 from app.services.brokers.token_issuance import (
     TokenIssuanceUnavailable,
+    cache_only_refusal,
     ensure_gatewayd_token,
+    is_cache_only_token_issuance,
     is_gatewayd_token_issuance,
+)
+from app.services.brokers.token_keys import (
+    toss_client_fingerprint,
+    toss_oauth_token_keys,
 )
 from app.services.brokers.toss.errors import (
     TossApiDisabled,
@@ -33,6 +38,7 @@ from app.services.brokers.toss.rate_limiter import (
     get_shared_rate_limiter,
 )
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
+from app.services.redis_token_manager import RedisTokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +78,7 @@ async def close_toss_token_redis() -> None:
 
 
 def _client_fingerprint(client_id: str) -> str:
-    return hashlib.sha256(client_id.encode("utf-8")).hexdigest()[:16]
+    return toss_client_fingerprint(client_id)
 
 
 class TossOAuthTokenManager:
@@ -95,9 +101,8 @@ class TossOAuthTokenManager:
         self._client_secret = client_secret
         self._base_url = base_url
         self._rate_limiter = rate_limiter or TossRateLimiter()
-        self._namespace = f"toss:oauth:{_client_fingerprint(client_id)}"
-        self.token_key = f"{self._namespace}:access_token"
-        self.lock_key = f"{self._namespace}:lock"
+        self.token_key, self.lock_key = toss_oauth_token_keys(client_id=client_id)
+        self._namespace = self.token_key.removesuffix(":access_token")
 
     def __repr__(self) -> str:
         return (
@@ -197,6 +202,10 @@ class TossOAuthTokenManager:
     async def _issue_single_flight(
         self, *, force_reissue: bool = False, failed_token: str | None = None
     ) -> str:
+        if is_cache_only_token_issuance(settings):
+            # cache_only: refuse before the issuer lock, OAuth, or any Redis write.
+            # Usable cache hits were already returned by get_access_token.
+            raise cache_only_refusal("toss")
         if is_gatewayd_token_issuance(settings):
             return await self._ensure_token_from_gatewayd(
                 force_reissue=force_reissue,
@@ -240,7 +249,7 @@ class TossOAuthTokenManager:
     async def _ensure_token_from_gatewayd(
         self, *, force_reissue: bool, failed_token: str | None
     ) -> str:
-        """Request gatewayd issuance without touching Toss's issuer lock/key.
+        """Request gatewayd issuance without acquiring Toss's issuer lock.
 
         gatewayd owns both the OAuth leg and the Redis issuance lock. Python
         only rechecks and reads the token cache around the ensure call. For a
@@ -252,6 +261,11 @@ class TossOAuthTokenManager:
             not force_reissue or failed_token is not None and cached != failed_token
         ):
             return cached
+
+        if force_reissue and failed_token is not None:
+            manager = RedisTokenManager()
+            manager.redis_client = await _get_redis_client()
+            await manager.invalidate_if_current(self.token_key, failed_token)
 
         await ensure_gatewayd_token("toss", settings_obj=settings)
         published = await self._wait_for_cached_token(

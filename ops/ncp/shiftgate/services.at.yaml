@@ -1,0 +1,49 @@
+# AT-1 steady-state shiftgate configuration. Install only after the documented
+# live checks; see docs/design/4155-shiftgate-adoption.md.
+state_dir: /var/lib/shiftgate-at
+keep_digests: 3
+log: {driver: __LIVE_CHECK_LOG_DRIVER__} # [live check] See docs/design/4155-shiftgate-adoption.md.
+haproxy:
+  config: /root/at-run/haproxy.cfg
+  socket: /__LIVE_CHECK_HAPROXY_SOCKET__ # [live check] See docs/design/4155-shiftgate-adoption.md.
+  socket_in_config: /__LIVE_CHECK_HAPROXY_SOCKET_IN_CONFIG__ # [live check] See docs/design/4155-shiftgate-adoption.md.
+  check: ["/root/at-run/ops/ncp/shiftgate/haproxy-check.sh", "{config}"]
+  reload: ["docker", "kill", "-s", "HUP", "at-haproxy"]
+  allowed_binds: ["127.0.0.1", "100.122.100.56"]
+  log: stdout format raw local0
+  timeouts: {connect: 5s, client: 1h, server: 1h, tunnel: 1h, http_request: 10s}
+services:
+  - name: at-api
+    image: ghcr.io/mgh3326/auto_trader
+    binds: ["127.0.0.1:8000", "100.122.100.56:8000"]
+    ports: {blue: 18000, green: 28000}
+    network: host
+    env_files: [/root/at-secrets/.env.api, /root/at-secrets/.env.scheduler]
+    args: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "{port}"]
+    health: {http: /healthz, timeout: 60s, interval: 2s}
+    check: {inter: 5s, fall: 2, rise: 1}
+    drain_timeout: 120s
+  - name: at-mcp
+    image: ghcr.io/mgh3326/auto_trader
+    binds: ["127.0.0.1:8765", "100.122.100.56:8765"]
+    ports: {blue: 18765, green: 28765}
+    network: host
+    env_files: [/root/at-secrets/.env.api, /root/at-secrets/.env.scheduler]
+    env:
+      MCP_PROFILE: default
+      MCP_HOST: 127.0.0.1
+      MCP_PORT: "{port}"
+      MCP_TYPE: streamable-http
+      MCP_PATH: /mcp
+      MCP_USER_ID: "1"
+      AUTO_TRADER_COLOR: "{color}"
+      MCP_HEARTBEAT_PATH: /var/run/auto-trader/mcp-heartbeat/mcp-sg-{color}.json
+    run_args: ["-v", "/root/at-run/mcp-heartbeat:/var/run/auto-trader/mcp-heartbeat", "-v", "/etc/machine-id:/etc/machine-id:ro"]
+    args: ["python", "-m", "app.mcp_server.main"]
+    health: {http: /health, timeout: 60s, interval: 2s}
+    check: {inter: 5s, fall: 2, rise: 1}
+    drain_timeout: 1h
+  # Fixed units remain adapter-managed; these entries only render static routes.
+  - {name: at-mcp-kiwoom, binds: ["100.122.100.56:8772"], upstream: "127.0.0.1:8772", health: {http: /health}, check: {inter: 5s, fall: 2, rise: 1}}
+  - {name: at-mcp-h3-crypto-paper, binds: ["100.122.100.56:8776"], upstream: "127.0.0.1:8776", health: {http: /health}, check: {inter: 5s, fall: 2, rise: 1}}
+  - {name: at-mcp-h3-us-paper, binds: ["100.122.100.56:8777"], upstream: "127.0.0.1:8777", health: {http: /health}, check: {inter: 5s, fall: 2, rise: 1}}

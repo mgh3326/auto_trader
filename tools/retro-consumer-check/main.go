@@ -17,8 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
@@ -117,6 +119,205 @@ type operationCheck struct {
 	rowDecimal []string
 	rowInteger []string
 	rowKeys    []string
+	// nested validates array-valued keys inside each row against a closed schema.
+	nested []nestedArrayCheck
+	// minRows is the fewest rows the fixture must return for this operation.
+	minRows int
+}
+
+// wireKind is the declared JSON type of one nested field (provider contract).
+type wireKind int
+
+const (
+	kindStringOrNull wireKind = iota
+	kindCodeOrNull
+	kindProseOrNull
+	kindDecimalOrNull
+	kindBool
+	kindDateTimeOrNull
+	kindPnlClass
+)
+
+type nestedField struct {
+	name string
+	kind wireKind
+}
+
+// nestedArrayCheck is a closed schema for the elements of one array-valued key:
+// every listed key is required, and no key outside the list is allowed.
+type nestedArrayCheck struct {
+	field  string
+	fields []nestedField
+}
+
+// wireCounts records how many rows and nested elements one response checked.
+type wireCounts struct {
+	rows   int
+	nested int
+}
+
+var decimalPattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
+
+var codePattern = regexp.MustCompile(`^[A-Za-z0-9_.:\-]+$`)
+
+var pnlClassValues = map[string]bool{
+	"recorded": true, "not_applicable": true, "unknown": true, "missing": true,
+}
+
+// retroTradesRowKeys is the closed TradeRow key set from contracts/retro/v1/openapi.yaml.
+var retroTradesRowKeys = []string{
+	"trade_ref", "symbol", "market", "side", "strategy", "entry_at", "exit_at",
+	"quantity", "entry_price", "exit_price", "currency", "return_rate",
+	"realized_amount", "realized_currency", "exit_reason", "basis", "reviews",
+}
+
+// retroTradesReviews is the closed TradeReviewRow schema (additionalProperties: false,
+// all fourteen keys required) with the declared type of each field.
+var retroTradesReviews = nestedArrayCheck{
+	field: "reviews",
+	fields: []nestedField{
+		{"review_ref", kindCodeOrNull},
+		{"outcome", kindCodeOrNull},
+		{"trigger_type", kindCodeOrNull},
+		{"root_cause_class", kindCodeOrNull},
+		{"pnl_status", kindCodeOrNull},
+		{"pnl_class", kindPnlClass},
+		{"realized_pnl", kindDecimalOrNull},
+		{"realized_pnl_currency", kindCodeOrNull},
+		{"fill_evidence_available", kindBool},
+		{"created_at", kindDateTimeOrNull},
+		{"lesson", kindProseOrNull},
+		{"result_summary", kindProseOrNull},
+		{"rationale", kindProseOrNull},
+		{"next_strategy", kindProseOrNull},
+	},
+}
+
+// retroTradesOperation is the retro_trades check definition, shared by the gate
+// run and the unit tests so the nested review schema cannot drift between them.
+// The call function is set by the caller; the unit tests only validate wire bytes.
+func retroTradesOperation() operationCheck {
+	return operationCheck{
+		name:       "retro_trades",
+		path:       "/trading/api/retro/v1/retro_trades",
+		rawQuery:   "?from=2026-01-01&to=2026-01-10",
+		rowKeys:    retroTradesRowKeys,
+		rowDecimal: []string{"quantity", "entry_price", "exit_price", "return_rate", "realized_amount"},
+		nested:     []nestedArrayCheck{retroTradesReviews},
+		minRows:    1,
+	}
+}
+
+func checkKind(v any, kind wireKind) error {
+	switch kind {
+	case kindStringOrNull:
+		if v == nil {
+			return nil
+		}
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("must be a string or null, got %T (%v)", v, v)
+		}
+	case kindCodeOrNull:
+		if v == nil {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("must be a string or null, got %T (%v)", v, v)
+		}
+		if !codePattern.MatchString(s) {
+			return fmt.Errorf("code %q does not match the contract pattern ^[A-Za-z0-9_.:\\-]+$", s)
+		}
+		if n := utf8.RuneCountInString(s); n > 64 {
+			return fmt.Errorf("code is %d characters, the contract allows at most 64", n)
+		}
+	case kindProseOrNull:
+		if v == nil {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("must be a string or null, got %T (%v)", v, v)
+		}
+		if n := utf8.RuneCountInString(s); n > 1000 {
+			return fmt.Errorf("prose is %d characters, the contract allows at most 1000", n)
+		}
+	case kindDecimalOrNull:
+		if v == nil {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("decimal must be a string, got %T (%v)", v, v)
+		}
+		if !decimalPattern.MatchString(s) {
+			return fmt.Errorf("decimal %q does not match the exact-decimal pattern", s)
+		}
+	case kindBool:
+		if _, ok := v.(bool); !ok {
+			return fmt.Errorf("must be a boolean, got %T (%v)", v, v)
+		}
+	case kindDateTimeOrNull:
+		if v == nil {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("date-time must be a string, got %T (%v)", v, v)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, s); err != nil {
+			return fmt.Errorf("date-time %q is not RFC 3339: %w", s, err)
+		}
+	case kindPnlClass:
+		s, ok := v.(string)
+		if !ok || !pnlClassValues[s] {
+			return fmt.Errorf("must be one of recorded|not_applicable|unknown|missing, got %v", v)
+		}
+	}
+	return nil
+}
+
+// validateNestedRow applies one closed nested schema to one element of an array.
+func validateNestedRow(item any, na nestedArrayCheck, op string, row, idx int) error {
+	obj, ok := item.(map[string]any)
+	if !ok {
+		return fmt.Errorf("schema violation: operation %s row %d %s %d is not an object", op, row, na.field, idx)
+	}
+	allowed := make(map[string]bool, len(na.fields))
+	for _, f := range na.fields {
+		allowed[f.name] = true
+	}
+	for _, f := range na.fields {
+		v, ok := obj[f.name]
+		if !ok {
+			return fmt.Errorf("schema violation: operation %s row %d %s %d missing required field %q", op, row, na.field, idx, f.name)
+		}
+		if err := checkKind(v, f.kind); err != nil {
+			return fmt.Errorf("schema violation: operation %s row %d %s %d field %q: %w", op, row, na.field, idx, f.name, err)
+		}
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !allowed[k] {
+			return fmt.Errorf("schema violation: operation %s row %d %s %d unexpected field %q (not in the closed schema)", op, row, na.field, idx, k)
+		}
+	}
+	return nil
+}
+
+// checkCoverage fails when the fixture did not give the harness anything to check.
+func checkCoverage(op operationCheck, counts wireCounts) error {
+	if counts.rows < op.minRows {
+		return fmt.Errorf("coverage violation: operation %s returned %d rows, want at least %d", op.name, counts.rows, op.minRows)
+	}
+	if len(op.nested) > 0 && counts.nested == 0 {
+		return fmt.Errorf("coverage violation: operation %s checked 0 nested elements; the gate fixture must include a linked review", op.name)
+	}
+	return nil
 }
 
 func scanPrivacy(val any, path string) error {
@@ -147,14 +348,15 @@ func scanPrivacy(val any, path string) error {
 	return nil
 }
 
-func validateWireEnvelope(raw map[string]any, op operationCheck) error {
+func validateWireEnvelope(raw map[string]any, op operationCheck) (wireCounts, error) {
+	var counts wireCounts
 	envelopeRequired := []string{
 		"as_of", "data_as_of", "timezone", "total", "truncated",
 		"limit", "cursor", "next_cursor", "unknowns", "data",
 	}
 	for _, key := range envelopeRequired {
 		if _, ok := raw[key]; !ok {
-			return fmt.Errorf("schema violation: operation %s: missing envelope field %q", op.name, key)
+			return wireCounts{}, fmt.Errorf("schema violation: operation %s: missing envelope field %q", op.name, key)
 		}
 	}
 
@@ -163,7 +365,7 @@ func validateWireEnvelope(raw map[string]any, op operationCheck) error {
 	if totalVal == nil {
 		unknowns, ok := raw["unknowns"].([]any)
 		if !ok {
-			return fmt.Errorf("unknowns violation: operation %s: total is null but unknowns is not a list", op.name)
+			return wireCounts{}, fmt.Errorf("unknowns violation: operation %s: total is null but unknowns is not a list", op.name)
 		}
 		explained := false
 		for _, u := range unknowns {
@@ -175,11 +377,11 @@ func validateWireEnvelope(raw map[string]any, op operationCheck) error {
 			}
 		}
 		if !explained {
-			return fmt.Errorf("unknowns violation: operation %s: total is null but unknowns does not explain field=total with reason=count_unavailable", op.name)
+			return wireCounts{}, fmt.Errorf("unknowns violation: operation %s: total is null but unknowns does not explain field=total with reason=count_unavailable", op.name)
 		}
 	} else if num, ok := totalVal.(json.Number); ok {
 		if strings.Contains(num.String(), ".") {
-			return fmt.Errorf("precision violation: operation %s: total is serialized as float %s", op.name, num.String())
+			return wireCounts{}, fmt.Errorf("precision violation: operation %s: total is serialized as float %s", op.name, num.String())
 		}
 	}
 
@@ -187,15 +389,15 @@ func validateWireEnvelope(raw map[string]any, op operationCheck) error {
 	if cursorVal := raw["next_cursor"]; cursorVal != nil {
 		cursorStr, ok := cursorVal.(string)
 		if !ok {
-			return fmt.Errorf("pagination violation: operation %s: next_cursor is not a string", op.name)
+			return wireCounts{}, fmt.Errorf("pagination violation: operation %s: next_cursor is not a string", op.name)
 		}
 		if op.name == "retro_scoreboard" {
 			if !scoreCursorPat.MatchString(cursorStr) {
-				return fmt.Errorf("pagination violation: operation %s: invalid scoreboard cursor %q", op.name, cursorStr)
+				return wireCounts{}, fmt.Errorf("pagination violation: operation %s: invalid scoreboard cursor %q", op.name, cursorStr)
 			}
 		} else {
 			if !cursorPattern.MatchString(cursorStr) {
-				return fmt.Errorf("pagination violation: operation %s: invalid next_cursor %q", op.name, cursorStr)
+				return wireCounts{}, fmt.Errorf("pagination violation: operation %s: invalid next_cursor %q", op.name, cursorStr)
 			}
 		}
 	}
@@ -203,23 +405,23 @@ func validateWireEnvelope(raw map[string]any, op operationCheck) error {
 	// Validate data array and rows
 	dataArr, ok := raw["data"].([]any)
 	if !ok {
-		return fmt.Errorf("schema violation: operation %s: data is not a list", op.name)
+		return wireCounts{}, fmt.Errorf("schema violation: operation %s: data is not a list", op.name)
 	}
 
 	for i, rowItem := range dataArr {
 		row, ok := rowItem.(map[string]any)
 		if !ok {
-			return fmt.Errorf("schema violation: operation %s row %d is not an object", op.name, i)
+			return wireCounts{}, fmt.Errorf("schema violation: operation %s row %d is not an object", op.name, i)
 		}
 		for _, reqKey := range op.rowKeys {
 			if _, ok := row[reqKey]; !ok {
-				return fmt.Errorf("schema violation: operation %s row %d missing required field %q", op.name, i, reqKey)
+				return wireCounts{}, fmt.Errorf("schema violation: operation %s row %d missing required field %q", op.name, i, reqKey)
 			}
 		}
 		for _, decKey := range op.rowDecimal {
 			if v, ok := row[decKey]; ok && v != nil {
 				if _, isStr := v.(string); !isStr {
-					return fmt.Errorf("precision violation: operation %s row %d decimal field %q must be string, got %T (%v)", op.name, i, decKey, v, v)
+					return wireCounts{}, fmt.Errorf("precision violation: operation %s row %d decimal field %q must be string, got %T (%v)", op.name, i, decKey, v, v)
 				}
 			}
 		}
@@ -227,20 +429,33 @@ func validateWireEnvelope(raw map[string]any, op operationCheck) error {
 			if v, ok := row[intKey]; ok && v != nil {
 				num, isNum := v.(json.Number)
 				if !isNum {
-					return fmt.Errorf("precision violation: operation %s row %d integer field %q must be number, got %T (%v)", op.name, i, intKey, v, v)
+					return wireCounts{}, fmt.Errorf("precision violation: operation %s row %d integer field %q must be number, got %T (%v)", op.name, i, intKey, v, v)
 				}
 				if strings.Contains(num.String(), ".") {
-					return fmt.Errorf("precision violation: operation %s row %d integer field %q serialized as float: %s", op.name, i, intKey, num.String())
+					return wireCounts{}, fmt.Errorf("precision violation: operation %s row %d integer field %q serialized as float: %s", op.name, i, intKey, num.String())
 				}
 			}
 		}
+		for _, na := range op.nested {
+			items, ok := row[na.field].([]any)
+			if !ok {
+				return wireCounts{}, fmt.Errorf("schema violation: operation %s row %d field %q must be a list", op.name, i, na.field)
+			}
+			for j, item := range items {
+				if err := validateNestedRow(item, na, op.name, i, j); err != nil {
+					return wireCounts{}, err
+				}
+				counts.nested++
+			}
+		}
+		counts.rows++
 	}
 
 	// Privacy scan
 	if err := scanPrivacy(raw, op.name); err != nil {
-		return err
+		return wireCounts{}, err
 	}
-	return nil
+	return counts, nil
 }
 
 func runChecks(baseURL, token string) error {
@@ -260,6 +475,10 @@ func runChecks(baseURL, token string) error {
 	}
 
 	d := parseDate
+	retroTrades := retroTradesOperation()
+	retroTrades.call = func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
+		return p.RetroTrades(ctx, &autotrader.RetroTradesParams{From: d("2026-01-01"), To: d("2026-01-10")})
+	}
 	operations := []operationCheck{
 		{
 			name: "retro_day",
@@ -334,16 +553,7 @@ func runChecks(baseURL, token string) error {
 			rowKeys:    []string{"symbol", "time", "open_price", "high_price", "low_price", "close_price", "quantity", "currency", "unit", "source", "venue", "adjusted", "missing_reason", "basis"},
 			rowDecimal: []string{"open_price", "high_price", "low_price", "close_price", "quantity"},
 		},
-		{
-			name: "retro_trades",
-			path: "/trading/api/retro/v1/retro_trades",
-			rawQuery: "?from=2026-01-01&to=2026-01-10",
-			call: func(ctx context.Context, p *autotrader.Provider) (autotrader.Result, error) {
-				return p.RetroTrades(ctx, &autotrader.RetroTradesParams{From: d("2026-01-01"), To: d("2026-01-10")})
-			},
-			rowKeys:    []string{"trade_ref", "symbol", "market", "side", "strategy", "entry_at", "exit_at", "quantity", "entry_price", "exit_price", "currency", "return_rate", "realized_amount", "realized_currency", "exit_reason", "basis", "reviews"},
-			rowDecimal: []string{"quantity", "entry_price", "exit_price", "return_rate", "realized_amount"},
-		},
+		retroTrades,
 		{
 			name: "data_gaps",
 			path: "/trading/api/retro/v1/data_gaps",
@@ -394,10 +604,14 @@ func runChecks(baseURL, token string) error {
 			return fmt.Errorf("decode json for %s: %w", op.name, err)
 		}
 
-		if err := validateWireEnvelope(raw, op); err != nil {
+		counts, err := validateWireEnvelope(raw, op)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("[operation-verified] %s: OK\n", op.name)
+		if err := checkCoverage(op, counts); err != nil {
+			return err
+		}
+		fmt.Printf("[operation-verified] %s: OK (rows=%d nested=%d)\n", op.name, counts.rows, counts.nested)
 	}
 
 	// 3. Authorization boundary checks

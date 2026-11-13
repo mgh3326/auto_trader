@@ -149,7 +149,10 @@ def _normalize_upbit_filled(order: dict[str, Any]) -> dict[str, Any] | None:
         "price": price,
         "quantity": executed_vol,
         "total_amount": total,
-        "fee": float(order.get("paid_fee") or 0),
+        "fee": float(order["paid_fee"])
+        if order.get("paid_fee") not in (None, "")
+        else None,
+        "filled_at_basis": "broker_order_time",
         "currency": "KRW",
         "account": "upbit",
         "order_id": str(order.get("uuid", "")),
@@ -179,7 +182,9 @@ def normalize_upbit_order(order: dict[str, Any]) -> list[dict[str, Any]]:  # NOS
     side_raw = str(order.get("side", "")).lower()
     side = "buy" if side_raw == "bid" else "sell"
     order_id = str(order.get("uuid", ""))
-    paid_fee = float(order.get("paid_fee") or 0)
+    paid_fee = (
+        float(order["paid_fee"]) if order.get("paid_fee") not in (None, "") else None
+    )
     redacted = _redact_sensitive_keys(order)
 
     trades = [t for t in (order.get("trades") or []) if float(t.get("volume") or 0) > 0]
@@ -195,7 +200,9 @@ def normalize_upbit_order(order: dict[str, Any]) -> list[dict[str, Any]]:  # NOS
             if trade_price <= 0:
                 continue
             # Proportionally allocate order-level fee across trades by volume
-            trade_fee = (trade_vol / executed_vol) * paid_fee if executed_vol else 0
+            trade_fee = (
+                (trade_vol / executed_vol) * paid_fee if paid_fee is not None else None
+            )
             fills.append(
                 {
                     "symbol": symbol,
@@ -206,6 +213,9 @@ def normalize_upbit_order(order: dict[str, Any]) -> list[dict[str, Any]]:  # NOS
                     "quantity": trade_vol,
                     "total_amount": trade_funds,
                     "fee": trade_fee,
+                    "filled_at_basis": "broker_fill_time"
+                    if trade.get("created_at")
+                    else "broker_order_time",
                     "currency": "KRW",
                     "account": "upbit",
                     "order_id": order_id,
@@ -233,6 +243,7 @@ def normalize_upbit_order(order: dict[str, Any]) -> list[dict[str, Any]]:  # NOS
             "quantity": executed_vol,
             "total_amount": price * executed_vol,
             "fee": paid_fee,
+            "filled_at_basis": "broker_order_time",
             "currency": "KRW",
             "account": "upbit",
             "order_id": order_id,
@@ -306,7 +317,8 @@ def _normalize_kis_domestic_filled(order: dict[str, Any]) -> dict[str, Any] | No
         "price": price,
         "quantity": qty,
         "total_amount": total,
-        "fee": float(order.get("fee") or order.get("tot_fee") or 0),
+        "fee": None,
+        "filled_at_basis": "broker_order_time",
         "currency": "KRW",
         "account": "kis",
         "order_id": str(order.get("ord_no") or order.get("odno") or ""),
@@ -336,7 +348,8 @@ def _normalize_kis_overseas_filled(order: dict[str, Any]) -> dict[str, Any] | No
         "price": price,
         "quantity": qty,
         "total_amount": total,
-        "fee": float(order.get("fee") or order.get("tot_fee") or 0),
+        "fee": None,
+        "filled_at_basis": "broker_order_time",
         "currency": "USD",
         "account": "kis_overseas",
         "order_id": str(order.get("odno") or order.get("ord_no") or ""),
@@ -381,6 +394,10 @@ def to_execution_ledger_upsert(
         if normalized.get("fee") is not None
         else None,
         fee_currency=normalized.get("currency"),
+        fee_basis="broker_reported"
+        if normalized.get("fee") is not None
+        else "not_provided",
+        filled_at_basis=normalized.get("filled_at_basis"),
         filled_at=_parse_filled_at(
             normalized.get("filled_at"),
             ord_dt=normalized.get("ord_dt"),

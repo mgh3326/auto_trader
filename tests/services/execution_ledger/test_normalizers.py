@@ -419,3 +419,89 @@ def test_kis_overseas_normalizer_maps_us_execution() -> None:
     assert normalized["side"] == "buy"
     assert normalized["fill_seq"] == 2
     assert normalized["currency"] == "USD"
+
+
+@pytest.mark.parametrize(
+    "normalizer,raw",
+    [
+        (
+            _normalize_kis_domestic_filled,
+            {
+                "ccld_qty": "1",
+                "ccld_unpr": "100",
+                "ord_dt": "20261102",
+                "ord_tmd": "090000",
+                "pdno": "005930",
+                "odno": "a",
+                "fee": "4",
+            },
+        ),
+        (
+            _normalize_kis_overseas_filled,
+            {
+                "ft_ccld_qty": "1",
+                "ft_ccld_unpr3": "100",
+                "ord_dt": "20261102",
+                "ord_tmd": "090000",
+                "pdno": "AAPL",
+                "odno": "a",
+                "fee": "4",
+            },
+        ),
+    ],
+)
+def test_kis_rest_fee_is_not_provided_and_time_is_order_proxy(normalizer, raw) -> None:
+    fill = to_execution_ledger_upsert(normalizer(raw))
+    assert (fill.fee_amount, fill.fee_basis, fill.filled_at_basis) == (
+        None,
+        "not_provided",
+        "broker_order_time",
+    )
+
+
+@pytest.mark.parametrize(
+    "trade_time,fee,expected_time,expected_fee",
+    [
+        ("2026-11-02T09:01:00+09:00", "5", "broker_fill_time", "broker_reported"),
+        (None, None, "broker_order_time", "not_provided"),
+    ],
+)
+def test_upbit_trade_and_order_time_and_fee_basis(
+    trade_time, fee, expected_time, expected_fee
+) -> None:
+    raw = {
+        "state": "done",
+        "market": "KRW-BTC",
+        "side": "bid",
+        "executed_volume": "1",
+        "price": "100",
+        "uuid": "a",
+        "created_at": "2026-11-02T09:00:00+09:00",
+        "paid_fee": fee,
+        "trades": [
+            {"uuid": "t", "volume": "1", "funds": "100", "created_at": trade_time}
+        ],
+    }
+    fill = to_execution_ledger_upsert(normalize_upbit_order(raw)[0])
+    assert fill.filled_at_basis == expected_time
+    assert fill.fee_basis == expected_fee
+    assert fill.fee_amount == (Decimal("5") if fee else None)
+
+
+def test_upbit_aggregate_uses_order_time_and_reported_fee() -> None:
+    order = {
+        "state": "done",
+        "market": "KRW-BTC",
+        "side": "bid",
+        "executed_volume": "1",
+        "price": "100",
+        "uuid": "aggregate",
+        "created_at": "2026-11-02T09:00:00+09:00",
+        "paid_fee": "2",
+    }
+    fill = to_execution_ledger_upsert(normalize_upbit_order(order)[0])
+    assert (fill.filled_at_basis, fill.fee_basis, fill.fee_amount) == (
+        "broker_order_time",
+        "broker_reported",
+        Decimal("2"),
+    )

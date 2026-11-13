@@ -10,6 +10,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,7 @@ from app.services.market_events.expected_sources import (
     EXPECTED_SOURCES,
     expected_sources_for_date,
 )
+from app.services.market_events.session_calendar import Market, trading_session_status
 
 # Partition is considered stale for the ROB-167 per-day/coverage surfaces if its
 # `finished_at` is older than this window. Sized for the recommended rolling
@@ -48,11 +50,43 @@ class _Key:
     market: str
 
 
-def _is_stale(finished_at: datetime | None, *, now: datetime) -> bool:
+_MARKET_ZONES: dict[str, tuple[Market, str]] = {
+    "kr": ("kr", "Asia/Seoul"),
+    "us": ("us", "America/New_York"),
+}
+
+
+def _is_stale(
+    finished_at: datetime | None, *, now: datetime, market: str | None = None
+) -> bool:
     if finished_at is None:
         return False
     finished_at = _ensure_aware(finished_at)
-    return finished_at < (now - timedelta(hours=STALE_AFTER_HOURS))
+    extra_hours = 24 * _non_session_days(market, finished_at, now) if market else 0
+    return finished_at < (now - timedelta(hours=STALE_AFTER_HOURS + extra_hours))
+
+
+def _non_session_days(market: str | None, finished_at: datetime, now: datetime) -> int:
+    """Count closed exchange days after the last success and before today (local).
+
+    Today is never counted: counting it would add 24 hours right after local
+    midnight and hide a missed run on the trading day that just ended.
+    An `unknown` calendar answer counts as open, so a calendar failure keeps
+    the plain hour rule instead of extending the threshold.
+    """
+    mapping = _MARKET_ZONES.get(market or "")
+    if mapping is None:
+        return 0
+    calendar_market, zone_name = mapping
+    zone = ZoneInfo(zone_name)
+    day = _ensure_aware(finished_at).astimezone(zone).date() + timedelta(days=1)
+    last = _ensure_aware(now).astimezone(zone).date()
+    count = 0
+    while day < last:
+        if trading_session_status(calendar_market, day) == "closed":
+            count += 1
+        day += timedelta(days=1)
+    return count
 
 
 def _date_iter(from_date: date, to_date: date) -> Iterator[date]:
@@ -189,6 +223,11 @@ class MarketEventsFreshnessService:
             default=None,
         )
         hours_since = _hours_since_finished_at(latest_succeeded, now)
+        allowance_hours = 0.0
+        if latest_succeeded is not None and latest_succeeded.finished_at is not None:
+            allowance_hours = 24.0 * _non_session_days(
+                key.market, latest_succeeded.finished_at, now
+            )
 
         return MarketEventsFreshnessRow(
             source=key.source,
@@ -217,7 +256,10 @@ class MarketEventsFreshnessService:
             if latest_failed
             else None,
             expected_next_refresh_at=expected_next_refresh,
-            stale=hours_since is None or hours_since > stale_threshold_hours,
+            stale=(
+                hours_since is None
+                or hours_since > stale_threshold_hours + allowance_hours
+            ),
         )
 
     async def get_per_day_states(
@@ -256,7 +298,9 @@ class MarketEventsFreshnessService:
                 out[current_date] = "partial"
                 continue
             # All present and all succeeded.
-            if all(_is_stale(p.finished_at, now=now) for p in succeeded):
+            if all(
+                _is_stale(p.finished_at, now=now, market=p.market) for p in succeeded
+            ):
                 out[current_date] = "stale"
                 continue
             if all(p.event_count == 0 for p in succeeded):
@@ -342,7 +386,9 @@ class MarketEventsFreshnessService:
                 state = "failed"
             elif succeeded_count == 0:
                 state = "missing"
-            elif last_success_at is not None and _is_stale(last_success_at, now=now):
+            elif last_success_at is not None and _is_stale(
+                last_success_at, now=now, market=mkt
+            ):
                 state = "stale"
             else:
                 state = "fresh"
