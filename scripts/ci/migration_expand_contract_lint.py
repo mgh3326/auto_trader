@@ -146,6 +146,54 @@ def _reachable_upgrade_functions(
     return reachable
 
 
+def _upgrade_entrypoint_problem(tree: ast.Module) -> str | None:
+    definitions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "upgrade"
+    ]
+    nested_definitions = [
+        node
+        for statement in tree.body
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(statement)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "upgrade"
+    ]
+    reassigned = [
+        node
+        for statement in tree.body
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name)
+        and node.id == "upgrade"
+        and isinstance(node.ctx, ast.Store)
+    ]
+    if len(definitions) != 1:
+        return "migration must define one top-level upgrade() function"
+    if (
+        nested_definitions
+        or reassigned
+        or isinstance(definitions[0], ast.AsyncFunctionDef)
+    ):
+        return "upgrade must be a plain top-level function definition"
+    return None
+
+
+def _module_level_calls(tree: ast.Module) -> list[ast.Call]:
+    calls: list[ast.Call] = []
+    pending: list[ast.AST] = list(tree.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Call):
+            calls.append(node)
+        pending.extend(ast.iter_child_nodes(node))
+    return calls
+
+
 def _safe_imported_calls(tree: ast.Module) -> set[str]:
     imports: dict[str, list[tuple[str, str]]] = {}
     for node in tree.body:
@@ -296,6 +344,8 @@ def _argument(
 
 
 def _alter_column_problem(call: ast.Call) -> str | None:
+    if any(isinstance(argument, ast.Starred) for argument in call.args):
+        return "alter_column uses dynamic *args"
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
     if None in keywords:
         return "alter_column uses dynamic **kwargs"
@@ -353,9 +403,12 @@ def violations(source: str, task_id: str) -> list[str]:
         return [f"line {exc.lineno or 1}: migration is not valid Python: {exc.msg}"]
 
     source_lines = source.splitlines()
+    entrypoint_problem = _upgrade_entrypoint_problem(tree)
+    if entrypoint_problem:
+        return [f"line 1: {entrypoint_problem}"]
     functions = _reachable_upgrade_functions(tree)
     if not functions:
-        return []
+        return ["line 1: upgrade() has no statically reachable function body"]
     module_functions = {
         node.name
         for node in tree.body
@@ -383,6 +436,12 @@ def violations(source: str, task_id: str) -> list[str]:
         for child in ast.iter_child_nodes(parent)
     }
     found: list[str] = []
+
+    for call in _module_level_calls(tree):
+        if not _has_contract_marker(source_lines, call, task_id, parents, batch_names):
+            found.append(
+                f"line {call.lineno}: module-level call cannot be checked statically"
+            )
 
     for function in functions:
         shadowed_names = {

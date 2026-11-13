@@ -40,6 +40,45 @@ def test_forbidden_upgrade_operations_require_marker(operation: str) -> None:
     assert lint.violations(marked, "4200") == []
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def _up():\n    op.drop_table('old')\nupgrade = _up\n",
+        "upgrade = lambda: op.drop_table('old')\n",
+        "if enabled:\n    def upgrade():\n        op.drop_table('old')\n",
+    ],
+)
+def test_upgrade_must_be_a_single_top_level_function(source: str) -> None:
+    assert lint.violations(source, "4200")
+
+
+def test_module_level_migration_operation_cannot_escape_the_lint() -> None:
+    source = "op.drop_table('old')\ndef upgrade():\n    pass\n"
+    assert lint.violations(source, "4200")
+    marked = (
+        "# expand-contract: contract-step 4200\n"
+        "op.drop_table('old')\ndef upgrade():\n    pass\n"
+    )
+    assert lint.violations(marked, "4200") == []
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "op.alter_column(*params)",
+        "op.alter_column('items', *rest)",
+        "op.alter_column('items', 'value', *nullable_and_rest)",
+    ],
+)
+def test_starred_alter_column_arguments_fail_closed(operation: str) -> None:
+    source = f"def upgrade():\n    {operation}\n"
+    assert lint.violations(source, "4200")
+    marked = (
+        f"def upgrade():\n    # expand-contract: contract-step 4200\n    {operation}\n"
+    )
+    assert lint.violations(marked, "4200") == []
+
+
 def test_additive_table_and_nullable_column_pass() -> None:
     source = """\
 def upgrade():
