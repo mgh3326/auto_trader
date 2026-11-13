@@ -701,3 +701,60 @@ async def test_websocket_reconnect_adopts_producer_key_published_after_cache_onl
     assert keys_used == ["KEY-REJECTED", "KEY-REJECTED", "KEY-ROTATED"]
     assert client.approval_key == "KEY-ROTATED"
     assert approval_redis.mutations == []
+
+
+@pytest.mark.asyncio
+async def test_websocket_reconnect_survives_redis_error_during_key_refresh(
+    cache_only_mode: None,
+    no_http: None,
+    approval_redis: _TrapRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Redis read error during the cache_only key refresh keeps the loop alive."""
+    client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=False)
+    client.is_running = True
+    client.reconnect_delay = 0
+    client.max_reconnect_attempts = 4
+    client.approval_key = "KEY-REJECTED"
+    keys_used: list[str] = []
+
+    async def broken_get(key: str) -> str | None:
+        raise ConnectionError("redis unavailable")
+
+    async def connect() -> None:
+        keys_used.append(client.approval_key)
+        if len(keys_used) < 3:
+            if len(keys_used) == 2:
+                # Redis fails on the repeated-ACK refresh path.
+                monkeypatch.setattr(approval_redis, "get", broken_get)
+            raise KISSubscriptionAckError(
+                tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                rt_cd="1",
+                msg_cd="OPSP0011",
+                msg1="invalid approval : NOT FOUND",
+            )
+        client.is_connected = True
+
+    with (
+        patch.object(
+            client,
+            "_issue_approval_key_if_needed",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            client,
+            "_build_websocket_url",
+            new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+        ),
+        patch.object(
+            client,
+            "_connect_and_subscribe_internal",
+            new=AsyncMock(side_effect=connect),
+        ),
+        patch.object(client, "_close_websocket_best_effort", new=AsyncMock()),
+    ):
+        await client.connect_and_subscribe()
+
+    assert keys_used == ["KEY-REJECTED", "KEY-REJECTED", "KEY-REJECTED"]
+    assert client.approval_key == "KEY-REJECTED"
+    assert approval_redis.mutations == []

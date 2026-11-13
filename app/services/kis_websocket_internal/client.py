@@ -270,12 +270,22 @@ class KISExecutionWebSocket:
     async def _adopt_cached_approval_key(self) -> None:
         """cache_only: adopt a producer-published approval key, never the rejected one.
 
-        Read-only. On a cache miss get_approval_key raises the cache_only refusal and
-        the current key is kept.
+        Read-only and best-effort. On a cache miss get_approval_key raises the
+        cache_only refusal; a Redis read error raises its own exception. In both
+        cases the current key is kept, so the reconnect loop keeps backing off
+        instead of ending.
         """
         try:
             key = await approval_keys.get_approval_key(self.account_mode)
         except TokenIssuanceCacheOnlyUnavailable:
+            return
+        except Exception as exc:  # noqa: BLE001 - best-effort refresh; never end the loop
+            logger.warning(
+                "KIS approval key cache refresh failed; keeping current key: "
+                "account_mode=%s error_class=%s",
+                self.account_mode,
+                type(exc).__name__,
+            )
             return
         if key != self.approval_key:
             self.approval_key = key
