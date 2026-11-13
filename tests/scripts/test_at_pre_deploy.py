@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -49,7 +50,7 @@ if "start" in sys.argv:
             Path(os.environ["BACKUP"], "backup-new.sha256").write_text("a"*64 + "  /backup/auto_trader-new.dump\\n")
     sys.exit(1 if os.environ.get("START_FAIL") or os.environ.get("STATUS3") else 0)
 started = Path(os.environ["STARTED"]).exists()
-props = {"InvocationID": "new" if started else "old", "Result": "exit-code" if os.environ.get("STATUS3") else "success", "ExecMainCode": "killed" if os.environ.get("KILLED") else "exited", "ExecMainStatus": "3" if os.environ.get("STATUS3") or os.environ.get("KILLED") else "0", "ExecMainStartTimestampMonotonic": "invalid" if os.environ.get("INVALID_START") else "1" if os.environ.get("OLD_START") else str(time.monotonic_ns() // 1000 + 1000000), "ExecMainExitTimestampMonotonic": "invalid" if os.environ.get("INVALID_EXIT") else "1" if os.environ.get("OLD_EXIT") else str(time.monotonic_ns() // 1000 + 2000000)}
+props = {"InvocationID": "new" if started else "old", "Result": "exit-code" if os.environ.get("STATUS3") else "success", "ExecMainCode": os.environ.get("KILLED", "1"), "ExecMainStatus": "3" if os.environ.get("STATUS3") or os.environ.get("KILLED") else "0", "ExecMainStartTimestampMonotonic": "invalid" if os.environ.get("INVALID_START") else "1" if os.environ.get("OLD_START") else str(time.monotonic_ns() // 1000 + 1000000), "ExecMainExitTimestampMonotonic": "invalid" if os.environ.get("INVALID_EXIT") else "1" if os.environ.get("OLD_EXIT") else str(time.monotonic_ns() // 1000 + 2000000)}
 for i, arg in enumerate(sys.argv):
     if arg == "-p": print(sys.argv[i+1] + "=" + props[sys.argv[i+1]])
 """
@@ -68,9 +69,25 @@ for i, arg in enumerate(sys.argv):
         UPGRADED=str(tmp_path / "upgraded"),
     )
 
-    def run(*args, **extra):
+    def run(*args, legacy=False, **extra):
+        if legacy:
+            wrapper = """import runpy, subprocess, sys, time
+original_run = subprocess.run
+def legacy_run(*args, **kwargs):
+    if 'capture_output' in kwargs or 'text' in kwargs:
+        raise TypeError('Python 3.6 subprocess.run does not accept these arguments')
+    return original_run(*args, **kwargs)
+subprocess.run = legacy_run
+del time.time_ns
+del time.monotonic_ns
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+            command = [sys.executable, "-c", wrapper, str(SCRIPT), IMAGE, *args]
+        else:
+            command = [str(SCRIPT), IMAGE, *args]
         result = subprocess.run(
-            [str(SCRIPT), IMAGE, *args],
+            command,
             env={**env, **extra},
             capture_output=True,
             text=True,
@@ -119,7 +136,9 @@ def test_previous_status_three_and_failed_start_refused(setup_fakes):
 
 def test_signal_three_is_not_remote_failure(setup_fakes):
     _, run = setup_fakes
-    result, _ = run("--migrate", "--accept-backup-remote-failure", "reason", KILLED="1")
+    result, _ = run(
+        "--migrate", "--accept-backup-remote-failure", "reason", KILLED="2", STATUS3="1"
+    )
     assert result.returncode == 1
 
 
@@ -281,7 +300,7 @@ def test_default_command_timeout_is_bounded(monkeypatch):
     spec.loader.exec_module(module)
     timeouts = []
 
-    def fake_run(args, *, capture_output, text, timeout, check):
+    def fake_run(args, *, stdout, stderr, universal_newlines, timeout, check):
         timeouts.append(timeout)
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
@@ -310,5 +329,46 @@ def test_migration_mismatch_records_measured_revision(setup_fakes):
 def test_invalid_monotonic_backup_timestamp_is_refused(setup_fakes, invalid_timestamp):
     _, run = setup_fakes
     result, calls = run("--migrate", **{invalid_timestamp: "1"})
+    assert result.returncode == 1
+    assert "docker upgrade" not in calls
+
+
+def test_numeric_systemd_exit_code_allows_success(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run("--migrate")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["migration"] == "applied"
+
+
+def test_legacy_python_runtime_supports_read_only_comparison(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run(legacy=True, EQUAL="1")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["migration"] == "none"
+
+
+def test_legacy_python_runtime_supports_migration(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run("--migrate", legacy=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["migration"] == "applied"
+
+
+def test_script_uses_python_36_compatible_syntax():
+    import ast
+
+    ast.parse(SCRIPT.read_text(), feature_version=(3, 6))
+
+
+@pytest.mark.parametrize("code", ["2", "3"])
+def test_signal_exit_codes_never_authorize_remote_failure(setup_fakes, code):
+    _, run = setup_fakes
+    result, calls = run(
+        "--migrate",
+        "--accept-backup-remote-failure",
+        "reason",
+        KILLED=code,
+        STATUS3="1",
+    )
     assert result.returncode == 1
     assert "docker upgrade" not in calls

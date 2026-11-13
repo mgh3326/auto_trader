@@ -20,8 +20,17 @@ REVISION = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def command(args, *, timeout=1800, check=True):
+    # Python 3.6 does not support subprocess.run's capture_output/text options.
+    capture = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "universal_newlines": True,
+    }
     result = subprocess.run(
-        args, capture_output=True, text=True, timeout=timeout, check=False
+        args,
+        timeout=timeout,
+        check=False,
+        **capture,
     )
     if check and result.returncode:
         stage = args[args.index("alembic") + 1] if "alembic" in args else args[0]
@@ -101,9 +110,13 @@ def backup(start_ns, start_monotonic_ns, reason, receipt):
                     break
         if "backup_file" in receipt:
             break
-    if outcome == ("success", "exited", "0"):
+    if outcome[0] == "success" and outcome[1] in ("1", "exited") and outcome[2] == "0":
         pass
-    elif outcome == ("exit-code", "exited", "3"):
+    elif (
+        outcome[0] == "exit-code"
+        and outcome[1] in ("1", "exited")
+        and outcome[2] == "3"
+    ):
         receipt["backup_healthcheck_ping"] = "not_sent"
         if not reason or not reason.strip():
             raise RuntimeError("backup remote failure not accepted")
@@ -121,8 +134,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--accept-backup-remote-failure", metavar="REASON")
     args = parser.parse_args()
-    start_ns = time.time_ns()
-    start_monotonic_ns = time.monotonic_ns()
+    start_ns = int(time.time() * 1_000_000_000)
+    start_monotonic_ns = int(time.monotonic() * 1_000_000_000)
     env_file = os.environ.get("AT_MIGRATION_ENV_FILE")
     if not env_file:
         raise RuntimeError("AT_MIGRATION_ENV_FILE is required")
