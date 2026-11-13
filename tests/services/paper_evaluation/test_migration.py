@@ -169,6 +169,16 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 )
             await connection.run_sync(Base.metadata.create_all)
+            # hk 4178 is newer than the stamped boundary. Remove the current
+            # metadata objects so the migration creates and tests both of them.
+            await connection.execute(
+                text("DROP TABLE review.kis_us_inference_expiry_events")
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE review.live_order_ledger DROP COLUMN last_reconcile_detail"
+                )
+            )
             # hk 3800 tables are post-boundary metadata; let their migration create them.
             await connection.execute(text("DROP TABLE review.account_external_flows"))
             await connection.execute(text("DROP TABLE review.account_value_snapshots"))
