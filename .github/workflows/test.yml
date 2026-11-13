@@ -88,12 +88,9 @@ jobs:
 
     - name: Expand-contract migration lint
       if: github.event_name == 'pull_request'
-      env:
-        BASE_REF: ${{ github.base_ref }}
       run: |
         set -euo pipefail
-        git fetch --no-tags --depth=1 origin "refs/heads/${BASE_REF}"
-        task_id="$(python3 - <<'PY'
+        readarray -t lint_inputs < <(python3 - <<'PY'
         import json
         import os
         import re
@@ -104,9 +101,16 @@ jobs:
         task_ids = re.findall(r"(?m)^Mergewake-Task: ([0-9]+)\s*$", body)
         if len(task_ids) != 1:
             raise SystemExit("expected exactly one numeric Mergewake-Task trailer")
+        base_sha = event["pull_request"]["base"]["sha"]
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", base_sha):
+            raise SystemExit("expected pull_request.base.sha to be a full commit SHA")
+        print(base_sha)
         print(task_ids[0])
         PY
-        )"
+        )
+        base_sha="${lint_inputs[0]}"
+        task_id="${lint_inputs[1]}"
+        git fetch --no-tags --depth=1 origin "${base_sha}"
         python3 scripts/ci/migration_expand_contract_lint.py --base-ref FETCH_HEAD --head-ref HEAD --task-id "${task_id}"
 
     - name: Run ty

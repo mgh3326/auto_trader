@@ -19,6 +19,7 @@ from scripts.ci import migration_expand_contract_lint as lint
         "op.rename_table('old_table', 'new_table')",
         "op.alter_column('items', 'old_name', new_column_name='new_name')",
         "op.alter_column('items', 'value', nullable=False)",
+        "op.alter_column('items', 'value', False)",
         "op.alter_column('items', 'value', type_=sa.BigInteger())",
         "op.execute('DROP TABLE old_table')",
         "op.execute('ALTER TABLE items DROP COLUMN old_column')",
@@ -26,6 +27,7 @@ from scripts.ci import migration_expand_contract_lint as lint
         "op.execute('ALTER TABLE items RENAME COLUMN old TO new')",
         "op.execute('ALTER TABLE items ALTER COLUMN value SET NOT NULL')",
         "op.execute('ALTER TABLE items ALTER COLUMN value TYPE BIGINT')",
+        "op.execute('ALTER TABLE items ALTER COLUMN value SET DATA TYPE BIGINT')",
     ],
 )
 def test_forbidden_upgrade_operations_require_marker(operation: str) -> None:
@@ -117,6 +119,29 @@ def upgrade():
 def test_drop_index_and_constraint_are_outside_column_drop_rule(sql: str) -> None:
     source = f"def upgrade():\n    op.execute({sql!r})\n"
     assert lint.violations(source, "4200") == []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "ALTER TABLE items ALTER COLUMN value DROP NOT NULL",
+        "ALTER TABLE items ALTER COLUMN value DROP DEFAULT",
+        "ALTER TABLE items ALTER COLUMN value DROP IDENTITY",
+    ],
+)
+def test_relaxing_column_constraints_is_not_a_contract_operation(sql: str) -> None:
+    source = f"def upgrade():\n    op.execute({sql!r})\n"
+    assert lint.violations(source, "4200") == []
+
+
+def test_execute_keyword_sqltext_is_checked_and_dynamic_missing_argument_fails_closed() -> (
+    None
+):
+    source = "def upgrade():\n    op.execute(sqltext='DROP TABLE old_table')\n"
+    assert lint.violations(source, "4200")
+
+    missing = "def upgrade():\n    op.execute(encoding='utf-8')\n"
+    assert lint.violations(missing, "4200")
 
 
 def test_dynamic_raw_sql_fails_closed() -> None:

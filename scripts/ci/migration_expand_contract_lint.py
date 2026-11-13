@@ -15,12 +15,12 @@ RAW_SQL_RE = re.compile(
     r"\bDROP\s+TABLE\b"
     r"|\bDROP\s+COLUMN\b"
     r"|\bALTER\s+TABLE\b[\s\S]*?\bDROP\s+(?:COLUMN\s+)?"
-    r"(?!CONSTRAINT\b|INDEX\b|PRIMARY\b|FOREIGN\b|UNIQUE\b|CHECK\b)"
+    r"(?!CONSTRAINT\b|INDEX\b|PRIMARY\b|FOREIGN\b|UNIQUE\b|CHECK\b|NOT\s+NULL\b|DEFAULT\b|IDENTITY\b)"
     r"[\"`A-Z_][\w$\"`]*"
     r"|\bRENAME\b"
     r"|\bSET\s+NOT\s+NULL\b"
     r"|\bALTER\s+TABLE\b[\s\S]*?\bALTER\s+(?:COLUMN\s+)?"
-    r"[\"`A-Z_][\w$\"`]*\s+TYPE\b",
+    r"[\"`A-Z_][\w$\"`]*\s+(?:SET\s+DATA\s+)?TYPE\b",
     re.I,
 )
 DESTRUCTIVE_OPS = frozenset(
@@ -226,13 +226,22 @@ def violations(source: str, task_id: str) -> list[str]:
             if method in DESTRUCTIVE_OPS:
                 keywords = {keyword.arg: keyword.value for keyword in call.keywords}
                 if method == "alter_column":
-                    if "new_column_name" in keywords:
+                    if "new_column_name" in keywords and not (
+                        isinstance(keywords["new_column_name"], ast.Constant)
+                        and keywords["new_column_name"].value is None
+                    ):
                         message = "alter_column renames a column"
                     elif "type_" in keywords:
                         message = "alter_column changes a column type"
                     elif (
                         isinstance(keywords.get("nullable"), ast.Constant)
                         and keywords["nullable"].value is False
+                    ):
+                        message = "alter_column tightens a column to NOT NULL"
+                    elif (
+                        len(call.args) > 2
+                        and isinstance(call.args[2], ast.Constant)
+                        and call.args[2].value is False
                     ):
                         message = "alter_column tightens a column to NOT NULL"
                 elif method == "drop_table":
@@ -242,19 +251,24 @@ def violations(source: str, task_id: str) -> list[str]:
                 elif method == "rename_table":
                     message = "rename_table renames a table"
             elif method == "execute":
-                if call.args and not _static_sql_expression(call.args[0], constants):
+                sql_argument = (
+                    call.args[0]
+                    if call.args
+                    else next(
+                        (
+                            keyword.value
+                            for keyword in call.keywords
+                            if keyword.arg in {"sqltext", "statement"}
+                        ),
+                        None,
+                    )
+                )
+                if sql_argument is None or not _static_sql_expression(
+                    sql_argument, constants
+                ):
                     message = "execute uses SQL that cannot be checked statically"
                 else:
-                    sql = [
-                        value
-                        for arg in call.args
-                        for value in _sql_strings(arg, constants)
-                    ]
-                    sql.extend(
-                        value
-                        for keyword in call.keywords
-                        for value in _sql_strings(keyword.value, constants)
-                    )
+                    sql = _sql_strings(sql_argument, constants)
                     match = next(
                         (
                             match
@@ -278,7 +292,8 @@ def changed_migrations(root: Path, base_ref: str, head_ref: str) -> list[Path]:
             "diff",
             "--name-only",
             "--diff-filter=ACMRT",
-            f"{base_ref}...{head_ref}",
+            base_ref,
+            head_ref,
             "--",
             "alembic/versions/*.py",
         ],
