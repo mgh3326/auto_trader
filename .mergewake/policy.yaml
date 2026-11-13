@@ -14,7 +14,12 @@ watch_checks:
   - 'test (3.13, 2)'
   - 'test (3.13, 3)'
   - 'test (3.13, 4)'
+# hk 3487: a cancelled main push run leaves its commit without a watched result;
+# bisect dispatches this workflow for that commit and reads the statuses it posts.
+any_ref_workflow: test-any-ref.yml
 blocking:
+  - paths: ['contracts/retro/**']
+    reason: The public retrospective contract controls data leaving the system.
   - paths:
       - 'app/services/brokers/**'
       - 'app/mcp_server/tooling/orders_kis_variants.py'
@@ -28,7 +33,10 @@ blocking:
       - 'app/services/order_send_intent_service.py'
       - 'app/services/kis_trading_service.py'
       - 'app/services/nhplug_mock/**'
-    reason: Broker, order and approval code can send or alter real orders before a revert.
+      - 'app/services/mock_strategy/**'
+      - 'scripts/mock_strategy.py'
+      - 'scripts/mock_strategy_crypto.py'
+    reason: Broker, order and approval code can send or alter real orders before a revert. The ROB-1474 mock strategy runner sends paper/demo orders and owns the one-send journal.
   - paths:
       - 'app/services/execution_ledger/**'
       - 'app/services/*ledger*.py'
@@ -48,6 +56,10 @@ blocking:
       - 'config/mcp_profiles/**'
       - 'app/core/config.py'
       - 'app/middleware/auth.py'
+      - 'app/mcp_server/auth.py'
+      - 'app/mcp_server/cf_access.py'
+      - 'app/mcp_server/main.py'
+      - 'app/mcp_server/caller_identity*.py'
     reason: Trading policy, broker mutation gates, MCP surfaces and ingest auth change live authority.
   - paths:
       - 'app/tasks/**/*.py'
@@ -174,6 +186,12 @@ deploy_approval:
       - 'app/schemas/trader_approvals.py'
       - 'app/middleware/auth.py'
     reason: Live broker transport, order mutation and approval authority can send or alter real orders.
+  - paths:
+      - 'app/mcp_server/auth.py'
+      - 'app/mcp_server/cf_access.py'
+      - 'app/mcp_server/main.py'
+      - 'app/mcp_server/caller_identity*.py'
+    reason: MCP authentication and caller identity decide who can invoke live-order tools; a later change to them holds for human approval.
   - paths:
       - 'alembic/versions/**'
       - 'alembic/env.py'

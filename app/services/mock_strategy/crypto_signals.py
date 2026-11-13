@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from research.crypto_universe.universe import PitUniverse
+from research.crypto_universe.universe import PitUniverse, crypto_exclusion_reason
 from research.stock_selection.forward import make_lists
 
 BASELINE = "relative_volatility_20"
@@ -45,19 +45,28 @@ def load_binance_panel(root: Path, asof: date) -> pd.DataFrame:
     listings = {x.symbol: x for x in universe.for_venue(PANEL_VENUE)}
     index = json.loads(_verified_file(root, manifest["candle_files"]).read_text())
     frames = []
+    exclusion_reasons = {}
     for record in index[PANEL_VENUE]:
         path = _verified_file(root, record)
         symbol = path.stem
         listing = listings[symbol]
-        if listing.is_leveraged_token or listing.is_stable_base:
-            continue
         frame = pd.read_parquet(path)
         if len(frame) != record["rows"]:
             raise ValueError("panel row count mismatch")
         frame["date"] = pd.to_datetime(frame.day)
-        frame = frame[
-            (frame.date.dt.date <= asof) & frame.date.dt.date.map(listing.tradeable_on)
-        ].copy()
+        completed = frame[frame.date.dt.date <= asof].copy()
+        reason = crypto_exclusion_reason(
+            listing.base_asset,
+            (
+                (stamp.date(), float(close))
+                for stamp, close in zip(completed.date, completed.close, strict=True)
+            ),
+            cutoff=asof,
+        )
+        if reason:
+            exclusion_reasons[symbol] = reason
+            continue
+        frame = completed[completed.date.dt.date.map(listing.tradeable_on)].copy()
         frame["symbol"] = symbol
         frames.append(frame)
     if not frames:
@@ -73,7 +82,7 @@ def load_binance_panel(root: Path, asof: date) -> pd.DataFrame:
     bars = pd.concat([bars, benchmark], ignore_index=True)
     for col in ("open", "high", "low", "close", "volume", "traded_value"):
         bars[col] = pd.to_numeric(bars[col])
-    return bars[
+    result = bars[
         [
             "date",
             "symbol",
@@ -87,6 +96,8 @@ def load_binance_panel(root: Path, asof: date) -> pd.DataFrame:
             "action",
         ]
     ]
+    result.attrs["exclusion_reasons"] = exclusion_reasons
+    return result
 
 
 def daily_lists(
@@ -109,14 +120,17 @@ def daily_lists(
         if root is None:
             raise ValueError("panel root required")
         bars = load_binance_panel(root, asof)
+    exclusion_reasons = dict(bars.attrs.get("exclusion_reasons", {}))
     payload = make_lists(
         bars, market="crypto", asof=asof.isoformat(), model=BASELINE, top_n=10
     )
     if meta is not None:
+        exclusion_reasons = dict(meta.get("excluded", {}))
         payload["universe_observed_at"] = meta["fetched_at"]
         payload["prediction_at"] = max(
             pd.Timestamp(payload["prediction_at"]), pd.Timestamp(meta["fetched_at"])
         ).isoformat()
     payload["panel_venue"] = PANEL_VENUE
+    payload["exclusion_reasons"] = exclusion_reasons
     payload["selection_basis"] = "ROB-1474 report #2271, descriptive Upbit diagnostic"
     return payload

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,6 +27,36 @@ from app.services.analyst_normalizer import (
     normalize_rating_label,
     rating_to_bucket,
 )
+
+
+class NoFundamentalsDataError(ValueError):
+    """Yahoo confirmed that it has no fundamentals for this symbol."""
+
+
+def _is_no_fundamentals_error(exc: Exception) -> bool:
+    """Only classify the provider's explicit quoteSummary 404 as missing."""
+    message = str(exc)
+    if "no fundamentals data found" not in message.casefold():
+        return False
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        return status_code == 404
+    return re.search(r"\b(?:HTTP\s+)?404\b", message, flags=re.IGNORECASE) is not None
+
+
+def _missing_fundamentals_payload(
+    symbol: str, *, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "symbol": symbol.upper(),
+        "instrument_type": "equity_us",
+        "source": "yfinance",
+        "data_state": "missing",
+        "reason": "no_fundamentals",
+        **(extra or {}),
+    }
 
 
 @dataclass
@@ -211,17 +242,23 @@ async def _fetch_financials_yfinance(
 
         freq_attr = f"quarterly_{yf_stmt_name}" if freq == "quarterly" else yf_stmt_name
 
-        if not hasattr(ticker, freq_attr):
+        try:
+            df = getattr(ticker, freq_attr)
+        except AttributeError as exc:
+            if freq == "quarterly":
+                raise ValueError(f"Failed to fetch {statement} data: {exc}") from exc
             try:
                 df = getattr(ticker, yf_stmt_name)
-                if df is None or df.empty:
-                    raise ValueError(f"No {statement} data available for '{symbol}'")
-            except Exception as e:
-                raise ValueError(f"Failed to fetch {statement} data: {e}")
-
-        df = getattr(ticker, freq_attr)
+            except Exception as exc:
+                if _is_no_fundamentals_error(exc):
+                    raise NoFundamentalsDataError from None
+                raise ValueError(f"Failed to fetch {statement} data: {exc}") from exc
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                raise NoFundamentalsDataError from None
+            raise ValueError(f"Failed to fetch {statement} data: {exc}") from exc
         if df is None or df.empty:
-            raise ValueError(f"No {statement} data available for '{symbol}'")
+            raise NoFundamentalsDataError
 
         financials = {}
         for col in df.columns:
@@ -237,7 +274,13 @@ async def _fetch_financials_yfinance(
 
     with yfinance_tracing_session() as session:
         ticker = yf.Ticker(symbol, session=session)
-        financials = await asyncio.to_thread(fetch_sync, ticker)
+        try:
+            financials = await asyncio.to_thread(fetch_sync, ticker)
+        except NoFundamentalsDataError:
+            return _missing_fundamentals_payload(
+                symbol,
+                extra={"statement": statement, "freq": freq, "data": {}},
+            )
 
     return {
         "symbol": symbol.upper(),
@@ -275,6 +318,19 @@ async def _fetch_dividends_yfinance(symbol: str) -> dict[str, Any]:
     return {"symbol": symbol.upper(), "source": "yfinance", "data": data}
 
 
+def _partial_fetch_errors(
+    fetch_errors: list[tuple[str, Exception]],
+) -> list[dict[str, str]]:
+    """Non-silent record of sub-request failures kept beside usable results.
+
+    Only the field name and exception class are kept; provider messages are
+    not copied into the response.
+    """
+    return [
+        {"field": name, "error_class": type(exc).__name__} for name, exc in fetch_errors
+    ]
+
+
 async def _fetch_investment_opinions_yfinance(
     symbol: str,
     limit: int,
@@ -287,32 +343,55 @@ async def _fetch_investment_opinions_yfinance(
             session = build_yfinance_tracing_session()
         ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict[str, Any] | None, Any, Any, dict[str, Any] | None]:
+    def _collect() -> tuple[
+        dict[str, Any] | None,
+        Any,
+        Any,
+        dict[str, Any] | None,
+        bool,
+        list[tuple[str, Exception]],
+    ]:
+        no_fundamentals = False
+        fetch_errors: list[tuple[str, Exception]] = []
         targets = None
         try:
             targets = ticker.analyst_price_targets
-        except Exception:
-            pass
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                no_fundamentals = True
+            else:
+                fetch_errors.append(("analyst_price_targets", exc))
 
         recommendations = None
         try:
             recommendations = ticker.recommendations
-        except Exception:
-            pass
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                no_fundamentals = True
+            else:
+                fetch_errors.append(("recommendations", exc))
 
         ud = None
         try:
             ud = ticker.upgrades_downgrades
-        except Exception:
-            pass
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                no_fundamentals = True
+            else:
+                fetch_errors.append(("upgrades_downgrades", exc))
 
         info = None
         try:
             info = ticker.info
-        except Exception:
-            pass
-        return targets, recommendations, ud, info
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                no_fundamentals = True
+            else:
+                fetch_errors.append(("info", exc))
+        return targets, recommendations, ud, info, no_fundamentals, fetch_errors
 
+    no_fundamentals = False
+    fetch_errors: list[tuple[str, Exception]] = []
     # Use pre-fetched snapshot if available
     if snapshot is not None:
         targets = snapshot.analyst_price_targets
@@ -321,10 +400,31 @@ async def _fetch_investment_opinions_yfinance(
         info = snapshot.info
     else:
         try:
-            targets, trend, ud, info = await asyncio.to_thread(_collect)
+            (
+                targets,
+                trend,
+                ud,
+                info,
+                no_fundamentals,
+                fetch_errors,
+            ) = await asyncio.to_thread(_collect)
         finally:
             if owns_session and session is not None:
                 close_yfinance_session(session)
+
+    has_source_data = (
+        _build_yahoo_target_consensus(targets, fallback_current_price=None) is not None
+        or _build_yahoo_count_consensus(trend) is not None
+        or (isinstance(ud, pd.DataFrame) and not ud.empty)
+        or bool(info)
+    )
+    if fetch_errors and not has_source_data:
+        raise fetch_errors[0][1]
+    if no_fundamentals and not has_source_data:
+        return _missing_fundamentals_payload(
+            symbol,
+            extra={"count": 0, "opinions": [], "consensus": None},
+        )
 
     current_price = _normalize_yahoo_numeric((info or {}).get("currentPrice"))
     opinions: list[dict[str, Any]] = []
@@ -388,6 +488,8 @@ async def _fetch_investment_opinions_yfinance(
         result["warning"] = (
             f"Yahoo analyst consensus data unavailable for {symbol.upper()}."
         )
+    if fetch_errors:
+        result["partial_errors"] = _partial_fetch_errors(fetch_errors)
     return result
 
 
@@ -402,26 +504,50 @@ async def _fetch_investment_opinions_yfinance_screen(
         session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict[str, Any] | None, Any]:
+    def _collect() -> tuple[
+        dict[str, Any] | None, Any, bool, list[tuple[str, Exception]]
+    ]:
+        no_fundamentals = False
+        fetch_errors: list[tuple[str, Exception]] = []
         targets = None
         try:
             targets = ticker.analyst_price_targets
-        except Exception:
-            pass
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                no_fundamentals = True
+            else:
+                fetch_errors.append(("analyst_price_targets", exc))
 
         recommendations = None
         try:
             recommendations = ticker.recommendations
-        except Exception:
-            pass
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                no_fundamentals = True
+            else:
+                fetch_errors.append(("recommendations", exc))
 
-        return targets, recommendations
+        return targets, recommendations, no_fundamentals, fetch_errors
 
     try:
-        targets, trend = await asyncio.to_thread(_collect)
+        targets, trend, no_fundamentals, fetch_errors = await asyncio.to_thread(
+            _collect
+        )
     finally:
         if owns_session:
             close_yfinance_session(session)
+
+    has_source_data = (
+        _build_yahoo_target_consensus(targets, fallback_current_price=None) is not None
+        or _build_yahoo_count_consensus(trend) is not None
+    )
+    if fetch_errors and not has_source_data:
+        raise fetch_errors[0][1]
+    if no_fundamentals and not has_source_data:
+        return _missing_fundamentals_payload(
+            symbol,
+            extra={"count": 0, "opinions": [], "consensus": None},
+        )
 
     target_consensus = _build_yahoo_target_consensus(
         targets,
@@ -455,6 +581,8 @@ async def _fetch_investment_opinions_yfinance_screen(
         result["warning"] = (
             f"Yahoo analyst consensus data unavailable for {symbol.upper()}."
         )
+    if fetch_errors:
+        result["partial_errors"] = _partial_fetch_errors(fetch_errors)
     return result
 
 
@@ -474,6 +602,10 @@ async def _fetch_valuation_yfinance(
         ticker = yf.Ticker(symbol, session=session)
         try:
             info: dict[str, Any] = await asyncio.to_thread(lambda: ticker.info)
+        except Exception as exc:
+            if _is_no_fundamentals_error(exc):
+                return _missing_fundamentals_payload(symbol)
+            raise
         finally:
             if owns_session:
                 close_yfinance_session(session)
@@ -730,6 +862,9 @@ __all__ = [
     "_fetch_valuation_yfinance",
     "_normalize_yahoo_count",
     "_normalize_yahoo_numeric",
+    "_is_no_fundamentals_error",
+    "_missing_fundamentals_payload",
+    "NoFundamentalsDataError",
     "_select_current_recommendation_row",
     "_YFinanceSnapshot",
 ]

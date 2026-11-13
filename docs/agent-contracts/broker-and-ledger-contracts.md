@@ -22,6 +22,7 @@
 - kis_mock 귀속 사슬 — pre-submit 강제
 - kis_mock 4행 Q-46 expired[inference] (#1250)
 - KIS Live Order Fill-Evidence Gate (ROB-395)
+- KIS live 일별 주문 조회 — 하루 전 종목 (hk 3717)
 - KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 - 7-D stale blocker night sweep + KIS expired[inference] (#1112)
 - US & Crypto Live Order Fill-Evidence Gate (ROB-407)
@@ -116,7 +117,7 @@ Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel
 - **실행 어댑터**: `app/services/brokers/binance/futures_demo/execution_client.BinanceFuturesDemoExecutionClient` — `demo-fapi.binance.com` only; mutation은 `submit_order(..., confirm=True)`만; close 주문에는 `reduce_only=True` 필수
 - **호스트 분리**: `FUTURES_DEMO_HOSTS = {demo-fapi.binance.com}`, Spot Demo (`demo-api.binance.com`)와 disjoint; live/testnet futures (`fapi.binance.com`, `testnet.binancefuture.com`) 차단
 - **env namespace**: `BINANCE_FUTURES_DEMO_*` 전용 (Spot Demo와 비공유)
-- **Leverage**: `1x` 강제 (`set_leverage` echo로 검증; mismatch → `BinanceFuturesDemoLeverageMismatch`)
+- **Leverage**: `1x` 강제 (`set_leverage` echo로 검증; mismatch → `BinanceFuturesDemoLeverageMismatch`). ROB-1474만 고정된 당일 short 배치에서 포지션·미체결이 없는 심볼을 확인 후 isolated와 1x로 설정할 수 있다. 해당 경로는 설정 후 재조회한다.
 - **Position mode**: One-way only (Hedge → `BinanceFuturesDemoHedgeModeBlocked`)
 - **Symbol allowlist**: `XRPUSDT` (default), `DOGEUSDT`, `SOLUSDT` (fallback). `BTCUSDT` 제외 (MIN_NOTIONAL=50 > cap=10). operator `--allow-symbol` override 시도해도 excluded list 우선
 - **Reconcile gate**: 클로즈 후 open orders empty AND position flat 둘 다 만족해야 `reconciled`. 둘 중 하나라도 dirty면 `anomaly` 기록
@@ -130,18 +131,28 @@ Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel
 `app/services/mock_strategy/crypto_*`와 `scripts.mock_strategy`의 crypto venue
 분기. Binance USDT spot delisted-complete 패널에서 고정
 `relative_volatility_20` top-10 long/short, 기본 3일·이름당 1,000 USDT다.
+Universe exclusion은 `research.crypto_universe.exclusions` 단일 정의를
+producer와 signal builder가 공유한다: 정적 stable list와 Binance USD-peg
+종가 규칙(최근 cutoff 이전 완료 일봉 30개가 모두 0.98–1.02 USDT), 그리고
+명시 wrapped duplicate(WBTC/BETH/WBETH). 부족하거나 빠진 세션은 peg 증거가
+아니며 정적 판정을 유지한다. PAXG는 real-asset token으로 유지한다. producer
+manifest와 signal provenance는 `stable_list`, `stable_peg_rule`,
+`wrapped_duplicate` 사유를 심볼별 기록한다. 근거 링크와 세부 정책은
+`docs/runbooks/rob1474-mock-data-refresh.md` 및
+`docs/runbooks/rob1474-crypto-paper.md`를 따른다. 과거 날짜 membership은
+재작성하지 않는다.
 공통 US PR의 `review.mock_strategy_orders`와 recorder만 쓴다.
-모든 쓰기는 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
+주문 전송은 커밋된 one-send claim 뒤에서만, 재전송 불명은 uncertain으로 남는다.
 일자별 배치 membership·입력 해시를 고정하고 partial close는 자기 체결 잔량만
 새 leg로 닫는다. dust는 열린 잔량이며 gross 실현 P&L은 청산 수량만이다.
 read-only preflight는 claim 전이며 전송 직전에도 반복한다. POST 전용 호출
 이전의 typed refusal만 no-order 증거로 rejected에 기록할 수 있다. generic
-전송/증거 오류는 uncertain 또는 unresolved로 남고 키를 재사용하지 않는다.
+전송/증거 오류는 uncertain 또는 unresolved로 남고 키를 재사용하지 않는다. 진입 주문의 HTTP 4xx 중 401·403·418·429를 제외한 응답만 해당 행을 uncertain으로 남기고 배치를 계속한다. 401·403·418·429, 500 이상, 응답 또는 상태 부재 및 전송·시간 초과 등 기타 오류는 배치를 중단한다.
 due 에피소드별 증거 실패는 다른 청산을 막지 않고, 프로세스 취소는 그대로
 전파한다. 최초 opened_at은 refresh로 덮어쓰지 않는다.
 `MOCK_STRATEGY_ENABLED`와 기존 venue gate·confirm은 기본 off/명시 조건이다.
 기존 demo host·예상 credential fingerprint, Alpaca clean 예상 계정 검증을 유지한다.
-선물 isolated·1x·one-way 읽기 검증, cover reduceOnly 필수. 사이징 상한은
+선물은 배치 확정 후 해당 short 심볼이 isolated·1x가 아니면 one-way·BOTH, 포지션 없음과 미체결 없음을 확인하고 isolated 다음 1x로 설정할 수 있다. 기존 게이트·confirm을 유지하며 dry run은 변경하지 않는다. 변경 시도와 읽기 결과는 entry meta에 기록하고, 재조회 실패는 주문 전 거부다. position mode는 바꾸지 않는다. 선물 isolated·1x·one-way 읽기 검증, cover reduceOnly 필수. 사이징 상한은
 운영자 2026-11-02 결정의 이 경로만 제거하며 venue filter와 다른 전략 상수는
 유지한다. 스케줄 등록·실거래·배포 없음. 런북:
 `docs/runbooks/rob1474-crypto-paper.md`.
@@ -215,6 +226,7 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   BinanceDemoLedgerService만 사용한다. H5 correlation과 signal_key는 DFC identity와
   독립이며 forecast는 실제 entry fill 후 저장하고 실제 held close 후 해소한다.
   predeclared 4h opportunity grid의 random control은 오프라인 계산만 수행한다.
+- **관리 전용 틱 (hk 3644)**: `scripts/binance_h5_demo.py --manage-only`(`--once`/`--loop` 공용)는 `H5Executor.run_tick(manage_only=True)`로 미해소 intent 정리·uncertain 차단·보유 포지션 관리(reduceOnly 청산)·forecast 복구까지만 실행하고 `entries_skipped_manage_only`로 끝난다. 신호 수집·사이징·진입 예약·개시 주문 전송에 도달하지 못하며 이 강제는 executor 안에 있다(기본값=기존 동작). 게이트·상수는 불변. H5 은퇴 시 마지막 포지션은 플레이북 §11 절차로만 닫는다(거래소 UI 수동 청산 금지 — H5 DB가 `holding`으로 남는다).
 - **권한**: 이 코드의 존재는 order permission이 아니다. 별도 operator contract의
   strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
   마이그레이션도 별도 운영 절차로 적용한다. 상세는
@@ -264,9 +276,9 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - 🔴 `app.main` 에 마운트하지 마라 — 공개 프록시 뒤에 있다. 라우트는 별도 프로세스(`app/execution_intent_gateway_server.py`)만 서빙하고, `scripts/run_execution_intent_gateway.py` 는 숫자 loopback 주소가 아닌 호스트(`localhost` 이름 포함)를 exit 2 로 거부한다. 운영자가 수동으로 띄운다(스케줄러·유닛·재시작 정책 없음).
 - 🔴 게이트 순서: `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED`(기본 false, 꺼지면 DB 접근 전 404) → 토큰(미설정 403, 오류 401) → 본문 검증(`parse_child_request`, 미지 필드 거부) → E1 `handle`. confirm 헤더가 본문 `idempotency_key` 와 정확히 같을 때만 `confirm=True` 이고 그 외는 E1 의 `confirm_required` 다. E1 env 게이트 `EXECUTION_INTENT_GATEWAY_ENABLED` 는 별도로 유지된다.
 - 🔴 조회는 `READ ONLY` 트랜잭션이고 쓰기·잠금·브로커 호출이 없다. 저널과 레저 증거만 읽으며 `uncertain`/`sending` 은 양성 증거가 없으면 `view: null` 이다. 레저 행 부재를 "주문 없음"으로 답하지 마라(레저 행은 전송 후 기록된다). soft cancel 은 종결 증거가 아니다. 🔴 lineage 의 주문을 말하는 곳은 `lineage_orders` 하나뿐이다 — 리더가 체결을 읽는 주문과 종결이 읽는 주문이 같은 목록에서 나온다. 주문은 (선행 0 제거한 번호, KST 거래일)이고 submit/amend 만 주문을 만든다. 이 키를 번호만으로 줄이거나 정규화를 빼지 마라 — 재사용 번호의 과거 체결이 살아 있는 주문을 종료로 보고하거나 체결이 누락된다. 🔴 `filled_qty` 는 `execution_ledger` 체결의 lineage 누적이고, 종결은 마지막 submit/amend 가 만든 주문의 자기 체결을 저널 수량과 비교해서만 판정한다. 🔴 `attributed_fill_qty` 는 종목 전체 보유 변화를 나눈 추정치라 주문 증거가 아니다 — 종결·`filled_qty` 에 쓰지 말고, 실행 원장보다 크거나 판독 불가면 `fill_evidence_conflict` 로 `view: null` 이다(`_derive_shadow_fill` 은 값이 없으면 전량 체결로 답하므로 여기서 쓰지 않는다). 저널과 레저가 한 주문을 말하지 못하면(재사용 번호·미설명 번호·번호 공유) `order_identity_ambiguous` 다. 🔴 레저가 따라오지 않은 unknown amend 는 이전 주문의 체결·만료·취소 증거로 닫지 마라 — 대체 주문이 살아 있을 수 있다. 불변식 표 J1~J12 와 테스트는 `docs/design/1440-intent-gateway-contract.md`.
-- 🔴 **후속 capability 범위**: `KisMockForwarder` 가 amend/cancel 마다 게이트웨이 저널 행을 durable claim 으로 capability 를 발급한다. 게이트웨이가 보낸 kis_mock 주문에만 해당한다(계좌·intent·대상 키·브로커 주문번호·레저 correlation `intent-gateway:<root>`). 그 밖의 출처(J2B·coordinated·mirror·운영자)와 비모의 주문은 발급되지 않고 ROB-1263 §7 폐쇄를 유지한다. 근거는 `docs/contracts/rob-1263-kis-coordination-adapter.md` §7 Amendment. 이 바인딩을 완화하지 마라.
-- 🔴 **코디네이션 라우트는 미설치다**: 이 PR 은 `set_kis_mock_coordination_route_provider` 를 호출하지 않는다. 설치 전에는 submit 이 전부 `uncertain`(주문 없음)이고 amend/cancel 은 `target_not_working` 이다. 설치는 별도 승인 사항이다.
-- cancel 은 `broker_cancel_confirmed` 가 true 일 때만 `accepted` 다. KIS mock 정정은 새 주문번호를 받으므로 `update_order_terms(order_no=...)` 로 레저 행의 번호를 옮기고 이전 번호는 `modified_from_order_no` 로 남긴다.
+- 🔴 **게이트웨이 후속 검사**: `KisMockForwarder` 는 amend/cancel 마다 게이트웨이 저널 행을 확인하고 capability 를 발급한다. 이 발급 경로와 게이트웨이의 계좌·intent·대상 키·브로커 주문번호·레저 correlation 바인딩은 유지된다. hk 3741 결정 이후 하위 KIS mock 주문 경로는 capability 를 요구하지 않는다.
+- 🔴 **코디네이션 라우트는 미설치다**: `set_kis_mock_coordination_route_provider` 호출자는 없다. hk 3741 이후 일반 KR mock submit/cancel 은 이 라우트에 의존하지 않는다. 코디네이터·증거 저장소와 기존 claim 복구는 남아 있다.
+- cancel 은 `broker_cancel_confirmed` 가 true 일 때만 `accepted` 다. KR mock amend 는 hk 3745까지 차단된다. E1은 기존대로 child 를 먼저 저널에 기록한 다음 `kis_mock_modify_unavailable`을 받으며 이를 `uncertain`으로 기록할 수 있다. E1 변경은 hk 3745에 미룬다(은퇴 검토 hk 3742).
 
 **계약**:
 - 🔴 `EXECUTION_INTENT_GATEWAY_ENABLED` 정확히 `true` + 호출별 `confirm is True` 이중 게이트. 둘 다 DB 접근 전에 거부한다.
@@ -275,13 +287,15 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
 - amend/cancel 대상은 journal 의 idempotency key 로만 지정한다. Go 가 브로커 주문번호를 넘길 수 없으므로 같은 intent 가 보낸 주문에만 작용한다.
 - submit/amend 는 기존 `review.kis_mock_runner_control` 이 `ACTIVE` 일 때만 허용하고 읽기 실패는 차단이다. 🔴 cancel 은 kill·만료·상한을 보지 않는다(ROB-1440 운영자 계약). 이 예외는 gateway 경로에만 있고 runner 의 `mutation_permission` 표는 바뀌지 않았다. 단, 나중 child 가 `sending`/`uncertain` 이면 대상 주문번호를 믿을 수 없으므로 그 주문의 cancel 도 `target_superseded` 로 거부하고 reconcile 을 기다린다.
 - 체결은 여기에 기록하지 않는다. `accepted` 는 체결이 아니며, 기존 레저와 reconcile 이 그대로 권한자다.
-- 하위 가드는 우회하지 않는다. 현재 KR mock 전송은 coordinated route 와 follow-up capability 없이는 하위 계층에서 거부되므로, 실제 주문은 E3 결정 전까지 나가지 않는다.
+- 하위 가드는 우회하지 않는다. KR/US mock place 는 제공된 `idempotency_key` 를 `kis_mock` 범위로 전송 전에 예약하고, 공개 MCP mock 주문은 live와 같은 주문 내용·거래일·`rung` 파생 키도 예약한다. 귀속 신호 커밋과 기존 확인은 유지한다. KR mock 취소는 자기 원장과 확인된 잔량을 요구하며 capability 나 coordinator lease 는 요구하지 않는다. KR mock 정정은 hk 3745까지 거부한다 (`hk:doc decision/2026-11-09/kis-mock-like-live`).
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 
 체결 수집 Go 데몬 `fillwire` 로의 이관을 위한 **P0 계약**. Go 는 DB 에 직접 쓰지 않고
 auto_trader 의 토큰 인증 HTTP 표면으로 원장에 넣는다. 이 단계는 계약 + Python 모니터
 sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 · 마이그레이션 0건**이다.
+- hk 4186 운영자 결정(2026-11-12, `decision/2026-11-12/at-operator-merge-rule16-q22`)은 `execution_ledger`의 `filled_at_basis`·`fee_basis`·`tax_amount` 추가형 마이그레이션과 writer 값 채우기만 예외로 허용한다. 멱등키·외부 ingest `source=websocket` 강제·항목별 savepoint·원장 커밋 권한·기존 재전송 갱신 동작은 유지한다.
+  새 행은 `fee_basis`로 실측 수수료와 미제공을 구분하며 Toss 수수료와 세금을 분리한다. `filled_at_basis`는 확인된 체결·주문·관측 시각을 구분하고 fillwire는 서버에서 프레임 시각 일치 시에만 체결 시각으로 기록한다. 과거 행은 `fee_basis IS NULL`로 식별하며 같은 키 재전송 시 수수료·통화와 세 새 열을 보존하되 다른 열의 기존 갱신 동작은 유지한다.
 
 - **엔드포인트**: `POST /trading/api/execution-ledger/fills/ingest` (배치 1..200),
   `POST /trading/api/execution-ledger/reconcile/trigger` (dry_run 기본 true)
@@ -444,6 +458,19 @@ dots export 와 공개 일봉만 읽어 실거래의 포지션 수익·진입 �
 - 🔴 **나중 배치의 seed 는 증분이 아니라 전체 보유량이다**: `net_quantity_by_match_key_since` 는 seed 행을 빼고 그 실행의 cutover 이후 체결만 세므로, 2026-09-29 배치 6행은 그 시점 보유량 전체를 담는다. 이 패키지는 해당 종목 보유량을 그 값으로 재설정한다. seed 행을 합산하는 리더는 첫 배치 위에 이 행을 이중으로 더하게 된다
 - **테스트**: `tests/research/trade_retro/`
 
+### 회고와 판단 근거 연결 (hk 4187 L6)
+
+`review.trade_retrospectives.decision_id`는 nullable UUID이며, 새 컬럼은 과거 행을
+채우지 않는다. 연결 행이 남아 있으면 downgrade는 이 데이터를 잃지 않도록 거부한다.
+유일 writer인 `TradeRetrospectiveRepository.upsert`와 MCP
+`save_trade_retrospective(decision_id=...)`는 호출자가 제공한 ID만 저장한다. 저장 전
+`review.decision_evidence`의 ID가 존재하고 정규화된 심볼·시장·계좌 모드가 회고와
+일치하는지 확인한다(시장 별칭은 `app/core/market.py` 규칙, `upbit_live`는 판단 근거의
+`upbit`와 대응). crypto 심볼은 `to_upbit_symbol` 규칙으로 비교해 `BTC`와 `KRW-BTC`를
+동일 자산으로 본다. 불일치·미존재 ID는 거부한다. ID가 생략되면 correlation ID 등으로
+판단을 추론하거나 새 연결을 저장하지 않는다. 기존 연결은 부분 upsert에서 보존되며,
+호출자가 명시적으로 null을 보내면 지운다.
+
 ### 전략 조정 증거 묶음 (ROB-1458)
 
 ROB-1439 의 정규화 체결·주문·포지션·현금 하한을 그대로 재사용해 물타기(tier 자체 `underwater-d20-v1` 규칙)·손절 반사실·매수 주문 방식·파킹·코인 매도 래더·유휴 현금과, 같은 신호에 다시 돌린 처음부터 짠 규칙 세트(낙폭 포함)를 잰다. 결과는 운영자용 선택지 표다. 🔴 연구 전용 — DB·브로커·자격증명·스케줄러 없음, `app/`·`config/` 변경 없음, 종목·금액 권고 없음.
@@ -563,6 +590,30 @@ allowlist change exists because `get_holdings` is already live-kr core.
 
 ### KIS mock dispatch evidence (ROB-1263)
 
+**hk 3741 운영자 결정** (`hk:doc decision/2026-11-09/kis-mock-like-live`):
+일반 KR mock place/cancel 은 아래 coordinated route 또는 writer lease 를
+요구하지 않는다. 제공된 place `idempotency_key` 는 KR/US 모두 `kis_mock` 범위에
+전송 전 커밋하고, mirror 는 기존 correlation 예약도 유지한다. 전송 결과가 불명확하면
+예약을 보존하고 재전송하지 않는다. 사전 미전송이 증명되었을 때만 해당 행 id 로
+해제한다. 기존 coordinator/evidence/E3/position-proof 모듈과 기존 claim 의 복구
+계약은 유지하지만, 이 일반 경로의 전송을 coordinated evidence 로 표시하지 않는다.
+mock client·VTS host·자격증명 namespace 검사는 전송 전에 유지하며 live 분기는 불변이다.
+전용 MCP `kis_mock_place_order`/`kis_mock_cancel_order`/`kis_mock_modify_order` 는
+`dry_run=True`에서 읽기 전용 미리보기를 반환한다. `dry_run=False`에서
+`confirm=True`가 없으면 네트워크·DB 쓰기 전에 거부한다. KR mock 정정 실행은
+가격·수량 모두 `kis_mock_modify_unavailable`로 거부하며 hk 3745에서 다룬다.
+전용·공용 MCP 모의 취소/정정은 KIS 외 시장을 `kis_mock_non_kis_market`으로
+브로커 호출·DB 쓰기 전에 거부한다.
+공용 MCP place/cancel/modify 의 KR mock 요청은 `kis_mock_use_dedicated_tool` 로
+해당 전용 도구를 안내한다. 공개 KR/US mock place는 live와 같은 내용·거래일·
+`rung` 파생 키를 전송 전에 예약하므로 같은 날 동일 내용·`rung`의 재주문은 차단한다.
+KR 전용 place에도 선택적 `rung`이 있다. 서로 다른 `rung`은 서로 다른 귀속 신호를
+기록하며 `rung`이 없으면 기존 귀속 ID를 쓴다. 내부 impl 호출자의 키와 live 경로는 유지한다.
+호출자가 `client_order_id` 를 주지 않은 KR mock edge 명령은 귀속 `correlation_id` 와
+정규화 주문 내용 및 `rung`으로 안정적인 명령 ID를 만든다. 같은 귀속·내용·`rung`의
+재시도는 날짜가 바뀌어도 같은 ID이고, 서로 다른 귀속이나 내용·`rung`은 다른 ID다.
+명시 ID는 변경하지 않는다.
+
 KR mock only: `kis_mock_runner/evidence_store.py` provides durable lineage,
 dispatch evidence and restart uncertainty ports in two new append-only tables
 (migration `20261102_rob1263_kis_evidence`, operator-applied). All seven native
@@ -584,9 +635,23 @@ exact attributed ODNOs on the claim's KST dispatch day. A separate per-call
 to confirmed non-dry-run execution to append native evidence; every surviving
 claim blocks the account. No current source proves `account_position_reconciled`, so even a
 terminal full fill is reported as `retained: position proof unavailable` with
-its claim ID and is never released. A reviewed position-proof implementation
-(hk 2690) remains an activation gate. Contract:
+its claim ID unless a position proof exists. hk 2690 (`position_proof.py`,
+append-only `review.kis_mock_position_baseline`, operator-applied migration
+`20261109_hk2690_kis_pos_base`) releases a claim only on terminal order
+evidence for the exact ODNO and KST day (full fill, confirmed cancel, DAY expiry
+past the accept-session deadline with a positive reject read, zero-fill reject)
+AND baseline ± attributed fills equal to a complete exact-account balance read
+AND the common gate and claim owner. A truncated, missing, malformed, stale or
+ambiguous read is unproven, never zero. The route must commit the baseline before
+reserving; until a route does, every claim stays retained. Contract:
 `docs/contracts/rob-1263-kis-coordination-adapter.md` §6.
+Recovery holds the physical and legacy writer keys and treats any unresolved
+`kis_mock_scalping` reservation as blocking because it lacks an account fingerprint.
+Balance freshness starts before the first page and is checked by the database
+after the exact claim row lock; malformed holding identities or quantities never
+prove an omitted symbol is zero. Terminal cumulative fills cannot be below an
+earlier partial fill; an older partial event whose quantity is missing also blocks.
+After release, the attempt-bound gate still rejects the already dispatched key.
 
 ### kis_mock 귀속 사슬 — pre-submit 강제
 
@@ -675,6 +740,41 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
 - **MCP 도구**: `kis_live_reconcile_orders` (dry_run-default)
 - **런북**: `docs/runbooks/kis-live-order-reconcile.md`
 - **스코프**: KR live only; US/crypto live unchanged (follow-up)
+- **종료 상태 전용**: `--apply-terminal-only`는 `KIS_LIVE_AUTO_RECONCILE_ENABLED` 하나로 KR `kis_live` 원장의 만료·취소만 반영하고 체결 부기는 보류한다. 자동 체결·저널·실현손익 기록은 기존 두 플래그와 `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` 게이트 뒤에 남으며, 브로커 주문·정정·취소 경로는 바뀌지 않는다 (운영자 결정 `hk:doc decision/2026-11-12/at-rule4-exception-and-design-docs` 항목 1).
+
+### KIS live 일별 주문 조회 — `kis_live_get_daily_orders` (hk 3717)
+
+외부 리서치 세션(dots)용 읽기 전용 MCP 도구. **DEFAULT 프로필에만** 등록된다
+(`register_kis_live_order_tools`). 쓰기·reconcile·원장/제안 갱신 없음.
+
+- **구현**: `app/mcp_server/tooling/kis_live_daily_orders.py` — 주문·정정·취소·원장 writer import 없음
+  (`tests/mcp_server/test_kis_live_daily_orders.py` 가 AST 로 고정)
+- **입력**: `trade_date`(KST 하루 `YYYY-MM-DD`, 미래·범위·malformed 는 브로커 호출 전 거부), 선택 `side`(`buy`/`sell`/`all`)
+- **조회**: `inquire_daily_order_domestic(start=end=그날, stock_code="", max_pages=100)` — reconcile 과 같은
+  exhaustive 기본값(ROB-903 display fast-path 아님). 페이지 중복 행은 `odno` 로 dedupe.
+  취소확인 행(`orgn_odno` 설정, `original_order_id` 로 원주문 링크)과 `rjct_qty > 0` 행도 전부 반환한다.
+- **`broker_status`**(`broker_status_basis="broker_fields"`): 브로커 필드만으로 `filled`(`tot_ccld_qty == ord_qty > 0` 일 때만) /
+  `partially_filled` / `working` / `cancelled`(실제 취소 증거 — `cncl_yn=Y` 또는 측면명의 '취소' 토큰, `live_order_expiry.row_has_cancel_evidence`; `orgn_odno` 는 정정확인 행도 가리키므로 링크일 뿐 취소 증거가 아니다) / `rejected_or_expired_eod` / `unknown`.
+- **`system_status`**: `review.kis_live_order_ledger` 의 같은 주문번호 **AND 그 행 `trade_date` 의 KST 날짜가 요청일**일 때만
+  `{status, lifecycle_state}` 를 붙인다(주문번호는 날짜를 넘어 재사용되며 원장 `order_no` 는 UNIQUE). 행이 없으면 null.
+  `system_status_basis="inference"` 는 같은 주문번호이고 같은 주문 인스턴스(idempotency key 또는 correlation id 일치)인
+  `order_proposal_rungs` 행이 #1112 마커(`expired_inference:kis_regular_day_order_no_broker_original`)를 가질 때만이고,
+  그 외 원장 행은 `"ledger"`. 🔴 이 마커는 원장 행이 아니라 rung 의 `void_reason` 에만 있다(운영자 답, hk 3717).
+  DB 읽기 실패는 도구를 실패시키지 않고 `system_status=null` + `system_status_error`(클래스명).
+- **`complete`**: 브로커 페이징이 정상 종료됐을 때만 `true`. `max_pages` 에 닿으면 클라이언트가 부분 행을 버리고 예외를 던지므로
+  도구는 `complete=false, orders=[], pages=max_pages, error_class` 를 반환한다 — **잘린 날은 행을 돌려주지 않는다.**
+  그 밖의 오류는 닫힌 모양 `{error_code, error_class}`(브로커 원문 메시지 없음).
+- 🔴 REST 에는 체결 시각이 없다 — 반환하지 않는다(`fill_time_available=false`).
+- 🔴 **#678 불변**: 이 도구는 `HARNESS_DENIED_TOOLS`(basis `live_session_harness_denied_678`)에 들어 있어 어떤 live 레인
+  route 계약에도 광고되지 않고, 레인 allowlist·robin-prefect `LIVE_ALLOWED_TOOLS` 에 추가하지 않는다.
+  `kis_live_get_order_history` 와 `inquire_daily_order_domestic` 은 변경 없음.
+- **테스트**: `test_kis_live_daily_orders.py`(순수·fake client), `test_kis_live_daily_orders_db.py`(테스트 DB 로더)
+
+### KIS 체결별 실현 수수료·세금 출처 (L11, hk 4192)
+
+저장소에서 확인되는 국내 `TTTC8001R`(`app/services/brokers/kis/constants.py:85-88`) 및 해외 `TTTS3035R`(`app/services/brokers/kis/constants.py:138-141`) 조회는 GET 체결/주문 히스토리다(`app/services/brokers/kis/domestic_orders.py:850-857`, `app/services/brokers/kis/overseas_orders.py:762-770`). 현행 저장소 코드와 포함 문서는 이들이 체결별 실현 수수료와 세금을 제공한다고 입증하지 않는다. 외부 KIS API에 해당 endpoint가 없다는 뜻은 아니다(`[INFERENCE]`). 확인 근거와 제한은 `docs/research/4192-kis-realized-cost-source.md`에 둔다.
+
+출처가 확인될 때까지 KIS 실현 비용은 `not_provided`로 취급하고 연구 reader는 이를 추정치(`estimated`)와 분리한다. REST normalizer의 fee 필드 누락 시 0 대체(`app/services/execution_ledger/normalizers.py:309-310`, `339-340`)는 관측된 수수료 0의 증거가 아니다. L11은 조사 문서 변경만이며 client, writer, 과거 행, 게이트, scheduler를 바꾸지 않는다.
 
 ### KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
 
@@ -779,7 +879,7 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 - 🔴 **보장 강도 = "우발 방지 + 정적 검출"**. **"구조적 불가능"이 아니다** — 계좌번호는 배포 env 파일에 여전히 존재하고 Settings 한 줄이면 도달 가능해진다. AST 가드는 **그 한 줄을 빌드 실패로 만드는 장치**다
 - **자격증명**: 전용 최소 파일 `.env.kiwoom-readonly.native`(4키, ACCOUNT_NO·DATABASE_URL 없음). 🔴 `ENV_FILE=.env.prod` 금지(CLI가 파일명 `prod` 거부)
 - **Redis 격리**: OAuth 토큰 캐시는 `--redis-url` 로 일회용 인스턴스 지정 — 배포 공유 캐시에 쓰지 않는다
-- **Rate limit 실측(2026-08-03, mock)**: 2.0s/1.0s/0.5s OK · 0.2s/0.05s `HTTPStatusError` → 임계는 0.5~0.2초 사이, 운영 기본 **2.0초**
+- **공식 호출 한도 확인(2026-11-10)**: 키움 포털은 국내 실전 주문·조회 TR 각각 5회/초, 모의는 TR별 국내 1회/초·미국 1회/초, 세션 1개를 공지한다([키움 REST API 이용 안내](https://openapi.kiwoom.com/intro)). 기존 2026-08-03 mock 실측(2.0s/1.0s/0.5s OK · 0.2s/0.05s `HTTPStatusError`)은 특정 시점 측정값으로만 유지하며 공식 TR 한도를 대신하지 않는다. 운영 기본 **2.0초**는 그대로 둔다.
 - **스케줄러 등록 없음** — CLI 수동 실행만. 🔴 **Stage 2(대량 수집·DB 저장)는 별도 승인**
 
 **동일성 실측(2026-08-03, 20종목 × 일봉 600 + 5분봉 900)**: 행 커버리지 40/40 동일, 비교 셀 252,000 중 불일치 36(99.9857%) — 🔴 **전부 형성 중인 최신 봉**(장중 2초 시차)이며 **최신 봉 제외 시 100.000000%**. 상폐 `051170` 은 live 에서 1행 반환. KIS 3자 대조에서 068270 은 2026-06-03 경계로 223건 어긋나지만 **live·mock 결과가 동일**하며 원인은 수정주가 역산 **반올림 규칙 차이**(약 0.004%) — 어느 쪽이 옳은지는 `UNDETERMINED`. 함의: **Kiwoom↔KIS 과거 수정주가 완전일치 대조는 실패하므로 허용오차 필요**
@@ -804,7 +904,8 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 
 - **파킹 제안 계좌 (#765)**: proposer는 read-only `toss_proposal_accounts`의 broker-listed account sequence 중 의도한 하나를 top-level `broker_account_id`로 명시한다. 설정·rationale·이전 제안에서 자동 채우지 않는다. Toss 파킹 meter는 명시값이 설정된 holdings reader의 sequence와 정확히 같고 broker account list에 정확히 1건 존재한 뒤에만 holdings를 읽는다. NULL/비정규형은 `account_identity_unavailable`, 다른 설정 계좌는 `account_identity_mismatch`, broker list 부재/중복은 `account_identity_unknown`, 계좌 조회 실패는 `account_lookup_failed`로 수동 카드다. 다계좌도 암묵 선택하지 않는다. 비파킹 제안은 이 검사 밖이다.
 
-- **클라이언트**: `app/services/brokers/toss/` — `transport.py`(host allowlist `openapi.tossinvest.com` + **https 강제**, 3xx 거부), `auth.TossOAuthTokenManager`(OAuth, **client당 유효 토큰 1개**라 Redis 공유+단일비행+failed-token double-check, ROB-262 패턴), `rate_limiter`(`TOSS_RATE_LIMITER_BACKEND=local` 기본의 프로세스 전역 싱글톤; `redis` opt-in은 client-id fingerprint별 원자 슬라이딩 윈도 공유, 장애 시 local로 fail-closed 강등; 그룹별 TPS, 09:00–09:10 ORDER 3TPS), `errors.parse_toss_response`(envelope + non-json typed), `client.TossReadClient`(read + place/modify/cancel)
+- **클라이언트**: `app/services/brokers/toss/` — `transport.py`(host allowlist `openapi.tossinvest.com` + **https 강제**, 3xx 거부), `auth.TossOAuthTokenManager`(OAuth, **client당 유효 토큰 1개**라 Redis 공유+단일비행+failed-token double-check, ROB-262 패턴; [공식 인증 문서](https://developers.tossinvest.com/docs/auth), 2026-11-10 확인), `rate_limiter`(`TOSS_RATE_LIMITER_BACKEND=local` 기본의 프로세스 전역 싱글톤; `redis` opt-in은 client-id fingerprint별 원자 슬라이딩 윈도 공유, 장애 시 local로 fail-closed 강등; 현행 공식 ORDER 한도는 기본·09:00–09:10 모두 10TPS([Rate Limits](https://developers.tossinvest.com/docs), 2026-11-10 확인). 앱 로컬 ORDER 한도는 기본 6TPS, KST 09:00–09:10에는 3TPS), `errors.parse_toss_response`(envelope + non-json typed), `client.TossReadClient`(read + place/modify/cancel)
+- **토큰 무효화 (hk 4307)**: KIS 만료 응답과 Toss gatewayd 401은 실패한 요청의 토큰이 Redis 현재 값과 일치할 때만 원자적으로 삭제한다. Toss gatewayd는 삭제 후 ensure 및 제한 시간 재확인을 수행하며 직접 발급하지 않는다.
 - **주문 MCP 도구**: `app/mcp_server/tooling/orders_toss_variants.py` — `toss_preview/place/modify/cancel_order`, `toss_get_order_history/positions/orderable_cash` (account_mode `toss_live`). dry_run+confirm 이중 게이트, 손실매도 가드, opposite-pending 사전검사, `clientOrderId` 멱등
 - **레저**: `review.toss_live_order_ledger` (`app/services/toss_live_order_ledger_service.py`, accepted-only + `record_send` 멱등 replay) + `toss_reconcile_orders`(단건 상세 fill-evidence, ROB-395/407 패턴)
 - **데이터 소스**: 환율 `exchange_rate_service`(토스 primary+폴백, midRate), 종목 마스터+시총 `toss_symbol_master_service`(gap-fill only — 기존 source 있으면 skip), warnings 가드 `warnings_guard`(LIQUIDATION 매수만 차단·매도 면제), 캔들 `market_data/toss_ohlcv`(1m/5m/15m/30m toss-first 페이지네이션, 1h는 DB hourly), 캘린더 `brokers/toss/market_calendar`(NXT/데이마켓)
@@ -824,3 +925,45 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.
+
+### 수동 계좌 가치 스냅샷과 기간 성과 (hk 3800)
+
+`scripts/account_value_snapshot.py`는 허용된 조회 메서드만 노출하는 broker view를
+사용하며 기본은 미리보기다. `--commit`은 서비스 레이어를 통해 계좌 전체와 각 시장의
+불변 일별 관측 또는 운영자 외부 흐름을 추가한다. 계좌·시장·날짜 중복은 기존 행을
+바꾸지 않고 CLI는 `already_present`와 실제 저장된 행을 표시한다. 외부 흐름은 운영자가
+`--flow-id` UUID를 지정해 재시도 시 재사용한다. 같은 ID의 다른 내용은 거부하고,
+동일 금액의 별도 흐름은 다른 ID를 쓴다. 잘못된 흐름은 원래 날짜의 반대 금액과
+새 UUID로 상쇄한 뒤 필요한 정정 흐름을 별도 UUID로 추가한다. 보유 수량·가격 출처와 시각·통화별 현금·환율 출처와 시각·미측정 사유를
+보존한다. 새 writer·CLI는 주문 모듈을 직접 import하지 않지만 기존 KIS 읽기 클라이언트의
+전이 import에는 주문 전송 관련 모듈이 있다. 설정된 계좌 식별자와 자격증명으로 프로세스
+안에서 HMAC 지문을 만들며 원문은 저장·출력하지 않는다. 지문이 바뀌면 별개 시리즈다.
+계좌 전체의 `series_break`는 보고 기간 안의 지문 변경만 표시한다. 이전 지문 변경으로
+원장의 물리 계좌 귀속이 불확실한 시장 행은 미측정이다(운영자 #408205). 지문이 없으면
+`account_identity_unknown`이다.
+
+`scripts/account_value_report.py`는 수동 기간 조회다. 계좌 행은 KRW 환산 보유 전체와
+현금을 Modified Dietz로 평가한다. 외부 입출금은 별도 기록하고 기간 전체 입력을
+`--flows-complete`로 확인하지 않으면 수익률은 미측정이다. 계좌 내부 환전은 외부 흐름이
+아니다. 날짜 누락·시각을 모르는 경계일 흐름·환율 근거 누락·양수가 아닌 분모는
+미측정이다. 시장 행은 현금을 배분하지 않는 `holdings_only`다. 운영자 결정 #407716에
+따라 종목·일별 수량 변화와 `execution_ledger_in_effect()`의 authoritative 순체결이
+모두 일치할 때만 체결 금액·수수료를 해당 시장의 흐름으로 쓴다. 🔴 순수량 일치는
+브로커 앱에서 발생한 미기록 당일 왕복까지 검출하지 못한다. 이 한계 때문에 시장
+성과가 실제와 다를 수 있으며 원장이 완전하다는 일반적 증거로 쓰지 않는다.
+불일치·누락 수수료는 미측정이다. KR 기준은 069500 종가, crypto 기준은 현금 0%;
+VOO는 조정종가 출처 혼합으로 배당 포함 총수익을 입증할 수 없어 unknown이다.
+sleeve는 기존 book의 기간 귀속 손익을 해당 기간의 변하지 않은 예산으로 나눈 별도
+basis를 쓰며 예산을 실제 현금으로 간주하지 않는다. 스케줄러·MCP 도구·주문 연결은 없다.
+
+일별 계좌 가치 스냅샷 DAG 제안(`deploy/dagu/at-daily/at-account-value-snapshot.yaml`, 런북 `docs/runbooks/account-value-snapshot-daily.md`)이 있으나 **등록되지 않았다** — 레포는 어떤 스케줄러도 등록하지 않는다.
+
+retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_scoreboard.py`의
+`read_retro_scoreboard(session, **params)`가 위 기간 성과 로더를 `RetroScoreboardResponse`
+(`contracts/retro/v1/openapi.yaml`)로 투영한다. `flows_complete`는 서버 측 사실일 뿐이며
+인자·헤더·요청 필드로 선언할 수 없다. 모듈 상수 `SERVER_FLOWS_COMPLETE=False`가 로더에
+항상 전달되고(지속적인 서버 측 확인 기록은 아직 없다), 계좌 행은 `flows_not_confirmed` 사유와
+함께 미측정이며 행의 `flows_complete`는 그 값을 보고한다. 계좌·sleeve 식별은 불투명한
+`ref_` 키드 다이제스트(서버 `SECRET_KEY` HMAC)뿐이고 금액·수익률은 정확한 decimal 문자열이다. `REPEATABLE READ READ ONLY`
+트랜잭션과 문장 timeout 안에서만 읽으며 스냅샷·흐름 writer를 import하거나 호출하지 않는다.
+아직 HTTP route는 없다(hk 3818). 운영자 CLI 출력은 바뀌지 않았다.

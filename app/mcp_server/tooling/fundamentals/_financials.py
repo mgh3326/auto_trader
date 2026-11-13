@@ -138,6 +138,8 @@ async def handle_get_financials(
             payload = await _fetch_financials_finnhub(symbol, statement, freq)
         except (ValueError, Exception):
             payload = await _fetch_financials_yfinance(symbol, statement, freq)
+        if payload.get("data_state") == "missing":
+            return payload
         return _annotate_financial_availability(payload)
     except Exception as exc:
         source = "naver" if normalized_market == "kr" else "yfinance"

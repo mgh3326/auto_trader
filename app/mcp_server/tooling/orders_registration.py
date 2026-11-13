@@ -11,12 +11,17 @@ from app.mcp_server.tooling.account_modes import (
     normalize_account_mode,
 )
 from app.mcp_server.tooling.orders_modify_cancel import (
+    _kis_mock_non_kis_market_error,
     cancel_order_impl,
     modify_order_impl,
 )
 from app.mcp_server.tooling.paper_order_handler import (
     _get_paper_order_history,
     _place_paper_order,
+)
+from app.mcp_server.tooling.shared import (
+    parse_holdings_market_filter,
+    resolve_market_type,
 )
 from app.services.orders.ladder_fill_safety import (
     LadderRung,
@@ -105,6 +110,27 @@ def _kis_mock_config_error() -> dict[str, Any] | None:
             + ", ".join(missing)
         ),
         "source": "kis",
+        "account_mode": "kis_mock",
+    }
+
+
+def _is_kr_order(symbol: str | None, market: str | None) -> bool:
+    market_type = parse_holdings_market_filter(market)
+    if market_type is not None:
+        return market_type == "equity_kr"
+    if symbol is None:
+        return False
+    try:
+        return resolve_market_type(symbol, None)[0] == "equity_kr"
+    except ValueError:
+        return False
+
+
+def _use_dedicated_mock_tool(tool_name: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error_code": "kis_mock_use_dedicated_tool",
+        "error": f"Use {tool_name} for KIS KR mock orders",
         "account_mode": "kis_mock",
     }
 
@@ -205,6 +231,7 @@ def register_order_tools(mcp: FastMCP) -> None:
             "pass paper_account to target a named paper account. "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings. "
+            "KIS KR mock orders must use kis_mock_place_order. "
             "Journal features (thesis/strategy/FIFO close) ARE supported in paper mode. "
             "defensive_trim=True is disabled on this direct tool; create an "
             "order_proposal_create request so Telegram can collect the required "
@@ -317,6 +344,8 @@ def register_order_tools(mcp: FastMCP) -> None:
                 routing,
             )
         if routing.is_kis_mock:
+            if _is_kr_order(symbol, None):
+                return _use_dedicated_mock_tool("kis_mock_place_order")
             config_error = _kis_mock_config_error()
             if config_error:
                 return config_error
@@ -346,6 +375,11 @@ def register_order_tools(mcp: FastMCP) -> None:
                 report_item_uuid=report_item_uuid,
                 approval_hash=approval_hash,
                 rung=rung,
+                **(
+                    {"reserve_mock_derived_idempotency": True}
+                    if routing.is_kis_mock
+                    else {}
+                ),
             ),
             routing,
         )
@@ -438,6 +472,7 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Cancel a pending order. Supports Upbit (crypto) and KIS (KR/US equities). "
             "For KIS US orders, resolves exchange/order details from symbol lookup and order history when possible. "
             "Use account_mode={'kis_live','kis_mock'} to choose KIS routing; "
+            "KIS KR mock orders must use kis_mock_cancel_order. "
             "account_type aliases are deprecated and emit warnings. "
             "account_mode='kis_mock' fails closed if KIS_MOCK_ENABLED, "
             "KIS_MOCK_APP_KEY, KIS_MOCK_APP_SECRET, or KIS_MOCK_ACCOUNT_NO "
@@ -465,6 +500,13 @@ def register_order_tools(mcp: FastMCP) -> None:
                 routing,
             )
         if routing.is_kis_mock:
+            market_error = _kis_mock_non_kis_market_error(order_id, symbol, market)
+            if market_error:
+                return apply_account_routing_metadata(market_error, routing)
+            if _is_kr_order(symbol, market):
+                return apply_account_routing_metadata(
+                    _use_dedicated_mock_tool("kis_mock_cancel_order"), routing
+                )
             config_error = _kis_mock_config_error()
             if config_error:
                 return apply_account_routing_metadata(config_error, routing)
@@ -490,6 +532,7 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Upbit: only limit orders in wait state. "
             "KIS: uses API modify endpoint. "
             "Use account_mode={'kis_live','kis_mock'} to choose KIS routing; "
+            "KIS KR mock orders must use kis_mock_modify_order. "
             "account_type aliases are deprecated and emit warnings. "
             "account_mode='kis_mock' fails closed if KIS_MOCK_ENABLED, "
             "KIS_MOCK_APP_KEY, KIS_MOCK_APP_SECRET, or KIS_MOCK_ACCOUNT_NO "
@@ -523,6 +566,13 @@ def register_order_tools(mcp: FastMCP) -> None:
                 routing,
             )
         if routing.is_kis_mock:
+            market_error = _kis_mock_non_kis_market_error(order_id, symbol, market)
+            if market_error:
+                return apply_account_routing_metadata(market_error, routing)
+            if _is_kr_order(symbol, market):
+                return apply_account_routing_metadata(
+                    _use_dedicated_mock_tool("kis_mock_modify_order"), routing
+                )
             config_error = _kis_mock_config_error()
             if config_error:
                 return apply_account_routing_metadata(config_error, routing)

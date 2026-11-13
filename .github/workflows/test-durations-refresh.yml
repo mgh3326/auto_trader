@@ -67,23 +67,19 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -112,7 +108,7 @@ jobs:
           --shard-count 4
 
     - name: Upload authoritative manifest
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: authoritative-collected-nodes
         path: authoritative-collected-nodes.txt
@@ -159,23 +155,19 @@ jobs:
           - 127.0.0.1:6379:6379
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -220,7 +212,7 @@ jobs:
           -o faulthandler_timeout=120
 
     - name: Upload shard measurements
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: durations-shard-${{ matrix.group }}
         path: |
@@ -246,24 +238,23 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Download shard measurements
-      uses: actions/download-artifact@v6
+      uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
       with:
         pattern: durations-shard-*
         path: duration-artifacts
         merge-multiple: true
 
     - name: Download authoritative collection manifest
-      uses: actions/download-artifact@v6
+      uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
       with:
         name: authoritative-collected-nodes
         path: duration-artifacts
@@ -304,7 +295,7 @@ jobs:
 
     - name: Upload merged duration artifact
       if: steps.diff.outputs.changed == 'true'
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: merged-test-durations
         path: refreshed-test-durations.json
@@ -358,27 +349,33 @@ jobs:
 
     - name: Upload call-phase duration artifact
       if: steps.call-durations-diff.outputs.changed == 'true'
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: merged-call-durations
         path: refreshed-call-durations.json
         if-no-files-found: error
 
     # ROB-1312: ci_shards/*.txt is a deterministic function of
-    # .call_durations.json (weight source) + the current authoritative
-    # collection -- if the weekly refresh rebuilt .call_durations.json but
+    # .test_durations (weight source) + the current authoritative
+    # collection -- if the weekly refresh rebuilt .test_durations but
     # never regenerated the manifests from it, LPT balance would silently
     # drift out of sync with reality with no duration-refresh workflow left
     # to correct it (exact-cover would still hold, since file membership is
     # unaffected by weight drift, but the "keep predicted shard weight spread
     # low" intent this planner exists for would quietly rot). Regenerate
-    # here from the same freshly-built artifact and authoritative capture
-    # against which this job already validated .call_durations.json, so both land in
-    # the same refresh PR in lockstep.
+    # here from the same freshly-merged artifact and authoritative capture
+    # against which this job already validated it, so both land in the same
+    # refresh PR in lockstep.
+    #
+    # hk-3336: the weight source is `.test_durations` (whole per-test
+    # protocol: setup + call + teardown), not `.call_durations.json` (call
+    # phase only). On the 2026-11-03 artifact the call phase missed 437.0 s
+    # (13.3 %) of real per-test time, and it cannot see the setup/teardown
+    # cost that bounds a `--dist=loadfile` shard at all.
     - name: Regenerate file-shard manifests
       run: |
         python3 -m scripts.ci.file_shard_plan generate \
-          --call-durations .call_durations.json \
+          --durations .test_durations \
           --collected duration-artifacts/authoritative-collected-nodes.txt \
           --manifest-dir ci_shards \
           --shard-count 4
@@ -415,7 +412,7 @@ jobs:
 
     - name: Upload file-shard manifests
       if: steps.ci-shards-diff.outputs.changed == 'true'
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: refreshed-ci-shards
         path: ci-shards-refresh-output/
@@ -432,13 +429,13 @@ jobs:
       pull-requests: write
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         persist-credentials: false
 
     - name: Download merged duration artifact
       if: needs.merge.outputs.changed == 'true'
-      uses: actions/download-artifact@v6
+      uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
       with:
         name: merged-test-durations
         path: duration-refresh-output
@@ -449,7 +446,7 @@ jobs:
 
     - name: Download call-phase duration artifact
       if: needs.merge.outputs.call_durations_changed == 'true'
-      uses: actions/download-artifact@v6
+      uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
       with:
         name: merged-call-durations
         path: call-durations-refresh-output
@@ -460,7 +457,7 @@ jobs:
 
     - name: Download file-shard manifests
       if: needs.merge.outputs.ci_shards_changed == 'true'
-      uses: actions/download-artifact@v6
+      uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
       with:
         name: refreshed-ci-shards
         path: ci-shards-refresh-output
@@ -474,7 +471,7 @@ jobs:
           ci-shards-refresh-output/weights.json ci_shards/
 
     - name: Open auto-PR with refreshed durations
-      uses: peter-evans/create-pull-request@v7
+      uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
       with:
         token: ${{ secrets.DURATIONS_REFRESH_TOKEN }}
         commit-message: "chore(ci): refresh .test_durations, .call_durations.json, and ci_shards manifests"
@@ -511,12 +508,16 @@ jobs:
           `.call_durations.json` is a separate, additive call-phase-only
           duration record (excludes setup/teardown/fixture cost) with
           source-commit and collection-hash provenance, built and
-          self-validated by `scripts/call_durations.py`. It is also the
-          weight source this run's `python3 -m scripts.ci.file_shard_plan
-          generate` summed per file to rebuild `ci_shards/shard-{1..4}.txt` +
-          `ci_shards/weights.json` from the same fresh measurement and the
-          same authoritative capture, self-checked with `... check`
-          immediately after. This same run refreshes the shard balance alongside
+          self-validated by `scripts/call_durations.py`.
+          `.test_durations` (the whole per-test protocol: setup + call +
+          teardown) is the weight source this run's `python3 -m
+          scripts.ci.file_shard_plan generate` summed per file to rebuild
+          `ci_shards/shard-{1..4}.txt` + `ci_shards/weights.json` from the
+          same fresh measurement and the same authoritative capture,
+          self-checked with `... check` immediately after.
+          `ci_shards/weights.json` now also reports the predicted per-shard
+          pytest time under `-n 4 --dist=loadfile`, which is the number a job
+          actually realises. This same run refreshes the shard balance alongside
           the duration data; exact cover is unaffected either way. The workflow
           keeps the *balance*, not just membership correctness, current.
 

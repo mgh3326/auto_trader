@@ -249,7 +249,8 @@ class Settings(BaseSettings):
 
     # Broker OAuth issuance stays local by default.  ``gatewayd`` makes this
     # process a Redis token consumer only; gatewayd performs provider issuance.
-    broker_token_issuance_mode: Literal["self", "gatewayd"] = "self"
+    # ``cache_only`` reads the shared Redis tokens and never issues.
+    broker_token_issuance_mode: Literal["self", "gatewayd", "cache_only"] = "self"
     gatewayd_url: str = "http://127.0.0.1:8791"
 
     # KIS
@@ -829,6 +830,9 @@ class Settings(BaseSettings):
     # gates the entire ``/trading/api/investment-reports/hermes/*`` family.
     # Required by the AuthMiddleware token branch; if unset, all four HTTP
     # endpoints respond ``403 "token not configured"`` regardless of body.
+    RETRO_API_ENABLED: bool = False
+    RETRO_API_READ_TOKEN: str = ""
+
     HERMES_INGEST_TOKEN: str = ""
     HERMES_INGEST_TOKEN_HEADER: str = "X-Hermes-Ingest-Token"
 

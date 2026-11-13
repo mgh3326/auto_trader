@@ -11,6 +11,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
+import sys
+import traceback
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -78,6 +83,10 @@ def _print_result(result) -> None:
         print("samples:")
         for sample in result.samples:
             print(f"  {sample}")
+    if result.numeric_overflow_counts:
+        # AT-3846: derived values excluded (None) because they do not fit their column.
+        for field_name, count in sorted(result.numeric_overflow_counts.items()):
+            print(f"numeric_overflow {field_name}={count} (excluded, set to None)")
     if result.warnings:
         print(f"warnings ({len(result.warnings)}):")
         for warning in result.warnings[:20]:
@@ -116,12 +125,29 @@ async def run(args: argparse.Namespace) -> int:
     return 0
 
 
+def format_failure_summary(exc: BaseException) -> str:
+    """One line: exception class + first message line (no traceback, no newline).
+
+    Schedulers keep only the stderr tail, so this is printed last (AT-3846).
+    """
+    cls = f"{type(exc).__module__}.{type(exc).__qualname__}"
+    lines = str(exc).strip().splitlines()
+    first = lines[0].strip() if lines else ""
+    return f"FAILED build_us_fundamentals_snapshots: {cls}: {first}"[:500]
+
+
 async def main() -> int:
     args = parse_args()
     from app.core.cli import setup_logging_and_sentry
 
     setup_logging_and_sentry(service_name="build-us-fundamentals-snapshots")
-    return await run(args)
+    try:
+        return await run(args)
+    except Exception as exc:  # noqa: BLE001 — report, then exit non-zero
+        logger.exception("US fundamentals snapshot build failed")
+        traceback.print_exc()
+        print(format_failure_summary(exc), file=sys.stderr, flush=True)
+        return 1
 
 
 if __name__ == "__main__":

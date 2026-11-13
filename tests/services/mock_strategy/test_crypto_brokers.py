@@ -396,3 +396,50 @@ async def test_crypto_factory_refuses_whitespace_identity_before_constructing_al
     with pytest.raises(ValueError, match="expected account identity"):
         await build_broker("alpaca_paper_crypto", confirm=True)
     assert client.closed
+
+
+def _off_grid(side):
+    return SimpleNamespace(
+        symbol="BTCUSDT",
+        side=side,
+        qty=Decimal("2.0005"),
+        client_order_id="r1474c-e-off-grid",
+    )
+
+
+@pytest.mark.parametrize("futures,side", [(False, "buy"), (True, "short")])
+@pytest.mark.asyncio
+async def test_off_grid_journal_quantity_is_refused_before_any_post(
+    monkeypatch, futures, side
+):
+    monkeypatch.setenv("MOCK_STRATEGY_ENABLED", "true")
+    monkeypatch.setenv(
+        "BINANCE_FUTURES_DEMO_ENABLED" if futures else "BINANCE_SPOT_DEMO_ENABLED",
+        "true",
+    )
+    client = Client()
+    broker = BinanceCryptoDemo(
+        client, futures=futures, expected_fingerprint="fixture-fingerprint"
+    )
+    with pytest.raises(PreDispatchRefusal) as refused:
+        await broker.preflight(_off_grid(side), confirm=True)
+    assert refused.value.reason_class == "ValueError"
+    with pytest.raises(PreDispatchRefusal):
+        await broker.submit(_off_grid(side), confirm=True)
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_storage_scale_on_grid_quantity_passes_preflight(monkeypatch):
+    monkeypatch.setenv("MOCK_STRATEGY_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_SPOT_DEMO_ENABLED", "true")
+    broker = BinanceCryptoDemo(
+        Client(), futures=False, expected_fingerprint="fixture-fingerprint"
+    )
+    on_grid = SimpleNamespace(
+        symbol="BTCUSDT",
+        side="buy",
+        qty=Decimal("2.000000000000000000"),
+        client_order_id="r1474c-e-on-grid",
+    )
+    await broker.preflight(on_grid, confirm=True)

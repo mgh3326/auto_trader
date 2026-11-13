@@ -35,6 +35,12 @@ class FixtureMarket:
             positive(item["min_notional"]),
         )
 
+    async def entry_rules(self, symbol: str) -> MarketRules:
+        return await self.rules(symbol)
+
+    async def inspect_entry_settings(self, symbol: str) -> None:
+        raise ValueError("fixture has no account settings evidence")
+
     async def price(self, symbol: str) -> Decimal:
         return positive(self.markets[symbol]["price"])
 
@@ -121,8 +127,12 @@ async def execute(args: argparse.Namespace) -> dict:
     if args.command == "run":
         if args.panel_root is None and args.cache_dir is None:
             raise ValueError("run requires --panel-root or --cache-dir")
-        if args.dry_run and args.market_fixture is None:
-            raise ValueError("run --dry-run requires --market-fixture")
+        if (
+            args.dry_run
+            and args.market_fixture is None
+            and (args.venue != "binance_futures_demo" or not args.confirm)
+        ):
+            raise ValueError("broker-backed dry run requires --confirm")
         payload = daily_lists(
             args.panel_root, args.asof, horizon=args.horizon, cache_root=args.cache_dir
         )

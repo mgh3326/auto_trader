@@ -1,33 +1,44 @@
 {
-  "authoritative_file_count": 1963,
-  "authoritative_node_count": 30536,
+  "authoritative_file_count": 2134,
+  "authoritative_node_count": 34978,
   "fallback": {
-    "not_called_seconds": 0.0,
-    "unmeasured_node_seconds": 0.125753
+    "unmeasured_node_seconds": 0.124943
   },
-  "max_min_spread_pct": 0.0,
-  "schema_version": 1,
+  "max_min_spread_pct": 0.0001,
+  "predicted_max_min_spread_pct": 50.1927,
+  "prediction": {
+    "model": "xdist_loadfile_list_scheduling",
+    "note": "pytest -n N --dist=loadfile on the manifest's sorted argv order: a file is the scheduling unit, so a shard cannot finish before its largest single file and total_weight_seconds / N",
+    "workers_per_shard": 4
+  },
+  "schema_version": 2,
   "shard_count": 4,
   "shards": [
     {
-      "file_count": 490,
+      "file_count": 533,
+      "predicted_pytest_seconds": 416.353951,
       "shard": 1,
-      "total_weight_seconds": 959.524803
+      "total_weight_seconds": 1092.563277
     },
     {
-      "file_count": 490,
+      "file_count": 533,
+      "predicted_pytest_seconds": 344.975076,
       "shard": 2,
-      "total_weight_seconds": 959.524793
+      "total_weight_seconds": 1092.564357
     },
     {
-      "file_count": 492,
+      "file_count": 534,
+      "predicted_pytest_seconds": 329.994536,
       "shard": 3,
-      "total_weight_seconds": 959.524605
+      "total_weight_seconds": 1092.564443
     },
     {
-      "file_count": 491,
+      "file_count": 534,
+      "predicted_pytest_seconds": 277.213267,
       "shard": 4,
-      "total_weight_seconds": 959.524616
+      "total_weight_seconds": 1092.564424
     }
-  ]
+  ],
+  "weight_basis": "setup+call+teardown per test, summed per file",
+  "weight_source": ".test_durations"
 }

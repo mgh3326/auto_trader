@@ -1,0 +1,42 @@
+operation: retro_day
+request:
+  path: /trading/api/retro/v1/retro_day
+  query:
+    market: XSYN
+    date: '2026-01-02'
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 2
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns: []
+  data:
+  - symbol: SYN001
+    stage: order
+    event_at: '2026-01-02T00:00:00Z'
+    event_ref: ref_synthetic_1
+    linked_ref: null
+    status: rejected
+    reason: rate_limited
+    quantity: '1'
+    price: '12.34'
+    currency: XSY
+    unit: shares
+    basis: broker
+  - symbol: SYN002
+    stage: order
+    event_at: '2026-01-02T00:00:00Z'
+    event_ref: ref_synthetic_2
+    linked_ref: null
+    status: unresolved
+    reason: no_terminal_evidence
+    quantity: '1'
+    price: '12.34'
+    currency: XSY
+    unit: shares
+    basis: unknown

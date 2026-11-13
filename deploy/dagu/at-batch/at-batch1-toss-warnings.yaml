@@ -1,0 +1,38 @@
+# 제안(PROPOSAL, hk 3848) — 어디에도 등록되어 있지 않다.
+# registered only via the runbook below: docs/runbooks/dagu-batch1-cutover.md
+# (잡별로: 이 파일 복사 → 수동 1회 실행 → Prefect 최근 실행과 결과 대조 → Prefect 스케줄 pause. 이 순서를 건너뛰지 않는다.)
+# 근거: 운영자 결정 hk:doc decision/2026-11-10/ncp-schedules-dagu-fillwire §3.
+#
+# 기계가 읽는 줄(tests/scripts/test_dagu_at_batch_dags.py 가 검사한다):
+# prefect_deployment: Toss Warnings Sync/daily-preopen
+# prefect_schedule: cron 30 7 * * * Asia/Seoul
+# dagu_shift_minutes: 0
+# dagu_schedule_kst: 07:30
+# cutover_gate: none
+#
+# 07:30 KST = 22:30 UTC (전날). 매일이라 요일 변환은 없다.
+# Prefect 의 로컬 모드는 TOSS_API_ENABLED=true 를 export 했지만 docker 모드 명령에는 없었다. 같은 docker 명령을 그대로 쓰므로 컨테이너 env 파일이 이 값을 가져야 한다(런북 §사전 조건).
+#
+# 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다).
+# 환경: dotenv 파일에서만 읽는다(이름만 런북에). 값은 이 파일과 레포에 없다.
+#   AT_BATCH_PING_URL_TOSS_WARNINGS (실패/성공 핑 URL)
+# 실패 경로: handler_on 이 healthchecks 핑(성공은 URL, 실패는 URL/fail)을 보낸다. Prefect 래퍼의 Discord 알림은 이 파일에 없다(런북 §알려진 차이).
+description: "Toss warnings sync (Toss 읽기, DB 쓰기)"
+schedule: "CRON_TZ=UTC 30 22 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: ncp
+dotenv: /root/at-secrets/.env.dagu-at-batch
+steps:
+  - name: sync
+    command: docker run --rm --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_toss_warnings
+    timeout_sec: 3600
+    retry_policy:
+      limit: 1
+      interval_sec: 300
+handler_on:
+  success:
+    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_TOSS_WARNINGS}"
+  failure:
+    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_TOSS_WARNINGS}/fail"

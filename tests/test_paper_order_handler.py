@@ -551,7 +551,9 @@ class TestPlaceOrderRegistration:
         paper_stub.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_account_mode_kis_mock_routes_to_order_impl_with_mock_enabled(self):
+    async def test_account_mode_us_kis_mock_routes_to_order_impl_with_mock_enabled(
+        self,
+    ):
         from app.mcp_server.tooling import orders_registration
 
         registered: dict[str, Any] = {}
@@ -584,7 +586,7 @@ class TestPlaceOrderRegistration:
             ),
         ):
             result = await place_order(
-                symbol="005930",
+                symbol="AAPL",
                 side="buy",
                 order_type="limit",
                 quantity=10,
@@ -597,7 +599,7 @@ class TestPlaceOrderRegistration:
         assert live_stub.await_args.kwargs["is_mock"] is True
 
     @pytest.mark.asyncio
-    async def test_account_mode_kis_mock_fails_closed_before_broker_call(self):
+    async def test_account_mode_us_kis_mock_fails_closed_before_broker_call(self):
         from app.mcp_server.tooling import orders_registration
 
         registered: dict[str, Any] = {}
@@ -628,7 +630,7 @@ class TestPlaceOrderRegistration:
             ),
         ):
             result = await place_order(
-                symbol="005930",
+                symbol="AAPL",
                 side="buy",
                 order_type="limit",
                 quantity=10,

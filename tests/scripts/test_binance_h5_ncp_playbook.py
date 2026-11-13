@@ -76,6 +76,11 @@ EXPECTED: dict[tuple[str, str], tuple[frozenset[str], str | None, bool]] = {
         "at-h5-demo",
         False,
     ),
+    ("binance_h5_demo", "--manage-only"): (
+        frozenset({DEMO, FUTURES}),
+        None,
+        True,
+    ),
     ("binance_h5_truth_gate", ""): (frozenset({DEMO, FUTURES}), None, True),
     ("binance_h5_heartbeat_watch", "--loop"): (
         frozenset({ALERT}),
@@ -321,7 +326,12 @@ def check_playbook(text: str, facts: dict) -> list[tuple[str, str]]:
             continue
         script, argv = command[2].removeprefix("scripts."), command[3:]
         mode = next(
-            (m for m in ("--help", "--send-test", "--loop", "--once") if m in argv), ""
+            (
+                m
+                for m in ("--help", "--send-test", "--manage-only", "--loop", "--once")
+                if m in argv
+            ),
+            "",
         )
         key = (script, mode)
         seen_combos.add(key)
@@ -476,6 +486,10 @@ MUTANTS: dict[str, list] = {
             "scripts.binance_h5_demo --loop --confirm-demo",
             "scripts.binance_h5_demo --loop",
         ),
+        swap(
+            "scripts.binance_h5_demo --once --manage-only --confirm-demo",
+            "scripts.binance_h5_demo --once --manage-only",
+        ),
     ],
     "NAMES": [
         swap("--name at-h5-demo", "--name at-worker"),
@@ -509,6 +523,10 @@ MUTANTS: dict[str, list] = {
     ],
     "COVERAGE": [
         swap("docker run --name at-h5-watch", "docker ps --name at-h5-watch"),
+        swap(
+            "scripts.binance_h5_demo --once --manage-only --confirm-demo",
+            "scripts.binance_h5_demo --once --confirm-demo",
+        ),
         swap(
             "scripts.binance_h5_heartbeat_watch --send-test",
             "scripts.binance_h5_heartbeat_watch --help",
@@ -575,6 +593,12 @@ def test_the_script_arguments_in_the_playbook_are_the_real_ones(playbook):
     ]
     assert len(commands) == len(EXPECTED)
     assert parse_with_script("binance_h5_demo", ["--loop"]) is None
+    assert (
+        parse_with_script(
+            "binance_h5_demo", ["--once", "--manage-only", "--confirm-demo"]
+        )
+        is None
+    )
     assert parse_with_script("binance_h5_demo", []) is not None  # a mode is required
     assert parse_with_script("binance_h5_demo", ["--bogus"]) is not None
 

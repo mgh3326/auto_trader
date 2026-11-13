@@ -139,6 +139,11 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    Alpaca paper 크기 상한 제거만 예외다. endpoint·예상 계정·이중 게이트는 유지한다.
    ROB-1474 전략 CLI도 기본 off 이중 게이트와 예상 계좌 검증을 유지하며,
    `mock_strategy_orders`의 sending/uncertain을 재전송하거나 journal을 지우지 않는다.
+   hk 4177의 명시 운영자 결정(2026-11-12, `decision/2026-11-12/at-b02-reconcile-and-3792`)은
+   KIS live KR 주문 원장 대사의 무인 실행을 expiry/cancel 전이(terminal_only)로 한정해
+   `KIS_LIVE_AUTO_RECONCILE_ENABLED` 하나로 허용하는 것만 예외다. fill booking(체결·저널·실현손익)은
+   `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED`를 포함한 두 플래그 게이트를 유지하며,
+   브로커 주문·정정·취소 경로는 바뀌지 않는다.
 5. **레저 쓰기는 서비스 레이어 경유만**: `alpaca_paper_order_ledger`,
    `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
    `toss_live_order_ledger` 등 주문 레저에 직접 SQL INSERT/UPDATE/DELETE 금지.
@@ -221,6 +226,7 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
     을 유지한다. `WS_LEDGER_SINK` 기본 `db` 유지, `http` 실패는 DB fail-open(유실 0),
     `WS_LEDGER_SINK_URL` 의 loopback/exact-path/no-userinfo 검증과
     `follow_redirects=False` 를 완화하지 마라. 마이그레이션·스케줄러 추가 금지.
+    hk 4186 의 명시 운영자 결정(2026-11-12, decision/2026-11-12/at-operator-merge-rule16-q22)은 execution_ledger 에 filled_at_basis·fee_basis·tax_amount 를 더하는 추가형 마이그레이션과 writer 의 값 채우기만 예외로 허용한다. 멱등키·외부 ingest 행의 source=websocket 강제·항목별 savepoint·원장 커밋 권한·기존 재전송 갱신 동작은 바뀌지 않는다.
 
 17. **MCP 레인 계약**: `config/mcp_lane_allowlists/`의 `tool<TAB>basis`를 보존하고,
     등록 변경은 `tests/mcp_server/test_lane_allowlist_contract.py`와
@@ -241,6 +247,12 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    이 제안에 묶인 결정 행과 스위치 AND 시장 AND 계정, `thresholds_confirmed` 뒤에서만
    풀리며, per-order·daily 캡을 올리거나 건너뛰지 마라. 평단 아래라는 이유만으로
    자르지 말고, 기록된 손절가 이탈·상승 중 제외·stale 가격 불발을 완화하지 마라.
+
+20. **MCP dots 외부 접속 (hk 3592)**: DEFAULT MCP 는 기존 bearer `MCP_AUTH_TOKEN` 과 검증된
+    Cloudflare Access assertion(`app/mcp_server/cf_access.py`) 두 자격증명만 받는다. 이메일 헤더 단독 신뢰,
+    `MCP_CF_ACCESS_*` 부분 설정 허용, DEFAULT 아닌 프로필에서의 Access 활성화, Access 호출이 `x-paperclip-agent-id` 로
+    다른 에이전트를 사칭하게 두는 것을 금지한다. 이 접속은 어떤 도구 게이트도 완화하지 않는다.
+    상세·결정 근거는 `docs/agent-contracts/mcp-and-analysis-contracts.md` 의 "dots 외부 접속".
 
 ## 계약 찾아보기
 

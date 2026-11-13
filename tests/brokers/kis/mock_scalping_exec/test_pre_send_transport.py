@@ -21,38 +21,12 @@ from app.services.brokers.kis.mock_scalping.contract import ReasonCode
 from app.services.brokers.kis.overseas_orders import OverseasOrderClient
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 
-
-@pytest.fixture(autouse=True)
-def _kis_mock_wire_authority(monkeypatch):
-    """ROB-1263: a mock mutation holds writer authority at the wire.
-
-    This suite's subject is the pre-send hook's ordering against the transport,
-    and it runs without the run-owned test database. The authority record is
-    still installed and still required; only the PostgreSQL session behind it is
-    stood in for. (orch approved this file's fence entry in r6.)
-    """
-
-    from tests.services.mock_integration.test_kis_coordination_adapter import (
-        stub_kis_mock_wire_lease,
-    )
-
-    stub_kis_mock_wire_lease(monkeypatch)
-
-
-def _cancel_receipt(order_id: str = "broker-order-id"):
-    """The FOLLOWUP receipt r3 requires of any cancel caller."""
-
-    from tests.services.mock_integration.test_kis_coordination_adapter import (
-        issued_followup_receipt,
-    )
-
-    return issued_followup_receipt("followup_cancel", order_id=order_id)
-
-
 _NXT = "app.services.brokers.kis.domestic_orders.is_nxt_eligible"
 
 
 class _Settings:
+    _is_mock = True
+    kis_base_url = "https://openapivts.koreainvestment.com:29443"
     kis_app_key = "k"
     kis_app_secret = "s"
     kis_access_token = "t"
@@ -63,11 +37,19 @@ class _Settings:
     kis_rate_limit_period = 1.0
 
 
+class _PassThroughVTSGate:
+    async def acquire(self, scope_key, *, freshness_hook=None, call_class=""):
+        if freshness_hook is not None:
+            await freshness_hook()
+
+
 class _Parent(BaseKISClient):
     def __init__(self) -> None:  # type: ignore[override]
         self._unmapped_rate_limit_keys_logged: set = set()
         type(self)._shared_client_lock = None
-        self._hdr_base = {"content-type": "application/json"}
+        self._hdr_base = {"content-type": "application/json", "appkey": "k"}
+        self._is_mock_client = True
+        self._vts_gate = _PassThroughVTSGate()
         tok = MagicMock()
         tok.clear_token = AsyncMock()
         self._token_manager = tok
@@ -77,7 +59,7 @@ class _Parent(BaseKISClient):
         return _Settings()
 
     def _kis_url(self, path: str) -> str:
-        return f"https://mockhost{path}"
+        return f"https://openapivts.koreainvestment.com:29443{path}"
 
     async def _ensure_token(self) -> None:
         return None
@@ -221,9 +203,8 @@ async def test_cancel_hook_runs_after_limiter_before_real_post(
             pre_send_hook=block_after_admission,
         )
 
-    async with _cancel_receipt():
-        with pytest.raises(PreSendFreshnessError):
-            await call
+    with pytest.raises(PreSendFreshnessError):
+        await call
 
     assert limiter.acquire.await_count == 1
     assert execute.await_count == 0
@@ -247,18 +228,17 @@ async def test_cancel_token_refresh_resend_rechecks_transport_hook(monkeypatch) 
         if hook_calls == 2:
             raise PreSendFreshnessError(("approval_window:DEFER_SESSION_CLOSED",))
 
-    async with _cancel_receipt():
-        with pytest.raises(PreSendFreshnessError):
-            await client.cancel_korea_order(
-                "broker-order-id",
-                "005930",
-                1,
-                70000,
-                "buy",
-                is_mock=True,
-                krx_fwdg_ord_orgno="06010",
-                pre_send_hook=allow_then_block,
-            )
+    with pytest.raises(PreSendFreshnessError):
+        await client.cancel_korea_order(
+            "broker-order-id",
+            "005930",
+            1,
+            70000,
+            "buy",
+            is_mock=True,
+            krx_fwdg_ord_orgno="06010",
+            pre_send_hook=allow_then_block,
+        )
 
     assert hook_calls == 2
     assert execute.await_count == 1

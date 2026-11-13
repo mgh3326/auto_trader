@@ -141,13 +141,32 @@ require_file() { [[ -f "$1" ]] || { printf 'required env file is unavailable: %s
 # Registry metadata is read before any pull, file write or container mutation.
 # The helper returns the immutable digest whose OCI revision passed GitHub CI.
 # Install it beside this script; --rollback intentionally never invokes it.
+# The helper needs Python >= 3.11, which a host's default python3 need not be
+# (NCP Rocky 8 ships 3.6). The interpreter is, in order: AT_DEPLOY_GATE_PYTHON
+# (an interpreter path), an installed Python >= 3.11 found by uv (no
+# downloads), then python3. Whichever is chosen must report >= 3.11.
+GATE_PYTHON_MIN='(3, 11)'
+gate_python() {
+  local uv
+  if [[ -n "${AT_DEPLOY_GATE_PYTHON:-}" ]]; then
+    GATE_PYTHON=("$AT_DEPLOY_GATE_PYTHON")
+  elif uv="$(command -v uv 2>/dev/null)" || { uv="${HOME:-/root}/.local/bin/uv"; [[ -x "$uv" ]]; }; then
+    GATE_PYTHON=("$uv" run --quiet --no-project --no-python-downloads --python '>=3.11' python)
+  elif command -v python3 >/dev/null 2>&1; then
+    GATE_PYTHON=(python3)
+  else
+    printf 'deploy gate requires Python >= 3.11: set AT_DEPLOY_GATE_PYTHON or install uv or python3\n' >&2; return 78
+  fi
+  "${GATE_PYTHON[@]}" -c "import sys; sys.exit(0 if sys.version_info >= $GATE_PYTHON_MIN else 1)" >/dev/null 2>&1 || {
+    printf 'deploy gate requires Python >= 3.11; %s is older or unusable (set AT_DEPLOY_GATE_PYTHON)\n' "${GATE_PYTHON[*]}" >&2; return 78; }
+}
 verified_deploy_image() {
   local gate="${SCRIPT_DIRECTORY}/deploy_ci_gate.py" digest
-  local -a args=(--image "$IMAGE")
+  local -a args=(--image "$IMAGE") GATE_PYTHON=()
   [[ -r "$gate" ]] || { printf 'deploy gate is unavailable: %s; install scripts/deploy_ci_gate.py beside this script\n' "$gate" >&2; return 78; }
-  command -v python3 >/dev/null 2>&1 || { printf 'deploy gate requires python3\n' >&2; return 78; }
+  gate_python || return $?
   [[ -z "$ALLOW_UNVERIFIED" ]] || args+=(--allow-unverified "$ALLOW_UNVERIFIED")
-  digest="$(python3 "$gate" "${args[@]}")" || return $?
+  digest="$("${GATE_PYTHON[@]}" "$gate" "${args[@]}")" || return $?
   is_digest "$digest" || { printf 'deploy gate returned no immutable image digest\n' >&2; return 78; }
   printf '%s\n' "$digest"
 }
@@ -430,8 +449,18 @@ run_scheduler() { docker run -d --name at-scheduler --restart unless-stopped --n
 run_worker() { docker run -d --name "$1" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$2" /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1; }
 run_ws() { docker run -d --name "$1" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$2" /app/.venv/bin/python websocket_monitor.py --mode "$3"; }
 wait_health() { local port="$1" attempt status; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do status="$(curl --silent --show-error --max-time 3 --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${port}/healthz")" && [[ "$status" == 200 ]] && return 0; printf 'waiting for API healthz (%s/%s)\n' "$attempt" "$HEALTHZ_ATTEMPTS" >&2; sleep "$HEALTHZ_SLEEP_SECONDS"; done; return 1; }
-wait_worker() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do docker logs --tail 100 "$name" 2>&1 | grep -Eq 'Listening started|Starting 1 worker processes.' && return 0; sleep "$HEALTHZ_SLEEP_SECONDS"; done; printf 'worker did not report Listening started\n' >&2; return 1; }
-wait_ws() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do docker logs --tail 100 "$name" 2>&1 | grep -Eq 'Unified WebSocket health:.*connected=True|connected=True' && return 0; sleep "$HEALTHZ_SLEEP_SECONDS"; done; return 1; }
+# A wait that gives up names the container and keeps the last log lines in the
+# run directory, because the rollback removes the container and its logs. The
+# copy is best effort: a failed write warns once and never changes the result.
+wait_failed() {
+  local name="$1" attempts="$2" file
+  printf '%s did not become ready after %s attempts\n' "$name" "$attempts" >&2
+  file="${RUN_DIRECTORY}/deploy-failure-${name}-$(date -u +%Y%m%dT%H%M%SZ || printf unknown-time).log"
+  ( umask 077; docker logs --timestamps --tail 60 "$name" >"$file" 2>&1 ) || printf 'warning: could not save failure logs for %s to %s\n' "$name" "$file" >&2
+  return 1
+}
+wait_worker() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do docker logs --tail 100 "$name" 2>&1 | grep -Eq 'Listening started|Starting 1 worker processes.' && return 0; sleep "$HEALTHZ_SLEEP_SECONDS"; done; wait_failed "$name" "$HEALTHZ_ATTEMPTS"; }
+wait_ws() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do docker logs --tail 100 "$name" 2>&1 | grep -Eq 'Unified WebSocket health:.*connected=True|connected=True' && return 0; sleep "$HEALTHZ_SLEEP_SECONDS"; done; wait_failed "$name" "$HEALTHZ_ATTEMPTS"; }
 
 # Every bind line names exactly one loopback or tailnet address and a port:
 # a wildcard, an IPv6 any-address, a bare port or an extra address fails.
@@ -517,7 +546,10 @@ deploy_singletons() {
   local image="$1"
   record_replacement at-scheduler; docker rm -f at-scheduler >/dev/null 2>&1 || true; run_scheduler "$image" >/dev/null || return 1
   record_replacement at-upbit-ws; docker rm -f at-upbit-ws >/dev/null 2>&1 || true; run_ws at-upbit-ws "$image" upbit >/dev/null || return 1; wait_ws at-upbit-ws || return 1
-  if ((SKIP_KIS_WS)); then
+  if [[ "${ORIGINAL_IMAGES[at-kis-ws]:-}" == ABSENT ]]; then
+    # fillwire holds the KIS stream; a second session on the app key is refused.
+    printf 'at-kis-ws absent at capture; not created (fillwire holds the KIS stream)\n'
+  elif ((SKIP_KIS_WS)); then
     printf 'at-kis-ws skipped; retaining digest %s\n' "${ORIGINAL_IMAGES[at-kis-ws]}"
   else
     record_replacement at-kis-ws; docker rm -f at-kis-ws >/dev/null 2>&1 || true; run_ws at-kis-ws "$image" kis >/dev/null || return 1; wait_ws at-kis-ws || return 1
@@ -837,7 +869,9 @@ dry_run() {
   printf '  at-worker: %s %s via at-worker-new rename; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-worker)"
   printf '  at-scheduler: %s %s; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-scheduler)"
   printf '  at-upbit-ws: %s %s; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-upbit-ws)"
-  if ((SKIP_KIS_WS)); then
+  if [[ "$(unit_image_summary at-kis-ws)" == absent ]]; then
+    printf '  at-kis-ws: absent at capture; not created (fillwire holds the KIS stream)\n'
+  elif ((SKIP_KIS_WS)); then
     printf '  at-kis-ws: skip; reason: explicit --skip-kis-ws request; retained digest: %s\n' "$(unit_image_summary at-kis-ws)"
   else
     printf '  at-kis-ws: %s %s; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-kis-ws)"

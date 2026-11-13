@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import httpx
+
 from app.services.mock_strategy.crypto_brokers import (
     CryptoBroker,
     FillEvidence,
@@ -91,6 +93,30 @@ async def _send(
             "status": "rejected",
             "submitted": False,
             "reason_class": exc.reason_class,
+        }
+    except httpx.HTTPStatusError as exc:
+        try:
+            await recorder.update(order.client_order_id, status="uncertain")
+        except Exception:
+            raise exc
+
+        def _continue_after_http_status(status_code: int | None) -> bool:
+            return (
+                status_code is not None
+                and 400 <= status_code < 500
+                and status_code not in {401, 403, 418, 429}
+            )
+
+        status_code = getattr(exc.response, "status_code", None)
+        if order.side not in {"buy", "short"} or not _continue_after_http_status(
+            status_code
+        ):
+            raise
+        return {
+            "client_order_id": order.client_order_id,
+            "status": "uncertain",
+            "submitted": None,
+            "error_class": "HTTPStatusError",
         }
     except BaseException:
         # A committed sending fence survives even if this status update fails.
@@ -199,7 +225,12 @@ async def run_lists(
                 existing.append(prior)
                 continue
         try:
-            rules, price = await broker.rules(symbol), await broker.price(symbol)
+            rules = await (
+                broker.entry_rules(symbol)
+                if venue == "binance_futures_demo"
+                else broker.rules(symbol)
+            )
+            price = await broker.price(symbol)
             qty = rules.floor(notional / price, price)
         except (ValueError, StopAsyncIteration, StopIteration):
             skipped.append(
@@ -230,10 +261,32 @@ async def run_lists(
             )
         )
     if dry_run:
+        would_set = []
+        eligible = []
+        if venue == "binance_futures_demo":
+            for plan in plans:
+                try:
+                    change = await broker.inspect_entry_settings(plan.symbol)
+                    if change is not None:
+                        would_set.append(change)
+                    eligible.append(plan)
+                except PreDispatchRefusal as exc:
+                    skipped.append({"symbol": plan.symbol, "reason": exc.reason_class})
+                except Exception:
+                    skipped.append(
+                        {
+                            "symbol": plan.symbol,
+                            "reason": "settings_evidence_unavailable",
+                        }
+                    )
         return {
             "dry_run": True,
-            "orders": [_output(p) for p in plans],
+            "orders": [
+                _output(p)
+                for p in (eligible if venue == "binance_futures_demo" else plans)
+            ],
             "skipped": skipped,
+            "would_set": would_set,
         }
     planned_symbols = [p.symbol for p in plans] + [r.symbol for r in existing]
     plans = [
@@ -249,8 +302,38 @@ async def run_lists(
     ]
     # Existing immutable intent mismatches reject the whole batch before POST.
     rows = existing + await recorder.record_many(plans)
-    outcomes = [await _send(recorder, broker, row, confirm=confirm) for row in rows]
-    return {"dry_run": False, "orders": outcomes, "skipped": skipped}
+    outcomes, settings_changes, settings_events = [], [], []
+    for row in rows:
+        if venue == "binance_futures_demo" and row.status == "planned":
+
+            async def audit(event: dict, cid: str = row.client_order_id) -> None:
+                settings_events.append(event)
+                await recorder.record_settings_event(cid, event)
+
+            try:
+                change = await broker.prepare_entry_settings(
+                    row.symbol, confirm=confirm, audit=audit
+                )
+                if change is not None:
+                    settings_changes.append(change)
+            except PreDispatchRefusal as exc:
+                outcomes.append(
+                    {
+                        "client_order_id": row.client_order_id,
+                        "status": "preflight_refused",
+                        "submitted": False,
+                        "reason_class": exc.reason_class,
+                    }
+                )
+                continue
+        outcomes.append(await _send(recorder, broker, row, confirm=confirm))
+    return {
+        "dry_run": False,
+        "orders": outcomes,
+        "skipped": skipped,
+        "settings_changes": settings_changes,
+        "settings_events": settings_events,
+    }
 
 
 async def close_due(

@@ -75,14 +75,28 @@ class KISMockLifecycleService:
     ) -> dict[str, Any]:
         from app.services.kis_mock_recovery import recover_kis_mock_dispatch_claims
 
-        return await recover_kis_mock_dispatch_claims(
-            store=store,
-            claims=claims,
-            reader=reader,
-            dry_run=dry_run,
-            confirm=confirm,
-            record_dispatch_evidence=record_dispatch_evidence,
-        )
+        # Lazy: the client is built only if a claim reaches the balance read.
+        position_reader = store.position_reader() if record_dispatch_evidence else None
+        try:
+            result = await recover_kis_mock_dispatch_claims(
+                store=store,
+                claims=claims,
+                reader=reader,
+                dry_run=dry_run,
+                confirm=confirm,
+                record_dispatch_evidence=record_dispatch_evidence,
+                position_reader=position_reader,
+            )
+        finally:
+            close_failed = False
+            if position_reader is not None:
+                try:
+                    await position_reader.close()
+                except Exception:  # noqa: BLE001 - keep the claim-by-claim report
+                    close_failed = True
+        if close_failed:
+            result["position_reader_close"] = "failed"
+        return result
 
     async def list_open_orders(
         self,

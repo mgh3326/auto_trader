@@ -15,6 +15,10 @@ hk 1040 (operator 10-16 dr-1040-1 A) moves exactly one tool on kr/us routes:
 it: the test undoes that single move (``_undo_1040``) and still requires the
 main bytes, and pins which cases moved.
 
+hk 3717 adds ``kis_live_get_daily_orders`` to ``HARNESS_DENIED_TOOLS``; it shows
+up only as one extra ``blocked_actions`` entry plus one ``harness_denied_tools`` key on DEFAULT, which the test undoes
+(``_undo_3717``) rather than regenerating the golden.
+
 Regenerate only for an intentional, reviewed route change:
 ``ROUTE_REQUEST_GOLDEN_WRITE=1 uv run pytest tests/mcp_server/test_route_request_profile_golden.py -k regenerate``.
 """
@@ -145,6 +149,31 @@ def _undo_1040(
     return undone, moved
 
 
+_3717_TOOL = "kis_live_get_daily_orders"
+
+
+def _undo_3717(
+    responses: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """hk 3717: the new harness-denied tool is bucketed in ``blocked_actions`` on
+    every profile that registers it (DEFAULT) and listed in ``harness_denied_tools``,
+    exactly like the existing denied tools; drop those two entries so the main bytes are still required."""
+    undone: dict[str, dict[str, dict[str, Any]]] = {}
+    for profile, cases in responses.items():
+        undone[profile] = {}
+        for case, response in cases.items():
+            denied = response.get("harness_denied_tools", {})
+            if _3717_TOOL in response.get("blocked_actions", []) or (
+                _3717_TOOL in denied
+            ):
+                response = copy.deepcopy(response)
+                if _3717_TOOL in response["blocked_actions"]:
+                    response["blocked_actions"].remove(_3717_TOOL)
+                response.get("harness_denied_tools", {}).pop(_3717_TOOL, None)
+            undone[profile][case] = response
+    return undone
+
+
 def _digests(responses: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
     return {
         profile: {
@@ -168,6 +197,7 @@ def test_route_request_is_byte_identical_to_main_off_the_h3_routes(
     expected = _golden()[key]
     responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
     undone, moved = _undo_1040(responses)
+    undone = _undo_3717(undone)
     # hk 1040: no kr/us route on any profile still blocks the tool, and at
     # least one moved; with the move undone every byte (crypto included) must
     # still be main's.

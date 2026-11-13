@@ -13,13 +13,14 @@ it.
 Two subcommands, deliberately asymmetric:
 
 * ``generate`` -- **duration-refresh workflow only**: reads
-  ``.call_durations.json`` (ROB-1295 call-phase
-  telemetry) and a fresh authoritative collect-only node manifest, sums
-  per-node weight into per-file weight, and writes four manifests via a
-  deterministic largest-processing-time-first (LPT) bin-packing. Overwrites
-  whatever manifests are already on disk. It intentionally has no incremental
-  mode, so a normal PR that merely adds a test file must minimally add that
-  sorted path to one committed manifest instead of running this command.
+  ``.test_durations`` (pytest-split ``--store-durations``: the whole
+  per-test protocol, setup + call + teardown) and a fresh authoritative
+  collect-only node manifest, sums per-node weight into per-file weight, and
+  writes four manifests via a deterministic
+  largest-processing-time-first (LPT) bin-packing. Overwrites whatever
+  manifests are already on disk. It intentionally has no incremental mode,
+  so a normal PR that merely adds a test file must minimally add that sorted
+  path to one committed manifest instead of running this command.
 * ``check`` -- reads the four committed manifests plus a fresh authoritative
   collect-only node manifest and validates exact cover: every authoritative
   file in exactly one manifest, no duplicates (within or across manifests),
@@ -27,19 +28,32 @@ Two subcommands, deliberately asymmetric:
   closed (non-zero exit, actionable message for a minimal manifest repair)
   on any violation.
 
-Weight fallbacks (explicit, deterministic -- see ``NOT_CALLED_FALLBACK_SECONDS``
-and ``_unmeasured_fallback_seconds``):
+Why the whole protocol, not the call phase: ``.call_durations.json``
+(ROB-1295) records only the ``call`` phase. On the 2026-11-03 refresh
+artifact that is 3,298.2 s against 3,735.2 s of real per-test pytest time --
+**437.0 s (13.3 %) of setup/teardown cost the call-phase weight cannot see**,
+mostly session/worker bootstrap (see ``docs/runbooks/ci-file-shard-manifests.md``
+§3). ``.test_durations`` is already produced by the same weekly refresh,
+already covers every authoritative node (including nodes whose ``setup``
+skips), and is what a shard actually pays.
 
-* A node present in the artifact's ``not_called`` list (its ``setup`` phase
-  skipped before reaching ``call``) contributes ``0.0`` -- it has no
-  call-phase cost to measure, by construction.
-* A node collected today but absent from *both* ``durations`` and
-  ``not_called`` (a brand-new test added since the artifact was last
-  refreshed, or genuine drift) contributes the mean of all measured
-  durations in that same artifact -- a deterministic, reproducible function
-  of the committed input, not a hand-tuned magic constant. If the artifact
-  has zero measured durations (an empty/bootstrap artifact), the fallback is
-  ``UNMEASURED_FALLBACK_DEFAULT_SECONDS``.
+Prediction vs. weight: the shards run ``pytest -n 4 --dist=loadfile``, so a
+**file** is the scheduling unit on four workers and the shard's pytest time is
+a *makespan*, not a sum -- one 301 s file bounds its shard at 301 s no matter
+how balanced the totals are. ``predict_shard_pytest_seconds`` models that
+(``--dist=loadfile`` hands units out in the manifest's sorted argv order to
+whichever worker is free), and ``weights.json`` reports it next to the raw
+weight totals so the number it prints is one a job can actually realise.
+
+Weight fallbacks (explicit, deterministic -- see
+``_unmeasured_fallback_seconds``):
+
+* A node collected today but absent from the artifact (a brand-new test added
+  since the artifact was last refreshed, or genuine drift) contributes the
+  mean of all measured durations in that same artifact -- a deterministic,
+  reproducible function of the committed input, not a hand-tuned magic
+  constant. If the artifact has zero measured durations (an empty/bootstrap
+  artifact), the fallback is ``UNMEASURED_FALLBACK_DEFAULT_SECONDS``.
 
 Determinism: file weights are summed by iterating the authoritative node list
 in sorted order (fixed float-addition order -- reproducible across runs and
@@ -59,33 +73,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from scripts.call_durations import load_artifact as load_call_durations_artifact
-from scripts.call_durations import (
-    validate_artifact_provenance,
-    validate_artifact_structure,
-)
+from scripts.call_durations import load_json_no_duplicate_keys
 
-#: Nodes recorded in the call-duration artifact's ``not_called`` list never
-#: reach the ``call`` phase (their ``setup`` skipped first) -- there is no
-#: call-phase cost to attribute, so their weight contribution is exactly
-#: zero rather than an estimate.
-NOT_CALLED_FALLBACK_SECONDS = 0.0
-
-#: Fallback per-node weight (seconds) used only when the call-duration
-#: artifact itself has zero measured durations (empty/bootstrap artifact) --
-#: normally unreachable once the artifact has been refreshed at least once.
+#: Fallback per-node weight (seconds) used only when the duration artifact
+#: itself has zero measured durations (empty/bootstrap artifact) -- normally
+#: unreachable once the artifact has been refreshed at least once.
 UNMEASURED_FALLBACK_DEFAULT_SECONDS = 1.0
+
+#: Mirrors ``-n 4`` in ``.github/workflows/test.yml`` and
+#: ``test-durations-refresh.yml``. Only used for the reported prediction; it
+#: is not a packing input.
+DEFAULT_WORKERS_PER_SHARD = 4
 
 DEFAULT_SHARD_COUNT = 4
 
 _MANIFEST_FILENAME = "shard-{index}.txt"
 _WEIGHTS_FILENAME = "weights.json"
-_WEIGHTS_SCHEMA_VERSION = 1
+#: 2: weight source is ``.test_durations`` (whole protocol) and the report
+#: carries a ``--dist=loadfile`` makespan prediction per shard.
+_WEIGHTS_SCHEMA_VERSION = 2
 
 
 class ShardPlanError(ValueError):
@@ -141,6 +153,99 @@ def collected_files_from_nodes(node_ids: list[str]) -> set[str]:
 # --------------------------------------------------------------------------
 
 
+def load_test_durations(path: Path) -> dict[str, float]:
+    """Read a pytest-split ``.test_durations`` map (node id -> seconds).
+
+    ``--store-durations`` measures the whole per-test protocol, so this is the
+    only artifact the refresh produces that contains setup and teardown cost.
+    Fails closed on anything a hand-edited or corrupted file could smuggle in:
+    duplicate JSON keys (``json.loads`` would otherwise silently keep the
+    last), a non-object top level, a non-string node id, and
+    non-finite/negative/non-numeric durations.
+
+    This loader deliberately does **not** require the artifact to describe
+    today's tree -- a stale but well-formed map is valid input, and nodes it
+    lacks fall back to ``_unmeasured_fallback_seconds``. Provenance is
+    established upstream: in the refresh workflow ``merge_test_durations.py``
+    wrote this file from the four measured shards and validated it against the
+    same authoritative capture ``generate`` receives.
+    """
+    raw = load_json_no_duplicate_keys(path)
+    if not isinstance(raw, dict):
+        raise ShardPlanError(f"{path}: expected a JSON object of node id -> seconds")
+    durations: dict[str, float] = {}
+    for node_id, duration in raw.items():
+        if not isinstance(node_id, str) or not node_id:
+            raise ShardPlanError(f"{path}: invalid node id {node_id!r}")
+        if isinstance(duration, bool) or not isinstance(duration, int | float):
+            raise ShardPlanError(
+                f"{path}: invalid duration for {node_id}: {duration!r}"
+            )
+        value = float(duration)
+        if value < 0 or not math.isfinite(value):
+            raise ShardPlanError(
+                f"{path}: invalid duration for {node_id}: {duration!r}"
+            )
+        durations[node_id] = value
+    return durations
+
+
+def _measured_files(durations: dict[str, float]) -> set[str]:
+    """Project the artifact's node ids onto their `tests/**/*.py` file paths."""
+    files: set[str] = set()
+    for node_id in durations:
+        if "::" not in node_id:
+            continue
+        file_path = node_id.split("::", 1)[0]
+        if file_path.startswith("tests/") and file_path.endswith(".py"):
+            files.add(file_path)
+    return files
+
+
+def validate_collection_covers_measured_files(
+    *,
+    durations: dict[str, float],
+    collected_files: set[str],
+    repo_root: Path,
+    limit: int = 20,
+) -> None:
+    """Fail closed when the collection is narrower than the measurement.
+
+    A `pytest --collect-only` capture can silently omit a test file that the
+    duration artifact measured, even though the file is still in the tree: a
+    module that refuses to import under this environment raises a
+    collection-time error, and both the workflow's and the documented local
+    recipe's ``2>/dev/null | grep '^tests/.*::'`` discard the ERRORS block.
+    Generating manifests from that capture drops the file from **every**
+    shard -- exact cover only fails later, in CI, when it is too late.
+
+    The discriminator is the working tree, which is what makes this precise
+    instead of a freshness check: a file the artifact measured but that is
+    **gone** is legitimate staleness (the mean-duration fallback exists for
+    exactly that), while a file that is **still on disk** and was not
+    collected means the capture looked through a narrower window than the
+    measurement did.
+    """
+    missing = sorted(
+        file_path
+        for file_path in _measured_files(durations) - collected_files
+        if (repo_root / file_path).is_file()
+    )
+    if not missing:
+        return
+    raise ShardPlanError(
+        f"authoritative collection is missing {len(missing)} test file(s) that the "
+        f"duration artifact measured and that still exist under the repo root: "
+        f"{missing[:limit]!r}\n"
+        "The collection saw a narrower suite than the measurement (a collection-time "
+        "skip or import error -- e.g. a test module that refuses to import under this "
+        "DATABASE_URL -- or a different -m/--ignore filter). Regenerating from it would "
+        "drop those files from every manifest. Re-collect the full suite with the "
+        "duration-refresh workflow's command and check pytest's exit status "
+        "(docs/runbooks/ci-file-shard-manifests.md §4)."
+    )
+
+
 def _unmeasured_fallback_seconds(durations: dict[str, float]) -> float:
     if not durations:
         return UNMEASURED_FALLBACK_DEFAULT_SECONDS
@@ -155,7 +260,6 @@ def compute_file_weights(
     *,
     collected_node_ids: list[str],
     durations: dict[str, float],
-    not_called: set[str],
 ) -> dict[str, float]:
     """Sum per-node weight into per-file weight.
 
@@ -167,12 +271,7 @@ def compute_file_weights(
     weights: dict[str, float] = {}
     for node_id in sorted(collected_node_ids):
         file_path = file_of_node_id(node_id)
-        if node_id in durations:
-            weight = durations[node_id]
-        elif node_id in not_called:
-            weight = NOT_CALLED_FALLBACK_SECONDS
-        else:
-            weight = fallback
+        weight = durations.get(node_id, fallback)
         weights[file_path] = weights.get(file_path, 0.0) + weight
     return weights
 
@@ -204,6 +303,39 @@ def assign_files_to_shards(
         shards[shard_index].append(file_path)
         totals[shard_index] += file_weights[file_path]
     return shards, totals
+
+
+# --------------------------------------------------------------------------
+# Predicted shard pytest time (--dist=loadfile on N workers)
+# --------------------------------------------------------------------------
+
+
+def predict_shard_pytest_seconds(
+    files: list[str],
+    file_weights: dict[str, float],
+    *,
+    workers: int = DEFAULT_WORKERS_PER_SHARD,
+) -> float:
+    """Predicted pytest wall time for one shard, as a makespan.
+
+    The shards run ``-n 4 --dist=loadfile``: the **file** is the scheduling
+    unit, and xdist hands the next collected unit to whichever worker is free.
+    pytest collects the manifest's positional arguments in order, and the
+    manifest is sorted (``_load_shard_manifest`` enforces it), so the dispatch
+    order is that sorted order. This replays exactly that: visit files in
+    sorted order, put each on the worker with the smallest accumulated total
+    (ties -> lowest worker index).
+
+    The result is therefore never below the shard's largest single file, which
+    is the floor the plain weight *sum* hides.
+    """
+    if workers < 1:
+        raise ShardPlanError(f"workers must be >= 1, got {workers}")
+    totals = [0.0] * workers
+    for file_path in sorted(files):
+        worker = min(range(workers), key=lambda i: (totals[i], i))
+        totals[worker] += file_weights[file_path]
+    return max(totals)
 
 
 # --------------------------------------------------------------------------
@@ -360,6 +492,25 @@ def validate_exact_cover(
 # --------------------------------------------------------------------------
 
 
+def _spread_pct(values: list[float]) -> float | None:
+    """``(max - min) / min * 100``, or ``None`` when it is undefined.
+
+    Deliberately divided by the **smaller** value, not the larger: dividing by
+    the larger number understates the imbalance (``max=110, min=90`` reads as
+    18.2% via /max but 22.2% via /min) and could pass a real >10% imbalance
+    under a naive reading of the acceptance bar.
+    """
+    if not values:
+        return 0.0
+    max_value = max(values)
+    min_value = min(values)
+    if min_value > 0:
+        return ((max_value - min_value) / min_value) * 100.0
+    if max_value <= 0:
+        return 0.0  # degenerate: every shard has zero weight.
+    return None  # undefined: some shard has zero weight, another does not.
+
+
 def build_weights_report(
     *,
     shard_count: int,
@@ -368,26 +519,30 @@ def build_weights_report(
     totals: list[float],
     fallback_unmeasured_seconds: float,
     authoritative_node_count: int,
+    workers_per_shard: int = DEFAULT_WORKERS_PER_SHARD,
 ) -> dict[str, Any]:
-    max_total = max(totals) if totals else 0.0
-    min_total = min(totals) if totals else 0.0
-    # (max - min) / min, NOT / max: dividing by the larger number
-    # understates the imbalance (e.g. max=110, min=90 reads as 18.2% via
-    # /max but 22.2% via /min) and could pass a real >10% imbalance under
-    # the acceptance criterion's "max/min spread <= 10%" reading.
-    spread_pct: float | None
-    if min_total > 0:
-        spread_pct = ((max_total - min_total) / min_total) * 100.0
-    elif max_total <= 0:
-        spread_pct = 0.0  # degenerate: every shard has zero weight.
-    else:
-        spread_pct = None  # undefined: some shard has zero weight, another does not.
+    predicted = [
+        predict_shard_pytest_seconds(files, file_weights, workers=workers_per_shard)
+        for files in shards
+    ]
+    weight_spread_pct = _spread_pct(totals)
+    predicted_spread_pct = _spread_pct(predicted)
     return {
         "schema_version": _WEIGHTS_SCHEMA_VERSION,
         "shard_count": shard_count,
+        "weight_source": ".test_durations",
+        "weight_basis": "setup+call+teardown per test, summed per file",
         "fallback": {
-            "not_called_seconds": NOT_CALLED_FALLBACK_SECONDS,
             "unmeasured_node_seconds": round(fallback_unmeasured_seconds, 6),
+        },
+        "prediction": {
+            "model": "xdist_loadfile_list_scheduling",
+            "workers_per_shard": workers_per_shard,
+            "note": (
+                "pytest -n N --dist=loadfile on the manifest's sorted argv "
+                "order: a file is the scheduling unit, so a shard cannot finish "
+                "before its largest single file and total_weight_seconds / N"
+            ),
         },
         "authoritative_node_count": authoritative_node_count,
         "authoritative_file_count": len(file_weights),
@@ -396,11 +551,15 @@ def build_weights_report(
                 "shard": index + 1,
                 "file_count": len(files),
                 "total_weight_seconds": round(totals[index], 6),
+                "predicted_pytest_seconds": round(predicted[index], 6),
             }
             for index, files in enumerate(shards)
         ],
         "max_min_spread_pct": (
-            round(spread_pct, 4) if spread_pct is not None else None
+            round(weight_spread_pct, 4) if weight_spread_pct is not None else None
+        ),
+        "predicted_max_min_spread_pct": (
+            round(predicted_spread_pct, 4) if predicted_spread_pct is not None else None
         ),
     }
 
@@ -411,39 +570,32 @@ def build_weights_report(
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
-    # Reuse call_durations.py's own strict loader/structural validator
-    # (duplicate-JSON-key rejection, schema_version, node_count cross-check,
-    # duration value type/finiteness, not_called duplicate/overlap) rather
-    # than reading the artifact with a bare json.loads -- a malformed or
-    # hand-tampered .call_durations.json must fail generate closed too, not
-    # just call_durations.py's own build/validate paths.
-    call_durations_artifact = load_call_durations_artifact(args.call_durations)
-    durations, not_called = validate_artifact_structure(
-        call_durations_artifact, source=str(args.call_durations)
-    )
-    # Provenance/self-consistency (ROB-1312 R1): garbage source_commit_sha or
-    # a collection_hash that does not actually describe this artifact's own
-    # durations/not_called must never silently produce a manifest. This is
-    # deliberately NOT a freshness check against today's tree -- a stale but
-    # internally-consistent artifact is valid input (see §3 below and the
-    # module docstring's fallback-weight design).
-    validate_artifact_provenance(
-        call_durations_artifact,
-        durations=durations,
-        not_called=not_called,
-        source=str(args.call_durations),
-    )
+    # Strict whole-protocol duration map (setup + call + teardown). In the
+    # refresh workflow this file was written by merge_test_durations.py in the
+    # same job, from the four measured shards, validated against the very
+    # authoritative capture passed here -- so a truncated or tampered map must
+    # fail generate closed rather than silently produce a manifest.
+    durations = load_test_durations(args.durations)
 
     collected_node_ids = load_collected_node_manifest(args.collected)
     authoritative_files = collected_files_from_nodes(collected_node_ids)
 
+    # A capture that silently lost a file (collection-time import error, a
+    # different marker/ignore filter) must never be packed into manifests:
+    # exact cover would only catch it downstream, in CI, after the bad
+    # manifests were written.
+    validate_collection_covers_measured_files(
+        durations=durations,
+        collected_files=authoritative_files,
+        repo_root=args.repo_root,
+    )
+
     file_weights = compute_file_weights(
         collected_node_ids=collected_node_ids,
         durations=durations,
-        not_called=not_called,
     )
-    # Every authoritative file must have a weight entry, even if all of its
-    # nodes happened to be `not_called` (weight 0.0) -- compute_file_weights
+    # Every authoritative file must have a weight entry, even if the artifact
+    # had no measurement for it (fallback seconds) -- compute_file_weights
     # already guarantees this since it iterates every collected node id.
     assert set(file_weights) == authoritative_files
 
@@ -475,8 +627,10 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     for path, files in zip(written, shards, strict=True):
         print(f"wrote {path}: {len(files)} file(s)")
     print(
-        f"wrote {weights_path}: spread={report['max_min_spread_pct']}% "
-        f"across {args.shard_count} shard(s)"
+        f"wrote {weights_path}: weight spread={report['max_min_spread_pct']}% "
+        f"predicted pytest spread={report['predicted_max_min_spread_pct']}% "
+        f"across {args.shard_count} shard(s), "
+        f"{report['prediction']['workers_per_shard']} worker(s) each"
     )
     return 0
 
@@ -511,7 +665,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "generate",
         help="duration-refresh only: fully rebalance manifests from fresh inputs",
     )
-    generate_parser.add_argument("--call-durations", type=Path, required=True)
+    generate_parser.add_argument(
+        "--durations",
+        type=Path,
+        required=True,
+        help=(
+            "pytest-split `.test_durations` map (node id -> seconds), i.e. the "
+            "whole setup+call+teardown protocol"
+        ),
+    )
     generate_parser.add_argument(
         "--collected",
         type=Path,
@@ -519,6 +681,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="authoritative `pytest --collect-only -m 'not live'` node-id capture",
     )
     generate_parser.add_argument("--manifest-dir", type=Path, required=True)
+    generate_parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(),
+        help=(
+            "root used to tell 'deleted since the refresh' (tolerated) apart from "
+            "'still in the tree but not collected' (fail closed); default: cwd"
+        ),
+    )
     generate_parser.add_argument("--shard-count", type=int, default=DEFAULT_SHARD_COUNT)
     generate_parser.set_defaults(func=_cmd_generate)
 
@@ -544,10 +715,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except ValueError as error:
         # ShardPlanError (this module) and the plain ValueError raised by
-        # scripts.call_durations's strict artifact loader/structural
-        # validator (a malformed .call_durations.json) must both fail
-        # generate/check closed with an actionable message, not an
-        # uncaught traceback.
+        # scripts.call_durations's duplicate-key JSON loader (a malformed
+        # .test_durations) must both fail generate/check closed with an
+        # actionable message, not an uncaught traceback.
         print(f"::error::{error}", file=sys.stderr)
         return 1
 

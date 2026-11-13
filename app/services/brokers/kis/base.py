@@ -33,7 +33,9 @@ from app.services.brokers.kis.vts_distributed_gate import (
     get_vts_distributed_gate,
 )
 from app.services.brokers.token_issuance import (
+    cache_only_refusal,
     ensure_gatewayd_token,
+    is_cache_only_token_issuance,
     is_gatewayd_token_issuance,
 )
 from app.services.redis_token_manager import redis_token_manager
@@ -489,6 +491,11 @@ class BaseKISClient:
         logging.info("KIS 새 토큰 발급 완료")
         return access_token, expires_in
 
+    def _token_provider_label(self) -> str:
+        """Provider label for cache_only refusals. Subclasses that own a mock
+        token namespace without ``_is_mock_client`` override this."""
+        return "kis-mock" if getattr(self, "_is_mock_client", False) else "kis-live"
+
     async def _ensure_token(self) -> None:
         """Ensure valid access token is available.
 
@@ -502,6 +509,10 @@ class BaseKISClient:
             self._settings.kis_access_token = token
             logging.debug("KIS access token ready for request")
             return
+
+        if is_cache_only_token_issuance(self._settings):
+            # cache_only: a miss or expiry refuses before any lock, OAuth, or write.
+            raise cache_only_refusal(self._token_provider_label())
 
         if is_gatewayd_token_issuance(self._settings):
             provider = (
@@ -606,6 +617,7 @@ class BaseKISClient:
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        do_not_retry_rate_limit_msg_codes: frozenset[str] = frozenset(),
         pre_send_hook: PreSendHook | None = None,
         send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
@@ -624,6 +636,8 @@ class BaseKISClient:
             max_retries_override: cap the retry count for this call. ROB-645 order
                 submission passes ``0`` so a timed-out or rate-limited (EGW00215)
                 order POST is sent exactly once and never re-POSTed.
+            do_not_retry_rate_limit_msg_codes: provider business-error codes that
+                the caller retries at a narrower layer instead.
 
         Returns:
             Parsed JSON response
@@ -644,6 +658,7 @@ class BaseKISClient:
             tr_id=tr_id,
             retry_request_errors=retry_request_errors,
             max_retries_override=max_retries_override,
+            do_not_retry_rate_limit_msg_codes=do_not_retry_rate_limit_msg_codes,
             pre_send_hook=pre_send_hook,
             send_outcome=send_outcome,
         )
@@ -662,6 +677,7 @@ class BaseKISClient:
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        do_not_retry_rate_limit_msg_codes: frozenset[str] = frozenset(),
         pre_send_hook: PreSendHook | None = None,
         send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
@@ -698,6 +714,7 @@ class BaseKISClient:
                 tr_id=tr_id,
                 retry_request_errors=retry_request_errors,
                 max_retries_override=max_retries_override,
+                do_not_retry_rate_limit_msg_codes=do_not_retry_rate_limit_msg_codes,
                 pre_send_hook=pre_send_hook,
                 send_outcome=send_outcome,
                 _phase=phase,
@@ -749,6 +766,7 @@ class BaseKISClient:
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        do_not_retry_rate_limit_msg_codes: frozenset[str] = frozenset(),
         pre_send_hook: PreSendHook | None = None,
         send_outcome: OrderSendOutcomeTracker | None = None,
         _phase: dict[str, bool] | None = None,
@@ -878,11 +896,15 @@ class BaseKISClient:
                         # Observation must not replace a successful response.
                         pass
 
-                if is_rate_limited and attempt < max_retries:
+                msg_cd = str(data.get("msg_cd", ""))
+                if (
+                    is_rate_limited
+                    and msg_cd not in do_not_retry_rate_limit_msg_codes
+                    and attempt < max_retries
+                ):
                     wait_time = self._calculate_retry_delay(
                         attempt=attempt, retry_after=0
                     )
-                    msg_cd = str(data.get("msg_cd", ""))
                     msg1 = str(data.get("msg1", ""))
                     logging.warning(
                         "[%s] Rate limit heuristic triggered for %s: %s %s, attempt %d/%d, waiting %.3fs",

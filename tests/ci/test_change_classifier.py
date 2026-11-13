@@ -19,6 +19,7 @@ from scripts.ci.classify_changes import (
     AFFECTED_JOB,
     ALL_JOBS,
     MAX_AFFECTED_TEST_FILES,
+    MIGRATION_CHAIN_TEST,
     ChangeEntry,
     Classification,
     ClassifierError,
@@ -1102,3 +1103,67 @@ def test_cli_is_red_when_base_and_head_share_no_history(
     code, report = _run_cli(repo, tmp_path, "--base-sha", base, "--head-sha", head)
     assert code == 1
     assert report["result"] == "error"
+
+
+def test_retro_contract_selects_contract_test_without_full_suite() -> None:
+    result = select_affected_tests(
+        classify_entries(_modified("contracts/retro/v1/openapi.yaml")),
+        TestUniverse.from_manifests(REPO_ROOT),
+    )
+    assert not result.run_all
+    assert result.affected_tests == ("tests/contracts/test_retro_v1_contract.py",)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "contracts/retro/v1/openapi.yaml",
+        "contracts/retro/v1/consumers.lock",
+        "app/routers/retro_v1.py",
+        "app/services/retro_v1/service.py",
+        "app/services/account_value/retro_scoreboard.py",
+        "app/middleware/auth.py",
+        "tools/retro-consumer-check/main.go",
+    ],
+)
+def test_retro_paths_trigger_run_retro_consumer_gate(path: str) -> None:
+    classification = classify_entries(_modified(path))
+    assert classification.run_retro_consumer_gate is True
+    outputs = build_outputs(classification)
+    assert outputs["run_retro_consumer_gate"] == "true"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/runbooks/something.md",
+        "app/services/halt_detection.py",
+        "tests/test_symbol_conversion.py",
+        "scripts/policy_table/adapters/kr.py",
+        "frontend/invest/src/desktop/screener/x.tsx",
+    ],
+)
+def test_unrelated_paths_do_not_trigger_run_retro_consumer_gate(path: str) -> None:
+    classification = classify_entries(_modified(path))
+    assert classification.run_retro_consumer_gate is False
+    outputs = build_outputs(classification)
+    assert outputs["run_retro_consumer_gate"] == "false"
+
+
+def test_a_referenced_migration_also_selects_the_single_head_check() -> None:
+    tree = {
+        "tests/services/x/test_migration_db.py": 'Path("alembic/versions/20261112_x.py")\n',
+        MIGRATION_CHAIN_TEST: "x = 1\n",
+    }
+    result = _select(tree, "alembic/versions/20261112_x.py")
+    assert result.run_all is False
+    assert result.affected_tests == tuple(sorted(tree))
+
+
+def test_an_unmapped_migration_still_forces_run_all_with_the_chain_test_present() -> (
+    None
+):
+    tree = {"tests/test_a.py": "x = 1\n", MIGRATION_CHAIN_TEST: "x = 1\n"}
+    result = _select(tree, "alembic/versions/untested.py")
+    assert result.run_all is True
+    assert result.reason == "unmapped_path"

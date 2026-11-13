@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -17,7 +18,8 @@ from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.symbol import to_db_symbol
+from app.core.market import market_instrument_type
+from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
@@ -42,6 +44,39 @@ from app.services.alpaca_paper_ledger_service import (
     RECORD_KIND_RECONCILE as _ALPACA_PAPER_RECORD_KIND_RECONCILE,
 )
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_BUY_LEG as PNL_STATUS_BUY_LEG,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_CLASS as PNL_STATUS_CLASS,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_MISSING_REALIZED_PNL as PNL_STATUS_MISSING_REALIZED_PNL,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_NO_FILL_EVIDENCE as PNL_STATUS_NO_FILL_EVIDENCE,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_NO_FILL_OUTCOME as PNL_STATUS_NO_FILL_OUTCOME,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_POSITION_INTAKE as PNL_STATUS_POSITION_INTAKE,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_RECORDED as PNL_STATUS_RECORDED,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_RECORDED_OTHER_PNL as PNL_STATUS_RECORDED_OTHER_PNL,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_UNKNOWN_OUTCOME as PNL_STATUS_UNKNOWN_OUTCOME,
+)
+from app.services.trade_journal.pnl_status import (
+    PNL_STATUS_UNKNOWN_SIDE as PNL_STATUS_UNKNOWN_SIDE,
+)
+from app.services.trade_journal.pnl_status import (
+    classify_pnl_status as classify_pnl_status,
+)
 from app.services.trade_journal.retrospective_action_repository import (
     ActionControlError,
     RetrospectiveActionRepository,
@@ -98,71 +133,6 @@ _VALID_OUTCOMES = {
     "cancelled",
 }
 _KST = ZoneInfo("Asia/Seoul")
-
-# ROB-1488 — why `realized_pnl` is NULL. A closed vocabulary derived at read
-# time so a genuinely non-applicable value is not confused with a filled sell
-# whose realized P&L was not recorded. This classification never fabricates a
-# P&L and never writes a row; it only labels evidence the row already carries.
-PNL_STATUS_RECORDED = "recorded"
-PNL_STATUS_RECORDED_OTHER_PNL = "recorded_other_pnl"
-PNL_STATUS_POSITION_INTAKE = "position_intake"
-PNL_STATUS_NO_FILL_EVIDENCE = "no_fill_evidence"
-PNL_STATUS_NO_FILL_OUTCOME = "no_fill_outcome"
-PNL_STATUS_UNKNOWN_OUTCOME = "unknown_outcome"
-PNL_STATUS_BUY_LEG = "buy_leg"
-PNL_STATUS_UNKNOWN_SIDE = "unknown_side"
-PNL_STATUS_MISSING_REALIZED_PNL = "missing_realized_pnl"
-
-PNL_STATUS_CLASS: dict[str, str] = {
-    PNL_STATUS_RECORDED: "recorded",
-    PNL_STATUS_RECORDED_OTHER_PNL: "recorded",
-    PNL_STATUS_POSITION_INTAKE: "not_applicable",
-    PNL_STATUS_NO_FILL_EVIDENCE: "unknown",
-    PNL_STATUS_NO_FILL_OUTCOME: "not_applicable",
-    PNL_STATUS_UNKNOWN_OUTCOME: "unknown",
-    PNL_STATUS_BUY_LEG: "not_applicable",
-    PNL_STATUS_UNKNOWN_SIDE: "unknown",
-    PNL_STATUS_MISSING_REALIZED_PNL: "missing",
-}
-
-_FILLED_OUTCOMES = frozenset({"filled", "partially_filled"})
-_NO_FILL_OUTCOMES = frozenset({"unfilled", "rejected", "cancelled"})
-
-
-def classify_pnl_status(row: TradeRetrospective) -> str:
-    """Label existing P&L evidence without converting or inventing a value.
-
-    ``recorded_other_pnl`` means another P&L field is present, not that the
-    absolute realized amount is known. ``missing_realized_pnl`` is reserved
-    for evidenced filled sells with no P&L field populated; cause is not inferred.
-    Position intake is not an execution and has no realized-P&L obligation.
-    """
-    if is_intake_retrospective(row):
-        return PNL_STATUS_POSITION_INTAKE
-    if row.realized_pnl is not None:
-        return PNL_STATUS_RECORDED
-    if any(
-        value is not None
-        for value in (
-            row.pnl_pct,
-            row.total_pnl_krw,
-            row.fx_pnl_krw,
-            row.security_pnl_usd,
-            row.security_pnl_krw,
-        )
-    ):
-        return PNL_STATUS_RECORDED_OTHER_PNL
-    if not row.fill_evidence_available:
-        return PNL_STATUS_NO_FILL_EVIDENCE
-    if row.outcome in _NO_FILL_OUTCOMES:
-        return PNL_STATUS_NO_FILL_OUTCOME
-    if row.outcome not in _FILLED_OUTCOMES:
-        return PNL_STATUS_UNKNOWN_OUTCOME
-    if row.side == "buy":
-        return PNL_STATUS_BUY_LEG
-    if row.side is None:
-        return PNL_STATUS_UNKNOWN_SIDE
-    return PNL_STATUS_MISSING_REALIZED_PNL
 
 
 def _pnl_status_counts(items: list[TradeRetrospective]) -> dict[str, int]:
@@ -384,16 +354,18 @@ class TradeRetrospectiveRepository:
 
         cid = payload.get("correlation_id")
         account_mode = payload.get("account_mode")
+        existing: TradeRetrospective | None = None
         if cid is not None:
             existing = await self.get_by_correlation_id(
                 cid, account_mode, for_update=True
             )
-            if existing is not None:
-                _assert_type_boundary(existing)
-                for key, value in payload.items():
-                    setattr(existing, key, value)
-                await self.db.flush()
-                return "updated", existing
+        await self._validate_decision_link(payload, existing)
+        if existing is not None:
+            _assert_type_boundary(existing)
+            for key, value in payload.items():
+                setattr(existing, key, value)
+            await self.db.flush()
+            return "updated", existing
         create_payload = dict(create_defaults or {})
         create_payload.update(payload)
         _assert_type_boundary(None)
@@ -414,11 +386,71 @@ class TradeRetrospectiveRepository:
             if existing is None:
                 raise
             _assert_type_boundary(existing)
+            await self._validate_decision_link(payload, existing)
             for key, value in payload.items():
                 setattr(existing, key, value)
             await self.db.flush()
             return "updated", existing
         return "created", row
+
+    async def _validate_decision_link(
+        self,
+        payload: dict[str, Any],
+        existing: TradeRetrospective | None,
+    ) -> None:
+        decision_id = payload.get(
+            "decision_id", existing.decision_id if existing is not None else None
+        )
+        if decision_id is None:
+            return
+        if not isinstance(decision_id, UUID):
+            raise RetrospectiveValidationError("decision_id must be a UUID")
+
+        symbol = payload.get(
+            "symbol", existing.symbol if existing is not None else None
+        )
+        market = payload.get(
+            "market", existing.market if existing is not None else None
+        )
+        account_mode = payload.get(
+            "account_mode", existing.account_mode if existing is not None else None
+        )
+        decision_market = market_instrument_type(market)
+        retrospective_account_mode = {
+            "kis_live": "kis_live",
+            "toss_live": "toss_live",
+            "upbit_live": "upbit",
+        }.get(account_mode)
+        if decision_market is None or retrospective_account_mode is None:
+            raise RetrospectiveValidationError(
+                "decision_id requires a supported matching market and live account_mode"
+            )
+
+        result = await self.db.execute(
+            text(
+                "SELECT symbol, market, account_mode "
+                "FROM review.decision_evidence WHERE decision_id = :decision_id"
+            ),
+            {"decision_id": decision_id},
+        )
+        decision = result.mappings().one_or_none()
+        if decision is None:
+            raise RetrospectiveValidationError(
+                "decision_id does not reference a decision"
+            )
+        decision_symbol = decision["symbol"]
+        if decision_market == "crypto":
+            symbol_matches = to_upbit_symbol(decision_symbol) == to_upbit_symbol(symbol)
+        else:
+            symbol_matches = decision_symbol == symbol
+        if (
+            not symbol_matches
+            or decision["market"] != decision_market
+            or decision["account_mode"] != retrospective_account_mode
+        ):
+            raise RetrospectiveValidationError(
+                "decision_id does not match retrospective symbol, market, and account_mode"
+            )
 
 
 def _integrity_constraint_name(exc: IntegrityError) -> str:
@@ -468,6 +500,7 @@ async def save_retrospective(
     market: Any = _UNSET,
     strategy_key: Any = _UNSET,
     correlation_id: str | None = None,
+    decision_id: Any = _UNSET,
     journal_id: Any = _UNSET,
     report_uuid: Any = _UNSET,
     report_item_uuid: Any = _UNSET,
@@ -660,6 +693,7 @@ async def save_retrospective(
         "fill_evidence_available": fill_evidence_available,
     }
     raw_optional_payload = {
+        "decision_id": decision_id,
         "side": side,
         "market": market,
         "strategy_key": strategy_key,

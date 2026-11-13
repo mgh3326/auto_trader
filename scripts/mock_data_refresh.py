@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 import pandas as pd
 
+from research.crypto_universe.universe import crypto_exclusion_reason
 from research.stock_selection.dataset import decision_at, sessions, validate_bars
 from research.stock_selection.io import digest, read_bars
 from scripts.mock_data_sources import AlpacaSource, BinanceSource, JsonGet
@@ -29,6 +30,17 @@ def completed_days(market: str, now: datetime, lookback: int) -> list[date]:
     return [
         d.date() for d in days if decision_at(market, d.date()) <= pd.Timestamp(now)
     ][-lookback:]
+
+
+def malformed_symbols(frame: pd.DataFrame, market: str) -> set[str]:
+    """Symbols with any row that validate_bars rejects, judged one symbol at a time."""
+    bad: set[str] = set()
+    for symbol, rows in frame.groupby(frame.symbol.astype(str), sort=False):
+        try:
+            validate_bars(rows, market)
+        except (TypeError, ValueError):
+            bad.add(str(symbol))
+    return bad
 
 
 def _csv(frame: pd.DataFrame) -> bytes:
@@ -160,6 +172,11 @@ def refresh(
         merged = merged[
             (merged.date >= days[0].isoformat()) & (merged.date <= cutoff)
         ].copy()
+        # A malformed symbol is excluded whole: no repair, no forward fill, no partial history.
+        malformed = malformed_symbols(merged, market)
+        if source.benchmark in malformed:
+            raise ValueError("benchmark has malformed bars; previous snapshot retained")
+        merged = merged[~merged.symbol.isin(malformed)]
         validated = validate_bars(merged, market)
         if (validated.available_at > pd.Timestamp(now)).any():
             raise ValueError("forming bar refused")
@@ -168,12 +185,28 @@ def refresh(
         validated["available_at"] = validated.available_at.map(lambda t: t.isoformat())
         merged = validated
         expected = {d.isoformat() for d in days}
-        scores, excluded = [], {}
+        scores, excluded = [], dict.fromkeys(sorted(malformed), "malformed_bars")
+        excluded.update(getattr(source, "excluded_assets", {}))
         window = 20 if market == "us" else 30
         for symbol in symbols:
+            if symbol in excluded:
+                continue
             if symbol not in present:
                 excluded[symbol] = "refresh_data_unavailable"
                 continue
+            if market == "crypto" and symbol != source.benchmark:
+                history = merged[merged.symbol == symbol].sort_values("date")
+                reason = crypto_exclusion_reason(
+                    symbol.removesuffix("USDT"),
+                    (
+                        (date.fromisoformat(row.date), float(row.close))
+                        for row in history.itertuples()
+                    ),
+                    cutoff=date.fromisoformat(cutoff),
+                )
+                if reason:
+                    excluded[symbol] = reason
+                    continue
             history = merged[merged.symbol == symbol].sort_values("date")
             if set(history.date) != expected:
                 excluded[symbol] = "incomplete_feature_history"

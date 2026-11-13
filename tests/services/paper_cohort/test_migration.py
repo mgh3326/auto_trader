@@ -169,6 +169,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 )
             await connection.run_sync(Base.metadata.create_all)
+            # hk 3800 tables are post-boundary metadata; let their migration create them.
+            await connection.execute(text("DROP TABLE review.account_external_flows"))
+            await connection.execute(text("DROP TABLE review.account_value_snapshots"))
             # ROB-1263 tables are post-boundary metadata, not parent objects.
             # Remove the evidence child before its lineage FK target.
             await connection.execute(
@@ -355,10 +358,23 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             )
             await connection.execute(text("DROP TABLE review.strategy_sleeve_versions"))
             await connection.execute(text("DROP TABLE review.strategy_sleeves"))
+            # hk 4186 (L5) execution_ledger basis columns are later too and
+            # already in Base.metadata; drop them (their CHECKs go with them)
+            # so the migration adds them back.
+            for column in ("filled_at_basis", "fee_basis", "tax_amount"):
+                await connection.execute(
+                    text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")
+                )
             for column in ("quarantined_by", "quarantine_reason", "quarantined_at"):
                 await connection.execute(
                     text(f"ALTER TABLE review.execution_ledger DROP COLUMN {column}")
                 )
+            # hk 4187 (L6) trade_retrospectives.decision_id is later too and
+            # already in Base.metadata; drop it (its index goes with it) so the
+            # migration adds it back.
+            await connection.execute(
+                text("ALTER TABLE review.trade_retrospectives DROP COLUMN decision_id")
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

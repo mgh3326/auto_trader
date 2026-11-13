@@ -135,7 +135,7 @@ same gate on its pinned build SHA and follows completed main-push Test runs.
 `--allow-unverified REASON` is an explicit logged CI override, not permission
 to bypass immutable image identity or other safety checks. `--rollback` and
 automatic failure recovery stay unchecked emergency paths. Install the helper
-beside the host script; Python 3, Docker Buildx, and authenticated GitHub CLI
+beside the host script; Python >= 3.11 (via `AT_DEPLOY_GATE_PYTHON`, uv, or python3; older refuses 78), Docker Buildx, and authenticated GitHub CLI
 Actions read access are prerequisites. Runbook:
 `docs/runbooks/ncp-pull-deploy.md` §Exact-SHA full-suite gate.
 

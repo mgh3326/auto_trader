@@ -2049,6 +2049,12 @@ def test_toss_execution_ledger_fill_seq_changes_by_delta():
     assert first.filled_qty == Decimal("1")
     assert second.filled_qty == Decimal("0.5")
     assert first.fill_seq != second.fill_seq
+    assert (
+        first.fee_amount,
+        first.tax_amount,
+        first.fee_basis,
+        first.filled_at_basis,
+    ) == (Decimal("0.05"), Decimal("0.01"), "broker_reported", "broker_order_time")
 
 
 # ---------------------------------------------------------------------------
@@ -2540,3 +2546,18 @@ async def test_real_batch_source_404_falls_back_to_anomaly_not_expired(db_sessio
     assert refreshed.status != "expired"
     assert refreshed.expired_at is None
     assert refreshed.requires_manual_review is True
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ({"execution": {"filledAt": "2026-07-07T00:31:00Z"}}, "broker_fill_time"),
+        ({"orderedAt": "2026-07-07T00:30:00Z"}, "broker_order_time"),
+        ({}, "observed_at"),
+    ],
+)
+def test_toss_fill_time_basis_tracks_timestamp_source(raw, expected):
+    from app.services.toss_execution_ledger import _parse_toss_fill_time
+
+    _, basis = _parse_toss_fill_time(raw)
+    assert basis == expected

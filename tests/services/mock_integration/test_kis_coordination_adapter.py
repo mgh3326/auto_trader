@@ -15,6 +15,7 @@ import pathlib
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -1325,6 +1326,7 @@ async def test_unknown_remainder_is_never_replaced_with_quantity_one(monkeypatch
             "symbol": "005930",
             "side": "buy",
             "quantity": 0.0,  # remainder unknown
+            "remaining_quantity": None,
             "price": 70000.0,
             "krx_fwdg_ord_orgno": "00950",
             "instrument_type": "equity_kr",
@@ -1369,6 +1371,7 @@ async def test_a_missing_orgno_neither_calls_the_broker_nor_releases_the_claim(
             "symbol": "005930",
             "side": "buy",
             "quantity": 2.0,
+            "remaining_quantity": 2.0,
             "price": 70000.0,
             "krx_fwdg_ord_orgno": None,  # no native cancel capability
             "instrument_type": "equity_kr",
@@ -1746,14 +1749,10 @@ def _domestic_client(*, is_mock_client: bool = True):
 
 
 @pytest.mark.asyncio
-async def test_env_gate_false_no_longer_lets_a_mock_mutation_reach_the_wire_unowned(
+async def test_mock_wire_without_coordinator_keeps_a_pinned_transport_hook(
     monkeypatch,
 ):
-    """The exact B-2 defect the round-1 branch left open.
-
-    With `KIS_MOCK_RUNNER_ENABLED` unset, the old wrapper became a no-op and an
-    `is_mock=True` place reached the transport holding no authority at all.
-    """
+    """The operator-approved mock path needs no lease but still pins VTS."""
 
     monkeypatch.delenv("KIS_MOCK_RUNNER_ENABLED", raising=False)
     client, parent = _domestic_client()
@@ -1762,10 +1761,10 @@ async def test_env_gate_false_no_longer_lets_a_mock_mutation_reach_the_wire_unow
 
     assert len(parent.authority_at_wire) == 1
     authority = parent.authority_at_wire[0]
-    assert authority is not None, "a mock mutation reached the wire holding nothing"
-    assert authority.account_mode == singleton.ACCOUNT_MODE
-    assert singleton.kis_mock_legacy_advisory_key() in authority.advisory_keys
-    # And the authority is dropped again once the mutation returns.
+    assert authority is None
+    hook = parent.requests[0]["pre_send_hook"]
+    assert hook is not None
+    await hook()
     assert singleton.active_writer_authority() is None
 
 
@@ -1795,12 +1794,8 @@ async def _always_false(*args: Any, **kwargs: Any) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_a_held_grant_composes_the_per_post_boundary_gate_into_the_transport():
-    """`build_kis_mock_send_boundary_hook` has a real production caller.
-
-    The decorator composes it into the transport's `pre_send_hook`, so firing
-    that hook re-proves ownership — which is what per-POST means.
-    """
+async def test_a_held_grant_does_not_replace_the_mock_transport_identity_gate():
+    """Even with a grant present, the ordinary path uses its own VTS pin."""
 
     _, envelope = _attempt_envelope()
     entry = _bound_kis_entry(envelope)
@@ -1811,10 +1806,10 @@ async def test_a_held_grant_composes_the_per_post_boundary_gate_into_the_transpo
         await client.order_korea_stock("005930", "buy", 1, 70000, True)
 
     hook = parent.requests[0].get("pre_send_hook")
-    assert hook is not None, "the coordinated wire path installed no boundary hook"
+    assert hook is not None
     before = grant._scope.calls  # type: ignore[attr-defined]
     await hook()
-    assert grant._scope.calls == before + 1  # type: ignore[attr-defined]
+    assert grant._scope.calls == before  # type: ignore[attr-defined]
 
     # And the composed hook really is the B-4 gate: drift the client to a live
     # host and the next attempt is refused before any transport work.
@@ -1855,60 +1850,30 @@ async def test_the_cancel_and_modify_wire_paths_also_receive_the_boundary_gate()
 
 
 @pytest.mark.asyncio
-async def test_a_followup_without_a_capability_never_reaches_the_kr_wire(monkeypatch):
-    """The enforcement point: the transport boundary itself refuses.
-
-    The legacy lease is stubbed to a no-op so that *removing the capability
-    check* lets the call run all the way to the wire. Without this the mutant
-    dies on an unrelated database error before reaching the assertion, which
-    would score a red that proves nothing.
-    """
+async def test_a_followup_without_a_capability_reaches_the_kr_wire(monkeypatch):
+    """The operator-approved follow-up path needs neither capability nor lease."""
 
     @contextlib.asynccontextmanager
     async def _no_db_lease(**kwargs: Any):
-        token = singleton._ACTIVE_WRITER_LEASE.set(
-            singleton._WriterAuthority(
-                account_mode=singleton.ACCOUNT_MODE,
-                advisory_keys=(singleton.kis_mock_legacy_advisory_key(),),
-                lease=object(),
-            )
-        )
-        try:
-            yield
-        finally:
-            singleton._ACTIVE_WRITER_LEASE.reset(token)
+        raise AssertionError("unexpected writer lease")
+        yield
 
     monkeypatch.setattr(singleton, "enforce_kis_mock_mutation_writer", _no_db_lease)
 
     client, parent = _domestic_client()
-    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
-        await client.cancel_korea_order(
-            "0000117058", "005930", 1, 70000, "buy", True, "00950"
-        )
-    assert parent.requests == []
-
-    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
-        await client.modify_korea_order("0000117058", "005930", 1, 70000, True, "00950")
-    assert parent.requests == []
-
-    # Positive control: the same stubbed lease with a valid receipt *does* reach
-    # the wire, so the assertion above is about the capability and nothing else.
-    async with await _issue():
-        await client.cancel_korea_order(
-            "0000117058", "005930", 1, 70000, "buy", True, "00950"
-        )
-    assert len(parent.requests) == 1
+    await client.cancel_korea_order(
+        "0000117058", "005930", 1, 70000, "buy", True, "00950"
+    )
+    await client.modify_korea_order("0000117058", "005930", 1, 70000, True, "00950")
+    assert len(parent.requests) == 2
+    assert all(request["pre_send_hook"] is not None for request in parent.requests)
 
 
 @pytest.mark.asyncio
-async def test_execute_and_record_routes_a_mock_send_through_the_coordinator(
+async def test_execute_and_record_does_not_route_mock_send_through_the_coordinator(
     monkeypatch, _clean_intents
 ):
-    """The production route: `_execute_and_record` → `coordinate_kis_mock_mutation`.
-
-    This exercises the real `order_execution` entry point, not a hand-built
-    callback. Deleting the `run_kis_mock_send(...)` call site makes it fail.
-    """
+    """A configured coordinator is not used by the mock order path."""
 
     _, envelope = _attempt_envelope()
     events: list[str] = []
@@ -1932,9 +1897,7 @@ async def test_execute_and_record_routes_a_mock_send_through_the_coordinator(
     async def _send(**kwargs: Any) -> dict[str, Any]:
         sends["n"] += 1
         events.append("http_send")
-        # Ownership must be provable from inside the coordinated section.
-        authority = singleton.active_writer_authority()
-        assert authority is not None and authority.grant is not None
+        assert singleton.active_writer_authority() is None
         return {"odno": "0000117058", "rt_cd": "0", "msg1": "ok"}
 
     async def _baseline(**kwargs: Any) -> None:
@@ -1951,17 +1914,8 @@ async def test_execute_and_record_routes_a_mock_send_through_the_coordinator(
         singleton.set_kis_mock_coordination_route_provider(None)
 
     assert sends["n"] == 1
-    # J3A's ordering carried the real send: lineage persisted and the binary
-    # claim was committed before the POST, and the typed dispatch evidence
-    # landed after it.
-    assert (
-        events.index("persist_pre")
-        < events.index("reserve")
-        < events.index("http_send")
-    )
-    assert events.index("http_send") < events.index("evidence")
-    assert stack["connection"].lock_calls, "no advisory lease was taken"
-    assert stack["evidence"].only.broker_order_id == "0000117058"
+    assert events == ["http_send"]
+    assert stack["connection"].lock_calls == []
 
 
 @pytest.mark.asyncio
@@ -1988,8 +1942,8 @@ async def test_without_a_route_the_lane_sends_nothing_at_all():
     assert "AUTO_READY_BLOCKED_BY_LIFECYCLE" in str(excinfo.value)
 
 
-def test_the_coordinator_call_site_exists_in_the_production_order_path():
-    """A route can only be honoured if `order_execution` actually calls it."""
+def test_the_coordinator_call_site_is_absent_from_the_production_order_path():
+    """The coordinator remains available but is not on the mock place path."""
 
     source = (
         REPO_ROOT / "app" / "mcp_server" / "tooling" / "order_execution.py"
@@ -2000,7 +1954,7 @@ def test_the_coordinator_call_site_exists_in_the_production_order_path():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert "run_kis_mock_send" in called
+    assert "run_kis_mock_send" not in called
 
     adapter = _adapter_source()
     adapter_tree = ast.parse(adapter)
@@ -2010,7 +1964,8 @@ def test_the_coordinator_call_site_exists_in_the_production_order_path():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "coordinate_mock_order_mutation" in inner_calls
-    assert "build_kis_mock_send_boundary_hook" in inner_calls
+    assert "build_kis_mock_send_boundary_hook" not in inner_calls
+    assert "_assert_uncoordinated_mock_transport" in inner_calls
 
 
 # ===========================================================================
@@ -2352,8 +2307,8 @@ def test_a_capability_for_a_different_operation_or_lane_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_a_cancel_without_a_capability_makes_zero_broker_calls(monkeypatch):
-    created: list[dict[str, Any]] = []
+async def test_a_cancel_without_a_capability_reaches_the_broker(monkeypatch):
+    calls: list[dict[str, Any]] = []
 
     async def _resolve(order_no: str):
         return {
@@ -2361,6 +2316,7 @@ async def test_a_cancel_without_a_capability_makes_zero_broker_calls(monkeypatch
             "symbol": "005930",
             "side": "buy",
             "quantity": 2.0,
+            "remaining_quantity": 2.0,
             "price": 70000.0,
             "krx_fwdg_ord_orgno": "00950",
             "instrument_type": "equity_kr",
@@ -2369,18 +2325,21 @@ async def test_a_cancel_without_a_capability_makes_zero_broker_calls(monkeypatch
 
     import app.mcp_server.tooling.kis_mock_ledger as ledger
 
+    class FakeKis:
+        async def cancel_korea_order(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"ord_tmd": "0901"}
+
     monkeypatch.setattr(ledger, "resolve_mock_order_for_cancel", _resolve)
-    monkeypatch.setattr(
-        omc, "_create_kis_client", lambda **kw: created.append(kw) or object()
-    )
+    monkeypatch.setattr(ledger, "mark_kis_mock_order_cancelled", AsyncMock())
+    monkeypatch.setattr(omc, "_create_kis_client", lambda **kw: FakeKis())
 
     assert singleton.active_followup_capability() is None
     result = await omc._cancel_kis_mock_domestic("0000117058", "005930")
 
-    assert created == []
-    assert result["success"] is False
-    assert result["reason_code"] == "claim_followup_not_authorized"
-    assert result["claim_released"] is False
+    assert len(calls) == 1
+    assert result["success"] is True
+    assert result["broker_cancel_confirmed"] is True
 
 
 @pytest.mark.asyncio
@@ -2393,6 +2352,7 @@ async def test_a_cancel_holding_a_valid_capability_reaches_the_broker(monkeypatc
             "symbol": "005930",
             "side": "buy",
             "quantity": 2.0,
+            "remaining_quantity": 2.0,
             "price": 70000.0,
             "krx_fwdg_ord_orgno": "00950",
             "instrument_type": "equity_kr",
@@ -2583,16 +2543,14 @@ def test_no_lane_code_is_reachable_from_the_live_branch_of_the_guard():
 
 
 @pytest.mark.asyncio
-async def test_a_receipt_for_one_order_cannot_cancel_a_different_order(monkeypatch):
-    """r4 §2 — a receipt is authority for its own ODNO, not for whatever is asked.
-
-    Without this vector the ODNO binding is unreachable by the suite: every other
-    cancel test happens to pass the same order id the receipt was issued for.
-    """
+async def test_cancel_requires_an_order_in_its_own_ledger(monkeypatch):
+    """A follow-up still needs the requested order in the mock ledger."""
 
     created: list[dict[str, Any]] = []
 
     async def _resolve(order_no: str):
+        if order_no != "0000117058":
+            return None
         return {
             "ledger_id": 1,
             "symbol": "005930",
@@ -2617,8 +2575,7 @@ async def test_a_receipt_for_one_order_cannot_cancel_a_different_order(monkeypat
 
     assert created == [], "a foreign-order receipt reached the broker"
     assert result["success"] is False
-    assert result["reason_code"] == "claim_followup_not_authorized"
-    assert "different native broker order id" in result["detail"]
+    assert "not found" in result["error"]
 
 
 @pytest.mark.asyncio

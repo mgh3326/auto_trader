@@ -43,6 +43,8 @@ jobs:
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       short: ${{ steps.sha.outputs.short }}
+      # hk 3445: the deploy tier checks exactly this pushed digest (one matrix leg).
+      digest: ${{ steps.build.outputs.digest }}
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +75,7 @@ jobs:
           echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ steps.sha.outputs.sha }}
           persist-credentials: false
@@ -93,10 +95,10 @@ jobs:
           python3 scripts/deploy_ci_gate.py "${args[@]}"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Verify Dockerfile exists
         run: |
@@ -106,7 +108,7 @@ jobs:
           ls -la .
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -114,7 +116,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
           # Moving tags are promoted together only after this SHA image exists.
@@ -134,7 +136,7 @@ jobs:
       - name: Build and push ${{ matrix.image }} Docker image
         id: build
         timeout-minutes: 30
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -144,8 +146,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # Build cache lives in GHCR (`:buildcache` tag of the image repository), never in
+          # the 10GB Actions cache: image layers there LRU-evict the toolchain caches (hk 3578).
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
           platforms: linux/amd64,linux/arm64
           provenance: false
 
@@ -202,7 +206,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.build-and-push.outputs.sha }}
           persist-credentials: false
@@ -221,10 +225,10 @@ jobs:
           python3 scripts/deploy_ci_gate.py "${args[@]}"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -248,6 +252,27 @@ jobs:
             --tag "$IMAGE_REPOSITORY:main" \
             --tag "$IMAGE_REPOSITORY:latest" \
             "$IMAGE_REPOSITORY:sha-$SHORT_SHA"
+
+  # hk 3445: deploy tier (docs/runbooks/ci-required-aggregator.md). Runs only for
+  # a main-push Test run that succeeded (a cancelled or red Test run gets none),
+  # on the digest pushed above; it never rebuilds. One run per repository, never
+  # cancelled (deploy-checks.yml). It publishes `deploy-ok`; nothing reads it yet.
+  # A red deploy tier never unpublishes or untags an image, and promote-moving-tags
+  # and notify do not wait for it.
+  deploy-checks:
+    needs: build-and-push
+    if: >-
+      needs.build-and-push.result == 'success' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      packages: read
+      statuses: write
+    uses: ./.github/workflows/deploy-checks.yml
+    with:
+      sha: ${{ needs.build-and-push.outputs.sha }}
+      image: ghcr.io/${{ github.repository }}@${{ needs.build-and-push.outputs.digest }}
 
   notify:
     if: failure()

@@ -13,6 +13,10 @@ import pandas as pd
 
 from app.core.json_safe import sanitize_non_finite
 from app.services.financial_fundamentals_snapshots.freshness import row_data_state
+from app.services.financial_fundamentals_snapshots.numeric_bounds import (
+    bound_rows,
+    overflow_warnings,
+)
 from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsUpsert,
 )
@@ -376,16 +380,27 @@ async def build_financial_fundamentals_for_symbols(
                     )
                 )
 
+    def _bounded() -> list[FinancialFundamentalsUpsert]:
+        # AT-3846: a value that cannot fit its NUMERIC column (e.g. a huge DART
+        # payout ratio) would abort the whole upsert chunk; exclude it instead.
+        bounded, counts, details = bound_rows(collected)
+        for detail in details:
+            logger.warning("fundamentals numeric overflow: %s", detail)
+        warnings.extend(overflow_warnings(counts))
+        return bounded
+
     try:
         await asyncio.gather(*(_one(symbol) for symbol in symbols_list))
     except DartDailyRequestBudgetExceeded as exc:
+        bounded = _bounded()
         raise DartDailyRequestBudgetExceeded(
             str(exc),
-            payloads=tuple(collected),
+            payloads=tuple(bounded),
             warnings=tuple(warnings) + (str(exc),),
         ) from exc
+    bounded = _bounded()
     return FinancialFundamentalsBuildResult(
-        payloads=tuple(collected), warnings=tuple(warnings)
+        payloads=tuple(bounded), warnings=tuple(warnings)
     )
 
 

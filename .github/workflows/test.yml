@@ -8,14 +8,32 @@ on:
   # Full suite on any ref, e.g. to force it for a PR branch or a deploy SHA:
   # gh workflow run test.yml --ref <branch>
   workflow_dispatch:
+  # hk 3487: the any-ref run (test-any-ref.yml) calls this workflow for one exact
+  # commit. `ref` is that commit; empty means the event's own ref, as before. Every
+  # checkout below reads it, so a called run tests the same jobs a push run tests.
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact 40-hex commit SHA to check out; empty uses the event ref.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      # The one secret the suite reads (coverage upload). A caller passes this by name.
+      CODECOV_TOKEN:
+        required: false
 
 # hk 2939: only the newest head of a ref runs. A push to main (T-POST) cancels the
 # previous push run of that ref, as a new commit cancels a PR's earlier run. A
-# workflow_dispatch run is a deliberate request for one SHA (deploy gate, mergewake
-# bisect), so it gets a group of its own by run id and is never cancelled by a push.
+# workflow_dispatch run (or a workflow_call from test-any-ref.yml) is a deliberate
+# request for one SHA (deploy gate, mergewake bisect). It gets a group of its own by
+# run id AND run attempt, so no push can share it, and a re-run cannot cancel the
+# attempt it re-runs. `cancel-in-progress` is the literal true: a workflow-level
+# expression is not verifiable by mergewake ci-policy (docs/ci-policy.md), and the
+# group above already makes a dispatch alone in its group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id)) || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}', github.run_id, github.run_attempt)) || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # hk 2939, three tiers (docs/runbooks/ci-required-aggregator.md):
@@ -43,22 +61,20 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        ref: ${{ inputs.ref }}
 
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group dev
@@ -115,8 +131,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/j3a-write-fence-test'
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # Full history: the base commit this fence diffs against must always
         # be locally resolvable without depending on the script's best-effort
         # runtime fetch fallback.
@@ -135,7 +152,7 @@ jobs:
 
     - name: Upload write-fence report
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: write-fence-report
         path: write-fence-report.json
@@ -163,15 +180,30 @@ jobs:
       jobs: ${{ steps.classify.outputs.jobs }}
       run_affected_tests: ${{ steps.classify.outputs.run_affected_tests }}
       check_manifests: ${{ steps.classify.outputs.check_manifests }}
+      run_retro_consumer_gate: ${{ steps.classify.outputs.run_retro_consumer_gate }}
       affected_tests: ${{ steps.classify.outputs.affected_tests }}
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # Full history: the base commit must be locally resolvable. A shallow
         # checkout that hides it is a hard failure in the classifier, not a
         # reason to fall back to a narrower run.
         fetch-depth: 0
         persist-credentials: false
+
+    # hk 3487: a called ref checks out that commit, but the classifier below selects tests from
+    # the PR's own diff. Only workflow_dispatch may pass a ref, so refuse it on a pull_request
+    # rather than run a partial suite for the wrong commit.
+    - name: Refuse a called ref on a pull_request
+      env:
+        CALLED_REF: ${{ inputs.ref }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        if [ -n "$CALLED_REF" ] && [ "$EVENT_NAME" = "pull_request" ]; then
+          echo "a called ref is for workflow_dispatch only; a pull_request tests its own head" >&2
+          exit 1
+        fi
 
     - name: Classify changed paths
       id: classify
@@ -187,7 +219,7 @@ jobs:
 
     - name: Upload change classification
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: change-classification
         path: change-classification.json
@@ -248,26 +280,23 @@ jobs:
           - 127.0.0.1:6379:6379
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # The context scope contract resolves the actual PR merge-base and
         # deliberately fails if it cannot be proven from local history.
         fetch-depth: 0
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -336,14 +365,17 @@ jobs:
 
     - name: Upload socket guard evidence
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: socket-guard-evidence-${{ matrix.python-version }}-shard${{ matrix.group }}
         path: .artifacts/socket-guard/summary-shard${{ matrix.group }}.json
         if-no-files-found: error
 
+    # hk 3487: a called ref (the any-ref run) is not uploaded. The action attributes coverage to
+    # the workflow's commit, which for a dispatch is main's head, not the commit under test.
     - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v6
+      if: ${{ !inputs.ref }}
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: coverage.xml
@@ -373,22 +405,20 @@ jobs:
           - 6379:6379
 
     steps:
-    - uses: actions/checkout@v5
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        ref: ${{ inputs.ref }}
 
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -431,7 +461,7 @@ jobs:
 
     - name: Upload authoritative collection manifest
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: authoritative-collected-nodes-pr
         path: authoritative-collected-nodes.txt
@@ -455,7 +485,7 @@ jobs:
 
     - name: Upload TaskIQ smoke logs
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: taskiq-smoke-logs-${{ env.PYTHON_VERSION }}
         path: |
@@ -502,27 +532,24 @@ jobs:
           - 127.0.0.1:6379:6379
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         # The context scope contract resolves the actual PR merge-base and
         # deliberately fails if it cannot be proven from local history.
         fetch-depth: 0
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -573,22 +600,20 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        ref: ${{ inputs.ref }}
 
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group dev
@@ -636,7 +661,7 @@ jobs:
 
     - name: Upload security reports
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: security-reports
         path: |
@@ -657,24 +682,21 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -704,24 +726,21 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -742,24 +761,21 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -792,24 +808,21 @@ jobs:
       PYTHON_VERSION: "3.13"
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
 
     - name: Load cached venv
       id: cached-uv-dependencies
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
 
     - name: Install dependencies
       run: uv sync --group test
@@ -856,19 +869,16 @@ jobs:
         working-directory: frontend/invest
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v5
+    # Node 22.x is pinned in .github/actions/setup-node-cached (the
+    # @testing-library/jest-dom@7 engines floor is >=22, hence the 22 line).
+    - name: Set up pinned Node.js with npm cache
+      uses: ./.github/actions/setup-node-cached
       with:
-        # @testing-library/jest-dom@7 declares engines.node >=22 (package.json's
-        # own engines field says >=20.19.0, but that devDependency is stricter);
-        # pin to 22 to match what was verified locally and avoid an EBADENGINE
-        # warning on every run.
-        node-version: "22"
-        cache: npm
         cache-dependency-path: frontend/invest/package-lock.json
 
     - name: Install dependencies
@@ -876,6 +886,47 @@ jobs:
 
     - name: Run Vitest suite
       run: npm test
+
+  # hk 3819: gate retro/v1 API contract against the pinned Go consumer (factortrail).
+  retro-consumer-gate:
+    name: retro-consumer-gate
+    needs: change-classifier
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.change-classifier.outputs.run_all != 'false' || needs.change-classifier.outputs.run_retro_consumer_gate == 'true') }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ inputs.ref }}
+        persist-credentials: false
+
+    - name: Set up pinned Python and uv
+      id: py
+      uses: ./.github/actions/setup-python-uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group dev
+
+    - name: Set up Go
+      uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+      with:
+        go-version: '1.27'
+        cache: true
+
+    - name: Run retro consumer contract gate
+      env:
+        GOTOOLCHAIN: auto
+      run: |
+        uv run python scripts/ci/run_retro_consumer_gate.py
 
   # ROB-1454: the verdict a PR merges on, with `lint`. A skip is fine only when
   # the classifier said the job was not needed (--pr-gate); on any other event the
@@ -900,7 +951,7 @@ jobs:
   gate-verdict:
     name: gate-verdict
     if: always()
-    needs: [lint, change-classifier, affected-tests, test, taskiq-smoke]
+    needs: [lint, change-classifier, affected-tests, test, taskiq-smoke, retro-consumer-gate]
     runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
@@ -908,8 +959,9 @@ jobs:
     outputs:
       superseded: ${{ steps.verdict.outputs.superseded }}
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
+        ref: ${{ inputs.ref }}
         persist-credentials: false
 
     - name: Evaluate the PR verdict
@@ -932,12 +984,13 @@ jobs:
           --required affected-tests \
           --required test \
           --required taskiq-smoke \
+          --required retro-consumer-gate \
           --summary \
           --json-out pr-gate-report.json
 
     - name: Upload PR gate report
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
         name: pr-gate-report
         path: pr-gate-report.json
@@ -962,3 +1015,38 @@ jobs:
           echo "::error::gate-verdict result is '$VERDICT_RESULT', not 'success'"
           exit 1
         fi
+
+  # hk 3445 (decision/2026-11-07/fleet-ci-three-tiers-r2): the main-tier verdict,
+  # `ci-ok`, over every job that runs on a main push or a dispatch. Same rule as
+  # auto_trader-operator ci-post.yml: a run whose only non-success results are
+  # cancellations (a newer main push superseded it) skips this job, so the check
+  # stays unknown for that head; any failure, skip or unknown result runs it red.
+  # The PR path never runs it. Not listed: affected-tests (PR only),
+  # write-fence-guard (one PR branch), gate-verdict and pr-gate (they aggregate
+  # the children below). The deploy tier is a separate workflow
+  # (.github/workflows/deploy-checks.yml, called from deploy.yml).
+  ci-ok:
+    name: ci-ok
+    needs:
+    - lint
+    - change-classifier
+    - test
+    - taskiq-smoke
+    - security
+    - alpaca-track-fast-tests
+    - intraday-harness-v2-tests
+    - kiwoom-dual-surface-smoke
+    - alpaca-track-walkforward-tests
+    - frontend
+    - retro-consumer-gate
+    if: ${{ always() && github.event_name != 'pull_request' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || !contains(needs.*.result, 'cancelled')) }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.AUTO_TRADER_POST_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+    - name: Check required jobs
+      env:
+        RESULTS: ${{ join(needs.*.result, ' ') }}
+      run: |
+        for r in $RESULTS; do
+          [ "$r" = success ] || { echo "a required job reported: $r"; exit 1; }
+        done

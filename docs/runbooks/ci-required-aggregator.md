@@ -15,13 +15,115 @@ green on the exact SHA before a deploy.
 `security` and the four research/smoke jobs are not part of any required or watched check, so
 moving them off the PR costs no gate. Their failures show on the main run.
 
+## 0a. Main tier verdict `ci-ok` and the deploy tier (hk 3445, decision 2026-11-07)
+
+`hk:doc decision/2026-11-07/fleet-ci-three-tiers-r2` keeps the PR tier as it is, makes the
+main tier (T-POST above) end in one verdict, and adds a heavy **deploy tier** that runs
+once the main tier is green. This change only *publishes* the two verdicts. The deploy path
+still reads the exact-SHA gate below (`scripts/deploy_ci_gate.py`, unchanged); nothing reads
+`ci-ok` or `deploy-ok` until mergewake's `main_checks` / `deploy_checks` switch lands.
+
+| tier | workflow | when | cancelled by a newer head? | verdict |
+|---|---|---|---|---|
+| PR | `test.yml` | `pull_request` | yes | `lint` + `PR gate` (unchanged) |
+| main | `test.yml` | push to main/develop, dispatch | yes | `ci-ok` |
+| deploy | `deploy.yml` -> `deploy-checks.yml` | after a **successful** main-push `Test` run | **never**; one run per repository, GitHub keeps the newest pending run | `deploy-ok` |
+
+### Main tier and `ci-ok`
+
+Nothing moved: the main tier is still every job that ran on a main push, with the six gate
+jobs (`lint`, `taskiq-smoke`, `test (3.13, 1..4)`) and their full-suite `if:` untouched. The
+move rule was: a job leaves the main tier only if it is none of the six gate jobs, is not a
+basic check (lint, types, security, frontend build) and the measured main wall time is above
+ten minutes. Measured on the last three green main runs, the wall time was 616 s, 577 s and
+593 s (median 593 s, two of three at or under ten minutes). The longest job in each run was a
+gate job (`test (3.13, 3)` 586 s, `test (3.13, 3)` 527 s, `test (3.13, 1)` 498 s). The only jobs that
+could move (`alpaca-track-walkforward-tests` 248-266 s, `alpaca-track-fast-tests`,
+`intraday-harness-v2-tests`, `kiwoom-dual-surface-smoke`) finish long before the shards, so moving
+them would not shorten the wall time. The decision also keeps regression mutants on main. If main grows past ten minutes, measure again and
+move a non-gate job to `deploy-checks.yml`; record the move and its measured time in the PR.
+
+`ci-ok` (job name `ci-ok`, `test.yml`) needs every main-tier job: `lint`, `change-classifier`,
+`test`, `taskiq-smoke`, `security`, `alpaca-track-fast-tests`, `intraday-harness-v2-tests`,
+`kiwoom-dual-surface-smoke`, `alpaca-track-walkforward-tests`, `frontend`. It is not listed in
+the PR path: `PR gate`, the classifier and `affected-tests` are unchanged, and `ci-ok` never runs
+on a `pull_request`. The rule is the one from `auto_trader-operator` `ci-post.yml` (hk 2924):
+
+| results of the needed jobs | `ci-ok` |
+|---|---|
+| all `success` | runs, green |
+| any `failure` (or a skipped / unknown result) | runs, red |
+| only `success` and `cancelled` (a newer push superseded the run) | **skipped**, so the check stays unknown for that head |
+
+A cancelled main run is "unknown", not green and not red (§0, "Only the newest main head runs").
+
+### Deploy tier
+
+`deploy.yml` calls `deploy-checks.yml` after `build-and-push`, for the same SHA, **only** when
+the triggering `Test` run's conclusion is `success` (a cancelled or red run gets no deploy tier)
+and passes the digest `build-and-push` pushed (`ghcr.io/<repo>@sha256:...`). Nothing is rebuilt.
+`build-and-push`, its tags, `promote-moving-tags` and `notify` behave as before and none of them
+waits for the deploy tier; a red deploy tier never unpublishes or untags an image.
+
+| job | what it checks |
+|---|---|
+| `plan` | resolves the candidate SHA and the deployed-schema base (below) |
+| `migration-path` | TimescaleDB service (`timescale/timescaledb:2.22.1-pg17`, the image `dev-kit.md` §3 pins; the migrations need the extension and fail on plain postgres): `alembic upgrade head` at the base checkout, then the candidate's `alembic upgrade head` on the same database |
+| `install-smoke` | `docker run` the image digest against the CI TimescaleDB and Redis services with placeholder settings (no secrets): `alembic upgrade head` from the image, `uvicorn app.main:app` answers `/healthz` 200 within 30 attempts x 2 s, the scheduler, TaskIQ worker and `websocket_monitor.py` entrypoints import; the last 60 container log lines print on failure |
+| `deploy-ok` | posts the `deploy-ok` commit status and uploads the evidence artifact |
+
+**Base revision.** The pinned commit production runs, `DEPLOYED_BASE_SHA` in `deploy-checks.yml`
+(`0c416a3df`, deploy record `deploy/auto_trader/20261106T230040Z`; `scripts/ci/select_deploy_base.py`).
+`deploy-ok` never moves it: that status says CI validated an image, and production deploys are run by an
+operator and publish nothing GitHub can read. Move the pin only in a PR that names the deploy record of
+the new production commit, never to make a run green. A pin older than production still runs every
+migration production has not applied. A pin that is not a commit, or not an ancestor of the candidate,
+fails the run; it never falls back to the candidate itself.
+
+**Trusted helpers.** `plan` and `deploy-ok` run `select_deploy_base.py` and `deploy_ok.py` from a sparse
+checkout of the workflow revision (`github.sha`, path `.deploy-tier-tools`), not from the candidate. The
+candidate may predate the helpers, and `deploy-ok` holds `statuses: write`, so candidate code never runs
+with it.
+
+**`deploy-ok`** (`scripts/ci/deploy_ok.py`, `statuses: write` on that job only) is `success` only when
+`plan`, `migration-path` and `install-smoke` all reported `success`; anything else (failure, cancelled,
+skipped, absent) is `failure`, with the run URL as the target. It is posted only for a commit that is an
+ancestor of `origin/main`. The evidence artifact `deploy-evidence` (JSON) holds `repo`, `sha`,
+`policy_revision` (git blob sha of `.mergewake/policy.yaml` at that SHA, `absent` if none), `suite`
+(`deploy`), `environment`, `run_id`, `result` and `image_digest`.
+
+**Any ref.** `gh workflow run deploy-checks.yml --ref <branch> -f ref=<ref> -f suite=deploy` (the only
+suite) builds the image locally (load, no push, no registry login, no cache write) and runs `plan`,
+`migration-path` and `install-smoke` on that ref. It posts `deploy-ok` only if the ref resolves to a main
+ancestor and writes the evidence either way. `deploy.yml`'s own dispatch (`allow_unverified`) is unchanged.
+`workflow_dispatch` only registers once the workflow file is on the default branch.
+
+**Concurrency.** `deploy-tier-<repo>` with `cancel-in-progress: false`, set once in `deploy-checks.yml`.
+Do not add a group with the same name to the calling job in `deploy.yml`: a caller and a callee that share a
+group deadlock.
+
 ### Only the newest main head runs
 
 `concurrency` groups a PR by its number and a push by its ref, and cancels in progress for
 both. A newer push to main cancels the run of the previous push, so T-POST tests the newest
 head only. A `workflow_dispatch` run is a deliberate request for one SHA (the deploy gate, a
-mergewake bisect), so its group includes `github.run_id` and `cancel-in-progress` is false:
-a later push never cancels it.
+mergewake bisect), so its group includes `github.run_id` and `github.run_attempt`: a later push
+never shares its group, and a re-run never cancels the attempt it re-runs.
+
+The concurrency table, before and after hk 3487 (`cancel-in-progress` became the literal `true`,
+because mergewake `ci-policy` cannot verify an expression; the groups are the same except the
+dispatch key now carries the attempt):
+
+| Event | Group (before) | Cancels (before) | Group (after) | Cancels (after) |
+|---|---|---|---|---|
+| `push` to main | `Test-refs/heads/main` | older main push runs | same | same |
+| `push` to develop | `Test-refs/heads/develop` | older develop push runs | same | same |
+| `pull_request` #N | `Test-<N>` | older runs of PR N | same | same |
+| `workflow_dispatch` run R | `Test-dispatch-<R>` (`cancel-in-progress: false`) | nothing; a re-run of R queued behind the running attempt | `Test-dispatch-<R>-<A>` (literal `true`) | nothing: no other run shares the group; a re-run is attempt A+1 with its own group, so it runs beside A and does not cancel it |
+| `workflow_call` from `test-any-ref.yml` run R, attempt A | (did not exist) | — | `Test-dispatch-<R>-<A>` (the event is `workflow_dispatch`) | nothing (as for dispatch) |
+
+The one visible change: a re-run of a dispatch no longer waits for the running attempt of the same
+run; the two attempts run side by side. No push, PR or other dispatch is affected.
 
 A cancelled main run is **not** evidence about its SHA. Consequences:
 
@@ -82,6 +184,92 @@ Until all of these hold, leave the variable unset; T-POST then runs on `ubuntu-l
 The `test` shards and `taskiq-smoke` declare `services:` (Postgres, Redis), which need
 **Docker on the runner**. A self-hosted Linux runner must have
 Docker, one concurrent job per runner, and no other workload that binds ports 5432 or 6379.
+
+### Any-ref CI for a cancelled main commit (hk 3487)
+
+A main commit whose push run a newer push cancelled has no watched result. When main is red,
+mergewake's bisect needs a result for each commit it reads, so it dispatches
+`.github/workflows/test-any-ref.yml` for that commit (`policy.any_ref_workflow` in
+`.mergewake/policy.yaml`). Two workflows and one artifact do the work:
+
+1. **`test-any-ref.yml`** (`Test (any ref)`, `workflow_dispatch`, input `ref` only):
+   - `validate` (first job, first steps): `ref` must be exactly 40 hex characters, and
+     `compare/main...<ref>` must report `behind` or `identical`. Anything else stops the run before
+     a checkout.
+   - `suite` calls `test.yml` with `ref`. Every checkout in `test.yml` reads `inputs.ref`, so the
+     jobs are the push run's jobs on that exact commit. Their names become `suite / <job>`; `if:`
+     conditions are unchanged. It passes only `CODECOV_TOKEN`, the one secret the suite reads, not
+     `secrets: inherit`: a branch can edit this file, so anything passed here is readable by a branch
+     dispatch.
+   - `record` (after `validate`): uploads the artifact `any-ref-target` with `sha.txt` (the commit)
+     and `expected-checks.txt` (the watched names this run must have published). It holds no
+     statuses permission.
+2. **`post-any-ref-status.yml`** (`Post any-ref statuses`, `workflow_run` of `Test (any ref)`,
+   completed): this is the only file that can post statuses (`statuses: write` on its `post` job).
+   - GitHub loads a `workflow_run` workflow from the **default branch**, whichever branch the
+     triggering run used. The code that holds `statuses: write` is therefore main's, and a branch
+     cannot change it.
+   - `resolve` reads the recorded commit and refuses a value that is not 40 hex. It holds no statuses
+     permission.
+   - `post` runs only when `resolve` found a target. It posts only when the triggering run was a
+     `workflow_dispatch` with `head_branch == main`, from this repository. A dispatch from any other branch runs that branch's files, and its
+     `head_branch` is that branch, so it is skipped.
+   - It checks out the default branch by name, downloads `any-ref-target`, refuses a non-SHA, and
+     refuses if the recorded check names differ from the names it publishes. Then
+     `.github/scripts/any_ref_statuses.py` judges each watched check by its job (`suite / lint`,
+     `suite / taskiq-smoke`, `suite / test (3.13, N)`): one completed job with conclusion `success` is
+     green, anything else red, and it posts one commit status per name on the commit.
+
+Why the split: before hk 3487's review, the statuses were posted by a job in the dispatched file. A
+dispatch from a branch runs that branch's files, so such a job could be given `statuses: write` by
+the branch and post green statuses on a main ancestor. Now no branch-run workflow holds
+`statuses: write`; the only place that can is a default-branch workflow that refuses every run not
+dispatched from main.
+
+What the any-ref path does **not** do, by design:
+
+- It posts no image, no `deploy-ok`, no `ci-ok`, and neither workflow is named `Test`. `deploy.yml`
+  builds only on a `Test` `workflow_run` whose event is `push`, and `scripts/deploy_ci_gate.py` reads
+  only `Test` runs. A called workflow does not create a `Test` run of its own; after the first
+  dispatch, confirm it (`gh api repos/<repo>/actions/workflows/test.yml/runs?head_sha=<sha>` lists only
+  the runs that existed before the dispatch).
+- Two runs of one commit: `post` is serialised per commit (`concurrency: any-ref-status-<sha>`, cancel
+  off). The newer run is found by the run title `any-ref <sha>` (the caller's `run-name`). A later run has a
+  higher id; a re-run keeps its id and raises the attempt, and a later attempt is newer too. A newer run or
+  attempt suppresses the helper's post only when its `validate ref` job concluded `success` (it recorded a
+  target, so it will publish). A newer run or attempt that is queued, cancelled, failed `validate ref`, or
+  never uploaded its target suppresses nothing: the older run posts its verdicts, and the newer poster
+  overwrites them when it publishes. If a newer run's state cannot be read, the poster fails so it can be
+  retried, rather than posting nothing silently.
+- A `ref` on a `pull_request` run is refused by the classifier (the step `Refuse a called ref on a
+  pull_request`): the classifier would otherwise select tests from the PR diff for another commit.
+- The poster's job name is not a watched check, so a same-name check run and status cannot be read as
+  ambiguous. The called jobs appear as `suite / <name>`.
+- A cancelled watched check plus a `success`/`failure` status of the same name reads as that status
+  (`internal/github/client.go` `foldChecks`), so a status beats the cancelled push run's check.
+- Two dispatches of one commit do not cancel each other: `test-any-ref.yml`'s concurrency group is per
+  run and attempt (`test-any-ref-<run_id>-<run_attempt>`), so each run posts its own verdicts.
+- If the validation did not pass, nothing is recorded and nothing is posted. Mergewake then holds the
+  commit as unknown, which is the safe outcome.
+
+Known limit: the called `test.yml` is the **default branch's** definition, while the code under test
+is the commit's. For a commit whose own `test.yml` differed, the job definitions are main's. The
+watched names and job bodies match since the hk 2939 tiers.
+
+Verify with a known-green main commit, not a bisect result:
+
+```bash
+SHA=$(git ls-remote origin refs/heads/main | cut -f1)   # or a commit you have confirmed green
+gh workflow run test-any-ref.yml -f ref="$SHA"
+RUN=$(gh run list --workflow test-any-ref.yml --limit 1 --json databaseId -q '.[0].databaseId')
+gh run watch "$RUN" --exit-status
+POST=$(gh run list --workflow post-any-ref-status.yml --limit 1 --json databaseId -q '.[0].databaseId')
+gh run watch "$POST" --exit-status
+gh api "repos/mgh3326/auto_trader/commits/$SHA/statuses" --jq '.[] | "\(.context) \(.state)"' | sort -u
+```
+
+Expect `lint`, `taskiq-smoke` and the four `test (3.13, N)` statuses, all `success`. A run that fails
+`validate` records nothing and posts nothing; a run whose `suite` job fails posts `failure` for that job.
 
 ## 1. What runs where
 
@@ -318,8 +506,17 @@ verdict job's `needs:` and `--required` lists, the tiers (which jobs a pull requ
 the concurrency groups, `runs-on` on every event with and without the runner variable) and that
 every check named in `.mergewake/policy.yaml` is one the workflow displays; it evaluates the
 workflow expressions with `tests/ci/gh_expr.py`. `tests/ci/test_required_aggregator.py` holds
-the gate's truth table and the superseded rule. `tests/ci/test_deploy_gate_workflow.py` pins
-that `deploy.yml` skips a cancelled `Test` run.
+the gate's truth table and the superseded rule. `tests/ci/test_any_ref_workflow_contract.py` (hk 3487)
+pins the literal `cancel-in-progress`, the groups per event kind, the ref validation that runs before
+any checkout (run under bash), the record's watched names against the poster's, that no branch-run
+workflow holds `statuses: write` and that only `post-any-ref-status.yml`'s `post` job does, that its
+`workflow_run` gate passes only a dispatch from `main` (evaluated with `gh_expr`), its default-branch
+checkout, and that the any-ref path posts no image or deploy-ok. `tests/ci/test_deploy_gate_workflow.py` pins
+that `deploy.yml` skips a cancelled `Test` run. `tests/ci/test_deploy_tier_workflow_contract.py`
+pins `ci-ok` (its `needs`, its `if:` and its step run as shell) and the deploy tier's wiring (called only
+after a successful main-push `Test`, on the pushed digest, never cancelled, never pushes, `deploy-ok` judged over
+every deploy-tier job); `tests/ci/test_deploy_tier_scripts.py` runs the three helpers under `scripts/ci/`
+against a throwaway git repository and fake `gh`, `docker` and `curl`.
 
 ## 5. Branch protection (operator-only)
 
@@ -335,3 +532,15 @@ A skipped matrix job does not report `test (3.13, N)`, so a narrow PR cannot mer
 names are required. The edit follows the landing of ROB-1454, not the other way round: `PR gate`
 does not report until the workflow is on main. An open PR reports `PR gate` only after it merges
 main. Keep `lint` required throughout so the enforced set is never empty.
+
+## 6. Toolchain cache (hk 3559, decision 2026-11-08)
+
+Every job that installs Python calls `./.github/actions/setup-python-uv`; the Node job calls
+`./.github/actions/setup-node-cached`. The exact versions are pinned once, in the `inputs` defaults of
+those two `action.yml` files: Python `3.13.18` and uv `0.13.7` in `setup-python-uv`, Node `22.23.4` in
+`setup-node-cached`. Each toolchain directory is restored from `actions/cache` before its setup action, keyed
+by runner OS, arch and the exact version, and a miss retries the setup up to three times. To bump a version,
+change that one default, then check that `tests/ci/test_toolchain_cache_contract.py` still passes (the Python
+matrix minor must match the pin). Pin every external `uses:` to a full commit SHA with the tag as a comment,
+and keep one SHA per action across the repo. The cache-hit proof is the `Cache restored from key:` line plus
+the setup action finding the version in the tool cache, read from a `lint` job log. Docker image builds cache to the GHCR `:buildcache` tag (`type=registry`), never to the Actions cache (`type=gha`), because image layers there filled the 10GB cache and evicted these toolchain entries (hk 3578).

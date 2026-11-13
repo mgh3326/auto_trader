@@ -159,7 +159,8 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # DB tests run its exact DDL.
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
-SCHEMA_BOOTSTRAP_VERSION = 64
+# v65 (hk 2690): the position baseline uses separate Core metadata.
+SCHEMA_BOOTSTRAP_VERSION = 67
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -733,6 +734,28 @@ _PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
 _DDL_STATEMENTS: tuple[str, ...] = (
     *_PAPER_COHORT_TRIGGER_DDL,
     *_PAPER_EVALUATION_TRIGGER_DDL,
+    """
+    CREATE TABLE IF NOT EXISTS review.kis_mock_position_baseline (
+        order_attempt_id TEXT PRIMARY KEY REFERENCES review.kis_mock_dispatch_lineage(order_attempt_id),
+        symbol TEXT NOT NULL,
+        quantity BIGINT NOT NULL CHECK (quantity >= 0),
+        read_digest TEXT NOT NULL CHECK (read_digest ~ '^[0-9a-f]{64}$'),
+        observed_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE OR REPLACE FUNCTION review.kis_mock_dispatch_immutable() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN
+        RAISE EXCEPTION 'kis_mock_dispatch_append_only' USING ERRCODE = '23000';
+    END $$
+    """,
+    "DROP TRIGGER IF EXISTS kis_mock_position_baseline_immutable ON review.kis_mock_position_baseline",
+    """
+    CREATE TRIGGER kis_mock_position_baseline_immutable
+    BEFORE UPDATE OR DELETE OR TRUNCATE ON review.kis_mock_position_baseline
+    FOR EACH STATEMENT EXECUTE FUNCTION review.kis_mock_dispatch_immutable()
+    """,
     # ---- raw-SQL daily candle tables (logical schema only) ----
     # Production Alembic migrations turn these into Timescale hypertables.
     # Pytest runs on plain PostgreSQL, so mirror the table contract without
@@ -2694,6 +2717,44 @@ async def apply_test_schema(conn) -> None:
     await _rebuild_legacy_paper_evaluation_schema(conn)
     await _ensure_evaluation_assignment_identity_index(conn)
     await conn.run_sync(Base.metadata.create_all)
+
+    # The decision tables are migration-owned and have no ORM models. Install
+    # their actual migrations so proposal tests exercise the same writer schema.
+    def install_decision_schema(sync_conn):
+        import importlib.util
+        from pathlib import Path
+
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        versions = Path(__file__).resolve().parents[1] / "alembic/versions"
+        with Operations.context(MigrationContext.configure(sync_conn)):
+            for filename, probe in (
+                (
+                    "20261112_hk4182_decision_evidence.py",
+                    "SELECT to_regclass('review.decision_evidence') IS NOT NULL",
+                ),
+                (
+                    "20261112_hk4184_proposal_decision.py",
+                    "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_proposals_decision_id' AND conrelid = 'review.order_proposals'::regclass)",
+                ),
+            ):
+                present = sync_conn.execute(text(probe)).scalar()
+                if present and "4182" in filename:
+                    continue
+                spec = importlib.util.spec_from_file_location(
+                    filename, versions / filename
+                )
+                assert spec is not None and spec.loader is not None
+                migration = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(migration)
+                if present:
+                    for statement in migration.NUMERIC_EXPANSIONS:
+                        sync_conn.execute(text(statement))
+                else:
+                    migration.upgrade()
+
+    await conn.run_sync(install_decision_schema)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog
     # probes that don't take AccessExclusive unless the column is genuinely

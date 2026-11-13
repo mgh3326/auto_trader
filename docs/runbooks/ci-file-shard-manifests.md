@@ -37,20 +37,20 @@ pytest "${SHARD_FILES[@]}" -m "not live" -n 4 ...
 |---|---|---|
 | planner/validator | `scripts/ci/file_shard_plan.py` | `generate` (full rebalance — duration refresh only) and `check` (validate exact cover) |
 | manifests | `ci_shards/shard-{1..4}.txt` | committed, one test file path per line, sorted |
-| audit report | `ci_shards/weights.json` | predicted per-shard weight/spread, not consumed by `check` |
+| audit report | `ci_shards/weights.json` | per-shard weight, `--dist=loadfile` predicted pytest time and spread; not consumed by `check` |
+| weight artifact | `.test_durations` (setup + call + teardown per test), produced by the weekly refresh | the only `generate` weight input |
 | duration merge contract | `scripts/merge_test_durations.py`, `scripts/call_durations.py` | disjoint-shard-collection validation for the weekly refresh |
 | workflow wiring | `.github/workflows/test.yml` (`test`, `taskiq-smoke`), `.github/workflows/test-durations-refresh.yml` (`collect-authoritative`, `measure`, `merge`) | consumes the manifests |
 
 ## 3. Weight model and the LPT algorithm
 
-`generate` sums per-file weight from `.call_durations.json` (ROB-1295
-call-phase telemetry) and assigns files to shards via a deterministic
-largest-processing-time-first (LPT) bin-pack:
+`generate` sums per-file weight from `.test_durations` — the pytest-split
+`--store-durations` map the same weekly refresh already produces, which
+measures the **whole per-test protocol (setup + call + teardown)** — and
+assigns files to shards via a deterministic largest-processing-time-first
+(LPT) bin-pack:
 
-- **Measured node**: its `durations[node_id]` value.
-- **`not_called` node** (its `setup` phase skipped before `call`): weight
-  `0.0` — there is no call-phase cost to attribute, by construction
-  (`NOT_CALLED_FALLBACK_SECONDS`).
+- **Measured node**: its `.test_durations` value.
 - **Unmeasured node** (collected today, absent from the artifact — a new
   test added since the last refresh, or drift): weight equal to the **mean
   of every measured duration in that same artifact** — a deterministic,
@@ -60,7 +60,8 @@ largest-processing-time-first (LPT) bin-pack:
   `UNMEASURED_FALLBACK_DEFAULT_SECONDS` (`1.0`).
 - File weight = sum of its nodes' weights, accumulated by iterating the
   authoritative node list **in sorted order** — float summation order is
-  fixed, so regenerating from the same inputs is byte-for-byte identical.
+  fixed, so regenerating from the same inputs is byte-for-byte identical
+  (`0.1 + 0.2 + 0.3` is `0.6000000000000001`; `0.3 + 0.2 + 0.1` is `0.6`).
 
 Assignment: files are visited in `(-weight, path)` order (largest first, path
 tie-break); each file goes to whichever shard currently has the smallest
@@ -68,13 +69,76 @@ running total, ties broken by the lowest shard index. Both tie-breaks are
 encoded directly in sort/min keys — determinism does not depend on
 dict/set iteration order or Python version.
 
+### 3.1 Why the whole protocol, not the call phase (hk-3336)
+
+Until hk-3336 the weight source was `.call_durations.json` (ROB-1295). That
+artifact records only the `call` phase, and on the 2026-11-03 refresh
+artifact (run `41556077676`), over the 2,088 files this repo collects, that is
+**3,298.2 s against 3,735.2 s of real per-test pytest time — 437.0 s (13.3 %)
+invisible to the weight**, almost all of it session/worker bootstrap landing
+on whichever test ran first (`whole ≈ 5.2–20.8 s`, `call ≈ 0.001 s`). A shard
+pays that time; only a whole-protocol measurement attributes it.
+
+`.test_durations` also covers every authoritative node (including nodes whose
+`setup` skips, which is what `.call_durations.json` had to record separately
+as `not_called`), and it is what `pytest -n 4` actually spends.
+
+### 3.2 Weight sum is not wall time: the `--dist=loadfile` floor
+
+`test.yml` and the refresh both run
+`pytest "${SHARD_FILES[@]}" -n 4 --dist=loadfile`: the **file** is the
+scheduling unit, so a shard's pytest time is a *makespan*, and no packing can
+finish a shard before its largest single file. On the 2026-11-03 artifact the
+largest file is `tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py` at
+**301.0 s**, against a **231.5 s** fair share per worker — so the equal-total
+LPT packing that reports `max_min_spread_pct: 0.0` cannot be realised by any
+job.
+
+`weights.json` therefore also reports, per shard, `predicted_pytest_seconds`
+from `predict_shard_pytest_seconds`: replay xdist's own hand-out — visit the
+manifest's files in its (sorted) argv order and give each to the worker with
+the smallest accumulated total — and take the maximum. `predicted_*` is the
+number to look at when judging balance; `total_weight_seconds` /
+`max_min_spread_pct` are kept for continuity, and `check` reads neither.
+
+Also measured: each xdist worker collects **all** of its shard's files before
+running (`Record shard collection manifest` took 55/40/60/64 s for
+521/504/526/528 files ≈ 0.10 s/file, single process). That is a per-shard
+constant when file counts are equal — which is why packing must keep file
+counts equal too, and why the "starve the shard that holds the giant file"
+minimax packing (4.5 % predicted spread, but **1 file in one shard and 1,958
+in another**) is not used.
+
+### 3.3 Measured spread, before and after
+
+Same 2026-11-03 measurement run, same collection (this repo's
+`pytest --collect-only -m "not live" tests/`, 33,846 nodes / 2,088 files — the
+capture CI itself checks against, see §4.3):
+
+| assignment | shard 1 | shard 2 | shard 3 | shard 4 | predicted spread |
+|---|---|---|---|---|---|
+| committed manifests (not regenerated since 2026-10-19) | 344.0 | 229.9 | 309.8 | 275.1 | **49.65 %** |
+| `generate` on call-phase weights | 335.3 | 299.7 | 231.8 | 232.3 | **44.70 %** |
+| `generate` on whole-protocol weights (current) | 324.3 | 320.4 | 238.7 | 248.6 | **35.87 %** |
+
+`Measure shard` on that run took 371 / 295 / 396 / 355 s. The residual
+35.9 % is close to the arithmetic floor for an equal-weight packing —
+`(301.0 − 233.4) / 233.4 = 29.0 %` (3,735.2 s / 16 workers = 233.4 s) —
+because the single 301 s file alone exceeds a worker's fair share; the extra
+~6 points are the dispatch delay the two giant files pay in sorted order. Getting genuinely below the floor needs
+one of: splitting the four `tests/scripts/test_deploy_ncp_pull_*.py` files
+(≈1,010 s, 27 % of the suite) into smaller files, or dropping
+`--dist=loadfile` so one heavy file's tests can span workers. Both are out of
+scope here.
+
 `ci_shards/weights.json`'s `max_min_spread_pct` is
 **`(max_total - min_total) / min_total * 100`** — deliberately divided by the
 **smaller** total, not the larger. Dividing by the larger number understates
 the imbalance (e.g. `max=110, min=90` reads as `18.2%` via `/max` but
 `22.2%` via `/min`), which could pass a real >10% imbalance under a naive
-reading of the acceptance bar. `weights.json` is an audit artifact only —
-`check` does not read or depend on it.
+reading of the acceptance bar. `predicted_max_min_spread_pct` uses the same
+formula on `predicted_pytest_seconds`. `weights.json` is an audit artifact
+only — `check` does not read or depend on it.
 
 ## 4. Normal test-file change: minimal manifest entry
 
@@ -86,8 +150,8 @@ addition. Do not run `file_shard_plan generate` for these cases.
 
 `generate` has no incremental mode. It rebuilds LPT assignment from one global
 `(-weight, path)` ordering and overwrites every manifest. A non-destructive
-measurement using the committed `.call_durations.json` and a collection derived
-from that artifact (`1666` files) still moved `1192/1666` shared files (`71.5%`)
+measurement using the committed duration artifact and a collection derived
+from it (`1666` files) still moved `1192/1666` shared files (`71.5%`)
 between shards; the cause of that churn is not asserted here. A one-file add is
 therefore not a use case for full regeneration. Exact-cover checks membership
 exactly once; it does **not** check weight balance. The minimal entry is
@@ -97,11 +161,14 @@ Choose the existing shard with the fewest entries and state that basis in the
 PR. Then verify the exact cover:
 
 ```bash
-uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
-  2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
-  > /tmp/collected.txt
+set -o pipefail
+AUTO_TRADER_TEST_DATABASE_URL=postgresql+asyncpg://nobody:x@localhost:1/test_db \
+  uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
+    2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
+    > /tmp/collected.txt
 
-# NOTE: `sort`, never `sort -u` — see §6.
+# NOTE: `sort`, never `sort -u` — see §6. NOTE: the `localhost` host is not
+# cosmetic — see §4.3 — and pipefail is what makes a collection error visible.
 
 uv run --no-sync python -m scripts.ci.file_shard_plan check \
   --collected /tmp/collected.txt \
@@ -124,51 +191,64 @@ Do not run `generate` to make a local check pass.
 Full regeneration belongs only to the duration-refresh workflow described in
 §6.1, where its fresh inputs and CI self-check live.
 
-### 4.2 Provenance guard: coherence, not correspondence
+### 4.2 Input validation: structure here, provenance upstream
 
-Before computing any weight, `generate` calls
-`scripts/call_durations.py::validate_artifact_provenance` on the loaded
-`.call_durations.json`, which requires:
+`generate` reads `.test_durations` through
+`load_test_durations`, which fails closed on anything a corrupted or
+hand-edited map could smuggle in:
 
-- `source_commit_sha` is a non-empty, non-whitespace string;
-- `collection_hash` is a string equal to
-  `compute_collection_hash(durations.keys() | not_called)` — i.e. it
-  actually hashes *this artifact's own* recorded node set.
+- a duplicate JSON key (a bare `json.loads` keeps the last value silently) —
+  rejected by the shared `scripts/call_durations.py::load_json_no_duplicate_keys`;
+- a non-object top level, an empty/non-string node id, or a duration that is
+  a bool, a non-number, negative, or non-finite (`Infinity`/`NaN`).
 
-This is a **coherence** check (do the artifact's fields agree with each
-other?), not a **correspondence** check (does `source_commit_sha` actually
-name the tree that was measured?). No predicate computed purely from the
-artifact's own content can answer the second question — a tamperer who
-edits `durations` can equally edit `source_commit_sha` and recompute
-`collection_hash` to match. Correspondence requires an expectation from an
-authority *outside* the artifact, which is exactly what
-`validate_freshness`'s `expected_source_commit_sha`/`collected_nodes`
-parameters provide for the one caller that has it (the weekly refresh,
-comparing against the `github.sha` it just measured — see §6). The
-provenance guard is **not** chained into `validate_freshness`, since
-`validate_freshness` already strictly implies it.
+It deliberately does **not** require the artifact to describe today's tree: a
+stale-but-well-formed map is valid input, and a node it lacks falls back to
+the measured mean (§3). That is what makes a normal PR's one-line manifest
+edit survivable between refreshes, and what lets this PR's manifests be built
+from the last measured artifact while the tree has moved on.
 
-Deliberately absent, by design (§6): comparing `source_commit_sha` against
-today's HEAD, comparing `collection_hash` against today's authoritative
-collection, or requiring the artifact's own node set to equal today's
-collection. A stale-but-internally-consistent artifact (correct
-`source_commit_sha` for *some* past tree, `collection_hash` that correctly
-describes its own — outdated — `durations`/`not_called`) is valid `generate`
-input; that staleness is what the mean-duration fallback above exists to
-absorb. What this guard *does* catch: a blank/whitespace/non-string
-`source_commit_sha`, and a `collection_hash` that is empty, non-string, or
-does not actually hash the artifact's own content (e.g. a leftover
-placeholder, a copy-paste from a different artifact, or accidental
-hand-editing) — any of which previously let `generate` silently produce a
-manifest from data with no real provenance behind it.
+The old `.call_durations.json` `source_commit_sha`/`collection_hash`
+coherence guard (ROB-1312 R1) has no analogue here and is not replaced by a
+weaker one, because **provenance is established upstream, in the same job**:
+the refresh's `merge` job runs `scripts/merge_test_durations.py` over the four
+measured shards against the same `authoritative-collected-nodes.txt` handed
+to `generate`, which proves the map is a complete, disjoint-union function
+of that capture; the step ordering is pinned by
+`test_duration_refresh_regenerate_feeds_whole_protocol_durations`.
+`.call_durations.json` keeps its own guard and its own `validate` step — it
+is still produced, validated and committed; it is just no longer a weight
+source.
 
-Threat model: accidental corruption and hand-editing of a *committed file
-in a branch-protected repo* — not an adversarial telemetry feed. There is
-no signature to verify and none is warranted. `check` never reads
-`.call_durations.json` at all, so none of this guards the runtime CI
+Threat model: accidental corruption and hand-editing of a *committed file in
+a branch-protected repo* — not an adversarial telemetry feed. `check` never
+reads a duration artifact at all, so none of this guards the runtime CI
 execution path (`test.yml`'s `test` matrix jobs just run whatever
 `ci_shards/*.txt` already says) — it guards only the manifest-*generation*
 path.
+
+### 4.3 The collection must be as wide as the measurement
+
+`generate` refuses to pack a capture that lost a file the duration artifact
+measured **and that still exists in the tree**
+(`validate_collection_covers_measured_files`, `--repo-root`, default cwd). It
+fails closed and writes nothing. The discriminator is the working tree: a file
+the artifact measured that is gone is legitimate staleness (the mean fallback
+in §3 exists for it), while a file that is still on disk and did not appear in
+the capture means the capture looked through a narrower window.
+
+That is not hypothetical — it produced hk-3336's first red CI run. The four
+`tests/services/research/test_*campaign_bridge*.py` / `test_rob944_*` modules
+raise at import unless `DATABASE_URL`'s host is literally `localhost`
+(`tests/services/research/_db_guard_test_policy.py`), so a capture taken with
+`127.0.0.1` dropped 123 nodes / 4 files; the regenerated manifests then missed
+them in every shard and `check` failed in CI. Two habits prevent a repeat:
+
+- use a `localhost` host in `AUTO_TRADER_TEST_DATABASE_URL` (an unreachable
+  loopback port is fine — collection opens no connection);
+- run the capture under `set -o pipefail` (or check pytest's exit status): the
+  `2>/dev/null | grep '^tests/.*::'` recipe discards pytest's ERRORS block, so
+  a collection-time import failure shows up only as quietly missing files.
 
 To only check (no write), e.g. to reproduce a CI failure locally:
 
@@ -219,7 +299,7 @@ front-loading the check; a failure there fails the job and, via `merge`'s
 `needs: [measure, collect-authoritative]`, blocks the merge/regenerate step
 fail-closed even though the `measure` shards' own CI time was already
 spent), and once in `merge` as a self-check on manifests it just
-regenerated from that run's fresh `.call_durations.json` (§6.1).
+regenerated from that run's fresh `.test_durations` (§6.1).
 
 ## 6. The duration-refresh disjoint-shard contract
 
@@ -258,16 +338,22 @@ it.
 
 ### 6.1 Same-PR manifest regeneration (durability)
 
-`ci_shards/*.txt` is a deterministic function of `.call_durations.json`
+`ci_shards/*.txt` is a deterministic function of `.test_durations`
 (weight source, §3) plus the current authoritative collection. If the weekly
-refresh rebuilt `.call_durations.json` without also regenerating the manifests,
+refresh rebuilt `.test_durations` without also regenerating the manifests,
 no duration-refresh workflow would correct the LPT balance. Exact cover would
 still hold (file membership does not depend on weight), but the "keep predicted
 shard spread low" purpose of the planner would quietly rot.
 
+That rot is not hypothetical: the refresh's `pull-request` job has been
+failing since 2026-10-26 (expired `DURATIONS_REFRESH_TOKEN`), so the committed
+manifests were last regenerated on 2026-10-19 and had drifted to 49.65 %
+predicted spread by 2026-11-03 while `weights.json` still said 0.0 (§3.3) —
+three weeks of per-PR one-line additions (§4) with no rebalance.
+
 So the `merge` job's "Regenerate file-shard manifests" step re-runs
 `python3 -m scripts.ci.file_shard_plan generate` from that same run's
-freshly-built `.call_durations.json` and the `collect-authoritative`
+freshly-merged `.test_durations` and the `collect-authoritative`
 capture, immediately self-checked by "Validate regenerated file-shard
 manifests (exact-cover)". If anything changed (`git status --porcelain --
 ci_shards/`), the refreshed `ci_shards/shard-{1..4}.txt` +
@@ -276,16 +362,21 @@ ci_shards/`), the refreshed `ci_shards/shard-{1..4}.txt` +
 one PR, `add-paths` covering all of it, not a separate easy-to-forget
 follow-up. `tests/ci/test_file_shard_plan_workflow_entrypoint.py` locks the
 `merge` job's `ci_shards_changed` output, the `pull-request` job's `if:`
-condition, and its `add-paths` list.
+condition, its `add-paths` list, and that the regenerate step is fed
+`--durations .test_durations` rather than the call-phase artifact.
 
 ## 7. Verifying locally
 
 ```bash
-uv run pytest tests/ci/test_file_shard_plan.py \
-  scripts/merge_test_durations_test.py \
-  scripts/call_durations_test.py \
-  tests/ci/test_file_shard_plan_workflow_entrypoint.py -q -ra
+AUTO_TRADER_TEST_DATABASE_URL=postgresql+asyncpg://nobody:x@localhost:1/test_db \
+  uv run pytest tests/ci/test_file_shard_plan.py \
+    scripts/merge_test_durations_test.py \
+    scripts/call_durations_test.py \
+    tests/ci/test_file_shard_plan_workflow_entrypoint.py -q -ra
 ```
+
+The `localhost` host keeps the unreachable-port target (`:1`) out of the
+research DB policy's way (§4.3) without touching a real server.
 
 Full-regeneration idempotence is locked by the unit tests listed above,
 including `test_cli_generate_twice_is_byte_identical`. The duration-refresh

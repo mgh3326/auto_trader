@@ -151,3 +151,84 @@ async def test_set_leverage_is_signed(
     url_str = str(last.url)
     assert "signature=" in url_str
     assert "timestamp=" in url_str
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("margin", ["CROSSED", "isolated", "", None])
+async def test_margin_rejects_other_values_before_http(client, httpx_mock, margin):
+    with pytest.raises(ValueError):
+        await client.set_margin_type(symbol="XRPUSDT", margin_type=margin, confirm=True)
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_margin_noop_requires_isolated_readback(client, httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=re.compile(r".*/fapi/v1/marginType\?.*"),
+        status_code=400,
+        json={"code": -4046},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r".*/fapi/v1/positionSide/dual\?.*"),
+        json={"dualSidePosition": False},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r".*/fapi/v2/positionRisk\?.*"),
+        json=[
+            {
+                "symbol": "XRPUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "leverage": "1",
+                "marginType": "cross",
+            }
+        ],
+    )
+    with pytest.raises(ValueError, match="readback"):
+        await client.set_margin_type(
+            symbol="XRPUSDT", margin_type="ISOLATED", confirm=True
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [True, None])
+async def test_preparation_requires_explicit_one_way(client, httpx_mock, mode):
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r".*/fapi/v1/positionSide/dual\?.*"),
+        json={"dualSidePosition": mode},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r".*/fapi/v2/positionRisk\?.*"),
+        json=[
+            {
+                "symbol": "XRPUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "leverage": "1",
+                "marginType": "isolated",
+            }
+        ],
+        is_optional=True,
+    )
+    with pytest.raises(ValueError, match="one-way"):
+        await client.get_preparation_state(symbol="XRPUSDT")
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("echoed", ["OTHERUSDT", None])
+async def test_preparation_leverage_requires_symbol_echo(client, httpx_mock, echoed):
+    httpx_mock.add_response(
+        method="POST",
+        url=re.compile(r".*/fapi/v1/leverage\?.*"),
+        json={"symbol": echoed, "leverage": 1},
+    )
+    with pytest.raises(BinanceFuturesDemoLeverageMismatch):
+        await client.set_leverage(
+            symbol="XRPUSDT", leverage=1, require_symbol_echo=True
+        )

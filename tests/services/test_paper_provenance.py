@@ -88,13 +88,35 @@ async def test_fill_carries_correlation_to_paper_trade(
     corr_id = place["correlation_id"]
     assert corr_id and corr_id.startswith(f"paper:{acct.id}:")
 
-    ts = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
+    from app.models.paper_trading import PaperPendingOrder
+
+    pending = await db_session.get(PaperPendingOrder, place["order_id"])
+    assert pending is not None
+    placed_at = pending.placed_at.astimezone(now_kst().tzinfo)
+    day_start = placed_at.replace(hour=9, minute=0, second=0, microsecond=0)
+    if placed_at.hour < 9:
+        day_start -= dt.timedelta(days=1)
+    ts = placed_at.replace(tzinfo=None) + dt.timedelta(minutes=1)
+    coverage = _candle(Decimal("96000000"), Decimal("97000000"), placed_at)
+    trigger = _candle(Decimal("94000000"), Decimal("95000000"), ts)
 
     async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
-        return [_candle(Decimal("94000000"), Decimal("95000000"), ts)]
+        if period == "day":
+            return [_candle(Decimal("94000000"), Decimal("95000000"), day_start)]
+        return [coverage, trigger]
 
     monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
-    res = await svc.reconcile_pending_orders(account_id=acct.id)
+
+    async def _daily_page(symbol: str, end: dt.datetime) -> list[Any]:
+        return await _bars(symbol, "crypto", "day", 200, end=end)
+
+    monkeypatch.setattr(
+        "app.services.paper_limit_order_service._fetch_upbit_daily_page", _daily_page
+    )
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id,
+        now=placed_at + dt.timedelta(minutes=3),
+    )
     assert res["success"] and res["filled"] == 1, res
 
     tr = (

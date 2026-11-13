@@ -60,6 +60,8 @@ def _run(
     active_mcp_color: str = "blue",
     both_mcp_colors_present: bool = False,
     deploy: Path | None = None,
+    fixed_date: str = "",
+    block_evidence_file: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -86,21 +88,21 @@ def _run(
     state_path.write_text(json.dumps(initial))
     docker = textwrap.dedent(
         """\
-        #!/usr/bin/env python3
-        import json, os, pathlib, sys
+        #!/usr/bin/env -S python3 -S
+        import json, os, sys
         args = sys.argv[1:]
-        state_file = pathlib.Path(os.environ['FAKE_DOCKER_STATE'])
-        log_file = pathlib.Path(os.environ['FAKE_DOCKER_LOG'])
-        state = json.loads(state_file.read_text())
-        with log_file.open('a') as f:
+        state_file = os.environ['FAKE_DOCKER_STATE']
+        state = json.loads(open(state_file).read())
+        with open(os.environ['FAKE_DOCKER_LOG'], 'a') as f:
             f.write(json.dumps(args) + '\\n')
         cmd = args[0]
         name = args[-1] if args else ''
+        state_changed = False
         if cmd == 'inspect':
             if name == os.environ.get('FAKE_TRANSIENT_INSPECT_NAME'):
-                marker = pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.transient')
-                if not marker.exists():
-                    marker.touch()
+                marker = os.environ['FAKE_DOCKER_STATE'] + '.transient'
+                if not os.path.exists(marker):
+                    open(marker, 'w').close()
                     print('Cannot connect to the Docker daemon', file=sys.stderr)
                     sys.exit(1)
             if name not in state:
@@ -109,7 +111,7 @@ def _run(
             fmt = args[2]
             value = state[name]
             if 'State.Running' in fmt:
-                pulled = pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.pulled').exists()
+                pulled = os.path.exists(os.environ['FAKE_DOCKER_STATE'] + '.pulled')
                 stopped_initial = (name == os.environ.get('FAKE_STOPPED_NAME')
                                    and not (pulled and name == os.environ.get('FAKE_START_AFTER_PULL_NAME')))
                 stopped_after_pull = pulled and name == os.environ.get('FAKE_STOP_AFTER_PULL_NAME')
@@ -138,6 +140,7 @@ def _run(
                 state[name] = os.environ['FAKE_NEW_DIGEST']
             else:
                 state[name] = image
+            state_changed = True
             print('id-' + name)
         elif cmd == 'logs':
             if name == os.environ.get('FAKE_FAIL_HEALTH_NAME') and state.get(name) == os.environ['FAKE_NEW_DIGEST']:
@@ -148,40 +151,54 @@ def _run(
             for item in args[1:]:
                 if item != '-f':
                     state.pop(item, None)
+            state_changed = True
         elif cmd == 'rename':
             state[args[2]] = state.pop(args[1])
+            state_changed = True
         elif cmd == 'kill':
             if os.environ.get('FAKE_FAIL_HAPROXY_HUP_ONCE') == '1':
-                marker = pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.hup')
-                if not marker.exists():
-                    marker.touch()
+                marker = os.environ['FAKE_DOCKER_STATE'] + '.hup'
+                if not os.path.exists(marker):
+                    open(marker, 'w').close()
                     sys.exit(23)
         elif cmd == 'pull':
-            pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.pulled').touch()
+            open(os.environ['FAKE_DOCKER_STATE'] + '.pulled', 'w').close()
         elif cmd == 'stop':
             pass
         else:
             sys.exit(42)
-        state_file.write_text(json.dumps(state))
+        if state_changed:
+            with open(state_file, 'w') as f:
+                f.write(json.dumps(state))
         """
     )
     install_gate_fakes(bindir, docker, NEW)
     (bindir / "curl").write_text(
-        "#!/usr/bin/env bash\n"
-        'url="${!#}"\n'
-        'if [[ "$FAKE_FAIL_HEALTH_NAME" == at-api-green && "$url" == *":8002/healthz" ]]; then echo 500; exit 0; fi\n'
-        'if [[ "$FAKE_FAIL_HEALTH_NAME" == at-mcp-green && "$url" == *":8767/health" ]]; then echo 500; exit 0; fi\n'
-        'if [[ -n "$FAKE_FAIL_HEALTH_PORT" && "$url" == "http://127.0.0.1:${FAKE_FAIL_HEALTH_PORT}/health" ]]; then echo 500; exit 0; fi\n'
-        'if [[ -n "$FAKE_FAIL_ROUTE_URL" && "$url" == "$FAKE_FAIL_ROUTE_URL" ]]; then exit 22; fi\n'
+        "#!/bin/sh\n"
+        "for url do :; done\n"
+        'case "$FAKE_FAIL_HEALTH_NAME:$url" in at-api-green*:8002/healthz) echo 500; exit 0;; esac\n'
+        'case "$FAKE_FAIL_HEALTH_NAME:$url" in at-mcp-green*:8767/health) echo 500; exit 0;; esac\n'
+        '[ -z "$FAKE_FAIL_HEALTH_PORT" ] || [ "$url" != "http://127.0.0.1:${FAKE_FAIL_HEALTH_PORT}/health" ] || { echo 500; exit 0; }\n'
+        '[ -z "$FAKE_FAIL_ROUTE_URL" ] || [ "$url" != "$FAKE_FAIL_ROUTE_URL" ] || exit 22\n'
         'printf "%s\\n" "$url" >> "$FAKE_CURL_LOG"\n'
-        'if [[ "$*" == *--write-out* ]]; then echo 200; fi\n'
+        'case "$*" in *--write-out*) echo 200;; esac\n'
     )
-    (bindir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n")
-    (bindir / "nohup").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (bindir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    if fixed_date:
+        # Pin only the failure-evidence stamp; every other date call is real.
+        (bindir / "date").write_text(
+            "#!/bin/sh\n"
+            f'if [ "$*" = "-u +%Y%m%dT%H%M%SZ" ]; then echo {fixed_date}; exit 0; fi\n'
+            'PATH=/usr/bin:/bin exec date "$@"\n'
+        )
+    if block_evidence_file:
+        # A directory where the evidence file goes makes the redirect fail.
+        (run_dir / block_evidence_file).mkdir()
+    (bindir / "nohup").write_text("#!/bin/sh\nexit 0\n")
     if fail_drain_arm:
         (bindir / "mv").write_text(
-            "#!/usr/bin/env bash\n"
-            'for arg in "$@"; do [[ "$arg" == *drain-guard*.ready ]] && exit 23; done\n'
+            "#!/bin/sh\n"
+            'for arg in "$@"; do case "$arg" in *drain-guard*.ready) exit 23;; esac; done\n'
             'exec /bin/mv "$@"\n'
         )
     for path in bindir.iterdir():

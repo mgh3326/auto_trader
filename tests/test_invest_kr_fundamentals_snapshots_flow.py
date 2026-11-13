@@ -53,6 +53,10 @@ def test_flow_is_not_registered_via_deployment_yaml() -> None:
     for yf in yaml_files:
         if ".venv" in str(yf) or ".git" in str(yf):
             continue
+        # Dagu proposals (hk 3848) name the script module; they are not Prefect
+        # deployments and are registered only via docs/runbooks/dagu-batch1-cutover.md.
+        if yf.is_relative_to(project_root / "deploy" / "dagu"):
+            continue
         if "invest_kr_fundamentals_snapshots" in yf.read_text():
             pytest.fail(
                 f"Found Prefect deployment YAML referencing the KR fundamentals flow at {yf}. "

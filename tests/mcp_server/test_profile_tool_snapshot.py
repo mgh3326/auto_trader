@@ -8,6 +8,7 @@ The initial commit retains the full audit baseline in Git history.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 from pathlib import Path
 
@@ -18,6 +19,24 @@ from tests.mcp_server._registration_recorder import collect_profile_tools
 
 pytestmark = pytest.mark.unit
 SNAPSHOT_PATH = Path(__file__).with_name("profile_tool_snapshot.json")
+
+
+def test_kis_mock_mutation_confirmation_defaults_snapshot() -> None:
+    from app.mcp_server.tooling.orders_kis_variants import register_kis_mock_order_tools
+    from tests._mcp_tooling_support import DummyMCP
+
+    mcp = DummyMCP()
+    register_kis_mock_order_tools(mcp)
+    expected = {"dry_run": True, "confirm": False}
+    for name in (
+        "kis_mock_place_order",
+        "kis_mock_cancel_order",
+        "kis_mock_modify_order",
+    ):
+        parameters = inspect.signature(mcp.tools[name]).parameters
+        assert {key: parameters[key].default for key in expected} == expected
+    place_parameters = inspect.signature(mcp.tools["kis_mock_place_order"]).parameters
+    assert place_parameters["rung"].default is None
 
 
 @pytest.mark.parametrize("gates_enabled", [True, False], ids=["gates-on", "gates-off"])
@@ -135,6 +154,9 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     # default profile only (behind ORDER_PROPOSALS_ENABLED), never on the
     # generic broad profiles.
     expected["default"].add("get_parking_exclusion")
+    # hk 3717: read-only all-symbol KIS KR daily orders for one KST date,
+    # registered with the typed kis_live_* tools on the default profile only.
+    expected["default"].add("kis_live_get_daily_orders")
     # #849: the NHPLUG Stage 2 mock tools register on the default profile only,
     # behind nh_mock_mcp_enabled (default off); no live profile lists them.
     from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES

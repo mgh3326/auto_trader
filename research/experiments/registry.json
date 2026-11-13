@@ -125,6 +125,27 @@
           "report_sha256": "c4ccc2a8f1d65a864a625daef393f88d01e41d94624393387698719da4823041"
         }
       ]
+    },
+    {
+      "id": "ROB-1474-sweep",
+      "title": "ROB-1474 multi-hypothesis selection sweep: simple rankers x horizons x sides vs random, equal-weight and benchmark controls (US, crypto)",
+      "tracker": "ROB-1474",
+      "markets": [
+        "us",
+        "crypto"
+      ],
+      "status": "sealed",
+      "registered_at": "2026-11-09",
+      "manifest": "research/experiments/manifests/rob-1474-sweep.json",
+      "manifest_sha256": "9ddf8a000b78e7d25b80387f97330f55fe36c01fc96dd10791cc54bd9478be91",
+      "previous_manifest_sha256": [
+        "dc2512f84635fdeae8502740db0035129e8df3c866e9bea4ddd298614826a7bd",
+        "a48d80bcd2b6a7eb283e063454c83f6f216302568d836ae817328074e3880750",
+        "d850a27d5f63e9ff514101773f88d03c12316de78612e6639599132a85231826",
+        "bfbb54ca70c4069cade3e4cce4b3994de9b4904c36f76e1742077103fb685ba2"
+      ],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }

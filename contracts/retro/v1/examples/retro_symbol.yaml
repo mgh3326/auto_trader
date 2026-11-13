@@ -1,0 +1,39 @@
+operation: retro_symbol
+request:
+  path: /trading/api/retro/v1/retro_symbol
+  query:
+    symbol: SYN001
+    from: '2026-01-02'
+    to: '2026-01-02'
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.event_at
+    reason: missing_data
+  - field: data.0.linked_ref
+    reason: missing_data
+  - field: data.0.quantity
+    reason: missing_data
+  - field: data.0.price
+    reason: missing_data
+  data:
+  - symbol: SYN001
+    stage: lot
+    event_at: null
+    event_ref: ref_synthetic_2
+    linked_ref: null
+    status: unknown
+    reason: missing_data
+    quantity: null
+    price: null
+    currency: XSY
+    unit: shares
+    basis: unknown

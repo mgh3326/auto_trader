@@ -55,6 +55,8 @@ from typing import TypedDict
 
 import pytest
 import pytest_asyncio
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
 
 from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
@@ -72,7 +74,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20261103_rob1487_perf_idx"
+# The current single head, read from the migration scripts so that adding a
+# migration does not require editing this test.
+HEAD_REVISION = ScriptDirectory.from_config(
+    AlembicConfig(str(_REPO / "alembic.ini"))
+).get_current_head()
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -103,6 +109,8 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: schema -- otherwise the migration collides with what create_all already
 #: made. Same maintenance point the sibling roundtrip tests carry.
 _POST_PARENT_TABLES: tuple[str, ...] = (
+    "review.account_external_flows",
+    "review.account_value_snapshots",
     "review.mock_strategy_orders",
     # ROB-1263 dispatch evidence is post-parent; child must precede lineage.
     "review.kis_mock_dispatch_evidence",
@@ -187,6 +195,15 @@ async def scratch_database() -> AsyncIterator[str]:
                 )
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                # hk 4186 (L5) execution_ledger basis columns are later than
+                # this boundary; their CHECKs drop with them.
+                for column in ("filled_at_basis", "fee_basis", "tax_amount"):
+                    await connection.execute(
+                        text(
+                            "ALTER TABLE review.execution_ledger "
+                            f"DROP COLUMN IF EXISTS {column}"
+                        )
+                    )
                 # #1175 quarantine columns are later than this boundary;
                 # their CHECKs drop with them and the migration adds all back.
                 for column in (
@@ -200,6 +217,15 @@ async def scratch_database() -> AsyncIterator[str]:
                             f"DROP COLUMN IF EXISTS {column}"
                         )
                     )
+                # hk 4187 (L6) trade_retrospectives.decision_id is later than
+                # this boundary; its index drops with it and the migration adds
+                # both back.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "DROP COLUMN IF EXISTS decision_id"
+                    )
+                )
                 # ROB-s257 E-2 is later than this reconstructed boundary.
                 # Current metadata already contains its nullable observation
                 # column, so drop it and let the migration add it back.

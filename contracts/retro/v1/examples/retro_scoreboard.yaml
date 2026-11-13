@@ -1,0 +1,44 @@
+operation: retro_scoreboard
+request:
+  path: /trading/api/retro/v1/retro_scoreboard
+  query:
+    from: '2026-01-02'
+    to: '2026-01-02'
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.return_rate
+    reason: missing_data
+  - field: data.0.flow_amount
+    reason: missing_data
+  - field: data.0.benchmark.return_rate
+    reason: missing_data
+  - field: data.0.benchmark.source
+    reason: missing_data
+  data:
+  - scope: account
+    subject_ref: ref_synthetic_account
+    market: synthetic
+    basis: modified_dietz
+    evidence_basis: unknown
+    return_rate: null
+    unmeasured_reason: flows_not_confirmed
+    flows_complete: false
+    start_amount: '100.0000'
+    end_amount: '101.0000'
+    flow_amount: null
+    currency: XSY
+    unit: currency
+    benchmark:
+      return_rate: null
+      source: null
+      basis: unknown
+      unknown_reason: not_applicable

@@ -468,30 +468,39 @@ async def _default_write(rows: Sequence[ScreenerPickRow]) -> None:
 async def maybe_record_fanout_picks(
     result: Mapping[str, Any],
     *,
+    call_id: uuid.UUID | None = None,
     enabled: bool | None = None,
     write_rows: Callable[[Sequence[ScreenerPickRow]], Awaitable[None]] | None = None,
     now: datetime | None = None,
     code_sha256: str | None = None,
-) -> None:
-    """Record fanout picks when the env gate is on. Never raises. Never mutates ``result``."""
+) -> uuid.UUID | None:
+    """Record fanout picks and return their call id only after a successful write."""
 
     try:
         if enabled is None:
             enabled = env_gate_enabled()
         if not enabled:
-            return
+            return None
         if not isinstance(result, Mapping):
-            return
-        rows = extract_pick_rows(result, now=now, code_sha256=code_sha256)
+            return None
+        resolved_call_id = call_id or uuid.uuid4()
+        rows = extract_pick_rows(
+            result,
+            now=now,
+            call_id=resolved_call_id,
+            code_sha256=code_sha256,
+        )
         if not rows:
-            return
+            return None
         writer = write_rows or _default_write
         await writer(rows)
+        return resolved_call_id
     except Exception:
         logger.warning(
             "screener pick log failed; fanout result is unchanged",
             exc_info=True,
         )
+        return None
 
 
 __all__ = [

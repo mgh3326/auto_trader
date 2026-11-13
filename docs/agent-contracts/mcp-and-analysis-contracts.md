@@ -83,11 +83,44 @@ crypto route 는 계속 차단한다. 레지스트리 분할(`STATUS_HELPER_TOOL
 `MCP_PROFILE` 은 DEFAULT 로 폴백하지 않고 기동을 거부한다(DEFAULT 는 `MCP_PROFILE=default` 로 명시). deploy 스크립트도
 배포 전 모든 유닛의 프로필이 비어 있지 않음을 검사한다. 레포 안 모든 서버 정의의 명시 프로필은
 `tests/mcp_server/test_mcp_profile_required.py` 가 목록으로 검증한다. 이 폴백을 되살리지 마라.
+**dots 외부 접속 (hk 3592, 운영자 결정 `hk:doc decision/2026-11-08/at-mcp-dots-all-tools`)**:
+ChatGPT 세션 dots 가 `https://at-mcp.robinco.dev/mcp` 로 **DEFAULT 표면 전체**(live 계좌 주문 도구 포함)를
+쓴다(운영자 답 A). 이 면에 한해 위 ROB-1436 의 "외부 읽기 세션이 필요해지면 새 리뷰로 추가한다" 문장을
+대체한다 — 읽기 전용 표면이 생긴 것이 아니다. Cloudflare Access(self-hosted 앱, MCP OAuth, 정책 = 운영자 이메일)가 엣지에서
+OAuth 발견 문서와 401 챌린지를 서빙하고 인증된 요청에 `Cf-Access-Jwt-Assertion` 을 붙여 원점으로 보낸다.
+원점이 받는 자격증명은 **정확히 둘**이다: (a) 기존 `MCP_AUTH_TOKEN` bearer(동작 불변), (b) 검증된 Access assertion
+(`app/mcp_server/cf_access.py`: RS256 서명을 `https://<team>/cdn-cgi/access/certs` 키로, `iss`·`aud`·`exp`·`nbf`(skew 30초),
+이메일 정확 일치 allowlist — 키는 10분 캐시, 모르는 `kid` 는 60초에 한 번만 갱신, 갱신 실패는 거부).
+결정 함수는 `DualCredentialAuth` 하나이고 streamable-http 와 sse 가 같은 provider 의 미들웨어를 쓴다. assertion 헤더가 있으면
+그것이 검증돼야 하며 옆에 유효한 bearer 가 있어도 우회되지 않는다. 🔴 `Cf-Access-Authenticated-User-Email` 등 다른 헤더는
+읽지 않는다. 설정은 `MCP_CF_ACCESS_TEAM_DOMAIN`·`MCP_CF_ACCESS_AUD`·`MCP_CF_ACCESS_ALLOWED_EMAILS` 셋 전부 미설정이면 꺼짐(동작은 이전과 같음),
+일부만 있거나 형식이 틀리거나 `MCP_AUTH_TOKEN` 이 비었으면 **기동 거부**. DEFAULT 가 아닌 프로필은 이 변수를 읽지 않고 bearer 전용으로
+남는다(고정 유닛들이 배포 env 파일을 공유하므로 거부가 아니라 무시).
+Access 인증 호출은 `caller_agent_id="dots"`·`caller_source="cf_access"` 로 귀속되고(Sentry consumer·제안의 `creator_agent_id`),
+클라이언트가 보낸 `x-paperclip-agent-id` 는 무시된다(loss_cut 허용 목록 사칭 방지). 운영자 이메일은 호출 로그 한 줄
+(`consumer=dots operator=operator:<email>`)에만 남고 Sentry·DB 에는 없다. 🔴 Access 신원은 live 주문 도구에 닿을 수 있다 — env 게이트, 호출별
+`dry_run`/`confirm`, `approval_hash`, 손실매도 가드, 정확 계좌 검사, kis_mock 귀속, W5 inbox, ROB-1340, NHPLUG, 체결 ingest 토큰은
+전부 그대로이며 이 변경은 어떤 게이트도 완화하지 않는다. 배포(터널 경로·Access 앱·운영 env)는 별도 운영자 승인 사항이고
+승인 전에는 아무것도 노출되지 않는다. 런북 `docs/runbooks/mcp-dots-access.md`, 테스트 `tests/mcp_server/test_cf_access_auth.py`.
 Task 881의 `kis_mock_ledger_expire_day_orders`는 별도 registrar로
 hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에는 없으며
 스냅샷과 과거 감사 예외 테스트가 이 물리적 경계를 검증한다. DB-only 도구여도
 KIS_MOCK_ENABLED 및 기존 필수 설정 게이트, dry_run 기본 true와 쓰기 confirm
 true를 유지한다.
+
+### Fundamentals provider availability
+
+`get_financials`, `get_valuation`, and US `get_investment_opinions` treat a Yahoo Finance
+quoteSummary response as missing fundamentals only when it is HTTP 404 and explicitly says
+`No fundamentals data found`, or when the financial statement result is empty. These cases
+return `success=true`, `data_state="missing"`, and `reason="no_fundamentals"` with the
+symbol and `source="yfinance"`. Other HTTP statuses, timeouts, malformed responses, and
+404s without that provider message remain errors; a failed fetch must not be represented as
+missing data. When such an error hits one opinion sub-request while another sub-request
+still returns usable data, the response keeps that data and lists the failed sub-request in
+`partial_errors` (`field` and `error_class` only, no provider message), so the gap is not
+silent. Only when no usable data remains is the error raised. US company profiles continue
+to use Finnhub.
 
 ### Runtime LLM ownership boundary
 
@@ -268,3 +301,59 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.
+
+
+### Factortrail retro/v1 공급자 계약 (hk 3815)
+
+`contracts/retro/v1/openapi.yaml`은 Factortrail 소비자를 위한 auto_trader 소유 HTTP 계약의 정본이다. retro HTTP route는 hk 3818에서 제공하며 MCP 도구는 없다. 응답은 닫힌 projection이며 계좌번호, 브로커 주문번호, 원문 payload와 예외를 내보내지 않는다. 연결에는 불투명한 ref만 쓴다. 조회하지 못했거나 실패한 값과 count는 0으로 바꾸지 않고 null과 사유로 표시한다. 생성 시각과 데이터 cutoff를 분리하고 count는 페이지 길이가 아닌 각 작업의 전체 모집단을 뜻한다. 금액·수량·가격은 정확한 decimal 문자열이다. 계좌 수익률의 외부 흐름 완전성은 서버 측 사실이며 호출자가 선언하지 않는다. 공개 예제는 전부 합성이다.
+
+retro/v1에서 `total: null`은 `unknowns`에 `field=total`, `reason=count_unavailable` 항목을 요구한다. 행의 null 값은 같은 행의 `reason`/`missing_reason` 또는 envelope `unknowns`의 해당 필드 경로로 사유를 표시한다. `as_of` 응답은 생성 시각이며 보유 조회 입력은 `cutoff_date`다.
+
+**retro/v1 읽기 모델 (hk 3816)**: `retro_scoreboard`를 뺀 8개 operation의 reader가 `app/services/retro_v1/`에 있다. `read_<operation>(session, **계약 쿼리 이름)`가 계약 응답 본문 dict를 그대로 돌려준다. `retro_scoreboard`는 hk 3817이다. HTTP route는 hk 3818에서 이 reader와 별도 scoreboard reader를 호출한다. MCP 도구와 스케줄러 연결은 없다.
+
+`stage=order`는 세 live 주문 레저를 원천으로 하며 직접 주문도 포함한다. 번호와 멱등키 또는 correlation ID 및 거래일이 일치하는 유일한 rung만 연결하고, fill은 거래일이 일치하는 레저 주문에 연결한다. 상태는 `filled`, `partially_filled`, `working`, `cancelled`, `expired`, `rejected`, `unresolved`로 닫혀 있다. 유효한 권위 fill이 우선하고, 다음으로 브로커 terminal 상태, #1112 rung 추론을 사용한다. 당일 미종결은 `working`, 과거 미종결은 `unresolved`다. 거절 사유는 `rate_limited`, `price_limit`, `insufficient_balance`, `market_closed`, `invalid_order`, `broker_other`다. 만료는 `day_order_expired` 또는 `expired_inference_no_broker_original`, 취소는 `cancelled`, 미해결은 `no_terminal_evidence`다. 원본 브로커 메시지와 코드는 노출하지 않는다. funnel의 order와 fill은 chain과 같은 행을 센다.
+
+
+- **읽기 전용은 구조다**: reader마다 자기 `REPEATABLE READ READ ONLY` 트랜잭션(statement timeout 8초)을 열어 count와 행이 한 스냅샷을 쓴다. 이미 트랜잭션 중인 세션은 `validation_error`로 거부한다(호출자 트랜잭션을 롤백하는 것도 부작용이다). SELECT 외 문장·브로커 클라이언트·주문·제안·recorder·reconcile·refresh·lazy-fill·MCP·router·스케줄러 import는 `tests/services/retro_v1/test_guards.py`가 직접 import, 정적 transitive closure, 쓰기/commit 호출, 실제 발행 SQL 네 겹으로 막는다. `account_value` 패키지(hk 3817)도 import하지 않는다.
+- **unknown은 0이 아니다**: 하위 읽기는 SAVEPOINT 안에서 돌고 실패하면 `unknowns`(`upstream_error`/`unavailable`)와 `total: null` + `count_unavailable`이 된다. 소스당 5,000행(렛저 이력 20,000행) 상한에 닿아도 같다. 행의 null은 행 `reason`/`missing_reason` 또는 `data.<i>.<field>` unknown으로 설명한다(계약 테스트와 같은 규칙).
+- **원장 규칙은 재사용한다**: 체결은 SQL의 `execution_ledger_in_effect()`에 파이썬 재검사를 더하고 `supersede_provisional`(ROB-1379)로 websocket 중복을 뺀다. 격리 행과 덮인 중복은 fill·markout·lot·position·funnel 어디에도 없다. `retro_positions`는 브로커 호출 없이 원장에서 `kis_lots.fifo_position`(최신 seed 기준 FIFO)로 보유를 구한다. 그래서 `basis=inference`이며, 미확인 websocket 행·oversold·잘린 읽기가 있으면 `lot_state=unknown`과 null 수량·평단·미실현이다. 브로커 보유 수량과의 대조(`kis_lots` 로더)는 하지 않는다.
+- **체인 연결**: `linked_ref`는 항상 상류(직전 단계)를 가리킨다(candidate→proposal→rung→order→fill→markout/lot). 후보→제안 연결은 저장돼 있지 않으므로 같은 종목에서 제안 이전의 가장 늦은 후보로 추론하고 `basis=inference`다. 주문 단계는 rung의 `broker_order_id`가 있을 때만 있고 시각은 `validated_at`이다. 주문↔체결 연결은 `order_identity`(ROB-1379: broker·종목·side·정규화 번호·거래일)와 같은 식별자로 하고, KIS의 거래일은 rung의 `validated_at`(취소·체결 전이가 덮어쓴다)이 아니라 전송 직전 한 번 삽입되는 `review.order_send_intents.created_at`(rung `idempotency_key`, `account_scope=kis_live` 행만 — mock 등 다른 scope의 같은 키는 증거도 모호성도 아니다)에서 얻고, 그 증거가 없거나 모호하거나 같은 식별자가 둘이면 연결은 null(`no_linked_order`)이며 funnel의 fill 건수는 null이다. opening seed(`SEED-*`/`seed_kind=opening_lot`)는 체결·markout·funnel 건수에 없고 lot FIFO 이력에만 쓴다. markout은 체결 시각 이후 DB 일봉의 20번째 종가이며 한 venue의 봉만 센다(KR은 KRX 우선, 그 밖의 다중 venue는 `reason=source_mixed`). 그 봉이 없으면 행을 빼지 않고 `reason=missing_data`로 낸다. lot은 체결이 있는 (broker, 종목)마다 창 끝 FIFO 잔량 한 행이다. 실거래(`account_mode=live`)만 읽는다.
+- **ref와 개인정보**: ref는 종류와 내부 PK의 해시(`kind-<sha256 앞 20자>`)이고 브로커 주문번호·계좌번호는 입력이 아니다. 주문번호는 체결↔rung를 잇는 내부 조인 키로만 쓰고 응답에 없다. 금액·수량·가격은 `Decimal`→문자열이며 float는 `TypeError`다.
+- **작은 약속**: 응답 `timezone`은 `KST`다(계약 패턴이 IANA 이름의 `/`를 허용하지 않는다). 요청 날짜는 KST 달력일, 시각은 UTC RFC 3339다. 계약 쿼리 이름 `from`은 파이썬 예약어라 `from_=` 또는 `**{"from": ...}`로 받는다. 커서는 쿼리 파라미터에 묶인 불투명 오프셋이다.
+- **`get_bars`**: 일봉(kr/us/crypto)과 1분봉(kr/us/crypto) 테이블만 읽는다. 5m·60m은 `unsupported` unknown이다(빈 성공이 아니다). kr/us 분봉 테이블은 provider 열이 없어 `source=null`+`unavailable`이고(crypto 분봉은 저장된 source를 낸다), KR 일봉은 조정 여부를 저장하지 않아 `adjusted=null`+`unavailable`이다. 한 행 안에서 소스를 섞지 않는다.
+- **`data_gaps`**: 새 probe 없이 기존 점검만 쓴다 — KRX 애프터마켓 적격 목록 신선도(`load_krx_after_market_health`), KIS reconcile 신선도(`compute_freshness` 90분 규칙), 시장별 음성 클래스 기록 건강(`load_negative_class_health`). fresh이면 행이 없고, 점검 자체가 실패하면 `unknowns`와 `total: null`이다.
+  ROB-3873 데이터셋: 각 소스는 자기 guarded 하위 읽기로 돈다. 실패는 그 데이터셋의 `unknowns` 항목과 `total: null`이 되고 다른 행은 유지된다. `crypto_insight.fear_greed`·`.stablecoin_supply`·`.breadth`·`.defi_tvl`은 레짐 뷰 신선도 규칙(`_crypto_regime.py`에서 복사, 테스트로 고정)을 쓴다. `crypto_insight.aggregate_oi`는 레짐 뷰가 disabled로 보고하므로 항상 `unsupported` 행이다. `candles_1m.kr|us`·`candles_1d.kr|us|crypto`는 최신 봉 날짜를 마지막으로 확정된 세션과 비교한다(crypto는 마지막으로 닫힌 UTC 일봉). `market_events.<source>.<category>.<market>`는 신선도 서비스 행과, 7일 창에 파티션이 없는 기대 소스를 포함한다. `latest_failed_error` 텍스트는 내보내지 않는다. `research_reports`, `valuation_snapshots.kr|us`도 포함한다. 사유는 닫힌 어휘만 쓰며 헬퍼의 오류·예외 문자열은 행에 들어가지 않는다.
+- **테스트**: `tests/services/retro_v1/`(가짜 세션 + 계약 응답 스키마 검증). DB 왕복은 CI 몫이며 로컬에서는 돌리지 않았다.
+
+**회고 지표 순수 계산 (L8, hk 4189)**: `app/services/retro_v1/metrics.py`는 판단 rung 입력으로 매수 위험 금액을 rung별 합산하고, 입력이 하나라도 빠지면 부분합 대신 `null`과 닫힌 사유를 반환한다. 음수 손절가는 거부하고 0은 허용한다. 일봉 MFE/MAE는 진입 세션과 청산 세션을 제외한 완전한 세션만 사용하고 0 아래로 내려가지 않는다. 청산 세션이 진입 세션보다 이르면 거부하며 같은 세션 청산은 허용한다. 완전한 세션이 없으면 `no_complete_session`이다. 각 세션에는 최대 한 봉만 허용하며 중복 세션은 거부한다. 세션 달력에 따른 연속성 판정은 caller 책임이다. 기업행위 조정 여부는 `adjusted=null`, 값 basis는 `inference`로 둔다. 기록 비용과 `round_trip_cost_bps` 기반 추정 비용은 별도 결과이며 추정에는 `rate_source`와 정책 버전/hash를 보존한다. `fee_basis=not_provided`이면 fee placeholder를 기록값으로 취급하지 않고 tax 입력은 유지한다. 기록 비용에 통화가 없으면 금액을 보존하고 `missing_currency` 사유를 반환한다. 이 모듈은 전달받은 `Decimal`·날짜·일봉만 계산하며 DB, 파일, 네트워크, 브로커, writer를 import하거나 호출하지 않는다. 동작은 `tests/services/retro_v1/test_metrics.py`에서 고정한다.
+
+### retro/v1 HTTP 라우트 (hk 3818)
+
+`/trading/api/retro/v1`은 기본 비활성(`RETRO_API_ENABLED=false`) 읽기 전용 HTTP 표면이다.
+DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 403,
+고정 헤더 `X-Retro-Read-Token` 누락·불일치 401, 허용된 9개 GET 외 403을 적용한다.
+세션 쿠키나 다른 머신 토큰은 대체하지 못한다. 각 라우트는 대응 reader 하나만 호출하며
+스케줄러·MCP 연결은 없다.
+
+### retro/v1 소비자 핀과 검증 게이트 (hk 3819)
+
+`retro/v1` 공급자 변경은 고정된 외부 소비자(`github.com/mgh3326/factortrail` 커밋 `4e111bf`)의 실제 Go 클라이언트 검증 게이트를 통과해야 한다.
+- **소비자 고정**: `contracts/retro/v1/consumers.lock`이 지원 소비자 repo, 커밋 SHA, Go 버전, 대상 패키지를 정의한다.
+- **검증 하네스**: `tools/retro-consumer-check/main.go`가 기존 고정 소비자의 8개 엔드포인트의 envelope 스키마, decimal/int 정밀도, 계좌/주문 식별자 비노출(개인정보 보호), unknown/사유 규약, 인증 경계(401/403)를 실제 HTTP 호출로 검증한다.
+- **실행 러너 및 CI 게이트**: `scripts/ci/run_retro_consumer_gate.py`가 루프백 서버를 띄워 하네스를 실행하며, `classify_changes.py`가 retro 경로 변경 시 `retro-consumer-gate` CI 작업을 트리거한다. `aggregate_required.py`는 게이트 누락 시 fail-closed로 거부한다.
+- **운영 런북**: 소비자 핀 갱신 절차(호환 확장 → 소비자 커밋 → 핀 갱신 → 구버전 퇴역) 및 비호환 변경(v2 병행 배포 후 이전) 규약은 `docs/runbooks/retro-consumer-pin.md`를 따른다.
+
+
+
+### retro/v1 청산 거래와 회고 (hk 3869)
+
+`retro_trades`는 KST 종료일 범위의 `status=closed`, `account_type=live` journal과
+`journal_id`로 연결된 `kis_live`, `toss_live`, `upbit_live` 회고만 읽는다.
+`entry_at`은 journal 생성 시각이며 `return_rate`는 기록된 `pnl_pct`의 퍼센트다.
+지원 시장 외 instrument도 행을 보존하며 시장·통화는 null과 `unsupported`로 표시한다.
+금액은 `total_pnl_krw`, `security_pnl_usd`, `security_pnl_krw` 순서로 기록된
+값 하나를 선택하고 통화를 함께 제공한다. 수치는 세션 기록이므로 `basis=inference`다.
+전체 필터 집계는 페이지와 무관하며 값이 없거나 읽기가 불완전하면 null과 사유를
+반환한다. 회고 prose는 민감 패턴을 검사한 뒤 1,000자로 제한하고 차단 시 `redacted`를
+기록한다. JSONB와 원본 식별자는 공개하지 않는다. 기존 consumer pin과 8개 호출
+하네스는 호환 확장 순서에 따라 유지한다.
