@@ -21,8 +21,11 @@ scripts, and local hosts that need broker tokens but must not issue them.
   `TokenIssuanceCacheOnlyUnavailable`, a subclass of `TokenIssuanceUnavailable`,
   and stop there. They make no OAuth or approval HTTP request, no gatewayd
   ensure request, take no issuance lock, and write or delete no Redis key.
-  A KIS forced invalidation is refused before the in-process copy is cleared;
-  that copy is revalidated against Redis on the existing interval.
+  A KIS forced invalidation never writes or deletes the Redis key. It drops this
+  process's in-process copy and remembers the rejected token, so Redis does not
+  hand that same token back. The next token the producer publishes to Redis is
+  used. Until the producer rotates, requests that read the cache get a miss and
+  are refused.
 - The error message names the provider and the mode only. It never contains a
   token, key, URL, or Redis key name.
 
