@@ -440,6 +440,9 @@ async def _reconcile_one_toss_row(
         base["local_status"] = row.status
         base["action"] = "noop_terminal"
         return base
+    if terminal_only and row.operation_kind == "cancel":
+        base["action"] = "noop_cancel_request"
+        return base
     if evidence_source is not None:
         evidence = await evidence_source.evidence_for(row)
     else:
@@ -911,12 +914,14 @@ async def toss_reconcile_orders_impl(
             )
         )
         reopened_rows = reopen_report.pop("rows")  # ORM rows, not echoed
-        open_rows = await service.list_open(
-            symbol=symbol,
-            order_id=order_id,
-            market=market,
-            limit=limit,
-        )
+        if terminal_only:
+            open_rows = await service.list_open(
+                symbol=symbol, order_id=order_id, market=market, limit=limit, after_id=0
+            )
+        else:
+            open_rows = await service.list_open(
+                symbol=symbol, order_id=order_id, market=market, limit=limit
+            )
         open_total = int(
             (
                 await db.execute(
@@ -943,6 +948,18 @@ async def toss_reconcile_orders_impl(
                 )
             ).scalar_one()
         )
+        if terminal_only and limit > 0:
+            while len(open_rows) < open_total and open_rows:
+                page = await service.list_open(
+                    symbol=symbol,
+                    order_id=order_id,
+                    market=market,
+                    limit=min(limit, open_total - len(open_rows)),
+                    after_id=open_rows[-1].id,
+                )
+                if not page:
+                    break
+                open_rows.extend(page)
         # Work-list = list_open rows + reopened rows, deduped by ledger id
         # (a non-dry-run reopened row is now 'accepted' and may also be in
         # open_rows). Touch attributes here while the session is still open.
@@ -1045,6 +1062,7 @@ async def toss_reconcile_orders_impl(
             oldest_scanned_at=scanned_oldest,
             newest_scanned_at=scanned_newest,
             now=datetime.now(UTC),
+            **({"scan_order": "id ASC"} if terminal_only else {}),
         ),
         "batch_build_error": batch_build_error,
         "message": (

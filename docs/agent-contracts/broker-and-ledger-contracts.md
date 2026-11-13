@@ -818,6 +818,7 @@ evidence-first / fail-closed.
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 
 **KIS US 종료 상태 전용 (hk 4179)**: `scripts.kis_us_auto_reconcile --apply-terminal-only`는 기본 false인 `KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED` 하나로 KIS US 원장의 증거 기반 만료·취소만 반영하고 체결 부기는 보류한다. 자동 체결·저널·실현손익은 기존 게이트 뒤에 남으며, 브로커 주문·정정·취소 경로는 바뀌지 않는다 (운영자 결정 `decision/2026-11-12/at-b02-reconcile-and-3792` 항목 2). dry-run에서 닫을 행이 있으면 경고와 exit 3이다.
+terminal-only의 `limit`은 페이지 크기다. 시작 시 열린 행 수를 상한으로 후보를 쓰기 전에 페이지별 수집하므로 체결 보류 행이 뒤의 후보를 가리지 않는다. 이미 기록한 체결과 브로커의 무체결 종료 증거가 모순되면 수동 검토를 요구하고 행을 열어 둔다.
 ...
 시장가 crypto 주문의 경우 전송 즉시 inline으로 Reconcile을 자동 수행하여 체결 장부를 확정합니다.
 
@@ -903,6 +904,7 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 ### 토스증권 Open API (ROB-529)
 
 **종료 상태 전용 (hk 4179)**: `scripts.toss_live_auto_reconcile --apply-terminal-only`는 기본 false인 `TOSS_TERMINAL_AUTO_RECONCILE_ENABLED` 하나로 Toss 원장의 증거 기반 만료·취소·거절만 반영하고 체결 부기는 보류한다. 자동 체결·저널·실현손익은 기존 두 플래그 게이트 뒤에 남으며, 브로커 주문·정정·취소 경로는 바뀌지 않는다 (운영자 결정 `decision/2026-11-12/at-b02-reconcile-and-3792` 항목 2). dry-run에서 닫을 행이 있으면 경고와 exit 3이다.
+terminal-only의 `limit`은 페이지 크기이며 시작 시 열린 행 수를 상한으로 후보를 쓰기 전에 수집한다. 별도 취소 요청 행은 원주문의 종료 증거가 아니므로 이 모드에서 건너뛴다.
 
 토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
 

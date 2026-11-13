@@ -258,6 +258,7 @@ async def _list_open_live_ledger_rows(
     symbol: str | None,
     order_no: str | None,
     limit: int,
+    after_id: int | None = None,
 ) -> list[LiveOrderLedger]:
     """Open rows in the aged ``_US_OPEN_SCAN_ORDER`` (ROB-719 gap D)."""
     async with _order_session_factory()() as db:
@@ -272,11 +273,17 @@ async def _list_open_live_ledger_rows(
             stmt = stmt.where(LiveOrderLedger.symbol == symbol)
         if order_no:
             stmt = stmt.where(LiveOrderLedger.order_no == order_no)
-        stmt = stmt.order_by(
-            _live_beyond_reach_clause().asc(),
-            LiveOrderLedger.created_at.asc(),
-            LiveOrderLedger.id.asc(),
-        ).limit(limit)
+        if after_id is not None:
+            stmt = stmt.where(LiveOrderLedger.id > after_id).order_by(
+                LiveOrderLedger.id.asc()
+            )
+        else:
+            stmt = stmt.order_by(
+                _live_beyond_reach_clause().asc(),
+                LiveOrderLedger.created_at.asc(),
+                LiveOrderLedger.id.asc(),
+            )
+        stmt = stmt.limit(limit)
         rows = list((await db.execute(stmt)).scalars().all())
         for r in rows:
             db.expunge(r)
@@ -404,6 +411,15 @@ async def _reconcile_one_live_row(
     else:
         evidence = await adapter.fetch_evidence(row)
     base["verdict"] = evidence.verdict.value
+
+    if (
+        terminal_only
+        and evidence.verdict in (FillVerdict.EXPIRED, FillVerdict.CANCELLED)
+        and (row.filled_qty or Decimal("0")) > 0
+    ):
+        base["action"] = "noop_contradictory_fill_evidence"
+        base["requires_manual_review"] = True
+        return base
 
     if evidence.verdict == FillVerdict.PENDING:
         base["action"] = "noop_pending"
@@ -681,9 +697,36 @@ async def live_reconcile_orders_impl(
         beyond_reach = await _count_beyond_reach_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id
         )
-        rows = await _list_open_live_ledger_rows(
-            market=market, broker=broker, symbol=symbol, order_no=order_id, limit=limit
-        )
+        if terminal_only:
+            rows = await _list_open_live_ledger_rows(
+                market=market,
+                broker=broker,
+                symbol=symbol,
+                order_no=order_id,
+                limit=limit,
+                after_id=0,
+            )
+        else:
+            rows = await _list_open_live_ledger_rows(
+                market=market,
+                broker=broker,
+                symbol=symbol,
+                order_no=order_id,
+                limit=limit,
+            )
+        if terminal_only and limit > 0:
+            while len(rows) < open_total and rows:
+                page = await _list_open_live_ledger_rows(
+                    market=market,
+                    broker=broker,
+                    symbol=symbol,
+                    order_no=order_id,
+                    limit=min(limit, open_total - len(rows)),
+                    after_id=rows[-1].id,
+                )
+                if not page:
+                    break
+                rows.extend(page)
         scanned_oldest, scanned_newest = scanned_row_bounds(rows)
     except Exception as exc:
         logger.exception("Failed to list open live ledger rows: %s", exc)
@@ -724,8 +767,8 @@ async def live_reconcile_orders_impl(
             oldest_scanned_at=scanned_oldest,
             newest_scanned_at=scanned_newest,
             now=datetime.now(UTC),
-            scan_order=_US_OPEN_SCAN_ORDER,
-            probeable_open=open_total - beyond_reach,
+            scan_order="id ASC" if terminal_only else _US_OPEN_SCAN_ORDER,
+            probeable_open=None if terminal_only else open_total - beyond_reach,
         ),
         "message": f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}",
     }

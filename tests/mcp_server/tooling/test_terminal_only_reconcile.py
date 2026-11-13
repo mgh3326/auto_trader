@@ -309,3 +309,133 @@ def test_terminal_flags_default_false():
     assert (
         Settings.model_fields["TOSS_TERMINAL_AUTO_RECONCILE_ENABLED"].default is False
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [FillVerdict.EXPIRED, FillVerdict.CANCELLED])
+async def test_kis_terminal_contradictory_booked_fill_stays_open(verdict):
+    row = live_row()
+    row.filled_qty = Decimal("1")
+    evidence = FillEvidence(verdict, Decimal(0), None, None, "test", "")
+    adapter = SimpleNamespace(fetch_evidence=AsyncMock(return_value=evidence))
+    with (
+        patch.object(live, "get_evidence_adapter", return_value=adapter),
+        patch.object(
+            live, "_update_live_ledger_outcome", new_callable=AsyncMock
+        ) as update,
+        patch.object(
+            live, "_converge_proposal_rung", new_callable=AsyncMock
+        ) as projection,
+    ):
+        result = await live._reconcile_one_live_row(
+            row, dry_run=False, terminal_only=True
+        )
+    assert result["action"] == "noop_contradictory_fill_evidence"
+    assert result["requires_manual_review"] is True
+    update.assert_not_awaited()
+    projection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_toss_terminal_cancel_request_does_not_close_original_rung():
+    row = toss_row()
+    row.operation_kind = "cancel"
+    source = SimpleNamespace(evidence_for=AsyncMock())
+    with (
+        patch.object(
+            toss, "_converge_toss_proposal_rung", new_callable=AsyncMock
+        ) as projection,
+        patch.object(toss, "_order_session_factory") as session,
+    ):
+        result = await toss._reconcile_one_toss_row(
+            row, dry_run=False, terminal_only=True, evidence_source=source
+        )
+    assert result["action"] == "noop_cancel_request"
+    source.evidence_for.assert_not_awaited()
+    projection.assert_not_awaited()
+    session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_kis_terminal_scans_past_deferred_page():
+    rows = [SimpleNamespace(id=i) for i in range(1, 102)]
+
+    async def list_rows(**kwargs):
+        after_id = kwargs.get("after_id", 0)
+        return [row for row in rows if row.id > after_id][: kwargs["limit"]]
+
+    async def reconcile(row, **kwargs):
+        return {
+            "verdict": "pending",
+            "action": "would_mark_expired"
+            if row.id == 101
+            else "deferred_fill_booking",
+        }
+
+    with (
+        patch.object(
+            live, "_count_open_live_ledger_rows", new=AsyncMock(return_value=101)
+        ),
+        patch.object(
+            live, "_count_beyond_reach_live_ledger_rows", new=AsyncMock(return_value=0)
+        ),
+        patch.object(
+            live, "_list_open_live_ledger_rows", new=AsyncMock(side_effect=list_rows)
+        ) as listing,
+        patch.object(
+            live, "_reconcile_one_live_row", new=AsyncMock(side_effect=reconcile)
+        ),
+        patch.object(live, "scanned_row_bounds", return_value=(None, None)),
+    ):
+        result = await live.live_reconcile_orders_impl(
+            market="us", broker="kis", dry_run=True, limit=100, terminal_only=True
+        )
+    assert len(result["reconciled"]) == 101
+    assert result["reconciled"][-1]["action"] == "would_mark_expired"
+    assert listing.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_toss_terminal_scans_past_deferred_page():
+    rows = [SimpleNamespace(id=i) for i in range(1, 102)]
+
+    async def list_rows(**kwargs):
+        after_id = kwargs.get("after_id", 0)
+        return [row for row in rows if row.id > after_id][: kwargs["limit"]]
+
+    async def reconcile(row, **kwargs):
+        return {
+            "verdict": "pending",
+            "action": "would_mark_cancelled"
+            if row.id == 101
+            else "deferred_fill_booking",
+        }
+
+    service = SimpleNamespace(list_open=AsyncMock(side_effect=list_rows))
+    db = MagicMock()
+    count = MagicMock()
+    count.scalar_one.return_value = 101
+    db.execute = AsyncMock(return_value=count)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=db)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    with (
+        patch.object(toss, "_order_session_factory", return_value=lambda: cm),
+        patch.object(toss, "TossLiveOrderLedgerService", return_value=service),
+        patch.object(
+            toss.TossReadClient, "from_settings", side_effect=RuntimeError("disabled")
+        ),
+        patch.object(
+            toss.TossBatchEvidenceSource, "build", new=AsyncMock(return_value=None)
+        ),
+        patch.object(
+            toss, "_reconcile_one_toss_row", new=AsyncMock(side_effect=reconcile)
+        ),
+        patch.object(toss, "scanned_row_bounds", return_value=(None, None)),
+    ):
+        result = await toss.toss_reconcile_orders_impl(
+            dry_run=True, limit=100, terminal_only=True
+        )
+    assert len(result["reconciled"]) == 101
+    assert result["reconciled"][-1]["action"] == "would_mark_cancelled"
+    assert service.list_open.await_count == 2
