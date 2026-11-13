@@ -17,6 +17,10 @@ from pathlib import Path
 
 SERVICE = "at-pg-backup.service"
 REVISION = re.compile(r"^[A-Za-z0-9_]+$")
+TIMEOUT_LOCK_WARNING = (
+    "DB 세션이 해당 SQL 문을 계속 실행하며 잠금을 보유할 수 있습니다 "
+    "(client_connection_check_interval=0). 즉시 재시도하면 대기될 수 있습니다."
+)
 
 
 def command(args, *, timeout=1800, check=True):
@@ -68,10 +72,27 @@ def properties(*names):
     return result
 
 
+def backup_timeout(receipt, stage):
+    receipt.update(
+        backup_exec_main_status="unknown",
+        backup_result="unknown",
+        backup_outcome="unknown",
+        backup_healthcheck_ping="unknown",
+        backup_timeout_lock_warning=TIMEOUT_LOCK_WARNING,
+    )
+    raise RuntimeError(stage + ". " + TIMEOUT_LOCK_WARNING) from None
+
+
 def backup(start_ns, start_monotonic_ns, reason, receipt):
-    old = properties("InvocationID")["InvocationID"]
+    try:
+        old = properties("InvocationID")["InvocationID"]
+    except subprocess.TimeoutExpired:
+        backup_timeout(receipt, "백업 이전 상태 확인 시간 초과")
     # systemctl returns nonzero for a completed oneshot whose process failed.
-    command(["systemctl", "start", SERVICE], check=False)
+    try:
+        command(["systemctl", "start", SERVICE], check=False)
+    except subprocess.TimeoutExpired:
+        backup_timeout(receipt, "백업 시작 요청 시간 초과")
     names = (
         "InvocationID",
         "Result",
@@ -80,7 +101,10 @@ def backup(start_ns, start_monotonic_ns, reason, receipt):
         "ExecMainStartTimestampMonotonic",
         "ExecMainExitTimestampMonotonic",
     )
-    status = properties(*names)
+    try:
+        status = properties(*names)
+    except subprocess.TimeoutExpired:
+        backup_timeout(receipt, "백업 결과 확인 시간 초과")
     if (
         not status["InvocationID"]
         or status["InvocationID"] == old
@@ -91,6 +115,10 @@ def backup(start_ns, start_monotonic_ns, reason, receipt):
     ):
         raise RuntimeError("backup invocation not confirmed")
     outcome = (status["Result"], status["ExecMainCode"], status["ExecMainStatus"])
+    receipt.update(
+        backup_exec_main_status=status["ExecMainStatus"],
+        backup_result=status["Result"],
+    )
     # The actual PG_BACKUP_DIRECTORY is a live check; see design §pre_deploy.
     directory = Path(os.environ.get("PG_BACKUP_DIRECTORY", "/var/backups/ncp-pg"))
     checksums = sorted(
@@ -110,19 +138,22 @@ def backup(start_ns, start_monotonic_ns, reason, receipt):
                     break
         if "backup_file" in receipt:
             break
-    if outcome[0] == "success" and outcome[1] in ("1", "exited") and outcome[2] == "0":
-        pass
-    elif (
-        outcome[0] == "exit-code"
-        and outcome[1] in ("1", "exited")
-        and outcome[2] == "3"
-    ):
-        receipt["backup_healthcheck_ping"] = "not_sent"
+    main_succeeded = outcome[1] in ("1", "exited") and outcome[2] == "0"
+    if outcome[0] == "success" and main_succeeded:
+        receipt["backup_outcome"] = "succeeded"
+    elif outcome[0] == "exit-code" and main_succeeded:
+        receipt["backup_outcome"] = "succeeded_ping_failed"
+        receipt["backup_healthcheck_ping"] = "failed"
         if not reason or not reason.strip():
-            raise RuntimeError("backup remote failure not accepted")
+            raise RuntimeError(
+                "백업은 성공했지만 ping에 실패했습니다. 승인 사유가 필요합니다"
+            )
         receipt["backup_remote_failure_accepted"] = reason
     else:
-        raise RuntimeError("backup failed")
+        receipt["backup_outcome"] = "failed"
+        if outcome[2] != "0":
+            receipt["backup_healthcheck_ping"] = "not_sent"
+        raise RuntimeError("백업 메인 프로세스가 실패했습니다")
     if "backup_file" not in receipt:
         raise RuntimeError("new backup checksum not found")
 
@@ -149,6 +180,12 @@ def main():
     args_image = args.image
     current = revisions(alembic("current"))
     heads = revisions(alembic("heads"))
+    option_receipt = {
+        "migrate_requested": args.migrate,
+        "accept_backup_remote_failure_used": (
+            args.accept_backup_remote_failure is not None
+        ),
+    }
     if not heads:
         raise RuntimeError("no image head")
     if current == heads:
@@ -158,6 +195,7 @@ def main():
                     "migration": "none",
                     "revision_before": sorted(current),
                     "revision_after": sorted(heads),
+                    **option_receipt,
                 }
             )
         )
@@ -176,8 +214,9 @@ def main():
             pending.append(match.group(1))
     if not pending or end not in pending:
         raise RuntimeError("cannot determine pending revisions")
+    pending.reverse()
     if not args.migrate:
-        print("pending revisions: " + ", ".join(pending))
+        print("적용 대기 리비전(오래된 순): " + ", ".join(pending))
         return 78
     if args.dry_run:
         print(
@@ -186,6 +225,7 @@ def main():
                     "pending_revisions": pending,
                     "backup": "planned",
                     "migration": "planned",
+                    **option_receipt,
                 }
             )
         )
@@ -194,6 +234,7 @@ def main():
         "migration": "not_run",
         "revision_before": sorted(current),
         "revision_after": sorted(current),
+        **option_receipt,
     }
     try:
         backup(start_ns, start_monotonic_ns, args.accept_backup_remote_failure, receipt)
@@ -214,6 +255,7 @@ def main():
                 timeout=1800,
             )
         except subprocess.TimeoutExpired:
+            receipt["migration"] = "unverified_timeout"
             try:
                 removed = command(["docker", "rm", "-f", name], timeout=30, check=False)
                 confirmed = removed.returncode == 0
@@ -222,15 +264,26 @@ def main():
             receipt["migration_container_cleanup"] = (
                 "confirmed" if confirmed else "unconfirmed"
             )
+            receipt["migration_timeout_lock_warning"] = TIMEOUT_LOCK_WARNING
+            error = "마이그레이션 시간 초과. " + TIMEOUT_LOCK_WARNING
             if not confirmed:
                 receipt["migration_container"] = name
-                raise RuntimeError(
-                    "migration timed out; container removal unconfirmed; migration may still be running"
-                ) from None
-            raise RuntimeError("migration timed out") from None
-        after = revisions(alembic("current"))
+                error = (
+                    "마이그레이션 시간 초과, 컨테이너 제거 미확인. "
+                    + TIMEOUT_LOCK_WARNING
+                )
+            raise RuntimeError(error) from None
+        receipt["migration"] = "applied_unverified"
+        try:
+            after = revisions(alembic("current"))
+        except subprocess.TimeoutExpired:
+            receipt["migration_timeout_lock_warning"] = TIMEOUT_LOCK_WARNING
+            raise RuntimeError(
+                "마이그레이션 후 리비전 확인 시간 초과. " + TIMEOUT_LOCK_WARNING
+            ) from None
         receipt["revision_after"] = sorted(after)
         if after != heads:
+            receipt["migration"] = "failed"
             raise RuntimeError("migration did not reach image head")
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
         print(json.dumps(receipt))
