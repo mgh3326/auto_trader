@@ -2872,6 +2872,34 @@ def test_snapshot_scope_preserves_client_identity_from_token_namespace_fp() -> N
     )
 
 
+def test_invalid_namespace_fingerprint_disables_snapshot_cache_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.toss_portfolio_snapshot_cache as cache_module
+    from app.core.config import settings
+
+    cache_module.reset_shared_portfolio_snapshot_cache()
+    redis_client_calls = 0
+
+    def create_redis_client(*_args: object, **_kwargs: object) -> object:
+        nonlocal redis_client_calls
+        redis_client_calls += 1
+        return object()
+
+    monkeypatch.setattr(cache_module.redis, "from_url", create_redis_client)
+    monkeypatch.setattr(settings, "toss_api_client_id", None)
+    monkeypatch.setattr(settings, "toss_token_namespace_fp", "malformed")
+    try:
+        first = cache_module.get_shared_portfolio_snapshot_cache()
+        second = cache_module.get_shared_portfolio_snapshot_cache()
+
+        assert first is second
+        assert not first.usable
+        assert redis_client_calls == 0
+    finally:
+        cache_module.reset_shared_portfolio_snapshot_cache()
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_toss_portfolio_snapshot_scopes_do_not_share_cached_values(
