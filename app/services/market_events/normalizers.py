@@ -6,6 +6,7 @@ to MarketEventsRepository.upsert_event_with_values.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -130,6 +131,7 @@ def classify_dart_category(report_nm: str) -> str:
 
 def normalize_dart_disclosure_row(
     row: dict[str, Any],
+    corp_registry: Mapping[str, list[dict[str, str]]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Normalize one DART ``list_date_ex`` row to a MarketEvent.
 
@@ -137,12 +139,43 @@ def normalize_dart_disclosure_row(
     name, filer name, and remarks. It does not expose ``stock_code``; keep support
     for that field for injected/legacy rows, but never substitute ``corp_code``.
     """
+    from app.services.market_events.dart_helpers import (
+        _listed_stock_code,
+        dart_row_stock_code,
+        normalize_dart_corp_name,
+    )
+
     rcept_no = (row.get("rcept_no") or row.get("rcp_no") or "").strip()
     rcept_dt = (row.get("rcept_dt") or row.get("date") or "").strip()
     corp_name = (row.get("corp_name") or "").strip()
     report_nm = (row.get("report_nm") or "").strip()
-    stock_code = (row.get("stock_code") or row.get("corp_cls_stock_code") or "").strip()
+    stock_code = dart_row_stock_code(row)
     symbol = stock_code if stock_code and stock_code.isdigit() else None
+    symbol_resolution_reason: str | None = None
+    if not stock_code:
+        normalized_name = normalize_dart_corp_name(corp_name)
+        if not normalized_name:
+            symbol_resolution_reason = "no_registry_match"
+        elif corp_registry is None:
+            symbol_resolution_reason = "registry_unavailable"
+        else:
+            entries = corp_registry.get(normalized_name, [])
+            if not entries:
+                symbol_resolution_reason = "no_registry_match"
+            else:
+                listed: dict[str, str] = {}
+                for index, entry in enumerate(entries):
+                    listed_code = _listed_stock_code(entry.get("stock_code"))
+                    if listed_code:
+                        corp_code = entry.get("corp_code", "")
+                        identity = corp_code or f"row:{index}"
+                        listed[identity] = listed_code
+                if not listed:
+                    symbol_resolution_reason = "unlisted"
+                elif len(listed) > 1:
+                    symbol_resolution_reason = "ambiguous_corp_name"
+                else:
+                    symbol = next(iter(listed.values()))
 
     if not rcept_no or not rcept_dt:
         raise ValueError("dart row missing rcept_no or rcept_dt")
@@ -173,7 +206,14 @@ def normalize_dart_disclosure_row(
         "source_url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}",
         "fiscal_year": None,
         "fiscal_quarter": None,
-        "raw_payload_json": dict(row),
+        "raw_payload_json": {
+            **dict(row),
+            **(
+                {"symbol_resolution_reason": symbol_resolution_reason}
+                if symbol_resolution_reason
+                else {}
+            ),
+        },
     }
     return event, []
 

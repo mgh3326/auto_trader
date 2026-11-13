@@ -20,6 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import today_kst
 from app.schemas.market_events import IngestionRunResult
+from app.services.market_events.dart_helpers import (
+    dart_row_stock_code,
+    fetch_dart_corp_registry,
+)
 from app.services.market_events.finnhub_helpers import fetch_earnings_calendar_finnhub
 from app.services.market_events.forexfactory_helpers import ForexFactoryFetchError
 from app.services.market_events.normalizers import (
@@ -291,6 +295,8 @@ async def ingest_kr_disclosures_for_date(
     fetch_rows: Callable[[date], Awaitable[list[dict[str, Any]]]] | None = None,
     *,
     today: date | None = None,
+    load_corp_registry: Callable[[], Awaitable[dict[str, list[dict[str, str]]] | None]]
+    | None = None,
 ) -> IngestionRunResult:
     """Ingest KR DART disclosures for one day.
 
@@ -325,10 +331,24 @@ async def ingest_kr_disclosures_for_date(
 
     try:
         rows = await fetch_rows(target_date)
+        corp_registry = None
+        needs_registry = any(
+            not dart_row_stock_code(row) and row.get("corp_name") for row in rows
+        )
+        if needs_registry:
+            if load_corp_registry is None:
+                load_corp_registry = fetch_dart_corp_registry
+            try:
+                corp_registry = await load_corp_registry()
+            except Exception:
+                # Registry lookup is enrichment only; ingestion must continue.
+                logger.warning("DART corp registry unavailable")
         upserted = 0
         for row in rows:
             try:
-                event_dict, value_dicts = normalize_dart_disclosure_row(row)
+                event_dict, value_dicts = normalize_dart_disclosure_row(
+                    row, corp_registry=corp_registry
+                )
             except ValueError as exc:
                 logger.warning("skipping unparseable dart row: %s (%s)", row, exc)
                 continue
