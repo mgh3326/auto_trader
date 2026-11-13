@@ -109,6 +109,7 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: schema -- otherwise the migration collides with what create_all already
 #: made. Same maintenance point the sibling roundtrip tests carry.
 _POST_PARENT_TABLES: tuple[str, ...] = (
+    "review.kis_us_inference_expiry_events",
     "review.account_external_flows",
     "review.account_value_snapshots",
     "review.mock_strategy_orders",
@@ -185,6 +186,12 @@ async def scratch_database() -> AsyncIterator[str]:
                         text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                     )
                 await connection.run_sync(Base.metadata.create_all)
+                # hk 4178's detail column is after this parent boundary.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.live_order_ledger DROP COLUMN last_reconcile_detail"
+                    )
+                )
                 # ROB-1470: the sleeve tag column references a post-parent
                 # table, so it goes before the table drops below.
                 await connection.execute(

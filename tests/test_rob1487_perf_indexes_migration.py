@@ -215,7 +215,12 @@ def test_head_replay_fixtures_exclude_account_value_tables():
                     }
                     if "DROP TABLE" in prefix and loop.target.id in names:
                         loop_drops = True
+        assert (
+            "ALTER TABLE review.live_order_ledger DROP COLUMN last_reconcile_detail"
+            in direct
+        ), path
         for table in (
+            "review.kis_us_inference_expiry_events",
             "review.account_value_snapshots",
             "review.account_external_flows",
         ):

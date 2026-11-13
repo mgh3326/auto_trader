@@ -298,8 +298,17 @@ async def _update_live_ledger_outcome(
     fx_pnl_accuracy: str | None = None,
 ) -> None:
     async with _order_session_factory()() as db:
-        row = await db.get(LiveOrderLedger, ledger_id)
+        row = await db.get(LiveOrderLedger, ledger_id, with_for_update=True)
         if row is None:
+            return
+        # Do not resurrect an operator-inferred terminal row from a stale
+        # pending reconciliation. Broker-confirmed terminal evidence may correct it.
+        if (row.last_reconcile_detail or {}).get(
+            "reason_code"
+        ) == "expired_inference:kis_us_day_order_no_broker_original" and status in (
+            "accepted",
+            "pending",
+        ):
             return
         row.status = status
         # lifecycle_state mirrors status for live

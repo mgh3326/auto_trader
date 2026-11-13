@@ -160,7 +160,7 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
 # v65 (hk 2690): the position baseline uses separate Core metadata.
-SCHEMA_BOOTSTRAP_VERSION = 67
+SCHEMA_BOOTSTRAP_VERSION = 68
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -732,6 +732,11 @@ _PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
 )
 
 _DDL_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE review.live_order_ledger ADD COLUMN IF NOT EXISTS last_reconcile_detail JSONB",
+    """CREATE OR REPLACE FUNCTION review.reject_kis_us_inference_event_mutation()
+       RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'KIS US inference audit is append-only'; END $$""",
+    "DROP TRIGGER IF EXISTS kis_us_inference_event_immutable ON review.kis_us_inference_expiry_events",
+    "CREATE TRIGGER kis_us_inference_event_immutable BEFORE UPDATE OR DELETE OR TRUNCATE ON review.kis_us_inference_expiry_events FOR EACH STATEMENT EXECUTE FUNCTION review.reject_kis_us_inference_event_mutation()",
     *_PAPER_COHORT_TRIGGER_DDL,
     *_PAPER_EVALUATION_TRIGGER_DDL,
     """
