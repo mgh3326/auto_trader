@@ -131,6 +131,8 @@ def backup(start_ns, start_monotonic_ns, reason, receipt):
         receipt["backup_remote_failure_accepted"] = reason
     else:
         receipt["backup_outcome"] = "failed"
+        if outcome[2] != "0":
+            receipt["backup_healthcheck_ping"] = "not_sent"
         raise RuntimeError("백업 메인 프로세스가 실패했습니다")
     if "backup_file" not in receipt:
         raise RuntimeError("new backup checksum not found")
@@ -250,9 +252,17 @@ def main():
                     + TIMEOUT_LOCK_WARNING
                 )
             raise RuntimeError(error) from None
-        after = revisions(alembic("current"))
+        receipt["migration"] = "applied_unverified"
+        try:
+            after = revisions(alembic("current"))
+        except subprocess.TimeoutExpired:
+            receipt["migration_timeout_lock_warning"] = TIMEOUT_LOCK_WARNING
+            raise RuntimeError(
+                "마이그레이션 후 리비전 확인 시간 초과. " + TIMEOUT_LOCK_WARNING
+            ) from None
         receipt["revision_after"] = sorted(after)
         if after != heads:
+            receipt["migration"] = "failed"
             raise RuntimeError("migration did not reach image head")
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
         print(json.dumps(receipt))

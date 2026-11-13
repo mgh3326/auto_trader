@@ -240,6 +240,7 @@ def test_main_failure_stays_fail_closed_with_acceptance_reason(setup_fakes):
     assert receipt["backup_exec_main_status"] == "3"
     assert receipt["backup_result"] == "exit-code"
     assert receipt["backup_outcome"] == "failed"
+    assert receipt["backup_healthcheck_ping"] == "not_sent"
     assert receipt["accept_backup_remote_failure_used"] is True
 
 
@@ -329,6 +330,85 @@ def test_migration_timeout_is_30_minutes_and_removes_container(
     assert "잠금을 보유" in str(raised.value)
     if remove_outcome != "success":
         assert receipt["migration_container"].startswith("at-pre-deploy-")
+
+
+def test_post_upgrade_revision_timeout_records_applied_unverified_warning(
+    monkeypatch, capsys
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pre_deploy_revision_timeout", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    current_calls = 0
+
+    def fake_command(args, *, timeout=None, check=True):
+        nonlocal current_calls
+        if "current" in args:
+            current_calls += 1
+            if current_calls == 2:
+                raise subprocess.TimeoutExpired(args, timeout)
+            output = "old\n"
+        elif "heads" in args:
+            output = "new (head)\n"
+        elif "history" in args:
+            output = "old -> new (head), migration\n"
+        elif "upgrade" in args:
+            output = ""
+        else:
+            raise AssertionError(args)
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(module, "command", fake_command)
+    monkeypatch.setattr(module, "backup", lambda *_: {})
+    monkeypatch.setattr(module.sys, "argv", [str(SCRIPT), IMAGE, "--migrate"])
+    monkeypatch.setenv("AT_MIGRATION_ENV_FILE", "FAKE_INPUT")
+    with pytest.raises(
+        RuntimeError, match="마이그레이션 후 리비전 확인 시간 초과"
+    ) as raised:
+        module.main()
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["migration"] == "applied_unverified"
+    assert receipt["revision_after"] == "unknown"
+    assert "client_connection_check_interval=0" in str(raised.value)
+    assert "잠금을 보유" in str(raised.value)
+    assert receipt["migration_timeout_lock_warning"] in str(raised.value)
+
+
+def test_post_upgrade_revision_read_error_stays_applied_unverified(monkeypatch, capsys):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pre_deploy_revision_error", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    current_calls = 0
+
+    def fake_command(args, *, timeout=None, check=True):
+        nonlocal current_calls
+        if "current" in args:
+            current_calls += 1
+            output = "old\n" if current_calls == 1 else "invalid output\n"
+        elif "heads" in args:
+            output = "new (head)\n"
+        elif "history" in args:
+            output = "old -> new (head), migration\n"
+        elif "upgrade" in args:
+            output = ""
+        else:
+            raise AssertionError(args)
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(module, "command", fake_command)
+    monkeypatch.setattr(module, "backup", lambda *_: {})
+    monkeypatch.setattr(module.sys, "argv", [str(SCRIPT), IMAGE, "--migrate"])
+    monkeypatch.setenv("AT_MIGRATION_ENV_FILE", "FAKE_INPUT")
+    with pytest.raises(RuntimeError, match="invalid Alembic revision output"):
+        module.main()
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["migration"] == "applied_unverified"
+    assert receipt["revision_after"] == "unknown"
 
 
 def test_annotated_alembic_current_and_heads_compare_equal(setup_fakes):
