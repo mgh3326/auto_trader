@@ -9,6 +9,8 @@ Supports testing mutants:
   --mutant delete_field: deletes a required field in retro_day
   --mutant float_integer: serializes a price decimal as a float number
   --mutant bypass_token: bypasses token authentication
+  --mutant delete_review_field: drops a required key from each retro_trades review
+  --mutant add_review_field: adds a key outside the closed review schema
 """
 
 from __future__ import annotations
@@ -165,6 +167,26 @@ def acquire_consumer_checkout(
         shutil.rmtree(temp_parent, ignore_errors=True)
 
 
+REVIEW_REQUIRED_FIELD = "fill_evidence_available"
+REVIEW_EXTRA_FIELD = "unexpected_field"
+
+
+def drop_review_field(resp: dict[str, Any]) -> dict[str, Any]:
+    """Mutant delete_review_field: remove one required key from every review element."""
+    for row in resp.get("data", []):
+        for review in row.get("reviews", []):
+            review.pop(REVIEW_REQUIRED_FIELD, None)
+    return resp
+
+
+def add_review_field(resp: dict[str, Any]) -> dict[str, Any]:
+    """Mutant add_review_field: add one key outside the closed review schema."""
+    for row in resp.get("data", []):
+        for review in row.get("reviews", []):
+            review[REVIEW_EXTRA_FIELD] = "synthetic"
+    return resp
+
+
 class CandidateServerThread(threading.Thread):
     def __init__(
         self,
@@ -179,6 +201,7 @@ class CandidateServerThread(threading.Thread):
         self.server: uvicorn.Server | None = None
         self.error: Exception | None = None
         self.original_retro_day = None
+        self.original_retro_trades = None
 
     def run(self) -> None:
         try:
@@ -235,6 +258,21 @@ class CandidateServerThread(threading.Thread):
 
                 retro_v1.READERS["retro_day"] = mutated_retro_day
 
+            elif self.mutant in ("delete_review_field", "add_review_field"):
+                real_retro_trades = retro_v1.READERS["retro_trades"]
+                self.original_retro_trades = real_retro_trades
+                mutate_review = (
+                    drop_review_field
+                    if self.mutant == "delete_review_field"
+                    else add_review_field
+                )
+
+                async def mutated_retro_trades(session, **query):
+                    resp = await real_retro_trades(session, **query)
+                    return mutate_review(resp)
+
+                retro_v1.READERS["retro_trades"] = mutated_retro_trades
+
             app.include_router(retro_v1.router)
 
             if self.mutant != "bypass_token":
@@ -257,6 +295,10 @@ class CandidateServerThread(threading.Thread):
             from app.routers import retro_v1
 
             retro_v1.READERS["retro_day"] = self.original_retro_day
+        if self.original_retro_trades is not None:
+            from app.routers import retro_v1
+
+            retro_v1.READERS["retro_trades"] = self.original_retro_trades
         if self.server:
             self.server.should_exit = True
 
@@ -290,7 +332,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--mutant",
-        choices=["delete_field", "float_integer", "bypass_token"],
+        choices=[
+            "delete_field",
+            "float_integer",
+            "bypass_token",
+            "delete_review_field",
+            "add_review_field",
+        ],
         default=None,
         help="Inject mutant for gate testing",
     )

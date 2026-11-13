@@ -18,8 +18,10 @@ from sqlalchemy.exc import OperationalError
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.order_proposals import OrderProposal, OrderProposalRung
-from app.models.review import TradeForecast
+from app.models.review import TradeForecast, TradeRetrospective
 from app.models.screener_pick_log import ScreenerPickLog
+from app.models.trade_journal import TradeJournal
+from app.models.trading import InstrumentType
 
 _CONTRACT_TEST = (
     Path(__file__).resolve().parents[2] / "contracts" / "test_retro_v1_contract.py"
@@ -341,6 +343,54 @@ def kr_day_session(**extra_routes: Any) -> FakeSession:
     return FakeSession(routes)
 
 
+GATE_TRADE_EXIT = datetime(
+    2026, 1, 5, 6, 0, tzinfo=UTC
+)  # inside the gate's 2026-01-01..01-10 window
+
+
+def gate_trade_journal() -> TradeJournal:
+    """One closed live KR trade (synthetic values) for the consumer gate."""
+    return TradeJournal(
+        id=1,
+        symbol="005930",
+        instrument_type=InstrumentType.equity_kr,
+        side="buy",
+        status="closed",
+        account_type="live",
+        strategy="S_ALPHA",
+        created_at=datetime(2026, 1, 2, tzinfo=UTC),
+        exit_date=GATE_TRADE_EXIT,
+        entry_price=Decimal("70000"),
+        exit_price=Decimal("72000"),
+        quantity=Decimal("3"),
+        pnl_pct=Decimal("2.8571"),
+        total_pnl_krw=Decimal("6000"),
+    )
+
+
+def gate_trade_review() -> TradeRetrospective:
+    """The one review linked to gate_trade_journal (synthetic values)."""
+    return TradeRetrospective(
+        id=1,
+        journal_id=1,
+        symbol="005930",
+        instrument_type=InstrumentType.equity_kr,
+        account_mode="kis_live",
+        outcome="filled",
+        side="sell",
+        fill_evidence_available=True,
+        created_at=GATE_TRADE_EXIT,
+        realized_pnl=Decimal("6000"),
+        realized_pnl_currency="KRW",
+        trigger_type="take_profit",
+        root_cause_class="none",
+        lesson="synthetic lesson",
+        result_summary="synthetic result",
+        rationale="synthetic rationale",
+        next_strategy="synthetic next",
+    )
+
+
 def build_gate_session() -> FakeSession:
     """Deterministic session providing complete data across all 8 retro/v1 operations."""
     now = datetime.now(UTC)
@@ -433,6 +483,8 @@ def build_gate_session() -> FakeSession:
         "account_value_snapshots": account_snapshots_route,
         "account_external_flows": [],
         "FROM public.kr_candles_1d": bars,
+        "FROM review.trade_journals": [gate_trade_journal()],
+        "FROM review.trade_retrospectives": [gate_trade_review()],
     }
 
     base_session = FakeSession()
