@@ -85,6 +85,15 @@ jobs:
     - name: Run Ruff formatter check
       run: uv run ruff format --check app/ tests/ research/ scripts/
 
+    - name: Expand-contract migration lint
+      if: github.event_name == 'pull_request'
+      env:
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        git fetch --no-tags --depth=1 origin "refs/heads/${BASE_REF}"
+        python3 scripts/ci/migration_expand_contract_lint.py --base-ref FETCH_HEAD --head-ref HEAD
+
     - name: Run ty
       run: uv run ty check app/ --error-on-warning
 

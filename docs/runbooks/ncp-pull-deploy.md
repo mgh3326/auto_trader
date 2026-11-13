@@ -412,6 +412,10 @@ bypass a failed rollback; investigate the image and container logs instead.
 
 Do not run migrations or make a live deployment from CI as part of this flow.
 
+### Expand-contract migration review
+
+PR CI checks only added or changed `alembic/versions/*.py` files for destructive operations in `upgrade()`. A contract step that intentionally drops or renames a table or column, or tightens a column to `NOT NULL`, must carry this exact comment in its migration file: `# expand-contract: contract-step <hk task id>` (for example, `# expand-contract: contract-step 4200`). Reviewers must confirm that the previous application version is no longer a rollback target before accepting the marked contract step. See [the shiftgate design](../design/4155-shiftgate-adoption.md#expand-contract-규칙).
+
 ## Expected interruption budget
 
 | Role | Expected interruption |

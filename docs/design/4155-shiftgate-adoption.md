@@ -223,6 +223,8 @@ blue/green 에서는 마이그레이션이 이전 색이 서비스하는 동안 
 - 파괴적 변경(삭제, 이름 변경, `NOT NULL` 강화, 타입 변경)은 N+1 에서만 낸다. 그 N+1 이 배포될 때 롤백 대상 `deployed-digest.previous` 는 이미 옛 모양을 쓰지 않는 N 이다.
 - 현재 이 규칙을 기계로 검사하는 장치는 저장소에 없다(`grep -rn "expand-contract" --include=*.md .` 결과 이 규칙을 정의하는 문서 0건). 사람 리뷰와 `deploy_approval` 보류가 막고 있고, 배포 계층 CI 는 "배포된 스키마 → 후보" 방향의 적용만 검사한다(`.github/workflows/deploy-checks.yml:10-12`). 린트 티켓 AT-6 은 선택이다.
 
+AT-6 은 PR 의 base..head 에서 추가·수정된 `alembic/versions/*.py`만 검사한다. `upgrade()`의 테이블·컬럼 삭제나 이름 변경, `NOT NULL` 강화, `op.execute`의 동등한 raw SQL 은 이전 코드와 호환되지 않는 변경으로 실패한다. 승인된 contract 단계만 파일에 다음 주석을 넣어 이 검사를 통과시킨다: `# expand-contract: contract-step <hk task id>` (예: `# expand-contract: contract-step 4200`). 이 표시는 contract 단계임을 리뷰어에게 명시하며, 해당 단계가 배포되기 전에 이전 코드가 더는 롤백 대상이 아님을 확인해야 한다.
+
 ### 이 단계의 소유와 시점
 
 - 정확한 SHA CI 게이트 통과 뒤, 첫 서비스 변경 앞에 실행한다. `--dry-run` 은 1~2 단계(읽기 전용 비교)만 실행하고 백업과 마이그레이션은 "실행 예정"으로만 출력한다.

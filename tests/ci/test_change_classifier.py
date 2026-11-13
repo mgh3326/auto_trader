@@ -113,6 +113,13 @@ def test_app_only_change_selects_the_app_lane_jobs() -> None:
     assert result.jobs == (AFFECTED_JOB, "lint")
 
 
+def test_alembic_change_selects_lint_and_affected_tests() -> None:
+    result = classify_entries(_added("alembic/versions/20261114_expand.py"))
+    assert result.run_all is False
+    assert result.lanes == ("migrations",)
+    assert result.jobs == (AFFECTED_JOB, "lint")
+
+
 def test_tests_only_change_selects_lint_and_test() -> None:
     result = classify_entries(_added("tests/test_a.py"))
     assert result.run_all is False
