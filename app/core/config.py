@@ -1514,6 +1514,17 @@ def validate_toss_api_config(settings_obj: Any = settings) -> list[str]:
     missing: list[str] = []
     if not bool(getattr(settings_obj, "toss_api_enabled", False)):
         missing.append("TOSS_API_ENABLED")
+    mode = getattr(settings_obj, "broker_token_issuance_mode", "self")
+    if mode in {"gatewayd", "cache_only"}:
+        has_client_id = _has_nonempty_value(
+            getattr(settings_obj, "toss_api_client_id", None)
+        )
+        has_namespace_fp = _has_nonempty_value(
+            getattr(settings_obj, "toss_token_namespace_fp", None)
+        )
+        if not (has_client_id or has_namespace_fp):
+            missing.append("TOSS_TOKEN_NAMESPACE_FP or TOSS_API_CLIENT_ID")
+        return missing
     if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_id", None)):
         missing.append("TOSS_API_CLIENT_ID")
     if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_secret", None)):

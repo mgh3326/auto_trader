@@ -146,6 +146,8 @@ class TossOAuthTokenManager:
         mode = getattr(settings_obj, "broker_token_issuance_mode", "self")
         client_id = getattr(settings_obj, "toss_api_client_id", None)
         namespace_fingerprint = getattr(settings_obj, "toss_token_namespace_fp", None)
+        if isinstance(namespace_fingerprint, str) and not namespace_fingerprint.strip():
+            namespace_fingerprint = None
         if namespace_fingerprint is not None:
             try:
                 toss_oauth_token_keys_for_fingerprint(namespace_fingerprint)
