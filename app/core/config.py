@@ -249,7 +249,8 @@ class Settings(BaseSettings):
 
     # Broker OAuth issuance stays local by default.  ``gatewayd`` makes this
     # process a Redis token consumer only; gatewayd performs provider issuance.
-    broker_token_issuance_mode: Literal["self", "gatewayd"] = "self"
+    # ``cache_only`` reads the shared Redis tokens and never issues.
+    broker_token_issuance_mode: Literal["self", "gatewayd", "cache_only"] = "self"
     gatewayd_url: str = "http://127.0.0.1:8791"
 
     # KIS

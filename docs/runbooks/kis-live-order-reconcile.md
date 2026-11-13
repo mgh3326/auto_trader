@@ -86,6 +86,8 @@ Migration for ROB-476 is 0 (non-breaking, backward compatible).
 - **CLI (온디맨드/cron)**: `uv run python -m scripts.kis_live_auto_reconcile`
   (dry-run 기본), 실제 booking은 `--apply` — 단 `--apply`는 아래 2개 플래그가
   모두 켜져 있어야 동작(exit 2로 거부, 게이트 우회 불가).
+- **종료 상태 전용**: `--apply-terminal-only`는 `KIS_LIVE_AUTO_RECONCILE_ENABLED=true`만 요구하고 증거가 있는 만료·취소를 기록한다. 체결 부기는 보류하며 `--apply`의 `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` 게이트는 유지된다.
+- **종료 코드**: 0 완료, 1 커널 실패, 2 게이트 차단, 3 성공했으나 작업이 남음(종료 상태 전용의 체결 보류 또는 dry-run의 `would_` 결과). `--apply`는 0/1을 유지한다.
 - **Paused TaskIQ 태스크**: `kis_live.reconcile_periodic` — worker에 등록되지만
   코드 내 `schedule=`은 없다. 외부 recurrence는 robin-prefect-automations에서
   등록한다. 활성화에는 **(ROB-487/ROB-574) 2개 플래그가 모두** 필요:

@@ -435,7 +435,23 @@ def _is_collected_test_name(path: str) -> bool:
     )
 
 
+#: Static check that the migration chain has exactly one head. Concurrent PRs
+#: that each add a migration on the same parent pass alone and create two heads
+#: once both merge; adding this to every narrow migration selection makes the
+#: PR gate (on a branch updated with main) catch that before the merge.
+MIGRATION_CHAIN_TEST = "tests/test_rob1487_perf_indexes_migration.py"
+
+
 def _tests_for_path(path: str, lane: str, universe: TestUniverse) -> set[str]:
+    if lane == "migrations":
+        selected = _references(path, universe) | {
+            f for f in universe.files if f.startswith(_mirror_prefixes(path))
+        }
+        # Only widen a narrow selection; an unmapped migration still selects
+        # nothing and therefore keeps forcing run_all.
+        if selected and MIGRATION_CHAIN_TEST in universe.files:
+            selected.add(MIGRATION_CHAIN_TEST)
+        return selected
     if lane == "retro_contract":
         test = "tests/contracts/test_retro_v1_contract.py"
         return {test} if test in universe.files else set()

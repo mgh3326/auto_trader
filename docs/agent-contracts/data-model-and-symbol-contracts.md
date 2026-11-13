@@ -175,3 +175,22 @@ DB Tables:
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.
+
+### 판단 근거와 주문 시도 연결 (hk 4182)
+
+`review.decision_evidence`, `decision_evidence_rungs`, `decision_reference_prices`,
+`decision_order_links`, `decision_order_link_outcomes`는 전향 기록 전용이다.
+`DecisionEvidenceService`만 쓰며 호출자가 트랜잭션을 소유한다. 판단 입력의 정규화
+JSON SHA-256을 저장하고, 금액에는 정확한 decimal을 쓴다. 다섯 테이블은 UPDATE ·
+DELETE · TRUNCATE를 거부하며 downgrade는 행이 하나라도 있으면 거부한다. 시도는
+`attempt_id`마다 별도 행이고 `(account_scope, send_key)`는 유니크가 아니다. 결과는
+시도당 최대 한 행이다. rung·가격·시도는 존재하는 판단을 참조하고 rung 인덱스는
+0 이상이다. 가격 관측 시각은 시간대가 있어야 한다. 제안 생성은 판단 행과 rung·참조
+가격을 같은 트랜잭션에 기록하고 `order_proposals.decision_id`를 INSERT 때만 설정한다.
+세션의 후보 참조는 실제 후보를 확인한 뒤 `recorded`로 기록한다. 매수 place에 한해
+같은 KST 날짜의 admitted 후보를 서버가 찾은 경우는 `inference`다. 후보의 관측 가격이
+양수이면서 저장 가능한 정확한 decimal이 아니면 연결은 유지하고 가격은 생략한다.
+기각 forecast의 판단 근거 연결은 세 시장(`equity_kr`, `equity_us`,
+`crypto`)만이며, `forex`·`index` forecast는 연결 없이 기존대로 저장한다. 기존 행
+소급은 없다. 판단의 stop·target 가격, rung의 수량·금액·지정가, 참조 가격은
+`numeric(38,12)`로 원래 제안의 정밀도를 보존한다. 이 정밀도는 downgrade에서도 좁히지 않는다.

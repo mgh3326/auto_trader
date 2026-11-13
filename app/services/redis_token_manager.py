@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 import math
@@ -12,7 +11,12 @@ from urllib.parse import urlsplit
 import redis.asyncio as redis
 
 from app.core.config import settings
-from app.services.brokers.token_issuance import TokenIssuanceUnavailable
+from app.services.brokers.token_issuance import (
+    TokenIssuanceUnavailable,
+    cache_only_refusal,
+    is_cache_only_token_issuance,
+)
+from app.services.brokers.token_keys import kis_live_token_keys, kis_mock_token_keys
 
 GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS = 3.0
 GATEWAYD_TOKEN_POLL_INTERVAL_SECONDS = 0.05
@@ -26,10 +30,19 @@ class RedisTokenManager:
         namespace: str = "kis",
         *,
         lock_wait_timeout_seconds: float = 3.0,
+        token_keys: tuple[str, str] | None = None,
     ):
         self.redis_client: redis.Redis | None = None
-        self._lock_key = f"{namespace}:token:lock"
-        self._token_key = f"{namespace}:access_token"
+        if token_keys is None:
+            token_key, lock_key = (
+                kis_live_token_keys()
+                if namespace == "kis"
+                else (f"{namespace}:access_token", f"{namespace}:token:lock")
+            )
+        else:
+            token_key, lock_key = token_keys
+        self._token_key = token_key
+        self._lock_key = lock_key
         self._lock_timeout = 30  # 락 타임아웃 (초)
         self._lock_wait_timeout_seconds = lock_wait_timeout_seconds
         self._token_expiry_buffer = 60  # 토큰 만료 전 버퍼 (초)
@@ -41,6 +54,9 @@ class RedisTokenManager:
         self._local_redis_miss_cooldown_seconds = 0.2
         self._local_last_redis_check_at: float = 0.0
         self._local_redis_revalidate_interval_seconds = 5.0
+        # cache_only only: the token KIS rejected through clear_token. Redis may
+        # still hold it until the producer rotates, so it is never re-cached.
+        self._cache_only_rejected_token: str | None = None
 
     async def _get_redis_client(self) -> redis.Redis:
         """Redis 클라이언트 가져오기 (지연 초기화)"""
@@ -198,6 +214,15 @@ class RedisTokenManager:
 
                 if self._is_token_valid(token_data):
                     access_token = token_data["access_token"]
+                    if access_token == self._cache_only_rejected_token:
+                        # cache_only: KIS already rejected this token. Treat it as a
+                        # miss and wait for the producer to publish another one.
+                        self._log_token_lookup(
+                            logging.INFO,
+                            "KIS access token in Redis was rejected; awaiting replacement",
+                            token_source="rejected",
+                        )
+                        return None
                     expires_at = float(token_data["expires_at"])
                     self._update_local_cache(access_token, expires_at)
                     self._log_token_lookup(
@@ -356,15 +381,49 @@ class RedisTokenManager:
             "gatewayd acknowledged token ensure without publishing a usable token"
         )
 
-    async def clear_token(self) -> None:
+    async def invalidate_if_current(self, key: str, failed_token: str) -> bool:
+        """Atomically remove a cached token only if it is the one that failed."""
+        redis_client = await self._get_redis_client()
+        script = """
+        local value = redis.call('GET', KEYS[1])
+        if not value then return 0 end
+        local ok, data = pcall(cjson.decode, value)
+        if ok and type(data) == 'table' and data.access_token == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+        """
+        return bool(await redis_client.eval(script, 1, key, failed_token))
+
+    async def clear_token(self, failed_token: str | None = None) -> None:
         """Redis에서 토큰 삭제"""
+        if is_cache_only_token_issuance(settings):
+            # cache_only: every KIS caller runs clear_token before re-ensuring, so
+            # this is the forced re-issue point. Never write or delete the shared
+            # Redis key.
+            if failed_token is not None:
+                # A peer may already have replaced the rejected token. A different
+                # usable cached token is a cache hit (as in Toss), so the caller's
+                # re-ensure picks it up. This is a read only.
+                current = await self.get_token(force_redis_check=True)
+                if current is not None and current != failed_token:
+                    return
+            # Otherwise remember the rejected token so it is not re-cached from
+            # Redis, and drop the in-process copy so the next read is from Redis.
+            rejected = failed_token if failed_token is not None else self._local_token
+            if rejected:
+                self._cache_only_rejected_token = rejected
+            self._clear_local_cache()
+            raise cache_only_refusal("kis")
         self._clear_local_cache()
         try:
-            redis_client = await self._get_redis_client()
-            await redis_client.delete(self._token_key)
-            logging.info("Redis에서 토큰 삭제 완료")
-        except Exception as e:
-            logging.error(f"Redis에서 토큰 삭제 실패: {e}")
+            if failed_token is None:
+                redis_client = await self._get_redis_client()
+                await redis_client.delete(self._token_key)
+            else:
+                await self.invalidate_if_current(self._token_key, failed_token)
+        except Exception:
+            logging.error("Redis 토큰 무효화 실패")
 
     async def close(self) -> None:
         """Redis 연결 종료"""
@@ -373,26 +432,34 @@ class RedisTokenManager:
             self.redis_client = None
 
 
-def _kis_mock_token_namespace(*, base_url: str, app_key: str) -> str:
-    """Build a non-secret Redis namespace for one VTS credential scope."""
+def _kis_mock_token_manager_keys(*, base_url: str, app_key: str) -> tuple[str, str]:
+    """Build non-secret Redis keys for one VTS credential scope."""
     host = urlsplit(base_url.rstrip("/")).netloc.lower()
     if not host:
         raise ValueError("KIS mock base URL must include a host")
-    app_key_fingerprint = hashlib.sha256(app_key.encode()).hexdigest()[:16]
-    return f"kis_mock:{host}:{app_key_fingerprint}"
+    return kis_mock_token_keys(netloc=host, app_key=app_key)
+
+
+def _kis_mock_token_namespace(*, base_url: str, app_key: str) -> str:
+    """Return the non-secret namespace used by one VTS credential scope."""
+    token_key, _ = _kis_mock_token_manager_keys(base_url=base_url, app_key=app_key)
+    return token_key.removesuffix(":access_token")
 
 
 @cache
-def _get_kis_mock_token_manager(namespace: str) -> RedisTokenManager:
+def _get_kis_mock_token_manager(token_keys: tuple[str, str]) -> RedisTokenManager:
     # VTS OAuth calls commonly take 4-6 seconds and may use the full 10-second
     # request budget. Waiters must outlive the lock owner's request.
-    return RedisTokenManager(namespace=namespace, lock_wait_timeout_seconds=11.0)
+    return RedisTokenManager(
+        lock_wait_timeout_seconds=11.0,
+        token_keys=token_keys,
+    )
 
 
 def get_kis_mock_token_manager(*, base_url: str, app_key: str) -> RedisTokenManager:
     """Return the process-shared VTS manager for a normalized host/appkey pair."""
-    namespace = _kis_mock_token_namespace(base_url=base_url, app_key=app_key)
-    return _get_kis_mock_token_manager(namespace)
+    token_keys = _kis_mock_token_manager_keys(base_url=base_url, app_key=app_key)
+    return _get_kis_mock_token_manager(token_keys)
 
 
 # 전역 인스턴스

@@ -15,6 +15,8 @@ AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 �
 
 ## 핵심 명령어
 
+플릿 세션(스폰된 워커, 디자인 세션, 리드 세션)은 테스트와 호스트 규칙에 스폰 프리앰블을 따른다. 아래 명령은 사람과 CI를 위한 것이다.
+
 ### 테스트
 ```bash
 make test                         # 모든 테스트 실행
@@ -126,9 +128,9 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    (Gemini/OpenAI/Grok 등) import·인스턴스화 금지. LLM 판단은 out-of-process MCP consumer 몫.
    정적 가드 테스트(`tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`)가
    이를 스캔한다.
-2. **브랜치 보호**: `main`·`production` 직접 push 금지. 모든 코드 변경은 feature branch + PR.
+2. **브랜치 보호**: `main`·`production` 직접 push 금지. 모든 코드 변경은 hk task ID를 쓰는 branch + PR.
 3. **Worktree 규칙**: canonical repo `/Users/mgh3326/work/auto_trader`는 항상 `main` 체크아웃 고정.
-   코드 변경은 `/Users/mgh3326/work/auto_trader.<issue-id>` worktree에서 수행.
+   코드 변경은 `/Users/mgh3326/work/auto_trader.<hk-id>` worktree에서 수행.
    머지된 브랜치 위에 계속 커밋 금지 — follow-up은 최신 `origin/main` 기준 새 브랜치로 시작.
 4. **브로커 실행 표면은 전부 default-disabled**: demo/mock/live 실행 경로는 env 게이트
    (예: `BINANCE_SPOT_DEMO_ENABLED`, `KIWOOM_MOCK_ENABLED`, `TOSS_API_ENABLED`) +
@@ -139,6 +141,11 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    Alpaca paper 크기 상한 제거만 예외다. endpoint·예상 계정·이중 게이트는 유지한다.
    ROB-1474 전략 CLI도 기본 off 이중 게이트와 예상 계좌 검증을 유지하며,
    `mock_strategy_orders`의 sending/uncertain을 재전송하거나 journal을 지우지 않는다.
+   hk 4177의 명시 운영자 결정(2026-11-12, `decision/2026-11-12/at-b02-reconcile-and-3792`)은
+   KIS live KR 주문 원장 대사의 무인 실행을 expiry/cancel 전이(terminal_only)로 한정해
+   `KIS_LIVE_AUTO_RECONCILE_ENABLED` 하나로 허용하는 것만 예외다. fill booking(체결·저널·실현손익)은
+   `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED`를 포함한 두 플래그 게이트를 유지하며,
+   브로커 주문·정정·취소 경로는 바뀌지 않는다.
 5. **레저 쓰기는 서비스 레이어 경유만**: `alpaca_paper_order_ledger`,
    `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
    `toss_live_order_ledger` 등 주문 레저에 직접 SQL INSERT/UPDATE/DELETE 금지.
@@ -221,6 +228,7 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
     을 유지한다. `WS_LEDGER_SINK` 기본 `db` 유지, `http` 실패는 DB fail-open(유실 0),
     `WS_LEDGER_SINK_URL` 의 loopback/exact-path/no-userinfo 검증과
     `follow_redirects=False` 를 완화하지 마라. 마이그레이션·스케줄러 추가 금지.
+    hk 4186 의 명시 운영자 결정(2026-11-12, decision/2026-11-12/at-operator-merge-rule16-q22)은 execution_ledger 에 filled_at_basis·fee_basis·tax_amount 를 더하는 추가형 마이그레이션과 writer 의 값 채우기만 예외로 허용한다. 멱등키·외부 ingest 행의 source=websocket 강제·항목별 savepoint·원장 커밋 권한·기존 재전송 갱신 동작은 바뀌지 않는다.
 
 17. **MCP 레인 계약**: `config/mcp_lane_allowlists/`의 `tool<TAB>basis`를 보존하고,
     등록 변경은 `tests/mcp_server/test_lane_allowlist_contract.py`와
@@ -277,15 +285,19 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
 
 ### 브랜치 네이밍
 ```
-feature/<task-id>-<설명>     # 새 기능 (예: feature/ROB-16-branch-protection)
-fix/<task-id>-<설명>         # 버그 수정
-chore/<설명>                 # 유지보수
+hk-<id>-<slug>               # 새 작업 브랜치 (예: hk-2787-agents-hk-ids)
+wk/<slug>                    # 스폰된 워커 브랜치
+PR 제목: hk <id>: <설명>
+커밋 제목: hk-<id>: <설명>
+PR 본문 trailer: Mergewake-Task: <id>
 ```
 
+기존 `ROB-…` ID는 과거 참조로 유지하며 새 작업 ID로 사용하지 않습니다.
+
 ### 워크플로우
-1. `main` 브랜치에서 feature branch 생성
+1. `main` 브랜치에서 hk 작업용 branch 생성
 2. 코드 변경 후 커밋
-3. PR 생성 (base: `main`)
+3. `hk <id>: <설명>` 형식으로 PR 생성 (base: `main`)
 4. 리뷰 후 머지
 5. 배포 시 `main` → `production` 머지
 
@@ -293,10 +305,10 @@ chore/<설명>                 # 유지보수
 
 **canonical repo `/Users/mgh3326/work/auto_trader` 는 항상 `main` 체크아웃 고정. 배포 머지 시에만 `production` 으로 일시 전환.** canonical repo에서 feature/fix 브랜치를 체크아웃하거나 작업하지 않습니다.
 
-코드 변경은 worktree에서 수행합니다. 다만 **새 Linear 이슈/병렬 작업**과 **같은 Linear 이슈의 follow-up**을 구분합니다:
+코드 변경은 worktree에서 수행합니다. 다만 **새 hk 작업/병렬 작업**과 **같은 hk 작업의 follow-up**을 구분합니다:
 
-- 새 Linear 이슈, 병렬 작업, 기존 worktree가 dirty인 경우, 또는 이전 diff/reference를 보존해야 하는 경우: 새 worktree를 만듭니다.
-- 같은 Linear 이슈의 follow-up이고 기존 issue worktree가 clean하며 재사용 가능하면: 기존 worktree를 재사용해도 됩니다. 물리 worktree를 매번 새로 만드는 것이 필수는 아닙니다.
+- 새 hk 작업, 병렬 작업, 기존 worktree가 dirty인 경우, 또는 이전 diff/reference를 보존해야 하는 경우: 새 worktree를 만듭니다.
+- 같은 hk 작업의 follow-up이고 기존 worktree가 clean하며 재사용 가능하면: 기존 worktree를 재사용해도 됩니다. 물리 worktree를 매번 새로 만드는 것이 필수는 아닙니다.
 - PR이 merge된 브랜치 위에서 계속 커밋하지 않습니다. follow-up 작업은 항상 최신 `origin/main` 기준 새 branch로 시작합니다.
 - worktree 재사용 전에는 `git status --short`, 필요한 diff/reference 백업, `git fetch --prune`을 먼저 확인합니다.
 
@@ -307,22 +319,22 @@ git fetch --prune origin
 git switch main
 git pull --ff-only
 
-# 새 Linear 이슈/병렬 작업: 새 worktree 생성
-git worktree add ../auto_trader.<issue-id> -b <branch-name> origin/main
+# 새 hk 작업/병렬 작업: 새 worktree 생성
+git worktree add ../auto_trader.<hk-id> -b hk-<id>-<slug> origin/main
 
-# 같은 Linear 이슈 follow-up: 기존 worktree가 clean하면 재사용
-cd /Users/mgh3326/work/auto_trader.<issue-id>
+# 같은 hk 작업 follow-up: 기존 worktree가 clean하면 재사용
+cd /Users/mgh3326/work/auto_trader.<hk-id>
 git status --short
 git fetch --prune origin
 git switch -c <new-followup-branch> origin/main
 
 # PR 머지 후 정리 (필요 diff/reference가 없고 clean한 상태에서)
 cd /Users/mgh3326/work/auto_trader
-git worktree remove ../auto_trader.<issue-id>
+git worktree remove ../auto_trader.<hk-id>
 git branch -D <branch-name>
 ```
 
-- **표준 worktree 경로**: `/Users/mgh3326/work/auto_trader.<issue-id>` (예: `/Users/mgh3326/work/auto_trader.rob-287`)
+- **표준 worktree 경로**: `/Users/mgh3326/work/auto_trader.<hk-id>` (예: `/Users/mgh3326/work/auto_trader.hk-2787-agents-hk-ids`)
 - 이전 경로 `.claude/worktrees/`, `~/.claude/worktrees/`, `~/auto_trader/.worktrees/` 는 deprecated — 남아 있다면 표준 경로로 이관하거나 prune
 - 이관: `git worktree move <old-path> <new-path>` (dirty 없는 상태에서)
 - 삭제된 원격 브랜치(`upstream gone`) 는 주기적으로 `git fetch --prune && git branch -vv | grep ': gone\]'` 로 확인하고 정리
