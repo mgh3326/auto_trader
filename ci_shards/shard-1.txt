@@ -174,6 +174,7 @@ tests/services/brokers/toss/test_dto.py
 tests/services/brokers/toss/test_errors.py
 tests/services/brokers/toss/test_market_calendar.py
 tests/services/brokers/toss/test_rate_limiter.py
+tests/services/brokers/toss/test_token_namespace_fp_cli.py
 tests/services/brokers/toss/test_transport.py
 tests/services/brokers/toss/test_warnings_guard.py
 tests/services/buy_gate_ab_shadow/test_epoch.py

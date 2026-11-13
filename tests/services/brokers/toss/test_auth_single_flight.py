@@ -108,7 +108,9 @@ async def test_from_settings_missing_credentials_raises_names_only() -> None:
 
 
 @pytest.mark.parametrize("mode", ["gatewayd", "cache_only"])
-async def test_consumer_mode_can_build_from_namespace_fingerprint_only(mode: str) -> None:
+async def test_consumer_mode_can_build_from_namespace_fingerprint_only(
+    mode: str,
+) -> None:
     fingerprint = auth.toss_client_fingerprint("client-id")
     expected = auth.TossOAuthTokenManager(
         client_id="client-id",
