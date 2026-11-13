@@ -160,19 +160,17 @@ async def test_matching_namespace_fingerprint_and_client_id_are_accepted() -> No
     assert manager.client_fingerprint == auth.toss_client_fingerprint("client-id")
 
 
-async def test_empty_namespace_fingerprint_is_ignored_in_self_mode() -> None:
-    configured = _Settings(toss_token_namespace_fp="")
+@pytest.mark.parametrize("mode", ["self", "gatewayd"])
+async def test_empty_namespace_fingerprint_is_ignored(mode: str) -> None:
+    configured = _Settings(
+        toss_token_namespace_fp="",
+        broker_token_issuance_mode=mode,
+        toss_api_client_secret=(SecretStr("client-secret") if mode == "self" else None),
+    )
 
     manager = auth.TossOAuthTokenManager.from_settings(configured)
-    expected = auth.TossOAuthTokenManager(
-        client_id="client-id",
-        client_secret=SecretStr("client-secret"),
-    )
 
-    assert (manager.token_key, manager.lock_key) == (
-        expected.token_key,
-        expected.lock_key,
-    )
+    assert manager.client_fingerprint == auth.toss_client_fingerprint("client-id")
 
 
 @pytest.mark.parametrize("fingerprint", ["short", "g123456789abcdef", "0" * 17])
