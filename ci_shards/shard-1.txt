@@ -112,6 +112,7 @@ tests/scripts/b0x/test_derivation.py
 tests/scripts/b0x/test_sidecar.py
 tests/scripts/b0x/us/test_alpaca.py
 tests/scripts/test_at_job_runner.py
+tests/scripts/test_at_pre_deploy.py
 tests/scripts/test_binance_h5_heartbeat_watch.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_dagu_account_value_snapshot_dag.py
