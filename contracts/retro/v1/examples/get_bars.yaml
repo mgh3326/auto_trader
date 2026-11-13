@@ -1,0 +1,38 @@
+operation: get_bars
+request:
+  path: /trading/api/retro/v1/get_bars
+  query:
+    symbol: KRW-BTC
+    market: crypto
+    tf: 1d
+    from: '2026-01-02'
+    to: '2026-01-02'
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.missing_reason
+    reason: missing_data
+  data:
+  - symbol: SYN001
+    time: '2026-01-02T00:00:00Z'
+    open_price: '1.2000'
+    high_price: '1.3000'
+    low_price: '1.1000'
+    close_price: '1.2500'
+    quantity: '100.0000'
+    currency: KRW
+    unit: base_asset
+    market: crypto
+    source: synthetic
+    venue: XSYN
+    adjusted: false
+    missing_reason: null
+    basis: inference

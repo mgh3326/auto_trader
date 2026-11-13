@@ -1,0 +1,46 @@
+# 제안(PROPOSAL, hk 3848) — 어디에도 등록되어 있지 않다.
+# registered only via the runbook below: docs/runbooks/dagu-batch1-cutover.md
+# (잡별로: 이 파일 복사 → 수동 1회 실행 → Prefect 최근 실행과 결과 대조 → Prefect 스케줄 pause. 이 순서를 건너뛰지 않는다.)
+# 근거: 운영자 결정 hk:doc decision/2026-11-10/ncp-schedules-dagu-fillwire §3.
+#
+# 기계가 읽는 줄(tests/scripts/test_dagu_at_batch_dags.py 가 검사한다):
+# prefect_deployment: Market Events Daily/daily
+# prefect_schedule: interval 1d (anchor unknown)
+# dagu_shift_minutes: 0
+# dagu_schedule_kst: 06:30
+# cutover_gate: none
+#
+# Prefect 는 24시간 interval 이라 고정 시각이 없다(anchor = 배포 생성 시각). 이 파일의 06:30 KST(21:30 UTC)는 임시 선택이다.
+# 🔴 등록 전에 `prefect deployment inspect` 의 다음 실행 시각을 읽어 이 cron 을 맞춘다(런북 §잡별 절차 9). 07:00 DART 와 겹치지 않는 시각을 골랐다.
+# Prefect 는 두 target 을 순서대로 돌리고 둘 다 끝낸 뒤에 실패를 올렸다. 두 step 은 서로 독립(병렬)이라 한쪽이 실패해도 다른 쪽이 끝까지 돌고 DAG 는 failed 가 된다. continue_on 은 쓰지 않는다: 쓰면 DAG 가 partially_succeeded 로 끝나 성공 핑이 나간다(로컬 Dagu 2.21.0 에서 확인).
+# 창: us_earnings = 오늘(KST) -7일 ~ +60일, kr_disclosures = 오늘(KST) -7일 ~ 오늘. 날짜는 GNU date 로 실행 시점에 계산한다.
+#
+# 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다).
+# 환경: dotenv 파일에서만 읽는다(이름만 런북에). 값은 이 파일과 레포에 없다.
+#   AT_BATCH_PING_URL_MARKET_EVENTS_DAILY (실패/성공 핑 URL)
+# 실패 경로: handler_on 이 healthchecks 핑(성공은 URL, 실패는 URL/fail)을 보낸다. Prefect 래퍼의 Discord 알림은 이 파일에 없다(런북 §알려진 차이).
+description: "Market events daily (US 실적 finnhub + KR 공시 dart)"
+schedule: "CRON_TZ=UTC 30 21 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: ncp
+dotenv: /root/at-secrets/.env.dagu-at-batch
+steps:
+  - name: us-earnings
+    command: docker run --rm --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_market_events --source finnhub --category earnings --market us --from-date $(TZ=Asia/Seoul date -d '7 days ago' +%F) --to-date $(TZ=Asia/Seoul date -d '60 days' +%F)
+    timeout_sec: 900
+    retry_policy:
+      limit: 1
+      interval_sec: 60
+  - name: kr-disclosures
+    command: docker run --rm --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_market_events --source dart --category disclosure --market kr --from-date $(TZ=Asia/Seoul date -d '7 days ago' +%F) --to-date $(TZ=Asia/Seoul date +%F)
+    timeout_sec: 900
+    retry_policy:
+      limit: 1
+      interval_sec: 60
+handler_on:
+  success:
+    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_MARKET_EVENTS_DAILY}"
+  failure:
+    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_MARKET_EVENTS_DAILY}/fail"

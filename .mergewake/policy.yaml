@@ -18,6 +18,8 @@ watch_checks:
 # bisect dispatches this workflow for that commit and reads the statuses it posts.
 any_ref_workflow: test-any-ref.yml
 blocking:
+  - paths: ['contracts/retro/**']
+    reason: The public retrospective contract controls data leaving the system.
   - paths:
       - 'app/services/brokers/**'
       - 'app/mcp_server/tooling/orders_kis_variants.py'

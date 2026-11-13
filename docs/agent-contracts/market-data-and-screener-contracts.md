@@ -47,6 +47,20 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 
 **안전 경계**: read-mostly 마켓 데이터, 브로커/주문/감시 mutation 없음. `raw_payload_json` 은 저장 전 `_redact_sensitive_keys` 적용. 모든 DB 쓰기는 `MarketEventsRepository` 경유. Prefect 배포는 후속 작업.
 
+**DART 공시 — 아직 끝나지 않은 날 (hk 3845)**: 07:00 KST 실행은 대상 날짜가 오늘이고 DART 가 오늘
+목록을 아직 올리지 않아 0건이 정상이다. 규칙은 하나: 대상 날짜 ≥ 실행 시점의 KST 오늘(`today_kst()`, 테스트는
+`today=` 주입)이면 "미완료"다.
+- 🔴 미완료 날짜가 **행 0건**이고 XKRX 가 **거래 세션**으로 확정한 경우만 실패가 아니다.
+  `ingest_kr_disclosures_for_date` 는 `status="pending"` 을 반환하고 파티션을 `pending` 으로 남긴다
+  (`mark_partition_pending`; `succeeded` 도 `failed` 도 아니다). 다음 실행(18:30, 다음 07:00)이 그 날을 다시 받는다.
+- 🔴 지난 날짜의 확정 세션 0건은 지금처럼 `RuntimeError`(failed)다. 캘린더 unknown 분기도 오늘에 대해서 그대로 실패한다.
+  행이 있었지만 전부 파싱 불가인 경우(#1085)는 오늘이어도 pending 이 아니다. 확정 비세션 0건은 오늘이어도 `succeeded` 다.
+- 🔴 `fetch_dart_filings_for_date` 는 대상 날짜 ≥ 오늘이면 `use_cache` 값과 무관하게 `list_date_ex(cache=False)` 로 받는다.
+  OpenDartReader 는 페이지 URL 마다 `docs_cache/` 에 한 번 쓰고 계속 되돌려 주므로, 이른 "검색된 자료가 없습니다" 페이지가
+  이후 실행에서 늦게 올라온 공시를 가린다.
+- CLI 요약 JSON 은 기존 키를 그대로 두고 `pending`(미완료 파티션 수)을 추가한다. `failed == 0` 이면 pending 이 있어도 종료 코드 0이다.
+  `pending` 키는 날짜 단위 루프 경로(dart 등)에만 있고 finnhub 범위 경로는 바뀌지 않았다.
+
 ### Research Reports Integration (ROB-140)
 
 브로커 리서치 리포트 (Naver Research / KIS Research 등) `research-reports.v1` 페이로드의 thin ingest/read-layer 통합.
@@ -83,6 +97,17 @@ US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 �
 Fail-open. Prices are exact decimal text, never
 float. Additive migration only — operator runs `alembic upgrade head`.
 No scheduler. Not a policy/weight input.
+
+The outer wrapper creates one `call_id` per fanout invocation and passes it to
+the recorder. It returns that value as the optional top-level
+`pick_log_call_id` only when the gate is enabled, at least one row is written,
+and the write succeeds. The key is omitted when logging is disabled, there are
+no rows, or the write fails. The discovery implementation remains write-free.
+
+fanout 바깥 wrapper는 호출마다 `call_id`를 하나 만들고 recorder에 전달한다.
+기록 게이트가 켜져 있고 행을 하나 이상 성공적으로 쓴 경우에만 같은 값을
+최상위 선택 키 `pick_log_call_id`로 반환한다. 기록이 꺼져 있거나 행이 없거나
+쓰기에 실패하면 이 키를 생략한다. 후보 발굴 구현은 계속 쓰기를 하지 않는다.
 
 Since task #884 (`collection_version="funnel-a1"`) the log is a full A-record:
 one row per (call, source, symbol) for every source top-10 row that entered
@@ -492,7 +517,9 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
   (`available_at` = 처음 본 시각, `fact_hash` 로 중복 제거).
 - **health**: 기한(`봉 가용 시각 + grace`)이 지난 세션 파티션이 빠지면 `gap`/`stale`, 해시 불일치 `corrupt`,
   커버리지 미달 `low_coverage` → exit 1. ping URL 은 출력하지 않는다.
-- **Dagu 제안**: `deploy/dagu/data-plane/*.yaml` — 🔴 **등록 안 됨**(운영자 승인 대상). 새 명령만 참조.
+- **Dagu**: `deploy/dagu/data-plane/*.yaml` — data-plane-kr/-us/-crypto 는 OCI Dagu coordinator 에 **등록되어 있고** NCP worker 에서 실행된다(hk:doc `report/2026-11-10/ncp-schedule-inventory` §4; 등록 시점은 그 인벤토리에 날짜 없음). DAG 등록·수정은 운영자만 호스트에서 하며, 레포의 YAML 은 사본이라 어떤 deploy 단계도 적용하지 않는다. 새 명령만 참조.
+- **venue 라벨 relabel (hk 3847)**: US 유니버스의 `otherlisted` 거래소 코드 `F`=Texas Stock Exchange, `M`=NYSE Texas 는 NASDAQ Trader 정의 페이지에 없어(A/N/P/Z/V 만 기재) 실제 파일 행에서 매핑했다. 축소 가드는 이전 파티션 카운트에 `symdir.LEGACY_VENUE_ALIASES`(검토된 옛 라벨→새 라벨, 현재 `UNKNOWN:TXSE`→Texas Stock Exchange)만 접어 비교한다 — 임계값·slack 불변, 알려진 venue 의 실제 감소는 그대로 거부한다. 미매핑 코드는 `UNKNOWN:<code>` 로 남고 universe manifest 의 `unmapped_venues` 로 보고된다.
+- **Dagu 제안 (배치 1, hk 3848)**: `deploy/dagu/at-batch/*.yaml` 11개 — Prefect 배치 11개의 이전 후보. 🔴 **등록 안 됨**: 등록·Prefect pause 는 `docs/runbooks/dagu-batch1-cutover.md` 를 잡별로 따를 때만, 8·10·11번은 hk 3846/3845 수정 배포 후. 정적 검사 `tests/scripts/test_dagu_at_batch_dags.py`.
 - 기존 `*_candles_1d`·`*_symbol_universe`·뉴스 테이블은 서빙용으로 유지하되 덮어쓰기라 학습 입력으로 쓰지 않는다.
 
 ### KR 부스팅 베이스라인·동결 대조군 (ROB-1441)
@@ -570,3 +597,7 @@ A symbol with any row that `validate_bars` rejects is excluded whole with reason
 nor `candidates.csv`. Missing or blank numeric fields parse to NaN so they take
 this path. A malformed benchmark bar aborts publication. `validate_bars` itself is
 unchanged.
+
+### US 지정가 깊이 연구 shadow 설계 (hk 3737)
+
+`docs/design/3737-us-limit-depth-shadow.md`는 후속 연구의 제안이며 구현·실험 활성화가 아니다. ROB-1474의 기록된 US 매수 진입 episode를 읽기 전용으로 비교하고, 1분봉 GET 파일의 불변 세대와 출처를 고정한다. 매수 반사실은 `low < limit`일 때만 체결 가정, 동등 접촉은 별도 계수하며 결과는 journal·브로커 체결과 별도 라벨이다. 사전등록·미결 설계 확정 후에만 후속 구현한다. 주문·원장 쓰기·소급·스케줄러 및 기존 시장가 실험 변경은 없다.

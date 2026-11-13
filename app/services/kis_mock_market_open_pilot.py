@@ -18,7 +18,7 @@ from app.services.preopen_approval_safety import (
 )
 
 PilotMode = Literal["readiness", "dry-run", "submit-mock"]
-PilotStatus = Literal["ready", "submitted", "blocked"]
+PilotStatus = Literal["ready", "submitted", "blocked", "unknown"]
 PilotSide = Literal["buy", "sell"]
 ReportStatus = Literal["accepted_but_fill_unknown", "filled_inferred", "rejected"]
 
@@ -202,8 +202,14 @@ async def run_kis_mock_market_open_pilot(
                 reason="ROB-95 KIS mock market-open pilot dry-run",
             )
         )
+        preview_ok = (
+            (response.get("success") is True or response.get("ok") is True)
+            and response.get("success") is not False
+            and response.get("ok") is not False
+            and not response.get("error")
+        )
         return KisMockMarketOpenPilotResult(
-            status="submitted",
+            status="ready" if preview_ok else "blocked",
             mode=request.mode,
             symbol=request.symbol,
             side=request.side,
@@ -213,6 +219,7 @@ async def run_kis_mock_market_open_pilot(
             account_mode=request.account_mode,
             dry_run=True,
             safety_checks=safety_checks,
+            blocking_reasons=[] if preview_ok else ["mock_preview_refused"],
             response=response,
         )
 
@@ -256,9 +263,48 @@ async def run_kis_mock_market_open_pilot(
             reason="ROB-95 KIS mock market-open pilot exact-approved mock submit",
         )
     )
-    report_status = classify_kis_mock_market_open_report(response=response)
+    response_status = str(response.get("status") or "").strip().lower()
+    not_sent = (
+        response.get("dry_run") is True
+        or response.get("mutation_sent") is False
+        or response.get("pre_send_blocked") is True
+        or response_status
+        in {
+            "preview",
+            "simulated",
+            "not_sent",
+            "blocked",
+            "refused",
+            "rejected",
+            "failed",
+        }
+    )
+    positive_response = (
+        (response.get("success") is True or response.get("ok") is True)
+        and response.get("success") is not False
+        and response.get("ok") is not False
+        and not response.get("error")
+        and not response.get("error_code")
+    )
+    has_order_id = any(
+        isinstance(response.get(key), str) and bool(response[key].strip())
+        for key in ("order_no", "odno", "order_id")
+    )
+    outcome_unknown = (
+        response.get("outcome_unknown") is True
+        or response.get("reconciliation_required") is True
+        or response_status in {"unknown", "uncertain"}
+        or (positive_response and not not_sent and not has_order_id)
+    )
+    sent = positive_response and has_order_id and not not_sent and not outcome_unknown
+    status: PilotStatus = (
+        "unknown" if outcome_unknown else "submitted" if sent else "blocked"
+    )
+    report_status = (
+        classify_kis_mock_market_open_report(response=response) if sent else None
+    )
     return KisMockMarketOpenPilotResult(
-        status="submitted",
+        status=status,
         mode=request.mode,
         symbol=request.symbol,
         side=request.side,
@@ -268,6 +314,9 @@ async def run_kis_mock_market_open_pilot(
         account_mode=request.account_mode,
         dry_run=False,
         safety_checks=safety_checks,
+        blocking_reasons=[]
+        if sent
+        else ["outcome_unknown" if outcome_unknown else "order_not_submitted"],
         response=response,
         expected_approval_text=expected_approval,
         report_status=report_status,

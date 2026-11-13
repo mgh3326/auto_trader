@@ -89,7 +89,7 @@ def test_the_six_gate_jobs_keep_their_names_and_full_suite_condition(
     assert "if" not in test_wf["jobs"]["lint"]
 
 
-def test_the_pr_gate_still_reads_exactly_its_five_children(
+def test_the_pr_gate_still_reads_exactly_its_children(
     test_wf: dict[str, Any],
 ) -> None:
     assert test_wf["jobs"]["gate-verdict"]["needs"] == [
@@ -98,6 +98,7 @@ def test_the_pr_gate_still_reads_exactly_its_five_children(
         "affected-tests",
         "test",
         "taskiq-smoke",
+        "retro-consumer-gate",
     ]
     assert test_wf["jobs"]["pr-gate"]["needs"] == ["gate-verdict"]
 

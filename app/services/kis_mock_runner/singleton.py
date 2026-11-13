@@ -1264,20 +1264,36 @@ async def issue_kis_mock_followup_capability(
             _ACTIVE_FOLLOWUP_CAPABILITY.reset(token)
 
 
-def _chain_pre_send_hooks(
-    first: Callable[[], Awaitable[None]] | None,
-    second: Callable[[], Awaitable[None]] | None,
-) -> Callable[[], Awaitable[None]] | None:
-    if first is None:
-        return second
-    if second is None:
-        return first
+def _assert_uncoordinated_mock_transport(
+    *, client: Any, path: str, lane_id: str
+) -> None:
+    from app.services.mock_lane_registry import (
+        LaneGuardError,
+        assert_mock_only_endpoint,
+        get_lane_registry_entry,
+    )
 
-    async def _both() -> None:
-        await first()
-        await second()
-
-    return _both
+    entry = _require_kis_mock_lane_entry(get_lane_registry_entry(lane_id))
+    if getattr(client, "_is_mock_client", None) is not True:
+        raise KISMockSendBoundaryRejected(
+            KIS_MOCK_TRANSPORT_NOT_MOCK_CLIENT,
+            detail="actual KIS client is not a mock client",
+        )
+    try:
+        netloc = assert_mock_only_endpoint(entry, client._kis_url(path))
+    except (LaneGuardError, ValueError) as exc:
+        raise KISMockSendBoundaryRejected(
+            KIS_MOCK_TRANSPORT_HOST_MISMATCH,
+            detail="resolved URL is not the KIS mock host",
+        ) from exc
+    if netloc != KIS_MOCK_VTS_NETLOC:
+        raise KISMockSendBoundaryRejected(KIS_MOCK_TRANSPORT_HOST_MISMATCH)
+    view = getattr(client, "_settings", None)
+    if (
+        getattr(view, "_is_mock", None) is not True
+        or _resolved_netloc(getattr(view, "kis_base_url", None)) != KIS_MOCK_VTS_NETLOC
+    ):
+        raise KISMockSendBoundaryRejected(KIS_MOCK_CREDENTIAL_NAMESPACE_MISMATCH)
 
 
 @asynccontextmanager
@@ -1291,68 +1307,16 @@ async def kis_mock_mutation_authority(
     caller_pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     lease_factory: Callable[[], KISMockWriterLease] = KISMockWriterLease,
 ) -> AsyncIterator[KISMockMutationAuthority]:
-    """Hold authority for the whole of one KIS mock mutation, or refuse it.
+    """Pin mock transport identity without requiring a coordinator or lease."""
 
-    ROB-1263 B-2: an ``is_mock=True`` place/cancel/modify may no longer reach the
-    wire *merely because an env gate is false*.  The account-mode lease is now
-    acquired for every mock mutation regardless of ``KIS_MOCK_RUNNER_ENABLED``;
-    that variable still arms the runner and changes nothing else, but it can no
-    longer switch this guard off.
+    _assert_uncoordinated_mock_transport(client=client, path=path, lane_id=lane_id)
 
-    ROB-1263 r3: a *follow-up* (cancel / modify / reduce) additionally requires an
-    operation-scoped capability. This function **verifies** one; it never issues
-    one and never decides that a follow-up should happen — that decision belongs
-    to J5 or the lane-native lifecycle owner.
-    """
+    async def mock_pre_send_hook() -> None:
+        _assert_uncoordinated_mock_transport(client=client, path=path, lane_id=lane_id)
+        if caller_pre_send_hook is not None:
+            await caller_pre_send_hook()
 
-    if operation is not KISMockOperation.PLACE:
-        # Fail closed before the lease: an unauthorized follow-up must not even
-        # contend for authority, let alone reach the transport.
-        capability = capability or active_followup_capability()
-        verify_kis_mock_followup_capability(
-            capability, operation=operation, lane_id=lane_id
-        )
-
-    authority = active_writer_authority()
-    grant = authority.grant if authority is not None else None
-    if grant is not None:
-        # r3 §6: a grant is authority for *its own* lane and physical account.
-        # Reusing a KR grant for a US send, or one account's grant for another's,
-        # is exactly the confusion an "authority is held" check must not permit.
-        if grant.lane_id != lane_id:
-            raise KISMockSendBoundaryRejected(
-                KIS_MOCK_LANE_PROFILE_MISMATCH,
-                detail=(
-                    f"grant is for lane {grant.lane_id!r}, "
-                    f"this transport is lane {lane_id!r}"
-                ),
-            )
-        if capability is not None and not capability.matches_grant(grant):
-            raise KISMockSendBoundaryRejected(
-                KIS_MOCK_LANE_PROFILE_MISMATCH,
-                detail="capability was issued against a different authority",
-            )
-        hook = _chain_pre_send_hooks(
-            build_kis_mock_send_boundary_hook(
-                client=client, path=path, entry=grant.entry, grant=grant
-            ),
-            caller_pre_send_hook,
-        )
-        yield KISMockMutationAuthority(grant=grant, pre_send_hook=hook)
-        return
-
-    # No coordination grant. The lane is not AUTO-eligible for this send, but it
-    # still may not touch the wire unowned: take the legacy account-mode lease
-    # unconditionally.
-    async with enforce_kis_mock_mutation_writer(
-        enabled=True, lease_factory=lease_factory
-    ):
-        if active_writer_authority() is None:  # pragma: no cover - defensive
-            raise KISMockUncoordinatedMutation(
-                KIS_MOCK_KEYSET_NOT_PROVEN,
-                detail="no writer authority is held at the KIS mock wire boundary",
-            )
-        yield KISMockMutationAuthority(grant=None, pre_send_hook=caller_pre_send_hook)
+    yield KISMockMutationAuthority(grant=None, pre_send_hook=mock_pre_send_hook)
 
 
 # --------------------------------------------------------------------------

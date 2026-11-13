@@ -200,13 +200,15 @@ async def test_save_helper_inserts_row(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kis_mock_buy_writes_ledger_and_skips_live(monkeypatch):
+async def test_kis_mock_buy_writes_ledger_and_skips_live(
+    monkeypatch, clean_kis_live_order_send_intents
+):
     from app.mcp_server.tooling import kis_mock_ledger, order_execution, order_journal
     from tests._mcp_tooling_support import build_tools
 
     # Allow KIS mock config through
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        "app.mcp_server.tooling.orders_kis_variants.validate_kis_mock_config",
         lambda *_, **__: [],
     )
 
@@ -266,13 +268,14 @@ async def test_kis_mock_buy_writes_ledger_and_skips_live(monkeypatch):
     monkeypatch.setattr(order_journal, "_link_journal_to_fill", link_journal)
 
     tools = build_tools()
-    result = await tools["place_order"](
+    result = await tools["kis_mock_place_order"](
         symbol="005930",
         side="buy",
         order_type="limit",
         quantity=10,
         price=70000.0,
         dry_run=False,
+        confirm=True,
         account_mode="kis_mock",
         strategy="posture-v1",
     )
@@ -295,13 +298,15 @@ async def test_kis_mock_buy_writes_ledger_and_skips_live(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kis_mock_sell_writes_ledger_and_does_not_close_journals(monkeypatch):
+async def test_kis_mock_sell_writes_ledger_and_does_not_close_journals(
+    monkeypatch, clean_kis_live_order_send_intents
+):
     from app.mcp_server.tooling import kis_mock_ledger, order_execution, order_journal
     from tests._mcp_tooling_support import build_tools
 
     # Allow KIS mock config through
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        "app.mcp_server.tooling.orders_kis_variants.validate_kis_mock_config",
         lambda *_, **__: [],
     )
 
@@ -370,13 +375,14 @@ async def test_kis_mock_sell_writes_ledger_and_does_not_close_journals(monkeypat
     monkeypatch.setattr(order_journal, "_link_journal_to_fill", link_journal)
 
     tools = build_tools()
-    result = await tools["place_order"](
+    result = await tools["kis_mock_place_order"](
         symbol="005930",
         side="sell",
         order_type="limit",
         quantity=5,
         price=70000.0,
         dry_run=False,
+        confirm=True,
         account_mode="kis_mock",
         strategy="posture-v1",
     )
@@ -402,20 +408,21 @@ async def test_kis_mock_missing_config_fails_closed_before_broker(monkeypatch):
     from tests._mcp_tooling_support import build_tools
 
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        "app.mcp_server.tooling.orders_kis_variants.validate_kis_mock_config",
         lambda *_, **__: ["KIS_MOCK_ENABLED", "KIS_MOCK_APP_KEY"],
     )
     sentinel = AsyncMock(side_effect=AssertionError("must not call broker"))
     monkeypatch.setattr(order_execution, "_execute_order", sentinel)
 
     tools = build_tools()
-    result = await tools["place_order"](
+    result = await tools["kis_mock_place_order"](
         symbol="005930",
         side="buy",
         order_type="limit",
         quantity=1,
         price=70000.0,
         dry_run=False,
+        confirm=True,
         account_mode="kis_mock",
     )
     assert result["success"] is False
@@ -435,13 +442,15 @@ async def test_kis_mock_missing_config_fails_closed_before_broker(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kis_mock_buy_does_not_require_thesis(monkeypatch):
+async def test_kis_mock_buy_does_not_require_thesis(
+    monkeypatch, clean_kis_live_order_send_intents
+):
     from app.mcp_server.tooling import kis_mock_ledger, order_execution, order_journal
     from tests._mcp_tooling_support import build_tools
 
     # Allow KIS mock config through
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        "app.mcp_server.tooling.orders_kis_variants.validate_kis_mock_config",
         lambda *_, **__: [],
     )
 
@@ -494,13 +503,14 @@ async def test_kis_mock_buy_does_not_require_thesis(monkeypatch):
 
     tools = build_tools()
     # No thesis — still fine for kis_mock (no TradeJournal is created).
-    result = await tools["place_order"](
+    result = await tools["kis_mock_place_order"](
         symbol="005930",
         side="buy",
         order_type="limit",
         quantity=3,
         price=70000.0,
         dry_run=False,
+        confirm=True,
         account_mode="kis_mock",
         strategy="posture-v1",
     )
@@ -518,7 +528,7 @@ async def test_kis_mock_buy_without_strategy_is_refused_before_send(monkeypatch)
     from tests._mcp_tooling_support import build_tools
 
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        "app.mcp_server.tooling.orders_kis_variants.validate_kis_mock_config",
         lambda *_, **__: [],
     )
     monkeypatch.setattr(
@@ -550,13 +560,14 @@ async def test_kis_mock_buy_without_strategy_is_refused_before_send(monkeypatch)
     monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save_ledger)
 
     tools = build_tools()
-    result = await tools["place_order"](
+    result = await tools["kis_mock_place_order"](
         symbol="005930",
         side="buy",
         order_type="limit",
         quantity=3,
         price=70000.0,
         dry_run=False,
+        confirm=True,
         account_mode="kis_mock",
     )
 

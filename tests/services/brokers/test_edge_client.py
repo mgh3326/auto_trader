@@ -336,6 +336,7 @@ def _patch_us_mock_cancel_resolution(monkeypatch, *, command_id: str) -> AsyncMo
             "symbol": "AAPL",
             "side": "buy",
             "quantity": 2.0,
+            "remaining_quantity": 2.0,
             "price": 123.45,
             "krx_fwdg_ord_orgno": None,
             "instrument_type": "equity_us",

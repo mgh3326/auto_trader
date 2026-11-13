@@ -49,6 +49,17 @@ def test_symbols_are_db_dot_format_and_test_issues_dropped() -> None:
     assert "ZVZZT" not in symbols
 
 
+def test_texas_codes_are_named_and_an_unknown_code_stays_visible() -> None:
+    codes = {"TXCP": "F", "MTEST1": "M", "NEWX": "Q"}
+    obs = parse_symbol_directory(
+        SERIES_OTHER, other_body(DAY, tuple(codes), codes=codes)
+    )
+    venue = {r.symbol: r.exchange for r in obs.rows}
+    assert venue["TXCP"] == "Texas Stock Exchange"
+    assert venue["MTEST1"] == "NYSE Texas"
+    assert venue["NEWX"] == "UNKNOWN:Q"
+
+
 def test_missing_footer_is_rejected_as_truncated() -> None:
     body = nasdaq_body(DAY, ("AAPL",))
     truncated = body[: body.index("File Creation Time")]

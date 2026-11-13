@@ -1,0 +1,1396 @@
+openapi: 3.1.0
+info:
+  title: Factortrail retro provider contract
+  version: 1.0.0
+  description: Read-only closed projections; max 500 rows/page.
+    Unknown is never zero. Opaque refs carry no raw identifiers.
+paths:
+  /trading/api/retro/v1/retro_day:
+    get:
+      operationId: retro_day
+      description: 'Count and rows share one read-only snapshot. '
+      parameters:
+      - name: market
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: &id001
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroDayResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_symbol:
+    get:
+      operationId: retro_symbol
+      description: 'Maximum date span: 366 days inclusive. Count and rows share one
+        read-only snapshot. '
+      parameters:
+      - name: symbol
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: market
+        in: query
+        required: false
+        description: Explicit market selection; when omitted, inferred from symbol.
+        schema:
+          type: string
+          enum: [kr, us, crypto]
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroSymbolResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_funnel:
+    get:
+      operationId: retro_funnel
+      description: 'Maximum date span: 366 days inclusive. Count and rows share one
+        read-only snapshot. '
+      parameters:
+      - name: market
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroFunnelResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_scoreboard:
+    get:
+      operationId: retro_scoreboard
+      description: 'Maximum date span: 366 days inclusive. Count and rows share one
+        read-only snapshot. External-flow completeness is a server-side fact, never
+        a request parameter. Account uses Modified Dietz, market holdings only, sleeve
+        attributed P&L over unchanged budget. US VOO benchmark is unknown when adjusted-close
+        sources are mixed.'
+      parameters:
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroScoreboardResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_positions:
+    get:
+      operationId: retro_positions
+      description: 'Count and rows share one read-only snapshot. '
+      parameters:
+      - name: cutoff_date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroPositionsResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/mock_experiments:
+    get:
+      operationId: mock_experiments
+      description: 'Count and rows share one read-only snapshot. '
+      parameters:
+      - name: strategy_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MockExperimentsResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/get_bars:
+    get:
+      operationId: get_bars
+      description: 'Maximum date span: 366 days inclusive. Count and rows share one
+        read-only snapshot. '
+      parameters:
+      - name: symbol
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: market
+        in: query
+        required: false
+        description: Explicit market selection; when omitted, inferred from symbol.
+        schema:
+          type: string
+          enum: [kr, us, crypto]
+      - name: tf
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - 1m
+          - 5m
+          - 60m
+          - 1d
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetBarsResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/data_gaps:
+    get:
+      operationId: data_gaps
+      description: 'Count and rows share one read-only snapshot. '
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataGapsResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_trades:
+    get:
+      operationId: retro_trades
+      description: Closed live journals (account_type=live) and linked live reviews
+        (account_mode=kis_live, toss_live, upbit_live). Dates are KST, inclusive, at
+        most 366 days. return_rate is pnl_pct in percent. entry_at is journal creation
+        time. Journal realized P&L prefers total_pnl_krw, then security_pnl_usd, then
+        security_pnl_krw. Values are session-recorded inference.
+      parameters:
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: market
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - kr
+          - us
+          - crypto
+      - name: strategy
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 64
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroTradesResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    DecimalValue:
+      type:
+      - string
+      - 'null'
+      pattern: ^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$
+      description: Exact decimal string; no float conversion. Unit and currency are
+        given by the containing row.
+    EvidenceBasis:
+      type: string
+      enum:
+      - broker
+      - inference
+      - unknown
+    UnknownReason:
+      type: string
+      enum:
+      - not_read
+      - unavailable
+      - unsupported
+      - stale
+      - upstream_error
+      - count_unavailable
+      - missing_data
+      - not_applicable
+      - flows_not_confirmed
+      - source_mixed
+      - incomplete_evidence
+      - redacted
+    Unknown:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - reason
+      properties:
+        field: *id001
+        reason:
+          $ref: '#/components/schemas/UnknownReason'
+    Envelope:
+      description: >-
+        A null total requires a total/count_unavailable unknown. Every null row
+        value requires a row reason or missing_reason, or an unknown entry with
+        its dotted data path. Never include raw exceptions or broker messages.
+      type: object
+      required:
+      - as_of
+      - data_as_of
+      - timezone
+      - total
+      - truncated
+      - limit
+      - cursor
+      - next_cursor
+      - unknowns
+      properties:
+        as_of: &id004
+          type: string
+          format: date-time
+        data_as_of: &id003
+          type:
+          - string
+          - 'null'
+          format: date-time
+        timezone: *id001
+        total:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        truncated:
+          type: boolean
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500
+        cursor: &id002
+          type:
+          - string
+          - 'null'
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+        next_cursor: *id002
+        unknowns:
+          type: array
+          items:
+            $ref: '#/components/schemas/Unknown'
+      allOf:
+      - if:
+          properties:
+            total:
+              type: 'null'
+          required:
+          - total
+        then:
+          properties:
+            unknowns:
+              contains:
+                type: object
+                properties:
+                  field:
+                    const: total
+                  reason:
+                    const: count_unavailable
+                required:
+                - field
+                - reason
+    Error:
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          enum:
+          - auth_missing
+          - auth_invalid
+          - scope_denied
+          - feature_off
+          - validation_error
+          - timeout
+          - upstream_unavailable
+          - schema_mismatch
+        message:
+          type: string
+          description: Fixed safe message; no raw exception or broker message.
+          enum:
+          - Authentication required.
+          - Authentication invalid.
+          - Scope denied.
+          - Feature unavailable.
+          - Request invalid.
+          - Invalid market parameter.
+          - Request timed out.
+          - Upstream unavailable.
+          - Schema mismatch.
+    ChainRow:
+      description: >-
+        Order rows originate from live broker order ledgers, including direct orders.
+        An unambiguous order links to its rung; fills link to their ledger order.
+        Order statuses are filled, partially_filled, working, cancelled, expired,
+        rejected, and unresolved. Authoritative fills take precedence, followed
+        by broker terminal status, then the linked rung expiry inference; a
+        current-day open order is working and an older one without terminal
+        evidence is unresolved. Rejection reasons are rate_limited, price_limit,
+        insufficient_balance, market_closed, invalid_order, or broker_other.
+        Expiry reasons are day_order_expired or expired_inference_no_broker_original;
+        cancellation uses cancelled and unresolved uses no_terminal_evidence.
+      type: object
+      additionalProperties: false
+      required:
+      - symbol
+      - stage
+      - event_at
+      - event_ref
+      - linked_ref
+      - status
+      - reason
+      - quantity
+      - price
+      - currency
+      - unit
+      - basis
+      properties:
+        symbol: *id001
+        stage:
+          type: string
+          enum:
+          - candidate
+          - proposal
+          - rung
+          - order
+          - fill
+          - markout
+          - lot
+        event_at: *id003
+        event_ref: *id001
+        linked_ref: *id002
+        status: *id001
+        reason: *id002
+        quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        price:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *id002
+        unit: *id001
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+    FunnelRow:
+      description: Order and fill counts use the same ledger orders and fill rows as the chain.
+      type: object
+      additionalProperties: false
+      required:
+      - stage
+      - cohort
+      - count
+      - denominator
+      - fill_rate
+      - unit
+      - basis
+      - missing_reason
+      properties:
+        stage: *id001
+        cohort: *id001
+        count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        denominator:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        fill_rate:
+          $ref: '#/components/schemas/DecimalValue'
+        unit: *id001
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+        missing_reason:
+          anyOf:
+          - $ref: '#/components/schemas/UnknownReason'
+          - type: 'null'
+    Benchmark:
+      type: object
+      additionalProperties: false
+      required:
+      - return_rate
+      - source
+      - basis
+      - unknown_reason
+      properties:
+        return_rate:
+          $ref: '#/components/schemas/DecimalValue'
+        source: *id002
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+        unknown_reason:
+          anyOf:
+          - $ref: '#/components/schemas/UnknownReason'
+          - type: 'null'
+    ScoreRow:
+      type: object
+      additionalProperties: false
+      required:
+      - scope
+      - subject_ref
+      - market
+      - basis
+      - evidence_basis
+      - return_rate
+      - unmeasured_reason
+      - flows_complete
+      - start_amount
+      - end_amount
+      - flow_amount
+      - currency
+      - unit
+      - benchmark
+      properties:
+        scope:
+          type: string
+          enum:
+          - account
+          - market
+          - sleeve
+        subject_ref: *id001
+        market: *id001
+        basis:
+          type: string
+          enum:
+          - modified_dietz
+          - holdings_only
+          - sleeve_budget
+        evidence_basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+        return_rate:
+          $ref: '#/components/schemas/DecimalValue'
+        unmeasured_reason: *id002
+        flows_complete:
+          type:
+          - boolean
+          - 'null'
+          description: Server-side fact; null when not applicable or unknown.
+        start_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        end_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        flow_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *id001
+        unit: *id001
+        benchmark:
+          $ref: '#/components/schemas/Benchmark'
+    PositionRow:
+      type: object
+      additionalProperties: false
+      required:
+      - symbol
+      - market
+      - position_ref
+      - broker
+      - quantity
+      - average_price
+      - unrealized_amount
+      - currency
+      - unit
+      - basis
+      - lot_state
+      - missing_reason
+      properties:
+        symbol: *id001
+        market:
+          type: string
+          description: Market derived from the ledger instrument type.
+          enum: [kr, us, crypto]
+        position_ref: *id001
+        broker:
+          description: Broker code, never an account identifier.
+          type: string
+          pattern: '^[a-z][a-z0-9_]{0,31}$'
+        quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        average_price:
+          $ref: '#/components/schemas/DecimalValue'
+        unrealized_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *id001
+        unit: *id001
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+        lot_state:
+          type: string
+          enum:
+          - known
+          - unknown
+        missing_reason:
+          anyOf:
+          - $ref: '#/components/schemas/UnknownReason'
+          - type: 'null'
+    ExperimentRow:
+      type: object
+      additionalProperties: false
+      required:
+      - strategy_id
+      - experiment_ref
+      - environment
+      - planned_count
+      - sent_count
+      - filled_count
+      - uncertain_count
+      - episode_pnl_amount
+      - currency
+      - unit
+      - basis
+      properties:
+        strategy_id: *id001
+        experiment_ref: *id001
+        environment: *id001
+        planned_count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        sent_count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        filled_count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        uncertain_count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        episode_pnl_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *id001
+        unit: *id001
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+    BarRow:
+      type: object
+      additionalProperties: false
+      required:
+      - symbol
+      - market
+      - time
+      - open_price
+      - high_price
+      - low_price
+      - close_price
+      - quantity
+      - currency
+      - unit
+      - source
+      - venue
+      - adjusted
+      - missing_reason
+      - basis
+      properties:
+        symbol: *id001
+        market:
+          type: string
+          description: Market actually read, selected explicitly or inferred from symbol.
+          enum: [kr, us, crypto]
+        time: *id004
+        open_price:
+          $ref: '#/components/schemas/DecimalValue'
+        high_price:
+          $ref: '#/components/schemas/DecimalValue'
+        low_price:
+          $ref: '#/components/schemas/DecimalValue'
+        close_price:
+          $ref: '#/components/schemas/DecimalValue'
+        quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *id001
+        unit: *id001
+        source: *id002
+        venue: *id002
+        adjusted: &id005
+          type:
+          - boolean
+          - 'null'
+        missing_reason: &id006
+          anyOf:
+          - $ref: '#/components/schemas/UnknownReason'
+          - type: 'null'
+        basis: &id007
+          $ref: '#/components/schemas/EvidenceBasis'
+    GapRow:
+      type: object
+      additionalProperties: false
+      required:
+      - dataset
+      - symbol
+      - last_updated_at
+      - source
+      - venue
+      - adjusted
+      - missing_reason
+      - basis
+      properties:
+        dataset: *id001
+        symbol: *id002
+        last_updated_at: *id003
+        source: *id002
+        venue: *id002
+        adjusted: *id005
+        missing_reason: *id006
+        basis: *id007
+    RetroDayResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/ChainRow'
+      description: total counts matching chain events for the requested market and
+        date before pagination, or null with count_unavailable. Page length is never
+        total.
+      unevaluatedProperties: false
+    RetroSymbolResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/ChainRow'
+      description: total counts matching chain and lot events for the symbol and range
+        before pagination, or null with count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    RetroFunnelResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/FunnelRow'
+      description: total counts matching funnel stages for the same cohort before
+        pagination, or null with count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    RetroScoreboardResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/ScoreRow'
+      description: total counts matching account, market and sleeve rows before pagination,
+        or null with count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    RetroPositionsResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/PositionRow'
+      description: total counts matching position rows at the requested cutoff before
+        pagination, or null with count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    MockExperimentsResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/ExperimentRow'
+      description: total counts matching experiment rows before pagination, or null
+        with count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    GetBarsResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/BarRow'
+      description: total counts matching bars in the requested interval before pagination,
+        or null with count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    DataGapsResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/GapRow'
+      description: total counts matching gap records before pagination, or null with
+        count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    TradeReviewRow:
+      type: object
+      additionalProperties: false
+      required:
+      - review_ref
+      - outcome
+      - trigger_type
+      - root_cause_class
+      - pnl_status
+      - pnl_class
+      - realized_pnl
+      - realized_pnl_currency
+      - fill_evidence_available
+      - created_at
+      - lesson
+      - result_summary
+      - rationale
+      - next_strategy
+      properties:
+        review_ref: &trade001
+          type:
+          - string
+          - 'null'
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 64
+        outcome: *trade001
+        trigger_type: *trade001
+        root_cause_class: *trade001
+        pnl_status: *trade001
+        pnl_class:
+          type: string
+          enum:
+          - recorded
+          - not_applicable
+          - unknown
+          - missing
+        realized_pnl:
+          $ref: '#/components/schemas/DecimalValue'
+        realized_pnl_currency: *trade001
+        fill_evidence_available:
+          type: boolean
+        created_at: &trade003
+          type:
+          - string
+          - 'null'
+          format: date-time
+        lesson: &trade002
+          type:
+          - string
+          - 'null'
+          pattern: (?s)^.{0,1000}$
+        result_summary: *trade002
+        rationale: *trade002
+        next_strategy: *trade002
+    TradeRow:
+      type: object
+      additionalProperties: false
+      required:
+      - trade_ref
+      - symbol
+      - market
+      - side
+      - strategy
+      - entry_at
+      - exit_at
+      - quantity
+      - entry_price
+      - exit_price
+      - currency
+      - return_rate
+      - realized_amount
+      - realized_currency
+      - exit_reason
+      - basis
+      - reviews
+      properties:
+        trade_ref: *trade001
+        symbol: *trade001
+        market:
+          type: [string, 'null']
+          enum: [kr, us, crypto, null]
+        side: *trade001
+        strategy: *trade001
+        entry_at: *trade003
+        exit_at: *trade003
+        quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        entry_price:
+          $ref: '#/components/schemas/DecimalValue'
+        exit_price:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *trade001
+        return_rate:
+          $ref: '#/components/schemas/DecimalValue'
+        realized_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        realized_currency: *trade001
+        exit_reason: *trade001
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+        reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/TradeReviewRow'
+    TradeSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - trade_count
+      - return_rate_count
+      - realized_by_currency
+      - pnl_coverage
+      properties:
+        trade_count: &trade004
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        return_rate_count: *trade004
+        realized_by_currency:
+          type:
+          - object
+          - 'null'
+          propertyNames:
+            enum:
+            - KRW
+            - USD
+          additionalProperties:
+            $ref: '#/components/schemas/DecimalValue'
+        pnl_coverage:
+          anyOf:
+          - type: object
+            additionalProperties: false
+            required:
+            - recorded
+            - not_applicable
+            - unknown
+            - missing
+            properties:
+              recorded:
+                type: integer
+                minimum: 0
+              not_applicable:
+                type: integer
+                minimum: 0
+              unknown:
+                type: integer
+                minimum: 0
+              missing:
+                type: integer
+                minimum: 0
+          - type: 'null'
+    RetroTradesResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        - summary
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/TradeRow'
+          summary:
+            $ref: '#/components/schemas/TradeSummary'
+      unevaluatedProperties: false
+  securitySchemes:
+    RetroReadToken:
+      type: apiKey
+      in: header
+      name: X-Retro-Read-Token
+security:
+- RetroReadToken: []

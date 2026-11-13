@@ -60,27 +60,10 @@ def _guard_kis_mock_writer(
     operation: str = "place",
     lane_id: str = "kr.kis.mock",
 ):
-    """Route every ``is_mock=True`` KRX mutation through the J3B wire boundary.
+    """Pin mock client and VTS identity on each domestic mutation attempt.
 
-    ``DomesticOrderClient`` is the common KRX wire boundary for runner, watch
-    auto-execute, smoke, and manual MCP place/cancel/modify.
-
-    ROB-1263 r2 — two things changed, and exactly one branch is affected:
-
-    * **live (``is_mock=False``) returns before any J3B code runs.** It is not
-      merely unchanged in effect; there is no path by which lane code observes
-      or alters it. The previous wrapper still entered a context manager for
-      live calls (a no-op ``yield``); returning first makes that structural.
-    * **mock no longer depends on ``KIS_MOCK_RUNNER_ENABLED`` for its
-      authority.** That gate being false used to make this guard a no-op, so an
-      ``is_mock=True`` place/cancel/modify reached the transport holding nothing
-      — the exact prohibition in B-2. The env variable still arms the runner and
-      is otherwise untouched; it can no longer switch the guard off.
-
-    When a coordinated J3A dual-key grant is held, ``kis_mock_mutation_authority``
-    composes the B-4 per-POST boundary gate into the transport's
-    ``pre_send_hook``, so it re-proves the actual client/host/profile before
-    every attempt, re-sends included.
+    Live calls return before the mock boundary. No coordinator grant or lease is
+    used by the mock transport path.
     """
 
     def decorate(method):
@@ -279,7 +262,9 @@ class DomesticOrderClient:
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
 
@@ -474,7 +459,9 @@ class DomesticOrderClient:
                     stock_code,
                     order_type,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 # ROB-843 P1: re-thread the hook so the token-refresh re-send
                 # re-checks freshness immediately before its own HTTP mutation.
@@ -721,7 +708,9 @@ class DomesticOrderClient:
                     order_number,
                     stock_code,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.cancel_korea_order(
                     order_number,
@@ -881,7 +870,9 @@ class DomesticOrderClient:
                         error_msg = f"{js.get('msg_cd')} {js.get('msg1')} (token retry limit exceeded)"
                         logging.error(f"국내주식 체결조회 실패: {error_msg}")
                         raise RuntimeError(error_msg)
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
 
@@ -1077,7 +1068,9 @@ class DomesticOrderClient:
                     order_number,
                     stock_code,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 # ROB-1263 r2: re-thread the hook so the token-refresh re-send
                 # re-proves the boundary before its own HTTP mutation, exactly

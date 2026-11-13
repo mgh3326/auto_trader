@@ -514,7 +514,10 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
 # denied before the call reaches the MCP server.  get_upbit_altseason is
 # denied because it primes the shared Upbit index cache that get_upbit_index
 # serves as truth (the shared-state basis of #678); the other three are denied
-# under the same ruling.  They remain registered in DEFAULT for other
+# under the same ruling.  kis_live_get_daily_orders (hk 3717: all-symbol KR
+# order listing for one KST date, for the external research session) is denied
+# under the same ruling too — absent from LIVE_ALLOWED_TOOLS, DEFAULT-only.
+# They remain registered in DEFAULT for other
 # consumers, but the route contract must not advertise them: they are bucketted
 # with the mutation classes so they land in blocked_actions, they are
 # subtracted from every lane's allowed candidates, and they are dropped from
@@ -527,6 +530,7 @@ HARNESS_DENIED_TOOLS: frozenset[str] = frozenset(
         "decision_table_validate",
         "get_intraday_investor_flow",
         "get_upbit_altseason",
+        "kis_live_get_daily_orders",
         "kis_live_get_order_history",
     }
 )

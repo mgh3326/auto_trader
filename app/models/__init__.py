@@ -1,4 +1,5 @@
 # app/models/__init__.py
+from .account_value import AccountExternalFlow, AccountValueSnapshot
 from .analysis import StockAnalysisResult, StockInfo
 from .analysis_artifact import AnalysisArtifact
 from .analyst_consensus_snapshot import AnalystConsensusSnapshot
@@ -206,6 +207,8 @@ from .watch_event_repricing_claims import WatchEventRepricingClaim
 # from .price import PricesLatest, PricesOHLCV, FxRate
 
 __all__ = [
+    "AccountExternalFlow",
+    "AccountValueSnapshot",
     "MockStrategyOrder",
     "KISMockDispatchEvidence",
     "KISMockDispatchLineage",

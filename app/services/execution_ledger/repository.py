@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +70,9 @@ COMPARE_COLUMNS = (
     "filled_notional",
     "fee_amount",
     "fee_currency",
+    "fee_basis",
+    "tax_amount",
+    "filled_at_basis",
     "filled_at",
     "currency",
     "correlation_id",
@@ -98,8 +101,15 @@ def _values_equal(current: Any, expected: Any) -> bool:
     return current == expected
 
 
+LEGACY_PROTECTED_COLUMNS = frozenset(
+    {"fee_amount", "fee_currency", "fee_basis", "tax_amount", "filled_at_basis"}
+)
+
+
 def _values_differ(row: ExecutionLedger, fill: ExecutionLedgerUpsert) -> bool:
     for column in COMPARE_COLUMNS:
+        if row.fee_basis is None and column in LEGACY_PROTECTED_COLUMNS:
+            continue
         expected = getattr(fill, column)
         current = getattr(row, column)
         if not _values_equal(current, expected):
@@ -234,6 +244,11 @@ class ExecutionLedgerRepository:
             if key
             not in {"broker", "account_mode", "venue", "broker_order_id", "fill_seq"}
         }
+        for key in LEGACY_PROTECTED_COLUMNS:
+            update_payload[key] = case(
+                (ExecutionLedger.fee_basis.is_(None), getattr(ExecutionLedger, key)),
+                else_=getattr(stmt.excluded, key),
+            )
         update_payload["updated_at"] = datetime.now(UTC)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_execution_ledger_fill",

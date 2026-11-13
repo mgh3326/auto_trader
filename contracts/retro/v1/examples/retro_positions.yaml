@@ -1,0 +1,45 @@
+operation: retro_positions
+request:
+  path: /trading/api/retro/v1/retro_positions
+  query:
+    cutoff_date: '2026-01-02'
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.missing_reason
+    reason: missing_data
+  - field: data.1.missing_reason
+    reason: missing_data
+  data:
+  - symbol: SYN001
+    position_ref: ref_synthetic_position
+    market: kr
+    broker: kis
+    quantity: '10.0000'
+    average_price: '1.2500'
+    unrealized_amount: '2.5000'
+    currency: XSY
+    unit: shares
+    basis: inference
+    lot_state: known
+    missing_reason: null
+  - symbol: SYN001
+    position_ref: ref_synthetic_toss_position
+    market: kr
+    broker: toss
+    quantity: '2.0000'
+    average_price: '1.2500'
+    unrealized_amount: '0.5000'
+    currency: XSY
+    unit: shares
+    basis: inference
+    lot_state: known
+    missing_reason: null

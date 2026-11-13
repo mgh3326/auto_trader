@@ -474,6 +474,33 @@ class UnifiedWebSocketMonitor:
         if not broker_order_id:
             broker_order_id = f"websocket-{self._ledger_fill_seq(event, order)}"
 
+        time_keys = (
+            ["trade_timestamp", "trade_time", "filled_at", "created_at", "timestamp"]
+            if broker == "upbit"
+            else ["filled_at", "timestamp", "exec_time", "ord_tmd", "ccld_time"]
+        )
+        time_key = next(
+            (key for key in time_keys if event.get(key) not in (None, "")), None
+        )
+        if time_key is None:
+            time_basis = "observed_at"
+        elif time_key in {"ord_tmd", "created_at"}:
+            time_basis = "broker_order_time"
+        elif time_key in {
+            "exec_time",
+            "ccld_time",
+            "trade_timestamp",
+            "trade_time",
+            "filled_at",
+        }:
+            time_basis = "broker_fill_time"
+        else:
+            time_basis = None
+        if time_key is not None:
+            time_value = str(event[time_key]).strip()
+            if len(time_value) == 6 and time_value.isdigit():
+                time_basis = None
+
         fill = ExecutionLedgerUpsert(
             broker=broker,  # type: ignore[arg-type]
             account_mode=self._ledger_account_mode(broker),
@@ -490,6 +517,8 @@ class UnifiedWebSocketMonitor:
             if order.filled_amount
             else None,
             fee_amount=None,
+            fee_basis="not_provided",
+            filled_at_basis=time_basis,
             fee_currency=currency,
             filled_at=order.filled_at,  # type: ignore[arg-type]
             currency=currency,  # type: ignore[arg-type]

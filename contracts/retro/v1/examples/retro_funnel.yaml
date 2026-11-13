@@ -1,0 +1,29 @@
+operation: retro_funnel
+request:
+  path: /trading/api/retro/v1/retro_funnel
+  query:
+    market: XSYN
+    from: '2026-01-02'
+    to: '2026-01-02'
+status: 200
+response:
+  as_of: '2026-01-03T00:00:00Z'
+  data_as_of: '2026-01-02T00:00:00Z'
+  timezone: UTC
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.fill_rate
+    reason: missing_data
+  data:
+  - stage: fill
+    cohort: synthetic
+    count: 0
+    denominator: 0
+    fill_rate: null
+    unit: ratio
+    basis: unknown
+    missing_reason: missing_data

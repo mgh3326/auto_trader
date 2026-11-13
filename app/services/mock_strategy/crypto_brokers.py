@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+from app.services.brokers.binance.demo.quantity import venue_order_quantity
 from app.services.brokers.binance.futures_demo.execution_client import (
     BinanceFuturesDemoExecutionClient,
 )
@@ -270,7 +271,7 @@ class BinanceCryptoDemo:
             symbol=order.symbol,
             side="BUY" if order.side in {"buy", "cover"} else "SELL",
             order_type="MARKET",
-            qty=order.qty,
+            qty=venue_order_quantity(order.qty),
             client_order_id=order.client_order_id,
             confirm=confirm,
             **kwargs,

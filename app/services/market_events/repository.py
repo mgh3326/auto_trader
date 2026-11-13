@@ -192,6 +192,19 @@ class MarketEventsRepository:
         partition.last_error = None
         await self.db.flush()
 
+    async def mark_partition_pending(
+        self, partition: MarketEventIngestionPartition
+    ) -> None:
+        """Return a partition to ``pending``: fetched, but the day is not complete.
+
+        Never counts as succeeded, so no reader treats the day as loaded and a
+        later run fetches it again.
+        """
+        partition.status = "pending"
+        partition.event_count = 0
+        partition.last_error = None
+        await self.db.flush()
+
     async def mark_partition_succeeded(
         self,
         partition: MarketEventIngestionPartition,

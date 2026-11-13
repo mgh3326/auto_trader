@@ -52,6 +52,7 @@ from app.services.order_proposals.cash_funding_exemption import (
     parse_funding_target,
     resolve_cash_funding_exemption,
 )
+from app.services.order_proposals.decision_evidence import record_proposal_decision
 from app.services.order_proposals.defensive_ttl import (
     DEFENSIVE_EXIT_INTENTS,
     resolve_defensive_valid_until,
@@ -862,6 +863,8 @@ class OrderProposalsService:
         target_order_snapshot: dict[str, str | None] | None = None,
         now: datetime | None = None,
         sleeve_id: int | None = None,
+        candidate_ref: dict[str, Any] | None = None,
+        decision_price_text: str | None = None,
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
@@ -985,6 +988,22 @@ class OrderProposalsService:
             ],
         )
 
+        decision_id = await record_proposal_decision(
+            self._session,
+            symbol=symbol,
+            market=market,
+            account_mode=account_mode,
+            side=side,
+            action=normalized_action,
+            proposer=proposer,
+            strategy=strategy,
+            sleeve_id=sleeve_id,
+            rungs=rungs,
+            source_asof=merged_source_asof,
+            candidate_ref=candidate_ref,
+            decision_price_text=decision_price_text,
+            now=now,
+        )
         group = await self._repo.insert_group(
             proposal_id=proposal_id,
             root_proposal_id=root_id,
@@ -1010,6 +1029,7 @@ class OrderProposalsService:
             retrospective_id=retrospective_id,
             approval_issue_id=approval_issue_id,
             sleeve_id=sleeve_id,
+            decision_id=decision_id,
             lifecycle_state="proposed",
             correlation_id=correlation_id,
             valid_until=valid_until,

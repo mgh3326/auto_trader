@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import pytest
 import sentry_sdk
+from sentry_sdk.profiler import transaction_profiler
 from sentry_sdk.transport import Transport
 
 import app.monitoring.sentry as sentry_module
@@ -57,6 +58,11 @@ class _CapturingTransport(Transport):
 
 @pytest.fixture(autouse=True)
 def _reset_sentry_state(monkeypatch):
+    # The profiler scheduler is process-global and setup_profiler() keeps an
+    # existing one. A scheduler left by an earlier test on the same xdist
+    # worker (e.g. its sampler thread already gone) makes every profile here
+    # empty, so start and end each test with no scheduler.
+    transaction_profiler.teardown_profiler()
     monkeypatch.setattr(sentry_module, "_initialized", False)
     monkeypatch.setattr(
         sentry_module,
@@ -72,6 +78,7 @@ def _reset_sentry_state(monkeypatch):
     # sentry_sdk.init() mutates process-global client state; restore isolation
     # for subsequent tests in the suite.
     sentry_sdk.get_global_scope().set_client(None)
+    transaction_profiler.teardown_profiler()
 
 
 def _init_via_real_seam(

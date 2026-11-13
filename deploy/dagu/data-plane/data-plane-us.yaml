@@ -1,5 +1,8 @@
-# PROPOSAL for operator approval (ROB-1443, ROB-1448) — NOT registered anywhere.
-# Copy to the Dagu DAGs directory only after the operator approves it.
+# Dagu DAG for the point-in-time data plane (ROB-1443, ROB-1448). REGISTERED on the OCI
+# Dagu coordinator and run on the NCP worker (hk:doc report/2026-11-10/
+# ncp-schedule-inventory §4). Registering or editing a DAG on a host is an
+# operator action; this file is the repo copy and is not applied by any deploy
+# step, so changing it here changes nothing on the host until the operator re-registers it.
 #
 # Point-in-time data plane, market: us.
 # Schedule: 23:00 UTC Mon-Fri = 19:00 EDT / 18:00 EST, after the 16:00 ET close + 30 min.

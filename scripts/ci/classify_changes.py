@@ -82,6 +82,7 @@ LANE_JOBS: dict[str, frozenset[str]] = {
     "migrations": _NARROW_JOBS,
     "config": _NARROW_JOBS,
     "manifests": _NARROW_JOBS,
+    "retro_contract": _NARROW_JOBS,
 }
 
 #: Lanes where a path that selects no test means "we do not know what this
@@ -89,7 +90,7 @@ LANE_JOBS: dict[str, frozenset[str]] = {
 #: isolated from the runtime and its suites run in their own jobs. ``docs``,
 #: ``frontend`` and ``manifests`` select no test files by definition.
 _MUST_MAP_LANES: frozenset[str] = frozenset(
-    {"app", "tests", "scripts", "root_python", "migrations", "config"}
+    {"app", "tests", "scripts", "root_python", "migrations", "config", "retro_contract"}
 )
 
 #: A selection bigger than one shard (~500 files, 5-9 minutes) would not fit one
@@ -148,6 +149,8 @@ _EXACT_RULES: tuple[tuple[str, str], ...] = (
 _PREFIX_RULES: tuple[tuple[str, str], ...] = (
     (".github/", "ci_shared"),
     ("scripts/ci/", "ci_shared"),
+    ("contracts/retro/", "retro_contract"),
+    ("tools/retro-consumer-check/", "retro_contract"),
     ("docs/", "docs"),
     ("app/", "app"),
     ("tests/", "tests"),
@@ -197,6 +200,7 @@ class Classification:
     changed_path_count: int = 0
     affected_tests: tuple[str, ...] = ()
     check_manifests: bool = False
+    run_retro_consumer_gate: bool = False
 
     @property
     def result(self) -> str:
@@ -237,6 +241,18 @@ def classify_path(path: str) -> str:
     return "unknown"
 
 
+def is_retro_path(path: str) -> bool:
+    """True when a changed path must trigger the retro-consumer-gate job."""
+    return (
+        path.startswith("contracts/retro/")
+        or path == "app/routers/retro_v1.py"
+        or path.startswith("app/services/retro_v1/")
+        or path == "app/services/account_value/retro_scoreboard.py"
+        or path == "app/middleware/auth.py"
+        or path.startswith("tools/retro-consumer-check/")
+    )
+
+
 def classify_entries(entries: Sequence[ChangeEntry]) -> Classification:
     """Classify a change set. Pure: no git, no filesystem, no environment."""
 
@@ -247,6 +263,7 @@ def classify_entries(entries: Sequence[ChangeEntry]) -> Classification:
             lanes=("unknown",),
             jobs=tuple(sorted(ALL_JOBS)),
             changed_path_count=0,
+            run_retro_consumer_gate=True,
         )
 
     path_lanes: dict[str, str] = {}
@@ -264,6 +281,8 @@ def classify_entries(entries: Sequence[ChangeEntry]) -> Classification:
             forcing.add(entry.path)
 
     lanes = tuple(sorted(set(path_lanes.values())))
+    has_retro = any(is_retro_path(entry.path) for entry in entries)
+
     if forcing:
         return Classification(
             run_all=True,
@@ -273,6 +292,7 @@ def classify_entries(entries: Sequence[ChangeEntry]) -> Classification:
             path_lanes=path_lanes,
             forcing_paths=tuple(sorted(forcing)),
             changed_path_count=len(path_lanes),
+            run_retro_consumer_gate=True,
         )
 
     jobs: set[str] = set()
@@ -285,6 +305,7 @@ def classify_entries(entries: Sequence[ChangeEntry]) -> Classification:
         jobs=tuple(sorted(jobs)),
         path_lanes=path_lanes,
         changed_path_count=len(path_lanes),
+        run_retro_consumer_gate=has_retro,
     )
 
 
@@ -414,7 +435,26 @@ def _is_collected_test_name(path: str) -> bool:
     )
 
 
+#: Static check that the migration chain has exactly one head. Concurrent PRs
+#: that each add a migration on the same parent pass alone and create two heads
+#: once both merge; adding this to every narrow migration selection makes the
+#: PR gate (on a branch updated with main) catch that before the merge.
+MIGRATION_CHAIN_TEST = "tests/test_rob1487_perf_indexes_migration.py"
+
+
 def _tests_for_path(path: str, lane: str, universe: TestUniverse) -> set[str]:
+    if lane == "migrations":
+        selected = _references(path, universe) | {
+            f for f in universe.files if f.startswith(_mirror_prefixes(path))
+        }
+        # Only widen a narrow selection; an unmapped migration still selects
+        # nothing and therefore keeps forcing run_all.
+        if selected and MIGRATION_CHAIN_TEST in universe.files:
+            selected.add(MIGRATION_CHAIN_TEST)
+        return selected
+    if lane == "retro_contract":
+        test = "tests/contracts/test_retro_v1_contract.py"
+        return {test} if test in universe.files else set()
     if lane == "tests":
         if path in universe.files:
             return {path}
@@ -634,6 +674,7 @@ def build_outputs(classification: Classification) -> dict[str, str]:
     """The flat ``key=value`` surface written to ``$GITHUB_OUTPUT``."""
 
     selected = set(classification.jobs)
+    run_retro = classification.run_all or classification.run_retro_consumer_gate
     outputs: dict[str, str] = {
         "result": classification.result,
         "run_all": "true" if classification.run_all else "false",
@@ -643,6 +684,7 @@ def build_outputs(classification: Classification) -> dict[str, str]:
         "changed_path_count": str(classification.changed_path_count),
         "run_affected_tests": "true" if classification.run_affected_tests else "false",
         "check_manifests": "true" if classification.check_manifests else "false",
+        "run_retro_consumer_gate": "true" if run_retro else "false",
         # A JSON array, not a shell string: read it through an env var.
         "affected_tests": json.dumps(list(classification.affected_tests)),
     }

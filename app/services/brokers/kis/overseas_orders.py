@@ -254,7 +254,9 @@ class OverseasOrderClient:
                     exchange_code,
                     order_type,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.order_overseas_stock(
                     symbol,
@@ -485,7 +487,9 @@ class OverseasOrderClient:
                         logging.error(f"미체결 주문 조회 실패: {error_msg}")
                         raise RuntimeError(error_msg)
                     token_refresh_resubmits += 1
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
 
@@ -636,7 +640,9 @@ class OverseasOrderClient:
                     symbol,
                     normalized_exchange_code,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.cancel_overseas_order(
                     order_number,
@@ -776,7 +782,9 @@ class OverseasOrderClient:
                         logging.error(f"해외주식 체결조회 실패: {error_msg}")
                         raise RuntimeError(error_msg)
                     token_refresh_resubmits += 1
-                    await self._parent._token_manager.clear_token()
+                    await self._parent._token_manager.clear_token(
+                        hdr["authorization"].removeprefix("Bearer ")
+                    )
                     await self._parent._ensure_token()
                     continue
 
@@ -961,7 +969,9 @@ class OverseasOrderClient:
                     symbol,
                     exchange_code,
                 )
-                await self._parent._token_manager.clear_token()
+                await self._parent._token_manager.clear_token(
+                    hdr["authorization"].removeprefix("Bearer ")
+                )
                 await self._parent._ensure_token()
                 return await self.modify_overseas_order(
                     order_number,
