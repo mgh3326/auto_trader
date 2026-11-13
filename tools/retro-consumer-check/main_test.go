@@ -136,3 +136,43 @@ func TestRetroTradesEmptyDataFailsCoverage(t *testing.T) {
 		t.Fatal("retro_trades with no checked row passed the coverage check")
 	}
 }
+
+func TestRetroTradesReviewCodeFieldPatternNamesField(t *testing.T) {
+	// The contract pins review_ref (and the other code fields) to ^[A-Za-z0-9_.:\-]+$.
+	raw := retroTradesDecoded(t)
+	firstReview(t, raw)["review_ref"] = "review with space"
+
+	_, err := validateWireEnvelope(raw, retroTradesOperation())
+	if err == nil {
+		t.Fatal("review_ref with a space was accepted; the contract pattern forbids it")
+	}
+	if !strings.Contains(err.Error(), `"review_ref"`) {
+		t.Fatalf("error does not name the code field: %v", err)
+	}
+}
+
+func TestRetroTradesReviewCodeFieldMaxLengthNamesField(t *testing.T) {
+	raw := retroTradesDecoded(t)
+	firstReview(t, raw)["outcome"] = strings.Repeat("a", 65)
+
+	_, err := validateWireEnvelope(raw, retroTradesOperation())
+	if err == nil {
+		t.Fatal("65-character outcome was accepted; the contract allows at most 64")
+	}
+	if !strings.Contains(err.Error(), `"outcome"`) {
+		t.Fatalf("error does not name the code field: %v", err)
+	}
+}
+
+func TestRetroTradesReviewProseMaxLengthNamesField(t *testing.T) {
+	raw := retroTradesDecoded(t)
+	firstReview(t, raw)["lesson"] = strings.Repeat("가", 1001)
+
+	_, err := validateWireEnvelope(raw, retroTradesOperation())
+	if err == nil {
+		t.Fatal("1001-character lesson was accepted; the contract allows at most 1000")
+	}
+	if !strings.Contains(err.Error(), `"lesson"`) {
+		t.Fatalf("error does not name the prose field: %v", err)
+	}
+}

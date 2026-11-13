@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
@@ -129,6 +130,8 @@ type wireKind int
 
 const (
 	kindStringOrNull wireKind = iota
+	kindCodeOrNull
+	kindProseOrNull
 	kindDecimalOrNull
 	kindBool
 	kindDateTimeOrNull
@@ -155,6 +158,8 @@ type wireCounts struct {
 
 var decimalPattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
 
+var codePattern = regexp.MustCompile(`^[A-Za-z0-9_.:\-]+$`)
+
 var pnlClassValues = map[string]bool{
 	"recorded": true, "not_applicable": true, "unknown": true, "missing": true,
 }
@@ -171,20 +176,20 @@ var retroTradesRowKeys = []string{
 var retroTradesReviews = nestedArrayCheck{
 	field: "reviews",
 	fields: []nestedField{
-		{"review_ref", kindStringOrNull},
-		{"outcome", kindStringOrNull},
-		{"trigger_type", kindStringOrNull},
-		{"root_cause_class", kindStringOrNull},
-		{"pnl_status", kindStringOrNull},
+		{"review_ref", kindCodeOrNull},
+		{"outcome", kindCodeOrNull},
+		{"trigger_type", kindCodeOrNull},
+		{"root_cause_class", kindCodeOrNull},
+		{"pnl_status", kindCodeOrNull},
 		{"pnl_class", kindPnlClass},
 		{"realized_pnl", kindDecimalOrNull},
-		{"realized_pnl_currency", kindStringOrNull},
+		{"realized_pnl_currency", kindCodeOrNull},
 		{"fill_evidence_available", kindBool},
 		{"created_at", kindDateTimeOrNull},
-		{"lesson", kindStringOrNull},
-		{"result_summary", kindStringOrNull},
-		{"rationale", kindStringOrNull},
-		{"next_strategy", kindStringOrNull},
+		{"lesson", kindProseOrNull},
+		{"result_summary", kindProseOrNull},
+		{"rationale", kindProseOrNull},
+		{"next_strategy", kindProseOrNull},
 	},
 }
 
@@ -211,6 +216,31 @@ func checkKind(v any, kind wireKind) error {
 		}
 		if _, ok := v.(string); !ok {
 			return fmt.Errorf("must be a string or null, got %T (%v)", v, v)
+		}
+	case kindCodeOrNull:
+		if v == nil {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("must be a string or null, got %T (%v)", v, v)
+		}
+		if !codePattern.MatchString(s) {
+			return fmt.Errorf("code %q does not match the contract pattern ^[A-Za-z0-9_.:\\-]+$", s)
+		}
+		if n := utf8.RuneCountInString(s); n > 64 {
+			return fmt.Errorf("code is %d characters, the contract allows at most 64", n)
+		}
+	case kindProseOrNull:
+		if v == nil {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("must be a string or null, got %T (%v)", v, v)
+		}
+		if n := utf8.RuneCountInString(s); n > 1000 {
+			return fmt.Errorf("prose is %d characters, the contract allows at most 1000", n)
 		}
 	case kindDecimalOrNull:
 		if v == nil {
