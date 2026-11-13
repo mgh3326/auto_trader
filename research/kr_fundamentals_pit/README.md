@@ -22,7 +22,10 @@ The latter is 23:59:59.999999 KST on the latest original/amended receipt date,
 with `available_at_basis=latest_amendment_rcept_date_eod`. A new run can add a
 new version after a later amendment; existing partitions remain unchanged.
 `as_of` selects the latest eligible version per symbol and period and refuses
-queries later than the published coverage end. Missing statement metrics are null
+queries later than the published coverage end. A newer filing with no matching
+statement invalidates older values after its receipt day. The end date must be
+before the current KST day, so an incomplete day is never published as complete.
+Missing statement metrics are null
 with a reason. Values are exact decimal strings; a disclosed zero remains zero.
 
 The statement endpoint cannot select a historical receipt. Values before an

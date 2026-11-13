@@ -10,9 +10,10 @@ import re
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from xml.etree import ElementTree
+from zoneinfo import ZoneInfo
 
 
 class BudgetExhausted(Exception):
@@ -53,7 +54,7 @@ class Collector:
         if (
             self.start < date(2015, 1, 1)
             or self.end < self.start
-            or self.end > date.today()
+            or self.end >= datetime.now(ZoneInfo("Asia/Seoul")).date()
         ):
             raise ValueError("invalid filing coverage window")
         if not key or budget < 0 or budget > 20000:

@@ -8,6 +8,7 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 def encode(value):
@@ -91,4 +92,33 @@ def as_of(root, symbol, ts):
             rank = (available.astimezone(UTC), row["rcept_no"])
             if key not in versions or rank > versions[key][0]:
                 versions[key] = (rank, row)
-    return [versions[key][1] for key in sorted(versions)]
+    # A known newer filing with no matched statement invalidates the older
+    # value from its receipt EOD, even though no replacement row was published.
+    for record in records:
+        for missing in record["missing_reports"]:
+            fields = (
+                "corp_code",
+                "business_year",
+                "report_code",
+                "period",
+                "rcept_date",
+                "rcept_no",
+            )
+            if missing.get("symbol") != symbol or not all(
+                field in missing for field in fields
+            ):
+                continue
+            available = datetime.strptime(missing["rcept_date"], "%Y%m%d").replace(
+                hour=23,
+                minute=59,
+                second=59,
+                microsecond=999999,
+                tzinfo=ZoneInfo("Asia/Seoul"),
+            )
+            key = tuple(missing[field] for field in fields[:4])
+            rank = (available.astimezone(UTC), missing["rcept_no"])
+            if available <= ts and key in versions and rank > versions[key][0]:
+                versions[key] = (rank, None)
+    return [
+        versions[key][1] for key in sorted(versions) if versions[key][1] is not None
+    ]

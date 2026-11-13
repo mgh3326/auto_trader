@@ -4,8 +4,10 @@ import tempfile
 import unittest
 import zipfile
 from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from research.kr_fundamentals_pit import cli
 from research.kr_fundamentals_pit.build import build_rows
@@ -142,6 +144,43 @@ class HistoryTest(unittest.TestCase):
             self.assertEqual(
                 result["missing"][0]["reason"], "receipt_mismatch_or_empty"
             )
+
+    def test_missing_amendment_invalidates_earlier_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            original, _ = transport()
+            first = Collector(
+                d, "first", "2020-01-01", "2020-01-31", KEY, 10, original
+            ).collect()
+            facts, derived = build_rows(first["reports"])
+            meta = {
+                "coverage_start": "2020-01-01",
+                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
+                "fetch_budget_used": 4,
+                "missing_reports": [],
+            }
+            publish(d, "first", facts, derived, meta)
+            amended, _ = transport(True)
+
+            def stale(endpoint, params, key):
+                body = amended(endpoint, params, key)
+                return (
+                    body.replace(b"20200103000002", b"20200102000001")
+                    if endpoint == "fnlttSinglAcntAll.json"
+                    else body
+                )
+
+            later = Collector(
+                d, "later", "2020-01-01", "2020-01-31", KEY, 10, stale
+            ).collect()
+            publish(d, "later", [], [], {**meta, "missing_reports": later["missing"]})
+            self.assertEqual(len(as_of(d, "999999", "2020-01-03T12:00:00+09:00")), 1)
+            self.assertEqual(as_of(d, "999999", "2020-01-04T00:00:00+09:00"), [])
+
+    def test_current_kst_day_is_not_complete_coverage(self):
+        with tempfile.TemporaryDirectory() as d:
+            today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+            with self.assertRaises(ValueError):
+                Collector(d, "today", today, today, KEY, 10)
 
     def test_secret_echo_and_transport_exception_are_sanitized(self):
         with tempfile.TemporaryDirectory() as d:
