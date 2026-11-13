@@ -63,3 +63,24 @@ async def test_toss_projection_failure_warns_and_exits_nonzero(capsys):
     ):
         assert await toss._run(apply=True, terminal_only=True) == 3
     assert "WARNING" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cli,kernel",
+    [(us, "live_reconcile_orders_impl"), (toss, "toss_reconcile_orders_impl")],
+)
+@pytest.mark.parametrize("apply", [False, True])
+async def test_contradictory_fill_evidence_warns(cli, kernel, apply, capsys):
+    result = {
+        "success": True,
+        "reconciled": [
+            {
+                "action": "noop_contradictory_fill_evidence",
+                "requires_manual_review": True,
+            }
+        ],
+    }
+    with patch.object(cli, kernel, AsyncMock(return_value=result)):
+        assert await cli._run(apply=apply, terminal_only=True) == 3
+    assert "WARNING" in capsys.readouterr().out

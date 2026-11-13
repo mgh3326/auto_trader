@@ -439,3 +439,27 @@ async def test_toss_terminal_scans_past_deferred_page():
     assert len(result["reconciled"]) == 101
     assert result["reconciled"][-1]["action"] == "would_mark_cancelled"
     assert service.list_open.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_toss_terminal_contradictory_booked_fill_stays_open(dry_run):
+    row = toss_row()
+    row.filled_qty = Decimal("1")
+    order = SimpleNamespace(status="CANCELED", execution={"filledQuantity": "0"})
+    source = SimpleNamespace(
+        evidence_for=AsyncMock(return_value=classify_toss_order_evidence(order))
+    )
+    with (
+        patch.object(
+            toss, "_converge_toss_proposal_rung", new_callable=AsyncMock
+        ) as projection,
+        patch.object(toss, "_order_session_factory") as session,
+    ):
+        result = await toss._reconcile_one_toss_row(
+            row, dry_run=dry_run, terminal_only=True, evidence_source=source
+        )
+    assert result["action"] == "noop_contradictory_fill_evidence"
+    assert result["requires_manual_review"] is True
+    projection.assert_not_awaited()
+    session.assert_not_called()

@@ -16,8 +16,10 @@ async def _run(*, apply: bool, terminal_only: bool) -> int:
     if not result.get("success"):
         return 1
     actions = [row.get("action", "") for row in result.get("reconciled", [])]
-    if (not apply and any(a.startswith("would_mark_") for a in actions)) or (
-        apply and terminal_only and "deferred_fill_booking" in actions
+    if (
+        (terminal_only and "noop_contradictory_fill_evidence" in actions)
+        or (not apply and any(a.startswith("would_mark_") for a in actions))
+        or (apply and terminal_only and "deferred_fill_booking" in actions)
     ):
         print("WARNING: reconciliation requires attention")
         return 3

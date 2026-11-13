@@ -468,7 +468,8 @@ async def _reconcile_one_toss_row(
             base["requires_session_reconcile"] = True
             return base
         if row.filled_qty and row.filled_qty > 0:
-            base["action"] = "noop_no_evidence"
+            base["action"] = "noop_contradictory_fill_evidence"
+            base["requires_manual_review"] = True
             return base
         if evidence.local_status not in {"expired", "cancelled", "rejected"}:
             base["action"] = "noop_pending"
