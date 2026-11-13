@@ -130,23 +130,6 @@ def _serve_python_docker_fakes() -> str | None:
                     else:
                         status = 42
                 else:
-                    source = Path(backend).read_text()
-                    source_lines = source.splitlines()[1:]
-                    for index, line in enumerate(source_lines):
-                        if line.startswith("import "):
-                            imports = [name.strip() for name in line[7:].split(",")]
-                            kept = [
-                                name for name in imports if name not in {"os", "sys"}
-                            ]
-                            source_lines[index] = (
-                                "import " + ", ".join(kept) if kept else ""
-                            )
-                    body = "\n".join(source_lines)
-                    digest = hashlib.sha256(body.encode()).hexdigest()
-                    code = _COMPILED_BACKENDS.get(digest)
-                    if code is None:
-                        code = compile(body, backend, "exec")
-                        _COMPILED_BACKENDS[digest] = code
                     stdout, stderr = io.StringIO(), io.StringIO()
                     fake_sys = types.SimpleNamespace(
                         argv=[backend, *args], stdout=stdout, stderr=stderr
@@ -157,6 +140,32 @@ def _serve_python_docker_fakes() -> str | None:
 
                     fake_sys.exit = fake_exit
 
+                    fake_os = types.SimpleNamespace(
+                        environ=env,
+                        path=os.path,
+                        getenv=lambda key, default=None: env.get(key, default),
+                    )
+
+                    def fake_import(
+                        name: str,
+                        globals: dict | None = None,
+                        locals: dict | None = None,
+                        fromlist: tuple[str, ...] = (),
+                        level: int = 0,
+                    ) -> object:
+                        if level == 0 and name.split(".", 1)[0] == "os":
+                            return (
+                                os.path if name == "os.path" and fromlist else fake_os
+                            )
+                        if level == 0 and name.split(".", 1)[0] == "sys":
+                            return fake_sys
+                        return builtins.__import__(
+                            name, globals, locals, fromlist, level
+                        )
+
+                    fake_builtins = vars(builtins).copy()
+                    fake_builtins["__import__"] = fake_import
+
                     def fake_print(*values: object, **kwargs: object) -> None:
                         target = kwargs.get("file")
                         stream = stderr if target is stderr else stdout
@@ -166,19 +175,34 @@ def _serve_python_docker_fakes() -> str | None:
                     namespace = {
                         "__name__": "__main__",
                         "__file__": backend,
-                        "os": types.SimpleNamespace(environ=env, path=os.path),
+                        "__builtins__": fake_builtins,
+                        "os": fake_os,
                         "sys": fake_sys,
                         "print": fake_print,
                     }
                     try:
                         try:
+                            source = Path(backend).read_text()
+                            body = "\n".join(source.splitlines()[1:])
+                            digest = hashlib.sha256(body.encode()).hexdigest()
+                            code = _COMPILED_BACKENDS.get(digest)
+                            if code is None:
+                                code = compile(body, backend, "exec")
+                                _COMPILED_BACKENDS[digest] = code
                             exec(code, namespace)
                         except SystemExit as exc:
-                            status = exc.code if isinstance(exc.code, int) else 0
+                            if exc.code is None:
+                                status = 0
+                            elif isinstance(exc.code, int):
+                                status = int(exc.code)
+                            else:
+                                error = str(exc.code) + "\n"
+                                status = 1
                     except BaseException as exc:
                         error = f"{type(exc).__name__}: {exc}\n"
                         status = 1
-                    output, error = stdout.getvalue(), error or stderr.getvalue()
+                    output = stdout.getvalue()
+                    error = stderr.getvalue() + error
                 Path(stderr_path).write_text(error)
                 Path(status_path).write_text(str(status))
                 self.wfile.write(output.encode())
@@ -217,8 +241,11 @@ status="$tmp.status"
 {{
   printf '%s\\0' {shlex.quote(str(backend))} {shlex.quote(str(bindir / "gate-calls.log"))} {shlex.quote(manifest)} {shlex.quote(config)} "$err" "$status"
   for key in {env_list}; do
-    eval "value=\\${{${{key}}-}}"
-    printf '%s\\0%s\\0' "$key" "$value"
+    eval "present=\\${{${{key}}+x}}"
+    if [ "$present" = x ]; then
+      eval "value=\\${{${{key}}}}"
+      printf '%s\\0%s\\0' "$key" "$value"
+    fi
   done
   printf '%s\\0' --ARGS-- "$@" --END--
 }} | {shlex.quote(shutil.which("nc") or "nc")} -U {shlex.quote(socket_path)}

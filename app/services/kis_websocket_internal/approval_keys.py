@@ -9,6 +9,10 @@ import httpx
 import redis.asyncio as redis
 
 from app.core.config import settings, validate_kis_mock_config
+from app.services.brokers.token_issuance import (
+    cache_only_refusal,
+    is_cache_only_token_issuance,
+)
 
 from .constants import (
     APPROVAL_ENDPOINT_HOSTS,
@@ -203,6 +207,9 @@ async def _issue_approval_key_single_flight(
     reuses the holder's cached key — never issues independently.
     """
     account_mode = _resolve_ws_account_mode(account_mode)
+    if is_cache_only_token_issuance(settings):
+        # cache_only: refuse before the issuance lock, any cache delete, or HTTP.
+        raise cache_only_refusal(f"kis-websocket-approval-{account_mode}")
     redis_client = await _get_redis_client()
     lock_token = await _acquire_issuance_lock(redis_client, account_mode)
 
@@ -397,6 +404,9 @@ async def _issue_approval_key(account_mode: str = "kis_live") -> str:
         Exception: HTTP 요청 실패 또는 응답에 approval_key 없음
     """
     account_mode = _resolve_ws_account_mode(account_mode)
+    if is_cache_only_token_issuance(settings):
+        # Defense in depth: no approval HTTP request in cache_only, even on a direct call.
+        raise cache_only_refusal(f"kis-websocket-approval-{account_mode}")
     base_url, appkey, secret = _resolve_approval_credentials(account_mode)
     _assert_approval_endpoint_host(account_mode, base_url)
 
