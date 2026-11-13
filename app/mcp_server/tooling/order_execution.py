@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import inspect
 import json
 import time
 import uuid
@@ -148,6 +149,21 @@ def _create_kis_client(*, is_mock: bool) -> KISClient:
 
 async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> Any:
     kwargs.pop("is_mock", None)
+    hook = kwargs.get("pre_send_hook")
+    if hook is not None and not is_mock:
+        try:
+            parameters = inspect.signature(method).parameters.values()
+            accepts_hook = any(
+                p.name == "pre_send_hook" or p.kind is inspect.Parameter.VAR_KEYWORD
+                for p in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_hook = True
+        if not accepts_hook:
+            # Compatibility with injected clients using the old protocol.
+            # First-party clients recheck inside each transport attempt.
+            await hook()
+            kwargs.pop("pre_send_hook")
     if is_mock:
         return await method(*args, **kwargs, is_mock=True)
     return await method(*args, **kwargs)
@@ -378,8 +394,8 @@ async def _execute_kr_order(
 
     assert kis is not None
 
-    # ROB-843 P1: only thread the hook when present (mock scalping). The live /
-    # normal path passes no callback at all → byte-for-byte identical behavior.
+    # The live observation wrapper preserves the original hook and counts sends.
+    # Mock paths keep their original hook behavior.
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if send_outcome is not None:
         hook_kw["send_outcome"] = send_outcome
@@ -475,7 +491,7 @@ async def _execute_us_order(
     kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
-    # ROB-843 P1: pass the hook only when present (live/normal path unchanged).
+    # Pass the live observation wrapper or the original mock hook when present.
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if side == "buy":
         return await _call_kis(
@@ -1475,6 +1491,36 @@ async def _execute_and_record(
             )
         )
 
+    observed_attempt_id = getattr(pre_send_hook, "attempt_id", None)
+    if observed_attempt_id is not None:
+        try:
+            from app.mcp_server.tooling.kis_live_ledger import _derive_live_send_status
+            from app.services.decision_evidence import (
+                observation_session,
+                schedule_order_attempt_outcome,
+            )
+
+            if market_type == "crypto":
+                accepted = bool(execution_result.get("uuid"))
+            else:
+                order_no = execution_result.get("odno") or execution_result.get(
+                    "ord_no"
+                )
+                accepted = (
+                    _derive_live_send_status(
+                        rt_cd=str(execution_result.get("rt_cd", "")) or None,
+                        order_no=str(order_no) if order_no else None,
+                    )
+                    == "accepted"
+                )
+            if accepted:
+                schedule_order_attempt_outcome(
+                    observation_session, observed_attempt_id, "sent"
+                )
+
+        except Exception:  # noqa: BLE001 - observation setup never gates orders
+            logger.error("decision_order_evidence reason=outcome_setup_failed")
+
     await _record_order_history(
         symbol=normalized_symbol,
         side=side,
@@ -2260,33 +2306,54 @@ async def _place_order_impl(
             preview_resp["idempotency_key"] = idempotency_key
             return preview_resp
 
-        # Live send — approval-hash gate (valid hash = confirm).
-        mode = getattr(settings, "order_approval_hash_mode", "optional")
-
-        # ROB-800 — loss_cut is fail-closed on the approval hash regardless of
-        # ORDER_APPROVAL_HASH_MODE. The operator must preview the exact order
-        # (dry_run=True) and pass the returned hash back: a missing hash is
-        # rejected, and a present-but-invalid/expired hash is verified and
-        # rejected even when mode="off" (which would otherwise skip verification).
-        if loss_cut_ctx is not None:
-            if approval_hash is None:
-                err = _order_error(
-                    "loss_cut live send requires approval_hash "
-                    "(re-run dry_run=True and pass the returned approval_hash)"
-                )
-                err["error_code"] = "loss_cut_approval_hash_required"
-                return err
-            verdict = order_approval.verify_approval_token(
-                approval_hash, canonical, now=now
+        attempt_hook = None
+        try:
+            from app.mcp_server.tooling.orders_toss_variants import (
+                _order_proposal_context,
             )
-            if not verdict.ok:
-                err = _order_error(verdict.message or "approval_hash invalid")
-                err["error_code"] = verdict.error_code
-                if verdict.diff is not None:
-                    err["diff"] = verdict.diff
-                return err
-        elif mode != "off":
-            if approval_hash is not None:
+            from app.services.decision_evidence import (
+                AttemptSendHook,
+                begin_order_attempt,
+                finish_order_attempt,
+                observation_session,
+            )
+
+            if not is_mock:
+                context = _order_proposal_context.get()
+                attempt_id = await begin_order_attempt(
+                    observation_session,
+                    account_mode="upbit" if market_type == "crypto" else "kis_live",
+                    market=market_type,
+                    symbol=normalized_symbol,
+                    side=side_lower,
+                    strategy=strategy,
+                    send_key=idempotency_key,
+                    proposal_id=context.proposal_id if context else None,
+                    rung_index=context.rung_index if context else None,
+                    decision_id=context.decision_id if context else None,
+                    proposal_flow=proposal_flow,
+                )
+                attempt_hook = AttemptSendHook(pre_send_hook)
+                attempt_hook.attempt_id = attempt_id
+        except Exception:  # noqa: BLE001 - observation setup never gates orders
+            logger.error("decision_order_evidence reason=attempt_setup_failed")
+        try:
+            # Live send — approval-hash gate (valid hash = confirm).
+            mode = getattr(settings, "order_approval_hash_mode", "optional")
+
+            # ROB-800 — loss_cut is fail-closed on the approval hash regardless of
+            # ORDER_APPROVAL_HASH_MODE. The operator must preview the exact order
+            # (dry_run=True) and pass the returned hash back: a missing hash is
+            # rejected, and a present-but-invalid/expired hash is verified and
+            # rejected even when mode="off" (which would otherwise skip verification).
+            if loss_cut_ctx is not None:
+                if approval_hash is None:
+                    err = _order_error(
+                        "loss_cut live send requires approval_hash "
+                        "(re-run dry_run=True and pass the returned approval_hash)"
+                    )
+                    err["error_code"] = "loss_cut_approval_hash_required"
+                    return err
                 verdict = order_approval.verify_approval_token(
                     approval_hash, canonical, now=now
                 )
@@ -2296,115 +2363,143 @@ async def _place_order_impl(
                     if verdict.diff is not None:
                         err["diff"] = verdict.diff
                     return err
-            elif mode == "required" and not is_mock:
-                # ROB-659: required-mode fail-close is scoped to LIVE orders only.
-                # Mock scalping / watch auto-execute / kis_mock callers can't mint
-                # an approval_hash, so gating them would break internal automation
-                # loops when the operator flips ORDER_APPROVAL_HASH_MODE=required.
-                # The live ScreenerService REST path remains the rollout gate — see
-                # docs/runbooks/order-approval-hash.md §6 (required-mode cutover).
-                err = _order_error(
-                    "approval_hash is required (ORDER_APPROVAL_HASH_MODE=required). "
-                    "Re-run with dry_run=True and pass the returned approval_hash."
-                )
-                err["error_code"] = "approval_hash_required"
-                return err
-            elif mode == "warn":
-                logger.warning(
-                    "place_order without approval_hash (mode=warn) symbol=%s side=%s",
-                    normalized_symbol,
-                    side_lower,
-                )
+            elif mode != "off":
+                if approval_hash is not None:
+                    verdict = order_approval.verify_approval_token(
+                        approval_hash, canonical, now=now
+                    )
+                    if not verdict.ok:
+                        err = _order_error(verdict.message or "approval_hash invalid")
+                        err["error_code"] = verdict.error_code
+                        if verdict.diff is not None:
+                            err["diff"] = verdict.diff
+                        return err
+                elif mode == "required" and not is_mock:
+                    # ROB-659: required-mode fail-close is scoped to LIVE orders only.
+                    # Mock scalping / watch auto-execute / kis_mock callers can't mint
+                    # an approval_hash, so gating them would break internal automation
+                    # loops when the operator flips ORDER_APPROVAL_HASH_MODE=required.
+                    # The live ScreenerService REST path remains the rollout gate — see
+                    # docs/runbooks/order-approval-hash.md §6 (required-mode cutover).
+                    err = _order_error(
+                        "approval_hash is required (ORDER_APPROVAL_HASH_MODE=required). "
+                        "Re-run with dry_run=True and pass the returned approval_hash."
+                    )
+                    err["error_code"] = "approval_hash_required"
+                    return err
+                elif mode == "warn":
+                    logger.warning(
+                        "place_order without approval_hash (mode=warn) symbol=%s side=%s",
+                        normalized_symbol,
+                        side_lower,
+                    )
 
-        approval_digest = (
-            order_approval.derive_approval_digest(canonical)
-            if (mode != "off" or loss_cut_ctx is not None)
-            else None
-        )
-
-        # Public rung orders are separate decisions even when their terms match.
-        attribution_correlation_id = correlation_id
-        if (
-            is_mock
-            and reserve_mock_derived_idempotency
-            and correlation_id is None
-            and rung is not None
-            and str(rung)
-        ):
-            rung_discriminator = int.from_bytes(
-                hashlib.sha256(str(rung).encode("utf-8")).digest(), "big"
+            approval_digest = (
+                order_approval.derive_approval_digest(canonical)
+                if (mode != "off" or loss_cut_ctx is not None)
+                else None
             )
-            attribution_correlation_id = mint_correlation_id(
-                symbol=normalized_symbol,
+
+            # Public rung orders are separate decisions even when their terms match.
+            attribution_correlation_id = correlation_id
+            if (
+                is_mock
+                and reserve_mock_derived_idempotency
+                and correlation_id is None
+                and rung is not None
+                and str(rung)
+            ):
+                rung_discriminator = int.from_bytes(
+                    hashlib.sha256(str(rung).encode("utf-8")).digest(), "big"
+                )
+                attribution_correlation_id = mint_correlation_id(
+                    symbol=normalized_symbol,
+                    side=side_lower,
+                    price=_to_float(dry_run_result.get("price"), default=0.0),
+                    quantity=_to_float(dry_run_result.get("quantity"), default=0.0),
+                    kst_trade_day=now.astimezone(KST).strftime("%Y-%m-%d"),
+                    rung=rung_discriminator,
+                )
+
+            # Real execution
+            execution_result = await _execute_and_record(
+                normalized_symbol=normalized_symbol,
                 side=side_lower,
-                price=_to_float(dry_run_result.get("price"), default=0.0),
-                quantity=_to_float(dry_run_result.get("quantity"), default=0.0),
-                kst_trade_day=now.astimezone(KST).strftime("%Y-%m-%d"),
-                rung=rung_discriminator,
+                order_type=order_type_lower,
+                order_quantity=order_quantity,
+                price=price,
+                market_type=market_type,
+                current_price=current_price,
+                avg_price=avg_price,
+                dry_run_result=dry_run_result,
+                order_amount=order_amount,
+                reason=reason,
+                exit_reason=exit_reason,
+                exit_intent=exit_intent,
+                thesis=thesis,
+                strategy=strategy,
+                target_price=target_price,
+                stop_loss=stop_loss,
+                min_hold_days=min_hold_days,
+                notes=notes,
+                indicators_snapshot=indicators_snapshot,
+                defensive_trim_ctx=defensive_trim_ctx,
+                order_error_fn=_order_error,
+                is_mock=is_mock,
+                correlation_id=attribution_correlation_id,
+                report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
+                approval_hash_digest=approval_digest,
+                idempotency_key=idempotency_key,
+                mirror_cohort=mirror_cohort,
+                mirror_source_bucket=mirror_source_bucket,
+                pre_send_hook=attempt_hook
+                if attempt_hook is not None
+                else pre_send_hook,
+                send_outcome=send_outcome,
+                **(
+                    {
+                        "reserve_mock_idempotency": (
+                            client_order_id is not None
+                            or reserve_mock_derived_idempotency
+                        ),
+                        "mock_key_was_supplied": client_order_id is not None,
+                        "mock_rung": rung,
+                    }
+                    if is_mock
+                    else {}
+                ),
             )
-
-        # Real execution
-        execution_result = await _execute_and_record(
-            normalized_symbol=normalized_symbol,
-            side=side_lower,
-            order_type=order_type_lower,
-            order_quantity=order_quantity,
-            price=price,
-            market_type=market_type,
-            current_price=current_price,
-            avg_price=avg_price,
-            dry_run_result=dry_run_result,
-            order_amount=order_amount,
-            reason=reason,
-            exit_reason=exit_reason,
-            exit_intent=exit_intent,
-            thesis=thesis,
-            strategy=strategy,
-            target_price=target_price,
-            stop_loss=stop_loss,
-            min_hold_days=min_hold_days,
-            notes=notes,
-            indicators_snapshot=indicators_snapshot,
-            defensive_trim_ctx=defensive_trim_ctx,
-            order_error_fn=_order_error,
-            is_mock=is_mock,
-            correlation_id=attribution_correlation_id,
-            report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
-            approval_hash_digest=approval_digest,
-            idempotency_key=idempotency_key,
-            mirror_cohort=mirror_cohort,
-            mirror_source_bucket=mirror_source_bucket,
-            pre_send_hook=pre_send_hook,
-            send_outcome=send_outcome,
-            **(
-                {
-                    "reserve_mock_idempotency": (
-                        client_order_id is not None or reserve_mock_derived_idempotency
-                    ),
-                    "mock_key_was_supplied": client_order_id is not None,
-                    "mock_rung": rung,
-                }
-                if is_mock
-                else {}
-            ),
-        )
-        # ROB-1460: a proposal-flow buy is recorded by revalidation, which has
-        # the proposal's stated stop. A mock order has no plan.
-        if (
-            not proposal_flow
-            and not is_mock
-            and side_lower == "buy"
-            and execution_result.get("success") is True
-        ):
-            await record_buy_exit_plan(
-                account_mode="upbit" if market_type == "crypto" else "kis_live",
-                market=market_type,
-                symbol=normalized_symbol,
-                price=price if price is not None else current_price,
-                quantity=order_quantity,
-                now=datetime.datetime.now(datetime.UTC),
-            )
-        return execution_result
+            # ROB-1460: a proposal-flow buy is recorded by revalidation, which has
+            # the proposal's stated stop. A mock order has no plan.
+            if (
+                not proposal_flow
+                and not is_mock
+                and side_lower == "buy"
+                and execution_result.get("success") is True
+            ):
+                await record_buy_exit_plan(
+                    account_mode="upbit" if market_type == "crypto" else "kis_live",
+                    market=market_type,
+                    symbol=normalized_symbol,
+                    price=price if price is not None else current_price,
+                    quantity=order_quantity,
+                    now=datetime.datetime.now(datetime.UTC),
+                )
+            return execution_result
+        finally:
+            if (
+                attempt_hook is not None
+                and attempt_hook.attempt_id is not None
+                and attempt_hook.post_count == 0
+            ):
+                try:
+                    await finish_order_attempt(
+                        observation_session,
+                        attempt_hook.attempt_id,
+                        "proven_not_sent",
+                    )
+                except Exception:  # noqa: BLE001 - keep the original refusal
+                    logger.error("decision_order_evidence reason=outcome_setup_failed")
     except Exception as exc:
         logger.exception(
             "place_order execution failed (symbol=%s side=%s market=%s): %s",

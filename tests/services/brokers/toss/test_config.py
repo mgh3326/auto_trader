@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pydantic import SecretStr
 
 from app.core.config import Settings, validate_toss_api_config
@@ -29,6 +30,32 @@ def test_validate_toss_api_config_reports_names_only() -> None:
 
     assert validate_toss_api_config(Configured()) == []
     assert "secret-value" not in repr(Configured.toss_api_client_secret)
+
+
+@pytest.mark.parametrize("mode", ["gatewayd", "cache_only"])
+def test_validate_toss_api_config_allows_fingerprint_only_consumers(mode: str) -> None:
+    class ConsumerConfig:
+        toss_api_enabled = True
+        toss_api_client_id = None
+        toss_api_client_secret = None
+        toss_token_namespace_fp = "0123456789abcdef"
+        broker_token_issuance_mode = mode
+
+    assert validate_toss_api_config(ConsumerConfig()) == []
+
+
+def test_validate_toss_api_config_keeps_self_credentials_required() -> None:
+    class SelfConfig:
+        toss_api_enabled = True
+        toss_api_client_id = None
+        toss_api_client_secret = None
+        toss_token_namespace_fp = "0123456789abcdef"
+        broker_token_issuance_mode = "self"
+
+    assert validate_toss_api_config(SelfConfig()) == [
+        "TOSS_API_CLIENT_ID",
+        "TOSS_API_CLIENT_SECRET",
+    ]
 
 
 def test_toss_live_order_mutation_gate_defaults_false() -> None:
