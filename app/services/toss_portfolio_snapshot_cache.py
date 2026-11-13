@@ -22,7 +22,10 @@ import redis.asyncio as redis
 from redis.exceptions import WatchError
 
 from app.core.config import settings
-from app.services.brokers.toss.auth import _client_fingerprint
+from app.services.brokers.token_keys import (
+    toss_client_fingerprint,
+    toss_oauth_token_keys_for_fingerprint,
+)
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -37,8 +40,8 @@ def _snapshot_cache_scope(settings_obj: Any) -> str:
     ROB-1310 R9 (B5): the cache previously used a static global key, so two
     processes configured for different Toss accounts/environments silently
     exchanged positions/cash on shared Redis. The scope is derived from the
-    configured endpoint, the OAuth client-id fingerprint (reusing the same
-    concept as ``TossOAuthTokenManager``), and the effective account
+    configured endpoint, the Toss token namespace fingerprint (from the client
+    id or its non-secret configured fp16), and the effective account
     selection -- never the raw base URL, client id, account sequence,
     secret, or token, which must never appear in a Redis key/log/error.
     """
@@ -47,7 +50,19 @@ def _snapshot_cache_scope(settings_obj: Any) -> str:
         getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
     ).rstrip("/")
     client_id = str(getattr(settings_obj, "toss_api_client_id", None) or "")
-    fingerprint = _client_fingerprint(client_id) if client_id else "unconfigured"
+    namespace_fingerprint = getattr(settings_obj, "toss_token_namespace_fp", None)
+    if client_id.strip():
+        fingerprint = toss_client_fingerprint(client_id)
+    elif isinstance(namespace_fingerprint, str) and namespace_fingerprint.strip():
+        try:
+            toss_oauth_token_keys_for_fingerprint(namespace_fingerprint)
+        except ValueError:
+            raise ValueError(
+                "TOSS_TOKEN_NAMESPACE_FP must be 16 hexadecimal characters"
+            ) from None
+        fingerprint = namespace_fingerprint.lower()
+    else:
+        fingerprint = "unconfigured"
     account_seq = getattr(settings_obj, "toss_api_account_seq", None)
     material = "|".join(
         [base_url, fingerprint, str(account_seq) if account_seq is not None else "auto"]

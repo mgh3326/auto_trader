@@ -64,6 +64,8 @@ class _Settings:
     toss_api_client_id: str | None = "client-id"
     toss_api_client_secret: SecretStr | None = SecretStr("client-secret")
     toss_api_base_url: str | None = "https://openapi.tossinvest.com"
+    broker_token_issuance_mode: str = "self"
+    toss_token_namespace_fp: str | None = None
 
 
 @pytest.fixture
@@ -103,6 +105,88 @@ async def test_from_settings_missing_credentials_raises_names_only() -> None:
     assert "TOSS_API_CLIENT_ID" in message
     assert "TOSS_API_CLIENT_SECRET" in message
     assert "client-secret" not in message
+
+
+@pytest.mark.parametrize("mode", ["gatewayd", "cache_only"])
+async def test_consumer_mode_can_build_from_namespace_fingerprint_only(
+    mode: str,
+) -> None:
+    fingerprint = auth.toss_client_fingerprint("client-id")
+    expected = auth.TossOAuthTokenManager(
+        client_id="client-id",
+        client_secret=SecretStr("client-secret"),
+    )
+    configured = _Settings(
+        toss_api_enabled=True,
+        toss_api_client_id=None,
+        toss_api_client_secret=None,
+        broker_token_issuance_mode=mode,
+        toss_token_namespace_fp=fingerprint,
+    )
+
+    manager = auth.TossOAuthTokenManager.from_settings(configured)
+
+    assert (manager.token_key, manager.lock_key) == (
+        expected.token_key,
+        expected.lock_key,
+    )
+
+
+async def test_namespace_fingerprint_and_client_id_must_match() -> None:
+    configured = _Settings(
+        broker_token_issuance_mode="gatewayd",
+        toss_token_namespace_fp="0123456789abcdef",
+    )
+
+    with pytest.raises(TossMissingCredentials) as exc_info:
+        auth.TossOAuthTokenManager.from_settings(configured)
+
+    message = str(exc_info.value)
+    assert "TOSS_TOKEN_NAMESPACE_FP" in message
+    assert "TOSS_API_CLIENT_ID" in message
+    assert "0123456789abcdef" not in message
+    assert "client-id" not in message
+
+
+async def test_matching_namespace_fingerprint_and_client_id_are_accepted() -> None:
+    configured = _Settings(
+        toss_api_client_secret=None,
+        broker_token_issuance_mode="cache_only",
+        toss_token_namespace_fp=auth.toss_client_fingerprint("client-id"),
+    )
+
+    manager = auth.TossOAuthTokenManager.from_settings(configured)
+
+    assert manager.client_fingerprint == auth.toss_client_fingerprint("client-id")
+
+
+@pytest.mark.parametrize("mode", ["self", "gatewayd"])
+async def test_empty_namespace_fingerprint_is_ignored(mode: str) -> None:
+    configured = _Settings(
+        toss_token_namespace_fp="",
+        broker_token_issuance_mode=mode,
+        toss_api_client_secret=(SecretStr("client-secret") if mode == "self" else None),
+    )
+
+    manager = auth.TossOAuthTokenManager.from_settings(configured)
+
+    assert manager.client_fingerprint == auth.toss_client_fingerprint("client-id")
+
+
+@pytest.mark.parametrize("fingerprint", ["short", "g123456789abcdef", "0" * 17])
+async def test_malformed_namespace_fingerprint_is_refused(fingerprint: str) -> None:
+    configured = _Settings(
+        broker_token_issuance_mode="gatewayd",
+        toss_api_client_id=None,
+        toss_api_client_secret=None,
+        toss_token_namespace_fp=fingerprint,
+    )
+
+    with pytest.raises(TossMissingCredentials) as exc_info:
+        auth.TossOAuthTokenManager.from_settings(configured)
+
+    assert "TOSS_TOKEN_NAMESPACE_FP" in str(exc_info.value)
+    assert fingerprint not in str(exc_info.value)
 
 
 async def test_concurrent_cold_start_issues_exactly_once(fake_redis, monkeypatch):

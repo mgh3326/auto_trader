@@ -23,7 +23,18 @@ def toss_client_fingerprint(client_id: str) -> str:
 def toss_oauth_token_keys(*, client_id: str) -> tuple[str, str]:
     """Return Toss OAuth token keys scoped to a client-id fingerprint."""
     client_id_fingerprint = toss_client_fingerprint(client_id)
-    namespace = f"toss:oauth:{client_id_fingerprint}"
+    return toss_oauth_token_keys_for_fingerprint(client_id_fingerprint)
+
+
+def toss_oauth_token_keys_for_fingerprint(
+    client_fingerprint: str,
+) -> tuple[str, str]:
+    """Return Toss OAuth token keys from a validated non-secret fp16."""
+    if len(client_fingerprint) != 16 or any(
+        char not in "0123456789abcdefABCDEF" for char in client_fingerprint
+    ):
+        raise ValueError("Toss client fingerprint must be 16 hexadecimal characters")
+    namespace = f"toss:oauth:{client_fingerprint.lower()}"
     return f"{namespace}:access_token", f"{namespace}:lock"
 
 
