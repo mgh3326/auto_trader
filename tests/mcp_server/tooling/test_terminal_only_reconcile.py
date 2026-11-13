@@ -117,6 +117,9 @@ async def test_toss_terminal_only_never_books_fill(status, qty, tif, expected):
     with (
         patch.object(toss, "_order_session_factory", return_value=lambda: cm),
         patch.object(toss, "TossLiveOrderLedgerService", return_value=service),
+        patch.object(
+            toss, "_converge_toss_proposal_rung", new=AsyncMock(return_value=None)
+        ) as projection,
         patch.object(toss, "_save_order_fill", new_callable=AsyncMock) as fill,
         patch.object(
             toss, "_create_trade_journal_for_buy", new_callable=AsyncMock
@@ -130,9 +133,63 @@ async def test_toss_terminal_only_never_books_fill(status, qty, tif, expected):
     assert service.update_reconcile_outcome.await_count == int(
         expected.startswith("marked_")
     )
+    assert projection.await_count == int(expected.startswith("marked_"))
+    if expected.startswith("marked_"):
+        assert projection.await_args.kwargs["filled_qty"] is None
     fill.assert_not_awaited()
     journal.assert_not_awaited()
     pnl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_toss_terminal_projection_failure_keeps_ledger_open():
+    order = SimpleNamespace(status="CANCELED", execution={"filledQuantity": "0"})
+    source = SimpleNamespace(
+        evidence_for=AsyncMock(return_value=classify_toss_order_evidence(order))
+    )
+    with (
+        patch.object(
+            toss,
+            "_converge_toss_proposal_rung",
+            new=AsyncMock(return_value={"converged": False}),
+        ),
+        patch.object(toss, "_order_session_factory") as session,
+    ):
+        result = await toss._reconcile_one_toss_row(
+            toss_row(), dry_run=False, terminal_only=True, evidence_source=source
+        )
+    assert result["action"] == "projection_failed"
+    session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_toss_terminal_projection_can_be_disabled():
+    order = SimpleNamespace(status="CANCELED", execution={"filledQuantity": "0"})
+    source = SimpleNamespace(
+        evidence_for=AsyncMock(return_value=classify_toss_order_evidence(order))
+    )
+    service = MagicMock()
+    service.update_reconcile_outcome = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=object())
+    cm.__aexit__ = AsyncMock(return_value=None)
+    with (
+        patch.object(
+            toss, "_converge_toss_proposal_rung", new_callable=AsyncMock
+        ) as projection,
+        patch.object(toss, "_order_session_factory", return_value=lambda: cm),
+        patch.object(toss, "TossLiveOrderLedgerService", return_value=service),
+    ):
+        result = await toss._reconcile_one_toss_row(
+            toss_row(),
+            dry_run=False,
+            terminal_only=True,
+            evidence_source=source,
+            project_proposal_rungs=False,
+        )
+    assert result["action"] == "marked_cancelled"
+    projection.assert_not_awaited()
+    service.update_reconcile_outcome.assert_awaited_once()
 
 
 @pytest.mark.asyncio

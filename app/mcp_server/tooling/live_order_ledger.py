@@ -669,7 +669,11 @@ async def live_reconcile_orders_impl(
     # terminal without its projection landing stayed `resting` forever. The
     # rung-driven sweep is untruncated and evidence-first, and makes no broker
     # call — see proposal_rung_convergence.
-    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run or terminal_only)
+    rung_sweep = (
+        {"ran": False, "skipped": "terminal_only"}
+        if terminal_only
+        else await run_resting_rung_sweep(dry_run=dry_run)
+    )
     try:
         open_total = await _count_open_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id

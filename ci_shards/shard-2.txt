@@ -46,6 +46,7 @@ tests/mcp_server/tooling/test_live_order_evidence_us.py
 tests/mcp_server/tooling/test_market_index_current_only.py
 tests/mcp_server/tooling/test_news_handlers.py
 tests/mcp_server/tooling/test_screen_stocks_halt_filter.py
+tests/mcp_server/tooling/test_terminal_only_reconcile.py
 tests/mcp_server/tooling/test_toss_live_evidence.py
 tests/mcp_server/tooling/test_toss_sellable_need_flag.py
 tests/models/test_analyst_consensus_snapshot_model.py

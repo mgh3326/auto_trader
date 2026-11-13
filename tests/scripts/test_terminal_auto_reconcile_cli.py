@@ -53,3 +53,13 @@ async def test_full_apply_preserves_existing_kernel_path(cli, kernel):
     if cli is us:
         kwargs.update(market="us", broker="kis")
     call.assert_awaited_once_with(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_toss_projection_failure_warns_and_exits_nonzero(capsys):
+    result = {"success": True, "reconciled": [{"action": "projection_failed"}]}
+    with patch.object(
+        toss, "toss_reconcile_orders_impl", AsyncMock(return_value=result)
+    ):
+        assert await toss._run(apply=True, terminal_only=True) == 3
+    assert "WARNING" in capsys.readouterr().out

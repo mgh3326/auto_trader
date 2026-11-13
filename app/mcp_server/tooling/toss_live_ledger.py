@@ -464,6 +464,9 @@ async def _reconcile_one_toss_row(
             base["action"] = "deferred_fill_booking"
             base["requires_session_reconcile"] = True
             return base
+        if row.filled_qty and row.filled_qty > 0:
+            base["action"] = "noop_no_evidence"
+            return base
         if evidence.local_status not in {"expired", "cancelled", "rejected"}:
             base["action"] = "noop_pending"
             return base
@@ -471,6 +474,16 @@ async def _reconcile_one_toss_row(
             f"{'would_mark' if dry_run else 'marked'}_{evidence.local_status}"
         )
         if not dry_run:
+            if project_proposal_rungs:
+                converged = await _converge_toss_proposal_rung(
+                    row, ledger_status=evidence.local_status, filled_qty=None
+                )
+                if converged is not None:
+                    base["proposal_rung"] = converged
+                    if converged.get("converged") is False:
+                        base["action"] = "projection_failed"
+                        base["requires_session_reconcile"] = True
+                        return base
             async with _order_session_factory()() as db:
                 await TossLiveOrderLedgerService(db).update_reconcile_outcome(
                     ledger_id=row.id,
@@ -879,7 +892,11 @@ async def toss_reconcile_orders_impl(
     # ROB-1284: rung-driven guaranteed-convergence sweep (untruncated,
     # evidence-first, no broker call) — closes the rungs the ledger-driven
     # repair above structurally cannot reach.
-    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run or terminal_only)
+    rung_sweep = (
+        {"ran": False, "skipped": "terminal_only"}
+        if terminal_only
+        else await run_resting_rung_sweep(dry_run=dry_run)
+    )
 
     # Self-healing reopen + list_open run in ONE session block so both the
     # recoverable-anomaly rows and the open rows are live-session ORM objects that
