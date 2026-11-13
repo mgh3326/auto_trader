@@ -400,7 +400,15 @@ class RedisTokenManager:
         if is_cache_only_token_issuance(settings):
             # cache_only: every KIS caller runs clear_token before re-ensuring, so
             # this is the forced re-issue point. Never write or delete the shared
-            # Redis key. Remember the rejected token so it is not re-cached from
+            # Redis key.
+            if failed_token is not None:
+                # A peer may already have replaced the rejected token. A different
+                # usable cached token is a cache hit (as in Toss), so the caller's
+                # re-ensure picks it up. This is a read only.
+                current = await self.get_token(force_redis_check=True)
+                if current is not None and current != failed_token:
+                    return
+            # Otherwise remember the rejected token so it is not re-cached from
             # Redis, and drop the in-process copy so the next read is from Redis.
             rejected = failed_token if failed_token is not None else self._local_token
             if rejected:

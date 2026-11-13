@@ -625,3 +625,79 @@ async def test_websocket_reconnect_backs_off_when_cache_only_refuses_reissue(
 
     assert attempts == 2
     assert approval_redis.mutations == []
+
+
+@pytest.mark.asyncio
+async def test_kis_forced_invalidation_returns_when_producer_already_replaced_token(
+    cache_only_mode: None,
+    no_http: None,
+    gatewayd_ensure: AsyncMock,
+) -> None:
+    """The producer rotated between KIS's rejection and clear_token: a cache hit, no raise."""
+    redis = _TrapRedis()
+    manager = RedisTokenManager(namespace="cache-only-kis-peer-replaced")
+    manager.redis_client = redis  # type: ignore[assignment]
+    key = manager._token_key
+    redis.values[key] = _kis_token_json("SECRET-TOKEN-A", expires_at=time.time() + 3600)
+    assert await manager.get_token() == "SECRET-TOKEN-A"
+
+    redis.values[key] = _kis_token_json("SECRET-TOKEN-B", expires_at=time.time() + 3600)
+    await manager.clear_token("SECRET-TOKEN-A")  # must not raise
+
+    assert await manager.get_token() == "SECRET-TOKEN-B"
+    assert redis.mutations == []
+    gatewayd_ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_websocket_reconnect_adopts_producer_key_published_after_cache_only_refusal(
+    cache_only_mode: None,
+    no_http: None,
+    approval_redis: _TrapRedis,
+) -> None:
+    """Refused reissue keeps the loop alive; a key published later must be adopted."""
+    cache_key = approval_keys.APPROVAL_KEY_CACHE_KEYS["kis_live"]
+    client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=False)
+    client.is_running = True
+    client.reconnect_delay = 0
+    client.max_reconnect_attempts = 4
+    client.approval_key = "KEY-REJECTED"
+    keys_used: list[str] = []
+
+    async def connect() -> None:
+        keys_used.append(client.approval_key)
+        if len(keys_used) < 3:
+            if len(keys_used) == 2:
+                # The producer rotates the key between the two rejections.
+                approval_redis.values[cache_key] = "KEY-ROTATED"
+            raise KISSubscriptionAckError(
+                tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                rt_cd="1",
+                msg_cd="OPSP0011",
+                msg1="invalid approval : NOT FOUND",
+            )
+        client.is_connected = True
+
+    with (
+        patch.object(
+            client,
+            "_issue_approval_key_if_needed",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            client,
+            "_build_websocket_url",
+            new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+        ),
+        patch.object(
+            client,
+            "_connect_and_subscribe_internal",
+            new=AsyncMock(side_effect=connect),
+        ),
+        patch.object(client, "_close_websocket_best_effort", new=AsyncMock()),
+    ):
+        await client.connect_and_subscribe()
+
+    assert keys_used == ["KEY-REJECTED", "KEY-REJECTED", "KEY-ROTATED"]
+    assert client.approval_key == "KEY-ROTATED"
+    assert approval_redis.mutations == []

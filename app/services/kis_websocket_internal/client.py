@@ -12,7 +12,10 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
 from app.schemas.execution_contracts import AccountMode
-from app.services.brokers.token_issuance import TokenIssuanceCacheOnlyUnavailable
+from app.services.brokers.token_issuance import (
+    TokenIssuanceCacheOnlyUnavailable,
+    is_cache_only_token_issuance,
+)
 
 from . import approval_keys
 from .constants import RECOVERABLE_APPROVAL_MSG_CODES, WEBSOCKET_ENDPOINT_HOSTS
@@ -180,6 +183,10 @@ class KISExecutionWebSocket:
                         # can fix by reissuing again. Do NOT churn the approval key;
                         # just back off via reconnect_delay below. The single-flight
                         # holder / next reconnect cycle resolves a genuine reissue.
+                        if is_cache_only_token_issuance(settings):
+                            # cache_only never reissues, so pick up a key the producer
+                            # has published since. Read-only; no churn.
+                            await self._adopt_cached_approval_key()
                         logger.warning(
                             "KIS WebSocket recoverable ACK persists after controlled "
                             "reissue; backing off without reissuing key: "
@@ -207,16 +214,24 @@ class KISExecutionWebSocket:
                                 self.messages_received,
                                 self.execution_events_received,
                             )
-                        except (
-                            approval_keys.ApprovalKeyIssuanceUnavailable,
-                            TokenIssuanceCacheOnlyUnavailable,
-                        ):
+                        except approval_keys.ApprovalKeyIssuanceUnavailable:
                             # Another owner holds the issuance lock and published no key
-                            # in time, or cache_only refused the reissue; back off
-                            # instead of issuing a second key or ending the loop.
+                            # in time; back off instead of issuing a second key.
                             logger.warning(
                                 "KIS approval key issuance contended during reconnect; "
                                 "backing off without independent reissue: "
+                                "msg_cd=%s attempt=%s/%s",
+                                ack_msg_cd,
+                                self.current_attempt,
+                                self.max_reconnect_attempts,
+                            )
+                        except TokenIssuanceCacheOnlyUnavailable:
+                            # cache_only refused the reissue. No independent issuance;
+                            # back off and keep the reconnect loop alive. A key the
+                            # producer publishes later is adopted on the repeated-ACK path.
+                            logger.warning(
+                                "KIS approval key reissue refused by cache_only during "
+                                "reconnect; backing off without independent reissue: "
                                 "msg_cd=%s attempt=%s/%s",
                                 ack_msg_cd,
                                 self.current_attempt,
@@ -251,6 +266,19 @@ class KISExecutionWebSocket:
 
         if not self.is_connected:
             raise RuntimeError("KIS WebSocket connection not established")
+
+    async def _adopt_cached_approval_key(self) -> None:
+        """cache_only: adopt a producer-published approval key, never the rejected one.
+
+        Read-only. On a cache miss get_approval_key raises the cache_only refusal and
+        the current key is kept.
+        """
+        try:
+            key = await approval_keys.get_approval_key(self.account_mode)
+        except TokenIssuanceCacheOnlyUnavailable:
+            return
+        if key != self.approval_key:
+            self.approval_key = key
 
     async def _issue_approval_key_if_needed(self):
         """Approval Key 발급 (캐시 미스 시) — account_mode 별 endpoint/credential"""
