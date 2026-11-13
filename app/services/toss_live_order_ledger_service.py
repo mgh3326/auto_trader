@@ -239,7 +239,6 @@ class TossLiveOrderLedgerService:
         order_id: str | None = None,
         market: str | None = None,
         limit: int = 100,
-        after_id: int | None = None,
     ) -> tuple[list[TossLiveOrderLedger], dict[str, int]]:
         stmt = select(TossLiveOrderLedger).where(
             TossLiveOrderLedger.status.in_(("accepted", "pending", "partial"))
@@ -253,15 +252,9 @@ class TossLiveOrderLedgerService:
             stmt = stmt.where(TossLiveOrderLedger.broker_order_id == order_id)
         if market:
             stmt = stmt.where(TossLiveOrderLedger.market == market)
-        if after_id is not None:
-            stmt = stmt.where(TossLiveOrderLedger.id > after_id).order_by(
-                TossLiveOrderLedger.id.asc()
-            )
-        else:
-            stmt = stmt.order_by(
-                TossLiveOrderLedger.created_at.asc(), TossLiveOrderLedger.id.asc()
-            )
-        stmt = stmt.limit(limit)
+        stmt = stmt.order_by(
+            TossLiveOrderLedger.created_at.asc(), TossLiveOrderLedger.id.asc()
+        ).limit(limit)
         rows = list((await self._db.execute(stmt)).scalars().all())
         for row in rows:
             self._db.expunge(row)

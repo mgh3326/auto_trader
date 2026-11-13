@@ -10,16 +10,34 @@ from app.mcp_server.tooling.live_order_ledger import live_reconcile_orders_impl
 
 async def _run(*, apply: bool, terminal_only: bool) -> int:
     result = await live_reconcile_orders_impl(
-        market="us", broker="kis", dry_run=not apply, terminal_only=terminal_only
+        market="us",
+        broker="kis",
+        dry_run=not apply,
+        scope="terminal_only" if terminal_only else "full",
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    if not result.get("success"):
-        return 1
-    actions = [row.get("action", "") for row in result.get("reconciled", [])]
+    rows = result.get("reconciled", [])
+
+    def clean(row: dict) -> bool:
+        action = row.get("action", "")
+        if (
+            row.get("error") is not None
+            or row.get("requires_manual_review")
+            or row.get("reason_code") == "not_found"
+        ):
+            return False
+        return action in {"noop_pending", "noop_terminal"} or (
+            apply and action.startswith("marked_")
+        )
+
     if (
-        (terminal_only and "noop_contradictory_fill_evidence" in actions)
-        or (not apply and any(a.startswith("would_mark_") for a in actions))
-        or (apply and terminal_only and "deferred_fill_booking" in actions)
+        not result.get("success")
+        or result.get("error") is not None
+        or result.get("candidate_scan", {}).get("truncated")
+        or result.get("proposal_rung_sweep", {}).get("error") is not None
+        or result.get("proposal_projection_repair", {}).get("failed", 0) > 0
+        or result.get("batch_build_error") is not None
+        or not all(clean(row) for row in rows)
     ):
         print("WARNING: reconciliation requires attention")
         return 3
@@ -47,7 +65,10 @@ def main() -> int:
         )
         return 2
     return asyncio.run(
-        _run(apply=args.apply or args.apply_terminal_only, terminal_only=not args.apply)
+        _run(
+            apply=args.apply or args.apply_terminal_only,
+            terminal_only=args.apply_terminal_only,
+        )
     )
 
 

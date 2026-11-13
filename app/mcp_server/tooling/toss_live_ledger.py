@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import sentry_sdk
@@ -425,7 +425,7 @@ async def _reconcile_one_toss_row(
     evidence_source: Any | None = None,
     fallback_client: Any | None = None,
     project_proposal_rungs: bool = True,
-    terminal_only: bool = False,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
     base = {
         "ledger_id": row.id,
@@ -440,9 +440,6 @@ async def _reconcile_one_toss_row(
         base["local_status"] = row.status
         base["action"] = "noop_terminal"
         return base
-    if terminal_only and row.operation_kind == "cancel":
-        base["action"] = "noop_cancel_request"
-        return base
     if evidence_source is not None:
         evidence = await evidence_source.evidence_for(row)
     else:
@@ -450,53 +447,6 @@ async def _reconcile_one_toss_row(
     base["verdict"] = evidence.verdict
     base["broker_status"] = evidence.broker_status
     base["local_status"] = evidence.local_status
-
-    if terminal_only:
-        execution = evidence.raw_order.get("execution")
-        quantity = (
-            execution.get("filledQuantity") if isinstance(execution, dict) else None
-        )
-        try:
-            confirmed_qty = Decimal(str(quantity))
-        except (ValueError, ArithmeticError):
-            confirmed_qty = None
-        if confirmed_qty is None or not confirmed_qty.is_finite() or confirmed_qty < 0:
-            base["action"] = "noop_no_evidence"
-            return base
-        if confirmed_qty > 0:
-            base["action"] = "deferred_fill_booking"
-            base["requires_session_reconcile"] = True
-            return base
-        if row.filled_qty and row.filled_qty > 0:
-            base["action"] = "noop_contradictory_fill_evidence"
-            base["requires_manual_review"] = True
-            return base
-        if evidence.local_status not in {"expired", "cancelled", "rejected"}:
-            base["action"] = "noop_pending"
-            return base
-        base["action"] = (
-            f"{'would_mark' if dry_run else 'marked'}_{evidence.local_status}"
-        )
-        if not dry_run:
-            if project_proposal_rungs:
-                converged = await _converge_toss_proposal_rung(
-                    row, ledger_status=evidence.local_status, filled_qty=None
-                )
-                if converged is not None:
-                    base["proposal_rung"] = converged
-                    if converged.get("converged") is False:
-                        base["action"] = "projection_failed"
-                        base["requires_session_reconcile"] = True
-                        return base
-            async with _order_session_factory()() as db:
-                await TossLiveOrderLedgerService(db).update_reconcile_outcome(
-                    ledger_id=row.id,
-                    status=evidence.local_status,
-                    broker_status=evidence.broker_status,
-                    raw_response=evidence.raw_order,
-                    expired_at=evidence.expired_at,
-                )
-        return base
 
     if evidence.verdict == "pending":
         if (
@@ -572,6 +522,11 @@ async def _reconcile_one_toss_row(
     base["filled_qty"] = float(broker_cum)
     base["avg_price"] = float(avg_price)
     base["delta_qty"] = float(delta)
+
+    if scope == "terminal_only":
+        base["action"] = "deferred_fill_booking"
+        base["requires_session_reconcile"] = True
+        return base
 
     if not dry_run and project_proposal_rungs:
         projection_status = (
@@ -874,10 +829,10 @@ async def toss_reconcile_orders_impl(
     dry_run: bool = True,
     limit: int = 100,
     project_proposal_rungs: bool = True,
-    terminal_only: bool = False,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
     if (
-        terminal_only
+        scope == "terminal_only"
         and not dry_run
         and settings.TOSS_TERMINAL_AUTO_RECONCILE_ENABLED is not True
     ):
@@ -886,7 +841,7 @@ async def toss_reconcile_orders_impl(
             "error": "terminal-only requires TOSS_TERMINAL_AUTO_RECONCILE_ENABLED",
         }
     projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
-    if not dry_run and project_proposal_rungs and not terminal_only:
+    if not dry_run and project_proposal_rungs:
         projection_repair = await _repair_terminal_toss_proposal_projections(
             symbol=symbol,
             order_id=order_id,
@@ -896,33 +851,23 @@ async def toss_reconcile_orders_impl(
     # ROB-1284: rung-driven guaranteed-convergence sweep (untruncated,
     # evidence-first, no broker call) — closes the rungs the ledger-driven
     # repair above structurally cannot reach.
-    rung_sweep = (
-        {"ran": False, "skipped": "terminal_only"}
-        if terminal_only
-        else await run_resting_rung_sweep(dry_run=dry_run)
-    )
+    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
 
     # Self-healing reopen + list_open run in ONE session block so both the
     # recoverable-anomaly rows and the open rows are live-session ORM objects that
     # detach together at block exit (matching the existing detached-row loop).
     async with _order_session_factory()() as db:
         service = TossLiveOrderLedgerService(db)
-        reopen_report = (
-            {"rows": [], "skipped": "terminal_only"}
-            if terminal_only
-            else await service.reopen_anomalies_for_reconcile(
-                dry_run=dry_run, market=market, symbol=symbol, limit=limit
-            )
+        reopen_report = await service.reopen_anomalies_for_reconcile(
+            dry_run=dry_run, market=market, symbol=symbol, limit=limit
         )
         reopened_rows = reopen_report.pop("rows")  # ORM rows, not echoed
-        if terminal_only:
-            open_rows = await service.list_open(
-                symbol=symbol, order_id=order_id, market=market, limit=limit, after_id=0
-            )
-        else:
-            open_rows = await service.list_open(
-                symbol=symbol, order_id=order_id, market=market, limit=limit
-            )
+        open_rows = await service.list_open(
+            symbol=symbol,
+            order_id=order_id,
+            market=market,
+            limit=limit,
+        )
         open_total = int(
             (
                 await db.execute(
@@ -949,18 +894,6 @@ async def toss_reconcile_orders_impl(
                 )
             ).scalar_one()
         )
-        if terminal_only and limit > 0:
-            while len(open_rows) < open_total and open_rows:
-                page = await service.list_open(
-                    symbol=symbol,
-                    order_id=order_id,
-                    market=market,
-                    limit=min(limit, open_total - len(open_rows)),
-                    after_id=open_rows[-1].id,
-                )
-                if not page:
-                    break
-                open_rows.extend(page)
         # Work-list = list_open rows + reopened rows, deduped by ledger id
         # (a non-dry-run reopened row is now 'accepted' and may also be in
         # open_rows). Touch attributes here while the session is still open.
@@ -1018,14 +951,14 @@ async def toss_reconcile_orders_impl(
     try:
         for row in rows:
             try:
-                if terminal_only:
+                if scope == "terminal_only":
                     outcome = await _reconcile_one_toss_row(
                         row,
                         dry_run=dry_run,
                         evidence_source=evidence_source,
                         fallback_client=shared_client,
                         project_proposal_rungs=project_proposal_rungs,
-                        terminal_only=True,
+                        scope=scope,
                     )
                 else:
                     outcome = await _reconcile_one_toss_row(
@@ -1036,9 +969,7 @@ async def toss_reconcile_orders_impl(
                         project_proposal_rungs=project_proposal_rungs,
                     )
             except Exception as exc:  # noqa: BLE001 — classified in the handler
-                outcome = await _handle_reconcile_row_error(
-                    row, exc, dry_run=dry_run or terminal_only
-                )
+                outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)
             reconciled.append(outcome)
             verdict = str(outcome.get("verdict", "anomaly"))
             counts[verdict] = counts.get(verdict, 0) + 1
@@ -1063,7 +994,6 @@ async def toss_reconcile_orders_impl(
             oldest_scanned_at=scanned_oldest,
             newest_scanned_at=scanned_newest,
             now=datetime.now(UTC),
-            **({"scan_order": "id ASC"} if terminal_only else {}),
         ),
         "batch_build_error": batch_build_error,
         "message": (

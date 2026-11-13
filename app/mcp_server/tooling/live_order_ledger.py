@@ -9,7 +9,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal
 
 from sqlalchemy import and_, func, or_, select
 
@@ -17,10 +17,7 @@ from app.core.config import settings
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory, _to_float
-from app.mcp_server.tooling.live_order_evidence import (
-    UsOverseasEvidenceAdapter,
-    get_evidence_adapter,
-)
+from app.mcp_server.tooling.live_order_evidence import get_evidence_adapter
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
@@ -258,7 +255,6 @@ async def _list_open_live_ledger_rows(
     symbol: str | None,
     order_no: str | None,
     limit: int,
-    after_id: int | None = None,
 ) -> list[LiveOrderLedger]:
     """Open rows in the aged ``_US_OPEN_SCAN_ORDER`` (ROB-719 gap D)."""
     async with _order_session_factory()() as db:
@@ -273,17 +269,11 @@ async def _list_open_live_ledger_rows(
             stmt = stmt.where(LiveOrderLedger.symbol == symbol)
         if order_no:
             stmt = stmt.where(LiveOrderLedger.order_no == order_no)
-        if after_id is not None:
-            stmt = stmt.where(LiveOrderLedger.id > after_id).order_by(
-                LiveOrderLedger.id.asc()
-            )
-        else:
-            stmt = stmt.order_by(
-                _live_beyond_reach_clause().asc(),
-                LiveOrderLedger.created_at.asc(),
-                LiveOrderLedger.id.asc(),
-            )
-        stmt = stmt.limit(limit)
+        stmt = stmt.order_by(
+            _live_beyond_reach_clause().asc(),
+            LiveOrderLedger.created_at.asc(),
+            LiveOrderLedger.id.asc(),
+        ).limit(limit)
         rows = list((await db.execute(stmt)).scalars().all())
         for r in rows:
             db.expunge(r)
@@ -394,7 +384,10 @@ async def _converge_proposal_rung(
 
 
 async def _reconcile_one_live_row(
-    row: LiveOrderLedger, *, dry_run: bool, terminal_only: bool = False
+    row: LiveOrderLedger,
+    *,
+    dry_run: bool,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
     base: dict[str, Any] = {
         "ledger_id": row.id,
@@ -404,22 +397,8 @@ async def _reconcile_one_live_row(
         "symbol": row.symbol,
     }
     adapter = get_evidence_adapter(row.broker)
-    if terminal_only:
-        evidence = await cast(UsOverseasEvidenceAdapter, adapter).fetch_evidence(
-            row, terminal_only=True
-        )
-    else:
-        evidence = await adapter.fetch_evidence(row)
+    evidence = await adapter.fetch_evidence(row)
     base["verdict"] = evidence.verdict.value
-
-    if (
-        terminal_only
-        and evidence.verdict in (FillVerdict.EXPIRED, FillVerdict.CANCELLED)
-        and (row.filled_qty or Decimal("0")) > 0
-    ):
-        base["action"] = "noop_contradictory_fill_evidence"
-        base["requires_manual_review"] = True
-        return base
 
     if evidence.verdict == FillVerdict.PENDING:
         base["action"] = "noop_pending"
@@ -474,11 +453,6 @@ async def _reconcile_one_live_row(
         )
         return base
 
-    if terminal_only:
-        base["action"] = "deferred_fill_booking"
-        base["requires_session_reconcile"] = True
-        return base
-
     # FILLED / PARTIAL — broker 확정값. 델타 멱등 booking.
     broker_cum = evidence.filled_qty or Decimal("0")
     already = row.filled_qty or Decimal("0")
@@ -490,6 +464,11 @@ async def _reconcile_one_live_row(
     base["delta_qty"] = float(delta)
 
     rung_terminal = "filled" if new_status == "filled" else "partially_filled"
+
+    if scope == "terminal_only":
+        base["action"] = "deferred_fill_booking"
+        base["requires_session_reconcile"] = True
+        return base
 
     if delta <= 0:
         base["action"] = "noop_already_booked"
@@ -670,9 +649,9 @@ async def live_reconcile_orders_impl(
     order_id: str | None = None,
     dry_run: bool = True,
     limit: int = 100,
-    terminal_only: bool = False,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
-    if terminal_only:
+    if scope == "terminal_only":
         if market != "us" or broker != "kis":
             return {"success": False, "error": "terminal-only requires KIS US"}
         if not dry_run and settings.KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED is not True:
@@ -685,11 +664,7 @@ async def live_reconcile_orders_impl(
     # terminal without its projection landing stayed `resting` forever. The
     # rung-driven sweep is untruncated and evidence-first, and makes no broker
     # call — see proposal_rung_convergence.
-    rung_sweep = (
-        {"ran": False, "skipped": "terminal_only"}
-        if terminal_only
-        else await run_resting_rung_sweep(dry_run=dry_run)
-    )
+    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
     try:
         open_total = await _count_open_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id
@@ -697,36 +672,9 @@ async def live_reconcile_orders_impl(
         beyond_reach = await _count_beyond_reach_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id
         )
-        if terminal_only:
-            rows = await _list_open_live_ledger_rows(
-                market=market,
-                broker=broker,
-                symbol=symbol,
-                order_no=order_id,
-                limit=limit,
-                after_id=0,
-            )
-        else:
-            rows = await _list_open_live_ledger_rows(
-                market=market,
-                broker=broker,
-                symbol=symbol,
-                order_no=order_id,
-                limit=limit,
-            )
-        if terminal_only and limit > 0:
-            while len(rows) < open_total and rows:
-                page = await _list_open_live_ledger_rows(
-                    market=market,
-                    broker=broker,
-                    symbol=symbol,
-                    order_no=order_id,
-                    limit=min(limit, open_total - len(rows)),
-                    after_id=rows[-1].id,
-                )
-                if not page:
-                    break
-                rows.extend(page)
+        rows = await _list_open_live_ledger_rows(
+            market=market, broker=broker, symbol=symbol, order_no=order_id, limit=limit
+        )
         scanned_oldest, scanned_newest = scanned_row_bounds(rows)
     except Exception as exc:
         logger.exception("Failed to list open live ledger rows: %s", exc)
@@ -736,9 +684,9 @@ async def live_reconcile_orders_impl(
     counts: dict[str, int] = {}
     for row in rows:
         try:
-            if terminal_only:
+            if scope == "terminal_only":
                 outcome = await _reconcile_one_live_row(
-                    row, dry_run=dry_run, terminal_only=True
+                    row, dry_run=dry_run, scope=scope
                 )
             else:
                 outcome = await _reconcile_one_live_row(row, dry_run=dry_run)
@@ -767,8 +715,8 @@ async def live_reconcile_orders_impl(
             oldest_scanned_at=scanned_oldest,
             newest_scanned_at=scanned_newest,
             now=datetime.now(UTC),
-            scan_order="id ASC" if terminal_only else _US_OPEN_SCAN_ORDER,
-            probeable_open=None if terminal_only else open_total - beyond_reach,
+            scan_order=_US_OPEN_SCAN_ORDER,
+            probeable_open=open_total - beyond_reach,
         ),
         "message": f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}",
     }
