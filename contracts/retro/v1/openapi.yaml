@@ -681,7 +681,8 @@ components:
         attempt_unconfirmed - one decision, but no sent outcome was recorded.
         no_candidate_ref, candidate_outside_trading_day, candidate_ref_unresolved
         - why a proposal has no candidate link. ambiguous_decision,
-        no_decision_link - why a trade has no decision link.
+        no_decision_link - why a trade has no decision link. attempts_unavailable
+        - the send-attempt read failed or was cut off, so no link was concluded.
       type:
       - string
       - 'null'
@@ -693,6 +694,7 @@ components:
       - candidate_ref_unresolved
       - ambiguous_decision
       - no_decision_link
+      - attempts_unavailable
       - null
     UnknownReason:
       type: string

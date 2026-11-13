@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from app.services.retro_v1 import links as links_module
 from app.services.retro_v1 import read_retro_day, read_retro_funnel, read_retro_symbol
 from app.services.retro_v1.envelope import make_ref
 from app.services.retro_v1.links import (
@@ -286,17 +287,36 @@ async def test_legacy_correlation_only_match_is_an_inference_with_the_proposal_d
 
 
 @pytest.mark.asyncio
-async def test_failed_link_read_is_an_unknown_and_keeps_the_legacy_rows() -> None:
-    session = kr_day_session(
-        **{"FROM review.decision_order_links": operational_error()}
-    )
+@pytest.mark.parametrize(
+    "failure", ["attempts_failed", "attempts_capped", "outcomes_failed"]
+)
+async def test_unreadable_attempts_give_no_link_and_no_legacy_fallback(
+    failure, monkeypatch
+) -> None:
+    if failure == "attempts_failed":
+        session = kr_day_session(
+            **{"FROM review.decision_order_links": operational_error()}
+        )
+        field = "source.decision_links"
+    elif failure == "attempts_capped":
+        monkeypatch.setattr(links_module, "_LINK_ROWS_CAP", 2)
+        # a surviving sent attempt would read as recorded; the cut-off one
+        # (another decision) is not in the result
+        session = two_proposal_session([A1, A2], [(A2, "sent")])
+        field = "source.decision_links"
+    else:
+        session = two_proposal_session([A1], [])
+        session.routes["FROM review.decision_order_link_outcomes"] = operational_error()
+        field = "source.decision_link_outcomes"
     response = await read_retro_day(session, market="kr", date=DAY)
     validate(response, "RetroDayResponse")
-    assert {"field": "source.decision_links", "reason": "upstream_error"} in response[
-        "unknowns"
-    ]
-    assert row_of(response, "order")["link_basis"] == "recorded"
-    assert response["total"] == 8, "a link read is not part of the population"
+    assert any(u["field"] == field for u in response["unknowns"])
+    order = row_of(response, "order")
+    # the legacy idempotency-key match would have linked this order to a rung
+    assert order["linked_ref"] is None
+    assert not {"link_basis", "decision_ref", "decision_link_basis"} & order.keys()
+    assert order["link_reason"] == "attempts_unavailable"
+    assert response["total"] is not None, "a link read is not part of the population"
 
 
 # --------------------------------------------------------------------------

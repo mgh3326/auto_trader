@@ -423,12 +423,178 @@ def test_costs_flag_pre_split_toss_fees_and_estimate_on_the_entry_leg() -> None:
     with_both = costs_of(buy, sell)
     only_sell = costs_of(sell)
     # a round trip is estimated once, on the entry notional
-    assert Decimal(with_both["estimated"]["amount"]) < Decimal(
-        only_sell["estimated"]["amount"]
+    assert with_both["estimated"]["amount"] == "5"  # 1000 * 50 bps
+    # no recorded entry fill: the exit proceeds are not an entry notional
+    assert only_sell["estimated"] is None
+    assert only_sell["estimated_reason"] == "missing_notional"
+
+
+def test_a_missing_fee_leaves_no_recorded_cost_even_when_the_tax_is_known() -> None:
+    body = costs_of(
+        ledger_fill(fee_basis="not_provided", fee_amount=None, tax_amount=Decimal("1"))
     )
+    assert body["recorded"] is None and body["recorded_reason"] == "not_provided"
+    assert body["estimated"]["amount"] == "5"
 
 
 def test_costs_with_mixed_currencies_have_no_recorded_currency() -> None:
     body = costs_of(ledger_fill(currency="KRW"), ledger_fill(currency="USD"))
     assert body["recorded"]["currency"] is None
     assert body["recorded_reason"] == "missing_currency"
+
+
+# --------------------------------------------------------------------------
+# review hardening: incomplete evidence, brokers without a KIS day, time basis
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_incomplete_order_evidence_withholds_fills_derived_fields() -> None:
+    # one order ledger fails while another still returns the order and its fill
+    source = fills_session(
+        fill(),
+        **{
+            "FROM review.kis_live_order_ledger": operational_error(),
+            "FROM review.live_order_ledger": [order()],
+        },
+    )
+    result = await read(source)
+    row = result["data"][0]
+    assert "costs" not in row and "fill_time_basis" not in row
+
+
+@pytest.mark.asyncio
+async def test_capped_order_read_withholds_fills_derived_fields(monkeypatch) -> None:
+    monkeypatch.setattr(trade_evidence, "MAX_SOURCE_ROWS", 2)
+    orders = [order(id_=100), order(id_=101, idempotency_key="idem-10")]
+    # two orders hit the cap of 2, one fill does not
+    result = await read(
+        fills_session(fill(), **{"FROM review.kis_live_order_ledger": orders})
+    )
+    row = result["data"][0]
+    assert "costs" not in row and "fill_time_basis" not in row
+    assert {
+        "field": "source.trade_kis_orders",
+        "reason": "incomplete_evidence",
+    } in result["unknowns"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["failed", "capped"])
+async def test_incomplete_reviews_withhold_every_new_field(
+    failure, monkeypatch
+) -> None:
+    reviews = [
+        kr_review(301, decision_id=DECISION_A),
+        kr_review(302, decision_id=DECISION_B),
+    ]
+    source = fills_session(fill())
+    if failure == "failed":
+        source.routes["FROM review.trade_retrospectives"] = operational_error()
+    else:
+        source.routes["FROM review.trade_retrospectives"] = reviews
+        monkeypatch.setattr("app.services.retro_v1.retro_trades.MAX_SOURCE_ROWS", 2)
+    result = await read(source)
+    row = result["data"][0]
+    assert not NEW_FIELDS & row.keys()
+    assert result["summary"]["pnl_coverage"] is None
+
+
+@pytest.mark.asyncio
+async def test_unavailable_attempts_give_no_derived_decision() -> None:
+    routes = {
+        "FROM review.kis_live_order_ledger": [order()],
+        "FROM review.decision_order_links": operational_error(),
+    }
+    result = await read(
+        session([kr_journal()], [kr_review(correlation_id="corr-1")], **routes)
+    )
+    row = result["data"][0]
+    assert row["link_reason"] == "attempts_unavailable"
+    assert "decision_ref" not in row
+
+
+@pytest.mark.asyncio
+async def test_upbit_fills_after_kst_midnight_still_belong_to_the_order() -> None:
+    placed = FILL_AT.replace(hour=14, minute=50)  # 23:50 KST
+    after_midnight = FILL_AT.replace(hour=15, minute=10)  # 00:10 KST next day
+    common = {
+        "broker": "upbit",
+        "instrument_type": "crypto",
+        "broker_order_id": "uuid-1",
+        "fee_amount": Decimal("5"),
+        "filled_notional": Decimal("1000"),
+    }
+    fills = [
+        ledger(
+            1,
+            placed,
+            **{
+                **common,
+                "symbol": "SAMPLE",
+                "raw_symbol": "SAMPLE",
+                "fill_seq": 1,
+                "fee_basis": "broker_reported",
+                "tax_amount": None,
+                "filled_at_basis": "broker_fill_time",
+            },
+        ),
+        ledger(
+            2,
+            after_midnight,
+            **{
+                **common,
+                "symbol": "SAMPLE",
+                "raw_symbol": "SAMPLE",
+                "fill_seq": 2,
+                "fee_basis": "broker_reported",
+                "tax_amount": None,
+                "filled_at_basis": "broker_fill_time",
+            },
+        ),
+    ]
+    upbit_order = live_order(
+        id_=100,
+        at=placed,
+        broker="upbit",
+        symbol="SAMPLE",
+        order_no="uuid-1",
+        correlation_id="corr-1",
+        idempotency_key="oprop-1",
+    )
+    source = session(
+        [journal(101, InstrumentType.crypto, correlation_id="corr-1")],
+        [kr_review()],
+        **{
+            "FROM review.live_order_ledger": [upbit_order],
+            "FROM review.execution_ledger": fills,
+        },
+    )
+    row = (await read(source))["data"][0]
+    assert row["costs"]["recorded"]["fee"] == "10"
+    assert row["fill_time_basis"] == "broker_fill_time"
+
+
+@pytest.mark.asyncio
+async def test_websocket_fill_times_are_used_only_when_they_cover_the_order() -> None:
+    tap = {
+        "source": "websocket",
+        "fill_seq": 7,
+        "filled_at_basis": "broker_fill_time",
+        "fee_basis": None,
+        "fee_amount": None,
+        "tax_amount": None,
+    }
+    complete = await read(
+        fills_session(fill(1), fill(2, **tap, filled_qty=Decimal("3")))
+    )
+    assert complete["data"][0]["fill_time_basis"] == "broker_fill_time"
+    short = await read(fills_session(fill(1), fill(2, **tap, filled_qty=Decimal("2"))))
+    assert short["data"][0]["fill_time_basis"] == "broker_order_time"
+    unlabelled = await read(
+        fills_session(
+            fill(1),
+            fill(2, **{**tap, "filled_at_basis": None}, filled_qty=Decimal("3")),
+        )
+    )
+    assert unlabelled["data"][0]["fill_time_basis"] == "broker_order_time"
+    # the costs still come from the authoritative row only
+    assert complete["data"][0]["costs"]["recorded"]["fee"] == "12"

@@ -20,8 +20,9 @@ the journal's or one of its retrospectives'.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Final
@@ -31,11 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import KISLiveOrderLedger, LiveOrderLedger, TossLiveOrderLedger
 from app.services.execution_ledger.supersede import (
+    AUTHORITATIVE_SOURCES,
     order_identity,
     supersede_provisional,
 )
 from app.services.retro_v1.chain import (
-    _day,
     _order_identity,
     fills_stmt,
     is_opening_seed,
@@ -80,6 +81,8 @@ class TradeEvidence:
     orders: list[Any] = field(default_factory=list)
     links: OrderLinkEvidence = field(default_factory=OrderLinkEvidence.empty)
     fills: list[Any] = field(default_factory=list)
+    #: the same fills before websocket duplicates are superseded (time basis).
+    raw_fills: list[Any] = field(default_factory=list)
     #: a failed read: absence of a link or a fill proves nothing.
     orders_ok: bool = True
     fills_ok: bool = True
@@ -180,6 +183,7 @@ async def load_trade_evidence(
             unknowns.note("source.trade_fills", "incomplete_evidence")
         kept, _ = supersede_provisional(fills)
         evidence.fills += [f for f in kept if not is_opening_seed(f)]
+        evidence.raw_fills += [f for f in fills if not is_opening_seed(f)]
     return evidence
 
 
@@ -225,6 +229,8 @@ def trade_decision_link(
         if not orders:
             continue
         resolution = evidence.links.resolve(orders[0])
+        if resolution.kind == "unavailable":
+            return {"link_reason": "attempts_unavailable"}
         if resolution.kind == "ambiguous":
             return {"link_reason": "ambiguous_attempts"}
         if resolution.kind in ("recorded", "unconfirmed"):
@@ -253,6 +259,9 @@ def trade_fills(
     correlations = {
         c for c in (journal.correlation_id, *(r.correlation_id for r in reviews)) if c
     }
+    # ``order_identity`` already carries the KIS trading day (and no day for
+    # brokers whose order ids are unique), so a fill after KST midnight of an
+    # Upbit order still matches.
     identities = set()
     for order in evidence.orders:
         if (
@@ -261,12 +270,8 @@ def trade_fills(
         ):
             identity = _order_identity(order, info)
             if identity is not None:
-                identities.add((identity, _day(order.broker, info, order.trade_date)))
-    return [
-        f
-        for f in evidence.fills
-        if (order_identity(f), _day(f.broker, info, f.filled_at)) in identities
-    ]
+                identities.add(identity)
+    return [f for f in evidence.fills if order_identity(f) in identities]
 
 
 def fill_time_basis(fill: Any) -> str | None:
@@ -286,11 +291,48 @@ def fill_time_basis(fill: Any) -> str | None:
     return None
 
 
-def weakest_time_basis(fills: Iterable[Any]) -> str | None:
-    bases = [fill_time_basis(f) for f in fills]
-    if not bases or None in bases:
+def _weakest(bases: Sequence[str | None]) -> str | None:
+    known = [b for b in bases if b is not None]
+    if not known or len(known) != len(bases):
         return None
-    return max(bases, key=_TIME_BASIS_RANK.__getitem__)
+    return max(known, key=_TIME_BASIS_RANK.__getitem__)
+
+
+def weakest_time_basis(fills: Iterable[Any]) -> str | None:
+    return _weakest([fill_time_basis(f) for f in fills])
+
+
+def trade_time_basis(fills: Sequence[Any], raw_fills: Sequence[Any]) -> str | None:
+    """Weakest time basis of a trade's orders (§6.2-4).
+
+    A reconciler row stands in for its order's websocket rows, which carry the
+    broker's own fill times. Those times are used for an order only when its
+    in-effect websocket rows all say ``broker_fill_time`` and their quantity
+    equals the authoritative quantity; otherwise the authoritative rows' basis
+    (the order time) stands for the whole order.
+    """
+    by_order: dict[Any, list[Any]] = defaultdict(list)
+    for fill in fills:
+        by_order[order_identity(fill)].append(fill)
+    bases: list[str | None] = []
+    for identity, rows in by_order.items():
+        authority = [r for r in rows if r.source in AUTHORITATIVE_SOURCES]
+        taps = [
+            r
+            for r in raw_fills
+            if r.source == "websocket" and order_identity(r) == identity
+        ]
+        if (
+            authority
+            and taps
+            and all(r.filled_at_basis == "broker_fill_time" for r in taps)
+            and sum((r.filled_qty for r in taps), Decimal(0))
+            == sum((r.filled_qty for r in authority), Decimal(0))
+        ):
+            bases.append("broker_fill_time")
+        else:
+            bases.append(weakest_time_basis(rows))
+    return _weakest(bases)
 
 
 def _fill_fee(fill: Any) -> tuple[Decimal | None, bool]:
@@ -344,7 +386,10 @@ def trade_costs(fills: Sequence[Any], market: MarketInfo) -> tuple[Costs, bool]:
     fee_total = _sum_or_none([fee for fee, _ in fees])
     tax_total = _sum_or_none([f.tax_amount for f in fills])
     currencies = {f.currency for f in fills}
-    entry = [f for f in fills if f.side == "buy"] or list(fills)
+    # The documented basis is the buy entry notional: a trade whose entry fill
+    # was never recorded has no entry notional (``missing_notional``), and its
+    # exit proceeds are not a stand-in.
+    entry = [f for f in fills if f.side == "buy"]
     bps, version, content_hash = _round_trip_bps(market)
     costs = calculate_costs(
         fee=fee_total,
@@ -356,6 +401,10 @@ def trade_costs(fills: Sequence[Any], market: MarketInfo) -> tuple[Costs, bool]:
         policy_version=version,
         policy_content_hash=content_hash,
     )
+    if fee_total is None and costs.recorded is not None:
+        # A fee that any fill did not provide leaves no recorded cost, even when
+        # the tax is known; the estimate stays.
+        costs = replace(costs, recorded=None, recorded_reason="not_provided")
     return costs, any(includes_tax for _, includes_tax in fees)
 
 
@@ -397,12 +446,14 @@ def trade_evidence_fields(
 ) -> dict[str, Any]:
     """The optional TradeRow fields of one trade (those without a value are absent)."""
     fields: dict[str, Any] = dict(trade_decision_link(reviews, evidence))
-    if info is None or not evidence.fills_ok:
+    # Fees and times describe the whole trade: withhold them unless both the
+    # order ledgers and the fills were read completely.
+    if info is None or not evidence.fills_ok or not evidence.orders_ok:
         return fields
     fills = trade_fills(journal, reviews, info, evidence)
     if not fills:
         return fields
-    basis = weakest_time_basis(fills)
+    basis = trade_time_basis(fills, evidence.raw_fills)
     if basis is not None:
         fields["fill_time_basis"] = basis
     costs, includes_tax = trade_costs(fills, info)

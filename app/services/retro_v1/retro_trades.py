@@ -167,6 +167,7 @@ async def read_retro_trades(
         )
         reviews, reviews_ok = ([], True)
         evidence = TradeEvidence()
+        reviews_usable = False
         if journals:
             reviews, reviews_ok = await guarded(
                 session,
@@ -175,7 +176,13 @@ async def read_retro_trades(
                 lambda: reviews_read([j.id for j in journals]),
                 [],
             )
-            evidence = await load_trade_evidence(session, unknowns, journals, reviews)
+            # The new fields describe a trade's whole review set: a failed or
+            # capped review read would let them speak for a partial one.
+            reviews_usable = reviews_ok and len(reviews) < MAX_SOURCE_ROWS
+            if reviews_usable:
+                evidence = await load_trade_evidence(
+                    session, unknowns, journals, reviews
+                )
     journals_capped = len(journals) >= MAX_SOURCE_ROWS
     reviews_capped = len(reviews) >= MAX_SOURCE_ROWS
     if journals_capped:
@@ -236,7 +243,10 @@ async def read_retro_trades(
                 if redacted:
                     item.setdefault("_redacted", []).append(field)
             row["reviews"].append(item)
-        row.update(trade_evidence_fields(journal, grouped[journal.id], info, evidence))
+        if reviews_usable:
+            row.update(
+                trade_evidence_fields(journal, grouped[journal.id], info, evidence)
+            )
         rows.append((row, {"market": "unsupported", "currency": "unsupported"}))
     response = build_response(
         as_of=as_of,

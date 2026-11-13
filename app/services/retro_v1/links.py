@@ -97,9 +97,11 @@ class AttemptResolution:
     ``none``: no live attempt (the legacy rule applies). ``ambiguous``: live
     attempts belong to two or more decisions. ``recorded``: one decision and a
     ``sent`` outcome. ``unconfirmed``: one decision, no ``sent`` evidence.
+    ``unavailable``: the attempt read failed or was cut off, so nothing — not
+    even the legacy rung match — may be concluded.
     """
 
-    kind: Literal["none", "ambiguous", "recorded", "unconfirmed"]
+    kind: Literal["none", "ambiguous", "recorded", "unconfirmed", "unavailable"]
     decision_id: UUID | None = None
     proposal_id: UUID | None = None
     rung_index: int | None = None
@@ -133,10 +135,15 @@ def resolve_attempts(
 
 @dataclass(slots=True)
 class OrderLinkEvidence:
-    """Attempt rows by ``(account_scope, send_key)`` and outcome by attempt."""
+    """Attempt rows by ``(account_scope, send_key)`` and outcome by attempt.
+
+    ``complete`` is false when the attempt read failed or hit its cap: an
+    omitted attempt could belong to another decision, so no order resolves.
+    """
 
     attempts: dict[tuple[str, str], list[Any]]
     outcomes: dict[Any, str]
+    complete: bool = True
 
     @classmethod
     def empty(cls) -> OrderLinkEvidence:
@@ -146,6 +153,8 @@ class OrderLinkEvidence:
         scope, key = order_scope(order), order_send_key(order)
         if scope is None or key is None:
             return AttemptResolution("none")
+        if not self.complete:
+            return AttemptResolution("unavailable")
         return resolve_attempts(self.attempts.get((scope, key), []), self.outcomes)
 
 
@@ -182,7 +191,9 @@ async def load_order_links(
         session, unknowns, "source.decision_links", read_attempts, []
     )
     if ok and len(attempts) >= _LINK_ROWS_CAP:
+        ok = False
         unknowns.note("source.decision_links", "incomplete_evidence")
+    evidence.complete = ok
     wanted = set(keys)
     by_key: dict[tuple[str, str], list[Any]] = defaultdict(list)
     for attempt in attempts:
@@ -206,7 +217,11 @@ async def load_order_links(
         session, unknowns, "source.decision_link_outcomes", read_outcomes, []
     )
     if ok and len(outcomes) >= _LINK_ROWS_CAP:
+        ok = False
         unknowns.note("source.decision_link_outcomes", "incomplete_evidence")
+    # Without the outcomes a hidden proven_not_sent could turn a live attempt
+    # into a wrong positive attribution, so the evidence is unusable.
+    evidence.complete = evidence.complete and ok
     known = set(ids)
     evidence.outcomes = {
         o.attempt_id: o.outcome for o in outcomes if o.attempt_id in known

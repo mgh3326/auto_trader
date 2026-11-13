@@ -886,6 +886,10 @@ def _order_link(
     ``recorded``; a correlation-only match is ``inference``. The decision of a
     legacy match is the one stored on its proposal.
     """
+    if resolution.kind == "unavailable":
+        # The attempt read failed or was cut off: neither the attempts nor the
+        # legacy rung match (which they could contradict) may be used.
+        return None, RowLinks(link_reason="attempts_unavailable")
     if resolution.kind == "ambiguous":
         return None, RowLinks(link_reason="ambiguous_attempts")
     if resolution.kind in ("recorded", "unconfirmed"):
