@@ -1,0 +1,21 @@
+# S1-only render configuration: preserve current legacy routing while HAProxy
+# ownership moves. Replace both marked upstream ports only after the live check
+# of the currently active legacy colours. See docs/design/4155-shiftgate-adoption.md.
+state_dir: /var/lib/shiftgate-at
+keep_digests: 3
+log: {driver: __LIVE_CHECK_LOG_DRIVER__} # [live check] See docs/design/4155-shiftgate-adoption.md.
+haproxy:
+  config: /root/at-run/haproxy.cfg
+  socket: /__LIVE_CHECK_HAPROXY_SOCKET__ # [live check] See docs/design/4155-shiftgate-adoption.md.
+  socket_in_config: /__LIVE_CHECK_HAPROXY_SOCKET_IN_CONFIG__ # [live check] See docs/design/4155-shiftgate-adoption.md.
+  check: ["/root/at-run/ops/ncp/shiftgate/haproxy-check.sh", "{config}"]
+  reload: ["docker", "kill", "-s", "HUP", "at-haproxy"]
+  allowed_binds: ["127.0.0.1", "100.122.100.56"]
+  log: stdout format raw local0
+  timeouts: {connect: 5s, client: 1h, server: 1h, tunnel: 1h, http_request: 10s}
+services:
+  - {name: at-api-legacy, binds: ["127.0.0.1:8000", "100.122.100.56:8000"], upstream: "127.0.0.1:__LIVE_CHECK_API_ACTIVE_PORT__", health: {http: /healthz}, check: {inter: 5s, fall: 2, rise: 1}}
+  - {name: at-mcp-legacy, binds: ["127.0.0.1:8765", "100.122.100.56:8765"], upstream: "127.0.0.1:__LIVE_CHECK_MCP_ACTIVE_PORT__", health: {http: /health}, check: {inter: 5s, fall: 2, rise: 1}}
+  - {name: at-mcp-kiwoom, binds: ["100.122.100.56:8772"], upstream: "127.0.0.1:8772", health: {http: /health}, check: {inter: 5s, fall: 2, rise: 1}}
+  - {name: at-mcp-h3-crypto-paper, binds: ["100.122.100.56:8776"], upstream: "127.0.0.1:8776", health: {http: /health}, check: {inter: 5s, fall: 2, rise: 1}}
+  - {name: at-mcp-h3-us-paper, binds: ["100.122.100.56:8777"], upstream: "127.0.0.1:8777", health: {http: /health}, check: {inter: 5s, fall: 2, rise: 1}}

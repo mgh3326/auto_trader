@@ -2,7 +2,9 @@
 
 The 11 DAGs in ``deploy/dagu/at-batch/`` replace Prefect deployments. They are
 proposals: nothing registers them. This test pins, per DAG, the Prefect
-deployment it replaces, its schedule (KST in the header, UTC in ``schedule``),
+deployment it replaces, its schedule (KST in the header, UTC in ``schedule``
+with an explicit ``CRON_TZ=UTC`` prefix, because the OCI Dagu server runs with
+``tz: Asia/Seoul`` and reads a bare cron as KST),
 the one command each step may run, and the failure alert path. It does not call
 Dagu, Prefect, Docker or a database.
 
@@ -271,6 +273,18 @@ def kst_cron_to_utc(kst_cron: str, shift_minutes: int) -> tuple[int, int, set[in
     return minute_of_day % 60, minute_of_day // 60, days
 
 
+UTC_PREFIX = "CRON_TZ=UTC "
+
+
+def _batch_utc_cron(schedule: str) -> str:
+    """A batch DAG's schedule must name UTC: the Dagu server default is Asia/Seoul."""
+    assert schedule.startswith(UTC_PREFIX), (
+        f"{schedule!r} has no CRON_TZ=UTC prefix; the OCI Dagu server reads a bare"
+        " cron as Asia/Seoul (11-11: toss DAGs ran 9 hours early)"
+    )
+    return schedule.removeprefix(UTC_PREFIX)
+
+
 def _utc_cron(cron: str) -> tuple[int, int, set[int]]:
     minute, hour, _, _, dow = _split_cron(cron)
     return minute, hour, _dow_set(dow)
@@ -314,7 +328,7 @@ def test_header_names_the_runbook_and_the_prefect_deployment(stem):
 def test_schedule_is_the_prefect_schedule_in_utc(stem):
     text, dag = _load(stem)
     job = JOBS[stem]
-    schedule = dag["schedule"]
+    schedule = _batch_utc_cron(dag["schedule"])
     assert schedule == job["schedule"], "the pinned UTC cron changed"
     if job["prefect"].startswith("cron "):
         kst_cron = job["prefect"].removeprefix("cron ").removesuffix(" Asia/Seoul")
@@ -345,13 +359,15 @@ def test_the_two_overlaps_are_at_least_ten_minutes_from_the_data_plane():
         yaml.safe_load((DATA_PLANE_DIR / "data-plane-kr.yaml").read_text())["schedule"]
     )
     for stem in ("at-batch1-crypto-screener", "at-batch1-crypto-insight"):
-        start, _ = slot(_load(stem)[1]["schedule"])
+        start, _ = slot(_batch_utc_cron(_load(stem)[1]["schedule"]))
         assert start - crypto_plane >= 10, stem
-    start, days = slot(_load("at-batch1-kr-fundamentals")[1]["schedule"])
+    start, days = slot(
+        _batch_utc_cron(_load("at-batch1-kr-fundamentals")[1]["schedule"])
+    )
     assert days >= kr_days and start - kr_plane >= 10
     # The shifted crypto jobs also stay apart from each other.
-    a, _ = slot(_load("at-batch1-crypto-screener")[1]["schedule"])
-    b, _ = slot(_load("at-batch1-crypto-insight")[1]["schedule"])
+    a, _ = slot(_batch_utc_cron(_load("at-batch1-crypto-screener")[1]["schedule"]))
+    b, _ = slot(_batch_utc_cron(_load("at-batch1-crypto-insight")[1]["schedule"]))
     assert abs(a - b) >= 10
 
 

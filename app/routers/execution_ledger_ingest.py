@@ -18,6 +18,8 @@ un-commits or re-inserts a fill.
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
@@ -53,6 +55,8 @@ from app.services.reconcile_trigger import get_reconcile_trigger_coordinator
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/trading", tags=["execution-ledger-ingest"])
+
+fillwire_time_basis_counts: Counter[str] = Counter()
 
 _INGEST_PATH = "/api/execution-ledger/fills/ingest"
 _RECONCILE_TRIGGER_PATH = "/api/execution-ledger/reconcile/trigger"
@@ -184,6 +188,20 @@ async def ingest_execution_ledger_fills(
         # pushing over this transport cannot claim reconciler or manual-import
         # provenance for the fill it just posted.
         fill.source = INGESTED_ROW_SOURCE  # type: ignore[assignment]
+        if request.source == "fillwire":
+            fill.filled_at_basis = None
+            try:
+                frame = decode_fillwire_kis_frame(fill.raw_payload_json or {})
+                frame_time = datetime.fromisoformat(frame["filled_at"])
+                if fill.broker == "kis" and frame_time == fill.filled_at:
+                    fill.filled_at_basis = "broker_fill_time"
+            except (KisFillwireFrameError, ValueError, TypeError, KeyError):
+                pass
+            if fill.filled_at_basis is None:
+                fillwire_time_basis_counts["unverified"] += 1
+        fill.fee_basis = (
+            "broker_reported" if fill.fee_amount is not None else "not_provided"
+        )
         # The envelope carries the transport run authority, so it wins over any
         # run id the item declared for itself.
         if request.source_run_id is not None:

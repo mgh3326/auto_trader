@@ -12,7 +12,9 @@ US 스크리너(`US Invest Screener Snapshots`, TaskIQ `us_post_close` 와 중�
 
 ## 대응표
 
-시각은 KST ↔ UTC. OCI Dagu 스케줄러가 UTC 로 돌기 때문에 DAG 의 `schedule` 은 UTC 다.
+시각은 KST ↔ UTC. DAG 의 `schedule` 은 UTC 이고 반드시 `CRON_TZ=UTC ` 접두어를 단다. 🔴 OCI Dagu 서버
+설정은 `tz: Asia/Seoul` 이라 접두어 없는 cron 은 KST 로 읽힌다(11-11 toss 두 DAG 가 9시간 이르게 22:20·22:30 KST 에 돌았다).
+아래 표의 `Dagu (UTC)` 칸은 접두어를 뺀 cron 이다.
 Prefect 스케줄은 `flows/auto_trader/*.py` 의 `CronSchedule`(robin-prefect-automations@d8f0054).
 
 | # | DAG 파일 (`deploy/dagu/at-batch/`) | Prefect deployment | Prefect (KST) | Dagu (UTC) | Dagu (KST) | 핑 env 이름 | 게이트 |

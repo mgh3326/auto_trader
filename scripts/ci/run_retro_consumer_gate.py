@@ -9,6 +9,8 @@ Supports testing mutants:
   --mutant delete_field: deletes a required field in retro_day
   --mutant float_integer: serializes a price decimal as a float number
   --mutant bypass_token: bypasses token authentication
+  --mutant delete_review_field: drops a required key from each retro_trades review
+  --mutant add_review_field: adds a key outside the closed review schema
 """
 
 from __future__ import annotations
@@ -165,6 +167,26 @@ def acquire_consumer_checkout(
         shutil.rmtree(temp_parent, ignore_errors=True)
 
 
+REVIEW_REQUIRED_FIELD = "fill_evidence_available"
+REVIEW_EXTRA_FIELD = "unexpected_field"
+
+
+def drop_review_field(resp: dict[str, Any]) -> dict[str, Any]:
+    """Mutant delete_review_field: remove one required key from every review element."""
+    for row in resp.get("data", []):
+        for review in row.get("reviews", []):
+            review.pop(REVIEW_REQUIRED_FIELD, None)
+    return resp
+
+
+def add_review_field(resp: dict[str, Any]) -> dict[str, Any]:
+    """Mutant add_review_field: add one key outside the closed review schema."""
+    for row in resp.get("data", []):
+        for review in row.get("reviews", []):
+            review[REVIEW_EXTRA_FIELD] = "synthetic"
+    return resp
+
+
 class CandidateServerThread(threading.Thread):
     def __init__(
         self,
@@ -179,6 +201,7 @@ class CandidateServerThread(threading.Thread):
         self.server: uvicorn.Server | None = None
         self.error: Exception | None = None
         self.original_retro_day = None
+        self.original_retro_trades = None
 
     def run(self) -> None:
         try:
@@ -235,6 +258,21 @@ class CandidateServerThread(threading.Thread):
 
                 retro_v1.READERS["retro_day"] = mutated_retro_day
 
+            elif self.mutant in ("delete_review_field", "add_review_field"):
+                real_retro_trades = retro_v1.READERS["retro_trades"]
+                self.original_retro_trades = real_retro_trades
+                mutate_review = (
+                    drop_review_field
+                    if self.mutant == "delete_review_field"
+                    else add_review_field
+                )
+
+                async def mutated_retro_trades(session, **query):
+                    resp = await real_retro_trades(session, **query)
+                    return mutate_review(resp)
+
+                retro_v1.READERS["retro_trades"] = mutated_retro_trades
+
             app.include_router(retro_v1.router)
 
             if self.mutant != "bypass_token":
@@ -257,6 +295,10 @@ class CandidateServerThread(threading.Thread):
             from app.routers import retro_v1
 
             retro_v1.READERS["retro_day"] = self.original_retro_day
+        if self.original_retro_trades is not None:
+            from app.routers import retro_v1
+
+            retro_v1.READERS["retro_trades"] = self.original_retro_trades
         if self.server:
             self.server.should_exit = True
 
@@ -290,7 +332,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--mutant",
-        choices=["delete_field", "float_integer", "bypass_token"],
+        choices=[
+            "delete_field",
+            "float_integer",
+            "bypass_token",
+            "delete_review_field",
+            "add_review_field",
+        ],
         default=None,
         help="Inject mutant for gate testing",
     )
@@ -309,8 +357,9 @@ def main() -> int:
 
     # Copy / stage tools/retro-consumer-check/main.go into isolated consumer workspace
     harness_src = REPO_ROOT / "tools" / "retro-consumer-check" / "main.go"
-    if not harness_src.exists():
-        print(f"error: harness {harness_src} not found", file=sys.stderr)
+    harness_test_src = REPO_ROOT / "tools" / "retro-consumer-check" / "main_test.go"
+    if not harness_src.exists() or not harness_test_src.exists():
+        print(f"error: harness {harness_src} or its tests not found", file=sys.stderr)
         return 2
 
     with acquire_consumer_checkout(consumer_info, args.consumer_dir) as consumer_dir:
@@ -320,6 +369,9 @@ def main() -> int:
         staged_main = staged_cmd_dir / "main.go"
         main_existed_before = staged_main.exists()
         shutil.copyfile(harness_src, staged_main)
+        staged_test = staged_cmd_dir / "main_test.go"
+        test_existed_before = staged_test.exists()
+        shutil.copyfile(harness_test_src, staged_test)
 
         port = args.port or find_free_port()
         print(
@@ -332,6 +384,18 @@ def main() -> int:
         server_thread.start()
 
         try:
+            # Harness unit tests (validator, mutant-shape rejections) run against the
+            # same staged package, so they are executed by CI and not only locally.
+            env = {**os.environ, "GOTOOLCHAIN": "auto"}
+            test_res = subprocess.run(
+                ["go", "test", "-count=1", "./cmd/retro-consumer-check"],
+                cwd=str(consumer_dir),
+                env=env,
+            )
+            if test_res.returncode != 0:
+                print("error: harness unit tests failed", file=sys.stderr)
+                return test_res.returncode
+
             if not wait_for_server(port, args.read_token, timeout=10.0):
                 print(
                     "error: candidate server did not start within timeout",
@@ -362,7 +426,6 @@ def main() -> int:
                 str(consumer_lock_path),
             ]
             print(f"[gate] Executing: {' '.join(cmd)}")
-            env = {**os.environ, "GOTOOLCHAIN": "auto"}
             res = subprocess.run(cmd, cwd=str(consumer_dir), env=env)
             return res.returncode
         finally:
@@ -370,6 +433,8 @@ def main() -> int:
             # Clean up staged files without deleting pre-existing consumer files
             if not main_existed_before and staged_main.exists():
                 staged_main.unlink(missing_ok=True)
+            if not test_existed_before and staged_test.exists():
+                staged_test.unlink(missing_ok=True)
             if not cmd_dir_existed_before and staged_cmd_dir.exists():
                 shutil.rmtree(staged_cmd_dir, ignore_errors=True)
 

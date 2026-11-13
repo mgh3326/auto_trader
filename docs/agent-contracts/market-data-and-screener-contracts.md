@@ -98,6 +98,17 @@ Fail-open. Prices are exact decimal text, never
 float. Additive migration only — operator runs `alembic upgrade head`.
 No scheduler. Not a policy/weight input.
 
+The outer wrapper creates one `call_id` per fanout invocation and passes it to
+the recorder. It returns that value as the optional top-level
+`pick_log_call_id` only when the gate is enabled, at least one row is written,
+and the write succeeds. The key is omitted when logging is disabled, there are
+no rows, or the write fails. The discovery implementation remains write-free.
+
+fanout 바깥 wrapper는 호출마다 `call_id`를 하나 만들고 recorder에 전달한다.
+기록 게이트가 켜져 있고 행을 하나 이상 성공적으로 쓴 경우에만 같은 값을
+최상위 선택 키 `pick_log_call_id`로 반환한다. 기록이 꺼져 있거나 행이 없거나
+쓰기에 실패하면 이 키를 생략한다. 후보 발굴 구현은 계속 쓰기를 하지 않는다.
+
 Since task #884 (`collection_version="funnel-a1"`) the log is a full A-record:
 one row per (call, source, symbol) for every source top-10 row that entered
 the bounded slice — admitted or not — carrying `family`, `rank` (ordinal in
@@ -586,3 +597,7 @@ A symbol with any row that `validate_bars` rejects is excluded whole with reason
 nor `candidates.csv`. Missing or blank numeric fields parse to NaN so they take
 this path. A malformed benchmark bar aborts publication. `validate_bars` itself is
 unchanged.
+
+### US 지정가 깊이 연구 shadow 설계 (hk 3737)
+
+`docs/design/3737-us-limit-depth-shadow.md`는 후속 연구의 제안이며 구현·실험 활성화가 아니다. ROB-1474의 기록된 US 매수 진입 episode를 읽기 전용으로 비교하고, 1분봉 GET 파일의 불변 세대와 출처를 고정한다. 매수 반사실은 `low < limit`일 때만 체결 가정, 동등 접촉은 별도 계수하며 결과는 journal·브로커 체결과 별도 라벨이다. 사전등록·미결 설계 확정 후에만 후속 구현한다. 주문·원장 쓰기·소급·스케줄러 및 기존 시장가 실험 변경은 없다.

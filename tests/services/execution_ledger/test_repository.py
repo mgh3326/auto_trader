@@ -12,7 +12,11 @@ from sqlalchemy import delete
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.trading import InstrumentType
-from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
+from app.schemas.execution_ledger import (
+    ExecutionLedgerRead,
+    ExecutionLedgerUpsert,
+    ReconcileRunRecord,
+)
 from app.services.execution_ledger.repository import (
     SUPERSEDE_LOOKBACK,
     ExecutionLedgerRepository,
@@ -767,3 +771,94 @@ async def test_position_before_fill_match_key_is_exact_and_unproven(
             )
         )
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_legacy_replay_preserves_cost_and_basis_but_updates_other_fields(
+    db_session,
+) -> None:
+    legacy = _row(_fill(broker_order_id="hk4186-legacy", fee_amount=Decimal("0")))
+    legacy.fee_basis = None
+    db_session.add(legacy)
+    await db_session.commit()
+    try:
+        repo = ExecutionLedgerRepository(db_session)
+        replay = _fill(
+            broker_order_id="hk4186-legacy",
+            fee_amount=None,
+            fee_basis="not_provided",
+            fee_currency="USD",
+            filled_at_basis="broker_order_time",
+            tax_amount=Decimal("1"),
+        )
+        status, row_id = await repo.upsert_fill(replay)
+        assert (status, row_id) == ("unchanged", legacy.id)
+        changed = replay.model_copy(update={"filled_price": Decimal("100000001")})
+        status, row_id = await repo.upsert_fill(changed)
+        assert (status, row_id) == ("updated", legacy.id)
+        await db_session.flush()
+        await db_session.refresh(legacy)
+        assert legacy.filled_price == Decimal("100000001")
+        assert (
+            legacy.fee_amount,
+            legacy.fee_currency,
+            legacy.fee_basis,
+            legacy.filled_at_basis,
+            legacy.tax_amount,
+        ) == (Decimal("0"), "KRW", None, None, None)
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(ExecutionLedger.id == legacy.id)
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_new_row_replay_updates_cost_and_basis(db_session) -> None:
+    repo = ExecutionLedgerRepository(db_session)
+    original = _fill(broker_order_id="hk4186-new", fee_basis="broker_reported")
+    _, row_id = await repo.upsert_fill(original)
+    try:
+        changed = original.model_copy(
+            update={
+                "fee_amount": Decimal("100"),
+                "tax_amount": Decimal("3"),
+                "filled_at_basis": "broker_fill_time",
+            }
+        )
+        status, _ = await repo.upsert_fill(changed)
+        await db_session.flush()
+        row = await repo.get_by_key(
+            original.broker,
+            original.account_mode,
+            original.venue,
+            original.broker_order_id,
+            original.fill_seq,
+        )
+        await db_session.refresh(row)
+        assert status == "updated"
+        assert (row.fee_amount, row.tax_amount, row.filled_at_basis) == (
+            Decimal("100"),
+            Decimal("3"),
+            "broker_fill_time",
+        )
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(ExecutionLedger.id == row_id)
+        )
+        await db_session.commit()
+
+
+def test_read_legacy_row_with_null_fee_basis() -> None:
+    row = _row(_fill())
+    row.fee_basis = None
+    result = ExecutionLedgerRead.model_validate(row)
+    assert result.fee_basis is None
+    assert result.model_dump(mode="json")["fee_basis"] is None
+
+
+def test_new_upsert_rejects_null_fee_basis() -> None:
+    with pytest.raises(ValidationError):
+        _fill(fee_basis=None)
