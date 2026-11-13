@@ -1207,6 +1207,11 @@ class SafeKISMockClient(BaseKISClient):
     def _settings(self) -> Any:  # type: ignore[override]
         return self._mock_settings
 
+    def _token_provider_label(self) -> str:
+        # This client never sets _is_mock_client (other code branches on it), but
+        # its token namespace is always the kis_mock one.
+        return "kis-mock"
+
     def _kis_url(self, path: str) -> str:
         base_url = (self._mock_settings.kis_base_url or "").rstrip("/")
         if not base_url:

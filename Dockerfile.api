@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.28
+# syntax=docker/dockerfile:1.29
 
 # ==============================================================================
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # STAGE 1b (optional): frontend-builder - builds the React/Vite SPA
 # Toggle with: --build-arg ENABLE_FRONTEND_BUILD=1
 # ==============================================================================
-FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:26-alpine AS frontend-builder
 
 ARG ENABLE_FRONTEND_BUILD=0
 

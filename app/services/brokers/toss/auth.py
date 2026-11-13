@@ -18,7 +18,9 @@ from app.services.brokers.credential_firewall import (
 )
 from app.services.brokers.token_issuance import (
     TokenIssuanceUnavailable,
+    cache_only_refusal,
     ensure_gatewayd_token,
+    is_cache_only_token_issuance,
     is_gatewayd_token_issuance,
 )
 from app.services.brokers.token_keys import (
@@ -200,6 +202,10 @@ class TossOAuthTokenManager:
     async def _issue_single_flight(
         self, *, force_reissue: bool = False, failed_token: str | None = None
     ) -> str:
+        if is_cache_only_token_issuance(settings):
+            # cache_only: refuse before the issuer lock, OAuth, or any Redis write.
+            # Usable cache hits were already returned by get_access_token.
+            raise cache_only_refusal("toss")
         if is_gatewayd_token_issuance(settings):
             return await self._ensure_token_from_gatewayd(
                 force_reissue=force_reissue,
