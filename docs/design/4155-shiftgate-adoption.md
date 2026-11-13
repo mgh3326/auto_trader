@@ -391,7 +391,7 @@ flowchart TD
 
 - 실행: `mode`(forward/rollback/dry-run), 입력 태그, 해소된 digest, 어댑터 스크립트 이름과 `shiftgate version`, `services.at.yaml` 의 sha256, 시작·종료 시각, 종료 코드.
 - 게이트: 검사한 SHA, `Test` run id 와 attempt, 6개 job 결과, `--allow-unverified` 사유(있으면 JSON 이스케이프한 그대로).
-- pre-deploy: 마이그레이션 전후 리비전 id, 백업 종료 코드, 덤프·체크섬 파일 **이름**, `--migrate`·`--accept-backup-remote-failure` 사용 여부.
+- pre-deploy: 마이그레이션 전후 리비전 id, 백업 `ExecMainStatus`·`Result`와 결과(`succeeded`, `succeeded_ping_failed`, `failed`), 덤프·체크섬 파일 **이름**, `--migrate`·`--accept-backup-remote-failure` 사용 여부. 백업 메인 프로세스는 성공하고 `ExecStartPost` ping 만 실패한 경우 승인 사유를 기록한다. 업그레이드 시간 초과 시 영수증과 오류에 DB 세션이 SQL 문을 계속 실행하며 잠금을 보유할 수 있다는 경고를 기록한다(`client_connection_check_interval=0`; 즉시 재시도 시 대기 가능).
 - 서비스별: shiftgate `op_id`(`swaps.log` 와 `ops/<op_id>.log` 로 연결), 이전→새 색·digest, 결과, 경고(드레인 시간 초과 등), 싱글톤·고정 유닛의 이전→새 digest.
 - 검증: 컨테이너별 기대/실행 digest 표, 라우트 프로브 결과.
 - 롤백: 수행 여부와 사유, 단계별 결과.

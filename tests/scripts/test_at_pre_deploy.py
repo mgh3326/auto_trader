@@ -30,7 +30,7 @@ if Path(sys.argv[0]).name == "docker":
             sys.exit(0)
         print(("new (label) (head) (mergepoint)" if os.environ.get("ANNOTATED") else "new (head)") if Path(os.environ["UPGRADED"]).exists() or os.environ.get("EQUAL") else "old (branchpoint)" if os.environ.get("ANNOTATED") else "old")
     elif cmd[0] == "heads": print("new (label) (head)" if os.environ.get("ANNOTATED") else "new (head)")
-    elif cmd[0] == "history": print("old, other -> new (head) (mergepoint), migration\\nbase -> old (branchpoint), old migration" if os.environ.get("ANNOTATED") else "old -> new (head), migration\\nbase -> old, old migration")
+    elif cmd[0] == "history": print("mid -> new (head), migration\\nold -> mid, migration\\nbase -> old, old migration" if os.environ.get("MULTI") else "old, other -> new (head) (mergepoint), migration\\nbase -> old (branchpoint), old migration" if os.environ.get("ANNOTATED") else "old -> new (head), migration\\nbase -> old, old migration")
     elif cmd[0] == "upgrade":
         if os.environ.get("MIGRATE_FAIL"):
             print("RuntimeError: migration role identity mismatch", file=sys.stderr)
@@ -50,7 +50,7 @@ if "start" in sys.argv:
             Path(os.environ["BACKUP"], "backup-new.sha256").write_text("a"*64 + "  /backup/auto_trader-new.dump\\n")
     sys.exit(1 if os.environ.get("START_FAIL") or os.environ.get("STATUS3") else 0)
 started = Path(os.environ["STARTED"]).exists()
-props = {"InvocationID": "new" if started else "old", "Result": "exit-code" if os.environ.get("STATUS3") else "success", "ExecMainCode": os.environ.get("KILLED", "1"), "ExecMainStatus": "3" if os.environ.get("STATUS3") or os.environ.get("KILLED") else "0", "ExecMainStartTimestampMonotonic": "invalid" if os.environ.get("INVALID_START") else "1" if os.environ.get("OLD_START") else str(time.monotonic_ns() // 1000 + 1000000), "ExecMainExitTimestampMonotonic": "invalid" if os.environ.get("INVALID_EXIT") else "1" if os.environ.get("OLD_EXIT") else str(time.monotonic_ns() // 1000 + 2000000)}
+props = {"InvocationID": "new" if started else "old", "Result": os.environ.get("BACKUP_RESULT", "exit-code" if os.environ.get("STATUS3") else "success"), "ExecMainCode": os.environ.get("BACKUP_CODE", os.environ.get("KILLED", "1")), "ExecMainStatus": os.environ.get("BACKUP_STATUS", "3" if os.environ.get("STATUS3") or os.environ.get("KILLED") else "0"), "ExecMainStartTimestampMonotonic": "invalid" if os.environ.get("INVALID_START") else "1" if os.environ.get("OLD_START") else str(time.monotonic_ns() // 1000 + 1000000), "ExecMainExitTimestampMonotonic": "invalid" if os.environ.get("INVALID_EXIT") else "1" if os.environ.get("OLD_EXIT") else str(time.monotonic_ns() // 1000 + 2000000)}
 for i, arg in enumerate(sys.argv):
     if arg == "-p": print(sys.argv[i+1] + "=" + props[sys.argv[i+1]])
 """
@@ -122,6 +122,17 @@ def test_dry_run_only_compares_and_reports_plan(setup_fakes):
     assert "systemctl" not in calls and "docker upgrade" not in calls
 
 
+def test_pending_revisions_are_in_apply_order_in_message_and_plan(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run(MULTI="1")
+    assert result.returncode == 78
+    assert "mid, new" in result.stdout
+
+    result, _ = run("--migrate", "--dry-run", MULTI="1")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["pending_revisions"] == ["mid", "new"]
+
+
 def test_previous_status_three_and_failed_start_refused(setup_fakes):
     _, run = setup_fakes
     result, _ = run(
@@ -162,29 +173,74 @@ def test_successful_backup_and_migration_record_names_and_followup(setup_fakes):
         "revision_before": ["old"],
         "revision_after": ["new"],
         "operator_followup": "symbol_sync",
+        "backup_exec_main_status": "0",
+        "backup_result": "success",
+        "backup_outcome": "succeeded",
+        "migrate_requested": True,
+        "accept_backup_remote_failure_used": False,
     }
 
 
 def test_remote_failure_requires_reason_and_records_ping(setup_fakes):
     _, run = setup_fakes
-    result, _ = run("--migrate", STATUS3="1")
+    result, _ = run("--migrate", BACKUP_RESULT="exit-code", BACKUP_STATUS="0")
     assert result.returncode == 1
     receipt = json.loads(result.stdout)
     assert receipt["migration"] == "not_run"
     assert receipt["checksum_file"] == "backup-new.sha256"
     assert receipt["backup_file"] == "auto_trader-new.dump"
-    assert receipt["backup_healthcheck_ping"] == "not_sent"
+    assert receipt["backup_healthcheck_ping"] == "failed"
 
 
 def test_remote_failure_with_reason_can_migrate(setup_fakes):
     _, run = setup_fakes
     result, _ = run(
-        "--migrate", "--accept-backup-remote-failure", "approved", STATUS3="1"
+        "--migrate",
+        "--accept-backup-remote-failure",
+        "approved",
+        BACKUP_RESULT="exit-code",
+        BACKUP_STATUS="0",
     )
     assert result.returncode == 0
     receipt = json.loads(result.stdout)
     assert receipt["backup_remote_failure_accepted"] == "approved"
-    assert receipt["backup_healthcheck_ping"] == "not_sent"
+    assert receipt["backup_healthcheck_ping"] == "failed"
+
+
+def test_main_success_with_failed_ping_is_overridable_and_recorded(setup_fakes):
+    _, run = setup_fakes
+    result, _ = run(
+        "--migrate",
+        "--accept-backup-remote-failure",
+        "approved",
+        BACKUP_RESULT="exit-code",
+        BACKUP_STATUS="0",
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["backup_exec_main_status"] == "0"
+    assert receipt["backup_result"] == "exit-code"
+    assert receipt["backup_outcome"] == "succeeded_ping_failed"
+    assert receipt["backup_healthcheck_ping"] == "failed"
+    assert receipt["accept_backup_remote_failure_used"] is True
+
+
+def test_main_failure_stays_fail_closed_with_acceptance_reason(setup_fakes):
+    _, run = setup_fakes
+    result, calls = run(
+        "--migrate",
+        "--accept-backup-remote-failure",
+        "approved",
+        BACKUP_RESULT="exit-code",
+        BACKUP_STATUS="3",
+    )
+    assert result.returncode == 1
+    assert "docker upgrade" not in calls
+    receipt = json.loads(result.stdout)
+    assert receipt["backup_exec_main_status"] == "3"
+    assert receipt["backup_result"] == "exit-code"
+    assert receipt["backup_outcome"] == "failed"
+    assert receipt["accept_backup_remote_failure_used"] is True
 
 
 def test_missing_migration_input_fails_before_docker(setup_fakes):
@@ -257,7 +313,7 @@ def test_migration_timeout_is_30_minutes_and_removes_container(
     monkeypatch.setattr(module, "backup", lambda *_: {})
     monkeypatch.setattr(module.sys, "argv", [str(SCRIPT), IMAGE, "--migrate"])
     monkeypatch.setenv("AT_MIGRATION_ENV_FILE", "FAKE_INPUT")
-    with pytest.raises(RuntimeError, match="timed out"):
+    with pytest.raises(RuntimeError, match="시간 초과") as raised:
         module.main()
     upgrade = next(item for item in calls if "upgrade" in item[0])
     assert upgrade[1] == 1800
@@ -268,6 +324,9 @@ def test_migration_timeout_is_30_minutes_and_removes_container(
     assert receipt["migration_container_cleanup"] == (
         "confirmed" if remove_outcome == "success" else "unconfirmed"
     )
+    assert receipt["migration_timeout_lock_warning"]
+    assert "client_connection_check_interval=0" in str(raised.value)
+    assert "잠금을 보유" in str(raised.value)
     if remove_outcome != "success":
         assert receipt["migration_container"].startswith("at-pre-deploy-")
 
