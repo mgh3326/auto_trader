@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import sentry_sdk
@@ -425,6 +425,7 @@ async def _reconcile_one_toss_row(
     evidence_source: Any | None = None,
     fallback_client: Any | None = None,
     project_proposal_rungs: bool = True,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
     base = {
         "ledger_id": row.id,
@@ -521,6 +522,11 @@ async def _reconcile_one_toss_row(
     base["filled_qty"] = float(broker_cum)
     base["avg_price"] = float(avg_price)
     base["delta_qty"] = float(delta)
+
+    if scope == "terminal_only":
+        base["action"] = "deferred_fill_booking"
+        base["requires_session_reconcile"] = True
+        return base
 
     if not dry_run and project_proposal_rungs:
         projection_status = (
@@ -823,7 +829,17 @@ async def toss_reconcile_orders_impl(
     dry_run: bool = True,
     limit: int = 100,
     project_proposal_rungs: bool = True,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
+    if (
+        scope == "terminal_only"
+        and not dry_run
+        and settings.TOSS_TERMINAL_AUTO_RECONCILE_ENABLED is not True
+    ):
+        return {
+            "success": False,
+            "error": "terminal-only requires TOSS_TERMINAL_AUTO_RECONCILE_ENABLED",
+        }
     projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
     if not dry_run and project_proposal_rungs:
         projection_repair = await _repair_terminal_toss_proposal_projections(
@@ -935,13 +951,23 @@ async def toss_reconcile_orders_impl(
     try:
         for row in rows:
             try:
-                outcome = await _reconcile_one_toss_row(
-                    row,
-                    dry_run=dry_run,
-                    evidence_source=evidence_source,
-                    fallback_client=shared_client,
-                    project_proposal_rungs=project_proposal_rungs,
-                )
+                if scope == "terminal_only":
+                    outcome = await _reconcile_one_toss_row(
+                        row,
+                        dry_run=dry_run,
+                        evidence_source=evidence_source,
+                        fallback_client=shared_client,
+                        project_proposal_rungs=project_proposal_rungs,
+                        scope=scope,
+                    )
+                else:
+                    outcome = await _reconcile_one_toss_row(
+                        row,
+                        dry_run=dry_run,
+                        evidence_source=evidence_source,
+                        fallback_client=shared_client,
+                        project_proposal_rungs=project_proposal_rungs,
+                    )
             except Exception as exc:  # noqa: BLE001 — classified in the handler
                 outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)
             reconciled.append(outcome)

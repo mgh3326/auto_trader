@@ -146,6 +146,9 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    `KIS_LIVE_AUTO_RECONCILE_ENABLED` 하나로 허용하는 것만 예외다. fill booking(체결·저널·실현손익)은
    `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED`를 포함한 두 플래그 게이트를 유지하며,
    브로커 주문·정정·취소 경로는 바뀌지 않는다.
+   같은 결정 항목 2는 KIS US와 Toss 주문 원장의 무인 대사를 terminal_only로 한정해
+   각각 `KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED`와 `TOSS_TERMINAL_AUTO_RECONCILE_ENABLED`
+   하나로 허용한다. 체결·저널·실현손익은 기존 게이트 뒤에 남는다.
 5. **레저 쓰기는 서비스 레이어 경유만**: `alpaca_paper_order_ledger`,
    `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
    `toss_live_order_ledger` 등 주문 레저에 직접 SQL INSERT/UPDATE/DELETE 금지.

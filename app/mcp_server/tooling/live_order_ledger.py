@@ -9,10 +9,11 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import and_, func, or_, select
 
+from app.core.config import settings
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory, _to_float
@@ -383,7 +384,10 @@ async def _converge_proposal_rung(
 
 
 async def _reconcile_one_live_row(
-    row: LiveOrderLedger, *, dry_run: bool
+    row: LiveOrderLedger,
+    *,
+    dry_run: bool,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
     base: dict[str, Any] = {
         "ledger_id": row.id,
@@ -460,6 +464,11 @@ async def _reconcile_one_live_row(
     base["delta_qty"] = float(delta)
 
     rung_terminal = "filled" if new_status == "filled" else "partially_filled"
+
+    if scope == "terminal_only":
+        base["action"] = "deferred_fill_booking"
+        base["requires_session_reconcile"] = True
+        return base
 
     if delta <= 0:
         base["action"] = "noop_already_booked"
@@ -640,7 +649,16 @@ async def live_reconcile_orders_impl(
     order_id: str | None = None,
     dry_run: bool = True,
     limit: int = 100,
+    scope: Literal["full", "terminal_only"] = "full",
 ) -> dict[str, Any]:
+    if scope == "terminal_only":
+        if market != "us" or broker != "kis":
+            return {"success": False, "error": "terminal-only requires KIS US"}
+        if not dry_run and settings.KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED is not True:
+            return {
+                "success": False,
+                "error": "terminal-only requires KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED",
+            }
     # ROB-1284: this path had NO proposal-rung repair pre-pass at all (KIS and
     # Toss each grew one; US/crypto never did), so a rung whose ledger row went
     # terminal without its projection landing stayed `resting` forever. The
@@ -666,7 +684,12 @@ async def live_reconcile_orders_impl(
     counts: dict[str, int] = {}
     for row in rows:
         try:
-            outcome = await _reconcile_one_live_row(row, dry_run=dry_run)
+            if scope == "terminal_only":
+                outcome = await _reconcile_one_live_row(
+                    row, dry_run=dry_run, scope=scope
+                )
+            else:
+                outcome = await _reconcile_one_live_row(row, dry_run=dry_run)
         except Exception as exc:
             logger.warning("live reconcile failed order_no=%s: %s", row.order_no, exc)
             outcome = {
