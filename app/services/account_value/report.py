@@ -17,6 +17,7 @@ class ReportRow:
     reasons: tuple[str, ...] = ()
     basis: str = "modified_dietz"
     fx_evidence: str = "-"
+    flows_complete: bool | None = None
 
 
 def _amount(value: Decimal | None) -> str:

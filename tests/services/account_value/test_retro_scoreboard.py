@@ -108,7 +108,9 @@ async def build(monkeypatch, flows=(), **kwargs):
 
     monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
     monkeypatch.setattr(load_report, "_benchmark", no_prices)
-    database = Database([snapshots(), list(flows), [(ACCOUNT, "account")], OBSERVED])
+    database = Database(
+        [[], snapshots(), list(flows), [(ACCOUNT, "account")], OBSERVED]
+    )
     result = await read_retro_scoreboard(
         database, **{"from": START, "to": END}, **kwargs
     )
@@ -276,7 +278,7 @@ async def test_flows_complete_is_never_an_input(monkeypatch, synthetic_loader):
         "limit",
         "cursor",
     ]
-    database = Database([None])
+    database = Database([[], None])
     for extra in (
         {"flows_complete": True},
         {"flows_confirmed": True},
@@ -286,15 +288,14 @@ async def test_flows_complete_is_never_an_input(monkeypatch, synthetic_loader):
         with pytest.raises(TypeError):
             await read_retro_scoreboard(database, **{"from": START, "to": END}, **extra)
     assert synthetic_loader == []
-    await read_retro_scoreboard(Database([None]), **{"from": START, "to": END})
-    assert synthetic_loader == [(START, END, {"flows_complete": False})]
-    assert retro_scoreboard.SERVER_FLOWS_COMPLETE is False
+    await read_retro_scoreboard(Database([[], None]), **{"from": START, "to": END})
+    assert synthetic_loader == [(START, END, {"confirmations": []})]
 
 
 @pytest.mark.asyncio
 async def test_rows_keep_bases_reasons_and_benchmarks(synthetic_loader):
     response = await read_retro_scoreboard(
-        Database([None]), **{"from": START, "to": END}
+        Database([[], None]), **{"from": START, "to": END}
     )
     VALIDATOR.validate(response)
     assert_nulls_explained(response)
@@ -335,7 +336,7 @@ async def test_rows_keep_bases_reasons_and_benchmarks(synthetic_loader):
 @pytest.mark.asyncio
 async def test_no_float_and_no_identity_leaves_the_reader(synthetic_loader):
     response = await read_retro_scoreboard(
-        Database([None]), **{"from": START, "to": END}
+        Database([[], None]), **{"from": START, "to": END}
     )
     encoded = json.dumps(response)
 
@@ -357,13 +358,15 @@ async def test_no_float_and_no_identity_leaves_the_reader(synthetic_loader):
     refs = [row["subject_ref"] for row in response["data"]]
     assert all(re.fullmatch(r"ref_[0-9a-f]{32}", ref) for ref in refs)
     assert len(set(refs)) == len(refs)
-    again = await read_retro_scoreboard(Database([None]), **{"from": START, "to": END})
+    again = await read_retro_scoreboard(
+        Database([[], None]), **{"from": START, "to": END}
+    )
     assert [row["subject_ref"] for row in again["data"]] == refs
 
 
 @pytest.mark.asyncio
 async def test_read_only_transaction_and_pagination(synthetic_loader):
-    database = Database([OBSERVED])
+    database = Database([[], OBSERVED])
     response = await read_retro_scoreboard(
         database, limit=3, **{"from": START, "to": END}
     )
@@ -377,7 +380,7 @@ async def test_read_only_transaction_and_pagination(synthetic_loader):
     assert response["truncated"] is True and response["next_cursor"] == "o3"
     VALIDATOR.validate(response)
     last = await read_retro_scoreboard(
-        Database([OBSERVED]), limit=3, cursor="o3", **{"from": START, "to": END}
+        Database([[], OBSERVED]), limit=3, cursor="o3", **{"from": START, "to": END}
     )
     assert len(last["data"]) == 1 and last["next_cursor"] is None
     assert last["cursor"] == "o3"
@@ -431,12 +434,12 @@ async def test_invalid_parameters_are_rejected_before_any_sql(params):
 async def test_366_day_span_is_accepted_and_367_rejected(synthetic_loader):
     start = date(2024, 1, 1)
     response = await read_retro_scoreboard(
-        Database([None]), **{"from": start, "to": start + timedelta(days=365)}
+        Database([[], None]), **{"from": start, "to": start + timedelta(days=365)}
     )
     VALIDATOR.validate(response)
     with pytest.raises(ValueError):
         await read_retro_scoreboard(
-            Database([None]), **{"from": start, "to": start + timedelta(days=366)}
+            Database([[], None]), **{"from": start, "to": start + timedelta(days=366)}
         )
 
 
@@ -469,7 +472,7 @@ async def test_operator_cli_render_is_unchanged(monkeypatch, capsys, synthetic_l
     # The CLI keeps its own loader call, including the operator flag.
     monkeypatch.setattr(account_value_report, "load_weekly_report", load)
     monkeypatch.setattr(account_value_report, "session_factory", lambda: Context())
-    await read_retro_scoreboard(Database([None]), **{"from": START, "to": END})
+    await read_retro_scoreboard(Database([[], None]), **{"from": START, "to": END})
     for flag in (False, True):
         await account_value_report.run(
             Namespace(start=START, end=END, flows_complete=flag)
@@ -502,7 +505,7 @@ async def test_flows_not_confirmed_survives_a_long_reason_list(monkeypatch):
 
     monkeypatch.setattr(retro_scoreboard, "load_weekly_report", load)
     response = await read_retro_scoreboard(
-        Database([None]), **{"from": START, "to": END}
+        Database([[], None]), **{"from": START, "to": END}
     )
     VALIDATOR.validate(response)
     reason = response["data"][0]["unmeasured_reason"]
@@ -515,9 +518,103 @@ async def test_flows_not_confirmed_survives_a_long_reason_list(monkeypatch):
 async def test_subject_ref_is_keyed(monkeypatch, synthetic_loader):
     from app.core.config import settings
 
-    first = await read_retro_scoreboard(Database([None]), **{"from": START, "to": END})
+    first = await read_retro_scoreboard(
+        Database([[], None]), **{"from": START, "to": END}
+    )
     monkeypatch.setattr(settings, "SECRET_KEY", "another-key-for-the-test")
-    second = await read_retro_scoreboard(Database([None]), **{"from": START, "to": END})
+    second = await read_retro_scoreboard(
+        Database([[], None]), **{"from": START, "to": END}
+    )
     assert [r["subject_ref"] for r in first["data"]] != [
         r["subject_ref"] for r in second["data"]
     ]
+
+
+@pytest.mark.asyncio
+async def test_server_confirmation_drives_account_row(monkeypatch):
+    async def no_sleeves(_session):
+        return []
+
+    async def no_prices(*args):
+        return None, None
+
+    monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
+    monkeypatch.setattr(load_report, "_benchmark", no_prices)
+    confirmed_at = datetime(2026, 1, 9, tzinfo=UTC)
+    confirmation = SimpleNamespace(
+        account=ACCOUNT, start_day=START, end_day=END, confirmed_at=confirmed_at
+    )
+    for flows, expected in (
+        ([], True),
+        (
+            [
+                SimpleNamespace(
+                    account=ACCOUNT,
+                    market="account",
+                    day=START + timedelta(days=3),
+                    currency="KRW",
+                    amount=Decimal("10"),
+                    created_at=confirmed_at + timedelta(seconds=1),
+                )
+            ],
+            False,
+        ),
+    ):
+        database = Database(
+            [[confirmation], snapshots(), flows, [(ACCOUNT, "account")], OBSERVED]
+        )
+        response = await read_retro_scoreboard(database, **{"from": START, "to": END})
+        row = response["data"][0]
+        assert row["flows_complete"] is expected
+        if expected:
+            assert row["return_rate"] == "0"
+        else:
+            assert row["return_rate"] is None
+            assert "flows_not_confirmed" in row["unmeasured_reason"]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_is_account_scoped_and_other_rows_unchanged(monkeypatch):
+    other = "toss:toss_live:" + "b" * 64
+    first_snapshots = snapshots()
+    second_snapshots = [
+        SimpleNamespace(**{**vars(item), "account": other}) for item in snapshots()
+    ]
+
+    async def no_sleeves(_session):
+        return []
+
+    async def no_prices(*args):
+        return None, None
+
+    monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
+    monkeypatch.setattr(load_report, "_benchmark", no_prices)
+    confirmation = SimpleNamespace(
+        account=ACCOUNT, start_day=START, end_day=END, confirmed_at=OBSERVED
+    )
+
+    async def read(records):
+        db = Database(
+            [
+                records,
+                first_snapshots + second_snapshots,
+                [],
+                [(ACCOUNT, "account"), (other, "account")],
+                OBSERVED,
+            ]
+        )
+        return await read_retro_scoreboard(db, **{"from": START, "to": END})
+
+    before, after = await read([]), await read([confirmation])
+    by_ref = {row["subject_ref"]: row for row in after["data"]}
+    assert by_ref[retro_scoreboard._ref(ACCOUNT)]["flows_complete"] is True
+    assert by_ref[retro_scoreboard._ref(other)]["flows_complete"] is False
+    assert by_ref[retro_scoreboard._ref(other)] == next(
+        row
+        for row in before["data"]
+        if row["subject_ref"] == retro_scoreboard._ref(other)
+    )
+    for row in synthetic_rows()[1:]:
+        assert retro_scoreboard._score_row(row, False) == retro_scoreboard._score_row(
+            row, True
+        )

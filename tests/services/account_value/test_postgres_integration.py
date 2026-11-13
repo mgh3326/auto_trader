@@ -122,3 +122,44 @@ async def test_flow_retry_conflict_distinct_equal_and_reversal(db_session):
     )
     assert len(rows) == 3
     assert sum(row.amount for row in rows) == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_flow_confirmation_is_immutable_and_downgrade_refuses(db_session):
+    from sqlalchemy import text
+
+    from app.services.account_value.completeness import record_confirmation
+
+    account = "upbit:upbit:" + uuid4().hex * 2
+    await record_confirmation(
+        db_session,
+        account,
+        date(2026, 1, 1),
+        date(2026, 1, 2),
+        "operator",
+        "checked",
+        commit=True,
+    )
+    for statement in (
+        "UPDATE review.account_flow_confirmations SET reason = 'changed'",
+        "DELETE FROM review.account_flow_confirmations",
+        "TRUNCATE review.account_flow_confirmations",
+    ):
+        with pytest.raises(DBAPIError, match="account_value_immutable"):
+            async with db_session.begin_nested():
+                await db_session.execute(text(statement))
+    spec = importlib.util.spec_from_file_location(
+        "flow_confirm_migration",
+        Path("alembic/versions/20261113_hk4282_flow_confirmations.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def downgrade(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            module.downgrade()
+
+    with pytest.raises(DBAPIError, match="account_flow_confirmation_rows_retained"):
+        async with db_session.begin_nested():
+            connection = await db_session.connection()
+            await connection.run_sync(downgrade)
