@@ -1241,6 +1241,7 @@ class TradeRetrospective(Base):
         Index("ix_trade_retrospectives_symbol", "symbol"),
         Index("ix_trade_retrospectives_report_uuid", "report_uuid"),
         Index("ix_trade_retrospectives_report_item_uuid", "report_item_uuid"),
+        Index("ix_trade_retrospectives_decision_id", "decision_id"),
         Index(
             "ix_trade_retrospectives_account_mode_created",
             "account_mode",
@@ -1251,6 +1252,7 @@ class TradeRetrospective(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     correlation_id: Mapped[str | None] = mapped_column(Text)
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     journal_id: Mapped[int | None] = mapped_column(
         ForeignKey("review.trade_journals.id", ondelete="SET NULL")
     )

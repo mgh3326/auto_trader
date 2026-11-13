@@ -24,9 +24,36 @@ class TokenIssuanceUnavailable(RuntimeError):
     """gatewayd could not prove that it accepted a token-ensure request."""
 
 
+class TokenIssuanceCacheOnlyUnavailable(TokenIssuanceUnavailable):
+    """``cache_only`` refused to issue: no usable cached token, or a re-issue was requested.
+
+    The message carries only the provider label and the mode. It never carries a
+    token, key, URL, or Redis key name.
+    """
+
+
 def is_gatewayd_token_issuance(settings_obj: object = settings) -> bool:
     """Return whether this process opted into gatewayd token ownership."""
     return getattr(settings_obj, "broker_token_issuance_mode", "self") == "gatewayd"
+
+
+def is_cache_only_token_issuance(settings_obj: object = settings) -> bool:
+    """Return whether this process may only read the shared broker token cache.
+
+    ``cache_only`` never issues: every provider path reads its existing Redis key
+    and, on a miss, expiry, or forced re-issue, raises
+    :class:`TokenIssuanceCacheOnlyUnavailable` before any OAuth/approval/gatewayd
+    request, issuance lock, or Redis write or delete.
+    """
+    return getattr(settings_obj, "broker_token_issuance_mode", "self") == "cache_only"
+
+
+def cache_only_refusal(provider: str) -> TokenIssuanceCacheOnlyUnavailable:
+    """Build the fixed refusal for one provider label (no token, key, or URL)."""
+    return TokenIssuanceCacheOnlyUnavailable(
+        f"broker token mode=cache_only refused issuance for provider={provider}: "
+        "no usable cached token, or a re-issue was requested; this mode never issues"
+    )
 
 
 async def ensure_gatewayd_token(

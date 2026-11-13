@@ -446,7 +446,8 @@ class TestKISRankingAPIParams:
         async def mock_get_token():
             return token_value
 
-        async def mock_clear_token():
+        async def mock_clear_token(failed_token):
+            assert failed_token == token_value
             call_count["clear_token"] += 1
 
         async def mock_ensure_token():
@@ -511,7 +512,8 @@ class TestKISRankingAPIParams:
         async def mock_get_token():
             return token_value
 
-        async def mock_clear_token():
+        async def mock_clear_token(failed_token):
+            assert failed_token == token_value
             call_count["clear_token"] += 1
 
         async def mock_ensure_token():

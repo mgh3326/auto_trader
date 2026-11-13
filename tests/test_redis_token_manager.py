@@ -797,3 +797,69 @@ async def test_get_holdings_path_kr_price_fanout_limits_token_redis_get(monkeypa
     assert len(result_positions) == 20
     assert result_errors == []
     assert mock_redis.get.await_count == 1
+
+
+def fake_redis_with_lua():
+    import importlib.util
+
+    from fakeredis import aioredis
+
+    client = aioredis.FakeRedis(decode_responses=True)
+    if importlib.util.find_spec("lupa") is None:
+
+        async def eval_script(script, key_count, key, failed_token):
+            assert "cjson.decode" in script and key_count == 1
+            raw = await client.get(key)
+            try:
+                data = json.loads(raw) if raw else None
+            except ValueError:
+                return 0
+            if isinstance(data, dict) and data.get("access_token") == failed_token:
+                return await client.delete(key)
+            return 0
+
+        client.eval = eval_script
+    return client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "failed_token", "deleted"),
+    [
+        ('{"access_token":"old"}', "old", True),
+        ('{"access_token":"new"}', "old", False),
+        ("not json", "old", False),
+        (None, "old", False),
+        ('"scalar"', "old", False),
+    ],
+)
+async def test_invalidate_if_current_lua(value, failed_token, deleted):
+    from app.services.redis_token_manager import RedisTokenManager
+
+    redis = fake_redis_with_lua()
+    manager = RedisTokenManager()
+    manager.redis_client = redis
+    if value is not None:
+        await redis.set(manager._token_key, value)
+    assert (
+        await manager.invalidate_if_current(manager._token_key, failed_token) is deleted
+    )
+    assert await redis.get(manager._token_key) == (None if deleted else value)
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_late_kis_expiry_does_not_delete_new_token():
+    from app.services.redis_token_manager import RedisTokenManager
+
+    redis = fake_redis_with_lua()
+    manager = RedisTokenManager()
+    manager.redis_client = redis
+    await manager.save_token("old", 3600)
+    await redis.set(
+        manager._token_key,
+        json.dumps({"access_token": "new", "expires_at": time.time() + 3600}),
+    )
+    await manager.clear_token("old")
+    assert await manager.get_token(force_redis_check=True) == "new"
+    await redis.aclose()
