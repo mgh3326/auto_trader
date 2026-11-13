@@ -144,6 +144,71 @@ def test_normalize_dart_without_stock_code_keeps_symbol_empty_not_corp_code():
     event, _ = normalize_dart_disclosure_row(row)
     assert event["symbol"] is None
     assert event["raw_payload_json"]["corp_code"] == "00126380"
+    assert event["raw_payload_json"]["symbol_resolution_reason"] == (
+        "registry_unavailable"
+    )
+
+
+@pytest.mark.unit
+def test_normalize_dart_fills_symbol_from_unique_whitespace_normalized_registry_name():
+    from app.services.market_events.normalizers import normalize_dart_disclosure_row
+
+    row = {**DART_ROW_QUARTERLY, "corp_name": "  삼성전자\t주식회사 "}
+    registry = {
+        "삼성전자 주식회사": [
+            {
+                "corp_code": "00000001",
+                "stock_code": "005930",
+                "modify_date": "20260101",
+            }
+        ]
+    }
+
+    event, _ = normalize_dart_disclosure_row(row, corp_registry=registry)
+
+    assert event["symbol"] == "005930"
+    assert "symbol_resolution_reason" not in event["raw_payload_json"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("registry", "reason"),
+    [
+        (
+            {
+                "삼성전자": [
+                    {"corp_code": "1", "stock_code": "005930"},
+                    {"corp_code": "2", "stock_code": "000660"},
+                ]
+            },
+            "ambiguous_corp_name",
+        ),
+        ({"삼성전자": [{"corp_code": "1", "stock_code": ""}]}, "unlisted"),
+        ({}, "no_registry_match"),
+    ],
+)
+def test_normalize_dart_closed_registry_miss_reasons(registry, reason):
+    from app.services.market_events.normalizers import normalize_dart_disclosure_row
+
+    row = {**DART_ROW_QUARTERLY}
+    row.pop("stock_code")
+    event, _ = normalize_dart_disclosure_row(row, corp_registry=registry)
+
+    assert event["symbol"] is None
+    assert event["raw_payload_json"]["symbol_resolution_reason"] == reason
+
+
+@pytest.mark.unit
+def test_normalize_dart_existing_stock_code_is_preserved_and_corp_code_is_not_symbol():
+    from app.services.market_events.normalizers import normalize_dart_disclosure_row
+
+    event, _ = normalize_dart_disclosure_row(DART_ROW_QUARTERLY, corp_registry={})
+    assert event["symbol"] == "005930"
+
+    row = {**DART_ROW_QUARTERLY}
+    row.pop("stock_code")
+    event, _ = normalize_dart_disclosure_row(row, corp_registry={})
+    assert event["symbol"] is None
 
 
 FF_ROW_HIGH_IMPACT = {

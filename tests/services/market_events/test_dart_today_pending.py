@@ -27,6 +27,7 @@ class FakeRepo:
     def __init__(self, db):
         self.partitions: dict[date, SimpleNamespace] = {}
         self.calls: list[tuple[str, date | None]] = []
+        self.events: list[dict] = []
         FakeRepo.instances.append(self)
 
     async def get_or_create_partition(self, *, partition_date, **_):
@@ -58,8 +59,8 @@ class FakeRepo:
         part.last_error = error
         self.calls.append(("failed", part.day))
 
-    async def upsert_event_with_values(self, *_):
-        raise AssertionError("no row should be upserted")
+    async def upsert_event_with_values(self, event, _values):
+        self.events.append(event)
 
 
 @pytest.fixture
@@ -156,6 +157,32 @@ async def test_today_with_only_unparseable_rows_is_not_pending(repo):
     )
 
     assert result.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_registry_failure_does_not_fail_dart_ingestion(repo):
+    row = {
+        "rcept_no": "20261110000001",
+        "rcept_dt": "20261110",
+        "corp_name": "Synthetic Listed Co",
+        "corp_code": "00000001",
+        "report_nm": "주요사항보고서",
+    }
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        _db(),
+        TODAY,
+        fetch_rows=AsyncMock(return_value=[row]),
+        today=TODAY,
+        load_corp_registry=AsyncMock(return_value=None),
+    )
+
+    assert result.status == "succeeded"
+    assert result.event_count == 1
+    event = repo.instances[-1].events[0]
+    assert event["symbol"] is None
+    assert event["raw_payload_json"]["symbol_resolution_reason"] == (
+        "registry_unavailable"
+    )
 
 
 class _Client:
