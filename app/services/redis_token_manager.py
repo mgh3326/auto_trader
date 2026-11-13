@@ -54,6 +54,9 @@ class RedisTokenManager:
         self._local_redis_miss_cooldown_seconds = 0.2
         self._local_last_redis_check_at: float = 0.0
         self._local_redis_revalidate_interval_seconds = 5.0
+        # cache_only only: the token KIS rejected through clear_token. Redis may
+        # still hold it until the producer rotates, so it is never re-cached.
+        self._cache_only_rejected_token: str | None = None
 
     async def _get_redis_client(self) -> redis.Redis:
         """Redis 클라이언트 가져오기 (지연 초기화)"""
@@ -211,6 +214,15 @@ class RedisTokenManager:
 
                 if self._is_token_valid(token_data):
                     access_token = token_data["access_token"]
+                    if access_token == self._cache_only_rejected_token:
+                        # cache_only: KIS already rejected this token. Treat it as a
+                        # miss and wait for the producer to publish another one.
+                        self._log_token_lookup(
+                            logging.INFO,
+                            "KIS access token in Redis was rejected; awaiting replacement",
+                            token_source="rejected",
+                        )
+                        return None
                     expires_at = float(token_data["expires_at"])
                     self._update_local_cache(access_token, expires_at)
                     self._log_token_lookup(
@@ -387,8 +399,13 @@ class RedisTokenManager:
         """Redis에서 토큰 삭제"""
         if is_cache_only_token_issuance(settings):
             # cache_only: every KIS caller runs clear_token before re-ensuring, so
-            # this is the forced re-issue point. Refuse before any local or Redis
-            # mutation; the issuing producer owns the shared key.
+            # this is the forced re-issue point. Never write or delete the shared
+            # Redis key. Remember the rejected token so it is not re-cached from
+            # Redis, and drop the in-process copy so the next read is from Redis.
+            rejected = failed_token if failed_token is not None else self._local_token
+            if rejected:
+                self._cache_only_rejected_token = rejected
+            self._clear_local_cache()
             raise cache_only_refusal("kis")
         self._clear_local_cache()
         try:

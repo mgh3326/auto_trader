@@ -12,6 +12,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
 from app.schemas.execution_contracts import AccountMode
+from app.services.brokers.token_issuance import TokenIssuanceCacheOnlyUnavailable
 
 from . import approval_keys
 from .constants import RECOVERABLE_APPROVAL_MSG_CODES, WEBSOCKET_ENDPOINT_HOSTS
@@ -206,9 +207,13 @@ class KISExecutionWebSocket:
                                 self.messages_received,
                                 self.execution_events_received,
                             )
-                        except approval_keys.ApprovalKeyIssuanceUnavailable:
+                        except (
+                            approval_keys.ApprovalKeyIssuanceUnavailable,
+                            TokenIssuanceCacheOnlyUnavailable,
+                        ):
                             # Another owner holds the issuance lock and published no key
-                            # in time; back off instead of issuing a second key.
+                            # in time, or cache_only refused the reissue; back off
+                            # instead of issuing a second key or ending the loop.
                             logger.warning(
                                 "KIS approval key issuance contended during reconnect; "
                                 "backing off without independent reissue: "

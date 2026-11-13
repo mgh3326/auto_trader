@@ -19,7 +19,7 @@ import re
 import time
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -34,7 +34,13 @@ from app.services.brokers.token_issuance import (
     is_cache_only_token_issuance,
 )
 from app.services.brokers.toss import auth as toss_auth
+from app.services.invest_home_readers import SafeKISMockClient
 from app.services.kis_websocket_internal import approval_keys
+from app.services.kis_websocket_internal.client import KISExecutionWebSocket
+from app.services.kis_websocket_internal.protocol import (
+    DOMESTIC_EXECUTION_TR_REAL,
+    KISSubscriptionAckError,
+)
 from app.services.redis_token_manager import RedisTokenManager
 
 
@@ -513,3 +519,109 @@ async def test_approval_endpoint_call_is_refused_even_when_called_directly(
 ) -> None:
     with pytest.raises(TokenIssuanceCacheOnlyUnavailable):
         await approval_keys._issue_approval_key("kis_live")
+
+
+# --- PR 2389 review regressions ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kis_rejected_token_is_not_recached_and_producer_replacement_is_observed(
+    cache_only_mode: None,
+    no_http: None,
+    gatewayd_ensure: AsyncMock,
+) -> None:
+    """KIS rejects cached token A. The producer later publishes B; this process must return B."""
+    redis = _TrapRedis()
+    manager = RedisTokenManager(namespace="cache-only-kis-rejected")
+    manager.redis_client = redis  # type: ignore[assignment]
+    key = manager._token_key
+    redis.values[key] = _kis_token_json("SECRET-TOKEN-A", expires_at=time.time() + 3600)
+
+    assert await manager.get_token() == "SECRET-TOKEN-A"
+    with pytest.raises(TokenIssuanceCacheOnlyUnavailable):
+        await manager.clear_token("SECRET-TOKEN-A")
+    # Redis still holds A until the producer rotates. It must not come back locally.
+    assert await manager.get_token() is None
+    assert await manager.get_token() is None
+
+    redis.values[key] = _kis_token_json("SECRET-TOKEN-B", expires_at=time.time() + 3600)
+    assert await manager.get_token() == "SECRET-TOKEN-B"
+    assert redis.mutations == []
+    gatewayd_ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_kis_mock_client_refusal_names_kis_mock(
+    cache_only_mode: None,
+    no_http: None,
+    gatewayd_ensure: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SafeKISMockClient never sets _is_mock_client, but its token namespace is kis_mock."""
+    monkeypatch.setattr(
+        settings, "kis_mock_base_url", "https://openapivts.koreainvestment.com:29443"
+    )
+    monkeypatch.setattr(settings, "kis_mock_app_key", "mock-app-key-for-test")
+    client = SafeKISMockClient()
+    redis = _TrapRedis()
+    manager = RedisTokenManager(namespace="cache-only-kis-safe-mock")
+    manager.redis_client = redis  # type: ignore[assignment]
+    client._token_manager = manager
+
+    with pytest.raises(
+        TokenIssuanceCacheOnlyUnavailable, match=re.escape("provider=kis-mock:")
+    ):
+        await client._ensure_token()
+
+    assert redis.mutations == []
+    gatewayd_ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_websocket_reconnect_backs_off_when_cache_only_refuses_reissue(
+    cache_only_mode: None,
+    no_http: None,
+    approval_redis: _TrapRedis,
+) -> None:
+    """The refusal must follow the back-off path and keep the reconnect loop alive."""
+    client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=False)
+    client.is_running = True
+    client.reconnect_delay = 0
+    client.max_reconnect_attempts = 3
+    client.approval_key = "cached-key"
+    attempts = 0
+
+    async def connect_fail_then_success() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise KISSubscriptionAckError(
+                tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                rt_cd="1",
+                msg_cd="OPSP0011",
+                msg1="invalid approval : NOT FOUND",
+            )
+        client.is_connected = True
+
+    with (
+        patch.object(
+            client,
+            "_issue_approval_key_if_needed",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            client,
+            "_build_websocket_url",
+            new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+        ),
+        patch.object(
+            client,
+            "_connect_and_subscribe_internal",
+            new=AsyncMock(side_effect=connect_fail_then_success),
+        ),
+        patch.object(client, "_close_websocket_best_effort", new=AsyncMock()),
+    ):
+        await client.connect_and_subscribe()
+
+    assert attempts == 2
+    assert approval_redis.mutations == []
