@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,6 +31,7 @@ from sqlalchemy import delete
 from app.core.db import AsyncSessionLocal
 from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services import kis_us_inference_expiry_service as us_inference
 from app.services import protected_quantity_service as pq
 from app.services.dots_history_export import reader as dots_reader
 from app.services.dots_history_export.projection import Window as DotsWindow
@@ -740,3 +742,59 @@ async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) 
         await sleeves.cleanup()
 
     assert [fill.ledger_id for fill in inputs.fills] == [scenario.real_id]
+
+
+async def test_us_inference_excludes_quarantined_fill(db_session, seed, monkeypatch):
+    tag = uuid.uuid4().hex[:5].upper()
+    symbol = f"Q{tag}"
+    order_no = f"P{tag}0001"
+    seed.symbols.add(symbol)
+    repo = ExecutionLedgerRepository(db_session)
+    _, fill_id = await repo.upsert_fill(
+        ExecutionLedgerUpsert(
+            broker="kis",
+            account_mode="live",
+            venue="NASD",
+            instrument_type="equity_us",
+            symbol=symbol,
+            raw_symbol=symbol,
+            side="buy",
+            broker_order_id=order_no,
+            filled_qty=Decimal("1"),
+            filled_price=Decimal("10"),
+            filled_at=NOW,
+            currency="USD",
+            source="websocket",
+        )
+    )
+    await db_session.commit()
+    row = SimpleNamespace(
+        id=1,
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        status="accepted",
+        lifecycle_state="accepted",
+        order_kind="limit",
+        trade_date=NOW,
+        order_time="143000",
+        filled_qty=None,
+        order_no=order_no,
+        symbol=symbol,
+        side="buy",
+        currency="USD",
+    )
+
+    async def read_counts():
+        result = await us_inference._decide(db_session, row, NOW + timedelta(days=100))
+        await db_session.rollback()
+        return result["order_fills"], result["symbol_fills"]
+
+    assert await read_counts() == (1, 1)
+    assert (
+        await repo.mark_quarantined([fill_id], at=NOW, reason=REASON, actor=ACTOR) == 1
+    )
+    await db_session.commit()
+    assert await read_counts() == (0, 0)
+    _drop_filter(monkeypatch, us_inference)
+    assert await read_counts() == (1, 1)
