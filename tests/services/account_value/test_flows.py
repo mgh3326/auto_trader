@@ -37,6 +37,7 @@ async def test_retry_id_is_idempotent_and_conflicting_reuse_is_rejected():
         async def execute(self, statement):
             params = statement.compile().params
             if statement.is_insert:
+                assert "clock_timestamp()" in str(statement)
                 key = params["flow_id"]
                 if key in self.rows:
                     return SimpleNamespace(scalar_one_or_none=lambda: None)

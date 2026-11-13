@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,7 +47,7 @@ async def record_flow(
     }
     statement = (
         insert(AccountExternalFlow)
-        .values(**values)
+        .values(**values, created_at=func.clock_timestamp())
         .on_conflict_do_nothing(index_elements=["flow_id"])
         .returning(AccountExternalFlow.id)
     )
