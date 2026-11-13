@@ -372,6 +372,7 @@ def test_migration_timeout_is_30_minutes_and_removes_container(
     assert upgrade[1] == 1800
     assert any(item[0][:3] == ["docker", "rm", "-f"] for item in calls)
     receipt = json.loads(capsys.readouterr().out)
+    assert receipt["migration"] == "unverified_timeout"
     assert receipt["revision_before"] == ["old"]
     assert receipt["revision_after"] == "unknown"
     assert receipt["migration_container_cleanup"] == (

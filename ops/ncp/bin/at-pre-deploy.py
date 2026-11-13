@@ -255,6 +255,7 @@ def main():
                 timeout=1800,
             )
         except subprocess.TimeoutExpired:
+            receipt["migration"] = "unverified_timeout"
             try:
                 removed = command(["docker", "rm", "-f", name], timeout=30, check=False)
                 confirmed = removed.returncode == 0
