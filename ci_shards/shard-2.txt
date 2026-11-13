@@ -276,6 +276,7 @@ tests/services/research/test_rob1023_backtest_metadata_width.py
 tests/services/research/test_rob974_h6a_e2e_smoke.py
 tests/services/research/test_rob984_cp3_transaction_coordinator.py
 tests/services/research/test_strategy_learning_event_migration.py
+tests/services/retro_v1/test_consumer_gate_fixture.py
 tests/services/retro_v1/test_guards.py
 tests/services/retro_v1/test_ledger_orders.py
 tests/services/retro_v1/test_retro_trades.py
