@@ -414,7 +414,7 @@ Do not run migrations or make a live deployment from CI as part of this flow.
 
 ### Expand-contract migration review
 
-PR CI checks only added or changed `alembic/versions/*.py` files for destructive operations in `upgrade()`. A contract step that intentionally drops or renames a table or column, or tightens a column to `NOT NULL`, must carry this exact comment in its migration file: `# expand-contract: contract-step <hk task id>` (for example, `# expand-contract: contract-step 4200`). Reviewers must confirm that the previous application version is no longer a rollback target before accepting the marked contract step. See [the shiftgate design](../design/4155-shiftgate-adoption.md#expand-contract-규칙).
+PR CI 는 추가·수정된 `alembic/versions/*.py` 파일의 `upgrade()`에서 파괴적 연산을 검사한다. 의도적으로 테이블·컬럼을 삭제·이름 변경하거나 컬럼을 `NOT NULL`로 강화하는 contract 단계는 migration 파일에 다음 주석을 정확히 넣어야 한다: `# expand-contract: contract-step <hk task id>` (예: `# expand-contract: contract-step 4200`). 표시된 contract 단계를 승인하기 전에 이전 애플리케이션 버전이 더는 롤백 대상이 아님을 리뷰어가 확인한다. 자세한 내용은 [shiftgate 설계](../design/4155-shiftgate-adoption.md#expand-contract-규칙)를 참고한다.
 
 ## Expected interruption budget
 
