@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
@@ -28,6 +29,7 @@ from app.services.kis_us_inference_expiry import (
 )
 
 KST = timezone(timedelta(hours=9))
+COMMIT_TIMEOUT_SECONDS = 10
 
 
 def _accept_at(row: LiveOrderLedger) -> datetime | None:
@@ -73,21 +75,26 @@ async def _decide(session: AsyncSession, row: LiveOrderLedger, now: datetime) ->
     if accepted is not None and deadline is not None:
         start, end = us_trading_day_window(accepted)
         fills = (
-            (
-                await session.execute(
-                    select(ExecutionLedger).where(
-                        ExecutionLedger.broker == "kis",
-                        ExecutionLedger.account_mode == "live",
-                        ExecutionLedger.instrument_type == "equity_us",
-                        ExecutionLedger.filled_at >= start,
-                        ExecutionLedger.filled_at <= end,
-                        execution_ledger_in_effect(),
-                    )
+            await session.execute(
+                select(
+                    ExecutionLedger.broker,
+                    ExecutionLedger.account_mode,
+                    ExecutionLedger.instrument_type,
+                    ExecutionLedger.symbol,
+                    ExecutionLedger.side,
+                    ExecutionLedger.currency,
+                    ExecutionLedger.broker_order_id,
+                    ExecutionLedger.filled_at,
+                ).where(
+                    ExecutionLedger.broker == "kis",
+                    ExecutionLedger.account_mode == "live",
+                    ExecutionLedger.instrument_type == "equity_us",
+                    ExecutionLedger.filled_at >= start,
+                    ExecutionLedger.filled_at <= end,
+                    execution_ledger_in_effect(),
                 )
             )
-            .scalars()
-            .all()
-        )
+        ).all()
         if identity_valid:
             target = SimpleNamespace(
                 broker="kis",
@@ -196,7 +203,9 @@ async def commit(
         or any(type(i) is not int or i <= 0 for i in ids)
     ):
         raise ValueError("invalid commit arguments")
-    async with session.begin():
+    async with asyncio.timeout(COMMIT_TIMEOUT_SECONDS), session.begin():
+        await session.execute(text("SET LOCAL lock_timeout = '2s'"))
+        await session.execute(text("SET LOCAL statement_timeout = '5s'"))
         # Blocks every fill insert/update until after the facts and transitions commit.
         await session.execute(text("LOCK TABLE review.execution_ledger IN SHARE MODE"))
         rows = await _candidates(session, lock=True)

@@ -80,7 +80,11 @@ def main() -> int:
         result = asyncio.run(run(args))
     except Exception as exc:
         # Database exceptions may contain connection credentials: report only the class.
-        print(json.dumps({"error": type(exc).__name__}))
+        sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+        if isinstance(exc, TimeoutError) or sqlstate in {"55P03", "57014"}:
+            print(json.dumps({"error": "timeout", "action": "retry_preview"}))
+        else:
+            print(json.dumps({"error": type(exc).__name__}))
         return 1
     print(json.dumps(result, ensure_ascii=False))
     return 0

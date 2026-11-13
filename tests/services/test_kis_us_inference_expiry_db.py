@@ -166,3 +166,30 @@ async def test_preview_commit_retry_and_immutable_audit(db_session: AsyncSession
                         "UPDATE review.kis_us_inference_expiry_events SET actor='changed'"
                     )
                 )
+
+
+async def test_commit_sets_postgres_timeouts_before_recheck(db_session, monkeypatch):
+    from app.services import kis_us_inference_expiry_service as service
+
+    connection = await db_session.connection()
+    async with AsyncSession(
+        bind=connection, join_transaction_mode="create_savepoint"
+    ) as session:
+
+        async def check_settings(session, *, lock=False):
+            assert lock
+            settings = (
+                await session.execute(
+                    text(
+                        "SELECT current_setting('lock_timeout'), current_setting('statement_timeout')"
+                    )
+                )
+            ).one()
+            assert settings == ("2s", "5s")
+            raise ValueError("stop after settings check")
+
+        monkeypatch.setattr(service, "_candidates", check_settings)
+        with pytest.raises(ValueError, match="stop after settings check"):
+            await service.commit(
+                session, ids=[1], decision_ref=DECISION_REF, actor="test", reason="test"
+            )

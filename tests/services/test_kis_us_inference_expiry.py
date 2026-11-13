@@ -202,3 +202,95 @@ def test_unrepresentable_inquiry_window_fails_closed():
     )
     assert not result["conditions"]["inquiry_window_passed"]
     assert not result["eligible"]
+
+
+@pytest.mark.asyncio
+async def test_commit_timeout_rolls_back_and_sets_database_timeouts(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from app.services import kis_us_inference_expiry_service as service
+
+    class SlowSession:
+        def __init__(self):
+            self.statements = []
+            self.rolled_back = False
+
+        @asynccontextmanager
+        async def begin(self):
+            try:
+                yield
+            except BaseException:
+                self.rolled_back = True
+                raise
+
+        async def execute(self, statement):
+            self.statements.append(str(statement))
+            if len(self.statements) == 3:
+                await asyncio.Event().wait()
+            return None
+
+    session = SlowSession()
+    monkeypatch.setattr(service, "COMMIT_TIMEOUT_SECONDS", 0.05)
+    with pytest.raises(TimeoutError):
+        await service.commit(
+            session,
+            ids=[1],
+            decision_ref=service.DECISION_REF,
+            actor="operator",
+            reason="test",
+        )
+    assert session.rolled_back
+    assert session.statements == [
+        "SET LOCAL lock_timeout = '2s'",
+        "SET LOCAL statement_timeout = '5s'",
+        "LOCK TABLE review.execution_ledger IN SHARE MODE",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fill_lookup_counts_identity_and_excludes_raw_payload():
+    from types import SimpleNamespace
+
+    from app.services import kis_us_inference_expiry_service as service
+
+    fill = SimpleNamespace(
+        broker="kis",
+        account_mode="live",
+        instrument_type="equity_us",
+        symbol="AAPL",
+        side="buy",
+        currency="USD",
+        broker_order_id="000123",
+        filled_at=ACCEPT,
+    )
+    row = SimpleNamespace(
+        id=1,
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        status="accepted",
+        lifecycle_state="accepted",
+        order_kind="limit",
+        trade_date=ACCEPT,
+        order_time="000000",
+        filled_qty=None,
+        order_no="123",
+        symbol="AAPL",
+        side="buy",
+        currency="USD",
+    )
+
+    # 15:00 UTC is 00:00 KST on the next calendar day.
+    class Session:
+        async def execute(self, statement):
+            assert "raw_payload_json" not in str(statement)
+            return SimpleNamespace(all=lambda: [fill])
+
+        async def scalar(self, statement):
+            return None
+
+    result = await service._decide(Session(), row, NOW)
+    assert result["order_fills"] == result["symbol_fills"] == 1
+    assert not result["conditions"]["no_order_fills"]
+    assert not result["conditions"]["no_symbol_fills"]
