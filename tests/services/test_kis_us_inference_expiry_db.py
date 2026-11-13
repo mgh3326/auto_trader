@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import event, select, text, update
@@ -10,8 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedgerReconcileRun
 from app.models.review import KISUSInferenceExpiryEvent, LiveOrderLedger
+from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.kis_us_inference_expiry import DECISION_REF
-from app.services.kis_us_inference_expiry_service import commit, preview
+from app.services.kis_us_inference_expiry_service import (
+    check_conflicts,
+    commit,
+    preview,
+)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -166,6 +173,32 @@ async def test_preview_commit_retry_and_immutable_audit(db_session: AsyncSession
                         "UPDATE review.kis_us_inference_expiry_events SET actor='changed'"
                     )
                 )
+
+        # A late-arriving record has its historical broker fill time, but is
+        # inserted after inference. The read-only check must expose it.
+        await ExecutionLedgerRepository(session).upsert_fill(
+            ExecutionLedgerUpsert(
+                broker="kis",
+                account_mode="live",
+                venue="NASD",
+                instrument_type="equity_us",
+                symbol="TEST0",
+                raw_symbol="TEST0",
+                side="buy",
+                broker_order_id="test41780",
+                filled_qty=Decimal("1"),
+                filled_price=Decimal("10"),
+                filled_at=accepted,
+                currency="USD",
+                source="reconciler",
+            )
+        )
+        await session.commit()
+        checks = await check_conflicts(session)
+        by_id = {item["ledger_id"]: item for item in checks}
+        assert by_id[ids[0]]["state"] == "conflict"
+        assert by_id[ids[1]]["state"] == "clear"
+        assert (await session.get(LiveOrderLedger, ids[0])).status == "expired"
 
 
 async def test_commit_sets_postgres_timeouts_before_recheck(db_session, monkeypatch):

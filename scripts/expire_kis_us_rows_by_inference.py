@@ -13,7 +13,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.services.kis_us_inference_expiry import DECISION_REF
-from app.services.kis_us_inference_expiry_service import commit, preview
+from app.services.kis_us_inference_expiry_service import (
+    check_conflicts,
+    commit,
+    preview,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -69,7 +73,10 @@ async def run(args: argparse.Namespace) -> dict:
                     actor=args.actor,
                     reason=args.reason,
                 )
-            return {"rows": await preview(session)}
+            return {
+                "rows": await preview(session),
+                "inference_checks": await check_conflicts(session),
+            }
     finally:
         await engine.dispose()
 

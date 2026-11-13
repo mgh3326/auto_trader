@@ -190,6 +190,52 @@ async def preview(session: AsyncSession, *, now: datetime | None = None) -> list
     return [await _decide(session, row, current) for row in await _candidates(session)]
 
 
+async def check_conflicts(
+    session: AsyncSession, *, now: datetime | None = None
+) -> list[dict]:
+    """Read audit-linked rows and report in-effect contradictory fills, without writes."""
+    current = now or datetime.now(UTC)
+    rows = (
+        (
+            await session.execute(
+                select(LiveOrderLedger)
+                .join(
+                    KISUSInferenceExpiryEvent,
+                    KISUSInferenceExpiryEvent.ledger_id == LiveOrderLedger.id,
+                )
+                .where(
+                    KISUSInferenceExpiryEvent.rule_version == RULE_VERSION,
+                    LiveOrderLedger.last_reconcile_detail["reason_code"].astext
+                    == MARKER,
+                )
+                .order_by(LiveOrderLedger.id)
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    result = []
+    for row in rows:
+        decision = await _decide(session, row, current)
+        order_fills, symbol_fills = decision["order_fills"], decision["symbol_fills"]
+        if order_fills is None or symbol_fills is None:
+            state = "unknown"
+        elif order_fills or symbol_fills:
+            state = "conflict"
+        else:
+            state = "clear"
+        result.append(
+            {
+                "ledger_id": row.id,
+                "state": state,
+                "order_fills": order_fills,
+                "symbol_fills": symbol_fills,
+            }
+        )
+    return result
+
+
 async def commit(
     session: AsyncSession, *, ids: list[int], decision_ref: str, actor: str, reason: str
 ) -> dict:
@@ -206,8 +252,6 @@ async def commit(
     async with asyncio.timeout(COMMIT_TIMEOUT_SECONDS), session.begin():
         await session.execute(text("SET LOCAL lock_timeout = '2s'"))
         await session.execute(text("SET LOCAL statement_timeout = '5s'"))
-        # Blocks every fill insert/update until after the facts and transitions commit.
-        await session.execute(text("LOCK TABLE review.execution_ledger IN SHARE MODE"))
         rows = await _candidates(session, lock=True)
         now = datetime.now(UTC)
         decisions = [await _decide(session, row, now) for row in rows]
@@ -241,6 +285,14 @@ async def commit(
                 return {"changed": 0, "rows": decisions}
         if eligible != set(ids):
             raise ValueError("ids must exactly match the eligible preview set")
+        # Read committed fill and run facts again immediately before any write.
+        # Fill writers remain independent; the final read-to-commit window is
+        # an explicitly accepted inference risk, surfaced by check_conflicts.
+        now = datetime.now(UTC)
+        decisions = [await _decide(session, row, now) for row in rows]
+        eligible = {d["ledger_id"] for d in decisions if d["eligible"]}
+        if eligible != set(ids):
+            raise ValueError("eligibility changed during final recheck")
         batch_id = uuid.uuid4()
         for row, decision in zip(rows, decisions, strict=True):
             if row.id not in eligible:

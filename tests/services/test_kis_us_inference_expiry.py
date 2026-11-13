@@ -226,11 +226,14 @@ async def test_commit_timeout_rolls_back_and_sets_database_timeouts(monkeypatch)
 
         async def execute(self, statement):
             self.statements.append(str(statement))
-            if len(self.statements) == 3:
-                await asyncio.Event().wait()
             return None
 
+    async def slow_candidates(session, *, lock=False):
+        assert lock
+        await asyncio.Event().wait()
+
     session = SlowSession()
+    monkeypatch.setattr(service, "_candidates", slow_candidates)
     monkeypatch.setattr(service, "COMMIT_TIMEOUT_SECONDS", 0.05)
     with pytest.raises(TimeoutError):
         await service.commit(
@@ -244,7 +247,6 @@ async def test_commit_timeout_rolls_back_and_sets_database_timeouts(monkeypatch)
     assert session.statements == [
         "SET LOCAL lock_timeout = '2s'",
         "SET LOCAL statement_timeout = '5s'",
-        "LOCK TABLE review.execution_ledger IN SHARE MODE",
     ]
 
 
@@ -294,3 +296,76 @@ async def test_fill_lookup_counts_identity_and_excludes_raw_payload():
     assert result["order_fills"] == result["symbol_fills"] == 1
     assert not result["conditions"]["no_order_fills"]
     assert not result["conditions"]["no_symbol_fills"]
+
+
+@pytest.mark.asyncio
+async def test_final_recheck_refuses_entire_batch_when_fill_appears(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.services import kis_us_inference_expiry_service as service
+
+    rows = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    calls = []
+
+    class FakeSession:
+        rolled_back = False
+
+        @asynccontextmanager
+        async def begin(self):
+            try:
+                yield
+            except BaseException:
+                self.rolled_back = True
+                raise
+
+        async def execute(self, statement):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+
+        def add(self, obj):
+            raise AssertionError("a refused batch must not write")
+
+    async def candidates(session, *, lock=False):
+        assert lock
+        return rows
+
+    async def decide(session, row, now):
+        calls.append(row.id)
+        return {"ledger_id": row.id, "eligible": not (len(calls) == 4)}
+
+    monkeypatch.setattr(service, "_candidates", candidates)
+    monkeypatch.setattr(service, "_decide", decide)
+    session = FakeSession()
+    with pytest.raises(ValueError, match="final recheck"):
+        await service.commit(
+            session,
+            ids=[1, 2],
+            decision_ref=service.DECISION_REF,
+            actor="a",
+            reason="r",
+        )
+    assert calls == [1, 2, 1, 2]
+    assert session.rolled_back
+
+
+@pytest.mark.asyncio
+async def test_check_conflicts_reports_later_fills_without_writes(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import kis_us_inference_expiry_service as service
+
+    rows = [SimpleNamespace(id=1), SimpleNamespace(id=2), SimpleNamespace(id=3)]
+
+    class ReadOnlySession:
+        async def execute(self, statement):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected write: {name}")
+
+    async def decide(session, row, now):
+        return {"order_fills": {1: 1, 2: 0, 3: None}[row.id], "symbol_fills": 0}
+
+    monkeypatch.setattr(service, "_decide", decide)
+    results = await service.check_conflicts(ReadOnlySession(), now=NOW)
+    assert [result["state"] for result in results] == ["conflict", "clear", "unknown"]
