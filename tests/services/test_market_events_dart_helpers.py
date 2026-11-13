@@ -85,6 +85,7 @@ async def test_corp_registry_is_cached_and_refreshed_after_ttl(
     monkeypatch.setattr(
         dart_helpers, "DART_CORP_REGISTRY_LOCK_PATH", tmp_path / "registry.lock"
     )
+    cache_path.write_text("{}", encoding="utf-8")
     frames = [
         pd.DataFrame(
             [
@@ -127,6 +128,33 @@ async def test_corp_registry_is_cached_and_refreshed_after_ttl(
     assert fetcher.call_count == 2
     assert refreshed["Synthetic Co"][0]["stock_code"] == "654321"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_empty_corp_registry_is_unavailable_and_not_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache_path = tmp_path / "registry.json"
+    monkeypatch.setattr(dart_helpers, "DART_CORP_REGISTRY_CACHE_PATH", cache_path)
+    monkeypatch.setattr(
+        dart_helpers, "DART_CORP_REGISTRY_LOCK_PATH", tmp_path / "registry.lock"
+    )
+    fetcher = MagicMock(
+        return_value=pd.DataFrame(
+            columns=["corp_code", "corp_name", "stock_code", "modify_date"]
+        )
+    )
+    monkeypatch.setattr(
+        "app.services.disclosures.dart._opendartreader",
+        lambda _name: fetcher,
+    )
+
+    result = await dart_helpers.fetch_dart_corp_registry()
+
+    assert result is None
+    assert fetcher.call_count == 1
+    assert not cache_path.exists()
 
 
 @pytest.mark.unit

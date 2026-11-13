@@ -63,6 +63,11 @@ def _listed_stock_code(value: Any) -> str | None:
     return code if len(code) == 6 and code.isascii() and code.isdigit() else None
 
 
+def dart_row_stock_code(row: dict[str, Any]) -> str:
+    """Return the normalized explicit stock code, if the scraped row has one."""
+    return (row.get("stock_code") or row.get("corp_cls_stock_code") or "").strip()
+
+
 @contextmanager
 def _corp_registry_lock():
     DART_CORP_REGISTRY_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +101,8 @@ def _registry_from_frame(frame: Any) -> dict[str, list[dict[str, str]]]:
                 "modify_date": modify_date,
             }
         )
+    if not registry:
+        raise ValueError("DART corp registry response has no usable rows")
     return dict(registry)
 
 
@@ -106,7 +113,7 @@ def _read_corp_registry_cache(now: float) -> dict[str, list[dict[str, str]]] | N
         ):
             return None
         value = json.loads(DART_CORP_REGISTRY_CACHE_PATH.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
+        if not isinstance(value, dict) or not value:
             return None
         if any(
             not isinstance(name, str)

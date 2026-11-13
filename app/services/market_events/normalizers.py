@@ -141,6 +141,7 @@ def normalize_dart_disclosure_row(
     """
     from app.services.market_events.dart_helpers import (
         _listed_stock_code,
+        dart_row_stock_code,
         normalize_dart_corp_name,
     )
 
@@ -148,7 +149,7 @@ def normalize_dart_disclosure_row(
     rcept_dt = (row.get("rcept_dt") or row.get("date") or "").strip()
     corp_name = (row.get("corp_name") or "").strip()
     report_nm = (row.get("report_nm") or "").strip()
-    stock_code = (row.get("stock_code") or row.get("corp_cls_stock_code") or "").strip()
+    stock_code = dart_row_stock_code(row)
     symbol = stock_code if stock_code and stock_code.isdigit() else None
     symbol_resolution_reason: str | None = None
     if not stock_code:

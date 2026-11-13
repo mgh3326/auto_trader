@@ -60,7 +60,7 @@ class FakeRepo:
         self.calls.append(("failed", part.day))
 
     async def upsert_event_with_values(self, event, _values):
-        self.events.append(event)
+        raise AssertionError(f"unexpected event upsert: {event}")
 
 
 @pytest.fixture
@@ -160,7 +160,14 @@ async def test_today_with_only_unparseable_rows_is_not_pending(repo):
 
 
 @pytest.mark.asyncio
-async def test_registry_failure_does_not_fail_dart_ingestion(repo):
+async def test_registry_failure_does_not_fail_dart_ingestion(repo, monkeypatch):
+    class RecordingFakeRepo(FakeRepo):
+        async def upsert_event_with_values(self, event, _values):
+            self.events.append(event)
+
+    # Only this enrichment test opts into recording the expected write; the
+    # fixture's default remains a guard against writes in pending/failure paths.
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", RecordingFakeRepo)
     row = {
         "rcept_no": "20261110000001",
         "rcept_dt": "20261110",
@@ -183,6 +190,40 @@ async def test_registry_failure_does_not_fail_dart_ingestion(repo):
     assert event["raw_payload_json"]["symbol_resolution_reason"] == (
         "registry_unavailable"
     )
+
+
+@pytest.mark.asyncio
+async def test_whitespace_stock_code_still_loads_registry(repo, monkeypatch):
+    class RecordingFakeRepo(FakeRepo):
+        async def upsert_event_with_values(self, event, _values):
+            self.events.append(event)
+
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", RecordingFakeRepo)
+    row = {
+        "rcept_no": "20261110000002",
+        "rcept_dt": "20261110",
+        "corp_name": "Synthetic Listed Co",
+        "stock_code": "   ",
+        "corp_code": "00000001",
+        "report_nm": "주요사항보고서",
+    }
+    load_registry = AsyncMock(
+        return_value={
+            "Synthetic Listed Co": [{"corp_code": "00000001", "stock_code": "123456"}]
+        }
+    )
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        _db(),
+        TODAY,
+        fetch_rows=AsyncMock(return_value=[row]),
+        today=TODAY,
+        load_corp_registry=load_registry,
+    )
+
+    assert result.status == "succeeded"
+    load_registry.assert_awaited_once_with()
+    assert repo.instances[-1].events[0]["symbol"] == "123456"
 
 
 class _Client:

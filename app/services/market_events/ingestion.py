@@ -20,6 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import today_kst
 from app.schemas.market_events import IngestionRunResult
+from app.services.market_events.dart_helpers import (
+    dart_row_stock_code,
+    fetch_dart_corp_registry,
+)
 from app.services.market_events.finnhub_helpers import fetch_earnings_calendar_finnhub
 from app.services.market_events.forexfactory_helpers import ForexFactoryFetchError
 from app.services.market_events.normalizers import (
@@ -329,16 +333,10 @@ async def ingest_kr_disclosures_for_date(
         rows = await fetch_rows(target_date)
         corp_registry = None
         needs_registry = any(
-            not (row.get("stock_code") or row.get("corp_cls_stock_code"))
-            and row.get("corp_name")
-            for row in rows
+            not dart_row_stock_code(row) and row.get("corp_name") for row in rows
         )
         if needs_registry:
             if load_corp_registry is None:
-                from app.services.market_events.dart_helpers import (
-                    fetch_dart_corp_registry,
-                )
-
                 load_corp_registry = fetch_dart_corp_registry
             try:
                 corp_registry = await load_corp_registry()
