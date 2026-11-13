@@ -39,7 +39,7 @@ runs:
         key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}
 
     - id: setup-node-1
-      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
       continue-on-error: true
       with:
         node-version: ${{ inputs.node-version }}
@@ -55,7 +55,7 @@ runs:
 
     - id: setup-node-2
       if: steps.setup-node-1.outcome == 'failure'
-      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
       continue-on-error: true
       with:
         node-version: ${{ inputs.node-version }}
@@ -71,7 +71,7 @@ runs:
 
     - id: setup-node-3
       if: steps.setup-node-1.outcome == 'failure' && steps.setup-node-2.outcome == 'failure'
-      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
       with:
         node-version: ${{ inputs.node-version }}
         cache: npm
