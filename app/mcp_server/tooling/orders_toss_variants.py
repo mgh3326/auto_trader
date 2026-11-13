@@ -147,6 +147,9 @@ class _OrderProposalContext:
     cash_funding_target: dict[str, Any] | None = None
     cash_funding_shortfall: Decimal | None = None
     parking_sell_ctx: ParkingSellContext | None = None
+    proposal_id: uuid.UUID | None = None
+    rung_index: int | None = None
+    decision_id: uuid.UUID | None = None
 
 
 _order_proposal_context: ContextVar[_OrderProposalContext | None] = ContextVar(
@@ -163,8 +166,12 @@ def _bind_order_proposal_context(
     cash_funding_target: dict[str, Any] | None = None,
     cash_funding_shortfall: Decimal | None = None,
     parking_sell_ctx: ParkingSellContext | None = None,
+    proposal_id: uuid.UUID | None = None,
+    rung_index: int | None = None,
+    decision_id: uuid.UUID | None = None,
 ):
     """Bind trusted proposal identity without exposing it in the MCP schema."""
+    parent = _order_proposal_context.get()
     token = _order_proposal_context.set(
         _OrderProposalContext(
             client_order_id,
@@ -173,6 +180,15 @@ def _bind_order_proposal_context(
             cash_funding_target,
             cash_funding_shortfall,
             parking_sell_ctx,
+            proposal_id
+            if proposal_id is not None
+            else (parent.proposal_id if parent else None),
+            rung_index
+            if rung_index is not None
+            else (parent.rung_index if parent else None),
+            decision_id
+            if decision_id is not None
+            else (parent.decision_id if parent else None),
         )
     )
     try:
@@ -1641,65 +1657,81 @@ async def _toss_place_order_impl(
     client_order_id = client_order_id_override or derive_client_order_id(
         canonical, market=mkt, now=now, rung=rung
     )
-    ledger_approval_hash = derive_approval_digest(canonical)
+    attempt_id = None
+    attempt_hook = None
+    try:
+        from app.services.decision_evidence import (
+            AttemptSendHook,
+            begin_order_attempt,
+            finish_order_attempt,
+            observation_session,
+            schedule_order_attempt_outcome,
+        )
 
-    payload: dict[str, Any] = {
-        "clientOrderId": client_order_id,
-        "symbol": symbol,
-        "side": side.upper(),
-        "orderType": order_type.upper(),
-        "timeInForce": time_in_force,
-    }
-    if quantity_str is not None:
-        payload["quantity"] = quantity_str
-    if price_str is not None:
-        payload["price"] = price_str
-    if order_amount_str is not None:
-        payload["orderAmount"] = order_amount_str
-    if confirm_high_value_order:
-        payload["confirmHighValueOrder"] = True
+        if not dry_run:
+            attempt_id = await begin_order_attempt(
+                observation_session,
+                account_mode="toss_live",
+                market=f"equity_{mkt}",
+                symbol=symbol,
+                side=side,
+                strategy=strategy,
+                send_key=client_order_id,
+                proposal_id=proposal_context.proposal_id if proposal_context else None,
+                rung_index=proposal_context.rung_index if proposal_context else None,
+                decision_id=proposal_context.decision_id if proposal_context else None,
+                proposal_flow=proposal_context is not None,
+            )
+            attempt_hook = AttemptSendHook(None)
+    except Exception:  # noqa: BLE001 - observation setup never gates orders
+        logger.error("decision_order_evidence reason=attempt_setup_failed")
+    try:
+        ledger_approval_hash = derive_approval_digest(canonical)
 
-    base_response = {
-        "source": "toss",
-        "account_mode": ACCOUNT_MODE_TOSS_LIVE,
-        "dry_run": dry_run,
-        "mutation_sent": False,
-        **tick_meta,
-        # ROB-545 Major — carry the clientOrderId on every response (incl. error
-        # paths) so a failed/timed-out order can be retried with the *same*
-        # idempotency key instead of minting a new one.
-        "client_order_id": payload["clientOrderId"],
-    }
+        payload: dict[str, Any] = {
+            "clientOrderId": client_order_id,
+            "symbol": symbol,
+            "side": side.upper(),
+            "orderType": order_type.upper(),
+            "timeInForce": time_in_force,
+        }
+        if quantity_str is not None:
+            payload["quantity"] = quantity_str
+        if price_str is not None:
+            payload["price"] = price_str
+        if order_amount_str is not None:
+            payload["orderAmount"] = order_amount_str
+        if confirm_high_value_order:
+            payload["confirmHighValueOrder"] = True
 
-    if (
-        id_guard := _client_order_id_error(client_order_id_override, base_response)
-    ) is not None:
-        return id_guard
-    mode = getattr(settings, "toss_approval_hash_mode", "optional")
-    if loss_cut_ctx is not None and not dry_run:
-        if approval_hash is None:
-            return {
-                "success": False,
-                **base_response,
-                "error": (
-                    "loss_cut live send requires approval_hash "
-                    "(re-run toss_preview_order and pass the returned token)"
-                ),
-                "error_code": "loss_cut_approval_hash_required",
-            }
-        result = verify_approval_token(approval_hash, canonical, now=now)
-        if not result.ok:
-            err = {
-                "success": False,
-                **base_response,
-                "error": result.message,
-                "error_code": result.error_code,
-            }
-            if result.diff is not None:
-                err["diff"] = result.diff
-            return err
-    elif mode != "off":
-        if approval_hash is not None:
+        base_response = {
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "dry_run": dry_run,
+            "mutation_sent": False,
+            **tick_meta,
+            # ROB-545 Major — carry the clientOrderId on every response (incl. error
+            # paths) so a failed/timed-out order can be retried with the *same*
+            # idempotency key instead of minting a new one.
+            "client_order_id": payload["clientOrderId"],
+        }
+
+        if (
+            id_guard := _client_order_id_error(client_order_id_override, base_response)
+        ) is not None:
+            return id_guard
+        mode = getattr(settings, "toss_approval_hash_mode", "optional")
+        if loss_cut_ctx is not None and not dry_run:
+            if approval_hash is None:
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": (
+                        "loss_cut live send requires approval_hash "
+                        "(re-run toss_preview_order and pass the returned token)"
+                    ),
+                    "error_code": "loss_cut_approval_hash_required",
+                }
             result = verify_approval_token(approval_hash, canonical, now=now)
             if not result.ok:
                 err = {
@@ -1711,393 +1743,441 @@ async def _toss_place_order_impl(
                 if result.diff is not None:
                     err["diff"] = result.diff
                 return err
-        elif mode == "required":
-            return {
-                "success": False,
-                **base_response,
-                "error": (
-                    "toss_place_order requires approval_hash "
-                    "(TOSS_APPROVAL_HASH_MODE=required). Re-preview and pass "
-                    "approval_hash from toss_preview_order."
-                ),
-                "error_code": "approval_hash_required",
-            }
-        elif mode == "warn":
-            logger.warning(
-                "toss_place_order called without approval_hash "
-                "(mode=warn) symbol=%s side=%s",
-                symbol,
-                side,
-            )
-
-    if dry_run:
-        sector_conc = None
-        order_warnings = []
-        if side == "buy":
-            effective_price = price_dec
-            if effective_price is None:
-                try:
-                    async with _client_context() as client:
-                        current_price_dec, _, _ = await _preview_price_context(
-                            client, symbol
-                        )
-                        effective_price = current_price_dec
-                except Exception:
-                    pass
-            cost_context = await _preview_cost_context(
-                market=mkt,
-                quantity=quantity_dec,
-                effective_price=effective_price,
-                order_amount=order_amount_dec,
-            )
-            estimated_val_str = cost_context.get("estimated_value")
-            estimated_val = (
-                float(estimated_val_str) if estimated_val_str is not None else None
-            )
-            order_currency = cost_context.get("estimated_value_currency") or (
-                "KRW" if mkt == "kr" else "USD"
-            )
-            sector_conc = await evaluate_sector_concentration(
-                symbol=symbol,
-                market=mkt,
-                order_estimated_value=estimated_val,
-                order_currency=order_currency,
-                # ROB-646 Finding 1: whole live portfolio (Toss is live-only)
-                account_ctx={"is_mock": False},
-            )
-            if sector_conc and sector_conc.get("warning"):
-                order_warnings.append(sector_conc["warning"])
-
-        dry_run_res = {
-            "success": True,
-            **base_response,
-            "payload_preview": payload,
-            "sector_concentration": sector_conc,
-        }
-        if loss_cut_ctx is not None:
-            dry_run_res["exit_intent"] = "loss_cut"
-            dry_run_res["retrospective_id"] = loss_cut_ctx.retrospective_id
-        if order_warnings:
-            dry_run_res["order_warnings"] = order_warnings
-        return dry_run_res
-
-    if not confirm:
-        return {
-            "success": False,
-            **base_response,
-            "error": "toss_place_order requires confirm=True when dry_run=False.",
-        }
-
-    # ROB-1310 R9 (B2): the explicit finite-positive SELL quantity gate must
-    # run before *any* Decimal arithmetic on the quantity, including the
-    # high-value KRW notional comparison below -- ``Decimal("NaN") >= ...``
-    # raises ``decimal.InvalidOperation`` instead of failing closed with the
-    # structured contract. There is one narrow #728 observation exception:
-    # when the Toss protection mode is shadow/enforce, an orderAmount-only
-    # SELL reaches G2 after the fresh broker preflight so an active protected
-    # declaration can reject it as unresolved. It still never reaches POST
-    # when no declaration blocks it; the legacy explicit-quantity rule stays
-    # intact in off mode and after a shadow observation.
-    order_amount_protection_probe = False
-    if side == "sell" and quantity_dec is None and order_amount_dec is not None:
-        try:
-            order_amount_protection_probe = (
-                protection_mode_for_scope("toss_live") != "off"
-            )
-        except ProtectionStateUnavailable:
-            # The normal structural error below is fail-closed, and avoids
-            # inventing an authority path if process configuration is invalid.
-            order_amount_protection_probe = False
-
-    if (
-        side == "sell"
-        and (
-            quantity_dec is None
-            or not quantity_dec.is_finite()
-            or quantity_dec <= Decimal("0")
-        )
-        and not order_amount_protection_probe
-    ):
-        return {
-            "success": False,
-            **base_response,
-            "error": "SELL orders require an explicit quantity.",
-            "error_code": "sell_quantity_required",
-        }
-
-    # Guard: high-value KR order
-    if (
-        guard := _high_value_error(
-            mkt,
-            quantity_dec,
-            price_dec,
-            order_amount_dec,
-            confirm_high_value_order,
-            base_response,
-        )
-    ) is not None:
-        return guard
-
-    if (
-        mutation_gate := _live_mutation_disabled_error(
-            "toss_place_order", base_response
-        )
-    ) is not None:
-        return mutation_gate
-
-    async def execute_order(client: TossReadClient):
-        sellable_evidence: dict[str, Any] = {}
-        protection_lease: Any | None = None
-        # Guard: Warnings check
-        guard_res = await check_warnings_guard(client, symbol, market=mkt, side=side)
-        guard_warnings = _warning_payload(guard_res.warnings)
-        if not guard_res.ok:
-            return {
-                "success": False,
-                **base_response,
-                "error": guard_res.error_message,
-                "warnings": guard_warnings,
-            }
-
-        # Guard: opposite pending order check
-        if (
-            opp_guard := await _opposite_pending_error(
-                client, symbol, side, base_response
-            )
-        ) is not None:
-            return opp_guard
-
-        # Guard: sell loss check
-        if side == "sell":
-            cash_funding_ctx: CashFundingContext | None = None
-            cash_funding_current_price: Decimal | None = None
-            if (
-                exit_intent == CASH_FUNDING_EXIT_INTENT or parking_sell_ctx is not None
-            ) and order_type == "limit":
-                try:
-                    cash_funding_current_price = await _latest_price(client, symbol)
-                except Exception:
-                    cash_funding_current_price = None
-                cash_funding_ctx, cash_funding_error = (
-                    _resolve_toss_cash_funding_context(
-                        exit_intent=exit_intent,
-                        symbol=symbol,
-                        market=mkt,
-                        side=side,
-                        order_type=order_type,
-                        quantity=quantity_dec,
-                        current_price=cash_funding_current_price,
-                        proposal_context=proposal_context,
-                    )
-                )
-                if cash_funding_error is not None:
-                    return {
+        elif mode != "off":
+            if approval_hash is not None:
+                result = verify_approval_token(approval_hash, canonical, now=now)
+                if not result.ok:
+                    err = {
                         "success": False,
                         **base_response,
-                        "error": cash_funding_error,
+                        "error": result.message,
+                        "error_code": result.error_code,
                     }
-            if (
-                sell_guard := await _sell_loss_guard(
-                    client,
-                    symbol,
-                    order_type,
-                    price_dec,
-                    base_response,
-                    loss_cut_ctx=loss_cut_ctx,
-                    cash_funding_ctx=cash_funding_ctx,
-                    parking_sell_ctx=parking_sell_ctx,
-                    current_price=cash_funding_current_price,
-                )
-            ) is not None:
-                return sell_guard
-
-        # Guard: NXT session preflight. Required mode fail-closes before POST;
-        # warn/optional log but proceed (fail-open on unknown session). For a
-        # SELL, keep this ahead of the fresh sellable read so broker
-        # sellability remains the last validation before mutation.
-        preflight = await _nxt_preflight_context(symbol, mkt)
-        if preflight is not None:
-            verdict, _ = preflight
-            if verdict.block:
-                mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
-                if mode == "required":
-                    return {
-                        "success": False,
-                        **base_response,
-                        "error": (
-                            f"NXT session {verdict.session!r} does not support "
-                            f"{symbol} ({verdict.reason}); order not sent."
-                        ),
-                        "error_code": "nxt_session_not_tradable",
-                        "session": verdict.session,
-                        "alternatives": list(verdict.alternatives),
-                    }
-                logger.warning(
-                    "NXT preflight advisory (mode=%s): symbol=%s session=%s "
-                    "reason=%s — proceeding with live send",
-                    mode,
-                    symbol,
-                    verdict.session,
-                    verdict.reason,
-                )
-
-        if side == "sell":
-            # ROB-1310: never consume the display sellable cache or shared
-            # portfolio snapshot for order sizing. Recheck Toss directly after
-            # the existing sell guards and before any mutation hook/POST.
-            sellable_evidence, sellable_error = await _fresh_sellable_preflight(
-                client,
-                symbol=symbol,
-                requested_quantity=quantity_dec,
-                base=base_response,
-            )
-            if sellable_error is not None:
-                return sellable_error
-            sellable_evidence = sellable_evidence or {}
-            protection_lease, protection_error = await _prepare_toss_sell_protection(
-                client,
-                market=mkt,
-                symbol=symbol,
-                quantity=quantity_dec,
-                fresh_sellable_evidence=sellable_evidence,
-                order_amount_present=order_amount_dec is not None,
-                kind="new",
-                base=base_response,
-            )
-            if protection_error is not None:
-                return protection_error
-
-            if order_amount_protection_probe:
-                # A shadow decision records its would-block event but does not
-                # authorize this independently unresolved payload. Release the
-                # protected-key lease before returning the unchanged structural
-                # contract, well before the pre-send hook or POST.
-                await protection_lease.release()
-                protection_lease = None
+                    if result.diff is not None:
+                        err["diff"] = result.diff
+                    return err
+            elif mode == "required":
                 return {
                     "success": False,
                     **base_response,
-                    "error": "SELL orders require an explicit quantity.",
-                    "error_code": "sell_quantity_required",
+                    "error": (
+                        "toss_place_order requires approval_hash "
+                        "(TOSS_APPROVAL_HASH_MODE=required). Re-preview and pass "
+                        "approval_hash from toss_preview_order."
+                    ),
+                    "error_code": "approval_hash_required",
                 }
-
-        pre_send_hook = _toss_pre_send_hook.get()
-
-        res = None
-        response: dict[str, Any] | None = None
-        try:
-            if pre_send_hook is None:
-                res = await client.place_order(payload)
-            elif not _accepts_pre_send_hook(client.place_order):
-                # Keep compatibility with injected clients implementing the
-                # original one-argument protocol. The hook still runs
-                # immediately before their mutation; the first-party client
-                # accepts the hook and rechecks it inside every HTTP attempt.
-                await pre_send_hook()
-                res = await client.place_order(payload)
-            else:
-                res = await client.place_order(
-                    payload,
-                    pre_send_hook=pre_send_hook,
+            elif mode == "warn":
+                logger.warning(
+                    "toss_place_order called without approval_hash "
+                    "(mode=warn) symbol=%s side=%s",
+                    symbol,
+                    side,
                 )
-            if side == "sell":
-                await _invalidate_sellable_after_sell_mutation(symbol)
-            raw_response = {
-                "orderId": res.order_id,
-                "clientOrderId": res.client_order_id,
-                "payload": _json_safe(payload),
-            }
-            ledger = await record_toss_place_order(
-                market=mkt,
-                symbol=symbol,
-                side=side,
-                order_type=order_type,
-                time_in_force=time_in_force,
-                quantity=quantity_dec,
-                price=price_dec,
-                order_amount=order_amount_dec,
-                currency=("KRW" if mkt == "kr" else "USD"),
-                client_order_id=res.client_order_id or str(payload["clientOrderId"]),
-                broker_order_id=res.order_id,
-                raw_response=raw_response,
-                reason=reason,
-                exit_intent=exit_intent,
-                exit_reason=exit_reason,
-                retrospective_id=retrospective_id,
-                approval_issue_id=approval_issue_id,
-                thesis=thesis,
-                strategy=strategy,
-                target_price=target_price_dec,
-                stop_loss=stop_loss_dec,
-                min_hold_days=min_hold_days,
-                notes=notes,
-                indicators_snapshot=indicators_snapshot,
-                report_item_uuid=report_item_uuid,
-                approval_hash=ledger_approval_hash,
-                correlation_id_override=(
-                    proposal_context.correlation_id
-                    if proposal_context is not None
-                    else None
-                ),
-                rung=(proposal_context.rung if proposal_context is not None else rung),
-            )
-            response = {
+
+        if dry_run:
+            sector_conc = None
+            order_warnings = []
+            if side == "buy":
+                effective_price = price_dec
+                if effective_price is None:
+                    try:
+                        async with _client_context() as client:
+                            current_price_dec, _, _ = await _preview_price_context(
+                                client, symbol
+                            )
+                            effective_price = current_price_dec
+                    except Exception:
+                        pass
+                cost_context = await _preview_cost_context(
+                    market=mkt,
+                    quantity=quantity_dec,
+                    effective_price=effective_price,
+                    order_amount=order_amount_dec,
+                )
+                estimated_val_str = cost_context.get("estimated_value")
+                estimated_val = (
+                    float(estimated_val_str) if estimated_val_str is not None else None
+                )
+                order_currency = cost_context.get("estimated_value_currency") or (
+                    "KRW" if mkt == "kr" else "USD"
+                )
+                sector_conc = await evaluate_sector_concentration(
+                    symbol=symbol,
+                    market=mkt,
+                    order_estimated_value=estimated_val,
+                    order_currency=order_currency,
+                    # ROB-646 Finding 1: whole live portfolio (Toss is live-only)
+                    account_ctx={"is_mock": False},
+                )
+                if sector_conc and sector_conc.get("warning"):
+                    order_warnings.append(sector_conc["warning"])
+
+            dry_run_res = {
                 "success": True,
                 **base_response,
-                "mutation_sent": True,
-                "order_id": res.order_id,
-                "client_order_id": res.client_order_id,
-                **ledger,
-                "approval_hash_digest": ledger_approval_hash,
-                "warnings": guard_warnings,
-                "warnings_check_message": guard_res.error_message,
-                **sellable_evidence,
-                "message": (
-                    "Toss live order accepted and recorded accepted-only; "
-                    "run toss_reconcile_orders to book confirmed fills."
-                ),
+                "payload_preview": payload,
+                "sector_concentration": sector_conc,
             }
-            # ROB-1460: a proposal-flow buy is recorded by revalidation.
-            if proposal_context is None and side == "buy":
-                await record_buy_exit_plan(
-                    account_mode="toss_live",
-                    market=f"equity_{mkt}",
-                    symbol=symbol,
-                    price=price_dec,
-                    quantity=quantity_dec,
-                    now=now_kst(),
+            if loss_cut_ctx is not None:
+                dry_run_res["exit_intent"] = "loss_cut"
+                dry_run_res["retrospective_id"] = loss_cut_ctx.retrospective_id
+            if order_warnings:
+                dry_run_res["order_warnings"] = order_warnings
+            return dry_run_res
+
+        if not confirm:
+            return {
+                "success": False,
+                **base_response,
+                "error": "toss_place_order requires confirm=True when dry_run=False.",
+            }
+
+        # ROB-1310 R9 (B2): the explicit finite-positive SELL quantity gate must
+        # run before *any* Decimal arithmetic on the quantity, including the
+        # high-value KRW notional comparison below -- ``Decimal("NaN") >= ...``
+        # raises ``decimal.InvalidOperation`` instead of failing closed with the
+        # structured contract. There is one narrow #728 observation exception:
+        # when the Toss protection mode is shadow/enforce, an orderAmount-only
+        # SELL reaches G2 after the fresh broker preflight so an active protected
+        # declaration can reject it as unresolved. It still never reaches POST
+        # when no declaration blocks it; the legacy explicit-quantity rule stays
+        # intact in off mode and after a shadow observation.
+        order_amount_protection_probe = False
+        if side == "sell" and quantity_dec is None and order_amount_dec is not None:
+            try:
+                order_amount_protection_probe = (
+                    protection_mode_for_scope("toss_live") != "off"
                 )
-            return response
-        except PreSendFreshnessError:
-            raise
-        except Exception as exc:
-            err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
-            # ROB-545 Major/B2 — if the POST already reached Toss (res set) the
-            # broker order id must survive a ledger-write failure or idempotency
-            # anomaly, so reconcile/cancel can still find the live order.
-            if res is not None:
-                err["order_id"] = res.order_id
-                if res.client_order_id is not None:
-                    err["client_order_id"] = res.client_order_id
-            response = err
-            return response
-        finally:
-            if protection_lease is not None:
-                release_warning = await release_live_sell_lease_preserving_outcome(
-                    protection_lease,
-                    operation="toss_place_order",
-                    broker_response_observed=res is not None,
+            except ProtectionStateUnavailable:
+                # The normal structural error below is fail-closed, and avoids
+                # inventing an authority path if process configuration is invalid.
+                order_amount_protection_probe = False
+
+        if (
+            side == "sell"
+            and (
+                quantity_dec is None
+                or not quantity_dec.is_finite()
+                or quantity_dec <= Decimal("0")
+            )
+            and not order_amount_protection_probe
+        ):
+            return {
+                "success": False,
+                **base_response,
+                "error": "SELL orders require an explicit quantity.",
+                "error_code": "sell_quantity_required",
+            }
+
+        # Guard: high-value KR order
+        if (
+            guard := _high_value_error(
+                mkt,
+                quantity_dec,
+                price_dec,
+                order_amount_dec,
+                confirm_high_value_order,
+                base_response,
+            )
+        ) is not None:
+            return guard
+
+        if (
+            mutation_gate := _live_mutation_disabled_error(
+                "toss_place_order", base_response
+            )
+        ) is not None:
+            return mutation_gate
+
+        async def execute_order(client: TossReadClient):
+            sellable_evidence: dict[str, Any] = {}
+            protection_lease: Any | None = None
+            # Guard: Warnings check
+            guard_res = await check_warnings_guard(
+                client, symbol, market=mkt, side=side
+            )
+            guard_warnings = _warning_payload(guard_res.warnings)
+            if not guard_res.ok:
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": guard_res.error_message,
+                    "warnings": guard_warnings,
+                }
+
+            # Guard: opposite pending order check
+            if (
+                opp_guard := await _opposite_pending_error(
+                    client, symbol, side, base_response
                 )
-                if response is not None:
-                    response.update(
-                        attach_live_sell_lease_cleanup_warning(
-                            response,
-                            release_warning,
+            ) is not None:
+                return opp_guard
+
+            # Guard: sell loss check
+            if side == "sell":
+                cash_funding_ctx: CashFundingContext | None = None
+                cash_funding_current_price: Decimal | None = None
+                if (
+                    exit_intent == CASH_FUNDING_EXIT_INTENT
+                    or parking_sell_ctx is not None
+                ) and order_type == "limit":
+                    try:
+                        cash_funding_current_price = await _latest_price(client, symbol)
+                    except Exception:
+                        cash_funding_current_price = None
+                    cash_funding_ctx, cash_funding_error = (
+                        _resolve_toss_cash_funding_context(
+                            exit_intent=exit_intent,
+                            symbol=symbol,
+                            market=mkt,
+                            side=side,
+                            order_type=order_type,
+                            quantity=quantity_dec,
+                            current_price=cash_funding_current_price,
+                            proposal_context=proposal_context,
                         )
                     )
+                    if cash_funding_error is not None:
+                        return {
+                            "success": False,
+                            **base_response,
+                            "error": cash_funding_error,
+                        }
+                if (
+                    sell_guard := await _sell_loss_guard(
+                        client,
+                        symbol,
+                        order_type,
+                        price_dec,
+                        base_response,
+                        loss_cut_ctx=loss_cut_ctx,
+                        cash_funding_ctx=cash_funding_ctx,
+                        parking_sell_ctx=parking_sell_ctx,
+                        current_price=cash_funding_current_price,
+                    )
+                ) is not None:
+                    return sell_guard
 
-    async with _client_context() as client:
-        return await execute_order(client)
+            # Guard: NXT session preflight. Required mode fail-closes before POST;
+            # warn/optional log but proceed (fail-open on unknown session). For a
+            # SELL, keep this ahead of the fresh sellable read so broker
+            # sellability remains the last validation before mutation.
+            preflight = await _nxt_preflight_context(symbol, mkt)
+            if preflight is not None:
+                verdict, _ = preflight
+                if verdict.block:
+                    mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
+                    if mode == "required":
+                        return {
+                            "success": False,
+                            **base_response,
+                            "error": (
+                                f"NXT session {verdict.session!r} does not support "
+                                f"{symbol} ({verdict.reason}); order not sent."
+                            ),
+                            "error_code": "nxt_session_not_tradable",
+                            "session": verdict.session,
+                            "alternatives": list(verdict.alternatives),
+                        }
+                    logger.warning(
+                        "NXT preflight advisory (mode=%s): symbol=%s session=%s "
+                        "reason=%s — proceeding with live send",
+                        mode,
+                        symbol,
+                        verdict.session,
+                        verdict.reason,
+                    )
+
+            if side == "sell":
+                # ROB-1310: never consume the display sellable cache or shared
+                # portfolio snapshot for order sizing. Recheck Toss directly after
+                # the existing sell guards and before any mutation hook/POST.
+                sellable_evidence, sellable_error = await _fresh_sellable_preflight(
+                    client,
+                    symbol=symbol,
+                    requested_quantity=quantity_dec,
+                    base=base_response,
+                )
+                if sellable_error is not None:
+                    return sellable_error
+                sellable_evidence = sellable_evidence or {}
+                (
+                    protection_lease,
+                    protection_error,
+                ) = await _prepare_toss_sell_protection(
+                    client,
+                    market=mkt,
+                    symbol=symbol,
+                    quantity=quantity_dec,
+                    fresh_sellable_evidence=sellable_evidence,
+                    order_amount_present=order_amount_dec is not None,
+                    kind="new",
+                    base=base_response,
+                )
+                if protection_error is not None:
+                    return protection_error
+
+                if order_amount_protection_probe:
+                    # A shadow decision records its would-block event but does not
+                    # authorize this independently unresolved payload. Release the
+                    # protected-key lease before returning the unchanged structural
+                    # contract, well before the pre-send hook or POST.
+                    await protection_lease.release()
+                    protection_lease = None
+                    return {
+                        "success": False,
+                        **base_response,
+                        "error": "SELL orders require an explicit quantity.",
+                        "error_code": "sell_quantity_required",
+                    }
+
+            pre_send_hook = _toss_pre_send_hook.get()
+            if attempt_hook is not None:
+                attempt_hook.hook = pre_send_hook
+                pre_send_hook = attempt_hook
+
+            res = None
+            response: dict[str, Any] | None = None
+            try:
+                if pre_send_hook is None:
+                    res = await client.place_order(payload)
+                elif not _accepts_pre_send_hook(client.place_order):
+                    # Keep compatibility with injected clients implementing the
+                    # original one-argument protocol. The hook still runs
+                    # immediately before their mutation; the first-party client
+                    # accepts the hook and rechecks it inside every HTTP attempt.
+                    await pre_send_hook()
+                    res = await client.place_order(payload)
+                else:
+                    res = await client.place_order(
+                        payload,
+                        pre_send_hook=pre_send_hook,
+                    )
+                if attempt_id is not None:
+                    try:
+                        schedule_order_attempt_outcome(
+                            observation_session, attempt_id, "sent"
+                        )
+                    except Exception:  # noqa: BLE001 - never gate accepted orders
+                        logger.error(
+                            "decision_order_evidence reason=outcome_setup_failed"
+                        )
+                if side == "sell":
+                    await _invalidate_sellable_after_sell_mutation(symbol)
+                raw_response = {
+                    "orderId": res.order_id,
+                    "clientOrderId": res.client_order_id,
+                    "payload": _json_safe(payload),
+                }
+                ledger = await record_toss_place_order(
+                    market=mkt,
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    time_in_force=time_in_force,
+                    quantity=quantity_dec,
+                    price=price_dec,
+                    order_amount=order_amount_dec,
+                    currency=("KRW" if mkt == "kr" else "USD"),
+                    client_order_id=res.client_order_id
+                    or str(payload["clientOrderId"]),
+                    broker_order_id=res.order_id,
+                    raw_response=raw_response,
+                    reason=reason,
+                    exit_intent=exit_intent,
+                    exit_reason=exit_reason,
+                    retrospective_id=retrospective_id,
+                    approval_issue_id=approval_issue_id,
+                    thesis=thesis,
+                    strategy=strategy,
+                    target_price=target_price_dec,
+                    stop_loss=stop_loss_dec,
+                    min_hold_days=min_hold_days,
+                    notes=notes,
+                    indicators_snapshot=indicators_snapshot,
+                    report_item_uuid=report_item_uuid,
+                    approval_hash=ledger_approval_hash,
+                    correlation_id_override=(
+                        proposal_context.correlation_id
+                        if proposal_context is not None
+                        else None
+                    ),
+                    rung=(
+                        proposal_context.rung if proposal_context is not None else rung
+                    ),
+                )
+                response = {
+                    "success": True,
+                    **base_response,
+                    "mutation_sent": True,
+                    "order_id": res.order_id,
+                    "client_order_id": res.client_order_id,
+                    **ledger,
+                    "approval_hash_digest": ledger_approval_hash,
+                    "warnings": guard_warnings,
+                    "warnings_check_message": guard_res.error_message,
+                    **sellable_evidence,
+                    "message": (
+                        "Toss live order accepted and recorded accepted-only; "
+                        "run toss_reconcile_orders to book confirmed fills."
+                    ),
+                }
+                # ROB-1460: a proposal-flow buy is recorded by revalidation.
+                if proposal_context is None and side == "buy":
+                    await record_buy_exit_plan(
+                        account_mode="toss_live",
+                        market=f"equity_{mkt}",
+                        symbol=symbol,
+                        price=price_dec,
+                        quantity=quantity_dec,
+                        now=now_kst(),
+                    )
+                return response
+            except PreSendFreshnessError:
+                raise
+            except Exception as exc:
+                err = _toss_error_response(
+                    exc, {**base_response, "mutation_sent": True}
+                )
+                # ROB-545 Major/B2 — if the POST already reached Toss (res set) the
+                # broker order id must survive a ledger-write failure or idempotency
+                # anomaly, so reconcile/cancel can still find the live order.
+                if res is not None:
+                    err["order_id"] = res.order_id
+                    if res.client_order_id is not None:
+                        err["client_order_id"] = res.client_order_id
+                response = err
+                return response
+            finally:
+                if protection_lease is not None:
+                    release_warning = await release_live_sell_lease_preserving_outcome(
+                        protection_lease,
+                        operation="toss_place_order",
+                        broker_response_observed=res is not None,
+                    )
+                    if response is not None:
+                        response.update(
+                            attach_live_sell_lease_cleanup_warning(
+                                response,
+                                release_warning,
+                            )
+                        )
+
+        async with _client_context() as client:
+            return await execute_order(client)
+    finally:
+        if (
+            attempt_id is not None
+            and attempt_hook is not None
+            and attempt_hook.post_count == 0
+        ):
+            try:
+                await finish_order_attempt(
+                    observation_session, attempt_id, "proven_not_sent"
+                )
+            except Exception:  # noqa: BLE001 - keep the original refusal
+                logger.error("decision_order_evidence reason=outcome_setup_failed")
 
 
 async def toss_place_order(

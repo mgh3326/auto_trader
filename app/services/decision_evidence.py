@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -11,7 +13,8 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -198,3 +201,171 @@ class DecisionEvidenceService:
         await self.session.execute(
             text(f"INSERT INTO review.{table} ({columns}) VALUES ({binds})"), values
         )
+
+
+_OBSERVATION_TIMEOUT = 1.0
+_MAX_OBSERVATION_TASKS = 8
+_observation_tasks: set[asyncio.Task] = set()
+_pending_attempts: dict[UUID, asyncio.Task] = {}
+_observation_sessions = None
+
+
+def observation_session():
+    """Use a separate, non-pooled connection, never the order session pool."""
+    global _observation_sessions
+    if _observation_sessions is None:
+        from app.core.config import settings
+
+        engine = create_async_engine(
+            settings.DATABASE_URL,
+            poolclass=NullPool,
+            connect_args={"timeout": 5.0, "command_timeout": 5.0},
+        )
+        _observation_sessions = async_sessionmaker(engine, expire_on_commit=False)
+    return _observation_sessions()
+
+
+def _start_observation(coro):
+    if sum(not task.done() for task in _observation_tasks) >= _MAX_OBSERVATION_TASKS:
+        coro.close()
+        logging.getLogger(__name__).error("decision_order_evidence reason=writer_busy")
+        return None
+    task = asyncio.create_task(coro)
+    _observation_tasks.add(task)
+    task.add_done_callback(_observation_tasks.discard)
+    return task
+
+
+async def _set_observation_timeouts(session):
+    await session.execute(
+        text(
+            "SELECT set_config('lock_timeout', '1000ms', true), "
+            "set_config('statement_timeout', '5000ms', true)"
+        )
+    )
+
+
+async def begin_order_attempt(
+    session_factory,
+    *,
+    account_mode,
+    market,
+    symbol,
+    side,
+    strategy,
+    send_key,
+    proposal_id,
+    rung_index,
+    decision_id,
+    proposal_flow,
+):
+    """Commit one observation in a bounded, independent transaction."""
+    reason = "decision_write_failed"
+    attempt_id = uuid4()
+
+    async def write():
+        try:
+            nonlocal reason
+            async with session_factory() as session:
+                await _set_observation_timeouts(session)
+                service = DecisionEvidenceService(session)
+                resolved = decision_id
+                if not proposal_flow:
+                    resolved = await service.record(
+                        DecisionEvidence(
+                            decision_kind="direct_order",
+                            decided_by="direct_order",
+                            market=market,
+                            account_mode=account_mode,
+                            symbol=symbol,
+                            side=side,
+                            strategy=strategy,
+                            decided_at=datetime.now(UTC),
+                        ),
+                        [],
+                        [],
+                    )
+                reason = "attempt_write_failed"
+                if resolved is None:
+                    raise ValueError("proposal decision missing")
+                await service.link_order(
+                    attempt_id=attempt_id,
+                    decision_id=resolved,
+                    account_scope=account_scope(account_mode),
+                    send_key=send_key,
+                    proposal_id=proposal_id,
+                    rung_index=rung_index,
+                )
+                await session.commit()
+            return True
+        except Exception:  # noqa: BLE001 - evidence must never gate an order
+            logging.getLogger(__name__).error(
+                "decision_order_evidence reason=%s", reason
+            )
+            return False
+
+    task = _start_observation(write())
+    if task is None:
+        return None
+    _pending_attempts[attempt_id] = task
+    task.add_done_callback(lambda completed: _pending_attempts.pop(attempt_id, None))
+    done, _ = await asyncio.wait({task}, timeout=_OBSERVATION_TIMEOUT)
+    if not done:
+        logging.getLogger(__name__).error(
+            "decision_order_evidence reason=attempt_timeout"
+        )
+        return attempt_id
+    return attempt_id if task.result() else None
+
+
+def schedule_order_attempt_outcome(session_factory, attempt_id, outcome):
+    """Schedule an outcome without inserting an await after broker acceptance."""
+    dependency = _pending_attempts.get(attempt_id)
+    if dependency is not None and not dependency.done():
+
+        def after_begin(completed):
+            if not completed.cancelled() and completed.result():
+                schedule_order_attempt_outcome(session_factory, attempt_id, outcome)
+
+        dependency.add_done_callback(after_begin)
+        return None
+
+    async def write():
+        try:
+            async with session_factory() as session:
+                await _set_observation_timeouts(session)
+                await DecisionEvidenceService(session).record_outcome(
+                    attempt_id, outcome
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001 - evidence must never gate an order
+            logging.getLogger(__name__).error(
+                "decision_order_evidence reason=outcome_write_failed"
+            )
+
+    return _start_observation(write())
+
+
+async def finish_order_attempt(session_factory, attempt_id, outcome):
+    task = schedule_order_attempt_outcome(session_factory, attempt_id, outcome)
+    if task is None:
+        return
+    done, _ = await asyncio.wait({task}, timeout=_OBSERVATION_TIMEOUT)
+    if not done:
+        logging.getLogger(__name__).error(
+            "decision_order_evidence reason=outcome_timeout"
+        )
+
+
+class AttemptSendHook:
+    """Preserve the hook and conservatively count entered POST boundaries."""
+
+    def __init__(self, hook):
+        self.hook = hook
+        self.post_count = 0
+        self.attempt_id: UUID | None = None
+
+    async def __call__(self, *args, **kwargs):
+        result = await self.hook(*args, **kwargs) if self.hook is not None else None
+        self.post_count += 1
+        return result

@@ -429,7 +429,11 @@ async def test_g2_rechecks_sellable_inside_protected_lease_before_each_post(
     """Two q=40 sells against H/S=100 and P=60 yield one broker POST."""
 
     from app.mcp_server.tooling import orders_toss_variants as toss
+    from app.services import decision_evidence
 
+    monkeypatch.setattr(
+        decision_evidence, "begin_order_attempt", AsyncMock(return_value=None)
+    )
     state = {"sellable": Decimal("100"), "initial_calls": 0}
     initial_reads_complete = asyncio.Event()
     lease_lock = asyncio.Lock()
@@ -477,7 +481,8 @@ async def test_g2_rechecks_sellable_inside_protected_lease_before_each_post(
             "sellable_quantity_source": "fake",
         }, None
 
-    async def place_order(payload: dict[str, Any]) -> SimpleNamespace:
+    async def place_order(payload: dict[str, Any], *, pre_send_hook) -> SimpleNamespace:
+        await pre_send_hook()
         assert Decimal(str(payload["quantity"])) == Decimal("40")
         state["sellable"] -= Decimal("40")
         return SimpleNamespace(order_id="fake-order", client_order_id="fake-client")
