@@ -33,7 +33,9 @@ from app.services.brokers.kis.vts_distributed_gate import (
     get_vts_distributed_gate,
 )
 from app.services.brokers.token_issuance import (
+    cache_only_refusal,
     ensure_gatewayd_token,
+    is_cache_only_token_issuance,
     is_gatewayd_token_issuance,
 )
 from app.services.redis_token_manager import redis_token_manager
@@ -502,6 +504,12 @@ class BaseKISClient:
             self._settings.kis_access_token = token
             logging.debug("KIS access token ready for request")
             return
+
+        if is_cache_only_token_issuance(self._settings):
+            # cache_only: a miss or expiry refuses before any lock, OAuth, or write.
+            raise cache_only_refusal(
+                "kis-mock" if getattr(self, "_is_mock_client", False) else "kis-live"
+            )
 
         if is_gatewayd_token_issuance(self._settings):
             provider = (

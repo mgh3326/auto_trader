@@ -11,7 +11,11 @@ from urllib.parse import urlsplit
 import redis.asyncio as redis
 
 from app.core.config import settings
-from app.services.brokers.token_issuance import TokenIssuanceUnavailable
+from app.services.brokers.token_issuance import (
+    TokenIssuanceUnavailable,
+    cache_only_refusal,
+    is_cache_only_token_issuance,
+)
 from app.services.brokers.token_keys import kis_live_token_keys, kis_mock_token_keys
 
 GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS = 3.0
@@ -381,6 +385,11 @@ class RedisTokenManager:
 
     async def clear_token(self, failed_token: str | None = None) -> None:
         """Redis에서 토큰 삭제"""
+        if is_cache_only_token_issuance(settings):
+            # cache_only: every KIS caller runs clear_token before re-ensuring, so
+            # this is the forced re-issue point. Refuse before any local or Redis
+            # mutation; the issuing producer owns the shared key.
+            raise cache_only_refusal("kis")
         self._clear_local_cache()
         try:
             if failed_token is None:
