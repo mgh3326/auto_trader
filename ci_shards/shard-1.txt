@@ -185,6 +185,7 @@ tests/services/daily_candles/test_migration_round_trip.py
 tests/services/daily_candles/test_repository_crypto_path.py
 tests/services/daily_candles/test_sync_service.py
 tests/services/decision_evidence/test_migration_db.py
+tests/services/decision_evidence/test_order_attempt_db.py
 tests/services/dots_history_export/test_export_db.py
 tests/services/dots_history_export/test_export_v2.py
 tests/services/execution_intent_gateway/test_migration_and_boundaries.py
