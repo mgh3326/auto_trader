@@ -79,6 +79,15 @@ def remove_old_table():
 """
     assert lint.violations(marked, "4200") == []
 
+    rebound = """\
+def upgrade():
+    with op.batch_alter_table('items') as batch:
+        pass
+    batch = unsafe
+    batch.add_column(sa.Column('extra', sa.String()))
+"""
+    assert lint.violations(rebound, "4200")
+
 
 def test_marker_only_covers_the_immediately_following_operation() -> None:
     source = """\

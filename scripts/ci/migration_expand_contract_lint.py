@@ -228,7 +228,7 @@ def _root_name(node: ast.AST) -> str | None:
 def _batch_receiver_names(
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef],
 ) -> set[str]:
-    names: set[str] = set()
+    candidates: set[str] = set()
     for function in functions:
         for node in ast.walk(function):
             if isinstance(node, (ast.With, ast.AsyncWith)):
@@ -242,8 +242,19 @@ def _batch_receiver_names(
                         and context.func.value.id == "op"
                         and isinstance(item.optional_vars, ast.Name)
                     ):
-                        names.add(item.optional_vars.id)
-    return names
+                        candidates.add(item.optional_vars.id)
+    return {
+        name
+        for name in candidates
+        if sum(
+            isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, ast.Store)
+            for function in functions
+            for node in ast.walk(function)
+        )
+        == 1
+    }
 
 
 def _has_contract_marker(
@@ -352,6 +363,19 @@ def violations(source: str, task_id: str) -> list[str]:
     }
     safe_imported_calls = _safe_imported_calls(tree)
     module_shadowed_names = _module_assigned_names(tree)
+    for function in functions:
+        module_shadowed_names.update(
+            node.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Store)
+            and node.id in {"op", "sa", "sqlalchemy", "postgresql"}
+        )
+        safe_imported_calls.difference_update(
+            node.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        )
     batch_names = _batch_receiver_names(functions)
     parents = {
         child: parent
