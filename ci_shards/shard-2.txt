@@ -177,6 +177,7 @@ tests/services/brokers/nhplug/test_live_period_collect.py
 tests/services/brokers/nhplug/test_stage2_listing_client.py
 tests/services/brokers/paper/test_capabilities.py
 tests/services/brokers/test_edge_client.py
+tests/services/brokers/test_token_issuance_cache_only.py
 tests/services/brokers/test_token_keys.py
 tests/services/brokers/toss/test_health.py
 tests/services/brokers/toss/test_market_data.py
