@@ -13,12 +13,13 @@ reconcile 이 이 스냅샷을 읽는다). 등록은 머지 후 운영자 단계
 
 ## 대응표
 
-시각은 KST ↔ UTC. OCI Dagu 스케줄러가 UTC 로 돌기 때문에 DAG 의 `schedule` 은 UTC 다.
+시각은 KST ↔ UTC. DAG 의 `schedule` 은 UTC 다. OCI Dagu 서버는 `tz: Asia/Seoul` 로 돌기 때문에
+`CRON_TZ=UTC` 접두를 명시한다(배치 DAG 와 같은 규칙, PR #2360). 접두가 없으면 22:40 KST 에 돈다.
 선행 스케줄러는 없다 — 이 스냅샷은 지금까지 손으로만 돌았다(첫 `--commit` 2026-11-11 06:23 KST, 8행).
 
 | DAG 파일 (`deploy/dagu/at-daily/`) | Dagu (UTC) | Dagu (KST) | 계좌 step | 핑 env 이름 |
 |---|---|---|---|---|
-| `at-account-value-snapshot` | `40 22 * * *` | 07:40 매일 | `kis` · `toss` · `upbit` (병렬) | `AT_BATCH_PING_URL_ACCOUNT_VALUE_SNAPSHOT` |
+| `at-account-value-snapshot` | `CRON_TZ=UTC 40 22 * * *` | 07:40 매일 | `kis` · `toss` · `upbit` (병렬) | `AT_BATCH_PING_URL_ACCOUNT_VALUE_SNAPSHOT` |
 
 - 세 step 은 서로 `depends` 가 없다. Dagu 는 의존이 없는 step 을 병렬로 돌리므로 한 계좌가 실패해도
   나머지 두 계좌는 계속 돈다.
@@ -45,10 +46,13 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
 
   | 이름 | 용도 |
   |---|---|
-  | `AT_BATCH_PING_URL_ACCOUNT_VALUE_SNAPSHOT` | healthchecks https 핑 URL(성공은 그대로, 실패는 `/fail`) |
+  | `AT_BATCH_PING_URL_ACCOUNT_VALUE_SNAPSHOT` | 선택. healthchecks https 핑 URL(성공은 그대로, 실패는 `/fail`) |
 
-  이 이름이 dotenv 에 없으면 DAG 는 돌지만 핑이 실패한다(`curl` 이 URL 없이 실패). 🔴 Dagu 는 없는
-  dotenv 파일을 오류 없이 넘기므로 첫 실행 로그에서 핸들러가 핑을 보냈는지 반드시 확인한다.
+  핑은 선택이다. 이 이름이 dotenv 에 없거나 비어 있으면 핸들러가 핑을 건너뛰고(`[ -z ... ] ||`),
+  실행 결과는 Dagu 상태(`succeeded`/`failed`)로만 남는다. healthchecks 무료 체크 한도(20개)가 차서
+  처음 등록은 핑 없이 한다(운영자 결정 `hk:doc decision/2026-11-13/factortrail-data-ownership`).
+  체크를 만들면 dotenv 에 이 이름을 넣기만 하면 된다. 🔴 Dagu 는 없는 dotenv 파일을 오류 없이
+  넘기므로, 핑을 넣은 뒤 첫 실행 로그에서 핸들러가 핑을 보냈는지 확인한다.
 - **Dagu 버전**: 로컬 Dagu 2.21.0 에서 `dagu validate` 통과. OCI 버전은 **확인 못 함(UNVERIFIED)**.
 - **쓰기 경로**: 이 DAG 는 DB 에 쓴다(`--commit`). 계좌 가치 스냅샷은 append-only 사실 행이고
   하루 한 번의 관측이다. 조회는 `scripts/account_value_report.py`, retro 는 `retro_scoreboard` 다.
@@ -69,7 +73,8 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
    - CLI 출력이 `{"mode": "commit", "snapshots": [...]}` 이고, 그날 계좌 8행이
      `"write_status": "inserted"` 이거나(첫 실행) 이미 그날 행이 있으면 `"already_present"` 인가.
      두 경우 모두 정상이다 — `already_present` 는 같은 날 재실행이 no-op 이라는 뜻이다.
-   - 성공 핸들러가 핑을 보냈는가(`onSuccess`). 실패가 있으면 `onFailure` 가 `<URL>/fail` 을 보낸다.
+   - 핑 URL 이 있으면: 성공 핸들러가 핑을 보냈는가(`onSuccess`). 실패가 있으면 `onFailure` 가
+     `<URL>/fail` 을 보낸다. 핑 URL 이 없으면 두 핸들러는 아무것도 보내지 않고 끝난다.
 4. **그날 행 확인**: 같은 날 두 번째 실행은 `already_present` 만 나와야 한다(중복 행 0). 새 행이
    생기면 `(account, market, day)` 키가 깨진 것이므로 스케줄을 켜지 말고 멈춘다.
 5. **스케줄 유지**: 3·4 가 맞으면 그대로 둔다. 맞지 않으면 §롤백으로 되돌린다.
@@ -78,7 +83,7 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
 
 1. 돌고 있는 실행이 있으면 먼저 `dagu stop at-account-value-snapshot`.
 2. Dagu DAGs 디렉터리에서 그 DAG 파일을 지운다. 스케줄이 사라진다.
-3. healthchecks 의 해당 체크를 일시 중지한다(안 하면 "안 옴" 알림이 온다).
+3. 핑을 쓰고 있었다면 healthchecks 의 해당 체크를 일시 중지한다(안 하면 "안 옴" 알림이 온다).
 
 **행은 남긴다.** 스냅샷은 append-only 사실 행이고 지우거나 고치지 않는다. 롤백은 스케줄만 끊는다.
 선행 스케줄러가 없으므로 되살릴 스케줄은 없다(배치 1 처럼 Prefect `schedule resume` 할 대상이 없다).
@@ -108,7 +113,9 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
 - 첫 미리보기 관측: account 행에 `cash_unknown`, 일부 종목(SGOV·SPYM·crypto 3종)에 `mark_unknown`
   이 있었다(`hk:doc decision/2026-11-11/factortrail-p1` §T5). 사유가 붙은 행도 저장된다 —
   미측정은 값이 아니라 이유로 남는다.
-- **알림**: healthchecks 핑(성공은 URL, 실패는 URL/`fail`)뿐이다. 실행이 아예 안 온 경우도
-  healthchecks 기대 주기로 잡힌다. Discord 알림은 없다.
+- **알림**: 핑 URL 이 있으면 healthchecks 핑(성공은 URL, 실패는 URL/`fail`)이고, 실행이 아예 안 온
+  경우도 healthchecks 기대 주기로 잡힌다. 핑 URL 이 없으면 알림이 없다 — 실패는 Dagu 실행 상태와
+  로그로만 남고, 운영자 결정 169(관측 문제는 레인 이벤트가 아니라 기록으로)에 따라 나중에 읽는다.
+  Discord 알림은 없다.
 - **한 계좌 실패 = 실행 실패**: 나머지 계좌는 계속 돌지만 DAG 는 `failed` 로 끝나 `/fail` 핑을 보낸다.
   어느 계좌가 실패했는지는 step 이름으로 로그에서 읽는다.

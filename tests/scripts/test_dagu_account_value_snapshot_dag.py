@@ -34,7 +34,8 @@ DOCKER = (
 MODULE = "scripts.account_value_snapshot"
 ACCOUNTS = ["kis", "toss", "upbit"]
 PING = "AT_BATCH_PING_URL_ACCOUNT_VALUE_SNAPSHOT"
-SCHEDULE_UTC = "40 22 * * *"
+SCHEDULE_UTC = "CRON_TZ=UTC 40 22 * * *"
+UTC_PREFIX = "CRON_TZ=UTC "
 KST_CLOCK = "07:40"
 KST_OFFSET_MIN = 9 * 60
 
@@ -74,8 +75,12 @@ def test_header_says_proposal_and_names_the_runbook_and_the_decision():
 
 def test_schedule_is_0740_kst_daily_in_utc():
     text, dag = _load()
-    minute, hour, dom, month, dow = dag["schedule"].split()
     assert dag["schedule"] == SCHEDULE_UTC, "the pinned UTC cron changed"
+    # The OCI Dagu server runs with tz Asia/Seoul; a bare cron would fire at
+    # 22:40 KST. The explicit prefix keeps the cron in UTC (same rule as the
+    # batch DAGs, tests/scripts/test_dagu_at_batch_dags.py).
+    assert dag["schedule"].startswith(UTC_PREFIX)
+    minute, hour, dom, month, dow = dag["schedule"][len(UTC_PREFIX) :].split()
     assert dom == "*" and month == "*" and dow == "*", "the run must be daily"
     # The header's documented KST clock is pinned separately: changing either the
     # header or the cron alone fails here.
@@ -138,13 +143,15 @@ def test_a_failing_account_does_not_stop_the_others_and_the_run_ends_failed():
         # ping instead of the failure ping.
         assert "continue_on" not in step, step["name"]
     handlers = dag["handler_on"]
+    # The ping is optional: with no URL in the dotenv the handler skips it
+    # (healthchecks free-tier check limit); with a URL it pings as before.
     assert (
         handlers["failure"]["command"]
-        == f'curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}/fail"'
+        == f'[ -z "${{{PING}}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}/fail"'
     )
     assert (
         handlers["success"]["command"]
-        == f'curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}"'
+        == f'[ -z "${{{PING}}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}"'
     )
 
 
