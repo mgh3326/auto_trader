@@ -580,20 +580,31 @@ def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
     """Return a process-local Redis client facade over the shared snapshot store."""
     global _shared_portfolio_snapshot_cache
     if _shared_portfolio_snapshot_cache is None:
-        redis_client = None
+        scope_valid = True
         try:
-            redis_client = redis.from_url(
-                settings.get_redis_url(),
-                max_connections=settings.redis_max_connections,
-                socket_timeout=settings.redis_socket_timeout,
-                socket_connect_timeout=settings.redis_socket_connect_timeout,
-                decode_responses=True,
+            scope = _snapshot_cache_scope(settings)
+        except ValueError:
+            logger.warning(
+                "Toss portfolio snapshot cache disabled: invalid token namespace fingerprint"
             )
-        except Exception as exc:  # noqa: BLE001 — cache fails open
-            logger.warning("Toss portfolio snapshot Redis client init failed: %s", exc)
+            scope = "unconfigured"
+            scope_valid = False
+        redis_client = None
+        if scope_valid:
+            try:
+                redis_client = redis.from_url(
+                    settings.get_redis_url(),
+                    max_connections=settings.redis_max_connections,
+                    socket_timeout=settings.redis_socket_timeout,
+                    socket_connect_timeout=settings.redis_socket_connect_timeout,
+                    decode_responses=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — cache fails open
+                logger.warning(
+                    "Toss portfolio snapshot Redis client init failed: %s", exc
+                )
         global _shared_snapshot_redis_client
         _shared_snapshot_redis_client = redis_client
-        scope = _snapshot_cache_scope(settings)
         _shared_portfolio_snapshot_cache = TossPortfolioSnapshotCache(
             redis_client=redis_client,
             key_prefix=f"{_KEY_PREFIX}:{scope}",
@@ -616,7 +627,8 @@ def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
                 )
             ),
             enabled=bool(
-                getattr(settings, "toss_portfolio_snapshot_cache_enabled", True)
+                scope_valid
+                and getattr(settings, "toss_portfolio_snapshot_cache_enabled", True)
             ),
         )
     return _shared_portfolio_snapshot_cache
