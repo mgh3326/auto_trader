@@ -12,6 +12,10 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
 from app.schemas.execution_contracts import AccountMode
+from app.services.brokers.token_issuance import (
+    TokenIssuanceCacheOnlyUnavailable,
+    is_cache_only_token_issuance,
+)
 
 from . import approval_keys
 from .constants import RECOVERABLE_APPROVAL_MSG_CODES, WEBSOCKET_ENDPOINT_HOSTS
@@ -179,6 +183,10 @@ class KISExecutionWebSocket:
                         # can fix by reissuing again. Do NOT churn the approval key;
                         # just back off via reconnect_delay below. The single-flight
                         # holder / next reconnect cycle resolves a genuine reissue.
+                        if is_cache_only_token_issuance(settings):
+                            # cache_only never reissues, so pick up a key the producer
+                            # has published since. Read-only; no churn.
+                            await self._adopt_cached_approval_key()
                         logger.warning(
                             "KIS WebSocket recoverable ACK persists after controlled "
                             "reissue; backing off without reissuing key: "
@@ -217,6 +225,18 @@ class KISExecutionWebSocket:
                                 self.current_attempt,
                                 self.max_reconnect_attempts,
                             )
+                        except TokenIssuanceCacheOnlyUnavailable:
+                            # cache_only refused the reissue. No independent issuance;
+                            # back off and keep the reconnect loop alive. A key the
+                            # producer publishes later is adopted on the repeated-ACK path.
+                            logger.warning(
+                                "KIS approval key reissue refused by cache_only during "
+                                "reconnect; backing off without independent reissue: "
+                                "msg_cd=%s attempt=%s/%s",
+                                ack_msg_cd,
+                                self.current_attempt,
+                                self.max_reconnect_attempts,
+                            )
                         self._last_reissue_msg_code = ack_msg_cd
                 else:
                     self._last_reissue_msg_code = None
@@ -246,6 +266,29 @@ class KISExecutionWebSocket:
 
         if not self.is_connected:
             raise RuntimeError("KIS WebSocket connection not established")
+
+    async def _adopt_cached_approval_key(self) -> None:
+        """cache_only: adopt a producer-published approval key, never the rejected one.
+
+        Read-only and best-effort. On a cache miss get_approval_key raises the
+        cache_only refusal; a Redis read error raises its own exception. In both
+        cases the current key is kept, so the reconnect loop keeps backing off
+        instead of ending.
+        """
+        try:
+            key = await approval_keys.get_approval_key(self.account_mode)
+        except TokenIssuanceCacheOnlyUnavailable:
+            return
+        except Exception as exc:  # noqa: BLE001 - best-effort refresh; never end the loop
+            logger.warning(
+                "KIS approval key cache refresh failed; keeping current key: "
+                "account_mode=%s error_class=%s",
+                self.account_mode,
+                type(exc).__name__,
+            )
+            return
+        if key != self.approval_key:
+            self.approval_key = key
 
     async def _issue_approval_key_if_needed(self):
         """Approval Key 발급 (캐시 미스 시) — account_mode 별 endpoint/credential"""

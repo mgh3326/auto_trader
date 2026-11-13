@@ -11,7 +11,11 @@ from urllib.parse import urlsplit
 import redis.asyncio as redis
 
 from app.core.config import settings
-from app.services.brokers.token_issuance import TokenIssuanceUnavailable
+from app.services.brokers.token_issuance import (
+    TokenIssuanceUnavailable,
+    cache_only_refusal,
+    is_cache_only_token_issuance,
+)
 from app.services.brokers.token_keys import kis_live_token_keys, kis_mock_token_keys
 
 GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS = 3.0
@@ -50,6 +54,9 @@ class RedisTokenManager:
         self._local_redis_miss_cooldown_seconds = 0.2
         self._local_last_redis_check_at: float = 0.0
         self._local_redis_revalidate_interval_seconds = 5.0
+        # cache_only only: the token KIS rejected through clear_token. Redis may
+        # still hold it until the producer rotates, so it is never re-cached.
+        self._cache_only_rejected_token: str | None = None
 
     async def _get_redis_client(self) -> redis.Redis:
         """Redis 클라이언트 가져오기 (지연 초기화)"""
@@ -207,6 +214,15 @@ class RedisTokenManager:
 
                 if self._is_token_valid(token_data):
                     access_token = token_data["access_token"]
+                    if access_token == self._cache_only_rejected_token:
+                        # cache_only: KIS already rejected this token. Treat it as a
+                        # miss and wait for the producer to publish another one.
+                        self._log_token_lookup(
+                            logging.INFO,
+                            "KIS access token in Redis was rejected; awaiting replacement",
+                            token_source="rejected",
+                        )
+                        return None
                     expires_at = float(token_data["expires_at"])
                     self._update_local_cache(access_token, expires_at)
                     self._log_token_lookup(
@@ -381,6 +397,24 @@ class RedisTokenManager:
 
     async def clear_token(self, failed_token: str | None = None) -> None:
         """Redis에서 토큰 삭제"""
+        if is_cache_only_token_issuance(settings):
+            # cache_only: every KIS caller runs clear_token before re-ensuring, so
+            # this is the forced re-issue point. Never write or delete the shared
+            # Redis key.
+            if failed_token is not None:
+                # A peer may already have replaced the rejected token. A different
+                # usable cached token is a cache hit (as in Toss), so the caller's
+                # re-ensure picks it up. This is a read only.
+                current = await self.get_token(force_redis_check=True)
+                if current is not None and current != failed_token:
+                    return
+            # Otherwise remember the rejected token so it is not re-cached from
+            # Redis, and drop the in-process copy so the next read is from Redis.
+            rejected = failed_token if failed_token is not None else self._local_token
+            if rejected:
+                self._cache_only_rejected_token = rejected
+            self._clear_local_cache()
+            raise cache_only_refusal("kis")
         self._clear_local_cache()
         try:
             if failed_token is None:
