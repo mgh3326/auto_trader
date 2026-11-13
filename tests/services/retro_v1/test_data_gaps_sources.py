@@ -114,6 +114,48 @@ async def test_a_missing_crypto_indicator_is_missing_data_not_fresh() -> None:
     assert row["last_updated_at"] is None
 
 
+@pytest.mark.asyncio
+async def test_reference_only_breadth_snapshot_is_unsupported() -> None:
+    breadth = crypto_snapshot(
+        "tv_crypto_breadth",
+        "tradingview",
+        value=None,
+        snapshot_at=NOW,
+    )
+    response = await read_data_gaps(
+        gap_session(crypto_insight_snapshots=crypto_route([breadth]))
+    )
+    row = by_dataset(response)["crypto_insight.breadth"]
+    assert row["missing_reason"] == "unsupported"
+    assert row["last_updated_at"] is None
+    assert row["source"] == "tradingview"
+    assert row["basis"] == "inference"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("age", "expected_reason"),
+    [(timedelta(hours=1), None), (timedelta(days=2), "stale")],
+)
+async def test_valued_breadth_snapshot_keeps_freshness_rule(
+    age, expected_reason
+) -> None:
+    breadth = crypto_snapshot(
+        "tv_crypto_breadth",
+        "tradingview",
+        value=0.42,
+        snapshot_at=NOW - age,
+    )
+    response = await read_data_gaps(
+        gap_session(crypto_insight_snapshots=crypto_route([breadth]))
+    )
+    row = by_dataset(response).get("crypto_insight.breadth")
+    if expected_reason is None:
+        assert row is None
+    else:
+        assert row["missing_reason"] == expected_reason
+
+
 # --------------------------------------------------------------------------
 # candles: stale against the last confirmed session / crypto's last closed day
 # --------------------------------------------------------------------------
