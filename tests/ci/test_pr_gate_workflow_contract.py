@@ -176,6 +176,25 @@ def test_lint_stays_unconditional(workflow: dict[str, Any]) -> None:
     assert "needs" not in lint
 
 
+def test_expand_contract_lint_runs_for_pull_requests(workflow: dict[str, Any]) -> None:
+    steps = [
+        step
+        for step in workflow["jobs"]["lint"]["steps"]
+        if step.get("name") == "Expand-contract migration lint"
+    ]
+    assert len(steps) == 1
+    step = steps[0]
+    assert step["if"] == "github.event_name == 'pull_request'"
+    assert step["env"] == {"BASE_REF": "${{ github.base_ref }}"}
+    assert (
+        'git fetch --no-tags --depth=1 origin "refs/heads/${BASE_REF}"' in step["run"]
+    )
+    assert (
+        "python3 scripts/ci/migration_expand_contract_lint.py "
+        "--base-ref FETCH_HEAD --head-ref HEAD"
+    ) in step["run"]
+
+
 def test_taskiq_smoke_still_owns_the_exact_cover_check(
     workflow: dict[str, Any],
 ) -> None:
