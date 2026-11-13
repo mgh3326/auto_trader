@@ -26,6 +26,7 @@ from app.services.brokers.token_issuance import (
 from app.services.brokers.token_keys import (
     toss_client_fingerprint,
     toss_oauth_token_keys,
+    toss_oauth_token_keys_for_fingerprint,
 )
 from app.services.brokers.toss.errors import (
     TossApiDisabled,
@@ -85,35 +86,49 @@ class TossOAuthTokenManager:
     def __init__(
         self,
         *,
-        client_id: str,
-        client_secret: SecretStr,
+        client_id: str | None = None,
+        client_secret: SecretStr | None = None,
+        namespace_fingerprint: str | None = None,
         base_url: str = DEFAULT_TOSS_BASE_URL,
         rate_limiter: TossRateLimiter | None = None,
     ) -> None:
         # #1257: refused before the secret is unwrapped.
         assert_broker_credentials_allowed("Toss token manager")
-        if not client_id.strip():
-            raise TossMissingCredentials("TOSS_API_CLIENT_ID is empty")
-        secret_value = client_secret.get_secret_value()
-        if not secret_value.strip():
-            raise TossMissingCredentials("TOSS_API_CLIENT_SECRET is empty")
-        self._client_id = client_id
-        self._client_secret = client_secret
+        if namespace_fingerprint is not None:
+            try:
+                self.token_key, self.lock_key = toss_oauth_token_keys_for_fingerprint(
+                    namespace_fingerprint
+                )
+            except ValueError:
+                raise TossMissingCredentials(
+                    "TOSS_TOKEN_NAMESPACE_FP must be 16 hexadecimal characters"
+                ) from None
+            self._client_fingerprint = namespace_fingerprint.lower()
+            self._client_id: str | None = None
+            self._client_secret: SecretStr | None = None
+        else:
+            if client_id is None or not client_id.strip():
+                raise TossMissingCredentials("TOSS_API_CLIENT_ID is empty")
+            if client_secret is None or not client_secret.get_secret_value().strip():
+                raise TossMissingCredentials("TOSS_API_CLIENT_SECRET is empty")
+            self._client_id = client_id
+            self._client_secret = client_secret
+            self._client_fingerprint = _client_fingerprint(client_id)
+            self.token_key, self.lock_key = toss_oauth_token_keys(client_id=client_id)
         self._base_url = base_url
         self._rate_limiter = rate_limiter or TossRateLimiter()
-        self.token_key, self.lock_key = toss_oauth_token_keys(client_id=client_id)
         self._namespace = self.token_key.removesuffix(":access_token")
 
     def __repr__(self) -> str:
         return (
             f"<TossOAuthTokenManager base_url={self._base_url!r} "
-            f"client_id_fp={_client_fingerprint(self._client_id)!r}>"
+            f"client_id_fp={self._client_fingerprint!r}>"
         )
 
     @property
     def client_fingerprint(self) -> str:
         """Non-secret client-id fingerprint, never the raw client id."""
-        return _client_fingerprint(self._client_id)
+        return self._client_fingerprint
 
     @classmethod
     def from_settings(
@@ -128,21 +143,53 @@ class TossOAuthTokenManager:
             raise TossApiDisabled(
                 "Toss API is disabled: TOSS_API_ENABLED is not truthy"
             )
-        missing = validate_toss_api_config(settings_obj)
-        if missing:
-            raise TossMissingCredentials(
-                "Toss API is disabled or missing required configuration: "
-                + ", ".join(missing)
-            )
-        secret = settings_obj.toss_api_client_secret
-        if not isinstance(secret, SecretStr):
-            secret = SecretStr(str(secret))
+        mode = getattr(settings_obj, "broker_token_issuance_mode", "self")
+        client_id = getattr(settings_obj, "toss_api_client_id", None)
+        namespace_fingerprint = getattr(
+            settings_obj, "toss_token_namespace_fp", None
+        )
+        if namespace_fingerprint is not None:
+            try:
+                toss_oauth_token_keys_for_fingerprint(namespace_fingerprint)
+            except (TypeError, ValueError):
+                raise TossMissingCredentials(
+                    "TOSS_TOKEN_NAMESPACE_FP must be 16 hexadecimal characters"
+                ) from None
+            namespace_fingerprint = namespace_fingerprint.lower()
+
+        if client_id is not None and str(client_id).strip() and namespace_fingerprint:
+            if _client_fingerprint(str(client_id)) != namespace_fingerprint:
+                raise TossMissingCredentials(
+                    "TOSS_TOKEN_NAMESPACE_FP does not match TOSS_API_CLIENT_ID"
+                )
+
+        if mode == "self":
+            missing = validate_toss_api_config(settings_obj)
+            if missing:
+                raise TossMissingCredentials(
+                    "Toss API is disabled or missing required configuration: "
+                    + ", ".join(missing)
+                )
+            secret = settings_obj.toss_api_client_secret
+            if not isinstance(secret, SecretStr):
+                secret = SecretStr(str(secret))
+            token_fingerprint = None
+        else:
+            if not namespace_fingerprint:
+                if client_id is None or not str(client_id).strip():
+                    raise TossMissingCredentials(
+                        "TOSS_TOKEN_NAMESPACE_FP or TOSS_API_CLIENT_ID is required"
+                    )
+                namespace_fingerprint = _client_fingerprint(str(client_id))
+            token_fingerprint = namespace_fingerprint
+            secret = None
         base_url = (
             getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
         )
         return cls(
-            client_id=str(settings_obj.toss_api_client_id),
+            client_id=(str(client_id) if mode == "self" else None),
             client_secret=secret,
+            namespace_fingerprint=token_fingerprint,
             base_url=str(base_url),
             rate_limiter=rate_limiter or get_shared_rate_limiter(),
         )
@@ -307,6 +354,10 @@ class TossOAuthTokenManager:
             logger.debug("Toss OAuth lock release best-effort failure: %s", exc)
 
     async def _issue_token(self) -> TossToken:
+        if self._client_id is None or self._client_secret is None:
+            raise TossMissingCredentials(
+                "TOSS_API_CLIENT_ID and TOSS_API_CLIENT_SECRET are required to issue tokens"
+            )
         await self._rate_limiter.acquire(TossApiGroup.AUTH)
         async with build_toss_client(base_url=self._base_url) as client:
             response = await client.post(

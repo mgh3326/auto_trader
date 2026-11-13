@@ -331,6 +331,9 @@ class Settings(BaseSettings):
     toss_api_enabled: bool = False
     toss_api_client_id: str | None = None
     toss_api_client_secret: SecretStr | None = None
+    # Non-secret fp16 of the Toss client ID, for token-cache consumers that do
+    # not issue OAuth themselves.
+    toss_token_namespace_fp: str | None = None
     toss_api_account_seq: int | None = None
     toss_api_base_url: str | None = None
     # Opt-in only: local preserves the existing per-process singleton; redis

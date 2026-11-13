@@ -60,6 +60,22 @@ Python must not fall back to its own OAuth endpoint in this mode.
 For a Mac API runtime, set `GATEWAYD_URL` to the tailnet-reachable gatewayd URL;
 the default loopback address only works when gatewayd is local to that process.
 
+### Toss 소비자에서 OAuth 자격 증명 제거
+
+`gatewayd` 또는 `cache_only` 모드에서 Toss 소비자는 Redis 키의 네임스페이스만
+알면 됩니다. 최초 한 번, Toss client ID가 설정된 환경에서 다음 명령을 실행해
+fp16만 출력합니다:
+
+```bash
+uv run python scripts/print_toss_token_namespace_fp.py
+```
+
+출력값을 소비자 환경의 `TOSS_TOKEN_NAMESPACE_FP`에 설정합니다. 이 값은
+Toss client ID의 SHA-256 앞 16자리 16진수이며 비밀값이 아닙니다. `gatewayd`와
+`cache_only` 소비자는 이 값만으로 기존 Redis 토큰 키를 사용합니다. 운영자가
+소비자 환경에서 `TOSS_API_CLIENT_ID`와 `TOSS_API_CLIENT_SECRET`을 제거할 수
+있습니다. 환경 변경은 운영자가 수행하며 gatewayd의 발급 자격 증명은 유지합니다.
+
 ## Cutover and rollback
 
 1. Confirm gatewayd can issue each intended provider token and publishes the
@@ -72,6 +88,6 @@ the default loopback address only works when gatewayd is local to that process.
 
 KIS API key and secret remain in the API environment: KIS requires them on
 every API request header even when gatewayd owns OAuth issuance. Toss client ID
-and secret are OAuth-only here, so they may be removed from the API environment
-only after gatewayd mode has stabilized and the accompanying Redis namespace
-configuration supports that operational change.
+and secret are OAuth-only here, so an operator may remove them from consumer
+environments after gatewayd mode has stabilized and `TOSS_TOKEN_NAMESPACE_FP`
+is configured with the matching Redis namespace.
