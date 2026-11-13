@@ -1460,41 +1460,51 @@ async def _revalidate_place_rung(
         ),
     )
 
+    from app.mcp_server.tooling.orders_toss_variants import _bind_order_proposal_context
+
     try:
-        submit = await _maybe_await(
-            place_order_fn(
-                dry_run=False,
-                account_mode=group.account_mode,
-                symbol=group.symbol,
-                side=rung.side,
-                market=group.market,
-                order_type=group.order_type,
-                quantity=rung.quantity,
-                price=rung.limit_price,
-                thesis=group.thesis,
-                strategy=group.strategy,
-                exit_intent=group.exit_intent,
-                exit_reason=group.exit_reason,
-                retrospective_id=group.retrospective_id,
-                approval_issue_id=group.approval_issue_id,
-                reason=_SUBMIT_REASON.format(rung=rung_index),
-                approval_hash=preview.get("approval_hash"),
-                **(
-                    {"proposal_client_order_id": proposal_client_order_id}
-                    if proposal_client_order_id is not None
-                    else {}
-                ),
-                rung=rung_index,
-                correlation_id=corr,
-                pre_send_hook=transport_gate,
-                **_cash_funding_revalidation_kwargs(group),
-                **(
-                    {"parking_sell_ctx": parking_sell_ctx}
-                    if parking_sell_ctx is not None
-                    else {}
-                ),
+        with _bind_order_proposal_context(
+            client_order_id=str(proposal_client_order_id or ""),
+            correlation_id=corr,
+            rung=rung_index,
+            proposal_id=group.proposal_id,
+            rung_index=rung_index,
+            decision_id=getattr(group, "decision_id", None),
+        ):
+            submit = await _maybe_await(
+                place_order_fn(
+                    dry_run=False,
+                    account_mode=group.account_mode,
+                    symbol=group.symbol,
+                    side=rung.side,
+                    market=group.market,
+                    order_type=group.order_type,
+                    quantity=rung.quantity,
+                    price=rung.limit_price,
+                    thesis=group.thesis,
+                    strategy=group.strategy,
+                    exit_intent=group.exit_intent,
+                    exit_reason=group.exit_reason,
+                    retrospective_id=group.retrospective_id,
+                    approval_issue_id=group.approval_issue_id,
+                    reason=_SUBMIT_REASON.format(rung=rung_index),
+                    approval_hash=preview.get("approval_hash"),
+                    **(
+                        {"proposal_client_order_id": proposal_client_order_id}
+                        if proposal_client_order_id is not None
+                        else {}
+                    ),
+                    rung=rung_index,
+                    correlation_id=corr,
+                    pre_send_hook=transport_gate,
+                    **_cash_funding_revalidation_kwargs(group),
+                    **(
+                        {"parking_sell_ctx": parking_sell_ctx}
+                        if parking_sell_ctx is not None
+                        else {}
+                    ),
+                )
             )
-        )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
         if transport_gate.blocked_decision is not None:
             await _release_after_rejection(
@@ -2127,36 +2137,46 @@ async def _revalidate_replace_rung(
         expected_policy_stamp=expected_policy_stamp,
         now_fn=now_fn,
     )
+    from app.mcp_server.tooling.orders_toss_variants import _bind_order_proposal_context
+
     try:
-        submit = await _maybe_await(
-            place_order_fn(
-                dry_run=False,
-                symbol=group.symbol,
-                side=rung.side,
-                market=group.market,
-                order_type=group.order_type,
-                quantity=rung.quantity,
-                price=rung.limit_price,
-                thesis=group.thesis,
-                strategy=group.strategy,
-                exit_intent=group.exit_intent,
-                exit_reason=group.exit_reason,
-                retrospective_id=group.retrospective_id,
-                approval_issue_id=group.approval_issue_id,
-                reason=_SUBMIT_REASON.format(rung=rung_index),
-                approval_hash=preview.get("approval_hash"),
-                rung=rung_index,
-                correlation_id=corr,
-                account_mode=group.account_mode,
-                **_cash_funding_revalidation_kwargs(group),
-                **(
-                    {"proposal_client_order_id": proposal_client_order_id}
-                    if proposal_client_order_id is not None
-                    else {}
-                ),
-                pre_send_hook=transport_gate,
+        with _bind_order_proposal_context(
+            client_order_id=str(proposal_client_order_id or ""),
+            correlation_id=corr,
+            rung=rung_index,
+            proposal_id=group.proposal_id,
+            rung_index=rung_index,
+            decision_id=getattr(group, "decision_id", None),
+        ):
+            submit = await _maybe_await(
+                place_order_fn(
+                    dry_run=False,
+                    symbol=group.symbol,
+                    side=rung.side,
+                    market=group.market,
+                    order_type=group.order_type,
+                    quantity=rung.quantity,
+                    price=rung.limit_price,
+                    thesis=group.thesis,
+                    strategy=group.strategy,
+                    exit_intent=group.exit_intent,
+                    exit_reason=group.exit_reason,
+                    retrospective_id=group.retrospective_id,
+                    approval_issue_id=group.approval_issue_id,
+                    reason=_SUBMIT_REASON.format(rung=rung_index),
+                    approval_hash=preview.get("approval_hash"),
+                    rung=rung_index,
+                    correlation_id=corr,
+                    account_mode=group.account_mode,
+                    **_cash_funding_revalidation_kwargs(group),
+                    **(
+                        {"proposal_client_order_id": proposal_client_order_id}
+                        if proposal_client_order_id is not None
+                        else {}
+                    ),
+                    pre_send_hook=transport_gate,
+                )
             )
-        )
     except Exception as exc:
         if transport_gate.blocked_decision is not None:
             return await _record_post_cancel_window_block(
