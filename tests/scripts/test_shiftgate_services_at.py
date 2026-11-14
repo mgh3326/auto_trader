@@ -170,6 +170,72 @@ backend api_backend
 """
 
 
+def _rendered_shiftgate_config(
+    *, s1: bool, api_legacy_port: int = 8001, mcp_legacy_port: int = 8766
+) -> str:
+    if s1:
+        api = VALID_HAPROXY.replace("backend api_backend", "backend at-api-legacy")
+        api = api.replace("127.0.0.1:18000", f"127.0.0.1:{api_legacy_port}")
+        api = api.replace("    server green 127.0.0.1:28000 check disabled\n", "")
+        mcp_backend = "at-mcp-legacy"
+        mcp_frontend = "at-mcp-legacy"
+        mcp_servers = f"    server active 127.0.0.1:{mcp_legacy_port} check\n"
+    else:
+        api = VALID_HAPROXY.replace("backend api_backend", "backend at-api")
+        api = api.replace("frontend api", "frontend at-api")
+        mcp_backend = "at-mcp"
+        mcp_frontend = "at-mcp"
+        mcp_servers = (
+            "    server blue 127.0.0.1:18765 check\n"
+            "    server green 127.0.0.1:28765 check disabled\n"
+        )
+
+    mcp = f"""
+frontend {mcp_frontend}
+    mode http
+    bind 127.0.0.1:8765
+    bind 100.122.100.56:8765
+    default_backend {mcp_backend}
+
+backend {mcp_backend}
+    mode http
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+{mcp_servers}"""
+    fixed_units = """
+frontend at-mcp-kiwoom
+    mode http
+    bind 100.122.100.56:8772
+    default_backend at-mcp-kiwoom
+
+backend at-mcp-kiwoom
+    mode http
+    server fixed 127.0.0.1:8772 check
+
+frontend at-mcp-h3-crypto-paper
+    mode http
+    bind 100.122.100.56:8776
+    default_backend at-mcp-h3-crypto-paper
+
+backend at-mcp-h3-crypto-paper
+    mode http
+    server fixed 127.0.0.1:8776 check
+
+frontend at-mcp-h3-us-paper
+    mode http
+    bind 100.122.100.56:8777
+    default_backend at-mcp-h3-us-paper
+
+backend at-mcp-h3-us-paper
+    mode http
+    server fixed 127.0.0.1:8777 check
+"""
+    if s1:
+        api = api.replace("frontend api", "frontend at-api-legacy")
+    return api + mcp + fixed_units
+
+
 def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(
     tmp_path: Path,
 ) -> None:
@@ -180,6 +246,125 @@ def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(
         f"run --rm --network none -v {config_dir}:{config_dir}:ro "
         f"haproxy:3.1-alpine haproxy -c -f {config_dir / 'candidate.cfg'}"
     )
+
+
+@pytest.mark.parametrize("s1", [False, True], ids=["steady", "s1"])
+def test_haproxy_check_accepts_current_rendered_shiftgate_configs(
+    tmp_path: Path, s1: bool
+) -> None:
+    result = _haproxy_check(tmp_path, _rendered_shiftgate_config(s1=s1))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("api_port", [8001, 8002])
+@pytest.mark.parametrize("mcp_port", [8766, 8767])
+def test_haproxy_check_scopes_every_legacy_color_to_s1_backend_names(
+    tmp_path: Path, api_port: int, mcp_port: int
+) -> None:
+    result = _haproxy_check(
+        tmp_path,
+        _rendered_shiftgate_config(
+            s1=True, api_legacy_port=api_port, mcp_legacy_port=mcp_port
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("mutation", "scope", "offending_token"),
+    [
+        (
+            lambda text: text.replace("bind 127.0.0.1:8000", "bind 127.0.0.1:8001", 1),
+            "frontend at-api",
+            "127.0.0.1:8001",
+        ),
+        (
+            lambda text: text.replace("bind 127.0.0.1:8765", "bind 127.0.0.1:8766", 1),
+            "frontend at-mcp",
+            "127.0.0.1:8766",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18000 check",
+                "server blue 127.0.0.1:18001 check",
+                1,
+            ),
+            "backend at-api",
+            "127.0.0.1:18001",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18765 check",
+                "server blue 127.0.0.1:18766 check",
+                1,
+            ),
+            "backend at-mcp",
+            "127.0.0.1:18766",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18000 check",
+                "server blue 127.0.0.1:8001 check",
+                1,
+            ),
+            "backend at-api",
+            "127.0.0.1:8001",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18765 check",
+                "server blue 127.0.0.1:8766 check",
+                1,
+            ),
+            "backend at-mcp",
+            "127.0.0.1:8766",
+        ),
+    ],
+    ids=[
+        "api-bind-outside-d9",
+        "mcp-bind-outside-d9",
+        "api-server-outside-d9",
+        "mcp-server-outside-d9",
+        "legacy-port-outside-s1",
+        "legacy-port-outside-mcp-backend",
+    ],
+)
+def test_haproxy_check_rejects_service_port_outside_scoped_set_and_names_line(
+    tmp_path: Path, mutation, scope: str, offending_token: str
+) -> None:
+    candidate = mutation(_rendered_shiftgate_config(s1=False))
+    offending_line = next(
+        number
+        for number, line in enumerate(candidate.splitlines(), start=1)
+        if offending_token in line
+    )
+
+    result = _haproxy_check(tmp_path, candidate)
+
+    assert result.returncode == 78
+    assert f"outside allowed set for {scope} on line {offending_line}" in result.stderr
+    assert not (tmp_path / "haproxy-call.log").exists()
+
+
+@pytest.mark.parametrize("port", sorted(RETIRED_PORTS))
+def test_haproxy_check_rejects_retired_port_and_names_line(
+    tmp_path: Path, port: int
+) -> None:
+    candidate = VALID_HAPROXY.replace(
+        "option httpchk GET /healthz",
+        f"option httpchk GET /healthz/{port}",
+    )
+    offending_line = next(
+        number
+        for number, line in enumerate(candidate.splitlines(), start=1)
+        if f"/healthz/{port}" in line
+    )
+
+    result = _haproxy_check(tmp_path, candidate)
+
+    assert result.returncode == 78
+    assert f"retired port {port} on line {offending_line}" in result.stderr
+    assert not (tmp_path / "haproxy-call.log").exists()
 
 
 def test_haproxy_check_validates_with_the_deploy_scripts_pinned_image() -> None:
