@@ -54,10 +54,26 @@ def _client_fingerprint(client_id: str) -> str:
     return hashlib.sha256(client_id.encode("utf-8")).hexdigest()[:16]
 
 
+def _validated_client_fingerprint(client_fingerprint: str) -> str:
+    if len(client_fingerprint) != 16 or any(
+        char not in "0123456789abcdefABCDEF" for char in client_fingerprint
+    ):
+        raise ValueError("client_fingerprint must be 16 hexadecimal characters")
+    return client_fingerprint.lower()
+
+
 def toss_rate_limit_key(client_id: str, group: TossApiGroup) -> str:
     """Return the client-scoped Redis key without exposing the client id."""
 
-    return f"toss:ratelimit:{_client_fingerprint(client_id)}:{group.value}"
+    return toss_rate_limit_key_for_fingerprint(_client_fingerprint(client_id), group)
+
+
+def toss_rate_limit_key_for_fingerprint(
+    client_fingerprint: str, group: TossApiGroup
+) -> str:
+    """Return the existing rate-limit key from a validated non-secret fp16."""
+
+    return f"toss:ratelimit:{_validated_client_fingerprint(client_fingerprint)}:{group.value}"
 
 
 # Values mirror the official doc's per-group TPS table
@@ -236,19 +252,29 @@ class RedisTossRateLimiter(TossRateLimiter):
     def __init__(
         self,
         *,
-        client_id: str,
         redis_client: Any,
+        client_id: str | None = None,
+        client_fingerprint: str | None = None,
         fallback_limiter: TossRateLimiter | None = None,
     ) -> None:
-        if not client_id.strip():
-            raise ValueError("client_id must not be empty for Redis rate limiting")
-        self._client_id = client_id
+        if client_id is not None and client_fingerprint is not None:
+            raise ValueError("provide client_id or client_fingerprint, not both")
+        if client_id is not None:
+            if not client_id.strip():
+                raise ValueError("client_id must not be empty for Redis rate limiting")
+            self._client_fingerprint = _client_fingerprint(client_id)
+        elif client_fingerprint is not None:
+            self._client_fingerprint = _validated_client_fingerprint(client_fingerprint)
+        else:
+            raise ValueError(
+                "client_id or client_fingerprint is required for Redis rate limiting"
+            )
         self._redis_client = redis_client
         self._fallback_limiter = fallback_limiter or _get_local_shared_rate_limiter()
         self._redis_degraded = False
 
     def key_for(self, group: TossApiGroup) -> str:
-        return toss_rate_limit_key(self._client_id, group)
+        return toss_rate_limit_key_for_fingerprint(self._client_fingerprint, group)
 
     @staticmethod
     def _parse_acquire_result(result: Any) -> tuple[bool, float]:
@@ -395,7 +421,7 @@ def get_shared_rate_limiter() -> TossRateLimiter:
 
     ``local`` is the default and preserves the existing process-global
     singleton.  ``redis`` is an explicit opt-in that scopes the shared window
-    to the Toss OAuth client id; setup failures safely retain the local budget.
+    to the Toss client namespace; setup failures safely retain the local budget.
     """
 
     global _shared_rate_limiter, _shared_rate_limiter_redis_client
@@ -408,18 +434,30 @@ def get_shared_rate_limiter() -> TossRateLimiter:
             return _shared_rate_limiter
 
         client_id = str(getattr(settings, "toss_api_client_id", "") or "")
+        client_fingerprint = getattr(settings, "toss_token_namespace_fp", None)
         redis_client: Any | None = None
         try:
-            if not client_id.strip():
+            if not client_id.strip() and not (
+                isinstance(client_fingerprint, str) and client_fingerprint.strip()
+            ):
                 raise _RedisRateLimiterUnavailable(
-                    "TOSS_API_CLIENT_ID is required for the Redis limiter namespace"
+                    "TOSS_API_CLIENT_ID or TOSS_TOKEN_NAMESPACE_FP is required "
+                    "for the Redis limiter namespace"
                 )
             redis_client = _build_redis_client()
-            _shared_rate_limiter = RedisTossRateLimiter(
-                client_id=client_id,
-                redis_client=redis_client,
-                fallback_limiter=_get_local_shared_rate_limiter(),
-            )
+            if client_id.strip():
+                _shared_rate_limiter = RedisTossRateLimiter(
+                    redis_client=redis_client,
+                    client_id=client_id,
+                    fallback_limiter=_get_local_shared_rate_limiter(),
+                )
+            else:
+                assert isinstance(client_fingerprint, str)
+                _shared_rate_limiter = RedisTossRateLimiter(
+                    redis_client=redis_client,
+                    client_fingerprint=client_fingerprint,
+                    fallback_limiter=_get_local_shared_rate_limiter(),
+                )
             _shared_rate_limiter_redis_client = redis_client
         except Exception as exc:  # noqa: BLE001 -- Redis opt-in must fail closed
             _close_owned_redis_client(redis_client)

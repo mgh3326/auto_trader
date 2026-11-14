@@ -816,6 +816,9 @@ evidence-first / fail-closed.
 - **테스트**: `tests/services/order_proposals/test_kis_leftover_inference.py`(조건별 단독 실패), `test_kis_leftover_inference_mutants.py`(디스크 카운트 mutant + 주문경로 import 가드), `test_night_sweep_unit.py`, `test_night_sweep_db.py`(A1 브로커 트랩·A5 멱등).
 
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
+
+**KIS US 종료 상태 전용 (hk 4179)**: `scripts.kis_us_auto_reconcile --apply-terminal-only`는 기본 false인 `KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED` 하나로 KIS US 원장의 증거 기반 만료·취소만 반영하고 체결 부기는 보류한다. 자동 체결·저널·실현손익은 기존 게이트 뒤에 남으며, 브로커 주문·정정·취소 경로는 바뀌지 않는다 (운영자 결정 `decision/2026-11-12/at-b02-reconcile-and-3792` 항목 2). dry-run에서 닫을 행이 있으면 경고와 exit 3이다.
+terminal-only는 기존 분류·전처리·scan과 같은 `limit` 상한을 쓰고 체결 부기만 보류한다. 미확인 행·오류·잘린 scan은 CLI에서 경고와 exit 3이다. 불완전 수량 및 기록 체결과 브로커 무체결 증거의 모순을 두 모드에 함께 적용할 공통 가드는 hk 4541 후속이다.
 ...
 시장가 crypto 주문의 경우 전송 즉시 inline으로 Reconcile을 자동 수행하여 체결 장부를 확정합니다.
 
@@ -900,6 +903,9 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 
 ### 토스증권 Open API (ROB-529)
 
+**종료 상태 전용 (hk 4179)**: `scripts.toss_live_auto_reconcile --apply-terminal-only`는 기본 false인 `TOSS_TERMINAL_AUTO_RECONCILE_ENABLED` 하나로 Toss 원장의 증거 기반 만료·취소·거절만 반영하고 체결 부기는 보류한다. 자동 체결·저널·실현손익은 기존 두 플래그 게이트 뒤에 남으며, 브로커 주문·정정·취소 경로는 바뀌지 않는다 (운영자 결정 `decision/2026-11-12/at-b02-reconcile-and-3792` 항목 2). dry-run에서 닫을 행이 있으면 경고와 exit 3이다.
+terminal-only는 기존 분류·전처리·scan과 같은 `limit` 상한과 취소 요청·교체 행 처리를 쓰고 체결 부기만 보류한다. 미확인 행·오류·잘린 scan은 CLI에서 경고와 exit 3이다. 두 모드의 공통 증거 경계 강화는 hk 4541 후속이다.
+
 토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
 
 - **파킹 제안 계좌 (#765)**: proposer는 read-only `toss_proposal_accounts`의 broker-listed account sequence 중 의도한 하나를 top-level `broker_account_id`로 명시한다. 설정·rationale·이전 제안에서 자동 채우지 않는다. Toss 파킹 meter는 명시값이 설정된 holdings reader의 sequence와 정확히 같고 broker account list에 정확히 1건 존재한 뒤에만 holdings를 읽는다. NULL/비정규형은 `account_identity_unavailable`, 다른 설정 계좌는 `account_identity_mismatch`, broker list 부재/중복은 `account_identity_unknown`, 계좌 조회 실패는 `account_lookup_failed`로 수동 카드다. 다계좌도 암묵 선택하지 않는다. 비파킹 제안은 이 검사 밖이다.
@@ -967,3 +973,9 @@ retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_s
 `ref_` 키드 다이제스트(서버 `SECRET_KEY` HMAC)뿐이고 금액·수익률은 정확한 decimal 문자열이다. `REPEATABLE READ READ ONLY`
 트랜잭션과 문장 timeout 안에서만 읽으며 스냅샷·흐름 writer를 import하거나 호출하지 않는다.
 아직 HTTP route는 없다(hk 3818). 운영자 CLI 출력은 바뀌지 않았다.
+
+### KIS US 오래된 DAY 주문 수동 추론 종료 (hk 4178)
+
+`scripts/expire_kis_us_rows_by_inference.py`는 기본 preview이며 브로커에 접속하지 않는다. `kis`/`kis_live`/`us`의 open 주문만 대상으로 한다. 조건 (a) open 소유 상태, (b) 저장된 `order_kind`가 limit/market이고 KIS US 송신이 `ORD_DVSN` 00/01만 사용하며 ROB-671 이력 범주가 `us_day_order`, (c) 접수 시각과 미국 거래일 종료 상한 판독 및 경과, (d) 그 종료 후 90일 초과, (e) 같은 미국 거래일의 동일 주문 체결 0, (f) 접수~종료의 KIS live US 동일 종목 체결 0, (g) 해당 구간을 덮고 종료 이후 끝난 성공·커밋 KIS execution-ledger 대사 실행 모두 통과해야 한다. 격리된 체결은 제외하며 판독 불가는 실패다. (d) 통과는 (c) 통과를 함의하며 둘은 각각 보고한다.
+
+종료 상한은 `us_trading_day_window`의 종료(뉴욕 20:00, DST 반영)다. 입증된 DAY 주문의 보수적 상한이며 브로커 만료 계약이 아니다. 정확한 decision ref, actor, reason, preview 적격 집합과 같은 최대 45개 ID가 있어야 커밋한다. 주문 행 잠금 뒤 커밋 직전에 모든 조건을 다시 읽고 적격 집합이 달라지면 전체 롤백한다. 체결 원장 쓰기는 잠그지 않는다. 마지막 재검사부터 커밋까지 도착한 체결은 수용된 경합 위험이며, 90일이 지난 DAY 주문의 이런 체결은 모순 증거다. preview의 `inference_checks`는 추론 감사에 연결된 주문의 이후 in-effect 모순 체결을 읽기 전용으로 표시한다(판독 불가는 unknown). #1112 선례처럼 원본 체결 기록과 추론 마커를 보존한다. 레저의 상세와 불변 감사 행에 `expiry_basis=inference`, `expiry_caveat=no_broker_original`, 결정·규칙·조건 사실을 남긴다. fill·journal·PnL 쓰기와 스케줄 연결은 없다. 마이그레이션 배포 및 운영 레버 실행은 운영자 승인 사항이다. 절차: `docs/runbooks/kis-us-inference-expiry.md`.

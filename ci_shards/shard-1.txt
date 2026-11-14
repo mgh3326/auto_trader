@@ -112,6 +112,7 @@ tests/scripts/b0x/test_derivation.py
 tests/scripts/b0x/test_sidecar.py
 tests/scripts/b0x/us/test_alpaca.py
 tests/scripts/test_at_job_runner.py
+tests/scripts/test_at_pre_deploy.py
 tests/scripts/test_binance_h5_heartbeat_watch.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_dagu_account_value_snapshot_dag.py
@@ -174,6 +175,7 @@ tests/services/brokers/toss/test_dto.py
 tests/services/brokers/toss/test_errors.py
 tests/services/brokers/toss/test_market_calendar.py
 tests/services/brokers/toss/test_rate_limiter.py
+tests/services/brokers/toss/test_token_namespace_fp_cli.py
 tests/services/brokers/toss/test_transport.py
 tests/services/brokers/toss/test_warnings_guard.py
 tests/services/buy_gate_ab_shadow/test_epoch.py
@@ -185,6 +187,7 @@ tests/services/daily_candles/test_migration_round_trip.py
 tests/services/daily_candles/test_repository_crypto_path.py
 tests/services/daily_candles/test_sync_service.py
 tests/services/decision_evidence/test_migration_db.py
+tests/services/decision_evidence/test_order_attempt_db.py
 tests/services/dots_history_export/test_export_db.py
 tests/services/dots_history_export/test_export_v2.py
 tests/services/execution_intent_gateway/test_migration_and_boundaries.py
@@ -292,6 +295,8 @@ tests/services/test_fill_event_handoff_kick_filter.py
 tests/services/test_fill_event_handoff_watch_kick.py
 tests/services/test_fill_handoff_lookback.py
 tests/services/test_kis_mock_preopen_approval_bridge.py
+tests/services/test_kis_us_inference_expiry.py
+tests/services/test_kis_us_inference_expiry_db.py
 tests/services/test_kr_preopen_news_brief_service.py
 tests/services/test_live_place_provenance.py
 tests/services/test_live_reconcile_metrics.py

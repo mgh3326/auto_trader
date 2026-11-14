@@ -331,6 +331,9 @@ class Settings(BaseSettings):
     toss_api_enabled: bool = False
     toss_api_client_id: str | None = None
     toss_api_client_secret: SecretStr | None = None
+    # Non-secret fp16 of the Toss client ID, for token-cache consumers that do
+    # not issue OAuth themselves.
+    toss_token_namespace_fp: str | None = None
     toss_api_account_seq: int | None = None
     toss_api_base_url: str | None = None
     # Opt-in only: local preserves the existing per-process singleton; redis
@@ -952,6 +955,10 @@ class Settings(BaseSettings):
     LIVE_AUTO_RECONCILE_ENABLED: bool = False
     LIVE_AUTO_RECONCILE_DRY_RUN: bool = True
 
+    # hk 4179: terminal-only unattended reconciliation, independently disabled.
+    KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED: bool = False
+    TOSS_TERMINAL_AUTO_RECONCILE_ENABLED: bool = False
+
     # ROB-757 — Toss REST fill poller. Default off; read-only broker scan plus
     # evidence-gated local booking only after operator activation.
     TOSS_FILL_POLL_ENABLED: bool = False
@@ -1511,6 +1518,17 @@ def validate_toss_api_config(settings_obj: Any = settings) -> list[str]:
     missing: list[str] = []
     if not bool(getattr(settings_obj, "toss_api_enabled", False)):
         missing.append("TOSS_API_ENABLED")
+    mode = getattr(settings_obj, "broker_token_issuance_mode", "self")
+    if mode in {"gatewayd", "cache_only"}:
+        has_client_id = _has_nonempty_value(
+            getattr(settings_obj, "toss_api_client_id", None)
+        )
+        has_namespace_fp = _has_nonempty_value(
+            getattr(settings_obj, "toss_token_namespace_fp", None)
+        )
+        if not (has_client_id or has_namespace_fp):
+            missing.append("TOSS_TOKEN_NAMESPACE_FP or TOSS_API_CLIENT_ID")
+        return missing
     if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_id", None)):
         missing.append("TOSS_API_CLIENT_ID")
     if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_secret", None)):

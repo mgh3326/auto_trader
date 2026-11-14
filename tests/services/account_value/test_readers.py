@@ -143,3 +143,31 @@ async def test_toss_automatic_selection_does_not_claim_an_identity(monkeypatch):
     [observation] = await BrokerReader(None, "toss", "us").read()
     assert observation.account.endswith(":identity_unknown")
     assert "account_identity_unknown" in observation.reasons
+
+
+@pytest.mark.asyncio
+async def test_toss_fingerprint_only_consumer_does_not_claim_account_identity(
+    monkeypatch,
+):
+    from app.core.config import settings
+    from app.services.brokers.toss.client import TossReadClient
+
+    class Client:
+        async def accounts(self):
+            return [SimpleNamespace(account_no="account-example", account_seq=123)]
+
+        async def holdings(self):
+            return SimpleNamespace(items=[])
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(TossReadClient, "from_settings", lambda: Client())
+    monkeypatch.setattr(settings, "toss_api_client_secret", None)
+    monkeypatch.setattr(settings, "toss_api_account_seq", 123)
+    monkeypatch.setattr(settings, "toss_token_namespace_fp", "0123456789abcdef")
+
+    [observation] = await BrokerReader(None, "toss", "us").read()
+
+    assert observation.account.endswith(":identity_unknown")
+    assert "account_identity_unknown" in observation.reasons

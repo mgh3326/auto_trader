@@ -1540,8 +1540,13 @@ class TestPlaceOrderHighAmount:
             "0.10000000",
             "limit",
             identifier=ANY,
-            pre_send_hook=None,
+            pre_send_hook=ANY,
         )
+        from app.services.decision_evidence import AttemptSendHook
+
+        hook = mock.place_buy_order.await_args.kwargs["pre_send_hook"]
+        assert isinstance(hook, AttemptSendHook)
+        assert hook.hook is None
 
     @pytest.mark.asyncio
     async def test_real_order_not_blocked_by_daily_limit(self, monkeypatch):
@@ -1627,8 +1632,13 @@ class TestPlaceOrderHighAmount:
             "0.10000000",
             "limit",
             identifier=ANY,
-            pre_send_hook=None,
+            pre_send_hook=ANY,
         )
+        from app.services.decision_evidence import AttemptSendHook
+
+        hook = mock.place_buy_order.await_args.kwargs["pre_send_hook"]
+        assert isinstance(hook, AttemptSendHook)
+        assert hook.hook is None
 
 
 # ----------------------------------------------------------------------
