@@ -314,11 +314,16 @@ async def _ensure_gatewayd_approval_key(
     """
     account_mode = _resolve_ws_account_mode(account_mode)
     provider = _GATEWAYD_APPROVAL_PROVIDERS[account_mode]
+    # A forced re-issue runs because KIS rejected the cached key, and gatewayd
+    # replaces it without a no-key window while the ensure ack can lag the
+    # publish — so the pre-ensure value must not satisfy the poll (the same
+    # failed-token guard as the Toss gatewayd path).
+    rejected = await _get_cached_approval_key(account_mode) if force else None
     await ensure_gatewayd_token(provider, settings_obj=settings, force=force)
     deadline = time.monotonic() + GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS
     while True:
         cached = await _get_cached_approval_key(account_mode)
-        if _is_valid_approval_key(cached):
+        if _is_valid_approval_key(cached) and cached != rejected:
             logger.info(
                 "KIS approval key published by gatewayd: account_mode=%s force=%s",
                 account_mode,

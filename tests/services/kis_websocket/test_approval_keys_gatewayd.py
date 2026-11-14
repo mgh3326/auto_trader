@@ -11,6 +11,7 @@ or acknowledgement without a usable cached key raises
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -185,6 +186,44 @@ async def test_gatewayd_reissue_ensures_with_force_and_re_reads(
     _assert_no_python_side_effects(approval_redis, account_mode)
 
 
+async def test_gatewayd_reissue_waits_past_stale_key_for_lagging_publish(
+    gatewayd_mode: None,
+    approval_redis: _GatewaydRedis,
+    no_self_issuance: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ensure ack can land before gatewayd's Redis publish: the poll must
+    keep waiting past the pre-ensure (rejected) value instead of returning it."""
+    account_mode = "kis_live"
+    cache_key = _cache_key(account_mode)
+    approval_redis.values[cache_key] = "rejected-key"
+    fresh = "kis-live-approval-fresh-key"
+
+    async def ensure(
+        actual_provider: str, *, settings_obj: object, force: bool = False
+    ) -> None:
+        assert actual_provider == "kis-live-approval"
+        assert force is True
+
+        async def publish_later() -> None:
+            await asyncio.sleep(0.05)
+            approval_redis.values[cache_key] = fresh
+
+        asyncio.create_task(publish_later())
+
+    ensure_mock = AsyncMock(side_effect=ensure)
+    monkeypatch.setattr(approval_keys, "ensure_gatewayd_token", ensure_mock)
+
+    result = await approval_keys.invalidate_and_reissue_approval_key(account_mode)
+
+    assert result == fresh
+    ensure_mock.assert_awaited_once_with(
+        "kis-live-approval", settings_obj=settings, force=True
+    )
+    no_self_issuance.assert_not_awaited()
+    _assert_no_python_side_effects(approval_redis, account_mode)
+
+
 async def test_gatewayd_ensure_failure_raises_without_self_issuance(
     gatewayd_mode: None,
     approval_redis: _GatewaydRedis,
@@ -228,6 +267,11 @@ async def test_gatewayd_force_ack_without_published_key_raises(
     no_self_issuance: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The cached value is the key KIS just rejected. gatewayd acknowledged the
+    # forced ensure but never published a replacement, so the stale key must
+    # NOT satisfy the poll — this is the OPSP0011 regression the differ-guard
+    # exists for.
+    approval_redis.values[_cache_key("kis_mock")] = "rejected-key"
     ensure = AsyncMock(return_value=None)
     monkeypatch.setattr(approval_keys, "ensure_gatewayd_token", ensure)
 
