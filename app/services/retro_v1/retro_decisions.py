@@ -530,7 +530,9 @@ async def _load_decision_data(
                 continue
             if broker == "toss" and info.key == "crypto":
                 continue
-            if getattr(order, "market", None) in (None, info.key) or broker == "kis":
+            if getattr(order, "market", None) in (None, info.key) or (
+                broker == "kis" and info.key in ("kr", "us")
+            ):
                 order_symbols[info.instrument_type].add(order.symbol.upper())
     for instrument_type, symbols in order_symbols.items():
         info = _MARKET_BY_INSTRUMENT[instrument_type]
@@ -552,7 +554,7 @@ async def _load_decision_data(
             read_fills,
             [],
         )
-        _track(data, unknowns, "fills", fills, fills_ok, MAX_SOURCE_ROWS)
+        _track(data, unknowns, f"fills_{info.key}", fills, fills_ok, MAX_SOURCE_ROWS)
         kept, _ = supersede_provisional(fills)
         data.fills[instrument_type] = [f for f in kept if not is_opening_seed(f)]
         data.raw_fills[instrument_type] = [f for f in fills if not is_opening_seed(f)]
@@ -813,6 +815,8 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
             )
         )
     )
+    if "proposals" in data.incomplete:
+        proposal_reason = "attempts_unavailable"
 
     # candidate link: the recorded reference resolved to the same pick row the
     # writer chose (latest pick of the call and symbol).
@@ -869,14 +873,37 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         pct_budget = result.pct_of_budget
         budget_reason = result.pct_of_budget_reason
 
+    # A failed or capped source read withholds, it never asserts absence.
+    plan_incomplete = bool({"decision_rungs", "reference_prices"} & data.incomplete)
+    if side is not None:
+        if plan_incomplete or (
+            "exit_plans" in data.incomplete and decision.stop_price is None
+        ):
+            risk_amount = None
+            risk_reason = "attempts_unavailable"
+            risk_basis = None
+            pct_notional = None
+            pct_budget = None
+            budget_reason = "attempts_unavailable"
+        elif "sleeve_versions" in data.incomplete and (
+            decision.sleeve_id is not None and budget_cap is None
+        ):
+            pct_budget = None
+            budget_reason = "attempts_unavailable"
+
     planned_quantities = [r.planned_quantity for r in risk_rungs]
     planned_quantity = (
         sum(planned_quantities)
         if planned_quantities and all(q is not None for q in planned_quantities)
         else None
     )
-    planned_reason = None if planned_quantity is not None else "no_planned_quantity"
-    reference_reason = None if display_kind is not None else "no_reference_price"
+    if plan_incomplete:
+        planned_quantity = None
+        planned_reason = "attempts_unavailable"
+        reference_reason = "attempts_unavailable"
+    else:
+        planned_reason = None if planned_quantity is not None else "no_planned_quantity"
+        reference_reason = None if display_kind is not None else "no_reference_price"
 
     orders = _decision_orders(decision.decision_id, data)
     orders_known = bool(orders) or (
@@ -893,7 +920,9 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         else []
     )
     raw_fills = data.raw_fills.get(info.instrument_type, []) if info else []
-    fills_known = "fills" not in data.incomplete and info is not None and orders_known
+    fills_known = (
+        info is not None and orders_known and f"fills_{info.key}" not in data.incomplete
+    )
 
     totals: dict[Any, Decimal] = defaultdict(Decimal)
     for fill in fills:
@@ -1085,7 +1114,9 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
                     r_multiple_reason = "no_risk_per_unit"
             else:
                 r_multiple_reason = "no_risk_per_unit"
-    elif not sell_fills and fills_known:
+    elif not fills_known:
+        r_multiple_reason = "attempts_unavailable"
+    elif not sell_fills:
         r_multiple_reason = "no_fills" if not orders else "no_exit_fill"
 
     row = {
@@ -1258,7 +1289,7 @@ async def read_retro_decisions(
     aware = [t for t in times if t is not None and t.tzinfo is not None]
     response = build_response(
         as_of=as_of,
-        data_as_of=max(aware) if aware else None,
+        data_as_of=min(max(aware), as_of) if aware else None,
         rows=rows,
         total=len(rows) if complete else None,
         limit=limit,

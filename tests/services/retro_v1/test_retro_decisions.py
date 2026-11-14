@@ -377,6 +377,18 @@ async def test_failed_order_ledger_read_withholds_the_count() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_rungs_read_withholds_plan_fields() -> None:
+    src = linked_session(**{"FROM review.decision_evidence_rungs": operational_error()})
+    response = await read_retro_decisions(src, from_="2026-01-01", to="2026-01-31")
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][0]
+    assert row["planned_quantity"] is None
+    assert row["planned_reason"] == "attempts_unavailable"
+    assert row["planned_risk_amount"] is None
+    assert row["risk_reason"] == "attempts_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_invalid_market_rejected() -> None:
     with pytest.raises(RetroReadError):
         await read_retro_decisions(
