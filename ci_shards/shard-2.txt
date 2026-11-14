@@ -281,6 +281,7 @@ tests/services/research/test_strategy_learning_event_migration.py
 tests/services/retro_v1/test_decision_links.py
 tests/services/retro_v1/test_guards.py
 tests/services/retro_v1/test_ledger_orders.py
+tests/services/retro_v1/test_retro_decisions.py
 tests/services/retro_v1/test_retro_trades.py
 tests/services/retro_v1/test_trade_evidence.py
 tests/services/screener_evidence/test_builder.py
