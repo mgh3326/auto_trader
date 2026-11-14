@@ -69,7 +69,7 @@ if ! awk '
       else if (section_name == "bk_at_mcp_h3_crypto_paper") allowed = " 8776 "
       else if (section_name == "bk_at_mcp_h3_us_paper") allowed = " 8777 "
     }
-    if (allowed !~ (" " port " ")) reject("server", port, "backend " section_name)
+    if (index(allowed, " " port " ") == 0) reject("server", port, "backend " section_name)
   }
   END { exit bad }
 ' "$config"; then
