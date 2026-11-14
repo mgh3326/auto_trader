@@ -14,8 +14,10 @@ from .account_no import resolve_kis_account_parts
 from .base import _log_kis_api_failure
 from .live_shadow_witness import (
     LiveShadowWitness,
-    current as current_live_shadow_witness,
     report_observation_failure,
+)
+from .live_shadow_witness import (
+    current as current_live_shadow_witness,
 )
 from .order_throttle import (
     MAX_THROTTLE_RESUBMITS,
