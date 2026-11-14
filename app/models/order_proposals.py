@@ -37,7 +37,9 @@ from app.models.rung_reason_vocabulary import (
 from app.services.order_proposals.state_machine import GROUP_STATES, RUNG_STATES
 
 _MARKETS = "'equity_kr','equity_us','crypto','forex','index'"
-_ACCOUNT_MODES = "'kis_live','kis_mock','toss_live','upbit','db_simulated'"
+_ACCOUNT_MODES = (
+    "'kis_live','kis_mock','toss_live','upbit','db_simulated','kiwoom_mock'"
+)
 _GROUP_STATES_SQL = ",".join(f"'{s}'" for s in sorted(GROUP_STATES))
 _RUNG_STATES_SQL = ",".join(f"'{s}'" for s in sorted(RUNG_STATES))
 

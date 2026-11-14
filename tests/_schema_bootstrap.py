@@ -160,7 +160,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
 # v65 (hk 2690): the position baseline uses separate Core metadata.
-SCHEMA_BOOTSTRAP_VERSION = 68
+# v69 (hk 4703): review.kiwoom_mock_order_ledger / kiwoom_mock_signal_ledger
+# are new ORM tables (create_all); order_proposals.account_mode is refreshed
+# to admit 'kiwoom_mock' on persistent test DBs (see the helper below).
+SCHEMA_BOOTSTRAP_VERSION = 69
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2652,6 +2655,44 @@ async def _ensure_alpaca_paper_ledger_account_mode_constraint(conn) -> None:
     )
 
 
+async def _ensure_order_proposals_account_mode_constraint(conn) -> None:
+    """hk 4703: admit 'kiwoom_mock' on order_proposals in persistent test DBs.
+
+    ``create_all`` never alters an existing table, so a persistent test database
+    keeps the pre-kiwoom account_mode CHECK. Drop every account_mode CHECK on the
+    table and recreate the ORM-canonical name with the full vocabulary.
+    """
+    constraints = await conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.order_proposals'::regclass "
+            "AND contype = 'c' "
+            "AND pg_get_constraintdef(oid) LIKE '%account_mode%'"
+        )
+    )
+    rows = list(constraints)
+    if rows and all(
+        "kiwoom_mock" in (definition or "") for _conname, definition in rows
+    ):
+        return
+
+    for conname, _definition in rows:
+        await conn.execute(
+            text(
+                f'ALTER TABLE review.order_proposals DROP CONSTRAINT IF EXISTS "{conname}"'
+            )
+        )
+    await conn.execute(
+        text(
+            "ALTER TABLE review.order_proposals "
+            "ADD CONSTRAINT ck_order_proposals_order_proposals_account_mode "
+            "CHECK (account_mode IN ('kis_live','kis_mock','toss_live','upbit',"
+            "'db_simulated','kiwoom_mock'))"
+        )
+    )
+
+
 async def _assert_approval_dispatch_schema_contract(conn) -> None:
     """Fail bootstrap if a persistent table remains weaker than production."""
     column_result = await conn.execute(
@@ -2844,6 +2885,7 @@ async def apply_test_schema(conn) -> None:
     await _ensure_operator_session_context_created_by_constraint(conn)
     await _ensure_alpaca_paper_ledger_lifecycle_state_constraint(conn)
     await _ensure_alpaca_paper_ledger_account_mode_constraint(conn)
+    await _ensure_order_proposals_account_mode_constraint(conn)
 
     for stmt in _DDL_STATEMENTS:
         await conn.execute(text(stmt))
