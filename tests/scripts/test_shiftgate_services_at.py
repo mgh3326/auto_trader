@@ -293,6 +293,15 @@ def test_haproxy_check_scopes_every_legacy_color_to_s1_backend_names(
         ),
         (
             lambda text: text.replace(
+                "server blue 127.0.0.1:18000 check",
+                "server blue 127.0.0.1:18000.* check",
+                1,
+            ),
+            "backend bk_at_api",
+            "127.0.0.1:18000.*",
+        ),
+        (
+            lambda text: text.replace(
                 "    server blue 127.0.0.1:18000 check",
                 "server blue 127.0.0.1:18001 check",
                 1,
@@ -333,6 +342,7 @@ def test_haproxy_check_scopes_every_legacy_color_to_s1_backend_names(
         "api-unindented-bind-outside-d9",
         "mcp-bind-outside-d9",
         "api-server-outside-d9",
+        "server-port-regex-metacharacters",
         "api-unindented-server-outside-d9",
         "mcp-server-outside-d9",
         "legacy-port-outside-s1",
