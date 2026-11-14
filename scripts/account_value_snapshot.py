@@ -9,7 +9,10 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from app.services.account_value.completeness import record_confirmation
+from app.services.account_value.completeness import (
+    record_confirmation,
+    record_revocation,
+)
 from app.services.account_value.flows import ExternalFlow, record_flow
 from app.services.account_value.readers import CompleteBrokerReader
 from app.services.account_value.snapshot import capture
@@ -26,6 +29,12 @@ def parser():
         nargs=5,
         metavar=("ACCOUNT", "START", "END", "CONFIRMED_BY", "REASON"),
     )
+    result.add_argument(
+        "--revoke-confirmation",
+        nargs=3,
+        metavar=("ID", "REVOKED_BY", "REASON"),
+        help="흐름 완전성 확인을 추가 전용으로 철회합니다",
+    )
     result.add_argument("--flow-id", type=UUID, help="재시도에 재사용할 흐름 UUID")
     result.add_argument(
         "--commit", action="store_true", help="미리보기가 아닌 실제 기록"
@@ -41,6 +50,33 @@ def session_factory():
 
 async def run(args):
     async with session_factory() as session:
+        if getattr(args, "revoke_confirmation", None):
+            confirmation_id, revoked_by, reason = args.revoke_confirmation
+            if (
+                args.flow
+                or args.account
+                or getattr(args, "confirm_flows", None)
+                or args.flow_id
+            ):
+                raise ValueError("하나의 작업만 지정해야 합니다")
+            status = await record_revocation(
+                session,
+                int(confirmation_id),
+                revoked_by,
+                reason,
+                commit=args.commit,
+            )
+            print(
+                json.dumps(
+                    {
+                        "mode": "commit" if args.commit else "preview",
+                        "confirmation_id": int(confirmation_id),
+                        "write_status": status,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
         if getattr(args, "confirm_flows", None):
             account, start, end, confirmed_by, reason = args.confirm_flows
             if args.flow or args.account:
