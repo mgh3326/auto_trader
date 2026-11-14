@@ -73,16 +73,18 @@ def publish(root, run_id, facts, derived, metadata):
     payloads.append(encode(entry).encode())
 
     def append_manifest():
-        # If a killed append left a torn line (no trailing newline), terminate
-        # it before appending so the new record is never glued onto the tear.
-        torn = (
-            manifest.exists()
-            and manifest.stat().st_size > 0
-            and manifest.read_bytes()[-1:] != b"\n"
-        )
+        # A killed append can leave a torn tail without a trailing newline.
+        # Truncate the partial record so the new entry appends onto a clean
+        # boundary and never sits behind a permanently corrupt middle line.
+        if manifest.exists():
+            data = manifest.read_bytes()
+            if data and data[-1:] != b"\n":
+                cut = data.rfind(b"\n")
+                with manifest.open("r+b") as stream:
+                    stream.truncate(cut + 1 if cut >= 0 else 0)
+                    stream.flush()
+                    os.fsync(stream.fileno())
         with manifest.open("a", encoding="utf-8") as stream:
-            if torn:
-                stream.write("\n")
             stream.write(encode(entry) + "\n")
             stream.flush()
             os.fsync(stream.fileno())

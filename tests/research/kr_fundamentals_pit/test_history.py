@@ -332,11 +332,15 @@ class HistoryTest(unittest.TestCase):
             manifest = Path(d) / "manifest.jsonl"
             with manifest.open("a") as stream:
                 stream.write('{"run_id"')
-            # Readers still work, and a new run can still publish.
+            # Readers still work, and a new run can still publish: the torn
+            # tail is truncated first, so readers keep working afterwards.
             rows = as_of(d, "999999", "2020-01-03T12:00:00+09:00")
             self.assertEqual(len(rows), 1)
             publish(d, "c2", facts, derived, meta)
-            self.assertEqual(len(manifest.read_text().splitlines()), 3)
+            self.assertEqual(len(manifest.read_text().splitlines()), 2)
+            self.assertEqual(len(as_of(d, "999999", "2020-01-03T12:00:00+09:00")), 1)
+            with self.assertRaises(FileExistsError):
+                publish(d, "c1", facts, derived, meta)
             # A corrupt middle record is real damage and still raises.
             lines = manifest.read_text().splitlines()
             lines[0] = "{broken"

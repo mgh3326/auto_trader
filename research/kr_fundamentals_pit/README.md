@@ -24,7 +24,7 @@ appended), and any other existing partition still refuses overwrite
 (write-once). Cache, identity and result files are written via a temp name and
 `os.replace`, so a kill mid-write cannot leave a truncated file that a resume
 would trust; a torn final `usage.jsonl` or `manifest.jsonl` line is dropped by
-readers (a corrupt middle record still raises) and terminated before the next
+readers (a corrupt middle record still raises) and truncated before the next
 append. The partitions directory is fsynced after each publish rename so a
 recorded entry cannot outlive its partition, and a manifest record is never
 appended twice for the same run ID. Fact rows carry
