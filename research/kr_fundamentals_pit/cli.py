@@ -50,7 +50,11 @@ def main(argv=None):
                 with usage_path.open("a") as stream:
                     stream.write(json.dumps({"budget_used": collector.used}) + "\n")
             if result["complete"]:
-                result_path.write_text(json.dumps(result, ensure_ascii=False))
+                # Temp-file + os.replace: a kill mid-write must not leave a
+                # truncated result.json that a rerun reads as "already complete".
+                tmp = result_path.with_name(result_path.name + ".tmp")
+                tmp.write_text(json.dumps(result, ensure_ascii=False))
+                os.replace(tmp, result_path)
                 print(f"complete; calls used: {collector.used}")
             else:
                 print(

@@ -6,6 +6,7 @@ import calendar
 import hashlib
 import io
 import json
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -41,9 +42,14 @@ def http_get(endpoint, params, key):
         with urllib.request.build_opener(_NoRedirect()).open(
             "https://opendart.fss.or.kr/api/" + endpoint + "?" + query, timeout=30
         ) as response:
-            return response.read()
+            body = response.read()
     except Exception:
-        raise SourceError("OpenDART request failed") from None
+        body = None
+    # Raise outside the except block so __context__ stays None; the original
+    # transport exception can carry the full request URL, key included.
+    if body is None:
+        raise SourceError("OpenDART request failed")
+    return body
 
 
 class Collector:
@@ -80,7 +86,11 @@ class Collector:
         try:
             body = self.transport(endpoint, params, self.key)
         except Exception:
-            raise SourceError("OpenDART request failed") from None
+            body = None
+        # Raised outside except so __context__ is None (ROB-1388 pattern): the
+        # transport exception may embed the key-bearing request URL.
+        if body is None:
+            raise SourceError("OpenDART request failed")
         if self.key.encode() in body:
             raise SourceError("OpenDART response rejected")
         if binary:
@@ -100,7 +110,11 @@ class Collector:
                     raise SourceError("OpenDART returned an error status")
             except (ValueError, AttributeError):
                 raise SourceError("Invalid OpenDART response") from None
-        path.write_bytes(body)
+        # Write via a temp name so a kill mid-write cannot leave a truncated
+        # file that a resume later treats as a valid cache hit.
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(body)
+        os.replace(tmp, path)
         return body if binary else payload
 
     def collect(self):

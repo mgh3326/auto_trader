@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -20,15 +21,20 @@ def publish(root, run_id, facts, derived, metadata):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
     directory = root / "partitions" / run_id
-    directory.mkdir(parents=True, exist_ok=True)
+    # A run ID never contains '.', so the staging path can never collide with
+    # a published partition name.
+    staging = directory.with_name(run_id + ".staging")
     manifest = root / "manifest.jsonl"
-    paths = [
-        directory / "facts.jsonl",
-        directory / "derived.jsonl",
-        directory / "metadata.json",
-    ]
-    if any(p.exists() for p in paths):
+    if directory.exists():
         raise FileExistsError("partition already exists")
+    # A retry of the same run ID after a mid-publish failure clears the
+    # leftover staging tree; write-once applies only to published partitions.
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    names = ("facts.jsonl", "derived.jsonl", "metadata.json")
+    paths = [staging / name for name in names]
+    published = [directory / name for name in names]
     payloads = [
         ("\n".join(encode(row) for row in rows) + ("\n" if rows else "")).encode()
         for rows in (facts, derived)
@@ -43,7 +49,11 @@ def publish(root, run_id, facts, derived, metadata):
                 "rows": len(rows),
             }
             for name, path, data, rows in zip(
-                ("facts", "derived"), paths, payloads, (facts, derived), strict=False
+                ("facts", "derived"),
+                published,
+                payloads,
+                (facts, derived),
+                strict=False,
             )
         },
     }
@@ -53,6 +63,14 @@ def publish(root, run_id, facts, derived, metadata):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+    fd = os.open(staging, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if directory.exists():
+        raise FileExistsError("partition already exists")
+    os.rename(staging, directory)
     with manifest.open("a", encoding="utf-8") as stream:
         stream.write(encode(entry) + "\n")
         stream.flush()

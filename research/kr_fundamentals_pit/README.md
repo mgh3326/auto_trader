@@ -15,9 +15,16 @@ reports no data. API errors are failures, not missing financial values.
 
 `build` publishes immutable JSONL partitions by run ID and appends a JSONL
 manifest entry containing SHA-256, row counts, coverage window, budget used,
-and missing reports with reasons. Fact rows carry symbol, corporation, business
-year, report code and period, account, amount, currency, receipt number,
-filing history, amendment flag, statement basis, and offset-aware `available_at`.
+and missing reports with reasons. Partition files are written into a staging
+directory and published by one atomic rename; the manifest is appended last.
+A retry of the same run ID clears leftover staging and republishes, while an
+already published partition still refuses overwrite (write-once). Cache and
+result files are written via a temp name and `os.replace`, so a kill mid-write
+cannot leave a truncated file that a resume would trust. Fact rows carry
+symbol, corporation, business year, report code and period, account, amount,
+year-to-date `cumulative_amount` when the API provides one, currency, receipt
+number, filing history, amendment flag, statement basis, and offset-aware
+`available_at`.
 The latter is 23:59:59.999999 KST on the latest original/amended receipt date,
 with `available_at_basis=latest_amendment_rcept_date_eod`. A new run can add a
 new version after a later amendment; existing partitions remain unchanged.
@@ -37,6 +44,15 @@ Non-calendar fiscal quarters that cannot be mapped unambiguously are reported
 missing. Annual income
 amounts are annual, not inferred fourth-quarter values. Shares are provided only
 when an unambiguous supported account exists.
+
+For interim reports (반기·분기, report codes 11012/11013/11014) DART carries the
+3-month flow amount in `thstrm_amount` and the year-to-date amount in
+`thstrm_add_amount`. Derived income-statement metrics therefore carry
+`period_basis` (`quarter` for interim flow values, `annual` for annual reports,
+`instant` for balance-sheet point-in-time values) and keep the YTD figure
+separately as `cumulative_value`. Identical account rows — for example the same
+account on the income statement and the statement of comprehensive income —
+collapse to one metric value; only differing values are `ambiguous_account`.
 
 ## Commands
 

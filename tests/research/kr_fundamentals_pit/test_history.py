@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from research.kr_fundamentals_pit import cli
+from research.kr_fundamentals_pit import cli, collector
 from research.kr_fundamentals_pit.build import build_rows
 from research.kr_fundamentals_pit.collector import Collector, SourceError
 from research.kr_fundamentals_pit.store import as_of, publish
@@ -243,6 +244,154 @@ class HistoryTest(unittest.TestCase):
                 ],
                 4,
             )
+
+    def test_publish_retry_after_mid_failure_with_same_run_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            meta = {
+                "coverage_start": "2020-01-01",
+                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
+                "fetch_budget_used": 1,
+                "missing_reports": [],
+            }
+            calls = []
+            real = os.fsync
+
+            def flaky(fd):
+                calls.append(fd)
+                if len(calls) == 2:
+                    raise OSError("simulated disk failure")
+                return real(fd)
+
+            with (
+                patch("research.kr_fundamentals_pit.store.os.fsync", flaky),
+                self.assertRaises(OSError),
+            ):
+                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            staging = Path(d) / "partitions" / "run.staging"
+            self.assertTrue(staging.exists())
+            self.assertFalse((Path(d) / "partitions" / "run").exists())
+            self.assertFalse((Path(d) / "manifest.jsonl").exists())
+            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            self.assertFalse(staging.exists())
+            self.assertEqual(entry["partitions"]["facts"]["rows"], 1)
+            self.assertEqual(
+                len((Path(d) / "manifest.jsonl").read_text().splitlines()), 1
+            )
+            with self.assertRaises(FileExistsError):
+                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+
+    def test_source_error_chain_never_carries_key(self):
+        def chain(err):
+            seen, out = set(), []
+            while err is not None and id(err) not in seen:
+                seen.add(id(err))
+                out.append(err)
+                err = err.__context__ or err.__cause__
+            return out
+
+        with tempfile.TemporaryDirectory() as d:
+
+            def fail(*args):
+                raise RuntimeError(KEY)
+
+            c = Collector(d, "one", "2020-01-01", "2020-01-31", KEY, 1, fail)
+            with self.assertRaises(SourceError) as err:
+                c.get("list.json", {})
+            for exc in chain(err.exception):
+                self.assertNotIn(KEY, repr(exc))
+
+            def opener(*args, **kwargs):
+                raise RuntimeError(KEY)
+
+            with (
+                patch.object(collector.urllib.request, "build_opener", opener),
+                self.assertRaises(SourceError) as err,
+            ):
+                collector.http_get("list.json", {}, KEY)
+            for exc in chain(err.exception):
+                self.assertNotIn(KEY, repr(exc))
+
+    def test_identical_is_cis_rows_dedupe_only_differing_is_ambiguous(self):
+        base = {
+            "symbol": "999999",
+            "corp_code": "99999999",
+            "business_year": "2020",
+            "report_code": "11011",
+            "period": "2020-12",
+            "history": [],
+            "rcept_no": "20200102000001",
+            "rcept_date": "20200102",
+            "amendment": False,
+            "statement_basis": "CFS",
+        }
+        row = {"rcept_no": "20200102000001", "account_id": "ifrs-full_ProfitLoss"}
+        same = {
+            **base,
+            "accounts": [
+                {**row, "sj_div": "IS", "thstrm_amount": "1,000", "currency": "KRW"},
+                {**row, "sj_div": "CIS", "thstrm_amount": "1,000", "currency": "KRW"},
+            ],
+        }
+        metric = build_rows([same])[1][0]["metrics"]["net_income"]
+        self.assertEqual(metric["value"], "1000")
+        self.assertIsNone(metric["reason"])
+        differ = {
+            **base,
+            "accounts": [
+                {**row, "sj_div": "IS", "thstrm_amount": "1,000", "currency": "KRW"},
+                {**row, "sj_div": "CIS", "thstrm_amount": "999", "currency": "KRW"},
+            ],
+        }
+        metric = build_rows([differ])[1][0]["metrics"]["net_income"]
+        self.assertIsNone(metric["value"])
+        self.assertEqual(metric["reason"], "ambiguous_account")
+
+    def test_interim_flow_metrics_carry_period_basis_and_cumulative(self):
+        base = {
+            "symbol": "999999",
+            "corp_code": "99999999",
+            "business_year": "2020",
+            "period": "2020-06",
+            "history": [],
+            "rcept_no": "20200814000001",
+            "rcept_date": "20200814",
+            "amendment": False,
+            "statement_basis": "CFS",
+            "accounts": [
+                {
+                    "rcept_no": "20200814000001",
+                    "account_id": "ifrs-full_Revenue",
+                    "sj_div": "IS",
+                    "thstrm_amount": "300",
+                    "thstrm_add_amount": "700",
+                    "currency": "KRW",
+                },
+                {
+                    "rcept_no": "20200814000001",
+                    "account_id": "ifrs-full_Assets",
+                    "sj_div": "BS",
+                    "thstrm_amount": "5000",
+                    "currency": "KRW",
+                },
+            ],
+        }
+        metrics = build_rows([{**base, "report_code": "11012"}])[1][0]["metrics"]
+        self.assertEqual(metrics["revenue"]["period_basis"], "quarter")
+        self.assertEqual(metrics["revenue"]["value"], "300")
+        self.assertEqual(metrics["revenue"]["cumulative_value"], "700")
+        self.assertEqual(metrics["total_assets"]["period_basis"], "instant")
+        self.assertIsNone(metrics["total_assets"]["cumulative_value"])
+        metrics = build_rows([{**base, "report_code": "11011"}])[1][0]["metrics"]
+        self.assertEqual(metrics["revenue"]["period_basis"], "annual")
+
+    def test_cache_files_do_not_count_until_renamed(self):
+        with tempfile.TemporaryDirectory() as d:
+            get, _ = transport()
+            c = Collector(d, "run", "2020-01-01", "2020-01-31", KEY, 1, get)
+            c.get("corpCode.xml", {}, binary=True)
+            files = list((Path(d) / "cache" / "run").glob("*.cache"))
+            self.assertEqual(len(files), 1)
+            self.assertFalse(list((Path(d) / "cache" / "run").glob("*.tmp")))
 
 
 if __name__ == "__main__":

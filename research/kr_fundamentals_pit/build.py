@@ -70,15 +70,22 @@ def build_rows(reports):
                     "account_name": row.get("account_nm"),
                     "statement": row.get("sj_div"),
                     "amount": amount(row.get("thstrm_amount")),
+                    "cumulative_amount": amount(row.get("thstrm_add_amount")),
                     "currency": row.get("currency"),
                 }
             )
         metrics = {}
         for name, ids in METRICS.items():
-            statement_types = (
-                ("BS",)
-                if name in ("equity", "total_assets", "shares")
-                else ("IS", "CIS")
+            flow = name not in ("equity", "total_assets", "shares")
+            statement_types = ("BS",) if not flow else ("IS", "CIS")
+            # For interim reports (반기/분기) DART carries the 3-month amount in
+            # thstrm_amount and the year-to-date amount in thstrm_add_amount;
+            # for annual reports thstrm_amount is the annual amount. period_basis
+            # describes the "value" field; "cumulative_value" keeps the YTD figure.
+            period_basis = (
+                ("annual" if report["report_code"] == "11011" else "quarter")
+                if flow
+                else "instant"
             )
             matches = [
                 row
@@ -86,15 +93,23 @@ def build_rows(reports):
                 if row.get("account_id") in ids and row.get("sj_div") in statement_types
             ]
             values = [
-                (amount(row.get("thstrm_amount")), row.get("currency"))
+                (
+                    amount(row.get("thstrm_amount")),
+                    amount(row.get("thstrm_add_amount")),
+                    row.get("currency"),
+                )
                 for row in matches
             ]
-            valid = [v for v in values if v[0] is not None]
+            # Identical rows (e.g. the same account on IS and CIS) collapse to
+            # one; only differing values make the metric ambiguous.
+            valid = list(dict.fromkeys(v for v in values if v[0] is not None))
             if len(valid) == 1:
                 metrics[name] = {
                     "value": valid[0][0],
+                    "cumulative_value": valid[0][1] if flow else None,
+                    "period_basis": period_basis,
                     "reason": None,
-                    "currency": valid[0][1],
+                    "currency": valid[0][2],
                     "available_at": available,
                     "statement_basis": report["statement_basis"],
                 }
@@ -106,6 +121,8 @@ def build_rows(reports):
                 )
                 metrics[name] = {
                     "value": None,
+                    "cumulative_value": None,
+                    "period_basis": period_basis,
                     "reason": reason,
                     "currency": None,
                     "available_at": available,
