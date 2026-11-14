@@ -271,7 +271,7 @@ def upgrade() -> None:
     op.create_index(
         "uq_kiwoom_mock_order_ledger_open_operation",
         _ORDER_TABLE,
-        ["original_order_id"],
+        ["account_mode", "trading_day", "original_order_id"],
         unique=True,
         schema=_SCHEMA,
         postgresql_where=sa.text(_OPEN_OPERATION_WHERE),

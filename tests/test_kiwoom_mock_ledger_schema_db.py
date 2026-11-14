@@ -254,6 +254,35 @@ async def test_open_operation_unique_blocks_a_cancel_while_a_modify_is_open(
     )
 
 
+async def test_open_operation_unique_is_scoped_by_account_and_trading_day(
+    db_session: AsyncSession,
+) -> None:
+    # Order numbers are reusable across trading days and accounts, so the same
+    # original order id on another day or account is not a competing correction.
+    original = "0000555"
+    await _insert(
+        db_session,
+        "kiwoom_mock_order_ledger",
+        _valid_order(
+            operation_kind="cancel",
+            original_order_id=original,
+            status="pending",
+            trading_day="20261116",
+        ),
+    )
+    await _insert(
+        db_session,
+        "kiwoom_mock_order_ledger",
+        _valid_order(
+            operation_kind="cancel",
+            original_order_id=original,
+            status="pending",
+            trading_day="20261117",
+        ),
+    )
+    await db_session.rollback()
+
+
 async def test_open_operation_unique_admits_a_correction_after_terminal(
     db_session: AsyncSession,
 ) -> None:
