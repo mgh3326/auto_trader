@@ -66,6 +66,11 @@ tests/models/test_investment_stages_model.py
 tests/models/test_research_run_models.py
 tests/models/test_rob734_mirror_schema.py
 tests/models/test_trading_decision_models.py
+tests/research/crypto_trend/test_archive.py
+tests/research/crypto_trend/test_http_allowlist.py
+tests/research/crypto_trend/test_run_guard.py
+tests/research/crypto_trend/test_signal.py
+tests/research/crypto_trend/test_simulate.py
 tests/research/crypto_universe/test_crypto_universe_snapshot.py
 tests/research/data_plane/test_data_plane_budget.py
 tests/research/kr_boosting/test_kr_boosting_pipeline.py
