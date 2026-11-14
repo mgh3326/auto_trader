@@ -143,7 +143,9 @@ async def test_flow_confirmation_is_immutable_and_downgrade_refuses(db_session):
     for statement in (
         "UPDATE review.account_flow_confirmations SET reason = 'changed'",
         "DELETE FROM review.account_flow_confirmations",
-        "TRUNCATE review.account_flow_confirmations",
+        # Plain TRUNCATE now stops at the revocation FK first; CASCADE reaches
+        # the immutability trigger itself.
+        "TRUNCATE review.account_flow_confirmations CASCADE",
     ):
         with pytest.raises(DBAPIError, match="account_value_immutable"):
             async with db_session.begin_nested():
@@ -213,7 +215,15 @@ async def test_flow_confirmation_revocation_is_immutable_and_degrades_coverage(
         {"account": account},
     )
     assert second_id is not None and second_id != confirmation_id
-    assert covered(start, end, await load_confirmations(db_session, start, end), [])
+
+    async def own_confirmations():
+        # The CI database is shared and confirmations are append-only, so rows
+        # other tests wrote for the same dates stay; the report filters by
+        # account (load_report.py) and so must this check.
+        rows = await load_confirmations(db_session, start, end)
+        return [row for row in rows if row.account == account]
+
+    assert covered(start, end, await own_confirmations(), [])
     assert (
         await record_revocation(
             db_session,
@@ -224,7 +234,7 @@ async def test_flow_confirmation_revocation_is_immutable_and_degrades_coverage(
         )
         == "revoked"
     )
-    assert covered(start, end, await load_confirmations(db_session, start, end), [])
+    assert covered(start, end, await own_confirmations(), [])
     assert (
         await record_revocation(
             db_session,
@@ -235,7 +245,7 @@ async def test_flow_confirmation_revocation_is_immutable_and_degrades_coverage(
         )
         == "revoked"
     )
-    assert not covered(start, end, await load_confirmations(db_session, start, end), [])
+    assert not covered(start, end, await own_confirmations(), [])
 
     for statement in (
         "UPDATE review.account_flow_confirmation_revocations SET reason = 'changed'",
