@@ -38,6 +38,7 @@ from app.services.dots_history_export.projection import Window as DotsWindow
 from app.services.execution_ledger import kis_lots
 from app.services.execution_ledger import quarantine as q
 from app.services.execution_ledger import query_service as query_service_module
+from app.services.execution_ledger import recorded_fills as recorded_fills_module
 from app.services.execution_ledger import repository as repository_module
 from app.services.execution_ledger.kis_lots import PositionRef
 from app.services.execution_ledger.opening_lots import (
@@ -607,6 +608,20 @@ async def _retro_positions_read_positions(db, s: Scenario) -> bool:
     return bool(match and match[0].get("quantity") is None)
 
 
+async def _recorded_boundary_fill(db, s: Scenario) -> bool:
+    qty = await recorded_fills_module.recorded_fill_qty_for_order(
+        db,
+        broker="kis",
+        instrument_type="equity_kr",
+        symbol=s.symbol,
+        side=s.phantom_side,
+        currency="KRW",
+        broker_order_id=s.phantom_order_no,
+        order_time=TODAY_MORNING,
+    )
+    return qty > 0
+
+
 READERS: dict[str, tuple[Probe, Any, str]] = {
     # name: (probe answering "is the phantom counted?", module to mutate, side)
     "broker_risk.list_fills_for_order": (_broker_risk_fills, broker_risk, "buy"),
@@ -640,6 +655,11 @@ READERS: dict[str, tuple[Probe, Any, str]] = {
     "retro_v1.retro_positions.read_retro_positions": (
         _retro_positions_read_positions,
         retro_positions,
+        "buy",
+    ),
+    "recorded_fills.recorded_fill_qty_for_order": (
+        _recorded_boundary_fill,
+        recorded_fills_module,
         "buy",
     ),
 }

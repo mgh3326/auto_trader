@@ -334,6 +334,9 @@ async def test_live_kernel_contradiction_stays_open(verdict, scope):
         patch.object(
             live, "_update_live_ledger_outcome", new_callable=AsyncMock
         ) as update,
+        patch.object(
+            live, "_record_live_boundary_block", new_callable=AsyncMock
+        ) as block,
     ):
         recorded.return_value = Decimal("3")
         out = await live._reconcile_one_live_row(
@@ -343,6 +346,8 @@ async def test_live_kernel_contradiction_stays_open(verdict, scope):
     assert out["reason_code"] == "evidence_contradiction"
     assert out["requires_manual_review"] is True
     update.assert_not_awaited()
+    block.assert_awaited_once()
+    assert block.await_args.kwargs["reason_code"] == "evidence_contradiction"
 
 
 @pytest.mark.asyncio
@@ -356,6 +361,9 @@ async def test_live_kernel_incomplete_fill_evidence_never_books(scope):
         patch.object(
             live, "_update_live_ledger_outcome", new_callable=AsyncMock
         ) as update,
+        patch.object(
+            live, "_record_live_boundary_block", new_callable=AsyncMock
+        ) as block,
     ):
         out = await live._reconcile_one_live_row(
             _live_row(), dry_run=False, scope=scope
@@ -364,6 +372,7 @@ async def test_live_kernel_incomplete_fill_evidence_never_books(scope):
     assert out["reason_code"] == "evidence_incomplete"
     fill.assert_not_awaited()
     update.assert_not_awaited()
+    block.assert_awaited_once()
 
 
 @pytest.mark.asyncio

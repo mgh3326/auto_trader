@@ -423,6 +423,27 @@ async def _recorded_positive_fill_qty(row: LiveOrderLedger) -> Decimal:
         )
 
 
+async def _record_live_boundary_block(
+    *, ledger_id: int, reason_code: str | None, detail: str
+) -> None:
+    """Persist an evidence-boundary block on the row without closing it.
+
+    ``last_reconcile_detail`` carries the reason so dry-runs, review queues
+    and later passes can see why the row stayed open; ``status`` and
+    ``lifecycle_state`` are untouched, so the open scan re-selects the row.
+    """
+    async with _order_session_factory()() as db:
+        row = await db.get(LiveOrderLedger, ledger_id)
+        if row is None:
+            return
+        row.last_reconcile_detail = {
+            "reason_code": reason_code,
+            "detail": detail,
+        }
+        row.reconciled_at = datetime.now(UTC)
+        await db.commit()
+
+
 async def _reconcile_one_live_row(
     row: LiveOrderLedger,
     *,
@@ -456,6 +477,12 @@ async def _reconcile_one_live_row(
         base["requires_manual_review"] = True
         base["reason_code"] = boundary.reason_code
         base["reason"] = boundary.detail
+        if not dry_run:
+            await _record_live_boundary_block(
+                ledger_id=row.id,
+                reason_code=boundary.reason_code,
+                detail=boundary.detail,
+            )
         return base
 
     if evidence.verdict == FillVerdict.PENDING:

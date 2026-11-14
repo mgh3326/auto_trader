@@ -13,7 +13,11 @@ normalize_order_id(broker_order_id), trading_day)``. When the reconcile row
 cannot prove a field (``symbol``/``side``/``currency`` empty, or no order
 time so a KIS trading day cannot be derived), that position matches any
 candidate — the read errs toward counting fills, i.e. toward contradiction,
-never toward silently closing the order.
+never toward silently closing the order. The trading-day position is the
+one deliberate exception: KIS order numbers are reused across days, and a
+DAY order's fills necessarily share its trading day, so a provable order
+day is matched strictly — a different-day fill under the same normalized
+id belongs to a different order and must not count.
 """
 
 from __future__ import annotations
