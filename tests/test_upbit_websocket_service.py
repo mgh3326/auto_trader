@@ -1,5 +1,6 @@
 """Unit tests for Upbit MyOrder websocket service."""
 
+import logging
 import ssl
 from unittest.mock import AsyncMock, patch
 
@@ -83,6 +84,36 @@ class TestUpbitMyOrderWebSocket:
         assert client.current_attempt == client.max_reconnect_attempts
         assert client.is_connected is False
         assert "3/3" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_connect_exhaustion_logs_warning_not_error_and_still_raises(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """An exhausted inner retry cycle is a WARNING; the exception still propagates."""
+        client = UpbitMyOrderWebSocket()
+        client.max_reconnect_attempts = 3
+        client.reconnect_delay = 0
+        caplog.set_level(logging.WARNING)
+
+        with patch.object(
+            client,
+            "_connect_and_subscribe_internal",
+            new=AsyncMock(side_effect=RuntimeError("simulated connection failure")),
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="Upbit WebSocket connection not established",
+            ):
+                await client.connect_and_subscribe()
+
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        exhausted = [
+            r
+            for r in caplog.records
+            if "최대 재연결 시도 횟수에 도달했습니다" in r.getMessage()
+        ]
+        assert exhausted
+        assert all(r.levelno == logging.WARNING for r in exhausted)
 
     def test_create_ssl_context_verifies_by_default(self):
         client = UpbitMyOrderWebSocket()

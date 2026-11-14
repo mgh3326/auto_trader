@@ -91,19 +91,15 @@ class UpbitMyOrderWebSocket:
                 break
             except Exception as e:
                 self.current_attempt += 1
-                # Only the attempt that exhausts the budget is an error; earlier
-                # attempts are expected reconnects and surface as WARNING.
-                log_reconnect_failure = (
-                    logger.error
-                    if self.current_attempt >= self.max_reconnect_attempts
-                    else logger.warning
-                )
-                log_reconnect_failure(
+                # Every failed attempt is a WARNING, including the one that
+                # exhausts this cycle. The caller (supervisor) decides whether
+                # a sustained outage is an ERROR; the exception still propagates.
+                logger.warning(
                     f"WebSocket 연결 실패 (시도 {self.current_attempt}/{self.max_reconnect_attempts}): {e}"
                 )
 
                 if self.current_attempt >= self.max_reconnect_attempts:
-                    logger.error(
+                    logger.warning(
                         "최대 재연결 시도 횟수에 도달했습니다. 연결을 중단합니다."
                     )
                     break
