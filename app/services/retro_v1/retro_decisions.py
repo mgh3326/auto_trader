@@ -331,6 +331,10 @@ async def _load_decision_data(
             rung_ok2,
             MAX_SOURCE_ROWS * 4,
         )
+    elif not proposal_ok:
+        # The proposals read failed, so dependent reads never ran: their
+        # absence is unavailable evidence, not empty evidence.
+        data.incomplete.update(("proposal_rungs", "exit_plans"))
 
     async def read_attempts() -> list[Any]:
         stmt = (
@@ -592,7 +596,7 @@ async def _load_decision_data(
         bars, bars_ok = await guarded(
             session, unknowns, f"source.bars_{info.key}", read_bars, []
         )
-        _track(data, unknowns, "bars", bars, bars_ok, MAX_SOURCE_ROWS * 4)
+        _track(data, unknowns, f"bars_{info.key}", bars, bars_ok, MAX_SOURCE_ROWS * 4)
         by_symbol: dict[str, list[daily_bars.Bar]] = defaultdict(list)
         for bar in bars:
             by_symbol[bar.symbol.upper()].append(bar)
@@ -909,7 +913,14 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
     orders_known = bool(orders) or (
         data.order_links.complete
         and not (
-            {"decision_links", "kis_orders", "live_orders", "toss_orders"}
+            {
+                "decision_links",
+                "proposals",
+                "proposal_rungs",
+                "kis_orders",
+                "live_orders",
+                "toss_orders",
+            }
             & data.incomplete
         )
     )
@@ -1003,7 +1014,9 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         excursion_reason = "missing_entry_price"
     else:
         key = f"{info.key}|{decision.symbol.upper()}"
-        if key not in data.bars:
+        if f"bars_{info.key}" in data.incomplete:
+            excursion_reason = "attempts_unavailable"
+        elif key not in data.bars:
             excursion_reason = "missing_data"
         elif data.bars[key] is None:
             excursion_reason = "source_mixed"
@@ -1095,11 +1108,20 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         r_multiple_reason = "missing_entry_price"
     elif sell_fills:
         exit_qty = sum((Decimal(str(f.filled_qty)) for f in sell_fills), Decimal(0))
-        exit_notional = sum(
-            (Decimal(str(f.filled_notional or 0)) for f in sell_fills),
-            Decimal(0),
-        )
-        if exit_qty > 0:
+        # Toss reconciler rows carry cumulative bookkeeping, so notional must
+        # be derived per order the same way the buy side does it.
+        by_sell_order: dict[Any, list[Any]] = defaultdict(list)
+        for fill in sell_fills:
+            by_sell_order[order_identity(fill)].append(fill)
+        exit_notional = Decimal(0)
+        exit_notional_ok = True
+        for order_rows in by_sell_order.values():
+            part = _order_entry_notional(order_rows)
+            if part is None:
+                exit_notional_ok = False
+                break
+            exit_notional += part
+        if exit_notional_ok and exit_qty > 0:
             exit_avg = exit_notional / exit_qty
             if (
                 risk_amount is not None
@@ -1114,6 +1136,8 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
                     r_multiple_reason = "no_risk_per_unit"
             else:
                 r_multiple_reason = "no_risk_per_unit"
+        else:
+            r_multiple_reason = "missing_notional"
     elif not fills_known:
         r_multiple_reason = "attempts_unavailable"
     elif not sell_fills:
