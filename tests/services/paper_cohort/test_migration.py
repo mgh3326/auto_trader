@@ -367,6 +367,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             )
             await connection.execute(text("DROP TABLE review.strategy_sleeve_versions"))
             await connection.execute(text("DROP TABLE review.strategy_sleeves"))
+            # hk 4702 trend state tables are later too (intents reference signals).
+            await connection.execute(text("DROP TABLE review.binance_trend_intents"))
+            await connection.execute(text("DROP TABLE review.binance_trend_signals"))
             # hk 4186 (L5) execution_ledger basis columns are later too and
             # already in Base.metadata; drop them (their CHECKs go with them)
             # so the migration adds them back.

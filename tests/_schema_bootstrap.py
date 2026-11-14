@@ -160,7 +160,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
 # v65 (hk 2690): the position baseline uses separate Core metadata.
-SCHEMA_BOOTSTRAP_VERSION = 68
+# v69 (hk 4702): review.binance_trend_signals / binance_trend_intents (new ORM
+# tables via create_all) and their guard triggers, loaded from the production
+# migration 20261114_hk4702_trend_state so the DB tests run its exact DDL.
+SCHEMA_BOOTSTRAP_VERSION = 69
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2434,6 +2437,25 @@ def _rob1470_sleeve_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _rob1470_sleeve_ddl()
+
+
+def _binance_trend_guard_ddl() -> tuple[str, ...]:
+    """hk 4702 guard DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261114_hk4702_trend_state.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk4702_trend_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.GUARD_DDL)
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _binance_trend_guard_ddl()
 
 
 # --------------------------------------------------------------------------- #

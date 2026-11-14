@@ -155,6 +155,9 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # order_proposals.sleeve_id column referencing them is dropped before).
     "review.strategy_sleeve_versions",
     "review.strategy_sleeves",
+    # hk 4702 trend state tables are later than this boundary (intents first).
+    "review.binance_trend_intents",
+    "review.binance_trend_signals",
 )
 
 

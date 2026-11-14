@@ -8,6 +8,7 @@
 - Binance Demo Order Ledger (ROB-298)
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
+- TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어 (hk 4702, 3796 CT-3)
 - Execution Intent Gateway (ROB-1440)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
@@ -260,6 +261,18 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   H5 에는 거래소 측 손절이 없으므로 모든 종류가 "포지션이 있으면 손절 감시 중단"을 뜻한다.
   코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
   core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
+
+### TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어 (hk 4702, 3796 CT-3)
+
+H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)의 **상태·상수 코어뿐**이다. 설계 `docs/design/3796-crypto-trend-demo.md` §4, 운영자 답 `decision/2026-11-15/at-3796-3797-design-answers`. 🔴 **주문 전송 경로가 아직 없다**: executor·`TrendStrategy`·CLI·알림·truth gate·env 게이트(`BINANCE_TREND_DEMO_ENABLED`)·스케줄러 연결은 CT-4/CT-5에서 게이트와 함께 들어온다. 그 전에는 이 패키지를 import 하는 코드가 패키지 밖에 없다(`tests/services/brokers/binance/trend/test_static_boundary.py`).
+
+- **identity·상수**: `IDENTITY = "TREND-TSMOM-v1"`. `constants.LOCKED_LIMITS`가 유니버스 `{BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT}`, leg notional 상한 60 USDT, 동시 포지션 4, gross 240 USDT, UTC일당 연속 hard-stop 2, UTC주당 conflict 3, 요구 레버리지 1x를 정한다(ROB-993 `LOCKED_LIMITS` 관용구). CLI·env·설정으로 바꾸는 경로가 없고 `assert_limits_locked`가 서비스 생성 시점에 DB·네트워크 이전에 거부한다. 레버리지·margin mode는 readback으로 요구만 하며 이 패키지는 설정을 바꾸지 않는다. ROB-993/H5/ROB-1474의 상수·allowlist·게이트는 건드리지 않는다.
+- **상태 테이블**: `review.binance_trend_signals`·`review.binance_trend_intents`(마이그레이션 `20261114_hk4702_trend_state`, 추가형, 모델 `app/models/binance_trend.py`). correlation id는 `binance-trend:<sha256 24hex>`(`keys.py`). conflict 기록은 신호 상태 `conflict_blocked`(자체 사전 차단)·`conflict_rejected`(브로커 거부)와 `conflict_at`·`conflict_detail`(<=200자)에 심볼과 시각으로 남는다.
+- **유일한 writer**: `state.TrendStateService`. 쓰기마다 자기 트랜잭션이고 하나의 advisory lock 아래서 직렬화된다. `reserve_entry`는 순수 판정 `entry_gate.decide_entry`로 동시 포지션 4·심볼당 1·gross 240·leg 상한·UTC일 연속 hard-stop 2·UTC주 conflict 3·`uncertain` 의도가 있는 심볼 차단을 한 번에 판정하고 모든 사유를 돌려준다. 연속 hard-stop은 당일 청산을 최신순으로 훑은 선두 연속열이다(다른 청산이 끊는다).
+- 🔴 **uncertain은 재전송하지 않는다**: 서비스는 의도를 `reserved`→`sending`(send fence) 한 방향으로만 옮기고, 전송 불명은 `uncertain`으로 보존한다. `uncertain`을 해소하려면 broker order/client id와 전계정 position 증거가 필요하며 그 경로는 CT-4다. DB 트리거도 `uncertain`→`reserved`/`sending`/`acknowledged`를 거부한다.
+- **DB 가드(어떤 역할이든)**: 두 테이블 DELETE·TRUNCATE 거부, 신호는 `observed`로만 INSERT·식별 열 불변·종결 상태 동결, 의도는 미전송 `reserved`로만 INSERT·요청 열 불변·상태 전진만 허용. downgrade는 행이 하나라도 있으면 거부한다. `at_app`에는 조건부 GRANT(역할이 없을 수 있음)로 SELECT·INSERT·UPDATE만 주고 DELETE는 주지 않는다(하드룰 18). 이 트리거·거부를 완화하지 마라.
+- **범위 밖(후속)**: 체결·청산 기록(`holding`/`closed` 쓰기), uncertain 해소, 계정 전체 flat/conflict 감지의 브로커 읽기, 알림, 스케줄러는 CT-4/CT-5. 이 PR은 어떤 게이트도 열지 않는다.
+- **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB).
 
 ### Execution Intent Gateway (ROB-1440)
 
