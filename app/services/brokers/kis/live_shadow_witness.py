@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -73,6 +73,15 @@ def _validate(section: str, value: Mapping[str, object]) -> bool:
     except ValidationError:
         return False
     return True
+
+
+def _invalid_echo_fields(echo: Mapping[str, object]) -> str:
+    """Name the schema-invalid echo fields; never include their values."""
+    names: set[str] = set()
+    for error in _VALIDATOR.iter_errors({"echo": dict(echo)}):
+        path = [str(part) for part in error.absolute_path]
+        names.add(path[-1] if len(path) > 1 else "echo")
+    return ",".join(sorted(names)) or "echo"
 
 
 def _validated_base_url(value: str) -> str | None:
@@ -242,16 +251,31 @@ class LiveShadowWitness:
     def capture_raw_echo(self, response: Mapping[str, object]) -> None:
         """Capture raw KIS fields before the domestic client normalizes them."""
         output = response.get("output")
-        echo = {
-            "ODNO": output.get("ODNO") if isinstance(output, dict) else None,
-            "rt_cd": response.get("rt_cd"),
-            "msg_cd": response.get("msg_cd"),
-            "msg1": response.get("msg1"),
-            "received_at": _utc_now(),
+        odno = output.get("ODNO") if isinstance(output, dict) else None
+        rt_cd = response.get("rt_cd")
+        msg_cd = response.get("msg_cd")
+        msg1 = response.get("msg1")
+        # A rejection the broker actually answered carries no order number.
+        # The v1 echo requires a string, so "" records that rejection instead
+        # of losing it; an accepted order without ODNO stays invalid.
+        if not isinstance(odno, str) and (
+            isinstance(rt_cd, str)
+            and rt_cd != "0"
+            and isinstance(msg_cd, str)
+            and isinstance(msg1, str)
+        ):
+            odno = ""
+        fields: dict[str, object] = {
+            "ODNO": odno,
+            "rt_cd": rt_cd,
+            "msg_cd": msg_cd,
+            "msg1": msg1,
         }
-        if not all(isinstance(value, str) for value in echo.values()):
-            _warning("kis_live_witness_echo_invalid")
+        invalid = [name for name, value in fields.items() if not isinstance(value, str)]
+        if invalid:
+            _warning("kis_live_witness_echo_invalid", invalid_fields=",".join(invalid))
             return
+        echo = {**cast(dict[str, str], fields), "received_at": _utc_now()}
         self._track(self._post_echo(echo))
 
     async def _post_echo(self, echo: Mapping[str, str]) -> None:
@@ -273,7 +297,10 @@ class LiveShadowWitness:
             _warning("kis_live_witness_echo_missing_receipt")
             return
         if not await asyncio.to_thread(_validate, "echo", echo):
-            _warning("kis_live_witness_echo_invalid")
+            _warning(
+                "kis_live_witness_echo_invalid",
+                invalid_fields=await asyncio.to_thread(_invalid_echo_fields, echo),
+            )
             return
         try:
             command_id = receipt["command_id"]

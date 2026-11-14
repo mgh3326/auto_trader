@@ -100,6 +100,25 @@ def _witness() -> witness.LiveShadowWitness:
     return witness.LiveShadowWitness("http://127.0.0.1:8080", _intent())
 
 
+_REJECTION: dict[str, object] = {
+    "rt_cd": "1",
+    "msg_cd": "40240000",
+    "msg1": "주문가능금액을 초과",
+}
+
+
+def _echo_requests(requests: list[httpx.Request]) -> list[httpx.Request]:
+    return [request for request in requests if request.url.path.endswith("/echo")]
+
+
+def _invalid_echo_events(caplog) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.getMessage() == "kis_live_witness_echo_invalid"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_intent_and_raw_echo_are_immutable_and_schema_valid() -> None:
     requests: list[httpx.Request] = []
@@ -121,7 +140,9 @@ async def test_intent_and_raw_echo_are_immutable_and_schema_valid() -> None:
 
     bodies = [json.loads(request.content) for request in requests]
     assert bodies[0]["price"] == "70000"
+    assert list(bodies[1]) == ["ODNO", "rt_cd", "msg_cd", "msg1", "received_at"]
     assert bodies[1]["ODNO"] == "000123"
+    assert bodies[1]["rt_cd"] == "0"
     assert all(request.headers.get("authorization") is None for request in requests)
 
     schema = json.loads(
@@ -149,6 +170,156 @@ async def test_invalid_receipt_skips_echo_without_raising() -> None:
     )
     await _settle(client)
     assert [request.url.path for request in requests] == ["/v1/commands"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        _REJECTION,
+        {**_REJECTION, "output": None},
+        {**_REJECTION, "output": {}},
+        {**_REJECTION, "output": {"ODNO": None}},
+        {**_REJECTION, "output": {"ODNO": 7}},
+        {**_REJECTION, "output": {"ODNO": ""}},
+    ],
+    ids=[
+        "absent-output",
+        "null-output",
+        "empty-output",
+        "null-odno",
+        "int-odno",
+        "empty-odno",
+    ],
+)
+async def test_broker_answered_rejection_is_echoed_without_order_number(
+    response: dict[str, object],
+) -> None:
+    requests: list[httpx.Request] = []
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    client.start()
+    client.capture_raw_echo(response)
+    await _settle(client, attempts=300)
+
+    echoes = _echo_requests(requests)
+    assert len(echoes) == 1
+    body = json.loads(echoes[0].content)
+    assert list(body) == ["ODNO", "rt_cd", "msg_cd", "msg1", "received_at"]
+    assert body["ODNO"] == ""
+    assert body["rt_cd"] == "1"
+    assert body["msg_cd"] == "40240000"
+    assert body["msg1"] == "주문가능금액을 초과"
+    schema = json.loads(
+        (FIXTURES / "kis_live_shadow_witness_v1.schema.json").read_text()
+    )
+    Draft202012Validator(schema).validate({"echo": body})
+
+
+@pytest.mark.asyncio
+async def test_accepted_echo_without_order_number_is_dropped(caplog) -> None:
+    requests: list[httpx.Request] = []
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    client.start()
+    with caplog.at_level(logging.WARNING, logger=witness.logger.name):
+        client.capture_raw_echo(
+            {"rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok", "output": {}}
+        )
+    await _settle(client)
+    assert [e.invalid_fields for e in _invalid_echo_events(caplog)] == ["ODNO"]
+    assert _echo_requests(requests) == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_echo_names_fields_but_never_values(caplog) -> None:
+    requests: list[httpx.Request] = []
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    client.start()
+    with caplog.at_level(logging.WARNING, logger=witness.logger.name):
+        client.capture_raw_echo(
+            {
+                "rt_cd": "1",
+                "msg_cd": 40240000,
+                "msg1": "SECRET-BROKER-MESSAGE",
+                "output": {"ODNO": "000123"},
+            }
+        )
+    await _settle(client)
+    assert [e.invalid_fields for e in _invalid_echo_events(caplog)] == ["msg_cd"]
+    assert _echo_requests(requests) == []
+    assert "40240000" not in caplog.text
+    assert "SECRET-BROKER-MESSAGE" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_non_string_rt_cd_never_substitutes_an_order_number(caplog) -> None:
+    requests: list[httpx.Request] = []
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    client.start()
+    with caplog.at_level(logging.WARNING, logger=witness.logger.name):
+        client.capture_raw_echo({"rt_cd": None, "msg_cd": "m", "msg1": "v"})
+    await _settle(client)
+    assert [e.invalid_fields for e in _invalid_echo_events(caplog)] == ["ODNO,rt_cd"]
+    assert _echo_requests(requests) == []
+
+
+@pytest.mark.asyncio
+async def test_schema_invalid_echo_is_dropped_with_named_field(caplog) -> None:
+    requests: list[httpx.Request] = []
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    client._intent_task = asyncio.create_task(asyncio.sleep(0, result=_receipt()))
+    with caplog.at_level(logging.WARNING, logger=witness.logger.name):
+        await client._post_echo(
+            {
+                "ODNO": "",
+                "rt_cd": "1",
+                "msg_cd": "40240000",
+                "msg1": "exceeded",
+                "received_at": "not-a-timestamp",
+            }
+        )
+    await client._intent_task
+    assert [e.invalid_fields for e in _invalid_echo_events(caplog)] == ["received_at"]
+    assert _echo_requests(requests) == []
+
+
+@pytest.mark.asyncio
+async def test_domestic_rejection_still_raises_and_echoes_without_odno(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+    requests: list[httpx.Request] = []
+    active = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    active.start()
+    parent = _DomesticParent(
+        {"rt_cd": "1", "msg_cd": "40240000", "msg1": "주문가능금액을 초과"}
+    )
+    token = witness.activate(active)
+    try:
+        with pytest.raises(RuntimeError, match="40240000 주문가능금액을 초과"):
+            await domestic_orders.DomesticOrderClient(parent).order_korea_stock(
+                "005930", "buy", 2, 70000, is_mock=False
+            )
+    finally:
+        witness.deactivate(token)
+    await _settle(active, attempts=300)
+    echoes = _echo_requests(requests)
+    assert len(echoes) == 1
+    assert json.loads(echoes[0].content)["ODNO"] == ""
+    assert len(parent.bodies) == 1
 
 
 @pytest.mark.asyncio
