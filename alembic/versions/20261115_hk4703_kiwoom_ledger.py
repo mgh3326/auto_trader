@@ -1,7 +1,7 @@
 """hk 4703 (3797 T-P1): Kiwoom mock order ledger + pre-submit signal ledger.
 
 Revision ID: 20261115_hk4703_kiwoom_ledger
-Revises: 20261113_hk4282_flow_confirm
+Revises: 20261115_hk4617_flow_revoke
 Create Date: 2026-11-15
 
 Adds ``review.kiwoom_mock_order_ledger`` and ``review.kiwoom_mock_signal_ledger``
@@ -36,7 +36,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261115_hk4703_kiwoom_ledger"
-down_revision: str | Sequence[str] | None = "20261113_hk4282_flow_confirm"
+down_revision: str | Sequence[str] | None = "20261115_hk4617_flow_revoke"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

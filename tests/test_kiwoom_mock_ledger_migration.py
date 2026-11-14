@@ -24,7 +24,7 @@ from app.models.review import (
 
 REPO = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = REPO / "alembic" / "versions" / "20261115_hk4703_kiwoom_ledger.py"
-PARENT_REVISION = "20261113_hk4282_flow_confirm"
+PARENT_REVISION = "20261115_hk4617_flow_revoke"
 REVISION = "20261115_hk4703_kiwoom_ledger"
 PROPOSAL_CHECK = "ck_order_proposals_order_proposals_account_mode"
 
