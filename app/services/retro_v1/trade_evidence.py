@@ -447,7 +447,7 @@ def _order_entry_notional(rows: Sequence[Any]) -> Decimal | None:
     evidence cannot be established.
     """
     cumulative = [
-        (payload, r.filled_price)
+        (payload, getattr(r, "filled_price", None))
         for r in rows
         if (payload := getattr(r, "raw_payload_json", None) or {})
         and "broker_cumulative_filled_qty" in payload
