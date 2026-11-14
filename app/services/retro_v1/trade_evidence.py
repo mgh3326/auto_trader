@@ -24,7 +24,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from sqlalchemy import select
@@ -279,7 +279,23 @@ def trade_fills(
         identity = _order_identity(order, info)
         if identity is not None:
             identities.add(identity)
-    return [f for f in evidence.fills if order_identity(f) in identities]
+    # ROB-1379: fillwire and the in-app monitor can record the same websocket
+    # fill under different ``fill_seq`` values, so one provisional row is one
+    # fill only as far as (time, quantity, price) distinguishes it — otherwise
+    # duplicate records masquerade as coverage or double a notional.
+    fills: list[Any] = []
+    seen_provisional: set[tuple[Any, ...]] = set()
+    for fill in evidence.fills:
+        identity = order_identity(fill)
+        if identity not in identities:
+            continue
+        if fill.source == "websocket":
+            marker = (identity, fill.filled_at, fill.filled_qty, fill.filled_price)
+            if marker in seen_provisional:
+                continue
+            seen_provisional.add(marker)
+        fills.append(fill)
+    return fills
 
 
 def _orders_fill_coverage(
@@ -441,17 +457,22 @@ def _order_entry_notional(rows: Sequence[Any]) -> Decimal | None:
         return _sum_or_none([r.filled_notional for r in rows])
     if len(cumulative) != len(rows):
         return None
-    chain = sorted(
-        (
+    try:
+        chain = sorted(
             (
-                Decimal(str(payload["broker_cumulative_filled_qty"])),
-                Decimal(str(payload["previous_filled_qty"])),
-                price,
-            )
-            for payload, price in cumulative
-        ),
-        key=lambda item: item[0],
-    )
+                (
+                    Decimal(str(payload["broker_cumulative_filled_qty"])),
+                    Decimal(str(payload["previous_filled_qty"])),
+                    price,
+                )
+                for payload, price in cumulative
+            ),
+            key=lambda item: item[0],
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        # raw_payload_json is unvalidated DB data; a malformed row means the
+        # notional cannot be established, same as a broken chain.
+        return None
     expected = Decimal(0)
     for cum, prev, _price in chain:
         if prev != expected or cum <= prev:

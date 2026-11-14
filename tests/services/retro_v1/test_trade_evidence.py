@@ -718,3 +718,46 @@ def test_toss_cumulative_notional_is_reconstructed_or_unavailable() -> None:
     broken = costs_of(toss_fill(Decimal(1), Decimal(2), Decimal(150)))
     assert broken["estimated"] is None
     assert broken["estimated_reason"] == "missing_notional"
+    # a malformed payload is unvalidated data, not a crash
+    for bad in ({"nested": "bad"}, None):
+        malformed = ledger_fill(
+            broker="toss",
+            raw_payload_json={
+                "previous_filled_qty": "0",
+                "broker_cumulative_filled_qty": bad,
+            },
+        )
+        body = costs_of(malformed)
+        assert body["estimated"] is None
+        assert body["estimated_reason"] == "missing_notional"
+
+
+@pytest.mark.asyncio
+async def test_websocket_only_duplicates_do_not_satisfy_coverage() -> None:
+    # no reconciler row yet: fillwire and the monitor can record the same
+    # fill under two fill_seq values, and the doubled quantity must not
+    # pass for the order's real filled total
+    tap = {
+        "source": "websocket",
+        "broker_order_id": ORDER_NO,
+        "filled_at_basis": "broker_fill_time",
+        "fee_basis": None,
+        "fee_amount": None,
+        "tax_amount": None,
+        "filled_qty": Decimal("3"),
+        "filled_notional": Decimal("210000"),
+        "fee_currency": None,
+    }
+    routes = {
+        "FROM review.kis_live_order_ledger": [order(filled_qty=Decimal("6"))],
+        "FROM review.execution_ledger": [
+            fill(1, **tap, fill_seq=7),
+            fill(2, **{**tap, "fill_seq": 8}),
+        ],
+    }
+    row = (
+        await read(
+            session([kr_journal(correlation_id="corr-1")], [kr_review()], **routes)
+        )
+    )["data"][0]
+    assert "costs" not in row and "fill_time_basis" not in row
