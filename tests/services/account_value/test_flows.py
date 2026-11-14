@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.sql.elements import TextClause
 
 from app.services.account_value.flows import ExternalFlow, record_flow
 from tests.services.account_value.test_snapshot import Session
@@ -34,7 +35,9 @@ async def test_retry_id_is_idempotent_and_conflicting_reuse_is_rejected():
         def __init__(self):
             self.rows = {}
 
-        async def execute(self, statement):
+        async def execute(self, statement, params=None):
+            if isinstance(statement, TextClause):
+                return SimpleNamespace()
             params = statement.compile().params
             if statement.is_insert:
                 assert "clock_timestamp()" in str(statement)

@@ -78,7 +78,7 @@ async def test_record_confirmation_preview_writes_only_on_commit():
             self.statements = []
             self.commits = 0
 
-        async def execute(self, statement):
+        async def execute(self, statement, params=None):
             self.statements.append(statement)
 
         async def commit(self):
@@ -96,9 +96,10 @@ async def test_record_confirmation_preview_writes_only_on_commit():
         )
         == "inserted"
     )
-    assert len(session.statements) == session.commits == 1
+    # advisory account lock + the append
+    assert len(session.statements) == 2 and session.commits == 1
     with pytest.raises(ValueError):
         await record_confirmation(
             session, ACCOUNT, END, START, "operator", "checked", commit=True
         )
-    assert len(session.statements) == session.commits == 1
+    assert len(session.statements) == 2 and session.commits == 1

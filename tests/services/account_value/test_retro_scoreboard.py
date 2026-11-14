@@ -74,6 +74,15 @@ class Database:
             return Result("on")
         return Result(next(self.results))
 
+    def begin_nested(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _savepoint():
+            yield
+
+        return _savepoint()
+
 
 def snapshots():
     return [
@@ -268,6 +277,46 @@ async def test_unmeasured_account_row_carries_reason_and_server_side_flag(
         "field": "data.0.return_rate",
         "reason": "flows_not_confirmed",
     } in response["unknowns"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_confirmations_degrade_to_not_confirmed(monkeypatch):
+    """Pre-migration deploys lack review.account_flow_confirmations: the
+    coverage read fails inside a savepoint and every account row reports
+    flows_complete=false with flows_not_confirmed instead of 500ing."""
+
+    async def no_sleeves(_session):
+        return []
+
+    async def no_prices(*args):
+        return None, None
+
+    monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
+    monkeypatch.setattr(load_report, "_benchmark", no_prices)
+    from sqlalchemy.exc import OperationalError
+
+    class MissingTableDatabase(Database):
+        def __init__(self, results=()):
+            super().__init__(results)
+            self.first_read = True
+
+        async def execute(self, statement, params=None):
+            if isinstance(statement, TextClause):
+                return await super().execute(statement, params)
+            if self.first_read:
+                self.first_read = False
+                raise OperationalError("select", {}, Exception("UndefinedTable"))
+            return await super().execute(statement, params)
+
+    database = MissingTableDatabase(
+        [snapshots(), [external_flow()], [(ACCOUNT, "account")], OBSERVED]
+    )
+    response = await read_retro_scoreboard(database, **{"from": START, "to": END})
+    VALIDATOR.validate(response)
+    assert_nulls_explained(response)
+    (row,) = response["data"]
+    assert row["flows_complete"] is False
+    assert "flows_not_confirmed" in row["unmeasured_reason"].split(".")
 
 
 @pytest.mark.asyncio

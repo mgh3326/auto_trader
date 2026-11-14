@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account_value import AccountExternalFlow
+from app.services.account_value.completeness import acquire_account_lock
 from app.services.account_value.identity import valid_account_market
 
 
@@ -37,6 +38,7 @@ async def record_flow(
         raise ValueError("invalid currency, flow amount or flow ID")
     if not commit:
         return "preview"
+    await acquire_account_lock(session, flow.account)
     values = {
         "flow_id": flow.flow_id,
         "account": flow.account,

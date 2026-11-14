@@ -108,6 +108,7 @@ tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_ncp_job_timers_check.py
 tests/scripts/test_nhplug_collect_period.py
 tests/scripts/test_run_rob1040_crs24_refreeze.py
+tests/services/account_value/test_completeness.py
 tests/services/account_value/test_market_return.py
 tests/services/account_value/test_postgres_integration.py
 tests/services/action_report/common/test_canonicalize.py

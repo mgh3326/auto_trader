@@ -2,7 +2,17 @@
 
 from datetime import timedelta
 
-from sqlalchemy import TIMESTAMP, Column, Date, MetaData, Table, Text, insert, select
+from sqlalchemy import (
+    TIMESTAMP,
+    Column,
+    Date,
+    MetaData,
+    Table,
+    Text,
+    insert,
+    select,
+    text,
+)
 
 from app.services.account_value.identity import valid_account
 
@@ -32,6 +42,21 @@ def covered(start, end, records, flows):
     return True
 
 
+async def acquire_account_lock(session, account: str) -> None:
+    """Hold the per-account writer lock until the transaction ends.
+
+    Flow rows and confirmations commit on independent sessions, so a
+    confirmation could otherwise be written while a flow insert for the same
+    account is still in flight and become visible first. Taking the same
+    advisory lock on both writers makes the confirmation wait for the flow's
+    commit, restoring the ordering ``covered()`` assumes.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:account))"),
+        {"account": account},
+    )
+
+
 async def load_confirmations(session, start, end):
     result = await session.execute(
         select(confirmations).where(
@@ -50,6 +75,7 @@ async def record_confirmation(
         raise ValueError("invalid confirmation")
     if not commit:
         return "preview"
+    await acquire_account_lock(session, account)
     await session.execute(
         insert(confirmations).values(
             account=account,
