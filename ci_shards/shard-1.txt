@@ -296,6 +296,8 @@ tests/services/test_fill_event_handoff_kick_filter.py
 tests/services/test_fill_event_handoff_watch_kick.py
 tests/services/test_fill_handoff_lookback.py
 tests/services/test_kis_mock_preopen_approval_bridge.py
+tests/services/test_kis_us_inference_expiry.py
+tests/services/test_kis_us_inference_expiry_db.py
 tests/services/test_kr_preopen_news_brief_service.py
 tests/services/test_live_place_provenance.py
 tests/services/test_live_reconcile_metrics.py
