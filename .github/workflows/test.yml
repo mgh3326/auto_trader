@@ -64,6 +64,7 @@ jobs:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       with:
         ref: ${{ inputs.ref }}
+        fetch-depth: 0
 
     - name: Set up pinned Python and uv
       id: py
@@ -84,6 +85,33 @@ jobs:
 
     - name: Run Ruff formatter check
       run: uv run ruff format --check app/ tests/ research/ scripts/
+
+    - name: Expand-contract migration lint
+      if: github.event_name == 'pull_request'
+      run: |
+        set -euo pipefail
+        readarray -t lint_inputs < <(python3 - <<'PY'
+        import json
+        import os
+        import re
+        from pathlib import Path
+
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        body = event["pull_request"].get("body") or ""
+        task_ids = re.findall(r"(?m)^Mergewake-Task: ([0-9]+)\s*$", body)
+        if len(task_ids) != 1:
+            raise SystemExit("expected exactly one numeric Mergewake-Task trailer")
+        base_sha = event["pull_request"]["base"]["sha"]
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", base_sha):
+            raise SystemExit("expected pull_request.base.sha to be a full commit SHA")
+        print(base_sha)
+        print(task_ids[0])
+        PY
+        )
+        base_sha="${lint_inputs[0]}"
+        task_id="${lint_inputs[1]}"
+        git fetch --no-tags --depth=1 origin "${base_sha}"
+        python3 scripts/ci/migration_expand_contract_lint.py --base-ref FETCH_HEAD --head-ref HEAD --task-id "${task_id}"
 
     - name: Run ty
       run: uv run ty check app/ --error-on-warning
