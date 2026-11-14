@@ -89,10 +89,10 @@ def publish(root, run_id, facts, derived, metadata):
             stream.flush()
             os.fsync(stream.fileno())
 
-    def manifest_has_run():
-        return any(
-            record.get("run_id") == run_id for record in manifest_records(manifest)
-        )
+    recorded = next(
+        (r for r in manifest_records(manifest) if r.get("run_id") == run_id),
+        None,
+    )
 
     if directory.exists():
         # A previous publish may have died after the atomic rename but before
@@ -100,13 +100,19 @@ def publish(root, run_id, facts, derived, metadata):
         # If its bytes match the payloads we would publish, adopt the orphan
         # and complete only the missing manifest entry; anything else is an
         # unknown partition and stays write-once refused.
-        if not manifest_has_run() and all(
+        if recorded is None and all(
             path.is_file() and path.read_bytes() == data
             for path, data in zip(published, payloads, strict=True)
         ):
             append_manifest()
             return entry
         raise FileExistsError("partition already exists")
+    # The manifest survived but the partition directory did not (e.g. a crash
+    # before the parent-directory fsync). Republish only the identical entry;
+    # different content for a recorded run ID is a write-once violation that
+    # would leave the manifest hash pointing at foreign bytes.
+    if recorded is not None and recorded != entry:
+        raise FileExistsError("run ID already recorded with different content")
     # A retry of the same run ID after a mid-publish failure clears the
     # leftover staging tree; write-once applies only to published partitions.
     if staging.exists():
@@ -132,7 +138,7 @@ def publish(root, run_id, facts, derived, metadata):
         os.fsync(fd)
     finally:
         os.close(fd)
-    if not manifest_has_run():
+    if recorded is None:
         append_manifest()
     return entry
 

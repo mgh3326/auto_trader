@@ -360,6 +360,11 @@ class HistoryTest(unittest.TestCase):
             # Simulate losing the directory entry (crash before parent fsync):
             # the manifest record survives but the partition is gone.
             shutil.rmtree(Path(d) / "partitions" / "run")
+            # Different content for a recorded run ID is refused before any
+            # republish can put foreign bytes behind the recorded hash.
+            with self.assertRaises(FileExistsError):
+                publish(d, "run", [{"a": 9}], [{"b": 2}], meta)
+            self.assertFalse((Path(d) / "partitions" / "run").exists())
             entry = publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
             self.assertEqual(entry["run_id"], "run")
             records = (Path(d) / "manifest.jsonl").read_text().splitlines()
