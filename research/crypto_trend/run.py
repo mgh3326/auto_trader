@@ -159,6 +159,7 @@ def _metrics(cfg: Configuration) -> dict[str, object]:
         "no_signal_points": no_signal,
         "missing_grid_bars": sum(s.missing_grid_bars for s in sleeves),
         "max_gross_usd": cfg.max_gross_usd,
+        "max_gross_entry_usd": cfg.max_gross_entry_usd,
         "max_concurrent": cfg.max_concurrent,
         "pnl_by_symbol_usd": per_symbol,
         "long_pnl_usd": sum(e.pnl_usd for e in long_eps),
@@ -253,6 +254,13 @@ def cmd_backtest(root: Path) -> int:
     return 0
 
 
+def refuse_in_repository(root: Path) -> None:
+    """Raw archives and manifests must live outside this checkout (git)."""
+    checkout = Path(__file__).resolve().parents[2]
+    if root.resolve().is_relative_to(checkout):
+        raise ValueError(f"--root must be outside the repository: {root}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -261,6 +269,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--root", type=Path, required=True)
     args = parser.parse_args(argv)
     root: Path = args.root
+    try:
+        refuse_in_repository(root)
+    except ValueError as exc:
+        parser.error(str(exc))
     root.mkdir(parents=True, exist_ok=True)
     if args.command == "fetch":
         return cmd_fetch(root)

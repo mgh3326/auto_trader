@@ -82,7 +82,8 @@ class SleeveRun:
     symbol: str
     episodes: list[Episode] = field(default_factory=list)
     equity: list[float] = field(default_factory=list)  # sleeve P&L per grid bar
-    open_notional: list[float] = field(default_factory=list)
+    open_notional: list[float] = field(default_factory=list)  # marked at close
+    open_allocation: list[float] = field(default_factory=list)  # entry notional
     decisions: int = 0
     no_signal: int = 0
     entry_requests: int = 0
@@ -166,7 +167,13 @@ def run_sleeve(
                 mark += _liquidation_mark(position, last_close)
             last_mark = mark
         run.equity.append(last_mark)
-        run.open_notional.append(position.notional if position else 0.0)
+        if position is not None:
+            ref_close = last_close if last_close is not None else position.entry_px
+            run.open_notional.append(position.qty * ref_close)
+            run.open_allocation.append(position.notional)
+        else:
+            run.open_notional.append(0.0)
+            run.open_allocation.append(0.0)
 
         # 3. decide at the close of this bar, T = o + BAR_MS.
         decision_t = o + BAR_MS
@@ -238,7 +245,8 @@ class Configuration:
     equity: list[float]
     episodes: list[Episode]
     sleeves: list[SleeveRun]
-    max_gross_usd: float
+    max_gross_usd: float  # marked at each close (current exposure)
+    max_gross_entry_usd: float  # entry allocation (what the entry cap governs)
     max_concurrent: int
 
 
@@ -248,15 +256,22 @@ def _combine(name: str, base: float, sleeves: list[SleeveRun]) -> Configuration:
         assert len(sleeve.equity) == length, "sleeves must share one grid"
     equity = [base + sum(sleeve.equity[i] for sleeve in sleeves) for i in range(length)]
     max_gross = 0.0
+    max_alloc = 0.0
     max_concurrent = 0
     for i in range(length):
         gross = sum(sleeve.open_notional[i] for sleeve in sleeves)
-        count = sum(1 for sleeve in sleeves if sleeve.open_notional[i] > 0)
+        alloc = sum(sleeve.open_allocation[i] for sleeve in sleeves)
+        count = sum(1 for sleeve in sleeves if sleeve.open_allocation[i] > 0)
         max_gross = max(max_gross, gross)
+        max_alloc = max(max_alloc, alloc)
         max_concurrent = max(max_concurrent, count)
-    if max_gross > GROSS_CAPITAL_USD + 1e-9 or max_concurrent > MAX_CONCURRENT:
+    # The entry cap governs allocation (design stopping rule iii): an entry
+    # never takes allocation over the gross cap or over MAX_CONCURRENT. Marked
+    # exposure can rise above the cap when prices move; it is reported, not
+    # enforced by refusing entries.
+    if max_alloc > GROSS_CAPITAL_USD + 1e-9 or max_concurrent > MAX_CONCURRENT:
         raise AssertionError(
-            f"exposure cap breached: gross={max_gross} n={max_concurrent}"
+            f"entry cap breached: allocation={max_alloc} n={max_concurrent}"
         )
     episodes = [ep for sleeve in sleeves for ep in sleeve.episodes]
     episodes.sort(key=lambda ep: (ep.entry_ms, ep.symbol))
@@ -267,6 +282,7 @@ def _combine(name: str, base: float, sleeves: list[SleeveRun]) -> Configuration:
         episodes=episodes,
         sleeves=sleeves,
         max_gross_usd=max_gross,
+        max_gross_entry_usd=max_alloc,
         max_concurrent=max_concurrent,
     )
 
@@ -321,5 +337,6 @@ def run_cash(window_start_ms: int, window_end_ms: int) -> Configuration:
         episodes=[],
         sleeves=[],
         max_gross_usd=0.0,
+        max_gross_entry_usd=0.0,
         max_concurrent=0,
     )

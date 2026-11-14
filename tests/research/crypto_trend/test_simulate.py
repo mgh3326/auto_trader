@@ -237,7 +237,7 @@ def test_candidate_respects_the_gross_and_concurrency_caps() -> None:
     market = {symbol: _data(closes) for symbol in SYMBOLS}
     cfg = run_candidate(market, SYMBOLS, 1, T0, _end(closes))
     assert cfg.max_concurrent == 4
-    assert cfg.max_gross_usd <= GROSS_CAPITAL_USD + 1e-9
+    assert cfg.max_gross_entry_usd <= GROSS_CAPITAL_USD + 1e-9
     assert all(e.notional_usd <= CAP_USD + 1e-12 for e in cfg.episodes)
 
     btc = run_btc_long_only(market, 1, T0, _end(closes))
@@ -260,3 +260,23 @@ def test_drawdown_and_net_return_on_a_small_equity_path() -> None:
     assert max_drawdown(100.0, equity) == pytest.approx(0.5)  # 120 -> 60
     assert net_return(100.0, equity) == pytest.approx(0.5)
     assert sharpe(100.0, [100.0, 100.0]) is None  # no variance
+
+
+@pytest.mark.unit
+def test_marked_exposure_rises_above_entry_allocation_when_prices_double() -> None:
+    # Entry near 120 with 60 USD allocation; price then doubles to 240.
+    closes = [100.0] * 6 + [120.0] * 2 + [240.0] * 4
+    run = run_sleeve(
+        "BTCUSDT",
+        _data(closes),
+        1,
+        long_only=False,
+        window_start_ms=T0,
+        window_end_ms=_end(closes),
+    )
+    assert run.open_allocation[-1] <= CAP_USD + 1e-9
+    assert run.open_notional[-1] == pytest.approx(2 * run.open_allocation[-1])
+    market = {symbol: _data(closes) for symbol in SYMBOLS}
+    cfg = run_candidate(market, SYMBOLS, 1, T0, _end(closes))
+    assert cfg.max_gross_entry_usd <= GROSS_CAPITAL_USD + 1e-9
+    assert cfg.max_gross_usd > cfg.max_gross_entry_usd
