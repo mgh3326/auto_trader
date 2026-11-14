@@ -272,41 +272,93 @@ async def test_flow_confirmation_revocation_commit_as_select_insert_role(db_sess
         record_revocation,
     )
 
-    app_role_available = await db_session.scalar(
-        text(
-            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') "
-            "AND (current_user = 'at_app' OR pg_has_role(current_user, 'at_app', 'MEMBER') "
-            "OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user))"
+    role_exists = await db_session.scalar(
+        text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')")
+    )
+    created_at_app = False
+    try:
+        if not role_exists:
+            await db_session.execute(text("CREATE ROLE at_app NOLOGIN"))
+            created_at_app = True
+            await db_session.execute(text("GRANT USAGE ON SCHEMA review TO at_app"))
+        await db_session.execute(
+            text("GRANT SELECT ON review.account_flow_confirmations TO at_app")
         )
-    )
-    if not app_role_available:
-        pytest.skip("CI database cannot assume the at_app role")
 
-    account = "upbit:upbit:" + uuid4().hex * 2
-    day = date(2026, 1, 3)
-    await record_confirmation(
-        db_session, account, day, day, "operator", "checked", commit=True
-    )
-    confirmation_id = await db_session.scalar(
-        text(
-            "SELECT id FROM review.account_flow_confirmations WHERE account = :account"
-        ),
-        {"account": account},
-    )
-    assert confirmation_id is not None
-
-    await db_session.execute(text("SET LOCAL ROLE at_app"))
-    assert await db_session.scalar(text("SELECT current_user")) == "at_app"
-    assert (
-        await record_revocation(
-            db_session,
-            confirmation_id,
-            "operator",
-            "least privilege check",
-            commit=True,
+        migration_path = Path(
+            "alembic/versions/20261115_hk4617_flow_confirmation_revocations.py"
         )
-        == "revoked"
-    )
+        migration_spec = importlib.util.spec_from_file_location(
+            "flow_revoke_grant_migration", migration_path
+        )
+        migration = importlib.util.module_from_spec(migration_spec)
+        migration_spec.loader.exec_module(migration)
+
+        def grant_at_app(connection):
+            with Operations.context(MigrationContext.configure(connection)):
+                migration._grant_at_app()
+
+        connection = await db_session.connection()
+        await connection.run_sync(grant_at_app)
+
+        account = "upbit:upbit:" + uuid4().hex * 2
+        day = date(2026, 1, 3)
+        await record_confirmation(
+            db_session, account, day, day, "operator", "checked", commit=True
+        )
+        confirmation_id = await db_session.scalar(
+            text(
+                "SELECT id FROM review.account_flow_confirmations "
+                "WHERE account = :account"
+            ),
+            {"account": account},
+        )
+        assert confirmation_id is not None
+
+        await db_session.execute(text("SET LOCAL ROLE at_app"))
+        assert await db_session.scalar(text("SELECT current_user")) == "at_app"
+        assert await db_session.scalar(
+            text(
+                "SELECT has_table_privilege('at_app', "
+                "'review.account_flow_confirmation_revocations', 'SELECT') "
+                "AND has_table_privilege('at_app', "
+                "'review.account_flow_confirmation_revocations', 'INSERT')"
+            )
+        )
+        assert not await db_session.scalar(
+            text(
+                "SELECT has_table_privilege('at_app', "
+                "'review.account_flow_confirmations', 'UPDATE')"
+            )
+        )
+        assert not await db_session.scalar(
+            text(
+                "SELECT has_table_privilege('at_app', "
+                "'review.account_flow_confirmation_revocations', 'UPDATE')"
+            )
+        )
+        assert (
+            await record_revocation(
+                db_session,
+                confirmation_id,
+                "operator",
+                "least privilege check",
+                commit=True,
+            )
+            == "revoked"
+        )
+    finally:
+        await db_session.rollback()
+        if created_at_app:
+            await db_session.execute(
+                text(
+                    "REVOKE ALL ON review.account_flow_confirmations, "
+                    "review.account_flow_confirmation_revocations FROM at_app"
+                )
+            )
+            await db_session.execute(text("REVOKE ALL ON SCHEMA review FROM at_app"))
+            await db_session.execute(text("DROP ROLE at_app"))
+            await db_session.commit()
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,17 @@ branch_labels = None
 depends_on = None
 
 
+def _grant_at_app() -> None:
+    op.execute("""
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
+                GRANT SELECT, INSERT
+                ON review.account_flow_confirmation_revocations TO at_app;
+            END IF;
+        END $$
+    """)
+
+
 def upgrade() -> None:
     op.execute("""
         CREATE TABLE review.account_flow_confirmation_revocations (
@@ -24,14 +35,7 @@ def upgrade() -> None:
         ON review.account_flow_confirmation_revocations
         FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()
     """)
-    op.execute("""
-        DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
-                GRANT SELECT, INSERT
-                ON review.account_flow_confirmation_revocations TO at_app;
-            END IF;
-        END $$
-    """)
+    _grant_at_app()
 
 
 def downgrade() -> None:
