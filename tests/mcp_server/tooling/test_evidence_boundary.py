@@ -27,10 +27,12 @@ from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillEvidence,
     FillVerdict,
 )
+from app.services.execution_ledger.normalizers import normalize_upbit_order
 from app.services.execution_ledger.recorded_fills import (
     order_identity_from_fields,
     order_identity_matches,
 )
+from app.services.execution_ledger.supersede import order_identity
 
 
 def _fill(verdict, qty=Decimal("0"), price=None, code="test", detail=""):
@@ -291,6 +293,49 @@ def test_order_identity_kis_uses_order_time_trading_day():
     assert order[7] is not None  # trading day proven for KIS
 
 
+def test_order_identity_crypto_matches_prefixed_order_to_stripped_fill():
+    """LiveOrderLedger stores "KRW-BTC"; execution_ledger stores "BTC".
+
+    Both must fold to one order identity or a recorded crypto fill is
+    invisible to the boundary (mergewake r4575675668).
+    """
+    order = order_identity_from_fields(
+        broker="upbit",
+        instrument_type="crypto",
+        symbol="KRW-BTC",  # the LiveOrderLedger stored form
+        side="buy",
+        currency="KRW",
+        broker_order_id="uuid-1",
+        order_time=None,
+    )
+    fill = normalize_upbit_order(
+        {
+            "uuid": "uuid-1",
+            "market": "KRW-BTC",
+            "side": "bid",
+            "state": "done",
+            "executed_volume": "0.5",
+            "price": "60000000",
+            "paid_fee": "0",
+            "created_at": "2026-11-14T01:00:00",
+            "trades": [],
+        }
+    )[0]
+    fill_row = SimpleNamespace(
+        broker="upbit",
+        account_mode="live",
+        instrument_type=fill["instrument_type"],
+        symbol=fill["symbol"],  # the execution_ledger stored form
+        side=fill["side"],
+        currency=fill["currency"],
+        broker_order_id=fill["order_id"],
+        filled_at=datetime(2026, 11, 14, 1, 0, tzinfo=UTC),
+        source="reconciler",
+    )
+    assert fill["symbol"] == "BTC"
+    assert order_identity_matches(order, order_identity(fill_row))
+
+
 # ---------------------------------------------------------------------------
 # kernel wiring: both scopes reject contradictory / incomplete evidence
 # ---------------------------------------------------------------------------
@@ -373,6 +418,74 @@ async def test_live_kernel_incomplete_fill_evidence_never_books(scope):
     fill.assert_not_awaited()
     update.assert_not_awaited()
     block.assert_awaited_once()
+
+
+def _crypto_live_row():
+    return SimpleNamespace(
+        id=3,
+        order_no="uuid-1",
+        broker="upbit",
+        market="crypto",
+        symbol="KRW-BTC",  # the LiveOrderLedger stored form
+        side="buy",
+        currency="KRW",
+        trade_date=datetime(2026, 11, 14, 1, 0, tzinfo=UTC),
+        filled_qty=Decimal("0"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["full", "terminal_only"])
+async def test_live_kernel_crypto_recorded_fill_is_contradictory(scope):
+    """The real `_recorded_positive_fill_qty` and identity matching run;
+    only the session is faked (mergewake r4575675668 — before the
+    `_symbol_key` fix the "KRW-BTC" order could not see its "BTC" fill and
+    this row closed as cancelled)."""
+    fill_row = SimpleNamespace(
+        broker="upbit",
+        account_mode="live",
+        instrument_type="crypto",
+        symbol="BTC",  # the execution_ledger stored form
+        side="buy",
+        currency="KRW",
+        broker_order_id="uuid-1",
+        filled_at=datetime(2026, 11, 14, 1, 0, tzinfo=UTC),
+        filled_qty=Decimal("0.5"),
+        source="reconciler",
+    )
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [fill_row]
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+
+    class _SessionCM:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *exc):
+            return False
+
+    session_factory = MagicMock(return_value=MagicMock(return_value=_SessionCM()))
+    evidence = _fill(FillVerdict.CANCELLED)
+    adapter = SimpleNamespace(fetch_evidence=AsyncMock(return_value=evidence))
+    with (
+        patch.object(live, "get_evidence_adapter", return_value=adapter),
+        patch.object(live, "_order_session_factory", session_factory),
+        patch.object(
+            live, "_update_live_ledger_outcome", new_callable=AsyncMock
+        ) as update,
+        patch.object(
+            live, "_record_live_boundary_block", new_callable=AsyncMock
+        ) as block,
+    ):
+        out = await live._reconcile_one_live_row(
+            _crypto_live_row(), dry_run=False, scope=scope
+        )
+    assert out["action"] == "noop_evidence_boundary"
+    assert out["reason_code"] == "evidence_contradiction"
+    update.assert_not_awaited()
+    block.assert_awaited_once()
+    assert block.await_args.kwargs["reason_code"] == "evidence_contradiction"
 
 
 @pytest.mark.asyncio

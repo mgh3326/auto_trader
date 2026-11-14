@@ -40,6 +40,7 @@ from typing import Any, Protocol
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import trade_day_kst
+from app.services.execution_ledger.normalizers import _strip_crypto_prefix
 
 PROVISIONAL_SOURCE = "websocket"
 AUTHORITATIVE_SOURCES = frozenset({"reconciler", "manual_import"})
@@ -75,10 +76,18 @@ def _instrument(value: Any) -> str:
 
 
 def _symbol_key(instrument_type: str, symbol: object) -> str:
+    """Fold each instrument's stored symbol formats into one identity key.
+
+    ``equity_us`` collapses BRK/B, BRK-B and BRK.B (app/core/symbol.py only);
+    ``crypto`` strips the KRW-/USDT- prefix so a LiveOrderLedger symbol
+    (``KRW-BTC``) and an execution_ledger symbol (``BTC``) are one identity.
+    The strip is idempotent — rows already stored prefix-free are unchanged.
+    """
     text = str(symbol or "").strip()
     if instrument_type == "equity_us":
-        # BRK/B, BRK-B and BRK.B are one US symbol (app/core/symbol.py only).
         return to_db_symbol(text).upper()
+    if instrument_type == "crypto":
+        return _strip_crypto_prefix(text)
     return text.upper()
 
 
