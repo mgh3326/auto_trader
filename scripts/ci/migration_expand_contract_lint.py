@@ -46,29 +46,6 @@ EXPANSION_OPS = frozenset(
         "inline_literal",
     }
 )
-SAFE_BUILTIN_CALLS = frozenset(
-    {
-        "RuntimeError",
-        "ValueError",
-        "TypeError",
-        "any",
-        "all",
-        "bool",
-        "dict",
-        "float",
-        "int",
-        "isinstance",
-        "len",
-        "list",
-        "max",
-        "min",
-        "set",
-        "str",
-        "sum",
-        "tuple",
-        "zip",
-    }
-)
 SAFE_SQLALCHEMY_CALLS = frozenset(
     {
         "ARRAY",
@@ -104,142 +81,322 @@ SAFE_SQLALCHEMY_CALLS = frozenset(
         "VARCHAR",
         "false",
         "column",
-        "inspect",
         "now",
         "table",
         "text",
     }
 )
+MODULE_METADATA = frozenset(
+    {"revision", "down_revision", "branch_labels", "depends_on"}
+)
 
 
-def _reachable_upgrade_functions(
-    tree: ast.Module,
-) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    functions = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    if "upgrade" not in functions:
-        return []
-
-    reachable: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
-    pending = ["upgrade"]
-    visited: set[str] = set()
-    while pending:
-        name = pending.pop()
-        if name in visited:
-            continue
-        visited.add(name)
-        function = functions.get(name)
-        if function is None:
-            continue
-        reachable.append(function)
-        for node in ast.walk(function):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in functions
-                and node.func.id not in visited
-            ):
-                pending.append(node.func.id)
-    return reachable
+def _root_name(node: ast.AST) -> str | None:
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
 
 
-def _upgrade_entrypoint_problem(tree: ast.Module) -> str | None:
-    definitions = [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "upgrade"
-    ]
-    nested_definitions = [
-        node
-        for statement in tree.body
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-        for node in ast.walk(statement)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "upgrade"
-    ]
-    reassigned = [
-        node
-        for statement in tree.body
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-        for node in ast.walk(statement)
-        if isinstance(node, ast.Name)
-        and node.id == "upgrade"
-        and isinstance(node.ctx, ast.Store)
-    ]
-    if len(definitions) != 1:
-        return "migration must define one top-level upgrade() function"
+def _matching_file_marker(
+    source_lines: list[str], tree: ast.Module, task_id: str
+) -> bool:
+    first_non_docstring = 0
     if (
-        nested_definitions
-        or reassigned
-        or isinstance(definitions[0], ast.AsyncFunctionDef)
+        tree.body
+        and isinstance(tree.body[0], ast.Expr)
+        and isinstance(tree.body[0].value, ast.Constant)
+        and isinstance(tree.body[0].value.value, str)
     ):
-        return "upgrade must be a plain top-level function definition"
+        first_non_docstring = 1
+    header_end = (
+        tree.body[first_non_docstring].lineno - 1
+        if len(tree.body) > first_non_docstring
+        else len(source_lines)
+    )
+    return any(
+        (match := CONTRACT_MARKER_RE.fullmatch(line)) is not None
+        and match.group(1) == task_id
+        for line in source_lines[:header_end]
+    )
+
+
+def _function_shape_problem(node: ast.FunctionDef) -> str | None:
+    if node.decorator_list:
+        return f"{node.name}() has decorators"
+    if (
+        node.args.posonlyargs
+        or node.args.args
+        or node.args.kwonlyargs
+        or node.args.vararg
+        or node.args.kwarg
+        or node.args.defaults
+        or any(default is not None for default in node.args.kw_defaults)
+    ):
+        return f"{node.name}() has parameters or defaults"
+    if (
+        node.returns is not None
+        or node.type_comment
+        or getattr(node, "type_params", ())
+    ):
+        return f"{node.name}() has annotations or type parameters"
     return None
 
 
-def _module_level_calls(tree: ast.Module) -> list[ast.Call]:
-    calls: list[ast.Call] = []
-    pending: list[ast.AST] = list(tree.body)
-    while pending:
-        node = pending.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+def _allowed_import(node: ast.Import | ast.ImportFrom) -> tuple[bool, set[str]]:
+    if isinstance(node, ast.Import):
+        if len(node.names) != 1:
+            return False, set()
+        alias = node.names[0]
+        if alias.name == "sqlalchemy" and alias.asname == "sa":
+            return True, {"sa"}
+        return False, set()
+
+    allowed = {
+        ("alembic", "op", None),
+        ("sqlalchemy.dialects", "postgresql", None),
+        ("sqlalchemy", "text", None),
+    }
+    names = {(node.module or "", alias.name, alias.asname) for alias in node.names}
+    bound = {alias.asname or alias.name for alias in node.names}
+    return len(names) == len(node.names) and bool(names) and names <= allowed, bound
+
+
+def _module_shape_problem(tree: ast.Module) -> str | None:
+    functions: dict[str, ast.FunctionDef] = {}
+    metadata: dict[str, ast.AST] = {}
+    imported_names: set[str] = set()
+    has_docstring = bool(
+        tree.body
+        and isinstance(tree.body[0], ast.Expr)
+        and isinstance(tree.body[0].value, ast.Constant)
+        and isinstance(tree.body[0].value.value, str)
+    )
+    function_phase = False
+
+    for index, node in enumerate(tree.body):
+        if (
+            index == 0
+            and isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
             continue
-        if isinstance(node, ast.Call):
-            calls.append(node)
-        pending.extend(ast.iter_child_nodes(node))
-    return calls
-
-
-def _safe_imported_calls(tree: ast.Module) -> set[str]:
-    imports: dict[str, list[tuple[str, str]]] = {}
-    for node in tree.body:
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name != "*":
-                    imports.setdefault(alias.asname or alias.name, []).append(
-                        (node.module or "", alias.name)
-                    )
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                imports.setdefault(alias.asname or alias.name.split(".")[0], []).append(
-                    (alias.name, "")
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if function_phase:
+                return f"line {node.lineno}: import appears after migration functions"
+            allowed, names = _allowed_import(node)
+            if not allowed:
+                return f"line {node.lineno}: import is outside the migration allowlist"
+            if imported_names & names:
+                return f"line {node.lineno}: imported name is rebound"
+            imported_names.update(names)
+            continue
+        if isinstance(node, ast.Assign):
+            if function_phase:
+                return (
+                    f"line {node.lineno}: assignment appears after migration functions"
                 )
-    safe_modules = {"sqlalchemy", "sqlalchemy.sql", "sqlalchemy.sql.expression"}
-    safe = {
-        name
-        for name, origins in imports.items()
-        if len(origins) == 1
-        and origins[0][0] in safe_modules
-        and origins[0][1] in {"inspect", "text"}
-    }
-    reassigned = {
-        name.id
-        for node in tree.body
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
-        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-        for name in ast.walk(target)
-        if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
-    }
-    return safe - reassigned
+            if (
+                len(node.targets) != 1
+                or not isinstance(node.targets[0], ast.Name)
+                or node.targets[0].id not in MODULE_METADATA
+            ):
+                return f"line {node.lineno}: only migration metadata assignments are allowed"
+            name = node.targets[0].id
+            if name in metadata:
+                return (
+                    f"line {node.lineno}: migration metadata {name!r} is assigned twice"
+                )
+            try:
+                ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                return f"line {node.lineno}: migration metadata {name!r} is not literal"
+            metadata[name] = node.value
+            continue
+        if isinstance(node, ast.FunctionDef):
+            function_phase = True
+            if node.name not in {"upgrade", "downgrade"} or node.name in functions:
+                return f"line {node.lineno}: only one upgrade() and downgrade() are allowed"
+            problem = _function_shape_problem(node)
+            if problem:
+                return f"line {node.lineno}: {problem}"
+            functions[node.name] = node
+            continue
+        return f"line {getattr(node, 'lineno', 1)}: {type(node).__name__} is outside the module grammar"
+
+    if not has_docstring:
+        return "migration must start with a module docstring"
+    if set(functions) != {"upgrade", "downgrade"}:
+        return "migration must define exactly upgrade() and downgrade()"
+    if metadata.keys() != MODULE_METADATA:
+        return "all four migration metadata fields must be literal assignments"
+    if "op" not in imported_names:
+        return "migration must use the allowed 'from alembic import op' import"
+    return _upgrade_body_problem(functions["upgrade"], imported_names)
 
 
-def _module_assigned_names(tree: ast.Module) -> set[str]:
-    return {
-        node.id
-        for statement in tree.body
-        if not isinstance(
-            statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+def _expression_problem(
+    node: ast.AST,
+    imported_names: set[str],
+    batch_name: str | None = None,
+    allow_batch_context: bool = False,
+) -> str | None:
+    if isinstance(node, ast.Constant):
+        if node.value is None or type(node.value) in {bool, int, float, str, bytes}:
+            return None
+        return "literal value is outside the migration grammar"
+    if isinstance(node, ast.Name):
+        return f"name {node.id!r} cannot be checked statically"
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        for element in node.elts:
+            problem = _expression_problem(
+                element, imported_names, batch_name, allow_batch_context
+            )
+            if problem:
+                return problem
+        return None
+    if isinstance(node, ast.Dict):
+        for item in [*node.keys, *node.values]:
+            if item is not None:
+                problem = _expression_problem(
+                    item, imported_names, batch_name, allow_batch_context
+                )
+                if problem:
+                    return problem
+        return None
+    if isinstance(node, ast.Attribute):
+        root = _root_name(node)
+        if (
+            isinstance(node.value, ast.Name)
+            and root in {"sa", "postgresql"}
+            and root in imported_names
+            and node.attr in SAFE_SQLALCHEMY_CALLS
+        ):
+            return None
+        return "attribute access cannot be checked statically"
+    if isinstance(node, ast.Call):
+        if any(isinstance(argument, ast.Starred) for argument in node.args):
+            return "starred arguments cannot be checked statically"
+        if any(keyword.arg is None for keyword in node.keywords):
+            return "expanded keyword arguments cannot be checked statically"
+        method = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+        root = _root_name(node.func) if isinstance(node.func, ast.Attribute) else None
+        if root == "op":
+            if "op" not in imported_names:
+                return "op call lacks the allowed Alembic import"
+            direct_op_method = (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "op"
+            )
+            bind_execute = (
+                method in SQL_EXECUTION_METHODS
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Call)
+                and isinstance(node.func.value.func, ast.Attribute)
+                and isinstance(node.func.value.func.value, ast.Name)
+                and node.func.value.func.value.id == "op"
+                and node.func.value.func.attr == "get_bind"
+                and not node.func.value.args
+                and not node.func.value.keywords
+            )
+            if not direct_op_method and not bind_execute:
+                return "indirect op attribute call cannot be checked statically"
+            if method not in EXPANSION_OPS | DESTRUCTIVE_OPS | SQL_EXECUTION_METHODS:
+                return f"operation {method!r} is outside the op allowlist"
+            if method == "batch_alter_table" and not allow_batch_context:
+                return "batch_alter_table must use the closed with-statement form"
+        elif root in {"sa", "postgresql"}:
+            if root not in imported_names:
+                return f"{root} call lacks its allowed import"
+            if not (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == root
+            ):
+                return (
+                    "indirect SQLAlchemy constructor call cannot be checked statically"
+                )
+            if method not in SAFE_SQLALCHEMY_CALLS:
+                return f"constructor {method!r} is outside the SQLAlchemy allowlist"
+        elif isinstance(node.func, ast.Name) and node.func.id == "text":
+            if "text" not in imported_names:
+                return "text() requires the allowed SQLAlchemy import"
+        elif root == batch_name:
+            if not (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == batch_name
+            ):
+                return "indirect batch operation cannot be checked statically"
+            if method not in EXPANSION_OPS | DESTRUCTIVE_OPS:
+                return f"batch operation {method!r} is outside the op allowlist"
+        else:
+            return "function call cannot be checked statically"
+        for argument in node.args:
+            problem = _expression_problem(
+                argument, imported_names, batch_name, allow_batch_context
+            )
+            if problem:
+                return problem
+        for keyword in node.keywords:
+            problem = _expression_problem(
+                keyword.value, imported_names, batch_name, allow_batch_context
+            )
+            if problem:
+                return problem
+        return None
+    return f"{type(node).__name__} is outside the migration expression grammar"
+
+
+def _upgrade_body_problem(
+    function: ast.FunctionDef, imported_names: set[str]
+) -> str | None:
+    for statement in function.body:
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+            problem = _expression_problem(statement.value, imported_names)
+            if problem:
+                return f"line {statement.lineno}: {problem}"
+            continue
+        if isinstance(statement, ast.With) and len(statement.items) == 1:
+            item = statement.items[0]
+            context = item.context_expr
+            alias = item.optional_vars
+            if (
+                not isinstance(context, ast.Call)
+                or not isinstance(context.func, ast.Attribute)
+                or context.func.attr != "batch_alter_table"
+                or not isinstance(context.func.value, ast.Name)
+                or context.func.value.id != "op"
+                or not isinstance(alias, ast.Name)
+            ):
+                return f"line {statement.lineno}: with statement is outside the batch grammar"
+            context_problem = _expression_problem(
+                context, imported_names, allow_batch_context=True
+            )
+            if context_problem:
+                return f"line {statement.lineno}: {context_problem}"
+            for body_statement in statement.body:
+                if not (
+                    isinstance(body_statement, ast.Expr)
+                    and isinstance(body_statement.value, ast.Call)
+                ):
+                    return f"line {body_statement.lineno}: batch body must contain op calls"
+                problem = _expression_problem(
+                    body_statement.value, imported_names, alias.id
+                )
+                if problem:
+                    return f"line {body_statement.lineno}: {problem}"
+            continue
+        return (
+            f"line {statement.lineno}: upgrade body must contain only allowed op calls"
         )
-        for node in ast.walk(statement)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-    }
+    return None
 
 
-def _literal_sql(node: ast.AST, imported_calls: set[str]) -> str | None:
+def _literal_sql(node: ast.AST, imported_names: set[str]) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if (
@@ -247,7 +404,7 @@ def _literal_sql(node: ast.AST, imported_calls: set[str]) -> str | None:
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "text"
         and isinstance(node.func.value, ast.Name)
-        and node.func.value.id in {"sa", "sqlalchemy"}
+        and node.func.value.id == "sa"
         and len(node.args) == 1
         and not node.keywords
         and isinstance(node.args[0], ast.Constant)
@@ -257,7 +414,8 @@ def _literal_sql(node: ast.AST, imported_calls: set[str]) -> str | None:
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id in imported_calls
+        and node.func.id == "text"
+        and "text" in imported_names
         and len(node.args) == 1
         and not node.keywords
         and isinstance(node.args[0], ast.Constant)
@@ -265,44 +423,6 @@ def _literal_sql(node: ast.AST, imported_calls: set[str]) -> str | None:
     ):
         return node.args[0].value
     return None
-
-
-def _root_name(node: ast.AST) -> str | None:
-    while isinstance(node, ast.Attribute):
-        node = node.value
-    return node.id if isinstance(node, ast.Name) else None
-
-
-def _batch_receiver_names(
-    functions: list[ast.FunctionDef | ast.AsyncFunctionDef],
-) -> set[str]:
-    candidates: set[str] = set()
-    for function in functions:
-        for node in ast.walk(function):
-            if isinstance(node, (ast.With, ast.AsyncWith)):
-                for item in node.items:
-                    context = item.context_expr
-                    if (
-                        isinstance(context, ast.Call)
-                        and isinstance(context.func, ast.Attribute)
-                        and context.func.attr == "batch_alter_table"
-                        and isinstance(context.func.value, ast.Name)
-                        and context.func.value.id == "op"
-                        and isinstance(item.optional_vars, ast.Name)
-                    ):
-                        candidates.add(item.optional_vars.id)
-    return {
-        name
-        for name in candidates
-        if sum(
-            isinstance(node, ast.Name)
-            and node.id == name
-            and isinstance(node.ctx, ast.Store)
-            for function in functions
-            for node in ast.walk(function)
-        )
-        == 1
-    }
 
 
 def _has_contract_marker(
@@ -335,14 +455,6 @@ def _has_contract_marker(
     return match is not None and match.group(1) == task_id
 
 
-def _argument(
-    call: ast.Call, keywords: dict[str | None, ast.AST], name: str, position: int
-) -> ast.AST | None:
-    if len(call.args) > position:
-        return call.args[position]
-    return keywords.get(name)
-
-
 def _alter_column_problem(call: ast.Call) -> str | None:
     if any(isinstance(argument, ast.Starred) for argument in call.args):
         return "alter_column uses dynamic *args"
@@ -370,8 +482,7 @@ def _alter_column_problem(call: ast.Call) -> str | None:
         return "alter_column uses an unsupported keyword"
     if len(call.args) > 7:
         return "alter_column has positional arguments outside the checked signature"
-
-    nullable = _argument(call, keywords, "nullable", 2)
+    nullable = call.args[2] if len(call.args) > 2 else keywords.get("nullable")
     if nullable is not None:
         if not isinstance(nullable, ast.Constant) or (
             nullable.value is not None and type(nullable.value) is not bool
@@ -379,14 +490,12 @@ def _alter_column_problem(call: ast.Call) -> str | None:
             return "alter_column nullable value cannot be checked statically"
         if nullable.value is False:
             return "alter_column tightens a column to NOT NULL"
-
-    new_name = _argument(call, keywords, "new_column_name", 5)
+    new_name = call.args[5] if len(call.args) > 5 else keywords.get("new_column_name")
     if new_name is not None and not (
         isinstance(new_name, ast.Constant) and new_name.value is None
     ):
         return "alter_column renames a column or uses a dynamic new_column_name"
-
-    type_value = _argument(call, keywords, "type_", 6)
+    type_value = call.args[6] if len(call.args) > 6 else keywords.get("type_")
     if type_value is not None and not (
         isinstance(type_value, ast.Constant) and type_value.value is None
     ):
@@ -394,186 +503,96 @@ def _alter_column_problem(call: ast.Call) -> str | None:
     return None
 
 
-def violations(source: str, task_id: str) -> list[str]:
-    """Check only the closed, statically safe migration grammar."""
+def _operation_problem(call: ast.Call, imported_names: set[str]) -> str | None:
+    method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+    root = _root_name(call.func.value) if isinstance(call.func, ast.Attribute) else None
+    if method in SQL_EXECUTION_METHODS and root == "op":
+        sql_arg = (
+            call.args[0]
+            if call.args
+            else next(
+                (
+                    kw.value
+                    for kw in call.keywords
+                    if kw.arg in {"sqltext", "statement"}
+                ),
+                None,
+            )
+        )
+        sql = _literal_sql(sql_arg, imported_names) if sql_arg is not None else None
+        if sql is None:
+            return f"{method} SQL is not a string literal"
+        match = RAW_SQL_RE.search(sql)
+        if match:
+            return f"{method} contains destructive SQL ({match.group(0)})"
+        return None
+    if method in DESTRUCTIVE_OPS:
+        return f"{method} is a destructive schema operation"
+    if method == "alter_column":
+        return _alter_column_problem(call)
+    return None
 
+
+def violations(source: str, task_id: str) -> list[str]:
+    """Check a closed module grammar before inspecting migration operations."""
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
         return [f"line {exc.lineno or 1}: migration is not valid Python: {exc.msg}"]
 
-    source_lines = source.splitlines()
-    entrypoint_problem = _upgrade_entrypoint_problem(tree)
-    if entrypoint_problem:
-        return [f"line 1: {entrypoint_problem}"]
-    functions = _reachable_upgrade_functions(tree)
-    if not functions:
-        return ["line 1: upgrade() has no statically reachable function body"]
-    module_functions = {
-        node.name
+    lines = source.splitlines()
+    shape_problem = _module_shape_problem(tree)
+    if shape_problem:
+        if _matching_file_marker(lines, tree, task_id):
+            return []
+        return [
+            f"line 1: migration module shape is indeterminate: {shape_problem}; contract marker required"
+        ]
+
+    imported_names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            imported_names.update(
+                alias.asname or alias.name.split(".")[0] for alias in node.names
+            )
+        elif isinstance(node, ast.ImportFrom):
+            imported_names.update(alias.asname or alias.name for alias in node.names)
+    upgrade = next(
+        node
         for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
+    )
+    batch_names = {
+        item.optional_vars.id
+        for statement in upgrade.body
+        if isinstance(statement, ast.With)
+        for item in statement.items
+        if isinstance(item.optional_vars, ast.Name)
     }
-    safe_imported_calls = _safe_imported_calls(tree)
-    module_shadowed_names = _module_assigned_names(tree)
-    for function in functions:
-        module_shadowed_names.update(
-            node.id
-            for node in ast.walk(function)
-            if isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Store)
-            and node.id in {"op", "sa", "sqlalchemy", "postgresql"}
-        )
-        safe_imported_calls.difference_update(
-            node.id
-            for node in ast.walk(function)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-        )
-    batch_names = _batch_receiver_names(functions)
     parents = {
         child: parent
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
     found: list[str] = []
-
-    for call in _module_level_calls(tree):
-        if not _has_contract_marker(source_lines, call, task_id, parents, batch_names):
-            found.append(
-                f"line {call.lineno}: module-level call cannot be checked statically"
-            )
-
-    for function in functions:
-        shadowed_names = {
-            node.id
-            for node in ast.walk(function)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-        }
-        shadowed_names.update(
-            argument.arg
-            for argument in [
-                *function.args.posonlyargs,
-                *function.args.args,
-                *function.args.kwonlyargs,
-            ]
+    for call in (node for node in ast.walk(upgrade) if isinstance(node, ast.Call)):
+        message = _operation_problem(call, imported_names)
+        root = (
+            _root_name(call.func.value)
+            if isinstance(call.func, ast.Attribute)
+            else None
         )
-        if function.args.vararg is not None:
-            shadowed_names.add(function.args.vararg.arg)
-        if function.args.kwarg is not None:
-            shadowed_names.add(function.args.kwarg.arg)
-        for node in ast.walk(function):
-            if isinstance(node, ast.Import):
-                shadowed_names.update(
-                    alias.asname or alias.name.split(".")[0] for alias in node.names
-                )
-            elif isinstance(node, ast.ImportFrom):
-                shadowed_names.update(
-                    alias.asname or alias.name
-                    for alias in node.names
-                    if alias.name != "*"
-                )
-        loop_calls = {
-            id(child)
-            for loop in ast.walk(function)
-            if isinstance(loop, (ast.For, ast.AsyncFor, ast.While))
-            for child in ast.walk(loop)
-            if isinstance(child, ast.Call)
-        }
-        for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
-            method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
-            root = (
-                _root_name(call.func.value)
-                if isinstance(call.func, ast.Attribute)
-                else None
-            )
-            message: str | None = None
-
-            if root in {"op", "sa", "sqlalchemy", "postgresql"} and (
-                root in shadowed_names or root in module_shadowed_names
-            ):
-                message = f"namespace {root!r} is rebound inside upgrade"
-            elif method in SQL_EXECUTION_METHODS:
-                sql_argument = (
-                    call.args[0]
-                    if call.args
-                    else next(
-                        (
-                            keyword.value
-                            for keyword in call.keywords
-                            if keyword.arg in {"sqltext", "statement"}
-                        ),
-                        None,
-                    )
-                )
-                sql = (
-                    _literal_sql(sql_argument, safe_imported_calls)
-                    if sql_argument is not None
-                    else None
-                )
-                if sql is None:
-                    message = f"{method} SQL is not a string literal"
-                else:
-                    match = RAW_SQL_RE.search(sql)
-                    if match:
-                        message = (
-                            f"{method} contains destructive SQL ({match.group(0)})"
-                        )
-            elif method in DESTRUCTIVE_OPS:
-                message = f"{method} is a destructive schema operation"
-            elif method == "alter_column":
-                if root not in {"op", *batch_names}:
-                    message = "alter_column receiver cannot be checked statically"
-                else:
-                    message = _alter_column_problem(call)
-            elif isinstance(call.func, ast.Name):
-                name = call.func.id
-                if name in shadowed_names:
-                    message = f"call target {name!r} is rebound inside upgrade"
-                elif (
-                    name not in module_functions
-                    and name not in SAFE_BUILTIN_CALLS
-                    and name not in safe_imported_calls
-                ):
-                    message = (
-                        f"call to unknown helper {name!r} cannot be checked statically"
-                    )
-            elif root in {"op", *batch_names}:
-                if method not in EXPANSION_OPS:
-                    message = (
-                        f"operation {method!r} is not in the expand-only allowlist"
-                    )
-            elif root in {"sa", "sqlalchemy", "postgresql"}:
-                if method not in SAFE_SQLALCHEMY_CALLS:
-                    message = f"call {method!r} is outside the SQLAlchemy constructor allowlist"
-            elif root == "datetime":
-                if method not in {
-                    "date",
-                    "datetime",
-                    "time",
-                    "timedelta",
-                    "fromisoformat",
-                }:
-                    message = f"call {method!r} is outside the datetime allowlist"
-            else:
-                message = f"call {method or '<dynamic>'!r} cannot be checked statically"
-
-            if message is None and id(call) in loop_calls:
-                if (
-                    method in EXPANSION_OPS
-                    or method in SQL_EXECUTION_METHODS
-                    or method in DESTRUCTIVE_OPS
-                ):
-                    message = (
-                        "migration operation inside a loop cannot be checked statically"
-                    )
-                elif (
-                    isinstance(call.func, ast.Name) and call.func.id in module_functions
-                ):
-                    message = "helper call inside a loop cannot be checked statically"
-            if message and not _has_contract_marker(
-                source_lines, call, task_id, parents, batch_names
-            ):
-                found.append(f"line {call.lineno}: {message}")
+        method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+        if (
+            root in {"op", *batch_names}
+            and method in EXPANSION_OPS | DESTRUCTIVE_OPS | SQL_EXECUTION_METHODS
+        ):
+            if method not in DESTRUCTIVE_OPS | SQL_EXECUTION_METHODS | {"alter_column"}:
+                continue
+        if message and not _has_contract_marker(
+            lines, call, task_id, parents, batch_names
+        ):
+            found.append(f"line {call.lineno}: {message}")
     return found
 
 

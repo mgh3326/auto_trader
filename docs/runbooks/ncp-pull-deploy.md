@@ -414,7 +414,7 @@ Do not run migrations or make a live deployment from CI as part of this flow.
 
 ### Expand-contract migration review
 
-PR CI 는 추가·수정된 `alembic/versions/*.py` 파일의 `upgrade()`에서 파괴적 연산을 검사한다. 의도적으로 테이블·컬럼을 삭제·이름 변경하거나 컬럼을 `NOT NULL` 또는 새 타입으로 강화하는 contract 단계는 각 연산 바로 위에 다음 주석을 정확히 넣어야 한다: `# expand-contract: contract-step <hk task id>` (예: `# expand-contract: contract-step 4200`). 숫자 task ID 는 PR 본문의 `Mergewake-Task` trailer 와 일치해야 한다. 표시된 contract 단계를 승인하기 전에 이전 애플리케이션 버전이 더는 롤백 대상이 아님을 리뷰어가 확인한다. 자세한 내용은 [shiftgate 설계](../design/4155-shiftgate-adoption.md#expand-contract-규칙)를 참고한다.
+PR CI 는 추가·수정된 `alembic/versions/*.py` 파일만 검사한다. 정적 분석은 모듈 docstring, `from alembic import op`, 필요에 따른 `import sqlalchemy as sa`·`from sqlalchemy.dialects import postgresql`·`from sqlalchemy import text`, 네 migration metadata의 리터럴 대입 및 decorator·기본값·annotation 없는 `upgrade()`·`downgrade()` 두 함수만 있는 닫힌 모듈 문법을 요구한다. `upgrade()`에는 허용 확장 op 또는 금지 키워드가 없는 리터럴 SQL 호출만 허용한다. helper·지역 대입·조건·반복 등 이 모양을 벗어난 파일은 전체 판정 불가이므로 파일 헤더에 `# expand-contract: contract-step <hk task id>`를 둬야 한다. 분석 가능한 파일에서 의도적으로 테이블·컬럼을 삭제·이름 변경하거나 컬럼을 `NOT NULL` 또는 새 타입으로 강화하는 contract 단계는 각 연산 바로 위에 같은 marker를 둔다. 숫자 task ID 는 PR 본문의 `Mergewake-Task` trailer 와 일치해야 한다. 표시된 contract 단계를 승인하기 전에 이전 애플리케이션 버전이 더는 롤백 대상이 아님을 리뷰어가 확인한다. 자세한 내용은 [shiftgate 설계](../design/4155-shiftgate-adoption.md#expand-contract-규칙)를 참고한다.
 
 ## Expected interruption budget
 

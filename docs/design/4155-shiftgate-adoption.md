@@ -221,9 +221,7 @@ blue/green 에서는 마이그레이션이 이전 색이 서비스하는 동안 
 
 - 릴리스 N 의 마이그레이션은 **N-1 코드가 그대로 동작하는 변경**(테이블·nullable 또는 기본값 있는 컬럼·인덱스 추가)만 한다.
 - 파괴적 변경(삭제, 이름 변경, `NOT NULL` 강화, 타입 변경)은 N+1 에서만 낸다. 그 N+1 이 배포될 때 롤백 대상 `deployed-digest.previous` 는 이미 옛 모양을 쓰지 않는 N 이다.
-- AT-6 이전에는 이 규칙을 기계로 검사하는 장치가 저장소에 없었다. 사람 리뷰와 `deploy_approval` 보류가 막고 있었고, 배포 계층 CI 는 지금도 "배포된 스키마 → 후보" 방향의 적용을 검사한다(`.github/workflows/deploy-checks.yml:10-12`).
-
-AT-6 은 PR 의 base..head 에서 추가·수정된 `alembic/versions/*.py`만 검사한다. `upgrade()`에서 호출되는 table/column 삭제·이름 변경, `NOT NULL` 또는 타입 강화, 동등한 raw SQL 은 이전 코드와 호환되지 않는 변경으로 실패한다. 정적으로 분석할 수 없는 `op.execute` SQL 도 실패한다. 승인된 contract 단계는 각 파괴적 연산 바로 위에 다음 주석을 두며, 숫자 task ID 는 PR 본문의 `Mergewake-Task` trailer 와 일치해야 한다: `# expand-contract: contract-step <hk task id>` (예: `# expand-contract: contract-step 4200`). 이 표시는 contract 단계임을 리뷰어에게 명시하며, 해당 단계가 배포되기 전에 이전 코드가 더는 롤백 대상이 아님을 확인해야 한다.
+AT-6 은 PR 의 base..head 에서 추가·수정된 `alembic/versions/*.py`만 검사한다. 정적 분석은 닫힌 모듈 문법만 받는다: 필수 모듈 docstring, `from alembic import op`, 필요에 따른 `import sqlalchemy as sa`·`from sqlalchemy.dialects import postgresql`·`from sqlalchemy import text`, 리터럴 `revision`·`down_revision`·`branch_labels`·`depends_on` 대입, decorator·기본값·annotation 없는 `upgrade()`·`downgrade()`만 허용한다. `upgrade()` 본문은 허용 목록의 확장 op 호출 또는 금지 키워드가 없는 리터럴 SQL 호출만 받으며, 지역 대입·helper 호출·조건·반복은 받지 않는다. 이 모양 밖의 파일은 전체를 판정 불가로 처리하고, 승인된 contract 단계임을 명시하는 파일 헤더 marker `# expand-contract: contract-step <hk task id>`가 필요하다. 분석 가능한 파일 안의 파괴적 연산(table/column 삭제·이름 변경, `NOT NULL`·타입 강화, 동등한 raw SQL)은 각 연산 바로 위에 같은 marker가 필요하다. 숫자 task ID 는 PR 본문의 `Mergewake-Task` trailer 와 일치해야 한다. 리뷰어는 표시된 contract 단계가 배포되기 전에 이전 코드가 더는 롤백 대상이 아님을 확인한다.
 
 ### 이 단계의 소유와 시점
 
