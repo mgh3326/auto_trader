@@ -647,6 +647,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_decisions:
+    get:
+      operationId: retro_decisions
+      description: >-
+        One row per recorded decision (review.decision_evidence) whose
+        decided_at falls in the KST date window, at most 366 days. Values come
+        only from recorded rows: null means not derivable and carries a closed
+        reason — never zero. mfe and mae report each horizon (1, 5, 20
+        sessions and to_exit) over completed daily sessions strictly inside
+        the trade; entry and exit sessions are excluded. refs are opaque; no
+        account numbers, broker order numbers or raw payloads.
+      parameters:
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: market
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - kr
+          - us
+          - crypto
+      - name: symbol
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:/\-]{1,32}$
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroDecisionsResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     DecimalValue:
@@ -1522,6 +1614,270 @@ components:
               $ref: '#/components/schemas/TradeRow'
           summary:
             $ref: '#/components/schemas/TradeSummary'
+      unevaluatedProperties: false
+    DecisionReason:
+      description: >-
+        Closed reason vocabulary for a null or weakened decision field.
+        Combines the link reasons of ChainRow with the metric reasons of the
+        risk, MFE/MAE and cost calculations.
+      type:
+      - string
+      - 'null'
+      enum:
+      - ambiguous_attempts
+      - attempt_unconfirmed
+      - ambiguous_decision
+      - no_candidate_ref
+      - candidate_outside_trading_day
+      - candidate_ref_unresolved
+      - no_decision_link
+      - attempts_unavailable
+      - no_reference_price
+      - no_planned_quantity
+      - no_stop_recorded
+      - no_budget_cap
+      - stop_not_below_reference_price
+      - not_applicable
+      - missing_entry_price
+      - missing_entry_session
+      - no_risk_per_unit
+      - no_complete_session
+      - window_open
+      - missing_notional
+      - missing_currency
+      - rate_unavailable
+      - not_provided
+      - no_proposal
+      - no_linked_order
+      - no_fills
+      - no_exit_fill
+      - missing_data
+      - null
+    Excursion:
+      description: >-
+        One MFE or MAE horizon: amount and pct share the entry price unit; r
+        divides by the entry risk per unit when known. status is complete when
+        the window closed, pending while it is still open, and unknown when it
+        can never be computed; a non-complete status carries reason.
+      type: object
+      additionalProperties: false
+      required:
+      - amount
+      - pct
+      - r
+      - status
+      - reason
+      properties:
+        amount:
+          $ref: '#/components/schemas/DecimalValue'
+        pct:
+          $ref: '#/components/schemas/DecimalValue'
+        r:
+          $ref: '#/components/schemas/DecimalValue'
+        r_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        status:
+          type: string
+          enum:
+          - complete
+          - unknown
+          - pending
+        reason:
+          $ref: '#/components/schemas/DecisionReason'
+    Excursions:
+      description: 'MFE or MAE per horizon: 1, 5 and 20 sessions, and to_exit.'
+      type: object
+      additionalProperties: false
+      required:
+      - '1'
+      - '5'
+      - '20'
+      - to_exit
+      properties:
+        '1':
+          $ref: '#/components/schemas/Excursion'
+        '5':
+          $ref: '#/components/schemas/Excursion'
+        '20':
+          $ref: '#/components/schemas/Excursion'
+        to_exit:
+          $ref: '#/components/schemas/Excursion'
+    DecisionRow:
+      description: >-
+        One recorded decision and what was derived from it at read time.
+        Every *_reason field is present only to explain its sibling null (or
+        weakened) value; null reasons are not_applicable. candidate_ref is the
+        pick the recorded candidate reference resolves to. order_states uses
+        the chain's closed vocabulary; order_count is the number of order
+        ledger rows whose send attempts resolve to this decision (null with
+        attempts_unavailable when that read failed). entry_avg_price and
+        filled_quantity are the buy fills of those orders. costs keeps
+        broker-reported costs apart from the policy estimate. mfe/mae are
+        daily-bar excursions (basis always inference, adjusted unknown).
+        retrospective_ref is the stored decision_id link (recorded) or the
+        single correlation-derived review (inference); r_multiple needs both
+        entry and exit fills plus a known risk per unit.
+      type: object
+      additionalProperties: false
+      required:
+      - decision_ref
+      - decision_kind
+      - decided_at
+      - decided_by
+      - market
+      - symbol
+      - side
+      - strategy
+      - candidate_ref
+      - candidate_link_basis
+      - candidate_reason
+      - reference_price
+      - reference_kind
+      - reference_reason
+      - stop_price
+      - stop_source
+      - risk_basis
+      - planned_quantity
+      - planned_reason
+      - planned_risk_amount
+      - risk_reason
+      - risk_pct_of_notional
+      - risk_pct_of_budget
+      - risk_pct_of_budget_reason
+      - proposal_ref
+      - proposal_reason
+      - order_count
+      - order_count_reason
+      - order_states
+      - order_states_reason
+      - entry_avg_price
+      - filled_quantity
+      - fill_reason
+      - fill_time_basis
+      - costs
+      - mfe
+      - mae
+      - excursion_basis
+      - adjusted
+      - retrospective_ref
+      - retrospective_link_basis
+      - retrospective_reason
+      - r_multiple
+      - r_multiple_reason
+      - basis
+      properties:
+        decision_ref: *id001
+        decision_kind:
+          type: [string, 'null']
+          enum: [proposal, direct_order, declined, null]
+        decided_at: *id003
+        decided_by: *id002
+        market:
+          type: [string, 'null']
+          enum: [kr, us, crypto, null]
+        symbol: *id001
+        side:
+          type: [string, 'null']
+          enum: [buy, sell, null]
+        strategy: *id002
+        candidate_ref: *id002
+        candidate_link_basis:
+          $ref: '#/components/schemas/LinkBasis'
+        candidate_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        reference_price:
+          $ref: '#/components/schemas/DecimalValue'
+        reference_kind:
+          type: [string, 'null']
+          enum: [limit, approval_price, quote_at_decision, candidate_price, null]
+        reference_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        stop_price:
+          $ref: '#/components/schemas/DecimalValue'
+        stop_source: *id002
+        risk_basis:
+          type: [string, 'null']
+          enum: [recorded, inference, null]
+        planned_quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        planned_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        planned_risk_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        risk_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        risk_pct_of_notional:
+          $ref: '#/components/schemas/DecimalValue'
+        risk_pct_of_budget:
+          $ref: '#/components/schemas/DecimalValue'
+        risk_pct_of_budget_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        proposal_ref: *id002
+        proposal_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        order_count: *trade004
+        order_count_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        order_states:
+          type: [array, 'null']
+          items:
+            type: string
+            enum:
+            - filled
+            - partially_filled
+            - working
+            - cancelled
+            - expired
+            - rejected
+            - unresolved
+        order_states_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        entry_avg_price:
+          $ref: '#/components/schemas/DecimalValue'
+        filled_quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        fill_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        fill_time_basis:
+          type: [string, 'null']
+          enum: [broker_fill_time, broker_order_time, observed_at, null]
+        costs:
+          anyOf:
+          - $ref: '#/components/schemas/TradeCosts'
+          - type: 'null'
+        mfe:
+          $ref: '#/components/schemas/Excursions'
+        mae:
+          $ref: '#/components/schemas/Excursions'
+        excursion_basis:
+          type: string
+          enum: [inference]
+        adjusted: *id005
+        retrospective_ref: *id002
+        retrospective_link_basis:
+          $ref: '#/components/schemas/LinkBasis'
+        retrospective_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        r_multiple:
+          $ref: '#/components/schemas/DecimalValue'
+        r_multiple_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        basis:
+          $ref: '#/components/schemas/EvidenceBasis'
+    RetroDecisionsResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/DecisionRow'
+      description: total counts matching decision rows in the requested KST window
+        before pagination, or null with count_unavailable. Page length is never
+        total.
       unevaluatedProperties: false
   securitySchemes:
     RetroReadToken:
