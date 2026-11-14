@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -117,6 +117,21 @@ def _intent_snapshot(row: BinanceTrendIntent) -> TrendIntentSnapshot:
         broker_status=row.broker_status,
         executed_qty=row.executed_qty,
     )
+
+
+_SCALE = Decimal("1e-12")
+
+
+def _stored_exactly(value: Decimal) -> bool:
+    """True when NUMERIC(28, 12) stores ``value`` unchanged (no rounding)."""
+    if not value.is_finite():
+        return False
+    with localcontext() as ctx:
+        ctx.prec = 60
+        try:
+            return value.quantize(_SCALE) == value and abs(value) < Decimal(10) ** 16
+        except InvalidOperation:
+            return False
 
 
 def _require_aware(now: dt.datetime) -> None:
@@ -290,6 +305,9 @@ class TrendStateService:
     ) -> TrendSignalSnapshot:
         """Reserve one exposure slot or refuse with every tripped reason."""
         _require_aware(now)
+        if not _stored_exactly(notional_usdt):
+            # The judged value must be the value the book will count.
+            raise TrendStateBlocked("notional must be exact to 12 decimals")
         async with self._factory() as db, db.begin():
             await self._lock(db)
             row = await db.get(BinanceTrendSignal, signal_key, with_for_update=True)
@@ -379,6 +397,9 @@ class TrendStateService:
         _require_aware(now)
         if not qty.is_finite() or qty <= 0 or side not in SIDES:
             raise TrendStateBlocked("invalid trend intent")
+        if not _stored_exactly(qty):
+            # Judged against the exact quantity that will be persisted.
+            raise TrendStateBlocked("qty must be exact to 12 decimals")
         if not reference_price.is_finite() or reference_price <= 0:
             raise TrendStateBlocked("invalid reference price")
         if reduce_only or leg_key != "entry":

@@ -68,6 +68,9 @@ async def test_naive_timestamps_are_refused() -> None:
         {"side": "HOLD"},
         {"reduce_only": True},
         {"leg_key": "exit"},
+        {"qty": D("0.0000000000015")},
+        {"qty": D("0.0000000000006")},
+        {"qty": D("1e20")},
         {"reference_price": D("0")},
         {"reference_price": D("NaN")},
     ],
@@ -84,6 +87,12 @@ async def test_reserve_intent_only_takes_a_valid_entry_leg(change: dict) -> None
     } | change
     with pytest.raises(TrendStateBlocked):
         await _service().reserve_intent(**args)
+
+
+async def test_notional_must_be_stored_exactly() -> None:
+    for bad in (D("1.5000000000001"), D("1e-13"), D("1e20")):
+        with pytest.raises(TrendStateBlocked, match="exact"):
+            await _service().reserve_entry(signal_key="k", notional_usdt=bad, now=NOW)
 
 
 async def test_resolve_conflicts_needs_an_identity() -> None:
