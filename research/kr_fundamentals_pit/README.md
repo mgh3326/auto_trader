@@ -17,17 +17,16 @@ reports no data. API errors are failures, not missing financial values.
 manifest entry containing SHA-256, row counts, coverage window, budget used,
 and missing reports with reasons. Partition files are written into a staging
 directory and published by one atomic rename; the manifest is appended last.
-A retry of the same run ID clears leftover staging and republishes; a
-partition that was renamed but never recorded in the manifest is adopted on
-retry when its bytes match the new payloads (the missing manifest entry is
-appended), and any other existing partition still refuses overwrite
-(write-once). Cache, identity and result files are written via a temp name and
-`os.replace`, so a kill mid-write cannot leave a truncated file that a resume
-would trust; a torn final `usage.jsonl` or `manifest.jsonl` line is dropped by
-readers (a corrupt middle record still raises) and truncated before the next
-append. The partitions directory is fsynced after each publish rename so a
-recorded entry cannot outlive its partition, and a manifest record is never
-appended twice for the same run ID. Fact rows carry
+Crash-safety contract: this is a hand-run collector, so on any detected
+inconsistency it refuses and says what a human must repair — it never
+auto-repairs. Before writing, `publish` runs one consistency check and exits
+nonzero if any of these hold: a leftover `*.staging` directory, a manifest
+that does not end in a newline or has an unparseable line, a partition with
+no manifest entry, or a manifest entry with no partition. A retry of the same
+run ID is possible only after the operator repairs the reported state;
+a published partition still refuses overwrite (write-once). Cache, identity
+and result files are written via a temp name and `os.replace`, and the
+partitions directory is fsynced after each rename. Fact rows carry
 symbol, corporation, business year, report code and period, account, amount,
 year-to-date `cumulative_amount` when the API provides one, currency, receipt
 number, filing history, amendment flag, statement basis, and offset-aware

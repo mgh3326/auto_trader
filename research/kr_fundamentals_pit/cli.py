@@ -67,16 +67,10 @@ def main(argv=None):
             raise ValueError("fetch is incomplete")
         result = json.loads(result_path.read_text())
         facts, derived = build_rows(result["reports"])
-        usage_lines = usage_path.read_text().splitlines()
-        usage = 0
-        for index, line in enumerate(usage_lines):
-            try:
-                usage += json.loads(line)["budget_used"]
-            except json.JSONDecodeError:
-                # A killed append can tear only the final line; the count is
-                # informational, so drop it rather than bricking the run's build.
-                if index != len(usage_lines) - 1:
-                    raise
+        usage = sum(
+            json.loads(line)["budget_used"]
+            for line in usage_path.read_text().splitlines()
+        )
         end = datetime.combine(
             date.fromisoformat(args.end), time.max, ZoneInfo("Asia/Seoul")
         ).isoformat()

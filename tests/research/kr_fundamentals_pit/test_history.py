@@ -246,14 +246,16 @@ class HistoryTest(unittest.TestCase):
                 4,
             )
 
-    def test_publish_retry_after_mid_failure_with_same_run_id(self):
+    def meta(self):
+        return {
+            "coverage_start": "2020-01-01",
+            "coverage_end": "2020-01-31T23:59:59.999999+09:00",
+            "fetch_budget_used": 1,
+            "missing_reports": [],
+        }
+
+    def test_mid_failure_retry_refuses_until_staging_removed(self):
         with tempfile.TemporaryDirectory() as d:
-            meta = {
-                "coverage_start": "2020-01-01",
-                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
-                "fetch_budget_used": 1,
-                "missing_reports": [],
-            }
             calls = []
             real = os.fsync
 
@@ -267,28 +269,23 @@ class HistoryTest(unittest.TestCase):
                 patch("research.kr_fundamentals_pit.store.os.fsync", flaky),
                 self.assertRaises(OSError),
             ):
-                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+                publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
             staging = Path(d) / "partitions" / "run.staging"
             self.assertTrue(staging.exists())
-            self.assertFalse((Path(d) / "partitions" / "run").exists())
+            # The residue is refused, never auto-cleaned; nothing is written.
+            with self.assertRaises(RuntimeError) as err:
+                publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
+            self.assertIn("leftover staging", str(err.exception))
             self.assertFalse((Path(d) / "manifest.jsonl").exists())
-            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
-            self.assertFalse(staging.exists())
+            # The operator deletes the residue; the same run ID then retries.
+            shutil.rmtree(staging)
+            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
             self.assertEqual(entry["partitions"]["facts"]["rows"], 1)
-            self.assertEqual(
-                len((Path(d) / "manifest.jsonl").read_text().splitlines()), 1
-            )
             with self.assertRaises(FileExistsError):
-                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+                publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
 
-    def test_publish_adopts_orphaned_partition_on_retry(self):
+    def test_orphaned_partition_refuses_until_repaired(self):
         with tempfile.TemporaryDirectory() as d:
-            meta = {
-                "coverage_start": "2020-01-01",
-                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
-                "fetch_budget_used": 1,
-                "missing_reports": [],
-            }
             real_open = Path.open
 
             def flaky_open(self, mode="r", *args, **kwargs):
@@ -298,80 +295,63 @@ class HistoryTest(unittest.TestCase):
 
             # Crash after the atomic rename but before the manifest append.
             with patch.object(Path, "open", flaky_open), self.assertRaises(OSError):
-                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+                publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
             self.assertTrue((Path(d) / "partitions" / "run").is_dir())
             self.assertFalse((Path(d) / "manifest.jsonl").exists())
-            # Retry with the same run ID completes only the missing entry.
-            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            # The manifest-less partition is reported and refused — no write.
+            with self.assertRaises(RuntimeError) as err:
+                publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
+            self.assertIn("no manifest entry", str(err.exception))
+            self.assertFalse((Path(d) / "manifest.jsonl").exists())
+            # Operator deletes the orphan; the same run ID publishes cleanly.
+            shutil.rmtree(Path(d) / "partitions" / "run")
+            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
             self.assertEqual(entry["run_id"], "run")
-            records = (Path(d) / "manifest.jsonl").read_text().splitlines()
-            self.assertEqual(len(records), 1)
-            # A fully recorded partition still refuses overwrite...
             with self.assertRaises(FileExistsError):
-                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
-            # ...and a partition whose content does not match stays refused.
-            (Path(d) / "partitions" / "other").mkdir(parents=True)
-            (Path(d) / "partitions" / "other" / "facts.jsonl").write_bytes(b"?")
-            with self.assertRaises(FileExistsError):
-                publish(d, "other", [{"a": 1}], [{"b": 2}], meta)
+                publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
 
-    def test_torn_final_manifest_line_does_not_brick_store(self):
+    def test_torn_or_corrupt_manifest_refuses_until_repaired(self):
         with tempfile.TemporaryDirectory() as d:
-            meta = {
-                "coverage_start": "2020-01-01",
-                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
-                "fetch_budget_used": 1,
-                "missing_reports": [],
-            }
             facts, derived = build_rows(
                 Collector(
                     d, "c1", "2020-01-01", "2020-01-31", KEY, 10, transport()[0]
                 ).collect()["reports"]
             )
-            publish(d, "c1", facts, derived, meta)
+            publish(d, "c1", facts, derived, self.meta())
             manifest = Path(d) / "manifest.jsonl"
             with manifest.open("a") as stream:
                 stream.write('{"run_id"')
-            # Readers still work, and a new run can still publish: the torn
-            # tail is truncated first, so readers keep working afterwards.
-            rows = as_of(d, "999999", "2020-01-03T12:00:00+09:00")
-            self.assertEqual(len(rows), 1)
-            publish(d, "c2", facts, derived, meta)
+            # A torn tail is detected and refused; as_of fails loudly too.
+            with self.assertRaises(RuntimeError) as err:
+                publish(d, "c2", facts, derived, self.meta())
+            self.assertIn("torn append", str(err.exception))
+            with self.assertRaises(json.JSONDecodeError):
+                as_of(d, "999999", "2020-01-03T12:00:00+09:00")
             self.assertEqual(len(manifest.read_text().splitlines()), 2)
+            # Operator truncates to the last newline; work resumes.
+            data = manifest.read_bytes()
+            manifest.write_bytes(data[: data.rfind(b"\n") + 1])
+            publish(d, "c2", facts, derived, self.meta())
             self.assertEqual(len(as_of(d, "999999", "2020-01-03T12:00:00+09:00")), 1)
-            with self.assertRaises(FileExistsError):
-                publish(d, "c1", facts, derived, meta)
-            # A corrupt middle record is real damage and still raises.
+            # A corrupt middle line is detected and refused as well.
             lines = manifest.read_text().splitlines()
             lines[0] = "{broken"
             manifest.write_text("\n".join(lines) + "\n")
-            with self.assertRaises(json.JSONDecodeError):
-                as_of(d, "999999", "2020-01-03T12:00:00+09:00")
+            with self.assertRaises(RuntimeError) as err:
+                publish(d, "c3", facts, derived, self.meta())
+            self.assertIn("line 1", str(err.exception))
 
-    def test_lost_partition_dir_is_republished_without_duplicate_entry(self):
+    def test_manifest_entry_without_partition_refuses(self):
         with tempfile.TemporaryDirectory() as d:
-            meta = {
-                "coverage_start": "2020-01-01",
-                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
-                "fetch_budget_used": 1,
-                "missing_reports": [],
-            }
-            publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
-            # Simulate losing the directory entry (crash before parent fsync):
-            # the manifest record survives but the partition is gone.
+            publish(d, "run", [{"a": 1}], [{"b": 2}], self.meta())
+            # The manifest record survives but the partition is gone.
             shutil.rmtree(Path(d) / "partitions" / "run")
-            # Different content for a recorded run ID is refused before any
-            # republish can put foreign bytes behind the recorded hash.
-            with self.assertRaises(FileExistsError):
-                publish(d, "run", [{"a": 9}], [{"b": 2}], meta)
-            self.assertFalse((Path(d) / "partitions" / "run").exists())
-            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
-            self.assertEqual(entry["run_id"], "run")
-            records = (Path(d) / "manifest.jsonl").read_text().splitlines()
-            self.assertEqual(len(records), 1)
-            self.assertTrue((Path(d) / "partitions" / "run").is_dir())
+            with self.assertRaises(RuntimeError) as err:
+                publish(d, "other", [{"a": 1}], [{"b": 2}], self.meta())
+            self.assertIn("no partition", str(err.exception))
+            self.assertFalse((Path(d) / "partitions" / "other").exists())
 
-    def test_build_tolerates_torn_final_usage_line(self):
+    def test_build_refuses_torn_usage_line(self):
         with tempfile.TemporaryDirectory() as d:
             get, _ = transport()
             args = [
@@ -400,13 +380,9 @@ class HistoryTest(unittest.TestCase):
                 usage_path = Path(d) / "cache" / "b" / "usage.jsonl"
                 with usage_path.open("a") as stream:
                     stream.write('{"budget_used"')
-                self.assertEqual(cli.main(["build", *args]), 0)
-            self.assertEqual(
-                json.loads((Path(d) / "manifest.jsonl").read_text())[
-                    "fetch_budget_used"
-                ],
-                4,
-            )
+                # A torn usage line fails the build rather than being dropped.
+                self.assertEqual(cli.main(["build", *args]), 2)
+            self.assertFalse((Path(d) / "manifest.jsonl").exists())
 
     def test_source_error_chain_never_carries_key(self):
         def chain(err):

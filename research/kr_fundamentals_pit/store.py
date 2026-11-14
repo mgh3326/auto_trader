@@ -1,4 +1,9 @@
-"""Immutable partition publication and causal lookup."""
+"""Immutable partition publication and causal lookup.
+
+Crash-safety contract (design decision, hk 3793): this is a hand-run research
+collector, so on any detected inconsistency it refuses and tells the operator
+what to delete or repair — it never auto-repairs. See consistency_problems().
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -17,34 +21,78 @@ def encode(value):
 
 
 def manifest_records(manifest):
-    """Parse append-only manifest lines.
-
-    A killed append can tear only the final line; drop it rather than bricking
-    every reader. A corrupt middle record means real damage — raise loudly.
-    """
-    records = []
+    """Parse append-only manifest lines; any unparseable line raises."""
     manifest = Path(manifest)
     if not manifest.exists():
-        return records
-    lines = manifest.read_text().splitlines()
-    for index, line in enumerate(lines):
-        try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError:
-            if index != len(lines) - 1:
-                raise
-    return records
+        return []
+    return [json.loads(line) for line in manifest.read_text().splitlines()]
+
+
+def consistency_problems(root):
+    """Detect store states a human must repair before any further write.
+
+    Returns a list of problems, each with the manual fix. The checked states
+    are exactly the crash residue of publish: leftover staging, a manifest
+    torn or unparseable, a partition with no manifest entry, or a manifest
+    entry with no partition.
+    """
+    root = Path(root)
+    manifest = root / "manifest.jsonl"
+    partitions = root / "partitions"
+    problems = []
+    records = []
+    if manifest.exists():
+        if manifest.stat().st_size and manifest.read_bytes()[-1:] != b"\n":
+            problems.append(
+                "manifest.jsonl ends mid-line (torn append): truncate it to "
+                "the last newline"
+            )
+        for index, line in enumerate(manifest.read_text().splitlines(), 1):
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                problems.append(
+                    f"manifest.jsonl line {index} is not valid JSON: fix or "
+                    "remove that line"
+                )
+    staging_dirs, partition_dirs = [], set()
+    if partitions.is_dir():
+        for child in sorted(partitions.iterdir()):
+            if child.name.endswith(".staging"):
+                staging_dirs.append(child.name)
+            elif child.is_dir():
+                partition_dirs.add(child.name)
+    for name in staging_dirs:
+        problems.append(f"leftover staging {name}: delete partitions/{name} and retry")
+    recorded = {r.get("run_id") for r in records if isinstance(r, dict)} - {None}
+    for name in sorted(partition_dirs - recorded):
+        problems.append(
+            f"partition {name} has no manifest entry: delete partitions/{name}"
+        )
+    for name in sorted(recorded - partition_dirs):
+        problems.append(
+            f"manifest entry for {name} has no partition: remove that manifest line"
+        )
+    return problems
 
 
 def publish(root, run_id, facts, derived, metadata):
     root = Path(root)
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
+    problems = consistency_problems(root)
+    if problems:
+        raise RuntimeError(
+            "artifact store is inconsistent; repair by hand before retrying:\n- "
+            + "\n- ".join(problems)
+        )
     directory = root / "partitions" / run_id
     # A run ID never contains '.', so the staging path can never collide with
     # a published partition name.
     staging = directory.with_name(run_id + ".staging")
     manifest = root / "manifest.jsonl"
+    if directory.exists():
+        raise FileExistsError("partition already exists")
     names = ("facts.jsonl", "derived.jsonl", "metadata.json")
     paths = [staging / name for name in names]
     published = [directory / name for name in names]
@@ -71,52 +119,8 @@ def publish(root, run_id, facts, derived, metadata):
         },
     }
     payloads.append(encode(entry).encode())
-
-    def append_manifest():
-        # A killed append can leave a torn tail without a trailing newline.
-        # Truncate the partial record so the new entry appends onto a clean
-        # boundary and never sits behind a permanently corrupt middle line.
-        if manifest.exists():
-            data = manifest.read_bytes()
-            if data and data[-1:] != b"\n":
-                cut = data.rfind(b"\n")
-                with manifest.open("r+b") as stream:
-                    stream.truncate(cut + 1 if cut >= 0 else 0)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-        with manifest.open("a", encoding="utf-8") as stream:
-            stream.write(encode(entry) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-
-    recorded = next(
-        (r for r in manifest_records(manifest) if r.get("run_id") == run_id),
-        None,
-    )
-
-    if directory.exists():
-        # A previous publish may have died after the atomic rename but before
-        # the manifest append, leaving a complete partition with no record.
-        # If its bytes match the payloads we would publish, adopt the orphan
-        # and complete only the missing manifest entry; anything else is an
-        # unknown partition and stays write-once refused.
-        if recorded is None and all(
-            path.is_file() and path.read_bytes() == data
-            for path, data in zip(published, payloads, strict=True)
-        ):
-            append_manifest()
-            return entry
-        raise FileExistsError("partition already exists")
-    # The manifest survived but the partition directory did not (e.g. a crash
-    # before the parent-directory fsync). Republish only the identical entry;
-    # different content for a recorded run ID is a write-once violation that
-    # would leave the manifest hash pointing at foreign bytes.
-    if recorded is not None and recorded != entry:
-        raise FileExistsError("run ID already recorded with different content")
-    # A retry of the same run ID after a mid-publish failure clears the
-    # leftover staging tree; write-once applies only to published partitions.
-    if staging.exists():
-        shutil.rmtree(staging)
+    # Write everything into staging, fsync, publish with one atomic rename,
+    # then append the manifest entry last.
     staging.mkdir(parents=True)
     for path, data in zip(paths, payloads, strict=True):
         with path.open("xb") as stream:
@@ -138,8 +142,10 @@ def publish(root, run_id, facts, derived, metadata):
         os.fsync(fd)
     finally:
         os.close(fd)
-    if recorded is None:
-        append_manifest()
+    with manifest.open("a", encoding="utf-8") as stream:
+        stream.write(encode(entry) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
     return entry
 
 
