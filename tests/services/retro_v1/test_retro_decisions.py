@@ -349,6 +349,34 @@ async def test_queries_are_select_only_and_snapshot_is_read_only() -> None:
 
 
 @pytest.mark.asyncio
+async def test_us_symbol_filter_is_normalized_to_db_form() -> None:
+    rows = [decision(1, market="equity_us", symbol="BRK.B")]
+    seen: list[dict] = []
+    src = session(rows)
+    src.routes["FROM review.decision_evidence"] = WithParams(
+        lambda sql, params: (seen.append(dict(params)), list(rows))[1]
+    )
+    result = await read_retro_decisions(
+        src, from_="2026-01-01", to="2026-01-31", market="us", symbol="BRK-B"
+    )
+    validate(result, "RetroDecisionsResponse")
+    assert result["total"] == 1
+    assert "BRK.B" in seen[0].values() and "BRK-B" not in seen[0].values()
+
+
+@pytest.mark.asyncio
+async def test_failed_order_ledger_read_withholds_the_count() -> None:
+    src = linked_session(**{"FROM review.kis_live_order_ledger": operational_error()})
+    response = await read_retro_decisions(src, from_="2026-01-01", to="2026-01-31")
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][0]
+    assert row["order_count"] is None
+    assert row["order_states"] is None
+    assert row["filled_quantity"] is None
+    assert row["fill_reason"] == "attempts_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_invalid_market_rejected() -> None:
     with pytest.raises(RetroReadError):
         await read_retro_decisions(

@@ -77,7 +77,12 @@ from app.services.retro_v1.links import (
     load_order_links,
     order_send_key,
 )
-from app.services.retro_v1.market import MARKETS, MarketInfo
+from app.services.retro_v1.market import (
+    MARKETS,
+    MarketInfo,
+    infer_market,
+    normalize_symbol,
+)
 from app.services.retro_v1.metrics import (
     DailyBar,
     Excursion,
@@ -875,7 +880,11 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
 
     orders = _decision_orders(decision.decision_id, data)
     orders_known = bool(orders) or (
-        data.order_links.complete and "decision_links" not in data.incomplete
+        data.order_links.complete
+        and not (
+            {"decision_links", "kis_orders", "live_orders", "toss_orders"}
+            & data.incomplete
+        )
     )
     bound = _bound_rungs(decision.decision_id, data, {})
     fills = (
@@ -884,7 +893,7 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         else []
     )
     raw_fills = data.raw_fills.get(info.instrument_type, []) if info else []
-    fills_known = "fills" not in data.incomplete and info is not None
+    fills_known = "fills" not in data.incomplete and info is not None and orders_known
 
     totals: dict[Any, Decimal] = defaultdict(Decimal)
     for fill in fills:
@@ -1053,7 +1062,9 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
     exit_avg = None
     r_multiple = None
     r_multiple_reason = "no_fills"
-    if sell_fills and entry_avg is not None:
+    if sell_fills and entry_avg is None:
+        r_multiple_reason = "missing_entry_price"
+    elif sell_fills:
         exit_qty = sum((Decimal(str(f.filled_qty)) for f in sell_fills), Decimal(0))
         exit_notional = sum(
             (Decimal(str(f.filled_notional or 0)) for f in sell_fills),
@@ -1206,7 +1217,14 @@ async def read_retro_decisions(
 
             raise RetroReadError("validation_error")
         info = MARKETS[market]
-    symbol_norm = check_symbol(symbol).upper() if symbol is not None else None
+    symbol_norm = None
+    if symbol is not None:
+        clean = check_symbol(symbol)
+        # DB form for the equality filter: only US symbols have alternate
+        # broker spellings, so infer the US shape when market is omitted.
+        symbol_norm = normalize_symbol(
+            clean, info if info is not None else infer_market(clean)
+        )
     digest = params_digest(
         op="retro_decisions",
         start=start,
@@ -1251,6 +1269,8 @@ async def read_retro_decisions(
     )
     for index, row in enumerate(response["data"]):
         for name in ("costs", "mfe", "mae"):
+            if row.get(name) is None:
+                continue  # the top-level null is already explained by _hints
             for path in _deep_nulls(row.get(name), f"data.{index}.{name}"):
                 leaf = path.rsplit(".", 1)[-1]
                 unknowns.note(
