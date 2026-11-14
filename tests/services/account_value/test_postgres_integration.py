@@ -166,6 +166,202 @@ async def test_flow_confirmation_is_immutable_and_downgrade_refuses(db_session):
 
 
 @pytest.mark.asyncio
+async def test_flow_confirmation_revocation_is_immutable_and_degrades_coverage(
+    db_session,
+):
+    from sqlalchemy import text
+
+    from app.services.account_value.completeness import (
+        covered,
+        load_confirmations,
+        record_confirmation,
+        record_revocation,
+    )
+
+    account = "upbit:upbit:" + uuid4().hex * 2
+    start, end = date(2026, 1, 1), date(2026, 1, 2)
+    assert (
+        await record_confirmation(
+            db_session, account, start, end, "operator", "checked", commit=True
+        )
+        == "inserted"
+    )
+    confirmation_id = await db_session.scalar(
+        text(
+            "SELECT id FROM review.account_flow_confirmations WHERE account = :account"
+        ),
+        {"account": account},
+    )
+    assert confirmation_id is not None
+    assert (
+        await record_confirmation(
+            db_session,
+            account,
+            start,
+            end,
+            "operator",
+            "second check",
+            commit=True,
+        )
+        == "inserted"
+    )
+    second_id = await db_session.scalar(
+        text(
+            "SELECT id FROM review.account_flow_confirmations "
+            "WHERE account = :account ORDER BY id DESC LIMIT 1"
+        ),
+        {"account": account},
+    )
+    assert second_id is not None and second_id != confirmation_id
+    assert covered(start, end, await load_confirmations(db_session, start, end), [])
+    assert (
+        await record_revocation(
+            db_session,
+            confirmation_id,
+            "operator",
+            "잘못된 확인",
+            commit=True,
+        )
+        == "revoked"
+    )
+    assert covered(start, end, await load_confirmations(db_session, start, end), [])
+    assert (
+        await record_revocation(
+            db_session,
+            second_id,
+            "operator",
+            "잘못된 확인",
+            commit=True,
+        )
+        == "revoked"
+    )
+    assert not covered(start, end, await load_confirmations(db_session, start, end), [])
+
+    for statement in (
+        "UPDATE review.account_flow_confirmation_revocations SET reason = 'changed'",
+        "DELETE FROM review.account_flow_confirmation_revocations",
+        "TRUNCATE review.account_flow_confirmation_revocations",
+    ):
+        with pytest.raises(DBAPIError, match="account_value_immutable"):
+            async with db_session.begin_nested():
+                await db_session.execute(text(statement))
+
+    path = Path("alembic/versions/20261115_hk4617_flow_confirmation_revocations.py")
+    spec = importlib.util.spec_from_file_location("flow_revoke_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def downgrade(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            module.downgrade()
+
+    with pytest.raises(
+        DBAPIError, match="account_flow_confirmation_revocation_rows_retained"
+    ):
+        async with db_session.begin_nested():
+            connection = await db_session.connection()
+            await connection.run_sync(downgrade)
+
+
+@pytest.mark.asyncio
+async def test_flow_confirmation_revocation_commit_as_select_insert_role(db_session):
+    from sqlalchemy import text
+
+    from app.services.account_value.completeness import (
+        record_confirmation,
+        record_revocation,
+    )
+
+    role_exists = await db_session.scalar(
+        text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')")
+    )
+    created_at_app = False
+    try:
+        if not role_exists:
+            await db_session.execute(text("CREATE ROLE at_app NOLOGIN"))
+            created_at_app = True
+            await db_session.execute(text("GRANT USAGE ON SCHEMA review TO at_app"))
+        await db_session.execute(
+            text("GRANT SELECT ON review.account_flow_confirmations TO at_app")
+        )
+
+        migration_path = Path(
+            "alembic/versions/20261115_hk4617_flow_confirmation_revocations.py"
+        )
+        migration_spec = importlib.util.spec_from_file_location(
+            "flow_revoke_grant_migration", migration_path
+        )
+        migration = importlib.util.module_from_spec(migration_spec)
+        migration_spec.loader.exec_module(migration)
+
+        def grant_at_app(connection):
+            with Operations.context(MigrationContext.configure(connection)):
+                migration._grant_at_app()
+
+        connection = await db_session.connection()
+        await connection.run_sync(grant_at_app)
+
+        account = "upbit:upbit:" + uuid4().hex * 2
+        day = date(2026, 1, 3)
+        await record_confirmation(
+            db_session, account, day, day, "operator", "checked", commit=True
+        )
+        confirmation_id = await db_session.scalar(
+            text(
+                "SELECT id FROM review.account_flow_confirmations "
+                "WHERE account = :account"
+            ),
+            {"account": account},
+        )
+        assert confirmation_id is not None
+
+        await db_session.execute(text("SET LOCAL ROLE at_app"))
+        assert await db_session.scalar(text("SELECT current_user")) == "at_app"
+        assert await db_session.scalar(
+            text(
+                "SELECT has_table_privilege('at_app', "
+                "'review.account_flow_confirmation_revocations', 'SELECT') "
+                "AND has_table_privilege('at_app', "
+                "'review.account_flow_confirmation_revocations', 'INSERT')"
+            )
+        )
+        assert not await db_session.scalar(
+            text(
+                "SELECT has_table_privilege('at_app', "
+                "'review.account_flow_confirmations', 'UPDATE')"
+            )
+        )
+        assert not await db_session.scalar(
+            text(
+                "SELECT has_table_privilege('at_app', "
+                "'review.account_flow_confirmation_revocations', 'UPDATE')"
+            )
+        )
+        assert (
+            await record_revocation(
+                db_session,
+                confirmation_id,
+                "operator",
+                "least privilege check",
+                commit=True,
+            )
+            == "revoked"
+        )
+    finally:
+        await db_session.rollback()
+        if created_at_app:
+            await db_session.execute(
+                text(
+                    "REVOKE ALL ON review.account_flow_confirmations, "
+                    "review.account_flow_confirmation_revocations FROM at_app"
+                )
+            )
+            await db_session.execute(text("REVOKE ALL ON SCHEMA review FROM at_app"))
+            await db_session.execute(text("DROP ROLE at_app"))
+            await db_session.commit()
+
+
+@pytest.mark.asyncio
 async def test_confirmation_waits_for_in_flight_flow_commit(db_session):
     """The two CLI writers run on independent sessions: a confirmation must
     block until a same-account flow insert commits, so it cannot appear to

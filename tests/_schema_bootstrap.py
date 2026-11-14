@@ -2384,8 +2384,8 @@ BEFORE INSERT OR UPDATE ON review.kis_mock_order_ledger
 FOR EACH ROW
 EXECUTE FUNCTION review.kis_mock_q46_fill_writer_lock()
 """,
-    # ---- hk 4282: review.account_flow_confirmations has no ORM model, so
-    # create_all never makes it. Mirror the table/trigger DDL from
+    # ---- hk 4282/4617: flow confirmations and their revocations have no ORM
+    # model, so create_all never makes them. Mirror their table/trigger DDL from
     # alembic/versions/20261113_hk4282_flow_confirmations.py plus the shared
     # immutable function from 20261110_hk3800_account_value.py.
     """
@@ -2410,6 +2410,30 @@ END $$
     "CREATE TRIGGER account_flow_confirmations_immutable "
     "BEFORE UPDATE OR DELETE OR TRUNCATE ON review.account_flow_confirmations "
     "FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()",
+    """
+CREATE TABLE IF NOT EXISTS review.account_flow_confirmation_revocations (
+    confirmation_id BIGINT PRIMARY KEY REFERENCES
+        review.account_flow_confirmations(id),
+    revoked_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    revoked_by TEXT NOT NULL CHECK (length(trim(revoked_by)) > 0),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) > 0)
+)
+""",
+    "DROP TRIGGER IF EXISTS account_flow_confirmation_revocations_immutable "
+    "ON review.account_flow_confirmation_revocations",
+    "CREATE TRIGGER account_flow_confirmation_revocations_immutable "
+    "BEFORE UPDATE OR DELETE OR TRUNCATE "
+    "ON review.account_flow_confirmation_revocations "
+    "FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()",
+    """
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
+        GRANT SELECT, INSERT ON review.account_flow_confirmations TO at_app;
+        GRANT SELECT, INSERT
+            ON review.account_flow_confirmation_revocations TO at_app;
+    END IF;
+END $$
+""",
 )
 
 

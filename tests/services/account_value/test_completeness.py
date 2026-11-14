@@ -44,6 +44,16 @@ def test_coverage_gaps_overlap_and_later_flow():
     )
 
 
+def test_revoked_confirmation_does_not_cover_its_window():
+    revoked = SimpleNamespace(
+        start_day=START,
+        end_day=END,
+        confirmed_at=T,
+        revoked_at=T + timedelta(minutes=1),
+    )
+    assert not covered(START, END, [revoked], [])
+
+
 @pytest.mark.asyncio
 async def test_cli_preview_and_commit_masks_account(monkeypatch, capsys):
     session = Session()
@@ -67,6 +77,82 @@ async def test_cli_preview_and_commit_masks_account(monkeypatch, capsys):
         assert ACCOUNT not in output and "a" * 64 not in output
         assert ('"inserted"' if commit else '"preview"') in output
     assert [item[-1] for item in seen] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_revoke_cli_preview_and_commit(monkeypatch, capsys):
+    session = Session()
+    monkeypatch.setattr(
+        account_value_snapshot, "session_factory", lambda: SessionContext(session)
+    )
+    seen = []
+
+    async def revoke(session, confirmation_id, revoked_by, reason, *, commit):
+        seen.append((confirmation_id, revoked_by, reason, commit))
+        return "revoked" if commit else "preview"
+
+    monkeypatch.setattr(account_value_snapshot, "record_revocation", revoke)
+    argv = ["--revoke-confirmation", "42", "operator", "잘못된 기간"]
+    for commit in (False, True):
+        args = account_value_snapshot.parser().parse_args(
+            argv + (["--commit"] if commit else [])
+        )
+        await account_value_snapshot.run(args)
+        output = capsys.readouterr().out
+        assert f'"mode": "{"commit" if commit else "preview"}"' in output
+        assert f'"write_status": "{"revoked" if commit else "preview"}"' in output
+    assert seen == [
+        (42, "operator", "잘못된 기간", False),
+        (42, "operator", "잘못된 기간", True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_revocation_preview_refusals_and_commit():
+    from app.services.account_value.completeness import record_revocation
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class Session:
+        def __init__(self, confirmation=True, revoked=False):
+            self.results = iter([42 if confirmation else None, 42 if revoked else None])
+            self.statements = []
+            self.commits = 0
+
+        async def execute(self, statement, params=None):
+            self.statements.append(statement)
+            return Result(next(self.results, None))
+
+        async def commit(self):
+            self.commits += 1
+
+    preview = Session()
+    assert await record_revocation(preview, 42, "operator", "mistake") == "preview"
+    assert len(preview.statements) == 2 and preview.commits == 0
+
+    committed = Session()
+    assert (
+        await record_revocation(committed, 42, "operator", "mistake", commit=True)
+        == "revoked"
+    )
+    assert len(committed.statements) == 4 and committed.commits == 1
+    assert "pg_advisory_xact_lock" in str(committed.statements[1])
+    assert all("FOR UPDATE" not in str(statement) for statement in committed.statements)
+
+    with pytest.raises(ValueError, match="unknown confirmation"):
+        await record_revocation(Session(confirmation=False), 404, "operator", "mistake")
+    with pytest.raises(ValueError, match="already revoked"):
+        await record_revocation(Session(revoked=True), 42, "operator", "mistake")
+
+    invalid = Session()
+    with pytest.raises(ValueError, match="invalid revocation"):
+        await record_revocation(invalid, 0, "operator", "mistake")
+    assert not invalid.statements and invalid.commits == 0
 
 
 @pytest.mark.asyncio
