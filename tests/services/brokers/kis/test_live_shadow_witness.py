@@ -17,6 +17,10 @@ from jsonschema import Draft202012Validator, FormatChecker
 from app.mcp_server.tooling import order_execution
 from app.services.brokers.kis import domestic_orders
 from app.services.brokers.kis import live_shadow_witness as witness
+from app.services.brokers.kis.send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+)
 from scripts import kis_live_witness_reconcile as reconcile
 
 FIXTURES = Path("tests/fixtures/broker_edge")
@@ -117,6 +121,26 @@ class _SequencedDomesticParent(_DomesticParent):
         response = self.responses[self.sent]
         self.sent += 1
         return response
+
+
+class _HttpStatusDomesticParent(_DomesticParent):
+    """Marks the HTTP status a real KIS client observes before parsing."""
+
+    def __init__(self, response: dict[str, object], status: int) -> None:
+        super().__init__(response)
+        self.status = status
+        self.sent = 0
+
+    async def _request_with_rate_limit(
+        self, *_: object, **kwargs: object
+    ) -> dict[str, object]:
+        self.bodies.append(kwargs["json_body"])
+        self.sent += 1
+        tracker = kwargs.get("send_outcome")
+        if tracker is not None:
+            tracker.mark_dispatched()
+            tracker.mark_http_response(self.status)
+        return self.response
 
 
 def _witness() -> witness.LiveShadowWitness:
@@ -307,37 +331,6 @@ async def test_non_string_rt_cd_never_substitutes_an_order_number(caplog) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("msg_cd", "msg1"),
-    [
-        ("EGW00123", "token expired"),
-        ("EGW00121", "invalid token"),
-        ("EGW00215", "초당 거래건수를 초과하였습니다"),
-        ("UNKNOWN", "초당 거래건수를 초과하였습니다"),
-    ],
-    ids=["token-expired", "token-invalid", "throttle-code", "throttle-text"],
-)
-async def test_retryable_rejection_alone_is_not_echoed(
-    caplog, msg_cd: str, msg1: str
-) -> None:
-    requests: list[httpx.Request] = []
-    client = witness.LiveShadowWitness(
-        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
-    )
-    client.start()
-    with caplog.at_level(logging.WARNING, logger=witness.logger.name):
-        client.capture_raw_echo({**_REJECTION, "msg_cd": msg_cd, "msg1": msg1})
-    await _settle(client)
-    events = [
-        record.getMessage()
-        for record in caplog.records
-        if "witness_echo" in record.getMessage()
-    ]
-    assert events == ["kis_live_witness_echo_resend_skipped"]
-    assert _echo_requests(requests) == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     "rejection",
     [
         _REJECTION | {"msg_cd": "EGW00123", "msg1": "token expired"},
@@ -379,6 +372,149 @@ async def test_resent_rejection_is_not_echoed_before_the_final_answer(
     body = json.loads(echoes[0].content)
     assert body["ODNO"] == "77"
     assert body["rt_cd"] == "0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("responses", "expected_sent"),
+    [
+        (
+            [
+                {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token expired"},
+                {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token expired"},
+            ],
+            2,
+        ),
+        (
+            [
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "EGW00201",
+                    "msg1": "초당 거래건수를 초과하였습니다",
+                },
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "EGW00201",
+                    "msg1": "초당 거래건수를 초과하였습니다",
+                },
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "EGW00201",
+                    "msg1": "초당 거래건수를 초과하였습니다",
+                },
+            ],
+            3,
+        ),
+    ],
+    ids=["token-cap", "throttle-cap"],
+)
+async def test_final_rejection_after_retry_cap_is_echoed(
+    monkeypatch, responses: list[dict[str, object]], expected_sent: int
+) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+    requests: list[httpx.Request] = []
+    active = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    active.start()
+    parent = _SequencedDomesticParent(responses)
+    token = witness.activate(active)
+    try:
+        with pytest.raises(RuntimeError):
+            await domestic_orders.DomesticOrderClient(parent).order_korea_stock(
+                "005930", "buy", 2, 70000, is_mock=False
+            )
+    finally:
+        witness.deactivate(token)
+    await _settle(active, attempts=300)
+
+    assert parent.sent == expected_sent
+    echoes = _echo_requests(requests)
+    assert len(echoes) == 1
+    body = json.loads(echoes[0].content)
+    assert body["ODNO"] == ""
+    assert body["rt_cd"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_http_5xx_body_is_not_echoed_and_stays_unknown(monkeypatch) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+    requests: list[httpx.Request] = []
+    active = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    active.start()
+    parent = _HttpStatusDomesticParent(
+        {"rt_cd": "1", "msg_cd": "50000000", "msg1": "internal error"}, 500
+    )
+    outcome = OrderSendOutcomeTracker()
+    token = witness.activate(active)
+    try:
+        with pytest.raises(RuntimeError, match="50000000 internal error"):
+            await domestic_orders.DomesticOrderClient(parent).order_korea_stock(
+                "005930", "buy", 2, 70000, is_mock=False, send_outcome=outcome
+            )
+    finally:
+        witness.deactivate(token)
+    await _settle(active, attempts=300)
+
+    assert parent.sent == 1
+    assert outcome.disposition is OrderSendDisposition.UNKNOWN
+    assert _echo_requests(requests) == []
+
+
+@pytest.mark.asyncio
+async def test_witness_never_changes_broker_calls_retries_or_outcome(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+    responses = [
+        {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token expired"},
+        {
+            "rt_cd": "0",
+            "msg_cd": "MCA00000",
+            "msg1": "ok",
+            "output": {"ODNO": "77", "ORD_TMD": "3"},
+        },
+    ]
+
+    async def run(requests: list[httpx.Request] | None):
+        parent = _SequencedDomesticParent([dict(response) for response in responses])
+        outcome = OrderSendOutcomeTracker()
+        active = None
+        if requests is not None:
+            active = witness.LiveShadowWitness(
+                "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+            )
+            active.start()
+        context = witness.activate(active)
+        try:
+            result = await domestic_orders.DomesticOrderClient(
+                parent
+            ).order_korea_stock(
+                "005930", "buy", 2, 70000, is_mock=False, send_outcome=outcome
+            )
+        finally:
+            witness.deactivate(context)
+        if active is not None:
+            await _settle(active, attempts=300)
+        return parent, outcome, result
+
+    off_parent, off_outcome, off_result = await run(None)
+    requests: list[httpx.Request] = []
+    on_parent, on_outcome, on_result = await run(requests)
+
+    assert on_result == off_result
+    assert on_parent.bodies == off_parent.bodies
+    assert on_parent.sent == off_parent.sent == 2
+    assert on_outcome.disposition is off_outcome.disposition
+    assert len(_echo_requests(requests)) == 1
 
 
 @pytest.mark.asyncio

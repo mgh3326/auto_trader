@@ -11,22 +11,20 @@ timeouts, and edge errors do not wait for or change the KIS broker call. A missi
 echo means an observation was not recorded; it is not evidence that an order did
 not execute.
 
-A rejection the broker answered as the order's final answer is recorded too. When
-KIS answers with a non-`0` `rt_cd` plus string `msg_cd` and `msg1` but no order
-number (rejections carry no `output.ODNO`), the echo is sent with `ODNO: ""`. The
-v1 echo schema requires a string and the edge stores the echo as a shadow witness
-only (its own `kis_live_witnesses` row, never a command receipt), so such an echo
-stops counting as `missing_echo` and cannot be read as an accepted order. An
-`rt_cd` of `0` without an order number is still dropped. An absent or `null`
-`ODNO` is treated as no order number, so the rejection above echoes `""`; any
-other non-string `ODNO` is reported instead of being replaced. A token-expiry
-(`EGW00123`/`EGW00121`) or gateway-throttle rejection is skipped while the
-domestic caller may still re-POST that order through the same witness: an early
-echo would win the edge's one-echo-per-command rule and hide the accepted
-re-send's order number. When the caller does not re-send (token retry cap
-reached, throttle retry cap reached, or an ambiguous throttle outcome) the code
-also skips it today, so that order's final rejection stays `missing_echo` — treat
-such a missing echo as a known gap until the caller reports the final response.
+A rejection the broker answered as the order's final answer is recorded too. The
+domestic order path captures only the response that ends the call, so a
+token-expiry or gateway-throttle rejection that the caller re-POSTs is never
+echoed ahead of the final answer. When KIS answers with a non-`0` `rt_cd` plus
+string `msg_cd` and `msg1` but no order number (rejections carry no
+`output.ODNO`), the echo is sent with `ODNO: ""`. The v1 echo schema requires a
+string and the edge stores the echo as a shadow witness only (its own
+`kis_live_witnesses` row, never a command receipt), so such an echo stops counting
+as `missing_echo` and cannot be read as an accepted order. An `rt_cd` of `0`
+without an order number is still dropped. An absent or `null` `ODNO` is treated as
+no order number, so the rejection above echoes `""`; any other non-string `ODNO`
+is reported instead of being replaced. A rejection is echoed only when the send
+outcome is `NOT_CREATED` (the broker proves no order was created); a 5xx body
+keeps the outcome unknown and is not echoed, so its receipt stays `missing_echo`.
 When an echo field is not a string, or the echo fails schema validation,
 `kis_live_witness_echo_invalid` carries the offending comma-separated field names
 and never their values.
