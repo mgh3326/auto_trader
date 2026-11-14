@@ -15,9 +15,13 @@ from sqlalchemy import and_, func, or_, select
 
 from app.core.config import settings
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.evidence_boundary import EvidenceBoundary
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory, _to_float
-from app.mcp_server.tooling.live_order_evidence import get_evidence_adapter
+from app.mcp_server.tooling.live_order_evidence import (
+    classify_live_evidence_boundary,
+    get_evidence_adapter,
+)
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
@@ -33,6 +37,7 @@ from app.models.review import LiveOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
 )
+from app.services.execution_ledger.recorded_fills import recorded_fill_qty_for_order
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
 
@@ -392,6 +397,32 @@ async def _converge_proposal_rung(
     return {"converged": True, "proposal_rung_state": rung.state}
 
 
+async def _recorded_positive_fill_qty(row: LiveOrderLedger) -> Decimal:
+    """Recorded fill evidence for the boundary: ledger row + execution_ledger.
+
+    The ledger row's own ``filled_qty`` is the cheap check; a row that never
+    booked (e.g. partial recorded only in ``execution_ledger`` by another
+    writer) still counts via the shared order-identity read.
+    """
+    recorded = _to_decimal(row.filled_qty) or Decimal("0")
+    if recorded > 0:
+        return recorded
+    order_no = str(row.order_no or "").strip()
+    if not order_no:
+        return Decimal("0")
+    async with _order_session_factory()() as db:
+        return await recorded_fill_qty_for_order(
+            db,
+            broker=row.broker,
+            instrument_type=_LIVE_MARKET_TO_INSTRUMENT.get(row.market, row.market),
+            symbol=row.symbol,
+            side=row.side,
+            currency=row.currency,
+            broker_order_id=order_no,
+            order_time=row.trade_date,
+        )
+
+
 async def _reconcile_one_live_row(
     row: LiveOrderLedger,
     *,
@@ -408,6 +439,24 @@ async def _reconcile_one_live_row(
     adapter = get_evidence_adapter(row.broker)
     evidence = await adapter.fetch_evidence(row)
     base["verdict"] = evidence.verdict.value
+
+    # hk 4606 — shared evidence boundary, identical for full and
+    # terminal_only scope: contradictory/incomplete broker evidence must
+    # never close the order nor book a fill.
+    recorded_fill_qty = Decimal("0")
+    if evidence.verdict in (FillVerdict.EXPIRED, FillVerdict.CANCELLED):
+        recorded_fill_qty = await _recorded_positive_fill_qty(row)
+    boundary = classify_live_evidence_boundary(
+        broker=row.broker,
+        evidence=evidence,
+        recorded_fill_qty=recorded_fill_qty,
+    )
+    if boundary.boundary is not EvidenceBoundary.USABLE:
+        base["action"] = "noop_evidence_boundary"
+        base["requires_manual_review"] = True
+        base["reason_code"] = boundary.reason_code
+        base["reason"] = boundary.detail
+        return base
 
     if evidence.verdict == FillVerdict.PENDING:
         base["action"] = "noop_pending"
