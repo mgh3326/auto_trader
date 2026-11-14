@@ -154,13 +154,13 @@ defaults
     timeout tunnel 1h
     timeout http-request 10s
 
-frontend api
+frontend ft_at_api
     mode http
     bind 127.0.0.1:8000
     bind 100.122.100.56:8000
-    default_backend api_backend
+    default_backend bk_at_api
 
-backend api_backend
+backend bk_at_api
     mode http
     option httpchk GET /healthz
     http-check expect status 200
@@ -168,6 +168,56 @@ backend api_backend
     server blue 127.0.0.1:18000 check
     server green 127.0.0.1:28000 check disabled
 """
+
+
+def _rendered_shiftgate_config(
+    source: Path,
+    *,
+    legacy_upstream_ports: dict[str, int] | None = None,
+) -> str:
+    config = _config(source)
+    legacy_upstream_ports = legacy_upstream_ports or {
+        "at-api-legacy": 8001,
+        "at-mcp-legacy": 8766,
+    }
+    rendered = [VALID_HAPROXY.split("frontend ft_at_api", maxsplit=1)[0].rstrip()]
+
+    for service in config["services"]:
+        section_name = service["name"].replace("-", "_")
+        frontend = f"ft_{section_name}"
+        backend = f"bk_{section_name}"
+        binds = service.get("binds", [])
+        health_path = service.get("health", {}).get("http", "/health")
+        frontend_lines = [
+            f"frontend {frontend}",
+            "    mode http",
+            *(f"    bind {bind}" for bind in binds),
+            f"    default_backend {backend}",
+        ]
+        backend_lines = [
+            "",
+            f"backend {backend}",
+            "    mode http",
+            f"    option httpchk GET {health_path}",
+            "    http-check expect status 200",
+            "    default-server inter 5s fall 2 rise 1",
+        ]
+        ports = service.get("ports")
+        if ports:
+            for color, port in ports.items():
+                suffix = " disabled" if color == "green" else ""
+                backend_lines.append(
+                    f"    server {color} 127.0.0.1:{port} check{suffix}"
+                )
+        else:
+            upstream = service["upstream"]
+            host, port = upstream.rsplit(":", maxsplit=1)
+            if not port.isdigit():
+                port = str(legacy_upstream_ports[service["name"]])
+            backend_lines.append(f"    server {section_name} {host}:{port} check")
+        rendered.extend(frontend_lines + backend_lines)
+
+    return "\n".join(rendered) + "\n"
 
 
 def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(
@@ -180,6 +230,159 @@ def test_haproxy_check_accepts_closed_shape_socket_and_required_binds(
         f"run --rm --network none -v {config_dir}:{config_dir}:ro "
         f"haproxy:3.1-alpine haproxy -c -f {config_dir / 'candidate.cfg'}"
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [STEADY_CONFIG, S1_CONFIG],
+    ids=["steady", "s1"],
+)
+def test_haproxy_check_accepts_current_rendered_shiftgate_configs(
+    tmp_path: Path, source: Path
+) -> None:
+    result = _haproxy_check(tmp_path, _rendered_shiftgate_config(source))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("api_port", [8001, 8002])
+@pytest.mark.parametrize("mcp_port", [8766, 8767])
+def test_haproxy_check_scopes_every_legacy_color_to_s1_backend_names(
+    tmp_path: Path, api_port: int, mcp_port: int
+) -> None:
+    result = _haproxy_check(
+        tmp_path,
+        _rendered_shiftgate_config(
+            S1_CONFIG,
+            legacy_upstream_ports={
+                "at-api-legacy": api_port,
+                "at-mcp-legacy": mcp_port,
+            },
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("mutation", "scope", "offending_token"),
+    [
+        (
+            lambda text: text.replace("bind 127.0.0.1:8000", "bind 127.0.0.1:8001", 1),
+            "frontend ft_at_api",
+            "127.0.0.1:8001",
+        ),
+        (
+            lambda text: text.replace(
+                "    bind 127.0.0.1:8000", "bind 127.0.0.1:8001", 1
+            ),
+            "frontend ft_at_api",
+            "127.0.0.1:8001",
+        ),
+        (
+            lambda text: text.replace("bind 127.0.0.1:8765", "bind 127.0.0.1:8766", 1),
+            "frontend ft_at_mcp",
+            "127.0.0.1:8766",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18000 check",
+                "server blue 127.0.0.1:18001 check",
+                1,
+            ),
+            "backend bk_at_api",
+            "127.0.0.1:18001",
+        ),
+        (
+            lambda text: text.replace(
+                "    server blue 127.0.0.1:18000 check",
+                "server blue 127.0.0.1:18001 check",
+                1,
+            ),
+            "backend bk_at_api",
+            "127.0.0.1:18001",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18765 check",
+                "server blue 127.0.0.1:18766 check",
+                1,
+            ),
+            "backend bk_at_mcp",
+            "127.0.0.1:18766",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18000 check",
+                "server blue 127.0.0.1:8001 check",
+                1,
+            ),
+            "backend bk_at_api",
+            "127.0.0.1:8001",
+        ),
+        (
+            lambda text: text.replace(
+                "server blue 127.0.0.1:18765 check",
+                "server blue 127.0.0.1:8766 check",
+                1,
+            ),
+            "backend bk_at_mcp",
+            "127.0.0.1:8766",
+        ),
+    ],
+    ids=[
+        "api-bind-outside-d9",
+        "api-unindented-bind-outside-d9",
+        "mcp-bind-outside-d9",
+        "api-server-outside-d9",
+        "api-unindented-server-outside-d9",
+        "mcp-server-outside-d9",
+        "legacy-port-outside-s1",
+        "legacy-port-outside-mcp-backend",
+    ],
+)
+def test_haproxy_check_rejects_service_port_outside_scoped_set_and_names_line(
+    tmp_path: Path, mutation, scope: str, offending_token: str
+) -> None:
+    candidate = mutation(_rendered_shiftgate_config(STEADY_CONFIG))
+    offending_line = next(
+        number
+        for number, line in enumerate(candidate.splitlines(), start=1)
+        if offending_token in line
+    )
+
+    result = _haproxy_check(tmp_path, candidate)
+
+    assert result.returncode == 78
+    assert f"outside allowed set for {scope} on line {offending_line}" in result.stderr
+    assert not (tmp_path / "haproxy-call.log").exists()
+
+
+@pytest.mark.parametrize("port", sorted(RETIRED_PORTS))
+@pytest.mark.parametrize("in_comment", [False, True], ids=["directive", "comment"])
+def test_haproxy_check_rejects_retired_port_and_names_line(
+    tmp_path: Path, port: int, in_comment: bool
+) -> None:
+    if in_comment:
+        candidate = VALID_HAPROXY.replace(
+            "frontend ft_at_api", f"# retired endpoint {port}\nfrontend ft_at_api"
+        )
+        offending_text = f"# retired endpoint {port}"
+    else:
+        candidate = VALID_HAPROXY.replace(
+            "option httpchk GET /healthz",
+            f"option httpchk GET /healthz/{port}",
+        )
+        offending_text = f"/healthz/{port}"
+    offending_line = next(
+        number
+        for number, line in enumerate(candidate.splitlines(), start=1)
+        if offending_text in line
+    )
+
+    result = _haproxy_check(tmp_path, candidate)
+
+    assert result.returncode == 78
+    assert f"retired port {port} on line {offending_line}" in result.stderr
+    assert not (tmp_path / "haproxy-call.log").exists()
 
 
 def test_haproxy_check_validates_with_the_deploy_scripts_pinned_image() -> None:

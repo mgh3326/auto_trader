@@ -8,6 +8,74 @@ fi
 
 config=$1
 
+# Retired ports are forbidden anywhere in the candidate file, including
+# comments and other directives. Keep the diagnostic tied to its source line.
+if ! awk '
+  {
+    for (port in retired) {
+      if ($0 ~ ("(^|[^0-9])" port "([^0-9]|$)")) {
+        printf "HAProxy config uses retired port %s on line %d\n", port, FNR > "/dev/stderr"
+        bad = 1
+      }
+    }
+  }
+  BEGIN {
+    split("8768 8769 8770 8771 8773 8774 8775", ports)
+    for (i in ports) retired[ports[i]] = 1
+  }
+  END { exit bad }
+' "$config"; then
+  exit 78
+fi
+
+# Keep listener and upstream ports tied to the rendered service section. The
+# S1 static mirrors are the only backends allowed to target legacy color ports;
+# fixed MCP units retain their documented static route ports.
+if ! awk '
+  function reject(kind, port, scope) {
+    printf "HAProxy config %s port %s outside allowed set for %s on line %d\n", kind, port, scope, FNR > "/dev/stderr"
+    bad = 1
+  }
+  /^[[:space:]]*(#|$)/ { next }
+  /^[^[:space:]]/ && $1 !~ /^(bind|server)$/ {
+    section = $1
+    section_name = ($1 == "frontend" || $1 == "backend") ? $2 : ""
+    next
+  }
+  $1 == "bind" {
+    port = $2
+    sub(/^.*:/, "", port)
+    expected = ""
+    if (section == "frontend") {
+      if (section_name == "ft_at_api" || section_name == "ft_at_api_legacy") expected = "8000"
+      else if (section_name == "ft_at_mcp" || section_name == "ft_at_mcp_legacy") expected = "8765"
+      else if (section_name == "ft_at_mcp_kiwoom") expected = "8772"
+      else if (section_name == "ft_at_mcp_h3_crypto_paper") expected = "8776"
+      else if (section_name == "ft_at_mcp_h3_us_paper") expected = "8777"
+    }
+    if (port != expected) reject("bind", port, "frontend " section_name)
+    next
+  }
+  $1 == "server" {
+    port = $3
+    sub(/^.*:/, "", port)
+    allowed = ""
+    if (section == "backend") {
+      if (section_name == "bk_at_api") allowed = " 18000 28000 "
+      else if (section_name == "bk_at_mcp") allowed = " 18765 28765 "
+      else if (section_name == "bk_at_api_legacy") allowed = " 8001 8002 "
+      else if (section_name == "bk_at_mcp_legacy") allowed = " 8766 8767 "
+      else if (section_name == "bk_at_mcp_kiwoom") allowed = " 8772 "
+      else if (section_name == "bk_at_mcp_h3_crypto_paper") allowed = " 8776 "
+      else if (section_name == "bk_at_mcp_h3_us_paper") allowed = " 8777 "
+    }
+    if (allowed !~ (" " port " ")) reject("server", port, "backend " section_name)
+  }
+  END { exit bad }
+' "$config"; then
+  exit 78
+fi
+
 # Keep the generated HAProxy language and directive arguments closed. The sole
 # extra listener-like directive is shiftgate's one Unix admin socket; all TCP
 # binds and health-check targets remain constrained to the committed addresses.
