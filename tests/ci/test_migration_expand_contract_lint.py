@@ -241,27 +241,28 @@ def downgrade() -> None:
     assert lint.violations(source, "4200") == []
 
 
-def test_sql_comment_tokens_cannot_hide_ddl_but_quoted_text_is_preserved() -> None:
-    assert (
-        "destructive SQL"
-        in _violations("def upgrade():\n    op.execute('DROP/*x*/TABLE old_table')\n")[
-            0
-        ]
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "op.execute('SELECT 1')",
+        "op.execute('DROP/*x*/TABLE old_table')",
+        "op.execute('ALTER/*x*/TABLE items DROP/*x*/COLUMN old')",
+        'op.execute("SELECT $é$--x$é$ ; DROP TABLE t")',
+        "op.execute(sqltext=build_ddl())",
+        "op.exec_driver_sql(sql)",
+        "connection.execute(sql)",
+        "connection.exec_driver_sql(sql)",
+    ],
+)
+def test_every_raw_sql_call_requires_its_operation_marker(expression: str) -> None:
+    source = f"def upgrade():\n    {expression}\n"
+    result = _violations(source, "4200")
+    assert len(result) == 1
+    assert "raw SQL execution requires a contract marker" in result[0]
+    marked = (
+        f"def upgrade():\n    # expand-contract: contract-step 4200\n    {expression}\n"
     )
-    assert (
-        "destructive SQL"
-        in _violations(
-            "def upgrade():\n    op.execute('ALTER/*x*/TABLE items DROP/*x*/COLUMN old')\n"
-        )[0]
-    )
-    assert (
-        _violations(
-            """def upgrade():
-    op.execute("SELECT 'DROP/*x*/TABLE' AS note")
-"""
-        )
-        == []
-    )
+    assert _violations(marked, "4200") == []
 
 
 def test_existing_rob811_standard_migration_is_analyzable() -> None:
@@ -398,7 +399,12 @@ def upgrade():
 )
 def test_drop_index_and_constraint_are_outside_column_drop_rule(sql: str) -> None:
     source = f"def upgrade():\n    op.execute({sql!r})\n"
-    assert _violations(source, "4200") == []
+    assert _violations(source, "4200")
+    marked = (
+        "def upgrade():\n    # expand-contract: contract-step 4200\n"
+        f"    op.execute({sql!r})\n"
+    )
+    assert _violations(marked, "4200") == []
 
 
 @pytest.mark.parametrize(
@@ -411,50 +417,25 @@ def test_drop_index_and_constraint_are_outside_column_drop_rule(sql: str) -> Non
 )
 def test_relaxing_column_constraints_is_not_a_contract_operation(sql: str) -> None:
     source = f"def upgrade():\n    op.execute({sql!r})\n"
-    assert _violations(source, "4200") == []
-
-
-def test_execute_keyword_sqltext_is_checked_and_dynamic_missing_argument_fails_closed() -> (
-    None
-):
-    source = "def upgrade():\n    op.execute(sqltext='DROP TABLE old_table')\n"
     assert _violations(source, "4200")
-
-    missing = "def upgrade():\n    op.execute(encoding='utf-8')\n"
-    assert _violations(missing, "4200")
-
-    dynamic = "def upgrade():\n    op.execute(sqltext=build_ddl())\n"
-    assert _violations(dynamic, "4200")
-    marked = _file_marker(
+    marked = (
         "def upgrade():\n    # expand-contract: contract-step 4200\n"
-        "    op.execute(sqltext=build_ddl())\n"
+        f"    op.execute({sql!r})\n"
     )
     assert _violations(marked, "4200") == []
-    multiline = _file_marker(
-        "def upgrade():\n    # expand-contract: contract-step 4200\n"
-        "    op.execute(\n        sqltext=build_ddl()\n    )\n"
-    )
-    assert _violations(multiline, "4200") == []
-
-
-def test_text_wrapper_requires_a_trusted_sqlalchemy_import() -> None:
-    trusted = (
-        "from sqlalchemy import text\n"
-        "def upgrade():\n    op.execute(text('DROP TABLE old'))\n"
-    )
-    assert _violations(trusted, "4200")
-    untrusted = (
-        "from helpers import text\n"
-        "def upgrade():\n    op.execute(text('DROP TABLE old'))\n"
-    )
-    assert _violations(untrusted, "4200")
 
 
 def test_dynamic_raw_sql_fails_closed() -> None:
     source = "def upgrade():\n    op.execute(f'DROP TABLE {table_name}')\n"
-    assert any(
-        "module shape is indeterminate" in item for item in _violations(source, "4200")
+    assert (
+        "raw SQL execution requires a contract marker" in _violations(source, "4200")[0]
     )
+    marked = (
+        "def upgrade():\n"
+        "    # expand-contract: contract-step 4200\n"
+        "    op.execute(f'DROP TABLE {table_name}')\n"
+    )
+    assert _violations(marked, "4200") == []
 
 
 def test_raw_sql_assigned_inside_upgrade_is_checked() -> None:
@@ -518,14 +499,14 @@ def test_unknown_helper_can_only_pass_with_local_contract_marker() -> None:
         "op.execute(sql)",
     ],
 )
-def test_exec_driver_sql_and_connection_execute_use_literal_sql_only(
+def test_exec_driver_sql_and_connection_execute_always_require_marker(
     expression: str,
 ) -> None:
     source = f"def upgrade():\n    {expression}\n"
-    assert any(
-        "module shape is indeterminate" in item for item in _violations(source, "4200")
+    assert (
+        "raw SQL execution requires a contract marker" in _violations(source, "4200")[0]
     )
-    marked = _file_marker(
+    marked = (
         f"def upgrade():\n    # expand-contract: contract-step 4200\n    {expression}\n"
     )
     assert _violations(marked, "4200") == []
@@ -533,9 +514,12 @@ def test_exec_driver_sql_and_connection_execute_use_literal_sql_only(
 
 def test_exec_driver_sql_literal_destructive_sql_requires_marker() -> None:
     source = "def upgrade():\n    conn.exec_driver_sql('ALTER TABLE items DROP COLUMN old')\n"
-    assert _violations(source, "4200")
-    marked = _file_marker(
-        "def upgrade():\n    # expand-contract: contract-step 4200\n"
+    assert (
+        "raw SQL execution requires a contract marker" in _violations(source, "4200")[0]
+    )
+    marked = (
+        "def upgrade():\n"
+        "    # expand-contract: contract-step 4200\n"
         "    conn.exec_driver_sql('ALTER TABLE items DROP COLUMN old')\n"
     )
     assert _violations(marked, "4200") == []
@@ -563,7 +547,7 @@ def test_dynamic_and_positional_alter_column_forms_fail_closed(
     assert _violations(marked, "4200") == []
 
 
-def test_only_known_expand_calls_and_literal_sql_are_green() -> None:
+def test_only_known_expand_schema_calls_are_green() -> None:
     source = """\
 def upgrade():
     op.create_table('items', sa.Column('id', sa.Integer()))
@@ -571,7 +555,6 @@ def upgrade():
     op.create_index('ix_items_extra', 'items', ['extra'])
     op.create_foreign_key('fk_items', 'items', 'other', ['other_id'], ['id'])
     op.alter_column('items', 'extra', nullable=True)
-    op.execute('ALTER TABLE items ADD COLUMN another TEXT')
 """
     assert _violations(source, "4200") == []
 

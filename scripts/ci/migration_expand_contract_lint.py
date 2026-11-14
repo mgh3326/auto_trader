@@ -11,21 +11,6 @@ from pathlib import Path
 
 CONTRACT_MARKER_RE = re.compile(r"^\s*# expand-contract: contract-step ([0-9]+)\s*$")
 TASK_ID_RE = re.compile(r"[0-9]+")
-RAW_SQL_RE = re.compile(
-    r"\bDROP\s+TABLE\b"
-    r"|\bDROP\s+COLUMN\b"
-    r"|\bALTER\s+TABLE\b[\s\S]*?\bDROP\s+(?:COLUMN\s+)?"
-    r"(?!CONSTRAINT\b|INDEX\b|PRIMARY\b|FOREIGN\b|UNIQUE\b|CHECK\b|NOT\s+NULL\b|DEFAULT\b|IDENTITY\b)"
-    r"[\"`A-Z_][\w$\"`]*"
-    r"|\bRENAME\b"
-    r"|\bSET\s+NOT\s+NULL\b"
-    r"|\bALTER\s+TABLE\b[\s\S]*?\bALTER\s+(?:COLUMN\s+)?"
-    r"[\"`A-Z_][\w$\"`]*\s+(?:SET\s+)?NOT\s+NULL\b"
-    r"|\bALTER\s+TABLE\b[\s\S]*?\bALTER\s+(?:COLUMN\s+)?"
-    r"[\"`A-Z_][\w$\"`]*\s+(?:SET\s+DATA\s+)?TYPE\b",
-    re.I,
-)
-SQL_DOLLAR_TAG_RE = re.compile(r"\$[A-Za-z_][A-Za-z_0-9]*\$|\$\$")
 DESTRUCTIVE_OPS = frozenset({"drop_table", "drop_column", "rename_table"})
 SQL_EXECUTION_METHODS = frozenset({"execute", "exec_driver_sql"})
 EXPANSION_OPS = frozenset(
@@ -368,11 +353,17 @@ def _expression_problem(
             return None
         return "attribute value is outside the SQLAlchemy constructor grammar"
     elif isinstance(node, ast.Call):
+        method = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+        if (
+            allow_op_operation
+            and method in SQL_EXECUTION_METHODS
+            and isinstance(node.func, ast.Attribute)
+        ):
+            return None
         if any(isinstance(argument, ast.Starred) for argument in node.args):
             return "starred arguments cannot be checked statically"
         if any(keyword.arg is None for keyword in node.keywords):
             return "expanded keyword arguments cannot be checked statically"
-        method = node.func.attr if isinstance(node.func, ast.Attribute) else ""
         root = _root_name(node.func) if isinstance(node.func, ast.Attribute) else None
         if root in sqlalchemy_names:
             if not (
@@ -502,35 +493,6 @@ def _upgrade_body_problem(
     return None
 
 
-def _literal_sql(node: ast.AST, imported_names: set[str]) -> str | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "text"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "sa"
-        and len(node.args) == 1
-        and not node.keywords
-        and isinstance(node.args[0], ast.Constant)
-        and isinstance(node.args[0].value, str)
-    ):
-        return node.args[0].value
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "text"
-        and "text" in imported_names
-        and len(node.args) == 1
-        and not node.keywords
-        and isinstance(node.args[0], ast.Constant)
-        and isinstance(node.args[0].value, str)
-    ):
-        return node.args[0].value
-    return None
-
-
 def _has_contract_marker(
     source_lines: list[str],
     call: ast.Call,
@@ -609,125 +571,15 @@ def _alter_column_problem(call: ast.Call) -> str | None:
     return None
 
 
-def _operation_problem(call: ast.Call, imported_names: set[str]) -> str | None:
+def _operation_problem(call: ast.Call) -> str | None:
     method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
-    root = _root_name(call.func.value) if isinstance(call.func, ast.Attribute) else None
-    if method in SQL_EXECUTION_METHODS and root == "op":
-        sql_arg = (
-            call.args[0]
-            if call.args
-            else next(
-                (
-                    kw.value
-                    for kw in call.keywords
-                    if kw.arg in {"sqltext", "statement"}
-                ),
-                None,
-            )
-        )
-        sql = _literal_sql(sql_arg, imported_names) if sql_arg is not None else None
-        if sql is None:
-            return f"{method} SQL is not a string literal"
-        match = RAW_SQL_RE.search(_strip_sql_comments(sql))
-        if match:
-            return f"{method} contains destructive SQL ({match.group(0)})"
-        return None
+    if method in SQL_EXECUTION_METHODS:
+        return f"{method} raw SQL execution requires a contract marker"
     if method in DESTRUCTIVE_OPS:
         return f"{method} is a destructive schema operation"
     if method == "alter_column":
         return _alter_column_problem(call)
     return None
-
-
-def _strip_sql_comments(sql: str) -> str:
-    """Replace SQL comments with spaces without changing quoted SQL text."""
-    output: list[str] = []
-    index = 0
-    state = "normal"
-    block_depth = 0
-    dollar_tag = ""
-    while index < len(sql):
-        if state == "line_comment":
-            if sql[index] in "\r\n":
-                output.append(sql[index])
-                state = "normal"
-            else:
-                output.append(" ")
-            index += 1
-            continue
-        if state == "block_comment":
-            if sql.startswith("/*", index):
-                output.extend("  ")
-                block_depth += 1
-                index += 2
-            elif sql.startswith("*/", index):
-                output.extend("  ")
-                block_depth -= 1
-                index += 2
-                if block_depth == 0:
-                    state = "normal"
-            else:
-                output.append("\n" if sql[index] == "\n" else " ")
-                index += 1
-            continue
-        if state == "dollar_quote":
-            if sql.startswith(dollar_tag, index):
-                output.append(dollar_tag)
-                index += len(dollar_tag)
-                state = "normal"
-            else:
-                output.append(sql[index])
-                index += 1
-            continue
-        if state in {"single_quote", "double_quote"}:
-            quote = "'" if state == "single_quote" else '"'
-            output.append(sql[index])
-            if sql[index] == quote:
-                if index + 1 < len(sql) and sql[index + 1] == quote:
-                    output.append(sql[index + 1])
-                    index += 2
-                    continue
-                state = "normal"
-            elif (
-                sql[index] == "\\" and state == "single_quote" and index + 1 < len(sql)
-            ):
-                output.append(sql[index + 1])
-                index += 2
-                continue
-            index += 1
-            continue
-
-        if sql.startswith("--", index):
-            output.extend("  ")
-            index += 2
-            state = "line_comment"
-        elif sql.startswith("/*", index):
-            output.extend("  ")
-            index += 2
-            state = "block_comment"
-            block_depth = 1
-        elif sql[index] == "'":
-            output.append(sql[index])
-            index += 1
-            state = "single_quote"
-        elif sql[index] == '"':
-            output.append(sql[index])
-            index += 1
-            state = "double_quote"
-        elif sql[index] == "$":
-            match = SQL_DOLLAR_TAG_RE.match(sql, index)
-            if match:
-                dollar_tag = match.group(0)
-                output.append(dollar_tag)
-                index += len(dollar_tag)
-                state = "dollar_quote"
-            else:
-                output.append(sql[index])
-                index += 1
-        else:
-            output.append(sql[index])
-            index += 1
-    return "".join(output)
 
 
 def violations(source: str, task_id: str) -> list[str]:
@@ -746,14 +598,6 @@ def violations(source: str, task_id: str) -> list[str]:
             f"line 1: migration module shape is indeterminate: {shape_problem}; contract marker required"
         ]
 
-    imported_names: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            imported_names.update(
-                alias.asname or alias.name.split(".")[0] for alias in node.names
-            )
-        elif isinstance(node, ast.ImportFrom):
-            imported_names.update(alias.asname or alias.name for alias in node.names)
     upgrade = next(
         node
         for node in tree.body
@@ -773,7 +617,7 @@ def violations(source: str, task_id: str) -> list[str]:
     }
     found: list[str] = []
     for call in (node for node in ast.walk(upgrade) if isinstance(node, ast.Call)):
-        message = _operation_problem(call, imported_names)
+        message = _operation_problem(call)
         root = (
             _root_name(call.func.value)
             if isinstance(call.func, ast.Attribute)
