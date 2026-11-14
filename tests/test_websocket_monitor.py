@@ -1,6 +1,7 @@
 """Tests for unified WebSocket monitor."""
 
 import asyncio
+import logging
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1401,6 +1402,73 @@ class TestHeartbeat:
         assert "updated_at_unix" in data
 
 
+class _FakeClock:
+    """Injectable monotonic clock; advanced only by the fake websocket."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def _drive_upbit_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cycles: list[tuple[float, bool]],
+) -> None:
+    """Run the Upbit supervisor through one scripted cycle per entry.
+
+    Each entry is (seconds to advance the fake clock, connect succeeds?).
+    The fake sleep stops the loop once the script is consumed, so nothing
+    really sleeps.
+    """
+    import websocket_monitor
+    from websocket_monitor import UnifiedWebSocketMonitor
+
+    clock = _FakeClock()
+    monitor = UnifiedWebSocketMonitor(
+        mode="upbit",
+        upbit_outage_error_threshold_seconds=900.0,
+        clock=clock,
+    )
+    monitor.is_running = True
+    remaining = list(cycles)
+
+    class FakeUpbitWs:
+        def __init__(self, *args, on_connected=None, **kwargs):
+            self.is_connected = False
+            self._on_connected = on_connected
+
+        async def connect_and_subscribe(self, *args, **kwargs):
+            advance, connected = remaining.pop(0)
+            clock.now += advance
+            if connected:
+                self.is_connected = True
+                # Mirrors the real client: connected fires before the listen loop.
+                self._on_connected()
+                return
+            raise RuntimeError("Upbit WebSocket connection not established (10/10)")
+
+    async def stop_after_script(_: float) -> None:
+        if not remaining:
+            monitor.is_running = False
+
+    monkeypatch.setattr(websocket_monitor, "UpbitMyOrderWebSocket", FakeUpbitWs)
+    monkeypatch.setattr(websocket_monitor.asyncio, "sleep", stop_after_script)
+    caplog.set_level("INFO")
+
+    await monitor._start_upbit_supervisor()
+
+
+def _monitor_records(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "websocket_monitor" and r.levelno == level
+    ]
+
+
 class TestAutoReconnect:
     """Tests for auto-reconnect supervisor behavior."""
 
@@ -1491,6 +1559,59 @@ class TestAutoReconnect:
         fake_ws.connect_and_subscribe.assert_awaited_once()
         assert "Upbit WebSocket connected" not in caplog.text
         assert "Reconnecting Upbit" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_upbit_outage_under_threshold_logs_warning_only(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Five failures spanning 300s stay under the 900s threshold.
+        await _drive_upbit_supervisor(monkeypatch, caplog, [(60.0, False)] * 5)
+
+        assert _monitor_records(caplog, logging.ERROR) == []
+        assert len(_monitor_records(caplog, logging.WARNING)) == 5
+
+    @pytest.mark.asyncio
+    async def test_upbit_outage_logs_exactly_one_error_past_threshold(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Failures every 120s: the episode passes 900s at the 9th failed cycle
+        # and stays silent at ERROR for the remaining 11 cycles.
+        await _drive_upbit_supervisor(monkeypatch, caplog, [(120.0, False)] * 20)
+
+        errors = _monitor_records(caplog, logging.ERROR)
+        assert len(errors) == 1
+        assert "9 failed cycles" in errors[0]
+        assert "outage exceeded 900s" in errors[0]
+        assert len(_monitor_records(caplog, logging.WARNING)) == 19
+
+    @pytest.mark.asyncio
+    async def test_upbit_recovery_logs_one_info_and_next_outage_can_error_again(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        episode = [(120.0, False)] * 9
+        cycles = episode + [(120.0, True)] + episode
+        await _drive_upbit_supervisor(monkeypatch, caplog, cycles)
+
+        # First outage: from t=120 to the successful connect at t=1200.
+        recovered = _monitor_records(caplog, logging.INFO)
+        recovered = [m for m in recovered if m.startswith("Upbit WebSocket recovered")]
+        assert len(recovered) == 1
+        assert "1080s outage" in recovered[0]
+        assert "9 failed cycles" in recovered[0]
+
+        # Each outage episode gets its own single ERROR.
+        errors = _monitor_records(caplog, logging.ERROR)
+        assert len(errors) == 2
+        assert all("9 failed cycles" in e for e in errors)
 
     @pytest.mark.asyncio
     async def test_kis_supervisor_backs_off_on_appkey_in_use_without_churn(
