@@ -925,7 +925,6 @@ class KiwoomMockOrderLedger(Base):
         Index("ix_kiwoom_mock_order_ledger_report_item_uuid", "report_item_uuid"),
         Index(
             "uq_kiwoom_mock_order_ledger_open_operation",
-            "operation_kind",
             "original_order_id",
             unique=True,
             postgresql_where=text(_KIWOOM_MOCK_OPEN_OPERATION_WHERE),

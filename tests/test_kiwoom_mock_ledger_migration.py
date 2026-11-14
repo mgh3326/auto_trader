@@ -178,10 +178,7 @@ def test_orm_declares_the_partial_open_operation_unique_index() -> None:
     indexes = {index.name: index for index in KiwoomMockOrderLedger.__table__.indexes}
     index = indexes["uq_kiwoom_mock_order_ledger_open_operation"]
     assert index.unique is True
-    assert [column.name for column in index.columns] == [
-        "operation_kind",
-        "original_order_id",
-    ]
+    assert [column.name for column in index.columns] == ["original_order_id"]
     where = str(index.dialect_options["postgresql"]["where"])
     assert "operation_kind IN ('modify','cancel')" in where
     for terminal in KIWOOM_MOCK_TERMINAL_STATUSES:

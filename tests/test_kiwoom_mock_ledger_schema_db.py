@@ -27,6 +27,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import engine
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -130,7 +131,13 @@ async def _expect_refused(
             ("ck_kiwoom_mock_order_ledger_operation_kind",),
         ),
         ({"side": "hold"}, ("ck_kiwoom_mock_order_ledger_side",)),
-        ({"order_type": "stop"}, ("ck_kiwoom_mock_order_ledger_order_type",)),
+        (
+            {"order_type": "stop"},
+            (
+                "ck_kiwoom_mock_order_ledger_order_type",
+                "ck_kiwoom_mock_order_ledger_kr_limit_only",
+            ),
+        ),
         (
             {"order_type": "market"},
             ("ck_kiwoom_mock_order_ledger_kr_limit_only",),
@@ -214,6 +221,34 @@ async def test_open_operation_unique_blocks_a_second_pending_cancel(
             operation_kind="cancel",
             original_order_id=original,
             status="uncertain",
+        ),
+        ("uq_kiwoom_mock_order_ledger_open_operation",),
+    )
+
+
+async def test_open_operation_unique_blocks_a_cancel_while_a_modify_is_open(
+    db_session: AsyncSession,
+) -> None:
+    # Keyed on original_order_id alone: a modify and a cancel on the same
+    # original order are competing corrections and must not coexist as open rows.
+    original = "0000999"
+    await _insert(
+        db_session,
+        "kiwoom_mock_order_ledger",
+        _valid_order(
+            operation_kind="modify",
+            original_order_id=original,
+            status="accepted",
+            broker_order_id="0001001",
+        ),
+    )
+    await _expect_refused(
+        db_session,
+        "kiwoom_mock_order_ledger",
+        _valid_order(
+            operation_kind="cancel",
+            original_order_id=original,
+            status="pending",
         ),
         ("uq_kiwoom_mock_order_ledger_open_operation",),
     )
@@ -356,6 +391,7 @@ def _run_step(sync_conn, step: str) -> None:
 
 
 async def test_upgrade_downgrade_upgrade_round_trip_and_downgrade_guard() -> None:
+    validate_run_owned_database_url(engine.url)
     async with engine.connect() as conn:
         try:
             # Start from the bootstrapped (create_all) state, where the new

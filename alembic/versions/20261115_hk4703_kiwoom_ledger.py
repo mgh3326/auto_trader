@@ -96,7 +96,7 @@ _OPEN_OPERATION_WHERE = (
 DOWNGRADE_GUARD = f"""
 DO $$
 BEGIN
-    LOCK TABLE {_SCHEMA}.{_ORDER_TABLE}, {_SCHEMA}.{_SIGNAL_TABLE}
+    LOCK TABLE {_SCHEMA}.{_ORDER_TABLE}, {_SCHEMA}.{_SIGNAL_TABLE}, {_SCHEMA}.{_PROPOSAL_TABLE}
         IN ACCESS EXCLUSIVE MODE;
     IF EXISTS (SELECT 1 FROM {_SCHEMA}.{_ORDER_TABLE})
        OR EXISTS (SELECT 1 FROM {_SCHEMA}.{_SIGNAL_TABLE})
@@ -271,7 +271,7 @@ def upgrade() -> None:
     op.create_index(
         "uq_kiwoom_mock_order_ledger_open_operation",
         _ORDER_TABLE,
-        ["operation_kind", "original_order_id"],
+        ["original_order_id"],
         unique=True,
         schema=_SCHEMA,
         postgresql_where=sa.text(_OPEN_OPERATION_WHERE),
