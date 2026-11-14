@@ -261,16 +261,78 @@ def _readback_ground_truth(lane_id: str) -> str:
     raise AssertionError(f"unowned lane: {lane_id}")
 
 
-def _evidence_ground_truth(lane_id: str) -> str:
+_KIWOOM_WRITE_TOKENS = ("insert(", ".add(", "INSERT INTO", ".merge(", "bulk_save")
+
+
+def _app_sources_outside_models() -> list[tuple[str, str]]:
+    return [
+        (
+            path.relative_to(_REPO_ROOT).as_posix(),
+            path.read_text(encoding="utf-8"),
+        )
+        for path in sorted((_REPO_ROOT / "app").rglob("*.py"))
+        if _MODELS_DIR not in path.parents
+    ]
+
+
+def _kiwoom_ledger_classes(models: str) -> list[tuple[str, str, str]]:
+    """(table name, ORM class name, class body) for each kiwoom ledger model."""
+
+    found = []
+    for chunk in re.split(r"^class ", models, flags=re.MULTILINE)[1:]:
+        cls = re.match(r"(\w+)\(Base\)", chunk)
+        table = re.search(r'__tablename__\s*=\s*"([^"]+)"', chunk)
+        if cls and table and "kiwoom" in table.group(1) and "ledger" in table.group(1):
+            found.append((table.group(1), cls.group(1), chunk))
+    return found
+
+
+def _attributes_us_rows(body: str) -> bool:
+    """Can a row be attributed to the US lane (account_mode or market)?"""
+
+    return "kiwoom_mock_us" in body or bool(
+        re.search(r"^\s+market\s*:", body, flags=re.MULTILINE)
+    )
+
+
+def _kiwoom_writer_exists(
+    table: str, class_name: str, app_sources: list[tuple[str, str]]
+) -> bool:
+    """A service module outside app/models that references the ledger and writes."""
+
+    return any(
+        (class_name in text or table in text)
+        and any(token in text for token in _KIWOOM_WRITE_TOKENS)
+        for _path, text in app_sources
+    )
+
+
+def _evidence_ground_truth(
+    lane_id: str,
+    *,
+    models: str | None = None,
+    app_sources: list[tuple[str, str]] | None = None,
+) -> str:
     """Can a lane-native evidence table attribute a row to *this* lane?"""
 
-    models = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(_MODELS_DIR.glob("*.py"))
-    )
+    if models is None:
+        models = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(_MODELS_DIR.glob("*.py"))
+        )
     if lane_id == "us.kiwoom.mock":
-        tablenames = re.findall(r'__tablename__\s*=\s*"([^"]+)"', models)
-        has_ledger = any("kiwoom" in name and "ledger" in name for name in tablenames)
-        return "PRESENT" if has_ledger else "ABSENT"
+        # Decision B (design session, hk 4703 scope extension): a table alone is
+        # not lane-native evidence. PRESENT needs a ledger that attributes rows
+        # to the US lane AND a writer in app/ that records rows into it. Until
+        # the T-P2/T-P8 writer lands, the lane stays ABSENT.
+        if app_sources is None:
+            app_sources = _app_sources_outside_models()
+        for table, class_name, body in _kiwoom_ledger_classes(models):
+            if _attributes_us_rows(body) and _kiwoom_writer_exists(
+                table, class_name, app_sources
+            ):
+                return "PRESENT"
+        return "ABSENT"
     if lane_id == "us.kis.mock":
         # The sole KIS mock ledger is CHECK-pinned to one account_mode and
         # carries no market/venue/lane discriminator, so a row cannot be
@@ -555,3 +617,55 @@ def test_g14_document_cites_rob1266_and_touches_no_production_module(
     assert "docs/contracts/rob-1266-us-readiness.md" in doc_text
     for path in (_REGISTRY_PATH, _COORDINATION_PATH, _LINEAGE_PATH):
         assert path.is_file()
+
+
+def test_kiwoom_evidence_is_absent_without_a_writer() -> None:
+    assert _evidence_ground_truth("us.kiwoom.mock", app_sources=[]) == "ABSENT"
+
+
+def test_kiwoom_evidence_is_present_once_a_us_attributable_writer_exists() -> None:
+    models = (
+        "class KiwoomMockOrderLedger(Base):\n"
+        '    __tablename__ = "kiwoom_mock_order_ledger"\n'
+        "    account_mode: Mapped[str] = mapped_column(Text)\n"
+        "    CheckConstraint(\"account_mode IN ('kiwoom_mock', 'kiwoom_mock_us')\")\n"
+    )
+    writer = (
+        "from app.models.review import KiwoomMockOrderLedger\n"
+        "def record(session):\n"
+        "    session.add(KiwoomMockOrderLedger(account_mode='kiwoom_mock_us'))\n"
+    )
+    assert (
+        _evidence_ground_truth(
+            "us.kiwoom.mock",
+            models=models,
+            app_sources=[("app/services/kiwoom_mock_writer.py", writer)],
+        )
+        == "PRESENT"
+    )
+
+
+def test_kiwoom_evidence_needs_us_attribution_even_with_a_writer() -> None:
+    models = (
+        "class KiwoomKrOnlyLedger(Base):\n"
+        '    __tablename__ = "kiwoom_kr_only_ledger"\n'
+        "    account_mode = 'kiwoom_mock'\n"
+    )
+    writer = (
+        "from app.models.review import KiwoomKrOnlyLedger\n"
+        "def record(session):\n"
+        "    session.add(KiwoomKrOnlyLedger())\n"
+    )
+    assert (
+        _evidence_ground_truth(
+            "us.kiwoom.mock",
+            models=models,
+            app_sources=[("app/services/kiwoom_kr_writer.py", writer)],
+        )
+        == "ABSENT"
+    )
+
+
+def test_kiwoom_evidence_is_absent_in_this_tree() -> None:
+    # The repository has the ledger models but no writer yet (T-P2/T-P8 pending).
+    assert _evidence_ground_truth("us.kiwoom.mock") == "ABSENT"
