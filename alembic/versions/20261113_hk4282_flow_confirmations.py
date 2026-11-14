@@ -3,7 +3,7 @@
 from alembic import op
 
 revision = "20261113_hk4282_flow_confirm"
-down_revision = "20261112_hk4186_basis"
+down_revision = "20261114_hk4178_us_inference"
 branch_labels = None
 depends_on = None
 
