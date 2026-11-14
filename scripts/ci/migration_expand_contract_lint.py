@@ -25,6 +25,7 @@ RAW_SQL_RE = re.compile(
     r"[\"`A-Z_][\w$\"`]*\s+(?:SET\s+DATA\s+)?TYPE\b",
     re.I,
 )
+SQL_DOLLAR_TAG_RE = re.compile(r"\$[A-Za-z_][A-Za-z_0-9]*\$|\$\$")
 DESTRUCTIVE_OPS = frozenset({"drop_table", "drop_column", "rename_table"})
 SQL_EXECUTION_METHODS = frozenset({"execute", "exec_driver_sql"})
 EXPANSION_OPS = frozenset(
@@ -86,6 +87,10 @@ SAFE_SQLALCHEMY_CALLS = frozenset(
         "text",
     }
 )
+SAFE_TYPING_IMPORTS = frozenset({"Sequence", "Union"})
+SAFE_COLLECTION_IMPORTS = frozenset(
+    {"Callable", "Collection", "Iterable", "Iterator", "Mapping", "Sequence"}
+)
 MODULE_METADATA = frozenset(
     {"revision", "down_revision", "branch_labels", "depends_on"}
 )
@@ -133,38 +138,92 @@ def _function_shape_problem(node: ast.FunctionDef) -> str | None:
         or any(default is not None for default in node.args.kw_defaults)
     ):
         return f"{node.name}() has parameters or defaults"
-    if (
-        node.returns is not None
-        or node.type_comment
-        or getattr(node, "type_params", ())
+    if node.returns is not None and not (
+        isinstance(node.returns, ast.Constant) and node.returns.value is None
     ):
-        return f"{node.name}() has annotations or type parameters"
+        return f"{node.name}() has a return annotation other than None"
+    if node.type_comment or getattr(node, "type_params", ()):
+        return f"{node.name}() has a type comment or type parameters"
     return None
 
 
 def _allowed_import(node: ast.Import | ast.ImportFrom) -> tuple[bool, set[str]]:
     if isinstance(node, ast.Import):
-        if len(node.names) != 1:
+        if not node.names:
             return False, set()
-        alias = node.names[0]
-        if alias.name == "sqlalchemy" and alias.asname == "sa":
-            return True, {"sa"}
-        return False, set()
+        bound: set[str] = set()
+        for alias in node.names:
+            if alias.name == "sqlalchemy" and alias.asname == "sa":
+                bound.add("sa")
+            elif alias.name.startswith("sqlalchemy.dialects.") and alias.asname:
+                bound.add(alias.asname)
+            else:
+                return False, set()
+        return True, bound
 
-    allowed = {
-        ("alembic", "op", None),
-        ("sqlalchemy.dialects", "postgresql", None),
-        ("sqlalchemy", "text", None),
-    }
-    names = {(node.module or "", alias.name, alias.asname) for alias in node.names}
+    module = node.module or ""
+    names = {alias.name for alias in node.names}
     bound = {alias.asname or alias.name for alias in node.names}
-    return len(names) == len(node.names) and bool(names) and names <= allowed, bound
+    if "*" in names or len(names) != len(node.names):
+        return False, set()
+    if module == "__future__":
+        return names == {"annotations"}, bound
+    if module == "alembic":
+        return bool(names) and names <= {"op", "context"}, bound
+    if module == "typing":
+        return bool(names) and names <= SAFE_TYPING_IMPORTS, bound
+    if module == "collections.abc":
+        return bool(names) and names <= SAFE_COLLECTION_IMPORTS, bound
+    if module == "sqlalchemy" or module.startswith("sqlalchemy."):
+        return bool(names), bound
+    return False, set()
+
+
+def _annotation_problem(node: ast.AST, imported_names: set[str]) -> str | None:
+    if isinstance(node, ast.Constant):
+        return (
+            None
+            if node.value is None
+            else "metadata annotation is not a type expression"
+        )
+    if isinstance(node, ast.Name):
+        if node.id in imported_names | {"str", "int", "bool", "float", "bytes"}:
+            return None
+        return f"metadata annotation name {node.id!r} is not imported"
+    if isinstance(node, ast.Attribute):
+        root = _root_name(node)
+        return (
+            None
+            if root in imported_names
+            else "metadata annotation namespace is not imported"
+        )
+    if isinstance(node, ast.Subscript):
+        for child in (node.value, node.slice):
+            problem = _annotation_problem(child, imported_names)
+            if problem:
+                return problem
+        return None
+    if isinstance(node, ast.Tuple):
+        for child in node.elts:
+            problem = _annotation_problem(child, imported_names)
+            if problem:
+                return problem
+        return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        for child in (node.left, node.right):
+            problem = _annotation_problem(child, imported_names)
+            if problem:
+                return problem
+        return None
+    return "metadata annotation is outside the literal type grammar"
 
 
 def _module_shape_problem(tree: ast.Module) -> str | None:
     functions: dict[str, ast.FunctionDef] = {}
     metadata: dict[str, ast.AST] = {}
     imported_names: set[str] = set()
+    sqlalchemy_names: set[str] = set()
+    safe_constructor_names: set[str] = set()
     has_docstring = bool(
         tree.body
         and isinstance(tree.body[0], ast.Expr)
@@ -190,6 +249,22 @@ def _module_shape_problem(tree: ast.Module) -> str | None:
             if imported_names & names:
                 return f"line {node.lineno}: imported name is rebound"
             imported_names.update(names)
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "sqlalchemy":
+                        sqlalchemy_names.add(alias.asname or "sqlalchemy")
+                    elif alias.name.startswith("sqlalchemy."):
+                        sqlalchemy_names.add(alias.asname or alias.name.split(".")[0])
+            else:
+                module = node.module or ""
+                if module == "sqlalchemy" or module.startswith("sqlalchemy."):
+                    sqlalchemy_names.update(names)
+                    safe_constructor_names.update(
+                        bound_name
+                        for alias in node.names
+                        if alias.name in SAFE_SQLALCHEMY_CALLS
+                        for bound_name in (alias.asname or alias.name,)
+                    )
             continue
         if isinstance(node, ast.Assign):
             if function_phase:
@@ -207,6 +282,33 @@ def _module_shape_problem(tree: ast.Module) -> str | None:
                 return (
                     f"line {node.lineno}: migration metadata {name!r} is assigned twice"
                 )
+            try:
+                ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                return f"line {node.lineno}: migration metadata {name!r} is not literal"
+            metadata[name] = node.value
+            continue
+        if isinstance(node, ast.AnnAssign):
+            if function_phase:
+                return (
+                    f"line {node.lineno}: assignment appears after migration functions"
+                )
+            if (
+                not isinstance(node.target, ast.Name)
+                or node.target.id not in MODULE_METADATA
+                or node.value is None
+            ):
+                return (
+                    f"line {node.lineno}: only valued metadata annotations are allowed"
+                )
+            name = node.target.id
+            if name in metadata:
+                return (
+                    f"line {node.lineno}: migration metadata {name!r} is assigned twice"
+                )
+            annotation_problem = _annotation_problem(node.annotation, imported_names)
+            if annotation_problem:
+                return f"line {node.lineno}: {annotation_problem}"
             try:
                 ast.literal_eval(node.value)
             except (ValueError, TypeError, SyntaxError):
@@ -232,13 +334,18 @@ def _module_shape_problem(tree: ast.Module) -> str | None:
         return "all four migration metadata fields must be literal assignments"
     if "op" not in imported_names:
         return "migration must use the allowed 'from alembic import op' import"
-    return _upgrade_body_problem(functions["upgrade"], imported_names)
+    return _upgrade_body_problem(
+        functions["upgrade"], imported_names, sqlalchemy_names, safe_constructor_names
+    )
 
 
 def _expression_problem(
     node: ast.AST,
     imported_names: set[str],
+    sqlalchemy_names: set[str],
+    safe_constructor_names: set[str],
     batch_name: str | None = None,
+    allow_op_operation: bool = False,
     allow_batch_context: bool = False,
 ) -> str | None:
     if isinstance(node, ast.Constant):
@@ -248,115 +355,104 @@ def _expression_problem(
     if isinstance(node, ast.Name):
         return f"name {node.id!r} cannot be checked statically"
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        for element in node.elts:
-            problem = _expression_problem(
-                element, imported_names, batch_name, allow_batch_context
-            )
-            if problem:
-                return problem
-        return None
-    if isinstance(node, ast.Dict):
-        for item in [*node.keys, *node.values]:
-            if item is not None:
-                problem = _expression_problem(
-                    item, imported_names, batch_name, allow_batch_context
-                )
-                if problem:
-                    return problem
-        return None
-    if isinstance(node, ast.Attribute):
+        children = node.elts
+    elif isinstance(node, ast.Dict):
+        children = [child for child in [*node.keys, *node.values] if child is not None]
+    elif isinstance(node, ast.Attribute):
         root = _root_name(node)
         if (
             isinstance(node.value, ast.Name)
-            and root in {"sa", "postgresql"}
-            and root in imported_names
+            and root in sqlalchemy_names
             and node.attr in SAFE_SQLALCHEMY_CALLS
         ):
             return None
-        return "attribute access cannot be checked statically"
-    if isinstance(node, ast.Call):
+        return "attribute value is outside the SQLAlchemy constructor grammar"
+    elif isinstance(node, ast.Call):
         if any(isinstance(argument, ast.Starred) for argument in node.args):
             return "starred arguments cannot be checked statically"
         if any(keyword.arg is None for keyword in node.keywords):
             return "expanded keyword arguments cannot be checked statically"
         method = node.func.attr if isinstance(node.func, ast.Attribute) else ""
         root = _root_name(node.func) if isinstance(node.func, ast.Attribute) else None
-        if root == "op":
-            if "op" not in imported_names:
-                return "op call lacks the allowed Alembic import"
-            direct_op_method = (
-                isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "op"
-            )
-            bind_execute = (
-                method in SQL_EXECUTION_METHODS
-                and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Call)
-                and isinstance(node.func.value.func, ast.Attribute)
-                and isinstance(node.func.value.func.value, ast.Name)
-                and node.func.value.func.value.id == "op"
-                and node.func.value.func.attr == "get_bind"
-                and not node.func.value.args
-                and not node.func.value.keywords
-            )
-            if not direct_op_method and not bind_execute:
-                return "indirect op attribute call cannot be checked statically"
-            if method not in EXPANSION_OPS | DESTRUCTIVE_OPS | SQL_EXECUTION_METHODS:
-                return f"operation {method!r} is outside the op allowlist"
-            if method == "batch_alter_table" and not allow_batch_context:
-                return "batch_alter_table must use the closed with-statement form"
-        elif root in {"sa", "postgresql"}:
-            if root not in imported_names:
-                return f"{root} call lacks its allowed import"
+        if root in sqlalchemy_names:
             if not (
                 isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
                 and node.func.value.id == root
+                and method in SAFE_SQLALCHEMY_CALLS
             ):
-                return (
-                    "indirect SQLAlchemy constructor call cannot be checked statically"
-                )
-            if method not in SAFE_SQLALCHEMY_CALLS:
-                return f"constructor {method!r} is outside the SQLAlchemy allowlist"
-        elif isinstance(node.func, ast.Name) and node.func.id == "text":
-            if "text" not in imported_names:
-                return "text() requires the allowed SQLAlchemy import"
-        elif root == batch_name:
+                return "SQLAlchemy call is outside the constructor allowlist"
+        elif root == "op":
+            if not (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "op"
+            ):
+                return "indirect op attribute call cannot be checked statically"
+            if method == "batch_alter_table":
+                if not allow_batch_context:
+                    return "batch_alter_table must use the closed with-statement form"
+            elif method in {"f", "inline_literal"}:
+                pass
+            elif not (
+                allow_op_operation
+                and method in EXPANSION_OPS | DESTRUCTIVE_OPS | SQL_EXECUTION_METHODS
+            ):
+                return "nested op calls are outside the argument grammar"
+        elif root == batch_name and batch_name is not None:
             if not (
                 isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
                 and node.func.value.id == batch_name
+                and allow_op_operation
+                and method in EXPANSION_OPS | DESTRUCTIVE_OPS
             ):
-                return "indirect batch operation cannot be checked statically"
-            if method not in EXPANSION_OPS | DESTRUCTIVE_OPS:
-                return f"batch operation {method!r} is outside the op allowlist"
+                return "batch operation is outside the closed call grammar"
+        elif isinstance(node.func, ast.Name) and node.func.id in safe_constructor_names:
+            pass
         else:
-            return "function call cannot be checked statically"
-        for argument in node.args:
-            problem = _expression_problem(
-                argument, imported_names, batch_name, allow_batch_context
-            )
-            if problem:
-                return problem
-        for keyword in node.keywords:
-            problem = _expression_problem(
-                keyword.value, imported_names, batch_name, allow_batch_context
-            )
-            if problem:
-                return problem
-        return None
-    return f"{type(node).__name__} is outside the migration expression grammar"
+            return "function call is outside the migration constructor grammar"
+        children = [*node.args, *(keyword.value for keyword in node.keywords)]
+    else:
+        return f"{type(node).__name__} is outside the migration expression grammar"
+
+    for child in children:
+        problem = _expression_problem(
+            child,
+            imported_names,
+            sqlalchemy_names,
+            safe_constructor_names,
+            batch_name=batch_name,
+        )
+        if problem:
+            return problem
+    return None
 
 
 def _upgrade_body_problem(
-    function: ast.FunctionDef, imported_names: set[str]
+    function: ast.FunctionDef,
+    imported_names: set[str],
+    sqlalchemy_names: set[str],
+    safe_constructor_names: set[str],
 ) -> str | None:
-    for statement in function.body:
+    for index, statement in enumerate(function.body):
+        if (
+            index == 0
+            and isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        ):
+            continue
         if isinstance(statement, ast.Pass):
             continue
         if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
-            problem = _expression_problem(statement.value, imported_names)
+            problem = _expression_problem(
+                statement.value,
+                imported_names,
+                sqlalchemy_names,
+                safe_constructor_names,
+                allow_op_operation=True,
+            )
             if problem:
                 return f"line {statement.lineno}: {problem}"
             continue
@@ -374,7 +470,12 @@ def _upgrade_body_problem(
             ):
                 return f"line {statement.lineno}: with statement is outside the batch grammar"
             context_problem = _expression_problem(
-                context, imported_names, allow_batch_context=True
+                context,
+                imported_names,
+                sqlalchemy_names,
+                safe_constructor_names,
+                allow_op_operation=True,
+                allow_batch_context=True,
             )
             if context_problem:
                 return f"line {statement.lineno}: {context_problem}"
@@ -385,7 +486,12 @@ def _upgrade_body_problem(
                 ):
                     return f"line {body_statement.lineno}: batch body must contain op calls"
                 problem = _expression_problem(
-                    body_statement.value, imported_names, alias.id
+                    body_statement.value,
+                    imported_names,
+                    sqlalchemy_names,
+                    safe_constructor_names,
+                    batch_name=alias.id,
+                    allow_op_operation=True,
                 )
                 if problem:
                     return f"line {body_statement.lineno}: {problem}"
@@ -522,7 +628,7 @@ def _operation_problem(call: ast.Call, imported_names: set[str]) -> str | None:
         sql = _literal_sql(sql_arg, imported_names) if sql_arg is not None else None
         if sql is None:
             return f"{method} SQL is not a string literal"
-        match = RAW_SQL_RE.search(sql)
+        match = RAW_SQL_RE.search(_strip_sql_comments(sql))
         if match:
             return f"{method} contains destructive SQL ({match.group(0)})"
         return None
@@ -531,6 +637,97 @@ def _operation_problem(call: ast.Call, imported_names: set[str]) -> str | None:
     if method == "alter_column":
         return _alter_column_problem(call)
     return None
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Replace SQL comments with spaces without changing quoted SQL text."""
+    output: list[str] = []
+    index = 0
+    state = "normal"
+    block_depth = 0
+    dollar_tag = ""
+    while index < len(sql):
+        if state == "line_comment":
+            if sql[index] in "\r\n":
+                output.append(sql[index])
+                state = "normal"
+            else:
+                output.append(" ")
+            index += 1
+            continue
+        if state == "block_comment":
+            if sql.startswith("/*", index):
+                output.extend("  ")
+                block_depth += 1
+                index += 2
+            elif sql.startswith("*/", index):
+                output.extend("  ")
+                block_depth -= 1
+                index += 2
+                if block_depth == 0:
+                    state = "normal"
+            else:
+                output.append("\n" if sql[index] == "\n" else " ")
+                index += 1
+            continue
+        if state == "dollar_quote":
+            if sql.startswith(dollar_tag, index):
+                output.append(dollar_tag)
+                index += len(dollar_tag)
+                state = "normal"
+            else:
+                output.append(sql[index])
+                index += 1
+            continue
+        if state in {"single_quote", "double_quote"}:
+            quote = "'" if state == "single_quote" else '"'
+            output.append(sql[index])
+            if sql[index] == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    output.append(sql[index + 1])
+                    index += 2
+                    continue
+                state = "normal"
+            elif (
+                sql[index] == "\\" and state == "single_quote" and index + 1 < len(sql)
+            ):
+                output.append(sql[index + 1])
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if sql.startswith("--", index):
+            output.extend("  ")
+            index += 2
+            state = "line_comment"
+        elif sql.startswith("/*", index):
+            output.extend("  ")
+            index += 2
+            state = "block_comment"
+            block_depth = 1
+        elif sql[index] == "'":
+            output.append(sql[index])
+            index += 1
+            state = "single_quote"
+        elif sql[index] == '"':
+            output.append(sql[index])
+            index += 1
+            state = "double_quote"
+        elif sql[index] == "$":
+            match = SQL_DOLLAR_TAG_RE.match(sql, index)
+            if match:
+                dollar_tag = match.group(0)
+                output.append(dollar_tag)
+                index += len(dollar_tag)
+                state = "dollar_quote"
+            else:
+                output.append(sql[index])
+                index += 1
+        else:
+            output.append(sql[index])
+            index += 1
+    return "".join(output)
 
 
 def violations(source: str, task_id: str) -> list[str]:

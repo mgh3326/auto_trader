@@ -93,7 +93,9 @@ def _file_marker(source: str) -> str:
         "op.alter_column('items', 'value', False)",
         "op.alter_column('items', 'value', type_=sa.BigInteger())",
         "op.execute('DROP TABLE old_table')",
+        "op.execute('DROP/*x*/TABLE old_table')",
         "op.execute('ALTER TABLE items DROP COLUMN old_column')",
+        "op.execute('ALTER/*x*/TABLE items DROP/*x*/COLUMN old_column')",
         "op.execute('ALTER TABLE items DROP old_column')",
         "op.execute('ALTER TABLE items RENAME COLUMN old TO new')",
         "op.execute('ALTER TABLE items ALTER COLUMN value SET NOT NULL')",
@@ -207,6 +209,67 @@ def downgrade():
         "module shape is indeterminate" in item
         for item in lint.violations(decorated, "4200")
     )
+
+
+def test_standard_annotated_create_table_and_add_column_need_no_marker() -> None:
+    source = '''\
+"""Standard typed Alembic migration."""
+from __future__ import annotations
+from typing import Sequence, Union
+from collections.abc import Iterable
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+revision: str = "standard"
+down_revision: Union[str, None] = "parent"
+branch_labels: Sequence[str] | None = None
+depends_on: Iterable[str] | None = None
+def upgrade() -> None:
+    """Add a table and an optional column."""
+    op.create_table(
+        "cache",
+        sa.Column("nid", sa.Text(), nullable=False),
+        sa.Column("payload", postgresql.JSONB(), nullable=False),
+        sa.PrimaryKeyConstraint("nid", name=op.f("pk_cache")),
+        sa.Column("fetched_at", sa.TIMESTAMP(), server_default=sa.text("now()"), nullable=False),
+    )
+    op.add_column("items", sa.Column("extra", sa.Text(), nullable=True))
+def downgrade() -> None:
+    """Reverse this migration."""
+    pass
+'''
+    assert lint.violations(source, "4200") == []
+
+
+def test_sql_comment_tokens_cannot_hide_ddl_but_quoted_text_is_preserved() -> None:
+    assert (
+        "destructive SQL"
+        in _violations("def upgrade():\n    op.execute('DROP/*x*/TABLE old_table')\n")[
+            0
+        ]
+    )
+    assert (
+        "destructive SQL"
+        in _violations(
+            "def upgrade():\n    op.execute('ALTER/*x*/TABLE items DROP/*x*/COLUMN old')\n"
+        )[0]
+    )
+    assert (
+        _violations(
+            """def upgrade():
+    op.execute("SELECT 'DROP/*x*/TABLE' AS note")
+"""
+        )
+        == []
+    )
+
+
+def test_existing_rob811_standard_migration_is_analyzable() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic/versions/rob811_naver_research_detail_cache.py"
+    )
+    assert lint.violations(path.read_text(), "4200") == []
 
 
 def test_rebound_module_helper_name_requires_a_file_marker() -> None:
