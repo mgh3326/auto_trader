@@ -632,6 +632,10 @@ class UnifiedWebSocketMonitor:
                 error,
             )
 
+    def _on_upbit_connected(self) -> None:
+        """Called by the Upbit client once a subscription is live."""
+        self._record_upbit_connected()
+
     def _record_upbit_connected(self) -> None:
         """Close the open outage episode, if any, with one INFO line."""
         if self._upbit_outage_started_at is None:
@@ -657,13 +661,13 @@ class UnifiedWebSocketMonitor:
                 self.upbit_ws = UpbitMyOrderWebSocket(
                     on_order_callback=self._on_upbit_order,
                     verify_ssl=True,
+                    on_connected=self._on_upbit_connected,
                 )
                 logger.info("Connecting to Upbit WebSocket...")
                 await self.upbit_ws.connect_and_subscribe()
                 if self.upbit_ws.is_connected is not True:
                     raise RuntimeError("Upbit WebSocket connection not established")
                 logger.info("Upbit WebSocket connected")
-                self._record_upbit_connected()
 
                 # Connection closed normally - check if we should reconnect
                 if self.is_running:

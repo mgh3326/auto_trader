@@ -1436,14 +1436,17 @@ async def _drive_upbit_supervisor(
     remaining = list(cycles)
 
     class FakeUpbitWs:
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args, on_connected=None, **kwargs):
             self.is_connected = False
+            self._on_connected = on_connected
 
         async def connect_and_subscribe(self, *args, **kwargs):
             advance, connected = remaining.pop(0)
             clock.now += advance
             if connected:
                 self.is_connected = True
+                # Mirrors the real client: connected fires before the listen loop.
+                self._on_connected()
                 return
             raise RuntimeError("Upbit WebSocket connection not established (10/10)")
 

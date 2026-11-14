@@ -115,6 +115,47 @@ class TestUpbitMyOrderWebSocket:
         assert exhausted
         assert all(r.levelno == logging.WARNING for r in exhausted)
 
+    @pytest.mark.asyncio
+    async def test_on_connected_fires_after_subscribe_and_before_listen(self):
+        """The connected hook is the only signal of success: connect_and_subscribe
+        does not return while the socket is live."""
+        events: list[str] = []
+        mock_websocket = AsyncMock()
+        mock_websocket.send = AsyncMock(side_effect=lambda _m: events.append("send"))
+        client = UpbitMyOrderWebSocket(
+            on_connected=lambda: events.append("connected"),
+        )
+
+        async def fake_listen():
+            events.append("listen")
+
+        with (
+            patch.object(client, "_create_ssl_context", return_value=object()),
+            patch.object(client, "_create_auth_token", return_value="token-123"),
+            patch("websockets.connect", new=AsyncMock(return_value=mock_websocket)),
+            patch.object(client, "_listen_for_messages", new=fake_listen),
+        ):
+            await client._connect_and_subscribe_internal()
+
+        assert events == ["send", "connected", "listen"]
+
+    @pytest.mark.asyncio
+    async def test_on_connected_not_fired_when_subscribe_fails(self):
+        calls: list[str] = []
+        mock_websocket = AsyncMock()
+        mock_websocket.send = AsyncMock(side_effect=RuntimeError("send failed"))
+        client = UpbitMyOrderWebSocket(on_connected=lambda: calls.append("connected"))
+
+        with (
+            patch.object(client, "_create_ssl_context", return_value=object()),
+            patch.object(client, "_create_auth_token", return_value="token-123"),
+            patch("websockets.connect", new=AsyncMock(return_value=mock_websocket)),
+        ):
+            with pytest.raises(RuntimeError, match="send failed"):
+                await client._connect_and_subscribe_internal()
+
+        assert calls == []
+
     def test_create_ssl_context_verifies_by_default(self):
         client = UpbitMyOrderWebSocket()
 
