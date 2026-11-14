@@ -302,6 +302,12 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
     ("app/services/retro_v1/retro_positions.py", "read_retro_positions"): (
         "test_quarantine_readers_db::READERS[retro_v1.retro_positions.read_retro_positions]"
     ),
+    (
+        "app/services/execution_ledger/recorded_fills.py",
+        "recorded_fill_qty_for_order",
+    ): (
+        "test_quarantine_readers_db::READERS[recorded_fills.recorded_fill_qty_for_order]"
+    ),
 }
 
 #: (path, function) -> why it deliberately reads every row (EXEMPT).

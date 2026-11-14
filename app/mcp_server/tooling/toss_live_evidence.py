@@ -7,6 +7,14 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.mcp_server.tooling.evidence_boundary import (
+    USABLE,
+    EvidenceBoundaryVerdict,
+    contradictory,
+    incomplete,
+    price_is_invalid,
+    qty_is_invalid,
+)
 from app.services.brokers.toss import TossReadClient
 
 logger = logging.getLogger(__name__)
@@ -339,3 +347,58 @@ class TossBatchEvidenceSource:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+_TERMINAL_NO_FILL_VERDICTS = frozenset({"none", "expired"})
+_FILL_VERDICTS = frozenset({"filled", "partial"})
+
+
+def classify_toss_evidence_boundary(
+    *, market: str, evidence: TossFillEvidence, recorded_fill_qty: Decimal
+) -> EvidenceBoundaryVerdict:
+    """Shared evidence boundary for the Toss live reconcile kernel.
+
+    Called for both ``full`` and ``terminal_only`` scopes before any terminal
+    transition or fill booking. ``usable`` evidence keeps existing behavior;
+    ``contradictory``/``incomplete`` evidence leaves the row open for manual
+    review (``evidence_contradiction`` / ``evidence_incomplete``).
+    """
+    if evidence.verdict in _TERMINAL_NO_FILL_VERDICTS:
+        # The classifier maps missing/zero/invalid fill quantities onto the
+        # no-fill branch, so inspect the raw execution block: a terminal
+        # verdict that actually carries a fill, or an unusable quantity
+        # field, is malformed evidence — not proof the order filled nothing.
+        raw_filled = dict(evidence.raw_order.get("execution") or {}).get(
+            "filledQuantity"
+        )
+        if raw_filled is not None:
+            parsed = _to_decimal(raw_filled)
+            if parsed is None or not parsed.is_finite() or parsed < 0:
+                return incomplete(
+                    f"terminal evidence with unusable broker filledQuantity "
+                    f"{raw_filled!r} ({evidence.broker_status})"
+                )
+            if parsed > 0:
+                return incomplete(
+                    f"terminal no-fill verdict carries positive broker "
+                    f"filledQuantity {parsed} ({evidence.broker_status})"
+                )
+        if recorded_fill_qty > 0:
+            return contradictory(
+                f"broker {evidence.broker_status}/{evidence.verdict} evidence "
+                f"vs recorded fills qty={recorded_fill_qty}"
+            )
+        return USABLE
+    if evidence.verdict in _FILL_VERDICTS:
+        # Toss KR equities are integer-quantity instruments; US is not.
+        if qty_is_invalid(evidence.filled_qty, integer=market == "kr"):
+            return incomplete(
+                f"fill verdict with unusable filled qty "
+                f"{evidence.filled_qty!r} ({evidence.broker_status})"
+            )
+        if price_is_invalid(evidence.avg_price):
+            return incomplete(
+                f"fill verdict with unusable avg price "
+                f"{evidence.avg_price!r} ({evidence.broker_status})"
+            )
+    return USABLE

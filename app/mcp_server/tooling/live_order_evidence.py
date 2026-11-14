@@ -12,6 +12,14 @@ import logging
 from decimal import Decimal
 from typing import Any, Protocol
 
+from app.mcp_server.tooling.evidence_boundary import (
+    USABLE,
+    EvidenceBoundaryVerdict,
+    contradictory,
+    incomplete,
+    price_is_invalid,
+    qty_is_invalid,
+)
 from app.mcp_server.tooling.kis_live_ledger import _create_live_kis_client
 from app.mcp_server.tooling.orders_modify_cancel import (
     _build_us_exchange_candidates,
@@ -226,3 +234,44 @@ def get_evidence_adapter(broker: str) -> LiveFillEvidenceAdapter:
     if adapter is None:
         raise ValueError(f"no live evidence adapter for broker={broker!r}")
     return adapter
+
+
+_TERMINAL_NO_FILL_VERDICTS = frozenset({FillVerdict.EXPIRED, FillVerdict.CANCELLED})
+_FILL_VERDICTS = frozenset({FillVerdict.FILLED, FillVerdict.PARTIAL})
+
+
+def classify_live_evidence_boundary(
+    *, broker: str, evidence: FillEvidence, recorded_fill_qty: Decimal
+) -> EvidenceBoundaryVerdict:
+    """Shared evidence boundary for the generic live reconcile kernel.
+
+    Called for both ``full`` and ``terminal_only`` scopes before any terminal
+    transition or fill booking. ``usable`` evidence keeps existing behavior;
+    ``contradictory``/``incomplete`` evidence leaves the row open for manual
+    review (``evidence_contradiction`` / ``evidence_incomplete``).
+    """
+    if evidence.verdict in _TERMINAL_NO_FILL_VERDICTS:
+        if evidence.filled_qty not in (None, Decimal("0")):
+            return incomplete(
+                f"terminal no-fill verdict carries fill qty "
+                f"{evidence.filled_qty!r} ({evidence.reason_code})"
+            )
+        if recorded_fill_qty > 0:
+            return contradictory(
+                f"broker {evidence.verdict.value} evidence vs recorded "
+                f"fills qty={recorded_fill_qty}"
+            )
+        return USABLE
+    if evidence.verdict in _FILL_VERDICTS:
+        # KIS equities are integer-quantity instruments; Upbit is not.
+        if qty_is_invalid(evidence.filled_qty, integer=broker == "kis"):
+            return incomplete(
+                f"fill verdict with unusable filled qty "
+                f"{evidence.filled_qty!r} ({evidence.reason_code})"
+            )
+        if price_is_invalid(evidence.avg_price):
+            return incomplete(
+                f"fill verdict with unusable avg price "
+                f"{evidence.avg_price!r} ({evidence.reason_code})"
+            )
+    return USABLE

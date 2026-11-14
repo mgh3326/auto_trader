@@ -41,6 +41,7 @@ tests/mcp_server/test_shared_converters.py
 tests/mcp_server/test_support_resistance_single_source.py
 tests/mcp_server/test_toss_proposal_accounts.py
 tests/mcp_server/test_watch_events_list_recent_tool.py
+tests/mcp_server/tooling/test_evidence_boundary.py
 tests/mcp_server/tooling/test_get_news_envelope.py
 tests/mcp_server/tooling/test_live_order_evidence_us.py
 tests/mcp_server/tooling/test_market_index_current_only.py
