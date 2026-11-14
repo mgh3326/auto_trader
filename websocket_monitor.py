@@ -13,6 +13,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -64,6 +65,8 @@ DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 5.0
 DEFAULT_HEALTH_LOG_INTERVAL_SECONDS = 300.0
 DEFAULT_RECONNECT_DELAY_SECONDS = 5.0
 DEFAULT_KIS_APPKEY_IN_USE_BACKOFF_SECONDS = 1800.0
+# An Upbit outage episode is logged as ERROR once it has lasted longer than this.
+DEFAULT_UPBIT_OUTAGE_ERROR_THRESHOLD_SECONDS = 15 * 60.0
 
 
 class UnifiedWebSocketMonitor:
@@ -73,11 +76,26 @@ class UnifiedWebSocketMonitor:
     Upbit/KIS 체결 이벤트를 수신하여 TradeNotifier(Discord/Telegram)로 체결 알림을 전송합니다.
     """
 
-    def __init__(self, mode: str = "both"):
+    def __init__(
+        self,
+        mode: str = "both",
+        *,
+        upbit_outage_error_threshold_seconds: float = (
+            DEFAULT_UPBIT_OUTAGE_ERROR_THRESHOLD_SECONDS
+        ),
+        clock: Callable[[], float] = time.monotonic,
+    ):
         if mode not in VALID_MONITOR_MODES:
             raise ValueError(
                 f"Invalid mode '{mode}'. Expected one of: {sorted(VALID_MONITOR_MODES)}"
             )
+        self._clock = clock
+        self._upbit_outage_error_threshold_seconds = (
+            upbit_outage_error_threshold_seconds
+        )
+        self._upbit_outage_started_at: float | None = None
+        self._upbit_outage_failed_cycles = 0
+        self._upbit_outage_error_logged = False
 
         self.mode = mode
         self.is_running = False
@@ -154,8 +172,6 @@ class UnifiedWebSocketMonitor:
         Args:
             is_running: Override for is_running status. If None, uses self.is_running.
         """
-        import time
-
         if is_running is None:
             is_running = self.is_running
 
@@ -577,6 +593,62 @@ class UnifiedWebSocketMonitor:
             self.fills_forwarded += 1
             self.last_agent_success_at = datetime.now(UTC).isoformat()
 
+    def _record_upbit_connect_failure(self, error: Exception) -> None:
+        """Track one failed supervisor cycle and log it for its outage episode.
+
+        An episode starts at the first failure after the last successful connect
+        (or after startup). Failures stay WARNING until the episode has lasted
+        longer than the threshold; the first failure past it logs exactly one
+        ERROR for that episode.
+        """
+        now = self._clock()
+        if self._upbit_outage_started_at is None:
+            self._upbit_outage_started_at = now
+            self._upbit_outage_failed_cycles = 0
+            self._upbit_outage_error_logged = False
+        self._upbit_outage_failed_cycles += 1
+        outage_seconds = now - self._upbit_outage_started_at
+        if (
+            outage_seconds > self._upbit_outage_error_threshold_seconds
+            and not self._upbit_outage_error_logged
+        ):
+            self._upbit_outage_error_logged = True
+            logger.error(
+                "Upbit WebSocket outage exceeded %.0fs: %.0fs, %d failed cycles, "
+                "last error %s: %s",
+                self._upbit_outage_error_threshold_seconds,
+                outage_seconds,
+                self._upbit_outage_failed_cycles,
+                type(error).__name__,
+                error,
+                exc_info=error,
+            )
+        else:
+            logger.warning(
+                "Upbit WebSocket error (outage %.0fs, %d failed cycles): %s: %s",
+                outage_seconds,
+                self._upbit_outage_failed_cycles,
+                type(error).__name__,
+                error,
+            )
+
+    def _on_upbit_connected(self) -> None:
+        """Called by the Upbit client once a subscription is live."""
+        self._record_upbit_connected()
+
+    def _record_upbit_connected(self) -> None:
+        """Close the open outage episode, if any, with one INFO line."""
+        if self._upbit_outage_started_at is None:
+            return
+        logger.info(
+            "Upbit WebSocket recovered after %.0fs outage (%d failed cycles)",
+            self._clock() - self._upbit_outage_started_at,
+            self._upbit_outage_failed_cycles,
+        )
+        self._upbit_outage_started_at = None
+        self._upbit_outage_failed_cycles = 0
+        self._upbit_outage_error_logged = False
+
     async def _start_upbit_supervisor(self) -> None:
         """
         Upbit WebSocket supervisor loop with auto-reconnect.
@@ -589,6 +661,7 @@ class UnifiedWebSocketMonitor:
                 self.upbit_ws = UpbitMyOrderWebSocket(
                     on_order_callback=self._on_upbit_order,
                     verify_ssl=True,
+                    on_connected=self._on_upbit_connected,
                 )
                 logger.info("Connecting to Upbit WebSocket...")
                 await self.upbit_ws.connect_and_subscribe()
@@ -607,7 +680,7 @@ class UnifiedWebSocketMonitor:
                     logger.info("Upbit WebSocket exiting (stop signal)")
                     break
             except Exception as e:
-                logger.error("Upbit WebSocket error: %s", e, exc_info=True)
+                self._record_upbit_connect_failure(e)
                 if self.is_running:
                     logger.info(
                         "Reconnecting Upbit in %.1fs...", self._reconnect_delay_seconds
