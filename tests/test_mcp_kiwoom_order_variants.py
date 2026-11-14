@@ -159,10 +159,85 @@ async def test_cancel_rejects_unsafe_order_ids(monkeypatch, bad_id):
 # ---------------------------------------------------------------------------
 
 
+class FakeKiwoomPlaceRecorder:
+    """In-memory stand-in for ``KiwoomMockPlaceRecorder`` (no database).
+
+    Records every call in order so tests can prove which persistence steps ran,
+    and models the UNIQUE ``(account_scope, idempotency_key)`` reservation.
+    """
+
+    def __init__(self) -> None:
+        from app.services.kiwoom_mock_order_ledger_service import (
+            DuplicateOrderIntent,
+        )
+
+        self._duplicate = DuplicateOrderIntent
+        self.events: list[str] = []
+        self.reserved: dict[str, int] = {}
+        self.rows: list[dict[str, Any]] = []
+        self.reserve_error: Exception | None = None
+        self.record_error: Exception | None = None
+        self.release_error: Exception | None = None
+
+    async def reserve(self, *, idempotency_key: str, symbol: str, side: str):
+        from app.services.kiwoom_mock_order_ledger_service import SendReservation
+
+        self.events.append("reserve")
+        if self.reserve_error is not None:
+            raise self.reserve_error
+        if idempotency_key in self.reserved:
+            raise self._duplicate(idempotency_key)
+        row_id = len(self.reserved) + 1
+        self.reserved[idempotency_key] = row_id
+        return SendReservation(
+            row_id=row_id, idempotency_key=idempotency_key, side=side
+        )
+
+    async def release(self, reservation) -> int:
+        self.events.append("release")
+        if self.release_error is not None:
+            raise self.release_error
+        return 1 if self.reserved.pop(reservation.idempotency_key, None) else 0
+
+    async def _record(self, status: str, kwargs: dict[str, Any]):
+        from app.services.kiwoom_mock_order_ledger_service import LedgerReceipt
+
+        self.events.append(f"record:{status}")
+        if self.record_error is not None:
+            raise self.record_error
+        self.rows.append({"status": status, **kwargs})
+        return LedgerReceipt(len(self.rows), status, kwargs["client_order_id"])
+
+    async def record_send(self, *, status: str, **kwargs):
+        return await self._record(status, kwargs)
+
+    async def record_uncertain(self, **kwargs):
+        return await self._record("uncertain", kwargs)
+
+
+def _install_fake_place_recorder(
+    monkeypatch, mod, recorder: FakeKiwoomPlaceRecorder | None = None
+) -> FakeKiwoomPlaceRecorder:
+    recorder = recorder or FakeKiwoomPlaceRecorder()
+    monkeypatch.setattr(mod, "_new_place_recorder", lambda: recorder)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def _fake_place_recorder(monkeypatch) -> FakeKiwoomPlaceRecorder:
+    """No test in this file may open a database through the place path."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    return _install_fake_place_recorder(monkeypatch, mod)
+
+
 def _patch_fake_kiwoom_order_client(
     monkeypatch, mod, responses: dict[str, dict[str, Any]]
 ):
     calls: list[dict[str, Any]] = []
+    # hk 4712: the confirmed place path persists a reservation and a ledger row.
+    # Every caller of this helper gets a database-free recorder.
+    _install_fake_place_recorder(monkeypatch, mod)
 
     class FakeKiwoomMockClient:
         @classmethod

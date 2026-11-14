@@ -286,6 +286,8 @@ tests/services/test_finnhub_news.py
 tests/services/test_halt_detection.py
 tests/services/test_kis_mock_inference_expiry_unit.py
 tests/services/test_kis_mock_retrospective_pending.py
+tests/services/test_kiwoom_mock_order_ledger_service.py
+tests/services/test_kiwoom_mock_order_ledger_service_db.py
 tests/services/test_krb1_p0_journal.py
 tests/services/test_krb1_selector_cli_exit_contract.py
 tests/services/test_krx_after_market.py
@@ -415,6 +417,7 @@ tests/test_kiwoom_auth_token_cache.py
 tests/test_kiwoom_domestic_orders.py
 tests/test_kiwoom_dual_surface.py
 tests/test_kiwoom_g1_canonical_wiring.py
+tests/test_kiwoom_mock_place_ledger_wiring.py
 tests/test_kiwoom_token_refresh.py
 tests/test_kr_fundamentals_dart_hybrid.py
 tests/test_kr_fundamentals_tv_screener.py
