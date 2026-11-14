@@ -93,10 +93,13 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
 - **흐름(flows) 없음**: DAG 는 `--commit` 만 주고 `--flow` 를 자동화하지 않는다. `--flows-complete` 는
   `scripts/account_value_report.py` 의 **조회 시 플래그**(`store_true`, "해당 기간의 외부 흐름 입력을
   확인함")이지 저장되는 흐름 기록이 아니다 — 운영자가 그 기간 외부 흐름 입력을 확인했으면 수동 보고서에
-  직접 준다. 반대로 retro/v1 `retro_scoreboard` 는 `SERVER_FLOWS_COMPLETE=False` 를 하드코딩해
-  전달하므로(`app/services/account_value/retro_scoreboard.py:271`) 스냅샷 행이 쌓여도 retro 쪽
-  `flows_complete` 는 false 이고 계좌 행은 `flows_not_confirmed` 로 미측정이다. 이 플래그는 흐름을
-  만들거나 기록하지 않는다 — 외부 입출금이 있는 날은 운영자가 `--flow-id` 로 직접 남긴다.
+  직접 준다. retro/v1 `retro_scoreboard` 는 이 플래그를 읽지 않고, 서버에 기록된 확인
+  (`review.account_flow_confirmations`, hk 4282)으로 `flows_complete` 를 정한다: 운영자가
+  `scripts/account_value_snapshot.py --confirm-flows` 로 계좌·기간의 외부 흐름 입력이 끝났음을 기록하고
+  (`--commit` 없으면 미리보기), 확인이 조회 창의 모든 날을 덮고 그 뒤에 그 기간 흐름이 새로 기록되지
+  않았을 때만 true 다. 그 전에는 스냅샷 행이 쌓여도 계좌 행은 `flows_not_confirmed` 로 미측정이다.
+  확인도 스냅샷도 흐름을 만들거나 기록하지 않는다 — 외부 입출금이 있는 날은 운영자가 `--flow-id` 로 직접 남긴다.
+  확인 테이블 마이그레이션은 배포 승인 뒤에 적용된다.
 - **KR 가격은 전일 종가**: 07:40 KST 는 KRX 개장 전이라 kr 행의 평가 가격은 직전 거래일 종가다.
   같은 날 15:30 종가가 아니다. US 행도 마지막 마감 세션 기준이다.
 - 🔴 **미측정은 그날 행에 영구히 남는다(성공 핑은 "행이 쓰였다"는 뜻)**: 07:40 KST 에 DB 일봉
