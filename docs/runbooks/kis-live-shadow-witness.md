@@ -11,15 +11,20 @@ timeouts, and edge errors do not wait for or change the KIS broker call. A missi
 echo means an observation was not recorded; it is not evidence that an order did
 not execute.
 
-A rejection the broker answered is recorded too. When KIS answers with a non-`0`
-`rt_cd` plus string `msg_cd` and `msg1` but no order number (rejections carry no
-`output.ODNO`), the echo is sent with `ODNO: ""`. The v1 echo schema requires a
-string and the edge stores the echo as a shadow witness only (its own
-`kis_live_witnesses` row, never a command receipt), so such an echo stops counting
-as `missing_echo` and cannot be read as an accepted order. An `rt_cd` of `0`
-without an order number is still dropped. When an echo field is not a string, or
-the echo fails schema validation, `kis_live_witness_echo_invalid` carries the
-offending comma-separated field names and never their values.
+A rejection the broker answered as the order's final answer is recorded too. When
+KIS answers with a non-`0` `rt_cd` plus string `msg_cd` and `msg1` but no order
+number (rejections carry no `output.ODNO`), the echo is sent with `ODNO: ""`. The
+v1 echo schema requires a string and the edge stores the echo as a shadow witness
+only (its own `kis_live_witnesses` row, never a command receipt), so such an echo
+stops counting as `missing_echo` and cannot be read as an accepted order. An
+`rt_cd` of `0` without an order number is still dropped, and a present but
+non-string `ODNO` is reported instead of being replaced. A token-expiry
+(`EGW00123`/`EGW00121`) or gateway-throttle rejection is not echoed at all: the
+domestic caller re-POSTs that order through the same witness, and an early echo
+would win the edge's one-echo-per-command rule and hide the accepted re-send's
+order number. When an echo field is not a string, or the echo fails schema
+validation, `kis_live_witness_echo_invalid` carries the offending comma-separated
+field names and never their values.
 
 Use the manual reconciler after the separate activation:
 

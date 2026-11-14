@@ -96,6 +96,29 @@ class _DomesticParent:
         return self.response
 
 
+class _ArgTokenManager:
+    async def clear_token(self, _: str) -> None:
+        return None
+
+
+class _SequencedDomesticParent(_DomesticParent):
+    """Returns each response in order so a caller re-send sees a new answer."""
+
+    def __init__(self, responses: list[dict[str, object]]) -> None:
+        super().__init__(responses[0])
+        self.responses = responses
+        self.sent = 0
+        self._token_manager = _ArgTokenManager()
+
+    async def _request_with_rate_limit(
+        self, *_: object, **kwargs: object
+    ) -> dict[str, object]:
+        self.bodies.append(kwargs["json_body"])
+        response = self.responses[self.sent]
+        self.sent += 1
+        return response
+
+
 def _witness() -> witness.LiveShadowWitness:
     return witness.LiveShadowWitness("http://127.0.0.1:8080", _intent())
 
@@ -180,7 +203,6 @@ async def test_invalid_receipt_skips_echo_without_raising() -> None:
         {**_REJECTION, "output": None},
         {**_REJECTION, "output": {}},
         {**_REJECTION, "output": {"ODNO": None}},
-        {**_REJECTION, "output": {"ODNO": 7}},
         {**_REJECTION, "output": {"ODNO": ""}},
     ],
     ids=[
@@ -188,7 +210,6 @@ async def test_invalid_receipt_skips_echo_without_raising() -> None:
         "null-output",
         "empty-output",
         "null-odno",
-        "int-odno",
         "empty-odno",
     ],
 )
@@ -234,6 +255,20 @@ async def test_accepted_echo_without_order_number_is_dropped(caplog) -> None:
 
 
 @pytest.mark.asyncio
+async def test_present_non_string_odno_is_dropped_not_replaced(caplog) -> None:
+    requests: list[httpx.Request] = []
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    client.start()
+    with caplog.at_level(logging.WARNING, logger=witness.logger.name):
+        client.capture_raw_echo({**_REJECTION, "output": {"ODNO": 7}})
+    await _settle(client)
+    assert [e.invalid_fields for e in _invalid_echo_events(caplog)] == ["ODNO"]
+    assert _echo_requests(requests) == []
+
+
+@pytest.mark.asyncio
 async def test_invalid_echo_names_fields_but_never_values(caplog) -> None:
     requests: list[httpx.Request] = []
     client = witness.LiveShadowWitness(
@@ -268,6 +303,82 @@ async def test_non_string_rt_cd_never_substitutes_an_order_number(caplog) -> Non
     await _settle(client)
     assert [e.invalid_fields for e in _invalid_echo_events(caplog)] == ["ODNO,rt_cd"]
     assert _echo_requests(requests) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("msg_cd", "msg1"),
+    [
+        ("EGW00123", "token expired"),
+        ("EGW00121", "invalid token"),
+        ("EGW00215", "초당 거래건수를 초과하였습니다"),
+        ("UNKNOWN", "초당 거래건수를 초과하였습니다"),
+    ],
+    ids=["token-expired", "token-invalid", "throttle-code", "throttle-text"],
+)
+async def test_retryable_rejection_alone_is_not_echoed(
+    caplog, msg_cd: str, msg1: str
+) -> None:
+    requests: list[httpx.Request] = []
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    client.start()
+    with caplog.at_level(logging.WARNING, logger=witness.logger.name):
+        client.capture_raw_echo({**_REJECTION, "msg_cd": msg_cd, "msg1": msg1})
+    await _settle(client)
+    events = [
+        record.getMessage()
+        for record in caplog.records
+        if "witness_echo" in record.getMessage()
+    ]
+    assert events == ["kis_live_witness_echo_resend_skipped"]
+    assert _echo_requests(requests) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        _REJECTION | {"msg_cd": "EGW00123", "msg1": "token expired"},
+        _REJECTION | {"msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"},
+    ],
+    ids=["token-expiry", "throttle"],
+)
+async def test_resent_rejection_is_not_echoed_before_the_final_answer(
+    monkeypatch, rejection: dict[str, object]
+) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+    requests: list[httpx.Request] = []
+    active = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+    active.start()
+    accepted = {
+        "rt_cd": "0",
+        "msg_cd": "MCA00000",
+        "msg1": "ok",
+        "output": {"ODNO": "77", "ORD_TMD": "3"},
+    }
+    parent = _SequencedDomesticParent([rejection, accepted])
+    token = witness.activate(active)
+    try:
+        result = await domestic_orders.DomesticOrderClient(parent).order_korea_stock(
+            "005930", "buy", 2, 70000, is_mock=False
+        )
+    finally:
+        witness.deactivate(token)
+    await _settle(active, attempts=300)
+
+    assert parent.sent == 2
+    assert result["odno"] == "77"
+    echoes = _echo_requests(requests)
+    assert len(echoes) == 1
+    body = json.loads(echoes[0].content)
+    assert body["ODNO"] == "77"
+    assert body["rt_cd"] == "0"
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,9 @@ import httpx
 import sentry_sdk
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
+from . import constants
+from .order_throttle import is_provider_throttle_reject
+
 logger = logging.getLogger(__name__)
 
 _ENABLED_ENV = "KIS_LIVE_SHADOW_WITNESS_ENABLED"
@@ -82,6 +85,23 @@ def _invalid_echo_fields(echo: Mapping[str, object]) -> str:
         path = [str(part) for part in error.absolute_path]
         names.add(path[-1] if len(path) > 1 else "echo")
     return ",".join(sorted(names)) or "echo"
+
+
+_RESEND_MSG_CODES = frozenset(
+    {constants.ERROR_TOKEN_EXPIRED, constants.ERROR_TOKEN_INVALID}
+)
+
+
+def _is_resend_rejection(msg_cd: str, msg1: str) -> bool:
+    """True for rejections the domestic order caller re-POSTs.
+
+    ``order_korea_stock`` re-sends the same order through this witness after a
+    token refresh (EGW00123/EGW00121) or a provably not-created gateway throttle
+    rejection. Only the order's final answer may be echoed: an earlier echo
+    would win the edge's one-echo-per-command rule and hide the order number of
+    an accepted re-send.
+    """
+    return msg_cd in _RESEND_MSG_CODES or is_provider_throttle_reject(msg_cd, msg1)
 
 
 def _validated_base_url(value: str) -> str | None:
@@ -255,15 +275,20 @@ class LiveShadowWitness:
         rt_cd = response.get("rt_cd")
         msg_cd = response.get("msg_cd")
         msg1 = response.get("msg1")
-        # A rejection the broker actually answered carries no order number.
-        # The v1 echo requires a string, so "" records that rejection instead
-        # of losing it; an accepted order without ODNO stays invalid.
-        if not isinstance(odno, str) and (
+        answered_rejection = (
             isinstance(rt_cd, str)
             and rt_cd != "0"
             and isinstance(msg_cd, str)
             and isinstance(msg1, str)
-        ):
+        )
+        if answered_rejection and _is_resend_rejection(msg_cd, msg1):
+            _warning("kis_live_witness_echo_resend_skipped")
+            return
+        # A rejection the broker actually answered carries no order number.
+        # The v1 echo requires a string, so "" records that rejection instead
+        # of losing it; an accepted order without ODNO stays invalid, and a
+        # present non-string ODNO is reported rather than overwritten.
+        if odno is None and answered_rejection:
             odno = ""
         fields: dict[str, object] = {
             "ODNO": odno,
