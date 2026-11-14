@@ -10,7 +10,6 @@ from sqlalchemy import (
     MetaData,
     Table,
     Text,
-    exists,
     insert,
     select,
     text,
@@ -77,13 +76,14 @@ async def acquire_account_lock(session, account: str) -> None:
 
 async def load_confirmations(session, start, end):
     result = await session.execute(
-        select(confirmations).where(
-            confirmations.c.start_day <= end,
-            confirmations.c.end_day >= start,
-            ~exists(
-                select(1).where(revocations.c.confirmation_id == confirmations.c.id)
-            ),
+        select(confirmations, revocations.c.revoked_at)
+        .select_from(
+            confirmations.outerjoin(
+                revocations,
+                revocations.c.confirmation_id == confirmations.c.id,
+            )
         )
+        .where(confirmations.c.start_day <= end, confirmations.c.end_day >= start)
     )
     return result.all()
 
@@ -126,11 +126,15 @@ async def record_revocation(
     confirmation_query = select(confirmations.c.id).where(
         confirmations.c.id == confirmation_id
     )
-    if commit:
-        confirmation_query = confirmation_query.with_for_update()
     confirmation = await session.execute(confirmation_query)
     if confirmation.scalar_one_or_none() is None:
         raise ValueError("unknown confirmation")
+
+    if commit:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"account_flow_confirmation_revocation:{confirmation_id}"},
+        )
 
     already_revoked = await session.execute(
         select(revocations.c.confirmation_id).where(

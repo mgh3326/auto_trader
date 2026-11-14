@@ -2425,6 +2425,15 @@ CREATE TABLE IF NOT EXISTS review.account_flow_confirmation_revocations (
     "BEFORE UPDATE OR DELETE OR TRUNCATE "
     "ON review.account_flow_confirmation_revocations "
     "FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()",
+    """
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
+        GRANT SELECT, INSERT ON review.account_flow_confirmations TO at_app;
+        GRANT SELECT, INSERT
+            ON review.account_flow_confirmation_revocations TO at_app;
+    END IF;
+END $$
+""",
 )
 
 

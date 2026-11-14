@@ -193,11 +193,42 @@ async def test_flow_confirmation_revocation_is_immutable_and_degrades_coverage(
         {"account": account},
     )
     assert confirmation_id is not None
+    assert (
+        await record_confirmation(
+            db_session,
+            account,
+            start,
+            end,
+            "operator",
+            "second check",
+            commit=True,
+        )
+        == "inserted"
+    )
+    second_id = await db_session.scalar(
+        text(
+            "SELECT id FROM review.account_flow_confirmations "
+            "WHERE account = :account ORDER BY id DESC LIMIT 1"
+        ),
+        {"account": account},
+    )
+    assert second_id is not None and second_id != confirmation_id
     assert covered(start, end, await load_confirmations(db_session, start, end), [])
     assert (
         await record_revocation(
             db_session,
             confirmation_id,
+            "operator",
+            "잘못된 확인",
+            commit=True,
+        )
+        == "revoked"
+    )
+    assert covered(start, end, await load_confirmations(db_session, start, end), [])
+    assert (
+        await record_revocation(
+            db_session,
+            second_id,
             "operator",
             "잘못된 확인",
             commit=True,
@@ -230,6 +261,52 @@ async def test_flow_confirmation_revocation_is_immutable_and_degrades_coverage(
         async with db_session.begin_nested():
             connection = await db_session.connection()
             await connection.run_sync(downgrade)
+
+
+@pytest.mark.asyncio
+async def test_flow_confirmation_revocation_commit_as_select_insert_role(db_session):
+    from sqlalchemy import text
+
+    from app.services.account_value.completeness import (
+        record_confirmation,
+        record_revocation,
+    )
+
+    app_role_available = await db_session.scalar(
+        text(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') "
+            "AND (current_user = 'at_app' OR pg_has_role(current_user, 'at_app', 'MEMBER') "
+            "OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user))"
+        )
+    )
+    if not app_role_available:
+        pytest.skip("CI database cannot assume the at_app role")
+
+    account = "upbit:upbit:" + uuid4().hex * 2
+    day = date(2026, 1, 3)
+    await record_confirmation(
+        db_session, account, day, day, "operator", "checked", commit=True
+    )
+    confirmation_id = await db_session.scalar(
+        text(
+            "SELECT id FROM review.account_flow_confirmations WHERE account = :account"
+        ),
+        {"account": account},
+    )
+    assert confirmation_id is not None
+
+    await db_session.execute(text("SET LOCAL ROLE at_app"))
+    assert await db_session.scalar(text("SELECT current_user")) == "at_app"
+    assert (
+        await record_revocation(
+            db_session,
+            confirmation_id,
+            "operator",
+            "least privilege check",
+            commit=True,
+        )
+        == "revoked"
+    )
 
 
 @pytest.mark.asyncio
