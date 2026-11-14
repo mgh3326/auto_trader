@@ -19,12 +19,16 @@ only (its own `kis_live_witnesses` row, never a command receipt), so such an ech
 stops counting as `missing_echo` and cannot be read as an accepted order. An
 `rt_cd` of `0` without an order number is still dropped, and a present but
 non-string `ODNO` is reported instead of being replaced. A token-expiry
-(`EGW00123`/`EGW00121`) or gateway-throttle rejection is not echoed at all: the
-domestic caller re-POSTs that order through the same witness, and an early echo
-would win the edge's one-echo-per-command rule and hide the accepted re-send's
-order number. When an echo field is not a string, or the echo fails schema
-validation, `kis_live_witness_echo_invalid` carries the offending comma-separated
-field names and never their values.
+(`EGW00123`/`EGW00121`) or gateway-throttle rejection is skipped while the
+domestic caller may still re-POST that order through the same witness: an early
+echo would win the edge's one-echo-per-command rule and hide the accepted
+re-send's order number. When the caller does not re-send (token retry cap
+reached, throttle retry cap reached, or an ambiguous throttle outcome) the code
+also skips it today, so that order's final rejection stays `missing_echo` — treat
+such a missing echo as a known gap until the caller reports the final response.
+When an echo field is not a string, or the echo fails schema validation,
+`kis_live_witness_echo_invalid` carries the offending comma-separated field names
+and never their values.
 
 Use the manual reconciler after the separate activation:
 
