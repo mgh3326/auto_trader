@@ -723,8 +723,15 @@ def _order_state(
         return terminal
     if rung is not None and getattr(rung, "void_reason", None) == _INFERENCE_MARKER:
         return "expired"
-    if order.status in _OPEN_STATUSES and day == order_trading_day(
-        getattr(order, "broker", "kis"), info.instrument_type, datetime.now(UTC)
+    if (
+        order.status in _OPEN_STATUSES
+        and day is not None
+        and day
+        == order_trading_day(
+            getattr(order, "broker", "kis"),
+            info.instrument_type,
+            datetime.now(UTC),
+        )
     ):
         return "working"
     return "unresolved"
@@ -820,6 +827,9 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         )
     )
     if "proposals" in data.incomplete:
+        # A capped read can retain one proposal and omit another: no unique
+        # proposal may be established, so neither its ref nor its exit plan.
+        proposal = None
         proposal_reason = "attempts_unavailable"
 
     # candidate link: the recorded reference resolved to the same pick row the
@@ -852,6 +862,10 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         if decision.sleeve_id is not None
         else None
     )
+    if budget_cap is not None and budget_cap <= 0:
+        # A zero cap is permitted by the table but cannot divide; the metric
+        # helper rejects nonpositive budgets, so treat it as unavailable.
+        budget_cap = None
     side: Literal["buy", "sell"] | None = (
         decision.side if decision.side in ("buy", "sell") else None
     )
@@ -889,9 +903,8 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
             pct_notional = None
             pct_budget = None
             budget_reason = "attempts_unavailable"
-        elif "sleeve_versions" in data.incomplete and (
-            decision.sleeve_id is not None and budget_cap is None
-        ):
+        elif "sleeve_versions" in data.incomplete and (decision.sleeve_id is not None):
+            # A capped version read may hold a stale budget: withhold the pct.
             pct_budget = None
             budget_reason = "attempts_unavailable"
 
@@ -910,19 +923,18 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         reference_reason = None if display_kind is not None else "no_reference_price"
 
     orders = _decision_orders(decision.decision_id, data)
-    orders_known = bool(orders) or (
-        data.order_links.complete
-        and not (
-            {
-                "decision_links",
-                "proposals",
-                "proposal_rungs",
-                "kis_orders",
-                "live_orders",
-                "toss_orders",
-            }
-            & data.incomplete
-        )
+    # One resolved order never proves the population: a failed read of
+    # another ledger could hide more, so completeness is required, not found.
+    orders_known = data.order_links.complete and not (
+        {
+            "decision_links",
+            "proposals",
+            "proposal_rungs",
+            "kis_orders",
+            "live_orders",
+            "toss_orders",
+        }
+        & data.incomplete
     )
     bound = _bound_rungs(decision.decision_id, data, {})
     fills = (
@@ -968,7 +980,29 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         order_count_reason = "attempts_unavailable"
 
     buy_fills = [f for f in fills if f.side == "buy"]
-    sell_fills = [f for f in fills if f.side == "sell"]
+    # Closing fills pair FIFO over the instrument's in-effect ledger fills —
+    # they routinely belong to a different decision than the entry (§ R
+    # multiple), so the exit input is not restricted to this decision's orders.
+    exit_fills: list[Any] = []
+    if fills_known and buy_fills:
+        entry_time = max(f.filled_at for f in buy_fills)
+        remaining = filled_quantity = sum(
+            (Decimal(str(f.filled_qty)) for f in buy_fills), Decimal(0)
+        )
+        for fill in sorted(
+            (
+                f
+                for f in data.fills.get(info.instrument_type, [])
+                if f.side == "sell"
+                and f.symbol.upper() == decision.symbol.upper()
+                and f.filled_at > entry_time
+            ),
+            key=lambda f: (f.filled_at, f.id),
+        ):
+            if remaining <= 0:
+                break
+            exit_fills.append(fill)
+            remaining -= Decimal(str(fill.filled_qty))
     if fills_known and buy_fills:
         filled_quantity = sum(
             (Decimal(str(f.filled_qty)) for f in buy_fills), Decimal(0)
@@ -1021,23 +1055,32 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         elif data.bars[key] is None:
             excursion_reason = "source_mixed"
         else:
+            entry_session = kst_day(
+                max(buy_fills, key=lambda f: (f.filled_at, f.id)).filled_at
+            )
+            exit_session = (
+                kst_day(min(exit_fills, key=lambda f: (f.filled_at, f.id)).filled_at)
+                if exit_fills
+                else None
+            )
+            # Bars keep their order: dropping a null-extreme bar would shift
+            # the horizon count onto later sessions, so a missing extreme in
+            # the measured span makes that horizon unknown instead.
+            raw_window = [
+                bar
+                for bar in data.bars[key]
+                if entry_session < kst_day(bar.time)
+                and (exit_session is None or kst_day(bar.time) <= exit_session)
+            ]
             series = [
                 DailyBar(
                     session=kst_day(bar.time),
                     high=bar.high,
                     low=bar.low,
                 )
-                for bar in data.bars[key]
+                for bar in raw_window
                 if bar.high is not None and bar.low is not None
             ]
-            entry_session = kst_day(
-                max(buy_fills, key=lambda f: (f.filled_at, f.id)).filled_at
-            )
-            exit_session = (
-                kst_day(min(sell_fills, key=lambda f: (f.filled_at, f.id)).filled_at)
-                if sell_fills
-                else None
-            )
             risk_per_unit = (
                 risk_amount / planned_quantity
                 if risk_amount is not None
@@ -1047,6 +1090,20 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
             )
             for horizon in _HORIZONS:
                 label = str(horizon)
+                span = (
+                    raw_window if horizon == "to_exit" else raw_window[: int(horizon)]
+                )
+                if any(b.high is None or b.low is None for b in span):
+                    body = {
+                        "amount": None,
+                        "pct": None,
+                        "r": None,
+                        "status": "unknown",
+                        "reason": "missing_data",
+                    }
+                    mfe_out[label] = dict(body)
+                    mae_out[label] = dict(body)
+                    continue
                 pair = calculate_mfe_mae(
                     entry_price=entry_avg,
                     entry_session=entry_session,
@@ -1089,12 +1146,29 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
             None,
             "",
         }
-        derived = [r for r in data.reviews if r.correlation_id in correlations]
-        if len(derived) == 1:
+        # A correlation must name this decision alone: the same value on
+        # orders resolving to other decisions is ambiguous, and a review
+        # recorded for a different account mode is not this decision's.
+        corr_owner: dict[str, set[Any]] = defaultdict(set)
+        for _, order in data.orders:
+            corr = getattr(order, "correlation_id", None)
+            if corr:
+                resolved = data.order_links.resolve(order)
+                if resolved.decision_id is not None:
+                    corr_owner[corr].add(resolved.decision_id)
+        derived = [
+            r
+            for r in data.reviews
+            if r.correlation_id in correlations
+            and getattr(r, "account_mode", None) == decision.account_mode
+        ]
+        if len(derived) > 1 or any(
+            len(corr_owner.get(r.correlation_id, set())) > 1 for r in derived
+        ):
+            retro_reason = "ambiguous_decision"
+        elif derived:
             retro_ref = make_ref("review", derived[0].id)
             retro_basis = "inference"
-        elif len(derived) > 1:
-            retro_reason = "ambiguous_decision"
         else:
             retro_reason = "no_decision_link"
     if "retrospectives" in data.incomplete:
@@ -1104,14 +1178,14 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
     exit_avg = None
     r_multiple = None
     r_multiple_reason = "no_fills"
-    if sell_fills and entry_avg is None:
+    if exit_fills and entry_avg is None:
         r_multiple_reason = "missing_entry_price"
-    elif sell_fills:
-        exit_qty = sum((Decimal(str(f.filled_qty)) for f in sell_fills), Decimal(0))
+    elif exit_fills:
+        exit_qty = sum((Decimal(str(f.filled_qty)) for f in exit_fills), Decimal(0))
         # Toss reconciler rows carry cumulative bookkeeping, so notional must
         # be derived per order the same way the buy side does it.
         by_sell_order: dict[Any, list[Any]] = defaultdict(list)
-        for fill in sell_fills:
+        for fill in exit_fills:
             by_sell_order[order_identity(fill)].append(fill)
         exit_notional = Decimal(0)
         exit_notional_ok = True
@@ -1140,7 +1214,7 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
             r_multiple_reason = "missing_notional"
     elif not fills_known:
         r_multiple_reason = "attempts_unavailable"
-    elif not sell_fills:
+    elif not exit_fills:
         r_multiple_reason = "no_fills" if not orders else "no_exit_fill"
 
     row = {

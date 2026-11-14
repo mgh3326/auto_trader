@@ -287,6 +287,7 @@ async def test_inferred_retrospective_link_via_one_correlation() -> None:
         id=77,
         decision_id=None,
         correlation_id="c-1",
+        account_mode="kis_live",
         created_at=FILL_AT + timedelta(days=9),
     )
     response = await read_retro_decisions(
