@@ -433,6 +433,35 @@ async def test_toss_kernel_incomplete_quantity_never_closes(scope):
 
 
 @pytest.mark.asyncio
+async def test_live_boundary_block_keeps_row_unreconciled():
+    """The blocked row stays open AND inside the unreconciled-age metrics:
+    ``reconciled_at`` must stay NULL (a stamp would drop it from
+    ``get_unreconciled_live_order_metrics``)."""
+    row = SimpleNamespace(
+        status="accepted",
+        lifecycle_state="accepted",
+        reconciled_at=None,
+        last_reconcile_detail=None,
+    )
+    db = MagicMock()
+    db.get = AsyncMock(return_value=row)
+    db.commit = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=db)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    with patch.object(live, "_order_session_factory", return_value=lambda: cm):
+        await live._record_live_boundary_block(
+            ledger_id=1,
+            reason_code="evidence_contradiction",
+            detail="broker expired vs recorded fills",
+        )
+    assert row.reconciled_at is None
+    assert row.status == "accepted"
+    assert row.last_reconcile_detail["reason_code"] == "evidence_contradiction"
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_toss_kernel_boundary_is_scope_independent():
     """A mutant bypassing the boundary in one scope turns this test red."""
     order = _toss_order("CANCELED", {"filledQuantity": "abc"})

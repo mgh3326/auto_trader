@@ -429,8 +429,10 @@ async def _record_live_boundary_block(
     """Persist an evidence-boundary block on the row without closing it.
 
     ``last_reconcile_detail`` carries the reason so dry-runs, review queues
-    and later passes can see why the row stayed open; ``status`` and
-    ``lifecycle_state`` are untouched, so the open scan re-selects the row.
+    and later passes can see why the row stayed open; ``status``,
+    ``lifecycle_state`` and ``reconciled_at`` are untouched, so the open
+    scan re-selects the row and it stays inside the unreconciled-age
+    metrics (``reconciled_at IS NULL``).
     """
     async with _order_session_factory()() as db:
         row = await db.get(LiveOrderLedger, ledger_id)
@@ -440,7 +442,6 @@ async def _record_live_boundary_block(
             "reason_code": reason_code,
             "detail": detail,
         }
-        row.reconciled_at = datetime.now(UTC)
         await db.commit()
 
 
