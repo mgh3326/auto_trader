@@ -23,8 +23,11 @@ retry when its bytes match the new payloads (the missing manifest entry is
 appended), and any other existing partition still refuses overwrite
 (write-once). Cache, identity and result files are written via a temp name and
 `os.replace`, so a kill mid-write cannot leave a truncated file that a resume
-would trust; a torn final `usage.jsonl` line is dropped on build rather than
-bricking the run. Fact rows carry
+would trust; a torn final `usage.jsonl` or `manifest.jsonl` line is dropped by
+readers (a corrupt middle record still raises) and terminated before the next
+append. The partitions directory is fsynced after each publish rename so a
+recorded entry cannot outlive its partition, and a manifest record is never
+appended twice for the same run ID. Fact rows carry
 symbol, corporation, business year, report code and period, account, amount,
 year-to-date `cumulative_amount` when the API provides one, currency, receipt
 number, filing history, amendment flag, statement basis, and offset-aware

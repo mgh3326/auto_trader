@@ -16,6 +16,26 @@ def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def manifest_records(manifest):
+    """Parse append-only manifest lines.
+
+    A killed append can tear only the final line; drop it rather than bricking
+    every reader. A corrupt middle record means real damage — raise loudly.
+    """
+    records = []
+    manifest = Path(manifest)
+    if not manifest.exists():
+        return records
+    lines = manifest.read_text().splitlines()
+    for index, line in enumerate(lines):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            if index != len(lines) - 1:
+                raise
+    return records
+
+
 def publish(root, run_id, facts, derived, metadata):
     root = Path(root)
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
@@ -53,17 +73,23 @@ def publish(root, run_id, facts, derived, metadata):
     payloads.append(encode(entry).encode())
 
     def append_manifest():
+        # If a killed append left a torn line (no trailing newline), terminate
+        # it before appending so the new record is never glued onto the tear.
+        torn = (
+            manifest.exists()
+            and manifest.stat().st_size > 0
+            and manifest.read_bytes()[-1:] != b"\n"
+        )
         with manifest.open("a", encoding="utf-8") as stream:
+            if torn:
+                stream.write("\n")
             stream.write(encode(entry) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
 
     def manifest_has_run():
-        if not manifest.exists():
-            return False
         return any(
-            json.loads(line).get("run_id") == run_id
-            for line in manifest.read_text().splitlines()
+            record.get("run_id") == run_id for record in manifest_records(manifest)
         )
 
     if directory.exists():
@@ -97,7 +123,15 @@ def publish(root, run_id, facts, derived, metadata):
     if directory.exists():
         raise FileExistsError("partition already exists")
     os.rename(staging, directory)
-    append_manifest()
+    # Make the new directory entry durable: without this fsync a crash can lose
+    # the partition while the manifest entry survives.
+    fd = os.open(directory.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if not manifest_has_run():
+        append_manifest()
     return entry
 
 
@@ -107,9 +141,7 @@ def as_of(root, symbol, ts):
     if ts.tzinfo is None or ts.utcoffset() is None:
         raise ValueError("timestamp must have an offset")
     root = Path(root)
-    records = [
-        json.loads(line) for line in (root / "manifest.jsonl").read_text().splitlines()
-    ]
+    records = manifest_records(root / "manifest.jsonl")
     end = max(datetime.fromisoformat(record["coverage_end"]) for record in records)
     if ts > end:
         raise ValueError("lookup exceeds coverage end")

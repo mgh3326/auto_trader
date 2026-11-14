@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -313,6 +314,53 @@ class HistoryTest(unittest.TestCase):
             (Path(d) / "partitions" / "other" / "facts.jsonl").write_bytes(b"?")
             with self.assertRaises(FileExistsError):
                 publish(d, "other", [{"a": 1}], [{"b": 2}], meta)
+
+    def test_torn_final_manifest_line_does_not_brick_store(self):
+        with tempfile.TemporaryDirectory() as d:
+            meta = {
+                "coverage_start": "2020-01-01",
+                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
+                "fetch_budget_used": 1,
+                "missing_reports": [],
+            }
+            facts, derived = build_rows(
+                Collector(
+                    d, "c1", "2020-01-01", "2020-01-31", KEY, 10, transport()[0]
+                ).collect()["reports"]
+            )
+            publish(d, "c1", facts, derived, meta)
+            manifest = Path(d) / "manifest.jsonl"
+            with manifest.open("a") as stream:
+                stream.write('{"run_id"')
+            # Readers still work, and a new run can still publish.
+            rows = as_of(d, "999999", "2020-01-03T12:00:00+09:00")
+            self.assertEqual(len(rows), 1)
+            publish(d, "c2", facts, derived, meta)
+            self.assertEqual(len(manifest.read_text().splitlines()), 3)
+            # A corrupt middle record is real damage and still raises.
+            lines = manifest.read_text().splitlines()
+            lines[0] = "{broken"
+            manifest.write_text("\n".join(lines) + "\n")
+            with self.assertRaises(json.JSONDecodeError):
+                as_of(d, "999999", "2020-01-03T12:00:00+09:00")
+
+    def test_lost_partition_dir_is_republished_without_duplicate_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            meta = {
+                "coverage_start": "2020-01-01",
+                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
+                "fetch_budget_used": 1,
+                "missing_reports": [],
+            }
+            publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            # Simulate losing the directory entry (crash before parent fsync):
+            # the manifest record survives but the partition is gone.
+            shutil.rmtree(Path(d) / "partitions" / "run")
+            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            self.assertEqual(entry["run_id"], "run")
+            records = (Path(d) / "manifest.jsonl").read_text().splitlines()
+            self.assertEqual(len(records), 1)
+            self.assertTrue((Path(d) / "partitions" / "run").is_dir())
 
     def test_build_tolerates_torn_final_usage_line(self):
         with tempfile.TemporaryDirectory() as d:
