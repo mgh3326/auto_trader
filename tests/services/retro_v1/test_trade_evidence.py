@@ -65,6 +65,8 @@ def order(**values):
         "correlation_id": "corr-1",
         "idempotency_key": KEY,
         "order_no": ORDER_NO,
+        "status": "filled",
+        "filled_qty": Decimal("3"),
     }
     base.update(values)
     return live_order(**base)
@@ -78,6 +80,7 @@ def fill(id_: int = 1, **values):
         "filled_at_basis": "broker_order_time",
         "fee_basis": "broker_reported",
         "fee_amount": Decimal("12"),
+        "fee_currency": "KRW",
         "tax_amount": Decimal("3"),
     }
     base.update(values)
@@ -370,14 +373,22 @@ async def test_failed_fill_read_is_unknown_not_empty() -> None:
 def ledger_fill(**values):
     base = {
         "broker": "kis",
+        "account_mode": "live",
+        "instrument_type": InstrumentType.equity_kr,
+        "symbol": "SAMPLE",
+        "broker_order_id": "ord-1",
+        "filled_at": FILL_AT,
+        "filled_qty": Decimal("1"),
         "source": "reconciler",
         "side": "buy",
         "currency": "KRW",
         "filled_notional": Decimal("1000"),
         "fee_basis": "broker_reported",
         "fee_amount": Decimal("1"),
+        "fee_currency": "KRW",
         "tax_amount": None,
         "filled_at_basis": None,
+        "raw_payload_json": None,
     }
     base.update(values)
     return ns(**base)
@@ -437,10 +448,18 @@ def test_a_missing_fee_leaves_no_recorded_cost_even_when_the_tax_is_known() -> N
     assert body["estimated"]["amount"] == "5"
 
 
-def test_costs_with_mixed_currencies_have_no_recorded_currency() -> None:
-    body = costs_of(ledger_fill(currency="KRW"), ledger_fill(currency="USD"))
-    assert body["recorded"]["currency"] is None
-    assert body["recorded_reason"] == "missing_currency"
+def test_costs_with_unknown_or_mixed_fee_currencies_are_withheld() -> None:
+    # a fill whose fee_currency was never recorded: the fee is not a KRW fee
+    missing = costs_of(ledger_fill(fee_currency=None))
+    assert missing["recorded"] is None
+    assert missing["recorded_reason"] == "missing_currency"
+    # two recorded fees in different currencies cannot be added together
+    mixed = costs_of(ledger_fill(), ledger_fill(fee_currency="USD"))
+    assert mixed["recorded"] is None
+    assert mixed["recorded_reason"] == "missing_currency"
+    # the trade currency is no stand-in for a missing fee currency either
+    foreign = costs_of(ledger_fill(currency="USD"))
+    assert foreign["recorded"]["currency"] == "KRW"
 
 
 # --------------------------------------------------------------------------
@@ -521,6 +540,7 @@ async def test_upbit_fills_after_kst_midnight_still_belong_to_the_order() -> Non
         "instrument_type": "crypto",
         "broker_order_id": "uuid-1",
         "fee_amount": Decimal("5"),
+        "fee_currency": "KRW",
         "filled_notional": Decimal("1000"),
     }
     fills = [
@@ -559,6 +579,8 @@ async def test_upbit_fills_after_kst_midnight_still_belong_to_the_order() -> Non
         order_no="uuid-1",
         correlation_id="corr-1",
         idempotency_key="oprop-1",
+        status="filled",
+        filled_qty=Decimal("6"),
     )
     source = session(
         [journal(101, InstrumentType.crypto, correlation_id="corr-1")],
@@ -598,3 +620,101 @@ async def test_websocket_fill_times_are_used_only_when_they_cover_the_order() ->
     assert unlabelled["data"][0]["fill_time_basis"] == "broker_order_time"
     # the costs still come from the authoritative row only
     assert complete["data"][0]["costs"]["recorded"]["fee"] == "12"
+
+
+@pytest.mark.asyncio
+async def test_a_duplicated_websocket_fill_is_not_coverage_of_another_fill() -> None:
+    # ROB-1379: the same fill can be written under two fill_seq values; two
+    # copies of a 3-unit fill do not cover a 6-unit authoritative fill.
+    tap = {
+        "source": "websocket",
+        "filled_at_basis": "broker_fill_time",
+        "fee_basis": None,
+        "fee_amount": None,
+        "tax_amount": None,
+        "filled_qty": Decimal("3"),
+    }
+    routes = {
+        "FROM review.kis_live_order_ledger": [order(filled_qty=Decimal("6"))],
+        "FROM review.execution_ledger": [
+            fill(1, filled_qty=Decimal("6")),
+            fill(2, **tap, fill_seq=7),
+            fill(3, **{**tap, "fill_seq": 8}),
+        ],
+    }
+    result = await read(
+        session(
+            [kr_journal(correlation_id="corr-1")],
+            [kr_review()],
+            **routes,
+        )
+    )
+    assert result["data"][0]["fill_time_basis"] == "broker_order_time"
+    # one distinct websocket row covering the order still wins
+    routes["FROM review.execution_ledger"] = [
+        fill(1, filled_qty=Decimal("6")),
+        fill(2, **{**tap, "filled_qty": Decimal("6")}, fill_seq=7),
+    ]
+    result = await read(
+        session(
+            [kr_journal(correlation_id="corr-1")],
+            [kr_review()],
+            **routes,
+        )
+    )
+    assert result["data"][0]["fill_time_basis"] == "broker_fill_time"
+
+
+@pytest.mark.asyncio
+async def test_an_order_without_fills_withholds_trade_costs_and_time_basis() -> None:
+    # a closed round trip whose exit order's fills were never written: the
+    # entry leg alone is not the trade's recorded cost.
+    buy = order(order_no="0000123456", side="buy")
+    sell = order(
+        id_=101,
+        order_no="0000654321",
+        side="sell",
+        correlation_id="corr-sell",
+        filled_qty=Decimal("3"),
+    )
+    source = session(
+        [kr_journal(correlation_id="corr-1")],
+        [kr_review(correlation_id="corr-sell")],
+        **{
+            "FROM review.kis_live_order_ledger": [buy, sell],
+            "FROM review.execution_ledger": [fill()],
+        },
+    )
+    row = (await read(source))["data"][0]
+    assert "costs" not in row and "fill_time_basis" not in row
+    # an order whose recorded fill total differs from the ledger's also fails
+    buy = order(order_no="0000123456", side="buy", filled_qty=Decimal("6"))
+    source.routes["FROM review.kis_live_order_ledger"] = [buy]
+    row = (await read(source))["data"][0]
+    assert "costs" not in row and "fill_time_basis" not in row
+
+
+def test_toss_cumulative_notional_is_reconstructed_or_unavailable() -> None:
+    def toss_fill(prev: Decimal, cum: Decimal, avg: Decimal):
+        return ledger_fill(
+            broker="toss",
+            filled_qty=cum - prev,
+            filled_price=avg,
+            filled_notional=(cum - prev) * avg,
+            raw_payload_json={
+                "previous_filled_qty": str(prev),
+                "broker_cumulative_filled_qty": str(cum),
+            },
+        )
+
+    rows = [
+        toss_fill(Decimal(0), Decimal(1), Decimal(100)),
+        toss_fill(Decimal(1), Decimal(2), Decimal(150)),
+    ]
+    body = costs_of(*rows)
+    # the entry notional is 2 * 150 = 300, not the ledger rows' 100 + 150
+    assert body["estimated"]["amount"] == "1.5"
+    # a gap in the cumulative chain means some fills were missed
+    broken = costs_of(toss_fill(Decimal(1), Decimal(2), Decimal(150)))
+    assert broken["estimated"] is None
+    assert broken["estimated_reason"] == "missing_notional"

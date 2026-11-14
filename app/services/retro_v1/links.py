@@ -150,11 +150,14 @@ class OrderLinkEvidence:
         return cls({}, {})
 
     def resolve(self, order: Any) -> AttemptResolution:
+        # A failed or capped read can omit another order's attempts, so no
+        # order — not even one without a send key — may fall back to the
+        # legacy rung match.
+        if not self.complete:
+            return AttemptResolution("unavailable")
         scope, key = order_scope(order), order_send_key(order)
         if scope is None or key is None:
             return AttemptResolution("none")
-        if not self.complete:
-            return AttemptResolution("unavailable")
         return resolve_attempts(self.attempts.get((scope, key), []), self.outcomes)
 
 

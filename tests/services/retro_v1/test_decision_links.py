@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from app.services.retro_v1 import chain as chain_module
 from app.services.retro_v1 import links as links_module
 from app.services.retro_v1 import read_retro_day, read_retro_funnel, read_retro_symbol
 from app.services.retro_v1.envelope import make_ref
@@ -20,6 +21,7 @@ from app.services.retro_v1.links import (
 )
 from tests.services.retro_v1.support import (
     FILL_AT,
+    WithParams,
     kr_day_session,
     live_order,
     ns,
@@ -148,6 +150,16 @@ def test_order_link_evidence_resolves_by_scope_and_key() -> None:
     other_scope = live_order(idempotency_key=SEND_KEY, broker="upbit")
     assert evidence.resolve(other_scope).kind == "none"
     assert evidence.resolve(live_order(idempotency_key=None)).kind == "none"
+
+
+def test_incomplete_evidence_is_unavailable_even_without_a_send_key() -> None:
+    # another order's failed attempt read must not let this order fall back
+    # to the legacy rung match
+    evidence = OrderLinkEvidence({}, {}, complete=False)
+    assert evidence.resolve(live_order(idempotency_key=None)).kind == "unavailable"
+    assert evidence.resolve(live_order(idempotency_key=SEND_KEY)).kind == (
+        "unavailable"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -444,5 +456,117 @@ async def test_unreadable_candidate_reference_is_not_guessed() -> None:
         candidate_link_basis="recorded",
     )
     row = await proposal_row(candidate_session([same_day], decided, [gone]))
+    assert row["linked_ref"] is None
+    assert row["link_reason"] == "candidate_ref_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_attempts_block_legacy_match_for_a_keyless_order() -> None:
+    # a second order with no send key of its own: another order's failed
+    # attempt read must still withhold its correlation-only legacy link
+    session = kr_day_session(
+        **{
+            "FROM review.order_proposals ": [
+                proposal(
+                    10,
+                    "005930",
+                    datetime(2026, 1, 5, 1, 0, tzinfo=UTC),
+                    proposal_id=PROPOSAL_A,
+                    decision_id=DECISION_A,
+                )
+            ],
+            "FROM review.order_proposal_rungs": [
+                rung(100, 10, idempotency_key="other-key", correlation_id="corr-1")
+            ],
+            "FROM review.order_send_intents": [
+                ("other-key", FILL_AT - timedelta(hours=1))
+            ],
+            "FROM review.kis_live_order_ledger": [
+                live_order(idempotency_key="idem-100"),
+                live_order(
+                    id_=101,
+                    idempotency_key=None,
+                    correlation_id="corr-1",
+                    broker="kis",
+                ),
+            ],
+            "FROM review.decision_order_links": operational_error(),
+        }
+    )
+    response = await read_retro_day(session, market="kr", date=DAY)
+    validate(response, "RetroDayResponse")
+    orders = [r for r in response["data"] if r["stage"] == "order"]
+    assert len(orders) == 2
+    for order in orders:
+        assert order["linked_ref"] is None
+        assert order["link_reason"] == "attempts_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_attempt_binding_loads_an_out_of_window_rung() -> None:
+    # the sent attempt binds proposal A's rung 0; A sits outside the day
+    # window, so the link needs the bound rung loaded on top
+    out_proposal = proposal(
+        9,
+        "005930",
+        datetime(2025, 12, 30, 1, 0, tzinfo=UTC),
+        proposal_id=PROPOSAL_A,
+        decision_id=DECISION_A,
+    )
+    out_rung = rung(99, 9, idempotency_key=None, broker_order_id="0000123456")
+
+    def proposals(sql, params):
+        return [out_proposal] if "proposal_id IN" in sql else []
+
+    def rungs(sql, params):
+        return [out_rung] if 9 in (params.get("proposal_pk_1") or []) else []
+
+    session = kr_day_session(
+        **{
+            "FROM review.order_proposals ": WithParams(proposals),
+            "FROM review.order_proposal_rungs": WithParams(rungs),
+            "FROM review.order_send_intents": [],
+            "FROM review.decision_order_links": [A1],
+            "FROM review.decision_order_link_outcomes": [
+                ns(attempt_id=A1.attempt_id, outcome="sent")
+            ],
+        }
+    )
+    response = await read_retro_day(session, market="kr", date=DAY)
+    validate(response, "RetroDayResponse")
+    order = row_of(response, "order")
+    assert order["linked_ref"] == make_ref("rung", 99)
+    assert order["link_basis"] == "recorded"
+    assert order["decision_ref"] == decision_ref(DECISION_A)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["failed", "capped"])
+async def test_an_incomplete_reference_read_withholds_the_candidate_link(
+    failure, monkeypatch
+) -> None:
+    # the cap keeps the earliest rows: a surviving pick is not evidence of
+    # which pick the writer recorded
+    decided = [proposal(10, "005930", kst(5, 12, 0), decision_id=DECISION_A)]
+    decision = ns(
+        decision_id=DECISION_A,
+        candidate_call_id=CALL,
+        candidate_symbol="005930",
+        candidate_link_basis="recorded",
+    )
+    picks = [
+        pick(7, "005930", kst(1, 9, 0), call_id=CALL),
+        pick(8, "005930", kst(1, 10, 0), call_id=CALL),
+    ]
+    source = candidate_session([], decided, [decision], ref_picks=picks)
+    if failure == "failed":
+
+        def fail(sql):
+            raise operational_error()
+
+        source.routes["FROM review.screener_pick_log"] = fail
+    else:
+        monkeypatch.setattr(chain_module, "MAX_SOURCE_ROWS", 2)
+    row = await proposal_row(source)
     assert row["linked_ref"] is None
     assert row["link_reason"] == "candidate_ref_unresolved"

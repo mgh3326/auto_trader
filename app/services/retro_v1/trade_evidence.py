@@ -252,26 +252,56 @@ def trade_decision_link(
 # --------------------------------------------------------------------------
 # fills of the trade: time basis and costs (§5.3, §6.2)
 # --------------------------------------------------------------------------
+def _trade_orders(
+    journal: Any, reviews: Sequence[Any], evidence: TradeEvidence
+) -> list[Any]:
+    """Order ledger rows of one trade (journal or review correlation + symbol)."""
+    correlations = {
+        c for c in (journal.correlation_id, *(r.correlation_id for r in reviews)) if c
+    }
+    return [
+        o
+        for o in evidence.orders
+        if o.correlation_id in correlations
+        and o.symbol.upper() == journal.symbol.upper()
+    ]
+
+
 def trade_fills(
     journal: Any, reviews: Sequence[Any], info: MarketInfo, evidence: TradeEvidence
 ) -> list[Any]:
     """Ledger fills of the orders recorded for one trade (exact order identity)."""
-    correlations = {
-        c for c in (journal.correlation_id, *(r.correlation_id for r in reviews)) if c
-    }
     # ``order_identity`` already carries the KIS trading day (and no day for
     # brokers whose order ids are unique), so a fill after KST midnight of an
     # Upbit order still matches.
     identities = set()
-    for order in evidence.orders:
-        if (
-            order.correlation_id in correlations
-            and order.symbol.upper() == journal.symbol.upper()
-        ):
-            identity = _order_identity(order, info)
-            if identity is not None:
-                identities.add(identity)
+    for order in _trade_orders(journal, reviews, evidence):
+        identity = _order_identity(order, info)
+        if identity is not None:
+            identities.add(identity)
     return [f for f in evidence.fills if order_identity(f) in identities]
+
+
+def _orders_fill_coverage(
+    orders: Sequence[Any], fills: Sequence[Any], info: MarketInfo
+) -> bool:
+    """Every order's recorded filled quantity is matched by the fills read.
+
+    A successful, uncapped read can still lack one order's fills (the row was
+    never written); matching the filled quantity the order ledger recorded is
+    what proves the surviving fills are the whole trade.
+    """
+    matched: dict[Any, Decimal] = defaultdict(Decimal)
+    for fill in fills:
+        matched[order_identity(fill)] += fill.filled_qty
+    for order in orders:
+        expected = getattr(order, "filled_qty", None)
+        if expected is None and getattr(order, "status", None) == "filled":
+            expected = getattr(order, "quantity", None)
+        seen = matched.get(_order_identity(order, info), Decimal(0))
+        if seen != (expected if expected is not None else Decimal(0)):
+            return False
+    return True
 
 
 def fill_time_basis(fill: Any) -> str | None:
@@ -317,11 +347,20 @@ def trade_time_basis(fills: Sequence[Any], raw_fills: Sequence[Any]) -> str | No
     bases: list[str | None] = []
     for identity, rows in by_order.items():
         authority = [r for r in rows if r.source in AUTHORITATIVE_SOURCES]
-        taps = [
-            r
-            for r in raw_fills
-            if r.source == "websocket" and order_identity(r) == identity
-        ]
+        # ROB-1379: fillwire and the in-app monitor can record the same
+        # websocket fill under different ``fill_seq`` values, so equal rows
+        # count once — otherwise two copies of one fill can masquerade as
+        # coverage of another fill that was never observed.
+        taps = []
+        seen_taps: set[tuple[Any, ...]] = set()
+        for row in raw_fills:
+            if row.source != "websocket" or order_identity(row) != identity:
+                continue
+            marker = (row.filled_at, row.filled_qty, row.filled_price)
+            if marker in seen_taps:
+                continue
+            seen_taps.add(marker)
+            taps.append(row)
         if (
             authority
             and taps
@@ -380,12 +419,82 @@ def _round_trip_bps(
         return None, None, None
 
 
+def _order_entry_notional(rows: Sequence[Any]) -> Decimal | None:
+    """True entry notional of one order's buy fills.
+
+    Toss reconciler rows price each incremental quantity at the broker's
+    *cumulative* averageFilledPrice (``toss_execution_ledger``), so their
+    ``filled_notional`` does not sum to the entry notional. When every row
+    carries the cumulative bookkeeping, the notional is the final cumulative
+    quantity times its average price — and only while the previous→cumulative
+    chain is unbroken. Anything else is summed directly; mixed or broken
+    evidence cannot be established.
+    """
+    cumulative = [
+        (payload, r.filled_price)
+        for r in rows
+        if (payload := getattr(r, "raw_payload_json", None) or {})
+        and "broker_cumulative_filled_qty" in payload
+        and "previous_filled_qty" in payload
+    ]
+    if not cumulative:
+        return _sum_or_none([r.filled_notional for r in rows])
+    if len(cumulative) != len(rows):
+        return None
+    chain = sorted(
+        (
+            (
+                Decimal(str(payload["broker_cumulative_filled_qty"])),
+                Decimal(str(payload["previous_filled_qty"])),
+                price,
+            )
+            for payload, price in cumulative
+        ),
+        key=lambda item: item[0],
+    )
+    expected = Decimal(0)
+    for cum, prev, _price in chain:
+        if prev != expected or cum <= prev:
+            return None
+        expected = cum
+    price = chain[-1][2]
+    return expected * price if price is not None else None
+
+
+def _entry_notional(entry: Sequence[Any]) -> Decimal | None:
+    """Entry notional across the trade's orders; ``None`` when not established."""
+    by_order: dict[Any, list[Any]] = defaultdict(list)
+    for fill in entry:
+        by_order[order_identity(fill)].append(fill)
+    if not by_order:
+        return None
+    total = Decimal(0)
+    for rows in by_order.values():
+        notional = _order_entry_notional(rows)
+        if notional is None:
+            return None
+        total += notional
+    return total
+
+
 def trade_costs(fills: Sequence[Any], market: MarketInfo) -> tuple[Costs, bool]:
     """Costs of the fills; the flag says a pre-split Toss fee includes its tax."""
     fees = [_fill_fee(f) for f in fills]
-    fee_total = _sum_or_none([fee for fee, _ in fees])
+    all_fees_known = bool(fees) and all(fee is not None for fee, _ in fees)
+    # The fee's own currency, not the fill's: the ingest schema allows a
+    # missing or different ``fee_currency``, and fees in different currencies
+    # cannot be added together. An unknown or mixed fee currency withholds
+    # the recorded sum.
+    fee_currencies = {
+        getattr(f, "fee_currency", None)
+        for f, (fee, _) in zip(fills, fees, strict=True)
+        if fee is not None
+    }
+    one_fee_currency = (
+        all_fees_known and len(fee_currencies) == 1 and None not in fee_currencies
+    )
+    fee_total = _sum_or_none([fee for fee, _ in fees]) if one_fee_currency else None
     tax_total = _sum_or_none([f.tax_amount for f in fills])
-    currencies = {f.currency for f in fills}
     # The documented basis is the buy entry notional: a trade whose entry fill
     # was never recorded has no entry notional (``missing_notional``), and its
     # exit proceeds are not a stand-in.
@@ -394,16 +503,19 @@ def trade_costs(fills: Sequence[Any], market: MarketInfo) -> tuple[Costs, bool]:
     costs = calculate_costs(
         fee=fee_total,
         tax=tax_total,
-        currency=currencies.pop() if len(currencies) == 1 else None,
+        currency=fee_currencies.pop() if one_fee_currency else None,
         fee_basis="broker_reported" if fee_total is not None else "not_provided",
-        notional=_sum_or_none([f.filled_notional for f in entry]),
+        notional=_entry_notional(entry),
         round_trip_cost_bps=bps,
         policy_version=version,
         policy_content_hash=content_hash,
     )
-    if fee_total is None and costs.recorded is not None:
-        # A fee that any fill did not provide leaves no recorded cost, even when
-        # the tax is known; the estimate stays.
+    if fee_total is None and all_fees_known and not one_fee_currency:
+        # A fee sum whose currency cannot be stated is withheld entirely.
+        costs = replace(costs, recorded=None, recorded_reason="missing_currency")
+    elif fee_total is None and costs.recorded is not None:
+        # A fee that any fill did not provide leaves no recorded cost, even
+        # when the tax is known. The estimate stays either way.
         costs = replace(costs, recorded=None, recorded_reason="not_provided")
     return costs, any(includes_tax for _, includes_tax in fees)
 
@@ -451,7 +563,12 @@ def trade_evidence_fields(
     if info is None or not evidence.fills_ok or not evidence.orders_ok:
         return fields
     fills = trade_fills(journal, reviews, info, evidence)
-    if not fills:
+    # Fees and times describe the whole trade: an order whose recorded filled
+    # quantity is not matched by the fills read means some fills were never
+    # written, so a partial fee or time is withheld rather than reported.
+    if not fills or not _orders_fill_coverage(
+        _trade_orders(journal, reviews, evidence), fills, info
+    ):
         return fields
     basis = trade_time_basis(fills, evidence.raw_fills)
     if basis is not None:

@@ -495,6 +495,82 @@ async def load_chain(
             unknowns,
             [k for k in (order_send_key(o) for _, o in data.orders) if k],
         )
+        # An attempt can name an out-of-window proposal's rung; without
+        # loading it the stored (proposal_id, rung_index) binding could not
+        # produce a linked_ref.
+        bound_proposal_ids = {
+            attempt.proposal_id
+            for attempts in data.order_links.attempts.values()
+            for attempt in attempts
+            if attempt.proposal_id is not None and attempt.rung_index is not None
+        }
+        known_pids = {
+            p.proposal_id
+            for p in [*data.proposals, *data.link_proposals]
+            if getattr(p, "proposal_id", None) is not None
+        }
+        missing = sorted(bound_proposal_ids - known_pids, key=str)
+        if missing:
+
+            async def read_bound_proposals() -> list[Any]:
+                stmt = (
+                    select(OrderProposal)
+                    .where(
+                        OrderProposal.proposal_id.in_(missing),
+                        OrderProposal.market == market.instrument_type,
+                        OrderProposal.account_mode.in_(LIVE_PROPOSAL_ACCOUNT_MODES),
+                    )
+                    .order_by(OrderProposal.id)
+                    .limit(MAX_SOURCE_ROWS)
+                )
+                return list((await session.execute(stmt)).scalars().all())
+
+            bound_proposals, bound_ok = await guarded(
+                session,
+                unknowns,
+                "source.link_bound_proposals",
+                read_bound_proposals,
+                [],
+            )
+            track("link_bound_proposals", bound_proposals, bound_ok, MAX_SOURCE_ROWS)
+            new_pks = {
+                p.id
+                for p in bound_proposals
+                if p.id not in {q.id for q in [*data.proposals, *data.link_proposals]}
+            }
+            if new_pks:
+
+                async def read_bound_rungs() -> list[Any]:
+                    stmt = (
+                        select(OrderProposalRung)
+                        .where(OrderProposalRung.proposal_pk.in_(new_pks))
+                        .order_by(
+                            OrderProposalRung.proposal_pk,
+                            OrderProposalRung.rung_index,
+                        )
+                        .limit(MAX_SOURCE_ROWS * 4)
+                    )
+                    return list((await session.execute(stmt)).scalars().all())
+
+                bound_rungs, bound_rungs_ok = await guarded(
+                    session,
+                    unknowns,
+                    "source.link_bound_rungs",
+                    read_bound_rungs,
+                    [],
+                )
+                track(
+                    "link_bound_rungs",
+                    bound_rungs,
+                    bound_rungs_ok,
+                    MAX_SOURCE_ROWS * 4,
+                )
+                seen_rungs = {r.id for r in [*data.rungs, *data.link_rungs]}
+                seen_proposals = {p.id for p in [*data.proposals, *data.link_proposals]}
+                data.link_proposals += [
+                    p for p in bound_proposals if p.id not in seen_proposals
+                ]
+                data.link_rungs += [r for r in bound_rungs if r.id not in seen_rungs]
         # Only the window's proposals show a candidate link; an order's decision
         # comes from the attempt rows or the rung's proposal column.
         decision_ids = [
@@ -526,7 +602,10 @@ async def load_chain(
             found_picks, picks_ok = await guarded(
                 session, unknowns, "source.ref_candidates", read_ref_candidates, []
             )
-            if picks_ok and len(found_picks) >= MAX_SOURCE_ROWS:
+            if not picks_ok:
+                data.incomplete.add("ref_candidates")
+            elif len(found_picks) >= MAX_SOURCE_ROWS:
+                data.incomplete.add("ref_candidates")
                 unknowns.note("source.ref_candidates", "incomplete_evidence")
             wanted = set(call_ids)
             data.ref_candidates = [c for c in found_picks if c.call_id in wanted]
@@ -729,6 +808,10 @@ def _candidate_link(
         return None, None, "candidate_ref_unresolved"
     if decision.candidate_call_id is None:
         return None, None, "no_candidate_ref"
+    if "ref_candidates" in data.incomplete:
+        # A failed or capped pick read can drop the writer's recorded pick,
+        # so a surviving row is not evidence of which pick was meant.
+        return None, None, "candidate_ref_unresolved"
     symbol = (decision.candidate_symbol or "").upper()
     named = [
         c
