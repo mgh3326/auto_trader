@@ -56,7 +56,7 @@ hk 4647이 요구한 설계 문서이고, hk 3796의 step 1이다.
 | 레버리지·포지션 모드 | `execution_client.py:1007-1073`, `:335-371` | `set_leverage`는 `!=1`을 POST 전에 거부. one-way(`BOTH`)만, hedge 사전 차단 |
 | reduceOnly | `execution_client.py:416-419` | close 주문에만 `reduceOnly=true` 전송 |
 | 계정 전체 읽기 | `execution_client.py:720`, `:852` | `get_all_open_orders()`/`get_all_positions()` — 공유 계정 충돌 감지용(ROB-993 R3) |
-| 심볼 allowlist(ROB-993/H5 경로) | `futures_demo/sizing.py:23-65` | `XRPUSDT` 기본 + `DOGEUSDT`·`SOLUSDT` fallback, `BTCUSDT`는 excluded(leg cap $10 < MIN_NOTIONAL $50) — **이 상수는 ROB-993 경로 것이다** |
+| 심볼 allowlist(ROB-993 경로) | `futures_demo/sizing.py:23-65` | `XRPUSDT` 기본 + `DOGEUSDT`·`SOLUSDT` fallback, `BTCUSDT`는 excluded(leg cap $10 < MIN_NOTIONAL $50) — **이 제외는 ROB-993 sizing 경로(`assert_symbol_allowed`)에서만 강제된다**. H5 어댑터는 이 가드를 거치지 않고 `UNIVERSE=('BTCUSDT','ETHUSDT','SOLUSDT')`(`app/services/brokers/binance/h5/strategy.py:22`)로 같은 데모 계정에서 BTCUSDT 를 거래한다 |
 | 데모 원장 | `app/services/brokers/binance/demo/ledger/service.py:70` | `BinanceDemoLedgerService`가 `binance_demo_order_ledger` 유일 writer. 상태 `planned→previewed→validated→submitted→filled→closed→reconciled` + `cancelled`/`anomaly`(`service.py:56-67`) |
 | 전송 전 예약 | `service.py:300-383` | `reserve_root_planned`/`commit_planned_claim` — advisory lock + cap + 멱등(`RESERVATION_*`, `repository.py:53-55`) |
 | 전략 플러그 인터페이스 | `app/services/brokers/binance/demo_strategy_loop/strategy.py:46-64` | `StrategyPlugin`: `evaluate(bars_4h_multi_symbol, *, decision_ts) -> Signal|None` |
@@ -105,7 +105,7 @@ hk 4647이 요구한 설계 문서이고, hk 3796의 step 1이다.
   - 권고 신호: 심볼별 완성 4h bar 집계 후 일봉 등가 수익률 `r = close_t / close_{t-L} - 1`의 부호. `L`은 후보 집합 {20, 60, 120일}에서 **탐색 구간(§3.5) 1회**로 고르고 manifest에 고정한다.
   - 변동성 스케일: 목표 연변동성 `σ*` 대비 실현 변동성(예: 20일 EWMA) 비율로 포지션 크기를 조절한다. 상수는 §6 Q2.
   - 방향: `r > 0` → 롱, `r < 0` → 숏(데모) 또는 현금(Upbit 실전 부분, §5).
-- **유니버스**: `{BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT}` 권고. 단, ROB-993/H5 경로의 `FUTURES_DEMO_EXCLUDED_SYMBOLS={BTCUSDT}`·leg cap $10(`futures_demo/sizing.py:23-29`)은 **그 경로의 상수**다. 이 러너는 자체 allowlist·자체 notional cap을 새 locked 상수로 둔다(§4.3, §6 Q1). `DOGEUSDT`는 유동성·대표성 이유로 제외를 권고.
+- **유니버스**: `{BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT}` 권고. 단, ROB-993 경로의 `FUTURES_DEMO_EXCLUDED_SYMBOLS={BTCUSDT}`·leg cap $10(`futures_demo/sizing.py:23-29`)은 **그 경로의 상수**다(H5 는 이 가드 밖이고 BTCUSDT 를 거래한다 — 같은 데모 계정의 심볼 충돌 계산에 넣는다). 이 러너는 자체 allowlist·자체 notional cap을 새 locked 상수로 둔다(§4.3, §6 Q1). `DOGEUSDT`는 유동성·대표성 이유로 제외를 권고.
 - **진입**: 완성 4h bar 마감 시 평가(ROB-993과 같은 synchronized complete-bar 게이트, 결측=NO_SIGNAL). 신호 방향이 현 포지션과 다르면 전량 청산 후 신규 진입(또는 현금). 같은 방향 유지 시 아무 것도 하지 않는다.
 - **추가매수**: 없다(에피소드당 1진입 1청산).
 - **청산**: (a) 신호 반전, (b) hard stop — 진입가 대비 고정 %, (c) 최대 보유 시간(예: 30일). 모든 청산은 `reduce_only=True`(`execution_client.py:416-419`). hard stop도 H5처럼 4h 마감 사이 1m 극값으로 감시할지는 §6 Q3(구현 비용 대 효과).

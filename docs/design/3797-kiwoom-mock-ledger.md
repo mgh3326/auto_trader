@@ -28,7 +28,7 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 
 | 규칙 | 내용 |
 |---|---|
-| **K1 accepted-only at send** | 원장 행은 브로커 ACK(return_code=0 + `ord_no`) 뒤에만 쓴다. 사전 상태·거절은 `rejected`, 송신 후 결과 불명은 `uncertain` 으로 남기며 둘 다 재송신을 허용하지 않는다. |
+| **K1 accepted-only at send** | 브로커 ACK(return_code=0 + `ord_no`) 없이 `accepted` 행을 쓰지 않는다(I1: accepted ⇒ broker_order_id). 사전 상태·거절은 `rejected`, 송신 후 결과 불명은 ACK 없이도 `uncertain` 행으로 반드시 남기며(I3 이 이 행에 의존), 둘 다 재송신을 허용하지 않는다. |
 | **K2 증거 우선** | `filled` 마킹은 브로커 조회 증거(체결 수량·가격)가 있을 때만. 부재는 증거가 아니다 — 목록에 없는 주문은 `cancelled` 가 아니라 `unknown`/수동검토다. |
 | **K3 단일 송신 보장** | `review.order_send_intents` 의 `(account_scope, idempotency_key)` UNIQUE 로 같은 키 재송신을 fail-closed. 키는 canonical 주문 + 거래일 소금 + rung 판별자로 결정적으로 만든다(Toss ROB-651 패턴). |
 | **K4 실전 동형** | 원장 스키마·대사 커널·제안 경로는 모의/실전이 같은 코드를 쓰고, 다른 것은 호스트·자격증명·env 게이트·계좌 모드 값뿐이다(§5 표). |
@@ -180,9 +180,9 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 
 | 용도 | KR | US | 근거 |
 |---|---|---|---|
-| 주문별 상태·미체결 목록 | `kt00009` (계좌별주문체결현황) | `ust21510` (당일주문) | `constants.py:34`, `:172` |
-| 주문 상세(체결내역/미체결) | `kt00007` (`qry_tp`: 1주문순/2역순/3미체결/4체결내역만 `constants.py:115-122`) | `ust21050` (미체결) | `constants.py:33`, `:169` |
-| 보유·가용 | `kt00018`(잔고), `kt00001`(예수금 — `kt00010` 은 모의 미지원 `domestic_account.py:51-60` ROB-904) | `ust21070`, `ust21160` | `constants.py:35-36`, `:170-172` |
+| 주문별 상태·미체결 목록 | `kt00009` (계좌별주문체결현황) | `ust21510` (당일주문) | `constants.py:34`, `:174` |
+| 주문 상세(체결내역/미체결) | `kt00007` (`qry_tp`: 1주문순/2역순/3미체결/4체결내역만 `constants.py:109-121`) | `ust21050` (미체결) | `constants.py:33`, `:172` |
+| 보유·가용 | `kt00018`(잔고), `kt00001`(예수금 — `kt00010` 은 모의 미지원 `domestic_account.py:51-60` ROB-904) | `ust21070`, `ust21160` | `constants.py:35-36`, `:173`, `:175` |
 
 - **Rate limit**: 모의 공통 TR 은 "국내주식 1초 1회, 미국주식 1초 1회"(research 행 2,
   공식 mockInvestInfo; 실측 0.5s 성공/0.2s 실패 `broker-and-ledger-contracts.md:860` 근방).
@@ -229,10 +229,10 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 - `execution_ledger` upsert: §2.3 형태, `source='reconciler'`.
 - 저널/실현손익: KIS 커널의 journal 부킹(`_create_trade_journal_for_buy` /
   `_close_journals_on_sell` `kis_live_ledger.py:965-1016`)과 같은 경계를 두되,
-  **모의 계좌의 저널 정책(기록할지, 어느 account 라벨로)은 §7-Q4 에서 운영자에게 묻는다**.
+  **모의 계좌의 저널 정책(기록할지, 어느 account 라벨로)은 §7-Q3 에서 운영자에게 묻는다**.
   커널은 부킹 경계를 플래그로 분리해 어느 쪽이든 마이그레이션 없이 맞춘다.
 - `account='kiwoom'` 라벨로 기존 trade/journal 테이블에 쓸지는 해당 테이블의
-  `account` 어휘 확인이 선행 조건이다(구현 티켓 T-RL4 선행 체크로 명시).
+  `account` 어휘 확인이 선행 조건이다(구현 티켓 T-P4 선행 체크로 명시; `trade_journals` 의 CHECK 는 `account_type IN ('live','paper','mock')` `app/models/trade_journal.py:50` 이고 `account` 는 자유 Text 다).
 
 ## 4. 제안 집행 통합 (order_proposals)
 
