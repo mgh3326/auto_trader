@@ -419,7 +419,7 @@ def fresh_source_routes(now: datetime) -> dict:
     snapshots = [
         crypto_snapshot("fear_greed", "alternative_me"),
         crypto_snapshot("stablecoin_supply", "defillama"),
-        crypto_snapshot("tv_crypto_breadth", "tradingview"),
+        crypto_snapshot("tv_crypto_breadth", "tradingview", value=0),
         crypto_snapshot("tvl", "defillama", symbol="bitcoin"),
     ]
 

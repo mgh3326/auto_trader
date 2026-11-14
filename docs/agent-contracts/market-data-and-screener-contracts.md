@@ -61,6 +61,15 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 - CLI 요약 JSON 은 기존 키를 그대로 두고 `pending`(미완료 파티션 수)을 추가한다. `failed == 0` 이면 pending 이 있어도 종료 코드 0이다.
   `pending` 키는 날짜 단위 루프 경로(dart 등)에만 있고 finnhub 범위 경로는 바뀌지 않았다.
 
+**DART 공시 심볼 연결 (hk 4591)**: `list_date_ex` 행에 `stock_code`가 없으면 공식 OpenDART `corpCode.xml`
+레지스트리의 `corp_name`을 공백 정규화한 뒤 정확히 비교한다. 디스크 캐시는 7일 TTL이며 갱신은 원자적으로 수행한다.
+정규화 이름에 해당하는 레지스트리 항목 중 유효한 6자리 숫자 `stock_code`를 가진 상장사가 정확히 하나일 때만
+그 코드를 `symbol`로 사용한다. 정확한 이름이 없으면 `no_registry_match`, 이름에 해당하는 항목은 있으나
+유효한 상장 코드가 없으면 `unlisted`, 상장사가 둘 이상이면 `ambiguous_corp_name`, 레지스트리를 읽을 수
+없으면 `registry_unavailable`을 `raw_payload_json.symbol_resolution_reason`에 기록하고 `symbol`은 `null`로 둔다.
+퍼지 매칭은 하지 않으며 `corp_code`는 심볼로 대체하지 않는다. 행에 기존 `stock_code`가 있으면 기존 정규화 동작을
+유지한다. 레지스트리 실패는 공시 수집을 실패시키지 않는다.
+
 ### Research Reports Integration (ROB-140)
 
 브로커 리서치 리포트 (Naver Research / KIS Research 등) `research-reports.v1` 페이로드의 thin ingest/read-layer 통합.

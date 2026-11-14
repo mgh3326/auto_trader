@@ -617,6 +617,7 @@ class LiveOrderLedger(Base):
     trade_id: Mapped[int | None] = mapped_column(BigInteger)
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_reconcile_detail: Mapped[dict | None] = mapped_column(JSONB)
 
     buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
@@ -635,6 +636,28 @@ class LiveOrderLedger(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class KISUSInferenceExpiryEvent(Base):
+    __tablename__ = "kis_us_inference_expiry_events"
+    __table_args__ = (
+        UniqueConstraint("ledger_id", name="uq_kis_us_inference_expiry_ledger"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    ledger_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("review.live_order_ledger.id"), nullable=False
+    )
+    batch_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    decision_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    rule_version: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    facts: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
 
 

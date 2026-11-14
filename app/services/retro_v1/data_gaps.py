@@ -244,6 +244,18 @@ def _snapshot_gap(
             ),
             None,
         )
+    if dataset == "crypto_insight.breadth" and snapshot.value is None:
+        return (
+            gap_row(
+                dataset=dataset,
+                symbol=None,
+                last_updated_at=None,
+                source=provider,
+                venue=None,
+                missing_reason="unsupported",
+            ),
+            snapshot.snapshot_at,
+        )
     if crypto_insight_state(snapshot.snapshot_at, snapshot.freshness_seconds, now) == (
         "fresh"
     ):

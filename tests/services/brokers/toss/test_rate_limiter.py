@@ -233,6 +233,39 @@ def test_get_shared_rate_limiter_selects_redis_only_when_opted_in(
         rate_limiter_module.reset_shared_rate_limiter()
 
 
+def test_get_shared_rate_limiter_uses_namespace_fp_without_client_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnusedRedis:
+        def close(self) -> None:
+            return None
+
+    redis_client = _UnusedRedis()
+    client_id = "factory-client-id"
+    rate_limiter_module.reset_shared_rate_limiter()
+    monkeypatch.setattr(
+        rate_limiter_module.settings, "toss_rate_limiter_backend", "redis"
+    )
+    monkeypatch.setattr(rate_limiter_module.settings, "toss_api_client_id", None)
+    monkeypatch.setattr(
+        rate_limiter_module.settings,
+        "toss_token_namespace_fp",
+        rate_limiter_module._client_fingerprint(client_id),
+    )
+    monkeypatch.setattr(
+        rate_limiter_module, "_build_redis_client", lambda: redis_client
+    )
+    try:
+        limiter = get_shared_rate_limiter()
+
+        assert isinstance(limiter, RedisTossRateLimiter)
+        assert limiter.key_for(TossApiGroup.AUTH) == toss_rate_limit_key(
+            client_id, TossApiGroup.AUTH
+        )
+    finally:
+        rate_limiter_module.reset_shared_rate_limiter()
+
+
 def test_redis_key_uses_only_client_fingerprint_and_group() -> None:
     client_id = "client-id-for-key-contract"
     expected_fingerprint = hashlib.sha256(client_id.encode("utf-8")).hexdigest()[:16]

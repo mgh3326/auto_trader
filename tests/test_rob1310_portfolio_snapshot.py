@@ -2837,6 +2837,69 @@ async def test_shared_snapshot_cache_scope_is_stable_for_the_same_account_identi
         cache_module.reset_shared_portfolio_snapshot_cache()
 
 
+def test_snapshot_scope_preserves_client_identity_from_token_namespace_fp() -> None:
+    from types import SimpleNamespace
+
+    from app.services.brokers.token_keys import toss_client_fingerprint
+    from app.services.toss_portfolio_snapshot_cache import _snapshot_cache_scope
+
+    client_id = "client-account-a"
+    shared = {
+        "toss_api_base_url": "https://openapi.tossinvest.com",
+        "toss_api_account_seq": 1,
+    }
+    with_client_id = SimpleNamespace(
+        **shared,
+        toss_api_client_id=client_id,
+        toss_token_namespace_fp=None,
+    )
+    fingerprint_only = SimpleNamespace(
+        **shared,
+        toss_api_client_id=None,
+        toss_token_namespace_fp=toss_client_fingerprint(client_id),
+    )
+    different_fingerprint = SimpleNamespace(
+        **shared,
+        toss_api_client_id=None,
+        toss_token_namespace_fp=toss_client_fingerprint("client-account-b"),
+    )
+
+    assert _snapshot_cache_scope(fingerprint_only) == _snapshot_cache_scope(
+        with_client_id
+    )
+    assert _snapshot_cache_scope(different_fingerprint) != _snapshot_cache_scope(
+        fingerprint_only
+    )
+
+
+def test_invalid_namespace_fingerprint_disables_snapshot_cache_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.toss_portfolio_snapshot_cache as cache_module
+    from app.core.config import settings
+
+    cache_module.reset_shared_portfolio_snapshot_cache()
+    redis_client_calls = 0
+
+    def create_redis_client(*_args: object, **_kwargs: object) -> object:
+        nonlocal redis_client_calls
+        redis_client_calls += 1
+        return object()
+
+    monkeypatch.setattr(cache_module.redis, "from_url", create_redis_client)
+    monkeypatch.setattr(settings, "toss_api_client_id", None)
+    monkeypatch.setattr(settings, "toss_token_namespace_fp", "malformed")
+    try:
+        first = cache_module.get_shared_portfolio_snapshot_cache()
+        second = cache_module.get_shared_portfolio_snapshot_cache()
+
+        assert first is second
+        assert not first.usable
+        assert redis_client_calls == 0
+    finally:
+        cache_module.reset_shared_portfolio_snapshot_cache()
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_toss_portfolio_snapshot_scopes_do_not_share_cached_values(

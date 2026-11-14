@@ -17,6 +17,9 @@ async def clean_kis_live_ledger(db_session, toss_ledger_cleanup_lock):
     from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
 
     async with _order_session_factory()() as db:
+        # Test-only cleanup of FK-linked append-only audit rows. The setting is
+        # transaction-local and ends at commit; production triggers stay enabled.
+        await db.execute(text("SET LOCAL session_replication_role = replica"))
         await db.execute(text("TRUNCATE TABLE review.kis_live_order_ledger CASCADE"))
         await db.execute(text("TRUNCATE TABLE review.live_order_ledger CASCADE"))
         await db.execute(text("TRUNCATE TABLE review.toss_live_order_ledger CASCADE"))

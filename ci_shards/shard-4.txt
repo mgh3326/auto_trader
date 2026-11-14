@@ -60,6 +60,7 @@ tests/research/eval_contract/test_eval_contract_types.py
 tests/research/kr_boosting/test_kr_boosting_features.py
 tests/research/kr_corpus/d3_engine/test_d3_calibration_guard.py
 tests/research/kr_delist_repair/test_kr_delist_causal.py
+tests/research/kr_fundamentals_pit/test_history.py
 tests/research/rob1391_us_resubmit_shadow/test_toss_preday_sweep.py
 tests/research/stock_selection/test_harness.py
 tests/research/strategy_evidence/test_core_calculations.py
@@ -158,6 +159,7 @@ tests/services/daily_candles/test_crypto_candles_1d_migration.py
 tests/services/daily_candles/test_crypto_candles_1m.py
 tests/services/daily_candles/test_crypto_instruments.py
 tests/services/decision_evidence/test_decision_evidence.py
+tests/services/decision_evidence/test_order_attempt_unit.py
 tests/services/dots_history_export/test_export_contract.py
 tests/services/dots_history_export/test_export_real.py
 tests/services/dots_history_export/test_export_v2_db.py

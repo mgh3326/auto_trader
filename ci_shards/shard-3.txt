@@ -125,6 +125,7 @@ tests/scripts/test_probe_us_earnings_coverage_cli.py
 tests/scripts/test_quarantine_execution_ledger_rows_cli.py
 tests/scripts/test_r4_p0_manifest_cli.py
 tests/scripts/test_spot_demo_confirm_lifecycle.py
+tests/scripts/test_terminal_auto_reconcile_cli.py
 tests/services/account_value/test_flows.py
 tests/services/account_value/test_report.py
 tests/services/account_value/test_snapshot.py
