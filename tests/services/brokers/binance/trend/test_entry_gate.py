@@ -168,3 +168,17 @@ def test_utc_windows() -> None:
     )
     monday = dt.datetime(2026, 11, 9, tzinfo=dt.UTC)
     assert utc_week_start(monday) == monday
+
+
+def test_the_notional_comparison_is_exact_not_context_rounded() -> None:
+    from app.services.brokers.binance.trend.state import _notional_exceeds
+
+    one = D("1")
+    # At the default 28-digit precision this product rounds to exactly 1.
+    assert _notional_exceeds(one, D("1.00000000000000000000000000001"), one)
+    assert not _notional_exceeds(one, one, one)
+    assert not _notional_exceeds(D("0.5"), D("2"), one)
+    assert _notional_exceeds(D("0.5"), D("2.000000000000000000000000000001"), one)
+    # Not exactly computable or no reservation: refuse.
+    assert _notional_exceeds(one, D("1e500"), one)
+    assert _notional_exceeds(one, one, None)

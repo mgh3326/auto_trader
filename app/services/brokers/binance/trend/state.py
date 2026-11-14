@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, Inexact, InvalidOperation, Overflow, localcontext
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -132,6 +132,20 @@ def _stored_exactly(value: Decimal) -> bool:
             return value.quantize(_SCALE) == value and abs(value) < Decimal(10) ** 16
         except InvalidOperation:
             return False
+
+
+def _notional_exceeds(qty: Decimal, price: Decimal, reserved: Decimal | None) -> bool:
+    """Exact ``qty * price > reserved``; anything not exactly computable refuses."""
+    if reserved is None:
+        return True
+    with localcontext() as ctx:
+        ctx.prec = 400
+        ctx.traps[Inexact] = True
+        ctx.traps[Overflow] = True
+        try:
+            return qty * price > reserved
+        except ArithmeticError:
+            return True
 
 
 def _require_aware(now: dt.datetime) -> None:
@@ -412,10 +426,7 @@ class TrendStateService:
                 raise TrendStateBlocked("entry intent requires reserved trend signal")
             if side != signal.side:
                 raise TrendStateBlocked("entry side must match the signal")
-            if (
-                signal.entry_notional_usdt is None
-                or qty * reference_price > signal.entry_notional_usdt
-            ):
+            if _notional_exceeds(qty, reference_price, signal.entry_notional_usdt):
                 raise TrendStateBlocked("intent exceeds the reserved notional")
             if await self._count_intents(db, signal_key, _ACTIVE_INTENTS):
                 raise TrendStateBlocked("previous intent unresolved")
