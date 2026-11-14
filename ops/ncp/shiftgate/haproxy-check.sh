@@ -8,11 +8,9 @@ fi
 
 config=$1
 
-# Retired ports are forbidden anywhere in an active config directive, not only
-# as recognized bind/server arguments. Keep the diagnostic tied to the source
-# line so an operator can locate the stale route.
+# Retired ports are forbidden anywhere in the candidate file, including
+# comments and other directives. Keep the diagnostic tied to its source line.
 if ! awk '
-  /^[[:space:]]*#/ { next }
   {
     for (port in retired) {
       if ($0 ~ ("(^|[^0-9])" port "([^0-9]|$)")) {
@@ -39,7 +37,7 @@ if ! awk '
     bad = 1
   }
   /^[[:space:]]*(#|$)/ { next }
-  /^[^[:space:]]/ {
+  /^[^[:space:]]/ && $1 !~ /^(bind|server)$/ {
     section = $1
     section_name = ($1 == "frontend" || $1 == "backend") ? $2 : ""
     next
@@ -49,11 +47,11 @@ if ! awk '
     sub(/^.*:/, "", port)
     expected = ""
     if (section == "frontend") {
-      if (section_name == "api" || section_name == "at-api" || section_name == "at-api-legacy") expected = "8000"
-      else if (section_name == "mcp" || section_name == "at-mcp" || section_name == "at-mcp-legacy") expected = "8765"
-      else if (section_name == "at-mcp-kiwoom") expected = "8772"
-      else if (section_name == "at-mcp-h3-crypto-paper") expected = "8776"
-      else if (section_name == "at-mcp-h3-us-paper") expected = "8777"
+      if (section_name == "ft_at_api" || section_name == "ft_at_api_legacy") expected = "8000"
+      else if (section_name == "ft_at_mcp" || section_name == "ft_at_mcp_legacy") expected = "8765"
+      else if (section_name == "ft_at_mcp_kiwoom") expected = "8772"
+      else if (section_name == "ft_at_mcp_h3_crypto_paper") expected = "8776"
+      else if (section_name == "ft_at_mcp_h3_us_paper") expected = "8777"
     }
     if (port != expected) reject("bind", port, "frontend " section_name)
     next
@@ -63,13 +61,13 @@ if ! awk '
     sub(/^.*:/, "", port)
     allowed = ""
     if (section == "backend") {
-      if (section_name == "api_backend" || section_name == "at-api") allowed = " 18000 28000 "
-      else if (section_name == "mcp_backend" || section_name == "at-mcp") allowed = " 18765 28765 "
-      else if (section_name == "at-api-legacy") allowed = " 8001 8002 "
-      else if (section_name == "at-mcp-legacy") allowed = " 8766 8767 "
-      else if (section_name == "at-mcp-kiwoom") allowed = " 8772 "
-      else if (section_name == "at-mcp-h3-crypto-paper") allowed = " 8776 "
-      else if (section_name == "at-mcp-h3-us-paper") allowed = " 8777 "
+      if (section_name == "bk_at_api") allowed = " 18000 28000 "
+      else if (section_name == "bk_at_mcp") allowed = " 18765 28765 "
+      else if (section_name == "bk_at_api_legacy") allowed = " 8001 8002 "
+      else if (section_name == "bk_at_mcp_legacy") allowed = " 8766 8767 "
+      else if (section_name == "bk_at_mcp_kiwoom") allowed = " 8772 "
+      else if (section_name == "bk_at_mcp_h3_crypto_paper") allowed = " 8776 "
+      else if (section_name == "bk_at_mcp_h3_us_paper") allowed = " 8777 "
     }
     if (allowed !~ (" " port " ")) reject("server", port, "backend " section_name)
   }
