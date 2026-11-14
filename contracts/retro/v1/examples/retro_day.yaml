@@ -9,12 +9,14 @@ response:
   as_of: '2026-01-03T00:00:00Z'
   data_as_of: '2026-01-02T00:00:00Z'
   timezone: UTC
-  total: 2
+  total: 3
   truncated: false
   limit: 100
   cursor: null
   next_cursor: null
-  unknowns: []
+  unknowns:
+  - field: data.2.reason
+    reason: not_applicable
   data:
   - symbol: SYN001
     stage: order
@@ -40,3 +42,19 @@ response:
     currency: XSY
     unit: shares
     basis: unknown
+    link_reason: ambiguous_attempts
+  - symbol: SYN003
+    stage: order
+    event_at: '2026-01-02T00:00:00Z'
+    event_ref: ref_synthetic_3
+    linked_ref: ref_synthetic_rung_3
+    status: filled
+    reason: null
+    quantity: '1'
+    price: '12.34'
+    currency: XSY
+    unit: shares
+    basis: broker
+    link_basis: recorded
+    decision_ref: ref_synthetic_decision_3
+    decision_link_basis: recorded

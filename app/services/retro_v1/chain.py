@@ -8,10 +8,20 @@ in-memory objects. Canonical rules are reused, not re-implemented:
   re-check, then ``supersede_provisional`` (ROB-1379) for websocket duplicates;
 * lots: ``kis_lots.fifo_position`` (latest-seed FIFO over authoritative rows).
 
-``linked_ref`` always points UPSTREAM to the event the row descends from. The
-candidate→proposal link is not stored anywhere, so it is an inference (same
-symbol, latest candidate recorded at or before the proposal) and the rows carry
-``basis="inference"``.
+``linked_ref`` always points UPSTREAM to the event the row descends from. Rows
+say how it was made in ``link_basis`` (``recorded`` = an exact stored key,
+``inference`` = a heuristic) and, for proposal, rung and order rows, which
+decision they descend from in ``decision_ref`` (hk 4188, design #4154 §3):
+
+* candidate→proposal: the candidate reference stored on the proposal's decision
+  (``recorded``/the writer's labelled ``inference``). A proposal without a
+  decision keeps the old inference (same symbol, latest candidate recorded at
+  or before the proposal), capped to the proposal's KST day (Q20);
+* order→rung/decision: ``links.resolve_attempts`` (§3 row 4), then, with no live
+  attempt, the legacy rung match (idempotency key ``recorded``, correlation
+  only ``inference``).
+
+Optional link fields are left out of a row when they have no value.
 """
 
 from __future__ import annotations
@@ -55,6 +65,16 @@ from app.services.retro_v1.envelope import (
     make_ref,
     safe_code,
 )
+from app.services.retro_v1.links import (
+    LINK_BASES,
+    AttemptResolution,
+    OrderLinkEvidence,
+    decision_ref,
+    kst_day,
+    load_decisions,
+    load_order_links,
+    order_send_key,
+)
 from app.services.retro_v1.market import MarketInfo
 from app.services.trade_journal.negative_class import NEGATIVE_CLASS_BUCKET
 
@@ -90,6 +110,12 @@ class ChainData:
     send_times: dict[str, datetime | None] = field(default_factory=dict)
     orders: list[tuple[str, Any]] = field(default_factory=list)
     link_orders: list[tuple[str, Any]] = field(default_factory=list)
+    #: decision attempt/outcome rows of the window's orders (§3 row 4).
+    order_links: OrderLinkEvidence = field(default_factory=OrderLinkEvidence.empty)
+    #: decision rows (candidate reference columns) by ``decision_id``.
+    decisions: dict[Any, Any] = field(default_factory=dict)
+    #: pick rows named by a stored candidate reference (any date).
+    ref_candidates: list[Any] = field(default_factory=list)
     evidence_fills: list[Any] = field(default_factory=list)
     fills: list[Any] = field(default_factory=list)
     history: list[Any] = field(default_factory=list)
@@ -219,11 +245,13 @@ async def load_chain(
     lo: datetime,
     hi: datetime,
     include_lots: bool = True,
+    include_links: bool = True,
 ) -> ChainData:
     """Read every chain source for the window. ``symbols=None`` = whole market.
 
     ``include_lots=False`` skips the downstream reads (lot history and markout
-    bars) for callers that only count stages.
+    bars) for callers that only count stages. ``include_links=False`` skips the
+    decision link reads (§3) for callers that do not show links.
     """
     data = ChainData()
 
@@ -461,6 +489,127 @@ async def load_chain(
             for key, created in intents:
                 data.send_times[key] = None if key in data.send_times else created
 
+    if include_links:
+        data.order_links = await load_order_links(
+            session,
+            unknowns,
+            [k for k in (order_send_key(o) for _, o in data.orders) if k],
+        )
+        # An attempt can name an out-of-window proposal's rung; without
+        # loading it the stored (proposal_id, rung_index) binding could not
+        # produce a linked_ref.
+        bound_proposal_ids = {
+            attempt.proposal_id
+            for attempts in data.order_links.attempts.values()
+            for attempt in attempts
+            if attempt.proposal_id is not None and attempt.rung_index is not None
+        }
+        known_pids = {
+            p.proposal_id
+            for p in [*data.proposals, *data.link_proposals]
+            if getattr(p, "proposal_id", None) is not None
+        }
+        missing = sorted(bound_proposal_ids - known_pids, key=str)
+        if missing:
+
+            async def read_bound_proposals() -> list[Any]:
+                stmt = (
+                    select(OrderProposal)
+                    .where(
+                        OrderProposal.proposal_id.in_(missing),
+                        OrderProposal.market == market.instrument_type,
+                        OrderProposal.account_mode.in_(LIVE_PROPOSAL_ACCOUNT_MODES),
+                    )
+                    .order_by(OrderProposal.id)
+                    .limit(MAX_SOURCE_ROWS)
+                )
+                return list((await session.execute(stmt)).scalars().all())
+
+            bound_proposals, bound_ok = await guarded(
+                session,
+                unknowns,
+                "source.link_bound_proposals",
+                read_bound_proposals,
+                [],
+            )
+            track("link_bound_proposals", bound_proposals, bound_ok, MAX_SOURCE_ROWS)
+            new_pks = {
+                p.id
+                for p in bound_proposals
+                if p.id not in {q.id for q in [*data.proposals, *data.link_proposals]}
+            }
+            if new_pks:
+
+                async def read_bound_rungs() -> list[Any]:
+                    stmt = (
+                        select(OrderProposalRung)
+                        .where(OrderProposalRung.proposal_pk.in_(new_pks))
+                        .order_by(
+                            OrderProposalRung.proposal_pk,
+                            OrderProposalRung.rung_index,
+                        )
+                        .limit(MAX_SOURCE_ROWS * 4)
+                    )
+                    return list((await session.execute(stmt)).scalars().all())
+
+                bound_rungs, bound_rungs_ok = await guarded(
+                    session,
+                    unknowns,
+                    "source.link_bound_rungs",
+                    read_bound_rungs,
+                    [],
+                )
+                track(
+                    "link_bound_rungs",
+                    bound_rungs,
+                    bound_rungs_ok,
+                    MAX_SOURCE_ROWS * 4,
+                )
+                seen_rungs = {r.id for r in [*data.rungs, *data.link_rungs]}
+                seen_proposals = {p.id for p in [*data.proposals, *data.link_proposals]}
+                data.link_proposals += [
+                    p for p in bound_proposals if p.id not in seen_proposals
+                ]
+                data.link_rungs += [r for r in bound_rungs if r.id not in seen_rungs]
+        # Only the window's proposals show a candidate link; an order's decision
+        # comes from the attempt rows or the rung's proposal column.
+        decision_ids = [
+            p.decision_id
+            for p in data.proposals
+            if getattr(p, "decision_id", None) is not None
+        ]
+        data.decisions = await load_decisions(session, unknowns, decision_ids)
+        call_ids = sorted(
+            {
+                d.candidate_call_id
+                for d in data.decisions.values()
+                if d.candidate_call_id is not None
+            },
+            key=str,
+        )
+        if call_ids:
+
+            async def read_ref_candidates() -> list[Any]:
+                stmt = (
+                    select(ScreenerPickLog)
+                    .where(ScreenerPickLog.market == market.key)
+                    .where(ScreenerPickLog.call_id.in_(call_ids))
+                    .order_by(ScreenerPickLog.recorded_at, ScreenerPickLog.id)
+                    .limit(MAX_SOURCE_ROWS)
+                )
+                return list((await session.execute(stmt)).scalars().all())
+
+            found_picks, picks_ok = await guarded(
+                session, unknowns, "source.ref_candidates", read_ref_candidates, []
+            )
+            if not picks_ok:
+                data.incomplete.add("ref_candidates")
+            elif len(found_picks) >= MAX_SOURCE_ROWS:
+                data.incomplete.add("ref_candidates")
+                unknowns.note("source.ref_candidates", "incomplete_evidence")
+            wanted = set(call_ids)
+            data.ref_candidates = [c for c in found_picks if c.call_id in wanted]
+
     fills, ok = await guarded(session, unknowns, "source.fills", read_fills, [])
     track("fills", fills, ok, MAX_SOURCE_ROWS)
     if ok:
@@ -507,6 +656,29 @@ async def load_chain(
 # --------------------------------------------------------------------------
 # pure row builders
 # --------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class RowLinks:
+    """The optional link fields of a chain row (hk 4188).
+
+    ``link_basis`` says how ``linked_ref`` was made; ``decision_ref`` is the
+    decision the row descends from and ``decision_link_basis`` how that was
+    made; ``link_reason`` is a closed code for a missing or weakened link.
+    """
+
+    link_basis: str | None = None
+    decision_ref: str | None = None
+    decision_link_basis: str | None = None
+    link_reason: str | None = None
+
+    def fields(self) -> dict[str, str | None]:
+        return {
+            "link_basis": self.link_basis,
+            "decision_ref": self.decision_ref,
+            "decision_link_basis": self.decision_link_basis,
+            "link_reason": self.link_reason,
+        }
+
+
 def _row(
     *,
     symbol: str,
@@ -522,6 +694,7 @@ def _row(
     currency: str | None = None,
     basis: str = "inference",
     hints: dict[str, str] | None = None,
+    links: RowLinks | None = None,
 ) -> Row:
     values = {
         "symbol": symbol,
@@ -537,6 +710,10 @@ def _row(
         "unit": market.quantity_unit,
         "basis": basis,
     }
+    if links is not None:
+        # Optional fields: present only with a value, so a row without link
+        # evidence is exactly the pre-hk-4188 row.
+        values.update({k: v for k, v in links.fields().items() if v is not None})
     return values, dict(hints or {})
 
 
@@ -588,14 +765,64 @@ def candidate_rows(
     return out
 
 
-def _match_candidate(proposal: Any, candidates: list[Any]) -> Any | None:
+def _legacy_candidate(
+    proposal: Any, candidates: list[Any]
+) -> tuple[Any | None, str | None]:
+    """The old inference, capped to the proposal's KST day (design Q20).
+
+    A proposal without a stored decision gets the latest candidate of the same
+    symbol recorded at or before it, but only one of the same KST day: an older
+    candidate is not evidence of this proposal. Returns ``(candidate, reason)``.
+    """
     earlier = [
         c
         for c in candidates
         if c.symbol.upper() == proposal.symbol.upper()
         and c.recorded_at <= proposal.created_at
     ]
-    return max(earlier, key=lambda c: (c.recorded_at, c.id), default=None)
+    if not earlier:
+        return None, "no_candidate_ref"
+    day = kst_day(proposal.created_at)
+    same_day = [c for c in earlier if kst_day(c.recorded_at) == day]
+    if not same_day:
+        return None, "candidate_outside_trading_day"
+    return max(same_day, key=lambda c: (c.recorded_at, c.id)), None
+
+
+def _candidate_link(
+    proposal: Any, data: ChainData
+) -> tuple[Any | None, str | None, str | None]:
+    """``(candidate pick row, link basis, reason)`` of a proposal (§3 row 1).
+
+    With a stored decision the candidate reference on it is the answer, labelled
+    by the writer (``recorded`` from the session, ``inference`` from the
+    server's same-day augmentation); the reader never infers on top of it.
+    Without one, the capped legacy inference applies.
+    """
+    decision_id = getattr(proposal, "decision_id", None)
+    if decision_id is None:
+        candidate, reason = _legacy_candidate(proposal, data.candidates)
+        return candidate, "inference" if candidate else None, reason
+    decision = data.decisions.get(decision_id)
+    if decision is None:
+        return None, None, "candidate_ref_unresolved"
+    if decision.candidate_call_id is None:
+        return None, None, "no_candidate_ref"
+    if "ref_candidates" in data.incomplete:
+        # A failed or capped pick read can drop the writer's recorded pick,
+        # so a surviving row is not evidence of which pick was meant.
+        return None, None, "candidate_ref_unresolved"
+    symbol = (decision.candidate_symbol or "").upper()
+    named = [
+        c
+        for c in [*data.candidates, *data.ref_candidates]
+        if c.call_id == decision.candidate_call_id and c.symbol.upper() == symbol
+    ]
+    if not named or decision.candidate_link_basis not in LINK_BASES:
+        return None, None, "candidate_ref_unresolved"
+    # Same pick the writer chose (latest row of the call and symbol).
+    pick = max(named, key=lambda c: (c.recorded_at, c.id))
+    return pick, decision.candidate_link_basis, None
 
 
 def proposal_rung_rows(
@@ -608,7 +835,7 @@ def proposal_rung_rows(
         rungs_by_proposal[rung.proposal_pk].append(rung)
     for p in data.proposals:
         rungs = rungs_by_proposal.get(p.id, [])
-        candidate = _match_candidate(p, data.candidates)
+        candidate, candidate_basis, candidate_reason = _candidate_link(p, data)
         quantity = (
             sum((Decimal(str(r.quantity)) for r in rungs), Decimal(0))
             if rungs
@@ -632,6 +859,16 @@ def proposal_rung_rows(
                     price=None,
                     market=market,
                     hints={"price": "not_applicable"},
+                    links=RowLinks(
+                        link_basis=candidate_basis,
+                        decision_ref=decision_ref(p.decision_id)
+                        if getattr(p, "decision_id", None) is not None
+                        else None,
+                        decision_link_basis="recorded"
+                        if getattr(p, "decision_id", None) is not None
+                        else None,
+                        link_reason=candidate_reason,
+                    ),
                 ),
             )
         )
@@ -655,6 +892,15 @@ def proposal_rung_rows(
                         price=limit_price,
                         market=market,
                         hints=price_hint,
+                        links=RowLinks(
+                            link_basis="recorded",
+                            decision_ref=decision_ref(p.decision_id)
+                            if getattr(p, "decision_id", None) is not None
+                            else None,
+                            decision_link_basis="recorded"
+                            if getattr(p, "decision_id", None) is not None
+                            else None,
+                        ),
                     ),
                 )
             )
@@ -707,6 +953,54 @@ def _order_identity(order: Any, market: MarketInfo) -> OrderIdentity | None:
     )
 
 
+def _order_link(
+    resolution: AttemptResolution,
+    legacy: tuple[Any, bool] | None,
+    rungs_by_binding: dict[tuple[Any, int], Any],
+    proposals: dict[Any, Any],
+) -> tuple[Any | None, RowLinks]:
+    """The rung and link fields of one order (§3 row 4).
+
+    The attempt rows decide when a live attempt exists: two decisions are
+    ``ambiguous_attempts`` (no link at all, the legacy match included, since the
+    key is shared), one decision with a ``sent`` outcome is ``recorded``, one
+    without is ``inference`` (``attempt_unconfirmed``). With no live attempt the
+    legacy rule applies: the rung's idempotency key equal to the ledger key is
+    ``recorded``; a correlation-only match is ``inference``. The decision of a
+    legacy match is the one stored on its proposal.
+    """
+    if resolution.kind == "unavailable":
+        # The attempt read failed or was cut off: neither the attempts nor the
+        # legacy rung match (which they could contradict) may be used.
+        return None, RowLinks(link_reason="attempts_unavailable")
+    if resolution.kind == "ambiguous":
+        return None, RowLinks(link_reason="ambiguous_attempts")
+    if resolution.kind in ("recorded", "unconfirmed"):
+        basis = "recorded" if resolution.kind == "recorded" else "inference"
+        bound = (
+            rungs_by_binding.get((resolution.proposal_id, resolution.rung_index))
+            if resolution.proposal_id is not None
+            else None
+        )
+        return bound, RowLinks(
+            link_basis=basis if bound is not None else None,
+            decision_ref=decision_ref(resolution.decision_id),
+            decision_link_basis=basis,
+            link_reason="attempt_unconfirmed" if basis == "inference" else None,
+        )
+    if legacy is None:
+        return None, RowLinks()
+    rung, same_key = legacy
+    basis = "recorded" if same_key else "inference"
+    owner = proposals.get(rung.proposal_pk)
+    stored = getattr(owner, "decision_id", None) if owner is not None else None
+    return rung, RowLinks(
+        link_basis=basis,
+        decision_ref=decision_ref(stored) if stored is not None else None,
+        decision_link_basis=basis if stored is not None else None,
+    )
+
+
 def order_rows(
     data: ChainData, market: MarketInfo
 ) -> tuple[list[tuple[datetime | None, Row]], dict[Any, str | None]]:
@@ -719,6 +1013,11 @@ def order_rows(
         if fill.source in AUTHORITATIVE_SOURCES:
             fill_key = (order_identity(fill), _day(fill.broker, market, fill.filled_at))
             totals[fill_key] += Decimal(str(fill.filled_qty))
+    rungs_by_binding: dict[tuple[Any, int], Any] = {}
+    for rung in [*data.rungs, *data.link_rungs]:
+        owner = proposals.get(rung.proposal_pk)
+        if owner is not None and getattr(owner, "proposal_id", None) is not None:
+            rungs_by_binding[(owner.proposal_id, rung.rung_index)] = rung
     rungs_by_identity: dict[Any, list[Any]] = defaultdict(list)
     for rung in [*data.rungs, *data.link_rungs]:
         proposal = proposals.get(rung.proposal_pk)
@@ -742,23 +1041,24 @@ def order_rows(
             refs[key] = None if key in refs else ref
         if (source, order.id) in linked_ids:
             continue
-        matches = []
-        for rung in rungs_by_identity.get(key, []):
+        matches: list[tuple[Any, bool]] = []
+        for candidate in rungs_by_identity.get(key, []):
             same_key = bool(
-                getattr(rung, "idempotency_key", None)
-                and rung.idempotency_key
-                == (
-                    getattr(order, "idempotency_key", None)
-                    or getattr(order, "client_order_id", None)
-                )
+                getattr(candidate, "idempotency_key", None)
+                and candidate.idempotency_key == order_send_key(order)
             )
             same_correlation = bool(
-                getattr(rung, "correlation_id", None)
-                and rung.correlation_id == getattr(order, "correlation_id", None)
+                getattr(candidate, "correlation_id", None)
+                and candidate.correlation_id == getattr(order, "correlation_id", None)
             )
             if same_key or same_correlation:
-                matches.append(rung)
-        rung = matches[0] if len(matches) == 1 else None
+                matches.append((candidate, same_key))
+        rung, links = _order_link(
+            data.order_links.resolve(order),
+            matches[0] if len(matches) == 1 else None,
+            rungs_by_binding,
+            proposals,
+        )
         total = totals.get(key, Decimal(0))
         quantity = Decimal(str(order.quantity)) if order.quantity is not None else None
         terminal = (
@@ -811,6 +1111,7 @@ def order_rows(
                     market=market,
                     currency=order.currency,
                     basis=basis,
+                    links=links,
                 ),
             )
         )
@@ -845,6 +1146,8 @@ def fill_rows(
                     # Only the broker's own order row (reconciler) is broker
                     # evidence; a websocket tap or manual import is not.
                     basis="broker" if f.source == "reconciler" else "inference",
+                    # §3 row 5: the exact order identity (when it matched).
+                    links=RowLinks(link_basis="recorded" if order_ref else None),
                 ),
             )
         )
@@ -909,6 +1212,8 @@ def markout_rows(
                     price=horizon.close if horizon else None,
                     market=market,
                     currency=f.currency,
+                    # A markout is computed from its own fill (same id).
+                    links=RowLinks(link_basis="recorded"),
                 ),
             )
         )
@@ -977,6 +1282,8 @@ def lot_rows(data: ChainData, market: MarketInfo) -> list[tuple[datetime | None,
                     market=market,
                     currency=last_fill.currency,
                     hints={"price": "not_applicable"} if status == "flat" else {},
+                    # §3 row 6: the position is a FIFO reading over many fills.
+                    links=RowLinks(link_basis="inference"),
                 ),
             )
         )

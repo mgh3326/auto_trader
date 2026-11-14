@@ -1,0 +1,346 @@
+{
+ "retro_day": {
+  "data": [
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T00:30:00Z",
+    "event_ref": "candidate-a28155e774305a6ce3ad",
+    "linked_ref": null,
+    "price": "70000",
+    "quantity": null,
+    "reason": "round_robin",
+    "stage": "candidate",
+    "status": "admitted",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T00:40:00Z",
+    "event_ref": "forecast-da26593ee126580ee399",
+    "linked_ref": null,
+    "price": null,
+    "quantity": null,
+    "reason": "negative_class_forecast",
+    "stage": "candidate",
+    "status": "deferred_no_action",
+    "symbol": "000660",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T01:00:00Z",
+    "event_ref": "proposal-d06fe0b4d158980ef968",
+    "linked_ref": "candidate-a28155e774305a6ce3ad",
+    "price": null,
+    "quantity": "3",
+    "reason": null,
+    "stage": "proposal",
+    "status": "filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T01:05:00Z",
+    "event_ref": "rung-ba6c594871beec615591",
+    "linked_ref": "proposal-d06fe0b4d158980ef968",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "rung",
+    "status": "filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "broker",
+    "currency": "KRW",
+    "event_at": "2026-01-05T02:00:00Z",
+    "event_ref": "order-5fd4da56e4a298b34f10",
+    "linked_ref": "rung-ba6c594871beec615591",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "order",
+    "status": "filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "broker",
+    "currency": "KRW",
+    "event_at": "2026-01-05T02:00:00Z",
+    "event_ref": "fill-b3a67743e0aaf610ec07",
+    "linked_ref": "order-5fd4da56e4a298b34f10",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "fill",
+    "status": "buy_filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T02:00:00Z",
+    "event_ref": "lot-f7cc73876bf614153d2b",
+    "linked_ref": "fill-b3a67743e0aaf610ec07",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "lot",
+    "status": "open",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-25T00:00:00Z",
+    "event_ref": "markout-d96d714b77fb42359b17",
+    "linked_ref": "fill-b3a67743e0aaf610ec07",
+    "price": "72019",
+    "quantity": "3",
+    "reason": null,
+    "stage": "markout",
+    "status": "markout_20_sessions",
+    "symbol": "005930",
+    "unit": "shares"
+   }
+  ],
+  "total": 8,
+  "truncated": false,
+  "unknowns": [
+   {
+    "field": "data.2.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.2.price",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.3.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.4.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.5.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.6.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.7.reason",
+    "reason": "not_applicable"
+   }
+  ]
+ },
+ "retro_symbol": {
+  "data": [
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T00:30:00Z",
+    "event_ref": "candidate-a28155e774305a6ce3ad",
+    "linked_ref": null,
+    "price": "70000",
+    "quantity": null,
+    "reason": "round_robin",
+    "stage": "candidate",
+    "status": "admitted",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T00:40:00Z",
+    "event_ref": "forecast-da26593ee126580ee399",
+    "linked_ref": null,
+    "price": null,
+    "quantity": null,
+    "reason": "negative_class_forecast",
+    "stage": "candidate",
+    "status": "deferred_no_action",
+    "symbol": "000660",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T01:00:00Z",
+    "event_ref": "proposal-d06fe0b4d158980ef968",
+    "linked_ref": "candidate-a28155e774305a6ce3ad",
+    "price": null,
+    "quantity": "3",
+    "reason": null,
+    "stage": "proposal",
+    "status": "filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T01:05:00Z",
+    "event_ref": "rung-ba6c594871beec615591",
+    "linked_ref": "proposal-d06fe0b4d158980ef968",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "rung",
+    "status": "filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "broker",
+    "currency": "KRW",
+    "event_at": "2026-01-05T02:00:00Z",
+    "event_ref": "order-5fd4da56e4a298b34f10",
+    "linked_ref": "rung-ba6c594871beec615591",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "order",
+    "status": "filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "broker",
+    "currency": "KRW",
+    "event_at": "2026-01-05T02:00:00Z",
+    "event_ref": "fill-b3a67743e0aaf610ec07",
+    "linked_ref": "order-5fd4da56e4a298b34f10",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "fill",
+    "status": "buy_filled",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-05T02:00:00Z",
+    "event_ref": "lot-f7cc73876bf614153d2b",
+    "linked_ref": "fill-b3a67743e0aaf610ec07",
+    "price": "70000",
+    "quantity": "3",
+    "reason": null,
+    "stage": "lot",
+    "status": "open",
+    "symbol": "005930",
+    "unit": "shares"
+   },
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "event_at": "2026-01-25T00:00:00Z",
+    "event_ref": "markout-d96d714b77fb42359b17",
+    "linked_ref": "fill-b3a67743e0aaf610ec07",
+    "price": "72019",
+    "quantity": "3",
+    "reason": null,
+    "stage": "markout",
+    "status": "markout_20_sessions",
+    "symbol": "005930",
+    "unit": "shares"
+   }
+  ],
+  "total": 8,
+  "truncated": false,
+  "unknowns": [
+   {
+    "field": "data.2.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.2.price",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.3.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.4.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.5.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.6.reason",
+    "reason": "not_applicable"
+   },
+   {
+    "field": "data.7.reason",
+    "reason": "not_applicable"
+   }
+  ]
+ },
+ "retro_trades": {
+  "data": [
+   {
+    "basis": "inference",
+    "currency": "KRW",
+    "entry_at": "2026-01-02T00:00:00Z",
+    "entry_price": "70000",
+    "exit_at": "2026-01-05T06:00:00Z",
+    "exit_price": "72000",
+    "exit_reason": null,
+    "market": "kr",
+    "quantity": "3",
+    "realized_amount": "6000",
+    "realized_currency": "KRW",
+    "return_rate": "2.8571",
+    "reviews": [
+     {
+      "created_at": "2026-01-05T06:00:00Z",
+      "fill_evidence_available": true,
+      "lesson": "synthetic lesson",
+      "next_strategy": "synthetic next",
+      "outcome": "filled",
+      "pnl_class": "recorded",
+      "pnl_status": "recorded",
+      "rationale": "synthetic rationale",
+      "realized_pnl": "6000",
+      "realized_pnl_currency": "KRW",
+      "result_summary": "synthetic result",
+      "review_ref": "review-68ed98354fc0bca9d59e",
+      "root_cause_class": "none",
+      "trigger_type": "take_profit"
+     }
+    ],
+    "side": "buy",
+    "strategy": "S_ALPHA",
+    "symbol": "005930",
+    "trade_ref": "trade-f434c7fdb3dad2390e37"
+   }
+  ],
+  "total": 1,
+  "truncated": false,
+  "unknowns": [
+   {
+    "field": "data.0.exit_reason",
+    "reason": "missing_data"
+   }
+  ]
+ }
+}

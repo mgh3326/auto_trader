@@ -46,6 +46,21 @@ response:
     realized_currency: KRW
     exit_reason: null
     basis: inference
+    decision_ref: decision-2cdcff0b8bcfc0576887
+    decision_link_basis: recorded
+    fill_time_basis: broker_order_time
+    costs:
+      recorded:
+        fee: '12'
+        tax: '3'
+        currency: KRW
+        fee_includes_tax: false
+      estimated:
+        amount: '1.05'
+        rate_source: trading_policy.order_proposals.auto_approve.round_trip_cost_bps
+        policy_version: synthetic-1
+        policy_content_hash: abc123def456
+        basis: inference
     reviews:
     - review_ref: review-8fbcaa34bf0336be8716
       outcome: filled
