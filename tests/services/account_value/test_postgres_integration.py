@@ -122,3 +122,103 @@ async def test_flow_retry_conflict_distinct_equal_and_reversal(db_session):
     )
     assert len(rows) == 3
     assert sum(row.amount for row in rows) == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_flow_confirmation_is_immutable_and_downgrade_refuses(db_session):
+    from sqlalchemy import text
+
+    from app.services.account_value.completeness import record_confirmation
+
+    account = "upbit:upbit:" + uuid4().hex * 2
+    await record_confirmation(
+        db_session,
+        account,
+        date(2026, 1, 1),
+        date(2026, 1, 2),
+        "operator",
+        "checked",
+        commit=True,
+    )
+    for statement in (
+        "UPDATE review.account_flow_confirmations SET reason = 'changed'",
+        "DELETE FROM review.account_flow_confirmations",
+        "TRUNCATE review.account_flow_confirmations",
+    ):
+        with pytest.raises(DBAPIError, match="account_value_immutable"):
+            async with db_session.begin_nested():
+                await db_session.execute(text(statement))
+    spec = importlib.util.spec_from_file_location(
+        "flow_confirm_migration",
+        Path("alembic/versions/20261113_hk4282_flow_confirmations.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def downgrade(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            module.downgrade()
+
+    with pytest.raises(DBAPIError, match="account_flow_confirmation_rows_retained"):
+        async with db_session.begin_nested():
+            connection = await db_session.connection()
+            await connection.run_sync(downgrade)
+
+
+@pytest.mark.asyncio
+async def test_confirmation_waits_for_in_flight_flow_commit(db_session):
+    """The two CLI writers run on independent sessions: a confirmation must
+    block until a same-account flow insert commits, so it cannot appear to
+    cover a flow it never saw."""
+    import asyncio
+
+    from sqlalchemy import text
+
+    from app.core.db import AsyncSessionLocal
+    from app.services.account_value.completeness import record_confirmation
+
+    account = "upbit:upbit:" + uuid4().hex * 2
+    day = date(2026, 1, 4)
+    async with AsyncSessionLocal() as writer:
+        await writer.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:account))"),
+            {"account": account},
+        )
+        await writer.execute(
+            text(
+                "INSERT INTO review.account_external_flows "
+                "(flow_id, account, market, currency, amount, day, created_at) "
+                "VALUES (:flow_id, :account, 'account', 'KRW', 10, :day, "
+                "clock_timestamp())"
+            ),
+            {"flow_id": uuid4(), "account": account, "day": day},
+        )
+
+        async def confirm():
+            async with AsyncSessionLocal() as confirmer:
+                return await record_confirmation(
+                    confirmer,
+                    account,
+                    day,
+                    day,
+                    "operator",
+                    "checked",
+                    commit=True,
+                )
+
+        task = asyncio.create_task(confirm())
+        for _ in range(100):
+            await asyncio.sleep(0.1)
+            if task.done():
+                break
+            waiting = await db_session.scalar(
+                text(
+                    "SELECT count(*) FROM pg_locks "
+                    "WHERE locktype = 'advisory' AND NOT granted"
+                )
+            )
+            if waiting:
+                break
+        assert not task.done()
+        await writer.commit()
+        assert await asyncio.wait_for(task, 15) == "inserted"

@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+from app.services.account_value.completeness import record_confirmation
 from app.services.account_value.flows import ExternalFlow, record_flow
 from app.services.account_value.readers import CompleteBrokerReader
 from app.services.account_value.snapshot import capture
@@ -19,6 +20,11 @@ def parser():
     result.add_argument("--account", choices=("kis", "upbit", "toss"))
     result.add_argument(
         "--flow", nargs=4, metavar=("ACCOUNT", "CURRENCY", "AMOUNT", "DATE")
+    )
+    result.add_argument(
+        "--confirm-flows",
+        nargs=5,
+        metavar=("ACCOUNT", "START", "END", "CONFIRMED_BY", "REASON"),
     )
     result.add_argument("--flow-id", type=UUID, help="재시도에 재사용할 흐름 UUID")
     result.add_argument(
@@ -35,6 +41,32 @@ def session_factory():
 
 async def run(args):
     async with session_factory() as session:
+        if getattr(args, "confirm_flows", None):
+            account, start, end, confirmed_by, reason = args.confirm_flows
+            if args.flow or args.account:
+                raise ValueError("하나의 작업만 지정해야 합니다")
+            status = await record_confirmation(
+                session,
+                account,
+                date.fromisoformat(start),
+                date.fromisoformat(end),
+                confirmed_by,
+                reason,
+                commit=args.commit,
+            )
+            print(
+                json.dumps(
+                    {
+                        "mode": "commit" if args.commit else "preview",
+                        "account": account.rsplit(":", 1)[0] + ":***",
+                        "start": start,
+                        "end": end,
+                        "write_status": status,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
         if args.flow:
             account, currency, amount, day = args.flow
             market = "account"
@@ -53,7 +85,10 @@ async def run(args):
                 json.dumps(
                     {
                         "mode": "commit" if args.commit else "preview",
-                        "flow": args.flow,
+                        "flow": [
+                            args.flow[0].rsplit(":", 1)[0] + ":***",
+                            *args.flow[1:],
+                        ],
                         "flow_id": str(args.flow_id),
                         "write_status": status,
                     },

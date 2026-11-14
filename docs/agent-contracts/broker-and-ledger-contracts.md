@@ -967,9 +967,7 @@ basis를 쓰며 예산을 실제 현금으로 간주하지 않는다. 스케줄�
 retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_scoreboard.py`의
 `read_retro_scoreboard(session, **params)`가 위 기간 성과 로더를 `RetroScoreboardResponse`
 (`contracts/retro/v1/openapi.yaml`)로 투영한다. `flows_complete`는 서버 측 사실일 뿐이며
-인자·헤더·요청 필드로 선언할 수 없다. 모듈 상수 `SERVER_FLOWS_COMPLETE=False`가 로더에
-항상 전달되고(지속적인 서버 측 확인 기록은 아직 없다), 계좌 행은 `flows_not_confirmed` 사유와
-함께 미측정이며 행의 `flows_complete`는 그 값을 보고한다. 계좌·sleeve 식별은 불투명한
+인자·헤더·요청 필드로 선언할 수 없다. 운영자는 `account_value_snapshot.py --confirm-flows ACCOUNT START END CONFIRMED_BY REASON`으로 정확한 KST 날짜 범위를 미리 보고 `--commit`으로 추가 전용 확인을 기록한다. 날짜마다 해당 날짜를 덮는 최신 확인이 있어야 하고, 그 확인 뒤 생성된 해당 날짜의 흐름이 있으면 재확인 전까지 미측정이다. 확인이 전체 기간을 덮지 못하거나 오래되면 `flows_not_confirmed`다. 확인은 이후 흐름 입력을 막지 않는다. 수동 보고서의 `--flows-complete`는 기존처럼 조회별 운영자 확인이다. 계좌·sleeve 식별은 불투명한
 `ref_` 키드 다이제스트(서버 `SECRET_KEY` HMAC)뿐이고 금액·수익률은 정확한 decimal 문자열이다. `REPEATABLE READ READ ONLY`
 트랜잭션과 문장 timeout 안에서만 읽으며 스냅샷·흐름 writer를 import하거나 호출하지 않는다.
 아직 HTTP route는 없다(hk 3818). 운영자 CLI 출력은 바뀌지 않았다.

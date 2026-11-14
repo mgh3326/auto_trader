@@ -123,7 +123,9 @@ def sleeve_row(
     )
 
 
-async def load_weekly_report(session, start, end, *, flows_complete=False):
+async def load_weekly_report(
+    session, start, end, *, flows_complete=False, confirmations=None
+):
     snapshots = (
         (
             await session.execute(
@@ -185,6 +187,16 @@ async def load_weekly_report(session, start, end, *, flows_complete=False):
             flow for flow in flows if flow.account == account and flow.market == market
         ]
         if market == "account":
+            complete = flows_complete
+            if confirmations is not None:
+                from app.services.account_value.completeness import covered
+
+                complete = covered(
+                    start,
+                    end,
+                    [c for c in confirmations if c.account == account],
+                    matching,
+                )
             row = account_row(
                 account,
                 market,
@@ -193,8 +205,9 @@ async def load_weekly_report(session, start, end, *, flows_complete=False):
                 observations,
                 matching,
                 benchmarks[market],
-                flows_complete=flows_complete,
+                flows_complete=complete,
             )
+            row = replace(row, flows_complete=complete)
             if (account, market) in broken:
                 row = replace(
                     row,

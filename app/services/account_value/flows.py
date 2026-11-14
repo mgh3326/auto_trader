@@ -5,11 +5,12 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account_value import AccountExternalFlow
+from app.services.account_value.completeness import acquire_account_lock
 from app.services.account_value.identity import valid_account_market
 
 
@@ -37,6 +38,7 @@ async def record_flow(
         raise ValueError("invalid currency, flow amount or flow ID")
     if not commit:
         return "preview"
+    await acquire_account_lock(session, flow.account)
     values = {
         "flow_id": flow.flow_id,
         "account": flow.account,
@@ -47,7 +49,7 @@ async def record_flow(
     }
     statement = (
         insert(AccountExternalFlow)
-        .values(**values)
+        .values(**values, created_at=func.clock_timestamp())
         .on_conflict_do_nothing(index_elements=["flow_id"])
         .returning(AccountExternalFlow.id)
     )
