@@ -52,3 +52,23 @@ def test_admits_futures_um_kline_archive_files(url: str) -> None:
 def test_refuses_everything_outside_the_kline_archive(url: str) -> None:
     with pytest.raises(DisallowedUrlError):
         check_url(url)
+
+
+@pytest.mark.unit
+def test_truncated_body_is_retried_not_fatal() -> None:
+    # http.client.IncompleteRead is an HTTPException, not an OSError, on 3.13.
+    import http.client
+
+    from research.crypto_trend.http import FetchResponse, with_retries
+
+    calls: list[str] = []
+
+    def flaky(url: str) -> FetchResponse:
+        calls.append(url)
+        if len(calls) == 1:
+            raise http.client.IncompleteRead(b"partial")
+        return FetchResponse(200, b"complete")
+
+    fetch = with_retries(flaky, attempts=3, base_delay=0.0)
+    assert fetch("https://data.binance.vision/x") == FetchResponse(200, b"complete")
+    assert len(calls) == 2

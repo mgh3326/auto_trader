@@ -9,6 +9,7 @@ credentials or auth headers are sent, and redirects are not followed.
 
 from __future__ import annotations
 
+import http.client
 import re
 import ssl
 import time
@@ -93,7 +94,7 @@ def with_retries(fetch: Fetch, *, attempts: int = 5, base_delay: float = 1.0) ->
             last = attempt == attempts - 1
             try:
                 resp = fetch(url)
-            except OSError:
+            except (OSError, http.client.HTTPException):
                 if last:
                     raise
             else:
