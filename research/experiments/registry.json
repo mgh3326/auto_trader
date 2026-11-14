@@ -146,6 +146,21 @@
       ],
       "k": 0,
       "test_looks": []
+    },
+    {
+      "id": "ROB-3796",
+      "title": "Crypto time-series momentum (basket 4) on the Binance USD-M futures demo, long and short, against cash and a BTC long-only control",
+      "tracker": "hk 3796",
+      "markets": [
+        "crypto"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-15",
+      "manifest": "research/experiments/manifests/rob-3796.json",
+      "manifest_sha256": "889a4f72e1eab352f8f638f7260fd3701caeb024eadfcf07cc71edac85bb0b0f",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }

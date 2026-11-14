@@ -166,9 +166,11 @@ class TestMcpDeadlineExceeded:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_upbit_ws_early_reconnect_attempts_warn_and_last_attempt_errors(
+async def test_upbit_ws_reconnect_attempts_warn_including_exhaustion(
     caplog,
 ):
+    # hk 4700: exhausting one inner retry cycle is WARNING. The RuntimeError still
+    # propagates to the supervisor, which logs ERROR once per outage episode.
     client = UpbitMyOrderWebSocket()
     client.reconnect_delay = 0
     failure = RuntimeError("connect refused")
@@ -187,13 +189,12 @@ async def test_upbit_ws_early_reconnect_attempts_warn_and_last_attempt_errors(
 
     attempts = [r for r in caplog.records if "WebSocket 연결 실패" in r.getMessage()]
     assert len(attempts) == client.max_reconnect_attempts
-    early = attempts[:-1]
+    assert all(r.levelno == logging.WARNING for r in attempts)
     last = attempts[-1]
-    assert all(r.levelno == logging.WARNING for r in early)
-    assert last.levelno == logging.ERROR
     assert f"시도 {client.max_reconnect_attempts}/{client.max_reconnect_attempts}" in (
         last.getMessage()
     )
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 # --- Size budget: long transactions are accepted, not too_large --------------
