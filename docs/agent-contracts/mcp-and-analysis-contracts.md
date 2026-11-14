@@ -337,7 +337,7 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 
 ### retro/v1 소비자 핀과 검증 게이트 (hk 3819)
 
-`retro/v1` 공급자 변경은 고정된 외부 소비자(`github.com/mgh3326/factortrail` 커밋 `4e111bf`)의 실제 Go 클라이언트 검증 게이트를 통과해야 한다.
+`retro/v1` 공급자 변경은 고정된 외부 소비자(`github.com/mgh3326/factortrail` 커밋 `a58d474`)의 실제 Go 클라이언트 검증 게이트를 통과해야 한다.
 - **소비자 고정**: `contracts/retro/v1/consumers.lock`이 지원 소비자 repo, 커밋 SHA, Go 버전, 대상 패키지를 정의한다.
 - **검증 하네스**: `tools/retro-consumer-check/main.go`가 기존 고정 소비자의 8개 엔드포인트의 envelope 스키마, decimal/int 정밀도, 계좌/주문 식별자 비노출(개인정보 보호), unknown/사유 규약, 인증 경계(401/403)를 실제 HTTP 호출로 검증한다.
 - **실행 러너 및 CI 게이트**: `scripts/ci/run_retro_consumer_gate.py`가 루프백 서버를 띄워 하네스를 실행하며, `classify_changes.py`가 retro 경로 변경 시 `retro-consumer-gate` CI 작업을 트리거한다. `aggregate_required.py`는 게이트 누락 시 fail-closed로 거부한다.
