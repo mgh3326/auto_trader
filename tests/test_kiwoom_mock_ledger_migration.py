@@ -41,6 +41,7 @@ ORDER_CHECKS = {
     "ck_kiwoom_mock_order_ledger_kr_limit_only",
     "ck_kiwoom_mock_order_ledger_status",
     "ck_kiwoom_mock_order_ledger_accepted_has_broker_order_id",
+    "ck_kiwoom_mock_order_ledger_original_required_for_correction",
 }
 SIGNAL_CHECKS = {
     "ck_kiwoom_mock_signal_ledger_account_mode",

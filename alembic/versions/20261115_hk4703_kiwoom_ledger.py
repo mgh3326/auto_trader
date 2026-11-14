@@ -248,6 +248,12 @@ def upgrade() -> None:
             "status <> 'accepted' OR broker_order_id IS NOT NULL",
             name=op.f("ck_kiwoom_mock_order_ledger_accepted_has_broker_order_id"),
         ),
+        # PostgreSQL unique indexes treat NULLs as distinct, so a correction
+        # without its original order id would bypass the open-operation index.
+        sa.CheckConstraint(
+            "operation_kind = 'place' OR original_order_id IS NOT NULL",
+            name=op.f("ck_kiwoom_mock_order_ledger_original_required_for_correction"),
+        ),
         schema=_SCHEMA,
     )
     op.create_index(

@@ -144,6 +144,10 @@ async def _expect_refused(
         ),
         ({"status": "done"}, ("ck_kiwoom_mock_order_ledger_status",)),
         (
+            {"operation_kind": "cancel", "original_order_id": None},
+            ("ck_kiwoom_mock_order_ledger_original_required_for_correction",),
+        ),
+        (
             {"status": "accepted", "broker_order_id": None},
             ("ck_kiwoom_mock_order_ledger_accepted_has_broker_order_id",),
         ),

@@ -920,6 +920,12 @@ class KiwoomMockOrderLedger(Base):
             "status <> 'accepted' OR broker_order_id IS NOT NULL",
             name="accepted_has_broker_order_id",
         ),
+        # NULLs are distinct in the unique index below, so a modify/cancel
+        # without its original order id must be refused here.
+        CheckConstraint(
+            "operation_kind = 'place' OR original_order_id IS NOT NULL",
+            name="original_required_for_correction",
+        ),
         Index("ix_kiwoom_mock_order_ledger_status", "status"),
         Index("ix_kiwoom_mock_order_ledger_market_symbol", "market", "symbol"),
         Index("ix_kiwoom_mock_order_ledger_report_item_uuid", "report_item_uuid"),
