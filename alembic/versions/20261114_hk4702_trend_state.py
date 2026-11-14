@@ -20,7 +20,7 @@ Downgrade refuses while either table holds rows: dropping them would lose the
 send fence and the uncertain-order evidence.
 
 Revision ID: 20261114_hk4702_trend_state
-Revises: 20261115_hk4617_flow_revoke
+Revises: 20261115_hk4703_kiwoom_ledger
 Create Date: 2026-11-14
 """
 
@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261114_hk4702_trend_state"
-down_revision: str | Sequence[str] | None = "20261115_hk4617_flow_revoke"
+down_revision: str | Sequence[str] | None = "20261115_hk4703_kiwoom_ledger"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

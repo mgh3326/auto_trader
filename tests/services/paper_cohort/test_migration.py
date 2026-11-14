@@ -223,6 +223,10 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Same for the kis_mock pre-submit signal ledger, added after this
             # boundary and already present in Base.metadata.
             await connection.execute(text("DROP TABLE review.kis_mock_signal_ledger"))
+            # hk 4703 Kiwoom mock ledgers are later than this boundary and are
+            # already in Base.metadata; drop them so the upgrade chain creates them.
+            for table in ("kiwoom_mock_signal_ledger", "kiwoom_mock_order_ledger"):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
             # ROB-1286's repricing claim table is likewise later than this
             # boundary and already in Base.metadata, so drop it and let the
             # migration create it.

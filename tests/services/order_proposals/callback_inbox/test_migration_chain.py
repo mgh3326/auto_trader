@@ -155,6 +155,10 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # order_proposals.sleeve_id column referencing them is dropped before).
     "review.strategy_sleeve_versions",
     "review.strategy_sleeves",
+    # hk 4703 Kiwoom mock ledgers are later than this boundary; neither table
+    # references the other, so their drop order is free.
+    "review.kiwoom_mock_signal_ledger",
+    "review.kiwoom_mock_order_ledger",
     # hk 4702 trend state tables are later than this boundary (intents first).
     "review.binance_trend_intents",
     "review.binance_trend_signals",

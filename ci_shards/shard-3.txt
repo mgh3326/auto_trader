@@ -444,6 +444,8 @@ tests/test_kis_websocket_mock_smoke.py
 tests/test_kiwoom_client_endpoint_guard.py
 tests/test_kiwoom_does_not_change_ohlcv_default.py
 tests/test_kiwoom_live_readonly_guard.py
+tests/test_kiwoom_mock_ledger_migration.py
+tests/test_kiwoom_mock_ledger_schema_db.py
 tests/test_kiwoom_mock_normalization.py
 tests/test_kiwoom_mock_preflight.py
 tests/test_kiwoom_mock_us_config.py
