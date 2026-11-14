@@ -199,6 +199,7 @@ tests/services/investment_stages/test_symbol_report_composition_wiring.py
 tests/services/kis_mock_runner/test_migration.py
 tests/services/kis_mock_runner/test_singleton.py
 tests/services/kis_websocket/test_approval_keys.py
+tests/services/kis_websocket/test_approval_keys_gatewayd.py
 tests/services/market_events/test_coverage_gate.py
 tests/services/mechanical_loss_cut/test_plans.py
 tests/services/mock_integration/test_kiwoom_coordination_adapter.py

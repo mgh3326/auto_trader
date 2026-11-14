@@ -3,6 +3,7 @@ import logging
 import random
 import time
 import uuid
+from typing import Final
 from urllib.parse import urlparse
 
 import httpx
@@ -10,8 +11,16 @@ import redis.asyncio as redis
 
 from app.core.config import settings, validate_kis_mock_config
 from app.services.brokers.token_issuance import (
+    GatewaydTokenProvider,
+    TokenIssuanceUnavailable,
     cache_only_refusal,
+    ensure_gatewayd_token,
     is_cache_only_token_issuance,
+    is_gatewayd_token_issuance,
+)
+from app.services.redis_token_manager import (
+    GATEWAYD_TOKEN_POLL_INTERVAL_SECONDS,
+    GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS,
 )
 
 from .constants import (
@@ -28,6 +37,13 @@ logger = logging.getLogger(__name__)
 
 # WebSocket approval keys are only issued for KIS environments.
 _SUPPORTED_ACCOUNT_MODES = ("kis_live", "kis_mock")
+
+# gatewayd provider per account mode. gatewayd publishes the approval key under
+# the same Redis cache key this module reads (internal/gatewayd/approval.go).
+_GATEWAYD_APPROVAL_PROVIDERS: Final[dict[str, GatewaydTokenProvider]] = {
+    "kis_live": "kis-live-approval",
+    "kis_mock": "kis-mock-approval",
+}
 
 
 class ApprovalKeyIssuanceUnavailable(RuntimeError):
@@ -169,6 +185,8 @@ async def get_approval_key(account_mode: str = "kis_live") -> str:
         return approval_key
 
     logger.info("KIS approval key cache miss: account_mode=%s", account_mode)
+    if is_gatewayd_token_issuance(settings):
+        return await _ensure_gatewayd_approval_key(account_mode)
     return await _issue_approval_key_single_flight(account_mode)
 
 
@@ -181,6 +199,9 @@ async def invalidate_and_reissue_approval_key(account_mode: str = "kis_live") ->
     owners wait and reuse the holder's fresh key instead of each hammering the
     approval endpoint. If the holder's reissue fails, the bad key is left cleared
     so contenders fail/back off rather than reusing a key KIS already rejected.
+    In ``gatewayd`` mode there is no Python-side lock or endpoint call: gatewayd
+    performs the forced re-issue (``?force=true``) and this process re-reads
+    the published Redis key.
 
     Returns:
         str: the freshly issued (or holder-published) approval key.
@@ -193,6 +214,8 @@ async def invalidate_and_reissue_approval_key(account_mode: str = "kis_live") ->
     logger.info(
         "KIS approval key controlled reissue requested: account_mode=%s", account_mode
     )
+    if is_gatewayd_token_issuance(settings):
+        return await _ensure_gatewayd_approval_key(account_mode, force=True)
     return await _issue_approval_key_single_flight(account_mode, force_reissue=True)
 
 
@@ -210,6 +233,12 @@ async def _issue_approval_key_single_flight(
     if is_cache_only_token_issuance(settings):
         # cache_only: refuse before the issuance lock, any cache delete, or HTTP.
         raise cache_only_refusal(f"kis-websocket-approval-{account_mode}")
+    if is_gatewayd_token_issuance(settings):
+        # gatewayd: refuse before the issuance lock, any cache delete, or HTTP.
+        raise TokenIssuanceUnavailable(
+            "broker token mode=gatewayd refused approval-key issuance lock for "
+            f"provider=kis-websocket-approval-{account_mode}"
+        )
     redis_client = await _get_redis_client()
     lock_token = await _acquire_issuance_lock(redis_client, account_mode)
 
@@ -268,6 +297,42 @@ async def _issue_approval_key_single_flight(
     raise ApprovalKeyIssuanceUnavailable(
         f"approval key issuance contended for {account_mode}; "
         "no cached key after bounded wait"
+    )
+
+
+async def _ensure_gatewayd_approval_key(
+    account_mode: str, *, force: bool = False
+) -> str:
+    """Ensure the approval key through gatewayd, then prove it via Redis.
+
+    In ``gatewayd`` mode this process never issues and never takes the
+    issuance lock: it POSTs the provider ensure endpoint (``?force=true`` for
+    a controlled re-issue) and re-reads the shared cache with the same short
+    bounded poll the access-token path uses. Any transport failure, non-2xx,
+    or acknowledgement without a usable cached key raises
+    ``TokenIssuanceUnavailable`` — there is no self-issuance fallback.
+    """
+    account_mode = _resolve_ws_account_mode(account_mode)
+    provider = _GATEWAYD_APPROVAL_PROVIDERS[account_mode]
+    await ensure_gatewayd_token(provider, settings_obj=settings, force=force)
+    deadline = time.monotonic() + GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS
+    while True:
+        cached = await _get_cached_approval_key(account_mode)
+        if _is_valid_approval_key(cached):
+            logger.info(
+                "KIS approval key published by gatewayd: account_mode=%s force=%s",
+                account_mode,
+                force,
+            )
+            assert cached is not None  # narrowed by _is_valid_approval_key
+            return cached
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(GATEWAYD_TOKEN_POLL_INTERVAL_SECONDS)
+
+    raise TokenIssuanceUnavailable(
+        "gatewayd acknowledged approval-key ensure without publishing "
+        "a usable cached key"
     )
 
 
@@ -407,6 +472,12 @@ async def _issue_approval_key(account_mode: str = "kis_live") -> str:
     if is_cache_only_token_issuance(settings):
         # Defense in depth: no approval HTTP request in cache_only, even on a direct call.
         raise cache_only_refusal(f"kis-websocket-approval-{account_mode}")
+    if is_gatewayd_token_issuance(settings):
+        # Defense in depth: gatewayd owns approval-key issuance; no self-issuance.
+        raise TokenIssuanceUnavailable(
+            "broker token mode=gatewayd refused self-issuance for "
+            f"provider=kis-websocket-approval-{account_mode}"
+        )
     base_url, appkey, secret = _resolve_approval_credentials(account_mode)
     _assert_approval_endpoint_host(account_mode, base_url)
 

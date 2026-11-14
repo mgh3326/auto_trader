@@ -42,7 +42,11 @@ token.
 
 Set `BROKER_TOKEN_ISSUANCE_MODE=gatewayd` only after gatewayd is deployed with
 the matching broker credentials and its Redis access targets the same token
-keys as the API process. Python performs the following fail-closed sequence:
+keys as the API process. For KIS WebSocket approval keys, gatewayd must
+additionally run with the `kis-live-approval` and `kis-mock-approval`
+providers enabled before a process switches to `gatewayd` mode; without them
+the approval ensure endpoint answers 404 and approval-key reads fail closed.
+Python performs the following fail-closed sequence:
 
 1. Read the existing Redis token.
 2. On a miss or expiry buffer hit, POST gatewayd's provider ensure endpoint.
@@ -52,10 +56,24 @@ Python never takes a provider issuance lock in `gatewayd` mode. gatewayd owns
 the OAuth leg and serializes concurrent ensures with that lock; taking it in
 the API process before the ensure request would deadlock a cache miss.
 
+KIS WebSocket approval keys follow the same sequence. `get_approval_key`
+reads the cached key and, on a miss, POSTs
+`/v1/tokens/kis-live-approval/ensure` or
+`/v1/tokens/kis-mock-approval/ensure` (chosen by account mode) and re-reads
+the shared `kis:websocket:approval_key` /
+`kis_mock:websocket:approval_key` cache with the same bounded poll.
+`invalidate_and_reissue_approval_key` (the OPSP0011 controlled reissue) posts
+the same endpoint with `?force=true`, which makes gatewayd replace the
+published key without a no-key window. In `gatewayd` mode Python never calls
+the KIS approval endpoint itself and never takes the approval-key issuance
+lock.
+
 The endpoints are `/v1/tokens/kis-live/ensure`, `/v1/tokens/kis-mock/ensure`,
-and `/v1/tokens/toss/ensure`. A gatewayd transport failure, non-2xx response,
-or an acknowledgement without a usable Redis token raises an issuance error;
-Python must not fall back to its own OAuth endpoint in this mode.
+`/v1/tokens/toss/ensure`, `/v1/tokens/kis-live-approval/ensure`, and
+`/v1/tokens/kis-mock-approval/ensure`. A gatewayd transport failure, non-2xx
+response, or an acknowledgement without a usable Redis token raises an
+issuance error; Python must not fall back to its own OAuth or approval
+endpoint in this mode.
 
 For a Mac API runtime, set `GATEWAYD_URL` to the tailnet-reachable gatewayd URL;
 the default loopback address only works when gatewayd is local to that process.
