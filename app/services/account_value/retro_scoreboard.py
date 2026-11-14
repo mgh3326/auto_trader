@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import ProgrammingError
 
 from app.models.account_value import AccountValueSnapshot
 from app.services.account_value.completeness import load_confirmations
@@ -267,10 +267,13 @@ async def read_retro_scoreboard(
     try:
         # Migrations are operator-applied separately from deploys, so the
         # table or its SELECT grant may be absent on this database. Fail only
-        # the coverage read (via savepoint) and degrade to unconfirmed.
+        # the coverage read (via savepoint) and degrade to unconfirmed; every
+        # other failure still propagates.
         async with session.begin_nested():
             confirmations = await load_confirmations(session, start, end)
-    except SQLAlchemyError:
+    except ProgrammingError as exc:
+        if getattr(exc.orig, "sqlstate", None) not in {"42P01", "42501"}:
+            raise
         confirmations = []
     rows = await load_weekly_report(session, start, end, confirmations=confirmations)
     data_as_of = (

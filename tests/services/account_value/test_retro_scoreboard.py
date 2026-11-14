@@ -293,23 +293,27 @@ async def test_unreadable_confirmations_degrade_to_not_confirmed(monkeypatch):
 
     monkeypatch.setattr(load_report, "list_sleeves", no_sleeves)
     monkeypatch.setattr(load_report, "_benchmark", no_prices)
-    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.exc import OperationalError, ProgrammingError
 
     class MissingTableDatabase(Database):
-        def __init__(self, results=()):
+        def __init__(self, results=(), error=None):
             super().__init__(results)
             self.first_read = True
+            self.error = error
 
         async def execute(self, statement, params=None):
             if isinstance(statement, TextClause):
                 return await super().execute(statement, params)
             if self.first_read:
                 self.first_read = False
-                raise OperationalError("select", {}, Exception("UndefinedTable"))
+                raise self.error
             return await super().execute(statement, params)
 
+    undefined_table = Exception("undefined table")
+    undefined_table.sqlstate = "42P01"
     database = MissingTableDatabase(
-        [snapshots(), [external_flow()], [(ACCOUNT, "account")], OBSERVED]
+        [snapshots(), [external_flow()], [(ACCOUNT, "account")], OBSERVED],
+        error=ProgrammingError("select", {}, undefined_table),
     )
     response = await read_retro_scoreboard(database, **{"from": START, "to": END})
     VALIDATOR.validate(response)
@@ -317,6 +321,16 @@ async def test_unreadable_confirmations_degrade_to_not_confirmed(monkeypatch):
     (row,) = response["data"]
     assert row["flows_complete"] is False
     assert "flows_not_confirmed" in row["unmeasured_reason"].split(".")
+
+    # Every other failure still propagates instead of degrading silently.
+    for error in (
+        ProgrammingError("select", {}, Exception("deadlock")),
+        OperationalError("select", {}, Exception("connection dropped")),
+    ):
+        with pytest.raises(type(error)):
+            await read_retro_scoreboard(
+                MissingTableDatabase(error=error), **{"from": START, "to": END}
+            )
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # A bare SELECT permits concurrent inserts: take ACCESS EXCLUSIVE first and
+    # hold it through DROP TABLE so no committed confirmation can slip between
+    # the emptiness check and the drop.
+    op.execute("LOCK TABLE review.account_flow_confirmations IN ACCESS EXCLUSIVE MODE")
     op.execute("""
         DO $$ BEGIN
             IF EXISTS (SELECT 1 FROM review.account_flow_confirmations) THEN
