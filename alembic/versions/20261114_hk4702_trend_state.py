@@ -7,7 +7,8 @@ split:
 
 * ``review.binance_trend_signals``: INSERT only as ``observed``; no DELETE or
   TRUNCATE; the identity columns never change; a terminal signal
-  (``closed``/``blocked``/``conflict_blocked``/``conflict_rejected``) is frozen.
+  (``closed``/``blocked``/``conflict_blocked``/``conflict_rejected``) is frozen,
+  except that an operator may mark a conflict record resolved once.
 * ``review.binance_trend_intents``: INSERT only as an unsent ``reserved`` row;
   no DELETE or TRUNCATE; the request columns never change; the state only moves
   forward. An ``uncertain`` intent can never go back to ``reserved``/``sending``,
@@ -60,6 +61,15 @@ GUARD_DDL: tuple[str, ...] = (
                     USING ERRCODE = 'restrict_violation';
             END IF;
             IF OLD.state IN ('closed','blocked','conflict_blocked','conflict_rejected') THEN
+                -- The one allowed change to a terminal row: an operator marks a
+                -- conflict record resolved, once, and nothing else changes.
+                IF OLD.state IN ('conflict_blocked','conflict_rejected')
+                   AND OLD.conflict_resolved_at IS NULL
+                   AND NEW.conflict_resolved_at IS NOT NULL
+                   AND (to_jsonb(NEW) - 'conflict_resolved_at' - 'conflict_resolved_by' - 'updated_at')
+                       = (to_jsonb(OLD) - 'conflict_resolved_at' - 'conflict_resolved_by' - 'updated_at') THEN
+                    RETURN NEW;
+                END IF;
                 RAISE EXCEPTION 'review.binance_trend_signals terminal row is frozen'
                     USING ERRCODE = 'restrict_violation';
             END IF;
@@ -195,6 +205,8 @@ def upgrade() -> None:
         sa.Column("exit_at", sa.TIMESTAMP(timezone=True)),
         sa.Column("conflict_at", sa.TIMESTAMP(timezone=True)),
         sa.Column("conflict_detail", sa.Text()),
+        sa.Column("conflict_resolved_at", sa.TIMESTAMP(timezone=True)),
+        sa.Column("conflict_resolved_by", sa.Text()),
         sa.Column(
             "created_at",
             sa.TIMESTAMP(timezone=True),
@@ -233,6 +245,14 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "conflict_detail IS NULL OR char_length(conflict_detail) <= 200",
             name="ck_binance_trend_signal_conflict_detail",
+        ),
+        sa.CheckConstraint(
+            "(conflict_resolved_at IS NULL) = (conflict_resolved_by IS NULL)",
+            name="ck_binance_trend_signal_resolution_pair",
+        ),
+        sa.CheckConstraint(
+            "conflict_resolved_at IS NULL OR conflict_at IS NOT NULL",
+            name="ck_binance_trend_signal_resolution_conflict",
         ),
         schema="review",
     )

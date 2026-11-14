@@ -68,6 +68,8 @@ async def test_naive_timestamps_are_refused() -> None:
         {"side": "HOLD"},
         {"reduce_only": True},
         {"leg_key": "exit"},
+        {"reference_price": D("0")},
+        {"reference_price": D("NaN")},
     ],
 )
 async def test_reserve_intent_only_takes_a_valid_entry_leg(change: dict) -> None:
@@ -76,11 +78,21 @@ async def test_reserve_intent_only_takes_a_valid_entry_leg(change: dict) -> None
         "leg_key": "entry",
         "side": "BUY",
         "qty": D("1"),
+        "reference_price": D("10"),
         "reduce_only": False,
         "now": NOW,
     } | change
     with pytest.raises(TrendStateBlocked):
         await _service().reserve_intent(**args)
+
+
+async def test_resolve_conflicts_needs_an_identity() -> None:
+    svc = _service()
+    for who in ("", "  ", "x" * 101):
+        with pytest.raises(TrendStateBlocked, match="resolver"):
+            await svc.resolve_conflicts(resolved_by=who, now=NOW)
+    with pytest.raises(TrendStateBlocked, match="aware"):
+        await svc.resolve_conflicts(resolved_by="op", now=NAIVE)
 
 
 async def test_conflict_detail_is_bounded_and_status_is_required() -> None:

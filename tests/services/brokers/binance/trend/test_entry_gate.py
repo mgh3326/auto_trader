@@ -12,8 +12,9 @@ from app.services.brokers.binance.trend.entry_gate import (
     ActiveSlot,
     EntryBook,
     EntryRefusal,
-    consecutive_hard_stops,
+    conflict_stop_tripped,
     decide_entry,
+    max_consecutive_hard_stops,
     utc_day_start,
     utc_week_start,
 )
@@ -26,13 +27,13 @@ def book(
     active: tuple[tuple[str, str], ...] = (),
     uncertain: tuple[str, ...] = (),
     stops: int = 0,
-    conflicts: int = 0,
+    tripped: bool = False,
 ) -> EntryBook:
     return EntryBook(
         active=tuple(ActiveSlot(symbol, D(notional)) for symbol, notional in active),
         uncertain_symbols=frozenset(uncertain),
-        consecutive_hard_stops_today=stops,
-        conflicts_this_week=conflicts,
+        max_consecutive_hard_stops_today=stops,
+        conflict_stop_tripped=tripped,
     )
 
 
@@ -104,9 +105,9 @@ def test_two_consecutive_hard_stops_in_a_utc_day_stop_new_entries() -> None:
     assert EntryRefusal.CONSECUTIVE_HARD_STOP_LIMIT_REACHED in reasons(book(stops=5))
 
 
-def test_three_conflicts_in_a_utc_week_stop_new_entries() -> None:
-    assert reasons(book(conflicts=2)) == set()
-    assert reasons(book(conflicts=3)) == {EntryRefusal.CONFLICT_WEEK_LIMIT_REACHED}
+def test_a_tripped_conflict_stop_blocks_new_entries() -> None:
+    assert reasons(book(tripped=False)) == set()
+    assert reasons(book(tripped=True)) == {EntryRefusal.CONFLICT_WEEK_LIMIT_REACHED}
 
 
 def test_an_uncertain_intent_blocks_only_its_symbol() -> None:
@@ -117,7 +118,7 @@ def test_an_uncertain_intent_blocks_only_its_symbol() -> None:
 
 def test_every_tripped_reason_is_reported() -> None:
     held = tuple((s, "70") for s in LOCKED_LIMITS.universe)
-    b = book(active=held, uncertain=("BTCUSDT",), stops=2, conflicts=3)
+    b = book(active=held, uncertain=("BTCUSDT",), stops=2, tripped=True)
     assert reasons(b, "BTCUSDT", "61") == {
         EntryRefusal.LEG_NOTIONAL_CAP_EXCEEDED,
         EntryRefusal.MAX_CONCURRENT_POSITIONS_REACHED,
@@ -129,12 +130,30 @@ def test_every_tripped_reason_is_reported() -> None:
     }
 
 
-def test_consecutive_hard_stops_is_a_leading_run() -> None:
-    assert consecutive_hard_stops([]) == 0
-    assert consecutive_hard_stops(["hard_stop", "hard_stop"]) == 2
-    assert consecutive_hard_stops(["signal_reversal", "hard_stop", "hard_stop"]) == 0
-    assert consecutive_hard_stops(["hard_stop", "time_exit", "hard_stop"]) == 1
-    assert consecutive_hard_stops([None, "hard_stop"]) == 0
+def test_hard_stop_stop_is_a_daily_latch_not_a_leading_run() -> None:
+    assert max_consecutive_hard_stops([]) == 0
+    assert max_consecutive_hard_stops(["hard_stop", "hard_stop"]) == 2
+    # A later exit of another position must not re-open the day.
+    assert (
+        max_consecutive_hard_stops(["hard_stop", "hard_stop", "signal_reversal"]) == 2
+    )
+    assert max_consecutive_hard_stops(["hard_stop", "time_exit", "hard_stop"]) == 1
+    assert max_consecutive_hard_stops([None, "hard_stop"]) == 1
+    assert max_consecutive_hard_stops(["hard_stop", "hard_stop", "hard_stop"]) == 3
+
+
+def test_conflict_stop_latches_per_week_and_survives_the_boundary() -> None:
+    def at(day: int, hour: int = 1) -> dt.datetime:
+        return dt.datetime(2026, 11, day, hour, tzinfo=dt.UTC)
+
+    assert not conflict_stop_tripped([], limit=3)
+    assert not conflict_stop_tripped([at(9), at(10)], limit=3)
+    assert conflict_stop_tripped([at(9), at(10), at(15, 23)], limit=3)
+    # One per week for three weeks never trips.
+    assert not conflict_stop_tripped([at(2), at(9), at(16)], limit=3)
+    # Three on Sunday still trip after Monday: the input is the unresolved
+    # records, not a window ending now.
+    assert conflict_stop_tripped([at(15, 20), at(15, 21), at(15, 22)], limit=3)
 
 
 def test_utc_windows() -> None:

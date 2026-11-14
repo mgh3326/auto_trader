@@ -31,10 +31,10 @@ from .entry_gate import (
     ActiveSlot,
     EntryBook,
     EntryDecision,
-    consecutive_hard_stops,
+    conflict_stop_tripped,
     decide_entry,
+    max_consecutive_hard_stops,
     utc_day_start,
-    utc_week_start,
 )
 from .keys import SIDES, make_signal_key, trend_client_order_id, trend_correlation_id
 
@@ -220,15 +220,26 @@ class TrendStateService:
             ).all()
             return tuple(_intent_snapshot(row) for row in rows)
 
-    async def _load_book(self, db: AsyncSession, now: dt.datetime) -> EntryBook:
-        """Read the durable book; the caller holds the lane lock."""
-        active_rows = (
-            await db.execute(
-                select(
-                    BinanceTrendSignal.symbol, BinanceTrendSignal.entry_notional_usdt
-                ).where(BinanceTrendSignal.state.in_(ACTIVE_SIGNAL_STATES))
+    async def _load_book(
+        self,
+        db: AsyncSession,
+        now: dt.datetime,
+        *,
+        exclude_signal_key: str | None = None,
+    ) -> EntryBook:
+        """Read the durable book; the caller holds the lane lock.
+
+        ``exclude_signal_key`` leaves one signal's own reservation out so the
+        send fence can re-judge it without counting it against itself.
+        """
+        active_query = select(
+            BinanceTrendSignal.symbol, BinanceTrendSignal.entry_notional_usdt
+        ).where(BinanceTrendSignal.state.in_(ACTIVE_SIGNAL_STATES))
+        if exclude_signal_key is not None:
+            active_query = active_query.where(
+                BinanceTrendSignal.signal_key != exclude_signal_key
             )
-        ).all()
+        active_rows = (await db.execute(active_query)).all()
         uncertain_symbols = frozenset(
             (
                 await db.scalars(
@@ -250,27 +261,28 @@ class TrendStateService:
                     BinanceTrendSignal.exit_at >= day_start,
                     BinanceTrendSignal.exit_at < day_start + dt.timedelta(days=1),
                 )
-                .order_by(BinanceTrendSignal.exit_at.desc())
+                .order_by(BinanceTrendSignal.exit_at.asc())
             )
         ).all()
-        week_start = utc_week_start(now)
-        conflicts = await db.scalar(
-            select(func.count())
-            .select_from(BinanceTrendSignal)
-            .where(
-                BinanceTrendSignal.state.in_(CONFLICT_SIGNAL_STATES),
-                BinanceTrendSignal.conflict_at >= week_start,
-                BinanceTrendSignal.conflict_at < week_start + dt.timedelta(days=7),
+        conflict_times = (
+            await db.scalars(
+                select(BinanceTrendSignal.conflict_at).where(
+                    BinanceTrendSignal.state.in_(CONFLICT_SIGNAL_STATES),
+                    BinanceTrendSignal.conflict_resolved_at.is_(None),
+                )
             )
-        )
+        ).all()
         return EntryBook(
             active=tuple(
                 ActiveSlot(symbol=symbol, notional_usdt=notional or Decimal(0))
                 for symbol, notional in active_rows
             ),
             uncertain_symbols=uncertain_symbols,
-            consecutive_hard_stops_today=consecutive_hard_stops(exits),
-            conflicts_this_week=conflicts or 0,
+            max_consecutive_hard_stops_today=max_consecutive_hard_stops(exits),
+            conflict_stop_tripped=conflict_stop_tripped(
+                [moment for moment in conflict_times if moment is not None],
+                limit=self._limits.max_conflicts_per_utc_week,
+            ),
         )
 
     async def reserve_entry(
@@ -353,13 +365,22 @@ class TrendStateService:
         leg_key: str,
         side: str,
         qty: Decimal,
+        reference_price: Decimal,
         reduce_only: bool,
         now: dt.datetime,
     ) -> TrendIntentSnapshot:
-        """Reserve the one entry leg. Closing legs arrive with CT-4."""
+        """Reserve the one entry leg. Closing legs arrive with CT-4.
+
+        ``qty * reference_price`` must fit inside the notional reserved for the
+        signal, so a fenced intent never carries exposure the book does not
+        count. The executor re-checks against a fresh executable price at
+        dispatch (CT-4).
+        """
         _require_aware(now)
         if not qty.is_finite() or qty <= 0 or side not in SIDES:
             raise TrendStateBlocked("invalid trend intent")
+        if not reference_price.is_finite() or reference_price <= 0:
+            raise TrendStateBlocked("invalid reference price")
         if reduce_only or leg_key != "entry":
             raise TrendStateBlocked("only the entry leg can be reserved")
         client_order_id = trend_client_order_id(signal_key, leg_key)
@@ -370,6 +391,11 @@ class TrendStateService:
                 raise TrendStateBlocked("entry intent requires reserved trend signal")
             if side != signal.side:
                 raise TrendStateBlocked("entry side must match the signal")
+            if (
+                signal.entry_notional_usdt is None
+                or qty * reference_price > signal.entry_notional_usdt
+            ):
+                raise TrendStateBlocked("intent exceeds the reserved notional")
             if await self._count_intents(db, signal_key, _ACTIVE_INTENTS):
                 raise TrendStateBlocked("previous intent unresolved")
             if await db.get(BinanceTrendIntent, client_order_id):
@@ -405,8 +431,24 @@ class TrendStateService:
             signal = await db.get(
                 BinanceTrendSignal, row.signal_key, with_for_update=True
             )
-            if signal is None or signal.state != "entry_reserved":
+            if (
+                signal is None
+                or signal.state != "entry_reserved"
+                or signal.entry_notional_usdt is None
+            ):
                 raise TrendStateBlocked("signal no longer holds the reservation")
+            # The fence is the authorization boundary: re-judge every entry
+            # rule under the lane lock, without counting this reservation
+            # against itself.
+            book = await self._load_book(db, now, exclude_signal_key=signal.signal_key)
+            decision = decide_entry(
+                book=book,
+                symbol=signal.symbol,
+                notional_usdt=signal.entry_notional_usdt,
+                limits=self._limits,
+            )
+            if not decision.allowed:
+                raise TrendEntryRefused(decision)
             row.state = "sending"
             row.updated_at = now
             return _intent_snapshot(row)
@@ -433,6 +475,33 @@ class TrendStateService:
             signal.state = "uncertain"
             signal.updated_at = now
             return _intent_snapshot(row)
+
+    async def resolve_conflicts(self, *, resolved_by: str, now: dt.datetime) -> int:
+        """Operator release of the conflict stop (design §4.5).
+
+        Marks every unresolved conflict record resolved, once, and returns how
+        many. Nothing else about those terminal rows can change.
+        """
+        _require_aware(now)
+        if not resolved_by.strip() or len(resolved_by) > 100:
+            raise TrendStateBlocked("resolver identity required (<=100 chars)")
+        async with self._factory() as db, db.begin():
+            await self._lock(db)
+            rows = (
+                await db.scalars(
+                    select(BinanceTrendSignal)
+                    .where(
+                        BinanceTrendSignal.state.in_(CONFLICT_SIGNAL_STATES),
+                        BinanceTrendSignal.conflict_resolved_at.is_(None),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+            for row in rows:
+                row.conflict_resolved_at = now
+                row.conflict_resolved_by = resolved_by
+                row.updated_at = now
+            return len(rows)
 
     @staticmethod
     def _detail(detail: str | None) -> str | None:

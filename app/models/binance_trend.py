@@ -77,6 +77,14 @@ class BinanceTrendSignal(Base):
             "conflict_detail IS NULL OR char_length(conflict_detail) <= 200",
             name="ck_binance_trend_signal_conflict_detail",
         ),
+        CheckConstraint(
+            "(conflict_resolved_at IS NULL) = (conflict_resolved_by IS NULL)",
+            name="ck_binance_trend_signal_resolution_pair",
+        ),
+        CheckConstraint(
+            "conflict_resolved_at IS NULL OR conflict_at IS NOT NULL",
+            name="ck_binance_trend_signal_resolution_conflict",
+        ),
         Index("ix_binance_trend_signals_symbol_state", "symbol", "state"),
         {"schema": "review"},
     )
@@ -108,6 +116,10 @@ class BinanceTrendSignal(Base):
     exit_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     conflict_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     conflict_detail: Mapped[str | None] = mapped_column(Text)
+    conflict_resolved_at: Mapped[dt.datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    conflict_resolved_by: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

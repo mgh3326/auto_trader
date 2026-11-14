@@ -152,25 +152,37 @@ async def test_two_consecutive_hard_stops_in_a_utc_day_block_entries(svc) -> Non
     )
 
 
-async def test_a_different_exit_breaks_the_hard_stop_streak(svc) -> None:
-    await seed(
-        symbol="BTCUSDT",
-        state="closed",
-        exit_reason="hard_stop",
-        exit_at=NOW - dt.timedelta(hours=2),
+async def test_the_daily_hard_stop_stop_is_a_latch(svc) -> None:
+    # Two consecutive hard stops, then another position exits otherwise: the
+    # newest row is no longer a hard stop but the day stays stopped.
+    for minutes, symbol, reason in (
+        (120, "BTCUSDT", "hard_stop"),
+        (90, "ETHUSDT", "hard_stop"),
+        (60, "SOLUSDT", "signal_reversal"),
+    ):
+        await seed(
+            symbol=symbol,
+            state="closed",
+            exit_reason=reason,
+            exit_at=NOW - dt.timedelta(minutes=minutes),
+        )
+    assert EntryRefusal.CONSECUTIVE_HARD_STOP_LIMIT_REACHED in await refused(
+        svc, "XRPUSDT"
     )
-    await seed(
-        symbol="ETHUSDT",
-        state="closed",
-        exit_reason="hard_stop",
-        exit_at=NOW - dt.timedelta(hours=1, minutes=30),
-    )
-    await seed(
-        symbol="SOLUSDT",
-        state="closed",
-        exit_reason="signal_reversal",
-        exit_at=NOW - dt.timedelta(hours=1),
-    )
+
+
+async def test_non_consecutive_hard_stops_do_not_trip_the_daily_stop(svc) -> None:
+    for minutes, symbol, reason in (
+        (120, "BTCUSDT", "hard_stop"),
+        (90, "ETHUSDT", "time_exit"),
+        (60, "SOLUSDT", "hard_stop"),
+    ):
+        await seed(
+            symbol=symbol,
+            state="closed",
+            exit_reason=reason,
+            exit_at=NOW - dt.timedelta(minutes=minutes),
+        )
     assert (await reserve(svc, "XRPUSDT")).state == "entry_reserved"
 
 
@@ -194,6 +206,7 @@ async def test_three_conflicts_in_a_utc_week_block_entries(svc) -> None:
         leg_key="entry",
         side="BUY",
         qty=D("0.5"),
+        reference_price=D("10"),
         reduce_only=False,
         now=NOW,
     )
@@ -205,16 +218,123 @@ async def test_three_conflicts_in_a_utc_week_block_entries(svc) -> None:
     assert EntryRefusal.CONFLICT_WEEK_LIMIT_REACHED in await refused(svc, "BTCUSDT")
 
 
-async def test_conflicts_from_last_week_do_not_count(svc) -> None:
-    last_week = dt.datetime(2026, 11, 8, 23, tzinfo=dt.UTC)
-    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
-        await seed(
-            symbol=symbol,
-            state="conflict_blocked",
-            entry_notional_usdt=None,
-            conflict_at=last_week,
-        )
+async def _seed_conflicts(*when: dt.datetime) -> None:
+    for symbol, moment in zip(
+        ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"), when, strict=False
+    ):
+        await seed(symbol=symbol, state="conflict_blocked", conflict_at=moment)
+
+
+async def test_the_conflict_stop_survives_the_week_boundary(svc) -> None:
+    # Three on Sunday 2026-11-08; "now" is the following Saturday.
+    sunday = dt.datetime(2026, 11, 8, 20, tzinfo=dt.UTC)
+    await _seed_conflicts(sunday, sunday, sunday)
+    assert EntryRefusal.CONFLICT_WEEK_LIMIT_REACHED in await refused(svc, "XRPUSDT")
+
+
+async def test_conflicts_spread_one_per_week_do_not_trip_the_stop(svc) -> None:
+    await _seed_conflicts(
+        dt.datetime(2026, 10, 27, tzinfo=dt.UTC),
+        dt.datetime(2026, 11, 3, tzinfo=dt.UTC),
+        dt.datetime(2026, 11, 10, tzinfo=dt.UTC),
+    )
     assert (await reserve(svc, "XRPUSDT")).state == "entry_reserved"
+
+
+async def test_only_an_operator_resolution_releases_the_conflict_stop(svc) -> None:
+    sunday = dt.datetime(2026, 11, 8, 20, tzinfo=dt.UTC)
+    await _seed_conflicts(sunday, sunday, sunday)
+    assert EntryRefusal.CONFLICT_WEEK_LIMIT_REACHED in await refused(svc, "XRPUSDT")
+    assert await svc.resolve_conflicts(resolved_by="operator", now=NOW) == 3
+    assert await svc.resolve_conflicts(resolved_by="operator", now=NOW) == 0
+    assert (await reserve(svc, "XRPUSDT")).state == "entry_reserved"
+
+
+async def test_the_database_allows_only_a_one_time_resolution(svc) -> None:
+    await _seed_conflicts(NOW)
+    for statement in (
+        "UPDATE review.binance_trend_signals SET conflict_detail = 'edited'",
+        "UPDATE review.binance_trend_signals SET state = 'blocked', "
+        "conflict_resolved_at = now(), conflict_resolved_by = 'op'",
+    ):
+        async with AsyncSessionLocal() as db:
+            with pytest.raises(DBAPIError, match="frozen"):
+                await db.execute(sa.text(statement))
+            await db.rollback()
+    await svc.resolve_conflicts(resolved_by="op", now=NOW)
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(DBAPIError, match="frozen"):
+            await db.execute(
+                sa.text(
+                    "UPDATE review.binance_trend_signals SET "
+                    "conflict_resolved_by = 'someone else'"
+                )
+            )
+        await db.rollback()
+
+
+async def test_the_send_fence_rejudges_the_kill_switches(svc) -> None:
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        await seed(symbol=symbol, state="conflict_blocked", conflict_at=NOW)
+    signal = await reserve(svc, "XRPUSDT")
+    intent = await svc.reserve_intent(
+        signal_key=signal.signal_key,
+        leg_key="entry",
+        side="BUY",
+        qty=D("1"),
+        reference_price=D("10"),
+        reduce_only=False,
+        now=NOW,
+    )
+    # A third conflict lands between the reservation and the fence.
+    other = await observe(svc, "SOLUSDT")
+    await svc.record_conflict_blocked(other.signal_key, now=NOW)
+    with pytest.raises(TrendEntryRefused) as caught:
+        await svc.mark_sending(intent.client_order_id, now=NOW)
+    assert EntryRefusal.CONFLICT_WEEK_LIMIT_REACHED in caught.value.reasons
+    (stored,) = await svc.list_intents(signal.signal_key)
+    assert stored.state == "reserved"
+
+
+async def test_the_send_fence_does_not_count_its_own_reservation(svc) -> None:
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+        await reserve(svc, symbol)
+    signal = await reserve(svc, "XRPUSDT")
+    intent = await svc.reserve_intent(
+        signal_key=signal.signal_key,
+        leg_key="entry",
+        side="BUY",
+        qty=D("1"),
+        reference_price=D("10"),
+        reduce_only=False,
+        now=NOW,
+    )
+    assert (await svc.mark_sending(intent.client_order_id, now=NOW)).state == "sending"
+
+
+async def test_an_intent_cannot_exceed_the_reserved_notional(svc) -> None:
+    signal = await reserve(svc, "BTCUSDT", notional="1")
+    for qty in ("0.11", "1000"):
+        with pytest.raises(TrendStateBlocked, match="reserved notional"):
+            await svc.reserve_intent(
+                signal_key=signal.signal_key,
+                leg_key="entry",
+                side="BUY",
+                qty=D(qty),
+                reference_price=D("10"),
+                reduce_only=False,
+                now=NOW,
+            )
+    ok = await svc.reserve_intent(
+        signal_key=signal.signal_key,
+        leg_key="entry",
+        side="BUY",
+        qty=D("0.1"),
+        reference_price=D("10"),
+        reduce_only=False,
+        now=NOW,
+    )
+    assert ok.state == "reserved"
 
 
 async def test_conflict_blocked_releases_an_unsent_reservation(svc) -> None:
@@ -224,6 +344,7 @@ async def test_conflict_blocked_releases_an_unsent_reservation(svc) -> None:
         leg_key="entry",
         side="BUY",
         qty=D("1"),
+        reference_price=D("10"),
         reduce_only=False,
         now=NOW,
     )
@@ -242,6 +363,7 @@ async def test_a_sent_entry_cannot_be_conflict_blocked(svc) -> None:
         leg_key="entry",
         side="BUY",
         qty=D("1"),
+        reference_price=D("10"),
         reduce_only=False,
         now=NOW,
     )
@@ -259,6 +381,7 @@ async def _uncertain(svc, symbol="BTCUSDT"):
         leg_key="entry",
         side="BUY",
         qty=D("1"),
+        reference_price=D("10"),
         reduce_only=False,
         now=NOW,
     )
@@ -286,6 +409,7 @@ async def test_an_uncertain_intent_blocks_its_symbol_and_is_never_resent(svc) ->
             leg_key="entry",
             side="BUY",
             qty=D("1"),
+            reference_price=D("10"),
             reduce_only=False,
             now=NOW,
         )
@@ -367,6 +491,7 @@ async def test_the_database_keeps_trend_state_append_only(svc, statement) -> Non
         leg_key="entry",
         side="BUY",
         qty=D("1"),
+        reference_price=D("10"),
         reduce_only=False,
         now=NOW,
     )

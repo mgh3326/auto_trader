@@ -47,8 +47,10 @@ class EntryBook:
 
     active: tuple[ActiveSlot, ...]
     uncertain_symbols: frozenset[str]
-    consecutive_hard_stops_today: int
-    conflicts_this_week: int
+    #: Longest run of consecutive hard stops anywhere in the current UTC day.
+    max_consecutive_hard_stops_today: int
+    #: Some UTC week holds ``max_conflicts_per_utc_week`` unresolved conflicts.
+    conflict_stop_tripped: bool
 
 
 @dataclass(frozen=True)
@@ -57,14 +59,17 @@ class EntryDecision:
     reasons: tuple[str, ...]
 
 
-def consecutive_hard_stops(exit_reasons_newest_first: Sequence[str | None]) -> int:
-    """Leading run of hard stops; any other exit breaks the streak."""
-    run = 0
-    for reason in exit_reasons_newest_first:
-        if reason != EXIT_HARD_STOP:
-            break
-        run += 1
-    return run
+def max_consecutive_hard_stops(exit_reasons_oldest_first: Sequence[str | None]) -> int:
+    """Longest run of hard stops in the day (the daily stop is a latch).
+
+    Once the threshold run happened, a later exit of another position must not
+    re-open entries for the rest of the UTC day, so the whole day is scanned.
+    """
+    best = run = 0
+    for reason in exit_reasons_oldest_first:
+        run = run + 1 if reason == EXIT_HARD_STOP else 0
+        best = max(best, run)
+    return best
 
 
 def utc_day_start(now: dt.datetime) -> dt.datetime:
@@ -76,6 +81,21 @@ def utc_week_start(now: dt.datetime) -> dt.datetime:
     """Monday 00:00 UTC of the week containing ``now``."""
     day = utc_day_start(now)
     return day - dt.timedelta(days=day.weekday())
+
+
+def conflict_stop_tripped(
+    unresolved_conflict_times: Sequence[dt.datetime], *, limit: int
+) -> bool:
+    """True when any UTC week holds ``limit`` unresolved conflicts.
+
+    The stop is not cleared by the week boundary: it stays until an operator
+    resolves the conflict records (design §4.5).
+    """
+    per_week: dict[dt.datetime, int] = {}
+    for moment in unresolved_conflict_times:
+        week = utc_week_start(moment)
+        per_week[week] = per_week.get(week, 0) + 1
+    return any(count >= limit for count in per_week.values())
 
 
 def decide_entry(
@@ -104,10 +124,10 @@ def decide_entry(
         if gross + notional_usdt > limits.max_gross_notional_usdt:
             reasons.append(EntryRefusal.GROSS_NOTIONAL_CAP_EXCEEDED)
     if (
-        book.consecutive_hard_stops_today
+        book.max_consecutive_hard_stops_today
         >= limits.max_consecutive_hard_stops_per_utc_day
     ):
         reasons.append(EntryRefusal.CONSECUTIVE_HARD_STOP_LIMIT_REACHED)
-    if book.conflicts_this_week >= limits.max_conflicts_per_utc_week:
+    if book.conflict_stop_tripped:
         reasons.append(EntryRefusal.CONFLICT_WEEK_LIMIT_REACHED)
     return EntryDecision(allowed=not reasons, reasons=tuple(reasons))
