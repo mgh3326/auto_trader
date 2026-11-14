@@ -17,8 +17,9 @@ number (rejections carry no `output.ODNO`), the echo is sent with `ODNO: ""`. Th
 v1 echo schema requires a string and the edge stores the echo as a shadow witness
 only (its own `kis_live_witnesses` row, never a command receipt), so such an echo
 stops counting as `missing_echo` and cannot be read as an accepted order. An
-`rt_cd` of `0` without an order number is still dropped, and a present but
-non-string `ODNO` is reported instead of being replaced. A token-expiry
+`rt_cd` of `0` without an order number is still dropped. An absent or `null`
+`ODNO` is treated as no order number, so the rejection above echoes `""`; any
+other non-string `ODNO` is reported instead of being replaced. A token-expiry
 (`EGW00123`/`EGW00121`) or gateway-throttle rejection is skipped while the
 domestic caller may still re-POST that order through the same witness: an early
 echo would win the edge's one-echo-per-command rule and hide the accepted
