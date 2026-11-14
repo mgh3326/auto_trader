@@ -280,6 +280,77 @@ class HistoryTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
 
+    def test_publish_adopts_orphaned_partition_on_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            meta = {
+                "coverage_start": "2020-01-01",
+                "coverage_end": "2020-01-31T23:59:59.999999+09:00",
+                "fetch_budget_used": 1,
+                "missing_reports": [],
+            }
+            real_open = Path.open
+
+            def flaky_open(self, mode="r", *args, **kwargs):
+                if self.name == "manifest.jsonl" and "a" in mode:
+                    raise OSError("simulated manifest failure")
+                return real_open(self, mode, *args, **kwargs)
+
+            # Crash after the atomic rename but before the manifest append.
+            with patch.object(Path, "open", flaky_open), self.assertRaises(OSError):
+                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            self.assertTrue((Path(d) / "partitions" / "run").is_dir())
+            self.assertFalse((Path(d) / "manifest.jsonl").exists())
+            # Retry with the same run ID completes only the missing entry.
+            entry = publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            self.assertEqual(entry["run_id"], "run")
+            records = (Path(d) / "manifest.jsonl").read_text().splitlines()
+            self.assertEqual(len(records), 1)
+            # A fully recorded partition still refuses overwrite...
+            with self.assertRaises(FileExistsError):
+                publish(d, "run", [{"a": 1}], [{"b": 2}], meta)
+            # ...and a partition whose content does not match stays refused.
+            (Path(d) / "partitions" / "other").mkdir(parents=True)
+            (Path(d) / "partitions" / "other" / "facts.jsonl").write_bytes(b"?")
+            with self.assertRaises(FileExistsError):
+                publish(d, "other", [{"a": 1}], [{"b": 2}], meta)
+
+    def test_build_tolerates_torn_final_usage_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            get, _ = transport()
+            args = [
+                "--root",
+                d,
+                "--key-env",
+                "TEST_DART_SYNTHETIC_KEY",
+                "--start",
+                "2020-01-01",
+                "--end",
+                "2020-01-31",
+                "--run-id",
+                "b",
+            ]
+            original = Collector.__init__
+
+            def init(self, *a, **kw):
+                return original(self, *a, **{**kw, "transport": get})
+
+            with (
+                patch.dict("os.environ", {"TEST_DART_SYNTHETIC_KEY": KEY}),
+                patch.object(Collector, "__init__", init),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(cli.main(["fetch", *args, "--budget", "9"]), 0)
+                usage_path = Path(d) / "cache" / "b" / "usage.jsonl"
+                with usage_path.open("a") as stream:
+                    stream.write('{"budget_used"')
+                self.assertEqual(cli.main(["build", *args]), 0)
+            self.assertEqual(
+                json.loads((Path(d) / "manifest.jsonl").read_text())[
+                    "fetch_budget_used"
+                ],
+                4,
+            )
+
     def test_source_error_chain_never_carries_key(self):
         def chain(err):
             seen, out = set(), []

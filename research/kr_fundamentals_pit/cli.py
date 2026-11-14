@@ -49,6 +49,8 @@ def main(argv=None):
             finally:
                 with usage_path.open("a") as stream:
                     stream.write(json.dumps({"budget_used": collector.used}) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
             if result["complete"]:
                 # Temp-file + os.replace: a kill mid-write must not leave a
                 # truncated result.json that a rerun reads as "already complete".
@@ -65,10 +67,16 @@ def main(argv=None):
             raise ValueError("fetch is incomplete")
         result = json.loads(result_path.read_text())
         facts, derived = build_rows(result["reports"])
-        usage = sum(
-            json.loads(line)["budget_used"]
-            for line in usage_path.read_text().splitlines()
-        )
+        usage_lines = usage_path.read_text().splitlines()
+        usage = 0
+        for index, line in enumerate(usage_lines):
+            try:
+                usage += json.loads(line)["budget_used"]
+            except json.JSONDecodeError:
+                # A killed append can tear only the final line; the count is
+                # informational, so drop it rather than bricking the run's build.
+                if index != len(usage_lines) - 1:
+                    raise
         end = datetime.combine(
             date.fromisoformat(args.end), time.max, ZoneInfo("Asia/Seoul")
         ).isoformat()

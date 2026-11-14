@@ -73,7 +73,9 @@ class Collector:
         if identity_path.exists() and json.loads(identity_path.read_text()) != identity:
             raise ValueError("run ID already belongs to another coverage window")
         if not identity_path.exists():
-            identity_path.write_bytes(_json_bytes(identity))
+            tmp = identity_path.with_name(identity_path.name + ".tmp")
+            tmp.write_bytes(_json_bytes(identity))
+            os.replace(tmp, identity_path)
 
     def get(self, endpoint, params, binary=False):
         cache_key = hashlib.sha256(_json_bytes([endpoint, params])).hexdigest()

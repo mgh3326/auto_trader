@@ -25,13 +25,6 @@ def publish(root, run_id, facts, derived, metadata):
     # a published partition name.
     staging = directory.with_name(run_id + ".staging")
     manifest = root / "manifest.jsonl"
-    if directory.exists():
-        raise FileExistsError("partition already exists")
-    # A retry of the same run ID after a mid-publish failure clears the
-    # leftover staging tree; write-once applies only to published partitions.
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
     names = ("facts.jsonl", "derived.jsonl", "metadata.json")
     paths = [staging / name for name in names]
     published = [directory / name for name in names]
@@ -58,6 +51,39 @@ def publish(root, run_id, facts, derived, metadata):
         },
     }
     payloads.append(encode(entry).encode())
+
+    def append_manifest():
+        with manifest.open("a", encoding="utf-8") as stream:
+            stream.write(encode(entry) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def manifest_has_run():
+        if not manifest.exists():
+            return False
+        return any(
+            json.loads(line).get("run_id") == run_id
+            for line in manifest.read_text().splitlines()
+        )
+
+    if directory.exists():
+        # A previous publish may have died after the atomic rename but before
+        # the manifest append, leaving a complete partition with no record.
+        # If its bytes match the payloads we would publish, adopt the orphan
+        # and complete only the missing manifest entry; anything else is an
+        # unknown partition and stays write-once refused.
+        if not manifest_has_run() and all(
+            path.is_file() and path.read_bytes() == data
+            for path, data in zip(published, payloads, strict=True)
+        ):
+            append_manifest()
+            return entry
+        raise FileExistsError("partition already exists")
+    # A retry of the same run ID after a mid-publish failure clears the
+    # leftover staging tree; write-once applies only to published partitions.
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
     for path, data in zip(paths, payloads, strict=True):
         with path.open("xb") as stream:
             stream.write(data)
@@ -71,10 +97,7 @@ def publish(root, run_id, facts, derived, metadata):
     if directory.exists():
         raise FileExistsError("partition already exists")
     os.rename(staging, directory)
-    with manifest.open("a", encoding="utf-8") as stream:
-        stream.write(encode(entry) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    append_manifest()
     return entry
 
 
