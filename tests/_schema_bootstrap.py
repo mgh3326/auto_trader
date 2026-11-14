@@ -2425,9 +2425,20 @@ CREATE TABLE IF NOT EXISTS review.account_flow_confirmation_revocations (
     "BEFORE UPDATE OR DELETE OR TRUNCATE "
     "ON review.account_flow_confirmation_revocations "
     "FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()",
+    # at_app is a cluster-global PostgreSQL role. Each xdist worker bootstraps
+    # a separate database in the same cluster, so make concurrent bootstrap
+    # attempts idempotent and never drop the shared role from a test.
+    """
+DO $$ BEGIN
+    CREATE ROLE at_app NOLOGIN;
+EXCEPTION WHEN duplicate_object THEN
+    NULL;
+END $$
+""",
     """
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
+        GRANT USAGE ON SCHEMA review TO at_app;
         GRANT SELECT, INSERT ON review.account_flow_confirmations TO at_app;
         GRANT SELECT, INSERT
             ON review.account_flow_confirmation_revocations TO at_app;
