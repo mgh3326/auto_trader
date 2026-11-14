@@ -2427,11 +2427,15 @@ CREATE TABLE IF NOT EXISTS review.account_flow_confirmation_revocations (
     "FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()",
     # at_app is a cluster-global PostgreSQL role. Each xdist worker bootstraps
     # a separate database in the same cluster, so make concurrent bootstrap
-    # attempts idempotent and never drop the shared role from a test.
+    # attempts idempotent and never drop the shared role from a test. A worker
+    # that sees the role already committed gets duplicate_object; a worker that
+    # raced another worker's still-uncommitted CREATE ROLE waits on the
+    # pg_authid name index and then gets unique_violation. Both mean the role
+    # exists.
     """
 DO $$ BEGIN
     CREATE ROLE at_app NOLOGIN;
-EXCEPTION WHEN duplicate_object THEN
+EXCEPTION WHEN duplicate_object OR unique_violation THEN
     NULL;
 END $$
 """,
