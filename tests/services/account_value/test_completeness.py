@@ -141,8 +141,16 @@ async def test_record_revocation_preview_refusals_and_commit():
         == "revoked"
     )
     assert len(committed.statements) == 4 and committed.commits == 1
-    assert "pg_advisory_xact_lock" in str(committed.statements[1])
-    assert all("FOR UPDATE" not in str(statement) for statement in committed.statements)
+    sql = [str(statement).strip().lower() for statement in committed.statements]
+    assert [statement.split(None, 1)[0] for statement in sql] == [
+        "select",
+        "select",
+        "select",
+        "insert",
+    ]
+    assert "pg_advisory_xact_lock" in sql[1]
+    assert all("for update" not in statement for statement in sql)
+    assert all(not statement.startswith(("update ", "delete ")) for statement in sql)
 
     with pytest.raises(ValueError, match="unknown confirmation"):
         await record_revocation(Session(confirmation=False), 404, "operator", "mistake")
