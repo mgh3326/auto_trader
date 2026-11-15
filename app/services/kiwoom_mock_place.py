@@ -217,25 +217,36 @@ def preflight_to_response(
 
 
 def not_submitted_response(
-    base: dict[str, Any], exc: KiwoomPreDispatchError
+    base: dict[str, Any],
+    exc: KiwoomPreDispatchError,
+    *,
+    not_sent: bool = True,
 ) -> dict[str, Any]:
     """Pre-dispatch failure: request provably never sent. No reconcile needed.
 
     Reads ONLY the structured fields on exc — never str(exc) or exc.__cause__
     (the redaction guarantee). token/secret/header/account/body/raw msg are
     never surfaced.
+
+    ``not_sent`` is the caller's claim that nothing exists for this order
+    identity. A replay of an identity an earlier attempt may have sent must pass
+    ``False``: the structured diagnostics stay, but ``status`` /
+    ``dispatch_started`` / ``reconcile_required`` are omitted so a proposal
+    caller keeps the response ambiguous instead of terminalizing a live order.
     """
-    return {
+    response = {
         **base,
         "success": False,
         "error": f"kiwoom_mock_place_order failed: {exc.cause_type}",
-        "status": "not_submitted",
-        "dispatch_started": False,
         "stage": exc.stage,
         "api_id": exc.api_id,
         "cause_type": exc.cause_type,
-        "reconcile_required": False,
     }
+    if not_sent:
+        response["status"] = "not_submitted"
+        response["dispatch_started"] = False
+        response["reconcile_required"] = False
+    return response
 
 
 def dispatch_unknown_response(base: dict[str, Any], exc: Exception) -> dict[str, Any]:
@@ -683,7 +694,9 @@ async def place_kiwoom_mock_order(
                 "cause_type": exc.cause_type,
             },
         )
-        return not_submitted_response(base_response, exc)
+        return not_submitted_response(
+            base_response, exc, not_sent=dry_run or signal_created
+        )
     except Exception as exc:  # noqa: BLE001 - preflight must fail closed
         await mark_kiwoom_signal_not_sent(
             signal_recorder,
@@ -856,7 +869,9 @@ async def place_kiwoom_mock_order(
     except KiwoomPreDispatchError as exc:
         # Provably never sent: no ledger row, and the same key may retry.
         released = await release_after_pre_dispatch_error(recorder, reservation)
-        response = not_submitted_response(base_response, exc)
+        response = not_submitted_response(
+            base_response, exc, not_sent=dry_run or signal_created
+        )
         response["reservation_released"] = released
         await mark_kiwoom_signal_not_sent(
             signal_recorder,

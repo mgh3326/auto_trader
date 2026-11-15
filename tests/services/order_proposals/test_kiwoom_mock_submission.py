@@ -444,6 +444,16 @@ def _failing_preflight(mode: str):
 
         return _refuse
 
+    if mode == "pre_dispatch":
+        from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
+
+        async def _refuse_pre_dispatch(**_kwargs):
+            raise KiwoomPreDispatchError(
+                stage="token_resolution", api_id="kt00018", cause_type="RuntimeError"
+            )
+
+        return _refuse_pre_dispatch
+
     async def _raise(**_kwargs):
         raise RuntimeError("balance read failed")
 
@@ -451,7 +461,7 @@ def _failing_preflight(mode: str):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["result", "exception"])
+@pytest.mark.parametrize("mode", ["result", "exception", "pre_dispatch"])
 async def test_replayed_preflight_refusal_keeps_the_ambiguous_shape(monkeypatch, mode):
     """hk 4732 r2: only the attempt that owns the identity may say "not sent".
 
@@ -483,3 +493,31 @@ async def test_replayed_preflight_refusal_keeps_the_ambiguous_shape(monkeypatch,
     assert recorder.events == []
     # The replayed row is never relabelled: one not-sent mark, from the owner.
     assert signal_recorder.events.count("signal_not_sent:preflight_refused") == 1
+
+
+def test_not_submitted_builder_drops_the_claim_when_it_does_not_own_the_identity():
+    """hk 4732 r3: the not-sent claim is a parameter, not a builder default.
+
+    Every refusal that builds through this helper must decide explicitly; a
+    replayed identity keeps the diagnostics and loses the claim.
+    """
+    from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
+    from app.services.kiwoom_mock_place import not_submitted_response
+
+    exc = KiwoomPreDispatchError(
+        stage="token_resolution", api_id="kt00018", cause_type="RuntimeError"
+    )
+    base = {"source": "kiwoom", "account_mode": "kiwoom_mock"}
+
+    owned = not_submitted_response(base, exc)
+    replayed = not_submitted_response(base, exc, not_sent=False)
+
+    for key in ("status", "dispatch_started", "reconcile_required"):
+        assert key in owned
+        assert key not in replayed
+    # Diagnostics survive either way; no secret is read from the exception.
+    for response in (owned, replayed):
+        assert response["stage"] == "token_resolution"
+        assert response["api_id"] == "kt00018"
+        assert response["cause_type"] == "RuntimeError"
+        assert response["success"] is False
