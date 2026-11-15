@@ -331,10 +331,11 @@ def _full_mode(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(name, "true")
 
 
-def _filled_detail(order_no: str, quantity: int) -> dict[str, Any]:
+def _filled_detail(order_no: str, quantity: int, symbol: str) -> dict[str, Any]:
     return _detail_payload(
         _detail_row(
             order_no,
+            stk_cd=symbol,
             cntr_qty=str(quantity),
             ord_remnq="0",
             cntr_uv="70000",
@@ -342,10 +343,11 @@ def _filled_detail(order_no: str, quantity: int) -> dict[str, Any]:
     )
 
 
-def _partial_detail(order_no: str, quantity: int) -> dict[str, Any]:
+def _partial_detail(order_no: str, quantity: int, symbol: str) -> dict[str, Any]:
     return _detail_payload(
         _detail_row(
             order_no,
+            stk_cd=symbol,
             cntr_qty=str(quantity),
             ord_remnq=str(10 - quantity),
             cntr_uv="70000",
@@ -432,7 +434,7 @@ async def test_full_mode_books_one_in_effect_row_and_a_kiwoom_journal(
     run_ids: list[str] = []
     try:
         await _accepted(client_order_id, order_no, symbol=symbol)
-        result = await _full_run(FakeReader(_filled_detail(order_no, 10)))
+        result = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
         if result.get("reconcile_run"):
             run_ids.append(result["reconcile_run"]["run_id"])
 
@@ -509,7 +511,7 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
     try:
         await _accepted(client_order_id, order_no, symbol=symbol)
 
-        first = await _full_run(FakeReader(_partial_detail(order_no, 4)))
+        first = await _full_run(FakeReader(_partial_detail(order_no, 4, symbol)))
         if first.get("reconcile_run"):
             run_ids.append(first["reconcile_run"]["run_id"])
         assert first["scope"] == "full"
@@ -518,7 +520,7 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         assert [fill.filled_qty for fill in fills] == [Decimal("4")]
         assert (await _fetch(client_order_id)).status == "partial"
 
-        replay = await _full_run(FakeReader(_partial_detail(order_no, 4)))
+        replay = await _full_run(FakeReader(_partial_detail(order_no, 4, symbol)))
         if replay.get("reconcile_run"):
             run_ids.append(replay["reconcile_run"]["run_id"])
         assert replay["reconciled"][0]["action"] == "noop_already_booked"
@@ -526,7 +528,7 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         assert replay["reconcile_run"]["committed_insert"] == 0
         assert replay["reconcile_run"]["unchanged"] >= 1
 
-        second = await _full_run(FakeReader(_filled_detail(order_no, 10)))
+        second = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
         if second.get("reconcile_run"):
             run_ids.append(second["reconcile_run"]["run_id"])
         assert second["reconciled"][0]["action"] == "booked_filled"
@@ -536,7 +538,7 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         assert (await _fetch(client_order_id)).status == "filled"
 
         # The row is terminal now, so another pass finds no candidate at all.
-        settled = await _full_run(FakeReader(_filled_detail(order_no, 10)))
+        settled = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
         assert settled["reconciled"] == []
         assert len(await _fills(order_no)) == 2
     finally:
