@@ -210,7 +210,7 @@ _CALLER_CLASSIFICATION = {
         "mock_only",
         1,
     ),
-    "app/mcp_server/tooling/orders_kiwoom_variants.py:_kiwoom_mock_place_order_impl:place_sell_order": (
+    "app/services/kiwoom_mock_place.py:place_kiwoom_mock_order:place_sell_order": (
         "mock_only",
         1,
     ),
