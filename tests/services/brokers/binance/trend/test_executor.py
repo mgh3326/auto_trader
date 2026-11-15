@@ -1291,8 +1291,14 @@ async def test_the_release_sweep_has_no_age_window(rig: Rig) -> None:
 # -------- managed holding of a partially filled entry (serialization, hk 4752)
 
 
-def _partial_rig(rig: Rig, *, executed: str = "0.3", avg: str | None = None) -> None:
-    rig.bars["BTCUSDT"] = trend_bars("BUY")
+def _partial_rig(
+    rig: Rig,
+    *,
+    executed: str = "0.3",
+    avg: str | None = None,
+    side: str = "BUY",
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars(side)
     script: dict = {"status": "PARTIALLY_FILLED", "executed": D(executed)}
     if avg is not None:
         script["avg"] = D(avg)
@@ -1301,17 +1307,26 @@ def _partial_rig(rig: Rig, *, executed: str = "0.3", avg: str | None = None) -> 
     def fill(kwargs):
         if kwargs["reduce_only"]:
             return  # the exit's effect comes from auto_fill / exit_script
-        rig.client.positions["BTCUSDT"] = D(executed)
+        amount = D(executed) if side == "BUY" else -D(executed)
+        rig.client.positions["BTCUSDT"] = amount
 
     rig.client.on_submit = fill
 
 
-def _terminal_entry(rig: Rig, *, executed: str, avg: str, status: str = "CANCELED"):
+def _terminal_entry(
+    rig: Rig,
+    *,
+    executed: str,
+    avg: str,
+    status: str = "CANCELED",
+    side: str = "BUY",
+):
     """The entry order is terminal with its final executed quantity."""
     rig.client.order_script = [
         {"status": status, "executed": D(executed), "avg": D(avg)}
     ]
-    rig.client.positions["BTCUSDT"] = D(executed)
+    amount = D(executed) if side == "BUY" else -D(executed)
+    rig.client.positions["BTCUSDT"] = amount
 
 
 def _ready_exit(rig: Rig, *, price: str = "110") -> None:
@@ -1403,6 +1418,60 @@ async def test_a_recorded_stop_is_latched_after_the_price_recovers(rig: Rig) -> 
     exits = [e for e in result.events if e.event.startswith("exit_")]
     assert len(exits) == 1 and exits[0].detail == EXIT_HARD_STOP
     assert [s["reduce_only"] for s in rig.client.sends] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_short_partial_entry_is_managed_too(rig: Rig) -> None:
+    """The broker amount is signed: a short partial entry is managed as well."""
+    _partial_rig(rig, side="SELL")
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="99", high="106")  # 105 stop of avg 100
+    result = await rig.tick()
+    assert ("BTCUSDT", "partial_entry_exit_decided") in rig.events(result)
+    assert len(rig.client.cancels) == 1
+    assert len(rig.client.sends) == 1  # the entry only
+    signal = next(iter(rig.state.signals.values()))
+    assert (signal.side, signal.exit_reason) == ("SELL", EXIT_HARD_STOP)
+
+    _terminal_entry(rig, executed="0.3", avg="100", side="SELL")
+    _ready_exit(rig, price="90")
+    await rig.tick()
+    assert [s["reduce_only"] for s in rig.client.sends] == [False, True]
+    assert rig.client.sends[1]["side"] == "BUY"  # the close of a short is a buy
+    assert rig.client.sends[1]["qty"] == D("0.3")
+    assert next(iter(rig.state.signals.values())).state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cancel_is_retried_after_the_price_recovers(rig: Rig) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    rig.client.cancel_error = TimeoutError("read timeout")
+    first = await rig.tick()
+    assert ("BTCUSDT", "partial_entry_cancel_unconfirmed") in rig.events(first)
+    rig.minutes["BTCUSDT"] = minute_rows(low="99")  # back above the stop
+    rig.client.cancel_error = None
+    second = await rig.tick()
+    # The recorded stop is a latch: the recovery does not stop the retry.
+    assert ("BTCUSDT", "partial_entry_cancel_sent") in rig.events(second)
+    assert len(rig.client.cancels) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_decision_record_failure_does_not_abort_the_tick(rig: Rig) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+
+    async def boom(*args, **kwargs):
+        raise TrendStateBlocked("state unavailable")
+
+    rig.state.record_exit_decision = boom  # type: ignore[method-assign]
+    result = await rig.tick()  # must not raise out of the tick
+    assert ("BTCUSDT", "blocked") in rig.events(result)
+    # The action the just-computed decision calls for still runs.
+    assert ("BTCUSDT", "partial_entry_cancel_sent") in rig.events(result)
 
 
 @pytest.mark.asyncio

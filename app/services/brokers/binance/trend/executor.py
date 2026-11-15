@@ -1044,10 +1044,23 @@ class TrendExecutor:
         if intent.avg_price is None or intent.created_at is None:
             return None
         positions = await self.client.get_all_positions()
-        remaining = position_amount(positions, signal.symbol)
+        # The broker amount is signed; a SHORT (SELL) entry sits negative and
+        # must be read as the same positive quantity the holding path uses.
+        amount = position_amount(positions, signal.symbol)
+        remaining = amount if signal.side == "BUY" else -amount
         if remaining <= 0:
             return None
         filters = await self.client.get_trend_filters(signal.symbol)
+        if signal.exit_reason == EXIT_HARD_STOP:
+            # A recorded stop is a latch here too: the decision was already
+            # taken (and counted by the daily kill switch), so a recovery or a
+            # failed cancel must not stop the lane from closing the remainder.
+            latched = floor_to_step(remaining, filters.step_size)
+            return (
+                ExitDecision(reason=EXIT_HARD_STOP, qty=latched)
+                if latched > 0
+                else None
+            )
         close_side = "SELL" if signal.side == "BUY" else "BUY"
         quote_price: Decimal | None
         try:
@@ -1145,9 +1158,19 @@ class TrendExecutor:
                     )
                 continue
             if decision.reason == EXIT_HARD_STOP:
-                await self.state.record_exit_decision(
-                    signal.signal_key, reason=decision.reason, now=now
-                )
+                try:
+                    await self.state.record_exit_decision(
+                        signal.signal_key, reason=decision.reason, now=now
+                    )
+                except Exception as exc:
+                    # One symbol's state refusal or DB error must not skip the
+                    # management of every other symbol this tick. The cancel
+                    # below still runs: it is the action the just-computed
+                    # decision calls for.
+                    logger.exception("trend working-entry decision record failed")
+                    events.append(
+                        TrendEvent(signal.symbol, "blocked", type(exc).__name__)
+                    )
             events.append(
                 TrendEvent(signal.symbol, "partial_entry_exit_decided", decision.reason)
             )
