@@ -287,6 +287,7 @@ H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)�
   - **금지**: leverage·margin mode 변경, 부분 체결 진입의 잔량을 직렬화 목적으로 취소하는 것 외의 모든 주문 취소(취소는 이 한 경로뿐이고 청산·미해결 의도의 해소 수단이 아니다), smoke order-test(클라이언트가 거부), 기존 ROB-993/H5/ROB-1474 상수·allowlist·게이트 변경, 선물 데모 클라이언트의 호스트 allowlist 변경.
   - **wire 계약 테스트**: `test_wire_contract.py`가 `wire_fixtures.py`의 **원문 JSON 텍스트**(문서 예시 기반, 출처 URL 병기, 실측 캡처 아님)를 실제 `httpx.Response`로 클라이언트 파싱 계층에 통과시킨다(주문 submit/query, positionRisk, positionSide/dual, openOrders, exchangeInfo 필터, bookTicker, klines, 오류 본문). 가짜가 파이썬 타입을 넣어 못 보던 문자열 필드·bool/문자열 혼재·누락 필드를 고정한다. 새 Binance 읽기 필드를 쓰면 픽스처부터 추가한다.
   - **테스트**: `test_executor.py`(가짜 클라이언트·원장·상태, 모든 거부 경로의 전송 0건 단언), `test_client_history.py`, `test_strategy_sizing.py`, `test_exits_exposure.py`, DB 전이는 CI의 `test_state_exec_db.py`.
+- **forecast (hk 4760)**: `trend/forecast.py`가 H5와 같은 학습 척추를 잇는다 — forecast id는 `uuid5(correlation_id)`로 결정적이고, 브로커가 증명한 진입 체결(`holding`, 진입 의도 `settled`) 후에만 `review.trade_forecasts`에 저장하며, 실제 held close(`closed`) 후에만 실현 손익에서 추정 테이커 수수료(`fees_usdt`, 체결 증거마다 `executed*avg*TAKER_FEE_RATE` 적립 — H5와 같은 비용 모형)를 뺀 값으로 해소한다. 트렌드 상태 테이블에는 forecast 열이 없으므로 forecast 행 자체가 멱등 기록이다(기존 행=저장 완료, `open` 아님=해소 완료). 저장·해소 실패는 틱 결과·주문·전송 수를 바꾸지 않는 fail-open이며 매 틱 관리 구간의 복구 스캔(`list_forecast_recovery_signals` 후보를 `repair_forecasts`가 세션 하나·SELECT 하나로 일괄 대조)이 놓친 쓰기를 재시도한다.
 - **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB).
 
 ### Execution Intent Gateway (ROB-1440)
