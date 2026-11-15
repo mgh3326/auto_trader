@@ -423,3 +423,63 @@ async def test_preflight_refusal_is_a_terminal_rejection(monkeypatch):
     assert submit["error"] == PREFLIGHT_CASH_INSUFFICIENT
     # The durable signal row says not-sent instead of "outcome unknown".
     assert signal_recorder.events == ["signal", "signal_not_sent:preflight_refused"]
+
+
+def _failing_preflight(mode: str):
+    """A preflight that refuses the read: result-based or exception-based."""
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_CASH_INSUFFICIENT,
+        PreflightResult,
+    )
+
+    if mode == "result":
+
+        async def _refuse(**_kwargs):
+            return PreflightResult(
+                ok=False,
+                error_code=PREFLIGHT_CASH_INSUFFICIENT,
+                error_detail="cash 1 < required 210000",
+                checks=[],
+            )
+
+        return _refuse
+
+    async def _raise(**_kwargs):
+        raise RuntimeError("balance read failed")
+
+    return _raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["result", "exception"])
+async def test_replayed_preflight_refusal_keeps_the_ambiguous_shape(monkeypatch, mode):
+    """hk 4732 r2: only the attempt that owns the identity may say "not sent".
+
+    On a replayed dispatch the signal row already exists, so an earlier attempt
+    under this correlation id may have placed a live order. A refusal must not
+    claim not_submitted/reconcile_required=false then, or the proposal rung is
+    terminalized (and its buying-power reservation released) while that order
+    is still at the broker.
+    """
+    from app.services import kiwoom_mock_place
+
+    recorder, signal_recorder, stub = _wire(monkeypatch)
+    monkeypatch.setattr(
+        kiwoom_mock_place, "run_kiwoom_mock_preflight", _failing_preflight(mode)
+    )
+
+    first = await _call()
+    assert first["status"] == "not_submitted"
+    assert first["success"] is False
+
+    second = await _call()
+
+    # Replay: the closed not-sent markers are gone, so the adapter keeps the
+    # response ambiguous (success dropped -> unverified) instead of rejecting.
+    assert "status" not in second
+    assert "success" not in second
+    assert "reconcile_required" not in second
+    assert stub.posts == []
+    assert recorder.events == []
+    # The replayed row is never relabelled: one not-sent mark, from the owner.
+    assert signal_recorder.events.count("signal_not_sent:preflight_refused") == 1

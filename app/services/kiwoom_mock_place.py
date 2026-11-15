@@ -186,6 +186,7 @@ def preflight_to_response(
     quantity: int,
     price: int,
     preview: bool,
+    not_sent: bool = True,
 ) -> dict[str, Any]:
     response: dict[str, Any] = {
         "success": result.ok,
@@ -201,14 +202,16 @@ def preflight_to_response(
     if not result.ok:
         response["error"] = result.error_code
         response["error_detail"] = result.error_detail
-        # hk 4732 r1: a refused preflight is a read-only account/quote check
-        # that never reached the order TR. Say so in the same closed vocabulary
-        # the other refusals use, so a submit caller cannot mistake it for an
-        # ambiguous send (it would otherwise be recorded `unverified` and keep
-        # the buying-power reservation).
-        response["status"] = "not_submitted"
-        response["dispatch_started"] = False
-        response["reconcile_required"] = False
+        # hk 4732 r1/r2: a refused preflight is a read-only account/quote check
+        # that never reached the order TR, so say so in the closed not-sent
+        # vocabulary. Only for an identity this call owns (``not_sent``): on a
+        # replayed signal the earlier attempt under the same correlation id may
+        # have placed a live order, and claiming "not submitted, no reconcile"
+        # would terminalize a rung whose order is still at the broker.
+        if not_sent:
+            response["status"] = "not_submitted"
+            response["dispatch_started"] = False
+            response["reconcile_required"] = False
     response.update(result.to_response_extras())
     return response
 
@@ -692,16 +695,20 @@ async def place_kiwoom_mock_order(
                 "error_class": type(exc).__name__,
             },
         )
-        return {
+        response = {
             "success": False,
             **base_response,
             "error": f"kiwoom_mock_place_order preflight failed: {type(exc).__name__}",
-            # Same closed not-sent vocabulary as every other pre-POST refusal:
-            # the preflight is a read, so nothing reached the order TR.
-            "status": "not_submitted",
-            "dispatch_started": False,
-            "reconcile_required": False,
         }
+        if dry_run or signal_created:
+            # Same closed not-sent vocabulary as every other pre-POST refusal:
+            # the preflight is a read, so nothing reached the order TR. A
+            # replayed identity keeps the ambiguous shape instead — the earlier
+            # attempt under it may have sent.
+            response["status"] = "not_submitted"
+            response["dispatch_started"] = False
+            response["reconcile_required"] = False
+        return response
     if not preflight.ok:
         response = preflight_to_response(
             preflight,
@@ -710,6 +717,9 @@ async def place_kiwoom_mock_order(
             quantity=quantity_int,
             price=price_int,
             preview=dry_run,
+            # A preview never claims an order identity; a confirmed refusal may
+            # only speak for an identity this call created.
+            not_sent=dry_run or signal_created,
         )
         response["dry_run"] = dry_run
         response["exchange"] = str(resolved_exchange).strip().upper()
