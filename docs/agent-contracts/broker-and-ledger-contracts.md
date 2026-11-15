@@ -337,7 +337,9 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   `('kis','upbit','toss','kiwoom')` 이고 `execution_ledger_reconcile_runs.broker` 는
   `('kis','upbit','kiwoom')` 다. 두 CHECK 은 `NOT VALID` 로 추가되고 별도 후속
   리비전(`20261115_hk4734_kiwoom_validate`)이 `VALIDATE CONSTRAINT` 로 스캔을 떠맡는다 —
-  ACCESS EXCLUSIVE 를 잡은 채 기존 원장을 스캔하지 않는다. Kiwoom 모의 체결은 full 대사(`--apply`, 두 게이트)만
+  ACCESS EXCLUSIVE 를 잡은 채 기존 원장을 스캔하지 않는다. full run 은
+  `execution_ledger_reconcile_runs` 에 `broker='kiwoom'`·`notes='kiwoom_mock_full'` 행을
+  남긴다. Kiwoom 모의 체결은 full 대사(`--apply`, 두 게이트)만
   `broker='kiwoom'`·`account_mode='mock'`·`venue='krx'`·`source='reconciler'` 행을 쓰고,
   델타는 브로커 누적 체결수량에서 이미 기록된 수량을 뺀 값이며 `fill_seq` 는 그 델타의
   결정적 해시다(재실행은 새 행 0). 한 행의 가격은 그 델타의 실제 가격이며 브로커 누적
@@ -507,7 +509,7 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
 - 🔴 **`execution_ledger` 는 `execution_ledger_in_effect()` 만** 읽는다(#1175). 교차 소스 중복은 지우지 않고 `superseded_duplicate` 로 표시한다(ROB-1379 `supersede`)
 - 🔴 솔트는 repo 와 출력에 들어가지 않는다. 출력 디렉터리도 repo 밖만 허용한다
 - KIS·Upbit·Toss 주문 행의 `filled_at` 은 같은 거래일의 in-effect `execution_ledger` 행에서만 온다(evidence-first). 근거 없으면 비운다. DB paper 표의 `filled_at` 은 시뮬레이터 자기 행의 값이며 `execution_ledger` 증거가 아니다. `terminal_outcome=open` 은 "아직 살아 있음"의 증거가 아니라 "종료 기록 없음"이다
-- Kiwoom mock 은 주문 원장 테이블이 없어 대상이 아니다(`manifest.sources_without_ledger`)
+- Kiwoom mock 은 이 export 의 account alias/reader 대상이 아니며 `manifest.sources_without_ledger` 가 `kiwoom_mock` 을 표시한다 — `review.kiwoom_mock_order_ledger` 는 dots export 가 읽지 않는다
 - **v2 (ROB-1450)**: `schema_version=dots-history-export/v2`. `execution_ledger` 에 파생 `fill_seq`(주문 identity 안의 1-based 순번 — 원장 `fill_seq` 해시 키는 내보내지 않는다)·`fill_seq_null_reason`·`fill_qty_basis`(writer 규칙: websocket·Toss reconciler·Upbit 거래별 행=`incremental`, KIS reconciler·Upbit `fill_seq=0` 집계=`cumulative`, `SEED-*`=`position_seed`)·`incremental_qty`·`is_seed` 를 더한다. 새 표 `account_balance_daily` 는 `paper.paper_daily_snapshots`(+`paper_pending_orders.reserved_krw`)만 원천이고, 🔴 브로커 계좌는 일별 잔고 테이블이 없어 `available=false` 행으로만 나간다 — 값을 만들거나 브로커를 부르지 않는다. leak check 는 정수 7자리 이상과, 읽은/deny 목록의 6자리 이상 숫자 식별자와 같은 숫자 셀을 거부한다. `research/trade_retro` 는 v1·v2 를 읽는다
 - **테스트**: `tests/services/dots_history_export/`, `test_quarantine_readers_db.py::test_dots_history_export_drops_the_quarantined_phantom`
 
@@ -734,15 +736,15 @@ After release, the attempt-bound gate still rejects the already dispatched key.
 
 ### Kiwoom mock 귀속 사슬 — pre-submit 강제 (hk 4723)
 
-`kiwoom_mock` KR 주문도 kis_mock 과 동일하게 **브로커 전송 전에** 귀속이 확정돼야 한다. 확정 못 하면 주문이 나가지 않는다(fail-closed).
+`kiwoom_mock`/`kiwoom_mock_us` 주문도 kis_mock 과 동일하게 **브로커 전송 전에** 귀속이 확정돼야 한다. 확정 못 하면 주문이 나가지 않는다(fail-closed).
 
 - **모델**: `app/models/review.KiwoomMockSignalLedger` (`review.kiwoom_mock_signal_ledger`) — `correlation_id`/`strategy`/`signal_source` **NOT NULL + 공백거부 CHECK**, `account_mode IN ('kiwoom_mock','kiwoom_mock_us')`
 - **서비스**: `app/services/kiwoom_mock_attribution.py` — `resolve_attribution`(순수) / `record_signal` / `mark_signal_outcome` / `KiwoomMockSignalRecorder`. 실패 계약(`MissingAttribution`/`InvalidStrategy`, `error_code` `attribution_required`/`placeholder_strategy`)과 placeholder denylist 는 kis_mock 모듈의 정의 하나를 그대로 쓴다.
-- **게이트 위치**: `orders_kiwoom_variants._kiwoom_mock_place_order_impl` 의 confirmed 경로 **최상단** — preflight(브로커 read)보다도 앞이며, `order_send_intents` 예약과 POST보다 앞이다.
-- **순서**: 신호 행 커밋 → `order_send_intents` 예약 → 브로커 POST → 신호 `outcome_state` 표시(`accepted`→`submitted`, 그 밖→`failed`). 표시 실패는 best-effort 이며 귀속 자체는 이미 durable 하다.
-- **호출자 계약(파괴적)**: `kiwoom_mock_place_order(dry_run=False)` 는 이제 `strategy` 필수 — 없거나 공백·placeholder 면 `error_code="attribution_required"`/`"placeholder_strategy"`, 신호 커밋 실패면 `signal_record_unavailable` 이며 셋 다 예약 0·송신 0. `dry_run=True` 미리보기는 kis_mock 과 같이 strategy 없이 동작하고 아무것도 쓰지 않는다. 응답은 `correlation_id` 를 돌려줘 신호 행과 원장 행을 잇는다. correlation id 는 송신 키와 같은 `rung` 표기를 포함한다(`None` 은 빈 discriminator, `0` 은 `"0"`) — 같은 날 의도적 동일 주문(다른 `rung`)은 별도 신호 행을 얻는다.
+- **게이트 위치**: KR `place_kiwoom_mock_order` 와 US `place_kiwoom_mock_us_order` 의 confirmed 경로 **최상단** — preflight(브로커 read)보다도 앞이며, `order_send_intents` 예약과 POST보다 앞이다. MCP 도구와 제안 어댑터는 각각 이 서비스를 호출한다.
+- **순서**: 신호 행 커밋 → `order_send_intents` 예약(`account_scope='kiwoom_mock'`/`'kiwoom_mock_us'`) → 브로커 POST → 원장 행 → 신호 `outcome_state` 표시(`accepted`→`submitted`, 그 밖→`failed`). 표시 실패는 best-effort 이며 귀속 자체는 이미 durable 하다.
+- **호출자 계약(파괴적)**: `place_kiwoom_mock_order(dry_run=False)` 와 `place_kiwoom_mock_us_order(dry_run=False)` 는 이제 `strategy` 필수 — 없거나 공백·placeholder 면 `error_code="attribution_required"`/`"placeholder_strategy"`, 신호 커밋 실패면 `signal_record_unavailable` 이며 셋 다 예약 0·송신 0. `dry_run=True` 미리보기는 strategy 없이 동작하고 아무것도 쓰지 않는다. 응답은 `client_order_id`·`correlation_id` 를 돌려줘 신호 행(`correlation_id`)과 원장 행(`client_order_id`)을 잇는다. correlation id 는 송신 키와 같은 `rung` 표기를 포함한다(`None` 은 빈 discriminator, `0` 은 `"0"`) — 같은 날 의도적 동일 주문(다른 `rung`)은 별도 신호 행을 얻는다.
 - **귀속 충돌**: 신호 행의 `correlation_id` 는 주문을 가리키고 strategy 를 포함하지 않는다. 그래서 이미 다른 strategy 로 기록된 correlation id 를 재사용하려 하면 `record_signal` 이 `SignalStrategyConflict` 로 거부하고, 호출자는 `signal_record_unavailable` 로 전송하지 않는다(전송하면 주문이 다른 전략에 귀속된다). 같은 strategy 재생은 기존 행 id 를 돌려준다.
-- **범위**: KR `place` 만. modify/cancel·US·대사는 불변. `scripts/kiwoom_mock_smoke.py` 는 `strategy="kiwoom_mock_smoke"` 로 귀속한다.
+- **범위**: KR·US `place` 만. modify/cancel·대사는 이 귀속 사슬 밖이다. `scripts/kiwoom_mock_smoke.py` 는 `strategy="kiwoom_mock_smoke"` 로 귀속한다.
 
 ### KIS mock legacy DAY 만료 분류 (Task 881, Q-46)
 
@@ -908,7 +910,7 @@ terminal-only는 기존 분류·전처리·scan과 같은 `limit` 상한을 쓰�
 
 ### Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 
-Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `account_mode="kiwoom_mock"`(KRX). **US는 ROB-867로 확장** — `kiwoom_mock_us_*` 변형(account_mode="kiwoom_mock_us", US 전용 앱키 4종 env, order-id 9자리 — 07-20 full 스모크 실측 확정).
+Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 8개 도구는 `account_mode="kiwoom_mock"`(KRX). US는 `kiwoom_mock_us_*` 변형(account_mode="kiwoom_mock_us", US 전용 앱키 4종 env, order-id 9자리 — 07-20 full 스모크 실측 확정; hk 4754에서 원장·제안·대사까지 연결).
 
 - **ROB-1340 ACCEPTANCE authority cessation**: confirmed ACCEPTANCE의 BUY→즉시
   journal→resting read→CANCEL→즉시 journal→reconcile은 하나의 PostgreSQL
@@ -925,7 +927,9 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
   만들지 않는다. 상세 복구·신뢰 한계는
   `docs/runbooks/kiwoom-b0x-bounded-send.md`를 따른다.
 
-- **MCP 도구**: `app/mcp_server/tooling/orders_kiwoom_variants.py` — `kiwoom_mock_preview_order`, `kiwoom_mock_place_order`, `kiwoom_mock_modify_order`, `kiwoom_mock_cancel_order`, `kiwoom_mock_get_order_history`, `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`
+- **MCP 도구**: `app/mcp_server/tooling/orders_kiwoom_variants.py` — `kiwoom_mock_preview_order`, `kiwoom_mock_place_order`, `kiwoom_mock_modify_order`, `kiwoom_mock_cancel_order`, `kiwoom_mock_get_order_history`, `kiwoom_mock_get_order_detail`, `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`
+- **주문 원장·송신 예약 (hk 4712/4722/4734)**: confirmed place 는 귀속 신호 → preflight → `order_send_intents` 예약(KR `account_scope='kiwoom_mock'`·US `'kiwoom_mock_us'`) → POST → `review.kiwoom_mock_order_ledger` 행 → 신호 결과 순서다. 원장 단일 writer는 `app/services/kiwoom_mock_order_ledger_service.py`의 `KiwoomMockOrderLedgerService`이고 `accepted`는 broker order id가 있어야 하며, 송신 후 불명은 `uncertain`으로 남기고 재송신하지 않는다. modify/cancel은 이 원장·제안 place 경로 밖이다.
+- **대사 CLI**: `scripts/kiwoom_mock_auto_reconcile.py` — 기본 dry-run, `--apply-terminal-only`는 시장별 terminal 게이트, `--apply`(KR full)는 두 full 게이트 뒤에서만 `execution_ledger` 델타와 reconcile-run 행을 쓰고 저널·실현손익은 hk 4802 공백이다(위 Execution Ledger HTTP Ingest의 Kiwoom 모의 행 참조).
 - **클라이언트**: `app/services/brokers/kiwoom/` — `client.KiwoomMockClient` (transport, host allowlist), `domestic_orders.KiwoomDomesticOrderClient` (buy/sell/modify/cancel), `domestic_account.KiwoomDomesticAccountClient` (orderable-amount/balance/order-status/order-detail)
 - **스모크 CLI**: `scripts/kiwoom_mock_smoke.py` (default-disabled, 3 modes: preflight/preview/full)
 - **런북**: `docs/runbooks/kiwoom-mock-smoke.md`
@@ -933,7 +937,7 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 **ROB-319에서 완성된 것**:
 - account-read 도구(`get_orderable_cash`/`get_positions`/`get_order_history`)는 stub-success가 아니라 `KiwoomDomesticAccountClient` 실 호출 결과를 반환. `success`는 broker `return_code`에서 파생(`_derive_broker_success`), raw `broker_response` 첨부.
 - `get_orderable_cash`: symbol 있으면 `get_orderable_amount`, 없으면 `get_balance`. cash를 확정 파싱 못하면 `cash: null` + `cash_source: "*_unparsed"` (fake 금지).
-- confirmed `modify_order`/`cancel_order`는 `KiwoomDomesticOrderClient`로 연결. modify는 `new_price`+`new_quantity` 둘 다, cancel은 `symbol`+`cancel_quantity` 필수. 비-zero `return_code`는 fake success 아닌 broker-evidence 실패로 표면화.
+- confirmed `modify_order`/`cancel_order`는 `KiwoomDomesticOrderClient`로 연결. modify는 `new_price`+`new_quantity` 둘 다, cancel은 `symbol`+`cancel_quantity` 필수. 비-zero `return_code`는 fake success 아닌 broker-evidence 실패로 표면화. 이 modify/cancel 경로는 `kiwoom_mock_order_ledger`·귀속 신호·`order_send_intents` 예약·`order_proposals` 제출을 타지 않는다(place 전용 경계).
 
 **안전 경계**:
 - **Mock 호스트 only**: `mockapi.kiwoom.com`만 허용 (`KiwoomMockClient` base-URL 거부 + build 후 host 재검증); live `api.kiwoom.com`은 선택 불가 방어 상수
