@@ -69,6 +69,8 @@ _ABORTED_EVENTS = frozenset({"entry_aborted", "exit_aborted"})
 _ALERT_EVENTS = frozenset(
     {
         "blocked",
+        "entry_conflict_blocked",
+        "entry_conflict_rejected",
         "exposure_mismatch",
         "partial_entry_cancel_unconfirmed",
         "partial_entry_exposure_open",
@@ -101,6 +103,11 @@ def classify_event(event: str) -> str | None:
     ends in ``_uncertain``, or is health. ``entry_refused`` is normal sizing and
     capacity behaviour except for the conflict-week kill switch, which must
     alert (design §4.4/§4.5).
+
+    A conflict record itself also alerts. The week latch trips on the record
+    that reaches the limit, and that tick emits ``entry_conflict_blocked`` /
+    ``entry_conflict_rejected`` — not ``entry_refused``. Alerting only on the
+    later refusal would hide the moment the permanent latch tripped.
     """
     name, detail = _split(event)
     if name in _ALERT_EVENTS or name in _ABORTED_EVENTS:

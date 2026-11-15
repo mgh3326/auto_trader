@@ -446,6 +446,12 @@ async def test_an_affirmative_rejection_is_recorded_not_uncertain(
     assert rig.ledger.rows[intent.client_order_id] == "reconciled"  # no order existed
     expected = "entry_conflict_rejected" if conflicting else "entry_rejected"
     assert rig.events(result) == [("BTCUSDT", expected)]
+    if conflicting:
+        from app.services.brokers.binance.trend import control
+
+        assert (
+            control.tick_failures(result.events)[0].bucket == "entry_conflict_rejected"
+        )
 
 
 @pytest.mark.asyncio
@@ -530,6 +536,10 @@ async def test_gate_one_foreign_position_is_conflict_blocked_before_the_ledger(
     rig.client.positions["BTCUSDT"] = D("-2")  # ROB-1474 short on the symbol
     result = await _only_btc(rig)
     assert rig.events(result) == [("BTCUSDT", "entry_conflict_blocked")]
+    from app.services.brokers.binance.trend import control
+
+    # The trip moment itself alerts, not only a later conflict-week refusal.
+    assert control.tick_failures(result.events)[0].bucket == "entry_conflict_blocked"
     signal = next(iter(rig.state.signals.values()))
     assert signal.state == "conflict_blocked" and signal.conflict_at is not None
     assert "foreign_position" in signal.conflict_detail
