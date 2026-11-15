@@ -319,9 +319,16 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   `('kis','upbit','kiwoom')` 다. Kiwoom 모의 체결은 full 대사(`--apply`, 두 게이트)만
   `broker='kiwoom'`·`account_mode='mock'`·`venue='krx'`·`source='reconciler'` 행을 쓰고,
   델타는 브로커 누적 체결수량에서 이미 기록된 수량을 뺀 값이며 `fill_seq` 는 그 델타의
-  결정적 해시다(재실행은 새 행 0). Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
+  결정적 해시다(재실행은 새 행 0). 한 행의 가격은 그 델타의 실제 가격이며 브로커 누적
+  평균(VWAP)을 델타 수량에 그대로 붙이지 않는다 — `(누적수량×누적평균 −
+  기존수량×기존평균)/델타수량` 으로 구하고, 기존 누적 평균을 모르면 부킹을 거부한다
+  (부킹된 명목 합은 브로커 누적 명목과 같아진다).
+  Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
   `fee_basis='not_provided'`·`filled_at_basis='observed_at'` 이고 0 으로 채우지 않는다.
-  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 이 행들은 외부 HTTP
+  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 저널 단계가 실패해도
+  체결 증거는 커밋된 채 남고, `last_reconcile_detail.journaled_qty` 가 `filled_qty` 보다
+  작은 `filled` 행은 다음 full 실행이 저널을 마무리한다(같은 실행이 실패를 숨기지 않고
+  `journal_error` 로 보고). 이 행들은 외부 HTTP
   ingest 대상이 아니며(`source` 는 항상 `websocket` 강제) 이 예외는 위 멱등키·savepoint·
   원장 커밋 권한 규칙을 바꾸지 않는다.
 - **라우터/스키마**: `app/routers/execution_ledger_ingest.py`,

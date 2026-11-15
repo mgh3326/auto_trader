@@ -87,6 +87,7 @@ def _row(
     filled_qty: int | None = None,
     side: str = "buy",
     journal_id: int | None = None,
+    journaled_qty: Decimal | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=ledger_id,
@@ -95,6 +96,7 @@ def _row(
         broker_order_id=broker_order_id,
         quantity=Decimal(10),
         filled_qty=None if filled_qty is None else Decimal(filled_qty),
+        avg_fill_price=None,
         symbol=symbol,
         side=side,
         trading_day=trading_day,
@@ -108,7 +110,10 @@ def _row(
         notes=None,
         indicators_snapshot=None,
         journal_id=journal_id,
+        journaled_qty=Decimal(0) if journaled_qty is None else journaled_qty,
+        trade_id=None,
         trade_date=NOW,
+        last_reconcile_detail=None,
     )
 
 
@@ -146,7 +151,9 @@ class FakeService:
         self.db = db
         self.writes: list[tuple[str, int, str, str | None]] = []
 
-    async def list_reconcile_candidates(self, *, limit: int):
+    async def list_reconcile_candidates(
+        self, *, limit: int, include_journal_recovery: bool = False
+    ):
         return list(type(self).rows[:limit]), type(self).total
 
     async def list_acknowledged_cancels(self, *, original_order_ids: set[str]):
@@ -180,6 +187,9 @@ class FakeService:
             delta_qty=Decimal(delta),
             cumulative_qty=Decimal(int(filled_quantity)),
             avg_price=Decimal(int(average_price)),
+            cumulative_avg=Decimal(int(average_price)),
+            journaled_qty=row.journaled_qty,
+            journaled_avg=Decimal(0),
             status=status,
             execution_ledger_row_id=None if delta <= 0 else 900 + ledger_id,
             fill_seq=None if delta <= 0 else 4242,
@@ -198,12 +208,16 @@ class FakeService:
             journal_id=row.journal_id,
         )
 
-    async def attach_journal(self, *, ledger_id, trade_id, journal_id):
+    async def attach_journal(
+        self, *, ledger_id, trade_id, journal_id, journaled_qty=None, journaled_avg=None
+    ):
         row = next(item for item in type(self).rows if item.id == ledger_id)
         if trade_id is not None and getattr(row, "trade_id", None) is None:
             row.trade_id = trade_id
         if journal_id is not None and row.journal_id is None:
             row.journal_id = journal_id
+        if journaled_qty is not None and journaled_qty > row.journaled_qty:
+            row.journaled_qty = journaled_qty
         self.writes.append(("attach_journal", ledger_id, str(journal_id), None))
 
 
@@ -580,6 +594,31 @@ async def test_full_mode_journal_failure_is_surfaced_after_the_booking(
     assert outcome["journal_error"] == "RuntimeError"
     assert outcome["requires_manual_review"] is True
     assert result["unresolved_count"] >= 1
+
+
+async def test_full_mode_recovers_the_journal_of_an_already_filled_row(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    # The fill committed earlier; the journal step never finished.
+    FakeService.rows = [
+        _row(1, status="filled", filled_qty=10, journaled_qty=Decimal(0))
+    ]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+
+    result = await _run(_filled_reader(), dry_run=False, terminal_only=False)
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "noop_already_booked"
+    # The whole cumulative fill is journaled now, not a zero delta.
+    save = next(payload for name, payload in calls if name == "save_order_fill")
+    assert save["quantity"] == 10.0
+    assert save["price"] == 70000.0
+    assert ("attach_journal", 1, "55", None) in _writes(fake_ledger)
+    assert result["unresolved_count"] == 0
 
 
 async def test_full_mode_sell_closes_journals_under_kiwoom_mock(

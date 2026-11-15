@@ -55,13 +55,23 @@ def build_kiwoom_execution_ledger_upsert(
     average_price: int,
     observed_at: datetime,
     correlation_id: str | None = None,
+    previous_average_price: Decimal | None = None,
 ) -> ExecutionLedgerUpsert:
     """Book one broker-evidence delta of a Kiwoom mock order.
 
     ``previous_filled_qty`` is the cumulative quantity already booked for the
-    order; ``filled_quantity`` is the broker's *cumulative* filled quantity.
-    Their difference is this row's quantity, so a re-run of the same broker
-    evidence maps to the same ``fill_seq`` and books nothing new (I4).
+    order and ``previous_average_price`` the cumulative average that booking
+    recorded; ``filled_quantity`` and ``average_price`` are the broker's
+    *cumulative* filled quantity and cumulative average. The difference of the
+    quantities is this row's quantity and the difference of the cumulative
+    notionals its price:
+
+        delta_price = (cum_qty*cum_avg - prev_qty*prev_avg) / delta_qty
+
+    so the row is not priced at the cumulative average for only the incremental
+    quantity — the sum of the booked notionals stays equal to the broker's
+    cumulative notional. A re-run of the same broker evidence maps to the same
+    ``fill_seq`` and books nothing new (I4).
 
     ``filled_quantity`` and ``average_price`` are the broker's exact integer KRW
     values — they are converted to ``Decimal`` without a float step.
@@ -74,6 +84,12 @@ def build_kiwoom_execution_ledger_upsert(
         raise ValueError("filled_quantity must be positive")
     if average_price <= 0:
         raise ValueError("average_price must be positive")
+    if previous_average_price is not None and not isinstance(
+        previous_average_price, Decimal
+    ):
+        raise TypeError("previous_average_price must be a Decimal or None")
+    if previous_average_price is not None and previous_average_price <= 0:
+        raise ValueError("previous_average_price must be positive")
 
     cumulative = Decimal(filled_quantity)
     delta = cumulative - previous_filled_qty
@@ -86,7 +102,23 @@ def build_kiwoom_execution_ledger_upsert(
     if not order_id:
         raise ValueError("broker_order_id must not be blank")
 
-    price = Decimal(average_price)
+    cumulative_average = Decimal(average_price)
+    if previous_filled_qty > 0:
+        if previous_average_price is None:
+            # Without the earlier cumulative average the incremental price is
+            # unknowable; refuse instead of booking the cumulative average for
+            # only this delta (that would corrupt P&L inputs).
+            raise ValueError(
+                "previous_average_price is required when quantity was already booked"
+            )
+        price = (
+            cumulative * cumulative_average
+            - previous_filled_qty * previous_average_price
+        ) / delta
+        if price <= 0:
+            raise ValueError("derived incremental price is not positive")
+    else:
+        price = cumulative_average
     fill_seq = _stable_int32_hash(
         f"{order_id}:{previous_filled_qty.normalize()}:{cumulative.normalize()}"
     )
@@ -116,6 +148,11 @@ def build_kiwoom_execution_ledger_upsert(
             "source": "kiwoom_mock_reconcile",
             "ledger_id": ledger_id,
             "previous_filled_qty": str(previous_filled_qty),
+            "previous_avg_fill_price": (
+                None if previous_average_price is None else str(previous_average_price)
+            ),
             "broker_cumulative_filled_qty": str(cumulative),
+            "broker_cumulative_avg_price": str(cumulative_average),
+            "delta_fill_price": str(price),
         },
     )

@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -90,8 +90,29 @@ _LIFECYCLE_FOR_TERMINAL: Final = {
 #: Lifecycle labels a fill transition writes (kis_mock vocabulary).
 _LIFECYCLE_FOR_FILL: Final = {"partial": "partial", "filled": "filled"}
 #: Only these source statuses may book a fill. ``uncertain`` is deliberately
-#: absent (I3: its only resolution is promotion to ``accepted``).
-_OPEN_FILL_STATUSES: Final = frozenset({"accepted", "pending", "partial"})
+#: absent (I3: its only resolution is promotion to ``accepted``). ``filled`` is
+#: present so a run can finish a journal step whose fill was already committed.
+_OPEN_FILL_STATUSES: Final = frozenset({"accepted", "pending", "partial", "filled"})
+
+#: Journal progress keys persisted in ``last_reconcile_detail`` (JSONB).
+_JOURNALED_QTY_KEY: Final = "journaled_qty"
+_JOURNALED_AVG_KEY: Final = "journaled_avg"
+
+
+def _journaled_progress(row: Any) -> tuple[Decimal, Decimal]:
+    """Quantity and price already journaled for the row (0, 0 when unknown)."""
+    detail = row.last_reconcile_detail or {}
+    raw_qty = detail.get(_JOURNALED_QTY_KEY) if isinstance(detail, dict) else None
+    raw_avg = detail.get(_JOURNALED_AVG_KEY) if isinstance(detail, dict) else None
+    try:
+        quantity = Decimal(str(raw_qty)) if raw_qty is not None else Decimal(0)
+    except (ArithmeticError, ValueError):
+        quantity = Decimal(0)
+    try:
+        average = Decimal(str(raw_avg)) if raw_avg is not None else Decimal(0)
+    except (ArithmeticError, ValueError):
+        average = Decimal(0)
+    return quantity, average
 
 
 class KiwoomMockTransitionRefused(Exception):
@@ -193,7 +214,13 @@ class FillBooking:
     action: str
     delta_qty: Decimal
     cumulative_qty: Decimal
+    #: Price of this delta (derived from the cumulative notionals), not VWAP.
     avg_price: Decimal
+    #: The broker's cumulative average, the row's recorded ``avg_fill_price``.
+    cumulative_avg: Decimal
+    #: Quantity/price the previous run already journaled, from the row detail.
+    journaled_qty: Decimal
+    journaled_avg: Decimal
     status: str
     execution_ledger_row_id: int | None
     fill_seq: int | None
@@ -323,15 +350,41 @@ class KiwoomMockOrderLedgerService:
     # ------------------------------------------------------------------
 
     async def list_reconcile_candidates(
-        self, *, limit: int
+        self, *, limit: int, include_journal_recovery: bool = False
     ) -> tuple[list[KiwoomMockOrderLedger], int]:
-        """Open + uncertain KR place rows, oldest first, plus the open total."""
-        where = (
+        """Open + uncertain KR place rows, oldest first, plus the open total.
+
+        ``include_journal_recovery`` also returns ``filled`` rows whose journal
+        step never finished (``journaled_qty`` below ``filled_qty``): the fill
+        evidence is committed, so only a later run can complete the projection.
+        """
+        where = [
             KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
             KiwoomMockOrderLedger.market == "kr",
             KiwoomMockOrderLedger.operation_kind == "place",
-            KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES),
-        )
+        ]
+        source = KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES)
+        if include_journal_recovery:
+            journaled = func.coalesce(
+                cast(
+                    KiwoomMockOrderLedger.last_reconcile_detail[
+                        _JOURNALED_QTY_KEY
+                    ].astext,
+                    Numeric(20, 8),
+                ),
+                0,
+            )
+            where.append(
+                or_(
+                    source,
+                    and_(
+                        KiwoomMockOrderLedger.status == "filled",
+                        KiwoomMockOrderLedger.filled_qty > journaled,
+                    ),
+                )
+            )
+        else:
+            where.append(source)
         total = (
             await self._db.execute(
                 select(func.count()).select_from(KiwoomMockOrderLedger).where(*where)
@@ -513,26 +566,40 @@ class KiwoomMockOrderLedgerService:
         now = observed_at or datetime.now(UTC)
         status = "filled" if cumulative >= row.quantity else "partial"
         delta = cumulative - previous
+        previous_average = row.avg_fill_price
+        journaled_qty, journaled_avg = _journaled_progress(row)
         row_id: int | None = None
         fill_seq: int | None = None
         if delta > 0:
-            fill = build_kiwoom_execution_ledger_upsert(
-                ledger_id=row.id,
-                broker_order_id=str(row.broker_order_id),
-                symbol=row.symbol,
-                side=str(row.side),
-                previous_filled_qty=previous,
-                filled_quantity=filled_quantity,
-                average_price=average_price,
-                observed_at=now,
-                correlation_id=row.correlation_id,
-            )
+            try:
+                fill = build_kiwoom_execution_ledger_upsert(
+                    ledger_id=row.id,
+                    broker_order_id=str(row.broker_order_id),
+                    symbol=row.symbol,
+                    side=str(row.side),
+                    previous_filled_qty=previous,
+                    previous_average_price=previous_average,
+                    filled_quantity=filled_quantity,
+                    average_price=average_price,
+                    observed_at=now,
+                    correlation_id=row.correlation_id,
+                )
+            except ValueError as exc:
+                # The cumulative average cannot be split into an incremental
+                # price: refuse rather than book a price we cannot derive.
+                raise KiwoomMockTransitionRefused(
+                    ledger_id=ledger_id,
+                    status=row.status,
+                    reason=f"incremental_price_unavailable:{exc}",
+                ) from exc
             _status, row_id = await ExecutionLedgerRepository(self._db).upsert_fill(
                 fill
             )
             fill_seq = fill.fill_seq
+            delta_price = fill.filled_price
             action = f"booked_{status}"
         else:
+            delta_price = Decimal(0)
             action = "noop_already_booked"
 
         row.status = status
@@ -541,14 +608,20 @@ class KiwoomMockOrderLedgerService:
         row.avg_fill_price = Decimal(average_price)
         row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
         row.reconciled_at = now
-        row.last_reconcile_detail = {
+        # Merge, never replace: the journal progress keys must survive a booking.
+        detail = {
+            **(row.last_reconcile_detail or {}),
             "action": action,
             "basis": "broker_evidence",
             "verdict": status,
             "previous_filled_qty": str(previous),
             "broker_cumulative_filled_qty": str(cumulative),
+            "broker_cumulative_avg_price": str(Decimal(average_price)),
             "execution_ledger_row_id": row_id,
         }
+        if delta > 0:
+            detail["delta_fill_price"] = str(delta_price)
+        row.last_reconcile_detail = detail
         await self._db.commit()
         await self._db.refresh(row)
         return FillBooking(
@@ -558,7 +631,10 @@ class KiwoomMockOrderLedgerService:
             action=action,
             delta_qty=delta,
             cumulative_qty=cumulative,
-            avg_price=Decimal(average_price),
+            avg_price=delta_price if delta > 0 else Decimal(average_price),
+            cumulative_avg=Decimal(average_price),
+            journaled_qty=journaled_qty,
+            journaled_avg=journaled_avg,
             status=status,
             execution_ledger_row_id=row_id,
             fill_seq=fill_seq,
@@ -583,17 +659,29 @@ class KiwoomMockOrderLedgerService:
         ledger_id: int,
         trade_id: int | None,
         journal_id: int | None,
+        journaled_qty: Decimal | None = None,
+        journaled_avg: Decimal | None = None,
     ) -> None:
         """Record the journal/trade a booked fill produced (add-only).
 
         A value already present is never overwritten: the first booking owns the
-        link, so a re-run cannot repoint the row at a second journal.
+        link, so a re-run cannot repoint the row at a second journal. The
+        journal progress (``journaled_qty``/``journaled_avg``) is monotonic —
+        it only advances — and is what lets a later run finish a journal step
+        whose fill was already committed (the row may even be ``filled``).
         """
         row = await self._lock_row(ledger_id)
         if trade_id is not None and row.trade_id is None:
             row.trade_id = trade_id
         if journal_id is not None and row.journal_id is None:
             row.journal_id = journal_id
+        current_qty, _current_avg = _journaled_progress(row)
+        if journaled_qty is not None and journaled_qty > current_qty:
+            detail = dict(row.last_reconcile_detail or {})
+            detail["journaled_qty"] = str(journaled_qty)
+            if journaled_avg is not None:
+                detail["journaled_avg"] = str(journaled_avg)
+            row.last_reconcile_detail = detail
         await self._db.commit()
 
     @staticmethod

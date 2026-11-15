@@ -331,14 +331,16 @@ def _full_mode(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(name, "true")
 
 
-def _filled_detail(order_no: str, quantity: int, symbol: str) -> dict[str, Any]:
+def _filled_detail(
+    order_no: str, quantity: int, symbol: str, average_price: int = 70000
+) -> dict[str, Any]:
     return _detail_payload(
         _detail_row(
             order_no,
             stk_cd=symbol,
             cntr_qty=str(quantity),
             ord_remnq="0",
-            cntr_uv="70000",
+            cntr_uv=str(average_price),
         )
     )
 
@@ -528,19 +530,106 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         assert replay["reconcile_run"]["committed_insert"] == 0
         assert replay["reconcile_run"]["unchanged"] >= 1
 
-        second = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        second = await _full_run(
+            FakeReader(_filled_detail(order_no, 10, symbol, average_price=76000))
+        )
         if second.get("reconcile_run"):
             run_ids.append(second["reconcile_run"]["run_id"])
         assert second["reconciled"][0]["action"] == "booked_filled"
         fills = await _fills(order_no)
         assert len(fills) == 2
         assert sum(fill.filled_qty for fill in fills) == Decimal("10")
+        # 4 @ 70,000 then cumulative 10 @ 76,000 → the second row is the real
+        # 6 @ 80,000 (from the cumulative notional difference), not 6 @ 76,000.
+        assert [fill.filled_price for fill in fills] == [
+            Decimal("70000"),
+            Decimal("80000"),
+        ]
+        assert sum(fill.filled_notional for fill in fills) == Decimal(10) * Decimal(
+            "76000"
+        )
         assert (await _fetch(client_order_id)).status == "filled"
 
-        # The row is terminal now, so another pass finds no candidate at all.
-        settled = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        # The row is terminal and fully journaled now, so another pass finds no
+        # candidate at all.
+        settled = await _full_run(
+            FakeReader(_filled_detail(order_no, 10, symbol, average_price=76000))
+        )
         assert settled["reconciled"] == []
         assert len(await _fills(order_no)) == 2
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_full_mode_recovers_a_journal_after_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed fill whose journal failed is finished by the next run.
+
+    The order is already ``filled`` (it left the open scan), the trade row from
+    the failed attempt exists, and the journal must still be created, linked and
+    activated — not left draft forever.
+    """
+    from app.mcp_server.tooling import order_journal
+
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    original = order_journal._create_trade_journal_for_buy
+
+    async def failing_journal(**kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("journal db down")
+
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        monkeypatch.setattr(
+            order_journal, "_create_trade_journal_for_buy", failing_journal
+        )
+        first = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        if first.get("reconcile_run"):
+            run_ids.append(first["reconcile_run"]["run_id"])
+        outcome = first["reconciled"][0]
+        assert outcome["action"] == "booked_filled"
+        assert outcome["journal_error"] == "RuntimeError"
+        stored = await _fetch(client_order_id)
+        assert stored.status == "filled"
+        assert stored.filled_qty == Decimal("10")
+        assert stored.journal_id is None
+        assert stored.trade_id is None
+        assert len(await _fills(order_no)) == 1
+
+        # The journal store recovers; the fill is not booked again.
+        monkeypatch.setattr(order_journal, "_create_trade_journal_for_buy", original)
+        recovered = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        if recovered.get("reconcile_run"):
+            run_ids.append(recovered["reconcile_run"]["run_id"])
+        outcome = recovered["reconciled"][0]
+        assert outcome["action"] == "noop_already_booked"
+        assert outcome["journal"]["journal_created"] is True
+        assert len(await _fills(order_no)) == 1
+
+        stored = await _fetch(client_order_id)
+        assert stored.journal_id is not None
+        # The trade row inserted by the failed attempt is found and linked.
+        assert stored.trade_id is not None
+        async with AsyncSessionLocal() as session:
+            journal = (
+                await session.execute(
+                    select(TradeJournal).where(TradeJournal.id == stored.journal_id)
+                )
+            ).scalar_one()
+        assert journal.status == "active"
+        assert journal.trade_id == stored.trade_id
+
+        settled = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        assert settled["reconciled"] == []
     finally:
         await _cleanup_full(
             client_order_id=client_order_id,

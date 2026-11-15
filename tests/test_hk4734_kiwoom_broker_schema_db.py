@@ -50,12 +50,15 @@ def _run_step(sync_conn, step: str) -> None:
 
 
 async def _broker_check_definitions(conn, table: str) -> list[str]:
+    # PostgreSQL renders ``IN (...)`` as ``= ANY (ARRAY[...])``, so match the
+    # constraint by name (the ORM/migration canonical spelling contains
+    # ``broker``) instead of by the definition text.
     rows = (
         await conn.execute(
             text(
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
                 f"WHERE conrelid = 'review.{table}'::regclass AND contype = 'c' "
-                "AND pg_get_constraintdef(oid) LIKE '%broker IN%'"
+                "AND conname LIKE '%broker%'"
             )
         )
     ).scalars()

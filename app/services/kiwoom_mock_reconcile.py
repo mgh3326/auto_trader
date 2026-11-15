@@ -36,7 +36,10 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Final, Protocol
+
+from sqlalchemy import select
 
 from app.schemas.execution_ledger import ReconcileRunRecord
 from app.services.brokers.kiwoom.mock_reconcile import (
@@ -222,6 +225,19 @@ def _evidence_for(*, detail: _Listing, status: _Listing | None) -> BrokerEvidenc
     )
 
 
+def _pending_journal_price(booking: FillBooking, pending: Decimal) -> Decimal | None:
+    """Price of the still-unjournaled quantity, from the cumulative notionals."""
+    if pending <= 0:
+        return None
+    if booking.journaled_qty <= 0:
+        return booking.cumulative_avg
+    notional = (
+        booking.cumulative_qty * booking.cumulative_avg
+        - booking.journaled_qty * booking.journaled_avg
+    )
+    return notional / pending
+
+
 async def kiwoom_mock_reconcile_orders_impl(
     *,
     dry_run: bool = True,
@@ -287,7 +303,9 @@ async def kiwoom_mock_reconcile_orders_impl(
     try:
         async with session_factory() as db:
             service = KiwoomMockOrderLedgerService(db)
-            rows, open_total = await service.list_reconcile_candidates(limit=limit)
+            rows, open_total = await service.list_reconcile_candidates(
+                limit=limit, include_journal_recovery=full_mode
+            )
             candidates = [
                 _Candidate(
                     ledger_id=row.id,
@@ -461,12 +479,32 @@ async def kiwoom_mock_reconcile_orders_impl(
                 )
                 return "noop_transition_refused", exc.reason
 
-    async def _book_journal(booking: FillBooking) -> dict[str, Any]:
+    async def _existing_trade_id(order_id: str) -> int | None:
+        """The trade row this order already has (retry after a journal failure)."""
+        from app.models.review import Trade
+
+        async with session_factory() as db:
+            value = (
+                await db.execute(
+                    select(Trade.id).where(
+                        Trade.account == JOURNAL_ACCOUNT,
+                        Trade.order_id == order_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        return None if value is None else int(value)
+
+    async def _book_journal(
+        booking: FillBooking, *, quantity: Decimal, price: Decimal
+    ) -> dict[str, Any]:
         """Write the trade row and journal at the KIS kernel's booking boundary.
 
         Same helpers, same FIFO semantics as the KIS live kernel; only the
         account label differs (``account='kiwoom_mock'``, ``account_type='mock'``).
-        Imported lazily so the reconcile module stays light for the CLI.
+        ``quantity``/``price`` are the still-unjournaled part of the fill, which
+        equals the delta on the normal path and the recovered remainder after a
+        failed projection. Imported lazily so the reconcile module stays light
+        for the CLI.
         """
         from app.mcp_server.tooling.order_journal import (
             _close_journals_on_sell,
@@ -475,20 +513,25 @@ async def kiwoom_mock_reconcile_orders_impl(
             _save_order_fill,
         )
 
-        average = float(booking.avg_price)
-        delta = float(booking.delta_qty)
+        average = float(price)
+        amount = float(quantity)
         trade_id = await _save_order_fill(
             symbol=booking.symbol,
             instrument_type=booking.instrument_type,
             side=str(booking.side),
             price=average,
-            quantity=delta,
-            total_amount=average * delta,
+            quantity=amount,
+            total_amount=average * amount,
             fee=0.0,
             currency=booking.currency,
             account=JOURNAL_ACCOUNT,
             order_id=booking.broker_order_id,
         )
+        if trade_id is None:
+            # A previous attempt already inserted the trade for this order
+            # (unique account+order_id); look it up so the journal can still be
+            # linked and activated instead of staying draft forever.
+            trade_id = await _existing_trade_id(booking.broker_order_id)
         details: dict[str, Any] = {"trade_id": trade_id}
         journal_id = booking.journal_id
         if booking.side == "buy":
@@ -498,9 +541,11 @@ async def kiwoom_mock_reconcile_orders_impl(
                     symbol=booking.symbol,
                     market_type=booking.instrument_type,
                     preview={
-                        "price": average,
+                        "price": float(booking.cumulative_avg),
                         "quantity": cumulative,
-                        "estimated_value": average * cumulative,
+                        "estimated_value": float(
+                            booking.cumulative_qty * booking.cumulative_avg
+                        ),
                     },
                     thesis=(booking.thesis or "").strip() or "reconciled fill",
                     strategy=(booking.strategy or "").strip() or "reconciled fill",
@@ -526,7 +571,7 @@ async def kiwoom_mock_reconcile_orders_impl(
         else:
             close = await _close_journals_on_sell(
                 symbol=booking.symbol,
-                sell_quantity=delta,
+                sell_quantity=amount,
                 sell_price=average,
                 exit_reason=booking.exit_reason or booking.reason,
                 account_type=JOURNAL_ACCOUNT_TYPE,
@@ -540,13 +585,6 @@ async def kiwoom_mock_reconcile_orders_impl(
             )
             details["journal_pnl_pct"] = close["total_pnl_pct"]
 
-        if trade_id is not None or details.get("journal_id") is not None:
-            async with session_factory() as db:
-                await KiwoomMockOrderLedgerService(db).attach_journal(
-                    ledger_id=booking.ledger_id,
-                    trade_id=int(trade_id) if trade_id is not None else None,
-                    journal_id=details.get("journal_id"),
-                )
         return details
 
     async def _apply_fill(
@@ -589,19 +627,33 @@ async def kiwoom_mock_reconcile_orders_impl(
         else:
             booked_count += 1
 
-        # A buy whose journal link is still missing is retried even when the
-        # broker delta added nothing: the fill evidence is already committed, the
-        # projection is not. A no-op sell is never re-closed (it would consume
-        # the FIFO lot twice).
-        needs_journal = booking.action in {"booked_partial", "booked_filled"} or (
-            booking.action == "noop_already_booked"
-            and booking.side == "buy"
-            and booking.journal_id is None
-        )
-        if not needs_journal:
+        # The fill evidence is committed; the journal is a projection. Anything
+        # still unjournaled is finished here — including a remainder recovered
+        # after an earlier failure (the row may already be ``filled``), which is
+        # why the quantity comes from the journal progress, not only from this
+        # run's delta. A sell is never re-closed for an already journaled
+        # quantity (that would consume the FIFO lot twice).
+        pending_qty = booking.cumulative_qty - booking.journaled_qty
+        if pending_qty <= 0:
+            return
+        pending_avg = _pending_journal_price(booking, pending_qty)
+        if pending_avg is None or pending_avg <= 0:
+            outcome["journal_error"] = "pending_price_unavailable"
+            outcome["requires_manual_review"] = True
             return
         try:
-            outcome["journal"] = await _book_journal(booking)
+            details = await _book_journal(
+                booking, quantity=pending_qty, price=pending_avg
+            )
+            async with session_factory() as db:
+                await KiwoomMockOrderLedgerService(db).attach_journal(
+                    ledger_id=booking.ledger_id,
+                    trade_id=details.get("trade_id"),
+                    journal_id=details.get("journal_id"),
+                    journaled_qty=booking.cumulative_qty,
+                    journaled_avg=booking.cumulative_avg,
+                )
+            outcome["journal"] = details
         except Exception as exc:  # noqa: BLE001 — surface the class, never hide it
             logger.exception(
                 "kiwoom mock journal booking failed id=%s", candidate.ledger_id
