@@ -181,26 +181,36 @@ sum by (dag) (count_over_time({source="journal", app="at-dagu-batch"} |= "status
 
 **쿼리 (ii) — DAG 별 미실행**
 
-`absent_over_time` 은 window 안에 `status=success` 줄이 하나도 없으면 1 을 낸다. window = 스케줄 간격 + 유예다.
+`absent_over_time` 은 window 안에 `status=success` 줄이 하나도 없으면 1 을 낸다. window 는 **한 번의 실행 간격 + 유예**다.
+요일 간격(예: 평일 DAG 의 72h)으로 window 를 늘리지 않는다. 월요일 성공 → 화요일 누락 → 수요일 성공이면 연속 성공 간격이
+48h 라서 72h window 는 화요일 누락을 가린다. 그래서 주간 여러 요일에 도는 DAG 는 window 를 하루 단위로 두고,
+실행이 없는 날의 알림은 Grafana 음소거 구간으로 막는다.
 
-- 간격: UTC cron 에서 연속 실행 사이 가장 긴 간격. 매일은 24h, 평일(`1-5`)과 UTC 일–목(`0-4`)은 주말을 건너 72h, 일요일 주간은 168h.
-- 유예: 한 번의 실행이 끝나는 데 걸릴 수 있는 시간. step `timeout_sec` 의 최댓값을 올림해 시간 단위로 잡고 최소 1h 로 둔다.
-  재시도(`retry_policy.limit: 1`)로 늦어진 정상 실행은 유예를 넘을 수 있고, 그때는 한 번 울릴 수 있다(알려진 한계).
+- **매일 DAG**: window = 24h + 유예.
+- **평일 DAG**(UTC `1-5`, `0-4`): window = 24h + 유예. 실행이 없는 날에는 줄이 계속 없으므로 **음소거 구간**(아래 표)을 건다.
+  음소거는 알림 발송만 막고 규칙 평가는 계속된다. 음소거 끝 시각은 다음 실행의 기한(예정 시각 + 유예)이다.
+  그 시각까지 줄이 없으면 알림이 나가므로, 그 요일의 누락은 그 요일 기한에 잡힌다.
+- **주간 DAG**(UTC `0 0 * * 0`): 일주일에 한 번 돌므로 window = 168h + 유예. 음소거 없음.
+- **유예**: step `timeout_sec` 의 최댓값을 올림해 시간 단위로 잡고 최소 1h 로 둔다. 재시도(`retry_policy.limit: 1`)로
+  늦어진 정상 실행은 유예를 넘을 수 있고, 그때는 한 번 울릴 수 있다(알려진 한계).
 
-| DAG | Dagu 스케줄 (UTC) | 간격 | 유예 (timeout 최댓값) | window |
+| DAG | Dagu 스케줄 (UTC) | window | 유예 (timeout 최댓값) | 음소거 (UTC, 평일 DAG 만) |
 |---|---|---|---|---|
-| `at-batch1-crypto-insight` | `50 0 * * *` | 24h | 1h (3600s) | 25h |
-| `at-batch1-crypto-screener` | `35 0 * * *` | 24h | 1h (3600s) | 25h |
-| `at-batch1-dart-0700` | `0 22 * * *` | 24h | 1h (900s) | 25h |
-| `at-batch1-dart-1830` | `30 9 * * *` | 24h | 1h (900s) | 25h |
-| `at-batch1-kr-fundamentals` | `20 9 * * *` | 24h | 2h (7200s) | 26h |
-| `at-batch1-kr-investor-flow` | `10 9 * * 1-5` | 72h | 1h (1800s) | 73h |
-| `at-batch1-market-events-daily` | `30 21 * * *` | 24h | 1h (900s) | 25h |
-| `at-batch1-toss-symbol-master` | `20 22 * * 0-4` | 72h | 1h (700s) | 73h |
-| `at-batch1-toss-warnings` | `30 22 * * *` | 24h | 1h (3600s) | 25h |
-| `at-batch1-us-fundamentals` | `0 0 * * 0` | 168h | 3h (10800s) | 171h |
-| `at-batch1-us-valuation` | `30 23 * * 1-5` | 72h | 3h (10800s) | 75h |
-| `at-account-value-snapshot` (`at-daily/`) | `40 22 * * *` | 24h | 1h (600s) | 25h |
+| `at-batch1-crypto-insight` | `50 0 * * *` | 25h | 1h (3600s) | — |
+| `at-batch1-crypto-screener` | `35 0 * * *` | 25h | 1h (3600s) | — |
+| `at-batch1-dart-0700` | `0 22 * * *` | 25h | 1h (900s) | — |
+| `at-batch1-dart-1830` | `30 9 * * *` | 25h | 1h (900s) | — |
+| `at-batch1-kr-fundamentals` | `20 9 * * *` | 26h | 2h (7200s) | — |
+| `at-batch1-kr-investor-flow` | `10 9 * * 1-5` | 25h | 1h (1800s) | 토 00:00 → 월 10:10 |
+| `at-batch1-market-events-daily` | `30 21 * * *` | 25h | 1h (900s) | — |
+| `at-batch1-toss-symbol-master` | `20 22 * * 0-4` | 25h | 1h (700s) | 금 00:00 → 일 23:20 |
+| `at-batch1-toss-warnings` | `30 22 * * *` | 25h | 1h (3600s) | — |
+| `at-batch1-us-fundamentals` | `0 0 * * 0` | 171h | 3h (10800s) | — (주간) |
+| `at-batch1-us-valuation` | `30 23 * * 1-5` | 27h | 3h (10800s) | 토 00:00 → 화 02:30 |
+| `at-account-value-snapshot` (`at-daily/`) | `40 22 * * *` | 25h | 1h (600s) | — |
+
+음소거 끝 시각은 `다음 실행 예정 시각 + 유예` 다(예: kr-investor-flow 는 월 09:10 + 1h = 월 10:10). Grafana 음소거 구간 설정은
+운영자 데스크 몫이다. 이 레포는 음소거를 만들지 않는다.
 
 DAG 별 쿼리(window 는 위 표):
 
@@ -210,12 +220,12 @@ absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-crypt
 absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-dart-0700 status=success" [25h])
 absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-dart-1830 status=success" [25h])
 absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-kr-fundamentals status=success" [26h])
-absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-kr-investor-flow status=success" [73h])
+absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-kr-investor-flow status=success" [25h])
 absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-market-events-daily status=success" [25h])
-absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-toss-symbol-master status=success" [73h])
+absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-toss-symbol-master status=success" [25h])
 absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-toss-warnings status=success" [25h])
 absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-us-fundamentals status=success" [171h])
-absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-us-valuation status=success" [75h])
+absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-batch1-us-valuation status=success" [27h])
 absent_over_time({source="journal", app="at-dagu-batch"} |= "dag=at-account-value-snapshot status=success" [25h])
 ```
 

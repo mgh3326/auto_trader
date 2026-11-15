@@ -74,7 +74,8 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
      `"write_status": "inserted"` 이거나(첫 실행) 이미 그날 행이 있으면 `"already_present"` 인가.
      두 경우 모두 정상이다 — `already_present` 는 같은 날 재실행이 no-op 이라는 뜻이다.
    - 핑 URL 이 있으면: 성공 핸들러가 핑을 보냈는가(`onSuccess`). 실패가 있으면 `onFailure` 가
-     `<URL>/fail` 을 보낸다. 핑 URL 이 없으면 두 핸들러는 아무것도 보내지 않고 끝난다.
+     `<URL>/fail` 을 보낸다. 핑 URL 이 없으면 핑만 건너뛰고, 핸들러는 journal 의
+     `status=success|failure` 줄을 남긴다(Grafana 가 읽는다).
 4. **그날 행 확인**: 같은 날 두 번째 실행은 `already_present` 만 나와야 한다(중복 행 0). 새 행이
    생기면 `(account, market, day)` 키가 깨진 것이므로 스케줄을 켜지 말고 멈춘다.
 5. **스케줄 유지**: 3·4 가 맞으면 그대로 둔다. 맞지 않으면 §롤백으로 되돌린다.
@@ -127,5 +128,5 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
   (`docs/runbooks/dagu-batch1-cutover.md` §Grafana 기록). 운영자 결정 169(관측 문제는 레인 이벤트가 아니라 기록으로)에
   따라 Discord 알림은 없다.
 - **한 계좌 실패 = 실행 실패**: 나머지 계좌는 계속 돌지만 DAG 는 `failed` 로 끝난다. 핑 URL 이 있으면
-  `/fail` 핑을 보내고, 없으면 핑 없이 Dagu 실행 상태(`failed`)로만 남는다.
+  `/fail` 핑을 보내고, 없으면 핑 없이 journal 의 `status=failure` 줄과 Dagu 실행 상태(`failed`)로 남는다.
   어느 계좌가 실패했는지는 step 이름으로 로그에서 읽는다.
