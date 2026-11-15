@@ -411,6 +411,7 @@ async def _close_journals_on_sell(
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
     db: AsyncSession | None = None,
+    journal_created_before: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -441,6 +442,12 @@ async def _close_journals_on_sell(
     caller can commit the close together with its own progress marker and a
     retry can never re-close the same lot. Without ``db`` the historical
     own-session-and-commit behaviour is kept.
+
+    ``journal_created_before`` bounds the FIFO walk to lots created at or
+    before that timestamp (a ``NULL`` ``created_at`` is never eligible under
+    a bound): a retried sell remainder may only consume cover that already
+    existed when the sell first missed, so a lot journaled from a later buy
+    is not retroactively closed against the older sell.
     """
     sell_qty_dec = Decimal(str(sell_quantity))
     sell_price_dec = Decimal(str(sell_price))
@@ -456,6 +463,8 @@ async def _close_journals_on_sell(
         )
         if account:
             stmt = stmt.where(TradeJournal.account == account)
+        if journal_created_before is not None:
+            stmt = stmt.where(TradeJournal.created_at <= journal_created_before)
 
         stmt = stmt.order_by(
             TradeJournal.created_at.asc(), TradeJournal.id.asc()

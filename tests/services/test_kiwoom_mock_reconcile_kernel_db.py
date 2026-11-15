@@ -737,6 +737,66 @@ async def test_close_filled_as_terminal_requires_the_whole_booked_fill(
         )
 
 
+async def test_journal_recovery_scan_skips_unmarked_history_and_orders_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mergewake r4578899898: recovery candidates need a journal marker and
+    must sit behind open rows so they cannot starve the open scan.
+
+    A row booked before hk 4802 has ``filled_qty`` but no journaled/manual
+    marker — it must NOT be retroactively journaled. A row whose sell
+    remainder is unmatched (marker present) IS a recovery candidate but
+    orders after every open row.
+    """
+    legacy_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    marked_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    open_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(legacy_id, order_no, symbol=symbol)
+        await _accepted(marked_id, _order_no(), symbol=symbol)
+        await _accepted(open_id, _order_no(), symbol=symbol)
+        legacy_ledger = (await _fetch(legacy_id)).id
+        marked_ledger = (await _fetch(marked_id)).id
+        async with AsyncSessionLocal() as session:
+            service = KiwoomMockOrderLedgerService(session)
+            # A pre-4802 booked fill: filled_qty, no journaled markers.
+            await service.record_fill(
+                ledger_id=legacy_ledger, filled_quantity=10, average_price=70000
+            )
+            # A post-4802 unmatched sell remainder on a 'filled' row: marker
+            # present, so recovery-only (not an open-status candidate).
+            await service.record_fill(
+                ledger_id=marked_ledger, filled_quantity=10, average_price=70000
+            )
+            await service.record_journal_progress(
+                ledger_id=marked_ledger,
+                journaled_qty=Decimal("0"),
+                journaled_avg=Decimal("0"),
+                manual_review_reason="unmatched_sell_quantity:4",
+            )
+            rows, _ = await service.list_reconcile_candidates(
+                limit=1000, include_journal_recovery=True
+            )
+        ids = [row.client_order_id for row in rows]
+        assert legacy_id not in ids  # unmarked history is never backfilled
+        assert marked_id in ids
+        assert open_id in ids
+        # Recovery candidates order behind every open row.
+        assert ids.index(marked_id) > ids.index(open_id)
+    finally:
+        await _cleanup_full(
+            client_order_id=legacy_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+        await _cleanup(marked_id)
+        await _cleanup(open_id)
+
+
 async def test_journal_failure_rolls_back_the_whole_booking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

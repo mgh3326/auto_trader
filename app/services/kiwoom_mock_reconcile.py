@@ -473,6 +473,10 @@ async def _journal_unjournaled(
             account_type=JOURNAL_ACCOUNT_TYPE,
             account=JOURNAL_ACCOUNT,
             db=db,
+            # A retried remainder only consumes lots that existed when the
+            # sell first missed: a lot journaled from a LATER buy is not
+            # cover for the older sell (mergewake r4578899894).
+            journal_created_before=booking.unmatched_sell_since,
         )
         details["journals_closed"] = close["journals_closed"]
         details["closed_journal_ids"] = close["closed_ids"]

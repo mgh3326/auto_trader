@@ -359,8 +359,14 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   종결·open 을 가리지 않고 journal recovery 로 다시 스캔돼 잔여분을 저널한다.
   🔴 매도가 활성 lot 을 넘어서면(`unmatched_quantity > 0`) 매칭된 수량만 종결하고
   진척을 매칭분까지만 올린다 — 미매칭분은 `unmatched_sell_quantity` 수동 검토
-  사유를 남기고 다음 대사가 재시도하며, 결코 부킹보다 먼저 journaled 로 표시하지
-  않는다. 잔량 0 인 부분 체결(`filled < ordered`, `ord_remnq=0`)은 브로커 marker(만료/거부/취소 —
+  사유와 첫 미매칭 시각(`unmatched_sell_since`)을 남기고 다음 대사가 재시도하며,
+  결코 부킹보다 먼저 journaled 로 표시하지 않는다. 재시도된 잔여 매도는 그 시각
+  이전에 만들어진 lot 만 종결할 수 있다 — 나중 매수로 만들어진 lot 을 더 오래된
+  매도에 소급 소비해 이미 보유 중인 포지션의 실현손익을 기록하지 않는다.
+  recovery 스캔은 journaled/manual-review 마커가 있는 행만 대상으로 하고 open
+  행 뒤에 정렬한다 — hk 4802 이전 부킹 이력은 소급 저널하지 않고, 영구 미매칭
+  행이 open 스캔을 굶기지 않는다. 잔량 0 인 부분 체결(`filled < ordered`,
+  `ord_remnq=0`)은 브로커 marker(만료/거부/취소 —
   취소는 자기 승인 취소 요청 필요)가 있으면 체결을 실은 terminal verdict 로 분류되고,
   그 verdict 는 **full 모드에서만** 델타 부킹 → 종결로 이어진다. 종결은 그 verdict 의
   `filled_quantity` 전량이 부킹되어 행의 누적 체결수량과 정확히 같을 때만 허용되고,

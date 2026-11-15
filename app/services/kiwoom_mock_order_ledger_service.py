@@ -58,6 +58,7 @@ __all__ = (
     "KiwoomMockTransitionRefused",
     "LedgerReceipt",
     "journaled_progress",
+    "unmatched_sell_since",
     "RESERVATION_ACCOUNT_SCOPE",
     "RESERVATION_ACCOUNT_SCOPE_US",
     "SendReservation",
@@ -171,6 +172,23 @@ _JOURNALED_AVG_KEY: Final = "journaled_avg"
 #: A sell delta that could not fully match its FIFO lots leaves this reason so
 #: the row surfaces for review; cleared once the remainder journals.
 _JOURNAL_MANUAL_REVIEW_KEY: Final = "journal_manual_review"
+#: When the unmatched-remainder reason was first recorded (ISO). The retried
+#: remainder may only close lots that already existed by then — a lot journaled
+#: from a LATER buy is not cover for an older sell (mergewake r4578899894).
+_UNMATCHED_SELL_SINCE_KEY: Final = "unmatched_sell_since"
+
+
+def unmatched_sell_since(row: Any) -> datetime | None:
+    """The first-unmatched timestamp of the sell remainder, if recorded."""
+    detail = getattr(row, "last_reconcile_detail", None) or {}
+    raw = detail.get(_UNMATCHED_SELL_SINCE_KEY) if isinstance(detail, dict) else None
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def journaled_progress(row: Any) -> tuple[Decimal, Decimal]:
@@ -378,6 +396,9 @@ class FillBooking:
     indicators_snapshot: dict[str, Any] | None = None
     trade_id: int | None = None
     journal_id: int | None = None
+    #: First-unmatched stamp of an outstanding sell remainder; bounds a retried
+    #: close to lots that already existed then. ``None`` on a first attempt.
+    unmatched_sell_since: datetime | None = None
 
 
 class KiwoomMockOrderLedgerService:
@@ -517,6 +538,11 @@ class KiwoomMockOrderLedgerService:
         never fully journaled (``journaled_qty`` below ``filled_qty``): the
         fill evidence is committed, so only a later run can complete the
         journal projection — including terminal rows a short sell closed.
+        Recovery candidates are ordered AFTER open rows so a permanently
+        unmatched remainder can never starve the open scan, and they are
+        limited to rows this projection already touched (a journaled or
+        manual-review marker): booked history that predates hk 4802 is NOT
+        backfilled — it stays manual-review territory (mergewake r4578899898).
         """
         profile = account_profile(account_mode)
         where = [
@@ -525,6 +551,7 @@ class KiwoomMockOrderLedgerService:
             KiwoomMockOrderLedger.operation_kind == "place",
         ]
         source = KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES)
+        order: list[Any] = [KiwoomMockOrderLedger.id.asc()]
         if include_journal_recovery:
             journaled = func.coalesce(
                 cast(
@@ -535,15 +562,22 @@ class KiwoomMockOrderLedgerService:
                 ),
                 0,
             )
+            detail = KiwoomMockOrderLedger.last_reconcile_detail
             where.append(
                 or_(
                     source,
                     and_(
                         KiwoomMockOrderLedger.filled_qty.isnot(None),
                         KiwoomMockOrderLedger.filled_qty > journaled,
+                        or_(
+                            detail[_JOURNALED_QTY_KEY].astext.isnot(None),
+                            detail[_JOURNAL_MANUAL_REVIEW_KEY].astext.isnot(None),
+                        ),
                     ),
                 )
             )
+            # Open rows first; recovery rows fill only the leftover window.
+            order = [source.desc(), KiwoomMockOrderLedger.id.asc()]
         else:
             where.append(source)
         total = (
@@ -556,7 +590,7 @@ class KiwoomMockOrderLedgerService:
                 await self._db.execute(
                     select(KiwoomMockOrderLedger)
                     .where(*where)
-                    .order_by(KiwoomMockOrderLedger.id.asc())
+                    .order_by(*order)
                     .limit(limit)
                 )
             )
@@ -926,8 +960,16 @@ class KiwoomMockOrderLedgerService:
                 detail[_JOURNALED_AVG_KEY] = str(journaled_avg)
         if manual_review_reason is not None:
             detail[_JOURNAL_MANUAL_REVIEW_KEY] = manual_review_reason
+            # The first unmatched sell stamps when its remainder first missed:
+            # a retried close may only consume lots that existed by then.
+            if (
+                manual_review_reason.startswith("unmatched_sell_quantity")
+                and _UNMATCHED_SELL_SINCE_KEY not in detail
+            ):
+                detail[_UNMATCHED_SELL_SINCE_KEY] = datetime.now(UTC).isoformat()
         elif journaled_qty is not None:
             detail.pop(_JOURNAL_MANUAL_REVIEW_KEY, None)
+            detail.pop(_UNMATCHED_SELL_SINCE_KEY, None)
         row.last_reconcile_detail = detail
         if commit:
             await self._db.commit()
@@ -973,6 +1015,7 @@ class KiwoomMockOrderLedgerService:
             indicators_snapshot=row.indicators_snapshot,
             trade_id=row.trade_id,
             journal_id=row.journal_id,
+            unmatched_sell_since=unmatched_sell_since(row),
         )
 
     @staticmethod

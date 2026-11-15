@@ -43,6 +43,7 @@ from app.services.kiwoom_mock_order_ledger_service import (
     FillBooking,
     KiwoomMockTransitionRefused,
     journaled_progress,
+    unmatched_sell_since,
 )
 from app.services.kiwoom_mock_reconcile import (
     FULL_GATE_ENVS,
@@ -151,10 +152,15 @@ class _FakeResult:
     """Serves the journal SELECT and the trade upsert ``RETURNING`` clause."""
 
     def scalars(self) -> _FakeScalars:
+        bound = FakeSession.journal_created_before
         active = [
             journal
             for journal in FakeSession.journals
             if journal.status == JournalStatus.active
+            and (
+                bound is None
+                or (journal.created_at is not None and journal.created_at <= bound)
+            )
         ]
         return _FakeScalars(active)
 
@@ -163,11 +169,17 @@ class _FakeResult:
 
 
 class FakeSession:
-    """In-memory journal store: get/add/flush/execute for the journal helpers."""
+    """In-memory journal store: get/add/flush/execute for the journal helpers.
+
+    ``journal_created_before`` is set by the test-side spy that wraps the real
+    ``_close_journals_on_sell`` so the fake SELECT honours the chronology bound
+    the real SQL would apply.
+    """
 
     statements: list[Any] = []
     journals: list[TradeJournal] = []
     _next_journal_id = 100
+    journal_created_before: datetime | None = None
 
     async def __aenter__(self) -> FakeSession:
         return self
@@ -217,6 +229,7 @@ def _journal(
     quantity: str = "10",
     entry_price: str = "70000",
     status: JournalStatus = JournalStatus.active,
+    created_at: datetime | None = None,
 ) -> TradeJournal:
     journal = TradeJournal(
         symbol=symbol,
@@ -232,6 +245,8 @@ def _journal(
         status=status,
     )
     journal.id = journal_id
+    # Old enough to precede any first-unmatched stamp (the fake stamps NOW).
+    journal.created_at = created_at or datetime(2026, 1, 1, tzinfo=UTC)
     return journal
 
 
@@ -287,6 +302,7 @@ def _fake_booking(
         indicators_snapshot=row.indicators_snapshot,
         trade_id=row.trade_id,
         journal_id=row.journal_id,
+        unmatched_sell_since=unmatched_sell_since(row),
     )
 
 
@@ -461,8 +477,14 @@ class FakeService:
                 detail["journaled_avg"] = str(journaled_avg)
         if manual_review_reason is not None:
             detail["journal_manual_review"] = manual_review_reason
+            if (
+                manual_review_reason.startswith("unmatched_sell_quantity")
+                and "unmatched_sell_since" not in detail
+            ):
+                detail["unmatched_sell_since"] = NOW.isoformat()
         elif journaled_qty is not None:
             detail.pop("journal_manual_review", None)
+            detail.pop("unmatched_sell_since", None)
         row.last_reconcile_detail = detail
         self.writes.append(
             ("journal_progress", ledger_id, str(journaled_qty), manual_review_reason)
@@ -515,6 +537,23 @@ def fake_ledger(monkeypatch: pytest.MonkeyPatch):
     FakeSession.journals = []
     FakeSession._next_journal_id = 100
     FakeSession.statements = []
+    FakeSession.journal_created_before = None
+
+    # Emulate the chronology bound the real helper applies in SQL: record the
+    # kwarg the kernel passes and let the fake SELECT honour it, while the real
+    # close logic (unmatched counting, lot splitting) still runs.
+    from app.mcp_server.tooling import order_journal
+
+    real_close = order_journal._close_journals_on_sell
+
+    async def bound_aware_close(**kwargs: Any) -> Any:
+        FakeSession.journal_created_before = kwargs.get("journal_created_before")
+        try:
+            return await real_close(**kwargs)
+        finally:
+            FakeSession.journal_created_before = None
+
+    monkeypatch.setattr(order_journal, "_close_journals_on_sell", bound_aware_close)
     written: list[FakeService] = []
 
     class Recorder(FakeService):
@@ -991,6 +1030,78 @@ async def test_short_sell_journals_matched_part_and_recovers_next_run(
         if j.status == JournalStatus.closed
     )
     assert closed_qty == Decimal("10")
+
+
+async def test_unmatched_sell_never_closes_a_lot_created_after_it_missed(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retried remainder closes only lots that existed when it first missed.
+
+    mergewake r4578899894: without the bound, a lot journaled from a LATER buy
+    is retroactively consumed by the older sell's recovery — an irreversible
+    close and realized P&L attributed to a position still held.
+    """
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [
+        _row(1, broker_order_id="0001", side="sell"),
+    ]
+    FakeService.total = 1
+    FakeSession.journals = [_journal(7, quantity="6", entry_price="70000")]
+
+    await _run(
+        _partial_reader(quantity=10, average_price=80000),
+        dry_run=False,
+        terminal_only=False,
+    )
+    stored = FakeService.rows[0]
+    since = unmatched_sell_since(stored)
+    assert since is not None
+
+    # A lot created AFTER the first unmatched stamp is not cover for this sell.
+    FakeSession.journals.append(
+        _journal(
+            8,
+            quantity="4",
+            entry_price="70000",
+            created_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
+    second = await _run(
+        _partial_reader(quantity=10, average_price=80000),
+        dry_run=False,
+        terminal_only=False,
+    )
+    outcome = second["reconciled"][0]
+    assert outcome["journal"]["unmatched_quantity"] == 4
+    assert journaled_progress(stored)[0] == Decimal("6")
+    assert stored.last_reconcile_detail["journal_manual_review"].startswith(
+        "unmatched_sell_quantity"
+    )
+    newer = next(j for j in FakeSession.journals if j.id == 8)
+    assert newer.status == JournalStatus.active
+    assert newer.quantity == Decimal("4")
+    assert newer.exit_price is None
+
+    # A lot that already existed when the sell first missed IS eligible.
+    FakeSession.journals.append(
+        _journal(
+            9,
+            quantity="4",
+            entry_price="70000",
+            created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+    )
+    third = await _run(
+        _partial_reader(quantity=10, average_price=80000),
+        dry_run=False,
+        terminal_only=False,
+    )
+    outcome = third["reconciled"][0]
+    assert outcome["action"] == "journaled"
+    assert journaled_progress(stored)[0] == Decimal("10")
+    closed_9 = next(j for j in FakeSession.journals if j.id == 9)
+    assert closed_9.status == JournalStatus.closed
 
 
 async def test_overlapping_full_runs_book_the_delta_once(
