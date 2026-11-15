@@ -57,6 +57,7 @@ tests/mcp_server/tooling/test_live_order_evidence_upbit.py
 tests/mcp_server/tooling/test_loss_cut_position_scope.py
 tests/mcp_server/tooling/test_loss_cut_preconditions.py
 tests/mcp_server/tooling/test_order_execution_live_routing.py
+tests/mcp_server/tooling/test_order_journal_fifo_db.py
 tests/mcp_server/tooling/test_orders_modify_cancel_ledger_wiring.py
 tests/mcp_server/tooling/test_screen_stocks_snapshot_docs.py
 tests/mcp_server/tooling/test_support_reserve_net_consumer_tool.py
