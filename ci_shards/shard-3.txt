@@ -111,6 +111,7 @@ tests/scripts/b0x/us/test_alpaca_lab_mutation_seam.py
 tests/scripts/b0x/us/test_cycle.py
 tests/scripts/test_binance_demo_strategy_loop.py
 tests/scripts/test_binance_h5_ncp_playbook.py
+tests/scripts/test_binance_trend_ncp_playbook.py
 tests/scripts/test_build_policy_table_out_dir.py
 tests/scripts/test_deploy_ci_gate.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
@@ -170,6 +171,8 @@ tests/services/brokers/binance/test_broker_ack_scope_migration.py
 tests/services/brokers/binance/test_gap_detection.py
 tests/services/brokers/binance/test_rate_limit_telemetry.py
 tests/services/brokers/binance/test_rest_client.py
+tests/services/brokers/binance/trend/test_alerting_control.py
+tests/services/brokers/binance/trend/test_cli.py
 tests/services/brokers/binance/trend/test_client_history.py
 tests/services/brokers/binance/trend/test_constants.py
 tests/services/brokers/binance/trend/test_entry_gate.py
@@ -182,6 +185,7 @@ tests/services/brokers/binance/trend/test_state_exec_db.py
 tests/services/brokers/binance/trend/test_state_inputs.py
 tests/services/brokers/binance/trend/test_static_boundary.py
 tests/services/brokers/binance/trend/test_strategy_sizing.py
+tests/services/brokers/binance/trend/test_truth_gate.py
 tests/services/brokers/binance/trend/test_wire_contract.py
 tests/services/brokers/kis/test_circuit_breaker.py
 tests/services/brokers/kis/test_live_order_expiry_krx_after.py

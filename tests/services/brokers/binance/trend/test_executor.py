@@ -1372,3 +1372,50 @@ async def test_an_uncertain_entry_found_partially_filled_still_alarms_and_blocks
     assert rig.state.intents[signal.entry_client_order_id].state == "uncertain"
     assert len(rig.client.sends) == 1  # no resend, no exit
     assert rig.state.calls["reserve_exit_intent"] == 0
+
+
+# ------------------------------------------------------------ manage-only
+
+
+@pytest.mark.asyncio
+async def test_manage_only_never_evaluates_a_signal_or_opens_an_entry(
+    rig: Rig, monkeypatch
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.auto_fill = True
+    evaluated: list[int] = []
+
+    def fake_evaluate_all(*args, **kwargs):
+        evaluated.append(1)
+        raise AssertionError("manage-only tick must not evaluate signals")
+
+    monkeypatch.setattr(executor_module, "evaluate_all", fake_evaluate_all)
+    result = await rig.exe.run_tick(now=NOW, confirm=True, manage_only=True)
+    events = [event.event for event in result.events]
+    assert "entries_skipped_manage_only" in events
+    assert evaluated == []
+    assert rig.client.sends == []
+    assert rig.state.calls["reserve_entry"] == 0
+    assert rig.state.calls["observe_signal"] == 0
+    assert rig.state.signals == {}
+
+
+@pytest.mark.asyncio
+async def test_manage_only_still_manages_a_held_position(rig: Rig) -> None:
+    key = hold(rig, entered_at=NOW - dt.timedelta(days=30, minutes=1))
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = minute_rows()
+    rig.client.auto_fill = True
+    result = await rig.exe.run_tick(now=NOW, confirm=True, manage_only=True)
+    assert rig.state.signals[key].exit_reason == EXIT_TIME_EXIT
+    assert len(rig.client.sends) == 1  # the reduceOnly exit, no entry
+    assert "entries_skipped_manage_only" in [e.event for e in result.events]
+
+
+@pytest.mark.asyncio
+async def test_the_executor_itself_refuses_an_entry_under_manage_only(rig: Rig) -> None:
+    rig.exe._manage_only = True
+    record = SimpleNamespace(signal_key="BTCUSDT|k|x|1", symbol="BTCUSDT")
+    with pytest.raises(TrendStateBlocked, match="manage-only"):
+        await rig.exe._enter(record, sigma_hat=D("1"), now=NOW)
+    assert rig.client.sends == []
