@@ -48,6 +48,7 @@ from app.services.brokers.binance.trend.constants import (
     SEAL_LOOKBACK_DAYS,
 )
 from app.services.brokers.binance.trend.control import (
+    LivenessOpen,
     RunnerHeartbeat,
     TickFailure,
     tick_failures,
@@ -200,7 +201,7 @@ async def _run_ticks(
             # lost lock means another runner owns the lane, so this loop stops
             # instead of trading beside it.
             if heartbeat is not None and not await heartbeat.stamp():
-                raise RuntimeError("trend runner liveness lock lost")
+                raise RuntimeError("trend runner liveness connection lost")
             await monitor.tick_done(_alert_pairs(failures))
             if once:
                 # Inside the try: a stop that lands while the alert is still
@@ -247,10 +248,13 @@ async def _run(args: argparse.Namespace) -> int:
         if monitor.enabled:
             _install_stop_signals(stop)
         if heartbeat is not None:
-            if not await heartbeat.open():
+            opened = await heartbeat.open()
+            if opened is LivenessOpen.HELD_BY_OTHER:
                 raise SystemExit("another TREND runner owns the loop lock")
+            if opened is LivenessOpen.UNAVAILABLE:
+                raise SystemExit("trend runner heartbeat database unavailable")
             if not await heartbeat.stamp():
-                raise SystemExit("trend runner liveness lock lost")
+                raise SystemExit("trend runner liveness connection lost")
         return await _run_ticks(
             args,
             client=client,

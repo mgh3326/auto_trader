@@ -64,11 +64,22 @@ async def _watch(
     clock: Callable[[], dt.datetime] = _utcnow,
 ) -> int:
     miss_after = dt.timedelta(minutes=args.miss_minutes)
+    seen = False
     while True:
-        record = await poll_heartbeat(lane, alerter, miss_after=miss_after, now=clock())
+        record = await poll_heartbeat(
+            lane,
+            alerter,
+            miss_after=miss_after,
+            now=clock(),
+            seen_before=seen,
+        )
+        seen = bool(record["runner_seen"])
         print(json.dumps(record, sort_keys=True), flush=True)
         if args.once:
-            return 2 if record["verdict"] in {"missed", "absent", "unreadable"} else 0
+            bad = record["verdict"] in {"missed", "unreadable"} or (
+                record["verdict"] == "absent" and record["runner_seen"]
+            )
+            return 2 if bad else 0
         await asyncio.sleep(args.poll_seconds)
 
 

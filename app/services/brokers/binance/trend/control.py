@@ -10,21 +10,29 @@ sends an order or mutates trading state.
   error, so it gets its own alert bucket here — the design requires an alert
   when it trips, and this is the only place it is surfaced to the operator.
 * :class:`RunnerHeartbeat` / :class:`RunnerLiveness` are the liveness pair.
-  ``--loop`` holds a session advisory lock for its whole life and touches that
-  connection after every tick; the watcher reads the lock and the backend's
-  ``pg_stat_activity.state_change``. A missing lock or an old state change
-  means the runner is dead or hung. The watcher only runs SELECTs.
+  The two facts are kept apart on purpose: **lock ownership** is a state of one
+  pinned connection (mutual exclusion), and **heartbeat** is a benign query on
+  that same connection (the watcher reads its ``state_change``). A failed
+  observation is not evidence that the lock was lost, so a transient statement
+  error never disposes the connection and never kills the loop; only a proven
+  dead backend (the lock is gone with it) does. A connection whose unlock fails
+  is invalidated, never returned to the pool while a session lock could ride on
+  it. ``open`` reports acquired / held-by-another / database-unavailable as
+  three distinct outcomes. The watcher only runs SELECTs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, InterfaceError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from .entry_gate import EntryRefusal
@@ -37,22 +45,10 @@ RUNNER_LOCK_KEY = "auto_trader:binance_trend_runner"
 
 _LOCK_SQL = text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))")
 _UNLOCK_SQL = text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))")
-# A one-bigint advisory lock appears in ``pg_locks`` as
-# classid = key >> 32, objid = key & 0xFFFFFFFF, objsubid = 1 (PostgreSQL
-# "Advisory Locks" docs). This one query is both the heartbeat stamp (any query
-# on the pinned connection moves ``state_change``) and the ownership proof.
-_LOCK_OWNED_SQL = text(
-    """
-    SELECT count(*)
-      FROM pg_locks
-     WHERE pid = pg_backend_pid()
-       AND locktype = 'advisory'
-       AND granted
-       AND objsubid = 1
-       AND classid::bigint = ((hashtextextended(:key, 0) >> 32) & 4294967295)
-       AND objid::bigint = (hashtextextended(:key, 0) & 4294967295)
-    """
-)
+# The heartbeat is deliberately not an ownership test: any query on the pinned
+# connection moves ``pg_stat_activity.state_change`` (what the watcher reads),
+# and a failure only means the heartbeat was missed, not that the lock was lost.
+_STAMP_SQL = text("SELECT 1")
 # The watcher sees the same lock from outside the backend.
 _LIVENESS_SQL = text(
     """
@@ -140,27 +136,47 @@ def stop_signature(exc: BaseException) -> str:
     return f"exception:{type(exc).__name__}"
 
 
+class LivenessOpen(StrEnum):
+    """Three distinct outcomes; only ``HELD_BY_OTHER`` means a competing runner."""
+
+    ACQUIRED = "acquired"
+    HELD_BY_OTHER = "held_by_other"
+    UNAVAILABLE = "unavailable"
+
+
+def _connection_lost(exc: BaseException) -> bool:
+    """True only when the backend is known gone (so its session lock is gone too).
+
+    A statement timeout, a cancelled statement or any other error on a live
+    backend proves nothing about the lock and must not dispose the connection.
+    """
+    if isinstance(exc, (ConnectionError, OSError, InterfaceError)):
+        return True
+    return isinstance(exc, DBAPIError) and bool(exc.connection_invalidated)
+
+
 class RunnerHeartbeat:
     """Session-level liveness lock held by the ``--loop`` runner.
 
-    The lock lives on one **checked-out connection** for the runner's whole
-    life. A session advisory lock outlives a commit and stays on the physical
-    backend, so using a pooled ``AsyncSession`` (which returns its connection
-    between transactions) would let unrelated queries refresh the stamp, move
-    the stamp to another backend, or leave the lock behind in the pool. This
-    object therefore owns an ``AsyncConnection`` and never releases it until
-    ``close``.
+    One **checked-out connection** owns the lock for the runner's whole life.
+    A session advisory lock outlives a commit and stays on the physical backend,
+    so this object never returns that connection to the pool while it may still
+    hold the lock; disposal always invalidates a backend whose unlock failed.
 
-    ``open`` returns ``False`` when another loop already holds the lock, so a
-    second runner cannot be started by accident. ``stamp`` runs one ownership
-    query on the pinned connection: it both refreshes ``state_change`` (the
-    watcher's heartbeat) and proves this backend still holds the lock. A lost
-    connection is reopened once; a lost lock reports ``False`` and the caller
-    stops the loop.
+    The two concepts are separate:
+
+    * ``open`` is the only ownership decision. It reports acquired,
+      held-by-another or database-unavailable, so the caller never blames a
+      phantom runner for an outage.
+    * ``stamp`` is only the heartbeat: a benign ``SELECT 1`` on the pinned
+      connection that moves ``pg_stat_activity.state_change``. A transient
+      statement error is logged and the loop continues (the next tick retries;
+      if stamps keep failing the watcher raises the stale alert). ``False`` is
+      returned only when the connection is proven dead, which means the
+      backend — and therefore the lock — is gone; the caller must stop.
 
     Transactions are committed after each statement so the connection never
-    sits ``idle in transaction``; the commit does not release the session lock
-    because the same physical connection stays checked out.
+    sits ``idle in transaction``.
     """
 
     def __init__(self, engine: AsyncEngine, *, key: str = RUNNER_LOCK_KEY) -> None:
@@ -168,57 +184,47 @@ class RunnerHeartbeat:
         self._key = key
         self._conn: Any | None = None
 
-    async def open(self) -> bool:
+    async def open(self) -> LivenessOpen:
         try:
             conn = await self._engine.connect()
         except Exception:
-            logger.exception("trend runner liveness connection unavailable")
-            return False
+            logger.exception("trend runner liveness database unavailable")
+            return LivenessOpen.UNAVAILABLE
         try:
             got = await conn.scalar(_LOCK_SQL, {"key": self._key})
             await conn.commit()
         except Exception:
-            logger.exception("trend runner liveness lock unavailable")
-            await self._close_conn(conn)
-            return False
+            logger.exception("trend runner liveness lock query failed")
+            await self._discard(conn)
+            return LivenessOpen.UNAVAILABLE
         if got is not True:
-            await self._close_conn(conn)
-            return False
+            await self._discard(conn)
+            return LivenessOpen.HELD_BY_OTHER
         self._conn = conn
-        return True
+        return LivenessOpen.ACQUIRED
 
     async def stamp(self) -> bool:
-        """Refresh the heartbeat; ``False`` means the lock is no longer ours."""
-        if self._conn is None and not await self.open():
-            return False
-        owned = await self._ownership()
-        if owned is False:
-            await self.close()
-            return False
-        if owned is None:
-            # The pinned connection died: reacquire once, then prove ownership.
-            await self._close_conn(self._conn)
-            self._conn = None
-            if not await self.open():
-                return False
-            owned = await self._ownership()
-            if owned is not True:
-                await self.close()
-                return False
-        return True
-
-    async def _ownership(self) -> bool | None:
-        """True/False from the ownership proof, ``None`` on a connection error."""
+        """Refresh the heartbeat. ``False`` only when the backend is proven dead."""
         conn = self._conn
         if conn is None:
-            return None
+            return False
         try:
-            owned = await conn.scalar(_LOCK_OWNED_SQL, {"key": self._key})
+            await conn.scalar(_STAMP_SQL)
             await conn.commit()
-        except Exception:
-            logger.exception("trend runner heartbeat stamp failed")
-            return None
-        return owned is not None and int(owned) >= 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if _connection_lost(exc):
+                logger.exception("trend runner liveness connection lost")
+                self._conn = None
+                await self._discard(conn)
+                return False
+            logger.warning(
+                "trend runner heartbeat stamp deferred error_class=%s",
+                type(exc).__name__,
+            )
+            return True
+        return True
 
     async def close(self) -> None:
         conn, self._conn = self._conn, None
@@ -228,15 +234,25 @@ class RunnerHeartbeat:
             await conn.scalar(_UNLOCK_SQL, {"key": self._key})
             await conn.commit()
         except Exception:
-            logger.exception("trend runner heartbeat unlock failed")
-        await self._close_conn(conn)
-
-    @staticmethod
-    async def _close_conn(conn: Any) -> None:
+            logger.exception("trend runner heartbeat unlock failed; invalidating")
+            await self._discard(conn)
+            return
         try:
             await conn.close()
         except Exception:
             logger.exception("trend runner heartbeat connection close failed")
+
+    @staticmethod
+    async def _discard(conn: Any) -> None:
+        """Kill the backend so a session lock can never ride a pooled connection."""
+        try:
+            await conn.invalidate()
+        except Exception:
+            logger.exception("trend runner heartbeat connection invalidate failed")
+            try:
+                await conn.close()
+            except Exception:
+                logger.exception("trend runner heartbeat connection close failed")
 
 
 class RunnerLiveness:

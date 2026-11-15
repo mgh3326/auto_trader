@@ -336,10 +336,16 @@ async def poll_heartbeat(
     *,
     miss_after: dt.timedelta,
     now: dt.datetime,
-    absent_is_failure: bool = True,
+    seen_before: bool = False,
     read_timeout: float = READ_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """One watcher poll: read the stamp, judge it, alert or re-arm.
+
+    Absence is only a death signal after this watcher has actually seen the
+    runner: without a durable tick stamp, a lock that was never there and a
+    lock that was lost look identical. ``seen_before`` carries that latch; a
+    database read failure is reported as ``unreadable`` (a blind watcher), not
+    as an absent runner.
 
     The read has a deadline: a stalled SELECT must end as an ``unreadable``
     alert, never leave the only hung-runner detector waiting forever.
@@ -351,12 +357,22 @@ async def poll_heartbeat(
         await alerter.fire(
             AlertKind.HEARTBEAT_MISSED, f"unreadable:{error_class}", "unreadable"
         )
-        return {"event": "watch", "verdict": "unreadable", "error_class": error_class}
+        return {
+            "event": "watch",
+            "verdict": "unreadable",
+            "error_class": error_class,
+            "runner_seen": seen_before,
+        }
+    seen = seen_before or last is not None
     verdict = judge_heartbeat(last, now=now, miss_after=miss_after)
     if verdict is HeartbeatVerdict.MISSED:
         await alerter.fire(AlertKind.HEARTBEAT_MISSED, "stale_tick", "stale")
-    elif verdict is HeartbeatVerdict.ABSENT and absent_is_failure:
-        await alerter.fire(AlertKind.HEARTBEAT_MISSED, "runner_absent", "absent")
+    elif verdict is HeartbeatVerdict.ABSENT:
+        if seen_before:
+            await alerter.fire(AlertKind.HEARTBEAT_MISSED, "runner_absent", "absent")
+        else:
+            # Never started (or the watcher itself started too early): not a failure.
+            alerter.clear(AlertKind.HEARTBEAT_MISSED)
     else:
         alerter.clear(AlertKind.HEARTBEAT_MISSED)
     return {
@@ -364,4 +380,5 @@ async def poll_heartbeat(
         "verdict": verdict.value,
         "last_tick_at": last.isoformat() if last is not None else None,
         "age_seconds": int((now - last).total_seconds()) if last is not None else None,
+        "runner_seen": seen,
     }

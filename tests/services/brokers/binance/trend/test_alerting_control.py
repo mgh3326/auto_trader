@@ -301,25 +301,33 @@ class Lane:
 
 
 @pytest.mark.asyncio
-async def test_absent_is_a_miss_when_the_caller_says_so_and_benign_otherwise():
+async def test_absence_alerts_only_after_this_watcher_has_seen_the_runner():
     channel = Channel()
     a = alerter(channel)
-    record = await poll_heartbeat(
+    # Never started: absence alone cannot distinguish that from a death.
+    first = await poll_heartbeat(
         Lane(None), a, miss_after=dt.timedelta(minutes=10), now=NOW
     )
-    assert record["verdict"] == "absent"
-    assert [x.signature for x in channel.sent] == ["runner_absent"]
-    a.clear(AlertKind.HEARTBEAT_MISSED)
-    channel.sent.clear()
-    record = await poll_heartbeat(
+    assert first["verdict"] == "absent" and first["runner_seen"] is False
+    assert channel.sent == []
+    # The runner was seen at least once; now the lock disappearing is a death.
+    seen = await poll_heartbeat(
+        Lane(NOW - dt.timedelta(minutes=1)),
+        a,
+        miss_after=dt.timedelta(minutes=10),
+        now=NOW,
+        seen_before=first["runner_seen"],
+    )
+    assert seen["verdict"] == "ok" and seen["runner_seen"] is True
+    gone = await poll_heartbeat(
         Lane(None),
         a,
         miss_after=dt.timedelta(minutes=10),
         now=NOW,
-        absent_is_failure=False,
+        seen_before=seen["runner_seen"],
     )
-    assert record["verdict"] == "absent"
-    assert channel.sent == []
+    assert gone["verdict"] == "absent" and gone["runner_seen"] is True
+    assert [x.signature for x in channel.sent] == ["runner_absent"]
 
 
 @pytest.mark.asyncio
@@ -358,6 +366,7 @@ async def test_an_unreadable_liveness_is_its_own_alert():
         "event": "watch",
         "verdict": "unreadable",
         "error_class": "TimeoutError",
+        "runner_seen": False,
     }
     assert [x.signature for x in channel.sent] == ["unreadable:TimeoutError"]
 
@@ -368,12 +377,25 @@ async def test_an_unreadable_liveness_is_its_own_alert():
 class FakeEngine:
     """Engine double: each ``connect`` returns a fresh pinned connection."""
 
-    def __init__(self, *, granted: bool = True, owned: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        granted: bool = True,
+        connect_error: Exception | None = None,
+        lock_error: Exception | None = None,
+        stamp_error: Exception | None = None,
+        unlock_ok: bool = True,
+    ) -> None:
         self.granted = granted
-        self.owned = owned
+        self.connect_error = connect_error
+        self.lock_error = lock_error
+        self.stamp_error = stamp_error
+        self.unlock_ok = unlock_ok
         self.connections: list[FakeConnection] = []
 
     async def connect(self) -> FakeConnection:
+        if self.connect_error is not None:
+            raise self.connect_error
         conn = FakeConnection(self)
         self.connections.append(conn)
         return conn
@@ -384,44 +406,59 @@ class FakeConnection:
         self.engine = engine
         self.commits = 0
         self.closed = False
+        self.invalidated = False
         self.stamps = 0
-        self.break_on_stamp = False
 
     async def scalar(self, statement, params=None):
         sql = str(statement)
         if "pg_try_advisory_lock" in sql:
+            if self.engine.lock_error is not None:
+                raise self.engine.lock_error
             return self.engine.granted
-        if "pg_locks" in sql:
-            self.stamps += 1
-            if self.break_on_stamp:
-                raise ConnectionError("gone")
-            return self.engine.owned
         if "pg_advisory_unlock" in sql:
-            return True
+            return self.engine.unlock_ok
+        if sql.strip().upper() == "SELECT 1":
+            self.stamps += 1
+            if self.engine.stamp_error is not None:
+                raise self.engine.stamp_error
+            return 1
         raise AssertionError(sql)
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def invalidate(self) -> None:
+        self.invalidated = True
+        self.closed = True
 
     async def close(self) -> None:
         self.closed = True
 
 
 @pytest.mark.asyncio
-async def test_a_second_loop_cannot_take_the_liveness_lock():
+async def test_open_reports_held_by_another_runner_distinctly():
     engine = FakeEngine(granted=False)
     heartbeat = RunnerHeartbeat(engine)
-    assert await heartbeat.open() is False
+    assert await heartbeat.open() is control.LivenessOpen.HELD_BY_OTHER
     assert engine.connections[0].closed is True
     assert await heartbeat.stamp() is False
     assert heartbeat._conn is None
 
 
 @pytest.mark.asyncio
+async def test_open_reports_a_database_outage_as_unavailable_not_a_runner():
+    engine = FakeEngine(connect_error=ConnectionError("db down"))
+    assert await RunnerHeartbeat(engine).open() is control.LivenessOpen.UNAVAILABLE
+    engine = FakeEngine(lock_error=RuntimeError("statement failed"))
+    assert await RunnerHeartbeat(engine).open() is control.LivenessOpen.UNAVAILABLE
+    assert engine.connections[0].closed is True
+
+
+@pytest.mark.asyncio
 async def test_the_loop_pins_one_connection_stamps_and_unlocks_it():
     engine = FakeEngine()
     heartbeat = RunnerHeartbeat(engine)
-    assert await heartbeat.open() is True
+    assert await heartbeat.open() is control.LivenessOpen.ACQUIRED
     conn = engine.connections[0]
     assert heartbeat._conn is conn
     assert await heartbeat.stamp() is True
@@ -431,32 +468,49 @@ async def test_the_loop_pins_one_connection_stamps_and_unlocks_it():
     assert conn.stamps == 2
     assert conn.commits >= 3  # the lock, then each stamp transaction
     await heartbeat.close()
-    assert conn.closed is True
+    assert conn.closed is True and conn.invalidated is False
     assert heartbeat._conn is None
 
 
 @pytest.mark.asyncio
-async def test_a_lost_connection_is_reopened_once_on_the_next_stamp():
-    engine = FakeEngine()
+async def test_a_transient_stamp_error_keeps_the_lock_and_the_loop():
+    engine = FakeEngine(stamp_error=RuntimeError("statement cancelled"))
     heartbeat = RunnerHeartbeat(engine)
-    assert await heartbeat.open() is True
-    first = engine.connections[0]
-    first.break_on_stamp = True
-    assert await heartbeat.stamp() is True  # reopened and proved ownership
-    assert len(engine.connections) == 2
-    assert first.closed is True
-    assert heartbeat._conn is engine.connections[1]
+    assert await heartbeat.open() is control.LivenessOpen.ACQUIRED
+    conn = engine.connections[0]
+    assert await heartbeat.stamp() is True  # logged, next tick retries
+    assert heartbeat._conn is conn and conn.invalidated is False
+    engine.stamp_error = None
+    assert await heartbeat.stamp() is True
 
 
 @pytest.mark.asyncio
-async def test_a_lost_lock_reports_false_and_releases_the_connection():
-    engine = FakeEngine()
+async def test_only_a_proven_dead_backend_stops_the_loop_and_is_invalidated():
+    engine = FakeEngine(stamp_error=ConnectionError("backend gone"))
     heartbeat = RunnerHeartbeat(engine)
-    assert await heartbeat.open() is True
-    engine.owned = 0  # someone else took the lane
+    assert await heartbeat.open() is control.LivenessOpen.ACQUIRED
+    conn = engine.connections[0]
     assert await heartbeat.stamp() is False
     assert heartbeat._conn is None
-    assert engine.connections[0].closed is True
+    assert conn.invalidated is True  # never returned to the pool while locked
+
+
+@pytest.mark.asyncio
+async def test_an_unlock_failure_invalidates_instead_of_pooling_a_locked_backend():
+    engine = FakeEngine(unlock_ok=False, lock_error=None)
+    heartbeat = RunnerHeartbeat(engine)
+    assert await heartbeat.open() is control.LivenessOpen.ACQUIRED
+    conn = engine.connections[0]
+
+    async def broken_unlock(statement, params=None):
+        if "pg_advisory_unlock" in str(statement):
+            raise RuntimeError("unlock failed")
+        return 1
+
+    conn.scalar = broken_unlock  # type: ignore[method-assign]
+    await heartbeat.close()
+    assert conn.invalidated is True
+    assert heartbeat._conn is None
 
 
 # --------------------------------------------------------------- liveness

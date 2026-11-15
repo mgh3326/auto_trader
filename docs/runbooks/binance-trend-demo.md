@@ -146,8 +146,10 @@ docker run --name at-trend-watch --network host --env-file "$env_file" -e BINANC
 
 watcher는 러너가 `--loop` 동안 잡고 있는 세션 advisory lock과 그 backend의
 `pg_stat_activity.state_change`를 SELECT로만 읽는다. Binance 자격증명이 필요 없다.
-러너가 **없거나**(잠금 부재) 마지막 touch가 10분을 넘으면 1회 알린다. H5와 달리 이
-레인에는 durable tick stamp가 없으므로 **잠금 부재가 곧 사망 신호**다 — 그래서
+**이 watcher가 러너를 한 번이라도 본 뒤** 잠금이 사라지거나 마지막 touch가 10분을
+넘으면 1회 알린다. 한 번도 못 본 잠금 부재는 "아직 시작 안 함"과 구분할 수 없어
+알리지 않고, DB 읽기 실패는 `absent`가 아니라 `unreadable`로 알린다. H5와 달리 이
+레인에는 durable tick stamp가 없으므로 **본 뒤의 잠금 부재가 사망 신호**다 — 그래서
 watcher는 러너의 첫 tick 뒤에 시작하고, 정지할 때는 watcher를 먼저 멈춘다. SIGKILL,
 OOM kill, 호스트 상실을 잡는 유일한 경로다.
 
@@ -286,8 +288,9 @@ docker run --rm --network host --env-file "$env_file" -e BINANCE_TREND_DEMO_ENAB
 
 - 이 러너는 어떤 스케줄러에도 등록되지 않는다. `--loop`도 사람이 띄운 foreground
   프로세스다.
-- 잔여 위험: watcher가 러너보다 늦게 시작하는 순서를 어기면 시작 전 `runner_absent`
-  알림이 1회 날 수 있다. 의도된 정지에서 watcher를 먼저 끄지 않으면 `heartbeat_missed`
-  가 1회 난다. 둘 다 사고가 아니지만, 반대로 잠금 부재를 무시하면 러너 사망을 놓친다.
+- 잔여 위험: watcher가 러너를 한 번도 보지 못한 채 러너가 죽으면(시작 전 또는 첫
+  관측 전) 잠금 부재 알림이 나가지 않는다 — 운영 순서(러너 첫 tick → watcher)가 그
+  구간을 막는다. 의도된 정지에서 watcher를 먼저 끄지 않으면 `heartbeat_missed`가 1회
+  난다. 일시적 DB 오류는 러너를 죽이지 않고, 계속 실패하면 10분 뒤 stale 알림이 난다.
 - 알림 전송 실패·지연은 러너 tick을 바꾸지 못한다(타임아웃 5초, 예외 삼킴, tick
   알림은 백그라운드 태스크).
