@@ -174,3 +174,118 @@ async def test_signal_row_is_committed_before_the_reservation_and_the_send(monke
                     {"key": client_order_id},
                 )
             await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_not_sent_marking_is_a_compare_and_set_on_recorded():
+    """hk 4729 — a row an earlier dispatch closed is never relabelled.
+
+    Only a still-'recorded' row may be marked not sent, so replaying a
+    correlation id can never turn a submitted order into "never sent" (that is
+    why hk 4725 was deferred out of #2434 rather than patched inline).
+    """
+    from app.services.kiwoom_mock_attribution import (
+        mark_signal_not_sent,
+        mark_signal_outcome,
+        record_signal,
+        resolve_attribution,
+    )
+
+    strategy = f"db-test-not-sent-{uuid.uuid4().hex[:12]}"
+    closed = resolve_attribution(
+        symbol="005930",
+        side="buy",
+        price=70100,
+        quantity=1,
+        strategy=strategy,
+        kst_trade_day="2026-11-16",
+    )
+    fresh = resolve_attribution(
+        symbol="005930",
+        side="buy",
+        price=70200,
+        quantity=1,
+        strategy=strategy,
+        kst_trade_day="2026-11-16",
+    )
+
+    try:
+        async with AsyncSessionLocal() as db:
+            created_closed = await record_signal(
+                db,
+                attribution=closed,
+                symbol="005930",
+                decision="order",
+                side="buy",
+                intended_quantity=1,
+                intended_price=70100,
+                kst_date="2026-11-16",
+            )
+            created_fresh = await record_signal(
+                db,
+                attribution=fresh,
+                symbol="005930",
+                decision="order",
+                side="buy",
+                intended_quantity=1,
+                intended_price=70200,
+                kst_date="2026-11-16",
+            )
+            # a replay reuses the row and says so: 'recorded' there belongs to
+            # the earlier attempt, so the caller must not close it
+            replayed = await record_signal(
+                db,
+                attribution=closed,
+                symbol="005930",
+                decision="order",
+            )
+        assert created_closed.created is True
+        assert created_fresh.created is True
+        assert replayed.created is False
+        assert replayed.row_id == created_closed.row_id
+        async with AsyncSessionLocal() as db:
+            await mark_signal_outcome(
+                db,
+                correlation_id=closed.correlation_id,
+                outcome_state="submitted",
+            )
+            closed_rows = await mark_signal_not_sent(
+                db,
+                correlation_id=closed.correlation_id,
+                reason="duplicate_intent",
+                detail_patch={"status": "not_submitted"},
+            )
+            fresh_rows = await mark_signal_not_sent(
+                db,
+                correlation_id=fresh.correlation_id,
+                reason="preflight_refused",
+                detail_patch={"status": "not_submitted"},
+            )
+
+        assert closed_rows == 0  # 'submitted' is final; the CAS refuses it
+        assert fresh_rows == 1
+
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    text(
+                        "SELECT correlation_id, outcome_state, suppressed_reason "
+                        "FROM review.kiwoom_mock_signal_ledger "
+                        "WHERE correlation_id IN (:closed, :fresh)"
+                    ),
+                    {"closed": closed.correlation_id, "fresh": fresh.correlation_id},
+                )
+            ).all()
+        by_id = {row[0]: (row[1], row[2]) for row in rows}
+        assert by_id[closed.correlation_id] == ("submitted", None)
+        assert by_id[fresh.correlation_id] == ("suppressed", "preflight_refused")
+    finally:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text(
+                    "DELETE FROM review.kiwoom_mock_signal_ledger "
+                    "WHERE strategy = :strategy"
+                ),
+                {"strategy": strategy},
+            )
+            await db.commit()
