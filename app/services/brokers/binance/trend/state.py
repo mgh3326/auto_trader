@@ -379,11 +379,16 @@ class TrendStateService:
             ).all()
         )
         day_start = utc_day_start(now)
+        # A stop is counted by the day it was *decided* (``exit_at`` is written
+        # at decision time by ``record_exit_decision``), not by the day the
+        # position finally went flat: a partially filled entry can delay the
+        # exit across UTC midnight, and neither the entry finishing nor a later
+        # close may move the day the stop fired.
         exits = (
             await db.scalars(
                 select(BinanceTrendSignal.exit_reason)
                 .where(
-                    BinanceTrendSignal.state == "closed",
+                    BinanceTrendSignal.exit_reason.is_not(None),
                     BinanceTrendSignal.exit_at >= day_start,
                     BinanceTrendSignal.exit_at < day_start + dt.timedelta(days=1),
                 )
@@ -815,6 +820,30 @@ class TrendStateService:
             await db.flush()
             return _intent_snapshot(row)
 
+    async def record_exit_decision(
+        self, signal_key: str, *, reason: str, now: dt.datetime
+    ) -> TrendSignalSnapshot:
+        """Record the exit decision at the moment it is taken; first one wins.
+
+        Written before the action because a partially filled entry delays the
+        exit: the signal can stay ``entry_reserved`` (or ``holding``) across a
+        UTC day change, and the daily kill switch counts a hard stop on the day
+        it fired. ``_apply_exit`` never overwrites these columns, so the close
+        cannot move the stop to another day.
+        """
+        _require_aware(now)
+        reason = self._exit_reason(reason)
+        async with self._factory() as db, db.begin():
+            await self._lock(db)
+            signal = await db.get(BinanceTrendSignal, signal_key, with_for_update=True)
+            if signal is None or signal.state not in {"entry_reserved", "holding"}:
+                raise TrendStateBlocked("exit decision needs a live exposure")
+            if signal.exit_at is None:
+                signal.exit_reason = reason
+                signal.exit_at = now
+            signal.updated_at = now
+            return _signal_snapshot(signal)
+
     async def release_unsent_exit(
         self, client_order_id: str, *, now: dt.datetime
     ) -> None:
@@ -1054,8 +1083,12 @@ class TrendStateService:
         if remaining == 0:
             reason = TrendStateService._exit_reason(intent.leg_key.split(":", 1)[0])
             signal.state = "closed"
-            signal.exit_reason = reason
-            signal.exit_at = when
+            # The decision record wins: a stop taken while the entry was still
+            # working must keep its own day even though the close lands later.
+            if signal.exit_reason is None:
+                signal.exit_reason = reason
+            if signal.exit_at is None:
+                signal.exit_at = when
         else:
             signal.state = "holding"
 

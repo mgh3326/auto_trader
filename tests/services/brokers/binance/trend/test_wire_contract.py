@@ -50,11 +50,13 @@ class RawTransport:
 
     base_url = DEMO_URL
 
-    def __init__(self, routes=None, *, post=None, post_status=200):
+    def __init__(self, routes=None, *, post=None, post_status=200, delete=None):
         self.routes = routes or {}
         self.post_raw = post
         self.post_status = post_status
         self.posted: list[dict] = []
+        self.delete_raw = delete
+        self.deleted: list[dict] = []
 
     async def get(self, path, *, params=None):
         route = self.routes[path]
@@ -64,6 +66,10 @@ class RawTransport:
     async def post(self, path, *, params):
         self.posted.append(dict(params))
         return response(self.post_raw, self.post_status)
+
+    async def delete(self, path, *, params):
+        self.deleted.append(dict(params))
+        return response(self.delete_raw)
 
 
 def client_for(transport: RawTransport) -> TrendDemoClient:
@@ -251,6 +257,55 @@ def test_a_query_response_that_does_not_echo_the_identity_is_refused(mutation) -
         run(
             client_for(transport).get_order(
                 symbol="BTCUSDT", client_order_id="trend-abc"
+            )
+        )
+
+
+# ---------------------------------------------------------- cancel (serialization)
+
+
+def test_a_cancel_response_is_echo_checked_and_keeps_text_quantities(monkeypatch):
+    monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
+    transport = RawTransport(delete=wire.CANCEL_ORDER_CANCELED)
+    result = run(
+        client_for(transport).cancel_order(
+            symbol="BTCUSDT", client_order_id="trend-abc", confirm=True
+        )
+    )
+    assert (result.client_order_id, result.symbol, result.status) == (
+        "trend-abc",
+        "BTCUSDT",
+        "CANCELED",
+    )
+    assert result.broker_order_id == "22542179"
+    sent = transport.deleted[0]
+    assert (sent["symbol"], sent["origClientOrderId"]) == ("BTCUSDT", "trend-abc")
+    assert "recvWindow" in sent
+    # The cancelled order keeps its partial fill in text, not a float.
+    assert json.loads(wire.CANCEL_ORDER_CANCELED)["executedQty"] == "0.200"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        wire.CANCEL_ORDER_NO_ECHO,
+        wire.CANCEL_ORDER_CANCELED.replace(
+            '"symbol": "BTCUSDT"', '"symbol": "ETHUSDT"'
+        ),
+    ],
+    ids=["client-id-absent", "symbol"],
+)
+def test_a_cancel_response_that_does_not_echo_the_order_is_refused(
+    body, monkeypatch
+) -> None:
+    monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
+    transport = RawTransport(delete=body)
+    with pytest.raises(TrendBrokerTruthUnavailable):
+        run(
+            client_for(transport).cancel_order(
+                symbol="BTCUSDT", client_order_id="trend-abc", confirm=True
             )
         )
 
