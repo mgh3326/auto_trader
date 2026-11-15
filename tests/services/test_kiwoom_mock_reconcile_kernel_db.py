@@ -808,3 +808,76 @@ async def test_full_mode_overlapping_runs_journal_the_order_once(
             symbol=symbol,
             run_ids=run_ids,
         )
+
+
+async def test_partial_sell_close_serializes_on_the_lot_pool() -> None:
+    """Two overlapping partial closes for one symbol consume the lot in turn.
+
+    The sells belong to *different* orders, so the order-row lock cannot
+    serialize them; the shared lot pool is read ``FOR UPDATE``, so the second
+    pass waits, re-reads the leftover and closes the lot. Without the lock both
+    read ``quantity=10`` under READ COMMITTED and both write ``quantity=4``,
+    leaving the lot active with 12 shares consumed against 10.
+    """
+    from app.mcp_server.tooling.order_journal import _close_journals_on_sell_partial
+
+    symbol = _symbol()
+    try:
+        async with AsyncSessionLocal() as session:
+            session.add(
+                TradeJournal(
+                    symbol=symbol,
+                    instrument_type="equity_kr",
+                    side="buy",
+                    entry_price=Decimal("70000"),
+                    quantity=Decimal("10"),
+                    amount=Decimal("700000"),
+                    thesis="lot pool serialization",
+                    status="active",
+                    account=kernel.JOURNAL_ACCOUNT,
+                    account_type=kernel.JOURNAL_ACCOUNT_TYPE,
+                )
+            )
+            await session.commit()
+
+        async def close() -> dict[str, Any]:
+            async with AsyncSessionLocal() as session:
+                result = await _close_journals_on_sell_partial(
+                    session,
+                    symbol=symbol,
+                    sell_quantity=6.0,
+                    sell_price=70000.0,
+                    account_type=kernel.JOURNAL_ACCOUNT_TYPE,
+                    account=kernel.JOURNAL_ACCOUNT,
+                )
+                # Hold the transaction (and its row locks) open while the peer
+                # makes its own pass, so the two really do overlap.
+                await asyncio.sleep(0.05)
+                await session.commit()
+                return result
+
+        first, second = await asyncio.gather(close(), close())
+
+        async with AsyncSessionLocal() as session:
+            lots = list(
+                (
+                    await session.execute(
+                        select(TradeJournal).where(TradeJournal.symbol == symbol)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(lots) == 1
+        lot = lots[0]
+        # 6 shares consumed, 4 left; the second pass consumes the leftover and
+        # closes the lot. Both passes of the same snapshot would leave it active.
+        assert lot.quantity == Decimal("4")
+        assert lot.status == "closed"
+        assert first["journals_closed"] + second["journals_closed"] == 1
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                delete(TradeJournal).where(TradeJournal.symbol == symbol)
+            )
+            await session.commit()

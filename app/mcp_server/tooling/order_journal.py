@@ -512,6 +512,14 @@ async def _close_journals_on_sell_partial(
     would never be recorded. This variant decrements the boundary lot's quantity
     (and amount) and closes only the lots the sell fully consumes. The caller
     owns the transaction (no commit).
+
+    The active lots are read ``FOR UPDATE``: the pass is a read-modify-write of
+    a pool shared by every sell of that symbol/account, so two transactions
+    journaling *different* orders of the same symbol (they lock different order
+    rows) would otherwise read the same snapshot and both decrement it — 6 + 6
+    shares sold out of one 10-share lot would leave 4 while 12 were consumed.
+    The lock order is deterministic (``created_at``, ``id``) so two passes
+    cannot deadlock on the same pair of lots.
     """
     remaining = Decimal(str(sell_quantity))
     price = Decimal(str(sell_price))
@@ -523,7 +531,9 @@ async def _close_journals_on_sell_partial(
     )
     if account:
         stmt = stmt.where(TradeJournal.account == account)
-    stmt = stmt.order_by(TradeJournal.created_at.asc())
+    stmt = stmt.order_by(
+        TradeJournal.created_at.asc(), TradeJournal.id.asc()
+    ).with_for_update()
     journals = list((await db.execute(stmt)).scalars().all())
 
     closed_ids: list[int] = []
