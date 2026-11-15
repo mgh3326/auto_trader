@@ -172,13 +172,17 @@ def _normalize_strategy_for_comparison(value: str) -> str:
     return normalized.strip().casefold()
 
 
-def validate_strategy(strategy: Any) -> str:
-    """Return a usable strategy or raise an exception; never substitute one."""
+def validate_strategy(strategy: Any, *, lane: str = ACCOUNT_SCOPE) -> str:
+    """Return a usable strategy or raise an exception; never substitute one.
+
+    ``lane`` only labels the warning; the rule (blank or placeholder is
+    refused) is one definition shared with the Kiwoom mock lane.
+    """
     cleaned = _clean(strategy)
     if cleaned is None or (
         _normalize_strategy_for_comparison(cleaned) in KIS_MOCK_PLACEHOLDER_STRATEGIES
     ):
-        logger.warning("kis_mock strategy rejected: blank or placeholder")
+        logger.warning("%s strategy rejected: blank or placeholder", lane)
         raise InvalidStrategy(strategy)
     return unicodedata.normalize("NFKC", cleaned).strip()
 
