@@ -31,7 +31,10 @@ from typing import Any
 import pytest
 
 from app.services import kiwoom_mock_reconcile as kernel
-from app.services.kiwoom_mock_order_ledger_service import FillBooking
+from app.services.kiwoom_mock_order_ledger_service import (
+    FillBooking,
+    KiwoomMockTransitionRefused,
+)
 from app.services.kiwoom_mock_reconcile import (
     FULL_GATE_ENVS,
     JOURNAL_ACCOUNT,
@@ -220,10 +223,37 @@ class FakeService:
     ):
         return type(self).cancels & original_order_ids
 
+    def _row(self, ledger_id: int) -> Any:
+        return next(item for item in type(self).rows if item.id == ledger_id)
+
     async def mark_terminal(
         self, *, ledger_id, status, reason, detail=None, account_mode="kiwoom_mock"
     ):
+        # Mirrors the service: a booked fill must never be closed as a no-fill
+        # terminal row.
+        row = self._row(ledger_id)
+        if row.status not in {"accepted", "pending"}:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="source_status_not_open",
+            )
         self.writes.append(("mark_terminal", ledger_id, status, reason))
+        return SimpleNamespace(id=ledger_id, status=status)
+
+    async def close_filled_as_terminal(
+        self, *, ledger_id, status, reason, detail=None, account_mode="kiwoom_mock"
+    ):
+        row = self._row(ledger_id)
+        filled = row.filled_qty or Decimal(0)
+        if row.status not in {"partial", "filled"} or row.journaled_qty < filled:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="fill_not_journaled",
+            )
+        row.status = status
+        self.writes.append(("close_filled", ledger_id, status, reason))
         return SimpleNamespace(id=ledger_id, status=status)
 
     async def promote_uncertain_to_accepted(
@@ -248,6 +278,7 @@ class FakeService:
         self.writes.append(("record_fill", ledger_id, action, None))
         row.filled_qty = Decimal(int(filled_quantity))
         row.avg_fill_price = Decimal(int(average_price))
+        row.status = status
         return _fake_booking(
             row,
             action=action,
@@ -257,7 +288,7 @@ class FakeService:
         )
 
     async def lock_for_journal(self, *, ledger_id):
-        row = next(item for item in type(self).rows if item.id == ledger_id)
+        row = self._row(ledger_id)
         return _fake_booking(row, action="locked_row", delta=Decimal(0))
 
     async def attach_journal(
@@ -270,7 +301,7 @@ class FakeService:
         journaled_avg=None,
         commit: bool = True,
     ):
-        row = next(item for item in type(self).rows if item.id == ledger_id)
+        row = self._row(ledger_id)
         if trade_id is not None and getattr(row, "trade_id", None) is None:
             row.trade_id = trade_id
         if journal_id is not None and row.journal_id is None:
@@ -873,12 +904,50 @@ async def test_terminal_verdict_with_a_positive_fill_journals_before_the_close(
     save = next(payload for name, payload in calls if name == "record_trade")
     assert save["quantity"] == 10.0
     assert save["price"] == 76000.0
+    # record_fill moved the row to ``filled``/``partial`` first, so the close
+    # must go through close_filled_as_terminal, not mark_terminal.
     assert (
-        "mark_terminal",
+        "close_filled",
         1,
         "cancelled",
         "own_cancel_acknowledged_and_broker_confirmed",
     ) in _writes(fake_ledger)
+    assert not any(write[0] == "mark_terminal" for write in _writes(fake_ledger))
+
+
+async def test_terminal_with_fill_is_not_closed_before_its_journal(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The close waits for the journal: an unjournaled fill keeps the row open."""
+    from app.services.brokers.kiwoom.mock_reconcile import Verdict
+
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls, fail=True)
+    monkeypatch.setattr(
+        kernel,
+        "classify_verdict",
+        lambda **_: Verdict(
+            verdict="cancelled",
+            reason="own_cancel_acknowledged_and_broker_confirmed",
+            requires_manual_review=False,
+            filled_quantity=10,
+            average_price=76000,
+        ),
+    )
+
+    result = await _run(FakeReader(), dry_run=False, terminal_only=False)
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "noop_transition_refused"
+    assert outcome["transition_refused"] == "fill_not_journaled"
+    assert outcome["requires_manual_review"] is True
+    assert not any(
+        write[0] in {"mark_terminal", "close_filled"} for write in _writes(fake_ledger)
+    )
 
 
 async def test_terminal_gate_off_refuses_before_any_read(

@@ -548,16 +548,56 @@ async def _close_journals_on_sell_partial(
         elif journal_qty <= remaining:
             remaining -= journal_qty
         else:
-            # Partially consume this lot: keep it active at the leftover size.
-            leftover = journal_qty - remaining
+            # Partially consume this lot. The shares sold now are a closed
+            # position of their own, so split them into a closed row at the
+            # lot's entry price: their realized P&L is recorded instead of
+            # vanishing with the consumed quantity, and the leftover stays
+            # active at the reduced size (it keeps this lot's ``created_at``,
+            # so the FIFO order of later sells is unchanged).
+            consumed = remaining
+            split = TradeJournal(
+                symbol=journal.symbol,
+                instrument_type=journal.instrument_type,
+                side=journal.side,
+                entry_price=journal.entry_price,
+                quantity=consumed,
+                amount=(
+                    consumed * journal.entry_price
+                    if journal.entry_price is not None
+                    else None
+                ),
+                thesis=journal.thesis,
+                strategy=journal.strategy,
+                target_price=journal.target_price,
+                stop_loss=journal.stop_loss,
+                min_hold_days=journal.min_hold_days,
+                account=journal.account,
+                account_type=journal.account_type,
+                trade_id=journal.trade_id,
+                correlation_id=journal.correlation_id,
+                status=JournalStatus.closed,
+                exit_price=price,
+                exit_date=now_kst(),
+                exit_reason=reason,
+            )
+            if journal.entry_price and journal.entry_price > 0:
+                pnl_pct = (
+                    (price - journal.entry_price) / journal.entry_price
+                ) * Decimal("100")
+                split.pnl_pct = pnl_pct
+                weighted_pnl_sum += pnl_pct * consumed
+                weighted_qty_sum += consumed
+            leftover = journal_qty - consumed
             journal.quantity = leftover
             journal.amount = (
                 leftover * journal.entry_price
                 if journal.entry_price is not None
                 else None
             )
-            remaining = Decimal("0")
+            db.add(split)
             await db.flush()
+            closed_ids.append(split.id)
+            remaining = Decimal("0")
             break
 
         journal.status = JournalStatus.closed

@@ -727,11 +727,23 @@ async def test_full_mode_split_sell_consumes_one_lot_across_two_fills(
         )
         if first.get("reconcile_run"):
             run_ids.append(first["reconcile_run"]["run_id"])
-        assert first["reconciled"][0]["journal"]["journals_closed"] == 0
+        # The 4 shares sold are split off as a closed row at the lot's entry
+        # price, so their realized P&L is recorded instead of disappearing; the
+        # leftover stays active.
+        assert first["reconciled"][0]["journal"]["journals_closed"] == 1
+        assert first["reconciled"][0]["journal"]["realized_pnl_pct"] > 0
         journals = await _journals(symbol)
-        assert len(journals) == 1
+        assert [journal.quantity for journal in journals] == [
+            Decimal("6"),
+            Decimal("4"),
+        ]
         assert journals[0].status == "active"
-        assert journals[0].quantity == Decimal("6")
+        split = journals[1]
+        assert split.status == "closed"
+        assert split.entry_price == Decimal("70000")
+        assert split.exit_price == Decimal("72000")
+        assert split.pnl_pct is not None and split.pnl_pct > 0
+        assert split.trade_id == journals[0].trade_id
 
         await _accepted(sell_b_id, sell_b_no, symbol=symbol, side="sell", quantity=6)
         second = await _full_run(
@@ -745,6 +757,7 @@ async def test_full_mode_split_sell_consumes_one_lot_across_two_fills(
         assert journals[0].status == "closed"
         assert journals[0].exit_price == Decimal("72000")
         assert journals[0].pnl_pct is not None
+        assert journals[1].status == "closed"
     finally:
         for client_order_id, order_no in (
             (buy_id, buy_no),
@@ -862,22 +875,91 @@ async def test_partial_sell_close_serializes_on_the_lot_pool() -> None:
             lots = list(
                 (
                     await session.execute(
-                        select(TradeJournal).where(TradeJournal.symbol == symbol)
+                        select(TradeJournal)
+                        .where(TradeJournal.symbol == symbol)
+                        .order_by(TradeJournal.id.asc())
                     )
                 )
                 .scalars()
                 .all()
             )
-        assert len(lots) == 1
-        lot = lots[0]
-        # 6 shares consumed, 4 left; the second pass consumes the leftover and
-        # closes the lot. Both passes of the same snapshot would leave it active.
-        assert lot.quantity == Decimal("4")
-        assert lot.status == "closed"
-        assert first["journals_closed"] + second["journals_closed"] == 1
+        # First pass: a closed split row for the 6 shares and 4 left active;
+        # second pass: the leftover is closed. Both passes of the same snapshot
+        # would leave the lot active at 4 with 12 shares consumed.
+        leftover, split = lots[0], lots[1]
+        assert [leftover.quantity, split.quantity] == [Decimal("4"), Decimal("6")]
+        assert split.status == "closed"
+        assert leftover.status == "closed"
+        assert first["journals_closed"] + second["journals_closed"] == 2
     finally:
         async with AsyncSessionLocal() as session:
             await session.execute(
                 delete(TradeJournal).where(TradeJournal.symbol == symbol)
             )
             await session.commit()
+
+
+async def test_full_mode_terminal_verdict_with_fill_closes_after_the_journal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled order that still filled is booked, journaled, then closed.
+
+    ``record_fill`` moves the row off the no-fill source statuses, so the close
+    must go through ``close_filled_as_terminal`` (allowed only once the whole
+    fill is journaled). Otherwise the row would be re-scanned forever, repeating
+    a no-op booking and a refused close.
+    """
+    from app.services.brokers.kiwoom.mock_reconcile import Verdict as BrokerVerdict
+
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    original = kernel.classify_verdict
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        monkeypatch.setattr(
+            kernel,
+            "classify_verdict",
+            lambda **_: BrokerVerdict(
+                verdict="cancelled",
+                reason="own_cancel_acknowledged_and_broker_confirmed",
+                requires_manual_review=False,
+                filled_quantity=10,
+                average_price=76000,
+            ),
+        )
+        detail = _filled_detail(order_no, 10, symbol, average_price=76000)
+        result = await _full_run(FakeReader(detail))
+        if result.get("reconcile_run"):
+            run_ids.append(result["reconcile_run"]["run_id"])
+
+        outcome = next(
+            row
+            for row in result["reconciled"]
+            if row["client_order_id"] == client_order_id
+        )
+        assert outcome["fill_action"] == "booked_filled"
+        assert outcome["action"] == "mark_cancelled"
+        assert outcome["requires_manual_review"] is False
+
+        stored = await _fetch(client_order_id)
+        assert stored.status == "cancelled"
+        assert stored.filled_qty == Decimal("10")
+        assert stored.journal_id is not None
+        assert len(await _fills(order_no)) == 1
+        journals = await _journals(symbol)
+        assert [journal.quantity for journal in journals] == [Decimal("10")]
+
+        # The row left the scan: the next run finds nothing to do.
+        settled = await _full_run(FakeReader(detail))
+        assert settled["reconciled"] == []
+    finally:
+        monkeypatch.setattr(kernel, "classify_verdict", original)
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )

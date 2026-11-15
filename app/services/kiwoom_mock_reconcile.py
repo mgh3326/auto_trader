@@ -656,9 +656,16 @@ async def _reconcile_orders(
     run_id = uuid.uuid4()
 
     async def _write_transition(
-        candidate: _Candidate, *, action: str, reason: str
+        candidate: _Candidate, *, action: str, reason: str, filled: bool = False
     ) -> tuple[str, str | None]:
-        """Apply one accepted terminal transition; report what happened."""
+        """Apply one accepted terminal transition; report what happened.
+
+        ``filled`` marks a terminal verdict that carried a positive cumulative
+        fill: :meth:`record_fill` already moved the row off the no-fill source
+        statuses, so the close goes through ``close_filled_as_terminal``, which
+        accepts a ``partial``/``filled`` row only once its whole fill is
+        journaled.
+        """
         async with session_factory() as db:
             service = KiwoomMockOrderLedgerService(db)
             try:
@@ -671,6 +678,15 @@ async def _reconcile_orders(
                     )
                     return "promoted_accepted", None
                 status = action.removeprefix("mark_")
+                if filled:
+                    await service.close_filled_as_terminal(
+                        ledger_id=candidate.ledger_id,
+                        status=status,
+                        reason=reason,
+                        detail={"verdict": status},
+                        account_mode=account_mode,
+                    )
+                    return action, None
                 await service.mark_terminal(
                     ledger_id=candidate.ledger_id,
                     status=status,
@@ -925,7 +941,8 @@ async def _reconcile_orders(
             if dry_run:
                 outcome["action"] = f"would_mark_{verdict.verdict}"
             else:
-                if full_mode and verdict.filled_quantity:
+                filled_close = bool(full_mode and verdict.filled_quantity)
+                if filled_close:
                     # A terminal verdict that still filled part of its quantity:
                     # book and journal the fill before the close, so no share is
                     # stranded outside the ledger or its journal.
@@ -935,6 +952,7 @@ async def _reconcile_orders(
                     candidate,
                     action=f"mark_{verdict.verdict}",
                     reason=verdict.reason,
+                    filled=filled_close,
                 )
                 outcome["action"] = action
                 if refused is not None:

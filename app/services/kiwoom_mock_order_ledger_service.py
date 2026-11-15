@@ -143,6 +143,10 @@ _RECONCILE_SOURCE_STATUSES: Final = frozenset(
 #: ``partial`` is absent too: a booked partial fill must never become a no-fill
 #: terminal row, or T-P4 would lose the fill it still has to book.
 _RECONCILE_TERMINAL_SOURCE_STATUSES: Final = frozenset({"accepted", "pending"})
+#: A row whose fill is booked may still be closed by a terminal broker verdict
+#: that carried the same fill (``close_filled_as_terminal``), but only once the
+#: whole fill is journaled. ``mark_terminal`` never takes these sources.
+_FILLED_SOURCE_STATUSES: Final = frozenset({"partial", "filled"})
 _RECONCILE_TERMINAL_TARGETS: Final = frozenset({"expired", "cancelled", "rejected"})
 _LIFECYCLE_FOR_TERMINAL: Final = {
     "expired": "expired",
@@ -606,6 +610,57 @@ class KiwoomMockOrderLedgerService:
                 reason="source_status_not_open",
             )
         self._apply_terminal(row, status=status, reason=reason, detail=detail)
+        await self._db.commit()
+        await self._db.refresh(row)
+        return row
+
+    async def close_filled_as_terminal(
+        self,
+        *,
+        ledger_id: int,
+        status: str,
+        reason: str,
+        detail: dict[str, Any] | None = None,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+    ) -> KiwoomMockOrderLedger:
+        """Close a partially filled row whose whole fill is booked and journaled.
+
+        ``mark_terminal`` refuses a ``partial``/``filled`` source on purpose: a
+        *no-fill* close must never swallow a booked fill. This is the other
+        case — a terminal broker verdict that still carried a positive fill.
+        It is allowed only once the whole fill is journaled, so the close adds
+        no evidence loss and the row finally leaves the reconcile scan instead
+        of being re-booked and re-journaled as a no-op forever.
+        """
+        if status not in _RECONCILE_TERMINAL_TARGETS:
+            raise ValueError(
+                f"close_filled_as_terminal status must be one of "
+                f"{sorted(_RECONCILE_TERMINAL_TARGETS)}; got {status!r}"
+            )
+        row = await self._lock_row(ledger_id, account_mode=account_mode)
+        if row.status not in _FILLED_SOURCE_STATUSES:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="source_status_not_filled",
+            )
+        filled = row.filled_qty or Decimal(0)
+        journaled_qty, journaled_avg = _journaled_progress(row)
+        if filled <= 0 or journaled_qty < filled:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="fill_not_journaled",
+            )
+        # Keep the journal progress in the terminal detail: it is the audit
+        # trail for what the close consumed.
+        terminal_detail = {
+            "verdict": status,
+            "journaled_qty": str(journaled_qty),
+            "journaled_avg": str(journaled_avg),
+            **(detail or {}),
+        }
+        self._apply_terminal(row, status=status, reason=reason, detail=terminal_detail)
         await self._db.commit()
         await self._db.refresh(row)
         return row
