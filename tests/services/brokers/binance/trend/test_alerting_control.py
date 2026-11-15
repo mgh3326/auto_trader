@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from types import SimpleNamespace
 
@@ -524,6 +525,29 @@ async def test_only_a_proven_dead_backend_stops_the_loop_and_is_invalidated():
     assert await heartbeat.stamp() is False
     assert heartbeat._conn is None
     assert conn.invalidated is True  # never returned to the pool while locked
+
+
+@pytest.mark.asyncio
+async def test_close_finishes_the_release_when_the_caller_is_cancelled():
+    engine = FakeEngine()
+    heartbeat = RunnerHeartbeat(engine)
+    assert await heartbeat.open() is control.LivenessOpen.ACQUIRED
+    conn = engine.connections[0]
+    started = asyncio.Event()
+
+    async def slow_rollback() -> None:
+        started.set()
+        await asyncio.sleep(0.05)
+
+    conn.rollback = slow_rollback  # type: ignore[method-assign]
+    task = asyncio.create_task(heartbeat.close())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # The shielded release still ran: unlock + close, never a stranded lock.
+    assert conn.closed is True
+    assert heartbeat._conn is None
 
 
 @pytest.mark.asyncio

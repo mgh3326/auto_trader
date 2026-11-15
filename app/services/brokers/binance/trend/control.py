@@ -266,9 +266,41 @@ class RunnerHeartbeat:
         return True
 
     async def close(self) -> None:
+        """Release the lock even when the caller is being cancelled.
+
+        ``close`` usually runs at loop shutdown, so CancelledError (or
+        KeyboardInterrupt) is the most likely interruption. Abandoning the
+        checked-out connection there would leave its session advisory lock on
+        a backend that goes back to the pool. The release therefore runs in a
+        shielded task that is allowed to finish; the original interruption is
+        re-raised afterwards.
+        """
         conn, self._conn = self._conn, None
         if conn is None:
             return
+        release = asyncio.create_task(self._release(conn))
+        cancelled = False
+        other: BaseException | None = None
+        while True:
+            try:
+                await asyncio.shield(release)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                continue
+            except BaseException as exc:  # KeyboardInterrupt / SystemExit
+                other = exc
+                try:
+                    await asyncio.shield(release)
+                except BaseException:
+                    pass
+                break
+        if other is not None:
+            raise other
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _release(self, conn: Any) -> None:
         try:
             # A stamp may have left an aborted transaction open; end it so the
             # unlock is not refused with "current transaction is aborted".
