@@ -80,6 +80,7 @@ def test_healthy_events_do_not_alert_and_do_not_fail_the_tick(name):
         ("entry_conflict_blocked", "entry_conflict_blocked"),
         ("entry_conflict_rejected", "entry_conflict_rejected"),
         ("entry_ledger_incomplete", "entry_ledger_incomplete"),
+        ("exit_ledger_incomplete", "exit_ledger_incomplete"),
         ("reconciled_ledger_incomplete", "reconciled_ledger_incomplete"),
         ("exposure_mismatch", "exposure_mismatch"),
         ("partial_entry_exposure_open", "partial_entry_exposure_open"),

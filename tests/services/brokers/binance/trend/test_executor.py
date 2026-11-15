@@ -1682,3 +1682,23 @@ async def test_the_real_aborted_entry_reaches_the_alert_classifier(rig: Rig) -> 
     result = await _only_btc(rig)
     assert result.events[0].event.startswith("entry_aborted")
     assert control.tick_failures(result.events)[0].bucket == "entry_aborted"
+
+
+@pytest.mark.asyncio
+async def test_an_exit_ledger_sync_failure_reaches_the_alert_classifier(
+    rig: Rig,
+) -> None:
+    from app.services.brokers.binance.trend import control
+
+    hold(rig, entered_at=NOW - dt.timedelta(days=30, minutes=1))
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = minute_rows()
+    rig.client.auto_fill = True
+
+    async def broken(**kwargs):
+        raise RuntimeError("ledger unavailable")
+
+    rig.ledger.record_filled = broken  # type: ignore[method-assign]
+    result = await rig.tick()
+    assert ("BTCUSDT", "exit_ledger_incomplete") in rig.events(result)
+    assert control.tick_failures(result.events)[0].bucket == "exit_ledger_incomplete"
