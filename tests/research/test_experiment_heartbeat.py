@@ -97,6 +97,10 @@ def test_idle_four_prints_red_and_idle_two_prints_ok(ledger: Path, capsys) -> No
     snapshot.write_text(
         json.dumps({"nav_samples": [{"observed_at": "2026-11-02T21:00:00+00:00"}]})
     )
+    trend = ledger.parent / "trend.json"
+    trend.write_text(
+        json.dumps({"ticks": [{"observed_at": "2026-11-02T21:00:00+00:00"}]})
+    )
 
     code = hb.main(
         [
@@ -106,6 +110,8 @@ def test_idle_four_prints_red_and_idle_two_prints_ok(ledger: Path, capsys) -> No
             f"ROB-1391={ledger}",
             "--path",
             f"H5={snapshot}",
+            "--path",
+            f"TREND-TSMOM-v1={trend}",
             "--now",
             "2026-11-04T22:00:00+00:00",
         ]
@@ -124,6 +130,8 @@ def test_idle_four_prints_red_and_idle_two_prints_ok(ledger: Path, capsys) -> No
             f"ROB-1391={ledger}",
             "--path",
             f"H5={snapshot}",
+            "--path",
+            f"TREND-TSMOM-v1={trend}",
             "--now",
             "2026-11-02T22:00:00+00:00",
         ]
