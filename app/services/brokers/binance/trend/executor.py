@@ -1560,7 +1560,11 @@ class TrendExecutor:
                 if sigma_hat is None:
                     continue
                 outcome = await self._enter(record, sigma_hat=sigma_hat, now=now)
-                events.append(TrendEvent(found.symbol, f"entry_{outcome}"))
+                # ``_enter`` already prefixes its refusal/abort results with
+                # ``entry_``; prefix only the bare outcomes so the emitted
+                # vocabulary is ``entry_refused:...``, not ``entry_entry_...``.
+                event = outcome if outcome.startswith("entry_") else f"entry_{outcome}"
+                events.append(TrendEvent(found.symbol, event))
                 if outcome == "uncertain":
                     break
         return TrendTickResult(decision_ts=decision_ts, events=tuple(events))

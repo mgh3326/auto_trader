@@ -32,7 +32,7 @@ import os
 import signal
 from typing import Any
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
 from app.services.brokers.binance.trend.alerting import (
     SEND_TIMEOUT_SECONDS,
@@ -195,10 +195,12 @@ async def _run_ticks(
                     )
                 print(json.dumps(payload, sort_keys=True), flush=True)
             # The heartbeat is independent of alerting: the watcher reads it
-            # whether or not this process can send alerts. A stamp failure is
-            # logged and repaired inside; it never fails a tick.
-            if heartbeat is not None:
-                await heartbeat.stamp()
+            # whether or not this process can send alerts. The stamp both
+            # refreshes it and proves this backend still holds the lane lock; a
+            # lost lock means another runner owns the lane, so this loop stops
+            # instead of trading beside it.
+            if heartbeat is not None and not await heartbeat.stamp():
+                raise RuntimeError("trend runner liveness lock lost")
             await monitor.tick_done(_alert_pairs(failures))
             if once:
                 # Inside the try: a stop that lands while the alert is still
@@ -240,14 +242,15 @@ async def _run(args: argparse.Namespace) -> int:
     state = TrendStateService(AsyncSessionLocal)
     monitor = _build_monitor()
     stop = _StopState()
-    heartbeat = RunnerHeartbeat(AsyncSessionLocal) if args.loop else None
+    heartbeat = RunnerHeartbeat(engine) if args.loop else None
     try:
         if monitor.enabled:
             _install_stop_signals(stop)
         if heartbeat is not None:
             if not await heartbeat.open():
                 raise SystemExit("another TREND runner owns the loop lock")
-            await heartbeat.stamp()
+            if not await heartbeat.stamp():
+                raise SystemExit("trend runner liveness lock lost")
         return await _run_ticks(
             args,
             client=client,

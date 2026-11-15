@@ -22,9 +22,10 @@ import datetime as dt
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from .entry_gate import EntryRefusal
 
@@ -36,10 +37,23 @@ RUNNER_LOCK_KEY = "auto_trader:binance_trend_runner"
 
 _LOCK_SQL = text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))")
 _UNLOCK_SQL = text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))")
-_STAMP_SQL = text("SELECT 1")
 # A one-bigint advisory lock appears in ``pg_locks`` as
 # classid = key >> 32, objid = key & 0xFFFFFFFF, objsubid = 1 (PostgreSQL
-# "Advisory Locks" docs). ``state_change`` moves on every stamp query.
+# "Advisory Locks" docs). This one query is both the heartbeat stamp (any query
+# on the pinned connection moves ``state_change``) and the ownership proof.
+_LOCK_OWNED_SQL = text(
+    """
+    SELECT count(*)
+      FROM pg_locks
+     WHERE pid = pg_backend_pid()
+       AND locktype = 'advisory'
+       AND granted
+       AND objsubid = 1
+       AND classid::bigint = ((hashtextextended(:key, 0) >> 32) & 4294967295)
+       AND objid::bigint = (hashtextextended(:key, 0) & 4294967295)
+    """
+)
+# The watcher sees the same lock from outside the backend.
 _LIVENESS_SQL = text(
     """
     SELECT max(a.state_change) AS last_tick_at
@@ -128,67 +142,100 @@ def stop_signature(exc: BaseException) -> str:
 class RunnerHeartbeat:
     """Session-level liveness lock held by the ``--loop`` runner.
 
+    The lock lives on one **checked-out connection** for the runner's whole
+    life. A session advisory lock outlives a commit and stays on the physical
+    backend, so using a pooled ``AsyncSession`` (which returns its connection
+    between transactions) would let unrelated queries refresh the stamp, move
+    the stamp to another backend, or leave the lock behind in the pool. This
+    object therefore owns an ``AsyncConnection`` and never releases it until
+    ``close``.
+
     ``open`` returns ``False`` when another loop already holds the lock, so a
-    second runner cannot be started by accident. ``stamp`` touches the
-    connection after every tick; the watcher reads that timestamp. Connection
-    loss is logged and repaired on the next stamp — it never fails a tick.
+    second runner cannot be started by accident. ``stamp`` runs one ownership
+    query on the pinned connection: it both refreshes ``state_change`` (the
+    watcher's heartbeat) and proves this backend still holds the lock. A lost
+    connection is reopened once; a lost lock reports ``False`` and the caller
+    stops the loop.
+
+    Transactions are committed after each statement so the connection never
+    sits ``idle in transaction``; the commit does not release the session lock
+    because the same physical connection stays checked out.
     """
 
-    def __init__(
-        self, session_factory: Callable[[], AsyncSession], *, key: str = RUNNER_LOCK_KEY
-    ) -> None:
-        self._factory = session_factory
+    def __init__(self, engine: AsyncEngine, *, key: str = RUNNER_LOCK_KEY) -> None:
+        self._engine = engine
         self._key = key
-        self._db: AsyncSession | None = None
+        self._conn: Any | None = None
 
     async def open(self) -> bool:
-        db = self._factory()
         try:
-            got = await db.scalar(_LOCK_SQL, {"key": self._key})
-            await db.commit()
+            conn = await self._engine.connect()
+        except Exception:
+            logger.exception("trend runner liveness connection unavailable")
+            return False
+        try:
+            got = await conn.scalar(_LOCK_SQL, {"key": self._key})
+            await conn.commit()
         except Exception:
             logger.exception("trend runner liveness lock unavailable")
-            await self._close_session(db)
+            await self._close_conn(conn)
             return False
         if got is not True:
-            await self._close_session(db)
+            await self._close_conn(conn)
             return False
-        self._db = db
+        self._conn = conn
         return True
 
-    async def stamp(self) -> None:
-        if self._db is None:
-            await self._reopen()
-            return
-        try:
-            await self._db.execute(_STAMP_SQL)
-            await self._db.commit()
-        except Exception:
-            logger.exception("trend runner heartbeat stamp failed; reopening")
-            await self._reopen()
+    async def stamp(self) -> bool:
+        """Refresh the heartbeat; ``False`` means the lock is no longer ours."""
+        if self._conn is None and not await self.open():
+            return False
+        owned = await self._ownership()
+        if owned is False:
+            await self.close()
+            return False
+        if owned is None:
+            # The pinned connection died: reacquire once, then prove ownership.
+            await self._close_conn(self._conn)
+            self._conn = None
+            if not await self.open():
+                return False
+            owned = await self._ownership()
+            if owned is not True:
+                await self.close()
+                return False
+        return True
 
-    async def _reopen(self) -> None:
-        await self.close()
-        if not await self.open():
-            logger.warning("trend runner heartbeat lock not reacquired")
+    async def _ownership(self) -> bool | None:
+        """True/False from the ownership proof, ``None`` on a connection error."""
+        conn = self._conn
+        if conn is None:
+            return None
+        try:
+            owned = await conn.scalar(_LOCK_OWNED_SQL, {"key": self._key})
+            await conn.commit()
+        except Exception:
+            logger.exception("trend runner heartbeat stamp failed")
+            return None
+        return owned is not None and int(owned) >= 1
 
     async def close(self) -> None:
-        db, self._db = self._db, None
-        if db is None:
+        conn, self._conn = self._conn, None
+        if conn is None:
             return
         try:
-            await db.execute(_UNLOCK_SQL, {"key": self._key})
-            await db.commit()
+            await conn.scalar(_UNLOCK_SQL, {"key": self._key})
+            await conn.commit()
         except Exception:
             logger.exception("trend runner heartbeat unlock failed")
-        await self._close_session(db)
+        await self._close_conn(conn)
 
     @staticmethod
-    async def _close_session(db: AsyncSession) -> None:
+    async def _close_conn(conn: Any) -> None:
         try:
-            await db.close()
+            await conn.close()
         except Exception:
-            logger.exception("trend runner heartbeat session close failed")
+            logger.exception("trend runner heartbeat connection close failed")
 
 
 class RunnerLiveness:

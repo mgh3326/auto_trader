@@ -482,7 +482,7 @@ async def _only_btc(rig: Rig):
 async def test_hedge_mode_refuses_the_entry(rig: Rig) -> None:
     rig.client.hedge = True
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_refused")
+    assert result.events[0].event.startswith("entry_refused")
     assert rig.state.calls["reserve_entry"] == 0
 
 
@@ -492,7 +492,7 @@ async def test_isolated_1x_readback_failure_refuses_without_mutating_settings(
 ) -> None:
     rig.client.isolated_ok = False
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_aborted")
+    assert result.events[0].event.startswith("entry_aborted")
     assert rig.state.calls["reserve_entry"] == 0
 
 
@@ -502,7 +502,7 @@ async def test_sizing_that_cannot_meet_the_exchange_minimum_refuses(rig: Rig) ->
         D("0.001"), D("61"), D("0.001"), D("1000"), 3
     )
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_refused")
+    assert result.events[0].event.startswith("entry_refused")
     assert rig.state.calls["reserve_entry"] == 0
 
 
@@ -571,7 +571,7 @@ async def test_a_fresh_price_above_the_reservation_refuses_the_send(rig: Rig) ->
 async def test_a_refused_ledger_reservation_aborts_before_the_send(rig: Rig) -> None:
     rig.ledger.root_status = "cap_reached"
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_aborted")
+    assert result.events[0].event.startswith("entry_aborted")
     assert rig.state.calls["mark_sending"] == 0
     assert next(iter(rig.state.signals.values())).state == "blocked"
 
@@ -1419,3 +1419,37 @@ async def test_the_executor_itself_refuses_an_entry_under_manage_only(rig: Rig) 
     with pytest.raises(TrendStateBlocked, match="manage-only"):
         await rig.exe._enter(record, sigma_hat=D("1"), now=NOW)
     assert rig.client.sends == []
+
+
+# ------------------------------------------- real events reach the alert layer
+
+
+@pytest.mark.asyncio
+async def test_the_real_conflict_week_refusal_reaches_the_alert_classifier(
+    rig: Rig,
+) -> None:
+    from app.services.brokers.binance.trend import control
+
+    for i in range(3):
+        key = rig.state.seed_holding(
+            symbol="ETHUSDT", key=f"conflict-{i}", state="conflict_blocked"
+        )
+        rig.state.signals[key].conflict_at = NOW - dt.timedelta(hours=1)
+    result = await _only_btc(rig)
+    assert result.events[0].event == "entry_refused:conflict_week_limit_reached"
+    assert control.tick_failures(result.events) == (
+        control.TickFailure(
+            "entry_refused:conflict_week_limit_reached",
+            "kill_switch_conflict_week",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_real_aborted_entry_reaches_the_alert_classifier(rig: Rig) -> None:
+    from app.services.brokers.binance.trend import control
+
+    rig.client.isolated_ok = False
+    result = await _only_btc(rig)
+    assert result.events[0].event.startswith("entry_aborted")
+    assert control.tick_failures(result.events)[0].bucket == "entry_aborted"

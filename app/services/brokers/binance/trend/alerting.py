@@ -216,6 +216,10 @@ class TrendAlerter:
         for key in [k for k in self._episodes if k[0] is kind]:
             del self._episodes[key]
 
+    def clear_bucket(self, kind: AlertKind, bucket: str) -> None:
+        """End one episode; other buckets of the same kind keep their timers."""
+        self._episodes.pop((kind, bucket), None)
+
     async def _deliver(self, channel: AlertChannel, alert: TrendAlert) -> bool:
         try:
             return bool(
@@ -243,25 +247,32 @@ class TrendRunMonitor:
     def __init__(self, alerter: TrendAlerter) -> None:
         self._alerter = alerter
         self._pending: set[asyncio.Task[bool]] = set()
+        self._error_buckets: set[str] = set()
 
     @property
     def enabled(self) -> bool:
         return self._alerter.enabled
 
     async def tick_done(self, failures: tuple[tuple[str, str], ...] = ()) -> None:
-        """``failures`` are ``(signature, bucket)`` pairs from ``control``."""
+        """``failures`` are ``(signature, bucket)`` pairs from ``control``.
+
+        Each bucket is its own episode: a bucket that disappeared re-arms even
+        while another failure persists, so a renewed ``blocked`` inside six
+        hours is not suppressed by a still-open ``partial_entry_exposure_open``.
+        """
         if not self.enabled:
             return  # flag off: no task, no scheduling difference from no alerts
         try:
-            if failures:
-                for signature, bucket in failures:
-                    task = asyncio.get_running_loop().create_task(
-                        self._alerter.fire(AlertKind.ERROR, signature, bucket)
-                    )
-                    self._pending.add(task)
-                    task.add_done_callback(self._forget)
-            else:
-                self._alerter.clear(AlertKind.ERROR)
+            current = {bucket for _, bucket in failures}
+            for gone in self._error_buckets - current:
+                self._alerter.clear_bucket(AlertKind.ERROR, gone)
+            self._error_buckets = current
+            for signature, bucket in failures:
+                task = asyncio.get_running_loop().create_task(
+                    self._alerter.fire(AlertKind.ERROR, signature, bucket)
+                )
+                self._pending.add(task)
+                task.add_done_callback(self._forget)
         except Exception:  # noqa: BLE001
             logger.exception("trend alert tick hook failed")
 

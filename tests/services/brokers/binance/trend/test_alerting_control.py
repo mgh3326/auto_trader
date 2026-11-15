@@ -234,6 +234,31 @@ async def test_a_healthy_tick_clears_the_error_episode_then_a_new_one_alerts():
 
 
 @pytest.mark.asyncio
+async def test_a_resolved_bucket_rearms_even_while_another_failure_persists():
+    channel = Channel()
+    monitor = TrendRunMonitor(alerter(channel))
+    partial = ("partial_entry_exposure_open", "partial_entry_exposure_open")
+    await monitor.tick_done((("blocked:first", "blocked"), partial))
+    await monitor.drain()
+    assert [a.signature for a in channel.sent] == [
+        "blocked:first",
+        "partial_entry_exposure_open",
+    ]
+    # ``blocked`` resolves; the partial-exposure episode stays open inside 6h.
+    await monitor.tick_done((partial,))
+    await monitor.drain()
+    assert len(channel.sent) == 2
+    # A renewed ``blocked`` within six hours must alert: its bucket was cleared.
+    await monitor.tick_done((("blocked:second", "blocked"), partial))
+    await monitor.drain()
+    assert [a.signature for a in channel.sent] == [
+        "blocked:first",
+        "partial_entry_exposure_open",
+        "blocked:second",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_the_operator_stop_is_never_alerted_but_any_other_is():
     channel = Channel()
     monitor = TrendRunMonitor(alerter(channel))
@@ -336,19 +361,40 @@ async def test_an_unreadable_liveness_is_its_own_alert():
 # ----------------------------------------------------------- runner lock
 
 
-class FakeSession:
-    def __init__(self, granted: bool = True) -> None:
+class FakeEngine:
+    """Engine double: each ``connect`` returns a fresh pinned connection."""
+
+    def __init__(self, *, granted: bool = True, owned: int = 1) -> None:
         self.granted = granted
-        self.executions = 0
+        self.owned = owned
+        self.connections: list[FakeConnection] = []
+
+    async def connect(self) -> FakeConnection:
+        conn = FakeConnection(self)
+        self.connections.append(conn)
+        return conn
+
+
+class FakeConnection:
+    def __init__(self, engine: FakeEngine) -> None:
+        self.engine = engine
         self.commits = 0
         self.closed = False
+        self.stamps = 0
+        self.break_on_stamp = False
 
     async def scalar(self, statement, params=None):
-        return self.granted
-
-    async def execute(self, statement, params=None):
-        self.executions += 1
-        return None
+        sql = str(statement)
+        if "pg_try_advisory_lock" in sql:
+            return self.engine.granted
+        if "pg_locks" in sql:
+            self.stamps += 1
+            if self.break_on_stamp:
+                raise ConnectionError("gone")
+            return self.engine.owned
+        if "pg_advisory_unlock" in sql:
+            return True
+        raise AssertionError(sql)
 
     async def commit(self) -> None:
         self.commits += 1
@@ -359,48 +405,54 @@ class FakeSession:
 
 @pytest.mark.asyncio
 async def test_a_second_loop_cannot_take_the_liveness_lock():
-    session = FakeSession(granted=False)
-    heartbeat = RunnerHeartbeat(lambda: session)
+    engine = FakeEngine(granted=False)
+    heartbeat = RunnerHeartbeat(engine)
     assert await heartbeat.open() is False
-    assert session.closed is True
-    await heartbeat.stamp()  # no lock held: it tries again, still denied
-    assert session.executions == 0
+    assert engine.connections[0].closed is True
+    assert await heartbeat.stamp() is False
+    assert heartbeat._conn is None
 
 
 @pytest.mark.asyncio
-async def test_the_loop_stamps_its_connection_and_releases_on_close():
-    session = FakeSession()
-    heartbeat = RunnerHeartbeat(lambda: session)
+async def test_the_loop_pins_one_connection_stamps_and_unlocks_it():
+    engine = FakeEngine()
+    heartbeat = RunnerHeartbeat(engine)
     assert await heartbeat.open() is True
-    await heartbeat.stamp()
-    await heartbeat.stamp()
-    assert session.executions == 2
+    conn = engine.connections[0]
+    assert heartbeat._conn is conn
+    assert await heartbeat.stamp() is True
+    assert await heartbeat.stamp() is True
+    # Every stamp ran on the same checked-out connection: no pool round trip.
+    assert len(engine.connections) == 1
+    assert conn.stamps == 2
+    assert conn.commits >= 3  # the lock, then each stamp transaction
     await heartbeat.close()
-    assert session.executions == 3  # the unlock
-    assert session.closed is True
-    assert heartbeat._db is None
+    assert conn.closed is True
+    assert heartbeat._conn is None
 
 
 @pytest.mark.asyncio
-async def test_a_lost_connection_is_reopened_on_the_next_stamp():
-    sessions: list[FakeSession] = []
-
-    def factory() -> FakeSession:
-        session = FakeSession()
-        sessions.append(session)
-        return session
-
-    heartbeat = RunnerHeartbeat(factory)
+async def test_a_lost_connection_is_reopened_once_on_the_next_stamp():
+    engine = FakeEngine()
+    heartbeat = RunnerHeartbeat(engine)
     assert await heartbeat.open() is True
-    first = sessions[0]
+    first = engine.connections[0]
+    first.break_on_stamp = True
+    assert await heartbeat.stamp() is True  # reopened and proved ownership
+    assert len(engine.connections) == 2
+    assert first.closed is True
+    assert heartbeat._conn is engine.connections[1]
 
-    async def broken_execute(statement, params=None):
-        raise ConnectionError("gone")
 
-    first.execute = broken_execute  # type: ignore[method-assign]
-    await heartbeat.stamp()  # logs, closes, reopens
-    assert len(sessions) == 2
-    assert heartbeat._db is sessions[1]
+@pytest.mark.asyncio
+async def test_a_lost_lock_reports_false_and_releases_the_connection():
+    engine = FakeEngine()
+    heartbeat = RunnerHeartbeat(engine)
+    assert await heartbeat.open() is True
+    engine.owned = 0  # someone else took the lane
+    assert await heartbeat.stamp() is False
+    assert heartbeat._conn is None
+    assert engine.connections[0].closed is True
 
 
 # --------------------------------------------------------------- liveness
