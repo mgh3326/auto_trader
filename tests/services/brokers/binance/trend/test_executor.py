@@ -123,6 +123,9 @@ class Rig:
         # here they are inert so executor tests never touch a session.
         monkeypatch.setattr(executor_module, "ensure_entry_forecast", AsyncMock())
         monkeypatch.setattr(executor_module, "repair_forecast", AsyncMock())
+        monkeypatch.setattr(
+            executor_module, "repair_forecasts", AsyncMock(return_value=({}, []))
+        )
 
     async def tick(self, *, now=NOW, confirm=True):
         return await self.exe.run_tick(now=now, confirm=confirm)

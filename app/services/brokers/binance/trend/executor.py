@@ -89,7 +89,7 @@ from .exposure import (
     exit_quantity,
     position_amount,
 )
-from .forecast import ensure_entry_forecast, repair_forecast
+from .forecast import ensure_entry_forecast, repair_forecast, repair_forecasts
 from .history import (
     collect_hard_stop_minutes,
     collect_signal_bars,
@@ -1718,11 +1718,14 @@ class TrendExecutor:
             # Forecast repair lives in the manage section of every tick (and
             # therefore in manage-only ticks): it only retries durable
             # forecast writes for proven fills — it never sends, blocks or
-            # changes a trading decision.
-            for forecast_signal in await self.state.list_forecast_recovery_signals():
-                try:
-                    await repair_forecast(forecast_signal, now=now)
-                except Exception as exc:
+            # changes a trading decision. One batched lookup covers every
+            # candidate so per-tick DB work does not grow with history.
+            forecast_candidates = await self.state.list_forecast_recovery_signals()
+            if forecast_candidates:
+                _, forecast_failures = await repair_forecasts(
+                    forecast_candidates, now=now
+                )
+                for forecast_signal, exc in forecast_failures:
                     logger.exception("trend forecast recovery failed")
                     events.append(
                         TrendEvent(

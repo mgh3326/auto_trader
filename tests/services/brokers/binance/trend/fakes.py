@@ -541,6 +541,10 @@ class FakeState:
                 row.entry_qty = ev.executed_qty
                 row.entry_price = ev.avg_price
                 row.entered_at = filled_at or now
+                row.fees_usdt = (
+                    row.fees_usdt
+                    + ev.executed_qty * ev.avg_price * constants.TAKER_FEE_RATE
+                )
         else:
             if ev.executed_qty == 0:
                 row.state = "holding"
@@ -551,6 +555,10 @@ class FakeState:
                 if broker_position_amt != expected:
                     raise TrendStateBlocked("position mismatch")
                 row.closed_qty = closed
+                row.fees_usdt = (
+                    row.fees_usdt
+                    + ev.executed_qty * ev.avg_price * constants.TAKER_FEE_RATE
+                )
                 if remaining == 0:
                     row.state = "closed"
                     if row.exit_reason is None:

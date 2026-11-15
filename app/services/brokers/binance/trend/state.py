@@ -28,6 +28,7 @@ from app.models.binance_trend import BinanceTrendIntent, BinanceTrendSignal
 from .constants import (
     EXIT_REASONS,
     LOCKED_LIMITS,
+    TAKER_FEE_RATE,
     TrendLimits,
     UnknownExitReason,
     assert_exit_reason,
@@ -194,6 +195,13 @@ def _intent_snapshot(row: BinanceTrendIntent) -> TrendIntentSnapshot:
 
 
 _SCALE = Decimal("1e-12")
+
+
+def _fill_fee(evidence: TrendOrderEvidence) -> Decimal:
+    """Estimated taker fee on one proven fill's quote notional (H5 parity)."""
+    return (evidence.executed_qty * evidence.avg_price * TAKER_FEE_RATE).quantize(
+        _SCALE
+    )
 
 
 def _stored_exactly(value: Decimal) -> bool:
@@ -1076,6 +1084,7 @@ class TrendStateService:
         signal.entry_qty = evidence.executed_qty
         signal.entry_price = evidence.avg_price
         signal.entered_at = when
+        signal.fees_usdt = signal.fees_usdt + _fill_fee(evidence)
 
     @staticmethod
     def _apply_exit(
@@ -1105,6 +1114,7 @@ class TrendStateService:
         signal.realized_pnl_usdt = signal.realized_pnl_usdt + (
             pnl * direction
         ).quantize(_SCALE)
+        signal.fees_usdt = signal.fees_usdt + _fill_fee(evidence)
         signal.closed_qty = closed
         if remaining == 0:
             reason = TrendStateService._exit_reason(intent.leg_key.split(":", 1)[0])

@@ -19,6 +19,7 @@ from app.services.brokers.binance.trend import forecast as forecast_module
 from app.services.brokers.binance.trend.forecast import (
     ensure_entry_forecast,
     repair_forecast,
+    repair_forecasts,
     resolve_held_outcome,
     trend_forecast_id,
 )
@@ -39,6 +40,7 @@ pytestmark = pytest.mark.unit
 class _Session:
     def __init__(self) -> None:
         self.commit = AsyncMock()
+        self.scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: []))
 
     async def __aenter__(self):
         return self
@@ -76,6 +78,19 @@ def _forecast_patches(monkeypatch, *, forecast_row=None):
     monkeypatch.setattr(forecast_module, "save_forecast", saved)
     monkeypatch.setattr(forecast_module, "resolve_forecast", resolved)
     return saved, resolved, getter
+
+
+def _batch_patches(monkeypatch, *, forecast_rows=()):
+    """Patch the batch repair path: one session whose SELECT returns rows."""
+    saved, resolved = AsyncMock(), AsyncMock(return_value={"status": "resolved"})
+    session = _Session()
+    session.scalars = AsyncMock(
+        return_value=SimpleNamespace(all=lambda: list(forecast_rows))
+    )
+    monkeypatch.setattr(forecast_module, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(forecast_module, "save_forecast", saved)
+    monkeypatch.setattr(forecast_module, "resolve_forecast", resolved)
+    return saved, resolved, session
 
 
 # ------------------------------------------------------- forecast.py contract
@@ -209,6 +224,27 @@ async def test_repair_leaves_an_open_forecast_on_a_held_signal(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_scores_net_of_fees_not_gross(monkeypatch):
+    _, resolved, getter = _forecast_patches(monkeypatch)
+    getter.return_value = SimpleNamespace(status="open")
+    # Gross +0.05 but accrued fees 0.10 -> net -0.05 -> a loss, not a win.
+    await resolve_held_outcome(
+        _signal(
+            state="closed",
+            closed_qty=D("0.6"),
+            realized_pnl_usdt=D("0.05"),
+            fees_usdt=D("0.10"),
+            exit_reason="time_exit",
+            exit_at=NOW,
+        ),
+        now=NOW,
+    )
+    kwargs = resolved.call_args.kwargs
+    assert kwargs["manual_outcome"] is False
+    assert kwargs["manual_observed_value"] == pytest.approx(-0.05)
+
+
+@pytest.mark.asyncio
 async def test_repair_never_resolves_an_already_closed_forecast(monkeypatch):
     saved, resolved, _ = _forecast_patches(
         monkeypatch,
@@ -221,6 +257,86 @@ async def test_repair_never_resolves_an_already_closed_forecast(monkeypatch):
     )
     saved.assert_not_called()
     resolved.assert_not_called()
+
+
+# ---------------------------------------------------- batched recovery scan
+
+
+@pytest.mark.asyncio
+async def test_repair_forecasts_uses_one_lookup_and_writes_only_misses(
+    monkeypatch,
+):
+    missing_hold = _signal(signal_key="k1", correlation_id="binance-trend:" + "1" * 24)
+    missing_closed = _signal(
+        signal_key="k2",
+        correlation_id="binance-trend:" + "2" * 24,
+        state="closed",
+        closed_qty=D("0.6"),
+        realized_pnl_usdt=D("1"),
+        exit_reason="time_exit",
+        exit_at=NOW,
+    )
+    open_hold = _signal(signal_key="k3", correlation_id="binance-trend:" + "3" * 24)
+    done_closed = _signal(
+        signal_key="k4",
+        correlation_id="binance-trend:" + "4" * 24,
+        state="closed",
+        closed_qty=D("0.6"),
+    )
+    rows = [
+        SimpleNamespace(forecast_id=trend_forecast_id(open_hold), status="open"),
+        SimpleNamespace(forecast_id=trend_forecast_id(done_closed), status="closed"),
+    ]
+    saved, resolved, session = _batch_patches(monkeypatch, forecast_rows=rows)
+
+    results, failures = await repair_forecasts(
+        [missing_hold, missing_closed, open_hold, done_closed], now=NOW
+    )
+
+    assert failures == []
+    # One session, one SELECT — resolved history costs a lookup, not writes.
+    assert session.scalars.await_count == 1
+    assert saved.await_count == 2  # the two missing forecasts only
+    assert resolved.await_count == 1  # the closed missing one, after its save
+    assert results == {
+        "k1": "saved",
+        "k2": "resolved",
+        "k3": "open",
+        "k4": "already_closed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_repair_forecasts_isolates_a_per_signal_failure(monkeypatch):
+    good = _signal(signal_key="k1", correlation_id="binance-trend:" + "1" * 24)
+    bad = _signal(signal_key="k2", correlation_id="binance-trend:" + "2" * 24)
+    _batch_patches(monkeypatch)
+    original_save = forecast_module._save
+
+    async def flaky_save(db, signal, fid, *, now):
+        if signal.signal_key == "k2":
+            raise RuntimeError("forecast store down")
+        await original_save(db, signal, fid, now=now)
+
+    monkeypatch.setattr(forecast_module, "_save", flaky_save)
+
+    results, failures = await repair_forecasts([good, bad], now=NOW)
+
+    assert results == {"k1": "saved"}
+    assert [s.signal_key for s, _ in failures] == ["k2"]
+    assert isinstance(failures[0][1], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_repair_forecasts_never_raises_on_a_lookup_failure(monkeypatch):
+    signal = _signal()
+    _, _, session = _batch_patches(monkeypatch)
+    session.scalars = AsyncMock(side_effect=RuntimeError("db down"))
+
+    results, failures = await repair_forecasts([signal], now=NOW)
+
+    assert results == {}
+    assert [s.signal_key for s, _ in failures] == [signal.signal_key]
 
 
 # ------------------------------------------------------- executor wiring
@@ -237,8 +353,13 @@ def _record_forecast(monkeypatch):
         repairs.append((signal.signal_key, signal.state))
         return "open"
 
+    async def repair_batch(signals, *, now):
+        repairs.extend((s.signal_key, s.state) for s in signals)
+        return {}, []
+
     monkeypatch.setattr(executor_module, "ensure_entry_forecast", ensure)
     monkeypatch.setattr(executor_module, "repair_forecast", repair)
+    monkeypatch.setattr(executor_module, "repair_forecasts", repair_batch)
     return ensures, repairs
 
 
@@ -318,8 +439,12 @@ async def test_forecast_failure_is_fail_open_and_never_resends(monkeypatch):
     async def boom(signal, *, now):
         raise RuntimeError("forecast store down")
 
+    async def failing_batch(signals, *, now):
+        return {}, [(s, RuntimeError("forecast store down")) for s in signals]
+
     monkeypatch.setattr(executor_module, "ensure_entry_forecast", boom)
     monkeypatch.setattr(executor_module, "repair_forecast", boom)
+    monkeypatch.setattr(executor_module, "repair_forecasts", failing_batch)
     first = await rig.tick()
     # The fill still books; the forecast failure changes nothing observable.
     assert len(rig.client.sends) == 1
@@ -340,11 +465,11 @@ async def test_recovery_tick_repairs_a_missed_save_without_sending(monkeypatch):
     rig = Rig(monkeypatch)
     repairs = []
 
-    async def repair(signal, *, now):
-        repairs.append((signal.signal_key, signal.state))
-        return "saved"
+    async def repair(signals, *, now):
+        repairs.extend((s.signal_key, s.state) for s in signals)
+        return {}, []
 
-    monkeypatch.setattr(executor_module, "repair_forecast", repair)
+    monkeypatch.setattr(executor_module, "repair_forecasts", repair)
     key = hold(rig)  # proven holding, calm market -> no exit decision
     # The durable entry intent is settled but its forecast was never saved.
     cid = trend_client_order_id(key, "entry")

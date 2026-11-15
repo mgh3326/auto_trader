@@ -12,9 +12,14 @@ happened and a non-``open`` status means the resolve already happened.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
+from collections.abc import Sequence
+
+from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
+from app.models.review import TradeForecast
 from app.services.trade_journal.forecast_service import (
     get_forecast,
     resolve_forecast,
@@ -23,6 +28,8 @@ from app.services.trade_journal.forecast_service import (
 
 from .constants import IDENTITY, TIME_EXIT_DAYS
 from .state import TrendSignalSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 def trend_forecast_id(signal: TrendSignalSnapshot) -> uuid.UUID:
@@ -122,6 +129,14 @@ async def resolve_held_outcome(
     return result
 
 
+def _proven_fill(signal: TrendSignalSnapshot) -> bool:
+    return (
+        signal.entry_qty > 0
+        and signal.entry_price is not None
+        and signal.state in {"holding", "closed"}
+    )
+
+
 async def repair_forecast(
     signal: TrendSignalSnapshot, *, now: dt.datetime
 ) -> str | None:
@@ -133,11 +148,7 @@ async def repair_forecast(
     to the caller, which logs and continues — they never change a trading
     decision or an order.
     """
-    if (
-        signal.entry_qty <= 0
-        or signal.entry_price is None
-        or signal.state not in {"holding", "closed"}
-    ):
+    if not _proven_fill(signal):
         return None
     fid = trend_forecast_id(signal)
     async with AsyncSessionLocal() as db:
@@ -157,9 +168,68 @@ async def repair_forecast(
         return "open" if status == "open" else "already_closed"
 
 
+async def repair_forecasts(
+    signals: Sequence[TrendSignalSnapshot], *, now: dt.datetime
+) -> tuple[dict[str, str], list[tuple[TrendSignalSnapshot, Exception]]]:
+    """Batch ``repair_forecast`` for the per-tick recovery scan.
+
+    One session and one ``review.trade_forecasts`` SELECT cover every
+    candidate, so per-tick DB work no longer grows with the lane's closed
+    history the way a per-signal session would. Per-signal failures are
+    isolated into the returned list — this function never raises for a
+    single signal's write, and the batch lookup failure fails every candidate
+    the same way (the caller logs and retries next tick).
+    """
+    candidates = [signal for signal in signals if _proven_fill(signal)]
+    if not candidates:
+        return {}, []
+    fids = {signal.signal_key: trend_forecast_id(signal) for signal in candidates}
+    results: dict[str, str] = {}
+    failures: list[tuple[TrendSignalSnapshot, Exception]] = []
+    try:
+        async with AsyncSessionLocal() as db:
+            existing = {
+                row.forecast_id: row.status
+                for row in (
+                    await db.scalars(
+                        select(TradeForecast).where(
+                            TradeForecast.forecast_id.in_(list(set(fids.values())))
+                        )
+                    )
+                ).all()
+            }
+            for signal in candidates:
+                fid = fids[signal.signal_key]
+                row_status = existing.get(fid)
+                try:
+                    saved_now = False
+                    if row_status is None:
+                        await _save(db, signal, fid, now=now)
+                        await db.commit()
+                        row_status = "open"
+                        saved_now = True
+                    if signal.state == "closed" and row_status == "open":
+                        await _resolve(db, signal, fid, now=now)
+                        await db.commit()
+                        results[signal.signal_key] = "resolved"
+                    elif saved_now:
+                        results[signal.signal_key] = "saved"
+                    elif row_status == "open":
+                        results[signal.signal_key] = "open"
+                    else:
+                        results[signal.signal_key] = "already_closed"
+                except Exception as exc:
+                    failures.append((signal, exc))
+    except Exception as exc:
+        logger.exception("trend forecast recovery lookup failed")
+        return {}, [(signal, exc) for signal in candidates]
+    return results, failures
+
+
 __all__ = [
     "ensure_entry_forecast",
     "repair_forecast",
+    "repair_forecasts",
     "resolve_held_outcome",
     "trend_forecast_id",
 ]

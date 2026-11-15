@@ -25,6 +25,11 @@ ANNUALISATION_DAYS: Final = 365
 # The lookback ``L`` is a required strategy argument (CT-5 fixes it at seal).
 LOOKBACK_CHOICES: Final = (20, 60, 120)
 TIME_EXIT_DAYS: Final = 30
+# Estimated taker fee per fill notional — the same starting point the H5 lane
+# uses; the ledger's measured ``fee_usdt`` supersedes it. Accrued into
+# ``fees_usdt`` on proven entry/exit fills so the forecast outcome is net of
+# fees, not gross.
+TAKER_FEE_RATE: Final = Decimal("0.0005")
 # A 1m hard-stop watch covers at most this much history after a restart; older
 # touches are covered only by the current executable quote and the 4h decision.
 HARD_STOP_WATCH_HOURS: Final = 24
