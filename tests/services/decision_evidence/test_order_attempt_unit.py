@@ -1001,7 +1001,12 @@ async def test_non_live_execution_surfaces_do_not_write_live_evidence(monkeypatc
     )
     _patch_preflight_success(monkeypatch, kiwoom)
     result = await kiwoom._kiwoom_mock_place_order_impl(
-        symbol="005930", side="buy", quantity=1, price=100, dry_run=False
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=100,
+        strategy="unit-test",
+        dry_run=False,
     )
     assert result["success"] is True
     assert any(call.get("method") == "buy" for call in calls)
