@@ -107,7 +107,7 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 | `lifecycle_state` | Text | kis_mock 상태 어휘 재사용 `d4f1c5a3e2b1:20-30` (`planned`~`anomaly`) | — |
 | `response_code`/`response_message`/`raw_response` | Text/JSONB | 브로커 `return_code`/`return_msg` + 원문 | kis_live:42-44 |
 | `filled_qty`/`avg_fill_price`/`fee` | Numeric | 대사가 `filled_qty`·`avg_fill_price` 를 채우고 `fee` 는 모의 응답에 없어 NULL 유지 | `app/services/kiwoom_mock_order_ledger_service.py:771-776`, `app/services/kiwoom_execution_ledger.py:138-142` |
-| `trade_id`/`journal_id` | BigInt NULL | 현재 full 대사는 채우지 않는다 — journal/trade 부킹은 hk 4802 공백 | `app/services/kiwoom_mock_reconcile.py:22-25,673-679` |
+| `trade_id`/`journal_id` | BigInt NULL | hk 4802 이후 full 대사가 저널 투영과 함께 채운다 | `app/services/kiwoom_mock_reconcile.py` |
 | `reconcile_attempts`/`last_reconcile_detail`/`reconciled_at` | Int/JSONB/timestamptz | 대사 이력 | `app/services/kiwoom_mock_order_ledger_service.py:777-792` |
 | `strategy`/`thesis`/`reason`/`notes`/`exit_intent`/`exit_reason`/`indicators_snapshot` | Text/JSONB | kis_live 동형 맥락 컬럼 — 현재 place 경로는 `strategy`/`reason` 도 넘기지 않아 NULL이고, 귀속·주문 맥락은 신호/제안 원장이 소유한다 | `app/models/review.py:987-993`, `app/services/kiwoom_mock_order_ledger_service.py:926-927` |
 | `created_at`/`updated_at` | timestamptz | | 공통 |
@@ -175,8 +175,10 @@ US(`kiwoom_mock_us`)는 terminal-only 범위이고, `market='us'` full mode 는 
 - full run 은 `execution_ledger` 델타와 별도로 `broker='kiwoom'`, `notes='kiwoom_mock_full'`,
   `committed_insert=booked_count`, `unchanged=already_booked_count` 인 reconcile-run 행을 한 번 쓴다
   (`app/services/kiwoom_mock_reconcile.py:836-857`).
-- **저널·trade row·실현손익은 아직 쓰지 않는다.** 그 공백은 hk 4802 가 소유한다
-  (`app/services/kiwoom_mock_reconcile.py:22-25,673-679`).
+- **저널·trade row·실현손익은 hk 4802 이후 델타 부킹과 같은 트랜잭션으로 쓴다** —
+  매수는 주문 lot 생성·가중평균 성장, 매도는 공유 FIFO 청산(`_close_journals_on_sell`),
+  미매칭분은 진척 없이 수동 검토로 남는다
+  (`app/services/kiwoom_mock_reconcile.py`).
 - 격리 리더 규약: 원장을 fill 로 읽는 새 리더는 `execution_ledger_in_effect()`
   (`quarantined_at IS NULL`)를 AND 한다(`app/models/execution_ledger.py:142-152`).
   격리 대상 CHECK 는 `source='websocket' AND broker='kis'` 라 Kiwoom 행은 격리 대상이
@@ -244,7 +246,7 @@ US(`kiwoom_mock_us`)는 terminal-only 범위이고, `market='us'` full mode 는 
 |---|---|---|---|
 | dry-run | `scripts/kiwoom_mock_auto_reconcile.py`(기본) | 없음 | verdict 예고만, 쓰기 0, `would_*` 액션 |
 | terminal-only | `--apply-terminal-only --market kr\|us` | KR=`KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`, US=`KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED` — 각각 정확히 `true` | 만료·취소·거절·uncertain→accepted 만 반영, 체결 부킹은 `deferred_fill_booking` |
-| full | `--apply` (**KR only**) | `KIWOOM_MOCK_AUTO_RECONCILE_ENABLED` **AND** `KIWOOM_MOCK_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` — 각각 정확히 `true` | `execution_ledger` 델타 부킹 + reconcile-run 행; 저널·실현손익은 hk 4802 공백 |
+| full | `--apply` (**KR only**) | `KIWOOM_MOCK_AUTO_RECONCILE_ENABLED` **AND** `KIWOOM_MOCK_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` — 각각 정확히 `true` | `execution_ledger` 델타 부킹 + reconcile-run 행 + hk 4802 저널·실현손익 투영(같은 트랜잭션) |
 
 - 커널은 `kiwoom_mock_reconcile_orders_impl` 이고 CLI 는 `--apply`/`--apply-terminal-only` 를
   mutually exclusive 로 받고, 미해결·deferred·잘린 scan·dry-run pending work 는 exit 3 으로

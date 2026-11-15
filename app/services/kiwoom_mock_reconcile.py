@@ -359,6 +359,7 @@ async def _hold_full_run_lock(
 
 async def _journal_buy_delta(
     db: Any,
+    service: KiwoomMockOrderLedgerService,
     booking: FillBooking,
     *,
     quantity: Decimal,
@@ -371,7 +372,11 @@ async def _journal_buy_delta(
     absorbs the unjournaled quantity at a quantity-weighted entry price (hk
     4802, operator decision 1); a fully closed (or missing) lot is replaced by
     a new active lot for the order — the sell that closed it already took its
-    realized P&L. The caller owns the transaction (never commits).
+    realized P&L. While an unmatched-sell stamp is outstanding for the
+    symbol, the delta opens a NEW lot instead of growing: a grown lot keeps
+    its old ``created_at``, so its later-added shares would pass the sell's
+    chronology bound and be consumed retroactively (mergewake r4578966217).
+    The caller owns the transaction (never commits).
     """
     from app.models.trade_journal import JournalStatus, TradeJournal
     from app.models.trading import InstrumentType
@@ -379,7 +384,11 @@ async def _journal_buy_delta(
     lot = None
     if booking.journal_id is not None:
         lot = await db.get(TradeJournal, booking.journal_id)
-    if lot is not None and lot.status == JournalStatus.active:
+    if (
+        lot is not None
+        and lot.status == JournalStatus.active
+        and not await service.has_outstanding_unmatched_sell(symbol=booking.symbol)
+    ):
         active_qty = lot.quantity or Decimal(0)
         active_price = lot.entry_price or Decimal(0)
         new_qty = active_qty + quantity
@@ -460,7 +469,12 @@ async def _journal_unjournaled(
     manual_review_reason: str | None = None
     if booking.side == "buy":
         grown = await _journal_buy_delta(
-            db, booking, quantity=unjournaled, price=price, trade_id=trade_id
+            db,
+            service,
+            booking,
+            quantity=unjournaled,
+            price=price,
+            trade_id=trade_id,
         )
         details.update(grown)
         journaled_now = unjournaled

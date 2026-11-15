@@ -449,6 +449,12 @@ class FakeService:
             avg_price=delta_price,
         )
 
+    async def has_outstanding_unmatched_sell(self, *, symbol):
+        return any(
+            unmatched_sell_since(row) is not None and row.symbol == symbol
+            for row in type(self).rows
+        )
+
     async def lock_for_journal(self, *, ledger_id):
         row = next(item for item in type(self).rows if item.id == ledger_id)
         return _fake_booking(row, action="journal_lock", delta=Decimal(0))
@@ -1102,6 +1108,67 @@ async def test_unmatched_sell_never_closes_a_lot_created_after_it_missed(
     assert journaled_progress(stored)[0] == Decimal("10")
     closed_9 = next(j for j in FakeSession.journals if j.id == 9)
     assert closed_9.status == JournalStatus.closed
+
+
+async def test_buy_delta_opens_a_new_lot_while_a_sell_stamp_is_outstanding(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Growing a lot under an unmatched-sell stamp would smuggle post-stamp
+    shares past the chronology bound (mergewake r4578966217): the lot keeps
+    its old created_at, so the sell's retry would consume shares bought after
+    the sell. While a stamp is outstanding the delta opens a new lot.
+    """
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    sell = _row(1, broker_order_id="0001", side="sell")
+    buy = _row(2, broker_order_id="0002", side="buy")
+    FakeService.rows = [sell, buy]
+    FakeService.total = 2
+    FakeSession.journals = [_journal(7, quantity="6", entry_price="70000")]
+
+    def reader(*, sell_qty: int, buy_qty: int) -> FakeReader:
+        return FakeReader(
+            detail_pages={
+                TODAY: [
+                    _detail_payload(
+                        _detail_row(
+                            ord_no="0001",
+                            cntr_qty=str(sell_qty),
+                            ord_remnq="0",
+                            cntr_uv="80000",
+                        ),
+                        _detail_row(
+                            ord_no="0002",
+                            cntr_qty=str(buy_qty),
+                            ord_remnq=str(10 - buy_qty),
+                            cntr_uv="70000",
+                        ),
+                    )
+                ]
+            }
+        )
+
+    # Sell outruns its lots → stamp; the buy's first delta opens lot L1.
+    await _run(reader(sell_qty=10, buy_qty=4), dry_run=False, terminal_only=False)
+    assert unmatched_sell_since(sell) is not None
+    active = [j for j in FakeSession.journals if j.status == JournalStatus.active]
+    assert len(active) == 1
+    lot_before = active[0]
+    assert lot_before.quantity == Decimal("4")
+
+    # The buy's next delta must open a NEW lot, not grow the pre-stamp one.
+    second = await _run(
+        reader(sell_qty=10, buy_qty=6), dry_run=False, terminal_only=False
+    )
+    outcome = next(r for r in second["reconciled"] if r["ledger_id"] == 2)
+    assert outcome["action"] == "booked_partial"
+    assert outcome["journal"]["journal_created"] is True
+    active = [j for j in FakeSession.journals if j.status == JournalStatus.active]
+    new_lots = [j for j in active if j.id != lot_before.id]
+    assert len(new_lots) == 1
+    assert new_lots[0].quantity == Decimal("2")
+    # The pre-stamp lot is untouched: no post-stamp shares inside the bound.
+    assert lot_before.quantity == Decimal("4")
 
 
 async def test_overlapping_full_runs_book_the_delta_once(

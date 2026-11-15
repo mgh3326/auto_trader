@@ -916,6 +916,26 @@ class KiwoomMockOrderLedgerService:
             journaled=journaled,
         )
 
+    async def has_outstanding_unmatched_sell(self, *, symbol: str) -> bool:
+        """True while any sell remainder for ``symbol`` is unmatched.
+
+        An outstanding ``unmatched_sell_since`` stamp bounds a retried close
+        to lots that existed then — so a buy delta arriving while a stamp is
+        outstanding must open a NEW lot rather than grow an older one whose
+        ``created_at`` would pass the bound (mergewake r4578966217).
+        """
+        return (
+            await self._db.execute(
+                select(func.count(KiwoomMockOrderLedger.id)).where(
+                    KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
+                    KiwoomMockOrderLedger.symbol == symbol,
+                    KiwoomMockOrderLedger.last_reconcile_detail[
+                        _UNMATCHED_SELL_SINCE_KEY
+                    ].astext.isnot(None),
+                )
+            )
+        ).scalar_one() > 0
+
     async def lock_for_journal(self, *, ledger_id: int) -> FillBooking:
         """Lock the order row and return its current fill/journal state.
 
