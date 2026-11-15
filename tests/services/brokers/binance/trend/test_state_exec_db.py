@@ -240,7 +240,7 @@ async def test_exit_needs_a_held_signal_and_a_bounded_quantity(svc) -> None:
         await svc.reserve_exit_intent(
             signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.1"), now=NOW
         )
-    held, _ = await to_holding(svc)
+    held, _ = await to_holding(svc, symbol="ETHUSDT")
     with pytest.raises(TrendStateBlocked, match="exceeds"):
         await svc.reserve_exit_intent(
             signal_key=held.signal_key, reason=EXIT_HARD_STOP, qty=D("0.7"), now=NOW
