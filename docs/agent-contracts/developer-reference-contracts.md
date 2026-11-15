@@ -15,7 +15,7 @@
 
 ## 개발 환경 설정
 
-플릿 세션(스폰된 워커, 디자인 세션, 리드 세션)은 테스트와 호스트 규칙에 스폰 프리앰블을 따른다. 아래 명령은 사람과 CI를 위한 것이다.
+플릿 세션(스폰된 워커, 디자인 세션, 리드 세션)은 테스트·DB·호스트 규칙에 스폰 프리앰블의 `Host safety (fleet-v1)` 블록을 따른다. 아래 명령은 사람과 CI를 위한 것이다.
 
 ### 필수 요구사항
 - Python 3.13+
@@ -96,6 +96,8 @@ TRADINGAGENTS_RUNNER_PATH=/path/to/run_auto_trader_research.py
 
 ## 테스트 작성
 
+플릿 세션(스폰된 워커, 디자인 세션, 리드 세션)은 테스트·DB·호스트 규칙에 스폰 프리앰블의 `Host safety (fleet-v1)` 블록을 따른다. 아래 명령은 사람과 CI를 위한 것이다.
+
 **테스트 마커 사용:**
 ```python
 import pytest
@@ -152,6 +154,8 @@ changes are never automatic. This policy does not relax the exact-SHA CI gate,
 register schedules, enable trading switches or authorize an order.
 
 ## 문제 해결
+
+플릿 세션(스폰된 워커, 디자인 세션, 리드 세션)은 테스트·DB·호스트 규칙에 스폰 프리앰블의 `Host safety (fleet-v1)` 블록을 따른다. 아래 명령은 사람과 CI를 위한 것이다.
 
 ### KIS 분봉 API 문제
 - **증상:** `time_unit` 파라미터가 제대로 작동하지 않아 모든 시간대에서 동일한 데이터 반환

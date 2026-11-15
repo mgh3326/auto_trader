@@ -629,6 +629,149 @@ def _adapt_live_submit_response(
     return submit
 
 
+_KIWOOM_MOCK_ACCOUNT_MODE = "kiwoom_mock"
+
+
+def _kiwoom_mock_refusal(error_code: str, message: str) -> dict[str, Any]:
+    """Pre-send refusal in the shape ``_classify_submit`` reads."""
+    return {
+        "success": False,
+        "error_code": error_code,
+        "error": message,
+        "mutation_sent": False,
+    }
+
+
+def _kiwoom_mock_int_amount(value: Any) -> int | None:
+    """Exact positive integer for a KR mock quantity/price, else ``None``.
+
+    The mock order body carries integer KRW/share amounts and ``int(Decimal)``
+    would silently floor a fractional rung. Refuse instead of truncating.
+    """
+    if value is None:
+        return None
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if (
+        not decimal_value.is_finite()
+        or decimal_value <= 0
+        or decimal_value != decimal_value.to_integral_value()
+    ):
+        return None
+    return int(decimal_value)
+
+
+def _adapt_kiwoom_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
+    """Pass the shared place preview through unchanged.
+
+    ``_revalidate_place_rung`` reads ``success``/``price``/``quantity`` and the
+    mock preview already carries exactly those.
+    """
+    return preview
+
+
+def _adapt_kiwoom_submit_response(submit: dict[str, Any]) -> dict[str, Any]:
+    """Map the shared KR mock place response into ``_classify_submit``'s shape.
+
+    Three closed outcomes, never a guess:
+
+    * accepted with a provable order number -> ``resting`` + ``broker_order_id``
+      (a DAY limit order the broker acknowledged; fills are reconcile's job);
+    * provably not sent (``status="not_submitted"``) -> explicit rejection with
+      the service's own ``error_code`` as the reason;
+    * anything else — ``acceptance_uncertain``, an unprovable ACK, a ledger
+      write that failed after the ACK, or a duplicate key whose earlier outcome
+      is unknown — drops ``success`` so the classifier records ``unverified``
+      and never terminalizes an order that may exist at the broker.
+    """
+    from app.services.kiwoom_mock_place import broker_order_id_from
+
+    status = submit.get("status")
+    if submit.get("success") is True and submit.get("ledger_status") == "accepted":
+        broker_order_id = broker_order_id_from(submit)
+        if broker_order_id is not None:
+            adapted = dict(submit)
+            adapted["status"] = "resting"
+            adapted["broker_order_id"] = broker_order_id
+            adapted["idempotency_key"] = submit.get("client_order_id")
+            return adapted
+    if submit.get("ledger_status") == "rejected" or (
+        status == "not_submitted" and submit.get("reconcile_required") is not True
+    ):
+        # The broker answered with an explicit rejection, or the place path
+        # refused provably before any send. Both are terminal, not ambiguous.
+        return {
+            **submit,
+            "success": False,
+            "error": str(
+                submit.get("error_code")
+                or submit.get("error")
+                or submit.get("return_msg")
+                or "kiwoom_mock_order_rejected"
+            ),
+        }
+    ambiguous = dict(submit)
+    ambiguous.pop("success", None)
+    return ambiguous
+
+
+async def _place_kiwoom_mock_proposal_order(
+    *,
+    dry_run: bool,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Proposal binding for the KR mock lane (hk 4732).
+
+    Calls the same service-layer place function the ``kiwoom_mock_*`` MCP tool
+    calls, so attribution, the send reservation and the ledger row land at the
+    same boundary on both paths. Every refusal below happens before any broker
+    call: the default-disabled config gate, the KRX/limit shape, and exact
+    integer quantity/price.
+    """
+    from app.services.kiwoom_mock_place import (
+        mock_config_error,
+        place_kiwoom_mock_order,
+    )
+
+    config_error = mock_config_error()
+    if config_error is not None:
+        return config_error
+    if str(kwargs.get("market") or "") != "equity_kr":
+        return _kiwoom_mock_refusal(
+            "kiwoom_mock_market_unsupported",
+            "kiwoom_mock proposals support market='equity_kr' only",
+        )
+    if str(kwargs.get("order_type") or "") != "limit":
+        return _kiwoom_mock_refusal(
+            "kiwoom_mock_order_type_unsupported",
+            "kiwoom_mock proposals support order_type='limit' only",
+        )
+    quantity = _kiwoom_mock_int_amount(kwargs.get("quantity"))
+    price = _kiwoom_mock_int_amount(kwargs.get("price"))
+    if quantity is None or price is None:
+        return _kiwoom_mock_refusal(
+            "kiwoom_mock_quantity_price_invalid",
+            "kiwoom_mock requires a positive integer quantity and limit price",
+        )
+    response = await place_kiwoom_mock_order(
+        symbol=kwargs.get("symbol"),
+        side=kwargs.get("side"),
+        quantity=quantity,
+        price=price,
+        exchange=None,
+        dry_run=dry_run,
+        strategy=kwargs.get("strategy"),
+        rung=kwargs.get("rung"),
+        correlation_id=kwargs.get("correlation_id"),
+        pre_send_hook=kwargs.get("pre_send_hook"),
+    )
+    if dry_run:
+        return _adapt_kiwoom_preview_response(response)
+    return _adapt_kiwoom_submit_response(response)
+
+
 @contextmanager
 def _optional_order_link_context(**kwargs: Any):
     """Bind observational identity without making it a submission gate."""
@@ -763,6 +906,16 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
         return _adapt_toss_submit_response(
             submit,
             order_type=str(kwargs.get("order_type")),
+        )
+
+    if account_mode == _KIWOOM_MOCK_ACCOUNT_MODE:
+        # hk 4732: the KR mock lane reuses the shared service-layer place
+        # sequence (attribution → reservation → POST → ledger) instead of the
+        # KIS/Upbit fallback below, which has no mock client. Preview and submit
+        # are the same call; ``dry_run`` decides whether anything is sent.
+        return await _place_kiwoom_mock_proposal_order(
+            dry_run=kwargs.get("dry_run") is True,
+            kwargs=kwargs,
         )
 
     from app.mcp_server.tooling.order_execution import _place_order_impl
