@@ -120,6 +120,7 @@ def test_from_env_needs_the_trend_flag_before_anything_else(monkeypatch) -> None
 
 def test_submit_posts_exactly_one_gated_one_way_market_order(monkeypatch) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = _Transport()
     result = run(make_client(transport).submit_order(**SEND))
     assert len(transport.posts) == 1
@@ -132,6 +133,7 @@ def test_submit_posts_exactly_one_gated_one_way_market_order(monkeypatch) -> Non
 
 def test_a_close_carries_reduce_only(monkeypatch) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = _Transport()
     run(
         make_client(transport).submit_order(
@@ -159,6 +161,7 @@ def test_submit_refuses_every_deviation_with_zero_posts(
     monkeypatch, change, message
 ) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = _Transport()
     with pytest.raises(ValueError, match=message):
         run(make_client(transport).submit_order(**{**SEND, **change}))
@@ -171,6 +174,7 @@ def test_submit_refuses_without_the_trend_flag_and_off_origin(monkeypatch) -> No
     with pytest.raises(ValueError, match="BINANCE_TREND_DEMO_ENABLED"):
         run(make_client(transport).submit_order(**SEND))
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     with pytest.raises(ValueError, match="exact Futures Demo origin"):
         run(
             make_client(transport, base_url="https://fapi.binance.com").submit_order(
@@ -184,6 +188,7 @@ def test_a_transport_that_drifts_off_the_demo_origin_is_refused_per_call(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = _Transport()
     transport.base_url = "https://fapi.binance.com"
     with pytest.raises(ValueError, match="exact Futures Demo origin"):
@@ -632,3 +637,32 @@ def test_position_mode_refuses_anything_else_and_never_reads_a_string_as_hedge(
                 _Transport({"/fapi/v1/positionSide/dual": ["x"]})
             ).get_position_mode()
         )
+
+
+@pytest.mark.parametrize("futures", [None, "false", "True", "1", ""])
+def test_a_directly_built_client_cannot_submit_without_the_exact_futures_flag(
+    monkeypatch, futures
+) -> None:
+    monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    if futures is None:
+        monkeypatch.delenv("BINANCE_FUTURES_DEMO_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", futures)
+    transport = _Transport()
+    with pytest.raises(ValueError, match="BINANCE_FUTURES_DEMO_ENABLED"):
+        run(make_client(transport).submit_order(**SEND))
+    assert transport.posts == []
+
+
+def test_turning_the_futures_flag_off_after_construction_stops_the_send(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
+    transport = _Transport()
+    client = make_client(transport)
+    run(client.submit_order(**SEND))
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "false")
+    with pytest.raises(ValueError, match="BINANCE_FUTURES_DEMO_ENABLED"):
+        run(client.submit_order(**{**SEND, "client_order_id": "trend-two"}))
+    assert len(transport.posts) == 1

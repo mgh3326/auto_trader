@@ -452,8 +452,12 @@ class TrendDemoClient(BinanceFuturesDemoExecutionClient):
             or kwargs.get("position_side") != "BOTH"
         ):
             raise ValueError("trend sends MARKET one-way orders only")
+        # Both gates exactly "true" and per-call confirm, checked here too: a
+        # directly constructed client must not bypass the futures gate.
         if os.environ.get(_ENV_TREND) != "true":
             raise ValueError(f"{_ENV_TREND} is disabled")
+        if os.environ.get(_ENV_FUTURES) != "true":
+            raise ValueError(f"{_ENV_FUTURES} is disabled")
         if kwargs.get("confirm") is not True:
             raise ValueError("trend requires per-call confirm=True")
         return await super().submit_order(**kwargs)
@@ -875,10 +879,14 @@ class TrendExecutor:
             # ledger sync from the still-unsettled intent.
             logger.exception("trend demo ledger sync incomplete")
             return "ledger_incomplete"
-        if current_intent.state == "acknowledged":
+        if current_intent.state in {"acknowledged", "uncertain"}:
             # An open order with an executed quantity is real exposure that no
-            # exit manages yet: surface it distinctly (no resend, no cancel).
-            return "pending_partial" if evidence.executed_qty > 0 else "pending"
+            # exit manages yet: surface it distinctly (no resend, no cancel). An
+            # intent that was marked uncertain stays uncertain (it never goes
+            # back to acknowledged) but is not a "no fill".
+            if evidence.executed_qty > 0:
+                return "pending_partial"
+            return "pending" if current_intent.state == "acknowledged" else "uncertain"
         if intent.reduce_only:
             if current.state == "closed":
                 return "closed"
@@ -924,7 +932,7 @@ class TrendExecutor:
                 continue
             if (
                 not intent.reduce_only
-                and intent.state == "acknowledged"
+                and intent.state in {"acknowledged", "uncertain"}
                 and intent.executed_qty > 0
             ):
                 # A still-working, partially filled entry: real exposure that no

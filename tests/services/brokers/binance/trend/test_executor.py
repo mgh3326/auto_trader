@@ -1348,3 +1348,27 @@ async def test_a_partial_entry_that_ends_is_a_normal_holding_with_the_executed_q
     signal = next(iter(rig.state.signals.values()))
     assert (signal.state, signal.entry_qty) == ("holding", D("0.3"))
     assert rig.ledger.rows[signal.entry_client_order_id] == "filled"  # closable root
+
+
+@pytest.mark.asyncio
+async def test_an_uncertain_entry_found_partially_filled_still_alarms_and_blocks(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.submit_error = TimeoutError("read timeout")  # sent, outcome unknown
+    first = await rig.tick()
+    assert rig.events(first) == [("BTCUSDT", "entry_uncertain")]
+    rig.client.submit_error = None
+    rig.client.order_script = [{"status": "PARTIALLY_FILLED", "executed": D("0.3")}]
+    rig.client.positions["BTCUSDT"] = D("0.3")
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    second = await rig.tick()
+    names = [e.event for e in second.events]
+    assert "partial_entry_exposure_open" in names  # the intent is still uncertain
+    assert names.count("partial_entry_stop_breached") == 1
+    assert ("BTCUSDT", "reconciled_pending_partial") in rig.events(second)
+    assert "reconciled_no_fill" not in names
+    signal = next(iter(rig.state.signals.values()))
+    assert rig.state.intents[signal.entry_client_order_id].state == "uncertain"
+    assert len(rig.client.sends) == 1  # no resend, no exit
+    assert rig.state.calls["reserve_exit_intent"] == 0

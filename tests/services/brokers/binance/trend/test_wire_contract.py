@@ -126,6 +126,7 @@ def test_a_documented_submit_response_parses_and_echoes_the_intent(
     monkeypatch, raw
 ) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = RawTransport(post=raw)
     result = run(client_for(transport).submit_order(**SEND))
     assert transport.posted[0]["positionSide"] == "BOTH"
@@ -141,6 +142,7 @@ def test_a_documented_submit_response_parses_and_echoes_the_intent(
 
 def test_a_reduce_only_close_response_echoes_a_close_intent(monkeypatch) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = RawTransport(post=wire.NEW_ORDER_CLOSE)
     result = run(
         client_for(transport).submit_order(
@@ -163,6 +165,7 @@ def test_a_response_without_position_side_is_never_read_as_agreement(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = RawTransport(post=wire.NEW_ORDER_NO_POSITION_SIDE)
     with pytest.raises(BinanceFuturesDemoPositionSideMismatch):
         run(client_for(transport).submit_order(**SEND))
@@ -184,6 +187,7 @@ def test_real_http_errors_classify_only_an_explicit_rejection(
     monkeypatch, raw, status, expected
 ) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = RawTransport(post=raw, post_status=status)
     with pytest.raises(httpx.HTTPStatusError) as caught:
         run(client_for(transport).submit_order(**SEND))
@@ -477,6 +481,7 @@ def test_a_db_scale_quantity_goes_on_the_wire_without_storage_zeros(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     transport = RawTransport(post=wire.NEW_ORDER_NEW)
     run(
         client_for(transport).submit_order(
