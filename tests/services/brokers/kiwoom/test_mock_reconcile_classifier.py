@@ -351,6 +351,80 @@ def test_uncertain_never_promotes_from_an_incomplete_listing() -> None:
     assert verdict.verdict == "unknown"
 
 
+def test_status_only_fill_blocks_a_cancel_close() -> None:
+    # kt00009 reports four fills; closing as cancelled would strand them.
+    verdict = _classify(
+        status=_status_payload(_status_row(cntr_qty="4", mdfy_cncl_tp="취소")),
+        detail=_detail_payload(),  # no kt00007 row
+        own_cancel_acknowledged=True,
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "status_listing_reports_fill"
+
+
+def test_zero_fill_detail_with_a_status_fill_is_a_conflict() -> None:
+    verdict = _classify(
+        status=_status_payload(_status_row(cntr_qty="4", mdfy_cncl_tp="취소")),
+        detail=_detail_payload(_detail_row(ord_remnq="0", mdfy_cncl="취소")),
+        own_cancel_acknowledged=True,
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "fill_evidence_conflict"
+
+
+def test_differing_fill_quantities_between_listings_are_a_conflict() -> None:
+    verdict = _classify(
+        status=_status_payload(_status_row(cntr_qty="10")),
+        detail=_detail_payload(
+            _detail_row(cntr_qty="4", ord_remnq="6", cntr_uv="70050")
+        ),
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "fill_evidence_conflict"
+
+
+def test_status_only_reject_marker_is_positive_evidence() -> None:
+    verdict = _classify(
+        status=_status_payload(_status_row(mdfy_cncl_tp="거부")),
+        detail=_detail_payload(),
+    )
+    assert verdict.verdict == "rejected"
+    assert verdict.reason == "broker_reject_confirmed"
+
+
+def test_status_only_expiry_marker_is_positive_evidence() -> None:
+    verdict = _classify(
+        status=_status_payload(_status_row(mdfy_cncl_tp="만료")),
+        detail=_detail_payload(),
+    )
+    assert verdict.verdict == "expired"
+
+
+def test_status_reject_marker_blocks_uncertain_promotion() -> None:
+    verdict = _classify(
+        ledger=_ledger(status="uncertain"),
+        status=_status_payload(_status_row(mdfy_cncl_tp="거부")),
+        detail=_detail_payload(),
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "uncertain_broker_terminal_evidence"
+
+
+def test_ordered_quantity_mismatch_is_not_the_same_order() -> None:
+    # Same number and symbol but a different size: not this ledger row's order.
+    detail = _detail_payload(_detail_row(ord_qty="1", ord_remnq="0", mdfy_cncl="만료"))
+    verdict = _classify(detail=detail)
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "quantity_mismatch"
+
+
+def test_ordered_quantity_mismatch_blocks_uncertain_promotion() -> None:
+    detail = _detail_payload(_detail_row(ord_qty="1", ord_remnq="1"))
+    verdict = _classify(ledger=_ledger(status="uncertain"), detail=detail)
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "quantity_mismatch"
+
+
 def test_past_trading_day_does_not_consult_todays_status_listing() -> None:
     # The detail listing alone decides the past-day row; kt00009 is not consulted
     # and its emptiness must not become "no such order".

@@ -38,6 +38,7 @@ __all__ = (
     "BrokerRow",
     "LedgerOrder",
     "Verdict",
+    "STATUS_LIST_KEY",
     "classify_verdict",
     "evidence_from_payloads",
     "return_code_ok",
@@ -58,6 +59,7 @@ VerdictName = Literal[
 
 SOURCE_ORDER_DETAIL: Final = "kt00007"
 SOURCE_ORDER_STATUS: Final = "kt00009"
+STATUS_LIST_KEY: Final = "acnt_ord_cntr_prst_array"
 
 # Closed marker vocabulary. Only these broker-reported texts are positive
 # terminal evidence; anything else is unclassified (``unknown``), never guessed.
@@ -184,18 +186,31 @@ def _rows_from_status(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
     source contributes cancel confirmation only — fill evidence comes from
     kt00007 (§3.2).
     """
+    normalized = normalize_orders(dict(payload))
+    raw_rows = payload.get(STATUS_LIST_KEY)
+    if not isinstance(raw_rows, list) or len(raw_rows) != len(normalized):
+        raise KiwoomMockEvidenceError("kt00009 rows could not be paired with raw rows")
     rows: list[BrokerRow] = []
-    for row in normalize_orders(dict(payload)):
+    for raw, row in zip(raw_rows, normalized, strict=True):
+        if not isinstance(raw, Mapping):
+            raise KiwoomMockEvidenceError("kt00009 raw row is not a mapping")
+        # ``normalize_orders`` maps only cancels; reject/expiry text is kept so
+        # the closed marker vocabulary applies to both listings.
+        marker = _marker(raw.get("mdfy_cncl_tp")) or (
+            "cancel" if row.get("status") == "cancelled" else None
+        )
         rows.append(
             BrokerRow(
                 order_id=str(row["order_id"]),
                 symbol=str(row["symbol"]),
                 source=SOURCE_ORDER_STATUS,
                 ordered_quantity=None,
-                filled_quantity=None,
+                # Carried, not discarded: a fill in either listing must block a
+                # no-fill close (the fill may still need booking).
+                filled_quantity=int(row["filled_quantity"]),
                 remaining_quantity=None,
                 average_price=None,
-                marker="cancel" if row.get("status") == "cancelled" else None,
+                marker=marker,
             )
         )
     return tuple(rows)
@@ -263,7 +278,16 @@ def _exact_rows(
         # The order number is reused or misread: do not attribute another
         # symbol's order to this ledger row.
         return None, None, "attribute_mismatch"
-    return (detail[0] if detail else None, status[0] if status else None, None)
+    detail_row = detail[0] if detail else None
+    if (
+        detail_row is not None
+        and detail_row.ordered_quantity is not None
+        and detail_row.ordered_quantity != ledger.quantity
+    ):
+        # Same number and symbol but a different order size is a different
+        # order (number reuse); never close/promote the ledger row with it.
+        return None, None, "quantity_mismatch"
+    return (detail_row, status[0] if status else None, None)
 
 
 def _classify_uncertain(
@@ -332,13 +356,16 @@ def classify_verdict(
         )
 
     if detail_row is None:
-        # kt00009 alone carries no quantities, so it cannot prove fills. It can
-        # still complete the cancel pair when our own request is acknowledged.
-        if (
-            status_row is not None
-            and status_row.marker == "cancel"
-            and own_cancel_acknowledged
-        ):
+        if status_row is None:
+            return _unknown("no_exact_row")
+        # kt00009 cannot price a fill, but a fill it reports is still broker
+        # evidence: closing now would strand it outside every T-P4 booking read.
+        if (status_row.filled_quantity or 0) > 0:
+            return _unknown("status_listing_reports_fill")
+        if status_row.marker == "cancel":
+            # The cancel pair needs our own acknowledged request (design §3.2).
+            if not own_cancel_acknowledged:
+                return _unknown("cancel_without_own_acknowledged_request")
             if ledger.recorded_filled_quantity > 0:
                 return _unknown("recorded_fill_contradicts_broker")
             return Verdict(
@@ -346,14 +373,31 @@ def classify_verdict(
                 reason="own_cancel_acknowledged_and_broker_confirmed",
                 requires_manual_review=False,
             )
-        return _unknown(
-            "no_detail_evidence" if status_row is not None else "no_exact_row"
-        )
+        if status_row.marker in {"reject", "expiry"}:
+            if ledger.recorded_filled_quantity > 0:
+                return _unknown("recorded_fill_contradicts_broker")
+            return Verdict(
+                verdict=("rejected" if status_row.marker == "reject" else "expired"),
+                reason=(
+                    "broker_reject_confirmed"
+                    if status_row.marker == "reject"
+                    else "broker_expiry_confirmed"
+                ),
+                requires_manual_review=False,
+            )
+        return _unknown("no_detail_evidence")
 
     filled = detail_row.filled_quantity
     ordered = detail_row.ordered_quantity or ledger.quantity
     if filled is None:
         return _unknown("filled_quantity_unreadable")
+    if (
+        status_row is not None
+        and status_row.filled_quantity is not None
+        and status_row.filled_quantity != filled
+    ):
+        # The listings disagree about the fill; never book or close on a guess.
+        return _unknown("fill_evidence_conflict")
 
     if filled > 0:
         price = detail_row.average_price
