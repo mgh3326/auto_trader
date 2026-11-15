@@ -1064,7 +1064,9 @@ async def resolve_submission_session(
         )
     if market == "equity_us" and account_mode == "toss_live":
         return await _resolve_toss_us_session(group, now)
-    if market == "equity_us" and account_mode == "kis_live":
+    if market == "equity_us" and account_mode in {"kis_live", "kiwoom_mock_us"}:
+        # hk 4754: the US mock lane is XNYS regular only — the Toss US pre/post
+        # key never applies to it, and there is no mock session of its own.
         return _resolve_xnys_session(group, now)
     if market == "equity_kr" and account_mode == "kiwoom_mock":
         # hk 4732: explicit KRX-regular-only branch; never the NXT-capable

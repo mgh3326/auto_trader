@@ -37,11 +37,19 @@ __all__ = (
     "BrokerEvidence",
     "BrokerRow",
     "LedgerOrder",
-    "Verdict",
+    "ROLE_DETAIL",
+    "ROLE_STATUS",
+    "SOURCE_US_OPEN_ORDERS",
+    "SOURCE_US_TODAY_ORDERS",
     "STATUS_LIST_KEY",
+    "US_ORDER_LIST_KEY",
+    "US_PAST_DAY_UNAVAILABLE",
+    "Verdict",
     "classify_verdict",
     "evidence_from_payloads",
     "return_code_ok",
+    "us_evidence_from_payloads",
+    "us_past_day_evidence",
 )
 
 #: Verdicts of the design §3.2 table, plus ``pending`` for a broker row that is
@@ -60,6 +68,17 @@ VerdictName = Literal[
 SOURCE_ORDER_DETAIL: Final = "kt00007"
 SOURCE_ORDER_STATUS: Final = "kt00009"
 STATUS_LIST_KEY: Final = "acnt_ord_cntr_prst_array"
+
+#: Roles the classifier partitions on (see :class:`BrokerRow`).
+ROLE_DETAIL: Final = "detail"
+ROLE_STATUS: Final = "status"
+
+# US mock order listings (hk 4754). The observed row shape is the one the US
+# smoke recorded (docs/runbooks/kiwoom-mock-us-smoke.md): ``result_list`` rows
+# with ``ord_no``/``ord_stat``/``cntr_qty``/``ord_remnq``/``ord_cntr_tp``.
+SOURCE_US_TODAY_ORDERS: Final = "ust21510"
+SOURCE_US_OPEN_ORDERS: Final = "ust21050"
+US_ORDER_LIST_KEY: Final = "result_list"
 
 # Closed marker vocabulary. Only these broker-reported texts are positive
 # terminal evidence; anything else is unclassified (``unknown``), never guessed.
@@ -86,11 +105,18 @@ class LedgerOrder:
 
 @dataclass(frozen=True, slots=True)
 class BrokerRow:
-    """One broker order row flattened from kt00007 / kt00009."""
+    """One broker order row flattened from an order listing.
+
+    ``source`` names the TR the row came from (``kt00007``/``ust21510``, …) and
+    is kept for evidence provenance. ``role`` is what the classifier partitions
+    on: ``detail`` is the per-order row that carries fill and marker evidence,
+    ``status`` is the account listing consulted alongside it.
+    """
 
     order_id: str
     symbol: str
     source: str
+    role: str
     ordered_quantity: int | None
     filled_quantity: int | None
     remaining_quantity: int | None
@@ -198,6 +224,7 @@ def _rows_from_detail(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
                 order_id=str(row["order_id"]),
                 symbol=str(row["symbol"]),
                 source=SOURCE_ORDER_DETAIL,
+                role=ROLE_DETAIL,
                 ordered_quantity=int(row["ordered_quantity"]),
                 filled_quantity=int(row["filled_quantity"]),
                 remaining_quantity=int(row["remaining_quantity"]),
@@ -241,6 +268,7 @@ def _rows_from_status(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
                 order_id=str(row["order_id"]),
                 symbol=str(row["symbol"]),
                 source=SOURCE_ORDER_STATUS,
+                role=ROLE_STATUS,
                 ordered_quantity=_raw_int(raw, "ord_qty"),
                 # Carried, not discarded: a fill in either listing must block a
                 # no-fill close (the fill may still need booking).
@@ -297,6 +325,136 @@ def evidence_from_payloads(
     return BrokerEvidence(complete=True, reason=None, rows=rows)
 
 
+# ---------------------------------------------------------------------------
+# US mock listings (hk 4754) — the same evidence model, US field names.
+#
+# Field shape is the one recorded by the US mock smoke
+# (docs/runbooks/kiwoom-mock-us-smoke.md): ``result_list`` rows carrying
+# ``ord_no``, ``ord_stat``, ``cntr_qty``, ``ord_remnq`` and ``ord_cntr_tp``
+# (``"12"`` marks a cancel row). ``ust21510`` lists today's orders *and fills*,
+# so it is the detail role; ``ust21050`` lists open orders and is the status
+# role. Neither exposes a per-row average fill price, so ``average_price`` is
+# always ``None`` and a fill verdict is only priced when the caller demands it.
+# ---------------------------------------------------------------------------
+
+#: ``ord_cntr_tp`` value of a cancel confirmation row.
+US_CANCEL_ROW_CODE: Final = "12"
+#: No US listing covers a past ET trading day: absence there proves nothing.
+US_PAST_DAY_UNAVAILABLE: Final = "us_listing_unavailable_for_past_trading_day"
+
+
+def _us_optional_int(row: Mapping[str, Any], key: str) -> int | None:
+    """A US listing integer, or ``None`` when absent/unreadable — never a guess."""
+    raw = row.get(key)
+    if raw is None or isinstance(raw, bool):
+        return None
+    text = str(raw).replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise KiwoomMockEvidenceError(
+            f"Kiwoom US row field {key} is not an integer"
+        ) from exc
+    if value < 0:
+        raise KiwoomMockEvidenceError(f"Kiwoom US row field {key} is negative")
+    return value
+
+
+def _us_order_id(row: Mapping[str, Any]) -> str:
+    """This row's own order number (``orig_ord_no`` names a *different* order)."""
+    found = {
+        str(value).strip()
+        for value in (row.get("ord_no"), row.get("order_no"))
+        if isinstance(value, str) and str(value).strip()
+    }
+    if len(found) != 1:
+        raise KiwoomMockEvidenceError("Kiwoom US row has no single order number")
+    return next(iter(found))
+
+
+def _us_rows(
+    payload: Mapping[str, Any], *, source: str, role: str
+) -> tuple[BrokerRow, ...]:
+    raw_rows = payload.get(US_ORDER_LIST_KEY)
+    if not isinstance(raw_rows, list):
+        raise KiwoomMockEvidenceError("Kiwoom US response has no result_list")
+    rows: list[BrokerRow] = []
+    for raw in raw_rows:
+        if not isinstance(raw, Mapping):
+            raise KiwoomMockEvidenceError("Kiwoom US row is not a mapping")
+        symbol = str(raw.get("stk_cd") or "").strip().upper()
+        if not symbol:
+            raise KiwoomMockEvidenceError("Kiwoom US row has no symbol")
+        text = str(raw.get("ord_stat") or "").strip()
+        matched = _matched_markers(text)
+        marker = matched[0] if len(matched) == 1 else None
+        if marker is None and str(raw.get("ord_cntr_tp") or "").strip() == (
+            US_CANCEL_ROW_CODE
+        ):
+            # A cancel *confirmation row* is positive cancel evidence for the
+            # original order it names; the closed marker vocabulary still owns
+            # any text it did recognise.
+            marker = "cancel"
+        rows.append(
+            BrokerRow(
+                order_id=_us_order_id(raw),
+                symbol=symbol,
+                source=source,
+                role=role,
+                ordered_quantity=_us_optional_int(raw, "ord_qty"),
+                filled_quantity=_us_optional_int(raw, "cntr_qty"),
+                remaining_quantity=_us_optional_int(raw, "ord_remnq"),
+                average_price=None,
+                marker=marker,
+                change_text=text or None,
+                marker_ambiguous=len(matched) > 1,
+            )
+        )
+    return tuple(rows)
+
+
+def us_evidence_from_payloads(
+    *, today_orders: Mapping[str, Any] | None, open_orders: Mapping[str, Any] | None
+) -> BrokerEvidence:
+    """Broker evidence from the two US listings (hk 4754).
+
+    ``None`` stands for a failed read. A failed, errored, truncated or
+    unparseable read makes the whole evidence incomplete: absence is only
+    meaningful when every consulted listing is complete (I5).
+    """
+    for payload, written in (
+        (today_orders, "us_today_orders"),
+        (open_orders, "us_open_orders"),
+    ):
+        if payload is None:
+            return BrokerEvidence(
+                complete=False, reason=f"{written}_unreadable", rows=()
+            )
+        if not return_code_ok(payload):
+            return BrokerEvidence(
+                complete=False, reason=f"{written}_broker_error", rows=()
+            )
+        if _listing_truncated(payload):
+            return BrokerEvidence(
+                complete=False, reason=f"{written}_listing_truncated", rows=()
+            )
+    try:
+        rows = _us_rows(today_orders, source=SOURCE_US_TODAY_ORDERS, role=ROLE_DETAIL)
+        rows = rows + _us_rows(
+            open_orders, source=SOURCE_US_OPEN_ORDERS, role=ROLE_STATUS
+        )
+    except (KiwoomMockEvidenceError, KeyError, TypeError, ValueError):
+        return BrokerEvidence(complete=False, reason="broker_rows_unparseable", rows=())
+    return BrokerEvidence(complete=True, reason=None, rows=rows)
+
+
+def us_past_day_evidence() -> BrokerEvidence:
+    """No US listing covers a past ET trading day — and absence is not evidence."""
+    return BrokerEvidence(complete=False, reason=US_PAST_DAY_UNAVAILABLE, rows=())
+
+
 def _unknown(reason: str) -> Verdict:
     return Verdict(verdict="unknown", reason=reason, requires_manual_review=True)
 
@@ -309,8 +467,8 @@ def _exact_rows(
     if order_id is None:
         return None, None, "no_broker_order_id"
     matched = [row for row in evidence.rows if row.order_id == order_id]
-    detail = [row for row in matched if row.source == SOURCE_ORDER_DETAIL]
-    status = [row for row in matched if row.source == SOURCE_ORDER_STATUS]
+    detail = [row for row in matched if row.role == ROLE_DETAIL]
+    status = [row for row in matched if row.role == ROLE_STATUS]
     if len(detail) > 1 or len(status) > 1:
         return None, None, "ambiguous_rows"
     if any(row.symbol != ledger.symbol for row in matched):
@@ -380,6 +538,7 @@ def classify_verdict(
     ledger: LedgerOrder,
     evidence: BrokerEvidence,
     own_cancel_acknowledged: bool,
+    require_fill_price: bool = True,
 ) -> Verdict:
     """Classify one ledger row (design §3.2).
 
@@ -448,7 +607,7 @@ def classify_verdict(
 
     if filled > 0:
         price = detail_row.average_price
-        if price is None or price <= 0:
+        if (price is None or price <= 0) and require_fill_price:
             return _unknown("fill_price_unparseable")
         verdict: VerdictName = "filled" if filled >= ordered else "partial"
         return Verdict(
