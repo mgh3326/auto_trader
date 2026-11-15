@@ -31,6 +31,11 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 TODAY = kr_trading_day(datetime.now(UTC))
 
 
+def _order_no() -> str:
+    """Kiwoom order numbers are numeric-only; the normalizer rejects letters."""
+    return str(uuid.uuid4().int)[:12]
+
+
 def _continuation() -> dict[str, str]:
     return {"cont_yn": "N", "next_key": ""}
 
@@ -139,7 +144,7 @@ def _ids() -> tuple[str, str]:
 
 async def test_mark_terminal_closes_once_and_refuses_a_repeat() -> None:
     client_order_id, _ = _ids()
-    order_no = f"T{uuid.uuid4().hex[:10]}"
+    order_no = _order_no()
     try:
         await _accepted(client_order_id, order_no)
         async with AsyncSessionLocal() as session:
@@ -170,7 +175,7 @@ async def test_mark_terminal_closes_once_and_refuses_a_repeat() -> None:
 
 async def test_mark_terminal_refuses_a_fill_target() -> None:
     client_order_id, _ = _ids()
-    order_no = f"T{uuid.uuid4().hex[:10]}"
+    order_no = _order_no()
     try:
         await _accepted(client_order_id, order_no)
         async with AsyncSessionLocal() as session:
@@ -193,7 +198,7 @@ async def test_mark_terminal_refuses_a_fill_target() -> None:
 
 async def test_promote_uncertain_to_accepted_persists_the_broker_order_id() -> None:
     client_order_id, _ = _ids()
-    order_no = f"T{uuid.uuid4().hex[:10]}"
+    order_no = _order_no()
     try:
         await _uncertain(client_order_id, order_no)
         async with AsyncSessionLocal() as session:
@@ -223,8 +228,8 @@ async def test_promote_uncertain_to_accepted_persists_the_broker_order_id() -> N
 async def test_candidate_list_covers_open_and_uncertain_only() -> None:
     open_id, expired_id = _ids()
     try:
-        await _accepted(open_id, f"T{uuid.uuid4().hex[:10]}")
-        await _accepted(expired_id, f"T{uuid.uuid4().hex[:10]}")
+        await _accepted(open_id, _order_no())
+        await _accepted(expired_id, _order_no())
         async with AsyncSessionLocal() as session:
             service = KiwoomMockOrderLedgerService(session)
             target = (
@@ -252,8 +257,8 @@ async def test_terminal_only_end_to_end_books_no_fill(
 ) -> None:
     monkeypatch.setenv(kernel.TERMINAL_GATE_ENV, "true")
     open_id, uncertain_id = _ids()
-    expiring_order = f"T{uuid.uuid4().hex[:10]}"
-    filled_order = f"T{uuid.uuid4().hex[:10]}"
+    expiring_order = _order_no()
+    filled_order = _order_no()
     try:
         await _accepted(open_id, expiring_order)
         await _uncertain(uncertain_id, filled_order)
@@ -274,9 +279,11 @@ async def test_terminal_only_end_to_end_books_no_fill(
         )
         assert result["success"] is True
         by_id = {row["client_order_id"]: row for row in result["reconciled"]}
-        assert by_id[open_id]["status"] == "expired"
-        # uncertain row's exact order is listed positively -> accepted
-        assert by_id[uncertain_id]["status"] == "accepted"
+        # The outcome carries the pre-scan ledger status; the verdict/action are
+        # what the run decided.
+        assert by_id[open_id]["verdict"] == "expired"
+        assert by_id[open_id]["action"] == "mark_expired"
+        assert by_id[uncertain_id]["action"] == "promoted_accepted"
 
         assert (await _fetch(open_id)).status == "expired"
         # Fills are never booked in terminal-only: no filled_qty is written.

@@ -70,7 +70,7 @@ _MARKERS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
 
 @dataclass(frozen=True, slots=True)
 class LedgerOrder:
-    """The reconcile-relevant columns of one ``review.kiwoom_mock_order_ledger`` row."""
+    """The reconcile-relevant columns of one Kiwoom mock order ledger row."""
 
     client_order_id: str
     status: str
