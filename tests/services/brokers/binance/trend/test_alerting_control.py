@@ -80,6 +80,10 @@ def test_healthy_events_do_not_alert_and_do_not_fail_the_tick(name):
         ("exposure_mismatch", "exposure_mismatch"),
         ("partial_entry_exposure_open", "partial_entry_exposure_open"),
         ("partial_entry_stop_breached", "partial_entry_stop_breached"),
+        (
+            "partial_entry_cancel_unconfirmed",
+            "partial_entry_cancel_unconfirmed",
+        ),
         ("entry_uncertain", "entry_uncertain"),
         ("exit_uncertain", "exit_uncertain"),
         ("reconciled_uncertain", "reconciled_uncertain"),

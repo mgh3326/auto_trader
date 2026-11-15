@@ -74,6 +74,7 @@ _ALERT_EVENTS = frozenset(
     {
         "blocked",
         "exposure_mismatch",
+        "partial_entry_cancel_unconfirmed",
         "partial_entry_exposure_open",
         "partial_entry_stop_breached",
     }

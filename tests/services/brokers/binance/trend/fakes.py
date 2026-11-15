@@ -221,10 +221,15 @@ class FakeState:
             if i.state == "uncertain"
         )
         day = utc_day_start(now)
+        window_end = day + dt.timedelta(days=1)
+        # A stop counts by its decision day (``exit_at`` is written when the
+        # decision is taken), whatever the signal state is at the time.
         exits = [
             r.exit_reason
             for r in sorted(self.signals.values(), key=lambda r: r.exit_at or day)
-            if r.state == "closed" and r.exit_at and day <= r.exit_at
+            if r.exit_reason is not None
+            and r.exit_at is not None
+            and day <= r.exit_at < window_end
         ]
         conflicts = [
             r.conflict_at
@@ -390,6 +395,20 @@ class FakeState:
         self.intents[cid] = self._new_intent(cid, signal_key, leg_key, side, qty, True)
         return self._snap_intent(self.intents[cid])
 
+    async def record_exit_decision(self, signal_key, *, reason, now):
+        self.calls["record_exit_decision"] += 1
+        try:
+            constants.assert_exit_reason(reason)
+        except constants.UnknownExitReason as exc:
+            raise TrendStateBlocked(str(exc)) from exc
+        row = self.signals[signal_key]
+        if row.state not in {"entry_reserved", "holding"}:
+            raise TrendStateBlocked("exit decision needs a live exposure")
+        if row.exit_at is None:
+            row.exit_reason = reason
+            row.exit_at = now
+        return self._snap_signal(row)
+
     async def release_unsent_exit(self, cid, *, now):
         self.calls["release_unsent_exit"] += 1
         intent = self.intents[cid]
@@ -517,8 +536,10 @@ class FakeState:
                 row.closed_qty = closed
                 if remaining == 0:
                     row.state = "closed"
-                    row.exit_reason = intent.leg_key.split(":")[0]
-                    row.exit_at = filled_at or now
+                    if row.exit_reason is None:
+                        row.exit_reason = intent.leg_key.split(":")[0]
+                    if row.exit_at is None:
+                        row.exit_at = filled_at or now
                 else:
                     row.state = "holding"
         intent.state = "evidenced"
@@ -623,6 +644,8 @@ class FakeClient(TrendDemoClient):
         self._client = SimpleNamespace(base_url="https://demo-fapi.binance.com")
         self._base_url = "https://demo-fapi.binance.com"
         self.sends: list[dict] = []
+        self.cancels: list[dict] = []
+        self.cancel_error: Exception | None = None
         self.position_reads = 0
         self.order_reads = 0
         self.positions: dict[str, D] = {}
@@ -760,3 +783,24 @@ class FakeClient(TrendDemoClient):
         }
         echo.update(self.submit_echo)
         return FuturesDemoOrderSubmitResult(**echo)
+
+    async def cancel_order(self, *, symbol, client_order_id, confirm=False):
+        self.cancels.append(
+            {
+                "symbol": symbol,
+                "client_order_id": client_order_id,
+                "confirm": confirm,
+            }
+        )
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        return SimpleNamespace(
+            client_order_id=client_order_id,
+            broker_order_id="42",
+            symbol=symbol,
+            status="CANCELED",
+            raw_response_redacted={
+                "symbol": symbol,
+                "clientOrderId": client_order_id,
+            },
+        )

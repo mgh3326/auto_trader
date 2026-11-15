@@ -20,6 +20,7 @@ from app.services.brokers.binance.trend.constants import (
     EXIT_SIGNAL_FLIP,
 )
 from app.services.brokers.binance.trend.state import (
+    TrendEntryRefused,
     TrendOrderEvidence,
     TrendStateBlocked,
     TrendStateService,
@@ -357,3 +358,117 @@ async def test_a_partial_entry_is_progress_only_and_blocks_any_exit_leg(svc) -> 
         now=NOW,
     )
     assert done.state == "holding" and done.entry_qty == D("0.3")
+
+
+async def test_an_exit_decision_counts_for_the_day_it_was_taken(svc) -> None:
+    """The daily kill switch reads the decision, not the close."""
+    stop_day = dt.datetime(2026, 11, 13, 23, 50, tzinfo=dt.UTC)
+    signal, intent = await to_sending(svc)
+    await svc.acknowledge(
+        intent.client_order_id,
+        broker_order_id="42",
+        broker_status="PARTIALLY_FILLED",
+        now=stop_day,
+    )
+    first = await svc.record_exit_decision(
+        signal.signal_key, reason=EXIT_HARD_STOP, now=stop_day
+    )
+    assert (first.exit_reason, first.exit_at) == (EXIT_HARD_STOP, stop_day)
+    # First decision wins: nothing may move the recorded day.
+    later = await svc.record_exit_decision(
+        signal.signal_key,
+        reason=EXIT_HARD_STOP,
+        now=stop_day + dt.timedelta(days=1),
+    )
+    assert later.exit_at == stop_day
+
+    second, _ = await to_sending(svc, symbol="ETHUSDT", qty="0.3")
+    await svc.record_exit_decision(
+        second.signal_key, reason=EXIT_HARD_STOP, now=stop_day
+    )
+    third = await svc.observe_signal(
+        symbol="SOLUSDT", side="BUY", decision_ts=next(_ts), price_text="100"
+    )
+    with pytest.raises(TrendEntryRefused) as refused:
+        await svc.reserve_entry(
+            signal_key=third.signal_key, notional_usdt=D("10"), now=stop_day
+        )
+    assert "consecutive_hard_stop_limit_reached" in refused.value.reasons
+    # The latch is per UTC day: the next day is clear again.
+    allowed = await svc.reserve_entry(
+        signal_key=third.signal_key,
+        notional_usdt=D("10"),
+        now=stop_day + dt.timedelta(days=1),
+    )
+    assert allowed.state == "entry_reserved"
+
+
+async def test_a_terminal_fill_after_the_stop_keeps_the_day_and_the_basis(
+    svc,
+) -> None:
+    """Entry fills that land after the decision are covered by the one exit."""
+    stop_day = dt.datetime(2026, 11, 13, 23, 50, tzinfo=dt.UTC)
+    close_day = stop_day + dt.timedelta(minutes=20)  # crosses UTC midnight
+    signal, entry = await to_sending(svc)
+    await svc.acknowledge(
+        entry.client_order_id,
+        broker_order_id="42",
+        broker_status="PARTIALLY_FILLED",
+        now=stop_day,
+    )
+    await svc.apply_order_evidence(
+        evidence(entry, status="PARTIALLY_FILLED", executed="0.2", avg="100"),
+        broker_position_amt=D("0.2"),
+        now=stop_day,
+    )
+    await svc.record_exit_decision(
+        signal.signal_key, reason=EXIT_HARD_STOP, now=stop_day
+    )
+    # The cancel landed after midnight with one more fill: the exit leg follows
+    # the terminal evidence and closes the whole broker-proven position.
+    held, _ = await svc.apply_order_evidence(
+        evidence(entry, status="CANCELED", executed="0.6", avg="120"),
+        broker_position_amt=D("0.6"),
+        now=close_day,
+    )
+    assert (held.state, held.entry_qty, held.entry_price) == (
+        "holding",
+        D("0.6"),
+        D("120"),
+    )
+    assert held.exit_at == stop_day
+
+    await svc.settle_intent(entry.client_order_id, now=close_day)
+    exit_intent = await svc.reserve_exit_intent(
+        signal_key=signal.signal_key,
+        reason=EXIT_HARD_STOP,
+        qty=D("0.6"),
+        now=close_day,
+    )
+    await svc.mark_sending(exit_intent.client_order_id, now=close_day)
+    await svc.acknowledge(
+        exit_intent.client_order_id,
+        broker_order_id="43",
+        broker_status="NEW",
+        now=close_day,
+    )
+    closed, _ = await svc.apply_order_evidence(
+        TrendOrderEvidence(
+            client_order_id=exit_intent.client_order_id,
+            broker_order_id="43",
+            symbol="BTCUSDT",
+            side="SELL",
+            orig_qty=D("0.6"),
+            executed_qty=D("0.6"),
+            avg_price=D("110"),
+            status="FILLED",
+            reduce_only=True,
+            position_side="BOTH",
+        ),
+        broker_position_amt=D("0"),
+        now=close_day,
+    )
+    assert (closed.state, closed.closed_qty) == ("closed", D("0.6"))
+    assert closed.realized_pnl_usdt == D("-6")  # (110 - 120) * 0.6
+    assert closed.exit_reason == EXIT_HARD_STOP
+    assert closed.exit_at == stop_day  # the close never moves the stop's day
