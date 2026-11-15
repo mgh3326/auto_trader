@@ -6,8 +6,11 @@ bootstrapped.
 
 T-P4 proves the full mode here: one in-effect ``execution_ledger`` row per
 broker delta, partial→filled deltas summing to the order quantity, a re-run
-booking nothing new, journals under ``account='kiwoom_mock'`` and one
-``broker='kiwoom'`` reconcile-run row.
+booking nothing new, one ``broker='kiwoom'`` reconcile-run row — and **no**
+trade row, journal or realized P&L (that projection is hk 4802). It also proves
+the two service guards the round-8 review found missing: a changed cumulative
+average without a fill is refused (and the next delta keeps the booked basis),
+and the terminal close requires the verdict's whole fill to be booked.
 """
 
 from __future__ import annotations
@@ -43,6 +46,10 @@ validate_run_owned_database_url(engine.url)
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 TODAY = kr_trading_day(datetime.now(UTC))
+
+#: The account label the journal projection (hk 4802) will use. This PR writes
+#: nothing under it; the helpers below assert that absence.
+KIWOOM_MOCK_ACCOUNT = "kiwoom_mock"
 
 
 def _order_no() -> str:
@@ -383,7 +390,7 @@ async def _trade(order_no: str) -> Trade | None:
         return (
             await session.execute(
                 select(Trade).where(
-                    Trade.account == kernel.JOURNAL_ACCOUNT,
+                    Trade.account == KIWOOM_MOCK_ACCOUNT,
                     Trade.order_id == order_no,
                 )
             )
@@ -397,7 +404,7 @@ async def _journals(symbol: str) -> list[TradeJournal]:
                 await session.execute(
                     select(TradeJournal)
                     .where(
-                        TradeJournal.account == kernel.JOURNAL_ACCOUNT,
+                        TradeJournal.account == KIWOOM_MOCK_ACCOUNT,
                         TradeJournal.symbol == symbol,
                     )
                     .order_by(TradeJournal.id.asc())
@@ -429,13 +436,13 @@ async def _cleanup_full(
         )
         await session.execute(
             delete(Trade).where(
-                Trade.account == kernel.JOURNAL_ACCOUNT,
+                Trade.account == KIWOOM_MOCK_ACCOUNT,
                 Trade.order_id == order_no,
             )
         )
         await session.execute(
             delete(TradeJournal).where(
-                TradeJournal.account == kernel.JOURNAL_ACCOUNT,
+                TradeJournal.account == KIWOOM_MOCK_ACCOUNT,
                 TradeJournal.symbol == symbol,
             )
         )
@@ -458,7 +465,7 @@ async def _full_run(reader: FakeReader) -> dict[str, Any]:
     )
 
 
-async def test_full_mode_books_one_in_effect_row_and_a_kiwoom_journal(
+async def test_full_mode_books_one_in_effect_row_and_writes_no_journal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _full_mode(monkeypatch)
@@ -500,21 +507,13 @@ async def test_full_mode_books_one_in_effect_row_and_a_kiwoom_journal(
         stored = await _fetch(client_order_id)
         assert stored.status == "filled"
         assert stored.filled_qty == Decimal("10")
-        assert stored.journal_id is not None
-        assert stored.trade_id is not None
+        # No trade row, journal link or journal: the projection is hk 4802.
+        assert stored.journal_id is None
+        assert stored.trade_id is None
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
 
         async with AsyncSessionLocal() as session:
-            journal = (
-                await session.execute(
-                    select(TradeJournal).where(TradeJournal.id == stored.journal_id)
-                )
-            ).scalar_one()
-            assert journal.account == kernel.JOURNAL_ACCOUNT == "kiwoom_mock"
-            assert journal.account_type == kernel.JOURNAL_ACCOUNT_TYPE == "mock"
-            assert journal.symbol == symbol
-            assert journal.quantity == Decimal("10")
-            assert journal.trade_id == stored.trade_id
-
             run = (
                 await session.execute(
                     select(ExecutionLedgerReconcileRun).where(
@@ -580,26 +579,15 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         assert sum(fill.filled_notional for fill in fills) == Decimal(10) * Decimal(
             "76000"
         )
-        assert (await _fetch(client_order_id)).status == "filled"
+        stored = await _fetch(client_order_id)
+        assert stored.status == "filled"
+        assert stored.avg_fill_price == Decimal("76000")
+        assert stored.journal_id is None
+        assert stored.trade_id is None
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
 
-        trade = await _trade(order_no)
-        assert trade is not None
-        # One row per order, advanced to the cumulative figures: the second
-        # partial is not dropped by the (account, order_id) unique key.
-        assert trade.quantity == Decimal("10")
-        assert trade.price == Decimal("76000")
-        assert trade.total_amount == Decimal("760000")
-
-        # One journal per order, written at the terminal fill: the partial
-        # created nothing, and the journal holds every filled share at the
-        # order's cumulative quantity and average price (hk 4734 review).
-        journals = await _journals(symbol)
-        assert [journal.quantity for journal in journals] == [Decimal("10")]
-        assert journals[0].entry_price == Decimal("76000")
-        assert journals[0].status == "active"
-
-        # The row is terminal and fully journaled now, so another pass finds no
-        # candidate at all.
+        # The row is terminal now, so another pass finds no candidate at all.
         settled = await _full_run(
             FakeReader(_filled_detail(order_no, 10, symbol, average_price=76000))
         )
@@ -614,78 +602,57 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         )
 
 
-async def test_full_mode_recovers_a_journal_after_a_failure(
+async def test_same_quantity_average_change_is_refused_and_keeps_the_booked_basis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A committed fill whose journal failed is finished by the next run.
+    """A changed average with no new share must not replace the booked basis.
 
-    The order is already ``filled`` (it left the open scan), the trade row from
-    the failed attempt exists, and the journal must still be created, linked and
-    activated — not left draft forever.
+    Review r4577667962: after booking 4 @ 70,000, a replay claiming
+    ``(4, 71,000)`` used to overwrite ``avg_fill_price``. The next cumulative
+    fill then priced its delta from an average no ledger row ever carried. The
+    refusal keeps the basis, so the 6-share delta books at 80,000 and the ledger
+    notional still equals the broker's 760,000.
     """
-    from app.mcp_server.tooling import order_journal
-
-    _full_mode(monkeypatch)
     client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
     order_no = _order_no()
     symbol = _symbol()
     run_ids: list[str] = []
-    original = order_journal._create_trade_journal_for_buy
-
-    async def failing_journal(**kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError("journal db down")
-
     try:
         await _accepted(client_order_id, order_no, symbol=symbol)
-        monkeypatch.setattr(
-            order_journal, "_create_trade_journal_for_buy", failing_journal
-        )
-        first = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
-        if first.get("reconcile_run"):
-            run_ids.append(first["reconcile_run"]["run_id"])
-        outcome = first["reconciled"][0]
-        assert outcome["action"] == "booked_filled"
-        assert outcome["journal_error"] == "RuntimeError"
-        stored = await _fetch(client_order_id)
-        assert stored.status == "filled"
-        assert stored.filled_qty == Decimal("10")
-        assert stored.journal_id is None
-        assert stored.trade_id is None
-        # The journal step shares one transaction with the trade row and the
-        # progress marker, so the failure rolled all of it back.
-        assert await _trade(order_no) is None
-        assert len(await _fills(order_no)) == 1
+        ledger_id = (await _fetch(client_order_id)).id
 
-        # The journal store recovers; the fill is not booked again.
-        monkeypatch.setattr(order_journal, "_create_trade_journal_for_buy", original)
-        recovered = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
-        if recovered.get("reconcile_run"):
-            run_ids.append(recovered["reconcile_run"]["run_id"])
-        outcome = recovered["reconciled"][0]
-        assert outcome["action"] == "noop_already_booked"
-        assert outcome["journal"]["journal_created"] is True
-        assert len(await _fills(order_no)) == 1
-
-        stored = await _fetch(client_order_id)
-        assert stored.journal_id is not None
-        assert stored.trade_id is not None
-        trade = await _trade(order_no)
-        assert trade is not None
-        assert trade.id == stored.trade_id
-        assert trade.quantity == Decimal("10")
-        assert trade.price == Decimal("70000")
-        assert trade.total_amount == Decimal("700000")
         async with AsyncSessionLocal() as session:
-            journal = (
-                await session.execute(
-                    select(TradeJournal).where(TradeJournal.id == stored.journal_id)
-                )
-            ).scalar_one()
-        assert journal.status == "active"
-        assert journal.trade_id == stored.trade_id
+            booking = await KiwoomMockOrderLedgerService(session).record_fill(
+                ledger_id=ledger_id, filled_quantity=4, average_price=70000
+            )
+        assert booking.action == "booked_partial"
 
-        settled = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
-        assert settled["reconciled"] == []
+        with pytest.raises(KiwoomMockTransitionRefused) as excinfo:
+            async with AsyncSessionLocal() as session:
+                await KiwoomMockOrderLedgerService(session).record_fill(
+                    ledger_id=ledger_id, filled_quantity=4, average_price=71000
+                )
+        assert excinfo.value.reason == "average_price_changed_without_fill"
+
+        unchanged = await _fetch(client_order_id)
+        assert unchanged.filled_qty == Decimal("4")
+        assert unchanged.avg_fill_price == Decimal("70000")
+        assert len(await _fills(order_no)) == 1
+
+        async with AsyncSessionLocal() as session:
+            booking = await KiwoomMockOrderLedgerService(session).record_fill(
+                ledger_id=ledger_id, filled_quantity=10, average_price=76000
+            )
+        assert booking.action == "booked_filled"
+        assert booking.delta_qty == Decimal("6")
+        assert booking.avg_price == Decimal("80000")
+
+        fills = await _fills(order_no)
+        assert [fill.filled_price for fill in fills] == [
+            Decimal("70000"),
+            Decimal("80000"),
+        ]
+        assert sum(fill.filled_notional for fill in fills) == Decimal("760000")
     finally:
         await _cleanup_full(
             client_order_id=client_order_id,
@@ -695,93 +662,59 @@ async def test_full_mode_recovers_a_journal_after_a_failure(
         )
 
 
-async def test_full_mode_split_sell_consumes_one_lot_across_two_fills(
+async def test_close_filled_as_terminal_requires_the_whole_booked_fill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A sell filled in two smaller deltas must not leave the lot active.
-
-    The FIFO helper used by KIS never splits a lot, so a 4-share and a 6-share
-    fill against one 10-share lot would close nothing. The partial-consumption
-    close decrements the lot, then closes it on the next fill.
-    """
-    _full_mode(monkeypatch)
-    suffix = uuid.uuid4().hex[:12]
-    buy_id, buy_no = f"kwoomm-f-{suffix}-b", _order_no()
-    sell_a_id, sell_a_no = f"kwoomm-f-{suffix}-a", _order_no()
-    sell_b_id, sell_b_no = f"kwoomm-f-{suffix}-c", _order_no()
+    """The close refuses a verdict quantity the row has not booked."""
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
     symbol = _symbol()
     run_ids: list[str] = []
     try:
-        await _accepted(buy_id, buy_no, symbol=symbol)
-        bought = await _full_run(FakeReader(_filled_detail(buy_no, 10, symbol)))
-        if bought.get("reconcile_run"):
-            run_ids.append(bought["reconcile_run"]["run_id"])
-        journals = await _journals(symbol)
-        assert len(journals) == 1
-        assert journals[0].status == "active"
-        assert journals[0].quantity == Decimal("10")
-
-        await _accepted(sell_a_id, sell_a_no, symbol=symbol, side="sell", quantity=4)
-        first = await _full_run(
-            FakeReader(_filled_detail(sell_a_no, 4, symbol, average_price=72000))
-        )
-        if first.get("reconcile_run"):
-            run_ids.append(first["reconcile_run"]["run_id"])
-        # The 4 shares sold are split off as a closed row at the lot's entry
-        # price, so their realized P&L is recorded instead of disappearing; the
-        # leftover stays active.
-        assert first["reconciled"][0]["journal"]["journals_closed"] == 1
-        assert first["reconciled"][0]["journal"]["realized_pnl_pct"] > 0
-        journals = await _journals(symbol)
-        assert [journal.quantity for journal in journals] == [
-            Decimal("6"),
-            Decimal("4"),
-        ]
-        assert journals[0].status == "active"
-        split = journals[1]
-        assert split.status == "closed"
-        assert split.entry_price == Decimal("70000")
-        assert split.exit_price == Decimal("72000")
-        assert split.pnl_pct is not None and split.pnl_pct > 0
-        assert split.trade_id == journals[0].trade_id
-
-        await _accepted(sell_b_id, sell_b_no, symbol=symbol, side="sell", quantity=6)
-        second = await _full_run(
-            FakeReader(_filled_detail(sell_b_no, 6, symbol, average_price=72000))
-        )
-        if second.get("reconcile_run"):
-            run_ids.append(second["reconcile_run"]["run_id"])
-        assert second["reconciled"][0]["journal"]["journals_closed"] == 1
-        assert second["reconciled"][0]["journal"]["realized_pnl_pct"] > 0
-        journals = await _journals(symbol)
-        assert journals[0].status == "closed"
-        assert journals[0].exit_price == Decimal("72000")
-        assert journals[0].pnl_pct is not None
-        assert journals[1].status == "closed"
-    finally:
-        for client_order_id, order_no in (
-            (buy_id, buy_no),
-            (sell_a_id, sell_a_no),
-            (sell_b_id, sell_b_no),
-        ):
-            await _cleanup_full(
-                client_order_id=client_order_id,
-                order_no=order_no,
-                symbol=symbol,
-                run_ids=run_ids,
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        ledger_id = (await _fetch(client_order_id)).id
+        async with AsyncSessionLocal() as session:
+            await KiwoomMockOrderLedgerService(session).record_fill(
+                ledger_id=ledger_id, filled_quantity=4, average_price=70000
             )
 
+        with pytest.raises(KiwoomMockTransitionRefused) as excinfo:
+            async with AsyncSessionLocal() as session:
+                await KiwoomMockOrderLedgerService(session).close_filled_as_terminal(
+                    ledger_id=ledger_id,
+                    status="expired",
+                    reason="broker_expiry_confirmed",
+                    filled_quantity=10,
+                )
+        assert excinfo.value.reason == "fill_not_booked"
+        still_open = await _fetch(client_order_id)
+        assert still_open.status == "partial"
+        assert still_open.filled_qty == Decimal("4")
 
-async def test_full_mode_overlapping_runs_journal_the_order_once(
+        async with AsyncSessionLocal() as session:
+            closed = await KiwoomMockOrderLedgerService(
+                session
+            ).close_filled_as_terminal(
+                ledger_id=ledger_id,
+                status="expired",
+                reason="broker_expiry_confirmed",
+                filled_quantity=4,
+            )
+        assert closed.status == "expired"
+        assert closed.last_reconcile_detail["booked_filled_qty"] == "4"
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_full_mode_overlapping_runs_book_the_delta_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two full runs started together apply the journal exactly once.
-
-    The run-level advisory lock serializes them: the run that ends up second
-    finds the order filled and journaled, so it books nothing and writes no
-    journal. The real lock, the order-row ``FOR UPDATE`` and the re-read before
-    any journal side effect are all exercised here.
-    """
+    """Two full runs started together book each delta once and write no journal."""
     _full_mode(monkeypatch)
     client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
     order_no = _order_no()
@@ -800,13 +733,8 @@ async def test_full_mode_overlapping_runs_journal_the_order_once(
 
         fills = await _fills(order_no)
         assert [fill.filled_qty for fill in fills] == [Decimal("10")]
-        trade = await _trade(order_no)
-        assert trade is not None
-        assert trade.quantity == Decimal("10")
-        journals = await _journals(symbol)
-        assert [journal.quantity for journal in journals] == [Decimal("10")]
-        assert journals[0].entry_price == Decimal("70000")
-        assert journals[0].status == "active"
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
 
         actions = [
             outcome["action"]
@@ -823,91 +751,15 @@ async def test_full_mode_overlapping_runs_journal_the_order_once(
         )
 
 
-async def test_partial_sell_close_serializes_on_the_lot_pool() -> None:
-    """Two overlapping partial closes for one symbol consume the lot in turn.
-
-    The sells belong to *different* orders, so the order-row lock cannot
-    serialize them; the shared lot pool is read ``FOR UPDATE``, so the second
-    pass waits, re-reads the leftover and closes the lot. Without the lock both
-    read ``quantity=10`` under READ COMMITTED and both write ``quantity=4``,
-    leaving the lot active with 12 shares consumed against 10.
-    """
-    from app.mcp_server.tooling.order_journal import _close_journals_on_sell_partial
-
-    symbol = _symbol()
-    try:
-        async with AsyncSessionLocal() as session:
-            session.add(
-                TradeJournal(
-                    symbol=symbol,
-                    instrument_type="equity_kr",
-                    side="buy",
-                    entry_price=Decimal("70000"),
-                    quantity=Decimal("10"),
-                    amount=Decimal("700000"),
-                    thesis="lot pool serialization",
-                    status="active",
-                    account=kernel.JOURNAL_ACCOUNT,
-                    account_type=kernel.JOURNAL_ACCOUNT_TYPE,
-                )
-            )
-            await session.commit()
-
-        async def close() -> dict[str, Any]:
-            async with AsyncSessionLocal() as session:
-                result = await _close_journals_on_sell_partial(
-                    session,
-                    symbol=symbol,
-                    sell_quantity=6.0,
-                    sell_price=70000.0,
-                    account_type=kernel.JOURNAL_ACCOUNT_TYPE,
-                    account=kernel.JOURNAL_ACCOUNT,
-                )
-                # Hold the transaction (and its row locks) open while the peer
-                # makes its own pass, so the two really do overlap.
-                await asyncio.sleep(0.05)
-                await session.commit()
-                return result
-
-        first, second = await asyncio.gather(close(), close())
-
-        async with AsyncSessionLocal() as session:
-            lots = list(
-                (
-                    await session.execute(
-                        select(TradeJournal)
-                        .where(TradeJournal.symbol == symbol)
-                        .order_by(TradeJournal.id.asc())
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        # First pass: a closed split row for the 6 shares and 4 left active;
-        # second pass: the leftover is closed. Both passes of the same snapshot
-        # would leave the lot active at 4 with 12 shares consumed.
-        leftover, split = lots[0], lots[1]
-        assert [leftover.quantity, split.quantity] == [Decimal("4"), Decimal("6")]
-        assert split.status == "closed"
-        assert leftover.status == "closed"
-        assert first["journals_closed"] + second["journals_closed"] == 2
-    finally:
-        async with AsyncSessionLocal() as session:
-            await session.execute(
-                delete(TradeJournal).where(TradeJournal.symbol == symbol)
-            )
-            await session.commit()
-
-
-async def test_full_mode_terminal_verdict_with_fill_closes_after_the_journal(
+async def test_full_mode_terminal_verdict_with_fill_books_then_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A settled partial (4 of 10, expiry marker) is booked, journaled, closed.
+    """A settled partial (4 of 10, expiry marker) is booked, then closed.
 
     The verdict comes from the real classifier: a partial fill with no remaining
-    quantity is terminal and carries its fill, so the shares reach a journal and
-    the row closes. Before that, the row stayed ``partial`` forever, re-booked as
-    a no-op with an empty journal.
+    quantity is terminal and carries its fill. Full mode books that delta and
+    closes the row once its booked quantity equals the verdict's; before that
+    the row stayed ``partial`` forever, re-booked as a no-op.
     """
     _full_mode(monkeypatch)
     client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
@@ -944,11 +796,12 @@ async def test_full_mode_terminal_verdict_with_fill_closes_after_the_journal(
         stored = await _fetch(client_order_id)
         assert stored.status == "expired"
         assert stored.filled_qty == Decimal("4")
-        assert stored.journal_id is not None
+        assert stored.journal_id is None
+        assert stored.trade_id is None
         fills = await _fills(order_no)
         assert [fill.filled_qty for fill in fills] == [Decimal("4")]
-        journals = await _journals(symbol)
-        assert [journal.quantity for journal in journals] == [Decimal("4")]
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
 
         # The row left the scan: the next run finds nothing to do.
         settled = await _full_run(FakeReader(detail))

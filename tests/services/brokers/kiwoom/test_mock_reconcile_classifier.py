@@ -141,8 +141,8 @@ def test_partial_is_open_but_reported() -> None:
 def test_settled_partial_fill_is_terminal_with_its_fill() -> None:
     """4 of 10 filled and nothing left working: the fill rides the terminal row.
 
-    The journal is written only at the terminal fill (hk 4734), so a settled
-    partial that stayed ``partial`` would never journal its shares.
+    A settled partial that stayed ``partial`` would never reach the
+    fill-carrying terminal path, so its booked shares would never close.
     """
     verdict = _classify(
         detail=_detail_payload(
@@ -259,6 +259,43 @@ def test_ambiguous_marker_text_is_not_evidence() -> None:
         detail=_detail_payload(_detail_row(ord_remnq="0", mdfy_cncl="취소/만료"))
     )
     assert verdict.verdict == "unknown"
+
+
+def test_conflicting_marker_classes_between_listings_are_unknown() -> None:
+    """Detail says cancelled, status says expired: neither is proven."""
+    verdict = _classify(
+        detail=_detail_payload(
+            _detail_row(cntr_qty="4", ord_remnq="0", cntr_uv="70000", mdfy_cncl="취소")
+        ),
+        status=_status_payload(_status_row(cntr_qty="4", mdfy_cncl_tp="만료")),
+        own_cancel_acknowledged=True,
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "conflicting_terminal_markers"
+    assert verdict.requires_manual_review is True
+
+
+def test_conflicting_marker_classes_are_unknown_in_either_order() -> None:
+    """The reverse pairing (detail expiry, status cancel) conflicts too."""
+    verdict = _classify(
+        detail=_detail_payload(
+            _detail_row(cntr_qty="4", ord_remnq="0", cntr_uv="70000", mdfy_cncl="만료")
+        ),
+        status=_status_payload(_status_row(cntr_qty="4", mdfy_cncl_tp="취소")),
+        own_cancel_acknowledged=True,
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "conflicting_terminal_markers"
+
+
+def test_conflicting_marker_classes_block_a_no_fill_terminal_too() -> None:
+    """The no-fill terminal branch refuses the conflict before selecting one."""
+    verdict = _classify(
+        detail=_detail_payload(_detail_row(ord_remnq="0", mdfy_cncl="거부")),
+        status=_status_payload(_status_row(mdfy_cncl_tp="만료")),
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "conflicting_terminal_markers"
 
 
 # ---------------------------------------------------------------------------

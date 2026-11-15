@@ -335,7 +335,9 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   `POST /trading/api/execution-ledger/reconcile/trigger` (dry_run 기본 true)
 - **Kiwoom 모의 행 (hk 4734, 3797 T-P4)**: `execution_ledger.broker` CHECK 는
   `('kis','upbit','toss','kiwoom')` 이고 `execution_ledger_reconcile_runs.broker` 는
-  `('kis','upbit','kiwoom')` 다. Kiwoom 모의 체결은 full 대사(`--apply`, 두 게이트)만
+  `('kis','upbit','kiwoom')` 다. 두 CHECK 은 `NOT VALID` 로 추가되고 별도 후속
+  리비전(`20261115_hk4734_kiwoom_validate`)이 `VALIDATE CONSTRAINT` 로 스캔을 떠맡는다 —
+  ACCESS EXCLUSIVE 를 잡은 채 기존 원장을 스캔하지 않는다. Kiwoom 모의 체결은 full 대사(`--apply`, 두 게이트)만
   `broker='kiwoom'`·`account_mode='mock'`·`venue='krx'`·`source='reconciler'` 행을 쓰고,
   델타는 브로커 누적 체결수량에서 이미 기록된 수량을 뺀 값이며 `fill_seq` 는 그 델타의
   결정적 해시다(재실행은 새 행 0). 한 행의 가격은 그 델타의 실제 가격이며 브로커 누적
@@ -344,26 +346,19 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (부킹된 명목 합은 브로커 누적 명목과 같아진다).
   Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
   `fee_basis='not_provided'`·`filled_at_basis='observed_at'` 이고 0 으로 채우지 않는다.
-  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 저널은 주문당
-  **한 번**, 그 체결이 종결일 때만(`filled`, 또는 양수 누적 체결이 있는 `cancelled`/`expired`)
-  주문의 **누적 체결수량·누적 명목 평균가**로 쓰인다 — 부분 체결 판정은
-  `execution_ledger` 델타만 부킹하고 저널은 건드리지 않는다. 저널 단계는 `review.trades`
-  행(주문당 1행, 누적 수량·누적평균)·저널 기록·`journaled_qty` 마커를 **한 트랜잭션**으로
-  커밋하므로 재실행이 FIFO를 두 번 닫거나 초안 저널을 남기지 않는다. 주문행을
-  `FOR UPDATE` 로 잠그고 `journaled_qty` 를 **저널 side effect 이전에** 다시 읽어 이미
-  저널링된 주문은 아무것도 하지 않으며, full 모드 실행 전체는 advisory lock 하나로
-  직렬화된다(겹친 두 실행이 같은 수량을 두 번 저널링하지 않는다). 매도의 부분 소비는 소비분을
-  lot 진입가의 **closed 행으로 split** 해 그 shares 의 실현손익을 기록하고 남은 수량만 active 로
-  유지하며, lot 이 완전 소진되면 종결한다(부분 체결 매도가 lot 을 영원히 열어두거나 소비분의
-  손익을 잃지 않는다). active lot 조회는 `FOR UPDATE` 로 잠그고 락 순서는 `created_at, id` 다.
+  🔴 **저널·실현손익은 아직 쓰지 않는다 (hk 4802).** full 대사는 `execution_ledger`
+  델타만 부킹하며 `review.trades` 행·`TradeJournal`·FIFO 청산·실현손익을 만들지 않는다.
   잔량 0 인 부분 체결(`filled < ordered`, `ord_remnq=0`)은 브로커 marker(만료/거부/취소 —
-  취소는 자기 승인 취소 요청 필요)가 있으면 체결을 실은 terminal verdict 로 분류된다.
-  그 verdict 는 **full 모드에서만** 델타 부킹·저널·종결로 이어지고, 체결을 부킹하지 않는
-  범위(terminal_only·US)에서는 `deferred_fill_booking` 으로 보고하고 행을 open 으로 남긴다
-  (부킹 불가 범위에서 닫으면 체결이 영구히 유실된다). 저널 단계가 실패하면 그 트랜잭션
-  전체가 롤백되고 체결 증거만 남으며,
-  `last_reconcile_detail.journaled_qty` 가 `filled_qty` 보다 작은 `filled` 행은 다음 full
-  실행이 저널을 마무리한다(같은 실행이 실패를 숨기지 않고 `journal_error` 로 보고). 이 행들은 외부 HTTP
+  취소는 자기 승인 취소 요청 필요)가 있으면 체결을 실은 terminal verdict 로 분류되고,
+  그 verdict 는 **full 모드에서만** 델타 부킹 → 종결로 이어진다. 종결은 그 verdict 의
+  `filled_quantity` 전량이 부킹되어 행의 누적 체결수량과 정확히 같을 때만 허용되고,
+  아니면 `fill_not_booked` 로 거부해 행을 open 으로 남긴다(체결을 부킹하지 않는
+  terminal_only·US 는 지금처럼 `deferred_fill_booking` 으로 보고만 하고 닫지 않는다 —
+  부킹 불가 범위에서 닫으면 체결이 영구히 유실된다). 같은 누적 수량에 다른 평균가가
+  오면 부킹을 거부하고 `avg_fill_price` 를 덮어쓰지 않는다 — 부킹된 평균이 다음 델타의
+  기준가이기 때문이다(`average_price_changed_without_fill`). 상세·status 두 행의 terminal
+  marker class 가 서로 다르면(취소 vs 만료 등) 분류는 `unknown`
+  (`conflicting_terminal_markers`)이다. 이 행들은 외부 HTTP
   ingest 대상이 아니며(`source` 는 항상 `websocket` 강제) 이 예외는 위 멱등키·savepoint·
   원장 커밋 권한 규칙을 바꾸지 않는다.
 - **라우터/스키마**: `app/routers/execution_ledger_ingest.py`,

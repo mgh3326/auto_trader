@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import datetime
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 from typing import cast as typing_cast
@@ -33,23 +31,6 @@ def _order_session_factory() -> async_sessionmaker[AsyncSession]:
     return typing_cast(
         async_sessionmaker[AsyncSession], typing_cast(object, AsyncSessionLocal)
     )
-
-
-@asynccontextmanager
-async def _own_or_caller_session(
-    db: AsyncSession | None,
-) -> AsyncIterator[AsyncSession]:
-    """Yield the caller's transaction, or a fresh session when none was given.
-
-    A caller transaction is never committed here; a self-opened session is left
-    for the caller of this context manager to commit only when it owned it (the
-    legacy helpers do, the reconcile path commits its own outer transaction).
-    """
-    if db is not None:
-        yield db
-        return
-    async with _order_session_factory()() as session:
-        yield session
 
 
 async def _save_order_fill(
@@ -100,123 +81,46 @@ async def _save_order_fill(
         return None
 
 
-async def _record_trade_for_fill(
-    db: AsyncSession,
-    *,
-    symbol: str,
-    instrument_type: str,
-    side: str,
-    price: float,
-    quantity: float,
-    total_amount: float,
-    fee: float,
-    currency: str,
-    account: str,
-    order_id: str | None,
-) -> int:
-    """Insert or update the order's single trade row to its cumulative figures.
-
-    ``review.trades`` is unique on ``(account, order_id)``, so a later partial
-    fill of the same order must advance the existing row instead of being
-    dropped by the unique conflict. The caller owns the transaction (this
-    function never commits), which is what lets a reconcile commit the trade,
-    the journal and its progress marker atomically.
-    """
-    stmt = (
-        pg_insert(Trade)
-        .values(
-            trade_date=now_kst(),
-            symbol=symbol,
-            instrument_type=instrument_type,
-            side=side,
-            price=price,
-            quantity=quantity,
-            total_amount=total_amount,
-            fee=fee,
-            currency=currency,
-            account=account,
-            order_id=order_id,
-        )
-        .on_conflict_do_update(
-            constraint="uq_review_trades_account_order",
-            set_={
-                "price": price,
-                "quantity": quantity,
-                "total_amount": total_amount,
-            },
-        )
-        .returning(Trade.id)
-    )
-    result = await db.execute(stmt)
-    return int(result.scalar_one())
-
-
-async def _link_journal_to_fill_in(
-    db: AsyncSession,
-    symbol: str,
-    trade_id: int,
-    account_type: str = "live",
-    account: str | None = None,
-) -> int | None:
-    """Link the newest matching draft journal; returns its id (no commit)."""
-    stmt = select(TradeJournal).where(
-        TradeJournal.symbol == symbol,
-        TradeJournal.status == JournalStatus.draft,
-        TradeJournal.account_type == account_type,
-    )
-    if account:
-        stmt = stmt.where(TradeJournal.account == account)
-
-    stmt = stmt.order_by(desc(TradeJournal.created_at)).limit(1)
-    result = await db.execute(stmt)
-    journal = result.scalars().first()
-
-    if journal is None:
-        return None
-
-    journal.status = JournalStatus.active
-    journal.trade_id = trade_id
-    if journal.min_hold_days:
-        from datetime import timedelta
-
-        journal.hold_until = now_kst() + timedelta(days=journal.min_hold_days)
-    await db.flush()
-    logger.info(
-        "Linked journal id=%s to trade id=%s for %s (account_type=%s, account=%s)",
-        journal.id,
-        trade_id,
-        symbol,
-        account_type,
-        account,
-    )
-    return int(journal.id)
-
-
 async def _link_journal_to_fill(
     symbol: str,
     trade_id: int,
     account_type: str = "live",
     account: str | None = None,
-    *,
-    db: AsyncSession | None = None,
 ) -> None:
-    """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until.
-
-    ``db`` is the caller's transaction (no commit, errors propagate). Without
-    it the historical own-session-and-commit behaviour is kept.
-    """
-    if db is not None:
-        await _link_journal_to_fill_in(
-            db, symbol, trade_id, account_type=account_type, account=account
-        )
-        return
+    """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until."""
     try:
-        async with _order_session_factory()() as session:
-            linked = await _link_journal_to_fill_in(
-                session, symbol, trade_id, account_type=account_type, account=account
+        async with _order_session_factory()() as db:
+            stmt = select(TradeJournal).where(
+                TradeJournal.symbol == symbol,
+                TradeJournal.status == JournalStatus.draft,
+                TradeJournal.account_type == account_type,
             )
-            if linked is not None:
-                await session.commit()
+            if account:
+                stmt = stmt.where(TradeJournal.account == account)
+
+            stmt = stmt.order_by(desc(TradeJournal.created_at)).limit(1)
+            result = await db.execute(stmt)
+            journal = result.scalars().first()
+
+            if journal is None:
+                return
+
+            journal.status = JournalStatus.active
+            journal.trade_id = trade_id
+            if journal.min_hold_days:
+                from datetime import timedelta
+
+                journal.hold_until = now_kst() + timedelta(days=journal.min_hold_days)
+
+            await db.commit()
+            logger.info(
+                "Linked journal id=%s to trade id=%s for %s (account_type=%s, account=%s)",
+                journal.id,
+                trade_id,
+                symbol,
+                account_type,
+                account,
+            )
     except Exception as exc:
         logger.warning("Failed to link journal to fill: %s", exc)
 
@@ -255,7 +159,6 @@ async def _create_trade_journal_for_buy(
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
     correlation_id: str | None = None,
-    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Create a draft trade journal entry for a buy order.
 
@@ -297,14 +200,10 @@ async def _create_trade_journal_for_buy(
         correlation_id=correlation_id,
     )
 
-    if db is not None:
+    async with _order_session_factory()() as db:
         db.add(journal)
-        await db.flush()
-    else:
-        async with _order_session_factory()() as session:
-            session.add(journal)
-            await session.commit()
-            await session.refresh(journal)
+        await db.commit()
+        await db.refresh(journal)
 
     return {
         "journal_created": True,
@@ -325,7 +224,6 @@ async def _close_journals_on_sell(
     sell_fx_rate: float | None = None,
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
-    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -352,7 +250,7 @@ async def _close_journals_on_sell(
     remaining_qty = sell_qty_dec
     resolved_reason = (exit_reason or "").strip() or "sold_via_place_order"
 
-    async with _own_or_caller_session(db) as session:
+    async with _order_session_factory()() as db:
         stmt = select(TradeJournal).where(
             TradeJournal.symbol == symbol,
             TradeJournal.status == JournalStatus.active,
@@ -362,7 +260,7 @@ async def _close_journals_on_sell(
             stmt = stmt.where(TradeJournal.account == account)
 
         stmt = stmt.order_by(TradeJournal.created_at.asc())
-        result = await session.execute(stmt)
+        result = await db.execute(stmt)
         journals = list(result.scalars().all())
 
         closed_ids: list[int] = []
@@ -455,12 +353,7 @@ async def _close_journals_on_sell(
 
             closed_ids.append(journal.id)
 
-        if db is None:
-            await session.commit()
-        else:
-            # The caller's transaction commits the journal close together with
-            # its progress marker, so a retry can never re-close the same lot.
-            await session.flush()
+        await db.commit()
 
     # total_pnl_pct is quantity-weighted across the FIFO-closed journals'
     # per-lot entry_price (lot basis), NOT the position account-average. The
@@ -493,138 +386,6 @@ async def _close_journals_on_sell(
         if fx_computed_count
         else FX_PNL_ACCURACY_UNAVAILABLE,
         "fx_unavailable_journal_ids": fx_unavailable_journal_ids,
-    }
-
-
-async def _close_journals_on_sell_partial(
-    db: AsyncSession,
-    *,
-    symbol: str,
-    sell_quantity: float,
-    sell_price: float,
-    exit_reason: str | None = None,
-    account_type: str = "live",
-    account: str | None = None,
-) -> dict[str, Any]:
-    """FIFO close that decrements a partially consumed lot instead of stopping.
-
-    ``_close_journals_on_sell`` deliberately never splits a lot, so a position
-    sold in several smaller fills would stay active forever and its realized P&L
-    would never be recorded. This variant decrements the boundary lot's quantity
-    (and amount) and closes only the lots the sell fully consumes. The caller
-    owns the transaction (no commit).
-
-    The active lots are read ``FOR UPDATE``: the pass is a read-modify-write of
-    a pool shared by every sell of that symbol/account, so two transactions
-    journaling *different* orders of the same symbol (they lock different order
-    rows) would otherwise read the same snapshot and both decrement it — 6 + 6
-    shares sold out of one 10-share lot would leave 4 while 12 were consumed.
-    The lock order is deterministic (``created_at``, ``id``) so two passes
-    cannot deadlock on the same pair of lots.
-    """
-    remaining = Decimal(str(sell_quantity))
-    price = Decimal(str(sell_price))
-    reason = (exit_reason or "").strip() or "sold_via_place_order"
-    stmt = select(TradeJournal).where(
-        TradeJournal.symbol == symbol,
-        TradeJournal.status == JournalStatus.active,
-        TradeJournal.account_type == account_type,
-    )
-    if account:
-        stmt = stmt.where(TradeJournal.account == account)
-    stmt = stmt.order_by(
-        TradeJournal.created_at.asc(), TradeJournal.id.asc()
-    ).with_for_update()
-    journals = list((await db.execute(stmt)).scalars().all())
-
-    closed_ids: list[int] = []
-    weighted_pnl_sum = Decimal("0")
-    weighted_qty_sum = Decimal("0")
-    for journal in journals:
-        if remaining <= 0:
-            break
-        journal_qty = journal.quantity
-        if journal_qty is None:
-            pass  # Legacy/manual case: close without consuming quantity
-        elif journal_qty <= remaining:
-            remaining -= journal_qty
-        else:
-            # Partially consume this lot. The shares sold now are a closed
-            # position of their own, so split them into a closed row at the
-            # lot's entry price: their realized P&L is recorded instead of
-            # vanishing with the consumed quantity, and the leftover stays
-            # active at the reduced size (it keeps this lot's ``created_at``,
-            # so the FIFO order of later sells is unchanged).
-            consumed = remaining
-            split = TradeJournal(
-                symbol=journal.symbol,
-                instrument_type=journal.instrument_type,
-                side=journal.side,
-                entry_price=journal.entry_price,
-                quantity=consumed,
-                amount=(
-                    consumed * journal.entry_price
-                    if journal.entry_price is not None
-                    else None
-                ),
-                thesis=journal.thesis,
-                strategy=journal.strategy,
-                target_price=journal.target_price,
-                stop_loss=journal.stop_loss,
-                min_hold_days=journal.min_hold_days,
-                account=journal.account,
-                account_type=journal.account_type,
-                trade_id=journal.trade_id,
-                correlation_id=journal.correlation_id,
-                status=JournalStatus.closed,
-                exit_price=price,
-                exit_date=now_kst(),
-                exit_reason=reason,
-            )
-            if journal.entry_price and journal.entry_price > 0:
-                pnl_pct = (
-                    (price - journal.entry_price) / journal.entry_price
-                ) * Decimal("100")
-                split.pnl_pct = pnl_pct
-                weighted_pnl_sum += pnl_pct * consumed
-                weighted_qty_sum += consumed
-            leftover = journal_qty - consumed
-            journal.quantity = leftover
-            journal.amount = (
-                leftover * journal.entry_price
-                if journal.entry_price is not None
-                else None
-            )
-            db.add(split)
-            await db.flush()
-            closed_ids.append(split.id)
-            remaining = Decimal("0")
-            break
-
-        journal.status = JournalStatus.closed
-        journal.exit_price = price
-        journal.exit_date = now_kst()
-        journal.exit_reason = reason
-        if journal.entry_price and journal.entry_price > 0:
-            pnl_pct = ((price - journal.entry_price) / journal.entry_price) * Decimal(
-                "100"
-            )
-            journal.pnl_pct = pnl_pct
-            if journal_qty and journal_qty > 0:
-                weighted_pnl_sum += pnl_pct * journal_qty
-                weighted_qty_sum += journal_qty
-        closed_ids.append(journal.id)
-
-    await db.flush()
-    total_pnl_pct = (
-        float(weighted_pnl_sum / weighted_qty_sum) if weighted_qty_sum > 0 else 0.0
-    )
-    return {
-        "journals_closed": len(closed_ids),
-        "journals_kept": len(journals) - len(closed_ids),
-        "closed_ids": closed_ids,
-        "total_pnl_pct": total_pnl_pct,
-        "realized_pnl_basis": "journal_entry",
     }
 
 

@@ -1,7 +1,7 @@
-"""hk 4734 (3797 T-P4): admit broker 'kiwoom' in the execution ledger.
+"""hk 4734 (3797 T-P4): admit broker 'kiwoom' in the execution ledger (expand).
 
 Revision ID: 20261115_hk4734_kiwoom_broker
-Revises: 20261114_hk4702_trend_state
+Revises: 20261116_hk4754_us_proposals
 Create Date: 2026-11-15
 
 Two additive CHECK widenings only (design docs/design/3797-kiwoom-mock-ledger.md
@@ -12,18 +12,24 @@ Two additive CHECK widenings only (design docs/design/3797-kiwoom-mock-ledger.md
 * ``review.execution_ledger_reconcile_runs.broker`` gains ``'kiwoom'`` — the
   run coverage row the same reconcile writes.
 
-Nothing else changes: the idempotency key, the external-ingest
-``source='websocket'`` forcing, per-item savepoints and ledger-commit authority
-are untouched. No new object is created, so no ``at_app`` grant is needed; the
-table-level privileges already cover these columns.
+Each constraint is added **NOT VALID**, so PostgreSQL takes its ACCESS
+EXCLUSIVE lock only for the catalog change and does not scan the existing
+ledger while holding it. The scan is a separate step: the follow-up revision
+``20261115_hk4734_kiwoom_broker_validate`` runs ``VALIDATE CONSTRAINT``, which
+takes only SHARE UPDATE EXCLUSIVE and does not block ordinary reads or writes.
+Do not fold the validation back into this revision.
 
-Constraint names: the ORM applies ``ck_%(table_name)s_%(constraint_name)s``, so
-the ORM-canonical spellings are pinned here with ``op.f``. Production databases
-carry the literal names from 2026_05_13_rob211 and 20260707_rob757, so both
-spellings are dropped with IF EXISTS before the widened constraint is added.
+The drops are unconditional (IF EXISTS) so a re-run after a partial failure
+replaces the constraint instead of failing on the duplicate name. Production
+databases carry the literal names from 2026_05_13_rob211 and 20260707_rob757,
+so every historical spelling is dropped before the widened one is added, and
+the widening cannot silently leave a narrow CHECK in place.
 
-Downgrade refuses while any Kiwoom row exists: the old CHECK would reject the
-rows the application can no longer write after a downgrade.
+Downgrade restores the previous vocabulary exactly as production carried it
+(both constraints valid, as before this revision) and refuses while any Kiwoom
+row exists: the old CHECK would reject rows the application can no longer write
+after a downgrade. It is the emergency path, so it pays the validation scan the
+forward path avoids.
 """
 
 from __future__ import annotations
@@ -37,69 +43,97 @@ down_revision: str | Sequence[str] | None = "20261116_hk4754_us_proposals"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_SCHEMA = "review"
-_LEDGER_TABLE = "execution_ledger"
-_RUNS_TABLE = "execution_ledger_reconcile_runs"
-
-_LEDGER_CHECK = "ck_execution_ledger_execution_ledger_broker"
-_LEDGER_CHECK_NAMES = (_LEDGER_CHECK, "execution_ledger_broker")
-_OLD_LEDGER_BROKERS = ("kis", "upbit", "toss")
-_NEW_LEDGER_BROKERS = (*_OLD_LEDGER_BROKERS, "kiwoom")
-
-_RUNS_CHECK = "ck_execution_ledger_reconcile_runs_runs_broker"
-_RUNS_CHECK_NAMES = (
-    _RUNS_CHECK,
-    # The ORM's previous 65-character name (PostgreSQL truncated it to 63) and
-    # the literal production name from 2026_05_13_rob211.
-    "ck_execution_ledger_reconcile_runs_execution_ledger_runs_broker",
-    "execution_ledger_runs_broker",
-)
-_OLD_RUNS_BROKERS = ("kis", "upbit")
-_NEW_RUNS_BROKERS = (*_OLD_RUNS_BROKERS, "kiwoom")
-
-DOWNGRADE_GUARD = f"""
-DO $$
-BEGIN
-    LOCK TABLE {_SCHEMA}.{_LEDGER_TABLE}, {_SCHEMA}.{_RUNS_TABLE}
-        IN ACCESS EXCLUSIVE MODE;
-    IF EXISTS (SELECT 1 FROM {_SCHEMA}.{_LEDGER_TABLE} WHERE broker = 'kiwoom')
-       OR EXISTS (
-           SELECT 1 FROM {_SCHEMA}.{_RUNS_TABLE} WHERE broker = 'kiwoom'
-       ) THEN
-        RAISE EXCEPTION 'execution ledger holds kiwoom rows; export before downgrading'
-            USING ERRCODE = 'restrict_violation';
-    END IF;
-END;
-$$
-"""
-
-
-def _brokers(values: Sequence[str]) -> str:
-    return f"broker IN ({', '.join(repr(value) for value in values)})"
-
-
-def _drop_checks(table: str, names: Sequence[str]) -> None:
-    for name in names:
-        op.execute(f'ALTER TABLE {_SCHEMA}.{table} DROP CONSTRAINT IF EXISTS "{name}"')
-
-
-def _create_check(name: str, table: str, expression: str) -> None:
-    op.create_check_constraint(op.f(name), table, expression, schema=_SCHEMA)
-
 
 def upgrade() -> None:
-    _drop_checks(_LEDGER_TABLE, _LEDGER_CHECK_NAMES)
-    _create_check(_LEDGER_CHECK, _LEDGER_TABLE, _brokers(_NEW_LEDGER_BROKERS))
-
-    _drop_checks(_RUNS_TABLE, _RUNS_CHECK_NAMES)
-    _create_check(_RUNS_CHECK, _RUNS_TABLE, _brokers(_NEW_RUNS_BROKERS))
+    """Widen both broker CHECKs without scanning the tables under the lock."""
+    # expand-contract: contract-step 4734
+    op.execute(
+        "ALTER TABLE review.execution_ledger DROP CONSTRAINT IF EXISTS "
+        '"ck_execution_ledger_execution_ledger_broker"'
+    )
+    # expand-contract: contract-step 4734
+    op.execute(
+        "ALTER TABLE review.execution_ledger DROP CONSTRAINT IF EXISTS "
+        '"execution_ledger_broker"'
+    )
+    # expand-contract: contract-step 4734
+    op.execute(
+        "ALTER TABLE review.execution_ledger ADD CONSTRAINT "
+        "ck_execution_ledger_execution_ledger_broker "
+        "CHECK (broker IN ('kis', 'upbit', 'toss', 'kiwoom')) NOT VALID"
+    )
+    # expand-contract: contract-step 4734
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT "
+        'IF EXISTS "ck_execution_ledger_reconcile_runs_runs_broker"'
+    )
+    # expand-contract: contract-step 4734
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT "
+        'IF EXISTS "ck_execution_ledger_reconcile_runs_execution_ledger_runs_broker"'
+    )
+    # expand-contract: contract-step 4734
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT "
+        'IF EXISTS "execution_ledger_runs_broker"'
+    )
+    # expand-contract: contract-step 4734
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs ADD CONSTRAINT "
+        "ck_execution_ledger_reconcile_runs_runs_broker "
+        "CHECK (broker IN ('kis', 'upbit', 'kiwoom')) NOT VALID"
+    )
 
 
 def downgrade() -> None:
-    op.execute(DOWNGRADE_GUARD)
-
-    _drop_checks(_RUNS_TABLE, _RUNS_CHECK_NAMES)
-    _create_check(_RUNS_CHECK, _RUNS_TABLE, _brokers(_OLD_RUNS_BROKERS))
-
-    _drop_checks(_LEDGER_TABLE, _LEDGER_CHECK_NAMES)
-    _create_check(_LEDGER_CHECK, _LEDGER_TABLE, _brokers(_OLD_LEDGER_BROKERS))
+    """Restore the previous broker vocabulary (refuses while Kiwoom rows exist)."""
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            LOCK TABLE review.execution_ledger, review.execution_ledger_reconcile_runs
+                IN ACCESS EXCLUSIVE MODE;
+            IF EXISTS (
+                SELECT 1 FROM review.execution_ledger WHERE broker = 'kiwoom'
+            ) OR EXISTS (
+                SELECT 1 FROM review.execution_ledger_reconcile_runs
+                WHERE broker = 'kiwoom'
+            ) THEN
+                RAISE EXCEPTION
+                    'execution ledger holds kiwoom rows; export before downgrading'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT "
+        'IF EXISTS "ck_execution_ledger_reconcile_runs_runs_broker"'
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT "
+        'IF EXISTS "ck_execution_ledger_reconcile_runs_execution_ledger_runs_broker"'
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT "
+        'IF EXISTS "execution_ledger_runs_broker"'
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger_reconcile_runs ADD CONSTRAINT "
+        "ck_execution_ledger_reconcile_runs_runs_broker "
+        "CHECK (broker IN ('kis', 'upbit'))"
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger DROP CONSTRAINT IF EXISTS "
+        '"ck_execution_ledger_execution_ledger_broker"'
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger DROP CONSTRAINT IF EXISTS "
+        '"execution_ledger_broker"'
+    )
+    op.execute(
+        "ALTER TABLE review.execution_ledger ADD CONSTRAINT "
+        "ck_execution_ledger_execution_ledger_broker "
+        "CHECK (broker IN ('kis', 'upbit', 'toss'))"
+    )

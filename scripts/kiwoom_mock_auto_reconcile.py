@@ -4,9 +4,10 @@
 Previews verdicts by default and writes nothing. ``--apply-terminal-only``
 closes only expired / cancelled / rejected rows and resolves ``uncertain`` to
 ``accepted``; fills are deferred. ``--apply`` (full mode, KR only) also books
-the broker-evidence fill delta into ``execution_ledger`` and journals it with
-``account='kiwoom_mock'`` once per order, at its terminal fill. Both need their
-exact-true gates. There is no scheduler — this lever is manual (hard rule 6).
+the broker-evidence fill delta into ``execution_ledger`` and closes a filled row
+once the delta is booked. It writes no trade row, journal or realized P&L (hk
+4802). Both need their exact-true gates. There is no scheduler — this lever is
+manual (hard rule 6).
 
 ``--market`` selects the account: ``kr`` (``kiwoom_mock``, gated by
 ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED``) or ``us`` (``kiwoom_mock_us``,
@@ -21,8 +22,7 @@ Exit codes:
     1  - kernel reported success=False
     2  - activation gate blocked
     3  - success but reconciliation work remains (unresolved rows, deferred
-         fill booking, a failed journal, truncated scan) or a dry run found
-         pending work
+         fill booking, truncated scan) or a dry run found pending work
 
 Usage:
     uv run python -m scripts.kiwoom_mock_auto_reconcile
@@ -108,8 +108,8 @@ def main(argv: list[str] | None = None) -> int:
         "--apply",
         action="store_true",
         help=(
-            "full mode (kr only): also book execution_ledger fills and journals "
-            "with account='kiwoom_mock'. Requires "
+            "full mode (kr only): also book execution_ledger fills and close "
+            "booked fill rows (no journal yet — hk 4802). Requires "
             + " and ".join(f"{name}=true" for name in FULL_GATE_ENVS)
         ),
     )

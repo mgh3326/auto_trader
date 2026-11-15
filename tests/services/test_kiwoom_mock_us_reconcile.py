@@ -89,16 +89,6 @@ def _row(
         symbol=symbol,
         side="buy",
         trading_day=trading_day,
-        instrument_type="equity_us",
-        currency="USD",
-        correlation_id=f"kiwoom-mock-us:{ledger_id}",
-        thesis=None,
-        strategy=None,
-        reason=None,
-        exit_reason=None,
-        notes=None,
-        indicators_snapshot=None,
-        journal_id=None,
         trade_date=None,
     )
 
@@ -129,7 +119,6 @@ class FakeService:
         *,
         limit: int,
         account_mode: str = "kiwoom_mock",
-        include_journal_recovery: bool = False,
     ):
         self.calls.append(("list", account_mode))
         return list(type(self).rows[:limit]), type(self).total

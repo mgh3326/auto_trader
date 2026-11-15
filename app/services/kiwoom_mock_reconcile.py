@@ -20,10 +20,9 @@ Modes (design §3.3):
 * terminal-only — expired / cancelled / rejected and uncertain→accepted;
   ``filled``/``partial`` are reported as ``deferred_fill_booking``;
 * full mode (KR only) — the same, plus the broker-evidence fill delta booked
-  into ``execution_ledger`` (through :class:`ExecutionLedgerRepository`) and,
-  **once per order at its terminal fill**, the trade row and journal written
-  with ``account='kiwoom_mock'`` at the KIS kernel's booking boundary, and one
-  reconcile-run row with ``broker='kiwoom'``.
+  into ``execution_ledger`` (through :class:`ExecutionLedgerRepository`) and one
+  reconcile-run row with ``broker='kiwoom'``. Journals, trade rows and realized
+  P&L are **not** written by this kernel: the journal projection is hk 4802.
 
 Writes require exact-true gates, checked before any ledger read or broker
 call: ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`` (or the US one) for
@@ -43,7 +42,6 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any, Final, Protocol
 
 from sqlalchemy import text
@@ -63,7 +61,6 @@ from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.kiwoom_mock_order_ledger_service import (
     ACCOUNT_MODE_KIWOOM_MOCK,
     ACCOUNT_MODE_KIWOOM_MOCK_US,
-    FillBooking,
     KiwoomMockOrderLedgerService,
     KiwoomMockTransitionRefused,
     kr_trading_day,
@@ -76,8 +73,6 @@ __all__ = (
     "DEFAULT_MAX_LISTING_PAGES",
     "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS",
     "FULL_GATE_ENVS",
-    "JOURNAL_ACCOUNT",
-    "JOURNAL_ACCOUNT_TYPE",
     "TERMINAL_GATE_ENV",
     "US_TERMINAL_GATE_ENV",
     "KiwoomMockReconcileBroker",
@@ -113,12 +108,6 @@ _MARKET_GATE_ENV: Final = {
     "us": US_TERMINAL_GATE_ENV,
 }
 
-#: Every booked Kiwoom mock fill journals under this account label (operator
-#: decision Q3, hk:doc decision/2026-11-15/at-3796-3797-design-answers). The
-#: journal's ``account_type`` is ``mock`` — the account's own type.
-JOURNAL_ACCOUNT: Final = "kiwoom_mock"
-JOURNAL_ACCOUNT_TYPE: Final = "mock"
-
 #: Mock TR limit is one request per second and per market (§3.1).
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.0
 
@@ -127,8 +116,8 @@ DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.0
 DEFAULT_MAX_LISTING_PAGES: Final = 20
 
 #: One advisory-lock key shared by every Kiwoom mock full reconcile run: two
-#: overlapping runs (manual CLI plus a retry) must not interleave their journal
-#: steps. The winner holds the lock until its run finishes.
+#: overlapping runs (manual CLI plus a retry) must not interleave their reads
+#: and bookings. The winner holds the lock until its run finishes.
 _FULL_RUN_LOCK_KEY: Final = "auto_trader:kiwoom_mock_full_reconcile"
 _FULL_RUN_LOCK_SQL: Final = text(
     "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:key AS text), 0))"
@@ -264,17 +253,6 @@ class _Candidate:
     symbol: str
     side: str | None
     trading_day: str
-    #: Journal inputs and provenance carried from the same row snapshot.
-    instrument_type: str = "equity_kr"
-    currency: str = "KRW"
-    correlation_id: str | None = None
-    thesis: str | None = None
-    strategy: str | None = None
-    reason: str | None = None
-    exit_reason: str | None = None
-    notes: str | None = None
-    indicators_snapshot: dict[str, Any] | None = None
-    journal_id: int | None = None
     trade_date: datetime | None = None
 
 
@@ -328,27 +306,17 @@ def _us_evidence(
     )
 
 
-def _closes_the_fill(verdict: Any) -> bool:
-    """Whether this verdict is the order's terminal fill (its journal moment).
-
-    ``filled`` closes a fully filled order; ``cancelled``/``expired`` close one
-    that still filled part of its quantity. ``rejected`` never carries a fill.
-    """
-    if verdict.verdict == "filled":
-        return True
-    return verdict.verdict in {"cancelled", "expired"} and bool(verdict.filled_quantity)
-
-
 @asynccontextmanager
 async def _hold_full_run_lock(
     session_factory: Callable[[], Any],
 ) -> AsyncIterator[None]:
     """Hold one advisory lock for the whole full-mode run.
 
-    Two overlapping runs must not both journal the same order. The journal step
-    also re-reads its progress under the order row lock, so the row itself is
-    never journaled twice; this run-level lock additionally keeps the two runs
-    from interleaving at all (the broker readings and the per-row transactions).
+    Two overlapping runs must not both book the same delta. The delta itself is
+    idempotent (``execution_ledger``'s unique key plus the row's recorded
+    quantity), and this run-level lock additionally keeps the two runs from
+    interleaving at all (the broker readings and the per-row transactions), so
+    each delta is booked once and the run row counts it once.
 
     The lock is transaction-scoped and therefore needs a transaction of its own
     that stays open for the run: every write the run makes commits in *other*
@@ -381,8 +349,8 @@ async def kiwoom_mock_reconcile_orders_impl(
     ``dry_run`` issues zero writes. ``terminal_only`` applies closed-outcome
     transitions only and leaves fills deferred. Full mode
     (``dry_run=False, terminal_only=False``, KR only) also books the
-    broker-evidence fill delta into ``execution_ledger`` and journals it under
-    ``account='kiwoom_mock'``. Every write path needs its exact-true operator
+    broker-evidence fill delta into ``execution_ledger``; it writes no trade
+    row, journal or realized P&L (hk 4802). Every write path needs its exact-true operator
     gate(s): ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`` (or
     ``KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED``) for terminal-only and
     both full-mode switches for full mode.
@@ -491,7 +459,6 @@ async def _reconcile_orders(
             rows, open_total = await service.list_reconcile_candidates(
                 limit=limit,
                 account_mode=account_mode,
-                include_journal_recovery=full_mode,
             )
             candidates = [
                 _Candidate(
@@ -504,16 +471,6 @@ async def _reconcile_orders(
                     symbol=row.symbol,
                     side=row.side,
                     trading_day=row.trading_day,
-                    instrument_type=row.instrument_type,
-                    currency=row.currency,
-                    correlation_id=row.correlation_id,
-                    thesis=row.thesis,
-                    strategy=row.strategy,
-                    reason=row.reason,
-                    exit_reason=row.exit_reason,
-                    notes=row.notes,
-                    indicators_snapshot=row.indicators_snapshot,
-                    journal_id=row.journal_id,
                     trade_date=row.trade_date,
                 )
                 for row in rows
@@ -656,15 +613,19 @@ async def _reconcile_orders(
     run_id = uuid.uuid4()
 
     async def _write_transition(
-        candidate: _Candidate, *, action: str, reason: str, filled: bool = False
+        candidate: _Candidate,
+        *,
+        action: str,
+        reason: str,
+        filled_quantity: int | None = None,
     ) -> tuple[str, str | None]:
         """Apply one accepted terminal transition; report what happened.
 
-        ``filled`` marks a terminal verdict that carried a positive cumulative
-        fill: :meth:`record_fill` already moved the row off the no-fill source
-        statuses, so the close goes through ``close_filled_as_terminal``, which
-        accepts a ``partial``/``filled`` row only once its whole fill is
-        journaled.
+        ``filled_quantity`` is set for a terminal verdict that carried a
+        positive cumulative fill: :meth:`record_fill` already moved the row off
+        the no-fill source statuses, so the close goes through
+        ``close_filled_as_terminal``, which accepts a ``partial``/``filled`` row
+        only once the row's booked quantity equals this exact fill.
         """
         async with session_factory() as db:
             service = KiwoomMockOrderLedgerService(db)
@@ -678,11 +639,12 @@ async def _reconcile_orders(
                     )
                     return "promoted_accepted", None
                 status = action.removeprefix("mark_")
-                if filled:
+                if filled_quantity is not None:
                     await service.close_filled_as_terminal(
                         ledger_id=candidate.ledger_id,
                         status=status,
                         reason=reason,
+                        filled_quantity=filled_quantity,
                         detail={"verdict": status},
                         account_mode=account_mode,
                     )
@@ -705,105 +667,16 @@ async def _reconcile_orders(
                 )
                 return "noop_transition_refused", exc.reason
 
-    async def _book_journal(
-        db: Any, booking: FillBooking, *, quantity: Decimal, price: Decimal
-    ) -> dict[str, Any]:
-        """Write the trade row and journal inside the caller's transaction.
-
-        Same helpers and FIFO semantics as the KIS live kernel; only the account
-        label differs (``account='kiwoom_mock'``, ``account_type='mock'``). The
-        trade row is the order's cumulative aggregate, the buy journal is the
-        position entry at the order's cumulative quantity and average price, and
-        a sell closes ``quantity`` of FIFO lots at ``price``. It runs once per
-        order, at the terminal fill. Nothing here commits: the caller commits
-        this together with the journal progress marker, so a retry can neither
-        repeat a FIFO close nor leave a draft journal behind. Imported lazily so
-        the reconcile module stays light for the CLI.
-        """
-        from app.mcp_server.tooling.order_journal import (
-            _close_journals_on_sell_partial,
-            _create_trade_journal_for_buy,
-            _link_journal_to_fill,
-            _record_trade_for_fill,
-        )
-
-        trade_id = await _record_trade_for_fill(
-            db,
-            symbol=booking.symbol,
-            instrument_type=booking.instrument_type,
-            side=str(booking.side),
-            price=float(booking.cumulative_avg),
-            quantity=float(booking.cumulative_qty),
-            total_amount=float(booking.cumulative_qty * booking.cumulative_avg),
-            fee=0.0,
-            currency=booking.currency,
-            account=JOURNAL_ACCOUNT,
-            order_id=booking.broker_order_id,
-        )
-        details: dict[str, Any] = {"trade_id": trade_id}
-        if booking.side == "buy":
-            result = await _create_trade_journal_for_buy(
-                symbol=booking.symbol,
-                market_type=booking.instrument_type,
-                preview={
-                    "price": float(price),
-                    "quantity": float(quantity),
-                    "estimated_value": float(price * quantity),
-                },
-                thesis=(booking.thesis or "").strip() or "reconciled fill",
-                strategy=(booking.strategy or "").strip() or "reconciled fill",
-                target_price=None,
-                stop_loss=None,
-                min_hold_days=None,
-                notes=booking.notes,
-                indicators_snapshot=booking.indicators_snapshot,
-                account_type=JOURNAL_ACCOUNT_TYPE,
-                account=JOURNAL_ACCOUNT,
-                correlation_id=booking.correlation_id,
-                db=db,
-            )
-            journal_id = result.get("journal_id")
-            details["journal_created"] = journal_id is not None
-            if journal_id is not None:
-                await _link_journal_to_fill(
-                    booking.symbol,
-                    int(trade_id),
-                    account_type=JOURNAL_ACCOUNT_TYPE,
-                    account=JOURNAL_ACCOUNT,
-                    db=db,
-                )
-            details["journal_id"] = journal_id
-        else:
-            close = await _close_journals_on_sell_partial(
-                db,
-                symbol=booking.symbol,
-                sell_quantity=float(quantity),
-                sell_price=float(price),
-                exit_reason=booking.exit_reason or booking.reason,
-                account_type=JOURNAL_ACCOUNT_TYPE,
-                account=JOURNAL_ACCOUNT,
-            )
-            details["journals_closed"] = close["journals_closed"]
-            details["closed_journal_ids"] = close["closed_ids"]
-            details["realized_pnl_pct"] = close["total_pnl_pct"]
-            details["realized_pnl_basis"] = close.get(
-                "realized_pnl_basis", "journal_entry"
-            )
-            details["journal_pnl_pct"] = close["total_pnl_pct"]
-
-        return details
-
-    async def _apply_fill(
+    async def _book_fill(
         candidate: _Candidate, verdict: Any, outcome: dict[str, Any]
     ) -> None:
-        """Book the broker-evidence delta and, at the terminal fill, its journal.
+        """Book the broker-evidence fill delta into ``execution_ledger``.
 
-        The ``execution_ledger`` delta is booked for every fill verdict: the
-        ledger is the authority on fills. The journal is written **once per
-        order**, only when the fill is terminal (``_closes_the_fill``), with the
-        order's cumulative filled quantity and cumulative-notional average
-        price — so a later partial never has to rewrite what an earlier one
-        wrote, and the journal always holds every filled share.
+        The ledger is the authority on fills, so every fill verdict of a full
+        run lands its delta there — including the cumulative fill a terminal
+        verdict carries. Nothing else is written here: the trade row, journal
+        and realized P&L are hk 4802, not this kernel's job. A re-run of
+        identical evidence books nothing new (the delta is zero) and says so.
         """
         nonlocal booked_count, already_booked_count
         if verdict.filled_quantity is None or verdict.average_price is None:
@@ -840,57 +713,6 @@ async def _reconcile_orders(
             already_booked_count += 1
         else:
             booked_count += 1
-
-        if not _closes_the_fill(verdict):
-            # Still working: the ledger owns the delta, the journal waits for
-            # the order's final quantity (one journal per order).
-            outcome["journal"] = {"deferred": "awaiting_terminal_fill"}
-            return
-
-        # The fill evidence is committed; the journal is a projection. The
-        # order row is locked and its journal progress re-read **inside this
-        # transaction, before any journal side effect**: a run that already
-        # journaled this order (an overlapping or retried run) leaves nothing
-        # here, so the trade row, the journal, the FIFO close and the progress
-        # marker are applied exactly once. They commit together, so a failure
-        # rolls them all back and the next run repeats them exactly once.
-        try:
-            async with session_factory() as db:
-                service = KiwoomMockOrderLedgerService(db)
-                locked = await service.lock_for_journal(ledger_id=booking.ledger_id)
-                if locked.journaled_qty > 0:
-                    # The progress marker and the journal commit together, so
-                    # the marker alone answers "already journaled" (a buy's
-                    # journal id is not a sell's marker).
-                    await db.rollback()
-                    outcome["journal"] = {"skipped": "already_journaled"}
-                    return
-                quantity = locked.cumulative_qty
-                price = locked.cumulative_avg
-                if quantity <= 0 or price <= 0:
-                    await db.rollback()
-                    outcome["journal_error"] = "cumulative_fill_unavailable"
-                    outcome["requires_manual_review"] = True
-                    return
-                details = await _book_journal(
-                    db, locked, quantity=quantity, price=price
-                )
-                await service.attach_journal(
-                    ledger_id=locked.ledger_id,
-                    trade_id=details.get("trade_id"),
-                    journal_id=details.get("journal_id"),
-                    journaled_qty=quantity,
-                    journaled_avg=price,
-                    commit=False,
-                )
-                await db.commit()
-                outcome["journal"] = details
-        except Exception as exc:  # noqa: BLE001 — surface the class, never hide it
-            logger.exception(
-                "kiwoom mock journal booking failed id=%s", candidate.ledger_id
-            )
-            outcome["journal_error"] = type(exc).__name__
-            outcome["requires_manual_review"] = True
 
     for candidate in candidates:
         if market == "kr":
@@ -949,18 +771,21 @@ async def _reconcile_orders(
             elif dry_run:
                 outcome["action"] = f"would_mark_{verdict.verdict}"
             else:
-                filled_close = bool(verdict.filled_quantity)
-                if filled_close:
+                filled_close = (
+                    int(verdict.filled_quantity) if verdict.filled_quantity else None
+                )
+                if filled_close is not None:
                     # A terminal verdict that still filled part of its quantity:
-                    # book and journal the fill before the close, so no share is
-                    # stranded outside the ledger or its journal.
-                    await _apply_fill(candidate, verdict, outcome)
+                    # book the delta before the close, so no share is stranded
+                    # outside the ledger. The close then requires exactly this
+                    # booked quantity.
+                    await _book_fill(candidate, verdict, outcome)
                     outcome["fill_action"] = outcome["action"]
                 action, refused = await _write_transition(
                     candidate,
                     action=f"mark_{verdict.verdict}",
                     reason=verdict.reason,
-                    filled=filled_close,
+                    filled_quantity=filled_close,
                 )
                 outcome["action"] = action
                 if refused is not None:
@@ -979,7 +804,7 @@ async def _reconcile_orders(
                     outcome["requires_manual_review"] = True
         elif verdict.verdict in {"filled", "partial"}:
             if full_mode:
-                await _apply_fill(candidate, verdict, outcome)
+                await _book_fill(candidate, verdict, outcome)
             else:
                 # Terminal-only never books fills (design §3.3).
                 outcome["action"] = "deferred_fill_booking"
@@ -990,9 +815,8 @@ async def _reconcile_orders(
             outcome["action"] = "noop_no_evidence"
             outcome["requires_manual_review"] = True
 
-        # Work still owed after this run: an unbooked fill, a journal that failed
-        # after its fill was booked, or a row a human must resolve. A successful
-        # close or booking is resolved.
+        # Work still owed after this run: an unbooked fill or a row a human must
+        # resolve. A successful close or booking is resolved.
         if outcome["action"] in {
             "deferred_fill_booking",
             "noop_no_evidence",
