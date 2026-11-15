@@ -316,3 +316,21 @@ async def test_the_tick_lease_is_released_when_the_tick_raises(svc) -> None:
             raise RuntimeError("tick died")
     async with svc.tick_lease():
         pass
+
+
+async def test_the_lease_check_passes_while_held(svc) -> None:
+    async with svc.tick_lease() as lease:
+        await lease.check()
+        await lease.check()  # re-entrant: the check does not leak lock counts
+    other = TrendStateService(AsyncSessionLocal)
+    async with other.tick_lease():
+        pass
+
+
+async def test_released_ids_cover_rejected_intents_and_blocked_entries(svc) -> None:
+    signal, intent = await to_sending(svc)
+    await svc.record_rejected(
+        intent.client_order_id, broker_status="http_400:-2019", now=NOW
+    )
+    ids = await svc.list_released_client_order_ids()
+    assert intent.client_order_id in ids  # rejected intent and blocked entry id

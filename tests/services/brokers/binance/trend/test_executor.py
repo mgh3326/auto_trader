@@ -1095,3 +1095,101 @@ async def test_a_partial_terminal_entry_fill_stays_on_a_closable_ledger_lifecycl
     assert signal.state == "closed"
     assert rig.ledger.rows[root] == "reconciled"
     assert rig.state.intents[rig.client.sends[-1]["client_order_id"]].state == "settled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", ["entry", "exit"])
+async def test_a_failed_ledger_release_after_a_rejection_is_retried_by_recovery(
+    rig: Rig, side
+) -> None:
+    broken = {"on": True}
+    real = rig.ledger.record_cancelled
+
+    async def flaky(**kwargs):
+        if broken["on"]:
+            raise RuntimeError("ledger unavailable")
+        await real(**kwargs)
+
+    rig.ledger.record_cancelled = flaky  # type: ignore[method-assign]
+    rig.client.submit_error = _HttpError(400, {"code": -2019, "msg": "x"})
+    if side == "entry":
+        rig.bars["BTCUSDT"] = trend_bars("BUY")
+    else:
+        hold(rig)
+        rig.bars["BTCUSDT"] = flat_bars()
+        rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    await rig.tick()
+    rejected = [i for i in rig.state.intents.values() if i.state == "rejected"]
+    assert len(rejected) == 1 and len(rig.client.sends) == 1
+    assert rig.ledger.rows[rejected[0].client_order_id] == "validated"  # stranded
+    broken["on"] = False
+    rig.client.submit_error = None
+    await rig.tick()  # recovery sweeps the pre-send row of the rejected order
+    assert rig.ledger.rows[rejected[0].client_order_id] == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_recovery_claims_the_state_before_it_touches_the_ledger(rig: Rig) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    original = rig.state.mark_sending
+
+    async def crash(cid, *, now):
+        raise RuntimeError("died before the fence")
+
+    rig.state.mark_sending = crash  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await rig.tick()
+    rig.state.mark_sending = original  # type: ignore[method-assign]
+    cid = next(iter(rig.state.intents))
+    seen = []
+    real = rig.ledger.record_cancelled
+
+    async def spy(**kwargs):
+        seen.append(rig.state.intents[kwargs["client_order_id"]].state)
+        await real(**kwargs)
+
+    rig.ledger.record_cancelled = spy  # type: ignore[method-assign]
+    await rig.tick()
+    # the intent was already released (fence impossible) when the row was cancelled
+    assert seen == ["rejected"]
+    assert rig.ledger.rows[cid] == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_a_sender_that_fenced_first_wins_the_claim_and_nothing_is_released(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    original = rig.state.mark_sending
+
+    async def crash(cid, *, now):
+        raise RuntimeError("died before the fence")
+
+    rig.state.mark_sending = crash  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await rig.tick()
+    rig.state.mark_sending = original  # type: ignore[method-assign]
+    cid = next(iter(rig.state.intents))
+    real_list = rig.state.list_unresolved_intents
+
+    async def stale_snapshot():
+        snapshot = await real_list()
+        # the other tick fences between our read and our claim
+        rig.state.intents[cid].state = "sending"
+        return snapshot
+
+    rig.state.list_unresolved_intents = stale_snapshot  # type: ignore[method-assign]
+    result = await rig.tick()
+    assert ("BTCUSDT", "unsent_released") not in rig.events(result)
+    assert rig.ledger.rows[cid] == "validated"  # a possibly sent order's root stays
+    assert rig.client.sends == []
+
+
+@pytest.mark.asyncio
+async def test_a_lost_lease_stops_the_tick_before_the_fence(rig: Rig) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.state.lease_lost = True
+    with pytest.raises(Exception, match="lease lost"):
+        await rig.tick()
+    assert rig.client.sends == [] and rig.state.calls["mark_sending"] == 0
+    assert rig.state.lease_checks >= 1 and rig.state.lease_held is False

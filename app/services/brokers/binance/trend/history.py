@@ -134,15 +134,17 @@ async def collect_hard_stop_minutes(
     now_ms: int,
     check: Callable[[], None],
 ) -> tuple[MinuteBar, ...]:
-    """Complete 1m rows wholly after the fill minute, at most the last 24 hours.
+    """Complete 1m rows from the fill minute on, at most the last 24 hours.
 
     Raises on any transport or contract failure, and on any missing minute
     (:class:`TrendKlineGap`): the caller turns that into the
     "4h decision only" fallback and never into a partial 1m picture.
     """
     window_start = max(entered_ms, now_ms - HARD_STOP_WATCH_HOURS * 60 * MINUTE_MS)
-    # The fill minute can hold extrema from before the fill: start at the next.
-    start = (window_start // MINUTE_MS + 1) * MINUTE_MS
+    # Include the fill minute: a stop crossed after the fill but inside that
+    # minute is otherwise invisible forever. Its pre-fill extrema can only make
+    # the watch trip earlier, never later.
+    start = (window_start // MINUTE_MS) * MINUTE_MS
     end = (now_ms // MINUTE_MS) * MINUTE_MS
     if start >= end:
         return ()

@@ -30,7 +30,8 @@ import asyncio
 import datetime as dt
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -499,6 +500,7 @@ class TrendExecutor:
         self.state = state
         self.demo_ledger = demo_ledger
         self.ledger_session = ledger_session
+        self._lease: Any = None
         self._poll_attempts = poll_attempts
         self._poll_interval_s = poll_interval_s
         self._sleep = sleep
@@ -805,13 +807,16 @@ class TrendExecutor:
             if intent.state == "reserved":
                 # Never fenced: nothing was sent, so the reservation is released.
                 try:
-                    await self._release_demo_unsent(intent.client_order_id, now=now)
+                    # State first: this is the atomic claim. Once the intent is
+                    # released a concurrent sender can no longer fence it; if the
+                    # sender fenced first, the claim fails and nothing is touched.
                     if intent.reduce_only:
                         await self.state.release_unsent_exit(
                             intent.client_order_id, now=now
                         )
                     else:
                         await self.state.block_unsent(intent.signal_key, now=now)
+                    await self._release_demo_unsent(intent.client_order_id, now=now)
                     events.append(TrendEvent(signal.symbol, "unsent_released"))
                 except Exception as exc:
                     logger.exception("trend unsent reservation release failed")
@@ -822,6 +827,7 @@ class TrendExecutor:
             outcome = await self._reconcile_intent(intent, now=now, poll=False)
             events.append(TrendEvent(signal.symbol, f"reconciled_{outcome}"))
         await self._release_orphaned_entries(now, events)
+        await self._sweep_released_roots(now)
         blocked: set[str] = set()
         for intent in await self.state.list_unresolved_intents():
             signal = await self.state.get_signal(intent.signal_key)
@@ -831,6 +837,37 @@ class TrendExecutor:
             if signal.state == "uncertain":
                 blocked.add(signal.symbol)
         return blocked
+
+    async def _sweep_released_roots(self, now: dt.datetime) -> None:
+        """Retry a ledger release that failed after the state was released.
+
+        Any recently rejected/blocked order whose demo row is still pre-send has
+        no order behind it (the state release is the atomic claim), so it only
+        wastes a shared open-root slot until released.
+        """
+        for cid in await self.state.list_released_client_order_ids():
+            try:
+                row = await self.demo_ledger.get_by_client_order_id(cid)
+                if row is not None and row.lifecycle_state in {
+                    "planned",
+                    "previewed",
+                    "validated",
+                }:
+                    await self._release_demo_unsent(cid, now=now)
+            except Exception:
+                logger.exception("trend demo ledger sweep release failed")
+
+    @asynccontextmanager
+    async def _bound(self, lease: Any) -> AsyncIterator[None]:
+        self._lease = lease
+        try:
+            yield
+        finally:
+            self._lease = None
+
+    async def _check_lease(self) -> None:
+        if self._lease is not None:
+            await self._lease.check()
 
     async def _release_orphaned_entries(
         self, now: dt.datetime, events: list[TrendEvent]
@@ -847,10 +884,10 @@ class TrendExecutor:
             if await self.state.list_intents(signal.signal_key):
                 continue  # reserved intents were handled above; sent ones block
             try:
+                await self.state.block_unsent(signal.signal_key, now=now)
                 await self._release_demo_unsent(
                     self._entry_cid(signal.signal_key), now=now
                 )
-                await self.state.block_unsent(signal.signal_key, now=now)
                 events.append(TrendEvent(signal.symbol, "orphan_reservation_released"))
             except Exception as exc:
                 logger.exception("trend orphaned reservation release failed")
@@ -890,6 +927,8 @@ class TrendExecutor:
         now: dt.datetime,
     ) -> str:
         """Fence, send exactly once, resolve from evidence. Never resends."""
+        # Ownership is re-verified right before the point of no return.
+        await self._check_lease()
         try:
             await self.state.mark_sending(intent.client_order_id, now=now)
         except TrendStateBlocked:
@@ -1247,7 +1286,7 @@ class TrendExecutor:
         events: list[TrendEvent] = []
         # One tick owns the lane at a time: recovery below treats an unfenced
         # reservation as abandoned, which is only true while no other tick lives.
-        async with self.state.tick_lease():
+        async with self.state.tick_lease() as lease, self._bound(lease):
             blocked = await self._reconcile_unresolved(now, events)
             histories: dict[str, tuple[Bar4h, ...]] = {}
             for symbol in LOCKED_LIMITS.universe:

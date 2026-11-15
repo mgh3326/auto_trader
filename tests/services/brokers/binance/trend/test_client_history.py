@@ -441,12 +441,12 @@ def test_the_collectors_refuse_a_symbol_outside_the_universe_and_bad_alignment()
         )
 
 
-def test_the_hard_stop_window_is_bounded_and_excludes_the_fill_minute() -> None:
+def test_the_hard_stop_window_is_bounded_and_includes_the_fill_minute() -> None:
     def rows(symbol):
         out = []
         for n in range(0, 3 * 24 * 60):
             ts = T - 3 * DAY_MS + n * MINUTE_MS
-            low = "90" if n == 5 else "99"
+            low = "90" if n == 4 else "99"
             out.append([ts, "100", "101", low, "100", "1", ts + MINUTE_MS - 1])
         return out
 
@@ -476,9 +476,10 @@ def test_the_hard_stop_window_is_bounded_and_excludes_the_fill_minute() -> None:
             check=client._assert_trend,
         )
     )
-    # fill in minute 4: its own minute (4) is excluded; minute 5 (low 90) counts.
+    # fill in minute 4 (low 90 inside that very minute): the fill minute counts,
+    # otherwise a stop crossed after the fill but within it is never seen.
     assert min(minute_low(m) for m in recent) == D("90")
-    assert recent[0].ts == T - 3 * DAY_MS + 5 * MINUTE_MS
+    assert recent[0].ts == T - 3 * DAY_MS + 4 * MINUTE_MS
 
 
 def test_an_empty_window_reads_nothing() -> None:
@@ -540,4 +541,4 @@ def test_a_truncated_page_is_a_gap_and_a_complete_window_passes() -> None:
     with pytest.raises(TrendKlineGap):
         _watch(_continuous(only=3 * 24 * 60 - 5))  # the newest minutes missing
     minutes = _watch(_continuous())
-    assert len(minutes) == 24 * 60 - 1  # the fill minute itself is excluded
+    assert len(minutes) == 24 * 60

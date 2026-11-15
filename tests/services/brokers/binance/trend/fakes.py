@@ -68,6 +68,8 @@ class FakeState:
         self.order: list[str] = []
         self.lease_held = False
         self.lease_entries = 0
+        self.lease_checks = 0
+        self.lease_lost = False
 
     @asynccontextmanager
     async def tick_lease(self):
@@ -75,10 +77,33 @@ class FakeState:
             raise TrendStateBlocked("another trend tick owns the lane")
         self.lease_held = True
         self.lease_entries += 1
+        state = self
+
+        class _Lease:
+            async def check(self):
+                state.lease_checks += 1
+                if state.lease_lost:
+                    from app.services.brokers.binance.trend.state import (
+                        TrendLeaseLost,
+                    )
+
+                    raise TrendLeaseLost("trend tick lease lost")
+
         try:
-            yield
+            yield _Lease()
         finally:
             self.lease_held = False
+
+    async def list_released_client_order_ids(self, *, limit=200):
+        rejected = [
+            i.client_order_id for i in self.intents.values() if i.state == "rejected"
+        ]
+        blocked = [
+            trend_client_order_id(r.signal_key, "entry")
+            for r in self.signals.values()
+            if r.state in ("blocked", "conflict_blocked", "conflict_rejected")
+        ]
+        return tuple(rejected + blocked)
 
     async def list_intents(self, signal_key):
         return tuple(

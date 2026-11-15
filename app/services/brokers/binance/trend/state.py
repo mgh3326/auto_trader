@@ -56,6 +56,31 @@ _SENT_INTENTS = ("sending", "acknowledged", "evidenced", "uncertain")
 _MAX_DETAIL = 200
 
 
+class TrendLeaseLost(RuntimeError):
+    """The tick no longer owns the lane; stop before any further send."""
+
+
+class TrendTickLease:
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
+
+    async def check(self) -> None:
+        """Re-take (re-entrantly) and release the lock on the lease connection.
+
+        A dropped connection raises; a lock somehow no longer ours returns
+        false. Either way ownership is gone.
+        """
+        try:
+            held = await self._db.scalar(_TICK_LEASE_SQL, {"key": _TICK_LEASE_KEY})
+            if held is not True:
+                raise TrendLeaseLost("trend tick lease lost")
+            await self._db.scalar(_TICK_UNLEASE_SQL, {"key": _TICK_LEASE_KEY})
+        except TrendLeaseLost:
+            raise
+        except Exception as exc:
+            raise TrendLeaseLost("trend tick lease connection lost") from exc
+
+
 class TrendStateBlocked(RuntimeError):
     """A trend safety gate refused an entry or state transition."""
 
@@ -213,23 +238,29 @@ class TrendStateService:
         self._limits = limits
 
     @asynccontextmanager
-    async def tick_lease(self) -> AsyncIterator[None]:
+    async def tick_lease(self) -> AsyncIterator[TrendTickLease]:
         """Exclusive ownership of the lane for one executor tick.
 
         A session-level advisory lock on a connection held for the whole tick
-        (it is released by the database if the process dies). Recovery of
-        "abandoned" reservations is only sound while no other tick can be
-        between a reservation and its send fence, so every tick holds this.
-        A second tick refuses instead of waiting.
+        (the database releases it if the process dies). It keeps two ticks from
+        churning each other's reservations; it is NOT what makes recovery safe:
+        every release is an atomic state-first claim (a fenced intent can no
+        longer be released), so even a lost lease cannot yield a sent order
+        with a released ledger root. ``lease.check()`` re-verifies ownership on
+        the lease connection and raises when it is gone; the executor calls it
+        before every send fence. A second tick refuses instead of waiting.
         """
         async with self._factory() as db:
             got = await db.scalar(_TICK_LEASE_SQL, {"key": _TICK_LEASE_KEY})
             if got is not True:
                 raise TrendStateBlocked("another trend tick owns the lane")
             try:
-                yield
+                yield TrendTickLease(db)
             finally:
-                await db.scalar(_TICK_UNLEASE_SQL, {"key": _TICK_LEASE_KEY})
+                try:
+                    await db.scalar(_TICK_UNLEASE_SQL, {"key": _TICK_LEASE_KEY})
+                except Exception:  # connection already gone: the lock went with it
+                    pass
 
     @staticmethod
     async def _lock(db: AsyncSession) -> None:
@@ -676,6 +707,41 @@ class TrendStateService:
     # CT-4: exit legs, broker acknowledgement and evidence-only resolution.
     # ------------------------------------------------------------------
 
+    async def list_released_client_order_ids(
+        self, *, limit: int = 200
+    ) -> tuple[str, ...]:
+        """Recent client order ids whose demo ledger row must not stay pre-send.
+
+        Rejected intents (an exit leg or an entry) plus the deterministic entry
+        id of every blocked/conflict signal. Recovery releases any of them whose
+        ledger row is still planned/previewed/validated, so a failed ledger
+        release after a state release is retried instead of stranding a root.
+        """
+        async with self._factory() as db:
+            rejected = (
+                await db.scalars(
+                    select(BinanceTrendIntent.client_order_id)
+                    .where(BinanceTrendIntent.state == "rejected")
+                    .order_by(BinanceTrendIntent.updated_at.desc())
+                    .limit(limit)
+                )
+            ).all()
+            blocked = (
+                await db.scalars(
+                    select(BinanceTrendSignal.signal_key)
+                    .where(
+                        BinanceTrendSignal.state.in_(
+                            ("blocked", "conflict_blocked", "conflict_rejected")
+                        )
+                    )
+                    .order_by(BinanceTrendSignal.updated_at.desc())
+                    .limit(limit)
+                )
+            ).all()
+        return tuple(rejected) + tuple(
+            trend_client_order_id(key, "entry") for key in blocked
+        )
+
     async def get_intent(self, client_order_id: str) -> TrendIntentSnapshot | None:
         async with self._factory() as db:
             row = await db.get(BinanceTrendIntent, client_order_id)
@@ -1001,6 +1067,8 @@ __all__ = [
     "EXIT_REASON_VOCABULARY",
     "TrendEntryRefused",
     "TrendIntentSnapshot",
+    "TrendLeaseLost",
+    "TrendTickLease",
     "TrendOrderEvidence",
     "TrendSignalSnapshot",
     "TrendStateBlocked",
