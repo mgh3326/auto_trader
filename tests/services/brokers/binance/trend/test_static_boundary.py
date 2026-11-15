@@ -54,7 +54,14 @@ FORBIDDEN_THIRD_PARTY = (
 
 
 def _imports(path: Path, *, in_package: bool = False) -> list[tuple[str, int]]:
+    """Every imported module and ``module.name`` alias, relative imports resolved.
+
+    ``from ..futures_demo import execution_client`` inside the package resolves
+    to ``app.services.brokers.binance.futures_demo`` plus the alias
+    ``...futures_demo.execution_client`` so the allowlists see the real target.
+    """
     tree = ast.parse(path.read_text())
+    package_parts = PACKAGE_MODULE.split(".")
     found: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -62,16 +69,12 @@ def _imports(path: Path, *, in_package: bool = False) -> list[tuple[str, int]]:
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level:
-                if in_package:
-                    # Relative imports stay inside the package by construction.
-                    found.append(
-                        (f"{PACKAGE_MODULE}.{module}".rstrip("."), node.lineno)
-                    )
-            else:
-                found.append((module, node.lineno))
-                found += [
-                    (f"{module}.{alias.name}", node.lineno) for alias in node.names
-                ]
+                if not in_package:
+                    continue
+                base = package_parts[: len(package_parts) - (node.level - 1)]
+                module = ".".join([*base, module] if module else base)
+            found.append((module, node.lineno))
+            found += [(f"{module}.{alias.name}", node.lineno) for alias in node.names]
     return found
 
 
@@ -197,3 +200,34 @@ def test_the_closed_exit_vocabulary_is_one_constant_used_by_gate_and_state() -> 
             if path.name == "constants.py":
                 continue
             assert f'"{name}"' not in path.read_text(), f"{path.name} hardcodes {name}"
+
+
+def test_the_import_resolver_sees_relative_imports_and_aliases(tmp_path) -> None:
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "from ..futures_demo import execution_client\n"
+        "from . import state\n"
+        "from .state import TrendStateService\n"
+        "from ...demo.ledger import service as ledger\n"
+        "import httpx\n"
+    )
+    seen = {module for module, _ in _imports(sample, in_package=True)}
+    assert "app.services.brokers.binance.futures_demo" in seen
+    assert "app.services.brokers.binance.futures_demo.execution_client" in seen
+    assert f"{PACKAGE_MODULE}.state" in seen
+    assert f"{PACKAGE_MODULE}.state.TrendStateService" in seen
+    assert "app.services.brokers.demo.ledger.service" in seen
+    assert "httpx" in seen
+
+
+def test_a_relative_import_of_the_execution_client_outside_the_executor_is_rejected(
+    tmp_path,
+) -> None:
+    sample = tmp_path / "evil.py"
+    sample.write_text("from ..futures_demo import execution_client\n")
+    offenders = [
+        m
+        for m, _ in _imports(sample, in_package=True)
+        if m.startswith(EXECUTION_CLIENT_MODULES)
+    ]
+    assert offenders == ["app.services.brokers.binance.futures_demo.execution_client"]

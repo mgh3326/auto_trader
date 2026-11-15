@@ -55,8 +55,13 @@ def size_entry(
         raise TrendSizingBlocked("invalid exchange filters")
     target = target_notional(sigma_hat)
     qty = floor_to_step(target / executable_price, step_size)
-    qty = qty.quantize(Decimal(1).scaleb(-quantity_precision), rounding=ROUND_DOWN)
+    quantum = Decimal(1).scaleb(-quantity_precision)
+    qty = qty.quantize(quantum, rounding=ROUND_DOWN)
     qty = floor_to_step(qty, step_size)
+    if qty != qty.quantize(quantum):
+        # The step floor can land between two precision increments (e.g. step
+        # 0.003 at 2 decimals). Never send a quantity the exchange would round.
+        raise TrendSizingBlocked("quantity is not representable at the precision")
     notional = qty * executable_price
     if qty < min_qty or qty > max_qty or notional < min_notional_usdt:
         raise TrendSizingBlocked("floor quantity cannot satisfy exchange minimums")

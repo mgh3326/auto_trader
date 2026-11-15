@@ -222,3 +222,20 @@ def test_sizing_never_rounds_up_to_reach_a_minimum() -> None:
 def test_sizing_refuses_invalid_exchange_inputs(change) -> None:
     with pytest.raises(TrendSizingBlocked):
         _size(**change)
+
+
+def test_a_quantity_the_step_floor_pushes_off_the_precision_grid_is_refused() -> None:
+    # sigma 1.2 -> 30 USDT target at price 700: 0.042 -> 0.04 (2 dp) -> 0.039 (step)
+    with pytest.raises(TrendSizingBlocked, match="representable"):
+        _size(
+            executable_price=D("700"),
+            step_size=D("0.003"),
+            quantity_precision=2,
+            min_notional_usdt=D("5"),
+            min_qty=D("0.003"),
+            max_qty=D("1000"),
+        )
+    # a step that is a multiple of the precision increment still sizes
+    assert _size(
+        executable_price=D("700"), step_size=D("0.01"), quantity_precision=2
+    ).qty == D("0.04")
