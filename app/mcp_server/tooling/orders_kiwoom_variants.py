@@ -15,10 +15,16 @@ Mirrors the structure of ``orders_kis_variants.py``.
 
 from __future__ import annotations
 
+import logging
 import re
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import validate_kiwoom_mock_config
+from app.core.db import AsyncSessionLocal
+from app.mcp_server.tooling.orders_kiwoom_shared import (
+    _is_explicit_broker_rejection,
+)
 from app.mcp_server.tooling.orders_kiwoom_shared import (
     derive_broker_success as _derive_broker_success,
 )
@@ -44,11 +50,20 @@ from app.services.brokers.kiwoom.order_preflight import (
     run_order_preflight,
 )
 from app.services.brokers.kiwoom.validation import normalize_krx_symbol
+from app.services.kiwoom_mock_order_ledger_service import (
+    DuplicateOrderIntent,
+    KiwoomMockPlaceRecorder,
+    SendReservation,
+    build_client_order_id,
+    kr_trading_day,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 __all__ = ("_derive_broker_success",)
+
+logger = logging.getLogger(__name__)
 
 ACCOUNT_MODE_KIWOOM_MOCK = "kiwoom_mock"
 
@@ -420,6 +435,184 @@ def _dispatch_unknown_response(base: dict[str, Any], exc: Exception) -> dict[str
     }
 
 
+def _new_place_recorder() -> KiwoomMockPlaceRecorder:
+    """Single chokepoint for the place-path persistence (tests inject a fake)."""
+    return KiwoomMockPlaceRecorder(AsyncSessionLocal)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+_SAFE_BROKER_ORDER_ID_MAX_LEN = 32
+
+
+def _broker_order_id_from(broker_response: dict[str, Any]) -> str | None:
+    """The single acknowledged order number, or ``None`` when not provable.
+
+    Both ``ord_no`` and ``order_no`` are read; a missing, non-string, unsafe or
+    conflicting value is *not* an acknowledgement.
+    """
+    found: set[str] = set()
+    for key in ("ord_no", "order_no"):
+        if key not in broker_response:
+            continue
+        raw = broker_response.get(key)
+        if raw is None or raw == "":
+            continue
+        if not isinstance(raw, str):
+            return None
+        candidate = raw.strip()
+        if (
+            not candidate
+            or len(candidate) > _SAFE_BROKER_ORDER_ID_MAX_LEN
+            or not _SAFE_ORDER_ID_RE.fullmatch(candidate)
+        ):
+            return None
+        found.add(candidate)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _classify_place_response(
+    broker_response: dict[str, Any],
+) -> tuple[Literal["accepted", "rejected", "uncertain"], str | None]:
+    """Three-way outcome of a place answer (design §2.2 item 2).
+
+    return_code == 0 with an order number -> accepted; return_code == 0 without
+    one -> uncertain; an explicit non-zero return_code -> rejected. A missing or
+    unparseable return_code proves neither, so it is uncertain.
+    """
+    if _derive_broker_success(broker_response):
+        order_id = _broker_order_id_from(broker_response)
+        return ("accepted", order_id) if order_id else ("uncertain", None)
+    if _is_explicit_broker_rejection(broker_response):
+        return "rejected", None
+    return "uncertain", None
+
+
+def _response_code_text(broker_response: dict[str, Any]) -> str | None:
+    value = broker_response.get("return_code")
+    return None if value is None else str(value)[:64]
+
+
+def _response_message_text(broker_response: dict[str, Any]) -> str | None:
+    value = broker_response.get("return_msg")
+    return None if value is None else str(value)[:500]
+
+
+async def _duplicate_intent_response(
+    base: dict[str, Any], client_order_id: str, recorder: KiwoomMockPlaceRecorder
+) -> dict[str, Any]:
+    """Same key already reserved: refused before any broker call (I2).
+
+    The earlier dispatch may have an unknown outcome (timeout, or a ledger write
+    that failed after the ACK), so reconciliation is required unless the ledger
+    proves a terminal broker rejection. A failed lookup is not a proof.
+    """
+    existing_status: str | None = None
+    try:
+        existing_status = await recorder.existing_status(client_order_id)
+    except Exception:  # noqa: BLE001 - an unreadable ledger proves nothing
+        logger.warning(
+            "kiwoom_mock duplicate-intent ledger lookup failed: key=%s", client_order_id
+        )
+    return {
+        **base,
+        "success": False,
+        "error": "kiwoom_mock_duplicate_order_intent",
+        "status": "not_submitted",
+        "dispatch_started": False,
+        "client_order_id": client_order_id,
+        "existing_ledger_status": existing_status,
+        "reconcile_required": existing_status != "rejected",
+        "retry_allowed": False,
+    }
+
+
+def _intent_unavailable_response(
+    base: dict[str, Any], client_order_id: str, exc: Exception
+) -> dict[str, Any]:
+    """Reservation could not be committed: fail closed, nothing was sent."""
+    return {
+        **base,
+        "success": False,
+        "error": f"kiwoom_mock_send_intent_unavailable: {type(exc).__name__}",
+        "status": "not_submitted",
+        "dispatch_started": False,
+        "client_order_id": client_order_id,
+        "reconcile_required": False,
+    }
+
+
+async def _release_after_pre_dispatch_error(
+    recorder: KiwoomMockPlaceRecorder, reservation: SendReservation
+) -> bool:
+    try:
+        await recorder.release(reservation)
+    except Exception:  # noqa: BLE001 - a kept reservation only blocks a retry
+        logger.warning(
+            "kiwoom_mock reservation release failed after pre-dispatch error: key=%s",
+            reservation.idempotency_key,
+        )
+        return False
+    return True
+
+
+async def _record_place_outcome(
+    recorder: KiwoomMockPlaceRecorder,
+    *,
+    outcome: Literal["accepted", "rejected", "uncertain"],
+    broker_response: dict[str, Any] | None,
+    broker_order_id: str | None,
+    ledger_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Write the ledger row AFTER the broker answered; never raises.
+
+    A recording failure must not change what the broker did: the caller keeps
+    the broker result and the reservation, and nothing is resent. The failure
+    is reported as ``ledger_recording_error``.
+    """
+    redacted = (
+        redact_broker_response(broker_response) if broker_response is not None else None
+    )
+    try:
+        if outcome == "uncertain":
+            receipt = await recorder.record_uncertain(
+                **ledger_kwargs,
+                broker_order_id=broker_order_id,
+                response_code=_response_code_text(broker_response or {}),
+                response_message=_response_message_text(broker_response or {}),
+                raw_response=redacted,
+            )
+        else:
+            receipt = await recorder.record_send(
+                status=outcome,
+                **ledger_kwargs,
+                broker_order_id=broker_order_id,
+                response_code=_response_code_text(broker_response or {}),
+                response_message=_response_message_text(broker_response or {}),
+                raw_response=redacted,
+            )
+    except Exception as exc:  # noqa: BLE001 - recording must not mask the ACK
+        logger.error(
+            "kiwoom_mock ledger recording failed after broker answer: key=%s outcome=%s error=%s",
+            ledger_kwargs.get("client_order_id"),
+            outcome,
+            type(exc).__name__,
+        )
+        return {
+            "ledger_recorded": False,
+            "ledger_recording_error": type(exc).__name__,
+            "reconcile_required": True,
+            "retry_allowed": False,
+        }
+    return {
+        "ledger_recorded": True,
+        "ledger_id": receipt.ledger_id,
+        "ledger_status": receipt.status,
+    }
+
+
 async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
     symbol = str(kwargs.get("symbol") or "").strip()
     side = kwargs.get("side")
@@ -501,6 +694,44 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
     # evidence as the authoritative snapshot.
     base_response.update(preflight.to_response_extras())
 
+    # hk 4712 — the Kiwoom order body has no client idempotency field, so the
+    # pre-send reservation is the only double-send defence. It is committed
+    # after preflight and immediately before the POST; a duplicate refuses
+    # before any broker call.
+    exchange_text = str(exchange).strip().upper()
+    trading_day = kr_trading_day(_utc_now())
+    client_order_id = build_client_order_id(
+        symbol=symbol,
+        side=str(side),
+        quantity=quantity,
+        price=price,
+        exchange=exchange_text,
+        trading_day=trading_day,
+        rung=kwargs.get("rung"),
+    )
+    base_response["client_order_id"] = client_order_id
+    recorder = _new_place_recorder()
+    try:
+        reservation = await recorder.reserve(
+            idempotency_key=client_order_id, symbol=symbol, side=str(side)
+        )
+    except DuplicateOrderIntent:
+        return await _duplicate_intent_response(
+            base_response, client_order_id, recorder
+        )
+    except Exception as exc:  # noqa: BLE001 - cannot prove the guard: do not send
+        return _intent_unavailable_response(base_response, client_order_id, exc)
+
+    ledger_kwargs: dict[str, Any] = {
+        "client_order_id": client_order_id,
+        "idempotency_key": client_order_id,
+        "symbol": symbol,
+        "side": str(side),
+        "quantity": quantity,
+        "price": price,
+        "trading_day": trading_day,
+    }
+
     try:
         if side == "buy":
             broker_response = await order_client.place_buy_order(
@@ -517,11 +748,45 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
                 exchange=exchange,
             )
     except KiwoomPreDispatchError as exc:
-        return _not_submitted_response(base_response, exc)
+        # Provably never sent: no ledger row, and the same key may retry.
+        released = await _release_after_pre_dispatch_error(recorder, reservation)
+        response = _not_submitted_response(base_response, exc)
+        response["reservation_released"] = released
+        return response
     except Exception as exc:  # noqa: BLE001 - post-dispatch: may have been sent
-        return _dispatch_unknown_response(base_response, exc)
+        # I3: uncertain row, reservation kept, never resent.
+        response = _dispatch_unknown_response(base_response, exc)
+        response.update(
+            await _record_place_outcome(
+                recorder,
+                outcome="uncertain",
+                broker_response=None,
+                broker_order_id=None,
+                ledger_kwargs=ledger_kwargs,
+            )
+        )
+        return response
 
-    return _finalize_broker_response(base_response, broker_response)
+    outcome, broker_order_id = _classify_place_response(broker_response)
+    response = _finalize_broker_response(base_response, broker_response)
+    if outcome == "uncertain":
+        # return_code 0 without a provable order number (or an unreadable
+        # return_code): the order may exist but cannot be tracked, so it is not
+        # a confirmed placement and must not be retried.
+        response["success"] = False
+        response["status"] = "acceptance_uncertain"
+        response["reconcile_required"] = True
+        response["retry_allowed"] = False
+    response.update(
+        await _record_place_outcome(
+            recorder,
+            outcome=outcome,
+            broker_response=broker_response,
+            broker_order_id=broker_order_id,
+            ledger_kwargs=ledger_kwargs,
+        )
+    )
+    return response
 
 
 async def _kiwoom_mock_preview_impl(**kwargs: Any) -> dict[str, Any]:
@@ -890,6 +1155,7 @@ def register(mcp: FastMCP) -> None:
         exchange: str | None = "KRX",
         dry_run: bool = True,
         confirm: bool = False,
+        rung: str | int | None = None,
     ) -> dict[str, Any]:
         for guard in (
             _mock_config_error(),
@@ -916,6 +1182,7 @@ def register(mcp: FastMCP) -> None:
             price=price,
             exchange=exchange,
             dry_run=dry_run,
+            rung=rung,
         )
 
     @mcp.tool(
