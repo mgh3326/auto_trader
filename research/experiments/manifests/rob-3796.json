@@ -1,23 +1,25 @@
 {
   "manifest_format": "experiment-manifest/v1",
   "hypothesis_id": "ROB-3796",
-  "version": 1,
+  "version": 2,
   "title": "Crypto time-series momentum (basket 4) on the Binance USD-M futures demo, long and short, against cash and a BTC long-only control",
   "question": "Does a fixed 4h-to-daily time-series momentum rule on BTC, ETH, SOL and XRP, sized to a 60% EWMA volatility target inside fixed caps, earn a positive net return after costs against cash at equal capital in an 8-week prospective seal on the Binance USD-M demo host?",
-  "status": "draft",
+  "status": "sealed",
   "markets": ["crypto"],
   "hashes": {
-    "preregistration_text": "docs/design/3796-crypto-trend-demo.md sections 3.1, 3.2 and 6 (answers Q1-Q8); operator record hk:doc decision/2026-11-15/at-3796-3797-design-answers",
+    "preregistration_text": "docs/design/3796-crypto-trend-demo.md sections 3.1, 3.2, 3.3, 3.5 and 6; operator records hk:doc decision/2026-11-15/at-3796-3797-design-answers (Q1-Q8) and decision/2026-11-15/at-3796-ct5-seal-inputs (L, hard stop, delta_min, funding rule)",
     "exploration_data_source": "Binance public kline archive (data.binance.vision), most recent 3 years (Q7). Demo-host klines are not used for performance estimates.",
-    "exploration_dataset_manifest_sha256": {"pending": "CT-2: fixed when the public archive is downloaded and hashed; exploration only, not sealed data"},
-    "evaluation_contract_sha256": {"pending": "CT-2: evaluation contract (fill model, metric definitions, episode rules) is hashed before the exploration comparison runs"},
-    "code_sha": {"pending": "CT-4/CT-5: runner code SHA is fixed when the manifest is sealed"},
-    "policy_version": {"pending": "CT-4: the design reads no config/trading_policy.yaml key; record the policy stamp only if CT-4 reads one, otherwise record none explicitly before seal"},
-    "cost_table_sha256": {"pending": "CT-4/CT-5: starting point is the H5 taker fee 0.0005 (app/services/brokers/binance/h5/constants.py); the realized fee_usdt of each fill replaces it in the ledger; table hashed at seal"}
+    "exploration_dataset_manifest_sha256": "0b7809744688394649368600ffb5540dc3f3b32df685e332f6ec7f13fad22a67 — sha256 of the 328-entry zip-checksum manifest that research/crypto_trend/run.py wrote to the artifact root (manifest.json, outside the repository). Exploration only, not sealed data.",
+    "evaluation_contract_sha256": "053f250ed751abbdad2026de4da048203f638662414da7631e6859e87dda1ecf — sha256 of the sorted sha256sum-style listing of research/crypto_trend/*.py at code_sha (fill model, episode rules, metric definitions); fixed before the CT-2 exploration comparison ran.",
+    "code_sha": "161af78737697944ce484d52471d8b88e0f59ae8 — main merge commit of PR #2445; the runner (app/services/brokers/binance/trend/, scripts/binance_trend_demo.py) at this commit is the code under seal",
+    "policy_version": "none — the trend package and CLI read no config/trading_policy.yaml key (no trading_policy import in app/services/brokers/binance/trend/ or scripts/binance_trend_demo.py). The lane's invariants are the locked constants, not a policy document.",
+    "constants_sha256": "d55fe054ebe9923d2f2ab92106f2262bc09b29ed130273bf8baaddbc760ea259 — sha256 of app/services/brokers/binance/trend/constants.py at code_sha: SEAL_LOOKBACK_DAYS 60, SEAL_HARD_STOP_FRACTION 0.10, SIGMA_STAR 0.60, EWMA_SPAN_DAYS 20, ANNUALISATION_DAYS 365, TIME_EXIT_DAYS 30, TAKER_FEE_RATE 0.0005, LOCKED_LIMITS",
+    "cost_table_sha256": "e62a8fb47267d0455f3f8a26ad20cd14feb11331a12caa1fe45e4ba8ad1e59ef — sha256 of the costs_fills.cost_table string below (canonical minified JSON, UTF-8)",
+    "determinism": "the signal, the volatility scale, the sizing and both controls use no random number generator; seeds is [0], the schema-required placeholder, not a sampled seed"
   },
   "features": [
     {
-      "name": "tsmom_sign_L (L in {20, 60, 120} days; one value fixed by CT-2)",
+      "name": "tsmom_sign_L (L = 60 days, fixed at seal from the CT-2 exploration; SEAL_LOOKBACK_DAYS = 60)",
       "available_at": "close of the complete 4h bar (UTC 4h boundary); decision at that bar close. Incomplete or missing bars are NO_SIGNAL, never forward-filled",
       "source": "Binance USD-M 4h bars built from klines with the research bar builder (research/nautilus_scalping/rob974_features.build_complete_4h); sign of close_t / close_(t-L) - 1 on daily-equivalent closes"
     },
@@ -35,7 +37,7 @@
   "labels": [
     {
       "name": "episode_net_return",
-      "definition": "per episode: signed (exit fill price - entry fill price) x quantity, minus fees (realized fee_usdt from the ledger; before fills exist, the taker fee starting point on each side), divided by the episode's leg notional. An episode runs from entry to exit at signal reversal, hard stop, or maximum holding time of 30 days. Funding payments are not priced in the design's cost table and remain an open question for the operator before seal.",
+      "definition": "per episode: signed (exit fill price - entry fill price) x quantity, minus fees (the ledger's realized fee_usdt; before a fill has a recorded fee, the 0.0005 taker fee per side of the cost table), plus the demo account's real funding receipts and payments attributable to the leg, divided by the episode's leg notional. A funding record that cannot be read is unknown, never zero, and withholds that episode's scoring. An episode runs from entry to exit at signal reversal, hard stop (10% of the entry price), or a maximum holding time of 30 days.",
       "horizon_sessions": 30
     }
   ],
@@ -50,15 +52,15 @@
     "folds": [],
     "test": {
       "kind": "prospective_seal",
-      "period": {"pending": "CT-5: 8 weeks (Q5) counted from the seal merge date; the period is fixed when the manifest is sealed"},
+      "period": ["2026-11-15", "2027-01-09"],
       "exposure_audit": "At scoring time, compare each signal with the real position exposure read from the ledger and the broker account (the demo account is shared with other strategies; conflict rejects are reported separately).",
-      "seal_rule": "Decisions after the seal merge only. The window is fixed at the seal and never extended. Any change to rule, universe, caps, cost table or code SHA is a new manifest version and a new seal."
+      "seal_rule": "Freeze time = the merge of this seal PR into main: start = the UTC date of that merge, end = start + 55 calendar days, 56 consecutive UTC days inclusive (8 weeks, operator decision Q5). This version records the freeze date as 2026-11-15 (the date it was committed) and therefore 2026-11-15 through 2027-01-09; only decisions timestamped at or after the freeze count, so a later merge date moves both ends together and no decision before the merge is ever counted. The length is fixed at the freeze; the window is never extended, shortened or reopened. Any change to rule, universe, caps, cost table or code SHA is a new manifest version and a new seal (design section 3.3)."
     }
   },
   "candidate_policies": [
     {
       "id": "candidate-tsmom",
-      "description": "Daily TSMOM on BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT (DOGEUSDT excluded). Long when the sign is positive, short when negative, one entry and one exit per episode, no adds. Lookback L in {20, 60, 120} days, one value chosen once in CT-2 and fixed in the sealed version. Volatility target sigma_star = 60% with 20-day EWMA; notional = cap x min(1, sigma_star / sigma_hat), never above cap. Leg notional cap USD 60, at most 4 concurrent positions, gross cap USD 240, 1x isolated."
+      "description": "Daily TSMOM on BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT (DOGEUSDT excluded). Long when the sign is positive, short when negative, one entry and one exit per episode, no adds. Lookback L = 60 days, chosen once by the CT-2 exploration under its pre-declared rule and fixed at seal. Volatility target sigma_star = 60% with 20-day EWMA; notional = cap x min(1, sigma_star / sigma_hat), never above cap. Leg notional cap USD 60, at most 4 concurrent positions, gross cap USD 240, 1x isolated."
     },
     {
       "id": "control-cash",
@@ -70,7 +72,7 @@
     }
   ],
   "costs_fills": {
-    "cost_table": {"pending": "CT-4/CT-5: round-trip cost table fixed before seal; starting point is the H5 taker fee 0.0005 per side, replaced by realized fee_usdt in the ledger"},
+    "cost_table": "{\"version\":\"trend-cost-table/v1\",\"cost_model\":{\"fill\":\"market at the next 4h bar open after the decision bar closes\",\"slippage\":\"0 (not modelled; recorded as a limitation)\",\"taker_fee_rate_per_side\":\"0.0005\",\"sides_per_round_trip\":2,\"funding\":\"none (funding is not estimated)\"},\"measurement\":{\"fees\":\"the realized fee_usdt of each fill in review.binance_demo_order_ledger supersedes the 0.0005 model\",\"funding\":\"the demo account's real funding receipts and payments are included in the net return\",\"unreadable\":\"unknown, never zero: a funding record that cannot be read withholds scoring\"},\"source\":\"operator decision hk:doc decision/2026-11-15/at-3796-ct5-seal-inputs; H5 starting point app/services/brokers/binance/h5/constants.py\"}",
     "fill_models": [
       "exploration default: conservative through, a touch of a level is not a fill",
       "prospective: broker fill evidence only (ledger after bounded poll, then account position read); a status NEW order is not treated as filled until the evidence is in"
@@ -78,25 +80,26 @@
   },
   "tuning_budget": {
     "max_configurations": 3,
-    "search": "One comparison of the lookback L in {20, 60, 120} days on the exploration archive (CT-2). sigma_star = 60% and the 20-day EWMA window are operator-fixed (Q2) and are not tuned. The control policies are not tuned.",
-    "notes": "Each configuration compared counts against max_configurations; no other search is allowed."
+    "search": "One comparison of the lookback L in {20, 60, 120} days on the exploration archive (CT-2); the sealed value is L = 60 days, CT-2's pre-declared choice. sigma_star = 60% and the 20-day EWMA window are operator-fixed (Q2) and are not tuned. The hard stop (10% of the entry price) and delta_min (0.00) are operator-fixed at seal and are not tuned. The control policies are not tuned.",
+    "notes": "Each configuration compared counts against max_configurations; no other search is allowed. The rule, the volatility scale, the sizing and both controls are deterministic — they use no random number generator, so seeds is [0], the schema-required placeholder rather than a sampled seed."
   },
-  "seeds": {"pending": "the rule is deterministic; CT-2 fixes seeds only if a randomized baseline is added"},
+  "seeds": [0],
   "metrics": {
     "primary": "net return after costs of candidate-tsmom against control-cash at equal capital, over the sealed window",
     "secondary": ["maximum drawdown", "Sharpe ratio", "fill rate (signal to actual entry)", "conflict reject count", "gap and missing-bar count"],
     "family": ["ROB-3796 single primary: candidate-tsmom against control-cash; no multiple-comparison correction"],
     "alpha": "0.05",
-    "delta_min": {"pending": "CT-5 seal: operator sets the minimum net-return effect before seal; the design does not set it"}
+    "delta_min": "0.00"
   },
   "stopping_rules": [
     "(i) At the end of the sealed window, a primary net return after costs at or below 0 ends the experiment.",
-    "(ii) Kill switch: after 2 consecutive hard-stop exits in a UTC day, no new entry that UTC day; management of open legs continues.",
-    "(iii) Exposure: an entry that would exceed 4 concurrent positions or USD 240 gross is refused; the caps are not raised by any path.",
-    "(iv) Conflict: 3 or more conflict rejects in a UTC week hold new entries until the operator decides on account separation (decision revision 1).",
-    "(v) The monthly loss limit of the experiment budget (decision section 1, item 2c) applies to any promotion judgment.",
+    "(ii) Hard stop: a 1m extreme (high or low) of an open leg beyond 10% of its entry price exits that leg at market; the fraction is SEAL_HARD_STOP_FRACTION = 0.10 and is never tuned. A 1m fetch failure on a tick decides that tick on the 4h close only and is recorded (Q3).",
+    "(iii) Kill switch: after 2 consecutive hard-stop exits in a UTC day, no new entry that UTC day; management of open legs continues.",
+    "(iv) Exposure: an entry that would exceed 4 concurrent positions or USD 240 gross is refused; the caps are not raised by any path.",
+    "(v) Conflict: 3 or more conflict rejects in a UTC week hold new entries until the operator decides on account separation (decision revision 1).",
+    "(vi) The monthly loss limit of the experiment budget (decision section 1, item 2c) applies to any promotion judgment.",
     "Isolated margin and 1x leverage are read back and required; the runner issues no margin or leverage mutation (Q4).",
-    "A 1m fetch failure on a tick decides that tick on the 4h close only and is recorded (Q3).",
+    "Funding: the demo account's real funding receipts and payments are included in the net return; a funding record that cannot be read is unknown, never zero, and withholds scoring.",
     "Upbit live is out of scope (Q6); this manifest registers no Upbit order path.",
     "The Binance live host is not allowed; only the demo host is used (design section 1.2).",
     "Missing path-dependent bars or a failed exploration fetch make the result unverified, never zero.",

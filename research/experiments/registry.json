@@ -154,11 +154,13 @@
       "markets": [
         "crypto"
       ],
-      "status": "draft",
+      "status": "running",
       "registered_at": "2026-11-15",
       "manifest": "research/experiments/manifests/rob-3796.json",
-      "manifest_sha256": "889a4f72e1eab352f8f638f7260fd3701caeb024eadfcf07cc71edac85bb0b0f",
-      "previous_manifest_sha256": [],
+      "manifest_sha256": "5d5b7e572807fb7b53c6373d5dec95dfddc8eb5a171bef1542d8de881aa79b7f",
+      "previous_manifest_sha256": [
+        "889a4f72e1eab352f8f638f7260fd3701caeb024eadfcf07cc71edac85bb0b0f"
+      ],
       "k": 0,
       "test_looks": []
     }
