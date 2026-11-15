@@ -212,6 +212,118 @@ async def _create_trade_journal_for_buy(
     }
 
 
+def _apply_sell_close_fields(
+    journal: TradeJournal,
+    *,
+    closed_quantity: Decimal | None,
+    sell_price: Decimal,
+    sell_fx_rate: Decimal | None,
+    fx_rate_source: str | None,
+    fx_pnl_accuracy: str | None,
+    exit_reason: str,
+    defensive_trim_ctx: DefensiveTrimContext | None,
+) -> tuple[dict[str, Decimal] | None, bool]:
+    """Stamp a lot row as sold.
+
+    Shared by the full-lot and split-lot paths so both record the same exit
+    fields: exit price/date/reason, realized PnL against the lot's own
+    ``entry_price``, and the US FX PnL split. ``closed_quantity`` is the
+    quantity this sell realizes — the whole lot for a full close, the consumed
+    part for a split — and drives the PnL/FX weighting (``None`` for legacy
+    rows without a quantity).
+
+    Returns ``(fx_values, fx_attempted)``.
+    """
+    journal.status = JournalStatus.closed
+    journal.exit_price = sell_price
+    journal.exit_date = now_kst()
+    journal.exit_reason = exit_reason
+    if defensive_trim_ctx is not None:
+        journal.notes = _append_defensive_trim_note(
+            journal.notes,
+            approval_issue_id=defensive_trim_ctx.approval_issue_id,
+            requester_agent_id=defensive_trim_ctx.requester_agent_id,
+        )
+
+    pnl_pct: Decimal | None = None
+    if journal.entry_price and journal.entry_price > 0:
+        pnl_pct = ((sell_price - journal.entry_price) / journal.entry_price) * Decimal(
+            "100"
+        )
+        journal.pnl_pct = pnl_pct
+
+    # ROB-568 — US FX PnL split
+    fx_attempted = (
+        journal.instrument_type == InstrumentType.equity_us
+        and closed_quantity is not None
+        and journal.entry_price is not None
+    )
+    fx_values: dict[str, Decimal] | None = None
+    if fx_attempted:
+        journal.sell_fx_rate = sell_fx_rate
+        fx_values = compute_us_equity_fx_pnl(
+            buy_price=Decimal(str(journal.entry_price)),
+            sell_price=sell_price,
+            quantity=Decimal(str(closed_quantity)),
+            buy_fx_rate=Decimal(str(journal.buy_fx_rate))
+            if journal.buy_fx_rate is not None
+            else None,
+            sell_fx_rate=sell_fx_rate,
+        )
+        if fx_values is None:
+            journal.fx_rate_source = FX_RATE_SOURCE_UNAVAILABLE
+            journal.fx_pnl_accuracy = FX_PNL_ACCURACY_UNAVAILABLE
+        else:
+            journal.security_pnl_usd = fx_values["security_pnl_usd"]
+            journal.security_pnl_krw = fx_values["security_pnl_krw"]
+            journal.fx_pnl_krw = fx_values["fx_pnl_krw"]
+            journal.total_pnl_krw = fx_values["total_pnl_krw"]
+            journal.fx_rate_source = fx_rate_source
+            journal.fx_pnl_accuracy = fx_pnl_accuracy
+
+    return fx_values, fx_attempted
+
+
+def _split_journal_lot(
+    journal: TradeJournal, consumed_quantity: Decimal
+) -> TradeJournal:
+    """Build the closed row for the consumed part of a partially sold lot.
+
+    The row carries the lot's descriptive fields (thesis/strategy/account/
+    trade and correlation links, buy FX rate) so the realized part stays
+    attributable, and the quantity/amount of only the consumed shares.
+    """
+    return TradeJournal(
+        symbol=journal.symbol,
+        instrument_type=journal.instrument_type,
+        side=journal.side,
+        entry_price=journal.entry_price,
+        quantity=consumed_quantity,
+        amount=(
+            consumed_quantity * journal.entry_price
+            if journal.entry_price is not None
+            else None
+        ),
+        thesis=journal.thesis,
+        strategy=journal.strategy,
+        target_price=journal.target_price,
+        stop_loss=journal.stop_loss,
+        min_hold_days=journal.min_hold_days,
+        hold_until=journal.hold_until,
+        indicators_snapshot=journal.indicators_snapshot,
+        extra_metadata=journal.extra_metadata,
+        trade_id=journal.trade_id,
+        paper_trade_id=journal.paper_trade_id,
+        paperclip_issue_id=journal.paperclip_issue_id,
+        correlation_id=journal.correlation_id,
+        buy_fx_rate=journal.buy_fx_rate,
+        account=journal.account,
+        account_type=journal.account_type,
+        notes=journal.notes,
+        status=JournalStatus.closed,
+    )
+
+
 async def _close_journals_on_sell(
     *,
     symbol: str,
@@ -228,21 +340,27 @@ async def _close_journals_on_sell(
     """Close active trade journals in FIFO order when a sell order succeeds.
 
     FIFO lot attribution: active journals are consumed oldest-first
-    (``order_by(created_at.asc())``); the oldest active journal is closed
-    against the sell before any newer averaging-down ("물타기") lot. So the
-    realized PnL is attributed against the per-lot ``entry_price`` of whichever
-    lot(s) the FIFO walk consumes, NOT the position's account-average cost.
+    (``order_by(created_at, id)`` under ``SELECT ... FOR UPDATE`` so concurrent
+    sells of the same symbol/account serialize and cannot double-consume a lot);
+    the oldest active journal is closed against the sell before any newer
+    averaging-down ("물타기") lot. So the realized PnL is attributed against the
+    per-lot ``entry_price`` of whichever lot(s) the FIFO walk consumes, NOT the
+    position's account-average cost.
 
-    - quantity is None: close immediately (legacy/manual case)
-    - quantity <= remaining_sell_qty: close and decrement remaining
-    - quantity > remaining_sell_qty: stop FIFO (partial sell, leave active)
+    - quantity is None: close immediately (legacy/manual case), consumes nothing
+    - quantity <= remaining_sell_qty: close the whole lot, decrement remaining
+    - quantity > remaining_sell_qty: split the lot — the consumed part becomes a
+      closed journal row and the lot stays active with the reduced quantity at
+      its original ``created_at`` (so later FIFO order is unchanged)
 
-    Returns dict with journals_closed, journals_kept, closed_ids, total_pnl_pct,
-    and realized_pnl_basis. ``total_pnl_pct`` is quantity-weighted across the
-    FIFO-closed journals' per-lot ``entry_price`` (i.e. journal/lot basis), and
-    ``realized_pnl_basis`` labels it as ``"journal_entry"`` so callers do not
-    confuse it with the account-average basis surfaced by place_order preview /
-    get_holdings / get_available_capital (ROB-544).
+    Returns dict with journals_closed, journals_kept, closed_ids,
+    unmatched_quantity, total_pnl_pct, and realized_pnl_basis.
+    ``journals_closed`` counts closed rows including split rows.
+    ``unmatched_quantity`` is the sell quantity no active lot covered (``0``
+    when fully matched) so a caller can tell a full close from a short one.
+    ``realized_pnl_basis`` labels the PnL as ``"journal_entry"`` so callers do
+    not confuse it with the account-average basis surfaced by place_order
+    preview / get_holdings / get_available_capital (ROB-544).
     """
     sell_qty_dec = Decimal(str(sell_quantity))
     sell_price_dec = Decimal(str(sell_price))
@@ -259,13 +377,17 @@ async def _close_journals_on_sell(
         if account:
             stmt = stmt.where(TradeJournal.account == account)
 
-        stmt = stmt.order_by(TradeJournal.created_at.asc())
+        stmt = stmt.order_by(
+            TradeJournal.created_at.asc(), TradeJournal.id.asc()
+        ).with_for_update()
         result = await db.execute(stmt)
         journals = list(result.scalars().all())
 
         closed_ids: list[int] = []
-        weighted_pnl_sum = Decimal("0")
-        weighted_qty_sum = Decimal("0")
+        # (closed quantity, closed row, fx values, fx attempted)
+        realized: list[
+            tuple[Decimal | None, TradeJournal, dict[str, Decimal] | None, bool]
+        ] = []
 
         fx_pnl_sum = Decimal("0")
         security_pnl_usd_sum = Decimal("0")
@@ -276,82 +398,79 @@ async def _close_journals_on_sell(
         fx_computed_count = 0
         fx_unavailable_journal_ids: list[int] = []
 
+        def _close(row: TradeJournal, *, closed_quantity: Decimal | None) -> None:
+            fx_values, fx_attempted = _apply_sell_close_fields(
+                row,
+                closed_quantity=closed_quantity,
+                sell_price=sell_price_dec,
+                sell_fx_rate=sell_fx_rate_dec,
+                fx_rate_source=fx_rate_source,
+                fx_pnl_accuracy=fx_pnl_accuracy,
+                exit_reason=resolved_reason,
+                defensive_trim_ctx=defensive_trim_ctx,
+            )
+            realized.append((closed_quantity, row, fx_values, fx_attempted))
+            closed_ids.append(row.id)
+
         for journal in journals:
             journal_qty = journal.quantity
 
             if journal_qty is None:
-                pass  # Legacy/manual case: close without consuming quantity
-            elif remaining_qty > 0 and journal_qty <= remaining_qty:
-                remaining_qty -= journal_qty
-            elif remaining_qty > 0 and journal_qty > remaining_qty:
-                # Partial sell smaller than the oldest active lot: intentionally stop
-                # here without consuming any lot (no lot-splitting). This is the
-                # designed behavior behind journals_closed=0 / security_pnl_usd=null
-                # on such sells (ROB-955 F3) — not a bug. See
-                # docs/runbooks/live-order-reconcile.md "journals_closed=0 진단".
-                break
-            else:
+                # Legacy/manual lot: close without consuming sell quantity.
+                _close(journal, closed_quantity=None)
+                continue
+
+            if remaining_qty <= 0:
                 break
 
-            journal.status = JournalStatus.closed
-            journal.exit_price = sell_price_dec
-            journal.exit_date = now_kst()
-            journal.exit_reason = resolved_reason
-            if defensive_trim_ctx is not None:
-                journal.notes = _append_defensive_trim_note(
-                    journal.notes,
-                    approval_issue_id=defensive_trim_ctx.approval_issue_id,
-                    requester_agent_id=defensive_trim_ctx.requester_agent_id,
+            if journal_qty > remaining_qty:
+                # The sell is smaller than this lot: split it. The consumed
+                # part closes as its own row (so its realized PnL is recorded
+                # against this lot's entry_price) and the lot keeps its
+                # created_at with the reduced size, so later FIFO order is
+                # unchanged.
+                consumed_qty = remaining_qty
+                split = _split_journal_lot(journal, consumed_qty)
+                db.add(split)
+                await db.flush()
+                _close(split, closed_quantity=consumed_qty)
+                journal.quantity = journal_qty - consumed_qty
+                journal.amount = (
+                    journal.quantity * journal.entry_price
+                    if journal.entry_price is not None
+                    else None
                 )
+                remaining_qty = Decimal("0")
+                break
 
-            if journal.entry_price and journal.entry_price > 0:
-                pnl_pct = (
-                    (sell_price_dec - journal.entry_price) / journal.entry_price
-                ) * Decimal("100")
-                journal.pnl_pct = pnl_pct
-                if journal_qty and journal_qty > 0:
-                    weighted_pnl_sum += pnl_pct * journal_qty
-                    weighted_qty_sum += journal_qty
+            remaining_qty -= journal_qty
+            _close(journal, closed_quantity=journal_qty)
 
-            # ROB-568 — US FX PnL split
-            if (
-                journal.instrument_type == InstrumentType.equity_us
-                and journal_qty is not None
-                and journal.entry_price is not None
-            ):
-                journal.sell_fx_rate = sell_fx_rate_dec
-                fx_values = compute_us_equity_fx_pnl(
-                    buy_price=Decimal(str(journal.entry_price)),
-                    sell_price=sell_price_dec,
-                    quantity=Decimal(str(journal_qty)),
-                    buy_fx_rate=Decimal(str(journal.buy_fx_rate))
-                    if journal.buy_fx_rate is not None
-                    else None,
-                    sell_fx_rate=sell_fx_rate_dec,
-                )
-                if fx_values is None:
-                    journal.fx_rate_source = FX_RATE_SOURCE_UNAVAILABLE
-                    journal.fx_pnl_accuracy = FX_PNL_ACCURACY_UNAVAILABLE
-                    fx_unavailable_journal_ids.append(journal.id)
-                else:
-                    journal.security_pnl_usd = fx_values["security_pnl_usd"]
-                    journal.security_pnl_krw = fx_values["security_pnl_krw"]
-                    journal.fx_pnl_krw = fx_values["fx_pnl_krw"]
-                    journal.total_pnl_krw = fx_values["total_pnl_krw"]
-                    journal.fx_rate_source = fx_rate_source
-                    journal.fx_pnl_accuracy = fx_pnl_accuracy
+        weighted_pnl_sum = Decimal("0")
+        weighted_qty_sum = Decimal("0")
+        for closed_qty, closed_row, fx_values, fx_attempted in realized:
+            if closed_qty and closed_qty > 0 and closed_row.pnl_pct is not None:
+                weighted_pnl_sum += closed_row.pnl_pct * closed_qty
+                weighted_qty_sum += closed_qty
 
-                    fx_pnl_sum += fx_values["fx_pnl_krw"]
-                    security_pnl_usd_sum += fx_values["security_pnl_usd"]
-                    security_pnl_krw_sum += fx_values["security_pnl_krw"]
-                    total_pnl_krw_sum += fx_values["total_pnl_krw"]
-                    fx_buy_notional_sum += fx_values["buy_notional_usd"]
-                    fx_buy_weighted_sum += fx_values["buy_notional_usd"] * Decimal(
-                        str(journal.buy_fx_rate)
-                    )
-                    fx_computed_count += 1
+            if not fx_attempted:
+                continue
+            if fx_values is None:
+                fx_unavailable_journal_ids.append(closed_row.id)
+                continue
+            fx_pnl_sum += fx_values["fx_pnl_krw"]
+            security_pnl_usd_sum += fx_values["security_pnl_usd"]
+            security_pnl_krw_sum += fx_values["security_pnl_krw"]
+            total_pnl_krw_sum += fx_values["total_pnl_krw"]
+            fx_buy_notional_sum += fx_values["buy_notional_usd"]
+            fx_buy_weighted_sum += fx_values["buy_notional_usd"] * Decimal(
+                str(closed_row.buy_fx_rate)
+            )
+            fx_computed_count += 1
 
-            closed_ids.append(journal.id)
+        journals_kept = sum(
+            1 for journal in journals if journal.status == JournalStatus.active
+        )
 
         await db.commit()
 
@@ -365,8 +484,9 @@ async def _close_journals_on_sell(
     )
     return {
         "journals_closed": len(closed_ids),
-        "journals_kept": len(journals) - len(closed_ids),
+        "journals_kept": journals_kept,
         "closed_ids": closed_ids,
+        "unmatched_quantity": remaining_qty,
         "total_pnl_pct": total_pnl_pct,
         "realized_pnl_basis": "journal_entry",
         "buy_fx_rate": float(fx_buy_weighted_sum / fx_buy_notional_sum)

@@ -974,8 +974,8 @@ class TestCloseJournalsOnSell:
         assert result["closed_ids"] == [42]
 
     @pytest.mark.asyncio
-    async def test_close_journals_on_sell_partial_sell_keeps_all_active(self) -> None:
-        """Sell 5 when first journal has 8 - FIFO stops, no journals closed."""
+    async def test_close_journals_on_sell_partial_sell_splits_oldest_lot(self) -> None:
+        """Sell 5 when first journal has 8 - split 5 off, keep 3 active."""
         from app.mcp_server.tooling.order_execution import _close_journals_on_sell
 
         now = datetime.now(UTC)
@@ -1010,6 +1010,15 @@ class TestCloseJournalsOnSell:
         mock_result = MagicMock()
         mock_result.scalars.return_value = mock_scalars
         mock_session.execute.return_value = mock_result
+        added: list[TradeJournal] = []
+        mock_session.add = MagicMock(side_effect=added.append)
+
+        async def _flush() -> None:
+            for offset, row in enumerate(added):
+                if row.id is None:
+                    row.id = 1000 + offset
+
+        mock_session.flush.side_effect = _flush
 
         factory = _mock_session_factory(mock_session)
         with patch(
@@ -1023,16 +1032,29 @@ class TestCloseJournalsOnSell:
                 exit_reason="rebalance",
             )
 
-        # First journal qty (8) > sell qty (5), so FIFO stops, nothing closed
+        # The consumed 5 shares become a closed row at the lot's entry price;
+        # the lot itself stays active (same created_at) with the remaining 3.
+        assert len(added) == 1
+        split = added[0]
+        assert split.status == "closed"
+        assert split.quantity == Decimal("5")
+        assert split.amount == Decimal("500")
+        assert split.entry_price == Decimal("100")
+        assert split.exit_price == Decimal("130.0")
+        assert split.exit_reason == "rebalance"
+        assert float(split.pnl_pct) == pytest.approx(30.0)
         assert first.status == "active"
         assert first.exit_price is None
+        assert first.quantity == Decimal("3")
+        assert first.amount == Decimal("300")
         assert second.status == "active"
         assert second.exit_price is None
         assert result == {
-            "journals_closed": 0,
+            "journals_closed": 1,
             "journals_kept": 2,
-            "closed_ids": [],
-            "total_pnl_pct": 0.0,
+            "closed_ids": [1000],
+            "unmatched_quantity": Decimal("0"),
+            "total_pnl_pct": pytest.approx(30.0),
             "realized_pnl_basis": "journal_entry",
             "buy_fx_rate": None,
             "sell_fx_rate": None,
@@ -1042,15 +1064,15 @@ class TestCloseJournalsOnSell:
             "total_pnl_krw": None,
             "fx_rate_source": "unavailable",
             "fx_pnl_accuracy": "unavailable",
-            "fx_unavailable_journal_ids": [],
+            "fx_unavailable_journal_ids": [1000],
         }
         mock_session.commit.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_close_journals_on_sell_partial_sell_closes_first_only(
+    async def test_close_journals_on_sell_partial_sell_closes_first_and_splits_second(
         self,
     ) -> None:
-        """Sell 10 with qty=8 and qty=3 journals - close first, keep second active."""
+        """Sell 10 with qty=8 and qty=3 journals - close first, split the second."""
         from app.mcp_server.tooling.order_execution import _close_journals_on_sell
 
         now = datetime.now(UTC)
@@ -1085,6 +1107,15 @@ class TestCloseJournalsOnSell:
         mock_result = MagicMock()
         mock_result.scalars.return_value = mock_scalars
         mock_session.execute.return_value = mock_result
+        added: list[TradeJournal] = []
+        mock_session.add = MagicMock(side_effect=added.append)
+
+        async def _flush() -> None:
+            for offset, row in enumerate(added):
+                if row.id is None:
+                    row.id = 1000 + offset
+
+        mock_session.flush.side_effect = _flush
 
         factory = _mock_session_factory(mock_session)
         with patch(
@@ -1100,13 +1131,21 @@ class TestCloseJournalsOnSell:
 
         assert first.status == "closed"
         assert first.exit_price == pytest.approx(Decimal("130.0"))
+        assert len(added) == 1
+        split = added[0]
+        assert split.quantity == Decimal("2")
+        assert split.status == "closed"
+        assert split.pnl_pct == pytest.approx(Decimal("8.3333"), abs=Decimal("0.0001"))
         assert second.status == "active"
-        assert second.exit_price is None
+        assert second.quantity == Decimal("1")
         assert result == {
-            "journals_closed": 1,
+            "journals_closed": 2,
             "journals_kept": 1,
-            "closed_ids": [42],
-            "total_pnl_pct": pytest.approx(30.0),
+            "closed_ids": [42, 1000],
+            # lot1: (130-100)/100 = +30% on 8 shares
+            # split: (130-120)/120 = +8.3333% on 2 shares
+            "unmatched_quantity": Decimal("0"),
+            "total_pnl_pct": pytest.approx((30.0 * 8 + (10 / 120 * 100) * 2) / 10),
             "realized_pnl_basis": "journal_entry",
             "buy_fx_rate": None,
             "sell_fx_rate": None,
@@ -1116,7 +1155,7 @@ class TestCloseJournalsOnSell:
             "total_pnl_krw": None,
             "fx_rate_source": "unavailable",
             "fx_pnl_accuracy": "unavailable",
-            "fx_unavailable_journal_ids": [42],
+            "fx_unavailable_journal_ids": [42, 1000],
         }
         mock_session.commit.assert_called_once()
 
@@ -1164,6 +1203,137 @@ class TestCloseJournalsOnSell:
         assert result["journals_closed"] == 1
         # No weighted PnL since quantity is None
         assert result["total_pnl_pct"] == pytest.approx(0.0)
+        # A legacy None-quantity lot consumes nothing: the whole sell is unmatched.
+        assert result["unmatched_quantity"] == Decimal("5")
+
+    @pytest.mark.asyncio
+    async def test_close_journals_ten_share_lot_sold_four_then_six(self) -> None:
+        """One 10-share lot sold 4 then 6: split row (4), then the lot closes (6)."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        lot = TradeJournal(
+            id=42,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="single lot",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("10"),
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [lot]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+        split_rows: list[TradeJournal] = []
+        mock_session.add = MagicMock(side_effect=split_rows.append)
+
+        async def _flush() -> None:
+            for offset, row in enumerate(split_rows):
+                if row.id is None:
+                    row.id = 1000 + offset
+
+        mock_session.flush.side_effect = _flush
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=factory,
+        ):
+            first_result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=4.0,
+                sell_price=110.0,
+                exit_reason="trim",
+            )
+
+        assert len(split_rows) == 1
+        assert split_rows[0].quantity == Decimal("4")
+        assert float(split_rows[0].pnl_pct) == pytest.approx(10.0)
+        assert lot.status == "active"
+        assert lot.quantity == Decimal("6")
+        assert first_result["journals_closed"] == 1
+        assert first_result["unmatched_quantity"] == Decimal("0")
+
+        # Second sell is the same lot, now 6 shares, sold in full.
+        second_session = AsyncMock()
+        second_scalars = MagicMock()
+        second_scalars.all.return_value = [lot]
+        second_result_obj = MagicMock()
+        second_result_obj.scalars.return_value = second_scalars
+        second_session.execute.return_value = second_result_obj
+        second_factory = _mock_session_factory(second_session)
+        with patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=second_factory,
+        ):
+            second_result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=6.0,
+                sell_price=130.0,
+                exit_reason="exit",
+            )
+
+        assert lot.status == "closed"
+        assert lot.exit_price == Decimal("130.0")
+        assert lot.exit_reason == "exit"
+        assert float(lot.pnl_pct) == pytest.approx(30.0)
+        assert second_result["journals_closed"] == 1
+        assert second_result["closed_ids"] == [42]
+        assert second_result["unmatched_quantity"] == Decimal("0")
+        assert second_result["journals_kept"] == 0
+
+        # Invariant: closed quantity (4 + 6) equals the bought quantity (10).
+        assert split_rows[0].quantity + lot.quantity == Decimal("10")
+
+    @pytest.mark.asyncio
+    async def test_close_journals_short_sell_reports_unmatched_quantity(self) -> None:
+        """Sell 10 with only a 3-share lot: close it and report 7 unmatched."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        lot = TradeJournal(
+            id=42,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="small lot",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("3"),
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [lot]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=10.0,
+                sell_price=130.0,
+                exit_reason="cover",
+            )
+
+        assert lot.status == "closed"
+        assert result["journals_closed"] == 1
+        assert result["journals_kept"] == 0
+        assert result["unmatched_quantity"] == Decimal("7")
+        assert mock_session.add.call_count == 0
 
     @pytest.mark.asyncio
     async def test_close_journals_on_sell_fully_consumes_multiple(self) -> None:
@@ -1248,6 +1418,7 @@ class TestCloseJournalsOnSell:
             "journals_closed": 0,
             "journals_kept": 0,
             "closed_ids": [],
+            "unmatched_quantity": Decimal("5"),
             "total_pnl_pct": 0.0,
             "realized_pnl_basis": "journal_entry",
             "buy_fx_rate": None,
@@ -1291,7 +1462,12 @@ class TestCloseJournalsOnSell:
 
         assert compiled.params["symbol_1"] == "AAPL"
         assert compiled.params["status_1"] == JournalStatus.active
-        assert "ORDER BY review.trade_journals.created_at ASC" in str(compiled)
+        # Deterministic lock order so concurrent FIFO passes cannot deadlock.
+        assert (
+            "ORDER BY review.trade_journals.created_at ASC, review.trade_journals.id ASC"
+            in str(compiled)
+        )
+        assert "FOR UPDATE" in str(compiled)
 
     @pytest.mark.asyncio
     async def test_close_journals_appends_defensive_trim_note(self) -> None:
