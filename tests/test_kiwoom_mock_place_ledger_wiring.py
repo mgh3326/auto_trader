@@ -964,3 +964,68 @@ async def test_marking_failure_leaves_the_refusal_response_unchanged(monkeypatch
     assert degraded["error"].startswith("kiwoom_mock_send_intent_unavailable")
     assert stub_broken.posts == []
     assert recorder_broken.signal.outcomes == []
+
+
+# --- a replayed correlation id is never relabelled (mergewake round 1) ------
+#
+# 'recorded' means "outcome unknown", not "not sent". A replay reuses the first
+# attempt's row, and that attempt may already have placed the order (an
+# accepted ACK whose best-effort mark failed, or a send still in flight).
+# Only a row THIS call created proves nothing was ever dispatched under the id.
+
+
+@pytest.mark.asyncio
+async def test_replayed_signal_is_not_marked_not_sent_by_a_duplicate_refusal(
+    monkeypatch,
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+    recorder.signal.mark_error = RuntimeError("signal mark failed")
+
+    first = await _place(mcp)
+
+    assert first["success"] is True  # the order WAS accepted at the broker
+    assert recorder.signal.outcomes == []  # its mark failed: the row is 'recorded'
+
+    recorder.signal.mark_error = None
+    second = await _place(mcp)
+
+    assert second["error"] == "kiwoom_mock_duplicate_order_intent"
+    assert second["reconcile_required"] is True
+    # the replay must not claim "never sent" for the earlier attempt's order
+    assert recorder.signal.outcomes == []
+    assert len(recorder.signal.rows) == 1
+    assert len(stub.posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_replayed_signal_is_not_marked_not_sent_by_a_preflight_refusal(
+    monkeypatch,
+):
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_CASH_INSUFFICIENT,
+        PreflightResult,
+    )
+
+    mod, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+    recorder.signal.mark_error = RuntimeError("signal mark failed")
+    await _place(mcp)  # accepted at the broker; the row stays 'recorded'
+
+    recorder.signal.mark_error = None
+
+    async def refusing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_CASH_INSUFFICIENT,
+            error_detail="insufficient cash",
+            checks=[],
+        )
+
+    monkeypatch.setattr(mod, "_run_preflight_for_kiwoom_mock", refusing_preflight)
+
+    second = await _place(mcp)
+
+    assert second["success"] is False
+    assert second["error"] == PREFLIGHT_CASH_INSUFFICIENT
+    assert recorder.signal.outcomes == []
+    assert len(recorder.signal.rows) == 1
+    assert len(stub.posts) == 1

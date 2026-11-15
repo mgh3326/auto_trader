@@ -636,22 +636,30 @@ async def _mark_kiwoom_signal_not_sent(
     signal_recorder: KiwoomMockSignalRecorder | None,
     attribution: KiwoomMockAttribution | None,
     *,
+    created: bool,
     reason: str,
     detail_patch: dict[str, Any],
 ) -> None:
     """Close the signal out as not sent for a provably unsent refusal.
 
+    Two conditions gate the write, and both are needed:
+
+    * ``created`` — the signal row was inserted by *this* call. A replayed row
+      is owned by an earlier attempt whose ``recorded`` state means "outcome
+      unknown"; that attempt may have placed the order (an accepted ACK whose
+      post-send mark failed, or a send still in flight), so relabelling it
+      would claim "never sent" on a path that may have sent.
+    * the SQL compare-and-set on ``outcome_state='recorded'`` (see
+      ``mark_signal_not_sent``), so an already-closed row is never rewritten.
+
     Only refusals that never handed an order to the broker reach this function;
-    a dispatch that may have been transmitted keeps today's labelling. The write
-    is a compare-and-set on ``outcome_state='recorded'`` (see
-    ``mark_signal_not_sent``), so replaying a correlation id cannot relabel an
-    order an earlier attempt already closed.
+    a dispatch that may have been transmitted keeps today's labelling.
 
     Best-effort by design: the attribution is already durable, so a failure
     here degrades the outcome label. It must never change the refusal the
     caller receives.
     """
-    if signal_recorder is None or attribution is None:
+    if not created or signal_recorder is None or attribution is None:
         return
     try:
         await signal_recorder.mark_not_sent(
@@ -775,6 +783,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
     # order without requiring attribution and writes nothing.
     kiwoom_attribution: KiwoomMockAttribution | None = None
     signal_recorder: KiwoomMockSignalRecorder | None = None
+    signal_created = False
     trading_day = kr_trading_day(_utc_now())
     kst_date = _kst_date(trading_day)
     if not dry_run:
@@ -799,7 +808,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
 
         signal_recorder = _new_signal_recorder()
         try:
-            await signal_recorder.record(
+            recorded_signal = await signal_recorder.record(
                 attribution=kiwoom_attribution,
                 symbol=symbol,
                 decision="order",
@@ -820,6 +829,11 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
                 type(signal_exc).__name__,
             )
             return _signal_record_unavailable_response(base_response, signal_exc)
+        # hk 4729 — only a row this call created proves that no earlier
+        # dispatch exists under this correlation id. A replayed row also reads
+        # ``recorded``, but there it means "outcome unknown" for the earlier
+        # attempt, so a pre-send refusal must not relabel it.
+        signal_created = recorded_signal.created
         base_response["correlation_id"] = kiwoom_attribution.correlation_id
 
     # ONE request-scoped client shared across preflight + POST (ROB-893 v2).
@@ -839,6 +853,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         await _mark_kiwoom_signal_not_sent(
             signal_recorder,
             kiwoom_attribution,
+            created=signal_created,
             reason="preflight_refused",
             detail_patch={
                 "status": "not_submitted",
@@ -851,6 +866,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         await _mark_kiwoom_signal_not_sent(
             signal_recorder,
             kiwoom_attribution,
+            created=signal_created,
             reason="preflight_refused",
             detail_patch={
                 "status": "not_submitted",
@@ -876,6 +892,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         await _mark_kiwoom_signal_not_sent(
             signal_recorder,
             kiwoom_attribution,
+            created=signal_created,
             reason="preflight_refused",
             detail_patch={
                 "status": "not_submitted",
@@ -929,6 +946,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         await _mark_kiwoom_signal_not_sent(
             signal_recorder,
             kiwoom_attribution,
+            created=signal_created,
             reason="duplicate_intent",
             detail_patch={
                 "status": "not_submitted",
@@ -943,6 +961,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         await _mark_kiwoom_signal_not_sent(
             signal_recorder,
             kiwoom_attribution,
+            created=signal_created,
             reason="send_intent_unavailable",
             detail_patch={
                 "status": "not_submitted",
@@ -985,6 +1004,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         await _mark_kiwoom_signal_not_sent(
             signal_recorder,
             kiwoom_attribution,
+            created=signal_created,
             reason="pre_dispatch_error",
             detail_patch={
                 "status": "not_submitted",

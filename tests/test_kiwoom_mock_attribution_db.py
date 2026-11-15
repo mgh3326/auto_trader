@@ -211,7 +211,7 @@ async def test_not_sent_marking_is_a_compare_and_set_on_recorded():
 
     try:
         async with AsyncSessionLocal() as db:
-            await record_signal(
+            created_closed = await record_signal(
                 db,
                 attribution=closed,
                 symbol="005930",
@@ -221,7 +221,7 @@ async def test_not_sent_marking_is_a_compare_and_set_on_recorded():
                 intended_price=70100,
                 kst_date="2026-11-16",
             )
-            await record_signal(
+            created_fresh = await record_signal(
                 db,
                 attribution=fresh,
                 symbol="005930",
@@ -231,6 +231,18 @@ async def test_not_sent_marking_is_a_compare_and_set_on_recorded():
                 intended_price=70200,
                 kst_date="2026-11-16",
             )
+            # a replay reuses the row and says so: 'recorded' there belongs to
+            # the earlier attempt, so the caller must not close it
+            replayed = await record_signal(
+                db,
+                attribution=closed,
+                symbol="005930",
+                decision="order",
+            )
+        assert created_closed.created is True
+        assert created_fresh.created is True
+        assert replayed.created is False
+        assert replayed.row_id == created_closed.row_id
         async with AsyncSessionLocal() as db:
             await mark_signal_outcome(
                 db,

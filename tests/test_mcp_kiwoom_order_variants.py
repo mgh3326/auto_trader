@@ -239,10 +239,17 @@ class FakeKiwoomSignalRecorder:
         self.record_error: Exception | None = None
         self.mark_error: Exception | None = None
 
-    async def record(self, *, attribution, **kwargs: Any) -> int:
+    async def record(self, *, attribution, **kwargs: Any):
+        from app.services.kiwoom_mock_attribution import RecordedSignal
+
         self.events.append("signal")
         if self.record_error is not None:
             raise self.record_error
+        for index, row in enumerate(self.rows):
+            if row["correlation_id"] == attribution.correlation_id:
+                # Mirrors ON CONFLICT DO NOTHING: the row belongs to the
+                # earlier attempt, so this call did not create it.
+                return RecordedSignal(row_id=index + 1, created=False)
         self.rows.append(
             {
                 "correlation_id": attribution.correlation_id,
@@ -251,7 +258,7 @@ class FakeKiwoomSignalRecorder:
                 **kwargs,
             }
         )
-        return len(self.rows)
+        return RecordedSignal(row_id=len(self.rows), created=True)
 
     async def mark_outcome(
         self,

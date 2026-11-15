@@ -58,6 +58,20 @@ class KiwoomMockAttribution:
     signal_source: str
 
 
+@dataclass(frozen=True, slots=True)
+class RecordedSignal:
+    """Result of :func:`record_signal`: the row, and whether this call made it.
+
+    ``created`` is the only local proof that no earlier dispatch exists under
+    this correlation id. A replay returns the first attempt's row, and that
+    row's ``recorded`` state means *outcome unknown* there — it is owned by the
+    earlier attempt, never by the caller that merely replayed the id.
+    """
+
+    row_id: int
+    created: bool
+
+
 def _clean(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -160,11 +174,14 @@ async def record_signal(
     report_item_uuid: uuid.UUID | None = None,
     detail: dict[str, Any] | None = None,
     kst_date: str | None = None,
-) -> int:
-    """Persist the signal row and return its id (existing id when replayed).
+) -> RecordedSignal:
+    """Persist the signal row; report the row and whether this call created it.
 
     Idempotent on ``correlation_id``. The function owns the transaction, so the
     row is on disk before the caller proceeds to the reservation or the broker.
+    A replay returns the existing row with ``created=False``: that row's state
+    belongs to the earlier attempt, so the caller must not close it on this
+    call's behalf.
     """
     if decision not in (_DECISION_ORDER, _DECISION_NO_ORDER):
         raise ValueError(f"unknown decision {decision!r}")
@@ -195,6 +212,7 @@ async def record_signal(
         .returning(KiwoomMockSignalLedger.id)
     )
     inserted = (await db.execute(stmt)).scalar_one_or_none()
+    created = inserted is not None
     if inserted is None:
         existing = (
             await db.execute(
@@ -222,7 +240,7 @@ async def record_signal(
             "kiwoom_mock signal row neither inserted nor found: "
             f"{attribution.correlation_id}"
         )
-    return int(inserted)
+    return RecordedSignal(row_id=int(inserted), created=created)
 
 
 async def mark_signal_outcome(
@@ -312,7 +330,9 @@ class KiwoomMockSignalRecorder:
     def __init__(self, session_factory: Any) -> None:
         self._session_factory = session_factory
 
-    async def record(self, *, attribution: KiwoomMockAttribution, **kwargs: Any) -> int:
+    async def record(
+        self, *, attribution: KiwoomMockAttribution, **kwargs: Any
+    ) -> RecordedSignal:
         async with self._session_factory() as db:
             return await record_signal(db, attribution=attribution, **kwargs)
 
@@ -356,6 +376,7 @@ __all__ = (
     "MissingAttribution",
     "NOT_SENT_OUTCOME",
     "NOT_SENT_REASONS",
+    "RecordedSignal",
     "SignalStrategyConflict",
     "mint_correlation_id",
     "mark_signal_not_sent",
