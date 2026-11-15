@@ -68,9 +68,10 @@ async def test_concurrent_sells_cannot_double_consume_one_lot_pool() -> None:
             ),
         )
 
-        # 12 shares sold against a 10-share pool: exactly 10 are matched and the
-        # 2-share shortfall is reported, never silently dropped.
-        matched = sum(Decimal("10") - r["unmatched_quantity"] for r in results)
+        # 12 shares sold against a 10-share pool: exactly 10 are matched (each
+        # sell covers 6 minus its unmatched part) and the 2-share shortfall is
+        # reported, never silently dropped.
+        matched = sum(Decimal("6") - r["unmatched_quantity"] for r in results)
         assert matched == Decimal("10")
         assert sum(r["unmatched_quantity"] for r in results) == Decimal("2")
         assert all(r["journals_closed"] >= 1 for r in results)

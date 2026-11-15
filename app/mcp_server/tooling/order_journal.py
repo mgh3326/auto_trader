@@ -320,6 +320,10 @@ def _split_journal_lot(
         account=journal.account,
         account_type=journal.account_type,
         notes=journal.notes,
+        # The split row is part of this lot, not a new position: keep the lot's
+        # entry timestamp so closed-journal readers (retro/v1 entry_at, fill
+        # window lower bounds) anchor to the buy, not to the sell.
+        created_at=journal.created_at,
         status=JournalStatus.closed,
     )
 

@@ -1040,6 +1040,8 @@ class TestCloseJournalsOnSell:
         assert split.quantity == Decimal("5")
         assert split.amount == Decimal("500")
         assert split.entry_price == Decimal("100")
+        # The realized part keeps the lot's entry timestamp (retro/v1 entry_at).
+        assert split.created_at == first.created_at
         assert split.exit_price == Decimal("130.0")
         assert split.exit_reason == "rebalance"
         assert float(split.pnl_pct) == pytest.approx(30.0)
