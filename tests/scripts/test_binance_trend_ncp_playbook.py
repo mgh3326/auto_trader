@@ -16,6 +16,7 @@ import pytest
 
 from scripts import binance_trend_demo as runner
 from scripts import binance_trend_heartbeat_watch as watcher
+from scripts import binance_trend_tick_export as exporter
 from scripts import binance_trend_truth_gate as gate
 
 pytestmark = pytest.mark.unit
@@ -27,6 +28,7 @@ PARSERS = {
     "scripts.binance_trend_demo": runner._parser,
     "scripts.binance_trend_truth_gate": gate._parser,
     "scripts.binance_trend_heartbeat_watch": watcher._parser,
+    "scripts.binance_trend_tick_export": exporter._parser,
 }
 
 
@@ -71,7 +73,7 @@ def parsed(text) -> list[tuple[str, list[str]]]:
     return invocations(text)
 
 
-def test_the_runbook_exists_and_invokes_all_three_scripts(parsed):
+def test_the_runbook_exists_and_invokes_every_pinned_script(parsed):
     assert {module for module, _ in parsed} == set(PARSERS)
 
 
@@ -129,8 +131,11 @@ def test_the_runbook_covers_all_four_modes_and_the_four_scripts_flags(parsed):
 
 def test_every_starting_command_carries_confirm_demo(parsed):
     for module, args in parsed:
-        if module == "scripts.binance_trend_heartbeat_watch":
-            continue  # reads the DB only; no Binance call and no order path
+        if module in (
+            "scripts.binance_trend_heartbeat_watch",  # DB reads only
+            "scripts.binance_trend_tick_export",  # log text -> snapshot file only
+        ):
+            continue  # no Binance call and no order path
         if "--help" in args:
             continue
         assert "--confirm-demo" in args, (module, args)
@@ -158,3 +163,17 @@ def test_the_runbook_names_the_state_tables_and_the_absence_rule(text):
     assert "review.binance_trend_signals" in text or "trend 상태 테이블" in text
     assert "runner_absent" in text or "잠금 부재" in text
     assert "스케줄러에도 등록되지 않는다" in text
+
+
+def test_the_tick_export_mounts_only_a_container_writable_dir(text):
+    """The image runs as appuser uid 10001; /root/at-run is root-owned 0700.
+
+    Mounting all of it makes the exporter fail with PermissionError on its
+    staged temp file, so the runbook must create a dedicated 10001-owned
+    directory and mount that one (fill-event-handoff precedent).
+    """
+
+    assert "install -d -m 0700 -o 10001 -g 10001 /root/at-run/trend-ticks" in text
+    assert "-v /root/at-run/trend-ticks:/out" in text
+    assert "-v /root/at-run:/out" not in text
+    assert "scp ncp:/root/at-run/trend-ticks/trend-ticks.json" in text

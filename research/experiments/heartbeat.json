@@ -34,7 +34,7 @@
     {
       "id": "TREND-TSMOM-v1",
       "hypothesis": "ROB-3796",
-      "description": "TREND-TSMOM-v1 futures demo runner (hk 3796 CT-5 seal); one advance per tick. Read from an operator-exported snapshot of the lane's tick timestamps in the form {\"ticks\": [{\"observed_at\": ...}, ...]} (the H5 pattern). No exporter exists yet, so until the operator produces one the epoch reads UNKNOWN (exit 2), never OK",
+      "description": "TREND-TSMOM-v1 futures demo runner (hk 3796 CT-5 seal); one advance per tick. Read from an operator-produced snapshot of the lane's tick timestamps in the form {\"ticks\": [{\"observed_at\": ...}, ...]} (the H5 pattern), written by `scripts.binance_trend_tick_export` from `docker logs --timestamps` (trend runbook §12). Without a snapshot path the epoch reads UNKNOWN (exit 2), never OK",
       "calendar": "24/7",
       "source": {
         "kind": "json_timestamps",

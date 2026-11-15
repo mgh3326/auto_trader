@@ -331,3 +331,59 @@ docker run --rm --network host --env-file "$env_file" -e BINANCE_TREND_DEMO_ENAB
   죽이지 않고, 계속 실패하면 10분 뒤 stale 알림이 난다.
 - 알림 전송 실패·지연은 러너 tick을 바꾸지 못한다(타임아웃 5초, 예외 삼킴, tick
   알림은 백그라운드 태스크).
+
+## 12. tick 스냅샷 export (실험 heartbeat)
+
+`research/experiments/heartbeat.json`의 `TREND-TSMOM-v1` epoch은 러너 tick 시각
+스냅샷을 읽는다. 이 레인에는 durable tick stamp가 없으므로(§7) 컨테이너 로그가
+유일한 증거다. 러너가 분당 한 줄씩 출력하는 tick JSON과 `docker logs
+--timestamps`의 RFC 3339 접두를 그대로 스냅샷으로 만든다.
+
+**준비(한 번).** 이미지는 `appuser` uid 10001로 실행되고(`Dockerfile.api`),
+`/root/at-run`은 root 소유 0700이라 그대로 마운트하면 컨테이너가 임시 파일을 만들지
+못해 `PermissionError`로 매번 exit 3이 된다. fill-event-handoff와 같은 규칙으로
+전용 디렉터리를 10001 소유로 만들고 **그 디렉터리만** 마운트한다.
+
+```bash
+install -d -m 0700 -o 10001 -g 10001 /root/at-run/trend-ticks
+```
+
+```bash
+docker logs --timestamps at-trend-demo 2>&1 \
+  | docker run --rm -i -v /root/at-run/trend-ticks:/out "$image" \
+      /app/.venv/bin/python -m scripts.binance_trend_tick_export --out /out/trend-ticks.json
+```
+
+- tick 결과 줄(`{"decision_ts": ..., "events": [...]}`)과 실패 tick 줄
+  (`{"event": "blocked", "error_class": ...}`)만 남긴다. 그 밖의 로그 줄·깨진
+  줄·중복 `observed_at`은 세어서 stdout 한 줄 요약(`ignored_lines`,
+  `duplicate_lines`)으로 보고하고 스냅샷에는 넣지 않는다.
+- 스냅샷은 `{"schema": "trend-tick-export/v1", "lane": "TREND-TSMOM-v1",
+  "exported_at": ..., "ticks": [{"observed_at": ..., "decision_ts": ...}, ...]}`
+  이고 `observed_at` 오름차순이다. 실패 tick의 `decision_ts`는 `null`이다.
+- tick이 0건이면 **exit 2이고 파일을 쓰지 않는다** — 빈 스냅샷으로 지난 정상
+  스냅샷을 덮어쓰지 않는다. usage·I/O 오류는 exit 3. 기존 스냅샷 교체는 임시
+  파일 + rename이라 독자가 반쯤 쓰인 파일을 볼 수 없다.
+- `--out` 경로는 레포 밖 사설 경로다(호스트에서는
+  `/root/at-run/trend-ticks/trend-ticks.json`). **컨테이너를 지우면 그 로그도 함께
+  사라진다** — export는 컨테이너가 살아 있는 동안 하고, 재시작으로 로그가 리셋되면
+  그 이전 tick은 복구되지 않는다.
+
+heartbeat 판정은 **레포 체크아웃이 있는 호스트**(desk 등)에서 한다.
+`research/experiments/`는 배포 이미지에 복사되지 않고(`Dockerfile.api`의 `research/`
+COPY 목록에 없다) NCP 호스트에는 레포 체크아웃이 없으므로, NCP에서는 `uv run`도
+이미지 안 `python -m research.experiments.heartbeat`도 동작하지 않는다. 스냅샷을
+체크아웃 호스트의 사설 경로로 가져와 읽는다.
+
+```bash
+mkdir -p ~/at-private
+scp ncp:/root/at-run/trend-ticks/trend-ticks.json ~/at-private/trend-ticks.json
+uv run python -m research.experiments.heartbeat --path TREND-TSMOM-v1=$HOME/at-private/trend-ticks.json
+```
+
+`TREND-TSMOM-v1` 줄이 `OK`면 스냅샷이 신선하고, `RED`면 마지막 tick이
+`idle_red_after_sessions`=3 UTC일을 넘었으며, `UNKNOWN`이면 경로·스냅샷이 없거나
+읽기에 실패한 것이다. 최종 exit code는 다른 epoch 경로를 주지 않으면 2일 수 있으므로
+epoch 줄의 상태를 읽는다(RED가 하나라도 있으면 exit는 1). RED는 러너 정지뿐 아니라
+**export를 다시 하지 않은 경우**에도 난다 — 판정 전에 §6으로 러너 생존을 먼저
+확인하고, 살아 있으면 다시 export한다.
