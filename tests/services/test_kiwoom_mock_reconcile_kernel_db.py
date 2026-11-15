@@ -71,10 +71,10 @@ class FakeReader:
     def __init__(self, detail: dict[str, Any]) -> None:
         self.detail = detail
 
-    async def read_order_status(self):
+    async def read_order_status(self, *, cont_yn=None, next_key=None):
         return _status_payload()
 
-    async def read_order_detail(self, *, order_date: str):
+    async def read_order_detail(self, *, order_date: str, cont_yn=None, next_key=None):
         return self.detail
 
 

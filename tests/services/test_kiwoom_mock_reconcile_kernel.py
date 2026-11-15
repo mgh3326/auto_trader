@@ -5,8 +5,9 @@ the kernel's contract is proven without a database or network:
 
 * dry run issues zero writes;
 * terminal-only applies only expired/cancelled/rejected and uncertain→accepted;
+* writes are impossible without both ``terminal_only`` and the exact-true gate;
 * fills are never booked (T-P4), unknown rows never transition;
-* a gate-off run touches neither the ledger nor the broker.
+* paged listings are followed, and a page cap is incomplete evidence.
 """
 
 from __future__ import annotations
@@ -30,8 +31,8 @@ TODAY = "20261116"
 NOW = datetime(2026, 11, 16, 3, tzinfo=UTC)  # 12:00 KST
 
 
-def _continuation() -> dict[str, str]:
-    return {"cont_yn": "N", "next_key": ""}
+def _continuation(cont_yn: str = "N", next_key: str = "") -> dict[str, str]:
+    return {"cont_yn": cont_yn, "next_key": next_key}
 
 
 def _status_payload(*rows: dict[str, Any]) -> dict[str, Any]:
@@ -73,6 +74,7 @@ def _row(
     status: str = "accepted",
     trading_day: str = TODAY,
     symbol: str = "005930",
+    filled_qty: int | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=ledger_id,
@@ -80,6 +82,7 @@ def _row(
         status=status,
         broker_order_id=broker_order_id,
         quantity=Decimal(10),
+        filled_qty=None if filled_qty is None else Decimal(filled_qty),
         symbol=symbol,
         side="buy",
         trading_day=trading_day,
@@ -123,29 +126,40 @@ class FakeService:
 
 
 class FakeReader:
+    """Serves configured pages and records the continuation tokens it was sent."""
+
     def __init__(
         self,
         *,
-        status: dict[str, Any] | None = None,
-        detail: dict[str, dict[str, Any]] | None = None,
+        status_pages: list[dict[str, Any]] | None = None,
+        detail_pages: dict[str, list[dict[str, Any]]] | None = None,
         fail: bool = False,
     ) -> None:
-        self.status = status if status is not None else _status_payload()
-        self.detail = detail if detail is not None else {}
+        self.status_pages = list(status_pages or [_status_payload()])
+        self.detail_pages = {
+            day: list(pages) for day, pages in (detail_pages or {}).items()
+        }
         self.fail = fail
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, str | None, str | None]] = []
+        self._status_i = 0
+        self._detail_i: dict[str, int] = {}
 
-    async def read_order_status(self):
-        self.calls.append("status")
+    async def read_order_status(self, *, cont_yn=None, next_key=None):
+        self.calls.append(("status", cont_yn, next_key))
         if self.fail:
             raise RuntimeError("boom")
-        return self.status
+        page = self.status_pages[min(self._status_i, len(self.status_pages) - 1)]
+        self._status_i += 1
+        return page
 
-    async def read_order_detail(self, *, order_date: str):
-        self.calls.append(f"detail:{order_date}")
+    async def read_order_detail(self, *, order_date: str, cont_yn=None, next_key=None):
+        self.calls.append((f"detail:{order_date}", cont_yn, next_key))
         if self.fail:
             raise RuntimeError("boom")
-        return self.detail.get(order_date, _detail_payload())
+        pages = self.detail_pages.get(order_date, [_detail_payload()])
+        index = self._detail_i.get(order_date, 0)
+        self._detail_i[order_date] = index + 1
+        return pages[min(index, len(pages) - 1)]
 
 
 @pytest.fixture()
@@ -174,6 +188,7 @@ async def _run(
     dry_run: bool = True,
     terminal_only: bool = False,
     limit: int = 100,
+    max_pages: int = kernel.DEFAULT_MAX_LISTING_PAGES,
     sleeps: list[float] | None = None,
 ) -> dict[str, Any]:
     async def fake_sleep(seconds: float) -> None:
@@ -184,6 +199,7 @@ async def _run(
         dry_run=dry_run,
         terminal_only=terminal_only,
         limit=limit,
+        max_pages=max_pages,
         session_factory=FakeSession,
         reader=reader,
         sleep=fake_sleep,
@@ -200,24 +216,28 @@ async def test_dry_run_issues_zero_writes(fake_ledger) -> None:
     # The cancel pair: our own acknowledged request + broker confirmation.
     FakeService.cancels = {"0001"}
     reader = FakeReader(
-        status=_status_payload(
-            {
-                "ord_no": "0001",
-                "stk_cd": "005930",
-                "ord_qty": "10",
-                "cntr_qty": "0",
-                "ord_uv": "70000",
-                "cntr_uv": "0",
-                "mdfy_cncl_tp": "취소",
-            },
-        ),
-        detail={
-            TODAY: _detail_payload(
-                _detail_row(ord_no="0001", ord_remnq="0"),
-                _detail_row(
-                    ord_no="0002", cntr_qty="10", ord_remnq="0", cntr_uv="70000"
-                ),
+        status_pages=[
+            _status_payload(
+                {
+                    "ord_no": "0001",
+                    "stk_cd": "005930",
+                    "ord_qty": "10",
+                    "cntr_qty": "0",
+                    "ord_uv": "70000",
+                    "cntr_uv": "0",
+                    "mdfy_cncl_tp": "취소",
+                },
             )
+        ],
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(ord_no="0001", ord_remnq="0"),
+                    _detail_row(
+                        ord_no="0002", cntr_qty="10", ord_remnq="0", cntr_uv="70000"
+                    ),
+                )
+            ]
         },
     )
 
@@ -237,39 +257,43 @@ async def test_terminal_only_applies_only_terminal_transitions(
     monkeypatch.setenv(TERMINAL_GATE_ENV, "true")
     FakeService.cancels = {"0003"}
     FakeService.rows = [
-        _row(1, broker_order_id="0001"),  # cancelled (own cancel acked)
+        _row(1, broker_order_id="0001"),  # cancelled marker, no own ack -> unknown
         _row(2, broker_order_id="0002"),  # filled -> deferred
-        _row(3, broker_order_id="0003"),  # cancelled marker, own ack present
-        _row(4, broker_order_id="0004", status="uncertain"),  # -> accepted
+        _row(3, broker_order_id="0003"),  # cancelled marker + own ack -> cancelled
+        _row(4, broker_order_id="0004", status="uncertain"),  # working -> accepted
         _row(5, broker_order_id="0005"),  # absent from listing -> unknown
     ]
     FakeService.total = 5
     reader = FakeReader(
-        status=_status_payload(
-            {
-                "ord_no": "0001",
-                "stk_cd": "005930",
-                "ord_qty": "10",
-                "cntr_qty": "0",
-                "ord_uv": "70000",
-                "cntr_uv": "0",
-                "mdfy_cncl_tp": "취소",
-            },
-        ),
-        detail={
-            TODAY: _detail_payload(
-                _detail_row(ord_no="0001", ord_remnq="0", mdfy_cncl="취소"),
-                _detail_row(
-                    ord_no="0002", cntr_qty="10", ord_remnq="0", cntr_uv="70000"
-                ),
-                _detail_row(ord_no="0003", ord_remnq="0", mdfy_cncl="취소"),
-                _detail_row(ord_no="0004"),
+        status_pages=[
+            _status_payload(
+                {
+                    "ord_no": "0001",
+                    "stk_cd": "005930",
+                    "ord_qty": "10",
+                    "cntr_qty": "0",
+                    "ord_uv": "70000",
+                    "cntr_uv": "0",
+                    "mdfy_cncl_tp": "취소",
+                },
             )
+        ],
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(ord_no="0001", ord_remnq="0", mdfy_cncl="취소"),
+                    _detail_row(
+                        ord_no="0002", cntr_qty="10", ord_remnq="0", cntr_uv="70000"
+                    ),
+                    _detail_row(ord_no="0003", ord_remnq="0", mdfy_cncl="취소"),
+                    _detail_row(ord_no="0004"),
+                )
+            ]
         },
     )
-    # id 1 has no acknowledged cancel -> unknown; id 3 does -> cancelled.
     result = await _run(reader, dry_run=False, terminal_only=True)
     assert result["success"] is True
+    assert result["scope"] == "terminal_only"
 
     actual = _writes(fake_ledger)
     assert (
@@ -279,13 +303,19 @@ async def test_terminal_only_applies_only_terminal_transitions(
         "own_cancel_acknowledged_and_broker_confirmed",
     ) in actual
     assert ("promote", 4, "0004", None) in actual
-    # Filled, unknown and the un-acked cancel are never written.
     written_ids = {write[1] for write in actual}
     assert written_ids == {3, 4}
     actions = {row["ledger_id"]: row["action"] for row in result["reconciled"]}
     assert actions[2] == "deferred_fill_booking"
     assert actions[5] == "noop_no_evidence"
     assert result["unresolved_count"] >= 2
+
+
+async def test_full_mode_writes_are_refused(fake_ledger) -> None:
+    # dry_run=False without terminal_only must never reach a write path.
+    with pytest.raises(ValueError):
+        await _run(FakeReader(), dry_run=False, terminal_only=False)
+    assert _writes(fake_ledger) == []
 
 
 async def test_terminal_gate_off_refuses_before_any_read(
@@ -298,7 +328,7 @@ async def test_terminal_gate_off_refuses_before_any_read(
             raise AssertionError("ledger must not be read with the gate off")
 
     class ExplodingReader(FakeReader):
-        async def read_order_status(self):
+        async def read_order_status(self, *, cont_yn=None, next_key=None):
             raise AssertionError("broker must not be read with the gate off")
 
     result = await kiwoom_mock_reconcile_orders_impl(
@@ -310,6 +340,7 @@ async def test_terminal_gate_off_refuses_before_any_read(
     )
     assert result["success"] is False
     assert result["error"] == "terminal_gate_disabled"
+    assert result["scope"] == "terminal_only"
 
 
 async def test_terminal_only_with_dry_run_is_refused(fake_ledger) -> None:
@@ -330,6 +361,7 @@ async def test_broker_read_failure_is_unknown_with_gate_on(
     assert row["verdict"] == "unknown"
     assert row["requires_manual_review"] is True
     assert row["action"] == "noop_no_evidence"
+    assert row["reason"] == "order_status_unreadable"
 
 
 async def test_reads_are_serial_and_spaced(fake_ledger) -> None:
@@ -340,24 +372,117 @@ async def test_reads_are_serial_and_spaced(fake_ledger) -> None:
     FakeService.total = 2
     sleeps: list[float] = []
     reader = FakeReader(
-        detail={
-            "20261114": _detail_payload(_detail_row()),
-            TODAY: _detail_payload(_detail_row()),
+        detail_pages={
+            "20261114": [_detail_payload(_detail_row())],
+            TODAY: [_detail_payload(_detail_row())],
         }
     )
 
     await _run(reader, sleeps=sleeps)
 
     # kt00009 once (today is among the days) + kt00007 per distinct day, 1.0 s apart.
-    assert reader.calls == ["status", "detail:20261114", f"detail:{TODAY}"]
+    assert reader.calls == [
+        ("status", None, None),
+        ("detail:20261114", None, None),
+        (f"detail:{TODAY}", None, None),
+    ]
     assert sleeps == [1.0, 1.0]
+
+
+async def test_paged_listing_is_followed(fake_ledger) -> None:
+    FakeService.rows = [
+        _row(1, broker_order_id="0001"),
+        _row(2, broker_order_id="0002"),
+    ]
+    FakeService.total = 2
+    page_one = _detail_payload(
+        _detail_row(ord_no="0001", cntr_qty="10", ord_remnq="0", cntr_uv="70000")
+    )
+    page_one["continuation"] = _continuation("Y", "NEXT")
+    page_two = _detail_payload(_detail_row(ord_no="0002"))
+    reader = FakeReader(detail_pages={TODAY: [page_one, page_two]})
+
+    result = await _run(reader)
+
+    assert reader.calls[1:] == [
+        (f"detail:{TODAY}", None, None),
+        (f"detail:{TODAY}", "Y", "NEXT"),
+    ]
+    actions = {row["ledger_id"]: row["action"] for row in result["reconciled"]}
+    assert actions[1] == "deferred_fill_booking"
+    # The second page's row is seen, so row 2 is working, not "no_exact_row".
+    assert actions[2] == "noop_pending"
+
+
+async def test_page_cap_is_incomplete_evidence(fake_ledger) -> None:
+    FakeService.rows = [_row(1)]
+    FakeService.total = 1
+    page = _detail_payload(_detail_row())
+    page["continuation"] = _continuation("Y", "AGAIN")
+    reader = FakeReader(detail_pages={TODAY: [page]})
+
+    result = await _run(reader, max_pages=2)
+
+    row = result["reconciled"][0]
+    assert row["verdict"] == "unknown"
+    assert row["reason"] == "order_detail_page_cap_reached"
+    assert row["action"] == "noop_no_evidence"
+
+
+async def test_uncertain_with_terminal_marker_is_not_promoted(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(TERMINAL_GATE_ENV, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001", status="uncertain")]
+    FakeService.total = 1
+    reader = FakeReader(
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(ord_no="0001", ord_remnq="0", mdfy_cncl="취소")
+                )
+            ]
+        }
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    assert _writes(fake_ledger) == []
+    row = result["reconciled"][0]
+    assert row["verdict"] == "unknown"
+    assert row["reason"] == "uncertain_broker_terminal_evidence"
+    assert result["unresolved_count"] >= 1
+
+
+async def test_partial_row_is_not_closed_as_terminal(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(TERMINAL_GATE_ENV, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001", status="partial", filled_qty=4)]
+    FakeService.total = 1
+    reader = FakeReader(
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(ord_no="0001", ord_remnq="0", mdfy_cncl="취소")
+                )
+            ]
+        }
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    assert _writes(fake_ledger) == []
+    row = result["reconciled"][0]
+    assert row["verdict"] == "unknown"
+    assert row["reason"] == "recorded_fill_contradicts_broker"
 
 
 async def test_truncated_scan_reports_work_remaining(fake_ledger) -> None:
     FakeService.rows = [_row(1), _row(2)]
     FakeService.total = 2
     result = await _run(
-        FakeReader(detail={TODAY: _detail_payload(_detail_row())}), limit=1
+        FakeReader(detail_pages={TODAY: [_detail_payload(_detail_row())]}), limit=1
     )
     assert result["candidate_scan"] == {
         "open_total": 2,

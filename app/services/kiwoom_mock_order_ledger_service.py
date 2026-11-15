@@ -73,9 +73,9 @@ _RECONCILE_SOURCE_STATUSES: Final = frozenset(
 )
 #: Only these source statuses may be closed. ``uncertain`` is deliberately
 #: absent: its only lawful resolution is ``promote_uncertain_to_accepted`` (I3).
-_RECONCILE_TERMINAL_SOURCE_STATUSES: Final = frozenset(
-    {"accepted", "pending", "partial"}
-)
+#: ``partial`` is absent too: a booked partial fill must never become a no-fill
+#: terminal row, or T-P4 would lose the fill it still has to book.
+_RECONCILE_TERMINAL_SOURCE_STATUSES: Final = frozenset({"accepted", "pending"})
 _RECONCILE_TERMINAL_TARGETS: Final = frozenset({"expired", "cancelled", "rejected"})
 _LIFECYCLE_FOR_TERMINAL: Final = {
     "expired": "expired",

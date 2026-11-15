@@ -40,6 +40,7 @@ __all__ = (
     "Verdict",
     "classify_verdict",
     "evidence_from_payloads",
+    "return_code_ok",
 )
 
 #: Verdicts of the design §3.2 table, plus ``pending`` for a broker row that is
@@ -76,6 +77,9 @@ class LedgerOrder:
     broker_order_id: str | None
     quantity: int
     symbol: str
+    #: The ledger's already-recorded cumulative fill. A no-fill terminal verdict
+    #: contradicts a positive value, so those rows go to manual review instead.
+    recorded_filled_quantity: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +119,7 @@ class Verdict:
     broker_order_id: str | None = None
 
 
-def _return_code_ok(payload: Mapping[str, Any]) -> bool:
+def return_code_ok(payload: Mapping[str, Any]) -> bool:
     """``return_code`` must be the broker success code.
 
     Mirrors ``app.mcp_server.tooling.orders_kiwoom_shared.derive_broker_success``
@@ -220,7 +224,7 @@ def evidence_from_payloads(
             return BrokerEvidence(
                 complete=False, reason=f"{written}_unreadable", rows=()
             )
-        if not _return_code_ok(payload):
+        if not return_code_ok(payload):
             return BrokerEvidence(
                 complete=False, reason=f"{written}_broker_error", rows=()
             )
@@ -262,6 +266,47 @@ def _exact_rows(
     return (detail[0] if detail else None, status[0] if status else None, None)
 
 
+def _classify_uncertain(
+    *,
+    ledger: LedgerOrder,
+    detail_row: BrokerRow | None,
+    status_row: BrokerRow | None,
+) -> Verdict:
+    """NH T9b: uncertainty is resolved only to ``accepted``, and only when the
+    matched broker row shows the order did not end against that assumption.
+
+    Promotable: a working row (no terminal marker, fill 0 with remaining > 0) or
+    a row with a positive fill (a fill is proof the order was accepted; the next
+    run classifies it filled/partial and T-P4 books it).
+
+    Not promotable: a terminal marker (cancel/reject/expiry) — writing
+    ``accepted`` would fabricate an acceptance and permanently strand the row,
+    because a later ``cancelled`` verdict needs our own cancel request, which a
+    broker-side cancel never has — and a no-fill, no-remaining row, whose ending
+    reason is unknown.
+    """
+    if detail_row is None and status_row is None:
+        return _unknown("no_exact_row")
+    markers = {
+        row.marker
+        for row in (detail_row, status_row)
+        if row is not None and row.marker is not None
+    }
+    terminal_no_fill = (
+        detail_row is not None
+        and detail_row.filled_quantity == 0
+        and detail_row.remaining_quantity == 0
+    )
+    if markers or terminal_no_fill:
+        return _unknown("uncertain_broker_terminal_evidence")
+    return Verdict(
+        verdict="accepted",
+        reason="positive_listing_match",
+        requires_manual_review=False,
+        broker_order_id=ledger.broker_order_id,
+    )
+
+
 def classify_verdict(
     *,
     ledger: LedgerOrder,
@@ -282,15 +327,8 @@ def classify_verdict(
         return _unknown(ambiguity)
 
     if ledger.status == "uncertain":
-        # NH T9b: only a complete listing containing the same acknowledged
-        # order number promotes uncertainty to acceptance.
-        if detail_row is None and status_row is None:
-            return _unknown("no_exact_row")
-        return Verdict(
-            verdict="accepted",
-            reason="positive_listing_match",
-            requires_manual_review=False,
-            broker_order_id=ledger.broker_order_id,
+        return _classify_uncertain(
+            ledger=ledger, detail_row=detail_row, status_row=status_row
         )
 
     if detail_row is None:
@@ -301,6 +339,8 @@ def classify_verdict(
             and status_row.marker == "cancel"
             and own_cancel_acknowledged
         ):
+            if ledger.recorded_filled_quantity > 0:
+                return _unknown("recorded_fill_contradicts_broker")
             return Verdict(
                 verdict="cancelled",
                 reason="own_cancel_acknowledged_and_broker_confirmed",
@@ -338,6 +378,10 @@ def classify_verdict(
         )
 
     # Terminal with no fill. The broker marker, never the clock, says which.
+    if ledger.recorded_filled_quantity > 0:
+        # A booked fill cannot coexist with a broker no-fill close; closing would
+        # strand the fill outside every T-P4 booking reader.
+        return _unknown("recorded_fill_contradicts_broker")
     markers = {
         row.marker
         for row in (detail_row, status_row)

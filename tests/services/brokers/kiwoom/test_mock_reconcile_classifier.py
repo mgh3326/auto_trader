@@ -302,6 +302,41 @@ def test_uncertain_promotes_on_exact_positive_listing_match() -> None:
     assert verdict.requires_manual_review is False
 
 
+def test_uncertain_with_terminal_marker_is_not_promoted() -> None:
+    # A broker-side cancel/reject cannot be tied to our own cancel request, so
+    # writing ``accepted`` would fabricate an acceptance and strand the row.
+    detail = _detail_payload(_detail_row(ord_remnq="0", mdfy_cncl="취소"))
+    verdict = _classify(ledger=_ledger(status="uncertain"), detail=detail)
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "uncertain_broker_terminal_evidence"
+    assert verdict.requires_manual_review is True
+
+
+def test_uncertain_terminal_no_fill_without_marker_is_not_promoted() -> None:
+    detail = _detail_payload(_detail_row(ord_remnq="0"))
+    verdict = _classify(ledger=_ledger(status="uncertain"), detail=detail)
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "uncertain_broker_terminal_evidence"
+
+
+def test_uncertain_with_a_positive_fill_is_promoted() -> None:
+    # A fill proves the order was accepted; the next run classifies filled/partial.
+    detail = _detail_payload(_detail_row(cntr_qty="10", ord_remnq="0", cntr_uv="70100"))
+    verdict = _classify(ledger=_ledger(status="uncertain"), detail=detail)
+    assert verdict.verdict == "accepted"
+
+
+def test_recorded_fill_blocks_a_no_fill_close() -> None:
+    detail = _detail_payload(_detail_row(ord_remnq="0", mdfy_cncl="취소"))
+    verdict = _classify(
+        ledger=_ledger(status="partial", recorded_filled_quantity=4),
+        detail=detail,
+        own_cancel_acknowledged=True,
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "recorded_fill_contradicts_broker"
+
+
 def test_uncertain_without_listing_row_stays_uncertain() -> None:
     verdict = _classify(ledger=_ledger(status="uncertain"), detail=_detail_payload())
     assert verdict.verdict == "unknown"
