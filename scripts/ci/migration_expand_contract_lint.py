@@ -96,7 +96,10 @@ def _comment_only_lines(source: str) -> list[str]:
     the line. Text that merely looks like a marker inside a string literal or
     docstring (hk 4200, mergewake r4577123392) must not satisfy the check.
     """
-    lines = source.splitlines()
+    # Index lines exactly as tokenize and ast number them: by "\n" only.
+    # str.splitlines() also splits on form feed, \x0b, \x1c-\x1e, \x85,
+    # U+2028 and U+2029, which would shift every later index (r4577472242).
+    lines = source.split("\n")
     keep: set[int] = set()
     try:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
@@ -607,6 +610,8 @@ def _operation_problem(call: ast.Call) -> str | None:
 
 def violations(source: str, task_id: str) -> list[str]:
     """Check a closed module grammar before inspecting migration operations."""
+    # One line numbering for ast, tokenize and the marker lookups.
+    source = source.replace("\r\n", "\n").replace("\r", "\n")
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:

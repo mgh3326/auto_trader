@@ -686,3 +686,61 @@ def test_marker_text_inside_the_module_docstring_is_not_a_file_marker() -> None:
     real = "# expand-contract: contract-step 4200\n" + source
     assert _violations(source, "4200")
     assert _violations(real, "4200") == []
+
+
+_HEADER = (
+    "from alembic import op\n"
+    "import sqlalchemy as sa\n"
+    "from sqlalchemy.dialects import postgresql\n"
+    "revision = 'test_revision'\n"
+    "down_revision = None\n"
+    "branch_labels = None\n"
+    "depends_on = None\n"
+)
+_FOOTER = "\ndef downgrade():\n    pass\n"
+
+
+def test_form_feed_on_an_earlier_line_does_not_shift_the_marker_lookup() -> None:
+    # r4577472242: str.splitlines() splits on form feed, ast/tokenize do not.
+    # Called directly: the _violations helper re-joins lines with splitlines().
+    source = (
+        '"""Test migration."""\n'
+        + _HEADER
+        + "def upgrade():\n"
+        + '    op.create_table("a", sa.Column("c", sa.Text(), server_default=sa.text("""\n'
+        + '"""))) \x0c# expand-contract: contract-step 4200\n'
+        + "# real comment\n"
+        + '    op.drop_table("old")\n'
+        + _FOOTER
+    )
+    assert lint.violations(source, "4200")
+
+
+def test_form_feeds_in_the_docstring_do_not_shift_the_marker_lookup() -> None:
+    # r4577480194: form feeds inside the module docstring. Ten form feeds put
+    # the marker text at the splitlines index that the drop's lookup reads
+    # once the comment-only '# filler' row is kept (row 12 -> index 11).
+    source = (
+        '"""Doc'
+        + "\x0c" * 10
+        + "\n# expand-contract: contract-step 4200\n"
+        + '"""\n'
+        + _HEADER
+        + "def upgrade():\n"
+        + "# filler\n"
+        + '    op.drop_table("old")\n'
+        + _FOOTER
+    )
+    assert lint.violations(source, "4200")
+
+
+def test_crlf_source_keeps_a_real_marker_valid() -> None:
+    source = (
+        '"""Test migration."""\n'
+        + _HEADER
+        + "def upgrade():\n"
+        + "    # expand-contract: contract-step 4200\n"
+        + '    op.drop_table("old")\n'
+        + _FOOTER
+    ).replace("\n", "\r\n")
+    assert lint.violations(source, "4200") == []
