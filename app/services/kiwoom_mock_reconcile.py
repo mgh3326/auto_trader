@@ -938,10 +938,18 @@ async def _reconcile_orders(
             outcome["avg_price"] = verdict.average_price
 
         if verdict.verdict in _TERMINAL_VERDICTS:
-            if dry_run:
+            if verdict.filled_quantity and not full_mode:
+                # A scope that cannot book a fill (terminal_only, and US, whose
+                # full mode is refused) must never close a row the broker
+                # filled: the row would leave the open scan and the shares would
+                # be stranded outside every booking reader. It stays open for a
+                # full run, exactly like a filled/partial verdict there.
+                outcome["action"] = "deferred_fill_booking"
+                outcome["requires_session_reconcile"] = True
+            elif dry_run:
                 outcome["action"] = f"would_mark_{verdict.verdict}"
             else:
-                filled_close = bool(full_mode and verdict.filled_quantity)
+                filled_close = bool(verdict.filled_quantity)
                 if filled_close:
                     # A terminal verdict that still filled part of its quantity:
                     # book and journal the fill before the close, so no share is

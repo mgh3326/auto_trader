@@ -927,6 +927,32 @@ async def test_terminal_verdict_with_a_positive_fill_journals_before_the_close(
     assert not any(write[0] == "mark_terminal" for write in _writes(fake_ledger))
 
 
+async def test_terminal_only_defers_a_settled_partial_instead_of_closing_it(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """terminal_only cannot book the fill, so the row must stay open.
+
+    Closing it would take the row out of the open scan with 4 broker-filled
+    shares never written to execution_ledger.
+    """
+    monkeypatch.setenv(TERMINAL_GATE_ENV, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+
+    result = await _run(_expired_partial_reader(), dry_run=False, terminal_only=True)
+
+    assert _writes(fake_ledger) == []
+    assert calls == []
+    outcome = result["reconciled"][0]
+    assert outcome["verdict"] == "expired"
+    assert outcome["filled_qty"] == 4
+    assert outcome["action"] == "deferred_fill_booking"
+    assert outcome["requires_session_reconcile"] is True
+    assert result["unresolved_count"] >= 1
+
+
 async def test_terminal_with_fill_is_not_closed_before_its_journal(
     fake_ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:

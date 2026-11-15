@@ -350,7 +350,12 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   lot 진입가의 **closed 행으로 split** 해 그 shares 의 실현손익을 기록하고 남은 수량만 active 로
   유지하며, lot 이 완전 소진되면 종결한다(부분 체결 매도가 lot 을 영원히 열어두거나 소비분의
   손익을 잃지 않는다). active lot 조회는 `FOR UPDATE` 로 잠그고 락 순서는 `created_at, id` 다.
-  저널 단계가 실패하면 그 트랜잭션 전체가 롤백되고 체결 증거만 남으며,
+  잔량 0 인 부분 체결(`filled < ordered`, `ord_remnq=0`)은 브로커 marker(만료/거부/취소 —
+  취소는 자기 승인 취소 요청 필요)가 있으면 체결을 실은 terminal verdict 로 분류된다.
+  그 verdict 는 **full 모드에서만** 델타 부킹·저널·종결로 이어지고, 체결을 부킹하지 않는
+  범위(terminal_only·US)에서는 `deferred_fill_booking` 으로 보고하고 행을 open 으로 남긴다
+  (부킹 불가 범위에서 닫으면 체결이 영구히 유실된다). 저널 단계가 실패하면 그 트랜잭션
+  전체가 롤백되고 체결 증거만 남으며,
   `last_reconcile_detail.journaled_qty` 가 `filled_qty` 보다 작은 `filled` 행은 다음 full
   실행이 저널을 마무리한다(같은 실행이 실패를 숨기지 않고 `journal_error` 로 보고). 이 행들은 외부 HTTP
   ingest 대상이 아니며(`source` 는 항상 `websocket` 강제) 이 예외는 위 멱등키·savepoint·
