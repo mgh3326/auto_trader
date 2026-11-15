@@ -425,6 +425,52 @@ def test_ordered_quantity_mismatch_blocks_uncertain_promotion() -> None:
     assert verdict.reason == "quantity_mismatch"
 
 
+def test_ambiguous_status_text_is_not_collapsed_into_a_cancel() -> None:
+    # normalize_orders would call this "cancelled" (it contains 취소); the
+    # classifier must not turn the ambiguity into a terminal write.
+    verdict = _classify(
+        status=_status_payload(_status_row(mdfy_cncl_tp="취소/만료")),
+        detail=_detail_payload(),
+        own_cancel_acknowledged=True,
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "ambiguous_marker_text"
+
+
+def test_status_only_quantity_mismatch_is_not_the_same_order() -> None:
+    verdict = _classify(
+        status=_status_payload(_status_row(ord_qty="1", mdfy_cncl_tp="만료")),
+        detail=_detail_payload(),
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "quantity_mismatch"
+
+
+def test_uncertain_with_ambiguous_change_text_is_not_promoted() -> None:
+    detail = _detail_payload(_detail_row(mdfy_cncl="취소/만료"))
+    verdict = _classify(ledger=_ledger(status="uncertain"), detail=detail)
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "uncertain_change_type_ambiguous"
+
+
+def test_uncertain_with_unrecognised_change_text_is_not_promoted() -> None:
+    detail = _detail_payload(_detail_row(mdfy_cncl="정정"))
+    verdict = _classify(ledger=_ledger(status="uncertain"), detail=detail)
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "uncertain_change_type_unclear"
+
+
+def test_uncertain_without_detail_quantity_proof_is_not_promoted() -> None:
+    # A status row alone cannot prove the order is working.
+    verdict = _classify(
+        ledger=_ledger(status="uncertain"),
+        status=_status_payload(_status_row()),
+        detail=_detail_payload(),
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "no_detail_evidence"
+
+
 def test_past_trading_day_does_not_consult_todays_status_listing() -> None:
     # The detail listing alone decides the past-day row; kt00009 is not consulted
     # and its emptiness must not become "no such order".

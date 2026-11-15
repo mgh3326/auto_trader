@@ -96,6 +96,11 @@ class BrokerRow:
     remaining_quantity: int | None
     average_price: int | None
     marker: str | None  # "cancel" | "reject" | "expiry" | None
+    #: Raw change-type text, kept so an unrecognised/ambiguous text is never
+    #: mistaken for "no change".
+    change_text: str | None = None
+    #: The change text matched more than one marker class (e.g. ``취소/만료``).
+    marker_ambiguous: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,42 +154,68 @@ def _listing_truncated(payload: Mapping[str, Any]) -> bool:
     return cont_yn not in {"", "N"}
 
 
+def _matched_markers(text: Any) -> list[str]:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return []
+    return [name for name, tokens in _MARKERS if any(t in lowered for t in tokens)]
+
+
 def _marker(text: Any) -> str | None:
     """The single positive marker in a broker change-type text, or ``None``.
 
     Zero matches and multi-way matches are both ``None``: an ambiguous text is
-    not evidence (§3.2 positive evidence only).
+    not evidence (§3.2 positive evidence only). Callers that need to tell the
+    two apart use :func:`_matched_markers`.
     """
-    lowered = str(text or "").strip().lower()
-    if not lowered:
-        return None
-    matched = [name for name, tokens in _MARKERS if any(t in lowered for t in tokens)]
+    matched = _matched_markers(text)
     return matched[0] if len(matched) == 1 else None
+
+
+def _raw_int(row: Mapping[str, Any], key: str) -> int:
+    """Parse a raw kt00009 integer with the normalizer's rules."""
+    raw = row.get(key)
+    text = str(raw).strip().replace(",", "") if raw is not None else ""
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise KiwoomMockEvidenceError(
+            f"Kiwoom row field {key} is not an integer"
+        ) from exc
+    if value < 0:
+        raise KiwoomMockEvidenceError(f"Kiwoom row field {key} is negative")
+    return value
 
 
 def _rows_from_detail(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
     """kt00007 ``acnt_ord_cntr_prps_dtl`` rows (raise = unparseable evidence)."""
-    return tuple(
-        BrokerRow(
-            order_id=str(row["order_id"]),
-            symbol=str(row["symbol"]),
-            source=SOURCE_ORDER_DETAIL,
-            ordered_quantity=int(row["ordered_quantity"]),
-            filled_quantity=int(row["filled_quantity"]),
-            remaining_quantity=int(row["remaining_quantity"]),
-            average_price=int(row["average_price"]),
-            marker=_marker(row.get("change_type")),
+    rows: list[BrokerRow] = []
+    for row in normalize_order_detail(dict(payload)):
+        text = str(row.get("change_type") or "").strip()
+        matched = _matched_markers(text)
+        rows.append(
+            BrokerRow(
+                order_id=str(row["order_id"]),
+                symbol=str(row["symbol"]),
+                source=SOURCE_ORDER_DETAIL,
+                ordered_quantity=int(row["ordered_quantity"]),
+                filled_quantity=int(row["filled_quantity"]),
+                remaining_quantity=int(row["remaining_quantity"]),
+                average_price=int(row["average_price"]),
+                marker=matched[0] if len(matched) == 1 else None,
+                change_text=text or None,
+                marker_ambiguous=len(matched) > 1,
+            )
         )
-        for row in normalize_order_detail(dict(payload))
-    )
+    return tuple(rows)
 
 
 def _rows_from_status(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
     """kt00009 ``acnt_ord_cntr_prst_array`` rows.
 
-    The shared normalizer keeps no ordered/filled quantity for kt00009, so this
-    source contributes cancel confirmation only — fill evidence comes from
-    kt00007 (§3.2).
+    The shared normalizer does not expose quantities or the raw change text, so
+    both are carried from the paired raw row: a fill or a terminal marker in
+    either listing is broker evidence and must not be lost.
     """
     normalized = normalize_orders(dict(payload))
     raw_rows = payload.get(STATUS_LIST_KEY)
@@ -194,23 +225,31 @@ def _rows_from_status(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
     for raw, row in zip(raw_rows, normalized, strict=True):
         if not isinstance(raw, Mapping):
             raise KiwoomMockEvidenceError("kt00009 raw row is not a mapping")
+        text = str(raw.get("mdfy_cncl_tp") or "").strip()
+        matched = _matched_markers(text)
         # ``normalize_orders`` maps only cancels; reject/expiry text is kept so
-        # the closed marker vocabulary applies to both listings.
-        marker = _marker(raw.get("mdfy_cncl_tp")) or (
-            "cancel" if row.get("status") == "cancelled" else None
-        )
+        # the closed marker vocabulary applies to both listings. An ambiguous
+        # text never falls back to the normalizer's coarse "cancelled" status.
+        if len(matched) == 1:
+            marker = matched[0]
+        elif matched:
+            marker = None
+        else:
+            marker = "cancel" if row.get("status") == "cancelled" else None
         rows.append(
             BrokerRow(
                 order_id=str(row["order_id"]),
                 symbol=str(row["symbol"]),
                 source=SOURCE_ORDER_STATUS,
-                ordered_quantity=None,
+                ordered_quantity=_raw_int(raw, "ord_qty"),
                 # Carried, not discarded: a fill in either listing must block a
                 # no-fill close (the fill may still need booking).
                 filled_quantity=int(row["filled_quantity"]),
-                remaining_quantity=None,
+                remaining_quantity=int(row["remaining_quantity"]),
                 average_price=None,
                 marker=marker,
+                change_text=text or None,
+                marker_ambiguous=len(matched) > 1,
             )
         )
     return tuple(rows)
@@ -278,16 +317,14 @@ def _exact_rows(
         # The order number is reused or misread: do not attribute another
         # symbol's order to this ledger row.
         return None, None, "attribute_mismatch"
-    detail_row = detail[0] if detail else None
-    if (
-        detail_row is not None
-        and detail_row.ordered_quantity is not None
-        and detail_row.ordered_quantity != ledger.quantity
+    if any(
+        row.ordered_quantity is not None and row.ordered_quantity != ledger.quantity
+        for row in matched
     ):
         # Same number and symbol but a different order size is a different
         # order (number reuse); never close/promote the ledger row with it.
         return None, None, "quantity_mismatch"
-    return (detail_row, status[0] if status else None, None)
+    return (detail[0] if detail else None, status[0] if status else None, None)
 
 
 def _classify_uncertain(
@@ -309,20 +346,27 @@ def _classify_uncertain(
     broker-side cancel never has — and a no-fill, no-remaining row, whose ending
     reason is unknown.
     """
-    if detail_row is None and status_row is None:
+    rows = [row for row in (detail_row, status_row) if row is not None]
+    if not rows:
         return _unknown("no_exact_row")
-    markers = {
-        row.marker
-        for row in (detail_row, status_row)
-        if row is not None and row.marker is not None
-    }
-    terminal_no_fill = (
-        detail_row is not None
-        and detail_row.filled_quantity == 0
-        and detail_row.remaining_quantity == 0
-    )
-    if markers or terminal_no_fill:
+    if any(row.marker is not None for row in rows):
         return _unknown("uncertain_broker_terminal_evidence")
+    if any(row.marker_ambiguous for row in rows):
+        # ``취소/만료`` and friends are not proof the order is working.
+        return _unknown("uncertain_change_type_ambiguous")
+    if any(row.change_text for row in rows):
+        # An unclassifiable change text is likewise not working evidence.
+        return _unknown("uncertain_change_type_unclear")
+    if detail_row is None:
+        # No quantity evidence: nothing positively proves the order is working.
+        return _unknown("no_detail_evidence")
+    filled = detail_row.filled_quantity
+    if filled is None:
+        return _unknown("filled_quantity_unreadable")
+    if filled == 0 and (detail_row.remaining_quantity or 0) <= 0:
+        return _unknown("uncertain_broker_terminal_evidence")
+    # A fill proves acceptance (the next run classifies filled/partial); a
+    # positive remaining quantity proves the order is still working.
     return Verdict(
         verdict="accepted",
         reason="positive_listing_match",
@@ -358,6 +402,9 @@ def classify_verdict(
     if detail_row is None:
         if status_row is None:
             return _unknown("no_exact_row")
+        if status_row.marker_ambiguous:
+            # Ambiguous terminal text must never be collapsed into a marker.
+            return _unknown("ambiguous_marker_text")
         # kt00009 cannot price a fill, but a fill it reports is still broker
         # evidence: closing now would strand it outside every T-P4 booking read.
         if (status_row.filled_quantity or 0) > 0:
@@ -426,6 +473,8 @@ def classify_verdict(
         # A booked fill cannot coexist with a broker no-fill close; closing would
         # strand the fill outside every T-P4 booking reader.
         return _unknown("recorded_fill_contradicts_broker")
+    if any(row.marker_ambiguous for row in (detail_row, status_row) if row is not None):
+        return _unknown("ambiguous_marker_text")
     markers = {
         row.marker
         for row in (detail_row, status_row)
