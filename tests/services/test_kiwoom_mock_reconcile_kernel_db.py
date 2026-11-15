@@ -338,6 +338,7 @@ def _filled_detail(
         _detail_row(
             order_no,
             stk_cd=symbol,
+            ord_qty=str(quantity),
             cntr_qty=str(quantity),
             ord_remnq="0",
             cntr_uv=str(average_price),
@@ -386,6 +387,24 @@ async def _trade(order_no: str) -> Trade | None:
                 )
             )
         ).scalar_one_or_none()
+
+
+async def _journals(symbol: str) -> list[TradeJournal]:
+    async with AsyncSessionLocal() as session:
+        return list(
+            (
+                await session.execute(
+                    select(TradeJournal)
+                    .where(
+                        TradeJournal.account == kernel.JOURNAL_ACCOUNT,
+                        TradeJournal.symbol == symbol,
+                    )
+                    .order_by(TradeJournal.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
 
 
 async def _cleanup_full(
@@ -570,6 +589,16 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         assert trade.price == Decimal("76000")
         assert trade.total_amount == Decimal("760000")
 
+        # Every buy delta is its own lot journal at its own price: no filled
+        # share is missing from a journal.
+        journals = await _journals(symbol)
+        assert [journal.quantity for journal in journals] == [
+            Decimal("4"),
+            Decimal("6"),
+        ]
+        assert journals[0].entry_price == Decimal("70000")
+        assert journals[1].entry_price == Decimal("80000")
+
         # The row is terminal and fully journaled now, so another pass finds no
         # candidate at all.
         settled = await _full_run(
@@ -665,3 +694,67 @@ async def test_full_mode_recovers_a_journal_after_a_failure(
             symbol=symbol,
             run_ids=run_ids,
         )
+
+
+async def test_full_mode_split_sell_consumes_one_lot_across_two_fills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sell filled in two smaller deltas must not leave the lot active.
+
+    The FIFO helper used by KIS never splits a lot, so a 4-share and a 6-share
+    fill against one 10-share lot would close nothing. The partial-consumption
+    close decrements the lot, then closes it on the next fill.
+    """
+    _full_mode(monkeypatch)
+    suffix = uuid.uuid4().hex[:12]
+    buy_id, buy_no = f"kwoomm-f-{suffix}-b", _order_no()
+    sell_a_id, sell_a_no = f"kwoomm-f-{suffix}-a", _order_no()
+    sell_b_id, sell_b_no = f"kwoomm-f-{suffix}-c", _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(buy_id, buy_no, symbol=symbol)
+        bought = await _full_run(FakeReader(_filled_detail(buy_no, 10, symbol)))
+        if bought.get("reconcile_run"):
+            run_ids.append(bought["reconcile_run"]["run_id"])
+        journals = await _journals(symbol)
+        assert len(journals) == 1
+        assert journals[0].status == "active"
+        assert journals[0].quantity == Decimal("10")
+
+        await _accepted(sell_a_id, sell_a_no, symbol=symbol, side="sell", quantity=4)
+        first = await _full_run(
+            FakeReader(_filled_detail(sell_a_no, 4, symbol, average_price=72000))
+        )
+        if first.get("reconcile_run"):
+            run_ids.append(first["reconcile_run"]["run_id"])
+        assert first["reconciled"][0]["journal"]["journals_closed"] == 0
+        journals = await _journals(symbol)
+        assert len(journals) == 1
+        assert journals[0].status == "active"
+        assert journals[0].quantity == Decimal("6")
+
+        await _accepted(sell_b_id, sell_b_no, symbol=symbol, side="sell", quantity=6)
+        second = await _full_run(
+            FakeReader(_filled_detail(sell_b_no, 6, symbol, average_price=72000))
+        )
+        if second.get("reconcile_run"):
+            run_ids.append(second["reconcile_run"]["run_id"])
+        assert second["reconciled"][0]["journal"]["journals_closed"] == 1
+        assert second["reconciled"][0]["journal"]["realized_pnl_pct"] > 0
+        journals = await _journals(symbol)
+        assert journals[0].status == "closed"
+        assert journals[0].exit_price == Decimal("72000")
+        assert journals[0].pnl_pct is not None
+    finally:
+        for client_order_id, order_no in (
+            (buy_id, buy_no),
+            (sell_a_id, sell_a_no),
+            (sell_b_id, sell_b_no),
+        ):
+            await _cleanup_full(
+                client_order_id=client_order_id,
+                order_no=order_no,
+                symbol=symbol,
+                run_ids=run_ids,
+            )

@@ -653,6 +653,53 @@ class KiwoomMockOrderLedgerService:
             journal_id=row.journal_id,
         )
 
+    async def lock_for_journal(self, *, ledger_id: int) -> FillBooking:
+        """Lock the order row and return its current fill/journal state.
+
+        The journal step must decide what is still unjournaled while holding
+        this lock: the marker read in the earlier fill transaction is only a
+        snapshot, so two overlapping runs would otherwise journal the same
+        quantity twice (a second lot journal, or a second FIFO close).
+        """
+        row = await self._lock_row(ledger_id)
+        journaled_qty, journaled_avg = _journaled_progress(row)
+        detail = row.last_reconcile_detail
+        raw_row_id = (
+            detail.get("execution_ledger_row_id") if isinstance(detail, dict) else None
+        )
+        filled = row.filled_qty or Decimal(0)
+        average = row.avg_fill_price or Decimal(0)
+        return FillBooking(
+            ledger_id=row.id,
+            client_order_id=row.client_order_id,
+            broker_order_id=str(row.broker_order_id or ""),
+            action="locked_row",
+            delta_qty=Decimal(0),
+            cumulative_qty=filled,
+            avg_price=average,
+            cumulative_avg=average,
+            journaled_qty=journaled_qty,
+            journaled_avg=journaled_avg,
+            status=row.status,
+            execution_ledger_row_id=(
+                int(raw_row_id) if isinstance(raw_row_id, int) else None
+            ),
+            fill_seq=None,
+            side=row.side,
+            symbol=row.symbol,
+            instrument_type=row.instrument_type,
+            currency=row.currency,
+            correlation_id=row.correlation_id,
+            thesis=row.thesis,
+            strategy=row.strategy,
+            reason=row.reason,
+            exit_reason=row.exit_reason,
+            notes=row.notes,
+            indicators_snapshot=row.indicators_snapshot,
+            trade_id=row.trade_id,
+            journal_id=row.journal_id,
+        )
+
     async def attach_journal(
         self,
         *,

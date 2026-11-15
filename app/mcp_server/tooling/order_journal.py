@@ -495,6 +495,88 @@ async def _close_journals_on_sell(
     }
 
 
+async def _close_journals_on_sell_partial(
+    db: AsyncSession,
+    *,
+    symbol: str,
+    sell_quantity: float,
+    sell_price: float,
+    exit_reason: str | None = None,
+    account_type: str = "live",
+    account: str | None = None,
+) -> dict[str, Any]:
+    """FIFO close that decrements a partially consumed lot instead of stopping.
+
+    ``_close_journals_on_sell`` deliberately never splits a lot, so a position
+    sold in several smaller fills would stay active forever and its realized P&L
+    would never be recorded. This variant decrements the boundary lot's quantity
+    (and amount) and closes only the lots the sell fully consumes. The caller
+    owns the transaction (no commit).
+    """
+    remaining = Decimal(str(sell_quantity))
+    price = Decimal(str(sell_price))
+    reason = (exit_reason or "").strip() or "sold_via_place_order"
+    stmt = select(TradeJournal).where(
+        TradeJournal.symbol == symbol,
+        TradeJournal.status == JournalStatus.active,
+        TradeJournal.account_type == account_type,
+    )
+    if account:
+        stmt = stmt.where(TradeJournal.account == account)
+    stmt = stmt.order_by(TradeJournal.created_at.asc())
+    journals = list((await db.execute(stmt)).scalars().all())
+
+    closed_ids: list[int] = []
+    weighted_pnl_sum = Decimal("0")
+    weighted_qty_sum = Decimal("0")
+    for journal in journals:
+        if remaining <= 0:
+            break
+        journal_qty = journal.quantity
+        if journal_qty is None:
+            pass  # Legacy/manual case: close without consuming quantity
+        elif journal_qty <= remaining:
+            remaining -= journal_qty
+        else:
+            # Partially consume this lot: keep it active at the leftover size.
+            leftover = journal_qty - remaining
+            journal.quantity = leftover
+            journal.amount = (
+                leftover * journal.entry_price
+                if journal.entry_price is not None
+                else None
+            )
+            remaining = Decimal("0")
+            await db.flush()
+            break
+
+        journal.status = JournalStatus.closed
+        journal.exit_price = price
+        journal.exit_date = now_kst()
+        journal.exit_reason = reason
+        if journal.entry_price and journal.entry_price > 0:
+            pnl_pct = ((price - journal.entry_price) / journal.entry_price) * Decimal(
+                "100"
+            )
+            journal.pnl_pct = pnl_pct
+            if journal_qty and journal_qty > 0:
+                weighted_pnl_sum += pnl_pct * journal_qty
+                weighted_qty_sum += journal_qty
+        closed_ids.append(journal.id)
+
+    await db.flush()
+    total_pnl_pct = (
+        float(weighted_pnl_sum / weighted_qty_sum) if weighted_qty_sum > 0 else 0.0
+    )
+    return {
+        "journals_closed": len(closed_ids),
+        "journals_kept": len(journals) - len(closed_ids),
+        "closed_ids": closed_ids,
+        "total_pnl_pct": total_pnl_pct,
+        "realized_pnl_basis": "journal_entry",
+    }
+
+
 def _append_journal_warning(existing: str | None, new_message: str) -> str:
     """Append a new journal warning to an existing one."""
     return new_message if not existing else f"{existing}; {new_message}"

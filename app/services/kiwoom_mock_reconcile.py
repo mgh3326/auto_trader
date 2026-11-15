@@ -493,7 +493,7 @@ async def kiwoom_mock_reconcile_orders_impl(
         light for the CLI.
         """
         from app.mcp_server.tooling.order_journal import (
-            _close_journals_on_sell,
+            _close_journals_on_sell_partial,
             _create_trade_journal_for_buy,
             _link_journal_to_fill,
             _record_trade_for_fill,
@@ -513,52 +513,50 @@ async def kiwoom_mock_reconcile_orders_impl(
             order_id=booking.broker_order_id,
         )
         details: dict[str, Any] = {"trade_id": trade_id}
-        journal_id = booking.journal_id
         if booking.side == "buy":
-            if journal_id is None:
-                cumulative = float(booking.cumulative_qty)
-                result = await _create_trade_journal_for_buy(
-                    symbol=booking.symbol,
-                    market_type=booking.instrument_type,
-                    preview={
-                        "price": float(booking.cumulative_avg),
-                        "quantity": cumulative,
-                        "estimated_value": float(
-                            booking.cumulative_qty * booking.cumulative_avg
-                        ),
-                    },
-                    thesis=(booking.thesis or "").strip() or "reconciled fill",
-                    strategy=(booking.strategy or "").strip() or "reconciled fill",
-                    target_price=None,
-                    stop_loss=None,
-                    min_hold_days=None,
-                    notes=booking.notes,
-                    indicators_snapshot=booking.indicators_snapshot,
+            # One lot journal per journaled delta: every filled share belongs to
+            # a journal at its own price (later deltas are not folded into the
+            # first lot's journal), and a later FIFO sell can consume the lots.
+            result = await _create_trade_journal_for_buy(
+                symbol=booking.symbol,
+                market_type=booking.instrument_type,
+                preview={
+                    "price": float(price),
+                    "quantity": float(quantity),
+                    "estimated_value": float(price * quantity),
+                },
+                thesis=(booking.thesis or "").strip() or "reconciled fill",
+                strategy=(booking.strategy or "").strip() or "reconciled fill",
+                target_price=None,
+                stop_loss=None,
+                min_hold_days=None,
+                notes=booking.notes,
+                indicators_snapshot=booking.indicators_snapshot,
+                account_type=JOURNAL_ACCOUNT_TYPE,
+                account=JOURNAL_ACCOUNT,
+                correlation_id=booking.correlation_id,
+                db=db,
+            )
+            journal_id = result.get("journal_id")
+            details["journal_created"] = journal_id is not None
+            if journal_id is not None:
+                await _link_journal_to_fill(
+                    booking.symbol,
+                    int(trade_id),
                     account_type=JOURNAL_ACCOUNT_TYPE,
                     account=JOURNAL_ACCOUNT,
-                    correlation_id=booking.correlation_id,
                     db=db,
                 )
-                journal_id = result.get("journal_id")
-                details["journal_created"] = journal_id is not None
-                if journal_id is not None:
-                    await _link_journal_to_fill(
-                        booking.symbol,
-                        int(trade_id),
-                        account_type=JOURNAL_ACCOUNT_TYPE,
-                        account=JOURNAL_ACCOUNT,
-                        db=db,
-                    )
             details["journal_id"] = journal_id
         else:
-            close = await _close_journals_on_sell(
+            close = await _close_journals_on_sell_partial(
+                db,
                 symbol=booking.symbol,
                 sell_quantity=float(quantity),
                 sell_price=float(price),
                 exit_reason=booking.exit_reason or booking.reason,
                 account_type=JOURNAL_ACCOUNT_TYPE,
                 account=JOURNAL_ACCOUNT,
-                db=db,
             )
             details["journals_closed"] = close["journals_closed"]
             details["closed_journal_ids"] = close["closed_ids"]
@@ -610,39 +608,45 @@ async def kiwoom_mock_reconcile_orders_impl(
         else:
             booked_count += 1
 
-        # The fill evidence is committed; the journal is a projection. Anything
-        # still unjournaled is finished here — including a remainder recovered
-        # after an earlier failure (the row may already be ``filled``), which is
-        # why the quantity comes from the journal progress, not only from this
-        # run's delta. A sell is never re-closed for an already journaled
-        # quantity (that would consume the FIFO lot twice).
-        pending_qty = booking.cumulative_qty - booking.journaled_qty
-        if pending_qty <= 0:
-            return
-        pending_avg = _pending_journal_price(booking, pending_qty)
-        if pending_avg is None or pending_avg <= 0:
-            outcome["journal_error"] = "pending_price_unavailable"
-            outcome["requires_manual_review"] = True
-            return
+        # The fill evidence is committed; the journal is a projection. The
+        # still-unjournaled quantity is decided **under the order-row lock** in
+        # this transaction, never from the earlier fill snapshot: two overlapping
+        # runs must not both journal the same quantity (a second lot journal or
+        # a second FIFO close). Everything — trade row, journals, FIFO close and
+        # the progress marker — commits together, so a failure rolls it all back
+        # and the next run repeats it exactly once.
         try:
-            # One transaction for the trade row, the journal side effects and
-            # the progress marker: a failure rolls all of them back, so the next
-            # run repeats the step exactly once (no double FIFO close, no second
-            # draft journal). The fill evidence itself is already committed.
             async with session_factory() as db:
-                details = await _book_journal(
-                    db, booking, quantity=pending_qty, price=pending_avg
+                service = KiwoomMockOrderLedgerService(db)
+                locked = await service.lock_for_journal(ledger_id=booking.ledger_id)
+                pending_qty = locked.cumulative_qty - locked.journaled_qty
+                pending_avg = (
+                    _pending_journal_price(locked, pending_qty)
+                    if pending_qty > 0
+                    else None
                 )
-                await KiwoomMockOrderLedgerService(db).attach_journal(
-                    ledger_id=booking.ledger_id,
-                    trade_id=details.get("trade_id"),
-                    journal_id=details.get("journal_id"),
-                    journaled_qty=booking.cumulative_qty,
-                    journaled_avg=booking.cumulative_avg,
-                    commit=False,
-                )
-                await db.commit()
-            outcome["journal"] = details
+                if pending_qty <= 0:
+                    # Another run advanced the marker first.
+                    await db.rollback()
+                    outcome["journal"] = {"skipped": "already_journaled"}
+                elif pending_avg is None or pending_avg <= 0:
+                    await db.rollback()
+                    outcome["journal_error"] = "pending_price_unavailable"
+                    outcome["requires_manual_review"] = True
+                else:
+                    details = await _book_journal(
+                        db, locked, quantity=pending_qty, price=pending_avg
+                    )
+                    await service.attach_journal(
+                        ledger_id=locked.ledger_id,
+                        trade_id=details.get("trade_id"),
+                        journal_id=details.get("journal_id"),
+                        journaled_qty=locked.cumulative_qty,
+                        journaled_avg=locked.cumulative_avg,
+                        commit=False,
+                    )
+                    await db.commit()
+                    outcome["journal"] = details
         except Exception as exc:  # noqa: BLE001 — surface the class, never hide it
             logger.exception(
                 "kiwoom mock journal booking failed id=%s", candidate.ledger_id

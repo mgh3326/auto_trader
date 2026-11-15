@@ -127,6 +127,9 @@ class FakeSession:
     async def commit(self) -> None:
         return None
 
+    async def rollback(self) -> None:
+        return None
+
 
 class FakeRepo:
     """Records reconcile runs instead of writing execution_ledger run rows."""
@@ -138,6 +141,44 @@ class FakeRepo:
 
     def record_run(self, run: Any) -> None:
         type(self).runs.append(run)
+
+
+def _fake_booking(
+    row: Any,
+    *,
+    action: str,
+    delta: Decimal,
+    row_id: int | None = None,
+    fill_seq: int | None = None,
+) -> FillBooking:
+    return FillBooking(
+        ledger_id=row.id,
+        client_order_id=row.client_order_id,
+        broker_order_id=str(row.broker_order_id),
+        action=action,
+        delta_qty=delta,
+        cumulative_qty=Decimal(row.filled_qty or 0),
+        avg_price=Decimal(row.avg_fill_price or 0),
+        cumulative_avg=Decimal(row.avg_fill_price or 0),
+        journaled_qty=row.journaled_qty,
+        journaled_avg=Decimal(0),
+        status=row.status,
+        execution_ledger_row_id=row_id,
+        fill_seq=fill_seq,
+        side=row.side,
+        symbol=row.symbol,
+        instrument_type=row.instrument_type,
+        currency=row.currency,
+        correlation_id=row.correlation_id,
+        thesis=row.thesis,
+        strategy=row.strategy,
+        reason=row.reason,
+        exit_reason=row.exit_reason,
+        notes=row.notes,
+        indicators_snapshot=row.indicators_snapshot,
+        trade_id=getattr(row, "trade_id", None),
+        journal_id=row.journal_id,
+    )
 
 
 class FakeService:
@@ -179,34 +220,18 @@ class FakeService:
         action = f"booked_{status}" if delta > 0 else "noop_already_booked"
         self.writes.append(("record_fill", ledger_id, action, None))
         row.filled_qty = Decimal(int(filled_quantity))
-        return FillBooking(
-            ledger_id=row.id,
-            client_order_id=row.client_order_id,
-            broker_order_id=str(row.broker_order_id),
+        row.avg_fill_price = Decimal(int(average_price))
+        return _fake_booking(
+            row,
             action=action,
-            delta_qty=Decimal(delta),
-            cumulative_qty=Decimal(int(filled_quantity)),
-            avg_price=Decimal(int(average_price)),
-            cumulative_avg=Decimal(int(average_price)),
-            journaled_qty=row.journaled_qty,
-            journaled_avg=Decimal(0),
-            status=status,
-            execution_ledger_row_id=None if delta <= 0 else 900 + ledger_id,
+            delta=Decimal(delta),
+            row_id=None if delta <= 0 else 900 + ledger_id,
             fill_seq=None if delta <= 0 else 4242,
-            side=row.side,
-            symbol=row.symbol,
-            instrument_type=row.instrument_type,
-            currency=row.currency,
-            correlation_id=row.correlation_id,
-            thesis=row.thesis,
-            strategy=row.strategy,
-            reason=row.reason,
-            exit_reason=row.exit_reason,
-            notes=row.notes,
-            indicators_snapshot=row.indicators_snapshot,
-            trade_id=getattr(row, "trade_id", None),
-            journal_id=row.journal_id,
         )
+
+    async def lock_for_journal(self, *, ledger_id):
+        row = next(item for item in type(self).rows if item.id == ledger_id)
+        return _fake_booking(row, action="locked_row", delta=Decimal(0))
 
     async def attach_journal(
         self,
@@ -456,7 +481,7 @@ def _patch_journal(
             )
         )
 
-    async def close_journals(**kwargs: Any) -> dict[str, Any]:
+    async def close_journals(db: Any = None, **kwargs: Any) -> dict[str, Any]:
         calls.append(("close_journals", kwargs))
         return {
             "journals_closed": 1,
@@ -469,7 +494,9 @@ def _patch_journal(
     monkeypatch.setattr(order_journal, "_record_trade_for_fill", record_trade)
     monkeypatch.setattr(order_journal, "_create_trade_journal_for_buy", create_journal)
     monkeypatch.setattr(order_journal, "_link_journal_to_fill", link)
-    monkeypatch.setattr(order_journal, "_close_journals_on_sell", close_journals)
+    monkeypatch.setattr(
+        order_journal, "_close_journals_on_sell_partial", close_journals
+    )
 
 
 def _filled_reader() -> FakeReader:
