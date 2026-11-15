@@ -20,6 +20,7 @@ ALLOWED_REFERENCE_FILES = {
     "app/mcp_server/README.md",
     "app/mcp_server/caller_identity_middleware.py",
     "app/mcp_server/main.py",
+    "app/mcp_server/tooling/order_journal.py",
     "app/mcp_server/tooling/trade_journal_registration.py",
     "app/mcp_server/tooling/trade_journal_tools.py",
     "app/models/trade_journal.py",
