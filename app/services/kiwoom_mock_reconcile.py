@@ -1,21 +1,27 @@
-"""hk 4722 (3797 T-P3) — Kiwoom mock terminal-only reconcile kernel.
+"""hk 4722 / hk 4734 (3797 T-P3, T-P4) — Kiwoom mock reconcile kernel.
 
-Design: ``docs/design/3797-kiwoom-mock-ledger.md`` §3.1–§3.3 and §6.1.
+Design: ``docs/design/3797-kiwoom-mock-ledger.md`` §3.1–§3.4 and §6.1.
 
 What it does: read the open/uncertain KR ``kiwoom_mock`` ledger rows, read the
 broker's kt00009 (order status) and kt00007 (order detail) listings — following
 ``cont_yn``/``next_key`` pages — classify each row with the pure §3.2 table
-(``mock_reconcile``), and — in terminal-only mode — apply **only** expired /
-cancelled / rejected and uncertain→accepted through
+(``mock_reconcile``), and apply the verdicts through
 :class:`KiwoomMockOrderLedgerService`, the sole ledger writer.
 
-What it never does (T-P4 owns these): book fills, write the execution ledger,
-journals or P&L. ``filled``/``partial`` are reported as
-``deferred_fill_booking`` and left untouched.
+Modes (design §3.3):
 
-Writes require the operator gate, not just ``terminal_only``: ``dry_run=False``
-without ``terminal_only`` is rejected (there is no full mode in T-P3) and the
-gate is checked whenever a write is possible. Broker reads are serial with a
+* dry run — classify only, zero writes;
+* terminal-only — expired / cancelled / rejected and uncertain→accepted;
+  ``filled``/``partial`` are reported as ``deferred_fill_booking``;
+* full mode — the same, plus the broker-evidence fill delta booked into
+  ``execution_ledger`` (through :class:`ExecutionLedgerRepository`) and its
+  trade row / journal written with ``account='kiwoom_mock'`` at the KIS
+  kernel's booking boundary, and one reconcile-run row with
+  ``broker='kiwoom'``.
+
+Writes require exact-true gates, checked before any ledger read or broker
+call: ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`` for terminal-only, and
+both full-mode switches for full mode. Broker reads are serial with a
 configurable minimum spacing (§3.1: mock TRs are 1 request/s). An incomplete,
 truncated or page-capped listing is never absence: it degrades every row to
 ``unknown`` for that run.
@@ -26,11 +32,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final, Protocol
 
+from app.schemas.execution_ledger import ReconcileRunRecord
 from app.services.brokers.kiwoom.mock_reconcile import (
     BrokerEvidence,
     LedgerOrder,
@@ -38,8 +46,10 @@ from app.services.brokers.kiwoom.mock_reconcile import (
     evidence_from_payloads,
     return_code_ok,
 )
+from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.kiwoom_mock_order_ledger_service import (
     ACCOUNT_MODE_KIWOOM_MOCK,
+    FillBooking,
     KiwoomMockOrderLedgerService,
     KiwoomMockTransitionRefused,
     kr_trading_day,
@@ -50,9 +60,13 @@ logger = logging.getLogger(__name__)
 __all__ = (
     "DEFAULT_MAX_LISTING_PAGES",
     "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS",
+    "FULL_GATE_ENVS",
+    "JOURNAL_ACCOUNT",
+    "JOURNAL_ACCOUNT_TYPE",
     "TERMINAL_GATE_ENV",
     "KiwoomMockReconcileBroker",
     "KiwoomMockReconcileReader",
+    "full_gate_enabled",
     "kiwoom_mock_reconcile_orders_impl",
     "terminal_gate_enabled",
 )
@@ -60,6 +74,19 @@ __all__ = (
 #: Exact-value gate for terminal-only application (default off). The string must
 #: be exactly ``true`` — mirroring the H5 alert gate, not pydantic bool parsing.
 TERMINAL_GATE_ENV: Final = "KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED"
+
+#: Full mode needs both switches exactly ``true`` (design §3.3): the feature
+#: switch and the safety-review acknowledgement.
+FULL_GATE_ENVS: Final = (
+    "KIWOOM_MOCK_AUTO_RECONCILE_ENABLED",
+    "KIWOOM_MOCK_AUTO_RECONCILE_SAFETY_REVIEW_PASSED",
+)
+
+#: Every booked Kiwoom mock fill journals under this account label (operator
+#: decision Q3, hk:doc decision/2026-11-15/at-3796-3797-design-answers). The
+#: journal's ``account_type`` is ``mock`` — the account's own type.
+JOURNAL_ACCOUNT: Final = "kiwoom_mock"
+JOURNAL_ACCOUNT_TYPE: Final = "mock"
 
 #: Mock TR limit is one request per second and per market (§3.1).
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.0
@@ -75,6 +102,12 @@ def terminal_gate_enabled(environ: Mapping[str, str] | None = None) -> bool:
     """``False`` unless the gate env var is exactly ``true``."""
     source = os.environ if environ is None else environ
     return source.get(TERMINAL_GATE_ENV) == "true"
+
+
+def full_gate_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """``False`` unless *both* full-mode gates are exactly ``true``."""
+    source = os.environ if environ is None else environ
+    return all(source.get(name) == "true" for name in FULL_GATE_ENVS)
 
 
 class KiwoomMockReconcileReader(Protocol):
@@ -145,6 +178,18 @@ class _Candidate:
     symbol: str
     side: str | None
     trading_day: str
+    #: Journal inputs and provenance carried from the same row snapshot.
+    instrument_type: str = "equity_kr"
+    currency: str = "KRW"
+    correlation_id: str | None = None
+    thesis: str | None = None
+    strategy: str | None = None
+    reason: str | None = None
+    exit_reason: str | None = None
+    notes: str | None = None
+    indicators_snapshot: dict[str, Any] | None = None
+    journal_id: int | None = None
+    trade_date: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,35 +234,46 @@ async def kiwoom_mock_reconcile_orders_impl(
     sleep: Callable[[float], Awaitable[None]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Classify and (terminal-only) close Kiwoom mock KR orders.
+    """Classify and apply Kiwoom mock KR order verdicts.
 
     ``dry_run`` issues zero writes. ``terminal_only`` applies closed-outcome
-    transitions only and leaves fills deferred. Any write path needs both
-    ``terminal_only=True`` and the exact-true operator gate.
+    transitions only and leaves fills deferred. Full mode
+    (``dry_run=False, terminal_only=False``) also books the broker-evidence
+    fill delta into ``execution_ledger`` and journals it under
+    ``account='kiwoom_mock'``. Every write path needs its exact-true operator
+    gate(s): ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`` for terminal-only
+    and both full-mode switches for full mode.
     """
-    if not dry_run and not terminal_only:
-        # T-P3 has no full mode. Refusing here (instead of silently writing in a
-        # non-terminal scope) keeps the gate impossible to bypass.
-        raise ValueError(
-            "full-mode booking is not implemented (T-P4); pass terminal_only=True"
-        )
     if terminal_only and dry_run:
         raise ValueError("terminal_only requires dry_run=False")
     if min_request_interval_seconds < 0:
         raise ValueError("min_request_interval_seconds must be >= 0")
     if max_pages < 1:
         raise ValueError("max_pages must be >= 1")
-    scope = "dry_run" if dry_run else "terminal_only"
-    if not dry_run and not terminal_gate_enabled():
-        # Gate on the write condition itself, not on the caller's flag.
-        return {
-            "success": False,
-            "error": "terminal_gate_disabled",
-            "error_class": "terminal_gate_disabled",
-            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-            "market": "kr",
-            "scope": scope,
-        }
+    full_mode = not dry_run and not terminal_only
+    scope = "dry_run" if dry_run else ("terminal_only" if terminal_only else "full")
+    if not dry_run:
+        # Gate on the write condition itself, not on the caller's flag, and
+        # before any ledger read or broker call (design §3.3).
+        if terminal_only and not terminal_gate_enabled():
+            return {
+                "success": False,
+                "error": "terminal_gate_disabled",
+                "error_class": "terminal_gate_disabled",
+                "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+                "market": "kr",
+                "scope": scope,
+            }
+        if full_mode and not full_gate_enabled():
+            return {
+                "success": False,
+                "error": "full_gate_disabled",
+                "error_class": "full_gate_disabled",
+                "required_env": list(FULL_GATE_ENVS),
+                "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+                "market": "kr",
+                "scope": scope,
+            }
 
     if session_factory is None:
         from app.core.db import AsyncSessionLocal
@@ -243,6 +299,17 @@ async def kiwoom_mock_reconcile_orders_impl(
                     symbol=row.symbol,
                     side=row.side,
                     trading_day=row.trading_day,
+                    instrument_type=row.instrument_type,
+                    currency=row.currency,
+                    correlation_id=row.correlation_id,
+                    thesis=row.thesis,
+                    strategy=row.strategy,
+                    reason=row.reason,
+                    exit_reason=row.exit_reason,
+                    notes=row.notes,
+                    indicators_snapshot=row.indicators_snapshot,
+                    journal_id=row.journal_id,
+                    trade_date=row.trade_date,
                 )
                 for row in rows
             ]
@@ -356,6 +423,11 @@ async def kiwoom_mock_reconcile_orders_impl(
     reconciled: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     unresolved_count = 0
+    booked_count = 0
+    already_booked_count = 0
+    run_now = now or datetime.now(UTC)
+    run_started_at = run_now
+    run_id = uuid.uuid4()
 
     async def _write_transition(
         candidate: _Candidate, *, action: str, reason: str
@@ -388,6 +460,154 @@ async def kiwoom_mock_reconcile_orders_impl(
                     exc.reason,
                 )
                 return "noop_transition_refused", exc.reason
+
+    async def _book_journal(booking: FillBooking) -> dict[str, Any]:
+        """Write the trade row and journal at the KIS kernel's booking boundary.
+
+        Same helpers, same FIFO semantics as the KIS live kernel; only the
+        account label differs (``account='kiwoom_mock'``, ``account_type='mock'``).
+        Imported lazily so the reconcile module stays light for the CLI.
+        """
+        from app.mcp_server.tooling.order_journal import (
+            _close_journals_on_sell,
+            _create_trade_journal_for_buy,
+            _link_journal_to_fill,
+            _save_order_fill,
+        )
+
+        average = float(booking.avg_price)
+        delta = float(booking.delta_qty)
+        trade_id = await _save_order_fill(
+            symbol=booking.symbol,
+            instrument_type=booking.instrument_type,
+            side=str(booking.side),
+            price=average,
+            quantity=delta,
+            total_amount=average * delta,
+            fee=0.0,
+            currency=booking.currency,
+            account=JOURNAL_ACCOUNT,
+            order_id=booking.broker_order_id,
+        )
+        details: dict[str, Any] = {"trade_id": trade_id}
+        journal_id = booking.journal_id
+        if booking.side == "buy":
+            if journal_id is None:
+                cumulative = float(booking.cumulative_qty)
+                result = await _create_trade_journal_for_buy(
+                    symbol=booking.symbol,
+                    market_type=booking.instrument_type,
+                    preview={
+                        "price": average,
+                        "quantity": cumulative,
+                        "estimated_value": average * cumulative,
+                    },
+                    thesis=(booking.thesis or "").strip() or "reconciled fill",
+                    strategy=(booking.strategy or "").strip() or "reconciled fill",
+                    target_price=None,
+                    stop_loss=None,
+                    min_hold_days=None,
+                    notes=booking.notes,
+                    indicators_snapshot=booking.indicators_snapshot,
+                    account_type=JOURNAL_ACCOUNT_TYPE,
+                    account=JOURNAL_ACCOUNT,
+                    correlation_id=booking.correlation_id,
+                )
+                journal_id = result.get("journal_id")
+                details["journal_created"] = journal_id is not None
+                if trade_id is not None and journal_id is not None:
+                    await _link_journal_to_fill(
+                        booking.symbol,
+                        int(trade_id),
+                        account_type=JOURNAL_ACCOUNT_TYPE,
+                        account=JOURNAL_ACCOUNT,
+                    )
+            details["journal_id"] = journal_id
+        else:
+            close = await _close_journals_on_sell(
+                symbol=booking.symbol,
+                sell_quantity=delta,
+                sell_price=average,
+                exit_reason=booking.exit_reason or booking.reason,
+                account_type=JOURNAL_ACCOUNT_TYPE,
+                account=JOURNAL_ACCOUNT,
+            )
+            details["journals_closed"] = close["journals_closed"]
+            details["closed_journal_ids"] = close["closed_ids"]
+            details["realized_pnl_pct"] = close["total_pnl_pct"]
+            details["realized_pnl_basis"] = close.get(
+                "realized_pnl_basis", "journal_entry"
+            )
+            details["journal_pnl_pct"] = close["total_pnl_pct"]
+
+        if trade_id is not None or details.get("journal_id") is not None:
+            async with session_factory() as db:
+                await KiwoomMockOrderLedgerService(db).attach_journal(
+                    ledger_id=booking.ledger_id,
+                    trade_id=int(trade_id) if trade_id is not None else None,
+                    journal_id=details.get("journal_id"),
+                )
+        return details
+
+    async def _apply_fill(
+        candidate: _Candidate, verdict: Any, outcome: dict[str, Any]
+    ) -> None:
+        """Book the broker-evidence delta and its journal (full mode only)."""
+        nonlocal booked_count, already_booked_count
+        if verdict.filled_quantity is None or verdict.average_price is None:
+            # The classifier never emits filled/partial without both; refuse to
+            # invent either value.
+            outcome["action"] = "noop_no_evidence"
+            outcome["requires_manual_review"] = True
+            return
+        try:
+            async with session_factory() as db:
+                booking = await KiwoomMockOrderLedgerService(db).record_fill(
+                    ledger_id=candidate.ledger_id,
+                    filled_quantity=int(verdict.filled_quantity),
+                    average_price=int(verdict.average_price),
+                    observed_at=run_now,
+                )
+        except KiwoomMockTransitionRefused as exc:
+            logger.info(
+                "kiwoom mock fill refused id=%s: %s", candidate.ledger_id, exc.reason
+            )
+            outcome["action"] = "noop_transition_refused"
+            outcome["transition_refused"] = exc.reason
+            outcome["requires_manual_review"] = True
+            return
+
+        outcome["action"] = booking.action
+        outcome["delta_qty"] = str(booking.delta_qty)
+        outcome["booked_cumulative_qty"] = str(booking.cumulative_qty)
+        if booking.execution_ledger_row_id is not None:
+            outcome["execution_ledger_row_id"] = booking.execution_ledger_row_id
+        if booking.fill_seq is not None:
+            outcome["fill_seq"] = booking.fill_seq
+        if booking.action == "noop_already_booked":
+            already_booked_count += 1
+        else:
+            booked_count += 1
+
+        # A buy whose journal link is still missing is retried even when the
+        # broker delta added nothing: the fill evidence is already committed, the
+        # projection is not. A no-op sell is never re-closed (it would consume
+        # the FIFO lot twice).
+        needs_journal = booking.action in {"booked_partial", "booked_filled"} or (
+            booking.action == "noop_already_booked"
+            and booking.side == "buy"
+            and booking.journal_id is None
+        )
+        if not needs_journal:
+            return
+        try:
+            outcome["journal"] = await _book_journal(booking)
+        except Exception as exc:  # noqa: BLE001 — surface the class, never hide it
+            logger.exception(
+                "kiwoom mock journal booking failed id=%s", candidate.ledger_id
+            )
+            outcome["journal_error"] = type(exc).__name__
+            outcome["requires_manual_review"] = True
 
     for candidate in candidates:
         is_today = candidate.trading_day == today
@@ -448,22 +668,28 @@ async def kiwoom_mock_reconcile_orders_impl(
                     outcome["transition_refused"] = refused
                     outcome["requires_manual_review"] = True
         elif verdict.verdict in {"filled", "partial"}:
-            # T-P4 books fills. Terminal-only never does (design §3.3).
-            outcome["action"] = "deferred_fill_booking"
-            outcome["requires_session_reconcile"] = True
+            if full_mode:
+                await _apply_fill(candidate, verdict, outcome)
+            else:
+                # Terminal-only never books fills (design §3.3).
+                outcome["action"] = "deferred_fill_booking"
+                outcome["requires_session_reconcile"] = True
         elif verdict.verdict == "pending":
             outcome["action"] = "noop_pending"
         else:
             outcome["action"] = "noop_no_evidence"
             outcome["requires_manual_review"] = True
 
-        # Work still owed after this run: a fill to book (T-P4) or a row a
-        # human must resolve. A successful close is resolved.
+        # Work still owed after this run: an unbooked fill, a journal that failed
+        # after its fill was booked, or a row a human must resolve. A successful
+        # close or booking is resolved.
         if outcome["action"] in {
             "deferred_fill_booking",
             "noop_no_evidence",
             "noop_transition_refused",
         }:
+            unresolved_count += 1
+        elif outcome.get("requires_manual_review"):
             unresolved_count += 1
 
         counts[verdict.verdict] = counts.get(verdict.verdict, 0) + 1
@@ -472,6 +698,40 @@ async def kiwoom_mock_reconcile_orders_impl(
     if scan["truncated"]:
         # A capped scan leaves rows unexamined: report the run as work remaining.
         unresolved_count += 1
+
+    run_record: dict[str, Any] | None = None
+    if full_mode:
+        window_start = min(
+            (c.trade_date for c in candidates if c.trade_date is not None),
+            default=run_now,
+        )
+        try:
+            async with session_factory() as db:
+                ExecutionLedgerRepository(db).record_run(
+                    ReconcileRunRecord(
+                        run_id=run_id,
+                        broker="kiwoom",
+                        window_start=window_start,
+                        window_end=run_now,
+                        started_at=run_started_at,
+                        finished_at=datetime.now(UTC),
+                        dry_run=False,
+                        committed_insert=booked_count,
+                        unchanged=already_booked_count,
+                        notes="kiwoom_mock_full",
+                    )
+                )
+                await db.commit()
+            run_record = {
+                "recorded": True,
+                "run_id": str(run_id),
+                "window_start": window_start.isoformat(),
+                "committed_insert": booked_count,
+                "unchanged": already_booked_count,
+            }
+        except Exception as exc:  # noqa: BLE001 — booked rows are already committed
+            logger.exception("kiwoom mock reconcile run row was not recorded")
+            run_record = {"recorded": False, "error_class": type(exc).__name__}
 
     return {
         "success": True,
@@ -483,8 +743,9 @@ async def kiwoom_mock_reconcile_orders_impl(
         "reconciled": reconciled,
         "candidate_scan": scan,
         "unresolved_count": unresolved_count,
+        "reconcile_run": run_record,
         "message": (
             f"Reconciled {len(reconciled)} kiwoom mock order(s) "
-            f"(dry_run={dry_run}, terminal_only={terminal_only}): {counts}"
+            f"(dry_run={dry_run}, scope={scope}): {counts}"
         ),
     }

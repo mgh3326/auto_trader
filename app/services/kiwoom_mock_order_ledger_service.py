@@ -29,6 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import KST
 from app.models.review import KiwoomMockOrderLedger
+from app.services.execution_ledger.repository import ExecutionLedgerRepository
+from app.services.kiwoom_execution_ledger import (
+    build_kiwoom_execution_ledger_upsert,
+)
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
@@ -40,6 +44,7 @@ __all__ = (
     "ACCOUNT_MODE_KIWOOM_MOCK",
     "CLIENT_ORDER_ID_PREFIX",
     "DuplicateOrderIntent",
+    "FillBooking",
     "KiwoomMockLedgerPayloadConflict",
     "KiwoomMockOrderLedgerService",
     "KiwoomMockPlaceRecorder",
@@ -82,6 +87,11 @@ _LIFECYCLE_FOR_TERMINAL: Final = {
     "cancelled": "cancelled",
     "rejected": "failed",
 }
+#: Lifecycle labels a fill transition writes (kis_mock vocabulary).
+_LIFECYCLE_FOR_FILL: Final = {"partial": "partial", "filled": "filled"}
+#: Only these source statuses may book a fill. ``uncertain`` is deliberately
+#: absent (I3: its only resolution is promotion to ``accepted``).
+_OPEN_FILL_STATUSES: Final = frozenset({"accepted", "pending", "partial"})
 
 
 class KiwoomMockTransitionRefused(Exception):
@@ -165,6 +175,41 @@ _PAYLOAD_FIELDS: Final = (
     "quantity",
     "price",
 )
+
+
+@dataclass(frozen=True)
+class FillBooking:
+    """Detached summary of one broker-evidence fill booking (T-P4).
+
+    Carries exactly what the journal step needs, so the kernel never reads the
+    order row again and the receipt survives the session that wrote it.
+    """
+
+    ledger_id: int
+    client_order_id: str
+    broker_order_id: str
+    #: ``booked_partial`` / ``booked_filled`` when this run booked a delta,
+    #: ``noop_already_booked`` when the broker evidence added nothing new.
+    action: str
+    delta_qty: Decimal
+    cumulative_qty: Decimal
+    avg_price: Decimal
+    status: str
+    execution_ledger_row_id: int | None
+    fill_seq: int | None
+    side: str | None
+    symbol: str
+    instrument_type: str
+    currency: str
+    correlation_id: str | None
+    thesis: str | None
+    strategy: str | None
+    reason: str | None
+    exit_reason: str | None
+    notes: str | None
+    indicators_snapshot: dict[str, Any] | None
+    trade_id: int | None
+    journal_id: int | None
 
 
 class KiwoomMockOrderLedgerService:
@@ -395,6 +440,161 @@ class KiwoomMockOrderLedgerService:
         await self._db.commit()
         await self._db.refresh(row)
         return row
+
+    async def record_fill(
+        self,
+        *,
+        ledger_id: int,
+        filled_quantity: int,
+        average_price: int,
+        observed_at: datetime | None = None,
+    ) -> FillBooking:
+        """Book the broker-evidence fill delta of one open order (I4, I9).
+
+        ``filled_quantity`` is the broker's *cumulative* filled quantity. The
+        delta against the quantity already recorded on the row is upserted into
+        ``execution_ledger`` — through :class:`ExecutionLedgerRepository`, the
+        only writer — in the same transaction that advances the row, so a re-run
+        of identical evidence books nothing new and finds the row already
+        advanced.
+
+        A regressed or over-order quantity is refused (the broker and the row
+        disagree, so neither is safe to book); ``uncertain`` rows are refused
+        because promotion is their only lawful resolution (I3).
+        """
+        if isinstance(filled_quantity, bool) or not isinstance(filled_quantity, int):
+            raise TypeError("filled_quantity must be an exact int")
+        if isinstance(average_price, bool) or not isinstance(average_price, int):
+            raise TypeError("average_price must be an exact int")
+        if average_price <= 0:
+            raise ValueError("average_price must be positive")
+
+        row = await self._lock_row(ledger_id)
+        if row.status not in _OPEN_FILL_STATUSES:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="source_status_not_open",
+            )
+        if row.broker_order_id is None:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="no_broker_order_id",
+            )
+        if row.side not in {"buy", "sell"}:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="side_unknown",
+            )
+        if row.quantity is None or row.quantity <= 0:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="order_quantity_unknown",
+            )
+
+        previous = row.filled_qty or Decimal(0)
+        cumulative = Decimal(filled_quantity)
+        if cumulative < previous:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="fill_quantity_regressed",
+            )
+        if cumulative > row.quantity:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="fill_exceeds_order_quantity",
+            )
+
+        now = observed_at or datetime.now(UTC)
+        status = "filled" if cumulative >= row.quantity else "partial"
+        delta = cumulative - previous
+        row_id: int | None = None
+        fill_seq: int | None = None
+        if delta > 0:
+            fill = build_kiwoom_execution_ledger_upsert(
+                ledger_id=row.id,
+                broker_order_id=str(row.broker_order_id),
+                symbol=row.symbol,
+                side=str(row.side),
+                previous_filled_qty=previous,
+                filled_quantity=filled_quantity,
+                average_price=average_price,
+                observed_at=now,
+                correlation_id=row.correlation_id,
+            )
+            _status, row_id = await ExecutionLedgerRepository(self._db).upsert_fill(
+                fill
+            )
+            fill_seq = fill.fill_seq
+            action = f"booked_{status}"
+        else:
+            action = "noop_already_booked"
+
+        row.status = status
+        row.lifecycle_state = _LIFECYCLE_FOR_FILL[status]
+        row.filled_qty = cumulative
+        row.avg_fill_price = Decimal(average_price)
+        row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+        row.reconciled_at = now
+        row.last_reconcile_detail = {
+            "action": action,
+            "basis": "broker_evidence",
+            "verdict": status,
+            "previous_filled_qty": str(previous),
+            "broker_cumulative_filled_qty": str(cumulative),
+            "execution_ledger_row_id": row_id,
+        }
+        await self._db.commit()
+        await self._db.refresh(row)
+        return FillBooking(
+            ledger_id=row.id,
+            client_order_id=row.client_order_id,
+            broker_order_id=str(row.broker_order_id),
+            action=action,
+            delta_qty=delta,
+            cumulative_qty=cumulative,
+            avg_price=Decimal(average_price),
+            status=status,
+            execution_ledger_row_id=row_id,
+            fill_seq=fill_seq,
+            side=row.side,
+            symbol=row.symbol,
+            instrument_type=row.instrument_type,
+            currency=row.currency,
+            correlation_id=row.correlation_id,
+            thesis=row.thesis,
+            strategy=row.strategy,
+            reason=row.reason,
+            exit_reason=row.exit_reason,
+            notes=row.notes,
+            indicators_snapshot=row.indicators_snapshot,
+            trade_id=row.trade_id,
+            journal_id=row.journal_id,
+        )
+
+    async def attach_journal(
+        self,
+        *,
+        ledger_id: int,
+        trade_id: int | None,
+        journal_id: int | None,
+    ) -> None:
+        """Record the journal/trade a booked fill produced (add-only).
+
+        A value already present is never overwritten: the first booking owns the
+        link, so a re-run cannot repoint the row at a second journal.
+        """
+        row = await self._lock_row(ledger_id)
+        if trade_id is not None and row.trade_id is None:
+            row.trade_id = trade_id
+        if journal_id is not None and row.journal_id is None:
+            row.journal_id = journal_id
+        await self._db.commit()
 
     @staticmethod
     def _apply_terminal(

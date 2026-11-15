@@ -286,6 +286,7 @@ tests/services/test_finnhub_news.py
 tests/services/test_halt_detection.py
 tests/services/test_kis_mock_inference_expiry_unit.py
 tests/services/test_kis_mock_retrospective_pending.py
+tests/services/test_kiwoom_execution_ledger.py
 tests/services/test_kiwoom_mock_order_ledger_service.py
 tests/services/test_kiwoom_mock_order_ledger_service_db.py
 tests/services/test_kiwoom_mock_reconcile_kernel.py

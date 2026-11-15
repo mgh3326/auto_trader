@@ -1,13 +1,19 @@
-"""hk 4722 (3797 T-P3) — Kiwoom mock reconcile kernel (unit, no database).
+"""hk 4722 / hk 4734 (3797 T-P3, T-P4) — Kiwoom mock reconcile kernel (unit).
 
-The ledger service is replaced by a recorder and the broker by a fake reader, so
-the kernel's contract is proven without a database or network:
+The ledger service is replaced by a recorder, the execution-ledger repository by
+a run recorder and the broker by a fake reader, so the kernel's contract is
+proven without a database or network:
 
 * dry run issues zero writes;
 * terminal-only applies only expired/cancelled/rejected and uncertain→accepted;
-* writes are impossible without both ``terminal_only`` and the exact-true gate;
-* fills are never booked (T-P4), unknown rows never transition;
-* paged listings are followed, and a page cap is incomplete evidence.
+* terminal-only is impossible without the exact-true gate;
+* full mode needs both exact-true gates and refuses before any read otherwise;
+* full mode books the broker-evidence delta and journals it with
+  ``account='kiwoom_mock'``/``account_type='mock'``;
+* a re-run of the same evidence books nothing new and journals nothing new;
+* a journal failure after a booked fill is surfaced, never hidden;
+* unknown rows never transition; paged listings are followed, and a page cap is
+  incomplete evidence.
 """
 
 from __future__ import annotations
@@ -20,7 +26,11 @@ from typing import Any
 import pytest
 
 from app.services import kiwoom_mock_reconcile as kernel
+from app.services.kiwoom_mock_order_ledger_service import FillBooking
 from app.services.kiwoom_mock_reconcile import (
+    FULL_GATE_ENVS,
+    JOURNAL_ACCOUNT,
+    JOURNAL_ACCOUNT_TYPE,
     TERMINAL_GATE_ENV,
     kiwoom_mock_reconcile_orders_impl,
 )
@@ -75,6 +85,8 @@ def _row(
     trading_day: str = TODAY,
     symbol: str = "005930",
     filled_qty: int | None = None,
+    side: str = "buy",
+    journal_id: int | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=ledger_id,
@@ -84,8 +96,19 @@ def _row(
         quantity=Decimal(10),
         filled_qty=None if filled_qty is None else Decimal(filled_qty),
         symbol=symbol,
-        side="buy",
+        side=side,
         trading_day=trading_day,
+        instrument_type="equity_kr",
+        currency="KRW",
+        correlation_id=f"kiwoom-mock:{ledger_id}",
+        thesis="breakout",
+        strategy="kiwoom-test",
+        reason=None,
+        exit_reason=None,
+        notes=None,
+        indicators_snapshot=None,
+        journal_id=journal_id,
+        trade_date=NOW,
     )
 
 
@@ -95,6 +118,21 @@ class FakeSession:
 
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
+
+    async def commit(self) -> None:
+        return None
+
+
+class FakeRepo:
+    """Records reconcile runs instead of writing execution_ledger run rows."""
+
+    runs: list[Any] = []
+
+    def __init__(self, db: Any) -> None:
+        self.db = db
+
+    def record_run(self, run: Any) -> None:
+        type(self).runs.append(run)
 
 
 class FakeService:
@@ -123,6 +161,50 @@ class FakeService:
     ):
         self.writes.append(("promote", ledger_id, broker_order_id, None))
         return SimpleNamespace(id=ledger_id, status="accepted")
+
+    async def record_fill(
+        self, *, ledger_id, filled_quantity, average_price, observed_at=None
+    ):
+        row = next(item for item in type(self).rows if item.id == ledger_id)
+        previous = int(row.filled_qty or 0)
+        delta = int(filled_quantity) - previous
+        status = "filled" if int(filled_quantity) >= int(row.quantity) else "partial"
+        action = f"booked_{status}" if delta > 0 else "noop_already_booked"
+        self.writes.append(("record_fill", ledger_id, action, None))
+        row.filled_qty = Decimal(int(filled_quantity))
+        return FillBooking(
+            ledger_id=row.id,
+            client_order_id=row.client_order_id,
+            broker_order_id=str(row.broker_order_id),
+            action=action,
+            delta_qty=Decimal(delta),
+            cumulative_qty=Decimal(int(filled_quantity)),
+            avg_price=Decimal(int(average_price)),
+            status=status,
+            execution_ledger_row_id=None if delta <= 0 else 900 + ledger_id,
+            fill_seq=None if delta <= 0 else 4242,
+            side=row.side,
+            symbol=row.symbol,
+            instrument_type=row.instrument_type,
+            currency=row.currency,
+            correlation_id=row.correlation_id,
+            thesis=row.thesis,
+            strategy=row.strategy,
+            reason=row.reason,
+            exit_reason=row.exit_reason,
+            notes=row.notes,
+            indicators_snapshot=row.indicators_snapshot,
+            trade_id=getattr(row, "trade_id", None),
+            journal_id=row.journal_id,
+        )
+
+    async def attach_journal(self, *, ledger_id, trade_id, journal_id):
+        row = next(item for item in type(self).rows if item.id == ledger_id)
+        if trade_id is not None and getattr(row, "trade_id", None) is None:
+            row.trade_id = trade_id
+        if journal_id is not None and row.journal_id is None:
+            row.journal_id = journal_id
+        self.writes.append(("attach_journal", ledger_id, str(journal_id), None))
 
 
 class FakeReader:
@@ -167,6 +249,7 @@ def fake_ledger(monkeypatch: pytest.MonkeyPatch):
     FakeService.rows = []
     FakeService.total = 0
     FakeService.cancels = set()
+    FakeRepo.runs = []
     written: list[FakeService] = []
 
     class Recorder(FakeService):
@@ -175,6 +258,7 @@ def fake_ledger(monkeypatch: pytest.MonkeyPatch):
             written.append(self)
 
     monkeypatch.setattr(kernel, "KiwoomMockOrderLedgerService", Recorder)
+    monkeypatch.setattr(kernel, "ExecutionLedgerRepository", FakeRepo)
     return written
 
 
@@ -311,11 +395,219 @@ async def test_terminal_only_applies_only_terminal_transitions(
     assert result["unresolved_count"] >= 2
 
 
-async def test_full_mode_writes_are_refused(fake_ledger) -> None:
-    # dry_run=False without terminal_only must never reach a write path.
-    with pytest.raises(ValueError):
-        await _run(FakeReader(), dry_run=False, terminal_only=False)
+def _patch_journal(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[tuple[str, dict[str, Any]]],
+    *,
+    fail: bool = False,
+    journal_id: int = 55,
+) -> None:
+    """Replace the journal writers; record the exact kwargs the kernel passes."""
+    from app.mcp_server.tooling import order_journal
+
+    async def save_order_fill(**kwargs: Any) -> int:
+        calls.append(("save_order_fill", kwargs))
+        return 501
+
+    async def create_journal(**kwargs: Any) -> dict[str, Any]:
+        calls.append(("create_journal", kwargs))
+        if fail:
+            raise RuntimeError("journal db down")
+        return {"journal_id": journal_id}
+
+    async def link(
+        symbol: str, trade_id: int, *, account_type: str, account: str
+    ) -> None:
+        calls.append(
+            (
+                "link",
+                {
+                    "symbol": symbol,
+                    "trade_id": trade_id,
+                    "account_type": account_type,
+                    "account": account,
+                },
+            )
+        )
+
+    async def close_journals(**kwargs: Any) -> dict[str, Any]:
+        calls.append(("close_journals", kwargs))
+        return {
+            "journals_closed": 1,
+            "journals_kept": 0,
+            "closed_ids": [77],
+            "total_pnl_pct": 2.5,
+            "realized_pnl_basis": "journal_entry",
+        }
+
+    monkeypatch.setattr(order_journal, "_save_order_fill", save_order_fill)
+    monkeypatch.setattr(order_journal, "_create_trade_journal_for_buy", create_journal)
+    monkeypatch.setattr(order_journal, "_link_journal_to_fill", link)
+    monkeypatch.setattr(order_journal, "_close_journals_on_sell", close_journals)
+
+
+def _filled_reader() -> FakeReader:
+    return FakeReader(
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(
+                        ord_no="0001", cntr_qty="10", ord_remnq="0", cntr_uv="70000"
+                    )
+                )
+            ]
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "enabled",
+    [
+        {},
+        {FULL_GATE_ENVS[0]: "true"},
+        {FULL_GATE_ENVS[1]: "true"},
+        {FULL_GATE_ENVS[0]: "yes", FULL_GATE_ENVS[1]: "true"},
+    ],
+)
+async def test_full_mode_needs_both_gates_before_any_read(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch, enabled: dict[str, str]
+) -> None:
+    for name in FULL_GATE_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in enabled.items():
+        monkeypatch.setenv(name, value)
+
+    class ExplodingSession:
+        async def __aenter__(self):
+            raise AssertionError("ledger must not be read with the gate off")
+
+    class ExplodingReader(FakeReader):
+        async def read_order_status(self, *, cont_yn=None, next_key=None):
+            raise AssertionError("broker must not be read with the gate off")
+
+    result = await kiwoom_mock_reconcile_orders_impl(
+        dry_run=False,
+        terminal_only=False,
+        session_factory=ExplodingSession,
+        reader=ExplodingReader(),
+        now=NOW,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "full_gate_disabled"
+    assert result["scope"] == "full"
     assert _writes(fake_ledger) == []
+
+
+async def test_full_mode_books_the_delta_and_journals_under_kiwoom_mock(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+
+    result = await _run(_filled_reader(), dry_run=False, terminal_only=False)
+
+    assert result["success"] is True
+    assert result["scope"] == "full"
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "booked_filled"
+    assert outcome["delta_qty"] == "10"
+    assert outcome["execution_ledger_row_id"] == 901
+    assert ("record_fill", 1, "booked_filled", None) in _writes(fake_ledger)
+
+    save = next(payload for name, payload in calls if name == "save_order_fill")
+    assert save["account"] == JOURNAL_ACCOUNT == "kiwoom_mock"
+    assert save["order_id"] == "0001"
+    assert save["quantity"] == 10.0
+    create = next(payload for name, payload in calls if name == "create_journal")
+    assert create["account"] == JOURNAL_ACCOUNT == "kiwoom_mock"
+    assert create["account_type"] == JOURNAL_ACCOUNT_TYPE == "mock"
+    link = next(payload for name, payload in calls if name == "link")
+    assert link["account"] == JOURNAL_ACCOUNT
+    assert link["account_type"] == JOURNAL_ACCOUNT_TYPE
+    assert ("attach_journal", 1, "55", None) in _writes(fake_ledger)
+
+    assert len(FakeRepo.runs) == 1
+    run = FakeRepo.runs[0]
+    assert run.broker == "kiwoom"
+    assert run.dry_run is False
+    assert run.committed_insert == 1
+    assert run.unchanged == 0
+
+
+async def test_full_mode_rerun_books_and_journals_nothing_new(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+
+    await _run(_filled_reader(), dry_run=False, terminal_only=False)
+    calls.clear()
+    second = await _run(_filled_reader(), dry_run=False, terminal_only=False)
+
+    outcome = second["reconciled"][0]
+    assert outcome["action"] == "noop_already_booked"
+    assert outcome["delta_qty"] == "0"
+    assert [name for name, _ in calls] == []
+    assert len(FakeRepo.runs) == 2
+    assert FakeRepo.runs[1].committed_insert == 0
+    assert FakeRepo.runs[1].unchanged == 1
+    assert second["unresolved_count"] == 0
+
+
+async def test_full_mode_journal_failure_is_surfaced_after_the_booking(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls, fail=True)
+
+    result = await _run(_filled_reader(), dry_run=False, terminal_only=False)
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "booked_filled"
+    assert outcome["journal_error"] == "RuntimeError"
+    assert outcome["requires_manual_review"] is True
+    assert result["unresolved_count"] >= 1
+
+
+async def test_full_mode_sell_closes_journals_under_kiwoom_mock(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001", side="sell", journal_id=9)]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+
+    result = await _run(_filled_reader(), dry_run=False, terminal_only=False)
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "booked_filled"
+    assert outcome["journal"] == {
+        "trade_id": 501,
+        "journals_closed": 1,
+        "closed_journal_ids": [77],
+        "realized_pnl_pct": 2.5,
+        "realized_pnl_basis": "journal_entry",
+        "journal_pnl_pct": 2.5,
+    }
+    close = next(payload for name, payload in calls if name == "close_journals")
+    assert close["account"] == JOURNAL_ACCOUNT
+    assert close["account_type"] == JOURNAL_ACCOUNT_TYPE
+    assert close["sell_quantity"] == 10.0
 
 
 async def test_terminal_gate_off_refuses_before_any_read(

@@ -314,6 +314,16 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 
 - **엔드포인트**: `POST /trading/api/execution-ledger/fills/ingest` (배치 1..200),
   `POST /trading/api/execution-ledger/reconcile/trigger` (dry_run 기본 true)
+- **Kiwoom 모의 행 (hk 4734, 3797 T-P4)**: `execution_ledger.broker` CHECK 는
+  `('kis','upbit','toss','kiwoom')` 이고 `execution_ledger_reconcile_runs.broker` 는
+  `('kis','upbit','kiwoom')` 다. Kiwoom 모의 체결은 full 대사(`--apply`, 두 게이트)만
+  `broker='kiwoom'`·`account_mode='mock'`·`venue='krx'`·`source='reconciler'` 행을 쓰고,
+  델타는 브로커 누적 체결수량에서 이미 기록된 수량을 뺀 값이며 `fill_seq` 는 그 델타의
+  결정적 해시다(재실행은 새 행 0). Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
+  `fee_basis='not_provided'`·`filled_at_basis='observed_at'` 이고 0 으로 채우지 않는다.
+  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 이 행들은 외부 HTTP
+  ingest 대상이 아니며(`source` 는 항상 `websocket` 강제) 이 예외는 위 멱등키·savepoint·
+  원장 커밋 권한 규칙을 바꾸지 않는다.
 - **라우터/스키마**: `app/routers/execution_ledger_ingest.py`,
   `app/schemas/execution_ledger_ingest.py`
 - **공유 서비스**: `app/services/execution_ledger/fill_ingest.py` (upsert + 다운스트림
@@ -419,6 +429,9 @@ fillwire(H0STCNI0 프레임 해시)·in-app 모니터(자체 seed 해시)·recon
   코드가 없어 `krx`, reconciler 는 `NASD`). KIS 주문번호는 날짜를 넘어 재사용되므로 KR=KST
   날짜, US=US 거래일(20:00 ET 롤오버, `kis_lots.us_trading_day_window`). Upbit(UUID)는 날짜 없음.
   US 심볼 키는 `app/core/symbol.py` `to_db_symbol` 만 쓴다.
+  Kiwoom 모의 `ord_no` 도 선행0 정규화 대상으로 등록됐다(hk 4734) — 숫자 주문번호의 자릿수
+  표기 차이가 같은 주문을 둘로 가르지 않는다. Kiwoom 은 websocket 출처가 없어 투영 중복
+  넘김 대상이 아니고, 이 등록은 기존 KIS/Upbit/Toss 규칙을 바꾸지 않는다.
 - **쓰기 측 (`ExecutionLedgerRepository.upsert_fill`)**: 자기 키 행이 **없는** 새 websocket
   체결이고, 같은 identity 의 in-effect `reconciler` 행이 브로커 증거로 **주문 종결**을 증명하며
   (KIS KR `rmn_qty==0` + `tot_ccld_qty==booked`, KIS US `nccs_qty==0` + `ft_ccld_qty==booked`,
