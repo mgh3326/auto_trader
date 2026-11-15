@@ -22,6 +22,16 @@ Order of every send, and where each rule is enforced:
    error or any exception after the fence keeps the intent ``uncertain``; an
    ``uncertain`` intent is never resent and is resolved only by broker order
    evidence plus a complete position read.
+
+Serialization: one live trend order per signal. Entry and exit fills on one
+broker position cannot be reconciled against a single position read, so a
+partially filled (still working) entry is never closed while the order can still
+fill. The lane cancels its remainder (``cancel_order``, same gates as
+``submit_order``), records a proven hard stop at the moment it is decided
+(``TrendStateService.record_exit_decision``, which is what the daily kill switch
+counts), and sends the sole exit for the broker-proven quantity once the entry is
+terminal. The entry order itself is never resent and an ``uncertain`` intent is
+never cancelled.
 """
 
 from __future__ import annotations
@@ -42,6 +52,7 @@ from app.services.brokers.binance.demo.errors import BinanceDemoOrderNotFound
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
 from app.services.brokers.binance.demo.quantity import venue_order_quantity
 from app.services.brokers.binance.futures_demo.dto import (
+    FuturesDemoCancelResult,
     FuturesDemoOpenOrder,
     FuturesDemoOpenOrdersResult,
     FuturesDemoOrderStatusResult,
@@ -61,11 +72,17 @@ from research.nautilus_scalping.rob974_features import FOUR_HOUR_MS, Bar4h
 from .constants import (
     CLIENT_ORDER_PREFIX,
     DEMO_URL,
+    EXIT_HARD_STOP,
     IDENTITY,
     LOCKED_LIMITS,
     assert_trend_demo_url,
 )
-from .exits import HardStopObservation, HeldPosition, choose_exit, hard_stop_touched
+from .exits import (
+    ExitDecision,
+    HardStopObservation,
+    HeldPosition,
+    choose_exit,
+)
 from .exposure import (
     TrendExposureMismatch,
     entry_conflicts,
@@ -180,10 +197,12 @@ def _lot_bound(
 class TrendDemoClient(BinanceFuturesDemoExecutionClient):
     """Trend identity over the existing signed Futures Demo transport.
 
-    Read-only account, quote and filter reads plus a gated ``submit_order``.
-    Leverage, margin mode, cancellation and the smoke order-test are disabled:
-    configuration is required by readback only (operator decision) and an
-    unresolved order is resolved by evidence, never by cancelling.
+    Read-only account, quote and filter reads plus a gated ``submit_order`` and
+    a gated ``cancel_order``. Leverage, margin mode and the smoke order-test are
+    disabled: configuration is required by readback only (operator decision). An
+    unresolved order is still resolved by evidence, never by cancelling; the only
+    cancel is the remainder of a partially filled entry, the serialization step
+    that must stop further fills before an exit may be sent.
     """
 
     def __init__(
@@ -431,8 +450,38 @@ class TrendDemoClient(BinanceFuturesDemoExecutionClient):
     async def set_margin_type(self, *args, **kwargs):  # type: ignore[override]
         raise ValueError("trend requires preconfigured isolated 1x; no mutation")
 
-    async def cancel_order(self, **kwargs):  # type: ignore[override]
-        raise ValueError("trend resolves intents by evidence; no cancellation")
+    async def cancel_order(  # type: ignore[override]
+        self, *, symbol: str, client_order_id: str, confirm: bool = False
+    ) -> FuturesDemoCancelResult:
+        """Cancel the remaining quantity of this lane's own working entry.
+
+        Only one caller exists: the serialization step of a partially filled
+        entry, which must stop further fills before an exit can be sent. That
+        is not a resolution of an unresolved send — the entry order is never
+        resent — and it carries the same gates as :meth:`submit_order`: exact
+        demo origin, trend client identity, both env gates and per-call
+        ``confirm=True``.
+        """
+        self._assert_trend()
+        if symbol not in LOCKED_LIMITS.universe:
+            raise ValueError("symbol outside trend universe")
+        if not isinstance(client_order_id, str) or not client_order_id.startswith(
+            CLIENT_ORDER_PREFIX
+        ):
+            raise ValueError("order outside trend identity")
+        if os.environ.get(_ENV_TREND) != "true":
+            raise ValueError(f"{_ENV_TREND} is disabled")
+        if os.environ.get(_ENV_FUTURES) != "true":
+            raise ValueError(f"{_ENV_FUTURES} is disabled")
+        if confirm is not True:
+            raise ValueError("trend requires per-call confirm=True")
+        result = await super().cancel_order(
+            symbol=symbol, client_order_id=client_order_id
+        )
+        raw = result.raw_response_redacted
+        if raw.get("symbol") != symbol or raw.get("clientOrderId") != client_order_id:
+            raise TrendBrokerTruthUnavailable("cancel response did not echo the order")
+        return result
 
     async def order_test(self, **kwargs):  # type: ignore[override]
         raise ValueError("trend does not expose the smoke order-test path")
@@ -544,7 +593,6 @@ class TrendExecutor:
         self.demo_ledger = demo_ledger
         self.ledger_session = ledger_session
         self._lease: Any = None
-        self._partial_entries: dict[str, TrendIntentSnapshot] = {}
         self._poll_attempts = poll_attempts
         self._poll_interval_s = poll_interval_s
         self._sleep = sleep
@@ -880,8 +928,9 @@ class TrendExecutor:
             logger.exception("trend demo ledger sync incomplete")
             return "ledger_incomplete"
         if current_intent.state in {"acknowledged", "uncertain"}:
-            # An open order with an executed quantity is real exposure that no
-            # exit manages yet: surface it distinctly (no resend, no cancel). An
+            # An open order with an executed quantity is real exposure managed by
+            # ``_manage_working_entries`` (acknowledged) or reported only because
+            # its status is unreadable (uncertain). No resend in either case. An
             # intent that was marked uncertain stays uncertain (it never goes
             # back to acknowledged) but is not a "no fill".
             if evidence.executed_qty > 0:
@@ -935,12 +984,12 @@ class TrendExecutor:
                 and intent.state in {"acknowledged", "uncertain"}
                 and intent.executed_qty > 0
             ):
-                # A still-working, partially filled entry: real exposure that no
-                # exit manages (entry and exit fills would be two streams on one
-                # broker position, which the state cannot reconcile; the managed
-                # holding is hk 4726). Everything on the symbol is blocked, the
-                # order is never resent or cancelled, and the operator sees it.
-                self._partial_entries[signal.symbol] = intent
+                # A still-working, partially filled entry. It is real exposure,
+                # and it is *managed* (see ``_manage_working_entries``): the
+                # lane cancels the remainder and exits the broker-proven
+                # quantity after the entry is terminal. An intent that was
+                # marked uncertain has no trustworthy order status, so
+                # serialization cannot be proven and nothing is sent for it.
                 events.append(
                     TrendEvent(
                         signal.symbol,
@@ -948,6 +997,8 @@ class TrendExecutor:
                         format(intent.executed_qty, "f"),
                     )
                 )
+                if intent.state == "acknowledged":
+                    continue
             blocked.add(signal.symbol)
         for signal in await self.state.list_active_signals():
             if signal.state == "uncertain":
@@ -973,7 +1024,82 @@ class TrendExecutor:
             except Exception:
                 logger.exception("trend demo ledger sweep release failed")
 
-    async def _alert_partial_entry_stops(
+    async def _working_entry_decision(
+        self,
+        signal: TrendSignalSnapshot,
+        intent: TrendIntentSnapshot,
+        bars: tuple[Bar4h, ...],
+        *,
+        decision_ts: int,
+        now: dt.datetime,
+    ) -> ExitDecision | None:
+        """The exit rules judged against a partially filled, still-working entry.
+
+        The exposure is the executed quantity of the working order; the stop is
+        derived from the average of the fills recorded so far, and its watch
+        starts at the reservation (a bound that is never later than the first
+        fill). The same 1m extremes / 4h close / quote evidence as for a holding
+        decides, with the 4h-only fallback when the 1m window is incomplete.
+        """
+        if intent.avg_price is None or intent.created_at is None:
+            return None
+        positions = await self.client.get_all_positions()
+        # The broker amount is signed; a SHORT (SELL) entry sits negative and
+        # must be read as the same positive quantity the holding path uses.
+        amount = position_amount(positions, signal.symbol)
+        remaining = amount if signal.side == "BUY" else -amount
+        if remaining <= 0:
+            return None
+        filters = await self.client.get_trend_filters(signal.symbol)
+        if signal.exit_reason == EXIT_HARD_STOP:
+            # A recorded stop is a latch here too: the decision was already
+            # taken (and counted by the daily kill switch), so a recovery or a
+            # failed cancel must not stop the lane from closing the remainder.
+            latched = floor_to_step(remaining, filters.step_size)
+            return (
+                ExitDecision(reason=EXIT_HARD_STOP, qty=latched)
+                if latched > 0
+                else None
+            )
+        close_side = "SELL" if signal.side == "BUY" else "BUY"
+        quote_price: Decimal | None
+        try:
+            quote_price = (
+                await self.client.get_book_quote(signal.symbol)
+            ).executable_price(close_side)
+        except Exception:
+            logger.exception("trend book quote unavailable; deciding without it")
+            quote_price = None
+        observed = await self._observe_hard_stop(
+            signal.symbol,
+            intent.created_at,
+            bars,
+            decision_ts=decision_ts,
+            quote_price=quote_price,
+            now=now,
+        )
+        return choose_exit(
+            HeldPosition(
+                side=signal.side,  # type: ignore[arg-type]
+                entry_price=intent.avg_price,
+                entered_at=intent.created_at,
+                broker_remaining_qty=remaining,
+                step_size=filters.step_size,
+            ),
+            stop_price=self.strategy.hard_stop_price(
+                side=signal.side,  # type: ignore[arg-type]
+                entry_price=intent.avg_price,
+            ),
+            observed=observed,
+            signal_side=momentum_sign(
+                bars,
+                decision_ts=decision_ts,
+                lookback_days=self.strategy.lookback_days,
+            ),
+            now=now,
+        )
+
+    async def _manage_working_entries(
         self,
         histories: dict[str, tuple[Bar4h, ...]],
         *,
@@ -981,56 +1107,90 @@ class TrendExecutor:
         now: dt.datetime,
         events: list[TrendEvent],
     ) -> None:
-        """Alarm only: a blocked partial entry whose hard stop price is breached.
+        """Serialized management of a partially filled, still-working entry.
 
-        Nothing is sent. The same 1m watch (4h-only fallback) as for a holding
-        judges the stop from the average price of what has executed so far.
+        Entry and exit fills on one broker position are two streams the state
+        cannot reconcile against a single position read, so the lane never has
+        both live: while the entry can still fill the only action is cancelling
+        its remainder. The exit follows the entry's terminal evidence on a later
+        step of this tick or on the next one. A proven hard stop is recorded
+        durably *before* that action, so the daily kill switch counts it on the
+        day it fired even if the entry only terminates on a later UTC day.
+
+        A partial entry whose intent is ``uncertain`` has no trustworthy order
+        status: serialization cannot be proven, so neither cancel nor exit is
+        sent and only the stop is reported (the symbol stays blocked).
         """
-        for symbol, intent in self._partial_entries.items():
-            if intent.avg_price is None or intent.created_at is None:
+        for intent in await self.state.list_unresolved_intents():
+            if intent.reduce_only or intent.executed_qty <= 0:
                 continue
-            side = intent.side
-            stop = self.strategy.hard_stop_price(
-                side=side,  # type: ignore[arg-type]
-                entry_price=intent.avg_price,
-            )
-            entered_ms = now_ms(intent.created_at)
-            bar_close_value: Decimal | None = None
-            for bar in histories.get(symbol, ()):
-                if bar.close_ts == decision_ts and decision_ts > entered_ms:
-                    bar_close_value = bar_close(bar)
+            if intent.state not in {"acknowledged", "uncertain"}:
+                continue
+            signal = await self.state.get_signal(intent.signal_key)
+            if signal is None:
+                continue
             try:
-                minutes = await collect_hard_stop_minutes(
-                    self.client.kline_transport(),
-                    symbol,
-                    entered_ms=entered_ms,
-                    now_ms=now_ms(now),
-                    check=self._check_origin,
+                decision = await self._working_entry_decision(
+                    signal,
+                    intent,
+                    histories.get(signal.symbol, ()),
+                    decision_ts=decision_ts,
+                    now=now,
                 )
-                observed = HardStopObservation(
-                    minutes_ok=True,
-                    minute_low=min((minute_low(m) for m in minutes), default=None),
-                    minute_high=max((minute_high(m) for m in minutes), default=None),
-                    bar_close=bar_close_value,
-                    quote=None,
+            except Exception as exc:
+                logger.exception("trend working-entry decision failed")
+                events.append(TrendEvent(signal.symbol, "blocked", type(exc).__name__))
+                continue
+            if decision is None:
+                continue
+            if intent.state == "uncertain":
+                if decision.reason == EXIT_HARD_STOP and intent.avg_price is not None:
+                    stop = self.strategy.hard_stop_price(
+                        side=signal.side,  # type: ignore[arg-type]
+                        entry_price=intent.avg_price,
+                    )
+                    events.append(
+                        TrendEvent(
+                            signal.symbol,
+                            "partial_entry_stop_breached",
+                            format(stop, "f"),
+                        )
+                    )
+                continue
+            if decision.reason == EXIT_HARD_STOP:
+                try:
+                    await self.state.record_exit_decision(
+                        signal.signal_key, reason=decision.reason, now=now
+                    )
+                except Exception as exc:
+                    # One symbol's state refusal or DB error must not skip the
+                    # management of every other symbol this tick. The cancel
+                    # below still runs: it is the action the just-computed
+                    # decision calls for.
+                    logger.exception("trend working-entry decision record failed")
+                    events.append(
+                        TrendEvent(signal.symbol, "blocked", type(exc).__name__)
+                    )
+            events.append(
+                TrendEvent(signal.symbol, "partial_entry_exit_decided", decision.reason)
+            )
+            try:
+                await self.client.cancel_order(
+                    symbol=signal.symbol,
+                    client_order_id=intent.client_order_id,
+                    confirm=True,
                 )
-            except Exception:
-                logger.exception("trend partial-entry 1m watch unavailable")
-                observed = HardStopObservation(
-                    minutes_ok=False,
-                    minute_low=None,
-                    minute_high=None,
-                    bar_close=bar_close_value,
-                    quote=None,
-                )
-            if hard_stop_touched(
-                side=side,  # type: ignore[arg-type]
-                stop_price=stop,
-                observed=observed,
-            ):
+            except Exception as exc:
+                logger.exception("trend working-entry cancel unconfirmed")
                 events.append(
-                    TrendEvent(symbol, "partial_entry_stop_breached", format(stop, "f"))
+                    TrendEvent(
+                        signal.symbol,
+                        "partial_entry_cancel_unconfirmed",
+                        type(exc).__name__,
+                    )
                 )
+                continue
+            events.append(TrendEvent(signal.symbol, "partial_entry_cancel_sent"))
 
     @asynccontextmanager
     async def _bound(self, lease: Any) -> AsyncIterator[None]:
@@ -1310,14 +1470,15 @@ class TrendExecutor:
 
     async def _observe_hard_stop(
         self,
-        signal: TrendSignalSnapshot,
+        symbol: str,
+        entered_at: dt.datetime | None,
         bars: tuple[Bar4h, ...],
         *,
         decision_ts: int,
         quote_price: Decimal | None,
         now: dt.datetime,
     ) -> HardStopObservation:
-        entered_ms = now_ms(signal.entered_at) if signal.entered_at else 0
+        entered_ms = now_ms(entered_at) if entered_at else 0
         bar_close_value: Decimal | None = None
         for bar in bars:
             if bar.close_ts == decision_ts and decision_ts > entered_ms:
@@ -1325,7 +1486,7 @@ class TrendExecutor:
         try:
             minutes = await collect_hard_stop_minutes(
                 self.client.kline_transport(),
-                signal.symbol,
+                symbol,
                 entered_ms=entered_ms,
                 now_ms=now_ms(now),
                 check=self._check_origin,
@@ -1388,30 +1549,52 @@ class TrendExecutor:
             logger.exception("trend book quote unavailable; deciding without it")
             quote_price = None
         observed = await self._observe_hard_stop(
-            signal, bars, decision_ts=decision_ts, quote_price=quote_price, now=now
-        )
-        decision = choose_exit(
-            HeldPosition(
-                side=signal.side,  # type: ignore[arg-type]
-                entry_price=signal.entry_price,
-                entered_at=signal.entered_at,
-                broker_remaining_qty=remaining,
-                step_size=filters.step_size,
-            ),
-            stop_price=self.strategy.hard_stop_price(
-                side=signal.side,  # type: ignore[arg-type]
-                entry_price=signal.entry_price,
-            ),
-            observed=observed,
-            signal_side=momentum_sign(
-                bars,
-                decision_ts=decision_ts,
-                lookback_days=self.strategy.lookback_days,
-            ),
+            symbol,
+            signal.entered_at,
+            bars,
+            decision_ts=decision_ts,
+            quote_price=quote_price,
             now=now,
         )
+        if signal.exit_reason == EXIT_HARD_STOP:
+            # A recorded stop is a latch: the decision was already taken (and
+            # counted by the daily kill switch), so a price recovery after it
+            # does not keep the position. The quantity is the broker remainder.
+            latched = floor_to_step(remaining, filters.step_size)
+            decision = (
+                ExitDecision(reason=EXIT_HARD_STOP, qty=latched)
+                if latched > 0
+                else None
+            )
+        else:
+            decision = choose_exit(
+                HeldPosition(
+                    side=signal.side,  # type: ignore[arg-type]
+                    entry_price=signal.entry_price,
+                    entered_at=signal.entered_at,
+                    broker_remaining_qty=remaining,
+                    step_size=filters.step_size,
+                ),
+                stop_price=self.strategy.hard_stop_price(
+                    side=signal.side,  # type: ignore[arg-type]
+                    entry_price=signal.entry_price,
+                ),
+                observed=observed,
+                signal_side=momentum_sign(
+                    bars,
+                    decision_ts=decision_ts,
+                    lookback_days=self.strategy.lookback_days,
+                ),
+                now=now,
+            )
         if decision is None:
             return None
+        if decision.reason == EXIT_HARD_STOP:
+            # First write wins: a stop proven while the entry was working keeps
+            # its own day here.
+            await self.state.record_exit_decision(
+                signal.signal_key, reason=decision.reason, now=now
+            )
         return TrendEvent(
             symbol,
             await self._exit(signal, reason=decision.reason, qty=decision.qty, now=now),
@@ -1471,7 +1654,6 @@ class TrendExecutor:
         # One tick owns the lane at a time: recovery below treats an unfenced
         # reservation as abandoned, which is only true while no other tick lives.
         async with self.state.tick_lease() as lease, self._bound(lease):
-            self._partial_entries = {}
             blocked = await self._reconcile_unresolved(now, events)
             histories: dict[str, tuple[Bar4h, ...]] = {}
             for symbol in LOCKED_LIMITS.universe:
@@ -1489,7 +1671,7 @@ class TrendExecutor:
                     events.append(
                         TrendEvent(symbol, "bars_unavailable", type(exc).__name__)
                     )
-            await self._alert_partial_entry_stops(
+            await self._manage_working_entries(
                 histories, decision_ts=decision_ts, now=now, events=events
             )
             # Manage what is held first; exits never wait for entry capacity.

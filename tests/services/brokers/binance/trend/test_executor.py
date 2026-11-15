@@ -912,7 +912,10 @@ async def test_a_partial_exit_fill_keeps_the_remainder_held(rig: Rig) -> None:
     signal = rig.state.signals[key]
     assert (signal.state, signal.closed_qty) == ("holding", D("0.5"))
     assert rig.client.positions["BTCUSDT"] == D("0.1")
-    assert signal.exit_reason is None  # not closed yet
+    # The decision (and its day) is recorded when it is taken, so the daily kill
+    # switch can count the stop although the position is still partly open.
+    assert signal.exit_reason == EXIT_HARD_STOP
+    assert signal.exit_at == NOW
 
 
 @pytest.mark.asyncio
@@ -929,30 +932,63 @@ async def test_an_unknown_exit_reason_is_refused_before_any_write(rig: Rig) -> N
 
 
 @pytest.mark.asyncio
-async def test_the_client_cannot_mutate_settings_or_cancel_or_order_test() -> None:
+async def test_the_client_cannot_mutate_settings_or_use_the_smoke_order_test() -> None:
     client = FakeClient()
     for call in (
         client.set_leverage(symbol="BTCUSDT", leverage=1),
         client.set_margin_type(symbol="BTCUSDT", margin_type="ISOLATED"),
-        client.cancel_order(symbol="BTCUSDT", client_order_id="trend-x"),
         client.order_test(symbol="BTCUSDT"),
     ):
         with pytest.raises(ValueError):
             await call
 
 
-def test_no_trend_module_calls_a_settings_cancel_or_smoke_order_method() -> None:
+@pytest.mark.asyncio
+async def test_the_trend_client_refuses_a_cancel_without_its_gates(
+    monkeypatch,
+) -> None:
+    """A cancel carries the same gates as a submit: both env flags and confirm."""
+    client = FakeClient()
+
+    async def call(**kwargs):
+        return await executor_module.TrendDemoClient.cancel_order(client, **kwargs)
+
+    ok = {"symbol": "BTCUSDT", "client_order_id": "trend-x", "confirm": True}
+    monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
+    for changed in (
+        {"confirm": False},
+        {"client_order_id": "foreign-1"},
+        {"symbol": "DOGEUSDT"},
+    ):
+        with pytest.raises(ValueError):
+            await call(**{**ok, **changed})
+    monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "True")
+    with pytest.raises(ValueError):
+        await call(**ok)
+    monkeypatch.setenv("BINANCE_TREND_DEMO_ENABLED", "true")
+    monkeypatch.delenv("BINANCE_FUTURES_DEMO_ENABLED", raising=False)
+    with pytest.raises(ValueError):
+        await call(**ok)
+
+
+def test_only_the_cancel_serialization_step_calls_cancel_order() -> None:
     import ast
     from pathlib import Path
 
     package = Path(executor_module.__file__).parent
-    banned = {"set_leverage", "set_margin_type", "cancel_order", "order_test"}
+    banned = {"set_leverage", "set_margin_type", "order_test"}
+    cancels: list[tuple[str, int]] = []
     for path in package.glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 assert node.func.attr not in banned, (
                     f"{path.name} calls {node.func.attr}"
                 )
+                if node.func.attr == "cancel_order":
+                    cancels.append((path.name, node.lineno))
+    # The gated client method (``super().cancel_order``) and its one caller.
+    assert [name for name, _ in cancels] == ["executor.py", "executor.py"]
 
 
 @pytest.mark.parametrize(
@@ -1252,17 +1288,54 @@ async def test_the_release_sweep_has_no_age_window(rig: Rig) -> None:
     assert rig.ledger.rows[cid] == "reconciled"
 
 
-# -------- design decision B: a partially filled entry blocks the whole symbol
+# -------- managed holding of a partially filled entry (serialization, hk 4752)
 
 
-def _partial_rig(rig: Rig, *, executed: str = "0.3") -> None:
-    rig.bars["BTCUSDT"] = trend_bars("BUY")
-    rig.client.order_script = [{"status": "PARTIALLY_FILLED", "executed": D(executed)}]
+def _partial_rig(
+    rig: Rig,
+    *,
+    executed: str = "0.3",
+    avg: str | None = None,
+    side: str = "BUY",
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars(side)
+    script: dict = {"status": "PARTIALLY_FILLED", "executed": D(executed)}
+    if avg is not None:
+        script["avg"] = D(avg)
+    rig.client.order_script = [script]
 
     def fill(kwargs):
-        rig.client.positions["BTCUSDT"] = D(executed)
+        if kwargs["reduce_only"]:
+            return  # the exit's effect comes from auto_fill / exit_script
+        amount = D(executed) if side == "BUY" else -D(executed)
+        rig.client.positions["BTCUSDT"] = amount
 
     rig.client.on_submit = fill
+
+
+def _terminal_entry(
+    rig: Rig,
+    *,
+    executed: str,
+    avg: str,
+    status: str = "CANCELED",
+    side: str = "BUY",
+):
+    """The entry order is terminal with its final executed quantity."""
+    rig.client.order_script = [
+        {"status": status, "executed": D(executed), "avg": D(avg)}
+    ]
+    amount = D(executed) if side == "BUY" else -D(executed)
+    rig.client.positions["BTCUSDT"] = amount
+
+
+def _ready_exit(rig: Rig, *, price: str = "110") -> None:
+    rig.client.auto_fill = True
+    rig.client.exit_script = {"status": "FILLED", "avg": D(price)}
+
+
+def _entry_cid(rig: Rig) -> str:
+    return next(iter(rig.state.signals.values())).entry_client_order_id
 
 
 @pytest.mark.asyncio
@@ -1281,36 +1354,184 @@ async def test_a_partially_filled_entry_stays_open_and_is_not_a_holding(
 
 
 @pytest.mark.asyncio
-async def test_a_partial_entry_blocks_every_send_on_the_symbol_with_an_operator_event(
-    rig: Rig,
-) -> None:
-    _partial_rig(rig)
-    await rig.tick()
-    rig.client.orders = [open_order("BTCUSDT", cid="trend-working")]
-    for _ in range(3):
-        result = await rig.tick()
-        assert ("BTCUSDT", "partial_entry_exposure_open") in rig.events(result)
-        assert len(rig.client.sends) == 1  # no resend, no second entry, no exit
-    event = next(e for e in result.events if e.event == "partial_entry_exposure_open")
-    assert event.detail == "0.3"
-    signal = next(iter(rig.state.signals.values()))
-    assert rig.state.intents[signal.entry_client_order_id].state == "acknowledged"
-    assert rig.state.calls["reserve_exit_intent"] == 0
-
-
-@pytest.mark.asyncio
-async def test_a_breached_stop_on_a_partial_entry_is_an_alarm_not_a_send(
-    rig: Rig,
-) -> None:
+async def test_a_partial_entry_is_managed_not_alarmed(rig: Rig) -> None:
+    """The breached stop cancels the working remainder; no exit is sent yet."""
     _partial_rig(rig)
     await rig.tick()
     rig.minutes["BTCUSDT"] = minute_rows(low="94")  # below the 95 stop of avg 100
     result = await rig.tick()
-    alarms = [e for e in result.events if e.event == "partial_entry_stop_breached"]
-    assert len(alarms) == 1 and alarms[0].symbol == "BTCUSDT"
-    assert alarms[0].detail == "95.00"  # the stop price, operator-visible
-    assert len(rig.client.sends) == 1  # zero sends from the alarm: only the entry
+    names = [e.event for e in result.events]
+    assert ("BTCUSDT", "partial_entry_exposure_open") in rig.events(result)
+    assert ("BTCUSDT", "partial_entry_exit_decided") in rig.events(result)
+    assert ("BTCUSDT", "partial_entry_cancel_sent") in rig.events(result)
+    assert "partial_entry_stop_breached" not in names  # replaced by the managed step
+    assert len(rig.client.sends) == 1  # the entry only: never an exit while it fills
+    assert rig.client.cancels == [
+        {"symbol": "BTCUSDT", "client_order_id": _entry_cid(rig), "confirm": True}
+    ]
+    signal = next(iter(rig.state.signals.values()))
+    assert (signal.state, signal.exit_reason) == ("entry_reserved", EXIT_HARD_STOP)
+    assert signal.exit_at == NOW  # recorded when the stop was proven
     assert rig.state.calls["reserve_exit_intent"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_fill_after_the_cancel_is_exited_in_full(rig: Rig) -> None:
+    """Round-7 scenario: entry 0.3, stop, cancel — and one more fill lands.
+
+    The exit waits for the terminal evidence, so it sends the broker's final
+    position (0.6), not the 0.3 visible at decision time, and no exit fill can
+    interleave with a later entry fill.
+    """
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    await rig.tick()
+    assert len(rig.client.sends) == 1 and len(rig.client.cancels) == 1
+
+    _terminal_entry(rig, executed="0.6", avg="120")
+    _ready_exit(rig)
+    result = await rig.tick()
+    assert ("BTCUSDT", "reconciled_filled") in rig.events(result)
+    assert [s["reduce_only"] for s in rig.client.sends] == [False, True]
+    assert rig.client.sends[1]["qty"] == D("0.6")
+    signal = next(iter(rig.state.signals.values()))
+    assert (signal.state, signal.entry_qty, signal.closed_qty) == (
+        "closed",
+        D("0.6"),
+        D("0.6"),
+    )
+    assert signal.entry_price == D("120")  # the broker's cumulative entry average
+    assert signal.exit_reason == EXIT_HARD_STOP
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_stop_is_latched_after_the_price_recovers(rig: Rig) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    await rig.tick()  # the stop is proven while the entry is still working
+    rig.minutes["BTCUSDT"] = minute_rows(low="99")  # back above the stop
+    _terminal_entry(rig, executed="0.3", avg="100")
+    _ready_exit(rig)
+    result = await rig.tick()
+    exits = [e for e in result.events if e.event.startswith("exit_")]
+    assert len(exits) == 1 and exits[0].detail == EXIT_HARD_STOP
+    assert [s["reduce_only"] for s in rig.client.sends] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_short_partial_entry_is_managed_too(rig: Rig) -> None:
+    """The broker amount is signed: a short partial entry is managed as well."""
+    _partial_rig(rig, side="SELL")
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="99", high="106")  # 105 stop of avg 100
+    result = await rig.tick()
+    assert ("BTCUSDT", "partial_entry_exit_decided") in rig.events(result)
+    assert len(rig.client.cancels) == 1
+    assert len(rig.client.sends) == 1  # the entry only
+    signal = next(iter(rig.state.signals.values()))
+    assert (signal.side, signal.exit_reason) == ("SELL", EXIT_HARD_STOP)
+
+    _terminal_entry(rig, executed="0.3", avg="100", side="SELL")
+    _ready_exit(rig, price="90")
+    await rig.tick()
+    assert [s["reduce_only"] for s in rig.client.sends] == [False, True]
+    assert rig.client.sends[1]["side"] == "BUY"  # the close of a short is a buy
+    assert rig.client.sends[1]["qty"] == D("0.3")
+    assert next(iter(rig.state.signals.values())).state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cancel_is_retried_after_the_price_recovers(rig: Rig) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    rig.client.cancel_error = TimeoutError("read timeout")
+    first = await rig.tick()
+    assert ("BTCUSDT", "partial_entry_cancel_unconfirmed") in rig.events(first)
+    rig.minutes["BTCUSDT"] = minute_rows(low="99")  # back above the stop
+    rig.client.cancel_error = None
+    second = await rig.tick()
+    # The recorded stop is a latch: the recovery does not stop the retry.
+    assert ("BTCUSDT", "partial_entry_cancel_sent") in rig.events(second)
+    assert len(rig.client.cancels) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_decision_record_failure_does_not_abort_the_tick(rig: Rig) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+
+    async def boom(*args, **kwargs):
+        raise TrendStateBlocked("state unavailable")
+
+    rig.state.record_exit_decision = boom  # type: ignore[method-assign]
+    result = await rig.tick()  # must not raise out of the tick
+    assert ("BTCUSDT", "blocked") in rig.events(result)
+    # The action the just-computed decision calls for still runs.
+    assert ("BTCUSDT", "partial_entry_cancel_sent") in rig.events(result)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_1m_fetch_still_manages_a_stopped_out_4h_close(
+    rig: Rig,
+) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = RuntimeError("klines down")
+    rig.bars["BTCUSDT"] = trend_bars("BUY", last="94", past="90")
+    result = await rig.tick()
+    assert ("BTCUSDT", "partial_entry_exit_decided") in rig.events(result)
+    assert len(rig.client.cancels) == 1
+    assert len(rig.client.sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_cancel_still_sends_no_exit(rig: Rig) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    rig.client.cancel_error = TimeoutError("read timeout")
+    result = await rig.tick()
+    assert ("BTCUSDT", "partial_entry_cancel_unconfirmed") in rig.events(result)
+    assert len(rig.client.sends) == 1  # the entry only
+    assert rig.state.calls["reserve_exit_intent"] == 0
+    signal = next(iter(rig.state.signals.values()))
+    assert signal.exit_reason == EXIT_HARD_STOP  # the decision is still durable
+
+
+@pytest.mark.asyncio
+async def test_the_kill_switch_counts_a_stop_on_the_day_it_fired(rig: Rig) -> None:
+    """A stop proven while the entry works is counted though nothing closed."""
+    for symbol in ("ETHUSDT", "SOLUSDT"):
+        rig.state.seed_holding(
+            symbol=symbol,
+            state="blocked",
+            exit_reason=EXIT_HARD_STOP,
+            exit_at=NOW - dt.timedelta(hours=1),
+        )
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    result = await rig.tick()
+    assert rig.client.sends == []
+    assert any("consecutive_hard_stop_limit_reached" in e.event for e in result.events)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_from_another_utc_day_does_not_count(rig: Rig) -> None:
+    for symbol in ("ETHUSDT", "SOLUSDT"):
+        rig.state.seed_holding(
+            symbol=symbol,
+            state="blocked",
+            exit_reason=EXIT_HARD_STOP,
+            exit_at=NOW - dt.timedelta(days=1, hours=1),
+        )
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.auto_fill = True
+    result = await rig.tick()
+    assert not any("entry_refused" in e.event for e in result.events)
+    assert rig.client.sends[0]["symbol"] == "BTCUSDT"
 
 
 @pytest.mark.asyncio
@@ -1320,19 +1541,7 @@ async def test_no_alarm_while_the_partial_entry_is_above_its_stop(rig: Rig) -> N
     rig.minutes["BTCUSDT"] = minute_rows(low="99")
     result = await rig.tick()
     assert "partial_entry_stop_breached" not in [e.event for e in result.events]
-    assert len(rig.client.sends) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_failed_1m_fetch_still_alarms_on_a_stopped_out_4h_close(
-    rig: Rig,
-) -> None:
-    _partial_rig(rig)
-    await rig.tick()
-    rig.minutes["BTCUSDT"] = RuntimeError("klines down")
-    rig.bars["BTCUSDT"] = trend_bars("BUY", last="94", past="90")
-    result = await rig.tick()
-    assert [e.event for e in result.events].count("partial_entry_stop_breached") == 1
+    assert rig.client.cancels == []
     assert len(rig.client.sends) == 1
 
 
@@ -1370,5 +1579,6 @@ async def test_an_uncertain_entry_found_partially_filled_still_alarms_and_blocks
     assert "reconciled_no_fill" not in names
     signal = next(iter(rig.state.signals.values()))
     assert rig.state.intents[signal.entry_client_order_id].state == "uncertain"
-    assert len(rig.client.sends) == 1  # no resend, no exit
+    assert len(rig.client.sends) == 1  # no resend, no cancel, no exit
+    assert rig.client.cancels == []
     assert rig.state.calls["reserve_exit_intent"] == 0

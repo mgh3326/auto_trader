@@ -97,6 +97,37 @@ QUERY_ORDER_PARTIAL = QUERY_ORDER_FILLED.replace(
     '"status": "FILLED"', '"status": "PARTIALLY_FILLED"'
 ).replace('"executedQty": "0.600"', '"executedQty": "0.300"')
 
+# DELETE /fapi/v1/order?symbol=&origClientOrderId= (cancel the remainder of a
+# working entry). Binance answers with the cancelled order: the executed
+# quantity of the partial fill stays part of the position.
+CANCEL_ORDER_CANCELED = """{
+  "avgPrice": "99874.50000",
+  "clientOrderId": "trend-abc",
+  "cumQuote": "19974.90000",
+  "executedQty": "0.200",
+  "orderId": 22542179,
+  "origQty": "0.600",
+  "origType": "MARKET",
+  "price": "0.00",
+  "reduceOnly": false,
+  "side": "BUY",
+  "positionSide": "BOTH",
+  "status": "CANCELED",
+  "closePosition": false,
+  "symbol": "BTCUSDT",
+  "time": 1766000000100,
+  "timeInForce": "GTC",
+  "type": "MARKET",
+  "updateTime": 1766000000999,
+  "workingType": "CONTRACT_PRICE",
+  "priceProtect": false
+}"""
+
+# A cancel answer that does not name the order it cancelled: never trusted.
+CANCEL_ORDER_NO_ECHO = CANCEL_ORDER_CANCELED.replace(
+    '  "clientOrderId": "trend-abc",\n', ""
+)
+
 # GET /fapi/v2/positionRisk (all symbols, one-way). Note the string flags
 # (``isAutoAddMargin: "false"``) and numeric-looking strings everywhere.
 POSITION_RISK_ALL = """[
