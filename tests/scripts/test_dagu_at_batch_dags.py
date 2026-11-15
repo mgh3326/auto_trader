@@ -5,7 +5,8 @@ proposals: nothing registers them. This test pins, per DAG, the Prefect
 deployment it replaces, its schedule (KST in the header, UTC in ``schedule``
 with an explicit ``CRON_TZ=UTC`` prefix, because the OCI Dagu server runs with
 ``tz: Asia/Seoul`` and reads a bare cron as KST),
-the one command each step may run, and the failure alert path. It does not call
+the one command each step may run, and the handlers (one journal line for Grafana,
+then an optional ping; hk 4020). It does not call
 Dagu, Prefect, Docker or a database.
 
 Set ``AT_BATCH_DAG_DIR`` to point the check at a scratch copy (used to show that
@@ -24,7 +25,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 DAG_DIR = Path(os.environ.get("AT_BATCH_DAG_DIR") or ROOT / "deploy/dagu/at-batch")
 DATA_PLANE_DIR = ROOT / "deploy/dagu/data-plane"
+AT_DAILY_DIR = ROOT / "deploy/dagu/at-daily"
 RUNBOOK = ROOT / "docs/runbooks/dagu-batch1-cutover.md"
+JOURNAL_TAG = "at-dagu-batch"
+# The daily account DAG (hk 3872) is checked here too, because its handlers use
+# the same journal-then-optional-ping shape (hk 4020).
+ACCOUNT_VALUE_STEM = "at-account-value-snapshot"
+ACCOUNT_VALUE_PING = "AT_BATCH_PING_URL_ACCOUNT_VALUE_SNAPSHOT"
 
 DOCKER = (
     "docker run --rm --network host --workdir /app "
@@ -306,6 +313,34 @@ def _load(stem: str) -> tuple[str, dict]:
     return text, yaml.safe_load(text)
 
 
+def _handler_commands(stem: str, ping: str) -> tuple[str, str]:
+    """The exact success/failure handler: one journal line first, then an optional ping.
+
+    The journal line is what Grafana reads (``docs/runbooks/dagu-batch1-cutover.md``
+    §Grafana 기록). The ping runs only when its env var is non-empty, so a DAG
+    without a healthchecks URL still records its outcome.
+    """
+    success = (
+        f'logger -t {JOURNAL_TAG} "dag={stem} status=success"; '
+        f'[ -z "${{{ping}:-}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{ping}}}"'
+    )
+    failure = (
+        f'logger -t {JOURNAL_TAG} "dag={stem} status=failure"; '
+        f'[ -z "${{{ping}:-}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{ping}}}/fail"'
+    )
+    return success, failure
+
+
+DAG_PINGS: dict[str, str] = {
+    **{stem: job["ping"] for stem, job in JOBS.items()},
+    ACCOUNT_VALUE_STEM: ACCOUNT_VALUE_PING,
+}
+
+
+def _all_dag_paths() -> list[Path]:
+    return sorted(DAG_DIR.glob("*.yaml")) + sorted(AT_DAILY_DIR.glob("*.yaml"))
+
+
 def test_exactly_the_eleven_documented_dags_exist():
     assert sorted(p.stem for p in DAG_DIR.glob("*.yaml")) == sorted(JOBS)
 
@@ -431,6 +466,22 @@ def test_commit_flag_is_literal_only_where_prefect_always_committed(stem):
         assert "--dry-run" not in command  # Prefect ran dry_run=False
 
 
+@pytest.mark.parametrize("path", _all_dag_paths(), ids=lambda p: p.stem)
+def test_every_dag_writes_one_journal_line_before_an_optional_ping(path):
+    """Acceptance 1 (hk 4020): both directories, both handlers, exact shape.
+
+    A DAG with no handler, a DAG whose journal line is missing or not first, or a
+    ping that is not guarded by its env var fails here.
+    """
+    dag = yaml.safe_load(path.read_text())
+    ping = DAG_PINGS.get(path.stem)
+    assert ping, f"{path.stem} has no pinned ping name"
+    success, failure = _handler_commands(path.stem, ping)
+    handlers = dag["handler_on"]
+    assert handlers["success"]["command"] == success
+    assert handlers["failure"]["command"] == failure
+
+
 @pytest.mark.parametrize("stem", sorted(JOBS))
 def test_every_dag_is_single_flight_bounded_and_alerts_on_failure(stem):
     text, dag = _load(stem)
@@ -441,16 +492,10 @@ def test_every_dag_is_single_flight_bounded_and_alerts_on_failure(stem):
     assert all(
         isinstance(s["timeout_sec"], int) and s["timeout_sec"] > 0 for s in dag["steps"]
     )
-    ping = job["ping"]
+    success, failure = _handler_commands(stem, job["ping"])
     handlers = dag["handler_on"]
-    assert (
-        handlers["success"]["command"]
-        == f'curl -fsS -m 10 --retry 3 -o /dev/null "${{{ping}}}"'
-    )
-    assert (
-        handlers["failure"]["command"]
-        == f'curl -fsS -m 10 --retry 3 -o /dev/null "${{{ping}}}/fail"'
-    )
+    assert handlers["success"]["command"] == success
+    assert handlers["failure"]["command"] == failure
     # continue_on makes Dagu end partially_succeeded and fire the *success* handler.
     assert "continue_on" not in dag["steps"][0]
     assert not re.search(

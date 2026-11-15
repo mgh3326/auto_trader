@@ -143,15 +143,16 @@ def test_a_failing_account_does_not_stop_the_others_and_the_run_ends_failed():
         # ping instead of the failure ping.
         assert "continue_on" not in step, step["name"]
     handlers = dag["handler_on"]
-    # The ping is optional: with no URL in the dotenv the handler skips it
+    # Each handler writes one journal line first (Grafana reads it; hk 4020). The
+    # ping is optional after it: with no URL in the dotenv the handler skips it
     # (healthchecks free-tier check limit); with a URL it pings as before.
     assert (
         handlers["failure"]["command"]
-        == f'[ -z "${{{PING}}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}/fail"'
+        == f'logger -t at-dagu-batch "dag={STEM} status=failure"; [ -z "${{{PING}:-}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}/fail"'
     )
     assert (
         handlers["success"]["command"]
-        == f'[ -z "${{{PING}}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}"'
+        == f'logger -t at-dagu-batch "dag={STEM} status=success"; [ -z "${{{PING}:-}}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${{{PING}}}"'
     )
 
 
