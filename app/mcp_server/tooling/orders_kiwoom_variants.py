@@ -632,6 +632,42 @@ async def _mark_kiwoom_signal_outcome(
         )
 
 
+async def _mark_kiwoom_signal_not_sent(
+    signal_recorder: KiwoomMockSignalRecorder | None,
+    attribution: KiwoomMockAttribution | None,
+    *,
+    reason: str,
+    detail_patch: dict[str, Any],
+) -> None:
+    """Close the signal out as not sent for a provably unsent refusal.
+
+    Only refusals that never handed an order to the broker reach this function;
+    a dispatch that may have been transmitted keeps today's labelling. The write
+    is a compare-and-set on ``outcome_state='recorded'`` (see
+    ``mark_signal_not_sent``), so replaying a correlation id cannot relabel an
+    order an earlier attempt already closed.
+
+    Best-effort by design: the attribution is already durable, so a failure
+    here degrades the outcome label. It must never change the refusal the
+    caller receives.
+    """
+    if signal_recorder is None or attribution is None:
+        return
+    try:
+        await signal_recorder.mark_not_sent(
+            correlation_id=attribution.correlation_id,
+            reason=reason,
+            detail_patch=detail_patch,
+        )
+    except Exception as exc:  # noqa: BLE001 - must not mask the refusal
+        logger.warning(
+            "kiwoom_mock signal not-sent update failed correlation_id=%s reason=%s: %s",
+            attribution.correlation_id,
+            reason,
+            type(exc).__name__,
+        )
+
+
 async def _release_after_pre_dispatch_error(
     recorder: KiwoomMockPlaceRecorder, reservation: SendReservation
 ) -> bool:
@@ -800,8 +836,27 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
             account_client=account_client,
         )
     except KiwoomPreDispatchError as exc:
+        await _mark_kiwoom_signal_not_sent(
+            signal_recorder,
+            kiwoom_attribution,
+            reason="preflight_refused",
+            detail_patch={
+                "status": "not_submitted",
+                "stage": exc.stage,
+                "cause_type": exc.cause_type,
+            },
+        )
         return _not_submitted_response(base_response, exc)
     except Exception as exc:  # noqa: BLE001 - preflight must fail closed
+        await _mark_kiwoom_signal_not_sent(
+            signal_recorder,
+            kiwoom_attribution,
+            reason="preflight_refused",
+            detail_patch={
+                "status": "not_submitted",
+                "error_class": type(exc).__name__,
+            },
+        )
         return {
             "success": False,
             **base_response,
@@ -818,6 +873,15 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         )
         response["dry_run"] = dry_run
         response["exchange"] = str(exchange).strip().upper()
+        await _mark_kiwoom_signal_not_sent(
+            signal_recorder,
+            kiwoom_attribution,
+            reason="preflight_refused",
+            detail_patch={
+                "status": "not_submitted",
+                "error_code": preflight.error_code,
+            },
+        )
         return response
 
     if dry_run:
@@ -859,11 +923,34 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
             idempotency_key=client_order_id, symbol=symbol, side=str(side)
         )
     except DuplicateOrderIntent:
-        return await _duplicate_intent_response(
+        response = await _duplicate_intent_response(
             base_response, client_order_id, recorder
         )
+        await _mark_kiwoom_signal_not_sent(
+            signal_recorder,
+            kiwoom_attribution,
+            reason="duplicate_intent",
+            detail_patch={
+                "status": "not_submitted",
+                "client_order_id": client_order_id,
+                "existing_ledger_status": response.get("existing_ledger_status"),
+                "reconcile_required": response.get("reconcile_required"),
+            },
+        )
+        return response
     except Exception as exc:  # noqa: BLE001 - cannot prove the guard: do not send
-        return _intent_unavailable_response(base_response, client_order_id, exc)
+        response = _intent_unavailable_response(base_response, client_order_id, exc)
+        await _mark_kiwoom_signal_not_sent(
+            signal_recorder,
+            kiwoom_attribution,
+            reason="send_intent_unavailable",
+            detail_patch={
+                "status": "not_submitted",
+                "client_order_id": client_order_id,
+                "error_class": type(exc).__name__,
+            },
+        )
+        return response
 
     ledger_kwargs: dict[str, Any] = {
         "client_order_id": client_order_id,
@@ -895,6 +982,18 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         released = await _release_after_pre_dispatch_error(recorder, reservation)
         response = _not_submitted_response(base_response, exc)
         response["reservation_released"] = released
+        await _mark_kiwoom_signal_not_sent(
+            signal_recorder,
+            kiwoom_attribution,
+            reason="pre_dispatch_error",
+            detail_patch={
+                "status": "not_submitted",
+                "client_order_id": client_order_id,
+                "stage": exc.stage,
+                "cause_type": exc.cause_type,
+                "reservation_released": released,
+            },
+        )
         return response
     except Exception as exc:  # noqa: BLE001 - post-dispatch: may have been sent
         # I3: uncertain row, reservation kept, never resent.

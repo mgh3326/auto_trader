@@ -274,6 +274,33 @@ class FakeKiwoomSignalRecorder:
         )
         return 1
 
+    async def mark_not_sent(
+        self,
+        *,
+        correlation_id: str,
+        reason: str,
+        detail_patch: dict[str, Any] | None = None,
+    ) -> int:
+        """Mirror ``mark_signal_not_sent``: compare-and-set on ``recorded``.
+
+        A row a real dispatch already closed is never relabelled, so the
+        overwrite protection the SQL predicate gives is visible to unit tests.
+        """
+        self.events.append(f"signal_not_sent:{reason}")
+        if self.mark_error is not None:
+            raise self.mark_error
+        if any(row["correlation_id"] == correlation_id for row in self.outcomes):
+            return 0
+        self.outcomes.append(
+            {
+                "correlation_id": correlation_id,
+                "outcome_state": "suppressed",
+                "suppressed_reason": reason,
+                "detail_patch": detail_patch,
+            }
+        )
+        return 1
+
 
 def _install_fake_signal_recorder(
     monkeypatch, mod, recorder: FakeKiwoomSignalRecorder | None = None

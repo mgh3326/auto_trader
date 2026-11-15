@@ -254,6 +254,58 @@ async def mark_signal_outcome(
     return int(result.rowcount or 0)
 
 
+NOT_SENT_OUTCOME = "suppressed"
+#: Closed vocabulary of refusals that provably sent no order. Widening this set
+#: is a contract change: every reason must be a path where the broker never
+#: received an order for the signal.
+NOT_SENT_REASONS: tuple[str, ...] = (
+    "preflight_refused",
+    "duplicate_intent",
+    "send_intent_unavailable",
+    "pre_dispatch_error",
+)
+
+
+async def mark_signal_not_sent(
+    db: AsyncSession,
+    *,
+    correlation_id: str,
+    reason: str,
+    detail_patch: dict[str, Any] | None = None,
+) -> int:
+    """Mark a signal whose order provably never left the process.
+
+    ``suppressed`` is the vocabulary's not-sent value (the same one kis_mock's
+    ``record_signal`` writes for ``decision='no_order'``).
+
+    The write is a compare-and-set on ``outcome_state='recorded'``: a row an
+    earlier dispatch already closed — ``submitted``, ``failed`` or
+    ``suppressed`` — is never relabelled. That matters because a replayed
+    correlation id reaches this function from a *duplicate-intent* refusal, and
+    the first attempt under that key may well have placed a real order.
+    """
+    if reason not in NOT_SENT_REASONS:
+        raise ValueError(f"unknown kiwoom_mock not-sent reason: {reason!r}")
+    values: dict[str, Any] = {
+        "outcome_state": NOT_SENT_OUTCOME,
+        "suppressed_reason": reason,
+    }
+    if detail_patch:
+        values["detail"] = KiwoomMockSignalLedger.detail.op("||")(
+            cast(detail_patch, JSONB)
+        )
+    result = await db.execute(
+        update(KiwoomMockSignalLedger)
+        .where(
+            KiwoomMockSignalLedger.correlation_id == correlation_id,
+            KiwoomMockSignalLedger.outcome_state == "recorded",
+        )
+        .values(**values)
+    )
+    await db.commit()
+    return int(result.rowcount or 0)
+
+
 class KiwoomMockSignalRecorder:
     """Session-per-operation facade used by the KR place path."""
 
@@ -281,14 +333,32 @@ class KiwoomMockSignalRecorder:
                 detail_patch=detail_patch,
             )
 
+    async def mark_not_sent(
+        self,
+        *,
+        correlation_id: str,
+        reason: str,
+        detail_patch: dict[str, Any] | None = None,
+    ) -> int:
+        async with self._session_factory() as db:
+            return await mark_signal_not_sent(
+                db,
+                correlation_id=correlation_id,
+                reason=reason,
+                detail_patch=detail_patch,
+            )
+
 
 __all__ = (
     "ACCOUNT_SCOPE",
     "KiwoomMockAttribution",
     "KiwoomMockSignalRecorder",
     "MissingAttribution",
+    "NOT_SENT_OUTCOME",
+    "NOT_SENT_REASONS",
     "SignalStrategyConflict",
     "mint_correlation_id",
+    "mark_signal_not_sent",
     "mark_signal_outcome",
     "record_signal",
     "resolve_attribution",
