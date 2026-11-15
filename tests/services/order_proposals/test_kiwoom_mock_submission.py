@@ -381,3 +381,45 @@ async def test_shape_refusals_happen_before_any_send(
     assert stub.posts == []
     assert recorder.events == []
     assert signal_recorder.events == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_refusal_is_a_terminal_rejection(monkeypatch):
+    """hk 4732 r1: a refused preflight is not sent, so it must not stay open.
+
+    The preflight is a read-only account/quote check that runs before the send
+    reservation; a refusal there must reach ``_classify_submit`` as an explicit
+    rejection (releasing the buying-power reservation) rather than as an
+    ambiguous ``unverified`` send.
+    """
+    from app.services import kiwoom_mock_place
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_CASH_INSUFFICIENT,
+        PreflightResult,
+    )
+
+    recorder, signal_recorder, stub = _wire(monkeypatch)
+
+    async def failing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_CASH_INSUFFICIENT,
+            error_detail="cash 1 < required 210000",
+            checks=[],
+        )
+
+    monkeypatch.setattr(
+        kiwoom_mock_place, "run_kiwoom_mock_preflight", failing_preflight
+    )
+
+    submit = await _call()
+
+    # Nothing was reserved and nothing was sent.
+    assert stub.posts == []
+    assert recorder.events == []
+    # Closed vocabulary: provably not sent, so the rung becomes rejected.
+    assert submit["status"] == "not_submitted"
+    assert submit["success"] is False
+    assert submit["error"] == PREFLIGHT_CASH_INSUFFICIENT
+    # The durable signal row says not-sent instead of "outcome unknown".
+    assert signal_recorder.events == ["signal", "signal_not_sent:preflight_refused"]

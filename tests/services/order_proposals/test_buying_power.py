@@ -921,9 +921,21 @@ def test_buying_power_advisory_allow_set_contains_kiwoom_mock():
 
 
 @pytest.mark.unit
-def test_kiwoom_mock_place_still_not_submittable():
-    """Advisory only: the submission gate (T-P5) is unchanged."""
-    with pytest.raises(OrderProposalUnsupportedTargetAction):
+def test_kiwoom_mock_place_is_submittable_and_target_actions_are_not():
+    """T-P5 (hk 4732) lands the place capability; replace/cancel stay closed.
+
+    The advisory (this module's reader) and the submission gate are separate
+    questions: opening place must not open a broker order a proposal could
+    target for cancel/replace.
+    """
+    assert (
         check_action_capability(
             action="place", account_mode="kiwoom_mock", market="equity_kr"
         )
+        == "place"
+    )
+    for action in ("replace", "cancel"):
+        with pytest.raises(OrderProposalUnsupportedTargetAction):
+            check_action_capability(
+                action=action, account_mode="kiwoom_mock", market="equity_kr"
+            )

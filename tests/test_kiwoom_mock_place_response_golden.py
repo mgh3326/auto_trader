@@ -347,3 +347,57 @@ async def test_place_response_matches_the_frozen_golden(case, monkeypatch):
     normalised = json.loads(json.dumps(response, sort_keys=True, default=str))
     assert normalised == GOLDEN[case]["response"]
     assert recorder.events == GOLDEN[case]["events"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_refusal_carries_the_not_submitted_markers(monkeypatch):
+    """hk 4732 r1: one deliberate delta from the base head.
+
+    A refused preflight now also says ``status="not_submitted"``,
+    ``dispatch_started=False`` and ``reconcile_required=False``, so a submit
+    caller cannot read a read-only check refusal as an ambiguous send. Every
+    other scenario in this module is byte-identical to the base dump.
+    """
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_SELLABLE_EXCEEDED,
+        PreflightCheck,
+        PreflightResult,
+    )
+
+    recorder = FakeKiwoomPlaceRecorder()
+    signal_recorder = FakeKiwoomSignalRecorder()
+
+    async def failing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_SELLABLE_EXCEEDED,
+            error_detail="requested=10, sellable=5",
+            checks=[PreflightCheck("sellable", False, "requested=10, sellable=5")],
+        )
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "_new_place_recorder", lambda: recorder)
+    monkeypatch.setattr(mod, "_new_signal_recorder", lambda: signal_recorder)
+    monkeypatch.setattr(mod, "_new_kiwoom_mock_client", lambda: object())
+    monkeypatch.setattr(mod, "_utc_now", lambda: FROZEN_NOW)
+    monkeypatch.setattr(mod, "_run_preflight_for_kiwoom_mock", failing_preflight)
+    mcp = DummyMCP()
+    mod.register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="sell",
+        quantity=10,
+        price=70000,
+        strategy="unit-test",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False
+    assert response["error"] == PREFLIGHT_SELLABLE_EXCEEDED
+    assert response["status"] == "not_submitted"
+    assert response["dispatch_started"] is False
+    assert response["reconcile_required"] is False
+    assert recorder.events == []

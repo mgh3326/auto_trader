@@ -201,6 +201,14 @@ def preflight_to_response(
     if not result.ok:
         response["error"] = result.error_code
         response["error_detail"] = result.error_detail
+        # hk 4732 r1: a refused preflight is a read-only account/quote check
+        # that never reached the order TR. Say so in the same closed vocabulary
+        # the other refusals use, so a submit caller cannot mistake it for an
+        # ambiguous send (it would otherwise be recorded `unverified` and keep
+        # the buying-power reservation).
+        response["status"] = "not_submitted"
+        response["dispatch_started"] = False
+        response["reconcile_required"] = False
     response.update(result.to_response_extras())
     return response
 
@@ -688,6 +696,11 @@ async def place_kiwoom_mock_order(
             "success": False,
             **base_response,
             "error": f"kiwoom_mock_place_order preflight failed: {type(exc).__name__}",
+            # Same closed not-sent vocabulary as every other pre-POST refusal:
+            # the preflight is a read, so nothing reached the order TR.
+            "status": "not_submitted",
+            "dispatch_started": False,
+            "reconcile_required": False,
         }
     if not preflight.ok:
         response = preflight_to_response(
