@@ -223,13 +223,43 @@ class RunnerHeartbeat:
                 "trend runner heartbeat stamp deferred error_class=%s",
                 type(exc).__name__,
             )
+            # The failed statement left the transaction aborted. Without this
+            # rollback every later stamp would fail (SQLAlchemy
+            # PendingRollbackError / "current transaction is aborted") and the
+            # heartbeat would silently stop while this method kept saying True.
+            if not await self._recover(conn):
+                return False
             return True
+        return True
+
+    async def _recover(self, conn: Any) -> bool:
+        """End the aborted transaction; ``False`` only if the backend is gone."""
+        try:
+            await conn.rollback()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if _connection_lost(exc):
+                logger.exception("trend runner liveness connection lost in rollback")
+                self._conn = None
+                await self._discard(conn)
+                return False
+            logger.warning(
+                "trend runner heartbeat rollback deferred error_class=%s",
+                type(exc).__name__,
+            )
         return True
 
     async def close(self) -> None:
         conn, self._conn = self._conn, None
         if conn is None:
             return
+        try:
+            # A stamp may have left an aborted transaction open; end it so the
+            # unlock is not refused with "current transaction is aborted".
+            await conn.rollback()
+        except Exception:
+            logger.warning("trend runner heartbeat rollback before unlock failed")
         try:
             await conn.scalar(_UNLOCK_SQL, {"key": self._key})
             await conn.commit()

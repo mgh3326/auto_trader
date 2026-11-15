@@ -408,6 +408,8 @@ class FakeConnection:
         self.closed = False
         self.invalidated = False
         self.stamps = 0
+        self.ok_stamps = 0
+        self.rollbacks = 0
 
     async def scalar(self, statement, params=None):
         sql = str(statement)
@@ -421,11 +423,18 @@ class FakeConnection:
             self.stamps += 1
             if self.engine.stamp_error is not None:
                 raise self.engine.stamp_error
+            self.ok_stamps += 1
             return 1
         raise AssertionError(sql)
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def rollback(self) -> None:
+        # A rollback ends the aborted transaction, so a modelled transient
+        # statement error recovers -- exactly what the real connection needs.
+        self.rollbacks += 1
+        self.engine.stamp_error = None
 
     async def invalidate(self) -> None:
         self.invalidated = True
@@ -473,15 +482,19 @@ async def test_the_loop_pins_one_connection_stamps_and_unlocks_it():
 
 
 @pytest.mark.asyncio
-async def test_a_transient_stamp_error_keeps_the_lock_and_the_loop():
+async def test_a_transient_stamp_error_rolls_back_and_the_next_stamp_works():
     engine = FakeEngine(stamp_error=RuntimeError("statement cancelled"))
     heartbeat = RunnerHeartbeat(engine)
     assert await heartbeat.open() is control.LivenessOpen.ACQUIRED
     conn = engine.connections[0]
-    assert await heartbeat.stamp() is True  # logged, next tick retries
+    assert await heartbeat.stamp() is True  # logged, transaction rolled back
+    assert conn.rollbacks == 1
     assert heartbeat._conn is conn and conn.invalidated is False
-    engine.stamp_error = None
+    # No manual reset: the rollback ended the aborted transaction, so the
+    # pinned connection is usable again instead of failing every later stamp.
     assert await heartbeat.stamp() is True
+    # The second stamp really ran a healthy query (not just returned True).
+    assert conn.stamps == 2 and conn.ok_stamps == 1
 
 
 @pytest.mark.asyncio
