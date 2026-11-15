@@ -280,8 +280,10 @@ async def test_unmeasured_account_row_carries_reason_and_server_side_flag(
 
 
 @pytest.mark.asyncio
-async def test_unreadable_confirmations_degrade_to_not_confirmed(monkeypatch):
-    """Pre-migration deploys lack review.account_flow_confirmations: the
+async def test_unreadable_flow_confirmation_tables_degrade_to_not_confirmed(
+    monkeypatch,
+):
+    """Pre-migration deploys may lack a flow confirmation table: the
     coverage read fails inside a savepoint and every account row reports
     flows_complete=false with flows_not_confirmed instead of 500ing."""
 
@@ -306,6 +308,7 @@ async def test_unreadable_confirmations_degrade_to_not_confirmed(monkeypatch):
                 return await super().execute(statement, params)
             if self.first_read:
                 self.first_read = False
+                assert "account_flow_confirmation_revocations" in str(statement)
                 raise self.error
             return await super().execute(statement, params)
 

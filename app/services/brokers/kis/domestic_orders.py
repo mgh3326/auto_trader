@@ -13,10 +13,11 @@ from . import constants
 from .account_no import resolve_kis_account_parts
 from .base import _log_kis_api_failure
 from .live_shadow_witness import (
-    current as current_live_shadow_witness,
+    LiveShadowWitness,
+    report_observation_failure,
 )
 from .live_shadow_witness import (
-    report_observation_failure,
+    current as current_live_shadow_witness,
 )
 from .order_throttle import (
     MAX_THROTTLE_RESUBMITS,
@@ -38,6 +39,16 @@ if TYPE_CHECKING:
 # fail-closed(RuntimeError). KR live mutation 경로(order/cancel/modify)의 무한 재-POST
 # 및 실 주문 다중 제출 리스크를 차단한다.
 _MAX_TOKEN_REFRESH_RESUBMITS = 1
+
+
+def _capture_witness_echo(
+    witness: LiveShadowWitness, response: dict[str, object]
+) -> None:
+    """Observation only: never alter the order call or its result."""
+    try:
+        witness.capture_raw_echo(response)
+    except Exception:
+        report_observation_failure("kis_live_witness_echo_capture_failed")
 
 
 async def _domestic_exchange_route(stock_code: str, *, is_mock: bool) -> str:
@@ -420,11 +431,17 @@ class DomesticOrderClient:
         )
 
         witness = current_live_shadow_witness()
-        if witness is not None:
-            try:
-                witness.capture_raw_echo(js)
-            except Exception:
-                report_observation_failure("kis_live_witness_echo_capture_failed")
+
+        def capture_final_rejection() -> None:
+            # Only a response that ends this call is a witness echo, and only a
+            # proven not-created outcome is a broker rejection. A 5xx body keeps
+            # the outcome UNKNOWN (send_outcome.mark_provider_rejected), so it is
+            # not recorded as a rejection.
+            if (
+                witness is not None
+                and outcome.disposition is OrderSendDisposition.NOT_CREATED
+            ):
+                _capture_witness_echo(witness, js)
 
         if js.get("rt_cd") != "0":
             outcome.mark_provider_rejected()
@@ -449,6 +466,7 @@ class DomesticOrderClient:
                         stock_code,
                         order_type,
                     )
+                    capture_final_rejection()
                     raise RuntimeError(error_msg)
                 logging.warning(
                     "국내주식 주문 토큰 만료(%s) - 토큰 재발급 후 재전송(%d/%d) "
@@ -530,8 +548,13 @@ class DomesticOrderClient:
                         order_type,
                     )
 
+            capture_final_rejection()
+
             error_msg = f"{msg_cd} {msg1}"
             raise RuntimeError(error_msg)
+
+        if witness is not None:
+            _capture_witness_echo(witness, js)
 
         output = js.get("output", {})
 

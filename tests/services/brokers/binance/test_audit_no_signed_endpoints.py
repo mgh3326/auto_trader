@@ -107,6 +107,10 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # appears only in table/column names and the docstring. Registered
         # in app/models/__init__.py (already allow-listed above).
         "app/models/binance_h5.py",
+        # hk 4702 — the TREND-TSMOM-v1 durable-state ORM model (same precedent as
+        # binance_h5.py): persistence only, review.binance_trend_* tables, no
+        # HTTP/WS, signing, credential, or endpoint behavior.
+        "app/models/binance_trend.py",
         "app/models/__init__.py",
         # hk 3816 — retro/v1 mock_experiments read model maps the closed
         # mock venue literals (binance_spot_demo/binance_futures_demo) to their

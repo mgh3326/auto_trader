@@ -160,7 +160,13 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v64 (ROB-1460): review.lot_exit_plans and review.mechanical_loss_cut_decisions
 # are new ORM tables. The production migration is 20261102_rob1460_exit_plans.
 # v65 (hk 2690): the position baseline uses separate Core metadata.
-SCHEMA_BOOTSTRAP_VERSION = 68
+# v69 (hk 4703): review.kiwoom_mock_order_ledger / kiwoom_mock_signal_ledger
+# are new ORM tables (create_all); order_proposals.account_mode is refreshed
+# to admit 'kiwoom_mock' on persistent test DBs (see the helper below).
+# v70 (hk 4702): review.binance_trend_signals / binance_trend_intents (new ORM
+# tables via create_all) and their guard triggers, loaded from the production
+# migration 20261114_hk4702_trend_state so the DB tests run its exact DDL.
+SCHEMA_BOOTSTRAP_VERSION = 70
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2384,8 +2390,8 @@ BEFORE INSERT OR UPDATE ON review.kis_mock_order_ledger
 FOR EACH ROW
 EXECUTE FUNCTION review.kis_mock_q46_fill_writer_lock()
 """,
-    # ---- hk 4282: review.account_flow_confirmations has no ORM model, so
-    # create_all never makes it. Mirror the table/trigger DDL from
+    # ---- hk 4282/4617: flow confirmations and their revocations have no ORM
+    # model, so create_all never makes them. Mirror their table/trigger DDL from
     # alembic/versions/20261113_hk4282_flow_confirmations.py plus the shared
     # immutable function from 20261110_hk3800_account_value.py.
     """
@@ -2410,6 +2416,45 @@ END $$
     "CREATE TRIGGER account_flow_confirmations_immutable "
     "BEFORE UPDATE OR DELETE OR TRUNCATE ON review.account_flow_confirmations "
     "FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()",
+    """
+CREATE TABLE IF NOT EXISTS review.account_flow_confirmation_revocations (
+    confirmation_id BIGINT PRIMARY KEY REFERENCES
+        review.account_flow_confirmations(id),
+    revoked_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    revoked_by TEXT NOT NULL CHECK (length(trim(revoked_by)) > 0),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) > 0)
+)
+""",
+    "DROP TRIGGER IF EXISTS account_flow_confirmation_revocations_immutable "
+    "ON review.account_flow_confirmation_revocations",
+    "CREATE TRIGGER account_flow_confirmation_revocations_immutable "
+    "BEFORE UPDATE OR DELETE OR TRUNCATE "
+    "ON review.account_flow_confirmation_revocations "
+    "FOR EACH STATEMENT EXECUTE FUNCTION review.account_value_immutable()",
+    # at_app is a cluster-global PostgreSQL role. Each xdist worker bootstraps
+    # a separate database in the same cluster, so make concurrent bootstrap
+    # attempts idempotent and never drop the shared role from a test. A worker
+    # that sees the role already committed gets duplicate_object; a worker that
+    # raced another worker's still-uncommitted CREATE ROLE waits on the
+    # pg_authid name index and then gets unique_violation. Both mean the role
+    # exists.
+    """
+DO $$ BEGIN
+    CREATE ROLE at_app NOLOGIN;
+EXCEPTION WHEN duplicate_object OR unique_violation THEN
+    NULL;
+END $$
+""",
+    """
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
+        GRANT USAGE ON SCHEMA review TO at_app;
+        GRANT SELECT, INSERT ON review.account_flow_confirmations TO at_app;
+        GRANT SELECT, INSERT
+            ON review.account_flow_confirmation_revocations TO at_app;
+    END IF;
+END $$
+""",
 )
 
 
@@ -2434,6 +2479,25 @@ def _rob1470_sleeve_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _rob1470_sleeve_ddl()
+
+
+def _binance_trend_guard_ddl() -> tuple[str, ...]:
+    """hk 4702 guard DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261114_hk4702_trend_state.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk4702_trend_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.GUARD_DDL)
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _binance_trend_guard_ddl()
 
 
 # --------------------------------------------------------------------------- #
@@ -2652,6 +2716,44 @@ async def _ensure_alpaca_paper_ledger_account_mode_constraint(conn) -> None:
     )
 
 
+async def _ensure_order_proposals_account_mode_constraint(conn) -> None:
+    """hk 4703: admit 'kiwoom_mock' on order_proposals in persistent test DBs.
+
+    ``create_all`` never alters an existing table, so a persistent test database
+    keeps the pre-kiwoom account_mode CHECK. Drop every account_mode CHECK on the
+    table and recreate the ORM-canonical name with the full vocabulary.
+    """
+    constraints = await conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.order_proposals'::regclass "
+            "AND contype = 'c' "
+            "AND pg_get_constraintdef(oid) LIKE '%account_mode%'"
+        )
+    )
+    rows = list(constraints)
+    if rows and all(
+        "kiwoom_mock" in (definition or "") for _conname, definition in rows
+    ):
+        return
+
+    for conname, _definition in rows:
+        await conn.execute(
+            text(
+                f'ALTER TABLE review.order_proposals DROP CONSTRAINT IF EXISTS "{conname}"'
+            )
+        )
+    await conn.execute(
+        text(
+            "ALTER TABLE review.order_proposals "
+            "ADD CONSTRAINT ck_order_proposals_order_proposals_account_mode "
+            "CHECK (account_mode IN ('kis_live','kis_mock','toss_live','upbit',"
+            "'db_simulated','kiwoom_mock'))"
+        )
+    )
+
+
 async def _assert_approval_dispatch_schema_contract(conn) -> None:
     """Fail bootstrap if a persistent table remains weaker than production."""
     column_result = await conn.execute(
@@ -2844,6 +2946,7 @@ async def apply_test_schema(conn) -> None:
     await _ensure_operator_session_context_created_by_constraint(conn)
     await _ensure_alpaca_paper_ledger_lifecycle_state_constraint(conn)
     await _ensure_alpaca_paper_ledger_account_mode_constraint(conn)
+    await _ensure_order_proposals_account_mode_constraint(conn)
 
     for stmt in _DDL_STATEMENTS:
         await conn.execute(text(stmt))

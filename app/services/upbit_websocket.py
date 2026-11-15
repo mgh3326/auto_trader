@@ -29,6 +29,7 @@ class UpbitMyOrderWebSocket:
         self,
         on_order_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         verify_ssl: bool = True,
+        on_connected: Callable[[], None] | None = None,
     ):
         """
         Args:
@@ -36,12 +37,16 @@ class UpbitMyOrderWebSocket:
                               함수 시그니처: async def callback(order_data: dict) -> None
             verify_ssl: 시그니처 호환용 플래그입니다. False는 지원하지 않으며,
                 인증서 검증은 항상 활성화됩니다.
+            on_connected: 구독 메시지 전송 후, 수신 루프 진입 직전에 호출된다.
+                connect_and_subscribe()는 연결이 끊길 때까지 돌아오지 않으므로
+                "연결 성공"은 이 콜백으로만 알 수 있다.
         """
         if not verify_ssl:
             raise ValueError(_VERIFY_SSL_UNSUPPORTED_MESSAGE)
 
         self.websocket_url = "wss://api.upbit.com/websocket/v1/private"
         self.on_order_callback = on_order_callback
+        self.on_connected = on_connected
         self.verify_ssl = verify_ssl
         self.websocket = None
         self.is_connected = False
@@ -91,19 +96,15 @@ class UpbitMyOrderWebSocket:
                 break
             except Exception as e:
                 self.current_attempt += 1
-                # Only the attempt that exhausts the budget is an error; earlier
-                # attempts are expected reconnects and surface as WARNING.
-                log_reconnect_failure = (
-                    logger.error
-                    if self.current_attempt >= self.max_reconnect_attempts
-                    else logger.warning
-                )
-                log_reconnect_failure(
+                # Every failed attempt is a WARNING, including the one that
+                # exhausts this cycle. The caller (supervisor) decides whether
+                # a sustained outage is an ERROR; the exception still propagates.
+                logger.warning(
                     f"WebSocket 연결 실패 (시도 {self.current_attempt}/{self.max_reconnect_attempts}): {e}"
                 )
 
                 if self.current_attempt >= self.max_reconnect_attempts:
-                    logger.error(
+                    logger.warning(
                         "최대 재연결 시도 횟수에 도달했습니다. 연결을 중단합니다."
                     )
                     break
@@ -157,6 +158,9 @@ class UpbitMyOrderWebSocket:
         subscribe_message = self._create_subscribe_message(coin_pairs)
         await self.websocket.send(json.dumps(subscribe_message))
         logger.info("구독 메시지 전송 완료")
+
+        if self.on_connected is not None:
+            self.on_connected()
 
         # 메시지 수신 루프 시작
         await self._listen_for_messages()
