@@ -28,7 +28,7 @@ from decimal import Decimal
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +57,7 @@ __all__ = (
     "KiwoomMockPlaceRecorder",
     "KiwoomMockTransitionRefused",
     "LedgerReceipt",
+    "journaled_progress",
     "RESERVATION_ACCOUNT_SCOPE",
     "RESERVATION_ACCOUNT_SCOPE_US",
     "SendReservation",
@@ -160,6 +161,32 @@ _LIFECYCLE_FOR_FILL: Final = {"partial": "partial", "filled": "filled"}
 #: present so a replayed run of the same terminal evidence books nothing and
 #: still finds the row.
 _OPEN_FILL_STATUSES: Final = frozenset({"accepted", "pending", "partial", "filled"})
+
+#: Journal progress keys persisted in ``last_reconcile_detail`` (JSONB). The
+#: journal is written per booked delta (hk 4802), and ``journaled_qty`` /
+#: ``journaled_avg`` are the monotonic cumulative markers of what already
+#: journaled — the same place the delta booking already records progress.
+_JOURNALED_QTY_KEY: Final = "journaled_qty"
+_JOURNALED_AVG_KEY: Final = "journaled_avg"
+#: A sell delta that could not fully match its FIFO lots leaves this reason so
+#: the row surfaces for review; cleared once the remainder journals.
+_JOURNAL_MANUAL_REVIEW_KEY: Final = "journal_manual_review"
+
+
+def journaled_progress(row: Any) -> tuple[Decimal, Decimal]:
+    """Quantity and price already journaled for the row (0, 0 when unknown)."""
+    detail = row.last_reconcile_detail or {}
+    raw_qty = detail.get(_JOURNALED_QTY_KEY) if isinstance(detail, dict) else None
+    raw_avg = detail.get(_JOURNALED_AVG_KEY) if isinstance(detail, dict) else None
+    try:
+        quantity = Decimal(str(raw_qty)) if raw_qty is not None else Decimal(0)
+    except (ArithmeticError, ValueError):
+        quantity = Decimal(0)
+    try:
+        average = Decimal(str(raw_avg)) if raw_avg is not None else Decimal(0)
+    except (ArithmeticError, ValueError):
+        average = Decimal(0)
+    return quantity, average
 
 
 class KiwoomMockTransitionRefused(Exception):
@@ -332,6 +359,25 @@ class FillBooking:
     status: str
     execution_ledger_row_id: int | None
     fill_seq: int | None
+    #: The broker's cumulative average, the row's recorded ``avg_fill_price``.
+    cumulative_avg: Decimal = Decimal(0)
+    #: Quantity/price already journaled before this booking, from the row detail.
+    journaled_qty: Decimal = Decimal(0)
+    journaled_avg: Decimal = Decimal(0)
+    #: The journal step's inputs, carried so the kernel never re-reads the row.
+    side: str | None = None
+    symbol: str = ""
+    instrument_type: str = ""
+    currency: str = ""
+    correlation_id: str | None = None
+    thesis: str | None = None
+    strategy: str | None = None
+    reason: str | None = None
+    exit_reason: str | None = None
+    notes: str | None = None
+    indicators_snapshot: dict[str, Any] | None = None
+    trade_id: int | None = None
+    journal_id: int | None = None
 
 
 class KiwoomMockOrderLedgerService:
@@ -461,18 +507,45 @@ class KiwoomMockOrderLedgerService:
         *,
         limit: int,
         account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+        include_journal_recovery: bool = False,
     ) -> tuple[list[KiwoomMockOrderLedger], int]:
         """Open + uncertain place rows, oldest first, plus the open total.
 
         Scoped to one account mode: a KR scan must never classify a US row.
+
+        ``include_journal_recovery`` also returns rows whose booked fill was
+        never fully journaled (``journaled_qty`` below ``filled_qty``): the
+        fill evidence is committed, so only a later run can complete the
+        journal projection — including terminal rows a short sell closed.
         """
         profile = account_profile(account_mode)
         where = [
             KiwoomMockOrderLedger.account_mode == account_mode,
             KiwoomMockOrderLedger.market == profile.market,
             KiwoomMockOrderLedger.operation_kind == "place",
-            KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES),
         ]
+        source = KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES)
+        if include_journal_recovery:
+            journaled = func.coalesce(
+                cast(
+                    KiwoomMockOrderLedger.last_reconcile_detail[
+                        _JOURNALED_QTY_KEY
+                    ].astext,
+                    Numeric(20, 8),
+                ),
+                0,
+            )
+            where.append(
+                or_(
+                    source,
+                    and_(
+                        KiwoomMockOrderLedger.filled_qty.isnot(None),
+                        KiwoomMockOrderLedger.filled_qty > journaled,
+                    ),
+                )
+            )
+        else:
+            where.append(source)
         total = (
             await self._db.execute(
                 select(func.count()).select_from(KiwoomMockOrderLedger).where(*where)
@@ -652,6 +725,7 @@ class KiwoomMockOrderLedgerService:
         filled_quantity: int,
         average_price: int,
         observed_at: datetime | None = None,
+        commit: bool = True,
     ) -> FillBooking:
         """Book the broker-evidence fill delta of one open order (I4, I9).
 
@@ -665,6 +739,10 @@ class KiwoomMockOrderLedgerService:
         A regressed or over-order quantity is refused (the broker and the row
         disagree, so neither is safe to book); ``uncertain`` rows are refused
         because promotion is their only lawful resolution (I3).
+
+        ``commit=False`` leaves the transaction open — the row stays locked and
+        the detail update uncommitted — so the caller can write the journal
+        effects and the journal progress marker in the same transaction.
         """
         if isinstance(filled_quantity, bool) or not isinstance(filled_quantity, int):
             raise TypeError("filled_quantity must be an exact int")
@@ -674,6 +752,7 @@ class KiwoomMockOrderLedgerService:
             raise ValueError("average_price must be positive")
 
         row = await self._lock_row(ledger_id)
+        journaled = journaled_progress(row)
         if row.status not in _OPEN_FILL_STATUSES:
             raise KiwoomMockTransitionRefused(
                 ledger_id=ledger_id,
@@ -790,19 +869,110 @@ class KiwoomMockOrderLedgerService:
         if delta > 0:
             detail["delta_fill_price"] = str(delta_price)
         row.last_reconcile_detail = detail
-        await self._db.commit()
-        await self._db.refresh(row)
+        if commit:
+            await self._db.commit()
+            await self._db.refresh(row)
+        return self._booking_from_row(
+            row,
+            action=action,
+            delta_qty=delta,
+            avg_price=delta_price if delta > 0 else Decimal(average_price),
+            execution_ledger_row_id=row_id,
+            fill_seq=fill_seq,
+            journaled=journaled,
+        )
+
+    async def lock_for_journal(self, *, ledger_id: int) -> FillBooking:
+        """Lock the order row and return its current fill/journal state.
+
+        The journal step must decide what is still unjournaled while holding
+        this lock: a journaled marker read without the row lock is only a
+        snapshot, so two overlapping runs would otherwise journal the same
+        quantity twice (a second lot journal, or a second FIFO close). Any
+        status is lockable — a terminal row can still owe journaled shares.
+        """
+        row = await self._lock_row(ledger_id)
+        return self._booking_from_row(row, action="journal_lock")
+
+    async def record_journal_progress(
+        self,
+        *,
+        ledger_id: int,
+        trade_id: int | None = None,
+        journal_id: int | None = None,
+        journaled_qty: Decimal | None = None,
+        journaled_avg: Decimal | None = None,
+        manual_review_reason: str | None = None,
+        commit: bool = True,
+    ) -> None:
+        """Record what a booked fill journaled, monotonically.
+
+        ``journal_id`` repoints the row at the order's current lot (a fully
+        closed lot is replaced by the new one); ``trade_id`` is add-only so a
+        re-run cannot repoint the row at a second trade. The progress markers
+        only advance — never regress — and ``manual_review_reason`` is stored
+        while set and cleared once the unjournaled remainder is resolved.
+        """
+        row = await self._lock_row(ledger_id)
+        if trade_id is not None and row.trade_id is None:
+            row.trade_id = trade_id
+        if journal_id is not None:
+            row.journal_id = journal_id
+        detail = dict(row.last_reconcile_detail or {})
+        current_qty, _current_avg = journaled_progress(row)
+        if journaled_qty is not None and journaled_qty > current_qty:
+            detail[_JOURNALED_QTY_KEY] = str(journaled_qty)
+            if journaled_avg is not None:
+                detail[_JOURNALED_AVG_KEY] = str(journaled_avg)
+        if manual_review_reason is not None:
+            detail[_JOURNAL_MANUAL_REVIEW_KEY] = manual_review_reason
+        elif journaled_qty is not None:
+            detail.pop(_JOURNAL_MANUAL_REVIEW_KEY, None)
+        row.last_reconcile_detail = detail
+        if commit:
+            await self._db.commit()
+
+    @staticmethod
+    def _booking_from_row(
+        row: KiwoomMockOrderLedger,
+        *,
+        action: str,
+        delta_qty: Decimal = Decimal(0),
+        avg_price: Decimal = Decimal(0),
+        execution_ledger_row_id: int | None = None,
+        fill_seq: int | None = None,
+        journaled: tuple[Decimal, Decimal] | None = None,
+    ) -> FillBooking:
+        journaled_qty, journaled_avg = (
+            journaled if journaled is not None else journaled_progress(row)
+        )
         return FillBooking(
             ledger_id=row.id,
             client_order_id=row.client_order_id,
-            broker_order_id=str(row.broker_order_id),
+            broker_order_id=str(row.broker_order_id or ""),
             action=action,
-            delta_qty=delta,
-            cumulative_qty=cumulative,
-            avg_price=delta_price if delta > 0 else Decimal(average_price),
-            status=status,
-            execution_ledger_row_id=row_id,
+            delta_qty=delta_qty,
+            cumulative_qty=row.filled_qty or Decimal(0),
+            avg_price=avg_price,
+            status=row.status,
+            execution_ledger_row_id=execution_ledger_row_id,
             fill_seq=fill_seq,
+            cumulative_avg=row.avg_fill_price or Decimal(0),
+            journaled_qty=journaled_qty,
+            journaled_avg=journaled_avg,
+            side=row.side,
+            symbol=row.symbol,
+            instrument_type=row.instrument_type,
+            currency=row.currency,
+            correlation_id=row.correlation_id,
+            thesis=row.thesis,
+            strategy=row.strategy,
+            reason=row.reason,
+            exit_reason=row.exit_reason,
+            notes=row.notes,
+            indicators_snapshot=row.indicators_snapshot,
+            trade_id=row.trade_id,
+            journal_id=row.journal_id,
         )
 
     @staticmethod

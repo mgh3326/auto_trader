@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 from typing import cast as typing_cast
@@ -31,6 +33,74 @@ def _order_session_factory() -> async_sessionmaker[AsyncSession]:
     return typing_cast(
         async_sessionmaker[AsyncSession], typing_cast(object, AsyncSessionLocal)
     )
+
+
+@asynccontextmanager
+async def _own_or_caller_session(
+    db: AsyncSession | None,
+) -> AsyncIterator[AsyncSession]:
+    """Yield the caller's transaction, or a fresh session when none was given.
+
+    A caller transaction is never committed here; the caller commits its own
+    outer transaction (the reconcile path commits the journal effects together
+    with the delta booking and the journal progress marker).
+    """
+    if db is not None:
+        yield db
+        return
+    async with _order_session_factory()() as session:
+        yield session
+
+
+async def _record_trade_for_fill(
+    db: AsyncSession,
+    *,
+    symbol: str,
+    instrument_type: str,
+    side: str,
+    price: float,
+    quantity: float,
+    total_amount: float,
+    fee: float,
+    currency: str,
+    account: str,
+    order_id: str | None,
+) -> int:
+    """Insert or update the order's single trade row to its cumulative figures.
+
+    ``review.trades`` is unique on ``(account, order_id)``, so a later fill
+    delta of the same order must advance the existing row instead of being
+    dropped by the unique conflict. The caller owns the transaction (this
+    function never commits), which is what lets a reconcile commit the trade,
+    the journal and its progress marker atomically.
+    """
+    stmt = (
+        pg_insert(Trade)
+        .values(
+            trade_date=now_kst(),
+            symbol=symbol,
+            instrument_type=instrument_type,
+            side=side,
+            price=price,
+            quantity=quantity,
+            total_amount=total_amount,
+            fee=fee,
+            currency=currency,
+            account=account,
+            order_id=order_id,
+        )
+        .on_conflict_do_update(
+            constraint="uq_review_trades_account_order",
+            set_={
+                "price": price,
+                "quantity": quantity,
+                "total_amount": total_amount,
+            },
+        )
+        .returning(Trade.id)
+    )
+    result = await db.execute(stmt)
+    return int(result.scalar_one())
 
 
 async def _save_order_fill(
@@ -340,6 +410,7 @@ async def _close_journals_on_sell(
     sell_fx_rate: float | None = None,
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
+    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -365,6 +436,11 @@ async def _close_journals_on_sell(
     ``realized_pnl_basis`` labels the PnL as ``"journal_entry"`` so callers do
     not confuse it with the account-average basis surfaced by place_order
     preview / get_holdings / get_available_capital (ROB-544).
+
+    ``db`` is the caller's transaction: it is flushed, never committed, so the
+    caller can commit the close together with its own progress marker and a
+    retry can never re-close the same lot. Without ``db`` the historical
+    own-session-and-commit behaviour is kept.
     """
     sell_qty_dec = Decimal(str(sell_quantity))
     sell_price_dec = Decimal(str(sell_price))
@@ -372,7 +448,7 @@ async def _close_journals_on_sell(
     remaining_qty = sell_qty_dec
     resolved_reason = (exit_reason or "").strip() or "sold_via_place_order"
 
-    async with _order_session_factory()() as db:
+    async with _own_or_caller_session(db) as session:
         stmt = select(TradeJournal).where(
             TradeJournal.symbol == symbol,
             TradeJournal.status == JournalStatus.active,
@@ -384,7 +460,7 @@ async def _close_journals_on_sell(
         stmt = stmt.order_by(
             TradeJournal.created_at.asc(), TradeJournal.id.asc()
         ).with_for_update()
-        result = await db.execute(stmt)
+        result = await session.execute(stmt)
         journals = list(result.scalars().all())
 
         closed_ids: list[int] = []
@@ -435,8 +511,8 @@ async def _close_journals_on_sell(
                 # unchanged.
                 consumed_qty = remaining_qty
                 split = _split_journal_lot(journal, consumed_qty)
-                db.add(split)
-                await db.flush()
+                session.add(split)
+                await session.flush()
                 _close(split, closed_quantity=consumed_qty)
                 journal.quantity = journal_qty - consumed_qty
                 journal.amount = (
@@ -476,7 +552,12 @@ async def _close_journals_on_sell(
             1 for journal in journals if journal.status == JournalStatus.active
         )
 
-        await db.commit()
+        if db is None:
+            await session.commit()
+        else:
+            # The caller's transaction commits the journal close together with
+            # its progress marker, so a retry can never re-close the same lot.
+            await session.flush()
 
     # total_pnl_pct is quantity-weighted across the FIFO-closed journals'
     # per-lot entry_price (lot basis), NOT the position account-average. The

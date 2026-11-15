@@ -1,18 +1,24 @@
-"""hk 4722 / hk 4734 (3797 T-P3, T-P4) — Kiwoom mock reconcile kernel (unit).
+"""hk 4722 / hk 4734 / hk 4802 — Kiwoom mock reconcile kernel (unit).
 
 The ledger service is replaced by a recorder, the execution-ledger repository by
-a run recorder and the broker by a fake reader, so the kernel's contract is
-proven without a database or network:
+a run recorder, the broker by a fake reader and the journal tables by an
+in-memory ``TradeJournal`` store on the fake session, so the kernel's contract
+is proven without a database or network:
 
 * dry run issues zero writes;
 * terminal-only applies only expired/cancelled/rejected and uncertain→accepted;
 * terminal-only is impossible without the exact-true gate;
 * full mode needs both exact-true gates and refuses before any read otherwise;
-* full mode books the broker-evidence delta only — no trade row, journal or
-  realized P&L is written (that projection is hk 4802);
-* a fill-carrying terminal verdict books its delta first and then closes once
-  the row's booked quantity equals the verdict's;
-* terminal_only and US keep ``deferred_fill_booking``;
+* full mode books each broker-evidence delta **and journals it in the same
+  transaction** (hk 4802): a buy delta creates or grows the order's lot at the
+  delta's implied price, a sell delta FIFO-closes lots (split on a partial
+  sell) with realized P&L, and ``journaled_qty``/``journaled_avg`` progress
+  commits with it so a retried or overlapping run never journals twice;
+* a sell delta that outruns the lots journals only the matched part, leaves a
+  manual-review reason and is completed by a later run;
+* a fill-carrying terminal verdict books and journals its delta first and then
+  closes once the row's booked quantity equals the verdict's;
+* terminal_only and US keep ``deferred_fill_booking`` and write no journal;
 * overlapping full runs still serialize on the run lock, and a re-run of the
   same evidence books nothing new;
 * unknown rows never transition; paged listings are followed, and a page cap is
@@ -30,10 +36,13 @@ from typing import Any
 
 import pytest
 
+from app.models.trade_journal import JournalStatus, TradeJournal
+from app.models.trading import InstrumentType
 from app.services import kiwoom_mock_reconcile as kernel
 from app.services.kiwoom_mock_order_ledger_service import (
     FillBooking,
     KiwoomMockTransitionRefused,
+    journaled_progress,
 )
 from app.services.kiwoom_mock_reconcile import (
     FULL_GATE_ENVS,
@@ -92,7 +101,17 @@ def _row(
     symbol: str = "005930",
     filled_qty: int | None = None,
     side: str = "buy",
+    avg_fill_price: int | None = None,
+    journal_id: int | None = None,
+    trade_id: int | None = None,
+    journaled_qty: Decimal | None = None,
+    journaled_avg: Decimal | None = None,
 ) -> SimpleNamespace:
+    detail: dict[str, Any] | None = None
+    if journaled_qty is not None:
+        detail = {"journaled_qty": str(journaled_qty)}
+        if journaled_avg is not None:
+            detail["journaled_avg"] = str(journaled_avg)
     return SimpleNamespace(
         id=ledger_id,
         client_order_id=f"kwoomm-{ledger_id}",
@@ -100,35 +119,120 @@ def _row(
         broker_order_id=broker_order_id,
         quantity=Decimal(10),
         filled_qty=None if filled_qty is None else Decimal(filled_qty),
-        avg_fill_price=None,
+        avg_fill_price=None if avg_fill_price is None else Decimal(avg_fill_price),
         symbol=symbol,
         side=side,
         trading_day=trading_day,
         trade_date=NOW,
-        last_reconcile_detail=None,
+        last_reconcile_detail=detail,
+        instrument_type="equity_kr",
+        currency="KRW",
+        correlation_id=None,
+        thesis="test thesis",
+        strategy="test strategy",
+        reason=None,
+        exit_reason=None,
+        notes=None,
+        indicators_snapshot=None,
+        trade_id=trade_id,
+        journal_id=journal_id,
     )
 
 
+class _FakeScalars:
+    def __init__(self, items: list[Any]) -> None:
+        self._items = items
+
+    def all(self) -> list[Any]:
+        return list(self._items)
+
+
+class _FakeResult:
+    """Serves the journal SELECT and the trade upsert ``RETURNING`` clause."""
+
+    def scalars(self) -> _FakeScalars:
+        active = [
+            journal
+            for journal in FakeSession.journals
+            if journal.status == JournalStatus.active
+        ]
+        return _FakeScalars(active)
+
+    def scalar_one(self) -> int:
+        return 777  # the upserted trade row's id
+
+
 class FakeSession:
+    """In-memory journal store: get/add/flush/execute for the journal helpers."""
+
+    statements: list[Any] = []
+    journals: list[TradeJournal] = []
+    _next_journal_id = 100
+
     async def __aenter__(self) -> FakeSession:
         return self
 
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
 
-    async def execute(self, statement: Any = None, params: Any = None) -> None:
+    async def execute(self, statement: Any = None, params: Any = None) -> _FakeResult:
         # The full-mode run lock is a plain SELECT on its own session; the unit
         # harness only needs it to not fail (the real ordering is a DB test).
         type(self).statements.append(statement)
-        return None
+        return _FakeResult()
 
-    statements: list[Any] = []
+    async def get(self, model: Any, ident: int) -> TradeJournal | None:
+        return next(
+            (journal for journal in type(self).journals if journal.id == ident),
+            None,
+        )
+
+    def add(self, obj: Any) -> None:
+        self._pending.append(obj)
+
+    async def flush(self) -> None:
+        for obj in self._pending:
+            if obj.id is None:
+                obj.id = type(self)._next_journal_id
+                type(self)._next_journal_id += 1
+            type(self).journals.append(obj)
+        self._pending = []
+
+    _pending: list[Any]
+
+    def __init__(self) -> None:
+        self._pending = []
 
     async def commit(self) -> None:
         return None
 
     async def rollback(self) -> None:
         return None
+
+
+def _journal(
+    journal_id: int,
+    *,
+    symbol: str = "005930",
+    quantity: str = "10",
+    entry_price: str = "70000",
+    status: JournalStatus = JournalStatus.active,
+) -> TradeJournal:
+    journal = TradeJournal(
+        symbol=symbol,
+        instrument_type=InstrumentType.equity_kr,
+        side="buy",
+        entry_price=Decimal(entry_price),
+        quantity=Decimal(quantity),
+        amount=Decimal(quantity) * Decimal(entry_price),
+        thesis="seed thesis",
+        strategy="seed strategy",
+        account="kiwoom_mock",
+        account_type="mock",
+        status=status,
+    )
+    journal.id = journal_id
+    return journal
 
 
 class FakeRepo:
@@ -150,7 +254,12 @@ def _fake_booking(
     delta: Decimal,
     row_id: int | None = None,
     fill_seq: int | None = None,
+    journaled: tuple[Decimal, Decimal] | None = None,
+    avg_price: Decimal | None = None,
 ) -> FillBooking:
+    journaled_qty, journaled_avg = (
+        journaled if journaled is not None else journaled_progress(row)
+    )
     return FillBooking(
         ledger_id=row.id,
         client_order_id=row.client_order_id,
@@ -158,10 +267,26 @@ def _fake_booking(
         action=action,
         delta_qty=delta,
         cumulative_qty=Decimal(row.filled_qty or 0),
-        avg_price=Decimal(row.avg_fill_price or 0),
+        avg_price=Decimal(row.avg_fill_price or 0) if avg_price is None else avg_price,
         status=row.status,
         execution_ledger_row_id=row_id,
         fill_seq=fill_seq,
+        cumulative_avg=Decimal(row.avg_fill_price or 0),
+        journaled_qty=journaled_qty,
+        journaled_avg=journaled_avg,
+        side=row.side,
+        symbol=row.symbol,
+        instrument_type=row.instrument_type,
+        currency=row.currency,
+        correlation_id=row.correlation_id,
+        thesis=row.thesis,
+        strategy=row.strategy,
+        reason=row.reason,
+        exit_reason=row.exit_reason,
+        notes=row.notes,
+        indicators_snapshot=row.indicators_snapshot,
+        trade_id=row.trade_id,
+        journal_id=row.journal_id,
     )
 
 
@@ -181,9 +306,23 @@ class FakeService:
         *,
         limit: int,
         account_mode: str = "kiwoom_mock",
+        include_journal_recovery: bool = False,
     ):
         self.account_mode = account_mode
-        return list(type(self).rows[:limit]), type(self).total
+        open_rows = [
+            row
+            for row in type(self).rows
+            if row.status in {"accepted", "pending", "partial", "uncertain"}
+        ]
+        if include_journal_recovery:
+            seen = {row.id for row in open_rows}
+            open_rows += [
+                row
+                for row in type(self).rows
+                if row.id not in seen
+                and (row.filled_qty or 0) > journaled_progress(row)[0]
+            ]
+        return list(open_rows[:limit]), type(self).total
 
     async def list_acknowledged_cancels(
         self, *, original_order_ids: set[str], account_mode: str = "kiwoom_mock"
@@ -244,15 +383,23 @@ class FakeService:
         return SimpleNamespace(id=ledger_id, status="accepted")
 
     async def record_fill(
-        self, *, ledger_id, filled_quantity, average_price, observed_at=None
+        self,
+        *,
+        ledger_id,
+        filled_quantity,
+        average_price,
+        observed_at=None,
+        commit=True,
     ):
         row = next(item for item in type(self).rows if item.id == ledger_id)
+        journaled = journaled_progress(row)
         previous = int(row.filled_qty or 0)
+        previous_avg = row.avg_fill_price
         delta = int(filled_quantity) - previous
         if (
             delta == 0
-            and row.avg_fill_price is not None
-            and Decimal(int(average_price)) != row.avg_fill_price
+            and previous_avg is not None
+            and Decimal(int(average_price)) != previous_avg
         ):
             raise KiwoomMockTransitionRefused(
                 ledger_id=ledger_id,
@@ -265,12 +412,60 @@ class FakeService:
         row.filled_qty = Decimal(int(filled_quantity))
         row.avg_fill_price = Decimal(int(average_price))
         row.status = status
+        # The implied delta price, mirroring the real service's
+        # (cumulative·avg − previous·prev_avg)/delta derivation.
+        delta_price = (
+            (
+                Decimal(int(filled_quantity)) * Decimal(int(average_price))
+                - Decimal(previous) * (previous_avg or Decimal(0))
+            )
+            / delta
+            if delta > 0
+            else Decimal(int(average_price))
+        )
         return _fake_booking(
             row,
             action=action,
             delta=Decimal(delta),
             row_id=None if delta <= 0 else 900 + ledger_id,
             fill_seq=None if delta <= 0 else 4242,
+            journaled=journaled,
+            avg_price=delta_price,
+        )
+
+    async def lock_for_journal(self, *, ledger_id):
+        row = next(item for item in type(self).rows if item.id == ledger_id)
+        return _fake_booking(row, action="journal_lock", delta=Decimal(0))
+
+    async def record_journal_progress(
+        self,
+        *,
+        ledger_id,
+        trade_id=None,
+        journal_id=None,
+        journaled_qty=None,
+        journaled_avg=None,
+        manual_review_reason=None,
+        commit=True,
+    ):
+        row = self._row(ledger_id)
+        if trade_id is not None and row.trade_id is None:
+            row.trade_id = trade_id
+        if journal_id is not None:
+            row.journal_id = journal_id
+        detail = dict(row.last_reconcile_detail or {})
+        current_qty, _ = journaled_progress(row)
+        if journaled_qty is not None and journaled_qty > current_qty:
+            detail["journaled_qty"] = str(journaled_qty)
+            if journaled_avg is not None:
+                detail["journaled_avg"] = str(journaled_avg)
+        if manual_review_reason is not None:
+            detail["journal_manual_review"] = manual_review_reason
+        elif journaled_qty is not None:
+            detail.pop("journal_manual_review", None)
+        row.last_reconcile_detail = detail
+        self.writes.append(
+            ("journal_progress", ledger_id, str(journaled_qty), manual_review_reason)
         )
 
 
@@ -317,6 +512,9 @@ def fake_ledger(monkeypatch: pytest.MonkeyPatch):
     FakeService.total = 0
     FakeService.cancels = set()
     FakeRepo.runs = []
+    FakeSession.journals = []
+    FakeSession._next_journal_id = 100
+    FakeSession.statements = []
     written: list[FakeService] = []
 
     class Recorder(FakeService):
@@ -577,10 +775,10 @@ async def test_full_mode_needs_both_gates_before_any_read(
     assert _writes(fake_ledger) == []
 
 
-async def test_full_mode_books_the_delta_and_closes_the_row(
+async def test_full_mode_books_the_delta_and_journals_it(
     fake_ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A filled verdict books its delta and the row ends terminal — no journal."""
+    """A filled verdict books its delta and journals it in the same pass."""
     for name in FULL_GATE_ENVS:
         monkeypatch.setenv(name, "true")
     FakeService.rows = [_row(1, broker_order_id="0001")]
@@ -596,10 +794,21 @@ async def test_full_mode_books_the_delta_and_closes_the_row(
     assert outcome["delta_qty"] == "10"
     assert outcome["execution_ledger_row_id"] == 901
     assert ("record_fill", 1, "booked_filled", None) in _writes(fake_ledger)
-    # The row is terminal through the booking itself; nothing else is written.
-    assert [write[0] for write in _writes(fake_ledger)] == ["record_fill"]
     assert not outcome.get("requires_manual_review")
     assert result["unresolved_count"] == 0
+
+    # hk 4802: the booked delta journals in the same pass — one active lot.
+    journal = outcome["journal"]
+    assert journal["journal_created"] is True
+    assert journal["journaled_qty"] == "10"
+    assert len(FakeSession.journals) == 1
+    lot = FakeSession.journals[0]
+    assert lot.status == JournalStatus.active
+    assert lot.quantity == Decimal("10")
+    assert lot.entry_price == Decimal("70000")
+    assert lot.account == "kiwoom_mock"
+    assert lot.account_type == "mock"
+    assert ("journal_progress", 1, "10", None) in _writes(fake_ledger)
 
     assert len(FakeRepo.runs) == 1
     run = FakeRepo.runs[0]
@@ -609,21 +818,22 @@ async def test_full_mode_books_the_delta_and_closes_the_row(
     assert run.unchanged == 0
 
 
-async def test_the_reconcile_kernel_names_no_journal_projection() -> None:
-    """No trade row, journal, FIFO close or realized P&L may be written here.
+async def test_terminal_only_and_dry_run_write_no_journal(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scopes that cannot book a fill must never write a journal row."""
+    monkeypatch.setenv(TERMINAL_GATE_ENV, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
 
-    The journal projection is hk 4802; the kernel must not even reference the
-    shared journal helpers, so a later re-wiring cannot creep back unnoticed.
-    """
-    from pathlib import Path
+    await _run(_filled_reader(), dry_run=False, terminal_only=True)
+    await _run(_filled_reader(), dry_run=True)
 
-    source = Path(kernel.__file__).read_text(encoding="utf-8")
-    assert "order_journal" not in source
-    assert "TradeJournal" not in source
-    assert "review.trades" not in source
+    assert FakeSession.journals == []
+    assert not any(write[0] == "journal_progress" for write in _writes(fake_ledger))
 
 
-async def test_full_mode_rerun_books_nothing_new(
+async def test_full_mode_rerun_books_and_journals_nothing_new(
     fake_ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for name in FULL_GATE_ENVS:
@@ -634,19 +844,25 @@ async def test_full_mode_rerun_books_nothing_new(
     await _run(_filled_reader(), dry_run=False, terminal_only=False)
     second = await _run(_filled_reader(), dry_run=False, terminal_only=False)
 
-    outcome = second["reconciled"][0]
-    assert outcome["action"] == "noop_already_booked"
-    assert outcome["delta_qty"] == "0"
-    assert len(FakeRepo.runs) == 2
-    assert FakeRepo.runs[1].committed_insert == 0
-    assert FakeRepo.runs[1].unchanged == 1
+    # The first run booked and journaled the whole fill; the row is terminal
+    # and fully journaled, so the second run finds nothing to do.
+    assert second["reconciled"] == []
+    assert len(FakeSession.journals) == 1
+    # An empty scan returns before the run row is written.
+    assert len(FakeRepo.runs) == 1
     assert second["unresolved_count"] == 0
 
 
-async def test_partial_then_terminal_books_each_delta_and_leaves_no_second_row(
+async def test_partial_then_terminal_books_each_delta_and_grows_one_lot(
     fake_ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A partial books only the delta; the final fill books the rest."""
+    """A partial books only the delta; the final fill books and grows the rest.
+
+    4 @ 70,000 then cumulative 10 @ 76,000: the second delta is 6 shares at the
+    implied 80,000, so one buy journal ends at 10 shares entered at the
+    quantity-weighted 76,000 — the journal's cost basis equals the booked
+    notional (4·70,000 + 6·80,000).
+    """
     for name in FULL_GATE_ENVS:
         monkeypatch.setenv(name, "true")
     FakeService.rows = [_row(1, broker_order_id="0001")]
@@ -656,8 +872,12 @@ async def test_partial_then_terminal_books_each_delta_and_leaves_no_second_row(
     outcome = first["reconciled"][0]
     assert outcome["action"] == "booked_partial"
     assert outcome["delta_qty"] == "4"
+    assert outcome["journal"]["journal_created"] is True
+    assert len(FakeSession.journals) == 1
+    lot = FakeSession.journals[0]
+    assert lot.quantity == Decimal("4")
+    assert lot.entry_price == Decimal("70000")
 
-    # 4 @ 70,000 then cumulative 10 @ 76,000 → 6 more shares.
     second = await _run(
         _filled_reader(average_price=76000), dry_run=False, terminal_only=False
     )
@@ -665,6 +885,112 @@ async def test_partial_then_terminal_books_each_delta_and_leaves_no_second_row(
     assert outcome["action"] == "booked_filled"
     assert outcome["delta_qty"] == "6"
     assert outcome["booked_cumulative_qty"] == "10"
+    assert outcome["journal"]["journal_grown"] is True
+
+    assert len(FakeSession.journals) == 1
+    assert lot.quantity == Decimal("10")
+    assert lot.entry_price == Decimal("76000")
+    stored = FakeService.rows[0]
+    assert journaled_progress(stored) == (Decimal("10"), Decimal("76000"))
+
+
+async def test_sell_delta_fifo_closes_and_splits_the_lot(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sell delta closes lots FIFO; a partial sell splits the boundary lot."""
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [
+        _row(1, broker_order_id="0001", side="sell"),
+    ]
+    FakeService.total = 1
+    FakeSession.journals = [
+        _journal(7, quantity="10", entry_price="70000"),
+    ]
+
+    result = await _run(
+        _partial_reader(quantity=4, average_price=80000),
+        dry_run=False,
+        terminal_only=False,
+    )
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "booked_partial"
+    journal = outcome["journal"]
+    assert journal["journals_closed"] == 1
+    assert journal["unmatched_quantity"] == 0
+    # 4 sold at 80,000 against a 70,000-entry lot: ~14.2857% realized.
+    assert journal["realized_pnl_pct"] == pytest.approx(14.2857, abs=1e-3)
+    assert journal["journaled_qty"] == "4"
+    assert not outcome.get("requires_manual_review")
+
+    # The lot split: the consumed 4 closed at 80,000; 6 stay active at 70,000.
+    closed = [j for j in FakeSession.journals if j.status == JournalStatus.closed]
+    active = [j for j in FakeSession.journals if j.status == JournalStatus.active]
+    assert len(closed) == 1
+    assert closed[0].quantity == Decimal("4")
+    assert closed[0].exit_price == Decimal("80000")
+    assert len(active) == 1
+    assert active[0].quantity == Decimal("6")
+    assert active[0].entry_price == Decimal("70000")
+
+
+async def test_short_sell_journals_matched_part_and_recovers_next_run(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unmatched_quantity never advances progress; a later run completes it."""
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [
+        _row(1, broker_order_id="0001", side="sell"),
+    ]
+    FakeService.total = 1
+    # Only 6 of the 10-share sell is covered by lots.
+    FakeSession.journals = [_journal(7, quantity="6", entry_price="70000")]
+
+    result = await _run(
+        _partial_reader(quantity=10, average_price=80000),
+        dry_run=False,
+        terminal_only=False,
+    )
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "booked_filled"
+    journal = outcome["journal"]
+    assert journal["unmatched_quantity"] == 4
+    # The unmatched 4 shares are NOT journaled: progress stops at 6 and the
+    # row keeps a manual-review reason for the next run.
+    assert Decimal(str(journal["journaled_qty"])) == Decimal("6")
+    assert outcome.get("requires_manual_review") is True
+    assert result["unresolved_count"] >= 1
+    stored = FakeService.rows[0]
+    assert journaled_progress(stored)[0] == Decimal("6")
+    assert stored.last_reconcile_detail["journal_manual_review"].startswith(
+        "unmatched_sell_quantity"
+    )
+
+    # Next run: the 'filled' row is scanned for journal recovery, the new lot
+    # covers the remaining 4 and the manual-review reason clears.
+    FakeSession.journals.append(_journal(8, quantity="4", entry_price="70000"))
+    second = await _run(
+        _partial_reader(quantity=10, average_price=80000),
+        dry_run=False,
+        terminal_only=False,
+    )
+    outcome = second["reconciled"][0]
+    assert outcome["verdict"] == "journal_recovery"
+    assert outcome["action"] == "journaled"
+    assert Decimal(str(outcome["journal"]["journaled_qty"])) == Decimal("10")
+    assert not outcome.get("requires_manual_review")
+    assert journaled_progress(stored)[0] == Decimal("10")
+    assert "journal_manual_review" not in (stored.last_reconcile_detail or {})
+    # The short sell was never marked fully journaled early.
+    closed_qty = sum(
+        j.quantity or 0
+        for j in FakeSession.journals
+        if j.status == JournalStatus.closed
+    )
+    assert closed_qty == Decimal("10")
 
 
 async def test_overlapping_full_runs_book_the_delta_once(
@@ -698,7 +1024,9 @@ async def test_overlapping_full_runs_book_the_delta_once(
         for result in (first, second)
         for outcome in result["reconciled"]
     )
-    assert deltas == ["0", "10"]
+    # The losing run sees the row already booked+journaled and out of scan.
+    assert deltas == ["10"]
+    assert len(FakeSession.journals) == 1
     booked = [
         write
         for write in _writes(fake_ledger)
