@@ -219,6 +219,7 @@ def test_only_the_executor_reads_the_environment_and_the_scripts_never_schedule(
     assert {p.name for p in scripts} == {
         "binance_trend_demo.py",
         "binance_trend_heartbeat_watch.py",
+        "binance_trend_tick_export.py",
         "binance_trend_truth_gate.py",
     }
     for path in scripts:
