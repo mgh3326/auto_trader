@@ -385,7 +385,7 @@ without blocking a commit; `blocking_data_gaps` records the required missing bar
 - **pre-send 훅**: 제안 경로의 `ApprovalWindowPreSendGate` 는 예약 직후·POST 직전에 실행되고,
   차단 시 예약을 해제한 뒤 예외를 그대로 올려 창/지연 결과로 수렴시킨다(증명된 미송신).
 - **범위 밖**: 이 제안 집행 절이 직접 쓰는 것은 원장·신호·예약이다. `execution_ledger` 체결
-  부킹은 별도 대사 경로(hk 4734)가 담당하고 저널·실현손익은 hk 4802 공백이다. propose 경유
+  부킹은 별도 대사 경로(hk 4734)가 담당하고 저널·실현손익 투영은 hk 4802 이다. propose 경유
   modify/cancel과 스케줄러 연결은 없다.
 
 ## 유지 규약

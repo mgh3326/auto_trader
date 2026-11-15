@@ -1,4 +1,4 @@
-"""hk 4722 / hk 4734 (3797 T-P3, T-P4) — reconcile against the test database.
+"""hk 4722 / hk 4734 / hk 4802 — reconcile against the test database.
 
 CI only (``integration``): never run locally. Rows are keyed by a per-test random
 ``client_order_id`` and removed in ``finally``; the shared schema is left as
@@ -6,11 +6,14 @@ bootstrapped.
 
 T-P4 proves the full mode here: one in-effect ``execution_ledger`` row per
 broker delta, partial→filled deltas summing to the order quantity, a re-run
-booking nothing new, one ``broker='kiwoom'`` reconcile-run row — and **no**
-trade row, journal or realized P&L (that projection is hk 4802). It also proves
-the two service guards the round-8 review found missing: a changed cumulative
-average without a fill is refused (and the next delta keeps the booked basis),
-and the terminal close requires the verdict's whole fill to be booked.
+booking nothing new, one ``broker='kiwoom'`` reconcile-run row — and, since
+hk 4802, the per-delta journal projection that commits with it: a ``review.trades``
+row, a buy ``TradeJournal`` lot grown at the implied delta prices, sell FIFO
+closes, and ``journaled_qty``/``journaled_avg`` progress on the ledger row. It
+also proves the two service guards the round-8 review found missing: a changed
+cumulative average without a fill is refused (and the next delta keeps the
+booked basis), and the terminal close requires the verdict's whole fill to be
+booked.
 """
 
 from __future__ import annotations
@@ -47,8 +50,8 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 TODAY = kr_trading_day(datetime.now(UTC))
 
-#: The account label the journal projection (hk 4802) will use. This PR writes
-#: nothing under it; the helpers below assert that absence.
+#: The account label the journal projection (hk 4802) writes its trade rows and
+#: journal lots under.
 KIWOOM_MOCK_ACCOUNT = "kiwoom_mock"
 
 
@@ -465,7 +468,7 @@ async def _full_run(reader: FakeReader) -> dict[str, Any]:
     )
 
 
-async def test_full_mode_books_one_in_effect_row_and_writes_no_journal(
+async def test_full_mode_books_one_in_effect_row_and_journals_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _full_mode(monkeypatch)
@@ -507,11 +510,22 @@ async def test_full_mode_books_one_in_effect_row_and_writes_no_journal(
         stored = await _fetch(client_order_id)
         assert stored.status == "filled"
         assert stored.filled_qty == Decimal("10")
-        # No trade row, journal link or journal: the projection is hk 4802.
-        assert stored.journal_id is None
-        assert stored.trade_id is None
-        assert await _trade(order_no) is None
-        assert await _journals(symbol) == []
+        # hk 4802: the booked delta journaled in the same transaction — one
+        # cumulative trade row, one active buy lot, journaled progress.
+        trade = await _trade(order_no)
+        assert trade is not None
+        assert trade.quantity == 10
+        assert trade.price == 70000
+        journals = await _journals(symbol)
+        assert len(journals) == 1
+        assert journals[0].status == "active"
+        assert journals[0].quantity == Decimal("10")
+        assert journals[0].entry_price == Decimal("70000")
+        assert stored.journal_id == journals[0].id
+        assert stored.trade_id == trade.id
+        detail = stored.last_reconcile_detail or {}
+        assert Decimal(detail["journaled_qty"]) == Decimal("10")
+        assert Decimal(detail["journaled_avg"]) == Decimal("70000")
 
         assert run_ids, "the full run must record its reconcile-run row"
         async with AsyncSessionLocal() as session:
@@ -583,10 +597,21 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         stored = await _fetch(client_order_id)
         assert stored.status == "filled"
         assert stored.avg_fill_price == Decimal("76000")
-        assert stored.journal_id is None
-        assert stored.trade_id is None
-        assert await _trade(order_no) is None
-        assert await _journals(symbol) == []
+        # hk 4802: one lot grown to the quantity-weighted 76,000 (the 6-share
+        # delta journaled at its implied 80,000), one cumulative trade row.
+        trade = await _trade(order_no)
+        assert trade is not None
+        assert trade.quantity == 10
+        assert trade.price == 76000
+        journals = await _journals(symbol)
+        assert len(journals) == 1
+        assert journals[0].quantity == Decimal("10")
+        assert journals[0].entry_price == Decimal("76000")
+        assert stored.journal_id == journals[0].id
+        assert stored.trade_id == trade.id
+        detail = stored.last_reconcile_detail or {}
+        assert Decimal(detail["journaled_qty"]) == Decimal("10")
+        assert Decimal(detail["journaled_avg"]) == Decimal("76000")
 
         # The row is terminal now, so another pass finds no candidate at all.
         settled = await _full_run(
@@ -712,10 +737,127 @@ async def test_close_filled_as_terminal_requires_the_whole_booked_fill(
         )
 
 
+async def test_journal_recovery_scan_skips_unmarked_history_and_orders_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mergewake r4578899898: recovery candidates need a journal marker and
+    must sit behind open rows so they cannot starve the open scan.
+
+    A row booked before hk 4802 has ``filled_qty`` but no journaled/manual
+    marker — it must NOT be retroactively journaled. A row whose sell
+    remainder is unmatched (marker present) IS a recovery candidate but
+    orders after every open row.
+    """
+    legacy_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    marked_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    open_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(legacy_id, order_no, symbol=symbol)
+        await _accepted(marked_id, _order_no(), symbol=symbol)
+        await _accepted(open_id, _order_no(), symbol=symbol)
+        legacy_ledger = (await _fetch(legacy_id)).id
+        marked_ledger = (await _fetch(marked_id)).id
+        async with AsyncSessionLocal() as session:
+            service = KiwoomMockOrderLedgerService(session)
+            # A pre-4802 booked fill: filled_qty, no journaled markers.
+            await service.record_fill(
+                ledger_id=legacy_ledger, filled_quantity=10, average_price=70000
+            )
+            # A post-4802 unmatched sell remainder on a 'filled' row: marker
+            # present, so recovery-only (not an open-status candidate).
+            await service.record_fill(
+                ledger_id=marked_ledger, filled_quantity=10, average_price=70000
+            )
+            await service.record_journal_progress(
+                ledger_id=marked_ledger,
+                journaled_qty=Decimal("0"),
+                journaled_avg=Decimal("0"),
+                manual_review_reason="unmatched_sell_quantity:4",
+            )
+            rows, _ = await service.list_reconcile_candidates(
+                limit=1000, include_journal_recovery=True
+            )
+        ids = [row.client_order_id for row in rows]
+        assert legacy_id not in ids  # unmarked history is never backfilled
+        assert marked_id in ids
+        assert open_id in ids
+        # Recovery candidates order behind every open row.
+        assert ids.index(marked_id) > ids.index(open_id)
+    finally:
+        await _cleanup_full(
+            client_order_id=legacy_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+        await _cleanup(marked_id)
+        await _cleanup(open_id)
+
+
+async def test_journal_failure_rolls_back_the_whole_booking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ledger delta, journal and progress commit atomically: a journal error
+    must leave neither an execution-ledger row nor a booked quantity, so the
+    next run can retry the whole delta.
+    """
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+
+        async def explode(db: Any, service: Any, booking: Any) -> dict[str, Any]:
+            raise RuntimeError("journal write failed")
+
+        monkeypatch.setattr(kernel, "_journal_unjournaled", explode)
+        result = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        if result.get("reconcile_run"):
+            run_ids.append(result["reconcile_run"]["run_id"])
+
+        outcome = next(
+            row
+            for row in result["reconciled"]
+            if row["client_order_id"] == client_order_id
+        )
+        assert outcome["action"] == "fill_journal_failed"
+        assert outcome["requires_manual_review"] is True
+        assert result["unresolved_count"] >= 1
+
+        stored = await _fetch(client_order_id)
+        assert stored.filled_qty is None
+        assert stored.status == "accepted"
+        assert await _fills(order_no) == []
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
+
+        # The retry books and journals the whole delta in one transaction.
+        monkeypatch.undo()
+        _full_mode(monkeypatch)
+        second = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        if second.get("reconcile_run"):
+            run_ids.append(second["reconcile_run"]["run_id"])
+        assert second["reconciled"][0]["action"] == "booked_filled"
+        assert len(await _fills(order_no)) == 1
+        assert len(await _journals(symbol)) == 1
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
 async def test_full_mode_overlapping_runs_book_the_delta_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two full runs started together book each delta once and write no journal."""
+    """Two full runs started together book and journal each delta once."""
     _full_mode(monkeypatch)
     client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
     order_no = _order_no()
@@ -734,8 +876,10 @@ async def test_full_mode_overlapping_runs_book_the_delta_once(
 
         fills = await _fills(order_no)
         assert [fill.filled_qty for fill in fills] == [Decimal("10")]
-        assert await _trade(order_no) is None
-        assert await _journals(symbol) == []
+        assert (await _trade(order_no)).quantity == 10
+        journals = await _journals(symbol)
+        assert len(journals) == 1
+        assert journals[0].quantity == Decimal("10")
 
         actions = [
             outcome["action"]
@@ -797,12 +941,18 @@ async def test_full_mode_terminal_verdict_with_fill_books_then_closes(
         stored = await _fetch(client_order_id)
         assert stored.status == "expired"
         assert stored.filled_qty == Decimal("4")
-        assert stored.journal_id is None
-        assert stored.trade_id is None
+        # The settled partial journaled in the same transaction as its booking.
+        assert stored.journal_id is not None
+        assert stored.trade_id is not None
+        detail = stored.last_reconcile_detail or {}
+        assert Decimal(detail["journaled_qty"]) == Decimal("4")
         fills = await _fills(order_no)
         assert [fill.filled_qty for fill in fills] == [Decimal("4")]
-        assert await _trade(order_no) is None
-        assert await _journals(symbol) == []
+        assert (await _trade(order_no)).quantity == 4
+        journals = await _journals(symbol)
+        assert len(journals) == 1
+        assert journals[0].quantity == Decimal("4")
+        assert journals[0].status == "active"
 
         # The row left the scan: the next run finds nothing to do.
         settled = await _full_run(FakeReader(detail))

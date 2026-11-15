@@ -90,6 +90,7 @@ def _row(
         side="buy",
         trading_day=trading_day,
         trade_date=None,
+        last_reconcile_detail=None,
     )
 
 
@@ -119,8 +120,9 @@ class FakeService:
         *,
         limit: int,
         account_mode: str = "kiwoom_mock",
+        include_journal_recovery: bool = False,
     ):
-        self.calls.append(("list", account_mode))
+        self.calls.append(("list", account_mode, include_journal_recovery))
         return list(type(self).rows[:limit]), type(self).total
 
     async def list_acknowledged_cancels(
@@ -228,7 +230,7 @@ async def test_us_scan_uses_the_et_trading_day(fake_service: type[FakeService]) 
     assert us_trading_day(NOW) == TODAY
     assert result["market"] == "us"
     assert result["account_mode"] == ACCOUNT_MODE_KIWOOM_MOCK_US
-    assert ("list", ACCOUNT_MODE_KIWOOM_MOCK_US) in fake_service.sink
+    assert ("list", ACCOUNT_MODE_KIWOOM_MOCK_US, False) in fake_service.sink
     assert ("cancels", ACCOUNT_MODE_KIWOOM_MOCK_US) in fake_service.sink
 
 

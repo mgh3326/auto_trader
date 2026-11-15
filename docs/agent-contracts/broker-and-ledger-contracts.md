@@ -348,9 +348,25 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (부킹된 명목 합은 브로커 누적 명목과 같아진다).
   Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
   `fee_basis='not_provided'`·`filled_at_basis='observed_at'` 이고 0 으로 채우지 않는다.
-  🔴 **저널·실현손익은 아직 쓰지 않는다 (hk 4802).** full 대사는 `execution_ledger`
-  델타만 부킹하며 `review.trades` 행·`TradeJournal`·FIFO 청산·실현손익을 만들지 않는다.
-  잔량 0 인 부분 체결(`filled < ordered`, `ord_remnq=0`)은 브로커 marker(만료/거부/취소 —
+  🔴 **저널 투영은 델타 부킹과 같은 트랜잭션이다 (hk 4802).** full 대사는 부킹한
+  `execution_ledger` 델타마다 `(account, order_id)` 단일 누적 `review.trades` 행을
+  upsert 하고 `account='kiwoom_mock'`·`account_type='mock'` 의 `TradeJournal` 을
+  쓴다 — 매수 델타는 주문의 active lot 을 만들거나 implied 델타가로 수량·가중평균을
+  키우고, 매도 델타는 공유 FIFO 헬퍼(`_close_journals_on_sell`)로 lot 을 종결해
+  부분매도는 lot 분할·실현손익을 기록한다. `journaled_qty`/`journaled_avg` 진척은
+  원장 행의 `last_reconcile_detail` 에 부킹 진척과 별도로 커밋되고, 둘은 항상 한
+  트랜잭션이다(저널 실패는 부킹도 롤백한다). 체결이 커밋됐는데 저널이 덜 쓰인 행은
+  종결·open 을 가리지 않고 journal recovery 로 다시 스캔돼 잔여분을 저널한다.
+  🔴 매도가 활성 lot 을 넘어서면(`unmatched_quantity > 0`) 매칭된 수량만 종결하고
+  진척을 매칭분까지만 올린다 — 미매칭분은 `unmatched_sell_quantity` 수동 검토
+  사유와 첫 미매칭 시각(`unmatched_sell_since`)을 남기고 다음 대사가 재시도하며,
+  결코 부킹보다 먼저 journaled 로 표시하지 않는다. 재시도된 잔여 매도는 그 시각
+  이전에 만들어진 lot 만 종결할 수 있다 — 나중 매수로 만들어진 lot 을 더 오래된
+  매도에 소급 소비해 이미 보유 중인 포지션의 실현손익을 기록하지 않는다.
+  recovery 스캔은 journaled/manual-review 마커가 있는 행만 대상으로 하고 open
+  행 뒤에 정렬한다 — hk 4802 이전 부킹 이력은 소급 저널하지 않고, 영구 미매칭
+  행이 open 스캔을 굶기지 않는다. 잔량 0 인 부분 체결(`filled < ordered`,
+  `ord_remnq=0`)은 브로커 marker(만료/거부/취소 —
   취소는 자기 승인 취소 요청 필요)가 있으면 체결을 실은 terminal verdict 로 분류되고,
   그 verdict 는 **full 모드에서만** 델타 부킹 → 종결로 이어진다. 종결은 그 verdict 의
   `filled_quantity` 전량이 부킹되어 행의 누적 체결수량과 정확히 같을 때만 허용되고,
@@ -929,7 +945,7 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 8개 도구는 `a
 
 - **MCP 도구**: `app/mcp_server/tooling/orders_kiwoom_variants.py` — `kiwoom_mock_preview_order`, `kiwoom_mock_place_order`, `kiwoom_mock_modify_order`, `kiwoom_mock_cancel_order`, `kiwoom_mock_get_order_history`, `kiwoom_mock_get_order_detail`, `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`
 - **주문 원장·송신 예약 (hk 4712/4722/4734)**: confirmed place 는 귀속 신호 → preflight → `order_send_intents` 예약(KR `account_scope='kiwoom_mock'`·US `'kiwoom_mock_us'`) → POST → `review.kiwoom_mock_order_ledger` 행 → 신호 결과 순서다. 원장 단일 writer는 `app/services/kiwoom_mock_order_ledger_service.py`의 `KiwoomMockOrderLedgerService`이고 `accepted`는 broker order id가 있어야 하며, 송신 후 불명은 `uncertain`으로 남기고 재송신하지 않는다. modify/cancel은 이 원장·제안 place 경로 밖이다.
-- **대사 CLI**: `scripts/kiwoom_mock_auto_reconcile.py` — 기본 dry-run, `--apply-terminal-only`는 시장별 terminal 게이트, `--apply`(KR full)는 두 full 게이트 뒤에서만 `execution_ledger` 델타와 reconcile-run 행을 쓰고 저널·실현손익은 hk 4802 공백이다(위 Execution Ledger HTTP Ingest의 Kiwoom 모의 행 참조).
+- **대사 CLI**: `scripts/kiwoom_mock_auto_reconcile.py` — 기본 dry-run, `--apply-terminal-only`는 시장별 terminal 게이트, `--apply`(KR full)는 두 full 게이트 뒤에서만 `execution_ledger` 델타와 reconcile-run 행을 쓰고, 부킹한 델타마다 `review.trades`·`TradeJournal`·FIFO 청산·실현손익을 같은 트랜잭션에 투영한다 (hk 4802 — 위 Execution Ledger HTTP Ingest의 Kiwoom 모의 행 참조).
 - **클라이언트**: `app/services/brokers/kiwoom/` — `client.KiwoomMockClient` (transport, host allowlist), `domestic_orders.KiwoomDomesticOrderClient` (buy/sell/modify/cancel), `domestic_account.KiwoomDomesticAccountClient` (orderable-amount/balance/order-status/order-detail)
 - **스모크 CLI**: `scripts/kiwoom_mock_smoke.py` (default-disabled, 3 modes: preflight/preview/full)
 - **런북**: `docs/runbooks/kiwoom-mock-smoke.md`

@@ -28,7 +28,7 @@ from decimal import Decimal
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +57,8 @@ __all__ = (
     "KiwoomMockPlaceRecorder",
     "KiwoomMockTransitionRefused",
     "LedgerReceipt",
+    "journaled_progress",
+    "unmatched_sell_since",
     "RESERVATION_ACCOUNT_SCOPE",
     "RESERVATION_ACCOUNT_SCOPE_US",
     "SendReservation",
@@ -160,6 +162,49 @@ _LIFECYCLE_FOR_FILL: Final = {"partial": "partial", "filled": "filled"}
 #: present so a replayed run of the same terminal evidence books nothing and
 #: still finds the row.
 _OPEN_FILL_STATUSES: Final = frozenset({"accepted", "pending", "partial", "filled"})
+
+#: Journal progress keys persisted in ``last_reconcile_detail`` (JSONB). The
+#: journal is written per booked delta (hk 4802), and ``journaled_qty`` /
+#: ``journaled_avg`` are the monotonic cumulative markers of what already
+#: journaled — the same place the delta booking already records progress.
+_JOURNALED_QTY_KEY: Final = "journaled_qty"
+_JOURNALED_AVG_KEY: Final = "journaled_avg"
+#: A sell delta that could not fully match its FIFO lots leaves this reason so
+#: the row surfaces for review; cleared once the remainder journals.
+_JOURNAL_MANUAL_REVIEW_KEY: Final = "journal_manual_review"
+#: When the unmatched-remainder reason was first recorded (ISO). The retried
+#: remainder may only close lots that already existed by then — a lot journaled
+#: from a LATER buy is not cover for an older sell (mergewake r4578899894).
+_UNMATCHED_SELL_SINCE_KEY: Final = "unmatched_sell_since"
+
+
+def unmatched_sell_since(row: Any) -> datetime | None:
+    """The first-unmatched timestamp of the sell remainder, if recorded."""
+    detail = getattr(row, "last_reconcile_detail", None) or {}
+    raw = detail.get(_UNMATCHED_SELL_SINCE_KEY) if isinstance(detail, dict) else None
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def journaled_progress(row: Any) -> tuple[Decimal, Decimal]:
+    """Quantity and price already journaled for the row (0, 0 when unknown)."""
+    detail = row.last_reconcile_detail or {}
+    raw_qty = detail.get(_JOURNALED_QTY_KEY) if isinstance(detail, dict) else None
+    raw_avg = detail.get(_JOURNALED_AVG_KEY) if isinstance(detail, dict) else None
+    try:
+        quantity = Decimal(str(raw_qty)) if raw_qty is not None else Decimal(0)
+    except (ArithmeticError, ValueError):
+        quantity = Decimal(0)
+    try:
+        average = Decimal(str(raw_avg)) if raw_avg is not None else Decimal(0)
+    except (ArithmeticError, ValueError):
+        average = Decimal(0)
+    return quantity, average
 
 
 class KiwoomMockTransitionRefused(Exception):
@@ -332,6 +377,28 @@ class FillBooking:
     status: str
     execution_ledger_row_id: int | None
     fill_seq: int | None
+    #: The broker's cumulative average, the row's recorded ``avg_fill_price``.
+    cumulative_avg: Decimal = Decimal(0)
+    #: Quantity/price already journaled before this booking, from the row detail.
+    journaled_qty: Decimal = Decimal(0)
+    journaled_avg: Decimal = Decimal(0)
+    #: The journal step's inputs, carried so the kernel never re-reads the row.
+    side: str | None = None
+    symbol: str = ""
+    instrument_type: str = ""
+    currency: str = ""
+    correlation_id: str | None = None
+    thesis: str | None = None
+    strategy: str | None = None
+    reason: str | None = None
+    exit_reason: str | None = None
+    notes: str | None = None
+    indicators_snapshot: dict[str, Any] | None = None
+    trade_id: int | None = None
+    journal_id: int | None = None
+    #: First-unmatched stamp of an outstanding sell remainder; bounds a retried
+    #: close to lots that already existed then. ``None`` on a first attempt.
+    unmatched_sell_since: datetime | None = None
 
 
 class KiwoomMockOrderLedgerService:
@@ -461,18 +528,58 @@ class KiwoomMockOrderLedgerService:
         *,
         limit: int,
         account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+        include_journal_recovery: bool = False,
     ) -> tuple[list[KiwoomMockOrderLedger], int]:
         """Open + uncertain place rows, oldest first, plus the open total.
 
         Scoped to one account mode: a KR scan must never classify a US row.
+
+        ``include_journal_recovery`` also returns rows whose booked fill was
+        never fully journaled (``journaled_qty`` below ``filled_qty``): the
+        fill evidence is committed, so only a later run can complete the
+        journal projection — including terminal rows a short sell closed.
+        Recovery candidates are ordered AFTER open rows so a permanently
+        unmatched remainder can never starve the open scan, and they are
+        limited to rows this projection already touched (a journaled or
+        manual-review marker): booked history that predates hk 4802 is NOT
+        backfilled — it stays manual-review territory (mergewake r4578899898).
         """
         profile = account_profile(account_mode)
         where = [
             KiwoomMockOrderLedger.account_mode == account_mode,
             KiwoomMockOrderLedger.market == profile.market,
             KiwoomMockOrderLedger.operation_kind == "place",
-            KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES),
         ]
+        source = KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES)
+        order: list[Any] = [KiwoomMockOrderLedger.id.asc()]
+        if include_journal_recovery:
+            journaled = func.coalesce(
+                cast(
+                    KiwoomMockOrderLedger.last_reconcile_detail[
+                        _JOURNALED_QTY_KEY
+                    ].astext,
+                    Numeric(20, 8),
+                ),
+                0,
+            )
+            detail = KiwoomMockOrderLedger.last_reconcile_detail
+            where.append(
+                or_(
+                    source,
+                    and_(
+                        KiwoomMockOrderLedger.filled_qty.isnot(None),
+                        KiwoomMockOrderLedger.filled_qty > journaled,
+                        or_(
+                            detail[_JOURNALED_QTY_KEY].astext.isnot(None),
+                            detail[_JOURNAL_MANUAL_REVIEW_KEY].astext.isnot(None),
+                        ),
+                    ),
+                )
+            )
+            # Open rows first; recovery rows fill only the leftover window.
+            order = [source.desc(), KiwoomMockOrderLedger.id.asc()]
+        else:
+            where.append(source)
         total = (
             await self._db.execute(
                 select(func.count()).select_from(KiwoomMockOrderLedger).where(*where)
@@ -483,7 +590,7 @@ class KiwoomMockOrderLedgerService:
                 await self._db.execute(
                     select(KiwoomMockOrderLedger)
                     .where(*where)
-                    .order_by(KiwoomMockOrderLedger.id.asc())
+                    .order_by(*order)
                     .limit(limit)
                 )
             )
@@ -652,6 +759,7 @@ class KiwoomMockOrderLedgerService:
         filled_quantity: int,
         average_price: int,
         observed_at: datetime | None = None,
+        commit: bool = True,
     ) -> FillBooking:
         """Book the broker-evidence fill delta of one open order (I4, I9).
 
@@ -665,6 +773,10 @@ class KiwoomMockOrderLedgerService:
         A regressed or over-order quantity is refused (the broker and the row
         disagree, so neither is safe to book); ``uncertain`` rows are refused
         because promotion is their only lawful resolution (I3).
+
+        ``commit=False`` leaves the transaction open — the row stays locked and
+        the detail update uncommitted — so the caller can write the journal
+        effects and the journal progress marker in the same transaction.
         """
         if isinstance(filled_quantity, bool) or not isinstance(filled_quantity, int):
             raise TypeError("filled_quantity must be an exact int")
@@ -674,6 +786,7 @@ class KiwoomMockOrderLedgerService:
             raise ValueError("average_price must be positive")
 
         row = await self._lock_row(ledger_id)
+        journaled = journaled_progress(row)
         if row.status not in _OPEN_FILL_STATUSES:
             raise KiwoomMockTransitionRefused(
                 ledger_id=ledger_id,
@@ -790,19 +903,139 @@ class KiwoomMockOrderLedgerService:
         if delta > 0:
             detail["delta_fill_price"] = str(delta_price)
         row.last_reconcile_detail = detail
-        await self._db.commit()
-        await self._db.refresh(row)
+        if commit:
+            await self._db.commit()
+            await self._db.refresh(row)
+        return self._booking_from_row(
+            row,
+            action=action,
+            delta_qty=delta,
+            avg_price=delta_price if delta > 0 else Decimal(average_price),
+            execution_ledger_row_id=row_id,
+            fill_seq=fill_seq,
+            journaled=journaled,
+        )
+
+    async def has_outstanding_unmatched_sell(self, *, symbol: str) -> bool:
+        """True while any sell remainder for ``symbol`` is unmatched.
+
+        An outstanding ``unmatched_sell_since`` stamp bounds a retried close
+        to lots that existed then — so a buy delta arriving while a stamp is
+        outstanding must open a NEW lot rather than grow an older one whose
+        ``created_at`` would pass the bound (mergewake r4578966217).
+        """
+        return (
+            await self._db.execute(
+                select(func.count(KiwoomMockOrderLedger.id)).where(
+                    KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
+                    KiwoomMockOrderLedger.symbol == symbol,
+                    KiwoomMockOrderLedger.last_reconcile_detail[
+                        _UNMATCHED_SELL_SINCE_KEY
+                    ].astext.isnot(None),
+                )
+            )
+        ).scalar_one() > 0
+
+    async def lock_for_journal(self, *, ledger_id: int) -> FillBooking:
+        """Lock the order row and return its current fill/journal state.
+
+        The journal step must decide what is still unjournaled while holding
+        this lock: a journaled marker read without the row lock is only a
+        snapshot, so two overlapping runs would otherwise journal the same
+        quantity twice (a second lot journal, or a second FIFO close). Any
+        status is lockable — a terminal row can still owe journaled shares.
+        """
+        row = await self._lock_row(ledger_id)
+        return self._booking_from_row(row, action="journal_lock")
+
+    async def record_journal_progress(
+        self,
+        *,
+        ledger_id: int,
+        trade_id: int | None = None,
+        journal_id: int | None = None,
+        journaled_qty: Decimal | None = None,
+        journaled_avg: Decimal | None = None,
+        manual_review_reason: str | None = None,
+        commit: bool = True,
+    ) -> None:
+        """Record what a booked fill journaled, monotonically.
+
+        ``journal_id`` repoints the row at the order's current lot (a fully
+        closed lot is replaced by the new one); ``trade_id`` is add-only so a
+        re-run cannot repoint the row at a second trade. The progress markers
+        only advance — never regress — and ``manual_review_reason`` is stored
+        while set and cleared once the unjournaled remainder is resolved.
+        """
+        row = await self._lock_row(ledger_id)
+        if trade_id is not None and row.trade_id is None:
+            row.trade_id = trade_id
+        if journal_id is not None:
+            row.journal_id = journal_id
+        detail = dict(row.last_reconcile_detail or {})
+        current_qty, _current_avg = journaled_progress(row)
+        if journaled_qty is not None and journaled_qty > current_qty:
+            detail[_JOURNALED_QTY_KEY] = str(journaled_qty)
+            if journaled_avg is not None:
+                detail[_JOURNALED_AVG_KEY] = str(journaled_avg)
+        if manual_review_reason is not None:
+            detail[_JOURNAL_MANUAL_REVIEW_KEY] = manual_review_reason
+            # The first unmatched sell stamps when its remainder first missed:
+            # a retried close may only consume lots that existed by then.
+            if (
+                manual_review_reason.startswith("unmatched_sell_quantity")
+                and _UNMATCHED_SELL_SINCE_KEY not in detail
+            ):
+                detail[_UNMATCHED_SELL_SINCE_KEY] = datetime.now(UTC).isoformat()
+        elif journaled_qty is not None:
+            detail.pop(_JOURNAL_MANUAL_REVIEW_KEY, None)
+            detail.pop(_UNMATCHED_SELL_SINCE_KEY, None)
+        row.last_reconcile_detail = detail
+        if commit:
+            await self._db.commit()
+
+    @staticmethod
+    def _booking_from_row(
+        row: KiwoomMockOrderLedger,
+        *,
+        action: str,
+        delta_qty: Decimal = Decimal(0),
+        avg_price: Decimal = Decimal(0),
+        execution_ledger_row_id: int | None = None,
+        fill_seq: int | None = None,
+        journaled: tuple[Decimal, Decimal] | None = None,
+    ) -> FillBooking:
+        journaled_qty, journaled_avg = (
+            journaled if journaled is not None else journaled_progress(row)
+        )
         return FillBooking(
             ledger_id=row.id,
             client_order_id=row.client_order_id,
-            broker_order_id=str(row.broker_order_id),
+            broker_order_id=str(row.broker_order_id or ""),
             action=action,
-            delta_qty=delta,
-            cumulative_qty=cumulative,
-            avg_price=delta_price if delta > 0 else Decimal(average_price),
-            status=status,
-            execution_ledger_row_id=row_id,
+            delta_qty=delta_qty,
+            cumulative_qty=row.filled_qty or Decimal(0),
+            avg_price=avg_price,
+            status=row.status,
+            execution_ledger_row_id=execution_ledger_row_id,
             fill_seq=fill_seq,
+            cumulative_avg=row.avg_fill_price or Decimal(0),
+            journaled_qty=journaled_qty,
+            journaled_avg=journaled_avg,
+            side=row.side,
+            symbol=row.symbol,
+            instrument_type=row.instrument_type,
+            currency=row.currency,
+            correlation_id=row.correlation_id,
+            thesis=row.thesis,
+            strategy=row.strategy,
+            reason=row.reason,
+            exit_reason=row.exit_reason,
+            notes=row.notes,
+            indicators_snapshot=row.indicators_snapshot,
+            trade_id=row.trade_id,
+            journal_id=row.journal_id,
+            unmatched_sell_since=unmatched_sell_since(row),
         )
 
     @staticmethod
@@ -817,10 +1050,26 @@ class KiwoomMockOrderLedgerService:
         row.lifecycle_state = _LIFECYCLE_FOR_TERMINAL[status]
         row.reconciled_at = datetime.now(UTC)
         row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+        # Journal progress survives the close: the journaled markers and an
+        # outstanding unmatched-sell remainder are durable state, not audit
+        # noise — a fill-bearing terminal row can still owe journaled shares
+        # the next run must find (mergewake od-b25d0595f6).
+        prior = row.last_reconcile_detail or {}
+        preserved = {
+            key: prior[key]
+            for key in (
+                _JOURNALED_QTY_KEY,
+                _JOURNALED_AVG_KEY,
+                _JOURNAL_MANUAL_REVIEW_KEY,
+                _UNMATCHED_SELL_SINCE_KEY,
+            )
+            if key in prior
+        }
         row.last_reconcile_detail = {
             "action": f"marked_{status}",
             "reason": reason,
             "basis": "positive_broker_evidence",
+            **preserved,
             **(detail or {}),
         }
 

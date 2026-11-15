@@ -20,9 +20,15 @@ Modes (design §3.3):
 * terminal-only — expired / cancelled / rejected and uncertain→accepted;
   ``filled``/``partial`` are reported as ``deferred_fill_booking``;
 * full mode (KR only) — the same, plus the broker-evidence fill delta booked
-  into ``execution_ledger`` (through :class:`ExecutionLedgerRepository`) and one
-  reconcile-run row with ``broker='kiwoom'``. Journals, trade rows and realized
-  P&L are **not** written by this kernel: the journal projection is hk 4802.
+  into ``execution_ledger`` (through :class:`ExecutionLedgerRepository`), one
+  reconcile-run row with ``broker='kiwoom'``, and — hk 4802 — the journal
+  projection **per booked delta**: a buy delta creates or grows the order's
+  ``kiwoom_mock`` lot journal, a sell delta closes FIFO lots (split on a
+  partial sell) with realized P&L, and the order's cumulative trade row is
+  upserted. Journal effects and the ``journaled_qty``/``journaled_avg``
+  progress markers commit in one transaction with the delta booking's row
+  lock, so a retried or overlapping run never journals a delta twice; a row
+  whose booked fill is not fully journaled stays in the scan until it is.
 
 Writes require exact-true gates, checked before any ledger read or broker
 call: ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`` (or the US one) for
@@ -42,6 +48,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Final, Protocol
 
 from sqlalchemy import text
@@ -61,8 +68,10 @@ from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.kiwoom_mock_order_ledger_service import (
     ACCOUNT_MODE_KIWOOM_MOCK,
     ACCOUNT_MODE_KIWOOM_MOCK_US,
+    FillBooking,
     KiwoomMockOrderLedgerService,
     KiwoomMockTransitionRefused,
+    journaled_progress,
     kr_trading_day,
     us_trading_day,
 )
@@ -124,6 +133,21 @@ _FULL_RUN_LOCK_SQL: Final = text(
 )
 
 _TERMINAL_VERDICTS: Final = frozenset({"expired", "cancelled", "rejected"})
+
+#: Every booked Kiwoom mock fill journals under this account label (operator
+#: decision at-3796-3797-design-answers Q3); the journal's ``account_type`` is
+#: ``mock`` — the account's own type.
+JOURNAL_ACCOUNT: Final = "kiwoom_mock"
+JOURNAL_ACCOUNT_TYPE: Final = "mock"
+
+#: Ledger statuses a row with a committed fill can hold once it left the open
+#: scan. Such a row is scanned only for journal recovery (the detail query's
+#: ``filled_qty > journaled_qty`` clause): the verdict classifier would
+#: misread a terminal source, and the ledger row itself is the authority on
+#: what is still unjournaled.
+_JOURNAL_RECOVERY_STATUSES: Final = frozenset(
+    {"filled", "expired", "cancelled", "rejected"}
+)
 
 
 def terminal_gate_enabled(
@@ -254,6 +278,8 @@ class _Candidate:
     side: str | None
     trading_day: str
     trade_date: datetime | None = None
+    #: Journaled quantity as the candidate list snapshot saw it (pre-lock).
+    journaled_qty: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +357,173 @@ async def _hold_full_run_lock(
             await db.rollback()
 
 
+async def _journal_buy_delta(
+    db: Any,
+    service: KiwoomMockOrderLedgerService,
+    booking: FillBooking,
+    *,
+    quantity: Decimal,
+    price: Decimal,
+    trade_id: int | None,
+) -> dict[str, Any]:
+    """Grow the order's active buy lot by ``quantity``, or open a new one.
+
+    The order's lot is found through its ``journal_id``. A still-active lot
+    absorbs the unjournaled quantity at a quantity-weighted entry price (hk
+    4802, operator decision 1); a fully closed (or missing) lot is replaced by
+    a new active lot for the order — the sell that closed it already took its
+    realized P&L. While an unmatched-sell stamp is outstanding for the
+    symbol, the delta opens a NEW lot instead of growing: a grown lot keeps
+    its old ``created_at``, so its later-added shares would pass the sell's
+    chronology bound and be consumed retroactively (mergewake r4578966217).
+    The caller owns the transaction (never commits).
+    """
+    from app.models.trade_journal import JournalStatus, TradeJournal
+    from app.models.trading import InstrumentType
+
+    lot = None
+    if booking.journal_id is not None:
+        lot = await db.get(TradeJournal, booking.journal_id)
+    if (
+        lot is not None
+        and lot.status == JournalStatus.active
+        and not await service.has_outstanding_unmatched_sell(symbol=booking.symbol)
+    ):
+        active_qty = lot.quantity or Decimal(0)
+        active_price = lot.entry_price or Decimal(0)
+        new_qty = active_qty + quantity
+        lot.entry_price = (active_qty * active_price + quantity * price) / new_qty
+        lot.quantity = new_qty
+        lot.amount = new_qty * lot.entry_price
+        await db.flush()
+        return {"journal_grown": True, "journal_id": lot.id}
+    lot = TradeJournal(
+        symbol=booking.symbol,
+        instrument_type=InstrumentType(booking.instrument_type),
+        side="buy",
+        entry_price=price,
+        quantity=quantity,
+        amount=price * quantity,
+        thesis=(booking.thesis or "").strip() or "reconciled fill",
+        strategy=(booking.strategy or "").strip() or "reconciled fill",
+        indicators_snapshot=booking.indicators_snapshot,
+        notes=booking.notes,
+        account=JOURNAL_ACCOUNT,
+        account_type=JOURNAL_ACCOUNT_TYPE,
+        trade_id=trade_id,
+        correlation_id=booking.correlation_id,
+        status=JournalStatus.active,
+    )
+    db.add(lot)
+    await db.flush()
+    return {"journal_created": True, "journal_id": lot.id}
+
+
+async def _journal_unjournaled(
+    db: Any,
+    service: KiwoomMockOrderLedgerService,
+    booking: FillBooking,
+) -> dict[str, Any]:
+    """Journal the order's unjournaled booked quantity inside the transaction.
+
+    ``unjournaled = filled_qty - journaled_qty`` is the quantity the committed
+    booking still owes the journal: the fresh delta on a normal booking, or
+    the remainder a previous sell could not match. Its price is the implied
+    residual ``(filled·avg − journaled·journaled_avg) / unjournaled`` — for a
+    fresh delta that is exactly the delta's implied price, so the journal's
+    cost basis equals the booked notional.
+
+    A buy journals the whole remainder into the order's lot; a sell closes
+    FIFO lots and a shortfall is NOT journaled: the progress marker advances
+    only by the matched part, a manual-review reason is left on the row, and
+    the next run sees the rest again. Imported lazily so the reconcile module
+    stays light for the CLI.
+    """
+    from app.mcp_server.tooling import order_journal
+
+    unjournaled = booking.cumulative_qty - booking.journaled_qty
+    if unjournaled <= 0:
+        return {"skipped": "already_journaled"}
+    residual = (
+        booking.cumulative_qty * booking.cumulative_avg
+        - booking.journaled_qty * booking.journaled_avg
+    )
+    price = residual / unjournaled
+    if price <= 0:
+        raise ValueError("unjournaled_price_unavailable")
+    average = booking.cumulative_avg if booking.cumulative_avg > 0 else price
+    trade_id = await order_journal._record_trade_for_fill(
+        db,
+        symbol=booking.symbol,
+        instrument_type=booking.instrument_type,
+        side=str(booking.side),
+        price=float(average),
+        quantity=float(booking.cumulative_qty),
+        total_amount=float(booking.cumulative_qty * average),
+        fee=0.0,
+        currency=booking.currency,
+        account=JOURNAL_ACCOUNT,
+        order_id=booking.broker_order_id,
+    )
+    details: dict[str, Any] = {"trade_id": trade_id}
+    manual_review_reason: str | None = None
+    if booking.side == "buy":
+        grown = await _journal_buy_delta(
+            db,
+            service,
+            booking,
+            quantity=unjournaled,
+            price=price,
+            trade_id=trade_id,
+        )
+        details.update(grown)
+        journaled_now = unjournaled
+    else:
+        close = await order_journal._close_journals_on_sell(
+            symbol=booking.symbol,
+            sell_quantity=float(unjournaled),
+            sell_price=float(price),
+            exit_reason=booking.exit_reason or booking.reason,
+            account_type=JOURNAL_ACCOUNT_TYPE,
+            account=JOURNAL_ACCOUNT,
+            db=db,
+            # A retried remainder only consumes lots that existed when the
+            # sell first missed: a lot journaled from a LATER buy is not
+            # cover for the older sell (mergewake r4578899894).
+            journal_created_before=booking.unmatched_sell_since,
+        )
+        details["journals_closed"] = close["journals_closed"]
+        details["closed_journal_ids"] = close["closed_ids"]
+        details["realized_pnl_pct"] = close["total_pnl_pct"]
+        details["realized_pnl_basis"] = close.get("realized_pnl_basis", "journal_entry")
+        unmatched = Decimal(str(close["unmatched_quantity"]))
+        details["unmatched_quantity"] = float(unmatched)
+        journaled_now = unjournaled - unmatched
+        if unmatched > 0:
+            manual_review_reason = f"unmatched_sell_quantity:{unmatched}"
+    new_qty = booking.journaled_qty + journaled_now
+    new_avg = (
+        (booking.journaled_qty * booking.journaled_avg + journaled_now * price)
+        / new_qty
+        if new_qty > 0
+        else booking.journaled_avg
+    )
+    await service.record_journal_progress(
+        ledger_id=booking.ledger_id,
+        trade_id=trade_id,
+        journal_id=details.get("journal_id"),
+        journaled_qty=new_qty,
+        journaled_avg=new_avg,
+        manual_review_reason=manual_review_reason,
+        commit=False,
+    )
+    details["journaled_qty"] = str(new_qty)
+    details["journaled_avg"] = str(new_avg)
+    if manual_review_reason is not None:
+        details["manual_review"] = manual_review_reason
+    return details
+
+
 async def kiwoom_mock_reconcile_orders_impl(
     *,
     market: str = "kr",
@@ -349,8 +542,9 @@ async def kiwoom_mock_reconcile_orders_impl(
     ``dry_run`` issues zero writes. ``terminal_only`` applies closed-outcome
     transitions only and leaves fills deferred. Full mode
     (``dry_run=False, terminal_only=False``, KR only) also books the
-    broker-evidence fill delta into ``execution_ledger``; it writes no trade
-    row, journal or realized P&L (hk 4802). Every write path needs its exact-true operator
+    broker-evidence fill delta into ``execution_ledger`` and journals each
+    booked delta — buy lots are created/grown, sell deltas FIFO-close lots
+    with realized P&L (hk 4802). Every write path needs its exact-true operator
     gate(s): ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`` (or
     ``KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED``) for terminal-only and
     both full-mode switches for full mode.
@@ -459,6 +653,7 @@ async def _reconcile_orders(
             rows, open_total = await service.list_reconcile_candidates(
                 limit=limit,
                 account_mode=account_mode,
+                include_journal_recovery=full_mode,
             )
             candidates = [
                 _Candidate(
@@ -472,6 +667,7 @@ async def _reconcile_orders(
                     side=row.side,
                     trading_day=row.trading_day,
                     trade_date=row.trade_date,
+                    journaled_qty=journaled_progress(row)[0],
                 )
                 for row in rows
             ]
@@ -670,13 +866,15 @@ async def _reconcile_orders(
     async def _book_fill(
         candidate: _Candidate, verdict: Any, outcome: dict[str, Any]
     ) -> None:
-        """Book the broker-evidence fill delta into ``execution_ledger``.
+        """Book the broker-evidence fill delta and journal it, in one transaction.
 
         The ledger is the authority on fills, so every fill verdict of a full
         run lands its delta there — including the cumulative fill a terminal
-        verdict carries. Nothing else is written here: the trade row, journal
-        and realized P&L are hk 4802, not this kernel's job. A re-run of
-        identical evidence books nothing new (the delta is zero) and says so.
+        verdict carries. hk 4802: the journaled part of the delta is written in
+        the *same* transaction under the booking's row lock — a buy delta
+        creates/grows the order's lot, a sell delta FIFO-closes lots — and the
+        ``journaled_qty`` marker commits with it, so a retried or overlapping
+        run can never journal a delta twice or lose a booked one.
         """
         nonlocal booked_count, already_booked_count
         if verdict.filled_quantity is None or verdict.average_price is None:
@@ -687,12 +885,16 @@ async def _reconcile_orders(
             return
         try:
             async with session_factory() as db:
-                booking = await KiwoomMockOrderLedgerService(db).record_fill(
+                service = KiwoomMockOrderLedgerService(db)
+                booking = await service.record_fill(
                     ledger_id=candidate.ledger_id,
                     filled_quantity=int(verdict.filled_quantity),
                     average_price=int(verdict.average_price),
                     observed_at=run_now,
+                    commit=False,
                 )
+                journal = await _journal_unjournaled(db, service, booking)
+                await db.commit()
         except KiwoomMockTransitionRefused as exc:
             logger.info(
                 "kiwoom mock fill refused id=%s: %s", candidate.ledger_id, exc.reason
@@ -701,10 +903,23 @@ async def _reconcile_orders(
             outcome["transition_refused"] = exc.reason
             outcome["requires_manual_review"] = True
             return
+        except Exception as exc:  # noqa: BLE001 — the class is surfaced, never hidden
+            logger.exception(
+                "kiwoom mock fill+journal failed id=%s", candidate.ledger_id
+            )
+            # The whole transaction rolled back: neither the delta nor the
+            # journal landed, so the next run retries both exactly once.
+            outcome["action"] = "fill_journal_failed"
+            outcome["journal_error"] = type(exc).__name__
+            outcome["requires_manual_review"] = True
+            return
 
         outcome["action"] = booking.action
         outcome["delta_qty"] = str(booking.delta_qty)
         outcome["booked_cumulative_qty"] = str(booking.cumulative_qty)
+        outcome["journal"] = journal
+        if journal.get("manual_review"):
+            outcome["requires_manual_review"] = True
         if booking.execution_ledger_row_id is not None:
             outcome["execution_ledger_row_id"] = booking.execution_ledger_row_id
         if booking.fill_seq is not None:
@@ -714,7 +929,82 @@ async def _reconcile_orders(
         else:
             booked_count += 1
 
+    async def _journal_recovery(
+        candidate: _Candidate,
+        outcome: dict[str, Any],
+        *,
+        keep_action: bool = False,
+    ) -> None:
+        """Journal whatever a committed fill still owes, without re-booking.
+
+        The row left the open scan (a terminal verdict, or ``filled``) or its
+        verdict this run carried no new fill evidence, yet ``journaled_qty``
+        is short — e.g. a sell delta that outran the available lots. The
+        ledger row is the authority: lock it, journal the remainder in one
+        transaction. ``keep_action`` preserves the verdict action the caller
+        already recorded (an open row can owe journaled shares under a
+        ``pending`` verdict too).
+        """
+        try:
+            async with session_factory() as db:
+                service = KiwoomMockOrderLedgerService(db)
+                locked = await service.lock_for_journal(ledger_id=candidate.ledger_id)
+                details = await _journal_unjournaled(db, service, locked)
+                await db.commit()
+        except KiwoomMockTransitionRefused as exc:
+            logger.info(
+                "kiwoom mock journal recovery refused id=%s: %s",
+                candidate.ledger_id,
+                exc.reason,
+            )
+            if not keep_action:
+                outcome["action"] = "noop_transition_refused"
+            outcome["transition_refused"] = exc.reason
+            outcome["requires_manual_review"] = True
+            return
+        except Exception as exc:  # noqa: BLE001 — surface the class, never hide it
+            logger.exception(
+                "kiwoom mock journal recovery failed id=%s", candidate.ledger_id
+            )
+            if not keep_action:
+                outcome["action"] = "journal_failed"
+            outcome["journal_error"] = type(exc).__name__
+            outcome["requires_manual_review"] = True
+            return
+        outcome["journal"] = details
+        if details.get("skipped"):
+            if not keep_action:
+                outcome["action"] = "noop_already_journaled"
+        elif details.get("manual_review"):
+            if not keep_action:
+                outcome["action"] = "journal_unmatched"
+            outcome["requires_manual_review"] = True
+        elif not keep_action:
+            outcome["action"] = "journaled"
+
     for candidate in candidates:
+        if (
+            full_mode
+            and candidate.status in _JOURNAL_RECOVERY_STATUSES
+            and candidate.journaled_qty < candidate.recorded_filled_quantity
+        ):
+            # A row whose fill is committed but not fully journaled (e.g. a
+            # short sell): classify nothing, journal the remainder instead.
+            outcome = {
+                "ledger_id": candidate.ledger_id,
+                "client_order_id": candidate.client_order_id,
+                "broker_order_id": candidate.broker_order_id,
+                "symbol": candidate.symbol,
+                "side": candidate.side,
+                "status": candidate.status,
+                "verdict": "journal_recovery",
+            }
+            await _journal_recovery(candidate, outcome)
+            if outcome.get("requires_manual_review"):
+                unresolved_count += 1
+            counts["journal_recovery"] = counts.get("journal_recovery", 0) + 1
+            reconciled.append(outcome)
+            continue
         if market == "kr":
             is_today = candidate.trading_day == today
             evidence = _evidence_for(
@@ -814,6 +1104,15 @@ async def _reconcile_orders(
         else:
             outcome["action"] = "noop_no_evidence"
             outcome["requires_manual_review"] = True
+
+        # An open row can still owe journaled shares under a non-fill verdict
+        # (a short sell's remainder stays ``partial``/``pending``): journal it.
+        if (
+            full_mode
+            and "journal" not in outcome
+            and candidate.journaled_qty < candidate.recorded_filled_quantity
+        ):
+            await _journal_recovery(candidate, outcome, keep_action=True)
 
         # Work still owed after this run: an unbooked fill or a row a human must
         # resolve. A successful close or booking is resolved.
