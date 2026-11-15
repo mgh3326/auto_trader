@@ -159,6 +159,9 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # references the other, so their drop order is free.
     "review.kiwoom_mock_signal_ledger",
     "review.kiwoom_mock_order_ledger",
+    # hk 4702 trend state tables are later than this boundary (intents first).
+    "review.binance_trend_intents",
+    "review.binance_trend_signals",
 )
 
 

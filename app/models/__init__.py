@@ -12,6 +12,7 @@ from .binance_h5 import (
     BinanceH5Opportunity,
     BinanceH5Signal,
 )
+from .binance_trend import BinanceTrendIntent, BinanceTrendSignal
 from .buy_gate_ab_collection_epoch import BuyGateABCollectionEpoch
 from .buy_gate_ab_experiment_lifecycle import (
     BuyGateABCollectionEpochV2,
@@ -223,6 +224,8 @@ __all__ = [
     "BinanceH5NavSample",
     "BinanceH5Opportunity",
     "BinanceH5Signal",
+    "BinanceTrendIntent",
+    "BinanceTrendSignal",
     "BuyGateABCollectionEpoch",
     "BuyGateABCollectionEpochV2",
     "BuyGateABExperimentRegistration",

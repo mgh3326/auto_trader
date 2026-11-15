@@ -170,6 +170,12 @@ tests/services/brokers/binance/test_broker_ack_scope_migration.py
 tests/services/brokers/binance/test_gap_detection.py
 tests/services/brokers/binance/test_rate_limit_telemetry.py
 tests/services/brokers/binance/test_rest_client.py
+tests/services/brokers/binance/trend/test_constants.py
+tests/services/brokers/binance/trend/test_entry_gate.py
+tests/services/brokers/binance/trend/test_migration_shape.py
+tests/services/brokers/binance/trend/test_state_db.py
+tests/services/brokers/binance/trend/test_state_inputs.py
+tests/services/brokers/binance/trend/test_static_boundary.py
 tests/services/brokers/kis/test_circuit_breaker.py
 tests/services/brokers/kis/test_live_order_expiry_krx_after.py
 tests/services/brokers/kis/test_live_shadow_witness.py
