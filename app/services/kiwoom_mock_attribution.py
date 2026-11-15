@@ -58,6 +58,20 @@ class KiwoomMockAttribution:
     signal_source: str
 
 
+@dataclass(frozen=True, slots=True)
+class RecordedSignal:
+    """Result of :func:`record_signal`: the row, and whether this call made it.
+
+    ``created`` is the only local proof that no earlier dispatch exists under
+    this correlation id. A replay returns the first attempt's row, and that
+    row's ``recorded`` state means *outcome unknown* there — it is owned by the
+    earlier attempt, never by the caller that merely replayed the id.
+    """
+
+    row_id: int
+    created: bool
+
+
 def _clean(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -160,11 +174,14 @@ async def record_signal(
     report_item_uuid: uuid.UUID | None = None,
     detail: dict[str, Any] | None = None,
     kst_date: str | None = None,
-) -> int:
-    """Persist the signal row and return its id (existing id when replayed).
+) -> RecordedSignal:
+    """Persist the signal row; report the row and whether this call created it.
 
     Idempotent on ``correlation_id``. The function owns the transaction, so the
     row is on disk before the caller proceeds to the reservation or the broker.
+    A replay returns the existing row with ``created=False``: that row's state
+    belongs to the earlier attempt, so the caller must not close it on this
+    call's behalf.
     """
     if decision not in (_DECISION_ORDER, _DECISION_NO_ORDER):
         raise ValueError(f"unknown decision {decision!r}")
@@ -195,6 +212,7 @@ async def record_signal(
         .returning(KiwoomMockSignalLedger.id)
     )
     inserted = (await db.execute(stmt)).scalar_one_or_none()
+    created = inserted is not None
     if inserted is None:
         existing = (
             await db.execute(
@@ -222,7 +240,7 @@ async def record_signal(
             "kiwoom_mock signal row neither inserted nor found: "
             f"{attribution.correlation_id}"
         )
-    return int(inserted)
+    return RecordedSignal(row_id=int(inserted), created=created)
 
 
 async def mark_signal_outcome(
@@ -254,13 +272,67 @@ async def mark_signal_outcome(
     return int(result.rowcount or 0)
 
 
+NOT_SENT_OUTCOME = "suppressed"
+#: Closed vocabulary of refusals that provably sent no order. Widening this set
+#: is a contract change: every reason must be a path where the broker never
+#: received an order for the signal.
+NOT_SENT_REASONS: tuple[str, ...] = (
+    "preflight_refused",
+    "duplicate_intent",
+    "send_intent_unavailable",
+    "pre_dispatch_error",
+)
+
+
+async def mark_signal_not_sent(
+    db: AsyncSession,
+    *,
+    correlation_id: str,
+    reason: str,
+    detail_patch: dict[str, Any] | None = None,
+) -> int:
+    """Mark a signal whose order provably never left the process.
+
+    ``suppressed`` is the vocabulary's not-sent value (the same one kis_mock's
+    ``record_signal`` writes for ``decision='no_order'``).
+
+    The write is a compare-and-set on ``outcome_state='recorded'``: a row an
+    earlier dispatch already closed — ``submitted``, ``failed`` or
+    ``suppressed`` — is never relabelled. That matters because a replayed
+    correlation id reaches this function from a *duplicate-intent* refusal, and
+    the first attempt under that key may well have placed a real order.
+    """
+    if reason not in NOT_SENT_REASONS:
+        raise ValueError(f"unknown kiwoom_mock not-sent reason: {reason!r}")
+    values: dict[str, Any] = {
+        "outcome_state": NOT_SENT_OUTCOME,
+        "suppressed_reason": reason,
+    }
+    if detail_patch:
+        values["detail"] = KiwoomMockSignalLedger.detail.op("||")(
+            cast(detail_patch, JSONB)
+        )
+    result = await db.execute(
+        update(KiwoomMockSignalLedger)
+        .where(
+            KiwoomMockSignalLedger.correlation_id == correlation_id,
+            KiwoomMockSignalLedger.outcome_state == "recorded",
+        )
+        .values(**values)
+    )
+    await db.commit()
+    return int(result.rowcount or 0)
+
+
 class KiwoomMockSignalRecorder:
     """Session-per-operation facade used by the KR place path."""
 
     def __init__(self, session_factory: Any) -> None:
         self._session_factory = session_factory
 
-    async def record(self, *, attribution: KiwoomMockAttribution, **kwargs: Any) -> int:
+    async def record(
+        self, *, attribution: KiwoomMockAttribution, **kwargs: Any
+    ) -> RecordedSignal:
         async with self._session_factory() as db:
             return await record_signal(db, attribution=attribution, **kwargs)
 
@@ -281,14 +353,33 @@ class KiwoomMockSignalRecorder:
                 detail_patch=detail_patch,
             )
 
+    async def mark_not_sent(
+        self,
+        *,
+        correlation_id: str,
+        reason: str,
+        detail_patch: dict[str, Any] | None = None,
+    ) -> int:
+        async with self._session_factory() as db:
+            return await mark_signal_not_sent(
+                db,
+                correlation_id=correlation_id,
+                reason=reason,
+                detail_patch=detail_patch,
+            )
+
 
 __all__ = (
     "ACCOUNT_SCOPE",
     "KiwoomMockAttribution",
     "KiwoomMockSignalRecorder",
     "MissingAttribution",
+    "NOT_SENT_OUTCOME",
+    "NOT_SENT_REASONS",
+    "RecordedSignal",
     "SignalStrategyConflict",
     "mint_correlation_id",
+    "mark_signal_not_sent",
     "mark_signal_outcome",
     "record_signal",
     "resolve_attribution",
