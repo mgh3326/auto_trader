@@ -335,9 +335,12 @@ async def test_proposal_projection_partial_fill_and_duplicate_evidence_are_idemp
     assert rung.filled_qty == Decimal("2")
 
 
-async def test_proposal_projection_cancel_preserves_existing_partial_quantity(
+async def test_contradictory_cancel_after_partial_leaves_rung_open(
     db_session,
 ):
+    """hk 4606 — broker no-fill terminal evidence against a recorded partial
+    fill is contradictory: the row and rung stay open for manual review, the
+    partial quantity is never closed over."""
     from app.mcp_server.tooling import toss_live_ledger as mod
 
     proposal_id, row = await _proposal_accepted_row(db_session, suffix="partial-cancel")
@@ -355,8 +358,11 @@ async def test_proposal_projection_cancel_preserves_existing_partial_quantity(
     )
     rung = await _proposal_rung(db_session, proposal_id)
 
-    assert cancelled["proposal_rung"]["proposal_rung_state"] == "cancelled"
-    assert rung.state == "cancelled"
+    assert cancelled["action"] == "noop_evidence_boundary"
+    assert cancelled["reason_code"] == "evidence_contradiction"
+    assert cancelled["requires_manual_review"] is True
+    assert "proposal_rung" not in cancelled
+    assert rung.state == "partially_filled"
     assert rung.filled_qty == Decimal("0.5")
 
 
@@ -1100,6 +1106,13 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
             verdict="none", local_status="cancelled", filled_qty="0"
         )
     terminal_result = await _reconcile_with_evidence(mod, row, terminal)
+    if terminal_status == "cancelled":
+        # hk 4606 — no-fill cancel evidence vs a recorded partial fill is
+        # contradictory: the row and rung stay open for manual review.
+        assert terminal_result["action"] == "noop_evidence_boundary"
+        assert terminal_result["reason_code"] == "evidence_contradiction"
+        assert "proposal_rung" not in terminal_result
+        return
     assert terminal_result.get("proposal_rung") == {
         "converged": True,
         "proposal_rung_state": terminal_status,
@@ -2372,7 +2385,10 @@ async def test_expired_projects_resting_rung_to_expired(db_session):
     assert rung.state == "expired"
 
 
-async def test_partially_filled_rung_expires_preserving_qty(db_session):
+async def test_partially_filled_rung_rejects_contradictory_expiry(db_session):
+    """hk 4606 — a DAY sweep that reports zero fills while a partial fill is
+    already recorded is contradictory evidence: the row and rung stay open
+    for manual review and are never closed over the recorded quantity."""
     from app.mcp_server.tooling import toss_live_ledger as mod
 
     proposal_id, row = await _proposal_accepted_row(
@@ -2400,8 +2416,11 @@ async def test_partially_filled_rung_expires_preserving_qty(db_session):
     )
     rung = await _proposal_rung(db_session, proposal_id)
 
-    assert expired["proposal_rung"]["proposal_rung_state"] == "expired"
-    assert rung.state == "expired"
+    assert expired["action"] == "noop_evidence_boundary"
+    assert expired["reason_code"] == "evidence_contradiction"
+    assert expired["requires_manual_review"] is True
+    assert "proposal_rung" not in expired
+    assert rung.state == "partially_filled"
     assert rung.filled_qty == Decimal("0.5")
 
 

@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.evidence_boundary import EvidenceBoundary
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
 from app.mcp_server.tooling.order_journal import (
@@ -29,12 +30,14 @@ from app.mcp_server.tooling.proposal_rung_convergence import (
 from app.mcp_server.tooling.toss_live_evidence import (
     TossBatchEvidenceSource,
     TossEvidenceAdapter,
+    classify_toss_evidence_boundary,
 )
 from app.models.review import TossLiveOrderLedger
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError, TossRateLimitError
 from app.services.execution_ledger.fill_intent_lookup import resolve_fill_intent
+from app.services.execution_ledger.recorded_fills import recorded_fill_qty_for_order
 from app.services.fill_notification import (
     is_fill_notifiable,
     normalize_toss_fill,
@@ -418,6 +421,32 @@ async def _repair_terminal_toss_proposal_projections(
 _TOSS_TERMINAL_LEDGER_STATUSES = frozenset({"expired"})
 
 
+async def _recorded_positive_toss_fill_qty(row: TossLiveOrderLedger) -> Decimal:
+    """Recorded fill evidence for the boundary: ledger row + execution_ledger.
+
+    The ledger row's own ``filled_qty`` is the cheap check; a partial fill
+    recorded only in ``execution_ledger`` by another writer still counts via
+    the shared order-identity read.
+    """
+    recorded = row.filled_qty or Decimal("0")
+    if recorded > 0:
+        return recorded
+    order_id = str(row.broker_order_id or "").strip()
+    if not order_id:
+        return Decimal("0")
+    async with _order_session_factory()() as db:
+        return await recorded_fill_qty_for_order(
+            db,
+            broker="toss",
+            instrument_type=_TOSS_MARKET_TO_INSTRUMENT.get(row.market, row.market),
+            symbol=row.symbol,
+            side=row.side,
+            currency=row.currency,
+            broker_order_id=order_id,
+            order_time=row.trade_date,
+        )
+
+
 async def _reconcile_one_toss_row(
     row: TossLiveOrderLedger,
     *,
@@ -447,6 +476,34 @@ async def _reconcile_one_toss_row(
     base["verdict"] = evidence.verdict
     base["broker_status"] = evidence.broker_status
     base["local_status"] = evidence.local_status
+
+    # hk 4606 — shared evidence boundary, identical for full and
+    # terminal_only scope: contradictory/incomplete broker evidence must
+    # never close the order nor book a fill.
+    if evidence.verdict in {"none", "expired"}:
+        recorded_fill_qty = await _recorded_positive_toss_fill_qty(row)
+    else:
+        recorded_fill_qty = Decimal("0")
+    boundary = classify_toss_evidence_boundary(
+        market=row.market,
+        evidence=evidence,
+        recorded_fill_qty=recorded_fill_qty,
+    )
+    if boundary.boundary is not EvidenceBoundary.USABLE:
+        base["action"] = "noop_evidence_boundary"
+        base["requires_manual_review"] = True
+        base["reason_code"] = boundary.reason_code
+        base["reason"] = boundary.detail
+        if not dry_run:
+            async with _order_session_factory()() as db:
+                await TossLiveOrderLedgerService(db).record_transient_reconcile_error(
+                    ledger_id=row.id,
+                    error={
+                        "reason_code": boundary.reason_code,
+                        "detail": boundary.detail,
+                    },
+                )
+        return base
 
     if evidence.verdict == "pending":
         if (

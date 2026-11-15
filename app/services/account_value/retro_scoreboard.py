@@ -4,8 +4,7 @@ Read-only projection of ``load_weekly_report`` into the closed
 ``RetroScoreboardResponse`` shape (``contracts/retro/v1/openapi.yaml``).
 
 * External-flow completeness is a server-side fact. No argument can declare it;
-  there is no durable server-side declaration yet, so account rows stay
-  unmeasured with ``flows_not_confirmed``.
+  operator confirmations determine the value for each account and window.
 * Account, market and sleeve identities leave only as opaque ``ref_`` digests.
 * Every amount and rate is an exact decimal string (never a float).
 * No snapshot or flow writer is imported or called, and nothing is refreshed.
@@ -18,14 +17,12 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import ProgrammingError
 
 from app.models.account_value import AccountValueSnapshot
+from app.services.account_value.completeness import load_confirmations
 from app.services.account_value.load_report import load_weekly_report
 from app.services.account_value.report import ReportRow
-
-# The only value ever handed to the loader. Nothing durable records that the
-# operator confirmed a period's external flows, so it is False for everyone.
-SERVER_FLOWS_COMPLETE = False
 
 MAX_SPAN_DAYS = 366
 DEFAULT_LIMIT = 100
@@ -143,7 +140,7 @@ def _benchmark(row: ReportRow, scope: str, market: str) -> tuple[dict, str | Non
     }, reason
 
 
-def _score_row(row: ReportRow) -> tuple[dict, dict[str, str]]:
+def _score_row(row: ReportRow, flows_complete=False) -> tuple[dict, dict[str, str]]:
     """One ScoreRow plus ``{field: UnknownReason}`` for each null value."""
     scope = (
         "account" if row.market == "account" else "sleeve" if row.sleeve else "market"
@@ -167,7 +164,7 @@ def _score_row(row: ReportRow) -> tuple[dict, dict[str, str]]:
         else "broker",
         "return_rate": _decimal_text(row.return_rate),
         "unmeasured_reason": None,
-        "flows_complete": SERVER_FLOWS_COMPLETE if scope == "account" else None,
+        "flows_complete": flows_complete if scope == "account" else None,
         "start_amount": _decimal_text(row.start_value),
         "end_amount": _decimal_text(row.end_value),
         "flow_amount": _decimal_text(row.flows),
@@ -251,7 +248,7 @@ async def read_retro_scoreboard(
     ``from`` is a Python keyword, so the two date names arrive as keyword
     arguments (``read_retro_scoreboard(session, **{"from": ..., "to": ...})``).
     Any other keyword, in particular anything about flow completeness, is a
-    ``TypeError``: the value is decided on the server (``SERVER_FLOWS_COMPLETE``).
+    ``TypeError``: the value is decided on the server.
     Invalid parameters raise ``ValueError``.
     """
     if set(window) != {"from", "to"}:
@@ -267,9 +264,18 @@ async def read_retro_scoreboard(
 
     await _begin_read_only(session)
     now = datetime.now(UTC)
-    rows = await load_weekly_report(
-        session, start, end, flows_complete=SERVER_FLOWS_COMPLETE
-    )
+    try:
+        # Migrations are operator-applied separately from deploys, so the
+        # table or its SELECT grant may be absent on this database. Fail only
+        # the coverage read (via savepoint) and degrade to unconfirmed; every
+        # other failure still propagates.
+        async with session.begin_nested():
+            confirmations = await load_confirmations(session, start, end)
+    except ProgrammingError as exc:
+        if getattr(exc.orig, "sqlstate", None) not in {"42P01", "42501"}:
+            raise
+        confirmations = []
+    rows = await load_weekly_report(session, start, end, confirmations=confirmations)
     data_as_of = (
         await session.execute(
             select(func.max(AccountValueSnapshot.observed_at)).where(
@@ -278,7 +284,7 @@ async def read_retro_scoreboard(
         )
     ).scalar_one_or_none()
 
-    scored = [_score_row(row) for row in rows]
+    scored = [_score_row(row, row.flows_complete is True) for row in rows]
     scored.sort(
         key=lambda item: (
             _SCOPE_ORDER[item[0]["scope"]],

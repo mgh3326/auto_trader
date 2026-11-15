@@ -1,0 +1,109 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "ROB-3796",
+  "version": 1,
+  "title": "Crypto time-series momentum (basket 4) on the Binance USD-M futures demo, long and short, against cash and a BTC long-only control",
+  "question": "Does a fixed 4h-to-daily time-series momentum rule on BTC, ETH, SOL and XRP, sized to a 60% EWMA volatility target inside fixed caps, earn a positive net return after costs against cash at equal capital in an 8-week prospective seal on the Binance USD-M demo host?",
+  "status": "draft",
+  "markets": ["crypto"],
+  "hashes": {
+    "preregistration_text": "docs/design/3796-crypto-trend-demo.md sections 3.1, 3.2 and 6 (answers Q1-Q8); operator record hk:doc decision/2026-11-15/at-3796-3797-design-answers",
+    "exploration_data_source": "Binance public kline archive (data.binance.vision), most recent 3 years (Q7). Demo-host klines are not used for performance estimates.",
+    "exploration_dataset_manifest_sha256": {"pending": "CT-2: fixed when the public archive is downloaded and hashed; exploration only, not sealed data"},
+    "evaluation_contract_sha256": {"pending": "CT-2: evaluation contract (fill model, metric definitions, episode rules) is hashed before the exploration comparison runs"},
+    "code_sha": {"pending": "CT-4/CT-5: runner code SHA is fixed when the manifest is sealed"},
+    "policy_version": {"pending": "CT-4: the design reads no config/trading_policy.yaml key; record the policy stamp only if CT-4 reads one, otherwise record none explicitly before seal"},
+    "cost_table_sha256": {"pending": "CT-4/CT-5: starting point is the H5 taker fee 0.0005 (app/services/brokers/binance/h5/constants.py); the realized fee_usdt of each fill replaces it in the ledger; table hashed at seal"}
+  },
+  "features": [
+    {
+      "name": "tsmom_sign_L (L in {20, 60, 120} days; one value fixed by CT-2)",
+      "available_at": "close of the complete 4h bar (UTC 4h boundary); decision at that bar close. Incomplete or missing bars are NO_SIGNAL, never forward-filled",
+      "source": "Binance USD-M 4h bars built from klines with the research bar builder (research/nautilus_scalping/rob974_features.build_complete_4h); sign of close_t / close_(t-L) - 1 on daily-equivalent closes"
+    },
+    {
+      "name": "ewma_vol_20d",
+      "available_at": "close of the complete 4h bar that closes the day; decision at that bar close",
+      "source": "20-day EWMA realized volatility of daily-equivalent returns; scale = min(1, sigma_star / sigma_hat) with sigma_star = 60%"
+    },
+    {
+      "name": "hard_stop_extreme_1m",
+      "available_at": "close of each 1m bar between two 4h closes",
+      "source": "1m high/low of the open leg from the public archive or the Binance demo host kline endpoint; a tick whose 1m fetch fails decides on the 4h close only and records the failure"
+    }
+  ],
+  "labels": [
+    {
+      "name": "episode_net_return",
+      "definition": "per episode: signed (exit fill price - entry fill price) x quantity, minus fees (realized fee_usdt from the ledger; before fills exist, the taker fee starting point on each side), divided by the episode's leg notional. An episode runs from entry to exit at signal reversal, hard stop, or maximum holding time of 30 days. Funding payments are not priced in the design's cost table and remain an open question for the operator before seal.",
+      "horizon_sessions": 30
+    }
+  ],
+  "calendar": {
+    "crypto": "24/7"
+  },
+  "splits": {
+    "scheme": "No fitting on the sealed period. Exploration backtest on the most recent 3 years of the Binance public kline archive (CT-2, one comparison of L in {20, 60, 120} days, not counted as a test look). Exploration periods do not overlap the prospective test; folds stay empty because the test is prospective.",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 30,
+    "gap_sessions": 30,
+    "folds": [],
+    "test": {
+      "kind": "prospective_seal",
+      "period": {"pending": "CT-5: 8 weeks (Q5) counted from the seal merge date; the period is fixed when the manifest is sealed"},
+      "exposure_audit": "At scoring time, compare each signal with the real position exposure read from the ledger and the broker account (the demo account is shared with other strategies; conflict rejects are reported separately).",
+      "seal_rule": "Decisions after the seal merge only. The window is fixed at the seal and never extended. Any change to rule, universe, caps, cost table or code SHA is a new manifest version and a new seal."
+    }
+  },
+  "candidate_policies": [
+    {
+      "id": "candidate-tsmom",
+      "description": "Daily TSMOM on BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT (DOGEUSDT excluded). Long when the sign is positive, short when negative, one entry and one exit per episode, no adds. Lookback L in {20, 60, 120} days, one value chosen once in CT-2 and fixed in the sealed version. Volatility target sigma_star = 60% with 20-day EWMA; notional = cap x min(1, sigma_star / sigma_hat), never above cap. Leg notional cap USD 60, at most 4 concurrent positions, gross cap USD 240, 1x isolated."
+    },
+    {
+      "id": "control-cash",
+      "description": "Primary control: the same capital held in cash; unspent capital earns zero. The primary comparison is candidate against this control."
+    },
+    {
+      "id": "control-btc-long-only",
+      "description": "Secondary control: the same rule, same caps and same capital, restricted to BTCUSDT long positions. Isolates the contribution of the short side."
+    }
+  ],
+  "costs_fills": {
+    "cost_table": {"pending": "CT-4/CT-5: round-trip cost table fixed before seal; starting point is the H5 taker fee 0.0005 per side, replaced by realized fee_usdt in the ledger"},
+    "fill_models": [
+      "exploration default: conservative through, a touch of a level is not a fill",
+      "prospective: broker fill evidence only (ledger after bounded poll, then account position read); a status NEW order is not treated as filled until the evidence is in"
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 3,
+    "search": "One comparison of the lookback L in {20, 60, 120} days on the exploration archive (CT-2). sigma_star = 60% and the 20-day EWMA window are operator-fixed (Q2) and are not tuned. The control policies are not tuned.",
+    "notes": "Each configuration compared counts against max_configurations; no other search is allowed."
+  },
+  "seeds": {"pending": "the rule is deterministic; CT-2 fixes seeds only if a randomized baseline is added"},
+  "metrics": {
+    "primary": "net return after costs of candidate-tsmom against control-cash at equal capital, over the sealed window",
+    "secondary": ["maximum drawdown", "Sharpe ratio", "fill rate (signal to actual entry)", "conflict reject count", "gap and missing-bar count"],
+    "family": ["ROB-3796 single primary: candidate-tsmom against control-cash; no multiple-comparison correction"],
+    "alpha": "0.05",
+    "delta_min": {"pending": "CT-5 seal: operator sets the minimum net-return effect before seal; the design does not set it"}
+  },
+  "stopping_rules": [
+    "(i) At the end of the sealed window, a primary net return after costs at or below 0 ends the experiment.",
+    "(ii) Kill switch: after 2 consecutive hard-stop exits in a UTC day, no new entry that UTC day; management of open legs continues.",
+    "(iii) Exposure: an entry that would exceed 4 concurrent positions or USD 240 gross is refused; the caps are not raised by any path.",
+    "(iv) Conflict: 3 or more conflict rejects in a UTC week hold new entries until the operator decides on account separation (decision revision 1).",
+    "(v) The monthly loss limit of the experiment budget (decision section 1, item 2c) applies to any promotion judgment.",
+    "Isolated margin and 1x leverage are read back and required; the runner issues no margin or leverage mutation (Q4).",
+    "A 1m fetch failure on a tick decides that tick on the 4h close only and is recorded (Q3).",
+    "Upbit live is out of scope (Q6); this manifest registers no Upbit order path.",
+    "The Binance live host is not allowed; only the demo host is used (design section 1.2).",
+    "Missing path-dependent bars or a failed exploration fetch make the result unverified, never zero.",
+    "No statistical promotion from exploration evidence; the sealed window alone decides."
+  ],
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  }
+}

@@ -60,6 +60,7 @@ tests/research/eval_contract/test_eval_contract_types.py
 tests/research/kr_boosting/test_kr_boosting_features.py
 tests/research/kr_corpus/d3_engine/test_d3_calibration_guard.py
 tests/research/kr_delist_repair/test_kr_delist_causal.py
+tests/research/kr_fundamentals_pit/test_history.py
 tests/research/rob1391_us_resubmit_shadow/test_toss_preday_sweep.py
 tests/research/stock_selection/test_harness.py
 tests/research/strategy_evidence/test_core_calculations.py
@@ -108,6 +109,7 @@ tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_ncp_job_timers_check.py
 tests/scripts/test_nhplug_collect_period.py
 tests/scripts/test_run_rob1040_crs24_refreeze.py
+tests/services/account_value/test_completeness.py
 tests/services/account_value/test_market_return.py
 tests/services/account_value/test_postgres_integration.py
 tests/services/action_report/common/test_canonicalize.py
@@ -197,6 +199,7 @@ tests/services/investment_stages/test_symbol_report_composition_wiring.py
 tests/services/kis_mock_runner/test_migration.py
 tests/services/kis_mock_runner/test_singleton.py
 tests/services/kis_websocket/test_approval_keys.py
+tests/services/kis_websocket/test_approval_keys_gatewayd.py
 tests/services/market_events/test_coverage_gate.py
 tests/services/mechanical_loss_cut/test_plans.py
 tests/services/mock_integration/test_kiwoom_coordination_adapter.py
@@ -283,6 +286,13 @@ tests/services/test_finnhub_news.py
 tests/services/test_halt_detection.py
 tests/services/test_kis_mock_inference_expiry_unit.py
 tests/services/test_kis_mock_retrospective_pending.py
+tests/services/test_kiwoom_mock_order_ledger_service.py
+tests/services/test_kiwoom_mock_order_ledger_service_db.py
+tests/services/test_kiwoom_mock_reconcile_kernel.py
+tests/services/test_kiwoom_mock_reconcile_kernel_db.py
+tests/services/test_kiwoom_mock_us_order_ledger_service_db.py
+tests/services/test_kiwoom_mock_us_place.py
+tests/services/test_kiwoom_mock_us_reconcile.py
 tests/services/test_krb1_p0_journal.py
 tests/services/test_krb1_selector_cli_exit_contract.py
 tests/services/test_krx_after_market.py
@@ -412,6 +422,7 @@ tests/test_kiwoom_auth_token_cache.py
 tests/test_kiwoom_domestic_orders.py
 tests/test_kiwoom_dual_surface.py
 tests/test_kiwoom_g1_canonical_wiring.py
+tests/test_kiwoom_mock_place_ledger_wiring.py
 tests/test_kiwoom_token_refresh.py
 tests/test_kr_fundamentals_dart_hybrid.py
 tests/test_kr_fundamentals_tv_screener.py

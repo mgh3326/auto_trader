@@ -22,6 +22,7 @@ OPERATIONS = {
     "retro_scoreboard": ("from", "to"),
     "retro_positions": ("cutoff_date",),
     "retro_trades": ("from", "to"),
+    "retro_decisions": ("from", "to"),
     "mock_experiments": (),
     "get_bars": ("symbol", "tf", "from", "to"),
     "data_gaps": (),
@@ -33,6 +34,7 @@ READERS = {
     "retro_scoreboard": retro_scoreboard.read_retro_scoreboard,
     "retro_positions": readers.read_retro_positions,
     "retro_trades": readers.read_retro_trades,
+    "retro_decisions": readers.read_retro_decisions,
     "mock_experiments": readers.read_mock_experiments,
     "get_bars": readers.read_get_bars,
     "data_gaps": readers.read_data_gaps,
@@ -50,6 +52,8 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
     allowed = {*required, "limit", "cursor"}
     if operation == "retro_trades":
         allowed.update(("market", "strategy"))
+    if operation == "retro_decisions":
+        allowed.update(("market", "symbol"))
     if operation == "mock_experiments":
         allowed.add("strategy_id")
     if operation in {"retro_symbol", "get_bars"}:

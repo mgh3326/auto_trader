@@ -225,7 +225,13 @@ async def test_stale_when_finished_at_older_than_window(
 ) -> None:
     monday = date(2026, 8, 3)
     await _clear_partitions_for_dates(db_session, monday)
-    stale = datetime.now(UTC) - timedelta(hours=STALE_AFTER_HOURS + 2)
+    # Pin the clock to a weekday: since #2365 the stale threshold grows by 24h
+    # per closed exchange day after finished_at, so "now - 38h" read on a
+    # weekend or holiday is not stale and the test would depend on the date.
+    now = datetime(
+        2026, 8, 5, 12, tzinfo=UTC
+    )  # Wednesday; Mon 22:00 UTC..now has no closed day
+    stale = now - timedelta(hours=STALE_AFTER_HOURS + 2)
     for src, cat, mkt in (
         ("finnhub", "earnings", "us"),
         ("dart", "disclosure", "kr"),
@@ -245,7 +251,7 @@ async def test_stale_when_finished_at_older_than_window(
     await db_session.flush()
 
     svc = MarketEventsFreshnessService(db_session)
-    states = await svc.get_per_day_states(monday, monday)
+    states = await svc.get_per_day_states(monday, monday, now=now)
     assert states[monday] == "stale"
 
 

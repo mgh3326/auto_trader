@@ -337,7 +337,7 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 
 ### retro/v1 소비자 핀과 검증 게이트 (hk 3819)
 
-`retro/v1` 공급자 변경은 고정된 외부 소비자(`github.com/mgh3326/factortrail` 커밋 `4e111bf`)의 실제 Go 클라이언트 검증 게이트를 통과해야 한다.
+`retro/v1` 공급자 변경은 고정된 외부 소비자(`github.com/mgh3326/factortrail` 커밋 `a58d474`)의 실제 Go 클라이언트 검증 게이트를 통과해야 한다.
 - **소비자 고정**: `contracts/retro/v1/consumers.lock`이 지원 소비자 repo, 커밋 SHA, Go 버전, 대상 패키지를 정의한다.
 - **검증 하네스**: `tools/retro-consumer-check/main.go`가 기존 고정 소비자의 8개 엔드포인트의 envelope 스키마, decimal/int 정밀도, 계좌/주문 식별자 비노출(개인정보 보호), unknown/사유 규약, 인증 경계(401/403)를 실제 HTTP 호출로 검증한다.
 - **실행 러너 및 CI 게이트**: `scripts/ci/run_retro_consumer_gate.py`가 루프백 서버를 띄워 하네스를 실행하며, `classify_changes.py`가 retro 경로 변경 시 `retro-consumer-gate` CI 작업을 트리거한다. `aggregate_required.py`는 게이트 누락 시 fail-closed로 거부한다.
@@ -357,3 +357,54 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 반환한다. 회고 prose는 민감 패턴을 검사한 뒤 1,000자로 제한하고 차단 시 `redacted`를
 기록한다. JSONB와 원본 식별자는 공개하지 않는다. 기존 consumer pin과 8개 호출
 하네스는 호환 확장 순서에 따라 유지한다.
+
+### retro/v1 판단 연결 읽기 (L7, hk 4188)
+
+설계 `docs/design/4154-candidate-to-retro-linking.md` §3·§8.1의 reader 규칙이다. 계약에는 선택 필드만 더했다
+(기존 필드·열거는 그대로, 값이 없으면 키를 내보내지 않는다). 소비자 pin(`consumers.lock`)은 L10이 갱신한다.
+
+- **ChainRow**: `link_basis`(`recorded`\|`inference`, `linked_ref`를 만든 방식 — 기존 `basis`는 값 basis이고 그대로),
+  `decision_ref`(proposal·rung·order 행이 내려오는 판단의 불투명 ref), `decision_link_basis`, `link_reason`(닫힌 코드:
+  `ambiguous_attempts`·`attempt_unconfirmed`·`no_candidate_ref`·`candidate_outside_trading_day`·`candidate_ref_unresolved`).
+  `decision_link_basis`·`link_reason`은 설계 §8.1의 두 필드에 더한 보조 필드다(한 행에서 후보 링크는 추론이고 판단 링크는
+  기록일 수 있고, 행의 `reason`은 주문 상태 사유가 쓴다). rung→proposal·fill→order·markout→fill은 `recorded`, lot은 FIFO라 `inference`다.
+- **주문→판단 (§3 4행)**: `links.resolve_attempts`. 한 `send_key`의 시도 중 `proven_not_sent`가 없는 것의 판단 집합이
+  둘 이상이면 링크 없음(`ambiguous_attempts`, 레거시 rung 매칭도 쓰지 않는다), 하나이고 그 시도 중 `sent` 결과가 있으면
+  `recorded`, 없으면 `inference`(`attempt_unconfirmed`)다. 살아 있는 시도가 없으면 레거시 규칙: rung `idempotency_key`가
+  원장 키와 같으면 `recorded`, correlation만 같으면 `inference`이고 판단은 그 rung 제안에 저장된 `decision_id`다.
+  결과 행 유실은 `recorded`를 막을 뿐 만들지 않는다. 🔴 시도·결과 읽기가 실패하거나 상한에 닿으면 증거가 불완전하므로 주문은 어떤
+  링크도 얻지 못한다(`link_reason=attempts_unavailable`, 레거시 rung 매칭 포함 — 빠진 시도가 다른 판단일 수 있다). 이 읽기 실패는
+  `unknowns`(`source.decision_links`, `source.decision_link_outcomes`)로도 남고 모집단·`total`에는 영향이 없다.
+- **후보→제안 (§3 1행, Q20)**: 제안에 저장된 판단의 후보 ref(`candidate_call_id`+심볼)가 있으면 그 writer 라벨(`recorded`/서버 보강
+  `inference`)을 그대로 쓰고 reader가 다시 추론하지 않는다. 판단이 없는 제안의 기존 추론(같은 심볼의 가장 늦은 이전 후보)은
+  제안과 **같은 KST 날짜**의 후보로 제한되며 넘으면 링크 없음(`candidate_outside_trading_day`, 이전 후보 자체가 없으면
+  `no_candidate_ref`)이다. 판단 행이나 후보 행을 찾지 못하면 `candidate_ref_unresolved`이고 추측하지 않는다.
+- **TradeRow**: `decision_ref`·`decision_link_basis`·`link_reason`·`fill_time_basis`·`costs`. 회고에 저장된 `decision_id`는
+  `recorded`(L6 writer가 판단 행과 일치를 검증), 서로 다른 둘이면 `ambiguous_decision`. 저장된 것이 없으면 회고 `correlation_id`
+  → 그 원장 주문 하나 → 시도 규칙으로 유도하고 항상 `inference`이며 저장하지 않는다(주문이 여럿이면 `ambiguous_decision`, 시도가
+  갈리면 `ambiguous_attempts`, 시도 읽기가 불완전하면 `attempts_unavailable`, 못 찾으면 `no_decision_link`). 주문 읽기가 실패하면
+  링크 부재를 주장하지 않는다. 🔴 회고 읽기가 실패하거나 상한에 닿으면 새 필드 전부를 내지 않는다(일부 회고만으로 말하지 않는다).
+- **체결 시각·비용 (L5 열, §5.3·§6.2)**: 거래의 주문(저널·회고 correlation의 라이브 원장 주문)에 정확한 order identity(KIS만 거래일을
+  포함 — 자정을 넘긴 Upbit 체결도 같은 주문이다)로 붙은 체결(`execution_ledger_in_effect()`, ROB-1379 supersede, opening seed 제외)만
+  쓴다. 주문 원장이나 체결 읽기가 불완전하면 `fill_time_basis`·`costs`를 내지 않는다. `fill_time_basis`는 주문별 basis 중 가장 약한 것이다:
+  주문의 in-effect websocket 행이 모두 `broker_fill_time`이고 수량 합이 권위 행 수량과 같을 때만 그 체결 시각을 쓰고, 아니면 권위 행의
+  basis(`filled_at_basis` NULL인 과거 행은 KIS reconciler만 `broker_order_time`, 그 밖은 unknown이라 값을 내지 않는다)를 쓴다.
+  `costs.recorded`는 브로커가 준 수수료·세금뿐이고 `fee_basis=not_provided`와 과거 KIS reconciler의 `fee=0`은 기록된 0이 아니다.
+  한 체결이라도 수수료를 주지 않았으면 세금이 있어도 부분합을 내지 않고 `recorded=null`(`recorded_reason`)이다. 과거 Toss 수수료는
+  commission+tax 합이라 `fee_includes_tax=true`다. `costs.estimated`는 `metrics.calculate_costs`가 정책
+  `round_trip_cost_bps`를 진입(매수) 체결 notional에 곱한 값이며 매수 체결이 없으면 `missing_notional`이다(매도 대금으로 대체하지 않는다).
+  `rate_source`·정책 버전·hash를 싣고 `recorded`와 섞지 않는다.
+- 🔴 이 reader는 쓰지 않는다: 새 읽기는 SELECT뿐이고 체결은 `chain.fills_stmt`를 재사용한다. 마이그레이션·writer 변경 없음. `retro_funnel`은
+  링크 테이블을 읽지 않는다. 동작은 `tests/services/retro_v1/test_decision_links.py`·`test_trade_evidence.py`가 고정하고,
+  링크 필드가 없는 행은 main 골든(`tests/services/retro_v1/golden/`)과 선택 필드만 다르다.
+
+### retro/v1 판단 회고 읽기 (L9, hk 4190)
+
+`retro_decisions`는 KST `decided_at` 창의 `review.decision_evidence` 행마다 한 행을 내는 설계 §8.2의 호환 확장 operation이다(새 경로·새 행 스키마만 더하고 기존 필드·열거는 그대로 — 소비자 pin은 L10이 갱신한다). 필수 쿼리는 `from`·`to`(최대 366일), 선택 필터는 `market`·`symbol`이고 `limit`·`cursor`는 공통 규칙이다. MCP 도구·스케줄러 연결은 없고 다른 reader와 같은 `REPEATABLE READ READ ONLY` 스냅샷 안에서만 읽는다.
+
+- **판단 행**: `decision_ref`(해시 ref, 내부 id가 아닌 `decision_id` 기준), `decision_kind`(`proposal`/`direct_order`/`declined`), `decided_at`/`decided_by`, 시장·심볼·side·strategy는 저장값 그대로이며 사유 없는 빈 값은 `not_applicable` unknown이다. `candidate_ref`는 판단에 저장된 `candidate_call_id`가 가리키는 같은 심볼의 가장 늦은 후보 pick이며 writer가 기록한 `candidate_link_basis`를 그대로 내고, ref나 후보를 해석할 수 없으면 null과 `candidate_ref_unresolved`/`no_candidate_ref`다.
+- **계획 위험(§5.1)**: rung 참조가는 `limit`→`approval_price`→`quote_at_decision`→`candidate_price` 우선순위로 고르고 마지막만 `inference`다. 손절은 판단에 저장된 값(`recorded`)이 우선이고 없으면 제안의 backfilled `lot_exit_plans` 정책 손절을 `inference`로 쓴다(여럿이면 가장 보수적인 최솟값). `planned_risk_amount`·`risk_pct_of_notional`·`risk_pct_of_budget`은 `metrics.calculate_risk_amount` 그대로이고 입력이 빠지면 부분합 없이 null과 사유다. sleeve `budget_cap`은 `strategy_sleeve_versions`의 최신 버전이며 없으면 `no_budget_cap`이다.
+- **주문·체결(§3 4행)**: `order_count`·`order_states`는 이 판단으로 해석되는 시도(`recorded`/`unconfirmed`)가 있는 주문 원장 행만 센다 — 같은 `send_key`의 시도가 두 판단으로 갈리면 양쪽 다 연결하지 않는다(애매함은 부정이 아니라 무표시다). 링크 읽기가 실패하거나 상한에 닿으면 `attempts_unavailable`과 `order_count=null`(`count_unavailable`)이다. `entry_avg_price`·`filled_quantity`는 매수 체결에서만 나오고(`_order_entry_notional`과 같은 규칙) `fill_time_basis`·`costs`는 `trade_evidence`의 체결 시각·비용 규칙을 그대로 쓴다.
+- **MFE/MAE(§5.2)**: `mfe`·`mae`는 `1`·`5`·`20`·`to_exit` horizon별 `metrics.calculate_mfe_mae`이며 진입 세션(마지막 매수 체결의 KST 일)과 청산 세션(첫 매도 체결)을 제외한 완전한 일봉 세션만 쓴다. `r`은 계획 위험 단위(`planned_risk_amount/planned_quantity`)로 나누고 못 나누면 사유를 낸다. `excursion_basis`는 `inference`, `adjusted`는 `null`이다. `r_multiple`은 (청산 평단−진입 평단)/위험 단위이고 어느 입력이든 없으면 null과 사유다.
+- **회고 링크(§3 7행)**: 저장된 `decision_id`가 하나면 `recorded`, 없으면 주문 correlation으로 유도한 유일 회고를 `inference`로 낸다. 둘 이상이거나 갈리면 `ambiguous_decision`, 못 찾으면 `no_decision_link`이고 회고 읽기가 불완전하면 `attempts_unavailable`로 부재를 주장하지 않는다.
+- **닫힌 projection**: 행의 모든 `*_reason`은 닫힌 `DecisionReason` 어휘이고 null 값은 행 사유 또는 `data.<i>.<field>` unknown으로 설명한다(계약 테스트 규칙). 응답에는 계좌번호·브로커 주문번호·send key·원문 payload가 없다. 동작은 `tests/services/retro_v1/test_retro_decisions.py`가 계약 스키마로 고정한다.

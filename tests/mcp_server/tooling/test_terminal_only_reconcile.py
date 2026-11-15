@@ -71,7 +71,13 @@ async def test_terminal_scope_matches_full_except_fill_booking(broker, case, boo
             verdict, Decimal(1) if books else Decimal(0), Decimal(10), None, "test", ""
         )
         adapter = SimpleNamespace(fetch_evidence=AsyncMock(return_value=evidence))
-        with patch.object(live, "get_evidence_adapter", return_value=adapter):
+        with (
+            patch.object(live, "get_evidence_adapter", return_value=adapter),
+            patch.object(
+                live, "_recorded_positive_fill_qty", new_callable=AsyncMock
+            ) as recorded,
+        ):
+            recorded.return_value = Decimal(0)
             full = await live._reconcile_one_live_row(live_row(), dry_run=True)
             terminal = await live._reconcile_one_live_row(
                 live_row(), dry_run=True, scope="terminal_only"
@@ -99,12 +105,16 @@ async def test_terminal_scope_matches_full_except_fill_booking(broker, case, boo
             evidence_for=AsyncMock(return_value=classify_toss_order_evidence(order))
         )
         row = toss_row("cancel" if case == "cancel_request" else "place")
-        full = await toss._reconcile_one_toss_row(
-            row, dry_run=True, evidence_source=source
-        )
-        terminal = await toss._reconcile_one_toss_row(
-            row, dry_run=True, evidence_source=source, scope="terminal_only"
-        )
+        with patch.object(
+            toss, "_recorded_positive_toss_fill_qty", new_callable=AsyncMock
+        ) as recorded:
+            recorded.return_value = Decimal(0)
+            full = await toss._reconcile_one_toss_row(
+                row, dry_run=True, evidence_source=source
+            )
+            terminal = await toss._reconcile_one_toss_row(
+                row, dry_run=True, evidence_source=source, scope="terminal_only"
+            )
     if books:
         assert full["action"] == "would_book"
         assert terminal == {
@@ -293,7 +303,11 @@ async def test_replaced_order_projects_same_rung_in_both_scopes():
         patch.object(toss, "_order_session_factory", return_value=lambda: cm),
         patch.object(toss, "TossLiveOrderLedgerService", return_value=service),
         patch.object(toss, "_converge_toss_proposal_rung", new=projection),
+        patch.object(
+            toss, "_recorded_positive_toss_fill_qty", new_callable=AsyncMock
+        ) as recorded,
     ):
+        recorded.return_value = Decimal(0)
         full = await toss._reconcile_one_toss_row(
             row, dry_run=False, evidence_source=source
         )

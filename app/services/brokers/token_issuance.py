@@ -14,9 +14,20 @@ import httpx
 
 from app.core.config import settings
 
-GatewaydTokenProvider = Literal["kis-live", "kis-mock", "toss"]
+GatewaydTokenProvider = Literal[
+    "kis-live",
+    "kis-mock",
+    "toss",
+    "kis-live-approval",
+    "kis-mock-approval",
+]
 
-_TOKEN_PROVIDERS: Final[frozenset[str]] = frozenset({"kis-live", "kis-mock", "toss"})
+_TOKEN_PROVIDERS: Final[frozenset[str]] = frozenset(
+    {"kis-live", "kis-mock", "toss", "kis-live-approval", "kis-mock-approval"}
+)
+_APPROVAL_PROVIDERS: Final[frozenset[str]] = frozenset(
+    {"kis-live-approval", "kis-mock-approval"}
+)
 _ENSURE_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(5.0, connect=3.0)
 
 
@@ -60,18 +71,29 @@ async def ensure_gatewayd_token(
     provider: GatewaydTokenProvider,
     *,
     settings_obj: object = settings,
+    force: bool = False,
 ) -> None:
     """Ask gatewayd to ensure one provider token, without accepting a token body.
 
     A successful HTTP response is only an acknowledgement.  The caller must
     independently re-read its existing Redis key, which is the authoritative
     Python-side proof that gatewayd published a usable token.
+
+    ``force=True`` appends ``?force=true`` and is only valid for the approval
+    providers (``kis-live-approval`` / ``kis-mock-approval``); gatewayd ignores
+    the parameter for every other provider, so it is rejected here instead.
     """
     if provider not in _TOKEN_PROVIDERS:
         raise TokenIssuanceUnavailable("unsupported gatewayd token provider")
+    if force and provider not in _APPROVAL_PROVIDERS:
+        raise TokenIssuanceUnavailable(
+            "gatewayd force ensure is only supported for approval providers"
+        )
 
     base_url = _validated_gatewayd_url(getattr(settings_obj, "gatewayd_url", None))
     endpoint = f"{base_url}/v1/tokens/{provider}/ensure"
+    if force:
+        endpoint = f"{endpoint}?force=true"
     try:
         async with httpx.AsyncClient(
             timeout=_ENSURE_TIMEOUT,

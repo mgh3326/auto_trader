@@ -1,0 +1,119 @@
+operation: retro_decisions
+request:
+  path: /trading/api/retro/v1/retro_decisions
+  query:
+    from: '2026-01-01'
+    to: '2026-01-31'
+    market: kr
+status: 200
+response:
+  as_of: '2026-11-10T21:21:53.402162Z'
+  data_as_of: '2026-01-05T02:00:00Z'
+  timezone: KST
+  total: 1
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.candidate_ref
+    reason: missing_data
+  - field: data.0.candidate_link_basis
+    reason: not_applicable
+  - field: data.0.reference_reason
+    reason: not_applicable
+  - field: data.0.planned_reason
+    reason: not_applicable
+  - field: data.0.risk_reason
+    reason: not_applicable
+  - field: data.0.risk_pct_of_budget_reason
+    reason: not_applicable
+  - field: data.0.proposal_reason
+    reason: not_applicable
+  - field: data.0.order_count_reason
+    reason: not_applicable
+  - field: data.0.order_states_reason
+    reason: not_applicable
+  - field: data.0.fill_reason
+    reason: not_applicable
+  - field: data.0.costs
+    reason: missing_data
+  - field: data.0.mfe.1.reason
+    reason: not_applicable
+  - field: data.0.mfe.5.reason
+    reason: not_applicable
+  - field: data.0.mfe.20.reason
+    reason: not_applicable
+  - field: data.0.mfe.to_exit.reason
+    reason: not_applicable
+  - field: data.0.mae.1.reason
+    reason: not_applicable
+  - field: data.0.mae.5.reason
+    reason: not_applicable
+  - field: data.0.mae.20.reason
+    reason: not_applicable
+  - field: data.0.mae.to_exit.reason
+    reason: not_applicable
+  - field: data.0.adjusted
+    reason: not_applicable
+  - field: data.0.retrospective_ref
+    reason: missing_data
+  - field: data.0.retrospective_link_basis
+    reason: not_applicable
+  - field: data.0.r_multiple_reason
+    reason: not_applicable
+  data:
+  - decision_ref: decision-2cdcff0b8bcfc0576887
+    decision_kind: proposal
+    decided_at: '2026-01-05T00:30:00Z'
+    decided_by: order_proposals
+    market: kr
+    symbol: SAMPLE
+    side: buy
+    strategy: swing-etf
+    candidate_ref: null
+    candidate_link_basis: null
+    candidate_reason: no_candidate_ref
+    reference_price: '10'
+    reference_kind: limit
+    reference_reason: null
+    stop_price: '9'
+    stop_source: policy
+    risk_basis: recorded
+    planned_quantity: '2'
+    planned_reason: null
+    planned_risk_amount: '2'
+    risk_reason: null
+    risk_pct_of_notional: '0.1'
+    risk_pct_of_budget: '0.001'
+    risk_pct_of_budget_reason: null
+    proposal_ref: proposal-9b7a5f01c2d4e6a8
+    proposal_reason: null
+    order_count: 1
+    order_count_reason: null
+    order_states:
+    - filled
+    order_states_reason: null
+    entry_avg_price: '10'
+    filled_quantity: '2'
+    fill_reason: null
+    fill_time_basis: broker_fill_time
+    costs: null
+    mfe:
+      '1': {amount: '1.5', pct: '15', r: '0.75', status: complete, reason: null}
+      '5': {amount: '2', pct: '20', r: '1', status: complete, reason: null}
+      '20': {amount: '2.5', pct: '25', r: '1.25', status: complete, reason: null}
+      to_exit: {amount: '3', pct: '30', r: '1.5', status: complete, reason: null}
+    mae:
+      '1': {amount: '-0.4', pct: '-4', r: '-0.2', status: complete, reason: null}
+      '5': {amount: '-0.8', pct: '-8', r: '-0.4', status: complete, reason: null}
+      '20': {amount: '-1', pct: '-10', r: '-0.5', status: complete, reason: null}
+      to_exit: {amount: '-1.2', pct: '-12', r: '-0.6', status: complete, reason: null}
+    excursion_basis: inference
+    adjusted: null
+    retrospective_ref: null
+    retrospective_link_basis: null
+    retrospective_reason: no_decision_link
+    r_multiple: '0.5'
+    r_multiple_reason: null
+    basis: inference

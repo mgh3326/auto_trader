@@ -195,13 +195,16 @@ def test_runbook_requires_the_toss_identity_and_distinguishes_the_flows_flag():
     """Two doc corrections from the bot review on PR 2359, both checked in code:
     without ``TOSS_API_ACCOUNT_SEQ`` the toss row still commits but carries
     ``account_identity_unknown`` (``readers.py:144-171``), and
-    ``--flows-complete`` is a per-query flag on the report CLI while
-    ``retro_scoreboard`` hard-codes ``SERVER_FLOWS_COMPLETE`` (line 271)."""
+    ``--flows-complete`` is a per-query flag on the report CLI, while
+    ``retro_scoreboard`` reads the server-side confirmations recorded with
+    ``--confirm-flows`` (hk 4282 replaced the ``SERVER_FLOWS_COMPLETE`` constant)."""
     runbook = _flat(RUNBOOK.read_text())
     assert "TOSS_API_ACCOUNT_SEQ" in runbook
     assert "account_identity_unknown" in runbook
     assert "toss:toss_live:identity_unknown" in runbook
-    assert "SERVER_FLOWS_COMPLETE" in runbook
+    assert "SERVER_FLOWS_COMPLETE" not in runbook
+    assert "account_flow_confirmations" in runbook
+    assert "--confirm-flows" in runbook
     assert "조회 시 플래그" in runbook
     assert "흐름을 만들거나 기록하지 않는다" in runbook
 

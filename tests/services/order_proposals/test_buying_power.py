@@ -1,9 +1,11 @@
 import asyncio
+import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+import app.services.order_proposals.buying_power as _buying_power_module
 from app.core.config import settings
 from app.services.order_proposals.buying_power import (
     BuyingPowerCache,
@@ -15,7 +17,14 @@ from app.services.order_proposals.buying_power import (
     pending_buy_requirement,
     required_cash,
 )
-from app.services.order_proposals.service import OrderProposalsService, RungInput
+from app.services.order_proposals.errors import (
+    OrderProposalUnsupportedTargetAction,
+)
+from app.services.order_proposals.service import (
+    OrderProposalsService,
+    RungInput,
+    check_action_capability,
+)
 
 
 @pytest.mark.unit
@@ -732,3 +741,201 @@ async def test_ladder_and_aggregate_agree_on_which_rows_count(db_session):
     assert skipped == 1
     assert ladder_skipped == 1
     assert sum((step.required for step in steps), Decimal("0")) == required
+
+
+# ---------------------------------------------------------------------------
+# hk 4724 (3797 T-P7) — kiwoom_mock buying-power reader (kt00001, fail-open).
+# ---------------------------------------------------------------------------
+
+
+def _patch_kiwoom_mock_config_ok(monkeypatch):
+    monkeypatch.setattr(
+        _buying_power_module,
+        "validate_kiwoom_mock_config",
+        lambda *args, **kwargs: [],
+    )
+
+
+def _patch_kiwoom_mock_transport(monkeypatch, payload=None, exc=None):
+    """Stub the kt00001 transport; returns the deposit-call counter."""
+    from app.services.brokers.kiwoom import domestic_account as _account_module
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+    calls: list[dict] = []
+
+    class _FakeAccountClient:
+        def __init__(self, client):
+            self._client = client
+
+        async def get_deposit(self, **kwargs):
+            calls.append(dict(kwargs))
+            if exc is not None:
+                raise exc
+            assert payload is not None
+            return dict(payload)
+
+    def _fake_from_settings():
+        return object()
+
+    monkeypatch.setattr(KiwoomMockClient, "from_app_settings", _fake_from_settings)
+    monkeypatch.setattr(
+        _account_module, "KiwoomDomesticAccountClient", _FakeAccountClient
+    )
+    return calls
+
+
+def _patch_kiwoom_mock_success(monkeypatch, payload):
+    _patch_kiwoom_mock_config_ok(monkeypatch)
+    return _patch_kiwoom_mock_transport(monkeypatch, payload=payload)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kiwoom_mock_reader_returns_deposit_cash(monkeypatch):
+    calls = _patch_kiwoom_mock_success(
+        monkeypatch, {"return_code": 0, "ord_alow_amt": "1,234,567"}
+    )
+
+    assert await default_buying_power_reader(
+        account_mode="kiwoom_mock",
+        broker_account_id=f"hk4724-ok-{_uuid.uuid4().hex[:8]}",
+        currency="KRW",
+    ) == Decimal("1234567")
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kiwoom_mock_reader_returns_unknown_on_broker_error(monkeypatch):
+    _patch_kiwoom_mock_success(
+        monkeypatch,
+        {
+            "return_code": 20,
+            "return_msg": "[2000](RC7006:모의투자 조회실패)",
+            "ord_alow_amt": "100",
+        },
+    )
+
+    assert (
+        await default_buying_power_reader(
+            account_mode="kiwoom_mock",
+            broker_account_id=f"hk4724-broker-error-{_uuid.uuid4().hex[:8]}",
+            currency="KRW",
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kiwoom_mock_reader_returns_unknown_on_transport_failure(monkeypatch):
+    _patch_kiwoom_mock_config_ok(monkeypatch)
+    _patch_kiwoom_mock_transport(monkeypatch, exc=RuntimeError("broker down"))
+
+    assert (
+        await default_buying_power_reader(
+            account_mode="kiwoom_mock",
+            broker_account_id=f"hk4724-transport-{_uuid.uuid4().hex[:8]}",
+            currency="KRW",
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"return_code": 0},
+        {"return_code": 0, "ord_alow_amt": ""},
+        {"return_code": 0, "ord_alow_amt": "abc"},
+        {"return_code": 0, "ord_alow_amt": "-5"},
+    ],
+)
+async def test_kiwoom_mock_reader_returns_unknown_on_unparseable_cash(
+    monkeypatch, payload
+):
+    _patch_kiwoom_mock_success(monkeypatch, payload)
+
+    assert (
+        await default_buying_power_reader(
+            account_mode="kiwoom_mock",
+            broker_account_id=f"hk4724-unparseable-{_uuid.uuid4().hex[:8]}",
+            currency="KRW",
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kiwoom_mock_reader_skips_when_provider_is_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "kiwoom_mock_enabled", False)
+
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+    def forbidden_client():
+        raise AssertionError("disabled provider must not construct a client")
+
+    monkeypatch.setattr(KiwoomMockClient, "from_app_settings", forbidden_client)
+
+    assert (
+        await default_buying_power_reader(
+            account_mode="kiwoom_mock",
+            broker_account_id=f"hk4724-disabled-{_uuid.uuid4().hex[:8]}",
+            currency="KRW",
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kiwoom_mock_reader_returns_unknown_for_non_krw_currency(monkeypatch):
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+    def forbidden_client():
+        raise AssertionError("non-KRW read must not touch the network")
+
+    monkeypatch.setattr(KiwoomMockClient, "from_app_settings", forbidden_client)
+
+    assert (
+        await default_buying_power_reader(
+            account_mode="kiwoom_mock",
+            broker_account_id=f"hk4724-fx-{_uuid.uuid4().hex[:8]}",
+            currency="USD",
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+def test_buying_power_advisory_allow_set_contains_kiwoom_mock():
+    from app.mcp_server.tooling.order_proposal_tools import (
+        _BUYING_POWER_ADVISORY_ACCOUNT_MODES,
+    )
+
+    assert "kiwoom_mock" in _BUYING_POWER_ADVISORY_ACCOUNT_MODES
+    assert {"toss_live", "kis_live"} <= set(_BUYING_POWER_ADVISORY_ACCOUNT_MODES)
+
+
+@pytest.mark.unit
+def test_kiwoom_mock_place_is_submittable_and_target_actions_are_not():
+    """T-P5 (hk 4732) lands the place capability; replace/cancel stay closed.
+
+    The advisory (this module's reader) and the submission gate are separate
+    questions: opening place must not open a broker order a proposal could
+    target for cancel/replace.
+    """
+    assert (
+        check_action_capability(
+            action="place", account_mode="kiwoom_mock", market="equity_kr"
+        )
+        == "place"
+    )
+    for action in ("replace", "cancel"):
+        with pytest.raises(OrderProposalUnsupportedTargetAction):
+            check_action_capability(
+                action=action, account_mode="kiwoom_mock", market="equity_kr"
+            )

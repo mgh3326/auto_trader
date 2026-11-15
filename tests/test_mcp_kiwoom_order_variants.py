@@ -159,10 +159,188 @@ async def test_cancel_rejects_unsafe_order_ids(monkeypatch, bad_id):
 # ---------------------------------------------------------------------------
 
 
+class FakeKiwoomPlaceRecorder:
+    """In-memory stand-in for ``KiwoomMockPlaceRecorder`` (no database).
+
+    Records every call in order so tests can prove which persistence steps ran,
+    and models the UNIQUE ``(account_scope, idempotency_key)`` reservation.
+    """
+
+    def __init__(self) -> None:
+        from app.services.kiwoom_mock_order_ledger_service import (
+            DuplicateOrderIntent,
+        )
+
+        self._duplicate = DuplicateOrderIntent
+        self.events: list[str] = []
+        self.reserved: dict[str, int] = {}
+        self.rows: list[dict[str, Any]] = []
+        self.reserve_error: Exception | None = None
+        self.record_error: Exception | None = None
+        self.release_error: Exception | None = None
+        self.lookup_error: Exception | None = None
+
+    async def reserve(self, *, idempotency_key: str, symbol: str, side: str):
+        from app.services.kiwoom_mock_order_ledger_service import SendReservation
+
+        self.events.append("reserve")
+        if self.reserve_error is not None:
+            raise self.reserve_error
+        if idempotency_key in self.reserved:
+            raise self._duplicate(idempotency_key)
+        row_id = len(self.reserved) + 1
+        self.reserved[idempotency_key] = row_id
+        return SendReservation(
+            row_id=row_id, idempotency_key=idempotency_key, side=side
+        )
+
+    async def release(self, reservation) -> int:
+        self.events.append("release")
+        if self.release_error is not None:
+            raise self.release_error
+        return 1 if self.reserved.pop(reservation.idempotency_key, None) else 0
+
+    async def _record(self, status: str, kwargs: dict[str, Any]):
+        from app.services.kiwoom_mock_order_ledger_service import LedgerReceipt
+
+        self.events.append(f"record:{status}")
+        if self.record_error is not None:
+            raise self.record_error
+        self.rows.append({"status": status, **kwargs})
+        return LedgerReceipt(len(self.rows), status, kwargs["client_order_id"])
+
+    async def existing_status(self, client_order_id: str) -> str | None:
+        self.events.append("existing_status")
+        if self.lookup_error is not None:
+            raise self.lookup_error
+        for row in self.rows:
+            if row["client_order_id"] == client_order_id:
+                return row["status"]
+        return None
+
+    async def record_send(self, *, status: str, **kwargs):
+        return await self._record(status, kwargs)
+
+    async def record_uncertain(self, **kwargs):
+        return await self._record("uncertain", kwargs)
+
+
+class FakeKiwoomSignalRecorder:
+    """In-memory stand-in for ``KiwoomMockSignalRecorder`` (no database).
+
+    Records the pre-submit attribution and its outcome so tests can prove the
+    ordering (signal before reservation before POST) without a session.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.rows: list[dict[str, Any]] = []
+        self.outcomes: list[dict[str, Any]] = []
+        self.record_error: Exception | None = None
+        self.mark_error: Exception | None = None
+
+    async def record(self, *, attribution, **kwargs: Any):
+        from app.services.kiwoom_mock_attribution import RecordedSignal
+
+        self.events.append("signal")
+        if self.record_error is not None:
+            raise self.record_error
+        for index, row in enumerate(self.rows):
+            if row["correlation_id"] == attribution.correlation_id:
+                # Mirrors ON CONFLICT DO NOTHING: the row belongs to the
+                # earlier attempt, so this call did not create it.
+                return RecordedSignal(row_id=index + 1, created=False)
+        self.rows.append(
+            {
+                "correlation_id": attribution.correlation_id,
+                "strategy": attribution.strategy,
+                "signal_source": attribution.signal_source,
+                **kwargs,
+            }
+        )
+        return RecordedSignal(row_id=len(self.rows), created=True)
+
+    async def mark_outcome(
+        self,
+        *,
+        correlation_id: str,
+        outcome_state: str,
+        suppressed_reason: str | None = None,
+        detail_patch: dict[str, Any] | None = None,
+    ) -> int:
+        self.events.append(f"signal_outcome:{outcome_state}")
+        if self.mark_error is not None:
+            raise self.mark_error
+        self.outcomes.append(
+            {
+                "correlation_id": correlation_id,
+                "outcome_state": outcome_state,
+                "suppressed_reason": suppressed_reason,
+                "detail_patch": detail_patch,
+            }
+        )
+        return 1
+
+    async def mark_not_sent(
+        self,
+        *,
+        correlation_id: str,
+        reason: str,
+        detail_patch: dict[str, Any] | None = None,
+    ) -> int:
+        """Mirror ``mark_signal_not_sent``: compare-and-set on ``recorded``.
+
+        A row a real dispatch already closed is never relabelled, so the
+        overwrite protection the SQL predicate gives is visible to unit tests.
+        """
+        self.events.append(f"signal_not_sent:{reason}")
+        if self.mark_error is not None:
+            raise self.mark_error
+        if any(row["correlation_id"] == correlation_id for row in self.outcomes):
+            return 0
+        self.outcomes.append(
+            {
+                "correlation_id": correlation_id,
+                "outcome_state": "suppressed",
+                "suppressed_reason": reason,
+                "detail_patch": detail_patch,
+            }
+        )
+        return 1
+
+
+def _install_fake_signal_recorder(
+    monkeypatch, mod, recorder: FakeKiwoomSignalRecorder | None = None
+) -> FakeKiwoomSignalRecorder:
+    recorder = recorder or FakeKiwoomSignalRecorder()
+    monkeypatch.setattr(mod, "_new_signal_recorder", lambda: recorder)
+    return recorder
+
+
+def _install_fake_place_recorder(
+    monkeypatch, mod, recorder: FakeKiwoomPlaceRecorder | None = None
+) -> FakeKiwoomPlaceRecorder:
+    recorder = recorder or FakeKiwoomPlaceRecorder()
+    monkeypatch.setattr(mod, "_new_place_recorder", lambda: recorder)
+    _install_fake_signal_recorder(monkeypatch, mod)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def _fake_place_recorder(monkeypatch) -> FakeKiwoomPlaceRecorder:
+    """No test in this file may open a database through the place path."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    return _install_fake_place_recorder(monkeypatch, mod)
+
+
 def _patch_fake_kiwoom_order_client(
     monkeypatch, mod, responses: dict[str, dict[str, Any]]
 ):
     calls: list[dict[str, Any]] = []
+    # hk 4712: the confirmed place path persists a reservation and a ledger row.
+    # Every caller of this helper gets a database-free recorder.
+    _install_fake_place_recorder(monkeypatch, mod)
 
     class FakeKiwoomMockClient:
         @classmethod
@@ -254,6 +432,7 @@ async def test_place_order_confirmed_calls_kiwoom_mock_order_client(
         side=side,
         quantity=quantity,
         price=price,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2394,6 +2573,7 @@ async def test_place_order_dry_run_returns_stable_failure_without_post(monkeypat
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2486,6 +2666,7 @@ async def test_place_order_confirmed_runs_single_preflight_right_before_post(
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2572,6 +2753,7 @@ async def test_place_order_confirmed_blocks_when_preflight_fails(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2869,6 +3051,7 @@ async def test_confirmed_place_reuses_single_client_for_preflight_and_post(monke
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2982,6 +3165,7 @@ async def test_confirmed_one_preflight_one_post(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3014,6 +3198,7 @@ async def test_token_resolution_failure_blocks_post(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3049,6 +3234,7 @@ async def test_request_build_failure_blocks_post(monkeypatch):
         side="sell",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3082,6 +3268,7 @@ async def test_post_dispatch_unknown_failure_requires_reconcile(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3291,6 +3478,7 @@ async def test_confirmed_sell_runs_real_balance_preflight_before_post(monkeypatc
         side="sell",
         quantity=5,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3328,6 +3516,7 @@ async def test_confirmed_sell_pre_dispatch_failures_preserve_structured_diagnost
         side="sell",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3470,6 +3659,7 @@ async def test_standalone_position_read_then_confirmed_sell_succeeds(monkeypatch
         side="sell",
         quantity=5,
         price=71000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )

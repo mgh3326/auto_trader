@@ -22,7 +22,11 @@ EXPECTED_SIGNATURES = {
     "app/mcp_server/tooling/orders_kis_variants.py::kis_mock_place_order": "symbol,side,order_type='limit',quantity=None,price=None,amount=None,dry_run=True,reason='',exit_reason=None,thesis=None,strategy=None,target_price=None,stop_loss=None,min_hold_days=None,notes=None,indicators_snapshot=None,defensive_trim=False,approval_issue_id=None,account_mode=None,account_type=None,report_item_uuid=None,rung=None,confirm=False",
     "app/mcp_server/tooling/orders_kis_variants.py::kis_mock_cancel_order": "order_id,symbol=None,market=None,account_mode=None,account_type=None,dry_run=True,confirm=False",
     "app/mcp_server/tooling/orders_kis_variants.py::kis_mock_modify_order": "order_id,symbol,market=None,new_price=None,new_quantity=None,dry_run=True,reason='',account_mode=None,account_type=None,confirm=False",
-    "app/mcp_server/tooling/orders_kiwoom_variants.py::kiwoom_mock_place_order": "symbol,side,quantity,price,market='kr',exchange='KRX',dry_run=True,confirm=False",
+    # hk 4723 (3797 T-P6, operator decision Q1 on decision/2026-11-15): a confirmed
+    # kiwoom_mock place must be attributed before the send, so the surface carries
+    # `strategy`. That single keyword-only parameter is the only widening; every
+    # other frozen signature here is byte-identical.
+    "app/mcp_server/tooling/orders_kiwoom_variants.py::kiwoom_mock_place_order": "symbol,side,quantity,price,market='kr',exchange='KRX',strategy=None,dry_run=True,confirm=False,rung=None",
     "app/mcp_server/tooling/orders_kiwoom_variants.py::kiwoom_mock_cancel_order": "order_id,symbol=None,cancel_quantity=None,dry_run=True,confirm=False",
     "app/mcp_server/tooling/orders_kiwoom_variants.py::kiwoom_mock_modify_order": "order_id,symbol,new_price=None,new_quantity=None,dry_run=True,confirm=False",
     "app/mcp_server/tooling/orders_toss_variants.py::toss_place_order": "symbol,side,order_type='limit',quantity=None,price=None,order_amount=None,market=None,time_in_force='DAY',dry_run=True,confirm=False,confirm_high_value_order=False,reason=None,exit_intent=None,exit_reason=None,retrospective_id=None,approval_issue_id=None,thesis=None,strategy=None,target_price=None,stop_loss=None,min_hold_days=None,notes=None,indicators_snapshot=None,report_item_uuid=None,account_mode=None,account_type=None,approval_hash=None,rung=None",

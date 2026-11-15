@@ -128,6 +128,20 @@ def test_upbit_identity_carries_no_day() -> None:
     assert s.order_identity(a) == s.order_identity(b)
 
 
+def test_crypto_identity_folds_the_market_prefix() -> None:
+    # LiveOrderLedger stores the full pair ("KRW-BTC"); execution_ledger
+    # stores the stripped currency ("BTC"). One order is one identity.
+    order_side = row(
+        broker="upbit", instrument_type="crypto", symbol="KRW-BTC", broker_order_id="u"
+    )
+    fill_side = ws(
+        broker="upbit", instrument_type="crypto", symbol="BTC", broker_order_id="u"
+    )
+    assert s.order_identity(order_side) == s.order_identity(fill_side)
+    assert s._symbol_key("crypto", "KRW-BTC") == s._symbol_key("crypto", "BTC") == "BTC"
+    assert s._symbol_key("crypto", "USDT-BTC") == "BTC"
+
+
 # ------------------------------------------------------------------ read side
 
 

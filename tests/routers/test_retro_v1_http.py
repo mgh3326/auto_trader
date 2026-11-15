@@ -234,3 +234,25 @@ async def test_scoreboard_database_timeout_is_safe(client, monkeypatch):
     )
     assert response.status_code == 503
     assert response.json() == {"code": "timeout", "message": "Request timed out."}
+
+
+@pytest.mark.asyncio
+async def test_scoreboard_flow_complete_cannot_be_supplied_through_http(
+    client, monkeypatch
+):
+    reader = AsyncMock(return_value={"flows_complete": False})
+    monkeypatch.setitem(retro_v1.READERS, "retro_scoreboard", reader)
+    url = f"{retro_v1.PREFIX}/retro_scoreboard"
+    headers = {"X-Retro-Read-Token": "retro-secret", "X-Flows-Complete": "true"}
+    params = {"from": "2026-01-01", "to": "2026-01-08"}
+    response = await client.get(
+        url, params={**params, "flows_complete": "true"}, headers=headers
+    )
+    assert response.status_code == 422
+    reader.assert_not_awaited()
+    response = await client.request(
+        "GET", url, params=params, headers=headers, json={"flows_complete": True}
+    )
+    assert response.status_code == 200
+    assert response.json()["flows_complete"] is False
+    assert reader.await_args.kwargs == params

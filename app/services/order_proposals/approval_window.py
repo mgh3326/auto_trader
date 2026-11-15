@@ -822,6 +822,58 @@ def _resolve_xnys_session(group: Any, now: datetime) -> SubmissionSessionEvidenc
     )
 
 
+def _resolve_kiwoom_mock_session(now: datetime) -> SubmissionSessionEvidence:
+    """KRX regular session only (09:00-15:30 KST) for the KR mock lane.
+
+    hk 4732 / design §4.2: the Kiwoom mock order surface is KRX-only and has no
+    NXT or pre-market equivalent, so the KIS/Toss NXT carry of
+    ``_resolve_kr_session`` must not apply here. This is an explicit branch
+    instead of falling into that resolver's fail-closed default: a proposal
+    must be submittable during the regular session, and refused outside it with
+    the next regular open named.
+    """
+    local = now.astimezone(_KST)
+    bounds = regular_session_bounds("kr", local.date())
+    next_day = next_trading_session("kr", local.date())
+    next_bounds = (
+        regular_session_bounds("kr", next_day) if next_day is not None else None
+    )
+    next_open: datetime | None = None
+    if bounds is not None:
+        session_open, session_close = bounds
+        if session_open <= now.astimezone(UTC) < session_close:
+            return SubmissionSessionEvidence(
+                known=True,
+                source="exchange_calendars:XKRX:regular_only",
+                current_session="regular",
+                allowed_sessions=("regular",),
+                allowed_now=True,
+                allowed_until=session_close,
+                next_allowed_at=next_bounds[0] if next_bounds is not None else None,
+            )
+        if now.astimezone(UTC) < session_open:
+            next_open = session_open
+    if next_open is None:
+        next_open = next_bounds[0] if next_bounds is not None else None
+    if next_open is None:
+        return SubmissionSessionEvidence(
+            known=False,
+            source="exchange_calendars:XKRX:regular_only",
+            current_session="closed",
+            allowed_sessions=("regular",),
+            allowed_now=False,
+            detail="next_regular_window_unavailable",
+        )
+    return SubmissionSessionEvidence(
+        known=True,
+        source="exchange_calendars:XKRX:regular_only",
+        current_session="closed",
+        allowed_sessions=("regular",),
+        allowed_now=False,
+        next_allowed_at=next_open,
+    )
+
+
 async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvidence:
     local = now.astimezone(_KST)
     krx_bounds = regular_session_bounds("kr", local.date())
@@ -1012,8 +1064,14 @@ async def resolve_submission_session(
         )
     if market == "equity_us" and account_mode == "toss_live":
         return await _resolve_toss_us_session(group, now)
-    if market == "equity_us" and account_mode == "kis_live":
+    if market == "equity_us" and account_mode in {"kis_live", "kiwoom_mock_us"}:
+        # hk 4754: the US mock lane is XNYS regular only — the Toss US pre/post
+        # key never applies to it, and there is no mock session of its own.
         return _resolve_xnys_session(group, now)
+    if market == "equity_kr" and account_mode == "kiwoom_mock":
+        # hk 4732: explicit KRX-regular-only branch; never the NXT-capable
+        # `_resolve_kr_session` below and never the fail-closed default.
+        return _resolve_kiwoom_mock_session(now)
     if market == "equity_kr" and account_mode in {"kis_live", "toss_live"}:
         return await _resolve_kr_session(group, now)
     return SubmissionSessionEvidence(

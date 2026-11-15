@@ -351,10 +351,16 @@ class ExpiredDefensiveProposal:
 # Toss has a dedicated adapter; `_place_order_impl` remains the KIS/Upbit-only
 # fallback and has no `account_mode` parameter. Reject any other combination at
 # create time rather than let a mock/paper/wrong-broker proposal reach submit.
+# hk 4732: `kiwoom_mock`/`equity_kr` is a place-only capability — the KR mock
+# lane has no broker order id to target for replace/cancel through
+# `SUPPORTED_TARGET_ACTIONS`, so those two actions stay unchanged.
+# hk 4754: `kiwoom_mock_us`/`equity_us` joins on the same terms (place only).
 _SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
     {
         ("kis_live", "equity_kr"),
         ("kis_live", "equity_us"),
+        ("kiwoom_mock", "equity_kr"),
+        ("kiwoom_mock_us", "equity_us"),
         ("toss_live", "equity_kr"),
         ("toss_live", "equity_us"),
         ("upbit", "crypto"),
@@ -371,7 +377,13 @@ _ACTION_CAPABILITIES = {
 # "allowed: ..." message and the supported_matrix response field. Any
 # account_mode/market absent from these tuples still sorts, just after the
 # named ones.
-_ACCOUNT_MODE_DISPLAY_ORDER = ("kis_live", "toss_live", "upbit")
+_ACCOUNT_MODE_DISPLAY_ORDER = (
+    "kis_live",
+    "kiwoom_mock",
+    "kiwoom_mock_us",
+    "toss_live",
+    "upbit",
+)
 _MARKET_DISPLAY_ORDER = ("equity_kr", "equity_us", "crypto")
 
 

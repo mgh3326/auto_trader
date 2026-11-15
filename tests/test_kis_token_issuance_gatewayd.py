@@ -105,6 +105,57 @@ async def test_gatewayd_ensure_posts_provider_endpoint_and_rejects_non_2xx(
 
 
 @pytest.mark.asyncio
+async def test_gatewayd_ensure_force_posts_force_flag_only_for_approval_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str) -> httpx.Response:
+            requests.append(url)
+            return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(token_issuance.httpx, "AsyncClient", FakeClient)
+    gatewayd_settings = type(
+        "GatewaydSettings", (), {"gatewayd_url": "http://edge:8791"}
+    )()
+
+    # Approval providers accept both plain and forced ensures.
+    await token_issuance.ensure_gatewayd_token(
+        "kis-live-approval", settings_obj=gatewayd_settings
+    )
+    await token_issuance.ensure_gatewayd_token(
+        "kis-mock-approval", settings_obj=gatewayd_settings, force=True
+    )
+
+    assert requests == [
+        "http://edge:8791/v1/tokens/kis-live-approval/ensure",
+        "http://edge:8791/v1/tokens/kis-mock-approval/ensure?force=true",
+    ]
+
+    # gatewayd ignores ?force for non-approval providers, so Python refuses
+    # the combination before any HTTP request.
+    requests.clear()
+    for provider in ("kis-live", "kis-mock", "toss"):
+        with pytest.raises(TokenIssuanceUnavailable, match="approval providers"):
+            await token_issuance.ensure_gatewayd_token(
+                provider,  # type: ignore[arg-type]
+                settings_obj=gatewayd_settings,
+                force=True,
+            )
+    assert requests == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("is_mock", "provider"),
     [(False, "kis-live"), (True, "kis-mock")],

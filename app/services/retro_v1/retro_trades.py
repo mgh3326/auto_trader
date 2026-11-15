@@ -33,6 +33,11 @@ from app.services.retro_v1.envelope import (
     safe_code,
 )
 from app.services.retro_v1.market import MARKETS
+from app.services.retro_v1.trade_evidence import (
+    TradeEvidence,
+    load_trade_evidence,
+    trade_evidence_fields,
+)
 from app.services.trade_journal.pnl_status import PNL_STATUS_CLASS, classify_pnl_status
 
 _LIVE_MODES = ("kis_live", "toss_live", "upbit_live")
@@ -161,6 +166,8 @@ async def read_retro_trades(
             session, unknowns, "source.trade_journals", journals_read, []
         )
         reviews, reviews_ok = ([], True)
+        evidence = TradeEvidence()
+        reviews_usable = False
         if journals:
             reviews, reviews_ok = await guarded(
                 session,
@@ -169,6 +176,13 @@ async def read_retro_trades(
                 lambda: reviews_read([j.id for j in journals]),
                 [],
             )
+            # The new fields describe a trade's whole review set: a failed or
+            # capped review read would let them speak for a partial one.
+            reviews_usable = reviews_ok and len(reviews) < MAX_SOURCE_ROWS
+            if reviews_usable:
+                evidence = await load_trade_evidence(
+                    session, unknowns, journals, reviews
+                )
     journals_capped = len(journals) >= MAX_SOURCE_ROWS
     reviews_capped = len(reviews) >= MAX_SOURCE_ROWS
     if journals_capped:
@@ -229,6 +243,10 @@ async def read_retro_trades(
                 if redacted:
                     item.setdefault("_redacted", []).append(field)
             row["reviews"].append(item)
+        if reviews_usable:
+            row.update(
+                trade_evidence_fields(journal, grouped[journal.id], info, evidence)
+            )
         rows.append((row, {"market": "unsupported", "currency": "unsupported"}))
     response = build_response(
         as_of=as_of,
@@ -250,6 +268,13 @@ async def read_retro_trades(
                         f"data.{i}.reviews.{j}.{field}",
                         "redacted" if field in redacted else "missing_data",
                     )
+        for field, value in row.get("costs", {}).items():
+            if isinstance(value, dict):
+                for name, inner in value.items():
+                    if inner is None:
+                        unknowns.note(f"data.{i}.costs.{field}.{name}", "missing_data")
+            elif value is None:
+                unknowns.note(f"data.{i}.costs.{field}", "missing_data")
     if not amounts or not complete:
         unknowns.note(
             "summary.realized_by_currency",

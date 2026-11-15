@@ -15,10 +15,13 @@ Mirrors the structure of ``orders_kis_variants.py``.
 
 from __future__ import annotations
 
+import logging
 import re
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import validate_kiwoom_mock_config
+from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.orders_kiwoom_shared import (
     derive_broker_success as _derive_broker_success,
 )
@@ -39,16 +42,28 @@ from app.services.brokers.kiwoom.normalization import (
     redact_broker_response,
     validate_mock_response_provenance,
 )
-from app.services.brokers.kiwoom.order_preflight import (
-    PreflightResult,
-    run_order_preflight,
-)
+from app.services.brokers.kiwoom.order_preflight import PreflightResult
 from app.services.brokers.kiwoom.validation import normalize_krx_symbol
+from app.services.kiwoom_mock_attribution import KiwoomMockSignalRecorder
+from app.services.kiwoom_mock_order_ledger_service import KiwoomMockPlaceRecorder
+from app.services.kiwoom_mock_place import (
+    KiwoomMockPlaceDeps,
+    place_kiwoom_mock_order,
+    run_kiwoom_mock_preflight,
+)
+from app.services.kiwoom_mock_place import (
+    not_submitted_response as _not_submitted_response,
+)
+from app.services.kiwoom_mock_place import (
+    preflight_to_response as _preflight_to_response,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 __all__ = ("_derive_broker_success",)
+
+logger = logging.getLogger(__name__)
 
 ACCOUNT_MODE_KIWOOM_MOCK = "kiwoom_mock"
 
@@ -329,6 +344,16 @@ def _new_kiwoom_mock_client() -> KiwoomMockClient:
     return KiwoomMockClient.from_app_settings()
 
 
+def _new_place_recorder() -> KiwoomMockPlaceRecorder:
+    """Single chokepoint for the place-path persistence (tests inject a fake)."""
+    return KiwoomMockPlaceRecorder(AsyncSessionLocal)
+
+
+def _new_signal_recorder() -> KiwoomMockSignalRecorder:
+    """Single chokepoint for pre-submit attribution (tests inject a fake)."""
+    return KiwoomMockSignalRecorder(AsyncSessionLocal)
+
+
 async def _run_preflight_for_kiwoom_mock(
     symbol: str,
     side: str,
@@ -336,192 +361,74 @@ async def _run_preflight_for_kiwoom_mock(
     price: int,
     *,
     account_client: Any | None = None,
+    fetch_quote: Any | None = None,
 ) -> PreflightResult:
-    quote_price, quote_freshness = await _fetch_kr_quote_for_preflight(symbol)
+    """MCP-module preflight: binds this module's client + quote seams.
+
+    The quote read and the account client are the two things tests replace
+    here, so the wrapper resolves both from this module's globals and hands
+    them to the shared service implementation.
+    """
     if account_client is None:
         account_client = KiwoomDomesticAccountClient(
             cast(Any, _new_kiwoom_mock_client())
         )
-    return await run_order_preflight(
+    return await run_kiwoom_mock_preflight(
+        symbol,
+        side,
+        quantity,
+        price,
         account_client=account_client,
-        symbol=symbol,
-        side=side,
-        quantity=quantity,
-        price=price,
-        quote_price=quote_price,
-        quote_freshness=quote_freshness,
+        fetch_quote=fetch_quote or _fetch_kr_quote_for_preflight,
     )
 
 
-def _preflight_to_response(
-    result: PreflightResult,
-    *,
-    symbol: str,
-    side: str,
-    quantity: int,
-    price: int,
-    preview: bool,
-) -> dict[str, Any]:
-    response: dict[str, Any] = {
-        "success": result.ok,
-        "source": "kiwoom",
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-        "symbol": symbol,
-        "side": side,
-        "quantity": quantity,
-        "price": price,
-    }
-    if preview:
-        response["preview"] = True
-    if not result.ok:
-        response["error"] = result.error_code
-        response["error_detail"] = result.error_detail
-    response.update(result.to_response_extras())
-    return response
+def _kiwoom_place_deps() -> KiwoomMockPlaceDeps:
+    """The MCP module's seam set for the shared place service (hk 4732).
 
-
-def _not_submitted_response(
-    base: dict[str, Any], exc: KiwoomPreDispatchError
-) -> dict[str, Any]:
-    """Pre-dispatch failure: request provably never sent. No reconcile needed.
-
-    Reads ONLY the structured fields on exc — never str(exc) or exc.__cause__
-    (the redaction guarantee). token/secret/header/account/body/raw msg are
-    never surfaced.
+    Built per call from module globals so every monkeypatch point in this
+    module (client, quote read, preflight, recorders, clock) keeps working.
+    The mock-config gate stays in the tool wrapper (`_mock_config_error`),
+    where it has always been - the impl never checked it.
     """
-    return {
-        **base,
-        "success": False,
-        "error": f"kiwoom_mock_place_order failed: {exc.cause_type}",
-        "status": "not_submitted",
-        "dispatch_started": False,
-        "stage": exc.stage,
-        "api_id": exc.api_id,
-        "cause_type": exc.cause_type,
-        "reconcile_required": False,
-    }
+    return KiwoomMockPlaceDeps(
+        new_client=_new_kiwoom_mock_client,
+        account_client_cls=KiwoomDomesticAccountClient,
+        order_client_cls=KiwoomDomesticOrderClient,
+        preflight=_run_preflight_for_kiwoom_mock,
+        fetch_quote=_fetch_kr_quote_for_preflight,
+        place_recorder=_new_place_recorder,
+        signal_recorder=_new_signal_recorder,
+        utc_now=_utc_now,
+    )
 
 
-def _dispatch_unknown_response(base: dict[str, Any], exc: Exception) -> dict[str, Any]:
-    """Post-dispatch / unclassifiable failure: request MAY have been sent.
-
-    Conservative default (Oracle Q6): cannot prove the request wasn't
-    transmitted (send may have succeeded before response/parsing failed), so
-    reconciliation is REQUIRED. Only KiwoomPreDispatchError earns
-    reconcile_required=False.
-    """
-    return {
-        **base,
-        "success": False,
-        "error": f"kiwoom_mock_place_order failed: {type(exc).__name__}",
-        "status": "acceptance_uncertain",
-        "reconcile_required": True,
-        "retry_allowed": False,
-    }
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
-    symbol = str(kwargs.get("symbol") or "").strip()
-    side = kwargs.get("side")
-    quantity_value = kwargs.get("quantity")
-    price_value = kwargs.get("price")
-    if quantity_value is None or price_value is None:
-        raise ValueError("kiwoom_mock_place_order requires quantity and price")
-    quantity = int(quantity_value)
-    price = int(price_value)
-    dry_run = bool(kwargs.get("dry_run", True))
-    exchange = kwargs.get("exchange") or constants.MOCK_EXCHANGE_KRX
+    """Delegate to the shared KR mock place service (hk 4732).
 
-    base_response = {
-        "source": "kiwoom",
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-        "dry_run": dry_run,
-        "side": side,
-        "symbol": symbol,
-        "quantity": quantity,
-        "price": price,
-        "exchange": str(exchange).strip().upper(),
-    }
-    if side not in {"buy", "sell"}:
-        return {
-            "success": False,
-            **base_response,
-            "error": f"kiwoom_mock_place_order supports side='buy' or 'sell'; got {side!r}.",
-        }
-
-    # ONE request-scoped client shared across preflight + POST (ROB-893 v2).
-    client = _new_kiwoom_mock_client()
-    account_client = KiwoomDomesticAccountClient(cast(Any, client))
-    order_client = KiwoomDomesticOrderClient(cast(Any, client))
-
-    try:
-        preflight = await _run_preflight_for_kiwoom_mock(
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            account_client=account_client,
-        )
-    except KiwoomPreDispatchError as exc:
-        return _not_submitted_response(base_response, exc)
-    except Exception as exc:  # noqa: BLE001 - preflight must fail closed
-        return {
-            "success": False,
-            **base_response,
-            "error": f"kiwoom_mock_place_order preflight failed: {type(exc).__name__}",
-        }
-    if not preflight.ok:
-        response = _preflight_to_response(
-            preflight,
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            preview=dry_run,
-        )
-        response["dry_run"] = dry_run
-        response["exchange"] = str(exchange).strip().upper()
-        return response
-
-    if dry_run:
-        response = _preflight_to_response(
-            preflight,
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            preview=True,
-        )
-        response["dry_run"] = True
-        response["exchange"] = str(exchange).strip().upper()
-        return response
-
-    # Confirmed: the single preflight above IS the mutation-boundary check,
-    # run immediately before POST on the SAME client/auth/token. Attach its
-    # evidence as the authoritative snapshot.
-    base_response.update(preflight.to_response_extras())
-
-    try:
-        if side == "buy":
-            broker_response = await order_client.place_buy_order(
-                symbol=symbol,
-                quantity=quantity,
-                price=price,
-                exchange=exchange,
-            )
-        else:
-            broker_response = await order_client.place_sell_order(
-                symbol=symbol,
-                quantity=quantity,
-                price=price,
-                exchange=exchange,
-            )
-    except KiwoomPreDispatchError as exc:
-        return _not_submitted_response(base_response, exc)
-    except Exception as exc:  # noqa: BLE001 - post-dispatch: may have been sent
-        return _dispatch_unknown_response(base_response, exc)
-
-    return _finalize_broker_response(base_response, broker_response)
+    The sequence itself - attribution signal, preflight, send reservation,
+    POST, ledger row, outcome marks - lives in
+    ``app.services.kiwoom_mock_place`` so the order_proposals submit adapter
+    runs the same boundary. This module keeps its own funnels
+    (client/preflight/recorders/clock) and hands them over, so every test seam
+    and every response byte stays what it was.
+    """
+    return await place_kiwoom_mock_order(
+        symbol=kwargs.get("symbol"),
+        side=kwargs.get("side"),
+        quantity=kwargs.get("quantity"),
+        price=kwargs.get("price"),
+        exchange=kwargs.get("exchange"),
+        dry_run=bool(kwargs.get("dry_run", True)),
+        strategy=kwargs.get("strategy"),
+        rung=kwargs.get("rung"),
+        correlation_id=kwargs.get("correlation_id"),
+        deps=_kiwoom_place_deps(),
+    )
 
 
 async def _kiwoom_mock_preview_impl(**kwargs: Any) -> dict[str, Any]:
@@ -879,7 +786,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="kiwoom_mock_place_order",
-        description="Place a KRX-only Kiwoom mock order. dry_run defaults to True.",
+        description=(
+            "Place a KRX-only Kiwoom mock order. dry_run defaults to True. "
+            "A confirmed order requires a non-blank strategy: the attribution "
+            "is committed to the signal ledger before the send reservation."
+        ),
     )
     async def kiwoom_mock_place_order(
         symbol: str,
@@ -888,8 +799,10 @@ def register(mcp: FastMCP) -> None:
         price: int,
         market: str | None = "kr",
         exchange: str | None = "KRX",
+        strategy: str | None = None,
         dry_run: bool = True,
         confirm: bool = False,
+        rung: str | int | None = None,
     ) -> dict[str, Any]:
         for guard in (
             _mock_config_error(),
@@ -915,7 +828,9 @@ def register(mcp: FastMCP) -> None:
             quantity=quantity,
             price=price,
             exchange=exchange,
+            strategy=strategy,
             dry_run=dry_run,
+            rung=rung,
         )
 
     @mcp.tool(

@@ -820,6 +820,259 @@ class TossLiveOrderLedger(Base):
     )
 
 
+#: hk 4703 (3797 T-P1) — Kiwoom mock lifecycle vocabulary. ``uncertain`` is
+#: the send-outcome-unknown state (design §2.2); ``anomaly`` and
+#: ``requires_manual_review`` are the reconcile escalation states.
+KIWOOM_MOCK_ORDER_STATUSES = (
+    "accepted",
+    "rejected",
+    "pending",
+    "partial",
+    "filled",
+    "cancelled",
+    "expired",
+    "replaced",
+    "uncertain",
+    "anomaly",
+    "requires_manual_review",
+)
+#: Statuses after which a modify/cancel row no longer blocks a competing
+#: correction or cancel on the same original order.
+KIWOOM_MOCK_TERMINAL_STATUSES = (
+    "rejected",
+    "filled",
+    "cancelled",
+    "expired",
+    "replaced",
+)
+_KIWOOM_MOCK_OPEN_OPERATION_WHERE = (
+    "operation_kind IN ('modify','cancel') AND status NOT IN ("
+    + ", ".join(f"'{s}'" for s in KIWOOM_MOCK_TERMINAL_STATUSES)
+    + ")"
+)
+
+
+class KiwoomMockOrderLedger(Base):
+    """hk 4703 — Kiwoom mock order lifecycle ledger (schema only).
+
+    Design: docs/design/3797-kiwoom-mock-ledger.md §2.1. KR (``kiwoom_mock``)
+    and US (``kiwoom_mock_us``) mock orders share this table; ``market``,
+    ``account_mode`` and ``currency`` are CHECK-bound to agree. ``client_order_id``
+    is the issued idempotency key (the broker body carries no client field).
+    No writer exists yet; T-P2 owns the service and send-path wiring.
+
+    CHECK constraints use short names here; the naming convention prefixes them
+    with ``ck_<table>_``, which is the spelling migration
+    20261115_hk4703_kiwoom_ledger pins with ``op.f``.
+    """
+
+    __tablename__ = "kiwoom_mock_order_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "client_order_id", name="uq_kiwoom_mock_order_ledger_client_order_id"
+        ),
+        UniqueConstraint(
+            "account_mode",
+            "trading_day",
+            "broker_order_id",
+            name="uq_kiwoom_mock_order_ledger_account_day_broker_order",
+        ),
+        CheckConstraint("broker = 'kiwoom'", name="broker"),
+        CheckConstraint(
+            "account_mode IN ('kiwoom_mock','kiwoom_mock_us')",
+            name="account_mode",
+        ),
+        CheckConstraint("market IN ('kr','us')", name="market"),
+        CheckConstraint(
+            "instrument_type IN ('equity_kr','equity_us')",
+            name="instrument_type",
+        ),
+        CheckConstraint("currency IN ('KRW','USD')", name="currency"),
+        # market, account_mode, instrument_type and currency must describe one
+        # account: a KR mock row cannot carry a US instrument or USD currency.
+        CheckConstraint(
+            "(account_mode = 'kiwoom_mock' AND market = 'kr' "
+            "AND instrument_type = 'equity_kr' AND currency = 'KRW') "
+            "OR (account_mode = 'kiwoom_mock_us' AND market = 'us' "
+            "AND instrument_type = 'equity_us' AND currency = 'USD')",
+            name="account_market_currency",
+        ),
+        CheckConstraint(
+            "operation_kind IN ('place','modify','cancel')",
+            name="operation_kind",
+        ),
+        CheckConstraint("side IS NULL OR side IN ('buy','sell')", name="side"),
+        CheckConstraint(
+            "order_type IS NULL OR order_type IN ('limit','market')",
+            name="order_type",
+        ),
+        CheckConstraint(
+            "market <> 'kr' OR order_type IS NULL OR order_type = 'limit'",
+            name="kr_limit_only",
+        ),
+        CheckConstraint(
+            "status IN ("
+            + ", ".join(f"'{s}'" for s in KIWOOM_MOCK_ORDER_STATUSES)
+            + ")",
+            name="status",
+        ),
+        CheckConstraint(
+            "status <> 'accepted' OR broker_order_id IS NOT NULL",
+            name="accepted_has_broker_order_id",
+        ),
+        # NULLs are distinct in the unique index below, so a modify/cancel
+        # without its original order id must be refused here.
+        CheckConstraint(
+            "operation_kind = 'place' OR original_order_id IS NOT NULL",
+            name="original_required_for_correction",
+        ),
+        Index("ix_kiwoom_mock_order_ledger_status", "status"),
+        Index("ix_kiwoom_mock_order_ledger_market_symbol", "market", "symbol"),
+        Index("ix_kiwoom_mock_order_ledger_report_item_uuid", "report_item_uuid"),
+        Index(
+            "uq_kiwoom_mock_order_ledger_open_operation",
+            "account_mode",
+            "trading_day",
+            "original_order_id",
+            unique=True,
+            postgresql_where=text(_KIWOOM_MOCK_OPEN_OPERATION_WHERE),
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    trade_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    trading_day: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str | None] = mapped_column(Text)
+    order_type: Mapped[str | None] = mapped_column(Text)
+    operation_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    currency: Mapped[str] = mapped_column(Text, nullable=False)
+
+    client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_hash: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    broker_order_id: Mapped[str | None] = mapped_column(Text)
+    original_order_id: Mapped[str | None] = mapped_column(Text)
+
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    broker: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str | None] = mapped_column(Text)
+    response_code: Mapped[str | None] = mapped_column(Text)
+    response_message: Mapped[str | None] = mapped_column(Text)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB)
+
+    filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    trade_id: Mapped[int | None] = mapped_column(BigInteger)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    reconcile_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+    last_reconcile_detail: Mapped[dict | None] = mapped_column(JSONB)
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    strategy: Mapped[str | None] = mapped_column(Text)
+    thesis: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class KiwoomMockSignalLedger(Base):
+    """hk 4703 — Kiwoom mock pre-submit signal (attribution) ledger.
+
+    Copy of ``KISMockSignalLedger`` for the Kiwoom mock accounts (design §2.4).
+    The row is written before any broker send, so ``strategy`` and
+    ``signal_source`` are blank-rejected at insert time. Unlike the KIS copy,
+    ``account_mode`` has no default: a US row must never be attributed to the KR
+    account by omission.
+    """
+
+    __tablename__ = "kiwoom_mock_signal_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "correlation_id", name="uq_kiwoom_mock_signal_ledger_correlation_id"
+        ),
+        CheckConstraint(
+            "account_mode IN ('kiwoom_mock','kiwoom_mock_us')",
+            name="account_mode",
+        ),
+        CheckConstraint("decision IN ('order','no_order')", name="decision"),
+        CheckConstraint(
+            "outcome_state IN ('recorded','submitted','suppressed','failed')",
+            name="outcome_state",
+        ),
+        CheckConstraint("side IS NULL OR side IN ('buy','sell')", name="side"),
+        CheckConstraint("length(btrim(strategy)) > 0", name="strategy_nonblank"),
+        CheckConstraint("length(btrim(signal_source)) > 0", name="source_nonblank"),
+        CheckConstraint(
+            "length(btrim(correlation_id)) > 0", name="correlation_nonblank"
+        ),
+        Index("ix_kiwoom_mock_signal_ledger_kst_date", "kst_date"),
+        Index("ix_kiwoom_mock_signal_ledger_strategy", "strategy"),
+        Index("ix_kiwoom_mock_signal_ledger_symbol", "symbol"),
+        Index("ix_kiwoom_mock_signal_ledger_outcome_state", "outcome_state"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    signal_source: Mapped[str] = mapped_column(Text, nullable=False)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False)
+
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    intended_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    intended_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome_state: Mapped[str] = mapped_column(Text, nullable=False, default="recorded")
+    suppressed_reason: Mapped[str | None] = mapped_column(Text)
+
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    detail: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    kst_date: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class TossFillPollState(Base):
     """ROB-757 state for Toss REST fill polling.
 

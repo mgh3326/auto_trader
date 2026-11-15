@@ -10,6 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import jsonschema
 from referencing import Registry, Resource
@@ -391,6 +392,64 @@ def gate_trade_review() -> TradeRetrospective:
     )
 
 
+GATE_DECISION_AT = datetime(2026, 1, 5, 0, 30, tzinfo=UTC)  # 09:30 KST on 2026-01-05
+GATE_DECISION_ID = UUID(int=0xD4718)
+
+
+def gate_decision() -> SimpleNamespace:
+    """One recorded KR proposal decision (synthetic values) for the consumer gate."""
+    return ns(
+        id=1,
+        decision_id=GATE_DECISION_ID,
+        decision_kind="proposal",
+        decided_at=GATE_DECISION_AT,
+        decided_by="order_proposals",
+        market="equity_kr",
+        account_mode="kis_live",
+        symbol="005930",
+        side="buy",
+        strategy="S_ALPHA",
+        sleeve_id=None,
+        candidate_call_id=None,
+        candidate_symbol=None,
+        candidate_link_basis=None,
+        currency="KRW",
+        stop_price=Decimal("69000"),
+        stop_basis="absolute",
+        stop_source="policy",
+        target_price=None,
+        horizon_sessions=20,
+        forecast_ids=None,
+        report_item_uuid=None,
+        policy_version=None,
+        policy_content_hash=None,
+    )
+
+
+def gate_decision_rung() -> SimpleNamespace:
+    """The one rung of gate_decision (synthetic values)."""
+    return ns(
+        decision_id=GATE_DECISION_ID,
+        rung_index=0,
+        side="buy",
+        planned_quantity=Decimal("3"),
+        planned_notional=Decimal("210000"),
+        limit_price=Decimal("70000"),
+    )
+
+
+def gate_reference_price() -> SimpleNamespace:
+    """The limit reference price of gate_decision_rung (synthetic values)."""
+    return ns(
+        id=1,
+        decision_id=GATE_DECISION_ID,
+        rung_index=0,
+        kind="limit",
+        price=Decimal("70000"),
+        asof=GATE_DECISION_AT,
+    )
+
+
 def build_gate_session() -> FakeSession:
     """Deterministic session providing complete data across all 8 retro/v1 operations."""
     now = datetime.now(UTC)
@@ -469,6 +528,13 @@ def build_gate_session() -> FakeSession:
             return [None]
         return [forecast(2, "000660", datetime(2026, 1, 5, 0, 40, tzinfo=UTC))]
 
+    # hk 4188: the gate trade carries a stored decision and an order recorded by
+    # correlation, so the consumer gate sees the new optional TradeRow fields.
+    gate_journal = gate_trade_journal()
+    gate_journal.correlation_id = "gate-corr"
+    gate_review = gate_trade_review()
+    gate_review.decision_id = UUID(int=0xD4188)
+
     routes = {
         "SHOW transaction_read_only": ["on"],
         "FROM review.execution_ledger_reconcile_runs": [stale_run],
@@ -483,8 +549,14 @@ def build_gate_session() -> FakeSession:
         "account_value_snapshots": account_snapshots_route,
         "account_external_flows": [],
         "FROM public.kr_candles_1d": bars,
-        "FROM review.trade_journals": [gate_trade_journal()],
-        "FROM review.trade_retrospectives": [gate_trade_review()],
+        "FROM review.trade_journals": [gate_journal],
+        "FROM review.trade_retrospectives": [gate_review],
+        # hk 4718: one recorded decision so the consumer gate checks a retro_decisions
+        # row. The longer rungs/prices fragments come first: decision_evidence is a
+        # prefix of the rungs table name, and the first matching route wins.
+        "FROM review.decision_evidence_rungs": [gate_decision_rung()],
+        "FROM review.decision_reference_prices": [gate_reference_price()],
+        "FROM review.decision_evidence": [gate_decision()],
     }
 
     base_session = FakeSession()
@@ -499,5 +571,8 @@ def build_gate_session() -> FakeSession:
             pass
         else:
             full_routes[k] = v
+    full_routes["FROM review.kis_live_order_ledger"] = [
+        live_order(correlation_id="gate-corr")
+    ]
     base_session.routes = full_routes
     return base_session
