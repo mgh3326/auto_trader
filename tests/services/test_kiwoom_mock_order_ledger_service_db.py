@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.review import KiwoomMockOrderLedger, OrderSendIntent
 from app.services.kiwoom_mock_order_ledger_service import (
     RESERVATION_ACCOUNT_SCOPE,
@@ -24,6 +24,9 @@ from app.services.kiwoom_mock_order_ledger_service import (
     KiwoomMockOrderLedgerService,
     KiwoomMockPlaceRecorder,
 )
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
