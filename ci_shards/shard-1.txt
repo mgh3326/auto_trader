@@ -253,6 +253,7 @@ tests/services/order_proposals/test_cash_funding_exemption.py
 tests/services/order_proposals/test_dispatch_security_invariants.py
 tests/services/order_proposals/test_kiwoom_mock_dispatch_db.py
 tests/services/order_proposals/test_kiwoom_mock_submission.py
+tests/services/order_proposals/test_kiwoom_mock_us_submission.py
 tests/services/order_proposals/test_models_smoke.py
 tests/services/order_proposals/test_night_sweep_db.py
 tests/services/order_proposals/test_redispatch.py

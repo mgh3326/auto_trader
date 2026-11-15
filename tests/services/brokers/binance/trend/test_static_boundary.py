@@ -30,6 +30,14 @@ EXTRA_ALLOWED = {
         "app.core.config",
         "app.monitoring.trade_notifier.transports",
     ),
+    # Forecast rows are durable learning metadata, not broker access: the
+    # forecast module may read the review model and reach the journal service
+    # (the only write surface) plus its session — nothing else.
+    "forecast.py": (
+        "app.core.db",
+        "app.models.review",
+        "app.services.trade_journal.forecast_service",
+    ),
     "executor.py": (
         _ROB974,
         f"{_FUTURES}.dto",

@@ -30,7 +30,7 @@ import datetime as dt
 import json
 import os
 import signal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
 from app.services.brokers.binance.trend.alerting import (
@@ -52,9 +52,11 @@ from app.services.brokers.binance.trend.control import (
     TickFailure,
     tick_failures,
 )
-from app.services.brokers.binance.trend.executor import TrendDemoClient, TrendExecutor
 from app.services.brokers.binance.trend.state import TrendStateService
 from app.services.brokers.binance.trend.strategy import TrendStrategy
+
+if TYPE_CHECKING:  # annotations only; the executor pulls settings at import
+    from app.services.brokers.binance.trend.executor import TrendDemoClient
 
 ENV_TREND = "BINANCE_TREND_DEMO_ENABLED"
 ENV_FUTURES = "BINANCE_FUTURES_DEMO_ENABLED"
@@ -173,7 +175,7 @@ async def _run_ticks(
     try:
         while True:
             async with _AsyncSessionLocal() as db:
-                executor = TrendExecutor(
+                executor = _TrendExecutor(
                     client=client,
                     strategy=strategy,
                     state=state,
@@ -229,6 +231,8 @@ async def _run_ticks(
 
 _AsyncSessionLocal: Any = None
 _engine: Any = None
+_TrendDemoClient: Any = None
+_TrendExecutor: Any = None
 
 
 def _load_db() -> None:
@@ -239,10 +243,15 @@ def _load_db() -> None:
     readiness mode promises none of that, so it cannot be imported at module
     scope.
     """
-    global _AsyncSessionLocal, _engine
+    global _AsyncSessionLocal, _engine, _TrendDemoClient, _TrendExecutor
     from app.core.db import AsyncSessionLocal, engine
+    from app.services.brokers.binance.trend.executor import (
+        TrendDemoClient,
+        TrendExecutor,
+    )
 
     _AsyncSessionLocal, _engine = AsyncSessionLocal, engine
+    _TrendDemoClient, _TrendExecutor = TrendDemoClient, TrendExecutor
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -253,7 +262,7 @@ async def _run(args: argparse.Namespace) -> int:
         )
         return 0
     _load_db()
-    client = TrendDemoClient.from_env()
+    client = _TrendDemoClient.from_env()
     strategy = TrendStrategy(
         lookback_days=SEAL_LOOKBACK_DAYS,
         hard_stop_fraction=SEAL_HARD_STOP_FRACTION,

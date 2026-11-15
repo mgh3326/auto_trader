@@ -2,12 +2,18 @@
 
 Design: ``docs/design/3797-kiwoom-mock-ledger.md`` §3.1–§3.3 and §6.1.
 
-What it does: read the open/uncertain KR ``kiwoom_mock`` ledger rows, read the
-broker's kt00009 (order status) and kt00007 (order detail) listings — following
+What it does: read the open/uncertain ``kiwoom_mock`` (or ``kiwoom_mock_us``)
+ledger rows for one market, read the broker's order listings — following
 ``cont_yn``/``next_key`` pages — classify each row with the pure §3.2 table
 (``mock_reconcile``), and — in terminal-only mode — apply **only** expired /
 cancelled / rejected and uncertain→accepted through
 :class:`KiwoomMockOrderLedgerService`, the sole ledger writer.
+
+The two markets differ only in their listings and their trading day (hk 4754):
+KR reads kt00009 (order status) plus kt00007 (order detail, per trading day);
+US reads ust21510 (today's orders *and fills*, the detail role) and ust21050
+(open orders, the status role). No US listing covers a past ET trading day, so
+a past US row is never classified from absence — it stays ``unknown``.
 
 What it never does (T-P4 owns these): book fills, write the execution ledger,
 journals or P&L. ``filled``/``partial`` are reported as
@@ -32,17 +38,22 @@ from datetime import UTC, datetime
 from typing import Any, Final, Protocol
 
 from app.services.brokers.kiwoom.mock_reconcile import (
+    US_ORDER_LIST_KEY,
     BrokerEvidence,
     LedgerOrder,
     classify_verdict,
     evidence_from_payloads,
     return_code_ok,
+    us_evidence_from_payloads,
+    us_past_day_evidence,
 )
 from app.services.kiwoom_mock_order_ledger_service import (
     ACCOUNT_MODE_KIWOOM_MOCK,
+    ACCOUNT_MODE_KIWOOM_MOCK_US,
     KiwoomMockOrderLedgerService,
     KiwoomMockTransitionRefused,
     kr_trading_day,
+    us_trading_day,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,8 +62,11 @@ __all__ = (
     "DEFAULT_MAX_LISTING_PAGES",
     "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS",
     "TERMINAL_GATE_ENV",
+    "US_TERMINAL_GATE_ENV",
     "KiwoomMockReconcileBroker",
     "KiwoomMockReconcileReader",
+    "KiwoomMockUsReconcileBroker",
+    "KiwoomMockUsReconcileReader",
     "kiwoom_mock_reconcile_orders_impl",
     "terminal_gate_enabled",
 )
@@ -60,6 +74,19 @@ __all__ = (
 #: Exact-value gate for terminal-only application (default off). The string must
 #: be exactly ``true`` — mirroring the H5 alert gate, not pydantic bool parsing.
 TERMINAL_GATE_ENV: Final = "KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED"
+#: The US account keeps its own gate: it is a different credential namespace and
+#: a different account, so arming one market must never arm the other.
+US_TERMINAL_GATE_ENV: Final = "KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED"
+
+#: Market -> the ledger account mode and the write gate it uses.
+_MARKET_ACCOUNT_MODE: Final = {
+    "kr": ACCOUNT_MODE_KIWOOM_MOCK,
+    "us": ACCOUNT_MODE_KIWOOM_MOCK_US,
+}
+_MARKET_GATE_ENV: Final = {
+    "kr": TERMINAL_GATE_ENV,
+    "us": US_TERMINAL_GATE_ENV,
+}
 
 #: Mock TR limit is one request per second and per market (§3.1).
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.0
@@ -71,10 +98,16 @@ DEFAULT_MAX_LISTING_PAGES: Final = 20
 _TERMINAL_VERDICTS: Final = frozenset({"expired", "cancelled", "rejected"})
 
 
-def terminal_gate_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """``False`` unless the gate env var is exactly ``true``."""
+def terminal_gate_enabled(
+    environ: Mapping[str, str] | None = None, *, market: str = "kr"
+) -> bool:
+    """``False`` unless this market's gate env var is exactly ``true``."""
+    try:
+        gate = _MARKET_GATE_ENV[market]
+    except KeyError as exc:
+        raise ValueError(f"unknown kiwoom mock market {market!r}") from exc
     source = os.environ if environ is None else environ
-    return source.get(TERMINAL_GATE_ENV) == "true"
+    return source.get(gate) == "true"
 
 
 class KiwoomMockReconcileReader(Protocol):
@@ -134,6 +167,47 @@ class KiwoomMockReconcileBroker:
         )
 
 
+class KiwoomMockUsReconcileReader(Protocol):
+    """The two US listings. ``None`` means the read failed (never absence)."""
+
+    async def read_today_orders(
+        self, *, cont_yn: str | None = None, next_key: str | None = None
+    ) -> Mapping[str, Any] | None: ...
+
+    async def read_open_orders(
+        self, *, cont_yn: str | None = None, next_key: str | None = None
+    ) -> Mapping[str, Any] | None: ...
+
+
+class KiwoomMockUsReconcileBroker:
+    """Default US broker reader: the US-credential mock account client."""
+
+    def __init__(self, client: Any | None = None) -> None:
+        self._client = client
+
+    def _account(self) -> Any:
+        from app.services.brokers.kiwoom.us_account import KiwoomUsAccountClient
+        from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
+
+        if self._client is None:
+            # Default-disabled: raises when the US mock gate or credentials are
+            # missing, before any network call.
+            self._client = KiwoomMockUsClient.from_app_settings()
+        return KiwoomUsAccountClient(self._client)
+
+    async def read_today_orders(
+        self, *, cont_yn: str | None = None, next_key: str | None = None
+    ) -> Mapping[str, Any] | None:
+        return await self._account().get_today_orders(
+            cont_yn=cont_yn, next_key=next_key
+        )
+
+    async def read_open_orders(
+        self, *, cont_yn: str | None = None, next_key: str | None = None
+    ) -> Mapping[str, Any] | None:
+        return await self._account().get_open_orders(cont_yn=cont_yn, next_key=next_key)
+
+
 @dataclass(frozen=True, slots=True)
 class _Candidate:
     ledger_id: int
@@ -177,24 +251,51 @@ def _evidence_for(*, detail: _Listing, status: _Listing | None) -> BrokerEvidenc
     )
 
 
+def _us_evidence(
+    today_listing: _Listing | None, open_listing: _Listing | None
+) -> BrokerEvidence:
+    """US evidence from the two listings, or the reason one is unusable."""
+    for listing, written in (
+        (today_listing, "us_today_orders"),
+        (open_listing, "us_open_orders"),
+    ):
+        if listing is None:
+            return BrokerEvidence(
+                complete=False, reason=f"{written}_unreadable", rows=()
+            )
+        if listing.reason is not None:
+            return BrokerEvidence(complete=False, reason=listing.reason, rows=())
+    return us_evidence_from_payloads(
+        today_orders=today_listing.payload,
+        open_orders=open_listing.payload,
+    )
+
+
 async def kiwoom_mock_reconcile_orders_impl(
     *,
+    market: str = "kr",
     dry_run: bool = True,
     terminal_only: bool = False,
     limit: int = 100,
     min_request_interval_seconds: float = DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
     max_pages: int = DEFAULT_MAX_LISTING_PAGES,
     session_factory: Callable[[], Any] | None = None,
-    reader: KiwoomMockReconcileReader | None = None,
+    reader: Any | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Classify and (terminal-only) close Kiwoom mock KR orders.
+    """Classify and (terminal-only) close Kiwoom mock orders for one market.
 
     ``dry_run`` issues zero writes. ``terminal_only`` applies closed-outcome
     transitions only and leaves fills deferred. Any write path needs both
-    ``terminal_only=True`` and the exact-true operator gate.
+    ``terminal_only=True`` and the exact-true operator gate of that market.
+
+    ``market`` selects the ledger account mode, the trading-day clock, the
+    listings and the gate. KR and US never share a scan.
     """
+    if market not in _MARKET_ACCOUNT_MODE:
+        raise ValueError(f"market must be 'kr' or 'us'; got {market!r}")
+    account_mode = _MARKET_ACCOUNT_MODE[market]
     if not dry_run and not terminal_only:
         # T-P3 has no full mode. Refusing here (instead of silently writing in a
         # non-terminal scope) keeps the gate impossible to bypass.
@@ -208,14 +309,14 @@ async def kiwoom_mock_reconcile_orders_impl(
     if max_pages < 1:
         raise ValueError("max_pages must be >= 1")
     scope = "dry_run" if dry_run else "terminal_only"
-    if not dry_run and not terminal_gate_enabled():
+    if not dry_run and not terminal_gate_enabled(market=market):
         # Gate on the write condition itself, not on the caller's flag.
         return {
             "success": False,
             "error": "terminal_gate_disabled",
             "error_class": "terminal_gate_disabled",
-            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-            "market": "kr",
+            "account_mode": account_mode,
+            "market": market,
             "scope": scope,
         }
 
@@ -225,13 +326,20 @@ async def kiwoom_mock_reconcile_orders_impl(
         session_factory = AsyncSessionLocal
     if sleep is None:
         sleep = asyncio.sleep
-    reader = reader or KiwoomMockReconcileBroker()
+    if reader is None:
+        reader = (
+            KiwoomMockReconcileBroker()
+            if market == "kr"
+            else KiwoomMockUsReconcileBroker()
+        )
 
     # ---- read the ledger candidates (one short session) -------------------
     try:
         async with session_factory() as db:
             service = KiwoomMockOrderLedgerService(db)
-            rows, open_total = await service.list_reconcile_candidates(limit=limit)
+            rows, open_total = await service.list_reconcile_candidates(
+                limit=limit, account_mode=account_mode
+            )
             candidates = [
                 _Candidate(
                     ledger_id=row.id,
@@ -249,7 +357,8 @@ async def kiwoom_mock_reconcile_orders_impl(
             acknowledged_cancels = await service.list_acknowledged_cancels(
                 original_order_ids={
                     c.broker_order_id for c in candidates if c.broker_order_id
-                }
+                },
+                account_mode=account_mode,
             )
     except Exception as exc:
         logger.exception("Failed to list kiwoom mock ledger candidates: %s", exc)
@@ -257,12 +366,13 @@ async def kiwoom_mock_reconcile_orders_impl(
             "success": False,
             "error": type(exc).__name__,
             "error_class": type(exc).__name__,
-            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-            "market": "kr",
+            "account_mode": account_mode,
+            "market": market,
             "scope": scope,
         }
 
-    today = kr_trading_day(now or datetime.now(UTC))
+    moment = now or datetime.now(UTC)
+    today = kr_trading_day(moment) if market == "kr" else us_trading_day(moment)
     days = sorted({c.trading_day for c in candidates})
     scan = {
         "open_total": open_total,
@@ -273,8 +383,8 @@ async def kiwoom_mock_reconcile_orders_impl(
     if not candidates:
         return {
             "success": True,
-            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-            "market": "kr",
+            "account_mode": account_mode,
+            "market": market,
             "dry_run": dry_run,
             "scope": scope,
             "counts": {},
@@ -333,23 +443,42 @@ async def kiwoom_mock_reconcile_orders_impl(
         return _Listing(None, f"{label}_page_cap_reached")
 
     status_listing: _Listing | None = None
-    if today in days:
-        status_listing = await _collect(
-            lambda cont_yn, next_key: reader.read_order_status(
+    detail_listings: dict[str, _Listing] = {}
+    us_today_listing: _Listing | None = None
+    us_open_listing: _Listing | None = None
+    if market == "kr":
+        if today in days:
+            status_listing = await _collect(
+                lambda cont_yn, next_key: reader.read_order_status(
+                    cont_yn=cont_yn, next_key=next_key
+                ),
+                list_key="acnt_ord_cntr_prst_array",
+                label="order_status",
+            )
+        for day in days:
+            detail_listings[day] = await _collect(
+                lambda cont_yn, next_key, day=day: reader.read_order_detail(
+                    order_date=day, cont_yn=cont_yn, next_key=next_key
+                ),
+                list_key="acnt_ord_cntr_prps_dtl",
+                label="order_detail",
+            )
+    elif today in days:
+        # Both US listings are today-scoped (ust21510 lists today's orders and
+        # fills, ust21050 the currently open ones): read them once.
+        us_today_listing = await _collect(
+            lambda cont_yn, next_key: reader.read_today_orders(
                 cont_yn=cont_yn, next_key=next_key
             ),
-            list_key="acnt_ord_cntr_prst_array",
-            label="order_status",
+            list_key=US_ORDER_LIST_KEY,
+            label="us_today_orders",
         )
-
-    detail_listings: dict[str, _Listing] = {}
-    for day in days:
-        detail_listings[day] = await _collect(
-            lambda cont_yn, next_key, day=day: reader.read_order_detail(
-                order_date=day, cont_yn=cont_yn, next_key=next_key
+        us_open_listing = await _collect(
+            lambda cont_yn, next_key: reader.read_open_orders(
+                cont_yn=cont_yn, next_key=next_key
             ),
-            list_key="acnt_ord_cntr_prps_dtl",
-            label="order_detail",
+            list_key=US_ORDER_LIST_KEY,
+            label="us_open_orders",
         )
 
     # ---- classify + apply --------------------------------------------------
@@ -369,6 +498,7 @@ async def kiwoom_mock_reconcile_orders_impl(
                         ledger_id=candidate.ledger_id,
                         broker_order_id=str(candidate.broker_order_id),
                         detail={"verdict": "accepted", "reason": reason},
+                        account_mode=account_mode,
                     )
                     return "promoted_accepted", None
                 status = action.removeprefix("mark_")
@@ -377,6 +507,7 @@ async def kiwoom_mock_reconcile_orders_impl(
                     status=status,
                     reason=reason,
                     detail={"verdict": status},
+                    account_mode=account_mode,
                 )
                 return action, None
             except KiwoomMockTransitionRefused as exc:
@@ -390,11 +521,18 @@ async def kiwoom_mock_reconcile_orders_impl(
                 return "noop_transition_refused", exc.reason
 
     for candidate in candidates:
-        is_today = candidate.trading_day == today
-        evidence = _evidence_for(
-            detail=detail_listings[candidate.trading_day],
-            status=status_listing if is_today else None,
-        )
+        if market == "kr":
+            is_today = candidate.trading_day == today
+            evidence = _evidence_for(
+                detail=detail_listings[candidate.trading_day],
+                status=status_listing if is_today else None,
+            )
+        elif candidate.trading_day == today:
+            evidence = _us_evidence(us_today_listing, us_open_listing)
+        else:
+            # No US listing covers a past ET trading day: never classify it
+            # from absence (I5, operator Q4).
+            evidence = us_past_day_evidence()
         verdict = classify_verdict(
             ledger=LedgerOrder(
                 client_order_id=candidate.client_order_id,
@@ -406,6 +544,9 @@ async def kiwoom_mock_reconcile_orders_impl(
             ),
             evidence=evidence,
             own_cancel_acknowledged=(candidate.broker_order_id in acknowledged_cancels),
+            # Fills are never booked here, so the US listings' missing average
+            # price must not turn a real fill into an unclassified row.
+            require_fill_price=market == "kr",
         )
 
         outcome: dict[str, Any] = {
@@ -475,8 +616,8 @@ async def kiwoom_mock_reconcile_orders_impl(
 
     return {
         "success": True,
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-        "market": "kr",
+        "account_mode": account_mode,
+        "market": market,
         "dry_run": dry_run,
         "scope": scope,
         "counts": counts,

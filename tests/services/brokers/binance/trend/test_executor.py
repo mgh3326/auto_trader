@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal as D
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -118,6 +119,13 @@ class Rig:
 
         monkeypatch.setattr(executor_module, "collect_signal_bars", fake_signal_bars)
         monkeypatch.setattr(executor_module, "collect_hard_stop_minutes", fake_minutes)
+        # Forecast writes are durable DB work covered by test_forecast.py;
+        # here they are inert so executor tests never touch a session.
+        monkeypatch.setattr(executor_module, "ensure_entry_forecast", AsyncMock())
+        monkeypatch.setattr(executor_module, "repair_forecast", AsyncMock())
+        monkeypatch.setattr(
+            executor_module, "repair_forecasts", AsyncMock(return_value=({}, []))
+        )
 
     async def tick(self, *, now=NOW, confirm=True):
         return await self.exe.run_tick(now=now, confirm=confirm)

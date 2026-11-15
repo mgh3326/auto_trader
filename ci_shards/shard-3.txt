@@ -178,6 +178,7 @@ tests/services/brokers/binance/trend/test_constants.py
 tests/services/brokers/binance/trend/test_entry_gate.py
 tests/services/brokers/binance/trend/test_executor.py
 tests/services/brokers/binance/trend/test_exits_exposure.py
+tests/services/brokers/binance/trend/test_forecast.py
 tests/services/brokers/binance/trend/test_migration_shape.py
 tests/services/brokers/binance/trend/test_state_apply_unit.py
 tests/services/brokers/binance/trend/test_state_db.py

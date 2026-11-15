@@ -293,6 +293,7 @@ H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)�
   - **heartbeat**: `--loop`은 세션 advisory lock(`auto_trader:binance_trend_runner`)을 **러너 수명 동안 체크아웃한 단일 `AsyncConnection`**에 잡는다(풀 `AsyncSession`의 commit은 물리 연결을 반납하지만 세션 advisory lock은 그 연결에 남으므로 그 연결을 풀에 돌려주면 안 된다). 🔴 **잠금 소유와 heartbeat는 분리한다**: `open()`은 `acquired`/`held_by_other`/`unavailable` 세 결과를 돌려주고(경쟁 러너와 DB 장애를 구분), `stamp()`는 그 연결에서 benign `SELECT 1`만 실행해 `pg_stat_activity.state_change`를 갱신한다. 일시적 statement 오류는 rollback으로 aborted transaction을 끝낸 뒤 로그만 남기고 loop을 계속하며(다음 tick 재시도, 계속 실패하면 watcher stale 알림), **backend 사망이 증명된 경우에만** False로 loop을 종료한다(그때 잠금도 함께 사라진다). unlock이 실패한 연결은 풀로 돌려주지 않고 invalidate한다. `scripts/binance_trend_heartbeat_watch.py`는 `pg_locks`와 `pg_stat_activity`만 SELECT로 읽고, **이 watcher가 러너를 한 번이라도 본 뒤의** 잠금 부재 또는 10분 초과 touch를 `heartbeat_missed` 1회로 알린다(한 번도 못 본 absent는 사고가 아니고, DB 읽기 실패는 `unreadable`이다). 🔴 이 레인에는 durable tick stamp가 없으므로 **본 뒤의 잠금 부재가 사망 신호**다(운영 순서: 러너 첫 tick 뒤 watcher 시작, 정지 시 watcher 먼저). 러너 **프로세스** 사망(SIGKILL/OOM)을 잡는 경로이고(같은 호스트의 watcher는 호스트 상실을 잡지 못하며 그 구간은 NCP 호스트 감시(desk 소관)에 의존한다) 스케줄…
   - **truth gate**(`trend/truth_gate.py` + `scripts/binance_trend_truth_gate.py`): 서명 GET·SELECT만으로 `demo_host_identity`·`one_way_position_mode`·`account_isolated_1x`(유니버스 4종 readback)·`account_flat_vs_trend_state`(미해소 intent 0, `holding` 외 활성 신호 0, foreign 포지션 0, 자기 `holding` 과 position 수량·방향 일치)를 판정하고 exit 0/2로 PASS/FAIL을 낸다. 주문·취소·레버리지·마진·원장 쓰기 도달이 없음을 AST 테스트가 고정한다. 런북 `docs/runbooks/binance-trend-demo.md`의 명령·플래그는 테스트가 실제 argparse와 대조한다.
 - **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB). CT-5a: `test_alerting_control.py`(에피소드·kill switch 버킷·heartbeat 정책·잠금), `test_truth_gate.py`(판정·실패 격리·읽기 전용 AST), `test_cli.py`(모드별 게이트 거부·manage-only·알림 non-blocking), `test_executor.py`의 manage-only 단언, `tests/scripts/test_binance_trend_ncp_playbook.py`(런북 플래그 대조).
+- **forecast (hk 4760)**: `trend/forecast.py`가 H5와 같은 학습 척추를 잇는다 — forecast id는 `uuid5(correlation_id)`로 결정적이고, 브로커가 증명한 진입 체결(`holding`, 진입 의도 `settled`) 후에만 `review.trade_forecasts`에 저장하며, 실제 held close(`closed`) 후에만 실현 손익에서 추정 테이커 수수료(`fees_usdt`, 체결 증거마다 `executed*avg*TAKER_FEE_RATE` 적립 — H5와 같은 비용 모형)를 뺀 값으로 해소한다. 트렌드 상태 테이블에는 forecast 열이 없으므로 forecast 행 자체가 멱등 기록이다(기존 행=저장 완료, `open` 아님=해소 완료). 저장·해소 실패는 틱 결과·주문·전송 수를 바꾸지 않는 fail-open이며 매 틱 관리 구간의 복구 스캔(`list_forecast_recovery_signals` 후보를 `repair_forecasts`가 세션 하나·SELECT 하나로 일괄 대조)이 놓친 쓰기를 재시도한다.
 
 ### Execution Intent Gateway (ROB-1440)
 
@@ -910,6 +911,38 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 - **KR 도구는 KRX only**: `NXT`/`SOR`/비-KRX 거부 (네트워크 호출 전). US 도구는 별도 `kiwoom_mock_us_*` 경로만 사용
 - **No secrets printed**: CLI는 missing env key **이름만** 보고, 값 출력 없음
 - **Cancel-before-submit**: `full` 모드는 cancel이 wired이기에만 실주문 제출; finally-block에서 항상 cancel 시도 후 reconcile
+
+**US 모의 계좌 확장 (hk 4754, 3797 T-P8)**:
+- **하나의 송신 경계**: `kiwoom_mock_us_place_order` MCP 도구와 `order_proposals` 제출 어댑터는
+  `app/services/kiwoom_mock_place.py`의 `place_kiwoom_mock_us_order` 하나를 호출한다. 순서는 KR과
+  같다 — 귀속 신호(`account_mode='kiwoom_mock_us'`) → 사전 점검(`stex_tp` 해석 + `trde_tp`/가격 형식)
+  → 송신 전 예약(`order_send_intents.account_scope='kiwoom_mock_us'`) → 주문 정확히 1회 → 원장 행
+  → 신호 결과. 예약에서 끝까지 가는 공통 꼬리는 `_execute_reserved_send` 하나이므로 이중 송신
+  방어·미확정 처리·원장 쓰기 규율은 두 시장에서 같은 코드다.
+- **원장 정체성**: `review.kiwoom_mock_order_ledger` 한 테이블에 `account_mode='kiwoom_mock_us'` +
+  `market='us'` + `instrument_type='equity_us'` + `currency='USD'` 로 쓴다(테이블 CHECK가 네 값을
+  결속). `trading_day`는 ET 거래일이며 20:00 ET(서머타임 반영)에 넘어간다(ROB-1379
+  `us_trading_day_window`를 재사용한다). 송신 키는 `kwoomus-<sha16>`이고 `100`과 `100.00`은 같은
+  주문이다. 브로커 주문번호는 문서상 9자리 숫자이며 `validate_us_order_id`를 통과하지 못하는 값은
+  `accepted`가 아니라 `uncertain` 원장 행이 된다.
+- **대사**: `scripts/kiwoom_mock_auto_reconcile.py --market us`가 `ust21510`(당일 주문·체결, detail
+  역할)과 `ust21050`(미체결, status 역할)을 `cont_yn`/`next_key`로 끝까지 읽어 KR과 같은 순수 분류기
+  (`app/services/brokers/kiwoom/mock_reconcile.py`)로 판정한다. 쓰기는 `--apply-terminal-only` +
+  `KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED=true`(기본 off)일 때만 일어나며, KR 게이트를 켜도
+  US는 열리지 않는다(계좌·자격증명이 다르다). 🔴 지난 ET 거래일을 덮는 목록이 없으므로 지난 날짜
+  행은 부재로 종결하지 않고 `unknown`(수동 검토)으로 남긴다. 🔴 US 목록에는 체결 평균가가 없어
+  체결은 `deferred_fill_booking`으로 보고만 하고 부킹하지 않는다(T-P4 범위 밖).
+- **제안**: (`kiwoom_mock_us`, `equity_us`)는 place 전용 제출 가능 조합이고, 승인 창은 XNYS 정규장만
+  이며(프리·애프터 없음, Toss US 확장 키를 읽지 않는다) **수동 승인 전용**이다 — 자동승인·veto 어휘에
+  없다. `review.order_proposals.account_mode` CHECK는 마이그레이션
+  `20261116_hk4754_us_proposals`가 `'kiwoom_mock_us'`를 받는다(downgrade는 그런 행이 있으면
+  거부).
+- **게이트**: 주문 도구는 기존 `KIWOOM_MOCK_US_ENABLED` + US 앱키/계좌 4종 설정 + 호출별
+  `dry_run`/`confirm` 이중 게이트 뒤에 있고, 대사 쓰기만 위의 US 대사 게이트 뒤에 있다. 두 게이트 모두
+  기본 off이며 스케줄러 등록·호스트 allowlist·KR 경로·KRX 규칙 변경은 없다.
+- **준비도**: `docs/contracts/rob-1268-us-kis-kiwoom-readiness.md`의 `us.kiwoom.mock`은 이제 일곱
+  evidence 종류 모두 `PRESENT`(lane_native_evidence 충족)이며, 수명주기 verdict는 owner·재탐색
+  트리거·readback 제약 때문에 여전히 `AUTO_READY_BLOCKED_BY_LIFECYCLE`이다.
 
 ### Kiwoom Live Read-Only Market Data (Stage 1)
 

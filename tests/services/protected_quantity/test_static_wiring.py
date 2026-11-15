@@ -202,15 +202,21 @@ _CALLER_CLASSIFICATION = {
         "same_order_retry",
         1,
     ),
+    # hk 4754: the US place tool delegates to the shared service, so it must not
+    # reach a broker send call of its own any more (count 0 is the assertion).
     "app/mcp_server/tooling/orders_kiwoom_us_variants.py:register.place:place_sell_order": (
         "mock_only",
-        1,
+        0,
     ),
     "app/mcp_server/tooling/orders_kiwoom_us_variants.py:register.modify:modify_order": (
         "mock_only",
         1,
     ),
-    "app/services/kiwoom_mock_place.py:place_kiwoom_mock_order:place_sell_order": (
+    "app/services/kiwoom_mock_place.py:place_kiwoom_mock_order._post:place_sell_order": (
+        "mock_only",
+        1,
+    ),
+    "app/services/kiwoom_mock_place.py:place_kiwoom_mock_us_order._post:place_sell_order": (
         "mock_only",
         1,
     ),

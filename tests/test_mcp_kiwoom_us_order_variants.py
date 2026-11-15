@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -26,6 +27,31 @@ def _tools() -> dict[str, Any]:
     mcp = DummyMCP()
     module.register(mcp)
     return mcp.tools
+
+
+FROZEN_NOW = datetime(2026, 11, 16, 14, 0, tzinfo=UTC)  # 2026-11-16 09:00 ET
+
+
+@pytest.fixture(autouse=True)
+def _place_seams(monkeypatch):
+    """Stub the confirmed place path's persistence and clock for every test.
+
+    hk 4754 moved the sequence into the shared service, so the same
+    attribution signal, send reservation and ledger row the KR tool writes are
+    now written here too. In-memory recorders keep these tests broker/DB-free.
+    """
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+    from tests.test_mcp_kiwoom_order_variants import (
+        FakeKiwoomPlaceRecorder,
+        FakeKiwoomSignalRecorder,
+    )
+
+    place = FakeKiwoomPlaceRecorder()
+    signal = FakeKiwoomSignalRecorder()
+    monkeypatch.setattr(module, "_new_us_place_recorder", lambda: place)
+    monkeypatch.setattr(module, "_new_signal_recorder", lambda: signal)
+    monkeypatch.setattr(module, "_utc_now", lambda: FROZEN_NOW)
+    return place, signal
 
 
 def test_registers_exact_seven_us_tools() -> None:
@@ -109,6 +135,7 @@ async def test_rejects_advanced_trde_tp_before_lookup_or_client(monkeypatch) -> 
         price=200.0,
         trde_tp="26",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
 
@@ -197,6 +224,7 @@ async def test_confirmed_limit_resolves_exchange_and_calls_broker(monkeypatch) -
         price=213.04,
         trde_tp="00",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
 
@@ -235,6 +263,7 @@ async def test_tracked_mutation_client_setup_failure_is_not_acceptance_uncertain
         price=213.04,
         trde_tp="00",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
     modify_result = await tools["kiwoom_mock_us_modify_order"](
@@ -300,6 +329,7 @@ async def test_tracked_mutation_oauth_failure_is_not_submitted(monkeypatch) -> N
         quantity=1,
         price=213.04,
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
     modify_result = await tools["kiwoom_mock_us_modify_order"](
@@ -395,6 +425,7 @@ async def test_confirmed_place_without_trackable_order_id_is_accepted_untracked(
         price=213.04,
         trde_tp="00",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
 
@@ -438,6 +469,7 @@ async def test_confirmed_place_broker_rejection_is_not_uncertain(monkeypatch) ->
         price=213.04,
         trde_tp="00",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
 
@@ -479,6 +511,7 @@ async def test_confirmed_place_transport_exception_is_uncertain(monkeypatch) -> 
         price=213.04,
         trde_tp="00",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
 
@@ -722,11 +755,9 @@ async def test_history_scope_selects_open_or_today(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_disabled_config_reports_only_us_keys(monkeypatch) -> None:
-    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
-
+    # hk 4754: the gate text has one definition (the shared place service).
     monkeypatch.setattr(
-        module,
-        "validate_kiwoom_mock_us_config",
+        "app.services.kiwoom_mock_place.validate_kiwoom_mock_us_config",
         lambda: ["KIWOOM_MOCK_US_APP_KEY"],
     )
     result = await _tools()["kiwoom_mock_us_get_positions"]()
@@ -799,6 +830,7 @@ async def test_confirmed_order_carries_us_mock_provenance(monkeypatch) -> None:
         price=213.04,
         trde_tp="00",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
 
@@ -859,6 +891,7 @@ async def test_spoofed_live_provenance_in_broker_payload_fails_closed(
         price=213.04,
         trde_tp="00",
         dry_run=False,
+        strategy="unit-test",
         confirm=True,
     )
     modify_result = await tools["kiwoom_mock_us_modify_order"](

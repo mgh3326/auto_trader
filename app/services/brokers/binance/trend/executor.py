@@ -89,6 +89,7 @@ from .exposure import (
     exit_quantity,
     position_amount,
 )
+from .forecast import ensure_entry_forecast, repair_forecast, repair_forecasts
 from .history import (
     collect_hard_stop_minutes,
     collect_signal_bars,
@@ -926,12 +927,31 @@ class TrendExecutor:
             if current.state == "closed":
                 await self._close_root_if_proven(current, now=now)
             if current_intent.state == "evidenced":
-                await self.state.settle_intent(intent.client_order_id, now=now)
+                current_intent = await self.state.settle_intent(
+                    intent.client_order_id, now=now
+                )
         except Exception:
             # The evidence is committed; the next tick replays the idempotent
             # ledger sync from the still-unsettled intent.
             logger.exception("trend demo ledger sync incomplete")
             return "ledger_incomplete"
+        # Forecast writes are durable but never a trading decision: they run
+        # only on broker-proven evidence (entry fill -> holding, held close ->
+        # closed) and any failure is logged and retried on later ticks.
+        if (
+            current.state == "holding"
+            and not current_intent.reduce_only
+            and current_intent.state == "settled"
+        ):
+            try:
+                await ensure_entry_forecast(current, now=now)
+            except Exception:
+                logger.exception("trend entry forecast write failed")
+        if current.state == "closed":
+            try:
+                await repair_forecast(current, now=now)
+            except Exception:
+                logger.exception("trend held-outcome forecast resolution failed")
         if current_intent.state in {"acknowledged", "uncertain"}:
             # An open order with an executed quantity is real exposure managed by
             # ``_manage_working_entries`` (acknowledged) or reported only because
@@ -1709,9 +1729,29 @@ class TrendExecutor:
                     events.append(managed)
                     if managed.event.endswith("uncertain"):
                         blocked.add(signal.symbol)
+            # Forecast repair lives in the manage section of every tick (and
+            # therefore in manage-only ticks): it only retries durable
+            # forecast writes for proven fills — it never sends, blocks or
+            # changes a trading decision. One batched lookup covers every
+            # candidate so per-tick DB work does not grow with history.
+            forecast_candidates = await self.state.list_forecast_recovery_signals()
+            if forecast_candidates:
+                _, forecast_failures = await repair_forecasts(
+                    forecast_candidates, now=now
+                )
+                for forecast_signal, exc in forecast_failures:
+                    logger.exception("trend forecast recovery failed")
+                    events.append(
+                        TrendEvent(
+                            forecast_signal.symbol,
+                            "forecast_recovery_failed",
+                            type(exc).__name__,
+                        )
+                    )
             if manage_only:
-                # Existing exposure and unresolved intents were handled above;
-                # nothing below may observe a signal or open an entry.
+                # Existing exposure and unresolved intents were handled above
+                # (including forecast repair); nothing below may observe a
+                # signal or open an entry.
                 events.append(
                     TrendEvent(
                         "*",

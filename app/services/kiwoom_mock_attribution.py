@@ -15,8 +15,10 @@ The failure vocabulary (``MissingAttribution`` / ``InvalidStrategy`` /
 kis_mock module on purpose: callers see one error surface, and there is no
 second definition of a placeholder strategy to drift.
 
-Only KR ``kiwoom_mock`` places use this today; US rows are reserved by the
-table CHECK for a later ticket.
+Both mock accounts use it: KR (``kiwoom_mock``) and US (``kiwoom_mock_us``).
+The account scope is a parameter because it is part of the correlation id: two
+accounts producing the same symbol/side/price/quantity/day must not mint one
+signal row, and the table's ``account_mode`` CHECK must name the real account.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from app.services.kis_mock_attribution import (
 from app.services.live_correlation import live_correlation_id
 
 ACCOUNT_SCOPE = "kiwoom_mock"
+ACCOUNT_SCOPE_US = "kiwoom_mock_us"
 CORRELATION_CONSTRAINT = "uq_kiwoom_mock_signal_ledger_correlation_id"
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,7 @@ def mint_correlation_id(
     quantity: Any,
     kst_trade_day: str | None = None,
     rung: int | str | None = None,
+    account_scope: str = ACCOUNT_SCOPE,
 ) -> str:
     """Deterministic ``live:kiwoom_mock:<sha16>`` id for one KR mock order.
 
@@ -105,7 +109,7 @@ def mint_correlation_id(
     would give two distinct orders one signal row.
     """
     return live_correlation_id(
-        account_scope=ACCOUNT_SCOPE,
+        account_scope=account_scope,
         symbol=symbol,
         side=side,
         price=_to_decimal(price) or Decimal("0"),
@@ -126,6 +130,7 @@ def resolve_attribution(
     correlation_id: str | None = None,
     kst_trade_day: str | None = None,
     rung: int | str | None = None,
+    account_scope: str = ACCOUNT_SCOPE,
 ) -> KiwoomMockAttribution:
     """Resolve the attribution triple, or raise :class:`MissingAttribution`.
 
@@ -134,7 +139,7 @@ def resolve_attribution(
     — it is never replaced by a stand-in.
     """
     resolved_strategy = (
-        validate_strategy(strategy, lane=ACCOUNT_SCOPE)
+        validate_strategy(strategy, lane=account_scope)
         if strategy is not None
         else None
     )
@@ -149,6 +154,7 @@ def resolve_attribution(
             quantity=quantity,
             kst_trade_day=kst_trade_day,
             rung=rung,
+            account_scope=account_scope,
         ),
         strategy=resolved_strategy,
         signal_source=_clean(signal_source) or DEFAULT_SIGNAL_SOURCE,
@@ -174,6 +180,7 @@ async def record_signal(
     report_item_uuid: uuid.UUID | None = None,
     detail: dict[str, Any] | None = None,
     kst_date: str | None = None,
+    account_mode: str = ACCOUNT_SCOPE,
 ) -> RecordedSignal:
     """Persist the signal row; report the row and whether this call created it.
 
@@ -195,7 +202,7 @@ async def record_signal(
             correlation_id=attribution.correlation_id,
             strategy=attribution.strategy,
             signal_source=attribution.signal_source,
-            account_mode=ACCOUNT_SCOPE,
+            account_mode=account_mode,
             symbol=symbol,
             instrument_type=instrument_type,
             side=side,
@@ -371,6 +378,7 @@ class KiwoomMockSignalRecorder:
 
 __all__ = (
     "ACCOUNT_SCOPE",
+    "ACCOUNT_SCOPE_US",
     "KiwoomMockAttribution",
     "KiwoomMockSignalRecorder",
     "MissingAttribution",

@@ -83,7 +83,7 @@ def set_gates(monkeypatch, trend: str | None, futures: str | None) -> None:
 def test_every_mode_refuses_before_network_or_db(
     monkeypatch, mode, confirm, trend, futures, message
 ):
-    monkeypatch.setattr(runner, "TrendDemoClient", Boom)
+    monkeypatch.setattr(runner, "_TrendDemoClient", Boom)
     monkeypatch.setattr(runner, "_AsyncSessionLocal", Boom())
     set_gates(monkeypatch, trend, futures)
     with pytest.raises(SystemExit, match=message):
@@ -94,7 +94,7 @@ def test_every_mode_refuses_before_network_or_db(
 
 
 def test_readiness_reports_facts_without_http_db_or_credentials(monkeypatch, capsys):
-    monkeypatch.setattr(runner, "TrendDemoClient", Boom)
+    monkeypatch.setattr(runner, "_TrendDemoClient", Boom)
     monkeypatch.setattr(runner, "_AsyncSessionLocal", Boom())
     set_gates(monkeypatch, "true", "true")
     monkeypatch.setenv("BINANCE_TREND_ALERT_ENABLED", "true")
@@ -189,7 +189,7 @@ def fake_executor(monkeypatch):
     RecordingExecutor.seen = []
     RecordingExecutor.ticks = 0
     RecordingExecutor.result_events = (TrendEvent("BTCUSDT", "no_signal"),)
-    monkeypatch.setattr(runner, "TrendExecutor", RecordingExecutor)
+    monkeypatch.setattr(runner, "_TrendExecutor", RecordingExecutor)
     monkeypatch.setattr(runner, "_AsyncSessionLocal", lambda: Session())
     monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
     return RecordingExecutor
@@ -250,7 +250,7 @@ def test_an_executor_exception_is_one_blocked_line_and_exit_2(
         async def run_tick(self, *, now, confirm, manage_only=False):
             raise TimeoutError("broker")
 
-    monkeypatch.setattr(runner, "TrendExecutor", Exploding)
+    monkeypatch.setattr(runner, "_TrendExecutor", Exploding)
     code = run_tick_once(TrendRunMonitor(TrendAlerter(channel=None, enabled=False)))
     assert code == 2
     payload = json.loads(capsys.readouterr().out.strip())
