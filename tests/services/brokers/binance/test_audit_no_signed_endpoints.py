@@ -282,6 +282,11 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
         defs are fail-closed overrides that raise on the inherited signed
         surface; ``submit_order``/``get_order`` carry the lane's real
         evidence-first signed path).
+      * ``app/services/brokers/binance/trend/`` (hk 4719 — the TREND-TSMOM-v1
+        Futures Demo lane's own signed adapter, same class as h5/. Its
+        ``cancel_order``/``set_leverage``/``order_test`` defs are fail-closed
+        overrides; ``submit_order`` is the lane's single gated send site and
+        lives only in ``trend/executor.py``, which a static test pins).
     Anywhere else under ``app/services/brokers/binance/`` is the
     read-only public adapter and must not gain signed surface.
     """
@@ -297,6 +302,8 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
         # Task 847 — H5-LS-ENV-v1 Futures Demo lane: its own signed adapter
         # package (fail-closed overrides + evidence-first signed path).
         pkg / "h5",
+        # hk 4719 — TREND-TSMOM-v1 Futures Demo lane (same class as h5/).
+        pkg / "trend",
     )
     offenders: list[tuple[pathlib.Path, int, str]] = []
     for py_file in pkg.rglob("*.py"):
