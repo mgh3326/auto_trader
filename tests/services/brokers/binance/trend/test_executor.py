@@ -819,28 +819,21 @@ async def test_an_old_bar_before_the_fill_is_not_a_4h_decision(rig: Rig) -> None
 
 
 @pytest.mark.asyncio
-async def test_exit_quantity_never_exceeds_the_lane_remainder_or_the_step(
+async def test_an_exit_is_refused_when_the_broker_differs_from_the_lane_remainder(
     rig: Rig,
 ) -> None:
     key = hold(rig, qty="0.6")
-    rig.client.positions["BTCUSDT"] = D("1.0")  # foreign quantity on top of ours
-    rig.client.filters = executor_module.TrendFilters(
-        D("0.5"), D("5"), D("0.5"), D("1000"), 1
-    )
+    rig.client.positions["BTCUSDT"] = D("1.0")  # a manual addition on top of ours
     rig.bars["BTCUSDT"] = flat_bars()
     rig.minutes["BTCUSDT"] = minute_rows(low="94")
     rig.client.auto_fill = True
-    await rig.tick()
-    sent = rig.client.sends[0]
-    assert sent["qty"] == D("0.5")  # floor(min(0.6, 1.0), step 0.5)
-    assert sent["qty"] <= rig.state.signals[key].entry_qty
-    assert sent["reduce_only"] is True
+    result = await rig.tick()
+    assert rig.client.sends == []  # the state could not reconcile the result
+    assert rig.events(result) == [("BTCUSDT", "exposure_mismatch")]
+    assert rig.state.signals[key].state == "holding"
 
 
-@pytest.mark.parametrize(
-    "setup",
-    ["flat", "wrong_side", "open_order", "not_1x"],
-)
+@pytest.mark.parametrize("setup", ["flat", "wrong_side", "open_order", "not_1x"])
 @pytest.mark.asyncio
 async def test_an_exit_the_account_cannot_support_sends_nothing(
     rig: Rig, setup
@@ -1193,3 +1186,134 @@ async def test_a_lost_lease_stops_the_tick_before_the_fence(rig: Rig) -> None:
         await rig.tick()
     assert rig.client.sends == [] and rig.state.calls["mark_sending"] == 0
     assert rig.state.lease_checks >= 1 and rig.state.lease_held is False
+
+
+# ------------------- review round 3: quote outage, partial entries, ledger
+
+
+@pytest.mark.asyncio
+async def test_a_book_quote_outage_does_not_stop_an_exit_the_candles_prove(
+    rig: Rig,
+) -> None:
+    key = hold(rig)
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    rig.client.book_down = True
+    rig.client.auto_fill = True
+    await rig.tick()
+    assert len(rig.client.sends) == 1 and rig.client.sends[0]["reduce_only"] is True
+    assert rig.state.signals[key].exit_reason == EXIT_HARD_STOP
+
+
+@pytest.mark.asyncio
+async def test_a_book_quote_outage_still_exits_a_flip_and_an_overdue_holding(
+    rig: Rig,
+) -> None:
+    hold(rig, entered_at=NOW - dt.timedelta(days=31))
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = minute_rows()
+    rig.client.book_down = True
+    rig.client.auto_fill = True
+    await rig.tick()
+    assert [s["reduce_only"] for s in rig.client.sends] == [True]
+
+
+@pytest.mark.asyncio
+async def test_an_entry_is_exposed_from_its_reservation_not_its_last_order_update(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.auto_fill = True  # the fake's order updateTime is NOW
+    await rig.tick()
+    signal = next(iter(rig.state.signals.values()))
+    reserved_at = rig.state.intents[signal.entry_client_order_id].created_at
+    assert reserved_at == NOW - dt.timedelta(minutes=10)
+    assert signal.entered_at == reserved_at  # not the later updateTime
+
+
+@pytest.mark.asyncio
+async def test_a_partially_filled_entry_still_gets_its_hard_stop_exit_and_no_new_entry(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.order_script = [{"status": "PARTIALLY_FILLED", "executed": D("0.3")}]
+    rig.client.exit_script = {"status": "FILLED"}
+
+    def fill(kwargs):
+        signed = kwargs["qty"] if kwargs["side"] == "BUY" else -kwargs["qty"]
+        if kwargs["reduce_only"] is False:
+            signed = D("0.3")  # only 0.3 of the 0.6 order has executed
+        rig.client.positions["BTCUSDT"] = (
+            rig.client.positions.get("BTCUSDT", D(0)) + signed
+        )
+
+    rig.client.on_submit = fill
+    first = await rig.tick()
+    assert rig.events(first) == [("BTCUSDT", "entry_pending_partial")]
+    signal = next(iter(rig.state.signals.values()))
+    entry_cid = signal.entry_client_order_id
+    # the entry intent stays open: no resend, no cancel, no new entry
+    assert rig.state.intents[entry_cid].state == "acknowledged"
+    assert (signal.state, signal.entry_qty) == ("holding", D("0.3"))
+    # price reaches the hard stop while the entry order is still working
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    second = await rig.tick()
+    sends = rig.client.sends
+    assert [(s["side"], s["reduce_only"]) for s in sends] == [
+        ("BUY", False),  # the one entry
+        ("SELL", True),  # exactly one reduceOnly exit
+    ]
+    assert sends[1]["qty"] == D("0.3")  # the broker-proven quantity, never more
+    assert ("BTCUSDT", "partial_entry_exposure_open") in rig.events(second)
+    assert signal.state == "closed" and signal.exit_reason == EXIT_HARD_STOP
+    assert rig.client.positions["BTCUSDT"] == D(0)
+    # still no new entry and no resend afterwards
+    await rig.tick()
+    assert len(rig.client.sends) == 2
+    assert rig.state.intents[entry_cid].state == "acknowledged"
+
+
+@pytest.mark.asyncio
+async def test_a_partial_entry_blocks_new_entry_sends_but_not_time_or_flip_exits(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.order_script = [{"status": "PARTIALLY_FILLED", "executed": D("0.3")}]
+    rig.client.exit_script = {"status": "FILLED"}
+
+    def fill(kwargs):
+        amount = D("0.3") if not kwargs["reduce_only"] else -kwargs["qty"]
+        rig.client.positions["BTCUSDT"] = (
+            rig.client.positions.get("BTCUSDT", D(0)) + amount
+        )
+
+    rig.client.on_submit = fill
+    await rig.tick()
+    rig.bars["BTCUSDT"] = trend_bars("SELL")  # the signal flips
+    rig.minutes["BTCUSDT"] = minute_rows()
+    await rig.tick()
+    assert [(s["side"], s["reduce_only"]) for s in rig.client.sends] == [
+        ("BUY", False),
+        ("SELL", True),
+    ]  # the flip closes; the new short is NOT sent while the entry is open
+
+
+@pytest.mark.asyncio
+async def test_a_ledger_error_rolls_the_shared_session_back(rig: Rig) -> None:
+    FakeSession.rollbacks = 0
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.ledger.root_status = "cap_reached"
+    await rig.tick()
+    assert FakeSession.rollbacks >= 1  # the aborted ledger transaction is cleared
+
+
+@pytest.mark.asyncio
+async def test_the_release_sweep_has_no_age_window(rig: Rig) -> None:
+    # 300 newer terminal records must not hide an older stranded root.
+    for i in range(300):
+        rig.state.seed_holding(symbol="ETHUSDT", key=f"b{i}", state="blocked")
+    stranded = rig.state.seed_holding(symbol="SOLUSDT", key="old", state="blocked")
+    cid = executor_module.trend_client_order_id(stranded, "entry")
+    rig.ledger.rows[cid] = "validated"
+    await rig.tick()
+    assert rig.ledger.rows[cid] == "reconciled"

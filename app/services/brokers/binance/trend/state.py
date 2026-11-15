@@ -132,6 +132,7 @@ class TrendIntentSnapshot:
     broker_status: str | None
     executed_qty: Decimal
     avg_price: Decimal | None = None
+    created_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +187,7 @@ def _intent_snapshot(row: BinanceTrendIntent) -> TrendIntentSnapshot:
         broker_status=row.broker_status,
         executed_qty=row.executed_qty,
         avg_price=row.avg_price,
+        created_at=row.created_at,
     )
 
 
@@ -536,6 +538,7 @@ class TrendStateService:
                 reduce_only=False,
                 state="reserved",
                 executed_qty=0,
+                created_at=now,
             )
             db.add(row)
             signal.entry_client_order_id = client_order_id
@@ -707,10 +710,11 @@ class TrendStateService:
     # CT-4: exit legs, broker acknowledgement and evidence-only resolution.
     # ------------------------------------------------------------------
 
-    async def list_released_client_order_ids(
-        self, *, limit: int = 200
-    ) -> tuple[str, ...]:
-        """Recent client order ids whose demo ledger row must not stay pre-send.
+    async def list_released_client_order_ids(self) -> tuple[str, ...]:
+        """Every client order id whose demo ledger row must not stay pre-send.
+
+        Unbounded on purpose: a failed release must never age out of the scan
+        (the lane's history is small; a cursor would need a migration).
 
         Rejected intents (an exit leg or an entry) plus the deterministic entry
         id of every blocked/conflict signal. Recovery releases any of them whose
@@ -723,7 +727,6 @@ class TrendStateService:
                     select(BinanceTrendIntent.client_order_id)
                     .where(BinanceTrendIntent.state == "rejected")
                     .order_by(BinanceTrendIntent.updated_at.desc())
-                    .limit(limit)
                 )
             ).all()
             blocked = (
@@ -735,7 +738,6 @@ class TrendStateService:
                         )
                     )
                     .order_by(BinanceTrendSignal.updated_at.desc())
-                    .limit(limit)
                 )
             ).all()
         return tuple(rejected) + tuple(
@@ -781,7 +783,24 @@ class TrendStateService:
                 raise TrendStateBlocked("exit intent requires a held signal")
             if qty > signal.entry_qty - signal.closed_qty:
                 raise TrendStateBlocked("exit exceeds the held quantity")
-            if await self._count_intents(db, signal_key, _ACTIVE_INTENTS):
+            active = (
+                await db.scalars(
+                    select(BinanceTrendIntent).where(
+                        BinanceTrendIntent.signal_key == signal_key,
+                        BinanceTrendIntent.state.in_(_ACTIVE_INTENTS),
+                    )
+                )
+            ).all()
+            # Only a still-working, partially filled entry may coexist with an
+            # exit (its exposure is exactly what the exit closes).
+            if any(
+                not (
+                    not row.reduce_only
+                    and row.state == "acknowledged"
+                    and row.executed_qty > 0
+                )
+                for row in active
+            ):
                 raise TrendStateBlocked("previous intent unresolved")
             attempts = (
                 await db.scalar(
@@ -804,6 +823,7 @@ class TrendStateService:
                 reduce_only=True,
                 state="reserved",
                 executed_qty=0,
+                created_at=now,
             )
             db.add(row)
             signal.updated_at = now
@@ -967,6 +987,15 @@ class TrendStateService:
             if evidence.status in _PENDING_ORDER_STATUSES:
                 if intent.state == "sending":
                     intent.state = "acknowledged"
+                if not intent.reduce_only and evidence.executed_qty > 0:
+                    self._apply_partial_entry_exposure(
+                        signal,
+                        intent,
+                        evidence,
+                        broker_position_amt,
+                        when=filled_at or now,
+                    )
+                    signal.updated_at = now
                 return _signal_snapshot(signal), _intent_snapshot(intent)
             if evidence.status == "FILLED":
                 if evidence.executed_qty != evidence.orig_qty:
@@ -1002,20 +1031,50 @@ class TrendStateService:
         *,
         when: dt.datetime,
     ) -> None:
-        if signal.state not in {"entry_reserved", "uncertain"}:
+        if signal.state not in {"entry_reserved", "uncertain", "holding"}:
             raise TrendStateBlocked("signal is not awaiting its entry")
         if evidence.executed_qty == 0:
+            if signal.state == "holding":
+                raise TrendStateBlocked("executed quantity cannot vanish")
             signal.state = "blocked"
             return
-        expected = evidence.executed_qty
-        if intent.side == "SELL":
-            expected = -expected
+        remaining = evidence.executed_qty - signal.closed_qty
+        expected = remaining if intent.side == "BUY" else -remaining
         if broker_position_amt != expected:
             raise TrendStateBlocked("broker position does not confirm the entry fill")
         signal.state = "holding"
         signal.entry_qty = evidence.executed_qty
         signal.entry_price = evidence.avg_price
-        signal.entered_at = when
+        if signal.entered_at is None:
+            signal.entered_at = when
+
+    @staticmethod
+    def _apply_partial_entry_exposure(
+        signal: BinanceTrendSignal,
+        intent: BinanceTrendIntent,
+        evidence: TrendOrderEvidence,
+        broker_position_amt: Decimal,
+        *,
+        when: dt.datetime,
+    ) -> None:
+        """Record real exposure of a still-open entry so that exits can manage it.
+
+        The entry intent stays ``acknowledged``: no resend, no cancellation, and
+        no new entry send on the symbol (the executor blocks entries while it is
+        unresolved). Only the reduceOnly exits are enabled, for exactly the
+        broker-confirmed quantity. A closed or terminal signal is left alone.
+        """
+        if signal.state not in {"entry_reserved", "uncertain", "holding"}:
+            return
+        remaining = evidence.executed_qty - signal.closed_qty
+        expected = remaining if intent.side == "BUY" else -remaining
+        if broker_position_amt != expected:
+            raise TrendStateBlocked("broker position does not confirm the partial fill")
+        signal.state = "holding"
+        signal.entry_qty = evidence.executed_qty
+        signal.entry_price = evidence.avg_price
+        if signal.entered_at is None:
+            signal.entered_at = when
 
     @staticmethod
     def _apply_exit(

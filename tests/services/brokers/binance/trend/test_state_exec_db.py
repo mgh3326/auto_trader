@@ -334,3 +334,49 @@ async def test_released_ids_cover_rejected_intents_and_blocked_entries(svc) -> N
     )
     ids = await svc.list_released_client_order_ids()
     assert intent.client_order_id in ids  # rejected intent and blocked entry id
+
+
+async def test_a_partially_filled_entry_enables_exits_but_stays_open(svc) -> None:
+    signal, intent = await to_sending(svc)
+    held, still = await svc.apply_order_evidence(
+        evidence(intent, status="PARTIALLY_FILLED", executed="0.3"),
+        broker_position_amt=D("0.3"),
+        now=NOW,
+    )
+    assert held.state == "holding" and held.entry_qty == D("0.3")
+    assert still.state == "acknowledged"  # no resend, no cancel
+    exit_intent = await svc.reserve_exit_intent(
+        signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.3"), now=NOW
+    )
+    await svc.mark_sending(exit_intent.client_order_id, now=NOW)
+    closed, _ = await svc.apply_order_evidence(
+        evidence(exit_intent), broker_position_amt=D("0"), now=NOW
+    )
+    assert closed.state == "closed" and closed.exit_reason == EXIT_HARD_STOP
+    # an exit leg does not make a second exit leg possible while it is unresolved
+    other, other_intent = await to_sending(svc, symbol="ETHUSDT")
+    await svc.apply_order_evidence(
+        evidence(
+            other_intent, symbol="ETHUSDT", status="PARTIALLY_FILLED", executed="0.2"
+        ),
+        broker_position_amt=D("0.2"),
+        now=NOW,
+    )
+    first = await svc.reserve_exit_intent(
+        signal_key=other.signal_key, reason=EXIT_SIGNAL_FLIP, qty=D("0.2"), now=NOW
+    )
+    with pytest.raises(TrendStateBlocked, match="unresolved"):
+        await svc.reserve_exit_intent(
+            signal_key=other.signal_key, reason=EXIT_HARD_STOP, qty=D("0.1"), now=NOW
+        )
+    assert first.reduce_only
+
+
+async def test_a_partial_entry_is_confirmed_by_the_position_and_closed_qty(svc) -> None:
+    signal, intent = await to_sending(svc)
+    with pytest.raises(TrendStateBlocked, match="position"):
+        await svc.apply_order_evidence(
+            evidence(intent, status="PARTIALLY_FILLED", executed="0.3"),
+            broker_position_amt=D("0.2"),
+            now=NOW,
+        )

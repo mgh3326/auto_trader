@@ -218,21 +218,30 @@ def test_incomplete_or_duplicate_account_data_is_never_read_as_flat(
         )
 
 
-def test_exit_quantity_is_bounded_by_the_broker_never_above_the_lane_remainder() -> (
-    None
-):
+def test_exit_quantity_is_the_lane_remainder_and_only_when_the_broker_agrees() -> None:
     args = {"symbol": "BTCUSDT", "open_orders": NOBODY}
-    long_rows = positions(BTCUSDT="0.8")
     assert exit_quantity(
-        side="BUY", expected_remaining=D("1.0"), positions=long_rows, **args
+        side="BUY",
+        expected_remaining=D("0.8"),
+        positions=positions(BTCUSDT="0.8"),
+        **args,
     ) == D("0.8")
     assert exit_quantity(
-        side="BUY", expected_remaining=D("0.5"), positions=long_rows, **args
-    ) == D("0.5")
-    short_rows = positions(BTCUSDT="-0.8")
-    assert exit_quantity(
-        side="SELL", expected_remaining=D("1.0"), positions=short_rows, **args
+        side="SELL",
+        expected_remaining=D("0.8"),
+        positions=positions(BTCUSDT="-0.8"),
+        **args,
     ) == D("0.8")
+    # The state can only reconcile the post-fill position against the lane
+    # remainder, so a broker position that differs either way is refused.
+    for broker in ("1.0", "0.5"):
+        with pytest.raises(TrendExposureMismatch, match="differs"):
+            exit_quantity(
+                side="BUY",
+                expected_remaining=D("0.8"),
+                positions=positions(BTCUSDT=broker),
+                **args,
+            )
 
 
 @pytest.mark.parametrize(

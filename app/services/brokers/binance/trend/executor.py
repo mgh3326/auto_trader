@@ -501,6 +501,7 @@ class TrendExecutor:
         self.demo_ledger = demo_ledger
         self.ledger_session = ledger_session
         self._lease: Any = None
+        self._entry_only_blocked: set[str] = set()
         self._poll_attempts = poll_attempts
         self._poll_interval_s = poll_interval_s
         self._sleep = sleep
@@ -535,11 +536,51 @@ class TrendExecutor:
 
     # ---------------------------------------------------------------- ledger
 
+    @asynccontextmanager
+    async def _ledger_guard(self) -> AsyncIterator[None]:
+        """A failed ledger write must not leave the shared session aborted.
+
+        The next sweep or tick reuses ``ledger_session``; without a rollback a
+        database error would poison every later ledger call until restart.
+        """
+        try:
+            yield
+        except BaseException:
+            try:
+                await self.ledger_session.rollback()
+            except Exception:
+                logger.exception("trend ledger session rollback failed")
+            raise
+
+    async def _instrument_id(self, *args: Any, **kwargs: Any) -> Any:
+        async with self._ledger_guard():
+            return await self._instrument_id_unguarded(*args, **kwargs)
+
+    async def _prepare_demo_entry(self, *args: Any, **kwargs: Any) -> Any:
+        async with self._ledger_guard():
+            return await self._prepare_demo_entry_unguarded(*args, **kwargs)
+
+    async def _prepare_demo_exit(self, *args: Any, **kwargs: Any) -> Any:
+        async with self._ledger_guard():
+            return await self._prepare_demo_exit_unguarded(*args, **kwargs)
+
+    async def _release_demo_unsent(self, *args: Any, **kwargs: Any) -> Any:
+        async with self._ledger_guard():
+            return await self._release_demo_unsent_unguarded(*args, **kwargs)
+
+    async def _sync_demo_ledger(self, *args: Any, **kwargs: Any) -> Any:
+        async with self._ledger_guard():
+            return await self._sync_demo_ledger_unguarded(*args, **kwargs)
+
+    async def _close_root_if_proven(self, *args: Any, **kwargs: Any) -> Any:
+        async with self._ledger_guard():
+            return await self._close_root_if_proven_unguarded(*args, **kwargs)
+
     @staticmethod
     def _entry_cid(signal_key: str) -> str:
         return trend_client_order_id(signal_key, "entry")
 
-    async def _instrument_id(self, symbol: str) -> int:
+    async def _instrument_id_unguarded(self, symbol: str) -> int:
         instrument_id = await self.demo_ledger.resolve_or_create_instrument(
             venue="binance",
             product="usdm_futures",
@@ -550,7 +591,7 @@ class TrendExecutor:
         await self.ledger_session.commit()
         return instrument_id
 
-    async def _prepare_demo_entry(
+    async def _prepare_demo_entry_unguarded(
         self,
         *,
         signal: TrendSignalSnapshot,
@@ -589,7 +630,7 @@ class TrendExecutor:
         await self.demo_ledger.record_validated(client_order_id=cid, now=now)
         await self.ledger_session.commit()
 
-    async def _prepare_demo_exit(
+    async def _prepare_demo_exit_unguarded(
         self,
         *,
         signal: TrendSignalSnapshot,
@@ -625,7 +666,9 @@ class TrendExecutor:
         )
         await self.ledger_session.commit()
 
-    async def _release_demo_unsent(self, cid: str, *, now: dt.datetime) -> None:
+    async def _release_demo_unsent_unguarded(
+        self, cid: str, *, now: dt.datetime
+    ) -> None:
         """Only a pre-send ledger row may be cancelled and reconciled."""
         row = await self.demo_ledger.get_by_client_order_id(cid)
         if row is None or row.lifecycle_state in {"cancelled", "reconciled"}:
@@ -636,7 +679,7 @@ class TrendExecutor:
         await self.demo_ledger.record_reconciled(client_order_id=cid, now=now)
         await self.ledger_session.commit()
 
-    async def _sync_demo_ledger(
+    async def _sync_demo_ledger_unguarded(
         self,
         intent: TrendIntentSnapshot,
         evidence: TrendOrderEvidence,
@@ -690,7 +733,7 @@ class TrendExecutor:
             await self.demo_ledger.record_reconciled(client_order_id=cid, now=now)
         await self.ledger_session.commit()
 
-    async def _close_root_if_proven(
+    async def _close_root_if_proven_unguarded(
         self, signal: TrendSignalSnapshot, *, now: dt.datetime
     ) -> None:
         """Close the entry root only on flat position and no open order evidence."""
@@ -771,7 +814,12 @@ class TrendExecutor:
                 evidence,
                 broker_position_amt=amount,
                 now=now,
-                filled_at=_broker_time(order),
+                # An entry is exposed from its reservation (a bound that is never
+                # later than the first fill); the order's updateTime is only its
+                # last change and would hide earlier price action.
+                filled_at=(
+                    _broker_time(order) if intent.reduce_only else intent.created_at
+                ),
             )
         except Exception:
             logger.exception("trend order evidence could not be applied")
@@ -789,7 +837,9 @@ class TrendExecutor:
             logger.exception("trend demo ledger sync incomplete")
             return "ledger_incomplete"
         if current_intent.state == "acknowledged":
-            return "pending"
+            # An open order with an executed quantity is real exposure that no
+            # exit manages yet: surface it distinctly (no resend, no cancel).
+            return "pending_partial" if evidence.executed_qty > 0 else "pending"
         if intent.reduce_only:
             if current.state == "closed":
                 return "closed"
@@ -831,8 +881,28 @@ class TrendExecutor:
         blocked: set[str] = set()
         for intent in await self.state.list_unresolved_intents():
             signal = await self.state.get_signal(intent.signal_key)
-            if signal is not None:
-                blocked.add(signal.symbol)
+            if signal is None:
+                continue
+            if (
+                not intent.reduce_only
+                and intent.state == "acknowledged"
+                and intent.executed_qty > 0
+                and signal.state == "holding"
+            ):
+                # A working, partially filled entry: new entry sends on the
+                # symbol stay blocked, but exits of the filled quantity do not
+                # (a block that also stopped the exits would leave a position
+                # with no stop). Operator-visible, never resent or cancelled.
+                self._entry_only_blocked.add(signal.symbol)
+                events.append(
+                    TrendEvent(
+                        signal.symbol,
+                        "partial_entry_exposure_open",
+                        format(intent.executed_qty, "f"),
+                    )
+                )
+                continue
+            blocked.add(signal.symbol)
         for signal in await self.state.list_active_signals():
             if signal.state == "uncertain":
                 blocked.add(signal.symbol)
@@ -1196,15 +1266,20 @@ class TrendExecutor:
             )
         except TrendExposureMismatch as exc:
             return TrendEvent(symbol, "exposure_mismatch", str(exc))
-        quote = await self.client.get_book_quote(symbol)
         filters = await self.client.get_trend_filters(symbol)
         close_side = "SELL" if signal.side == "BUY" else "BUY"
+        quote_price: Decimal | None
+        try:
+            quote_price = (await self.client.get_book_quote(symbol)).executable_price(
+                close_side
+            )
+        except Exception:
+            # An outage of the quote is not a reason to hold a stopped-out,
+            # flipped or overdue position: the other evidence still decides.
+            logger.exception("trend book quote unavailable; deciding without it")
+            quote_price = None
         observed = await self._observe_hard_stop(
-            signal,
-            bars,
-            decision_ts=decision_ts,
-            quote_price=quote.executable_price(close_side),
-            now=now,
+            signal, bars, decision_ts=decision_ts, quote_price=quote_price, now=now
         )
         decision = choose_exit(
             HeldPosition(
@@ -1287,6 +1362,7 @@ class TrendExecutor:
         # One tick owns the lane at a time: recovery below treats an unfenced
         # reservation as abandoned, which is only true while no other tick lives.
         async with self.state.tick_lease() as lease, self._bound(lease):
+            self._entry_only_blocked = set()
             blocked = await self._reconcile_unresolved(now, events)
             histories: dict[str, tuple[Bar4h, ...]] = {}
             for symbol in LOCKED_LIMITS.universe:
@@ -1331,7 +1407,11 @@ class TrendExecutor:
             for found in evaluate_all(
                 self.strategy, histories, decision_ts=decision_ts
             ):
-                if found.symbol in blocked or found.symbol in occupied:
+                if (
+                    found.symbol in blocked
+                    or found.symbol in self._entry_only_blocked
+                    or found.symbol in occupied
+                ):
                     continue
                 bars = histories[found.symbol]
                 decision_bar = next(bar for bar in bars if bar.close_ts == decision_ts)

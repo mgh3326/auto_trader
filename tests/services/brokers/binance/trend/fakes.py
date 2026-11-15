@@ -147,6 +147,7 @@ class FakeState:
             broker_status=row.broker_status,
             executed_qty=row.executed_qty,
             avg_price=row.avg_price,
+            created_at=row.created_at,
         )
 
     def seed_holding(
@@ -359,6 +360,7 @@ class FakeState:
             broker_status=None,
             executed_qty=D(0),
             avg_price=None,
+            created_at=NOW - dt.timedelta(minutes=10),
         )
 
     async def reserve_exit_intent(self, *, signal_key, reason, qty, now):
@@ -373,7 +375,11 @@ class FakeState:
         if qty > row.entry_qty - row.closed_qty:
             raise TrendStateBlocked("exit exceeds the held quantity")
         if any(
-            i.signal_key == signal_key and i.state in _ACTIVE_INTENTS
+            i.signal_key == signal_key
+            and i.state in _ACTIVE_INTENTS
+            and not (
+                not i.reduce_only and i.state == "acknowledged" and i.executed_qty > 0
+            )
             for i in self.intents.values()
         ):
             raise TrendStateBlocked("previous intent unresolved")
@@ -485,22 +491,38 @@ class FakeState:
         if ev.status in {"NEW", "PARTIALLY_FILLED"}:
             if intent.state == "sending":
                 intent.state = "acknowledged"
+            if (
+                not intent.reduce_only
+                and ev.executed_qty > 0
+                and row.state in {"entry_reserved", "uncertain", "holding"}
+            ):
+                remaining = ev.executed_qty - row.closed_qty
+                expected = remaining if intent.side == "BUY" else -remaining
+                if broker_position_amt != expected:
+                    raise TrendStateBlocked("position mismatch")
+                row.state = "holding"
+                row.entry_qty = ev.executed_qty
+                row.entry_price = ev.avg_price
+                row.entered_at = row.entered_at or filled_at or now
             return self._snap_signal(row), self._snap_intent(intent)
         if ev.status == "FILLED" and ev.executed_qty != ev.orig_qty:
             raise TrendStateBlocked("FILLED without the full quantity")
         if ev.status not in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
             raise TrendStateBlocked("unknown order status")
         if not intent.reduce_only:
+            if row.state not in {"entry_reserved", "uncertain", "holding"}:
+                raise TrendStateBlocked("signal is not awaiting its entry")
             if ev.executed_qty == 0:
                 row.state = "blocked"
             else:
-                expected = ev.executed_qty if intent.side == "BUY" else -ev.executed_qty
+                left = ev.executed_qty - row.closed_qty
+                expected = left if intent.side == "BUY" else -left
                 if broker_position_amt != expected:
                     raise TrendStateBlocked("position mismatch")
                 row.state = "holding"
                 row.entry_qty = ev.executed_qty
                 row.entry_price = ev.avg_price
-                row.entered_at = filled_at or now
+                row.entered_at = row.entered_at or filled_at or now
         else:
             if ev.executed_qty == 0:
                 row.state = "holding"
@@ -577,6 +599,10 @@ class FakeLedger:
 
 class FakeSession:
     commits = 0
+    rollbacks = 0
+
+    async def rollback(self):
+        FakeSession.rollbacks += 1
 
     async def commit(self):
         FakeSession.commits += 1
@@ -630,6 +656,9 @@ class FakeClient(TrendDemoClient):
         self.order_not_found = False
         self.isolated_ok = True
         self.on_submit = None
+        #: status served for reduceOnly orders (entries keep ``order_script``)
+        self.exit_script: dict | None = None
+        self.book_down = False
         #: fill every submit immediately: moves the position, serves FILLED
         self.auto_fill = False
         #: orders the broker knows although this process never sent them
@@ -653,6 +682,8 @@ class FakeClient(TrendDemoClient):
         return FuturesDemoPositionModeResult(is_hedge_mode=self.hedge)
 
     async def get_book_quote(self, symbol):
+        if self.book_down:
+            raise RuntimeError("bookTicker unavailable")
         price = self.price
         if self.price_script:
             price = (
@@ -685,7 +716,16 @@ class FakeClient(TrendDemoClient):
         self.order_reads += 1
         if self.order_not_found:
             raise BinanceDemoOrderNotFound("nf")
-        if self.order_script:
+        sent_for_script = self.known_orders.get(client_order_id) or next(
+            (x for x in self.sends if x["client_order_id"] == client_order_id), None
+        )
+        if (
+            self.exit_script is not None
+            and sent_for_script is not None
+            and sent_for_script["reduce_only"]
+        ):
+            script = self.exit_script
+        elif self.order_script:
             script = (
                 self.order_script[0]
                 if len(self.order_script) == 1

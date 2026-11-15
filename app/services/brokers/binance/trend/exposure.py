@@ -85,11 +85,11 @@ def exit_quantity(
     positions: object,
     open_orders: object,
 ) -> Decimal:
-    """Quantity a reduceOnly exit may close: lane remainder bounded by the broker.
+    """Quantity a reduceOnly exit may close: the lane remainder, broker-proven.
 
-    Refuses when the broker position is flat or on the other side (the lane
-    holds something the broker does not show), or when an unexplained open order
-    sits on the symbol. Otherwise ``min(expected, |position|)``.
+    Refuses when the broker position is flat, on the other side, or not exactly
+    the lane remainder (the lane and the broker disagree about what is held), or
+    when an unexplained open order sits on the symbol.
     """
     rows, orders = validate_snapshot(positions, open_orders)
     if any(order.symbol == symbol for order in orders.orders):
@@ -101,4 +101,9 @@ def exit_quantity(
     for row in rows:
         if row.symbol == symbol and (row.position_side != "BOTH" or row.leverage != 1):
             raise TrendExposureMismatch("broker position not 1x one-way")
-    return min(expected_remaining, signed)
+    if signed != expected_remaining:
+        # The state can only reconcile the post-fill position against the lane
+        # remainder; an exit that would leave a different position (manual
+        # reduction or addition) is refused before the fence.
+        raise TrendExposureMismatch("broker position differs from the lane remainder")
+    return expected_remaining
