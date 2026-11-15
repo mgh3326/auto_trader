@@ -146,6 +146,37 @@ def _positive_decimal(raw: Any, field: str) -> Decimal:
     return value
 
 
+def _usable_lot(lot: Any) -> bool:
+    """A lot filter that carries a positive step (``0`` means "use LOT_SIZE")."""
+    if not isinstance(lot, dict):
+        return False
+    try:
+        return Decimal(str(lot.get("stepSize", "0"))) > 0
+    except (InvalidOperation, ValueError):
+        return False
+
+
+def _lot_bound(
+    lot: dict, plain_lot: Any, key: str, *, default: Decimal | None = None
+) -> Decimal:
+    """``minQty``/``maxQty``; a zero (documented "no limit for market orders")
+    falls back to LOT_SIZE's value, then to ``default`` (one lot step for a
+    minimum, since nothing smaller than a step can be sent anyway)."""
+    try:
+        value = Decimal(str(lot.get(key)))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise TrendBrokerTruthUnavailable(f"invalid {key}") from exc
+    if not value.is_finite() or value < 0:
+        raise TrendBrokerTruthUnavailable(f"invalid {key}")
+    if value > 0:
+        return value
+    if isinstance(plain_lot, dict) and plain_lot is not lot:
+        return _lot_bound(plain_lot, None, key, default=default)
+    if default is not None:
+        return default
+    raise TrendBrokerTruthUnavailable(f"invalid {key}")
+
+
 class TrendDemoClient(BinanceFuturesDemoExecutionClient):
     """Trend identity over the existing signed Futures Demo transport.
 
@@ -241,11 +272,11 @@ class TrendDemoClient(BinanceFuturesDemoExecutionClient):
             for item in row.get("filters", [])
             if isinstance(item, dict)
         }
-        lot = by_type.get("MARKET_LOT_SIZE") or by_type.get("LOT_SIZE")
+        market_lot = by_type.get("MARKET_LOT_SIZE")
+        plain_lot = by_type.get("LOT_SIZE")
+        lot = market_lot if _usable_lot(market_lot) else plain_lot
         if not isinstance(lot, dict):
             raise TrendBrokerTruthUnavailable("market lot filter missing")
-        if Decimal(str(lot.get("stepSize", "0"))) == 0:
-            lot = by_type.get("LOT_SIZE")
         notional = by_type.get("MIN_NOTIONAL") or by_type.get("NOTIONAL")
         if not isinstance(lot, dict) or not isinstance(notional, dict):
             raise TrendBrokerTruthUnavailable("trend filter missing")
@@ -253,11 +284,12 @@ class TrendDemoClient(BinanceFuturesDemoExecutionClient):
         precision = row.get("quantityPrecision")
         if type(precision) is not int:
             raise TrendBrokerTruthUnavailable("quantity precision unavailable")
+        step_size = _positive_decimal(lot.get("stepSize"), "stepSize")
         return TrendFilters(
-            step_size=_positive_decimal(lot.get("stepSize"), "stepSize"),
+            step_size=step_size,
             min_notional_usdt=_positive_decimal(minimum, "MIN_NOTIONAL"),
-            min_qty=_positive_decimal(lot.get("minQty"), "minQty"),
-            max_qty=_positive_decimal(lot.get("maxQty"), "maxQty"),
+            min_qty=_lot_bound(lot, plain_lot, "minQty", default=step_size),
+            max_qty=_lot_bound(lot, plain_lot, "maxQty"),
             quantity_precision=precision,
         )
 
@@ -927,6 +959,13 @@ class TrendExecutor:
             except Exception:
                 logger.exception("trend demo ledger sweep release failed")
 
+    async def _own_order_ids(self, signal_key: str) -> frozenset[str]:
+        """Client ids of this signal's own lane orders (a working partial entry)."""
+        return frozenset(
+            intent.client_order_id
+            for intent in await self.state.list_intents(signal_key)
+        )
+
     @asynccontextmanager
     async def _bound(self, lease: Any) -> AsyncIterator[None]:
         self._lease = lease
@@ -1263,6 +1302,7 @@ class TrendExecutor:
                 expected_remaining=signal.remaining_qty,
                 positions=positions,
                 open_orders=orders,
+                own_order_ids=await self._own_order_ids(signal.signal_key),
             )
         except TrendExposureMismatch as exc:
             return TrendEvent(symbol, "exposure_mismatch", str(exc))
@@ -1334,6 +1374,7 @@ class TrendExecutor:
                 expected_remaining=signal.remaining_qty,
                 positions=positions,
                 open_orders=orders,
+                own_order_ids=await self._own_order_ids(signal.signal_key),
             )
             if floor_to_step(
                 bound, (await self.client.get_trend_filters(symbol)).step_size

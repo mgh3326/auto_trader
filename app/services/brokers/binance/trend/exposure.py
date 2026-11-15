@@ -84,16 +84,22 @@ def exit_quantity(
     expected_remaining: Decimal,
     positions: object,
     open_orders: object,
+    own_order_ids: frozenset[str] = frozenset(),
 ) -> Decimal:
     """Quantity a reduceOnly exit may close: the lane remainder, broker-proven.
 
     Refuses when the broker position is flat, on the other side, or not exactly
     the lane remainder (the lane and the broker disagree about what is held), or
-    when an unexplained open order sits on the symbol.
+    when a foreign open order (not one of ``own_order_ids``) sits on the symbol.
     """
     rows, orders = validate_snapshot(positions, open_orders)
-    if any(order.symbol == symbol for order in orders.orders):
-        raise TrendExposureMismatch("open order on a held symbol")
+    # The lane's own working order (a partially filled entry that is never
+    # cancelled) is not foreign: exits must keep working while it rests.
+    if any(
+        order.symbol == symbol and order.client_order_id not in own_order_ids
+        for order in orders.orders
+    ):
+        raise TrendExposureMismatch("foreign open order on a held symbol")
     amount = position_amount(rows, symbol)
     signed = amount if side == "BUY" else -amount
     if signed <= 0:

@@ -277,3 +277,28 @@ def test_an_exit_is_refused_with_an_open_order_or_a_non_1x_position() -> None:
             positions=[position("BTCUSDT", "1", leverage=3)],
             open_orders=NOBODY,
         )
+
+
+def test_the_lanes_own_working_order_does_not_block_an_exit_but_a_foreign_one_does() -> (
+    None
+):
+    own = FuturesDemoOpenOrdersResult(orders=[open_order("BTCUSDT", cid="trend-own")])
+    args = {
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "expected_remaining": D("0.3"),
+        "positions": positions(BTCUSDT="0.3"),
+    }
+    assert exit_quantity(
+        open_orders=own, own_order_ids=frozenset({"trend-own"}), **args
+    ) == D("0.3")
+    with pytest.raises(TrendExposureMismatch, match="foreign"):
+        exit_quantity(open_orders=own, **args)
+    mixed = FuturesDemoOpenOrdersResult(
+        orders=[
+            open_order("BTCUSDT", cid="trend-own"),
+            open_order("BTCUSDT", cid="x-1"),
+        ]
+    )
+    with pytest.raises(TrendExposureMismatch, match="foreign"):
+        exit_quantity(open_orders=mixed, own_order_ids=frozenset({"trend-own"}), **args)

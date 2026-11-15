@@ -542,3 +542,65 @@ def test_a_truncated_page_is_a_gap_and_a_complete_window_passes() -> None:
         _watch(_continuous(only=3 * 24 * 60 - 5))  # the newest minutes missing
     minutes = _watch(_continuous())
     assert len(minutes) == 24 * 60
+
+
+def _filters_body(market, plain=None):
+    filters = [{"filterType": "MIN_NOTIONAL", "notional": "100"}]
+    if market is not None:
+        filters.append({"filterType": "MARKET_LOT_SIZE", **market})
+    if plain is not None:
+        filters.append({"filterType": "LOT_SIZE", **plain})
+    return {
+        "/fapi/v1/exchangeInfo": {
+            "symbols": [
+                {
+                    "symbol": "BTCUSDT",
+                    "status": "TRADING",
+                    "quantityPrecision": 3,
+                    "filters": filters,
+                }
+            ]
+        }
+    }
+
+
+def test_a_zero_market_min_qty_means_no_minimum_and_falls_back_to_lot_size() -> None:
+    market = {"stepSize": "0.001", "minQty": "0.00000000", "maxQty": "120"}
+    plain = {"stepSize": "0.001", "minQty": "0.005", "maxQty": "1000"}
+    client = make_client(_Transport(_filters_body(market, plain)))
+    filters = run(client.get_trend_filters("BTCUSDT"))
+    assert (filters.step_size, filters.min_qty, filters.max_qty) == (
+        D("0.001"),
+        D("0.005"),
+        D("120"),
+    )
+
+
+def test_a_zero_market_min_qty_without_lot_size_uses_one_step() -> None:
+    market = {"stepSize": "0.001", "minQty": "0", "maxQty": "120"}
+    client = make_client(_Transport(_filters_body(market)))
+    assert run(client.get_trend_filters("BTCUSDT")).min_qty == D("0.001")
+
+
+def test_a_zero_market_step_and_max_fall_back_to_lot_size_and_junk_is_refused() -> None:
+    market = {"stepSize": "0", "minQty": "0", "maxQty": "0"}
+    plain = {"stepSize": "0.01", "minQty": "0.01", "maxQty": "500"}
+    filters = run(
+        make_client(_Transport(_filters_body(market, plain))).get_trend_filters(
+            "BTCUSDT"
+        )
+    )
+    assert (filters.step_size, filters.min_qty, filters.max_qty) == (
+        D("0.01"),
+        D("0.01"),
+        D("500"),
+    )
+    for bad in (
+        {"stepSize": "0.001", "minQty": "-1", "maxQty": "9"},
+        {"stepSize": "0.001", "minQty": "x", "maxQty": "9"},
+        {"stepSize": "0.001", "minQty": "0", "maxQty": "0"},
+    ):
+        with pytest.raises(TrendBrokerTruthUnavailable):
+            run(
+                make_client(_Transport(_filters_body(bad))).get_trend_filters("BTCUSDT")
+            )

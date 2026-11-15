@@ -1255,6 +1255,8 @@ async def test_a_partially_filled_entry_still_gets_its_hard_stop_exit_and_no_new
     # the entry intent stays open: no resend, no cancel, no new entry
     assert rig.state.intents[entry_cid].state == "acknowledged"
     assert (signal.state, signal.entry_qty) == ("holding", D("0.3"))
+    # the partially filled entry order is still resting at the broker
+    rig.client.orders = [open_order("BTCUSDT", cid=entry_cid)]
     # price reaches the hard stop while the entry order is still working
     rig.minutes["BTCUSDT"] = minute_rows(low="94")
     second = await rig.tick()
