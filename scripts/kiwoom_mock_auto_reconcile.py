@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""hk 4722 (3797 T-P3) / hk 4754 — operator CLI for Kiwoom mock terminal reconcile.
+"""hk 4722 / hk 4734 (3797 T-P3, T-P4) / hk 4754 — operator CLI for Kiwoom mock reconcile.
 
 Previews verdicts by default and writes nothing. ``--apply-terminal-only``
 closes only expired / cancelled / rejected rows and resolves ``uncertain`` to
-``accepted``; fills are deferred to T-P4. There is no full-apply mode yet and no
-scheduler — this lever is manual (hard rule 6).
+``accepted``; fills are deferred. ``--apply`` (full mode, KR only) also books
+the broker-evidence fill delta into ``execution_ledger`` and closes a filled row
+once the delta is booked. It writes no trade row, journal or realized P&L (hk
+4802). Both need their exact-true gates. There is no scheduler — this lever is
+manual (hard rule 6).
 
 ``--market`` selects the account: ``kr`` (``kiwoom_mock``, gated by
 ``KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED``) or ``us`` (``kiwoom_mock_us``,
 gated by ``KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED``). The two scans never
-mix.
+mix. Full-mode fill booking is KR only (T-P4); ``--apply`` with ``--market us``
+is refused.
 
 Prints the kernel result as JSON; never prints credentials.
 
@@ -23,6 +27,7 @@ Exit codes:
 Usage:
     uv run python -m scripts.kiwoom_mock_auto_reconcile
     uv run python -m scripts.kiwoom_mock_auto_reconcile --apply-terminal-only
+    uv run python -m scripts.kiwoom_mock_auto_reconcile --apply
 """
 
 from __future__ import annotations
@@ -35,8 +40,10 @@ from typing import Any
 
 from app.services.kiwoom_mock_reconcile import (
     DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
+    FULL_GATE_ENVS,
     TERMINAL_GATE_ENV,
     US_TERMINAL_GATE_ENV,
+    full_gate_enabled,
     kiwoom_mock_reconcile_orders_impl,
     terminal_gate_enabled,
 )
@@ -98,6 +105,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "full mode (kr only): also book execution_ledger fills and close "
+            "booked fill rows (no journal yet — hk 4802). Requires "
+            + " and ".join(f"{name}=true" for name in FULL_GATE_ENVS)
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=100,
@@ -114,6 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+
+    if args.apply and args.apply_terminal_only:
+        parser.error("--apply and --apply-terminal-only are mutually exclusive")
+    if args.apply and args.market != "kr":
+        parser.error(
+            "--apply (full-mode fill booking) is KR only; "
+            "use --apply-terminal-only for --market us"
+        )
 
     gate_env = _GATE_ENV_BY_MARKET[args.market]
     if args.apply_terminal_only and not terminal_gate_enabled(market=args.market):
@@ -132,10 +156,30 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    if args.apply and not full_gate_enabled():
+        # Refuse before any ledger or broker access (design §3.3).
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "status": "paused",
+                    "required_env": list(FULL_GATE_ENVS),
+                    "message": (
+                        "--apply requires "
+                        + " and ".join(f"{name}=true" for name in FULL_GATE_ENVS)
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 2
+
+    applying = args.apply or args.apply_terminal_only
     return asyncio.run(
         _run(
             market=args.market,
-            dry_run=not args.apply_terminal_only,
+            dry_run=not applying,
             terminal_only=args.apply_terminal_only,
             limit=args.limit,
             min_request_interval_seconds=args.min_request_interval_seconds,

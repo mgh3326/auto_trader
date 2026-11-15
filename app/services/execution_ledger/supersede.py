@@ -64,7 +64,13 @@ class LedgerFillLike(Protocol):
 
 
 def normalize_order_id(order_id: object) -> str:
-    """Leading-zero-normalized order id (same rule as query_service/kis_lots)."""
+    """Leading-zero-normalized order id (same rule as query_service/kis_lots).
+
+    Registered for the Kiwoom mock broker too (hk 4734): ``ord_no`` is a plain
+    decimal number, so the same order reported with different zero padding by
+    the place acknowledgement and by kt00007/kt00009 is one identity, and a
+    leading-zero difference never splits or duplicates a Kiwoom fill.
+    """
     raw = str(order_id or "").strip()
     # An all-zero id normalizes to "0" so it matches the SQL ``ltrim(.., '0')``
     # prefilter's equivalence class instead of splitting "000" from "0".

@@ -459,6 +459,22 @@ def _unknown(reason: str) -> Verdict:
     return Verdict(verdict="unknown", reason=reason, requires_manual_review=True)
 
 
+def _terminal_marker_class(
+    *rows: BrokerRow | None,
+) -> tuple[str | None, str | None]:
+    """The single terminal marker class both listings agree on, or the conflict.
+
+    ``detail`` and ``status`` are two views of one order. When one says the
+    order was cancelled and the other that it expired, neither is proven: the
+    caller must stop before selecting a verdict (manual review) instead of
+    letting a set union pick one by precedence.
+    """
+    markers = {row.marker for row in rows if row is not None and row.marker is not None}
+    if len(markers) > 1:
+        return None, "conflicting_terminal_markers"
+    return (next(iter(markers)) if markers else None), None
+
+
 def _exact_rows(
     ledger: LedgerOrder, evidence: BrokerEvidence
 ) -> tuple[BrokerRow | None, BrokerRow | None, str | None]:
@@ -609,9 +625,62 @@ def classify_verdict(
         price = detail_row.average_price
         if (price is None or price <= 0) and require_fill_price:
             return _unknown("fill_price_unparseable")
-        verdict: VerdictName = "filled" if filled >= ordered else "partial"
+        if filled >= ordered:
+            return Verdict(
+                verdict="filled",
+                reason="broker_cumulative_fill",
+                requires_manual_review=False,
+                filled_quantity=filled,
+                average_price=price,
+            )
+        # A partial fill with **no remaining quantity** is settled: nothing is
+        # left working, so no later fill can arrive. The broker marker says how
+        # it ended, and the fill must ride on that terminal verdict — otherwise
+        # the fill-carrying close would wait forever for an order that is
+        # already over, and its booked shares would never be terminal.
+        if detail_row.remaining_quantity == 0:
+            if ledger.recorded_filled_quantity > filled:
+                # The ledger claims more than the broker ever filled.
+                return _unknown("recorded_fill_contradicts_broker")
+            if any(
+                row.marker_ambiguous
+                for row in (detail_row, status_row)
+                if row is not None
+            ):
+                return _unknown("ambiguous_marker_text")
+            marker, conflict = _terminal_marker_class(detail_row, status_row)
+            if conflict is not None:
+                return _unknown(conflict)
+            if marker == "reject":
+                return Verdict(
+                    verdict="rejected",
+                    reason="broker_reject_confirmed",
+                    requires_manual_review=False,
+                    filled_quantity=filled,
+                    average_price=price,
+                )
+            if marker == "expiry":
+                return Verdict(
+                    verdict="expired",
+                    reason="broker_expiry_confirmed",
+                    requires_manual_review=False,
+                    filled_quantity=filled,
+                    average_price=price,
+                )
+            if marker == "cancel":
+                if not own_cancel_acknowledged:
+                    # The cancel pair still needs our own acknowledged request.
+                    return _unknown("cancel_without_own_acknowledged_request")
+                return Verdict(
+                    verdict="cancelled",
+                    reason="own_cancel_acknowledged_and_broker_confirmed",
+                    requires_manual_review=False,
+                    filled_quantity=filled,
+                    average_price=price,
+                )
+            return _unknown("terminal_without_reason_marker")
         return Verdict(
-            verdict=verdict,
+            verdict="partial",
             reason="broker_cumulative_fill",
             requires_manual_review=False,
             filled_quantity=filled,
@@ -634,12 +703,10 @@ def classify_verdict(
         return _unknown("recorded_fill_contradicts_broker")
     if any(row.marker_ambiguous for row in (detail_row, status_row) if row is not None):
         return _unknown("ambiguous_marker_text")
-    markers = {
-        row.marker
-        for row in (detail_row, status_row)
-        if row is not None and row.marker is not None
-    }
-    if "cancel" in markers:
+    marker, conflict = _terminal_marker_class(detail_row, status_row)
+    if conflict is not None:
+        return _unknown(conflict)
+    if marker == "cancel":
         if not own_cancel_acknowledged:
             # A cancel we cannot tie to our own acknowledged request is not
             # proven (design §3.2 requires both halves).
@@ -649,13 +716,13 @@ def classify_verdict(
             reason="own_cancel_acknowledged_and_broker_confirmed",
             requires_manual_review=False,
         )
-    if "reject" in markers:
+    if marker == "reject":
         return Verdict(
             verdict="rejected",
             reason="broker_reject_confirmed",
             requires_manual_review=False,
         )
-    if "expiry" in markers:
+    if marker == "expiry":
         return Verdict(
             verdict="expired",
             reason="broker_expiry_confirmed",

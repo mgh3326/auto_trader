@@ -1,22 +1,39 @@
-"""hk 4722 (3797 T-P3) — reconcile transitions against the test database.
+"""hk 4722 / hk 4734 (3797 T-P3, T-P4) — reconcile against the test database.
 
 CI only (``integration``): never run locally. Rows are keyed by a per-test random
 ``client_order_id`` and removed in ``finally``; the shared schema is left as
 bootstrapped.
+
+T-P4 proves the full mode here: one in-effect ``execution_ledger`` row per
+broker delta, partial→filled deltas summing to the order quantity, a re-run
+booking nothing new, one ``broker='kiwoom'`` reconcile-run row — and **no**
+trade row, journal or realized P&L (that projection is hk 4802). It also proves
+the two service guards the round-8 review found missing: a changed cumulative
+average without a fill is refused (and the next delta keeps the booked basis),
+and the terminal close requires the verdict's whole fill to be booked.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from sqlalchemy import delete, select
 
 from app.core.db import AsyncSessionLocal, engine
-from app.models.review import KiwoomMockOrderLedger
+from app.models.execution_ledger import (
+    ExecutionLedger,
+    ExecutionLedgerReconcileRun,
+    execution_ledger_in_effect,
+)
+from app.models.review import KiwoomMockOrderLedger, Trade
+from app.models.trade_journal import TradeJournal
 from app.services import kiwoom_mock_reconcile as kernel
+from app.services.kiwoom_execution_ledger import KIWOOM_BROKER
 from app.services.kiwoom_mock_order_ledger_service import (
     KiwoomMockOrderLedgerService,
     KiwoomMockTransitionRefused,
@@ -29,6 +46,10 @@ validate_run_owned_database_url(engine.url)
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 TODAY = kr_trading_day(datetime.now(UTC))
+
+#: The account label the journal projection (hk 4802) will use. This PR writes
+#: nothing under it; the helpers below assert that absence.
+KIWOOM_MOCK_ACCOUNT = "kiwoom_mock"
 
 
 def _order_no() -> str:
@@ -93,21 +114,30 @@ async def _cleanup(client_order_id: str) -> None:
         await session.commit()
 
 
-async def _accepted(client_order_id: str, order_no: str) -> None:
+async def _accepted(
+    client_order_id: str,
+    order_no: str,
+    *,
+    symbol: str = "005930",
+    side: str = "buy",
+    quantity: int = 10,
+    correlation_id: str | None = None,
+) -> None:
     async with AsyncSessionLocal() as session:
         await KiwoomMockOrderLedgerService(session).record_send(
             status="accepted",
             client_order_id=client_order_id,
             idempotency_key=client_order_id,
-            symbol="005930",
-            side="buy",
-            quantity=10,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
             price=70000,
             broker_order_id=order_no,
             response_code="0",
             response_message="정상",
             raw_response={"return_code": 0},
             trading_day=TODAY,
+            correlation_id=correlation_id,
         )
 
 
@@ -295,3 +325,492 @@ async def test_terminal_only_end_to_end_books_no_fill(
 
 async def _no_sleep(seconds: float) -> None:
     del seconds
+
+
+# ---- hk 4734 (3797 T-P4): full mode ----------------------------------------
+
+
+def _symbol() -> str:
+    return str(uuid.uuid4().int % 900000 + 100000)
+
+
+def _full_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in kernel.FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+
+
+def _filled_detail(
+    order_no: str, quantity: int, symbol: str, average_price: int = 70000
+) -> dict[str, Any]:
+    return _detail_payload(
+        _detail_row(
+            order_no,
+            stk_cd=symbol,
+            ord_qty=str(quantity),
+            cntr_qty=str(quantity),
+            ord_remnq="0",
+            cntr_uv=str(average_price),
+        )
+    )
+
+
+def _partial_detail(order_no: str, quantity: int, symbol: str) -> dict[str, Any]:
+    return _detail_payload(
+        _detail_row(
+            order_no,
+            stk_cd=symbol,
+            cntr_qty=str(quantity),
+            ord_remnq=str(10 - quantity),
+            cntr_uv="70000",
+        )
+    )
+
+
+async def _fills(order_no: str) -> list[ExecutionLedger]:
+    async with AsyncSessionLocal() as session:
+        return list(
+            (
+                await session.execute(
+                    select(ExecutionLedger)
+                    .where(
+                        ExecutionLedger.broker == KIWOOM_BROKER,
+                        ExecutionLedger.broker_order_id == order_no,
+                        execution_ledger_in_effect(),
+                    )
+                    .order_by(ExecutionLedger.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _trade(order_no: str) -> Trade | None:
+    async with AsyncSessionLocal() as session:
+        return (
+            await session.execute(
+                select(Trade).where(
+                    Trade.account == KIWOOM_MOCK_ACCOUNT,
+                    Trade.order_id == order_no,
+                )
+            )
+        ).scalar_one_or_none()
+
+
+async def _journals(symbol: str) -> list[TradeJournal]:
+    async with AsyncSessionLocal() as session:
+        return list(
+            (
+                await session.execute(
+                    select(TradeJournal)
+                    .where(
+                        TradeJournal.account == KIWOOM_MOCK_ACCOUNT,
+                        TradeJournal.symbol == symbol,
+                    )
+                    .order_by(TradeJournal.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _cleanup_full(
+    *,
+    client_order_id: str,
+    order_no: str,
+    symbol: str,
+    run_ids: list[str],
+) -> None:
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            delete(KiwoomMockOrderLedger).where(
+                KiwoomMockOrderLedger.client_order_id == client_order_id
+            )
+        )
+        await session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker == KIWOOM_BROKER,
+                ExecutionLedger.broker_order_id == order_no,
+            )
+        )
+        await session.execute(
+            delete(Trade).where(
+                Trade.account == KIWOOM_MOCK_ACCOUNT,
+                Trade.order_id == order_no,
+            )
+        )
+        await session.execute(
+            delete(TradeJournal).where(
+                TradeJournal.account == KIWOOM_MOCK_ACCOUNT,
+                TradeJournal.symbol == symbol,
+            )
+        )
+        for run_id in run_ids:
+            await session.execute(
+                delete(ExecutionLedgerReconcileRun).where(
+                    ExecutionLedgerReconcileRun.run_id == uuid.UUID(run_id)
+                )
+            )
+        await session.commit()
+
+
+async def _full_run(reader: FakeReader) -> dict[str, Any]:
+    return await kernel.kiwoom_mock_reconcile_orders_impl(
+        dry_run=False,
+        terminal_only=False,
+        session_factory=AsyncSessionLocal,
+        reader=reader,
+        sleep=_no_sleep,
+    )
+
+
+async def test_full_mode_books_one_in_effect_row_and_writes_no_journal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        result = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        if result.get("reconcile_run"):
+            run_ids.append(result["reconcile_run"]["run_id"])
+
+        assert result["success"] is True
+        assert result["scope"] == "full"
+        outcome = next(
+            row
+            for row in result["reconciled"]
+            if row["client_order_id"] == client_order_id
+        )
+        assert outcome["action"] == "booked_filled"
+
+        fills = await _fills(order_no)
+        assert len(fills) == 1
+        fill = fills[0]
+        assert fill.broker == KIWOOM_BROKER == "kiwoom"
+        assert fill.account_mode == "mock"
+        assert fill.venue == "krx"
+        assert fill.instrument_type == "equity_kr"
+        assert fill.currency == "KRW"
+        assert fill.source == "reconciler"
+        assert fill.filled_qty == Decimal("10")
+        assert fill.filled_price == Decimal("70000")
+        assert fill.filled_notional == Decimal("700000")
+        assert fill.fee_basis == "not_provided"
+        assert fill.fee_amount is None
+        assert fill.filled_at_basis == "observed_at"
+
+        stored = await _fetch(client_order_id)
+        assert stored.status == "filled"
+        assert stored.filled_qty == Decimal("10")
+        # No trade row, journal link or journal: the projection is hk 4802.
+        assert stored.journal_id is None
+        assert stored.trade_id is None
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
+
+        assert run_ids, "the full run must record its reconcile-run row"
+        async with AsyncSessionLocal() as session:
+            run = (
+                await session.execute(
+                    select(ExecutionLedgerReconcileRun).where(
+                        ExecutionLedgerReconcileRun.run_id == uuid.UUID(run_ids[0])
+                    )
+                )
+            ).scalar_one()
+            assert run.broker == "kiwoom"
+            assert run.dry_run is False
+            assert run.committed_insert >= 1
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+
+        first = await _full_run(FakeReader(_partial_detail(order_no, 4, symbol)))
+        if first.get("reconcile_run"):
+            run_ids.append(first["reconcile_run"]["run_id"])
+        assert first["scope"] == "full"
+        assert first["reconciled"][0]["action"] == "booked_partial"
+        fills = await _fills(order_no)
+        assert [fill.filled_qty for fill in fills] == [Decimal("4")]
+        assert (await _fetch(client_order_id)).status == "partial"
+
+        replay = await _full_run(FakeReader(_partial_detail(order_no, 4, symbol)))
+        if replay.get("reconcile_run"):
+            run_ids.append(replay["reconcile_run"]["run_id"])
+        assert replay["reconciled"][0]["action"] == "noop_already_booked"
+        assert len(await _fills(order_no)) == 1
+        assert replay["reconcile_run"]["committed_insert"] == 0
+        assert replay["reconcile_run"]["unchanged"] >= 1
+
+        second = await _full_run(
+            FakeReader(_filled_detail(order_no, 10, symbol, average_price=76000))
+        )
+        if second.get("reconcile_run"):
+            run_ids.append(second["reconcile_run"]["run_id"])
+        assert second["reconciled"][0]["action"] == "booked_filled"
+        fills = await _fills(order_no)
+        assert len(fills) == 2
+        assert sum(fill.filled_qty for fill in fills) == Decimal("10")
+        # 4 @ 70,000 then cumulative 10 @ 76,000 → the second row is the real
+        # 6 @ 80,000 (from the cumulative notional difference), not 6 @ 76,000.
+        assert [fill.filled_price for fill in fills] == [
+            Decimal("70000"),
+            Decimal("80000"),
+        ]
+        assert sum(fill.filled_notional for fill in fills) == Decimal(10) * Decimal(
+            "76000"
+        )
+        stored = await _fetch(client_order_id)
+        assert stored.status == "filled"
+        assert stored.avg_fill_price == Decimal("76000")
+        assert stored.journal_id is None
+        assert stored.trade_id is None
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
+
+        # The row is terminal now, so another pass finds no candidate at all.
+        settled = await _full_run(
+            FakeReader(_filled_detail(order_no, 10, symbol, average_price=76000))
+        )
+        assert settled["reconciled"] == []
+        assert len(await _fills(order_no)) == 2
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_same_quantity_average_change_is_refused_and_keeps_the_booked_basis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed average with no new share must not replace the booked basis.
+
+    Review r4577667962: after booking 4 @ 70,000, a replay claiming
+    ``(4, 71,000)`` used to overwrite ``avg_fill_price``. The next cumulative
+    fill then priced its delta from an average no ledger row ever carried. The
+    refusal keeps the basis, so the 6-share delta books at 80,000 and the ledger
+    notional still equals the broker's 760,000.
+    """
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        ledger_id = (await _fetch(client_order_id)).id
+
+        async with AsyncSessionLocal() as session:
+            booking = await KiwoomMockOrderLedgerService(session).record_fill(
+                ledger_id=ledger_id, filled_quantity=4, average_price=70000
+            )
+        assert booking.action == "booked_partial"
+
+        with pytest.raises(KiwoomMockTransitionRefused) as excinfo:
+            async with AsyncSessionLocal() as session:
+                await KiwoomMockOrderLedgerService(session).record_fill(
+                    ledger_id=ledger_id, filled_quantity=4, average_price=71000
+                )
+        assert excinfo.value.reason == "average_price_changed_without_fill"
+
+        unchanged = await _fetch(client_order_id)
+        assert unchanged.filled_qty == Decimal("4")
+        assert unchanged.avg_fill_price == Decimal("70000")
+        assert len(await _fills(order_no)) == 1
+
+        async with AsyncSessionLocal() as session:
+            booking = await KiwoomMockOrderLedgerService(session).record_fill(
+                ledger_id=ledger_id, filled_quantity=10, average_price=76000
+            )
+        assert booking.action == "booked_filled"
+        assert booking.delta_qty == Decimal("6")
+        assert booking.avg_price == Decimal("80000")
+
+        fills = await _fills(order_no)
+        assert [fill.filled_price for fill in fills] == [
+            Decimal("70000"),
+            Decimal("80000"),
+        ]
+        assert sum(fill.filled_notional for fill in fills) == Decimal("760000")
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_close_filled_as_terminal_requires_the_whole_booked_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The close refuses a verdict quantity the row has not booked."""
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        ledger_id = (await _fetch(client_order_id)).id
+        async with AsyncSessionLocal() as session:
+            await KiwoomMockOrderLedgerService(session).record_fill(
+                ledger_id=ledger_id, filled_quantity=4, average_price=70000
+            )
+
+        with pytest.raises(KiwoomMockTransitionRefused) as excinfo:
+            async with AsyncSessionLocal() as session:
+                await KiwoomMockOrderLedgerService(session).close_filled_as_terminal(
+                    ledger_id=ledger_id,
+                    status="expired",
+                    reason="broker_expiry_confirmed",
+                    filled_quantity=10,
+                )
+        assert excinfo.value.reason == "fill_not_booked"
+        still_open = await _fetch(client_order_id)
+        assert still_open.status == "partial"
+        assert still_open.filled_qty == Decimal("4")
+
+        async with AsyncSessionLocal() as session:
+            closed = await KiwoomMockOrderLedgerService(
+                session
+            ).close_filled_as_terminal(
+                ledger_id=ledger_id,
+                status="expired",
+                reason="broker_expiry_confirmed",
+                filled_quantity=4,
+            )
+        assert closed.status == "expired"
+        assert closed.last_reconcile_detail["booked_filled_qty"] == "4"
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_full_mode_overlapping_runs_book_the_delta_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two full runs started together book each delta once and write no journal."""
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        reader = FakeReader(_filled_detail(order_no, 10, symbol))
+        first, second = await asyncio.gather(
+            _full_run(reader),
+            _full_run(reader),
+        )
+        for result in (first, second):
+            if result.get("reconcile_run"):
+                run_ids.append(result["reconcile_run"]["run_id"])
+
+        fills = await _fills(order_no)
+        assert [fill.filled_qty for fill in fills] == [Decimal("10")]
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
+
+        actions = [
+            outcome["action"]
+            for result in (first, second)
+            for outcome in result["reconciled"]
+        ]
+        assert actions.count("booked_filled") == 1
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_full_mode_terminal_verdict_with_fill_books_then_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled partial (4 of 10, expiry marker) is booked, then closed.
+
+    The verdict comes from the real classifier: a partial fill with no remaining
+    quantity is terminal and carries its fill. Full mode books that delta and
+    closes the row once its booked quantity equals the verdict's; before that
+    the row stayed ``partial`` forever, re-booked as a no-op.
+    """
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        detail = _detail_payload(
+            _detail_row(
+                order_no,
+                stk_cd=symbol,
+                ord_qty="10",
+                cntr_qty="4",
+                ord_remnq="0",
+                cntr_uv="70000",
+                mdfy_cncl="만료",
+            )
+        )
+        result = await _full_run(FakeReader(detail))
+        if result.get("reconcile_run"):
+            run_ids.append(result["reconcile_run"]["run_id"])
+
+        outcome = next(
+            row
+            for row in result["reconciled"]
+            if row["client_order_id"] == client_order_id
+        )
+        assert outcome["verdict"] == "expired"
+        assert outcome["fill_action"] == "booked_partial"
+        assert outcome["action"] == "mark_expired"
+        assert not outcome.get("requires_manual_review")
+
+        stored = await _fetch(client_order_id)
+        assert stored.status == "expired"
+        assert stored.filled_qty == Decimal("4")
+        assert stored.journal_id is None
+        assert stored.trade_id is None
+        fills = await _fills(order_no)
+        assert [fill.filled_qty for fill in fills] == [Decimal("4")]
+        assert await _trade(order_no) is None
+        assert await _journals(symbol) == []
+
+        # The row left the scan: the next run finds nothing to do.
+        settled = await _full_run(FakeReader(detail))
+        assert settled["reconciled"] == []
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )

@@ -166,7 +166,11 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v70 (hk 4702): review.binance_trend_signals / binance_trend_intents (new ORM
 # tables via create_all) and their guard triggers, loaded from the production
 # migration 20261114_hk4702_trend_state so the DB tests run its exact DDL.
-SCHEMA_BOOTSTRAP_VERSION = 70
+# v71 (hk 4734): review.execution_ledger.broker and
+# review.execution_ledger_reconcile_runs.broker admit 'kiwoom' (additive
+# migration 20261115_hk4734_kiwoom_broker). The mirror below widens a persistent
+# test DB whose execution_ledger predates the change.
+SCHEMA_BOOTSTRAP_VERSION = 71
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2058,6 +2062,24 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_quotes_consumer_mutation()",
     # ---- #1175: execution_ledger quarantine (mirrors 20261001_t1175_ledger_quar).
+    # ---- hk 4734 (3797 T-P4): broker 'kiwoom' in both execution-ledger CHECKs
+    # (mirrors 20261115_hk4734_kiwoom_broker; the table itself is create_all's).
+    "ALTER TABLE review.execution_ledger "
+    "DROP CONSTRAINT IF EXISTS ck_execution_ledger_execution_ledger_broker",
+    "ALTER TABLE review.execution_ledger "
+    "DROP CONSTRAINT IF EXISTS execution_ledger_broker",
+    "ALTER TABLE review.execution_ledger "
+    "ADD CONSTRAINT ck_execution_ledger_execution_ledger_broker "
+    "CHECK (broker IN ('kis','upbit','toss','kiwoom'))",
+    "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT IF EXISTS "
+    "ck_execution_ledger_reconcile_runs_execution_ledger_runs_broker",
+    "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT IF EXISTS "
+    "execution_ledger_runs_broker",
+    "ALTER TABLE review.execution_ledger_reconcile_runs DROP CONSTRAINT IF EXISTS "
+    "ck_execution_ledger_reconcile_runs_runs_broker",
+    "ALTER TABLE review.execution_ledger_reconcile_runs ADD CONSTRAINT "
+    "ck_execution_ledger_reconcile_runs_runs_broker "
+    "CHECK (broker IN ('kis','upbit','kiwoom'))",
     "ALTER TABLE review.execution_ledger "
     "ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMP WITH TIME ZONE",
     "ALTER TABLE review.execution_ledger "

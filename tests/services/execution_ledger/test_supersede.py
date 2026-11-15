@@ -285,3 +285,38 @@ def test_manual_import_rows_neither_witness_nor_count() -> None:
 def test_all_zero_order_ids_share_one_identity(raw: str) -> None:
     assert s.normalize_order_id(raw) == "0"
     assert s.normalize_order_id("") == ""
+
+
+def test_kiwoom_mock_order_id_is_one_identity_whatever_its_zero_padding() -> None:
+    """hk 4734 — Kiwoom ``ord_no`` leading zeros are normalized (ROB-1379 rule).
+
+    The place acknowledgement and kt00007/kt00009 may report the same number
+    with different padding; a fill must not be split into two identities.
+    """
+    base = {
+        "id": 1,
+        "broker": "kiwoom",
+        "account_mode": "mock",
+        "instrument_type": "equity_kr",
+        "symbol": "005930",
+        "side": "buy",
+        "currency": "KRW",
+        "filled_at": KR_FILL_TIME,
+        "source": "reconciler",
+    }
+    padded = SimpleNamespace(**{**base, "broker_order_id": "000123"})
+    bare = SimpleNamespace(**{**base, "broker_order_id": "123"})
+
+    identity = s.order_identity(padded)
+    assert identity == s.order_identity(bare)
+    assert identity[0] == "kiwoom"
+    assert identity[1] == "mock"
+    assert identity[6] == "123"
+    # The trading-day rule is unchanged ("규칙은 그대로", design §2.3): only KIS
+    # numbers are reused across days, so a Kiwoom identity carries no day.
+    assert identity[7] is None
+    # Same number, different broker → different order.
+    kis_like = SimpleNamespace(
+        **{**base, "broker": "kis", "account_mode": "live", "broker_order_id": "123"}
+    )
+    assert s.order_identity(kis_like) != identity

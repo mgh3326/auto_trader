@@ -34,6 +34,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import KST
 from app.models.review import KiwoomMockOrderLedger
+from app.services.execution_ledger.repository import ExecutionLedgerRepository
+from app.services.kiwoom_execution_ledger import (
+    build_kiwoom_execution_ledger_upsert,
+)
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
@@ -47,6 +51,7 @@ __all__ = (
     "CLIENT_ORDER_ID_PREFIX",
     "CLIENT_ORDER_ID_PREFIX_US",
     "DuplicateOrderIntent",
+    "FillBooking",
     "KiwoomMockLedgerPayloadConflict",
     "KiwoomMockOrderLedgerService",
     "KiwoomMockPlaceRecorder",
@@ -138,12 +143,23 @@ _RECONCILE_SOURCE_STATUSES: Final = frozenset(
 #: ``partial`` is absent too: a booked partial fill must never become a no-fill
 #: terminal row, or T-P4 would lose the fill it still has to book.
 _RECONCILE_TERMINAL_SOURCE_STATUSES: Final = frozenset({"accepted", "pending"})
+#: A row whose fill is booked may still be closed by a terminal broker verdict
+#: that carried the same fill (``close_filled_as_terminal``), but only once the
+#: whole fill is booked. ``mark_terminal`` never takes these sources.
+_FILLED_SOURCE_STATUSES: Final = frozenset({"partial", "filled"})
 _RECONCILE_TERMINAL_TARGETS: Final = frozenset({"expired", "cancelled", "rejected"})
 _LIFECYCLE_FOR_TERMINAL: Final = {
     "expired": "expired",
     "cancelled": "cancelled",
     "rejected": "failed",
 }
+#: Lifecycle labels a fill transition writes (kis_mock vocabulary).
+_LIFECYCLE_FOR_FILL: Final = {"partial": "partial", "filled": "filled"}
+#: Only these source statuses may book a fill. ``uncertain`` is deliberately
+#: absent (I3: its only resolution is promotion to ``accepted``). ``filled`` is
+#: present so a replayed run of the same terminal evidence books nothing and
+#: still finds the row.
+_OPEN_FILL_STATUSES: Final = frozenset({"accepted", "pending", "partial", "filled"})
 
 
 class KiwoomMockTransitionRefused(Exception):
@@ -295,6 +311,29 @@ _PAYLOAD_FIELDS: Final = (
 )
 
 
+@dataclass(frozen=True)
+class FillBooking:
+    """Detached summary of one broker-evidence fill booking (T-P4).
+
+    Carries the receipt of the ``execution_ledger`` delta so the kernel can
+    report it without reading the order row again after the session closed.
+    """
+
+    ledger_id: int
+    client_order_id: str
+    broker_order_id: str
+    #: ``booked_partial`` / ``booked_filled`` when this run booked a delta,
+    #: ``noop_already_booked`` when the broker evidence added nothing new.
+    action: str
+    delta_qty: Decimal
+    cumulative_qty: Decimal
+    #: Price of this delta (derived from the cumulative notionals), not VWAP.
+    avg_price: Decimal
+    status: str
+    execution_ledger_row_id: int | None
+    fill_seq: int | None
+
+
 class KiwoomMockOrderLedgerService:
     """The only writer of ``review.kiwoom_mock_order_ledger`` (hard rule 5)."""
 
@@ -418,19 +457,22 @@ class KiwoomMockOrderLedgerService:
     # ------------------------------------------------------------------
 
     async def list_reconcile_candidates(
-        self, *, limit: int, account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK
+        self,
+        *,
+        limit: int,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
     ) -> tuple[list[KiwoomMockOrderLedger], int]:
         """Open + uncertain place rows, oldest first, plus the open total.
 
         Scoped to one account mode: a KR scan must never classify a US row.
         """
         profile = account_profile(account_mode)
-        where = (
+        where = [
             KiwoomMockOrderLedger.account_mode == account_mode,
             KiwoomMockOrderLedger.market == profile.market,
             KiwoomMockOrderLedger.operation_kind == "place",
             KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES),
-        )
+        ]
         total = (
             await self._db.execute(
                 select(func.count()).select_from(KiwoomMockOrderLedger).where(*where)
@@ -509,6 +551,64 @@ class KiwoomMockOrderLedgerService:
         await self._db.refresh(row)
         return row
 
+    async def close_filled_as_terminal(
+        self,
+        *,
+        ledger_id: int,
+        status: str,
+        reason: str,
+        filled_quantity: int,
+        detail: dict[str, Any] | None = None,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+    ) -> KiwoomMockOrderLedger:
+        """Close a partially filled row whose whole fill is booked.
+
+        ``mark_terminal`` refuses a ``partial``/``filled`` source on purpose: a
+        *no-fill* close must never swallow a booked fill. This is the other
+        case — a terminal broker verdict that still carried a positive fill.
+        It is allowed only once the row's booked cumulative quantity equals the
+        verdict's ``filled_quantity``, so the close adds no evidence loss and
+        the row finally leaves the reconcile scan instead of being re-booked as
+        a no-op forever.
+
+        ``filled_quantity`` is the broker's cumulative fill on this verdict
+        (the exact int the classifier reported). A row that booked less (a
+        refused or failed delta) is refused, never closed over unbooked shares.
+        """
+        if status not in _RECONCILE_TERMINAL_TARGETS:
+            raise ValueError(
+                f"close_filled_as_terminal status must be one of "
+                f"{sorted(_RECONCILE_TERMINAL_TARGETS)}; got {status!r}"
+            )
+        if isinstance(filled_quantity, bool) or not isinstance(filled_quantity, int):
+            raise TypeError("filled_quantity must be an exact int")
+        row = await self._lock_row(ledger_id, account_mode=account_mode)
+        if row.status not in _FILLED_SOURCE_STATUSES:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="source_status_not_filled",
+            )
+        booked = row.filled_qty or Decimal(0)
+        if filled_quantity <= 0 or booked != Decimal(filled_quantity):
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="fill_not_booked",
+            )
+        # Keep the booked quantity in the terminal detail: it is the audit trail
+        # for what the close consumed. The verdict's exact int is stored because
+        # the column's ``numeric(20, 8)`` scale would render as "4.00000000".
+        terminal_detail = {
+            "verdict": status,
+            "booked_filled_qty": str(filled_quantity),
+            **(detail or {}),
+        }
+        self._apply_terminal(row, status=status, reason=reason, detail=terminal_detail)
+        await self._db.commit()
+        await self._db.refresh(row)
+        return row
+
     async def promote_uncertain_to_accepted(
         self,
         *,
@@ -544,6 +644,166 @@ class KiwoomMockOrderLedgerService:
         await self._db.commit()
         await self._db.refresh(row)
         return row
+
+    async def record_fill(
+        self,
+        *,
+        ledger_id: int,
+        filled_quantity: int,
+        average_price: int,
+        observed_at: datetime | None = None,
+    ) -> FillBooking:
+        """Book the broker-evidence fill delta of one open order (I4, I9).
+
+        ``filled_quantity`` is the broker's *cumulative* filled quantity. The
+        delta against the quantity already recorded on the row is upserted into
+        ``execution_ledger`` — through :class:`ExecutionLedgerRepository`, the
+        only writer — in the same transaction that advances the row, so a re-run
+        of identical evidence books nothing new and finds the row already
+        advanced.
+
+        A regressed or over-order quantity is refused (the broker and the row
+        disagree, so neither is safe to book); ``uncertain`` rows are refused
+        because promotion is their only lawful resolution (I3).
+        """
+        if isinstance(filled_quantity, bool) or not isinstance(filled_quantity, int):
+            raise TypeError("filled_quantity must be an exact int")
+        if isinstance(average_price, bool) or not isinstance(average_price, int):
+            raise TypeError("average_price must be an exact int")
+        if average_price <= 0:
+            raise ValueError("average_price must be positive")
+
+        row = await self._lock_row(ledger_id)
+        if row.status not in _OPEN_FILL_STATUSES:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="source_status_not_open",
+            )
+        if row.broker_order_id is None:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="no_broker_order_id",
+            )
+        if row.side not in {"buy", "sell"}:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="side_unknown",
+            )
+        if row.quantity is None or row.quantity <= 0:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="order_quantity_unknown",
+            )
+
+        previous = row.filled_qty or Decimal(0)
+        cumulative = Decimal(filled_quantity)
+        if cumulative < previous:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="fill_quantity_regressed",
+            )
+        if cumulative > row.quantity:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="fill_exceeds_order_quantity",
+            )
+
+        now = observed_at or datetime.now(UTC)
+        status = "filled" if cumulative >= row.quantity else "partial"
+        delta = cumulative - previous
+        previous_average = row.avg_fill_price
+        if (
+            delta == 0
+            and previous_average is not None
+            and Decimal(average_price) != previous_average
+        ):
+            # The broker changed its cumulative average without filling another
+            # share. The stored average describes the booked fills and is the
+            # basis the next delta's price is derived from, so replacing it
+            # here would silently misprice that delta. Refuse and leave the row
+            # untouched for a manual look; a later fill still books against the
+            # booked basis.
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="average_price_changed_without_fill",
+            )
+        row_id: int | None = None
+        fill_seq: int | None = None
+        if delta > 0:
+            try:
+                fill = build_kiwoom_execution_ledger_upsert(
+                    ledger_id=row.id,
+                    broker_order_id=str(row.broker_order_id),
+                    symbol=row.symbol,
+                    side=str(row.side),
+                    previous_filled_qty=previous,
+                    previous_average_price=previous_average,
+                    filled_quantity=filled_quantity,
+                    average_price=average_price,
+                    observed_at=now,
+                    correlation_id=row.correlation_id,
+                )
+            except ValueError as exc:
+                # The cumulative average cannot be split into an incremental
+                # price: refuse rather than book a price we cannot derive.
+                raise KiwoomMockTransitionRefused(
+                    ledger_id=ledger_id,
+                    status=row.status,
+                    reason=f"incremental_price_unavailable:{exc}",
+                ) from exc
+            _status, row_id = await ExecutionLedgerRepository(self._db).upsert_fill(
+                fill
+            )
+            fill_seq = fill.fill_seq
+            delta_price = fill.filled_price
+            action = f"booked_{status}"
+        else:
+            delta_price = Decimal(0)
+            action = "noop_already_booked"
+
+        row.status = status
+        row.lifecycle_state = _LIFECYCLE_FOR_FILL[status]
+        row.filled_qty = cumulative
+        if delta > 0:
+            # Never store an average that no booked delta justifies.
+            row.avg_fill_price = Decimal(average_price)
+        row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+        row.reconciled_at = now
+        # Merge, never replace: earlier reconcile detail survives a booking.
+        detail = {
+            **(row.last_reconcile_detail or {}),
+            "action": action,
+            "basis": "broker_evidence",
+            "verdict": status,
+            "previous_filled_qty": str(previous),
+            "broker_cumulative_filled_qty": str(cumulative),
+            "broker_cumulative_avg_price": str(Decimal(average_price)),
+            "execution_ledger_row_id": row_id,
+        }
+        if delta > 0:
+            detail["delta_fill_price"] = str(delta_price)
+        row.last_reconcile_detail = detail
+        await self._db.commit()
+        await self._db.refresh(row)
+        return FillBooking(
+            ledger_id=row.id,
+            client_order_id=row.client_order_id,
+            broker_order_id=str(row.broker_order_id),
+            action=action,
+            delta_qty=delta,
+            cumulative_qty=cumulative,
+            avg_price=delta_price if delta > 0 else Decimal(average_price),
+            status=status,
+            execution_ledger_row_id=row_id,
+            fill_seq=fill_seq,
+        )
 
     @staticmethod
     def _apply_terminal(

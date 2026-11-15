@@ -18,8 +18,8 @@ from pydantic import (
 
 from app.core.timezone import trade_day_kst
 
-Broker = Literal["kis", "upbit", "toss"]
-ReconcileRunBroker = Literal["kis", "upbit"]
+Broker = Literal["kis", "upbit", "toss", "kiwoom"]
+ReconcileRunBroker = Literal["kis", "upbit", "kiwoom"]
 AccountMode = Literal["live", "mock"]
 Side = Literal["buy", "sell"]
 Currency = Literal["KRW", "USD"]
