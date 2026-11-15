@@ -5,6 +5,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -80,7 +84,7 @@ def test_every_mode_refuses_before_network_or_db(
     monkeypatch, mode, confirm, trend, futures, message
 ):
     monkeypatch.setattr(runner, "TrendDemoClient", Boom)
-    monkeypatch.setattr(runner, "AsyncSessionLocal", Boom())
+    monkeypatch.setattr(runner, "_AsyncSessionLocal", Boom())
     set_gates(monkeypatch, trend, futures)
     with pytest.raises(SystemExit, match=message):
         asyncio.run(runner._run(args_for(mode, confirm=confirm)))
@@ -91,7 +95,7 @@ def test_every_mode_refuses_before_network_or_db(
 
 def test_readiness_reports_facts_without_http_db_or_credentials(monkeypatch, capsys):
     monkeypatch.setattr(runner, "TrendDemoClient", Boom)
-    monkeypatch.setattr(runner, "AsyncSessionLocal", Boom())
+    monkeypatch.setattr(runner, "_AsyncSessionLocal", Boom())
     set_gates(monkeypatch, "true", "true")
     monkeypatch.setenv("BINANCE_TREND_ALERT_ENABLED", "true")
     code = asyncio.run(runner._run(args_for("readiness")))
@@ -111,7 +115,35 @@ def test_readiness_reports_facts_without_http_db_or_credentials(monkeypatch, cap
     }
 
 
-def test_the_parser_exposes_exactly_the_four_exclusive_modes():
+def test_readiness_runs_in_a_clean_process_without_db_env_or_credentials():
+    """The readiness contract: no DATABASE_URL, no broker credential, exit 0."""
+    repo_root = Path(__file__).resolve().parents[5]
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "BINANCE_TREND_DEMO_ENABLED": "true",
+        "BINANCE_FUTURES_DEMO_ENABLED": "true",
+    }
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.binance_trend_demo",
+            "--readiness",
+            "--confirm-demo",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip())
+    assert out["lane"] == "TREND-TSMOM-v1"
+    assert out["scheduler"] == "none"
+
+
+def test_the_parser_exposes_the_four_modes_and_the_manage_only_loop():
     parser = runner._parser()
     for flag in ("--once", "--loop", "--manage-only", "--readiness"):
         assert parser.parse_args([flag, "--confirm-demo"]) is not None
@@ -119,6 +151,12 @@ def test_the_parser_exposes_exactly_the_four_exclusive_modes():
         parser.parse_args(["--once", "--loop", "--confirm-demo"])
     with pytest.raises(SystemExit):
         parser.parse_args(["--confirm-demo"])  # a mode is required
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--readiness", "--manage-only", "--confirm-demo"])
+    bare = parser.parse_args(["--manage-only", "--confirm-demo"])
+    assert bare.once is True and bare.loop is False and bare.manage_only is True
+    loop = parser.parse_args(["--loop", "--manage-only", "--confirm-demo"])
+    assert loop.loop is True and loop.once is False and loop.manage_only is True
 
 
 # -------------------------------------------------------------- ticks
@@ -152,7 +190,7 @@ def fake_executor(monkeypatch):
     RecordingExecutor.ticks = 0
     RecordingExecutor.result_events = (TrendEvent("BTCUSDT", "no_signal"),)
     monkeypatch.setattr(runner, "TrendExecutor", RecordingExecutor)
-    monkeypatch.setattr(runner, "AsyncSessionLocal", lambda: Session())
+    monkeypatch.setattr(runner, "_AsyncSessionLocal", lambda: Session())
     monkeypatch.setattr(runner, "BinanceDemoLedgerService", lambda db: object())
     return RecordingExecutor
 

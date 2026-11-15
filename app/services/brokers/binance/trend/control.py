@@ -71,10 +71,12 @@ _ALERT_EVENTS = frozenset(
         "blocked",
         "entry_conflict_blocked",
         "entry_conflict_rejected",
+        "entry_ledger_incomplete",
         "exposure_mismatch",
         "partial_entry_cancel_unconfirmed",
         "partial_entry_exposure_open",
         "partial_entry_stop_breached",
+        "reconciled_ledger_incomplete",
     }
 )
 _UNCERTAIN_SUFFIX = "_uncertain"

@@ -32,7 +32,6 @@ import os
 import signal
 from typing import Any
 
-from app.core.db import AsyncSessionLocal, engine
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
 from app.services.brokers.binance.trend.alerting import (
     SEND_TIMEOUT_SECONDS,
@@ -170,10 +169,10 @@ async def _run_ticks(
     stop: _StopState,
     heartbeat: RunnerHeartbeat | None,
 ) -> int:
-    once = args.once or args.manage_only
+    once = not args.loop
     try:
         while True:
-            async with AsyncSessionLocal() as db:
+            async with _AsyncSessionLocal() as db:
                 executor = TrendExecutor(
                     client=client,
                     strategy=strategy,
@@ -228,6 +227,24 @@ async def _run_ticks(
         raise
 
 
+_AsyncSessionLocal: Any = None
+_engine: Any = None
+
+
+def _load_db() -> None:
+    """Import the settings-dependent DB module only on the runtime path.
+
+    ``app.core.db`` builds the settings singleton (DATABASE_URL, credentials)
+    at import, and resolving its lazy ``engine`` builds the engine. The
+    readiness mode promises none of that, so it cannot be imported at module
+    scope.
+    """
+    global _AsyncSessionLocal, _engine
+    from app.core.db import AsyncSessionLocal, engine
+
+    _AsyncSessionLocal, _engine = AsyncSessionLocal, engine
+
+
 async def _run(args: argparse.Namespace) -> int:
     _guard_cli(args)
     if args.readiness:
@@ -235,15 +252,16 @@ async def _run(args: argparse.Namespace) -> int:
             json.dumps(_readiness_report(dict(os.environ)), sort_keys=True), flush=True
         )
         return 0
+    _load_db()
     client = TrendDemoClient.from_env()
     strategy = TrendStrategy(
         lookback_days=SEAL_LOOKBACK_DAYS,
         hard_stop_fraction=SEAL_HARD_STOP_FRACTION,
     )
-    state = TrendStateService(AsyncSessionLocal)
+    state = TrendStateService(_AsyncSessionLocal)
     monitor = _build_monitor()
     stop = _StopState()
-    heartbeat = RunnerHeartbeat(engine) if args.loop else None
+    heartbeat = RunnerHeartbeat(_engine) if args.loop else None
     try:
         if monitor.enabled:
             _install_stop_signals(stop)
@@ -270,37 +288,54 @@ async def _run(args: argparse.Namespace) -> int:
         await client.aclose()
 
 
+class _Parser(argparse.ArgumentParser):
+    """Validate mode combinations, including the manage-only loop."""
+
+    def parse_args(self, *args: Any, **kwargs: Any) -> argparse.Namespace:
+        parsed = super().parse_args(*args, **kwargs)
+        if parsed.readiness and parsed.manage_only:
+            self.error("--readiness cannot be combined with --manage-only")
+        if not (parsed.once or parsed.loop or parsed.readiness or parsed.manage_only):
+            self.error("one of --once/--loop/--manage-only/--readiness is required")
+        if not (parsed.once or parsed.loop or parsed.readiness):
+            # Bare --manage-only stays a single management tick; with --loop it
+            # keeps managing every 60 s (the retirement procedure).
+            parsed.once = True
+        return parsed
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         description=(
             "TREND-TSMOM-v1 Futures Demo runner (manual, default disabled). "
-            "Modes are mutually exclusive: --once / --loop / --manage-only / "
-            "--readiness."
+            "Modes: --once / --loop / --manage-only / --readiness; "
+            "--manage-only may modify --once (default) or --loop."
         )
     )
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument("--once", action="store_true", help="Run one tick and exit.")
     mode.add_argument(
         "--loop",
         action="store_true",
         help=(
             f"Run a tick every {TICK_SECONDS}s in the foreground. No scheduler; "
-            "stop it with Ctrl-C."
-        ),
-    )
-    mode.add_argument(
-        "--manage-only",
-        dest="manage_only",
-        action="store_true",
-        help=(
-            "One tick that only recovers reservations, keeps uncertain intents "
-            "blocked and manages held positions. It never opens an entry."
+            "stop it with Ctrl-C. Combine with --manage-only to only manage."
         ),
     )
     mode.add_argument(
         "--readiness",
         action="store_true",
         help="No-secret gate/envelope report. No HTTP, no DB, no credentials.",
+    )
+    parser.add_argument(
+        "--manage-only",
+        dest="manage_only",
+        action="store_true",
+        help=(
+            "Only recover reservations, keep uncertain intents blocked and "
+            "manage held positions; never open an entry. One tick by default, "
+            "every tick with --loop."
+        ),
     )
     parser.add_argument(
         "--confirm-demo",

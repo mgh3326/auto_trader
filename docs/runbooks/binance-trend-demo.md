@@ -150,8 +150,12 @@ watcher는 러너가 `--loop` 동안 잡고 있는 세션 advisory lock과 그 b
 넘으면 1회 알린다. 한 번도 못 본 잠금 부재는 "아직 시작 안 함"과 구분할 수 없어
 알리지 않고, DB 읽기 실패는 `absent`가 아니라 `unreadable`로 알린다. H5와 달리 이
 레인에는 durable tick stamp가 없으므로 **본 뒤의 잠금 부재가 사망 신호**다 — 그래서
-watcher는 러너의 첫 tick 뒤에 시작하고, 정지할 때는 watcher를 먼저 멈춘다. SIGKILL,
-OOM kill, 호스트 상실을 잡는 유일한 경로다.
+watcher는 러너의 첫 tick 뒤에 시작하고, 정지할 때는 watcher를 먼저 멈춘다.
+
+이 watcher가 잡는 것은 **러너 프로세스의 사망**(SIGKILL, OOM kill)이다. 같은 NCP
+호스트에서 도는 watcher는 **호스트 자체의 손실**까지는 잡지 못한다(둘이 함께 죽는다).
+호스트 손실은 기존 NCP 호스트 감시(desk 소관)에 의존하며, 이 런북은 별도 호스트 배치를
+요구하지 않는다.
 
 ## 6. 시작 검증·T0·correlation id
 
@@ -231,9 +235,10 @@ tmux kill-session -t trend-runner
 ```
 
 4. truth gate(§4)를 다시 돈다. 열린 TREND 포지션이 보이면 러너만이 그것을 관리할 수
-   있다: §9로 재시작하거나, 레인을 은퇴시키는 경우 §10의 manage-only tick으로 닫는다.
-   데모 UI에서 손으로 닫지 마라 — state가 `holding`으로 남아 이후 모든 청산이 브로커
-   position 대사에 실패한다. 감시 없이 두지 않는다.
+   있다: §9로 재시작하거나, 레인을 은퇴시키는 경우 **§10 절차로 flat이 확인될 때까지
+   계속 관리한다**. manage-only 한 번은 강제 청산이 아니다. 데모 UI에서 손으로 닫지
+   마라 — state가 `holding`으로 남아 이후 모든 청산이 브로커 position 대사에 실패한다.
+   감시 없이 두지 않는다.
 
 러너를 먼저 멈추면 watcher가 10분 뒤 `heartbeat_missed`를 1회 보낸다. 예상된 동작이며
 사고가 아니다.
@@ -280,6 +285,36 @@ docker run --rm --network host --env-file "$env_file" -e BINANCE_TREND_DEMO_ENAB
 나오면 계약 위반이므로 즉시 멈추고 보고한다. 같은 명령에서 `--manage-only`를
 `--once`로 바꾸면 정상 tick 1회(진입 포함)다.
 
+🔴 **manage-only 한 번은 포지션을 닫지 않는다.** manage-only는 holding과 같은 정상
+청산 조건(hard stop·신호 반전·time exit)을 판정할 뿐이며, 조건이 아직 아니면 포지션은
+열린 채 남는다. 은퇴·정지 절차로 포지션을 정리할 때는 **flat이 확인될 때까지 반복**한다.
+
+```bash
+docker run --rm --network host --env-file "$env_file" -e BINANCE_TREND_DEMO_ENABLED=true -e BINANCE_FUTURES_DEMO_ENABLED=true "$image" /app/.venv/bin/python -m scripts.binance_trend_demo --loop --manage-only --confirm-demo
+```
+
+`--loop --manage-only`는 60초마다 관리 tick만 돌린다(신규 진입 없음). 끝낼 때는
+Ctrl-C. 반복 실행 대신 이 foreground loop를 써도 된다.
+
+flat 확인은 truth gate다. `account_flat_vs_trend_state`가 PASS이고 `detail`이
+`flat_or_owned=0`이면 열린 TREND 포지션이 없다. 그 전까지는 감시를 멈추지 않는다.
+
+```bash
+docker run --rm --network host --env-file "$env_file" -e BINANCE_TREND_DEMO_ENABLED=true -e BINANCE_FUTURES_DEMO_ENABLED=true "$image" /app/.venv/bin/python -m scripts.binance_trend_truth_gate --confirm-demo
+```
+
+`holding` 신호가 남아 있는지도 state에서 확인한다(읽기 전용).
+
+```bash
+docker run --rm --network host --env-file "$env_file" "$image" /app/.venv/bin/python -c "import asyncio; from app.core.db import AsyncSessionLocal; from sqlalchemy import text; async def m():
+ async with AsyncSessionLocal() as db:
+  print(await db.scalar(text("SELECT count(*) FROM review.binance_trend_signals WHERE state='holding'")))
+asyncio.run(m())"
+```
+
+출력이 `0`이고 truth gate가 `flat_or_owned=0`일 때만 은퇴가 끝난 것이다. 하나라도
+남아 있으면 manage-only loop를 계속 돌린다.
+
 ```bash
 docker run --rm --network host --env-file "$env_file" -e BINANCE_TREND_DEMO_ENABLED=true -e BINANCE_FUTURES_DEMO_ENABLED=true "$image" /app/.venv/bin/python -m scripts.binance_trend_demo --once --confirm-demo
 ```
@@ -290,7 +325,9 @@ docker run --rm --network host --env-file "$env_file" -e BINANCE_TREND_DEMO_ENAB
   프로세스다.
 - 잔여 위험: watcher가 러너를 한 번도 보지 못한 채 러너가 죽으면(시작 전 또는 첫
   관측 전) 잠금 부재 알림이 나가지 않는다 — 운영 순서(러너 첫 tick → watcher)가 그
-  구간을 막는다. 의도된 정지에서 watcher를 먼저 끄지 않으면 `heartbeat_missed`가 1회
-  난다. 일시적 DB 오류는 러너를 죽이지 않고, 계속 실패하면 10분 뒤 stale 알림이 난다.
+  구간을 막는다. 호스트 자체가 죽으면 같은 호스트의 watcher도 죽으므로 이 watcher는
+  알리지 못하고, NCP 호스트 감시(desk 소관)가 그 구간을 맡는다. 의도된 정지에서
+  watcher를 먼저 끄지 않으면 `heartbeat_missed`가 1회 난다. 일시적 DB 오류는 러너를
+  죽이지 않고, 계속 실패하면 10분 뒤 stale 알림이 난다.
 - 알림 전송 실패·지연은 러너 tick을 바꾸지 못한다(타임아웃 5초, 예외 삼킴, tick
   알림은 백그라운드 태스크).

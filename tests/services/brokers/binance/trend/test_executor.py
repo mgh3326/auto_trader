@@ -697,9 +697,18 @@ async def test_an_evidenced_intent_whose_ledger_sync_failed_is_replayed(
     rig.ledger.record_filled = broken  # type: ignore[method-assign]
     first = await rig.tick()
     assert rig.events(first) == [("BTCUSDT", "entry_ledger_incomplete")]
+    from app.services.brokers.binance.trend import control
+
+    assert control.tick_failures(first.events)[0].bucket == "entry_ledger_incomplete"
     cid = next(iter(rig.state.intents))
     assert rig.state.intents[cid].state == "evidenced"
     assert next(iter(rig.state.signals.values())).state == "holding"
+    # The same failure on the reconcile path must also reach the classifier.
+    retried = await rig.tick()
+    assert ("BTCUSDT", "reconciled_ledger_incomplete") in rig.events(retried)
+    assert control.tick_failures(retried.events)[0].bucket == (
+        "reconciled_ledger_incomplete"
+    )
     rig.ledger.record_filled = real  # type: ignore[method-assign]
     second = await rig.tick()
     assert len(rig.client.sends) == 1  # replay never resends
