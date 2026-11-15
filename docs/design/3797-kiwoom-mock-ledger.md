@@ -88,17 +88,17 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 | `id` | BigInteger PK | autoincrement | 공통 |
 | `trade_date` | timestamptz NOT NULL | 송신(ACK) 시각 | kis_live:25 |
 | `trading_day` | Text NOT NULL | KR=KST `YYYYMMDD`, US=미국 거래일(ROB-1379 `us_trading_day_window`) | ROB-1379 거래일 전제 |
-| `symbol` / `raw_symbol` | Text NOT NULL | DB 형태 `.` 구분(하드룰 8) + 브로커 원문 | execution_ledger 동일 쌍 |
+| `symbol` / `raw_symbol` | Text NOT NULL | 현재 writer는 두 컬럼에 같은 입력값을 쓴다(브로커 원문 별도 보존은 없다) | `app/services/kiwoom_mock_order_ledger_service.py:903-904` |
 | `instrument_type` | Text NOT NULL | `equity_kr`/`equity_us` | kis_live:27 |
 | `market` | Text NOT NULL CHECK `IN ('kr','us')` | account_mode 와 정합: `kiwoom_mock↔kr`, `kiwoom_mock_us↔us` | toss CHECK `app/models/review.py:715` |
 | `side` / `order_type` | Text | side `buy|sell`; order_type KR `limit` 고정(`trde_tp='0'` `domestic_orders.py:91`), US `limit|market`(`US_SUPPORTED_TRDE_TP` `constants.py:183-185`) | — |
-| `operation_kind` | Text CHECK `IN ('place','modify','cancel')` | 정정·취소도 같은 원장에 행으로 남긴다 | toss `:706-710` |
+| `operation_kind` | Text CHECK `IN ('place','modify','cancel')` | 스키마는 정정·취소도 같은 원장 행으로 표현할 수 있게 한다 — 현재 송신 경로는 `place` 만 쓴다 | toss `:706-710` |
 | `quantity` / `price` / `amount` | Numeric | 지정가 필수(KR), 시장가는 price NULL 허용(US) | kis_live:30-32 |
 | `currency` | Text CHECK `IN ('KRW','USD')` | market 과 정합 | — |
 | `client_order_id` | Text UNIQUE NOT NULL | **우리가 발행하는 멱등키**(아래 §2.2). 브로커 필드가 없어 wire에는 안 나간다 | toss `clientOrderId` |
 | `idempotency_key` | Text NOT NULL | `order_send_intents` 예약과 같은 값 | ROB-653 |
-| `approval_hash` | Text NULL | ROB-651/653 토큰 digest — 모의는 `optional` 모드 면제 경로와 별개로 저장해 실전과 동형 유지 | `broker-and-ledger-contracts.md:919-920` |
-| `correlation_id` / `report_item_uuid` | Text / UUID NULL | 신호 원장과 리포트 귀속 | kis_mock_signal:38-41 |
+| `approval_hash` | Text NULL | kis_live 동형 자리지만 현재 모의 place 경로는 채우지 않는다(NULL) | `app/services/kiwoom_mock_order_ledger_service.py:916`, `app/services/kiwoom_mock_place.py:950-958,1464-1473` |
+| `correlation_id` / `report_item_uuid` | Text / UUID NULL | 스키마는 두지만 현재 place 경로는 채우지 않는다 — 귀속 `correlation_id` 는 `kiwoom_mock_signal_ledger` 가 소유 | `app/services/kiwoom_mock_order_ledger_service.py:917-918`, `app/services/kiwoom_mock_place.py:950-958,1464-1473` |
 | `broker_order_id` | Text NULL | `ord_no`(KR)·US ord_no(문서상 9자리, 수용 1–18 `us_orders.py:20-21`) | — |
 | `original_order_id` | Text NULL | modify/cancel 이 가리키는 원주문 | toss |
 | `account_mode` | Text CHECK `IN ('kiwoom_mock','kiwoom_mock_us')` | tooling 고정값과 동일 `orders_kiwoom_variants.py:53` | — |
@@ -106,10 +106,10 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 | `status` | Text CHECK (아래) | `accepted`/`rejected`/`pending`/`partial`/`filled`/`cancelled`/`expired`/`replaced`/`uncertain`/`anomaly`/`requires_manual_review` | toss `:716-724` + `uncertain` 추가 |
 | `lifecycle_state` | Text | kis_mock 상태 어휘 재사용 `d4f1c5a3e2b1:20-30` (`planned`~`anomaly`) | — |
 | `response_code`/`response_message`/`raw_response` | Text/JSONB | 브로커 `return_code`/`return_msg` + 원문 | kis_live:42-44 |
-| `filled_qty`/`avg_fill_price`/`fee` | Numeric | 대사가 채움 | kis_live:54-55 |
-| `trade_id`/`journal_id` | BigInt NULL | full 모드 부킹 결과 | kis_live:56-57 |
-| `reconcile_attempts`/`last_reconcile_detail`/`reconciled_at` | Int/JSONB/timestamptz | 대사 이력 | kis_mock lifecycle `d4f1c5a3e2b1:52-69` |
-| `strategy`/`thesis`/`reason`/`notes`/`exit_intent`/`exit_reason`/`indicators_snapshot` | Text/JSONB | 저널 부킹 재료 | kis_live:46-53 |
+| `filled_qty`/`avg_fill_price`/`fee` | Numeric | 대사가 `filled_qty`·`avg_fill_price` 를 채우고 `fee` 는 모의 응답에 없어 NULL 유지 | `app/services/kiwoom_mock_order_ledger_service.py:771-776`, `app/services/kiwoom_execution_ledger.py:138-142` |
+| `trade_id`/`journal_id` | BigInt NULL | 현재 full 대사는 채우지 않는다 — journal/trade 부킹은 hk 4802 공백 | `app/services/kiwoom_mock_reconcile.py:22-25,673-679` |
+| `reconcile_attempts`/`last_reconcile_detail`/`reconciled_at` | Int/JSONB/timestamptz | 대사 이력 | `app/services/kiwoom_mock_order_ledger_service.py:777-792` |
+| `strategy`/`thesis`/`reason`/`notes`/`exit_intent`/`exit_reason`/`indicators_snapshot` | Text/JSONB | kis_live 동형 맥락 컬럼 — 현재 place 경로는 `strategy`/`reason` 도 넘기지 않아 NULL이고, 귀속·주문 맥락은 신호/제안 원장이 소유한다 | `app/models/review.py:987-993`, `app/services/kiwoom_mock_order_ledger_service.py:926-927` |
 | `created_at`/`updated_at` | timestamptz | | 공통 |
 
 인덱스·유일성:
@@ -119,8 +119,11 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
   가능성을 KIS 와 동일하게 가정(ROB-1379 전제 `broker-and-ledger-contracts.md:399-401`).
   **미검증 전제**: Kiwoom `ord_no` 의 재사용 여부는 공식 문서에서 확인되지 않았다
   (research 행 4 could not verify) — 날짜 포함 유일키는 재사용이 없어도 안전하다.
-- `UNIQUE(operation_kind, original_order_id)` 부분 인덱스(`operation_kind IN ('modify','cancel')`
-  AND 상태가 비종결) — 같은 원주문에 대한 동시 정정·취소 경쟁을 막는다.
+- 부분 유일 인덱스 `uq_kiwoom_mock_order_ledger_open_operation` on
+  `(account_mode, trading_day, original_order_id)` — 술어는
+  `operation_kind IN ('modify','cancel') AND status NOT IN ('rejected','filled','cancelled','expired','replaced')`.
+  같은 원주문에 대한 동시 정정·취소 경쟁을 막는다(`app/models/review.py:932-939`,
+  `alembic/versions/20261115_hk4703_kiwoom_ledger.py:277-284`).
 - `ix (status)`, `ix (market, symbol)`, `ix (report_item_uuid)` — 대사·리포트 스캔.
 - CHECK `acknowledged 계열은 broker_order_id NOT NULL` (`status='accepted'` 이면
   `broker_order_id IS NOT NULL`) — NH r4-Q3 에서 입증된 형태.
@@ -131,41 +134,53 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 `domestic_orders.py:87-95`)에 **클라이언트 멱등 필드가 없다** — NH 와 같은 구조적 상황이므로
 송신 전 예약이 유일한 이중송신 방어다.
 
-- `client_order_id`/`idempotency_key` = `kwoomm-<sha16>(canonical|거래일소금|rung)`
+- `client_order_id`/`idempotency_key` = `kwoomm-<sha16>(canonical|거래일소금|rung)` (KR),
+  `kwoomus-<sha16>(canonical|거래일소금|rung)` (US — market/order_type 도 canonical 에 들어간다)
   (Toss `tossp6-` 패턴 `broker-and-ledger-contracts.md:919`). 같은 거래일 동일 주문은 dedupe,
   익일은 신규, 같은 날 진짜 동일 두 번째는 rung 판별자로 분리.
 - 송신 직전 `review.order_send_intents` 에 `(account_scope='kiwoom_mock'|'kiwoom_mock_us',
   idempotency_key)` INSERT — UNIQUE 충돌은 브로커 호출 **전**에 fail-closed.
-- 송신 후 결과 세 갈래(이미 코드에 존재 `orders_kiwoom_variants.py:383-416`):
+- 송신 후 결과 세 갈래(구현은 `app/services/kiwoom_mock_place.py` 의 공통 꼬리
+  `_execute_reserved_send` 와 시장별 classifier):
   1. `KiwoomPreDispatchError` — 미송신 확정 → 원장 0행, 예약 해제(같은 키 재시도 가능).
-  2. 정상 응답 — `return_code==0` 이면 `accepted`(ord_no 필요, 없으면 `uncertain`),
-     비-0 이면 `rejected`(예약은 소비된 채 종결 — 브로커가 거절했으므로 재송신 의미 없음).
+  2. 정상 응답 — `return_code==0` 이면 `accepted`(KR 은 `ord_no`/`order_no` 단일 안전값,
+     US 는 `validate_us_order_id` 통과 1–18자리 단일값이 필요하고 없으면 `uncertain`),
+     명시적 비-0 `return_code` 면 `rejected`(예약은 소비된 채 종결 — 브로커가 거절했으므로 재송신 의미 없음).
   3. `_dispatch_unknown_response` — 송신 여부 불명 → `uncertain` 행 + 예약 **유지**.
      대사가 양성 증거로 해소할 때까지 같은 키 재송신 금지(NH S3 와 동일 논리).
 
 ### 2.3 `execution_ledger` 로의 도달
 
-| 항목 | 값 | 근거 |
-|---|---|---|
-| `broker` | `'kiwoom'` | CHECK 확장 필요 — 현재 `('kis','upbit','toss')` `app/models/execution_ledger.py:58` |
-| `account_mode` | `'mock'` | CHECK `('live','mock')` `:75` — mock 값 재사용 (KIS mock 과 동일 규약) |
-| `venue` | KR=`'krx'`, US=거래소 코드(`'NASD'` 등) | normalizers 관례 `app/services/execution_ledger/normalizers.py:329,360` |
-| `instrument_type` | `equity_kr`/`equity_us` | execution_ledger ENUM `2026_05_13_rob211:25-31` |
-| `broker_order_id` | 원장 `broker_order_id` | — |
-| `fill_seq` | `_stable_int32_hash` 계열 결정적 값 또는 delta 순번 | toss `app/services/toss_execution_ledger.py:17-19,66-68` |
-| `source` | `'reconciler'`(대사 부킹) / `'manual_import'`(운영자 임포트) | CHECK `('reconciler','websocket','manual_import')` — websocket 소스는 없다(키움 fillwire 없음) |
-| `filled_at`/`filled_at_basis` | 브로커 체결 시각 없으면 `observed_at` | hk 4186 기반 컬럼, toss `:21-46` 패턴 |
-| `fee_amount`/`fee_basis`/`tax_amount` | 모의 응답이 수수료를 주면 `broker_reported`, 아니면 `not_provided` | toss `:88-92` |
+T-P4(hk 4734)가 구현한 현재 형태는 **KR full 대사만** `execution_ledger` 에 쓴다.
+US(`kiwoom_mock_us`)는 terminal-only 범위이고, `market='us'` full mode 는 쓰기 전에 거부된다
+(`app/services/kiwoom_mock_reconcile.py:370-377`).
 
-- ROB-1379 정체성(`broker, account_mode, instrument_type, symbol, side, currency,
-  선행0 정규화 주문번호, 거래일` `broker-and-ledger-contracts.md:395-407`)에 broker 값만
-  추가되고 규칙은 그대로다. Kiwoom `ord_no` 선행0 정규화 규칙을 supersede 모듈에 등록한다.
-- 격리 리더 규약: 원장을 fill 로 읽는 모든 새 리더는 `execution_ledger_in_effect()`
-  (`quarantined_at IS NULL`)를 AND 한다 `app/models/execution_ledger.py:142-152`.
+| 항목 | 현재 구현 | 근거 |
+|---|---|---|
+| `broker` | `'kiwoom'` — `execution_ledger` CHECK 는 `('kis','upbit','toss','kiwoom')`, `execution_ledger_reconcile_runs` CHECK 는 `('kis','upbit','kiwoom')` | `alembic/versions/20261115_hk4734_kiwoom_broker.py:50-85`, `alembic/versions/20261115_hk4734_kiwoom_validate.py:31-42` |
+| `account_mode` | `'mock'` | `app/services/kiwoom_execution_ledger.py:33-35` |
+| `venue`/`instrument_type`/`currency` | `'krx'` / `'equity_kr'` / `'KRW'` (KR only) | `app/services/kiwoom_execution_ledger.py:35-37` |
+| `broker_order_id` | 원장 `broker_order_id` — `record_fill` 은 broker order id 없는 행을 거부 | `app/services/kiwoom_mock_order_ledger_service.py:683-688` |
+| `fill_seq` | `_stable_int32_hash(f"{broker_order_id}:{previous}:{cumulative}")` 결정적 int32 | `app/services/kiwoom_execution_ledger.py:42-44,122-124` |
+| `source` | `'reconciler'`(대사 부킹) | `app/services/kiwoom_execution_ledger.py:146` |
+| `filled_at`/`filled_at_basis` | `observed_at` / `'observed_at'` — 브로커 체결 시각을 주지 않으므로 관측 시각을 명시 | `app/services/kiwoom_execution_ledger.py:11-13,142-143` |
+| `fee_amount`/`fee_basis`/`tax_amount` | `fee_amount=None`, `fee_basis='not_provided'`, `tax_amount=None` — 모의 응답의 미제공 수수료를 0 으로 채우지 않는다 | `app/services/kiwoom_execution_ledger.py:11-13,138-142` |
+
+- 부킹 단위는 **델타**다: 브로커의 누적 체결수량·평균가와 원장의 이전 누적값의 차이를
+  `ExecutionLedgerRepository.upsert_fill` 로 쓴다. 이전 수량이 있으면 이전 누적평균가가
+  필요하고, 증분가격은 `(cum_qty*cum_avg - prev_qty*prev_avg) / delta_qty` 로 유도한다
+  (`app/services/kiwoom_execution_ledger.py:53-74,105-121`). 같은 누적수량에 다른 평균가가
+  오면 `average_price_changed_without_fill` 로 거부해 부킹된 평균을 바꾸지 않는다
+  (`app/services/kiwoom_mock_order_ledger_service.py:721-736`).
+- full run 은 `execution_ledger` 델타와 별도로 `broker='kiwoom'`, `notes='kiwoom_mock_full'`,
+  `committed_insert=booked_count`, `unchanged=already_booked_count` 인 reconcile-run 행을 한 번 쓴다
+  (`app/services/kiwoom_mock_reconcile.py:836-857`).
+- **저널·trade row·실현손익은 아직 쓰지 않는다.** 그 공백은 hk 4802 가 소유한다
+  (`app/services/kiwoom_mock_reconcile.py:22-25,673-679`).
+- 격리 리더 규약: 원장을 fill 로 읽는 새 리더는 `execution_ledger_in_effect()`
+  (`quarantined_at IS NULL`)를 AND 한다(`app/models/execution_ledger.py:142-152`).
   격리 대상 CHECK 는 `source='websocket' AND broker='kis'` 라 Kiwoom 행은 격리 대상이
   아니지만(#1175 경계), 리더 계약은 동일하게 지킨다.
-- `execution_ledger_reconcile_runs.broker` CHECK `('kis','upbit')` `:188` 도 `'kiwoom'` 확장
-  — 대사 실행 커버리지(7-D/#1112 추론 종결의 전제)를 동일하게 남기기 위함.
 
 ### 2.4 `review.kiwoom_mock_signal_ledger` (귀속, §4.5)
 
@@ -178,11 +193,15 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 
 ### 3.1 입력 — 조회 TR 과 한도
 
-| 용도 | KR | US | 근거 |
+| 역할 | KR | US | 근거 |
 |---|---|---|---|
-| 주문별 상태·미체결 목록 | `kt00009` (계좌별주문체결현황) | `ust21510` (당일주문) | `constants.py:34`, `:174` |
-| 주문 상세(체결내역/미체결) | `kt00007` (`qry_tp`: 1주문순/2역순/3미체결/4체결내역만 `constants.py:109-121`) | `ust21050` (미체결) | `constants.py:33`, `:172` |
-| 보유·가용 | `kt00018`(잔고), `kt00001`(예수금 — `kt00010` 은 모의 미지원 `domestic_account.py:51-60` ROB-904) | `ust21070`, `ust21160` | `constants.py:35-36`, `:173`, `:175` |
+| 상태 목록(`role='status'`) | `kt00009` (`acnt_ord_cntr_prst_array`) | `ust21050` (미체결/오픈 주문) | `constants.py:33-34`, `:172`; `app/services/kiwoom_mock_reconcile.py:570-603` |
+| 주문 상세(`role='detail'`) | `kt00007` `qry_tp="1"` (주문순 — 그 거래일의 주문 행 전부; `qry_tp` 어휘는 1주문순/2역순/3미체결/4체결내역만 `constants.py:109-121`) | `ust21510` (당일 주문·체결) | `constants.py:33`, `:174`; `app/services/brokers/kiwoom/mock_reconcile.py:76-81,334-344`; `app/services/kiwoom_mock_reconcile.py:188-201,587-603` |
+
+- US 는 과거 ET 거래일을 덮는 목록이 없다. 과거 US 행은 `us_past_day_evidence()` 로
+  항상 불완전 증거(`us_listing_unavailable_for_past_trading_day`)가 되어 `unknown` 이다
+  (`app/services/brokers/kiwoom/mock_reconcile.py:342-344,453-455`;
+  `app/services/kiwoom_mock_reconcile.py:724-729`).
 
 - **Rate limit**: 모의 공통 TR 은 "국내주식 1초 1회, 미국주식 1초 1회"(research 행 2,
   공식 mockInvestInfo; 실측 0.5s 성공/0.2s 실패 `broker-and-ledger-contracts.md:860` 근방).
@@ -190,49 +209,67 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 - 목록 불완전(페이지 절단·오류·빈 응답 모호)은 "부재 증거"로 쓰지 않는다 — 해당 스캔은
   `unknown` 으로 끝내고 다음 실행에 맡긴다(NH S6·키움 contract 의 목록-불완전 규칙과 동형).
 
-### 3.2 종결 분류표 (KIS 커널 대수를 TR 만 바꿔 이식)
+### 3.2 종결 분류표 (T-P3/T-P4 구현)
+
+판정은 순수 함수 `classify_verdict`(`app/services/brokers/kiwoom/mock_reconcile.py:552-731`)가
+하고, 커널이 verdict 를 원장 서비스로 적용한다. `unknown` 은 전이 없이 open 을 유지하고
+`requires_manual_review` 로 보고한다.
 
 | verdict | 증거(전부 양성) | 원장 전이 | 부수 동작 |
 |---|---|---|---|
-| `filled` | kt00007 `qry_tp=4` 행에서 동일 `ord_no`, 누적 체결수량 ≥ 주문수량, 체결가 파싱 가능 | `filled` | full 모드만 delta-멱등 부킹(execution_ledger + journal). terminal_only 는 `deferred_fill_booking` |
-| `partial` | 동일 `ord_no`, 0 < 체결수량 < 주문수량 | `partial` | delta 만큼만 부킹, 행은 open 유지 |
-| `cancelled` | 자기 취소 요청의 ACK **+** 원주문에 대한 양성 취소 확인(kt00009 취소 플래그/취소 확인 행) — 둘 다 필요 | `cancelled` | — |
-| `expired` | 브로커가 내리는 만료·거부 수량 증거(KIS `rjct_qty==ord_qty` 등가물 `live_order_expiry.py:308-318`) — **세션 종료 추론만으로는 만료시키지 않음**. Kiwoom 모의의 만료 의미론은 미검증이라 양성 증거만 허용하고, 관측이 쌓이면 추론 전이는 별도 결정 | `expired` | — |
-| `rejected` | 송신 시점 return_code 비-0(송신 기록), 또는 브로커 목록의 양성 거부 증거 | `rejected` | — |
-| `unknown` | 목록에 해당 `ord_no` 없음 / 파싱 불가 / 목록 불완전 | **전이 없음** — `noop_no_evidence` + `requires_manual_review` 플래그 | 행은 open 유지 |
-| `uncertain 해소` | `uncertain` 행: 완전한 전체 목록에서 동일 `ord_no`+속성 일치 → `accepted` 로 승격; 양성 미존재 증명(브로커 문서화 코드) 확보될 때까지는 그대로 유지 | `uncertain→accepted` 만 허용 | NH T9b 패턴 |
+| `filled` | detail 행의 동일 `ord_no`, 누적 체결수량 ≥ 주문수량. KR 은 평균가 파싱 가능해야 한다(`require_fill_price=True`); US 는 평균가가 없어도 verdict 는 나지만 full mode 가 KR only 라 부킹하지 않는다 | full mode 에서만 `filled` | `execution_ledger` 델타 부킹; terminal_only·US 는 `deferred_fill_booking` |
+| `partial` | detail 행의 동일 `ord_no`, 0 < 누적 체결수량 < 주문수량이고 아직 미체결 잔량이 남은 상태 | `partial`(open 유지) | full mode 에서 델타만큼 `execution_ledger` 부킹 |
+| `cancelled` | 우리 자신의 acknowledged cancel 요청 **+** 원주문에 대한 양성 취소 marker(`취소`/`cancel` 또는 US `ord_cntr_tp='12'`) — 둘 다 필요. 누적 체결이 있으면 그 체결을 싣고 종결 | `cancelled` | 양성 체결이 있으면 full mode 가 델타를 먼저 부킹하고, 부킹 누적이 verdict 수량과 정확히 같을 때만 `close_filled_as_terminal` |
+| `expired` | detail/status 행의 단일 `expiry` marker(`만료`/`expire`) — **세션 종료·목록 부재만으로는 만료시키지 않음** | `expired` | 양성 체결이 있으면 위와 같이 델타 부킹 후 종결 |
+| `rejected` | detail/status 행의 단일 `reject` marker(`거부`/`reject`) | `rejected` | 양성 체결이 있으면 위와 같이 델타 부킹 후 종결 |
+| `pending` | detail 행이 살아 있고 잔량이 남은 브로커 행 | 전이 없음 | `noop_pending` |
+| `unknown` | `ord_no` 정확 일치 행 없음 / 목록 불완전·파싱 불가 / symbol·수량 불일치 / marker 모호·충돌 / 기록된 체결과 브로커 체결 모순 | **전이 없음** — `noop_no_evidence` + `requires_manual_review` | 행은 open 유지 |
+| `uncertain 해소` | `uncertain` 행: 완전한 목록에서 동일 `ord_no`+symbol+수량 일치, 종결·모호·불명확 change text 없음, detail 증거와 읽을 수 있는 체결수량이 있고, 체결>0 또는 잔량>0 이면 `accepted` 로만 승격. 종결 marker 가 보이면 `unknown` 유지 | `uncertain→accepted` 만 허용 | 재송신 없음; 승격 후 다음 run 이 filled/partial 을 분류 |
 
-- `PENDING`(접수됐으나 체결 없음)은 종결이 아니라 open 유지다. KIS 커널의
-  `classify_fill_evidence`(`fill_evidence.py:118-190`)·`classify_day_order_expiry`
-  (`live_order_expiry.py:272-330`)와 **같은 대수**를 Kiwoom 필드명으로 재구현한다 —
-  판정 로직은 순수 함수(브로커 필드 → verdict)로 분리해 테스트 가능하게 한다.
-- "늦은 종결은 무해, 이른 종결은 유해"(KIS `_reconcile_one_ledger_row` 주석
-  `kis_live_ledger.py:881-885`) 원칙을 그대로 둔다.
+- marker 는 닫힌 어휘(`cancel`/`reject`/`expiry`)만 양성 증거다. 두 listing 의 marker class 가
+  다르면(`conflicting_terminal_markers`) 어느 쪽도 선택하지 않고 `unknown` 이다
+  (`app/services/brokers/kiwoom/mock_reconcile.py:462-475,651-681,704-731`).
+- `filled`/`partial` 이 아닌 종결 verdict 에 양성 누적 체결이 실려 오면 full mode 는 먼저
+  `_book_fill` 로 델타를 부킹하고, `close_filled_as_terminal` 은 행의 부킹 누적이 verdict 의
+  `filled_quantity` 와 정확히 같을 때만 종결한다. 아니면 `fill_not_booked` 로 거부해 행을
+  open 에 남긴다(`app/services/kiwoom_mock_reconcile.py:762-789`;
+  `app/services/kiwoom_mock_order_ledger_service.py:554-610`).
+- "늦은 종결은 무해, 이른 종결은 유해" 원칙을 그대로 둔다: 전이 거부는
+  `KiwoomMockTransitionRefused` 로 표면화하고 보고된 close 가 실제로 일어나지 않았음을 숨기지 않는다
+  (`app/services/kiwoom_mock_reconcile.py:615-668`).
 
 ### 3.3 실행 모드 — #2400 형태
 
 | 모드 | CLI | 게이트(기본 false) | 동작 |
 |---|---|---|---|
 | dry-run | `scripts/kiwoom_mock_auto_reconcile.py`(기본) | 없음 | verdict 예고만, 쓰기 0, `would_*` 액션 |
-| terminal-only | `--apply-terminal-only` | `KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED` | 만료·취소·거절·uncertain 해소만 반영, 체결 부킹은 `deferred_fill_booking`(exit 3) |
-| full | `--apply` | `KIWOOM_MOCK_AUTO_RECONCILE_ENABLED` **AND** `KIWOOM_MOCK_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` | 체결·저널·실현손익 부킹 포함 |
+| terminal-only | `--apply-terminal-only --market kr\|us` | KR=`KIWOOM_MOCK_TERMINAL_AUTO_RECONCILE_ENABLED`, US=`KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED` — 각각 정확히 `true` | 만료·취소·거절·uncertain→accepted 만 반영, 체결 부킹은 `deferred_fill_booking` |
+| full | `--apply` (**KR only**) | `KIWOOM_MOCK_AUTO_RECONCILE_ENABLED` **AND** `KIWOOM_MOCK_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` — 각각 정확히 `true` | `execution_ledger` 델타 부킹 + reconcile-run 행; 저널·실현손익은 hk 4802 공백 |
 
-- 커널 입출력은 `kis_live_reconcile_orders_impl` 의 `dry_run`/`scope="terminal_only"` 계약
-  (`scripts/kis_live_auto_reconcile.py:31-42`)을 복제한다. 미확인 행·오류·잘린 scan 은
-  경고 + exit 3(Toss terminal-only 규약 `broker-and-ledger-contracts.md:906-908`).
+- 커널은 `kiwoom_mock_reconcile_orders_impl` 이고 CLI 는 `--apply`/`--apply-terminal-only` 를
+  mutually exclusive 로 받고, 미해결·deferred·잘린 scan·dry-run pending work 는 exit 3 으로
+  보고한다(`scripts/kiwoom_mock_auto_reconcile.py:54-85,134-187`;
+  `app/services/kiwoom_mock_reconcile.py:334-434`).
+- 게이트는 write 조건 자체를 쓰기 전·원장/브로커 읽기 전에 검사한다. terminal-only 는 시장별
+  게이트 하나, full mode 는 두 스위치가 모두 필요하고 US full mode 는 거부된다
+  (`app/services/kiwoom_mock_reconcile.py:361-400`).
 - **스케줄러 등록 없음**(하드룰 6) — CLI/수동 lever 만 출고.
 - 모의라도 full 부킹은 두 플래그를 유지한다 — 실전 전환 시 게이트 이름만 바꾸고
   구조는 동일해야 하므로(§5).
 
 ### 3.4 부킹 범위 (full 모드)
 
-- `execution_ledger` upsert: §2.3 형태, `source='reconciler'`.
-- 저널/실현손익: KIS 커널의 journal 부킹(`_create_trade_journal_for_buy` /
-  `_close_journals_on_sell` `kis_live_ledger.py:965-1016`)과 같은 경계를 두되,
-  **모의 계좌의 저널 정책(기록할지, 어느 account 라벨로)은 §7-Q3 에서 운영자에게 묻는다**.
-  커널은 부킹 경계를 플래그로 분리해 어느 쪽이든 마이그레이션 없이 맞춘다.
-- `account='kiwoom'` 라벨로 기존 trade/journal 테이블에 쓸지는 해당 테이블의
-  `account` 어휘 확인이 선행 조건이다(구현 티켓 T-P4 선행 체크로 명시; `trade_journals` 의 CHECK 는 `account_type IN ('live','paper','mock')` `app/models/trade_journal.py:50` 이고 `account` 는 자유 Text 다).
+- `execution_ledger` upsert: §2.3 형태, `source='reconciler'`. 원장 행은 `partial`/`filled`
+  로 전이하고 `filled_qty`·`avg_fill_price`·`reconcile_attempts`·`last_reconcile_detail`·
+  `reconciled_at` 을 갱신한다(`app/services/kiwoom_mock_order_ledger_service.py:648-806`).
+- full run 은 `execution_ledger_reconcile_runs` 에 `broker='kiwoom'`, `notes='kiwoom_mock_full'`,
+  `committed_insert=booked_count`, `unchanged=already_booked_count` 인 행을 한 번 쓴다
+  (`app/services/kiwoom_mock_reconcile.py:836-857`).
+- **저널·trade row·실현손익은 아직 쓰지 않는다.** hk 4734 는 `execution_ledger` 델타만
+  부킹하고, 저널 프로젝션은 hk 4802 가 소유한다
+  (`app/services/kiwoom_mock_reconcile.py:22-25,670-679`).
+- 기존 trade/journal 테이블의 account 어휘를 Kiwoom mock 에 맞출지는 hk 4802 의
+  선행 조건이지, 현재 reconcile 이 쓰는 범위가 아니다.
 
 ## 4. 제안 집행 통합 (order_proposals)
 

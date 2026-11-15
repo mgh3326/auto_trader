@@ -12,7 +12,7 @@
 - Telegram 알림 분리 + 자동승인 다이제스트 (ROB-1052)
 - Toss US 확장세션 승인 창 (#1116)
 - 전략 슬리브 — 실계좌 안의 전략별 예산·손실 한도 (ROB-1470)
-- Kiwoom 모의 제안 집행 (hk 4732 / 3797 T-P5)
+- Kiwoom 모의 제안 집행 (hk 4732/4754 / 3797 T-P5/T-P8)
 
 ## 기준 원문 계약
 
@@ -350,39 +350,43 @@ Bar gaps block collection only along new signal paths and existing active or
 still-maturing episodes. Unused missing-universe members remain in `data_gaps`
 without blocking a commit; `blocking_data_gaps` records the required missing bars.
 
-### Kiwoom 모의 제안 집행 (hk 4732 / 3797 T-P5)
+### Kiwoom 모의 제안 집행 (hk 4732/4754 / 3797 T-P5/T-P8)
 
-`order_proposals` 는 `account_mode='kiwoom_mock'`(시장 `equity_kr`) **place 제안만** 받는다.
-`_SUBMITTABLE_ACCOUNT_MODE_MARKETS` 에 `('kiwoom_mock','equity_kr')` 하나가 추가되고
+`order_proposals` 는 Kiwoom mock **place 제안만** 받는다: `('kiwoom_mock','equity_kr')`(KR, hk 4732)와
+`('kiwoom_mock_us','equity_us')`(US, hk 4754)가 `_SUBMITTABLE_ACCOUNT_MODE_MARKETS` 에 있다.
 `SUPPORTED_TARGET_ACTIONS`(replace/cancel)는 그대로다 — 교체·취소 제안은 kiwoom 계좌에서
-생성되지 않는다(구조화된 `unsupported account_mode/market/action` 거부).
+생성되지 않는다(구조화된 `unsupported account_mode/market/action` 거부). US 어댑터는
+`equity_us`+`order_type='limit'` 만 허용하고 양의 정수 quantity·양의 decimal price 를 요구한다
+(KR 어댑터는 정수 quantity/price).
 
-- **세션**: `resolve_submission_session` 의 **명시 분기**가 KRX 정규장(09:00–15:30 KST)만
-  허용한다. NXT 프리마켓·애프터마켓 연장은 없다 — KIS/Toss 의 `_resolve_kr_session` 을 타지
-  않고 `exchange_calendars:XKRX:regular_only` 근거로 판정하며, 창 밖은
-  `DEFER_SESSION_CLOSED`(또는 `NO_EXECUTABLE_WINDOW`)로 다음 정규장 시각을 명시한다.
+- **세션**: `resolve_submission_session` 의 **명시 분기**가 KR 은 KRX 정규장(09:00–15:30 KST),
+  US 는 XNYS 정규장만 허용한다(`exchange_calendars:XKRX:regular_only` / `exchange_calendars:XNYS`).
+  NXT·pre/post 연장은 없다 — KIS/Toss 의 `_resolve_kr_session`/`_resolve_toss_us_session` 을
+  타지 않고, 창 밖은 `DEFER_SESSION_CLOSED`(또는 `NO_EXECUTABLE_WINDOW`)로 다음 정규장 시각을
+  명시한다.
 - **수동 승인 전용**: `_VETO_CAPABLE_ACCOUNT_MARKETS`·자동승인 어휘·`auto_approve_audit`
-  `account_mode` 열거에 `kiwoom_mock` 은 없다. 제안 경유 kiwoom 주문은 전부 사람 승인 카드다
-  (veto 는 브로커 취소 경로가 필요한데 이 티켓은 취소를 열지 않는다). 이 집합들은 테스트로
-  고정한다.
-- **하나의 송신 경계**: 확정 KR kiwoom place 시퀀스(귀속 신호 → preflight → 송신 예약 →
+  `account_mode` 열거에 `kiwoom_mock`/`kiwoom_mock_us` 는 없다. 제안 경유 kiwoom 주문은 전부
+  사람 승인 카드다(veto 는 브로커 취소 경로가 필요한데 이 경로는 취소를 열지 않는다). 이 집합들은
+  테스트로 고정한다.
+- **하나의 송신 경계**: 확정 KR/US kiwoom place 시퀀스(귀속 신호 → preflight → 송신 예약 →
   POST → 원장 행 → 신호 결과 표시)는 `app/services/kiwoom_mock_place.py` 의
-  `place_kiwoom_mock_order` 하나에 있고, `kiwoom_mock_place_order` MCP 도구와 제안 어댑터
-  (`revalidation._default_place_order_fn` 의 `kiwoom_mock` 분기)가 **같은 함수**를 호출한다.
-  MCP 응답은 골든 테스트로 바이트 동일하게 고정된다.
+  `place_kiwoom_mock_order`/`place_kiwoom_mock_us_order` 에 있고, `kiwoom_mock_place_order`/
+  `kiwoom_mock_us_place_order` MCP 도구와 제안 어댑터(`revalidation._default_place_order_fn` 의
+  두 kiwoom 분기)가 **같은 함수**를 호출한다. MCP 응답은 골든 테스트로 바이트 동일하게 고정된다.
 - **귀속·예약은 송신 전**: 제안의 `strategy`/`correlation_id` 가 귀속을 공급한다.
   `strategy` 가 없으면 `attribution_required`, 신호 행 커밋 실패는
   `signal_record_unavailable`, 예약 실패는 `send_intent_unavailable` 이며 셋 다 **송신 0**.
-  같은 rung 의 재디스패치는 결정적 `client_order_id` 로 예약 1회·송신 1회다.
-- **응답 매핑(닫힌 3분기)**: 브로커 ACK + 주문번호 증명 → rung `resting`(broker_order_id·
-  idempotency key·correlation 기록). 명시적 브로커 거절 또는 증명된 미송신 → `rejected`
-  (`error_code` 를 void 사유로). 그 밖(`acceptance_uncertain`, 주문번호 없는 ACK, ACK 후
-  원장 기록 실패, 앞선 결과가 불명인 중복 키)은 `success` 를 지워 `unverified` 로 남기고
-  절대 종결 처리하지 않는다.
+  같은 rung 의 재디스패치는 결정적 `client_order_id`(`kwoomm-`/`kwoomus-`)로 예약 1회·송신 1회다.
+- **응답 매핑(닫힌 3분기)**: 브로커 ACK + 주문번호 증명(KR `ord_no`/`order_no`, US 는
+  `validate_us_order_id` 통과 주문번호) → rung `resting`(broker_order_id·idempotency key·
+  correlation 기록). 명시적 브로커 거절 또는 증명된 미송신 → `rejected`(`error_code` 를 void
+  사유로). 그 밖(`acceptance_uncertain`, 주문번호 없는/불량 ACK, ACK 후 원장 기록 실패, 앞선
+  결과가 불명인 중복 키)은 `success` 를 지워 `unverified` 로 남기고 절대 종결 처리하지 않는다.
 - **pre-send 훅**: 제안 경로의 `ApprovalWindowPreSendGate` 는 예약 직후·POST 직전에 실행되고,
   차단 시 예약을 해제한 뒤 예외를 그대로 올려 창/지연 결과로 수렴시킨다(증명된 미송신).
-- **범위 밖**: `execution_ledger` 부킹(T-P4), US(`kiwoom_mock_us`, T-P8), propose 경유
-  modify/cancel. 스케줄러 연결 없음.
+- **범위 밖**: 이 제안 집행 절이 직접 쓰는 것은 원장·신호·예약이다. `execution_ledger` 체결
+  부킹은 별도 대사 경로(hk 4734)가 담당하고 저널·실현손익은 hk 4802 공백이다. propose 경유
+  modify/cancel과 스케줄러 연결은 없다.
 
 ## 유지 규약
 
