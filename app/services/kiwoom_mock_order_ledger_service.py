@@ -1030,10 +1030,26 @@ class KiwoomMockOrderLedgerService:
         row.lifecycle_state = _LIFECYCLE_FOR_TERMINAL[status]
         row.reconciled_at = datetime.now(UTC)
         row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+        # Journal progress survives the close: the journaled markers and an
+        # outstanding unmatched-sell remainder are durable state, not audit
+        # noise — a fill-bearing terminal row can still owe journaled shares
+        # the next run must find (mergewake od-b25d0595f6).
+        prior = row.last_reconcile_detail or {}
+        preserved = {
+            key: prior[key]
+            for key in (
+                _JOURNALED_QTY_KEY,
+                _JOURNALED_AVG_KEY,
+                _JOURNAL_MANUAL_REVIEW_KEY,
+                _UNMATCHED_SELL_SINCE_KEY,
+            )
+            if key in prior
+        }
         row.last_reconcile_detail = {
             "action": f"marked_{status}",
             "reason": reason,
             "basis": "positive_broker_evidence",
+            **preserved,
             **(detail or {}),
         }
 
