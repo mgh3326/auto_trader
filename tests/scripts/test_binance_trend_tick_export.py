@@ -180,6 +180,38 @@ def test_stdin_is_read_when_no_input_file_is_given(
     assert len(snapshot["ticks"]) == 1
 
 
+def _os_error() -> Exception:
+    return OSError(5, "Input/output error")
+
+
+def _decode_error() -> Exception:
+    return UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+
+@pytest.mark.parametrize(
+    "make_failure", [_os_error, _decode_error], ids=["os_error", "decode_error"]
+)
+def test_a_stdin_read_error_exits_3_without_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    make_failure: Any,
+) -> None:
+    failure = make_failure()
+
+    class _Broken(io.StringIO):
+        def __iter__(self):  # type: ignore[override]
+            raise failure
+
+    monkeypatch.setattr(sys, "stdin", _Broken())
+    out = tmp_path / "snapshot.json"
+    assert exporter.main(["--out", str(out)]) == exporter.EXIT_USAGE
+    assert not out.exists()
+    captured = capsys.readouterr()
+    assert type(failure).__name__ in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_a_reexport_replaces_the_snapshot_without_leaving_staging_files(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

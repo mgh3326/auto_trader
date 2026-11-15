@@ -163,3 +163,17 @@ def test_the_runbook_names_the_state_tables_and_the_absence_rule(text):
     assert "review.binance_trend_signals" in text or "trend 상태 테이블" in text
     assert "runner_absent" in text or "잠금 부재" in text
     assert "스케줄러에도 등록되지 않는다" in text
+
+
+def test_the_tick_export_mounts_only_a_container_writable_dir(text):
+    """The image runs as appuser uid 10001; /root/at-run is root-owned 0700.
+
+    Mounting all of it makes the exporter fail with PermissionError on its
+    staged temp file, so the runbook must create a dedicated 10001-owned
+    directory and mount that one (fill-event-handoff precedent).
+    """
+
+    assert "install -d -m 0700 -o 10001 -g 10001 /root/at-run/trend-ticks" in text
+    assert "-v /root/at-run/trend-ticks:/out" in text
+    assert "-v /root/at-run:/out" not in text
+    assert "scp ncp:/root/at-run/trend-ticks/trend-ticks.json" in text

@@ -221,19 +221,22 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     out: Path = args.out
-    if args.input is None:
-        parsed = parse_lines(sys.stdin)
-    else:
-        try:
+    source = "stdin" if args.input is None else str(args.input)
+    # Both branches are inside the guard: iterating stdin can fail too (EIO on a
+    # broken pipe, invalid bytes), and that is an I/O error, not a traceback.
+    try:
+        if args.input is None:
+            parsed = parse_lines(sys.stdin)
+        else:
             with args.input.open("r", encoding="utf-8", errors="replace") as handle:
                 parsed = parse_lines(handle)
-        except OSError as exc:
-            print(
-                f"{Path(sys.argv[0]).name}: cannot read {args.input} "
-                f"({exc.__class__.__name__})",
-                file=sys.stderr,
-            )
-            return EXIT_USAGE
+    except (OSError, UnicodeDecodeError) as exc:
+        print(
+            f"{Path(sys.argv[0]).name}: cannot read {source} "
+            f"({exc.__class__.__name__})",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
 
     summary: dict[str, Any] = {
         "schema": SCHEMA,
