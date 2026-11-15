@@ -288,6 +288,8 @@ tests/services/test_kis_mock_inference_expiry_unit.py
 tests/services/test_kis_mock_retrospective_pending.py
 tests/services/test_kiwoom_mock_order_ledger_service.py
 tests/services/test_kiwoom_mock_order_ledger_service_db.py
+tests/services/test_kiwoom_mock_reconcile_kernel.py
+tests/services/test_kiwoom_mock_reconcile_kernel_db.py
 tests/services/test_krb1_p0_journal.py
 tests/services/test_krb1_selector_cli_exit_contract.py
 tests/services/test_krx_after_market.py
