@@ -119,6 +119,39 @@ def test_signal_source_defaults_and_can_be_named():
     )
 
 
+def test_send_key_and_signal_key_agree_on_which_orders_are_the_same():
+    """K1 == K2 ⇔ C1 == C2 for every rung spelling the public tool accepts.
+
+    The two keys are built by different modules for different purposes; this
+    pins that they partition orders the same way, which is the invariant whose
+    absence caused the repeated review findings.
+    """
+    from itertools import combinations
+
+    from app.services.kiwoom_mock_order_ledger_service import build_client_order_id
+
+    rungs: list[Any] = [None, 0, "0", 1, "1", 2, "2", "", 3, "3"]
+
+    def send_key(rung: Any) -> str:
+        return build_client_order_id(
+            symbol="005930",
+            side="buy",
+            quantity=3,
+            price=70000,
+            exchange="KRX",
+            trading_day="20261116",
+            rung=rung,
+        )
+
+    def signal_key(rung: Any) -> str:
+        return mint_correlation_id(**ORDER, kst_trade_day="2026-11-16", rung=rung)
+
+    for left, right in combinations(rungs, 2):
+        assert (send_key(left) == send_key(right)) == (
+            signal_key(left) == signal_key(right)
+        ), (left, right)
+
+
 class _FakeResult:
     def __init__(self, *, scalar: Any = None, first: Any = None) -> None:
         self._scalar = scalar

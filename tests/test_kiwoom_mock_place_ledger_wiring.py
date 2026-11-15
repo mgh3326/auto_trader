@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
+from app.services.kiwoom_mock_attribution import SignalStrategyConflict
 from app.services.kiwoom_mock_order_ledger_service import (
     CLIENT_ORDER_ID_PREFIX,
     build_client_order_id,
@@ -622,6 +623,22 @@ async def test_signal_record_failure_refuses_before_reservation_and_broker(
     assert response["error_code"] == "signal_record_unavailable"
     assert response["status"] == "not_submitted"
     assert "signal insert failed" not in response["error"]
+    assert recorder.signal.reservations_before_record == [0]
+    assert recorder.reserved == {}
+    assert recorder.events == []
+    assert stub.posts == []
+
+
+@pytest.mark.asyncio
+async def test_strategy_conflict_refuses_before_reservation_and_broker(monkeypatch):
+    """A typed conflict follows the recorder-exception path: nothing is sent."""
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+    recorder.signal.record_error = SignalStrategyConflict("owned by another strategy")
+
+    response = await _place(mcp)
+
+    assert response["success"] is False
+    assert response["error_code"] == "signal_record_unavailable"
     assert recorder.signal.reservations_before_record == [0]
     assert recorder.reserved == {}
     assert recorder.events == []
