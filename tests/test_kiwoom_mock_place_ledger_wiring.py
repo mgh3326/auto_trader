@@ -24,7 +24,7 @@ from app.services.kiwoom_mock_order_ledger_service import (
 from tests.test_mcp_kiwoom_order_variants import (
     DummyMCP,
     FakeKiwoomPlaceRecorder,
-    _install_fake_place_recorder,
+    FakeKiwoomSignalRecorder,
     _patch_preflight_success,
 )
 
@@ -65,13 +65,39 @@ class StubOrderClient:
         return _OrderClient
 
 
+class OrderingSignalRecorder(FakeKiwoomSignalRecorder):
+    """Fake signal recorder that snapshots how far the order path had got.
+
+    ``record`` runs before the reservation and before the POST, ``mark_outcome``
+    after the ledger row — the two counts below prove that order.
+    """
+
+    def __init__(self, place: FakeKiwoomPlaceRecorder) -> None:
+        super().__init__()
+        self.place = place
+        self.reservations_before_record: list[int] = []
+        self.ledger_rows_before_mark: list[int] = []
+
+    async def record(self, *, attribution, **kwargs: Any) -> int:
+        self.reservations_before_record.append(len(self.place.reserved))
+        return await super().record(attribution=attribution, **kwargs)
+
+    async def mark_outcome(self, **kwargs: Any) -> int:
+        self.ledger_rows_before_mark.append(len(self.place.rows))
+        return await super().mark_outcome(**kwargs)
+
+
 def _wire(monkeypatch, behaviour: list[Any]):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     class _FakeClient:
         pass
 
-    recorder = _install_fake_place_recorder(monkeypatch, mod)
+    recorder = FakeKiwoomPlaceRecorder()
+    monkeypatch.setattr(mod, "_new_place_recorder", lambda: recorder)
+    signal_recorder = OrderingSignalRecorder(recorder)
+    monkeypatch.setattr(mod, "_new_signal_recorder", lambda: signal_recorder)
+    recorder.signal = signal_recorder  # type: ignore[attr-defined]
     stub = StubOrderClient(recorder, behaviour)
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
     monkeypatch.setattr(mod, "_new_kiwoom_mock_client", lambda: _FakeClient())
@@ -89,6 +115,7 @@ async def _place(mcp, **overrides):
         "side": "buy",
         "quantity": 3,
         "price": 70000,
+        "strategy": "unit-test",
         "dry_run": False,
         "confirm": True,
     }
@@ -540,3 +567,127 @@ async def test_sell_side_uses_the_sell_endpoint_and_its_own_key(monkeypatch):
     assert stub.posts[0]["method"] == "sell"
     assert response["client_order_id"] == _key(side="sell")
     assert recorder.rows[0]["side"] == "sell"
+
+
+# --- pre-submit attribution gate (hk 4723, design §4.5 / I10) ----------------
+
+
+@pytest.mark.asyncio
+async def test_confirmed_place_without_strategy_sends_nothing_and_reserves_nothing(
+    monkeypatch,
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    response = await _place(mcp, strategy=None)
+
+    assert response["success"] is False
+    assert response["error_code"] == "attribution_required"
+    assert response["missing_attribution"] == ["strategy"]
+    assert response["status"] == "not_submitted"
+    assert response["dispatch_started"] is False
+    # nothing persisted, nothing reserved, nothing sent
+    assert recorder.signal.rows == []
+    assert recorder.events == []
+    assert recorder.reserved == {}
+    assert stub.posts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["", "   ", "test", "null", "tbd"])
+async def test_confirmed_place_with_blank_or_placeholder_strategy_is_refused(
+    monkeypatch, strategy
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    response = await _place(mcp, strategy=strategy)
+
+    assert response["success"] is False
+    assert response["error_code"] == "placeholder_strategy"
+    assert response["status"] == "not_submitted"
+    assert recorder.signal.rows == []
+    assert recorder.events == []
+    assert stub.posts == []
+
+
+@pytest.mark.asyncio
+async def test_signal_record_failure_refuses_before_reservation_and_broker(
+    monkeypatch,
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+    recorder.signal.record_error = RuntimeError("signal insert failed")
+
+    response = await _place(mcp)
+
+    assert response["success"] is False
+    assert response["error_code"] == "signal_record_unavailable"
+    assert response["status"] == "not_submitted"
+    assert "signal insert failed" not in response["error"]
+    assert recorder.signal.reservations_before_record == [0]
+    assert recorder.reserved == {}
+    assert recorder.events == []
+    assert stub.posts == []
+
+
+@pytest.mark.asyncio
+async def test_signal_row_commits_before_reservation_and_send(monkeypatch):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    response = await _place(mcp)
+
+    assert response["success"] is True
+    # at record time the order path had reserved and posted nothing yet
+    assert recorder.signal.reservations_before_record == [0]
+    assert len(recorder.signal.rows) == 1
+    assert recorder.signal.rows[0]["strategy"] == "unit-test"
+    assert recorder.signal.rows[0]["correlation_id"] == response["correlation_id"]
+    assert recorder.signal.rows[0]["decision"] == "order"
+    assert recorder.events == ["reserve", "post", "record:accepted"]
+    assert len(stub.posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_signal_outcome_is_marked_after_the_broker_answer(monkeypatch):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    response = await _place(mcp)
+
+    # the ledger row existed before the outcome was marked
+    assert recorder.signal.ledger_rows_before_mark == [1]
+    assert recorder.signal.outcomes == [
+        {
+            "correlation_id": response["correlation_id"],
+            "outcome_state": "submitted",
+            "suppressed_reason": None,
+            "detail_patch": {
+                "order_no": "0000111222",
+                "status": "accepted",
+                "ledger_id": 1,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rejected_place_marks_signal_failed(monkeypatch):
+    _, mcp, recorder, stub = _wire(
+        monkeypatch, [{"return_code": 40, "return_msg": "거부"}]
+    )
+
+    response = await _place(mcp)
+
+    assert response["success"] is False
+    assert recorder.signal.outcomes[0]["outcome_state"] == "failed"
+    assert recorder.signal.outcomes[0]["suppressed_reason"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_dry_run_preview_needs_no_strategy_and_writes_nothing(monkeypatch):
+    """Matches kis_mock: the preview echoes the order without attribution."""
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    response = await _place(mcp, strategy=None, dry_run=True)
+
+    assert response["dry_run"] is True
+    assert recorder.signal.rows == []
+    assert recorder.events == []
+    assert stub.posts == []

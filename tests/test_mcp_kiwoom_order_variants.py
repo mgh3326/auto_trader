@@ -225,11 +225,70 @@ class FakeKiwoomPlaceRecorder:
         return await self._record("uncertain", kwargs)
 
 
+class FakeKiwoomSignalRecorder:
+    """In-memory stand-in for ``KiwoomMockSignalRecorder`` (no database).
+
+    Records the pre-submit attribution and its outcome so tests can prove the
+    ordering (signal before reservation before POST) without a session.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.rows: list[dict[str, Any]] = []
+        self.outcomes: list[dict[str, Any]] = []
+        self.record_error: Exception | None = None
+        self.mark_error: Exception | None = None
+
+    async def record(self, *, attribution, **kwargs: Any) -> int:
+        self.events.append("signal")
+        if self.record_error is not None:
+            raise self.record_error
+        self.rows.append(
+            {
+                "correlation_id": attribution.correlation_id,
+                "strategy": attribution.strategy,
+                "signal_source": attribution.signal_source,
+                **kwargs,
+            }
+        )
+        return len(self.rows)
+
+    async def mark_outcome(
+        self,
+        *,
+        correlation_id: str,
+        outcome_state: str,
+        suppressed_reason: str | None = None,
+        detail_patch: dict[str, Any] | None = None,
+    ) -> int:
+        self.events.append(f"signal_outcome:{outcome_state}")
+        if self.mark_error is not None:
+            raise self.mark_error
+        self.outcomes.append(
+            {
+                "correlation_id": correlation_id,
+                "outcome_state": outcome_state,
+                "suppressed_reason": suppressed_reason,
+                "detail_patch": detail_patch,
+            }
+        )
+        return 1
+
+
+def _install_fake_signal_recorder(
+    monkeypatch, mod, recorder: FakeKiwoomSignalRecorder | None = None
+) -> FakeKiwoomSignalRecorder:
+    recorder = recorder or FakeKiwoomSignalRecorder()
+    monkeypatch.setattr(mod, "_new_signal_recorder", lambda: recorder)
+    return recorder
+
+
 def _install_fake_place_recorder(
     monkeypatch, mod, recorder: FakeKiwoomPlaceRecorder | None = None
 ) -> FakeKiwoomPlaceRecorder:
     recorder = recorder or FakeKiwoomPlaceRecorder()
     monkeypatch.setattr(mod, "_new_place_recorder", lambda: recorder)
+    _install_fake_signal_recorder(monkeypatch, mod)
     return recorder
 
 
@@ -339,6 +398,7 @@ async def test_place_order_confirmed_calls_kiwoom_mock_order_client(
         side=side,
         quantity=quantity,
         price=price,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2479,6 +2539,7 @@ async def test_place_order_dry_run_returns_stable_failure_without_post(monkeypat
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2571,6 +2632,7 @@ async def test_place_order_confirmed_runs_single_preflight_right_before_post(
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2657,6 +2719,7 @@ async def test_place_order_confirmed_blocks_when_preflight_fails(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -2954,6 +3017,7 @@ async def test_confirmed_place_reuses_single_client_for_preflight_and_post(monke
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3067,6 +3131,7 @@ async def test_confirmed_one_preflight_one_post(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3099,6 +3164,7 @@ async def test_token_resolution_failure_blocks_post(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3134,6 +3200,7 @@ async def test_request_build_failure_blocks_post(monkeypatch):
         side="sell",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3167,6 +3234,7 @@ async def test_post_dispatch_unknown_failure_requires_reconcile(monkeypatch):
         side="buy",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3376,6 +3444,7 @@ async def test_confirmed_sell_runs_real_balance_preflight_before_post(monkeypatc
         side="sell",
         quantity=5,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3413,6 +3482,7 @@ async def test_confirmed_sell_pre_dispatch_failures_preserve_structured_diagnost
         side="sell",
         quantity=1,
         price=70000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )
@@ -3555,6 +3625,7 @@ async def test_standalone_position_read_then_confirmed_sell_succeeds(monkeypatch
         side="sell",
         quantity=5,
         price=71000,
+        strategy="unit-test",
         dry_run=False,
         confirm=True,
     )

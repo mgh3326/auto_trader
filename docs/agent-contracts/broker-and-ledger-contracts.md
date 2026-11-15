@@ -21,6 +21,7 @@
 - KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
+- Kiwoom mock 귀속 사슬 — pre-submit 강제 (hk 4723)
 - kis_mock 4행 Q-46 expired[inference] (#1250)
 - KIS Live Order Fill-Evidence Gate (ROB-395)
 - KIS live 일별 주문 조회 — 하루 전 종목 (hk 3717)
@@ -680,6 +681,17 @@ After release, the attempt-bound gate still rejects the already dispatched key.
 **호출자 계약(파괴적)**: `place_order(is_mock=True)` 는 이제 `strategy` 필수 — 없으면 `error_code="attribution_required"`. `mirror_cohort="mock_counterfactual"` 은 레인 라벨 자동 판정. `thesis` 는 여전히 불필요.
 
 **주의**: `kis_mock_order_ledger.correlation_id`/`strategy` 는 과거 NULL 행 때문에 nullable 유지 — DB 제약은 pre-submit 신호 테이블에 걸려 있다. 원장 백필은 별건.
+
+### Kiwoom mock 귀속 사슬 — pre-submit 강제 (hk 4723)
+
+`kiwoom_mock` KR 주문도 kis_mock 과 동일하게 **브로커 전송 전에** 귀속이 확정돼야 한다. 확정 못 하면 주문이 나가지 않는다(fail-closed).
+
+- **모델**: `app/models/review.KiwoomMockSignalLedger` (`review.kiwoom_mock_signal_ledger`) — `correlation_id`/`strategy`/`signal_source` **NOT NULL + 공백거부 CHECK**, `account_mode IN ('kiwoom_mock','kiwoom_mock_us')`
+- **서비스**: `app/services/kiwoom_mock_attribution.py` — `resolve_attribution`(순수) / `record_signal` / `mark_signal_outcome` / `KiwoomMockSignalRecorder`. 실패 계약(`MissingAttribution`/`InvalidStrategy`, `error_code` `attribution_required`/`placeholder_strategy`)과 placeholder denylist 는 kis_mock 모듈의 정의 하나를 그대로 쓴다.
+- **게이트 위치**: `orders_kiwoom_variants._kiwoom_mock_place_order_impl` 의 confirmed 경로 **최상단** — preflight(브로커 read)보다도 앞이며, `order_send_intents` 예약과 POST보다 앞이다.
+- **순서**: 신호 행 커밋 → `order_send_intents` 예약 → 브로커 POST → 신호 `outcome_state` 표시(`accepted`→`submitted`, 그 밖→`failed`). 표시 실패는 best-effort 이며 귀속 자체는 이미 durable 하다.
+- **호출자 계약(파괴적)**: `kiwoom_mock_place_order(dry_run=False)` 는 이제 `strategy` 필수 — 없거나 공백·placeholder 면 `error_code="attribution_required"`/`"placeholder_strategy"`, 신호 커밋 실패면 `signal_record_unavailable` 이며 셋 다 예약 0·송신 0. `dry_run=True` 미리보기는 kis_mock 과 같이 strategy 없이 동작하고 아무것도 쓰지 않는다. 응답은 `correlation_id` 를 돌려줘 신호 행과 원장 행을 잇는다.
+- **범위**: KR `place` 만. modify/cancel·US·대사는 불변. `scripts/kiwoom_mock_smoke.py` 는 `strategy="kiwoom_mock_smoke"` 로 귀속한다.
 
 ### KIS mock legacy DAY 만료 분류 (Task 881, Q-46)
 

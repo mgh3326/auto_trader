@@ -251,6 +251,7 @@ async def run_full(args: argparse.Namespace) -> int:
         side="buy",
         quantity=args.quantity,
         price=price,
+        strategy="kiwoom_mock_smoke",
         dry_run=False,
         confirm=True,
     )
