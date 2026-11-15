@@ -1000,3 +1000,98 @@ def test_the_broker_rejection_helper_is_safe_on_unreadable_responses() -> None:
 
 def test_the_executor_uses_only_the_locked_universe_constants() -> None:
     assert LOCKED_LIMITS.universe == ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+
+
+# ----------------------------------------- ownership, orphans, partial fills
+
+
+@pytest.mark.asyncio
+async def test_a_second_tick_cannot_run_while_one_owns_the_lane(rig: Rig) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.state.lease_held = True  # another tick is between reservation and fence
+    with pytest.raises(TrendStateBlocked, match="owns the lane"):
+        await rig.tick()
+    assert rig.client.sends == [] and rig.client.position_reads == 0
+    assert rig.state.calls == {} and rig.ledger.calls == []
+    # the lease is held for the whole tick and released afterwards
+    rig.state.lease_held = False
+    await rig.tick()
+    assert rig.state.lease_entries == 1 and rig.state.lease_held is False
+
+
+@pytest.mark.asyncio
+async def test_the_lease_is_released_when_a_tick_dies(rig: Rig) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+
+    async def die(**kwargs):
+        raise KeyboardInterrupt
+
+    rig.state.reserve_entry = die  # type: ignore[method-assign]
+    with pytest.raises(KeyboardInterrupt):
+        await rig.tick()
+    assert rig.state.lease_held is False
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_orphaned_before_its_intent_is_released_on_restart(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+
+    async def crash(**kwargs):
+        raise KeyboardInterrupt  # dies after the root commit, before reserve_intent
+
+    original = rig.state.reserve_intent
+    rig.state.reserve_intent = crash  # type: ignore[method-assign]
+    with pytest.raises(KeyboardInterrupt):
+        await rig.tick()
+    rig.state.reserve_intent = original  # type: ignore[method-assign]
+    signal = next(iter(rig.state.signals.values()))
+    cid = executor_module.trend_client_order_id(signal.signal_key, "entry")
+    assert signal.state == "entry_reserved" and rig.state.intents == {}
+    assert rig.ledger.rows[cid] == "validated"  # the stranded root
+    restart = await rig.tick()
+    assert rig.client.sends == []
+    assert ("BTCUSDT", "orphan_reservation_released") in rig.events(restart)
+    assert signal.state == "blocked"  # slot and symbol are free again
+    assert rig.ledger.rows[cid] == "reconciled"  # root no longer consumes a slot
+    assert await rig.state.list_active_signals() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_sent_entry_is_never_treated_as_an_orphan(rig: Rig) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.order_script = [{"status": "NEW"}]
+    await rig.tick()  # pending: entry_reserved with an acknowledged intent
+    again = await rig.tick()
+    assert "orphan_reservation_released" not in [e for _, e in rig.events(again)]
+    assert len(rig.client.sends) == 1
+    assert next(iter(rig.state.signals.values())).state == "entry_reserved"
+
+
+@pytest.mark.asyncio
+async def test_a_partial_terminal_entry_fill_stays_on_a_closable_ledger_lifecycle(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.order_script = [{"status": "CANCELED", "executed": D("0.3")}]
+    rig.client.on_submit = lambda kwargs: rig.client.positions.update(
+        {"BTCUSDT": D("0.3")}
+    )
+    first = await rig.tick()
+    assert rig.events(first) == [("BTCUSDT", "entry_filled")]
+    signal = next(iter(rig.state.signals.values()))
+    assert (signal.state, signal.entry_qty) == ("holding", D("0.3"))
+    root = signal.entry_client_order_id
+    assert rig.ledger.rows[root] == "filled"  # never "anomaly"
+    assert ("record_anomaly", root) not in rig.ledger.calls
+    # the remainder can still be closed and the root released
+    rig.client.order_script = []
+    rig.client.auto_fill = True
+    rig.client.on_submit = None
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = minute_rows(low="60")
+    await rig.tick()
+    assert signal.state == "closed"
+    assert rig.ledger.rows[root] == "reconciled"
+    assert rig.state.intents[rig.client.sends[-1]["client_order_id"]].state == "settled"

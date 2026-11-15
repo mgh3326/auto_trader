@@ -658,19 +658,20 @@ class TrendExecutor:
                 client_order_id=cid, broker_order_id=evidence.broker_order_id, now=now
             )
             state = "submitted"
-        if state == "submitted" and no_fill:
-            if evidence.executed_qty == 0:
-                await self.demo_ledger.record_cancelled(client_order_id=cid, now=now)
-                await self.demo_ledger.record_reconciled(client_order_id=cid, now=now)
-            else:
-                await self.demo_ledger.record_anomaly(
-                    client_order_id=cid,
-                    reason="partial_terminal_fill_requires_manual_review",
-                    now=now,
-                )
+        if state == "submitted" and no_fill and evidence.executed_qty == 0:
+            await self.demo_ledger.record_cancelled(client_order_id=cid, now=now)
+            await self.demo_ledger.record_reconciled(client_order_id=cid, now=now)
             await self.ledger_session.commit()
             return
-        if state == "submitted" and evidence.status == "FILLED":
+        if (
+            state == "submitted"
+            and evidence.executed_qty > 0
+            and (evidence.status == "FILLED" or no_fill)
+        ):
+            # A terminal order with a positive executed quantity is a fill of
+            # that quantity (broker evidence, confirmed by the position read in
+            # the state service). It stays on the closable lifecycle: an
+            # ``anomaly`` root could never be closed or released again.
             await self.demo_ledger.record_filled(
                 client_order_id=cid,
                 now=now,
@@ -678,6 +679,7 @@ class TrendExecutor:
                     "fill_evidence": "broker_order_status",
                     "filled_qty": format(evidence.executed_qty, "f"),
                     "avg_price": format(evidence.avg_price, "f"),
+                    "partial_terminal_fill": evidence.status != "FILLED",
                 },
             )
             state = "filled"
@@ -819,6 +821,7 @@ class TrendExecutor:
                 continue
             outcome = await self._reconcile_intent(intent, now=now, poll=False)
             events.append(TrendEvent(signal.symbol, f"reconciled_{outcome}"))
+        await self._release_orphaned_entries(now, events)
         blocked: set[str] = set()
         for intent in await self.state.list_unresolved_intents():
             signal = await self.state.get_signal(intent.signal_key)
@@ -828,6 +831,30 @@ class TrendExecutor:
             if signal.state == "uncertain":
                 blocked.add(signal.symbol)
         return blocked
+
+    async def _release_orphaned_entries(
+        self, now: dt.datetime, events: list[TrendEvent]
+    ) -> None:
+        """Release a reservation whose process died before ``reserve_intent``.
+
+        Sound only under the tick lease: no other tick can be mid-entry, and no
+        intent exists, so nothing could have been fenced or sent. The demo root
+        (deterministic client order id) is released only from a pre-send state.
+        """
+        for signal in await self.state.list_active_signals():
+            if signal.state != "entry_reserved":
+                continue
+            if await self.state.list_intents(signal.signal_key):
+                continue  # reserved intents were handled above; sent ones block
+            try:
+                await self._release_demo_unsent(
+                    self._entry_cid(signal.signal_key), now=now
+                )
+                await self.state.block_unsent(signal.signal_key, now=now)
+                events.append(TrendEvent(signal.symbol, "orphan_reservation_released"))
+            except Exception as exc:
+                logger.exception("trend orphaned reservation release failed")
+                events.append(TrendEvent(signal.symbol, "blocked", type(exc).__name__))
 
     # ------------------------------------------------------------------ send
 
@@ -1218,63 +1245,72 @@ class TrendExecutor:
             raise TrendStateBlocked("aware clock required")
         decision_ts = (now_ms(now) // FOUR_HOUR_MS) * FOUR_HOUR_MS
         events: list[TrendEvent] = []
-        blocked = await self._reconcile_unresolved(now, events)
-        histories: dict[str, tuple[Bar4h, ...]] = {}
-        for symbol in LOCKED_LIMITS.universe:
-            try:
-                histories[symbol] = await collect_signal_bars(
-                    self.client.kline_transport(),
-                    symbol,
+        # One tick owns the lane at a time: recovery below treats an unfenced
+        # reservation as abandoned, which is only true while no other tick lives.
+        async with self.state.tick_lease():
+            blocked = await self._reconcile_unresolved(now, events)
+            histories: dict[str, tuple[Bar4h, ...]] = {}
+            for symbol in LOCKED_LIMITS.universe:
+                try:
+                    histories[symbol] = await collect_signal_bars(
+                        self.client.kline_transport(),
+                        symbol,
+                        decision_ts=decision_ts,
+                        lookback_days=self.strategy.lookback_days,
+                        check=self._check_origin,
+                    )
+                except Exception as exc:
+                    logger.exception("trend signal bars unavailable")
+                    histories[symbol] = ()
+                    events.append(
+                        TrendEvent(symbol, "bars_unavailable", type(exc).__name__)
+                    )
+            # Manage what is held first; exits never wait for entry capacity.
+            for signal in await self.state.list_active_signals():
+                if signal.state != "holding" or signal.symbol in blocked:
+                    continue
+                try:
+                    managed = await self._manage_holding(
+                        signal,
+                        histories.get(signal.symbol, ()),
+                        decision_ts=decision_ts,
+                        now=now,
+                    )
+                except Exception as exc:
+                    logger.exception("trend holding management failed")
+                    events.append(
+                        TrendEvent(signal.symbol, "blocked", type(exc).__name__)
+                    )
+                    continue
+                if managed is not None:
+                    events.append(managed)
+                    if managed.event.endswith("uncertain"):
+                        blocked.add(signal.symbol)
+            occupied = {
+                signal.symbol for signal in await self.state.list_active_signals()
+            }
+            for found in evaluate_all(
+                self.strategy, histories, decision_ts=decision_ts
+            ):
+                if found.symbol in blocked or found.symbol in occupied:
+                    continue
+                bars = histories[found.symbol]
+                decision_bar = next(bar for bar in bars if bar.close_ts == decision_ts)
+                record = await self.state.observe_signal(
+                    symbol=found.symbol,
+                    side=found.side,
                     decision_ts=decision_ts,
-                    lookback_days=self.strategy.lookback_days,
-                    check=self._check_origin,
+                    price_text=bar_close_text(decision_bar),
                 )
-            except Exception as exc:
-                logger.exception("trend signal bars unavailable")
-                histories[symbol] = ()
-                events.append(
-                    TrendEvent(symbol, "bars_unavailable", type(exc).__name__)
-                )
-        # Manage what is held first; exits never wait for entry capacity.
-        for signal in await self.state.list_active_signals():
-            if signal.state != "holding" or signal.symbol in blocked:
-                continue
-            try:
-                managed = await self._manage_holding(
-                    signal,
-                    histories.get(signal.symbol, ()),
-                    decision_ts=decision_ts,
-                    now=now,
-                )
-            except Exception as exc:
-                logger.exception("trend holding management failed")
-                events.append(TrendEvent(signal.symbol, "blocked", type(exc).__name__))
-                continue
-            if managed is not None:
-                events.append(managed)
-                if managed.event.endswith("uncertain"):
-                    blocked.add(signal.symbol)
-        occupied = {signal.symbol for signal in await self.state.list_active_signals()}
-        for found in evaluate_all(self.strategy, histories, decision_ts=decision_ts):
-            if found.symbol in blocked or found.symbol in occupied:
-                continue
-            bars = histories[found.symbol]
-            decision_bar = next(bar for bar in bars if bar.close_ts == decision_ts)
-            record = await self.state.observe_signal(
-                symbol=found.symbol,
-                side=found.side,
-                decision_ts=decision_ts,
-                price_text=bar_close_text(decision_bar),
-            )
-            if record.state != "observed":
-                continue
-            sigma_hat = realized_vol_annual(bars, decision_ts=decision_ts)
-            if sigma_hat is None:
-                continue
-            outcome = await self._enter(record, sigma_hat=sigma_hat, now=now)
-            events.append(TrendEvent(found.symbol, f"entry_{outcome}"))
-            if outcome == "uncertain":
-                break
+                if record.state != "observed":
+                    continue
+                sigma_hat = realized_vol_annual(bars, decision_ts=decision_ts)
+                if sigma_hat is None:
+                    continue
+                outcome = await self._enter(record, sigma_hat=sigma_hat, now=now)
+                events.append(TrendEvent(found.symbol, f"entry_{outcome}"))
+                if outcome == "uncertain":
+                    break
         return TrendTickResult(decision_ts=decision_ts, events=tuple(events))
 
 

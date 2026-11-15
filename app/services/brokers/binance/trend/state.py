@@ -14,7 +14,8 @@ positive broker evidence and is also CT-4.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal, Inexact, InvalidOperation, Overflow, localcontext
 
@@ -47,6 +48,9 @@ from .keys import SIDES, make_signal_key, trend_client_order_id, trend_correlati
 
 _LOCK_SQL = text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))")
 _LOCK_KEY = "auto_trader:binance_trend_state"
+_TICK_LEASE_SQL = text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))")
+_TICK_UNLEASE_SQL = text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))")
+_TICK_LEASE_KEY = "auto_trader:binance_trend_tick"
 _ACTIVE_INTENTS = ("reserved", "sending", "acknowledged", "evidenced", "uncertain")
 _SENT_INTENTS = ("sending", "acknowledged", "evidenced", "uncertain")
 _MAX_DETAIL = 200
@@ -207,6 +211,25 @@ class TrendStateService:
         assert_limits_locked(limits)
         self._factory = session_factory
         self._limits = limits
+
+    @asynccontextmanager
+    async def tick_lease(self) -> AsyncIterator[None]:
+        """Exclusive ownership of the lane for one executor tick.
+
+        A session-level advisory lock on a connection held for the whole tick
+        (it is released by the database if the process dies). Recovery of
+        "abandoned" reservations is only sound while no other tick can be
+        between a reservation and its send fence, so every tick holds this.
+        A second tick refuses instead of waiting.
+        """
+        async with self._factory() as db:
+            got = await db.scalar(_TICK_LEASE_SQL, {"key": _TICK_LEASE_KEY})
+            if got is not True:
+                raise TrendStateBlocked("another trend tick owns the lane")
+            try:
+                yield
+            finally:
+                await db.scalar(_TICK_UNLEASE_SQL, {"key": _TICK_LEASE_KEY})
 
     @staticmethod
     async def _lock(db: AsyncSession) -> None:

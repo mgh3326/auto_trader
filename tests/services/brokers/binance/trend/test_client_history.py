@@ -13,6 +13,7 @@ from app.services.brokers.binance.trend.executor import (
     TrendDemoClient,
 )
 from app.services.brokers.binance.trend.history import (
+    TrendKlineGap,
     collect_hard_stop_minutes,
     collect_signal_bars,
     minute_high,
@@ -496,3 +497,47 @@ def test_an_empty_window_reads_nothing() -> None:
         == ()
     )
     assert transport.gets == []
+
+
+def _continuous(skip=(), only=None):
+    def rows(symbol):
+        out = []
+        for n in range(0, 3 * 24 * 60):
+            ts = T - 3 * DAY_MS + n * MINUTE_MS
+            if n in skip:
+                continue
+            out.append([ts, "100", "101", "99", "100", "1", ts + MINUTE_MS - 1])
+        return out if only is None else out[:only]
+
+    return rows
+
+
+def _watch(klines, *, now_ms=T):
+    client = make_client(_Transport(klines=klines))
+    return run(
+        collect_hard_stop_minutes(
+            client.kline_transport(),
+            "BTCUSDT",
+            entered_ms=T - 3 * DAY_MS,
+            now_ms=now_ms,
+            check=client._assert_trend,
+        )
+    )
+
+
+def test_a_missing_minute_in_the_watch_window_is_a_gap_not_a_watch() -> None:
+    missing = 3 * 24 * 60 - 100  # inside the last 24 hours
+    with pytest.raises(TrendKlineGap):
+        _watch(_continuous(skip={missing}))
+
+
+def test_an_empty_answer_for_the_watch_window_is_a_gap() -> None:
+    with pytest.raises(TrendKlineGap):
+        _watch(_continuous(only=0))
+
+
+def test_a_truncated_page_is_a_gap_and_a_complete_window_passes() -> None:
+    with pytest.raises(TrendKlineGap):
+        _watch(_continuous(only=3 * 24 * 60 - 5))  # the newest minutes missing
+    minutes = _watch(_continuous())
+    assert len(minutes) == 24 * 60 - 1  # the fill minute itself is excluded

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import Counter
+from contextlib import asynccontextmanager
 from decimal import Decimal as D
 from types import SimpleNamespace
 
@@ -65,6 +66,26 @@ class FakeState:
         self.intents: dict[str, SimpleNamespace] = {}
         self.calls: Counter[str] = Counter()
         self.order: list[str] = []
+        self.lease_held = False
+        self.lease_entries = 0
+
+    @asynccontextmanager
+    async def tick_lease(self):
+        if self.lease_held:
+            raise TrendStateBlocked("another trend tick owns the lane")
+        self.lease_held = True
+        self.lease_entries += 1
+        try:
+            yield
+        finally:
+            self.lease_held = False
+
+    async def list_intents(self, signal_key):
+        return tuple(
+            self._snap_intent(i)
+            for i in self.intents.values()
+            if i.signal_key == signal_key
+        )
 
     def _snap_signal(self, row) -> TrendSignalSnapshot:
         return TrendSignalSnapshot(

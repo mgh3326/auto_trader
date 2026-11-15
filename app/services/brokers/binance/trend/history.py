@@ -30,6 +30,10 @@ _PAGE_MINUTES = 500
 _BUCKET_MINUTES = 240
 
 
+class TrendKlineGap(RuntimeError):
+    """A watch window the exchange answered with a missing completed minute."""
+
+
 @dataclass(frozen=True)
 class TrendMinuteBar(MinuteBar):
     low_text: str
@@ -132,7 +136,8 @@ async def collect_hard_stop_minutes(
 ) -> tuple[MinuteBar, ...]:
     """Complete 1m rows wholly after the fill minute, at most the last 24 hours.
 
-    Raises on any transport or contract failure: the caller turns that into the
+    Raises on any transport or contract failure, and on any missing minute
+    (:class:`TrendKlineGap`): the caller turns that into the
     "4h decision only" fallback and never into a partial 1m picture.
     """
     window_start = max(entered_ms, now_ms - HARD_STOP_WATCH_HOURS * 60 * MINUTE_MS)
@@ -145,6 +150,11 @@ async def collect_hard_stop_minutes(
     rows = await _fetch_window(
         transport, symbol, start_ms=start, end_ms=end, check=check, raw_prices=raw
     )
+    expected = tuple(range(start, end, MINUTE_MS))
+    if tuple(row.ts for row in rows) != expected:
+        # A successful but incomplete answer (even an empty page) is not a
+        # watch: a stop touched in the missing minute would go unseen.
+        raise TrendKlineGap("1m hard-stop window is not continuous")
     return tuple(
         TrendMinuteBar(**asdict(row), low_text=raw[row.ts][2], high_text=raw[row.ts][1])
         for row in rows

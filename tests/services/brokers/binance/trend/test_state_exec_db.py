@@ -298,3 +298,21 @@ async def test_a_partial_exit_leaves_the_remainder_held(svc) -> None:
     )
     assert partial.state == "holding" and partial.closed_qty == D("0.5")
     assert partial.remaining_qty == D("0.1") and partial.exit_reason is None
+
+
+async def test_the_tick_lease_is_exclusive_and_released(svc) -> None:
+    other = TrendStateService(AsyncSessionLocal)
+    async with svc.tick_lease():
+        with pytest.raises(TrendStateBlocked, match="owns the lane"):
+            async with other.tick_lease():
+                pass
+    async with other.tick_lease():  # released: a later tick can own the lane
+        pass
+
+
+async def test_the_tick_lease_is_released_when_the_tick_raises(svc) -> None:
+    with pytest.raises(RuntimeError):
+        async with svc.tick_lease():
+            raise RuntimeError("tick died")
+    async with svc.tick_lease():
+        pass
