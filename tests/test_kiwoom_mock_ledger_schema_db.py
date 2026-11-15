@@ -365,7 +365,7 @@ async def test_signal_ledger_admits_both_mock_modes_and_refuses_duplicate(
     )
 
 
-async def test_order_proposals_check_admits_kiwoom_mock_only(
+async def test_order_proposals_check_admits_both_kiwoom_mock_modes(
     db_session: AsyncSession,
 ) -> None:
     definition = (
@@ -378,7 +378,10 @@ async def test_order_proposals_check_admits_kiwoom_mock_only(
         )
     ).scalar_one()
     assert "'kiwoom_mock'" in definition
-    assert "kiwoom_mock_us" not in definition
+    # hk 4754 (T-P8): the US mock account is a submittable place capability,
+    # so the constraint must store its rows (hk 4703 admitted KR only).
+    assert "'kiwoom_mock_us'" in definition
+    assert "'kis_live'" in definition
 
 
 async def _table_names(conn) -> set[str]:

@@ -929,7 +929,7 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 - **제안**: (`kiwoom_mock_us`, `equity_us`)는 place 전용 제출 가능 조합이고, 승인 창은 XNYS 정규장만
   이며(프리·애프터 없음, Toss US 확장 키를 읽지 않는다) **수동 승인 전용**이다 — 자동승인·veto 어휘에
   없다. `review.order_proposals.account_mode` CHECK는 마이그레이션
-  `20261116_hk4754_kiwoom_us_proposals`가 `'kiwoom_mock_us'`를 받는다(downgrade는 그런 행이 있으면
+  `20261116_hk4754_us_proposals`가 `'kiwoom_mock_us'`를 받는다(downgrade는 그런 행이 있으면
   거부).
 - **게이트**: 주문 도구는 기존 `KIWOOM_MOCK_US_ENABLED` + US 앱키/계좌 4종 설정 + 호출별
   `dry_run`/`confirm` 이중 게이트 뒤에 있고, 대사 쓰기만 위의 US 대사 게이트 뒤에 있다. 두 게이트 모두

@@ -1,7 +1,7 @@
 """hk 4754 (3797 T-P8): admit ``kiwoom_mock_us`` in ``order_proposals``.
 
-Revision ID: 20261116_hk4754_kiwoom_us_proposals
-Revises: 20261115_hk4703_kiwoom_ledger
+Revision ID: 20261116_hk4754_us_proposals
+Revises: 20261114_hk4702_trend_state
 Create Date: 2026-11-16
 
 hk 4703 (T-P1) widened ``review.order_proposals.account_mode`` with
@@ -25,8 +25,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "20261116_hk4754_kiwoom_us_proposals"
-down_revision: str | Sequence[str] | None = "20261115_hk4703_kiwoom_ledger"
+revision: str = "20261116_hk4754_us_proposals"
+down_revision: str | Sequence[str] | None = "20261114_hk4702_trend_state"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
