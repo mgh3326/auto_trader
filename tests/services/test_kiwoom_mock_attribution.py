@@ -8,13 +8,17 @@ never a value, and nothing is substituted for it.
 from __future__ import annotations
 
 import unicodedata
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from app.services.kis_mock_attribution import InvalidStrategy, MissingAttribution
 from app.services.kiwoom_mock_attribution import (
     ACCOUNT_SCOPE,
+    SignalStrategyConflict,
     mint_correlation_id,
+    record_signal,
     resolve_attribution,
 )
 
@@ -113,3 +117,70 @@ def test_signal_source_defaults_and_can_be_named():
         resolve_attribution(**ORDER, strategy="s", signal_source="smoke").signal_source
         == "smoke"
     )
+
+
+class _FakeResult:
+    def __init__(self, *, scalar: Any = None, first: Any = None) -> None:
+        self._scalar = scalar
+        self._first = first
+
+    def scalar_one_or_none(self) -> Any:
+        return self._scalar
+
+    def first(self) -> Any:
+        return self._first
+
+
+class _FakeSession:
+    """Just enough of AsyncSession for record_signal's conflict path."""
+
+    def __init__(self, existing: Any) -> None:
+        self.existing = existing
+        self.calls = 0
+        self.commits = 0
+
+    async def execute(self, _stmt: Any) -> _FakeResult:
+        self.calls += 1
+        if self.calls == 1:
+            return _FakeResult(scalar=None)  # ON CONFLICT DO NOTHING
+        return _FakeResult(first=self.existing)
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+def _attribution(strategy: str) -> Any:
+    return resolve_attribution(**ORDER, strategy=strategy, correlation_id="fixed")
+
+
+@pytest.mark.asyncio
+async def test_same_strategy_replay_returns_the_existing_row():
+    existing = SimpleNamespace(id=7, strategy="alpha")
+    session = _FakeSession(existing)
+
+    row_id = await record_signal(
+        cast(Any, session),
+        attribution=_attribution("alpha"),
+        symbol="005930",
+        decision="order",
+    )
+
+    assert row_id == 7
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_a_different_strategy_on_the_same_order_is_refused():
+    existing = SimpleNamespace(id=7, strategy="alpha")
+    session = _FakeSession(existing)
+
+    with pytest.raises(SignalStrategyConflict):
+        await record_signal(
+            cast(Any, session),
+            attribution=_attribution("beta"),
+            symbol="005930",
+            decision="order",
+        )
+
+    # nothing was committed for the conflicting write
+    assert session.commits == 0

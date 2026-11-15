@@ -141,6 +141,10 @@ def resolve_attribution(
     )
 
 
+class SignalStrategyConflict(RuntimeError):
+    """The correlation id is already attributed to a different strategy."""
+
+
 async def record_signal(
     db: AsyncSession,
     *,
@@ -192,11 +196,26 @@ async def record_signal(
     )
     inserted = (await db.execute(stmt)).scalar_one_or_none()
     if inserted is None:
-        inserted = await db.scalar(
-            select(KiwoomMockSignalLedger.id).where(
-                KiwoomMockSignalLedger.correlation_id == attribution.correlation_id
+        existing = (
+            await db.execute(
+                select(
+                    KiwoomMockSignalLedger.id,
+                    KiwoomMockSignalLedger.strategy,
+                ).where(
+                    KiwoomMockSignalLedger.correlation_id == attribution.correlation_id
+                )
             )
-        )
+        ).first()
+        if existing is not None and existing.strategy != attribution.strategy:
+            # The id names the order, not the strategy. A row already owned by
+            # another strategy cannot be relabelled: sending would attribute a
+            # real order to the wrong owner. The caller treats this as
+            # signal_record_unavailable and does not send.
+            raise SignalStrategyConflict(
+                "kiwoom_mock signal row is already attributed to a different "
+                f"strategy: {attribution.correlation_id}"
+            )
+        inserted = existing.id if existing is not None else None
     await db.commit()
     if inserted is None:  # pragma: no cover — conflict without a readable row
         raise RuntimeError(
@@ -268,6 +287,7 @@ __all__ = (
     "KiwoomMockAttribution",
     "KiwoomMockSignalRecorder",
     "MissingAttribution",
+    "SignalStrategyConflict",
     "mint_correlation_id",
     "mark_signal_outcome",
     "record_signal",
