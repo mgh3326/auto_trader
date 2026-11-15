@@ -42,7 +42,7 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
 |---|---|---|
 | KR 모의 MCP 8도구 | `app/mcp_server/tooling/orders_kiwoom_variants.py:63-71` (`KIWOOM_MOCK_TOOL_NAMES`), `account_mode="kiwoom_mock"` 고정 `:53` | preview/place/modify/cancel/order history·detail/positions/orderable cash |
 | US 모의 MCP 변형 | `app/mcp_server/tooling/orders_kiwoom_us_variants.py` (account_mode `kiwoom_mock_us`) | 별도 앱키 4종 |
-| 송신 경계 | `_kiwoom_mock_place_order_impl` `orders_kiwoom_variants.py:423` — dry_run+confirm 이중 게이트, preflight 직후 `place_buy_order`/`place_sell_order` `:503-511`, `KiwoomPreDispatchError`(미송신 확정) vs `_dispatch_unknown_response`(송신 불명) `:383-416` | 여기가 원장 쓰기 지점 |
+| 송신 경계 | MCP `kiwoom_mock_place_order`/`kiwoom_mock_us_place_order` 의 dry_run+confirm 게이트(`orders_kiwoom_variants.py:803-832`, `orders_kiwoom_us_variants.py:343-392`) 뒤 공유 서비스 `place_kiwoom_mock_order`/`place_kiwoom_mock_us_order`(`app/services/kiwoom_mock_place.py:723,1272`) — 귀속 신호→preflight→예약→POST→원장→outcome 는 공통 꼬리 `_execute_reserved_send` `:1095`, `KiwoomPreDispatchError`(미송신 확정 `client.py:81`) vs `dispatch_unknown_response`(송신 불명 `:411`) | 여기가 원장 쓰기 지점 |
 | 주문/조회 TR | `app/services/brokers/kiwoom/constants.py:27-36` (kt10000~kt10003 주문, kt00007 주문체결상세, kt00009 주문체결현황, kt00001 예수금, kt00018 잔고), `:167-178` (US ust20000~20003, ust21050/21070/21510/21160) | 대사 입력 |
 | KRX-only 강제 | `MOCK_REJECTED_EXCHANGES={"NXT","SOR"}` `constants.py:54`, 주문 경로 `dmst_stex_tp=KRX` 고정 `domestic_orders.py:88` (`_ensure_krx` `:39`), tooling 사전거부 `orders_kiwoom_variants.py:121-127` | 네트워크 호출 전 거부 |
 | 게이트 | `validate_kiwoom_mock_config` `app/core/config.py:1465-1471` (`KIWOOM_MOCK_ENABLED`+APP_KEY/SECRET/ACCOUNT_NO), US `validate_kiwoom_mock_us_config` `:1499-1512`, `KiwoomMockClient` 가 mock host 외 거부 `client.py:135-140` (`MOCK_BASE_URL` `constants.py:10`) | fail-closed |
@@ -146,7 +146,7 @@ Toss(`review.toss_live_order_ledger` + `toss_reconcile_orders`) 선례를 그대
   2. 정상 응답 — `return_code==0` 이면 `accepted`(KR 은 `ord_no`/`order_no` 단일 안전값,
      US 는 `validate_us_order_id` 통과 1–18자리 단일값이 필요하고 없으면 `uncertain`),
      명시적 비-0 `return_code` 면 `rejected`(예약은 소비된 채 종결 — 브로커가 거절했으므로 재송신 의미 없음).
-  3. `_dispatch_unknown_response` — 송신 여부 불명 → `uncertain` 행 + 예약 **유지**.
+  3. `dispatch_unknown_response`(`app/services/kiwoom_mock_place.py:411`, `_execute_reserved_send` 의 post-dispatch except `:1208`) — 송신 여부 불명 → `uncertain` 행 + 예약 **유지**.
      대사가 양성 증거로 해소할 때까지 같은 키 재송신 금지(NH S3 와 동일 논리).
 
 ### 2.3 `execution_ledger` 로의 도달
