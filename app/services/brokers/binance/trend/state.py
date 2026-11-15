@@ -1003,12 +1003,23 @@ class TrendStateService:
             elif evidence.status not in _TERMINAL_NO_FILL_STATUSES:
                 raise TrendStateBlocked("unknown order status")
             if intent.reduce_only:
+                entry_working = False
+                if signal.entry_client_order_id:
+                    entry = await db.get(
+                        BinanceTrendIntent, signal.entry_client_order_id
+                    )
+                    entry_working = entry is not None and entry.state in {
+                        "sending",
+                        "acknowledged",
+                        "uncertain",
+                    }
                 self._apply_exit(
                     signal,
                     intent,
                     evidence,
                     broker_position_amt,
                     when=filled_at or now,
+                    entry_working=entry_working,
                 )
             else:
                 self._apply_entry(
@@ -1042,11 +1053,18 @@ class TrendStateService:
         expected = remaining if intent.side == "BUY" else -remaining
         if broker_position_amt != expected:
             raise TrendStateBlocked("broker position does not confirm the entry fill")
-        signal.state = "holding"
         signal.entry_qty = evidence.executed_qty
         signal.entry_price = evidence.avg_price
         if signal.entered_at is None:
             signal.entered_at = when
+        if remaining == 0 and signal.closed_qty > 0:
+            # The entry ended without filling beyond what the exits already
+            # closed: the flat interval was the end.
+            if signal.exit_reason is None or signal.exit_at is None:
+                raise TrendStateBlocked("closed without an exit record")
+            signal.state = "closed"
+        else:
+            signal.state = "holding"
 
     @staticmethod
     def _apply_partial_entry_exposure(
@@ -1084,6 +1102,7 @@ class TrendStateService:
         broker_position_amt: Decimal,
         *,
         when: dt.datetime,
+        entry_working: bool = False,
     ) -> None:
         if signal.state not in {"holding", "uncertain"}:
             raise TrendStateBlocked("signal is not holding an exit")
@@ -1107,9 +1126,13 @@ class TrendStateService:
         signal.closed_qty = closed
         if remaining == 0:
             reason = TrendStateService._exit_reason(intent.leg_key.split(":", 1)[0])
-            signal.state = "closed"
             signal.exit_reason = reason
             signal.exit_at = when
+            # While the entry order can still fill, the flat interval is NOT the
+            # end: a later fill would be a position with no record and no stop.
+            # The signal stays ``holding`` (remainder 0) until the entry is
+            # terminal; the terminal entry evidence closes it.
+            signal.state = "holding" if entry_working else "closed"
         else:
             signal.state = "holding"
 

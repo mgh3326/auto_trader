@@ -380,3 +380,50 @@ async def test_a_partial_entry_is_confirmed_by_the_position_and_closed_qty(svc) 
             broker_position_amt=D("0.2"),
             now=NOW,
         )
+
+
+async def test_the_flat_interval_of_a_working_entry_keeps_the_signal_holding(
+    svc,
+) -> None:
+    signal, entry = await to_sending(svc)
+    await svc.apply_order_evidence(
+        evidence(entry, status="PARTIALLY_FILLED", executed="0.3"),
+        broker_position_amt=D("0.3"),
+        now=NOW,
+    )
+    stop = await svc.reserve_exit_intent(
+        signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.3"), now=NOW
+    )
+    await svc.mark_sending(stop.client_order_id, now=NOW)
+    flat, _ = await svc.apply_order_evidence(
+        evidence(stop, avg="95"), broker_position_amt=D("0"), now=NOW
+    )
+    assert flat.state == "holding" and flat.remaining_qty == 0  # entry still working
+    # the entry order ends without filling more: only now is the signal closed
+    closed, _ = await svc.apply_order_evidence(
+        evidence(entry, status="CANCELED", executed="0.3"),
+        broker_position_amt=D("0"),
+        now=NOW,
+    )
+    assert closed.state == "closed" and closed.exit_reason == EXIT_HARD_STOP
+
+
+async def test_a_fill_after_the_interim_exit_becomes_a_holding_again(svc) -> None:
+    signal, entry = await to_sending(svc)
+    await svc.apply_order_evidence(
+        evidence(entry, status="PARTIALLY_FILLED", executed="0.3"),
+        broker_position_amt=D("0.3"),
+        now=NOW,
+    )
+    stop = await svc.reserve_exit_intent(
+        signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.3"), now=NOW
+    )
+    await svc.mark_sending(stop.client_order_id, now=NOW)
+    await svc.apply_order_evidence(
+        evidence(stop, avg="95"), broker_position_amt=D("0"), now=NOW
+    )
+    held, _ = await svc.apply_order_evidence(
+        evidence(entry, status="FILLED"), broker_position_amt=D("0.3"), now=NOW
+    )
+    assert held.state == "holding" and held.remaining_qty == D("0.3")
+    assert held.entry_qty == D("0.6")

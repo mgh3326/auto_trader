@@ -519,7 +519,7 @@ class FakeState:
                 expected = left if intent.side == "BUY" else -left
                 if broker_position_amt != expected:
                     raise TrendStateBlocked("position mismatch")
-                row.state = "holding"
+                row.state = "closed" if left == 0 and row.closed_qty > 0 else "holding"
                 row.entry_qty = ev.executed_qty
                 row.entry_price = ev.avg_price
                 row.entered_at = row.entered_at or filled_at or now
@@ -533,10 +533,16 @@ class FakeState:
                 if broker_position_amt != expected:
                     raise TrendStateBlocked("position mismatch")
                 row.closed_qty = closed
+                entry = self.intents.get(row.entry_client_order_id)
+                working = entry is not None and entry.state in {
+                    "sending",
+                    "acknowledged",
+                    "uncertain",
+                }
                 if remaining == 0:
-                    row.state = "closed"
                     row.exit_reason = intent.leg_key.split(":")[0]
                     row.exit_at = filled_at or now
+                    row.state = "holding" if working else "closed"
                 else:
                     row.state = "holding"
         intent.state = "evidenced"

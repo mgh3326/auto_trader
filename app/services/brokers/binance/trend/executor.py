@@ -1300,6 +1300,10 @@ class TrendExecutor:
     ) -> TrendEvent | None:
         if signal.entered_at is None or signal.entry_price is None:
             raise TrendStateBlocked("held signal missing fill evidence")
+        if signal.remaining_qty <= 0:
+            # Flat interval of a still-working entry: nothing to close until a
+            # further fill arrives (the entry reconciliation records it).
+            return None
         symbol = signal.symbol
         positions, orders = await self._read_account()
         try:

@@ -1267,12 +1267,21 @@ async def test_a_partially_filled_entry_still_gets_its_hard_stop_exit_and_no_new
     ]
     assert sends[1]["qty"] == D("0.3")  # the broker-proven quantity, never more
     assert ("BTCUSDT", "partial_entry_exposure_open") in rig.events(second)
-    assert signal.state == "closed" and signal.exit_reason == EXIT_HARD_STOP
+    # the entry order can still fill: the flat interval is not the end
+    assert signal.state == "holding" and signal.entry_qty - signal.closed_qty == 0
+    assert signal.exit_reason == EXIT_HARD_STOP
     assert rig.client.positions["BTCUSDT"] == D(0)
-    # still no new entry and no resend afterwards
+    # still no new entry, no resend, and nothing to close while flat
     await rig.tick()
     assert len(rig.client.sends) == 2
     assert rig.state.intents[entry_cid].state == "acknowledged"
+    # the entry order ends without filling more: only now is the signal closed
+    rig.client.order_script = [{"status": "CANCELED", "executed": D("0.3")}]
+    rig.client.orders = []  # the canceled entry no longer rests at the broker
+    await rig.tick()
+    assert signal.state == "closed" and signal.exit_reason == EXIT_HARD_STOP
+    assert rig.state.intents[entry_cid].state == "settled"
+    assert len(rig.client.sends) == 2
 
 
 @pytest.mark.asyncio
@@ -1319,3 +1328,38 @@ async def test_the_release_sweep_has_no_age_window(rig: Rig) -> None:
     rig.ledger.rows[cid] = "validated"
     await rig.tick()
     assert rig.ledger.rows[cid] == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_a_fill_after_the_interim_exit_is_managed_and_gets_its_own_stop(
+    rig: Rig,
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.order_script = [{"status": "PARTIALLY_FILLED", "executed": D("0.3")}]
+    rig.client.exit_script = {"status": "FILLED"}
+
+    def fill(kwargs):
+        amount = D("0.3") if not kwargs["reduce_only"] else -kwargs["qty"]
+        rig.client.positions["BTCUSDT"] = (
+            rig.client.positions.get("BTCUSDT", D(0)) + amount
+        )
+
+    rig.client.on_submit = fill
+    await rig.tick()  # 0.3 of 0.6 filled
+    signal = next(iter(rig.state.signals.values()))
+    entry_cid = signal.entry_client_order_id
+    rig.client.orders = [open_order("BTCUSDT", cid=entry_cid)]
+    rig.minutes["BTCUSDT"] = minute_rows(low="94")
+    await rig.tick()  # the stop sells the first 0.3: flat, entry still working
+    assert (signal.state, signal.entry_qty - signal.closed_qty) == ("holding", D(0))
+    # the rest of the entry fills afterwards: 0.3 of new exposure, no stop yet
+    rig.client.positions["BTCUSDT"] = D("0.3")
+    rig.client.orders = []
+    rig.client.order_script = [{"status": "FILLED"}]
+    # reconciled in this tick: the new 0.3 is recorded and its own stop fires
+    await rig.tick()
+    assert signal.entry_qty == D("0.6") and signal.closed_qty == D("0.6")
+    sells = [s for s in rig.client.sends if s["reduce_only"]]
+    assert [s["qty"] for s in sells] == [D("0.3"), D("0.3")]
+    assert signal.state == "closed" and rig.client.positions["BTCUSDT"] == D(0)
+    assert [s["side"] for s in rig.client.sends].count("BUY") == 1  # one entry only
