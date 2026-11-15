@@ -513,6 +513,7 @@ async def test_full_mode_books_one_in_effect_row_and_writes_no_journal(
         assert await _trade(order_no) is None
         assert await _journals(symbol) == []
 
+        assert run_ids, "the full run must record its reconcile-run row"
         async with AsyncSessionLocal() as session:
             run = (
                 await session.execute(
