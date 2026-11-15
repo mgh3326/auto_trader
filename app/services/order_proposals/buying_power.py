@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import validate_toss_api_config
+from app.core.config import validate_kiwoom_mock_config, validate_toss_api_config
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 
 
@@ -179,13 +179,63 @@ async def _load_toss_buying_power(*, currency: str) -> Decimal:
         await client.aclose()
 
 
+async def _load_kiwoom_mock_buying_power() -> Decimal:
+    from app.services.brokers.kiwoom import constants as kiwoom_constants
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+    from app.services.brokers.kiwoom.domestic_account import (
+        KiwoomDomesticAccountClient,
+    )
+    from app.services.brokers.kiwoom.normalization import (
+        KiwoomMockEvidenceError,
+        normalize_deposit,
+        validate_mock_response_provenance,
+    )
+
+    client = KiwoomMockClient.from_app_settings()
+    account_client = KiwoomDomesticAccountClient(client)
+    payload = await account_client.get_deposit()
+    validate_mock_response_provenance(payload)
+    return_code = payload.get("return_code")
+    if not (
+        (
+            type(return_code) is int
+            and return_code == kiwoom_constants.SUCCESS_RETURN_CODE
+        )
+        or (
+            isinstance(return_code, str)
+            and return_code == str(kiwoom_constants.SUCCESS_RETURN_CODE)
+        )
+    ):
+        raise KiwoomMockEvidenceError(
+            "Kiwoom mock buying-power read was not successful"
+        )
+    return Decimal(normalize_deposit(payload))
+
+
 async def default_buying_power_reader(
     *,
     account_mode: str,
     broker_account_id: str | None,
     currency: str,
 ) -> Decimal | None:
-    """Read Toss buying power; unsupported brokers deliberately return unknown."""
+    """Read buying power; unsupported brokers deliberately return unknown.
+
+    kiwoom_mock reads available KRW cash via the kt00001 deposit path
+    (ROB-904: kt00010 is mock-unsupported). Any failure or unparseable cash
+    returns unknown (fail-open) — never 0 or a guess.
+    """
+    if account_mode == "kiwoom_mock":
+        if currency != "KRW":
+            return None
+        if validate_kiwoom_mock_config():
+            return None
+        key = BuyingPowerKey(account_mode, broker_account_id, currency)
+        try:
+            return await _CACHE.get_or_load(
+                key, lambda: _load_kiwoom_mock_buying_power()
+            )
+        except Exception:  # noqa: BLE001 - advisory is fail-open unknown
+            return None
     if account_mode != "toss_live":
         return None
     if validate_toss_api_config():
