@@ -132,6 +132,7 @@ class FakeState:
             entered_at=row.entered_at,
             closed_qty=row.closed_qty,
             realized_pnl_usdt=row.realized_pnl_usdt,
+            fees_usdt=row.fees_usdt,
         )
 
     def _snap_intent(self, row) -> TrendIntentSnapshot:
@@ -178,6 +179,7 @@ class FakeState:
             entered_at=entered_at or NOW - dt.timedelta(hours=8),
             closed_qty=D(0),
             realized_pnl_usdt=D(0),
+            fees_usdt=D(0),
             exit_reason=exit_reason,
             exit_at=exit_at,
             conflict_at=None,
@@ -207,6 +209,20 @@ class FakeState:
             self._snap_intent(r)
             for r in self.intents.values()
             if r.state in _ACTIVE_INTENTS
+        )
+
+    async def list_forecast_recovery_signals(self):
+        return tuple(
+            self._snap_signal(r)
+            for r in self.signals.values()
+            if r.entry_qty > 0
+            and r.state in ("holding", "closed")
+            and any(
+                i.signal_key == r.signal_key
+                and not i.reduce_only
+                and i.state == "settled"
+                for i in self.intents.values()
+            )
         )
 
     def _book(self, now, exclude=None) -> EntryBook:
@@ -265,6 +281,7 @@ class FakeState:
                 entered_at=None,
                 closed_qty=D(0),
                 realized_pnl_usdt=D(0),
+                fees_usdt=D(0),
                 exit_reason=None,
                 exit_at=None,
                 conflict_at=None,

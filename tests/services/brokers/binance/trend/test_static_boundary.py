@@ -24,6 +24,12 @@ EXTRA_ALLOWED = {
     "strategy.py": (f"{_BARS}.strategy", _ROB974),
     "history.py": (f"{_BARS}.bars", _ROB974),
     "exposure.py": (f"{_FUTURES}.dto",),
+    # Forecast rows are durable learning metadata, not broker access: the
+    # forecast module may reach the journal service and its session only.
+    "forecast.py": (
+        "app.core.db",
+        "app.services.trade_journal.forecast_service",
+    ),
     "executor.py": (
         _ROB974,
         f"{_FUTURES}.dto",

@@ -113,6 +113,7 @@ class TrendSignalSnapshot:
     entered_at: dt.datetime | None = None
     closed_qty: Decimal = Decimal(0)
     realized_pnl_usdt: Decimal = Decimal(0)
+    fees_usdt: Decimal = Decimal(0)
 
     @property
     def remaining_qty(self) -> Decimal:
@@ -171,6 +172,7 @@ def _signal_snapshot(row: BinanceTrendSignal) -> TrendSignalSnapshot:
         entered_at=row.entered_at,
         closed_qty=row.closed_qty,
         realized_pnl_usdt=row.realized_pnl_usdt,
+        fees_usdt=row.fees_usdt,
     )
 
 
@@ -334,6 +336,30 @@ class TrendStateService:
                 )
             ).all()
             return tuple(_intent_snapshot(row) for row in rows)
+
+    async def list_forecast_recovery_signals(self) -> tuple[TrendSignalSnapshot, ...]:
+        """Signals with a proven entry fill that may need forecast repair.
+
+        Candidates only: whether a forecast still needs saving or resolving is
+        decided against ``review.trade_forecasts`` by the forecast module —
+        the trend tables carry no forecast columns.
+        """
+        async with self._factory() as db:
+            rows = (
+                await db.scalars(
+                    select(BinanceTrendSignal).where(
+                        BinanceTrendSignal.entry_qty > 0,
+                        BinanceTrendSignal.state.in_(("holding", "closed")),
+                        BinanceTrendSignal.signal_key.in_(
+                            select(BinanceTrendIntent.signal_key).where(
+                                BinanceTrendIntent.reduce_only.is_(False),
+                                BinanceTrendIntent.state == "settled",
+                            )
+                        ),
+                    )
+                )
+            ).all()
+            return tuple(_signal_snapshot(row) for row in rows)
 
     async def list_unresolved_intents(self) -> tuple[TrendIntentSnapshot, ...]:
         async with self._factory() as db:
