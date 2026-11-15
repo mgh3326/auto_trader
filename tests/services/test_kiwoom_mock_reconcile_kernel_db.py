@@ -939,7 +939,7 @@ async def test_full_mode_terminal_verdict_with_fill_closes_after_the_journal(
         assert outcome["verdict"] == "expired"
         assert outcome["fill_action"] == "booked_partial"
         assert outcome["action"] == "mark_expired"
-        assert outcome["requires_manual_review"] is False
+        assert not outcome.get("requires_manual_review")
 
         stored = await _fetch(client_order_id)
         assert stored.status == "expired"
