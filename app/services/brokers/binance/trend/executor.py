@@ -309,7 +309,7 @@ class TrendDemoClient(BinanceFuturesDemoExecutionClient):
             raise TrendBrokerTruthUnavailable("margin configuration not unique")
         row = rows[0]
         if (
-            row.get("marginType") != "isolated"
+            str(row.get("marginType")).lower() != "isolated"
             or str(row.get("leverage")) != "1"
             or row.get("positionSide") != "BOTH"
         ):

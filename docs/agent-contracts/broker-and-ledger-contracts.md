@@ -285,6 +285,7 @@ H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)�
   - **충돌**: 신호 심볼에 우리 것이 아닌 position·open order가 있으면 `conflict_blocked`(미전송), 브로커 거절 뒤 같은 증거가 보이면 `conflict_rejected`를 기록하며 둘 다 주 3건 래치로 센다.
   - **청산**: 우선순위 hard stop → signal flip → time exit(30일). 모든 청산은 `reduceOnly` MARKET one-way, 수량은 `min(레인 잔량, 브로커 position)`을 lot step으로 내림한 값이며 브로커가 보유 방향을 보이지 않거나 해당 심볼에 미체결이 있으면 보내지 않는다. hard stop은 4h 마감 사이를 체결 분(分)을 포함한 이후 1m 극값(최대 24시간; 체결 분의 체결 이전 극값은 감시가 더 일찍 걸리는 쪽으로만 작용)과 현재 호가로 감시하고, 1m 조회가 실패한 틱은 **4h 결정(완성 bar 종가)만** 쓴다. `exit_reason`은 `constants.EXIT_REASONS={hard_stop, signal_flip, time_exit}` 하나뿐이며 `TrendStateService`가 모든 쓰기 전에 검증한다(DB CHECK 없음). 청산은 진입 규칙(kill switch·cap)에 막히지 않는다.
   - **금지**: leverage·margin mode 변경, 주문 취소, smoke order-test(클라이언트가 거부), 기존 ROB-993/H5/ROB-1474 상수·allowlist·게이트 변경, 선물 데모 클라이언트의 호스트 allowlist 변경.
+  - **wire 계약 테스트**: `test_wire_contract.py`가 `wire_fixtures.py`의 **원문 JSON 텍스트**(문서 예시 기반, 출처 URL 병기, 실측 캡처 아님)를 실제 `httpx.Response`로 클라이언트 파싱 계층에 통과시킨다(주문 submit/query, positionRisk, positionSide/dual, openOrders, exchangeInfo 필터, bookTicker, klines, 오류 본문). 가짜가 파이썬 타입을 넣어 못 보던 문자열 필드·bool/문자열 혼재·누락 필드를 고정한다. 새 Binance 읽기 필드를 쓰면 픽스처부터 추가한다.
   - **테스트**: `test_executor.py`(가짜 클라이언트·원장·상태, 모든 거부 경로의 전송 0건 단언), `test_client_history.py`, `test_strategy_sizing.py`, `test_exits_exposure.py`, DB 전이는 CI의 `test_state_exec_db.py`.
 - **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB).
 

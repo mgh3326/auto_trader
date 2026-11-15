@@ -181,6 +181,7 @@ tests/services/brokers/binance/trend/test_state_exec_db.py
 tests/services/brokers/binance/trend/test_state_inputs.py
 tests/services/brokers/binance/trend/test_static_boundary.py
 tests/services/brokers/binance/trend/test_strategy_sizing.py
+tests/services/brokers/binance/trend/test_wire_contract.py
 tests/services/brokers/kis/test_circuit_breaker.py
 tests/services/brokers/kis/test_live_order_expiry_krx_after.py
 tests/services/brokers/kis/test_live_shadow_witness.py
