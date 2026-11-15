@@ -28,6 +28,7 @@ from app.models.binance_trend import BinanceTrendIntent, BinanceTrendSignal
 from .constants import (
     EXIT_REASONS,
     LOCKED_LIMITS,
+    TAKER_FEE_RATE,
     TrendLimits,
     UnknownExitReason,
     assert_exit_reason,
@@ -113,6 +114,7 @@ class TrendSignalSnapshot:
     entered_at: dt.datetime | None = None
     closed_qty: Decimal = Decimal(0)
     realized_pnl_usdt: Decimal = Decimal(0)
+    fees_usdt: Decimal = Decimal(0)
 
     @property
     def remaining_qty(self) -> Decimal:
@@ -171,6 +173,7 @@ def _signal_snapshot(row: BinanceTrendSignal) -> TrendSignalSnapshot:
         entered_at=row.entered_at,
         closed_qty=row.closed_qty,
         realized_pnl_usdt=row.realized_pnl_usdt,
+        fees_usdt=row.fees_usdt,
     )
 
 
@@ -192,6 +195,13 @@ def _intent_snapshot(row: BinanceTrendIntent) -> TrendIntentSnapshot:
 
 
 _SCALE = Decimal("1e-12")
+
+
+def _fill_fee(evidence: TrendOrderEvidence) -> Decimal:
+    """Estimated taker fee on one proven fill's quote notional (H5 parity)."""
+    return (evidence.executed_qty * evidence.avg_price * TAKER_FEE_RATE).quantize(
+        _SCALE
+    )
 
 
 def _stored_exactly(value: Decimal) -> bool:
@@ -334,6 +344,30 @@ class TrendStateService:
                 )
             ).all()
             return tuple(_intent_snapshot(row) for row in rows)
+
+    async def list_forecast_recovery_signals(self) -> tuple[TrendSignalSnapshot, ...]:
+        """Signals with a proven entry fill that may need forecast repair.
+
+        Candidates only: whether a forecast still needs saving or resolving is
+        decided against ``review.trade_forecasts`` by the forecast module —
+        the trend tables carry no forecast columns.
+        """
+        async with self._factory() as db:
+            rows = (
+                await db.scalars(
+                    select(BinanceTrendSignal).where(
+                        BinanceTrendSignal.entry_qty > 0,
+                        BinanceTrendSignal.state.in_(("holding", "closed")),
+                        BinanceTrendSignal.signal_key.in_(
+                            select(BinanceTrendIntent.signal_key).where(
+                                BinanceTrendIntent.reduce_only.is_(False),
+                                BinanceTrendIntent.state == "settled",
+                            )
+                        ),
+                    )
+                )
+            ).all()
+            return tuple(_signal_snapshot(row) for row in rows)
 
     async def list_unresolved_intents(self) -> tuple[TrendIntentSnapshot, ...]:
         async with self._factory() as db:
@@ -1050,6 +1084,7 @@ class TrendStateService:
         signal.entry_qty = evidence.executed_qty
         signal.entry_price = evidence.avg_price
         signal.entered_at = when
+        signal.fees_usdt = signal.fees_usdt + _fill_fee(evidence)
 
     @staticmethod
     def _apply_exit(
@@ -1079,6 +1114,7 @@ class TrendStateService:
         signal.realized_pnl_usdt = signal.realized_pnl_usdt + (
             pnl * direction
         ).quantize(_SCALE)
+        signal.fees_usdt = signal.fees_usdt + _fill_fee(evidence)
         signal.closed_qty = closed
         if remaining == 0:
             reason = TrendStateService._exit_reason(intent.leg_key.split(":", 1)[0])

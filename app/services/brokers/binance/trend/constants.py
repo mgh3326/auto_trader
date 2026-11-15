@@ -24,7 +24,17 @@ EWMA_SPAN_DAYS: Final = 20
 ANNUALISATION_DAYS: Final = 365
 # The lookback ``L`` is a required strategy argument (CT-5 fixes it at seal).
 LOOKBACK_CHOICES: Final = (20, 60, 120)
+# CT-5 seal inputs (hk:doc decision/2026-11-15/at-3796-ct5-seal-inputs). The
+# CLI passes exactly these to ``TrendStrategy``; CT-5b references this block in
+# the experiment manifest instead of repeating the numbers.
+SEAL_LOOKBACK_DAYS: Final = 60
+SEAL_HARD_STOP_FRACTION: Final = Decimal("0.10")
 TIME_EXIT_DAYS: Final = 30
+# Estimated taker fee per fill notional — the same starting point the H5 lane
+# uses; the ledger's measured ``fee_usdt`` supersedes it. Accrued into
+# ``fees_usdt`` on proven entry/exit fills so the forecast outcome is net of
+# fees, not gross.
+TAKER_FEE_RATE: Final = Decimal("0.0005")
 # A 1m hard-stop watch covers at most this much history after a restart; older
 # touches are covered only by the current executable quote and the 4h decision.
 HARD_STOP_WATCH_HOURS: Final = 24

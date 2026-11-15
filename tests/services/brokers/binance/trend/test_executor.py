@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal as D
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -118,6 +119,13 @@ class Rig:
 
         monkeypatch.setattr(executor_module, "collect_signal_bars", fake_signal_bars)
         monkeypatch.setattr(executor_module, "collect_hard_stop_minutes", fake_minutes)
+        # Forecast writes are durable DB work covered by test_forecast.py;
+        # here they are inert so executor tests never touch a session.
+        monkeypatch.setattr(executor_module, "ensure_entry_forecast", AsyncMock())
+        monkeypatch.setattr(executor_module, "repair_forecast", AsyncMock())
+        monkeypatch.setattr(
+            executor_module, "repair_forecasts", AsyncMock(return_value=({}, []))
+        )
 
     async def tick(self, *, now=NOW, confirm=True):
         return await self.exe.run_tick(now=now, confirm=confirm)
@@ -446,6 +454,12 @@ async def test_an_affirmative_rejection_is_recorded_not_uncertain(
     assert rig.ledger.rows[intent.client_order_id] == "reconciled"  # no order existed
     expected = "entry_conflict_rejected" if conflicting else "entry_rejected"
     assert rig.events(result) == [("BTCUSDT", expected)]
+    if conflicting:
+        from app.services.brokers.binance.trend import control
+
+        assert (
+            control.tick_failures(result.events)[0].bucket == "entry_conflict_rejected"
+        )
 
 
 @pytest.mark.asyncio
@@ -482,7 +496,7 @@ async def _only_btc(rig: Rig):
 async def test_hedge_mode_refuses_the_entry(rig: Rig) -> None:
     rig.client.hedge = True
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_refused")
+    assert result.events[0].event.startswith("entry_refused")
     assert rig.state.calls["reserve_entry"] == 0
 
 
@@ -492,7 +506,7 @@ async def test_isolated_1x_readback_failure_refuses_without_mutating_settings(
 ) -> None:
     rig.client.isolated_ok = False
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_aborted")
+    assert result.events[0].event.startswith("entry_aborted")
     assert rig.state.calls["reserve_entry"] == 0
 
 
@@ -502,7 +516,7 @@ async def test_sizing_that_cannot_meet_the_exchange_minimum_refuses(rig: Rig) ->
         D("0.001"), D("61"), D("0.001"), D("1000"), 3
     )
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_refused")
+    assert result.events[0].event.startswith("entry_refused")
     assert rig.state.calls["reserve_entry"] == 0
 
 
@@ -530,6 +544,10 @@ async def test_gate_one_foreign_position_is_conflict_blocked_before_the_ledger(
     rig.client.positions["BTCUSDT"] = D("-2")  # ROB-1474 short on the symbol
     result = await _only_btc(rig)
     assert rig.events(result) == [("BTCUSDT", "entry_conflict_blocked")]
+    from app.services.brokers.binance.trend import control
+
+    # The trip moment itself alerts, not only a later conflict-week refusal.
+    assert control.tick_failures(result.events)[0].bucket == "entry_conflict_blocked"
     signal = next(iter(rig.state.signals.values()))
     assert signal.state == "conflict_blocked" and signal.conflict_at is not None
     assert "foreign_position" in signal.conflict_detail
@@ -571,7 +589,7 @@ async def test_a_fresh_price_above_the_reservation_refuses_the_send(rig: Rig) ->
 async def test_a_refused_ledger_reservation_aborts_before_the_send(rig: Rig) -> None:
     rig.ledger.root_status = "cap_reached"
     result = await _only_btc(rig)
-    assert result.events[0].event.startswith("entry_entry_aborted")
+    assert result.events[0].event.startswith("entry_aborted")
     assert rig.state.calls["mark_sending"] == 0
     assert next(iter(rig.state.signals.values())).state == "blocked"
 
@@ -687,9 +705,18 @@ async def test_an_evidenced_intent_whose_ledger_sync_failed_is_replayed(
     rig.ledger.record_filled = broken  # type: ignore[method-assign]
     first = await rig.tick()
     assert rig.events(first) == [("BTCUSDT", "entry_ledger_incomplete")]
+    from app.services.brokers.binance.trend import control
+
+    assert control.tick_failures(first.events)[0].bucket == "entry_ledger_incomplete"
     cid = next(iter(rig.state.intents))
     assert rig.state.intents[cid].state == "evidenced"
     assert next(iter(rig.state.signals.values())).state == "holding"
+    # The same failure on the reconcile path must also reach the classifier.
+    retried = await rig.tick()
+    assert ("BTCUSDT", "reconciled_ledger_incomplete") in rig.events(retried)
+    assert control.tick_failures(retried.events)[0].bucket == (
+        "reconciled_ledger_incomplete"
+    )
     rig.ledger.record_filled = real  # type: ignore[method-assign]
     second = await rig.tick()
     assert len(rig.client.sends) == 1  # replay never resends
@@ -1582,3 +1609,104 @@ async def test_an_uncertain_entry_found_partially_filled_still_alarms_and_blocks
     assert len(rig.client.sends) == 1  # no resend, no cancel, no exit
     assert rig.client.cancels == []
     assert rig.state.calls["reserve_exit_intent"] == 0
+
+
+# ------------------------------------------------------------ manage-only
+
+
+@pytest.mark.asyncio
+async def test_manage_only_never_evaluates_a_signal_or_opens_an_entry(
+    rig: Rig, monkeypatch
+) -> None:
+    rig.bars["BTCUSDT"] = trend_bars("BUY")
+    rig.client.auto_fill = True
+    evaluated: list[int] = []
+
+    def fake_evaluate_all(*args, **kwargs):
+        evaluated.append(1)
+        raise AssertionError("manage-only tick must not evaluate signals")
+
+    monkeypatch.setattr(executor_module, "evaluate_all", fake_evaluate_all)
+    result = await rig.exe.run_tick(now=NOW, confirm=True, manage_only=True)
+    events = [event.event for event in result.events]
+    assert "entries_skipped_manage_only" in events
+    assert evaluated == []
+    assert rig.client.sends == []
+    assert rig.state.calls["reserve_entry"] == 0
+    assert rig.state.calls["observe_signal"] == 0
+    assert rig.state.signals == {}
+
+
+@pytest.mark.asyncio
+async def test_manage_only_still_manages_a_held_position(rig: Rig) -> None:
+    key = hold(rig, entered_at=NOW - dt.timedelta(days=30, minutes=1))
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = minute_rows()
+    rig.client.auto_fill = True
+    result = await rig.exe.run_tick(now=NOW, confirm=True, manage_only=True)
+    assert rig.state.signals[key].exit_reason == EXIT_TIME_EXIT
+    assert len(rig.client.sends) == 1  # the reduceOnly exit, no entry
+    assert "entries_skipped_manage_only" in [e.event for e in result.events]
+
+
+@pytest.mark.asyncio
+async def test_the_executor_itself_refuses_an_entry_under_manage_only(rig: Rig) -> None:
+    rig.exe._manage_only = True
+    record = SimpleNamespace(signal_key="BTCUSDT|k|x|1", symbol="BTCUSDT")
+    with pytest.raises(TrendStateBlocked, match="manage-only"):
+        await rig.exe._enter(record, sigma_hat=D("1"), now=NOW)
+    assert rig.client.sends == []
+
+
+# ------------------------------------------- real events reach the alert layer
+
+
+@pytest.mark.asyncio
+async def test_the_real_conflict_week_refusal_reaches_the_alert_classifier(
+    rig: Rig,
+) -> None:
+    from app.services.brokers.binance.trend import control
+
+    for i in range(3):
+        key = rig.state.seed_holding(
+            symbol="ETHUSDT", key=f"conflict-{i}", state="conflict_blocked"
+        )
+        rig.state.signals[key].conflict_at = NOW - dt.timedelta(hours=1)
+    result = await _only_btc(rig)
+    assert result.events[0].event == "entry_refused:conflict_week_limit_reached"
+    assert control.tick_failures(result.events) == (
+        control.TickFailure(
+            "entry_refused:conflict_week_limit_reached",
+            "kill_switch_conflict_week",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_real_aborted_entry_reaches_the_alert_classifier(rig: Rig) -> None:
+    from app.services.brokers.binance.trend import control
+
+    rig.client.isolated_ok = False
+    result = await _only_btc(rig)
+    assert result.events[0].event.startswith("entry_aborted")
+    assert control.tick_failures(result.events)[0].bucket == "entry_aborted"
+
+
+@pytest.mark.asyncio
+async def test_an_exit_ledger_sync_failure_reaches_the_alert_classifier(
+    rig: Rig,
+) -> None:
+    from app.services.brokers.binance.trend import control
+
+    hold(rig, entered_at=NOW - dt.timedelta(days=30, minutes=1))
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = minute_rows()
+    rig.client.auto_fill = True
+
+    async def broken(**kwargs):
+        raise RuntimeError("ledger unavailable")
+
+    rig.ledger.record_filled = broken  # type: ignore[method-assign]
+    result = await rig.tick()
+    assert ("BTCUSDT", "exit_ledger_incomplete") in rig.events(result)
+    assert control.tick_failures(result.events)[0].bucket == "exit_ledger_incomplete"

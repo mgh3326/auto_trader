@@ -412,6 +412,10 @@ bypass a failed rollback; investigate the image and container logs instead.
 
 Do not run migrations or make a live deployment from CI as part of this flow.
 
+### Expand-contract migration review
+
+PR CI 는 추가·수정된 `alembic/versions/*.py` 파일만 검사한다. 정적 분석은 모듈 docstring, 허용된 Alembic/SQLAlchemy import, 네 migration metadata의 리터럴 일반/annotated 대입, no-arg `upgrade()`·`downgrade()` 두 함수만 있는 닫힌 모듈 문법을 요구한다. 표준 future/type import, `-> None`, 함수 docstring과 `pass`도 허용한다. `upgrade()`는 허용 목록의 구조적 확장 `op.*` 호출만 분석한다. `op.execute`·`op.exec_driver_sql`·`connection.execute` 등 raw SQL 실행은 리터럴 여부와 무관하게 해석하지 않으며, 각 호출 바로 위에 `# expand-contract: contract-step <hk task id>` marker가 필요하다. helper·지역 대입·조건·반복 등 이 모양을 벗어난 파일은 전체 판정 불가이므로 파일 헤더에도 같은 marker를 둬야 한다. 분석 가능한 파일에서 의도적으로 테이블·컬럼을 삭제·이름 변경하거나 기존 컬럼을 `NOT NULL` 또는 새 타입으로 강화하는 contract 단계는 각 연산 바로 위에 marker를 둔다. 새 테이블의 `nullable=False` 컬럼은 추가형 생성으로 허용한다. 숫자 task ID 는 PR 본문의 `Mergewake-Task` trailer 와 일치해야 한다. 표시된 contract 단계를 승인하기 전에 이전 애플리케이션 버전이 더는 롤백 대상이 아님을 리뷰어가 확인한다. 자세한 내용은 [shiftgate 설계](../design/4155-shiftgate-adoption.md#expand-contract-규칙)를 참고한다.
+
 ## Expected interruption budget
 
 | Role | Expected interruption |

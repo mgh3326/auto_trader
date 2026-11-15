@@ -15,6 +15,7 @@ tests/ci/test_build_cache_registry_contract.py
 tests/ci/test_change_classifier.py
 tests/ci/test_deploy_gate_workflow.py
 tests/ci/test_file_shard_plan_workflow_entrypoint.py
+tests/ci/test_migration_expand_contract_lint.py
 tests/ci/test_required_aggregator.py
 tests/contracts/test_retro_v1_contract.py
 tests/core/test_cli.py

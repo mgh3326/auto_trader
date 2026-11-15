@@ -36,6 +36,7 @@ def signal(**values) -> BinanceTrendSignal:
         "entry_qty": D(0),
         "closed_qty": D(0),
         "realized_pnl_usdt": D(0),
+        "fees_usdt": D(0),
         "entry_price": None,
         "entered_at": None,
         "exit_reason": None,
@@ -89,6 +90,9 @@ def test_a_full_fill_and_a_full_exit_close_the_round_trip() -> None:
         D("0.6"),
     )
     assert sig.realized_pnl_usdt == D("0.6")
+    # Estimated taker fees accrue on both proven fills: 0.6*100*5e-4 +
+    # 0.6*101*5e-4 — the forecast outcome is net of this, not gross.
+    assert sig.fees_usdt == D("0.0603")
 
 
 def test_a_terminal_partial_entry_holds_exactly_the_executed_quantity() -> None:
@@ -133,6 +137,7 @@ def test_a_short_round_trip_uses_negative_positions_and_pnl_direction() -> None:
     cover = intent(reduce_only=True, leg_key="hard_stop:0", side="BUY")
     apply_exit(sig, cover, evidence(cover, avg="98"), D("0"), when=NOW)
     assert sig.state == "closed" and sig.realized_pnl_usdt == D("1.2")
+    assert sig.fees_usdt == D("0.0594")  # 0.6*100*5e-4 + 0.6*98*5e-4
 
 
 def test_an_unknown_exit_reason_never_closes_a_signal() -> None:
