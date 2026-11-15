@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +43,7 @@ __all__ = (
     "KiwoomMockLedgerPayloadConflict",
     "KiwoomMockOrderLedgerService",
     "KiwoomMockPlaceRecorder",
+    "KiwoomMockTransitionRefused",
     "LedgerReceipt",
     "RESERVATION_ACCOUNT_SCOPE",
     "SendReservation",
@@ -64,6 +65,40 @@ _LIFECYCLE_FOR_STATUS: Final = {
     "rejected": "failed",
     "uncertain": "submitted",
 }
+
+# hk 4722 — terminal-only reconcile. The scan covers open + uncertain rows; the
+# only target statuses are the three that need no fill booking (design §3.3).
+_RECONCILE_SOURCE_STATUSES: Final = frozenset(
+    {"accepted", "pending", "partial", "uncertain"}
+)
+#: Only these source statuses may be closed. ``uncertain`` is deliberately
+#: absent: its only lawful resolution is ``promote_uncertain_to_accepted`` (I3).
+#: ``partial`` is absent too: a booked partial fill must never become a no-fill
+#: terminal row, or T-P4 would lose the fill it still has to book.
+_RECONCILE_TERMINAL_SOURCE_STATUSES: Final = frozenset({"accepted", "pending"})
+_RECONCILE_TERMINAL_TARGETS: Final = frozenset({"expired", "cancelled", "rejected"})
+_LIFECYCLE_FOR_TERMINAL: Final = {
+    "expired": "expired",
+    "cancelled": "cancelled",
+    "rejected": "failed",
+}
+
+
+class KiwoomMockTransitionRefused(Exception):
+    """A reconcile transition was refused: stale snapshot, wrong source state.
+
+    Never a silent no-op — the caller learns that the row moved (or was never
+    open) so it does not report a close it did not perform.
+    """
+
+    def __init__(self, *, ledger_id: int, status: str | None, reason: str) -> None:
+        self.ledger_id = ledger_id
+        self.status = status
+        self.reason = reason
+        super().__init__(
+            f"kiwoom mock ledger transition refused for id={ledger_id} "
+            f"(status={status!r}): {reason}"
+        )
 
 
 def kr_trading_day(now: datetime) -> str:
@@ -232,6 +267,171 @@ class KiwoomMockOrderLedgerService:
         """Read-only: the recorded status for a key, or ``None`` if no row."""
         existing = await self._find(client_order_id)
         return None if existing is None else existing.status
+
+    # ------------------------------------------------------------------
+    # hk 4722 (3797 T-P3) — reconcile reads and terminal transitions.
+    #
+    # Terminal-only reconcile closes exactly three outcomes (design §3.3):
+    # expired / cancelled / rejected, and resolves ``uncertain`` to
+    # ``accepted``. Fills are NOT booked here (T-P4); the methods below cannot
+    # set ``filled``/``partial`` and cannot touch ``filled_qty``.
+    # ------------------------------------------------------------------
+
+    async def list_reconcile_candidates(
+        self, *, limit: int
+    ) -> tuple[list[KiwoomMockOrderLedger], int]:
+        """Open + uncertain KR place rows, oldest first, plus the open total."""
+        where = (
+            KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
+            KiwoomMockOrderLedger.market == "kr",
+            KiwoomMockOrderLedger.operation_kind == "place",
+            KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES),
+        )
+        total = (
+            await self._db.execute(
+                select(func.count()).select_from(KiwoomMockOrderLedger).where(*where)
+            )
+        ).scalar_one()
+        rows = (
+            (
+                await self._db.execute(
+                    select(KiwoomMockOrderLedger)
+                    .where(*where)
+                    .order_by(KiwoomMockOrderLedger.id.asc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(rows), int(total)
+
+    async def list_acknowledged_cancels(
+        self, *, original_order_ids: set[str]
+    ) -> set[str]:
+        """Original order ids for which we hold our own acknowledged cancel.
+
+        The first half of the design §3.2 ``cancelled`` requirement. Cancel rows
+        are not created in T-P3, so this is normally empty; it stays a real read
+        so the pair rule is enforced the day cancel rows exist.
+        """
+        if not original_order_ids:
+            return set()
+        rows = (
+            await self._db.execute(
+                select(KiwoomMockOrderLedger.original_order_id).where(
+                    KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
+                    KiwoomMockOrderLedger.operation_kind == "cancel",
+                    KiwoomMockOrderLedger.status == "accepted",
+                    KiwoomMockOrderLedger.original_order_id.in_(
+                        sorted(original_order_ids)
+                    ),
+                )
+            )
+        ).scalars()
+        return {str(value) for value in rows if value}
+
+    async def mark_terminal(
+        self,
+        *,
+        ledger_id: int,
+        status: str,
+        reason: str,
+        detail: dict[str, Any] | None = None,
+    ) -> KiwoomMockOrderLedger:
+        """Close an open row as ``expired`` / ``cancelled`` / ``rejected``.
+
+        Refuses every other target and every non-open source: a late close is
+        harmless, an early or wrong close is not (§3.2).
+        """
+        if status not in _RECONCILE_TERMINAL_TARGETS:
+            raise ValueError(
+                f"mark_terminal status must be one of "
+                f"{sorted(_RECONCILE_TERMINAL_TARGETS)}; got {status!r}"
+            )
+        row = await self._lock_row(ledger_id)
+        if row.status not in _RECONCILE_TERMINAL_SOURCE_STATUSES:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="source_status_not_open",
+            )
+        self._apply_terminal(row, status=status, reason=reason, detail=detail)
+        await self._db.commit()
+        await self._db.refresh(row)
+        return row
+
+    async def promote_uncertain_to_accepted(
+        self,
+        *,
+        ledger_id: int,
+        broker_order_id: str,
+        detail: dict[str, Any] | None = None,
+    ) -> KiwoomMockOrderLedger:
+        """``uncertain → accepted`` on a positive, complete broker listing.
+
+        The only resolution I3 allows. A non-blank broker order id is required
+        by the accepted-side CHECK; nothing is resent.
+        """
+        if not isinstance(broker_order_id, str) or not broker_order_id.strip():
+            raise ValueError("promote_uncertain_to_accepted requires broker_order_id")
+        row = await self._lock_row(ledger_id)
+        if row.status != "uncertain":
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id,
+                status=row.status,
+                reason="not_uncertain",
+            )
+        row.status = "accepted"
+        row.broker_order_id = broker_order_id.strip()
+        row.lifecycle_state = _LIFECYCLE_FOR_STATUS["accepted"]
+        row.reconciled_at = datetime.now(UTC)
+        row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+        row.last_reconcile_detail = {
+            "action": "uncertain_to_accepted",
+            "reason": "positive_listing_match",
+            **(detail or {}),
+        }
+        await self._db.commit()
+        await self._db.refresh(row)
+        return row
+
+    @staticmethod
+    def _apply_terminal(
+        row: KiwoomMockOrderLedger,
+        *,
+        status: str,
+        reason: str,
+        detail: dict[str, Any] | None,
+    ) -> None:
+        row.status = status
+        row.lifecycle_state = _LIFECYCLE_FOR_TERMINAL[status]
+        row.reconciled_at = datetime.now(UTC)
+        row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+        row.last_reconcile_detail = {
+            "action": f"marked_{status}",
+            "reason": reason,
+            "basis": "positive_broker_evidence",
+            **(detail or {}),
+        }
+
+    async def _lock_row(self, ledger_id: int) -> KiwoomMockOrderLedger:
+        row = (
+            await self._db.execute(
+                select(KiwoomMockOrderLedger)
+                .where(
+                    KiwoomMockOrderLedger.id == ledger_id,
+                    KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
+                    KiwoomMockOrderLedger.market == "kr",
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise KiwoomMockTransitionRefused(
+                ledger_id=ledger_id, status=None, reason="row_not_found"
+            )
+        return row
 
     async def _find(self, client_order_id: str) -> KiwoomMockOrderLedger | None:
         return (

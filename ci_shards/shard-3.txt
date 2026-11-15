@@ -180,6 +180,7 @@ tests/services/brokers/kis/test_circuit_breaker.py
 tests/services/brokers/kis/test_live_order_expiry_krx_after.py
 tests/services/brokers/kis/test_live_shadow_witness.py
 tests/services/brokers/kiwoom/test_credential_identity.py
+tests/services/brokers/kiwoom/test_mock_reconcile_classifier.py
 tests/services/brokers/nhplug/test_client.py
 tests/services/brokers/paper/test_production_adapter_contract.py
 tests/services/brokers/toss/test_candles.py
@@ -451,6 +452,7 @@ tests/test_kiwoom_client_endpoint_guard.py
 tests/test_kiwoom_does_not_change_ohlcv_default.py
 tests/test_kiwoom_live_readonly_guard.py
 tests/test_kiwoom_mock_attribution_db.py
+tests/test_kiwoom_mock_auto_reconcile.py
 tests/test_kiwoom_mock_ledger_migration.py
 tests/test_kiwoom_mock_ledger_schema_db.py
 tests/test_kiwoom_mock_normalization.py
