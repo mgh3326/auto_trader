@@ -500,10 +500,22 @@ def _response_message_text(broker_response: dict[str, Any]) -> str | None:
     return None if value is None else str(value)[:500]
 
 
-def _duplicate_intent_response(
-    base: dict[str, Any], client_order_id: str
+async def _duplicate_intent_response(
+    base: dict[str, Any], client_order_id: str, recorder: KiwoomMockPlaceRecorder
 ) -> dict[str, Any]:
-    """Same key already reserved: refused before any broker call (I2)."""
+    """Same key already reserved: refused before any broker call (I2).
+
+    The earlier dispatch may have an unknown outcome (timeout, or a ledger write
+    that failed after the ACK), so reconciliation is required unless the ledger
+    proves a terminal broker rejection. A failed lookup is not a proof.
+    """
+    existing_status: str | None = None
+    try:
+        existing_status = await recorder.existing_status(client_order_id)
+    except Exception:  # noqa: BLE001 - an unreadable ledger proves nothing
+        logger.warning(
+            "kiwoom_mock duplicate-intent ledger lookup failed: key=%s", client_order_id
+        )
     return {
         **base,
         "success": False,
@@ -511,7 +523,9 @@ def _duplicate_intent_response(
         "status": "not_submitted",
         "dispatch_started": False,
         "client_order_id": client_order_id,
-        "reconcile_required": False,
+        "existing_ledger_status": existing_status,
+        "reconcile_required": existing_status != "rejected",
+        "retry_allowed": False,
     }
 
 
@@ -702,7 +716,9 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
             idempotency_key=client_order_id, symbol=symbol, side=str(side)
         )
     except DuplicateOrderIntent:
-        return _duplicate_intent_response(base_response, client_order_id)
+        return await _duplicate_intent_response(
+            base_response, client_order_id, recorder
+        )
     except Exception as exc:  # noqa: BLE001 - cannot prove the guard: do not send
         return _intent_unavailable_response(base_response, client_order_id, exc)
 
@@ -755,7 +771,10 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
     response = _finalize_broker_response(base_response, broker_response)
     if outcome == "uncertain":
         # return_code 0 without a provable order number (or an unreadable
-        # return_code): the order may exist, so it must not be retried.
+        # return_code): the order may exist but cannot be tracked, so it is not
+        # a confirmed placement and must not be retried.
+        response["success"] = False
+        response["status"] = "acceptance_uncertain"
         response["reconcile_required"] = True
         response["retry_allowed"] = False
     response.update(
@@ -1136,6 +1155,7 @@ def register(mcp: FastMCP) -> None:
         exchange: str | None = "KRX",
         dry_run: bool = True,
         confirm: bool = False,
+        rung: str | int | None = None,
     ) -> dict[str, Any]:
         for guard in (
             _mock_config_error(),
@@ -1162,6 +1182,7 @@ def register(mcp: FastMCP) -> None:
             price=price,
             exchange=exchange,
             dry_run=dry_run,
+            rung=rung,
         )
 
     @mcp.tool(

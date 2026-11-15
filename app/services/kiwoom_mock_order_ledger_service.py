@@ -228,6 +228,11 @@ class KiwoomMockOrderLedgerService:
             reason=reason,
         )
 
+    async def get_status(self, client_order_id: str) -> str | None:
+        """Read-only: the recorded status for a key, or ``None`` if no row."""
+        existing = await self._find(client_order_id)
+        return None if existing is None else existing.status
+
     async def _find(self, client_order_id: str) -> KiwoomMockOrderLedger | None:
         return (
             await self._db.execute(
@@ -377,6 +382,11 @@ class KiwoomMockPlaceRecorder:
                 idempotency_key=reservation.idempotency_key,
                 side=reservation.side,
             )
+
+    async def existing_status(self, client_order_id: str) -> str | None:
+        """Ledger status already recorded for this key (``None`` = no row)."""
+        async with self._session_factory() as db:
+            return await KiwoomMockOrderLedgerService(db).get_status(client_order_id)
 
     async def record_send(self, **kwargs: Any) -> LedgerReceipt:
         async with self._session_factory() as db:

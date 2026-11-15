@@ -217,6 +217,10 @@ async def test_unprovable_acknowledgement_is_uncertain_and_not_retryable(
     assert recorder.events == ["reserve", "post", "record:uncertain"]
     assert recorder.rows[0]["status"] == "uncertain"
     assert response["ledger_status"] == "uncertain"
+    # an untrackable order is not a confirmed placement
+    assert response["success"] is False
+    assert response["status"] == "acceptance_uncertain"
+    assert "broker_response" in response
     assert response["reconcile_required"] is True
     assert response["retry_allowed"] is False
     assert _key() in recorder.reserved
@@ -310,7 +314,9 @@ async def test_duplicate_key_is_refused_before_any_broker_call(monkeypatch):
     assert response["status"] == "not_submitted"
     assert response["dispatch_started"] is False
     assert response["client_order_id"] == _key()
-    assert recorder.events == ["reserve"]
+    # reserve refused, then a read-only status lookup; never post or record
+    assert recorder.events == ["reserve", "existing_status"]
+    assert recorder.reserved == {_key(): 99}
     assert recorder.rows == []
 
 
@@ -327,30 +333,82 @@ async def test_second_identical_confirmed_call_is_refused_after_accept(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_rung_allows_a_deliberate_second_identical_order(monkeypatch):
-    # ``rung`` is an internal discriminator (the public tool signature is pinned
-    # by test_static_boundaries); a proposal caller passes it to the impl.
-    mod, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
-    impl_kwargs: dict[str, Any] = {
-        "symbol": "005930",
-        "side": "buy",
-        "quantity": 3,
-        "price": 70000,
-        "exchange": "KRX",
-        "dry_run": False,
-    }
+async def test_rung_through_the_public_tool_allows_a_deliberate_second_order(
+    monkeypatch,
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
 
-    await mod._kiwoom_mock_place_order_impl(**impl_kwargs)
-    refused = await mod._kiwoom_mock_place_order_impl(**impl_kwargs)
-    second = await mod._kiwoom_mock_place_order_impl(**impl_kwargs, rung=2)
+    await _place(mcp)
+    refused = await _place(mcp)
+    second = await _place(mcp, rung=2)
+    third = await _place(mcp, rung=2)
 
     assert refused["error"] == "kiwoom_mock_duplicate_order_intent"
     assert second["success"] is True
+    assert third["error"] == "kiwoom_mock_duplicate_order_intent"
     assert len(stub.posts) == 2
     assert {row["client_order_id"] for row in recorder.rows} == {
         _key(),
         _key(rung=2),
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_answer", "expected_reconcile"),
+    [
+        ({"return_code": 20, "return_msg": "거부"}, False),  # proven rejection
+        (ACK, True),
+        (TimeoutError("read timeout"), True),
+        ({"return_code": 0}, True),
+    ],
+    ids=["rejected", "accepted", "unknown-dispatch", "untrackable"],
+)
+async def test_duplicate_refusal_reports_whether_reconciliation_is_needed(
+    monkeypatch, first_answer, expected_reconcile
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [first_answer, ACK])
+
+    await _place(mcp)
+    again = await _place(mcp)
+
+    assert len(stub.posts) == 1
+    assert again["error"] == "kiwoom_mock_duplicate_order_intent"
+    assert again["reconcile_required"] is expected_reconcile
+    assert again["retry_allowed"] is False
+    assert again["existing_ledger_status"] == recorder.rows[0]["status"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_refusal_without_a_ledger_row_requires_reconciliation(
+    monkeypatch,
+):
+    # post-ACK ledger write failed, so no row proves anything about the first send
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+    recorder.record_error = RuntimeError("ledger insert failed")
+    await _place(mcp)
+    recorder.record_error = None
+
+    again = await _place(mcp)
+
+    assert again["existing_ledger_status"] is None
+    assert again["reconcile_required"] is True
+    assert len(stub.posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_refusal_with_unreadable_ledger_requires_reconciliation(
+    monkeypatch,
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [{"return_code": 20}, ACK])
+    await _place(mcp)
+    recorder.lookup_error = ConnectionError("db down")
+
+    again = await _place(mcp)
+
+    assert again["error"] == "kiwoom_mock_duplicate_order_intent"
+    assert again["reconcile_required"] is True  # a failed lookup proves nothing
+    assert len(stub.posts) == 1
 
 
 @pytest.mark.asyncio

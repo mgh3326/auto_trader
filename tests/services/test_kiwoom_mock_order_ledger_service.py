@@ -251,6 +251,18 @@ async def test_same_key_with_a_different_payload_is_a_conflict(override, field):
 
 
 @pytest.mark.asyncio
+async def test_get_status_reads_the_recorded_status_or_none():
+    session = FakeSession()
+    service = KiwoomMockOrderLedgerService(session)
+
+    assert await service.get_status("kwoomm-0123456789abcdef") is None
+    await service.record_send(**_send_kwargs(status="rejected", broker_order_id=None))
+
+    assert await service.get_status("kwoomm-0123456789abcdef") == "rejected"
+    assert session.adds == 1  # the read wrote nothing
+
+
+@pytest.mark.asyncio
 async def test_a_unique_race_replays_the_winner():
     session = FakeSession()
     winner_session = FakeSession()

@@ -178,6 +178,7 @@ class FakeKiwoomPlaceRecorder:
         self.reserve_error: Exception | None = None
         self.record_error: Exception | None = None
         self.release_error: Exception | None = None
+        self.lookup_error: Exception | None = None
 
     async def reserve(self, *, idempotency_key: str, symbol: str, side: str):
         from app.services.kiwoom_mock_order_ledger_service import SendReservation
@@ -207,6 +208,15 @@ class FakeKiwoomPlaceRecorder:
             raise self.record_error
         self.rows.append({"status": status, **kwargs})
         return LedgerReceipt(len(self.rows), status, kwargs["client_order_id"])
+
+    async def existing_status(self, client_order_id: str) -> str | None:
+        self.events.append("existing_status")
+        if self.lookup_error is not None:
+            raise self.lookup_error
+        for row in self.rows:
+            if row["client_order_id"] == client_order_id:
+                return row["status"]
+        return None
 
     async def record_send(self, *, status: str, **kwargs):
         return await self._record(status, kwargs)

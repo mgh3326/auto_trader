@@ -194,3 +194,18 @@ async def test_recorder_returns_a_detached_receipt():
         assert receipt.ledger_id > 0
     finally:
         await _cleanup(key)
+
+
+async def test_recorder_existing_status_reads_without_writing():
+    key = f"kwoomm-{uuid.uuid4().hex[:16]}"
+    recorder = KiwoomMockPlaceRecorder(AsyncSessionLocal)
+    try:
+        assert await recorder.existing_status(key) is None
+        await recorder.record_send(
+            **_kwargs(key, status="rejected", broker_order_id=None)
+        )
+
+        assert await recorder.existing_status(key) == "rejected"
+        assert await _count(key) == 1
+    finally:
+        await _cleanup(key)
