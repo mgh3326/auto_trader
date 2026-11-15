@@ -16,6 +16,7 @@ import pytest
 
 from scripts import binance_trend_demo as runner
 from scripts import binance_trend_heartbeat_watch as watcher
+from scripts import binance_trend_tick_export as exporter
 from scripts import binance_trend_truth_gate as gate
 
 pytestmark = pytest.mark.unit
@@ -27,6 +28,7 @@ PARSERS = {
     "scripts.binance_trend_demo": runner._parser,
     "scripts.binance_trend_truth_gate": gate._parser,
     "scripts.binance_trend_heartbeat_watch": watcher._parser,
+    "scripts.binance_trend_tick_export": exporter._parser,
 }
 
 
@@ -71,7 +73,7 @@ def parsed(text) -> list[tuple[str, list[str]]]:
     return invocations(text)
 
 
-def test_the_runbook_exists_and_invokes_all_three_scripts(parsed):
+def test_the_runbook_exists_and_invokes_every_pinned_script(parsed):
     assert {module for module, _ in parsed} == set(PARSERS)
 
 
@@ -129,8 +131,11 @@ def test_the_runbook_covers_all_four_modes_and_the_four_scripts_flags(parsed):
 
 def test_every_starting_command_carries_confirm_demo(parsed):
     for module, args in parsed:
-        if module == "scripts.binance_trend_heartbeat_watch":
-            continue  # reads the DB only; no Binance call and no order path
+        if module in (
+            "scripts.binance_trend_heartbeat_watch",  # DB reads only
+            "scripts.binance_trend_tick_export",  # log text -> snapshot file only
+        ):
+            continue  # no Binance call and no order path
         if "--help" in args:
             continue
         assert "--confirm-demo" in args, (module, args)
