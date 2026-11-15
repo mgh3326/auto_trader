@@ -212,10 +212,11 @@ async def _link_journal_to_fill(
         return
     try:
         async with _order_session_factory()() as session:
-            await _link_journal_to_fill_in(
+            linked = await _link_journal_to_fill_in(
                 session, symbol, trade_id, account_type=account_type, account=account
             )
-            await session.commit()
+            if linked is not None:
+                await session.commit()
     except Exception as exc:
         logger.warning("Failed to link journal to fill: %s", exc)
 

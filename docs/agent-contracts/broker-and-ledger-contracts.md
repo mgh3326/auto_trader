@@ -346,8 +346,10 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   커밋하므로 재실행이 FIFO를 두 번 닫거나 초안 저널을 남기지 않는다. 주문행을
   `FOR UPDATE` 로 잠그고 `journaled_qty` 를 **저널 side effect 이전에** 다시 읽어 이미
   저널링된 주문은 아무것도 하지 않으며, full 모드 실행 전체는 advisory lock 하나로
-  직렬화된다(겹친 두 실행이 같은 수량을 두 번 저널링하지 않는다). 매도는 부분 소비 lot 의
-  수량만 줄이며 완전 소진 시 종결한다(부분 체결 매도가 lot 을 영원히 열어두지 않는다).
+  직렬화된다(겹친 두 실행이 같은 수량을 두 번 저널링하지 않는다). 매도의 부분 소비는 소비분을
+  lot 진입가의 **closed 행으로 split** 해 그 shares 의 실현손익을 기록하고 남은 수량만 active 로
+  유지하며, lot 이 완전 소진되면 종결한다(부분 체결 매도가 lot 을 영원히 열어두거나 소비분의
+  손익을 잃지 않는다). active lot 조회는 `FOR UPDATE` 로 잠그고 락 순서는 `created_at, id` 다.
   저널 단계가 실패하면 그 트랜잭션 전체가 롤백되고 체결 증거만 남으며,
   `last_reconcile_detail.journaled_qty` 가 `filled_qty` 보다 작은 `filled` 행은 다음 full
   실행이 저널을 마무리한다(같은 실행이 실패를 숨기지 않고 `journal_error` 로 보고). 이 행들은 외부 HTTP
