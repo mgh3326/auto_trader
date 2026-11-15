@@ -20,7 +20,7 @@ def live_correlation_id(
     price: Decimal,
     quantity: Decimal,
     kst_trade_day: str,
-    rung: int = 0,
+    rung: int | str = 0,
 ) -> str:
     canonical = "|".join(
         (

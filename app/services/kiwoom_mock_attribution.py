@@ -81,8 +81,15 @@ def mint_correlation_id(
     price: Any,
     quantity: Any,
     kst_trade_day: str | None = None,
+    rung: int | str = 0,
 ) -> str:
-    """Deterministic ``live:kiwoom_mock:<sha16>`` id for one KR mock order."""
+    """Deterministic ``live:kiwoom_mock:<sha16>`` id for one KR mock order.
+
+    ``rung`` is part of the identity for the same reason ``build_client_order_id``
+    salts the send key with it: a deliberate second identical order on the same
+    day is a distinct order and must get its own signal row, not overwrite the
+    first one's outcome.
+    """
     return live_correlation_id(
         account_scope=ACCOUNT_SCOPE,
         symbol=symbol,
@@ -90,6 +97,7 @@ def mint_correlation_id(
         price=_to_decimal(price) or Decimal("0"),
         quantity=_to_decimal(quantity) or Decimal("0"),
         kst_trade_day=kst_trade_day or now_kst().strftime("%Y-%m-%d"),
+        rung=rung,
     )
 
 
@@ -103,6 +111,7 @@ def resolve_attribution(
     signal_source: str | None = None,
     correlation_id: str | None = None,
     kst_trade_day: str | None = None,
+    rung: int | str | None = None,
 ) -> KiwoomMockAttribution:
     """Resolve the attribution triple, or raise :class:`MissingAttribution`.
 
@@ -125,6 +134,7 @@ def resolve_attribution(
             price=price,
             quantity=quantity,
             kst_trade_day=kst_trade_day,
+            rung=0 if rung is None else rung,
         ),
         strategy=resolved_strategy,
         signal_source=_clean(signal_source) or DEFAULT_SIGNAL_SOURCE,

@@ -52,6 +52,32 @@ def test_the_trading_day_separates_ids():
     assert day_one.correlation_id != day_two.correlation_id
 
 
+def test_rung_separates_deliberate_identical_orders():
+    base = resolve_attribution(**ORDER, strategy="s", kst_trade_day="2026-11-16")
+    rung_one = resolve_attribution(
+        **ORDER, strategy="s", kst_trade_day="2026-11-16", rung=1
+    )
+    rung_two = resolve_attribution(
+        **ORDER, strategy="s", kst_trade_day="2026-11-16", rung=2
+    )
+    assert base.correlation_id != rung_one.correlation_id
+    assert rung_one.correlation_id != rung_two.correlation_id
+    # the same discriminator in its two accepted spellings is one order
+    assert (
+        resolve_attribution(
+            **ORDER, strategy="s", kst_trade_day="2026-11-16", rung="2"
+        ).correlation_id
+        == rung_two.correlation_id
+    )
+    # no rung means rung 0
+    assert (
+        resolve_attribution(
+            **ORDER, strategy="s", kst_trade_day="2026-11-16", rung=0
+        ).correlation_id
+        == base.correlation_id
+    )
+
+
 def test_an_explicit_correlation_id_is_honoured():
     attribution = resolve_attribution(**ORDER, strategy="s", correlation_id="given")
     assert attribution.correlation_id == "given"

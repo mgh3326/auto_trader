@@ -750,6 +750,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
                 quantity=quantity,
                 strategy=kwargs.get("strategy"),
                 kst_trade_day=kst_date,
+                rung=kwargs.get("rung"),
             )
         except MissingAttribution as attribution_exc:
             logger.warning(

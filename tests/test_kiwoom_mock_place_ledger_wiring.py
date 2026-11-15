@@ -691,3 +691,29 @@ async def test_dry_run_preview_needs_no_strategy_and_writes_nothing(monkeypatch)
     assert recorder.signal.rows == []
     assert recorder.events == []
     assert stub.posts == []
+
+
+@pytest.mark.asyncio
+async def test_a_deliberate_second_rung_gets_its_own_signal_row(monkeypatch):
+    """The send key is rung-salted, so the signal row must be rung-salted too.
+
+    Otherwise the second broker order would reuse the first order's signal row
+    (ON CONFLICT DO NOTHING) and overwrite its order_no/ledger_id detail.
+    """
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+
+    first = await _place(mcp)
+    second = await _place(mcp, rung=1)
+
+    assert first["success"] is True and second["success"] is True
+    assert first["correlation_id"] != second["correlation_id"]
+    assert [row["correlation_id"] for row in recorder.signal.rows] == [
+        first["correlation_id"],
+        second["correlation_id"],
+    ]
+    assert [outcome["correlation_id"] for outcome in recorder.signal.outcomes] == [
+        first["correlation_id"],
+        second["correlation_id"],
+    ]
+    assert len(recorder.reserved) == 2
+    assert len(stub.posts) == 2

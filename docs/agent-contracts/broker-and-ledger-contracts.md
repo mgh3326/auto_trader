@@ -690,7 +690,7 @@ After release, the attempt-bound gate still rejects the already dispatched key.
 - **서비스**: `app/services/kiwoom_mock_attribution.py` — `resolve_attribution`(순수) / `record_signal` / `mark_signal_outcome` / `KiwoomMockSignalRecorder`. 실패 계약(`MissingAttribution`/`InvalidStrategy`, `error_code` `attribution_required`/`placeholder_strategy`)과 placeholder denylist 는 kis_mock 모듈의 정의 하나를 그대로 쓴다.
 - **게이트 위치**: `orders_kiwoom_variants._kiwoom_mock_place_order_impl` 의 confirmed 경로 **최상단** — preflight(브로커 read)보다도 앞이며, `order_send_intents` 예약과 POST보다 앞이다.
 - **순서**: 신호 행 커밋 → `order_send_intents` 예약 → 브로커 POST → 신호 `outcome_state` 표시(`accepted`→`submitted`, 그 밖→`failed`). 표시 실패는 best-effort 이며 귀속 자체는 이미 durable 하다.
-- **호출자 계약(파괴적)**: `kiwoom_mock_place_order(dry_run=False)` 는 이제 `strategy` 필수 — 없거나 공백·placeholder 면 `error_code="attribution_required"`/`"placeholder_strategy"`, 신호 커밋 실패면 `signal_record_unavailable` 이며 셋 다 예약 0·송신 0. `dry_run=True` 미리보기는 kis_mock 과 같이 strategy 없이 동작하고 아무것도 쓰지 않는다. 응답은 `correlation_id` 를 돌려줘 신호 행과 원장 행을 잇는다.
+- **호출자 계약(파괴적)**: `kiwoom_mock_place_order(dry_run=False)` 는 이제 `strategy` 필수 — 없거나 공백·placeholder 면 `error_code="attribution_required"`/`"placeholder_strategy"`, 신호 커밋 실패면 `signal_record_unavailable` 이며 셋 다 예약 0·송신 0. `dry_run=True` 미리보기는 kis_mock 과 같이 strategy 없이 동작하고 아무것도 쓰지 않는다. 응답은 `correlation_id` 를 돌려줘 신호 행과 원장 행을 잇는다. correlation id 는 송신 키와 같이 `rung` 을 포함하므로 같은 날 의도적 동일 주문(다른 `rung`)은 별도 신호 행을 얻는다.
 - **범위**: KR `place` 만. modify/cancel·US·대사는 불변. `scripts/kiwoom_mock_smoke.py` 는 `strategy="kiwoom_mock_smoke"` 로 귀속한다.
 
 ### KIS mock legacy DAY 만료 분류 (Task 881, Q-46)
