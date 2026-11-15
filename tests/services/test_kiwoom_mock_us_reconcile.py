@@ -85,9 +85,11 @@ def _row(
         broker_order_id=broker_order_id,
         quantity=Decimal(1),
         filled_qty=None if filled_qty is None else Decimal(filled_qty),
+        avg_fill_price=None,
         symbol=symbol,
         side="buy",
         trading_day=trading_day,
+        trade_date=None,
     )
 
 
@@ -113,7 +115,10 @@ class FakeService:
         self.calls = type(self).sink
 
     async def list_reconcile_candidates(
-        self, *, limit: int, account_mode: str = "kiwoom_mock"
+        self,
+        *,
+        limit: int,
+        account_mode: str = "kiwoom_mock",
     ):
         self.calls.append(("list", account_mode))
         return list(type(self).rows[:limit]), type(self).total
@@ -306,6 +311,41 @@ async def test_us_terminal_only_applies_with_the_us_gate(
     assert result["reconciled"][0]["action"] == "mark_rejected"
     marks = [c for c in fake_service.sink if c[0] == "mark_terminal"]
     assert marks and marks[0][1] == ACCOUNT_MODE_KIWOOM_MOCK_US
+
+
+async def test_us_terminal_only_defers_a_settled_partial_instead_of_closing_it(
+    monkeypatch: pytest.MonkeyPatch, fake_service: type[FakeService]
+) -> None:
+    """A US fill is never booked here, so the settled partial must stay open."""
+    monkeypatch.setenv(US_TERMINAL_GATE_ENV, "true")
+    row = _row(1, broker_order_id="000000064")
+    row.quantity = Decimal(10)
+    fake_service.rows = [row]
+    fake_service.total = 1
+    reader = FakeUsReader(
+        today_pages=[
+            _payload(
+                _us_row(
+                    ord_no="000000064",
+                    ord_qty="10",
+                    cntr_qty="4",
+                    ord_remnq="0",
+                    ord_stat="Expired",
+                )
+            )
+        ]
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    outcome = result["reconciled"][0]
+    assert outcome["verdict"] == "expired"
+    assert outcome["filled_qty"] == 4
+    assert outcome["action"] == "deferred_fill_booking"
+    assert outcome["requires_session_reconcile"] is True
+    # Nothing was closed or booked: only the reads touched the ledger service.
+    assert [call[0] for call in fake_service.sink] == ["list", "cancels"]
+    assert result["unresolved_count"] >= 1
 
 
 async def test_us_terminal_only_refuses_without_the_us_gate(
