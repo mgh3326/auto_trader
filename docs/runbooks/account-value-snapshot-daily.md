@@ -122,9 +122,10 @@ NCP Dagu 워커(`worker_selector: host: ncp`)에서:
   이 있었다(`hk:doc decision/2026-11-11/factortrail-p1` §T5). 사유가 붙은 행도 저장된다 —
   미측정은 값이 아니라 이유로 남는다.
 - **알림**: 핑 URL 이 있으면 healthchecks 핑(성공은 URL, 실패는 URL/`fail`)이고, 실행이 아예 안 온
-  경우도 healthchecks 기대 주기로 잡힌다. 핑 URL 이 없으면 알림이 없다 — 실패는 Dagu 실행 상태와
-  로그로만 남고, 운영자 결정 169(관측 문제는 레인 이벤트가 아니라 기록으로)에 따라 나중에 읽는다.
-  Discord 알림은 없다.
+  경우도 healthchecks 기대 주기로 잡힌다. 핑 URL 이 없어도 핸들러가 journal 한 줄
+  (`dag=at-account-value-snapshot status=success|failure`)을 남기고, Grafana 가 그 줄을 읽는다
+  (`docs/runbooks/dagu-batch1-cutover.md` §Grafana 기록). 운영자 결정 169(관측 문제는 레인 이벤트가 아니라 기록으로)에
+  따라 Discord 알림은 없다.
 - **한 계좌 실패 = 실행 실패**: 나머지 계좌는 계속 돌지만 DAG 는 `failed` 로 끝난다. 핑 URL 이 있으면
   `/fail` 핑을 보내고, 없으면 핑 없이 Dagu 실행 상태(`failed`)로만 남는다.
   어느 계좌가 실패했는지는 step 이름으로 로그에서 읽는다.

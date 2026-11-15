@@ -16,7 +16,7 @@
 # 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다).
 # 환경: dotenv 파일에서만 읽는다(이름만 런북에). 값은 이 파일과 레포에 없다.
 #   AT_BATCH_PING_URL_CRYPTO_SCREENER (실패/성공 핑 URL), INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED (commit 게이트)
-# 실패 경로: handler_on 이 healthchecks 핑(성공은 URL, 실패는 URL/fail)을 보낸다. Prefect 래퍼의 Discord 알림은 이 파일에 없다(런북 §알려진 차이).
+# 실패 경로: handler_on 이 journal 한 줄(`logger -t at-dagu-batch`, Grafana 기록)을 먼저 남기고, 핑 URL 이 설정된 경우에만 healthchecks 핑(성공은 URL, 실패는 URL/fail)을 보낸다(런북 §Grafana 기록). Discord 알림은 쓰지 않는다(운영자 결정 hk:doc decision/2026-11-16/at-4020-dagu-alert-scope).
 description: "Invest Crypto Screener Snapshots (Upbit 공개 API, DB 쓰기)"
 schedule: "CRON_TZ=UTC 35 0 * * *"
 max_active_runs: 1
@@ -33,6 +33,6 @@ steps:
       interval_sec: 120
 handler_on:
   success:
-    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_CRYPTO_SCREENER}"
+    command: 'logger -t at-dagu-batch "dag=at-batch1-crypto-screener status=success"; [ -z "${AT_BATCH_PING_URL_CRYPTO_SCREENER:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_CRYPTO_SCREENER}"'
   failure:
-    command: curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_CRYPTO_SCREENER}/fail"
+    command: 'logger -t at-dagu-batch "dag=at-batch1-crypto-screener status=failure"; [ -z "${AT_BATCH_PING_URL_CRYPTO_SCREENER:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_CRYPTO_SCREENER}/fail"'
