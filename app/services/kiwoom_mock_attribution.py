@@ -81,14 +81,14 @@ def mint_correlation_id(
     price: Any,
     quantity: Any,
     kst_trade_day: str | None = None,
-    rung: int | str = 0,
+    rung: int | str | None = None,
 ) -> str:
     """Deterministic ``live:kiwoom_mock:<sha16>`` id for one KR mock order.
 
     ``rung`` is part of the identity for the same reason ``build_client_order_id``
-    salts the send key with it: a deliberate second identical order on the same
-    day is a distinct order and must get its own signal row, not overwrite the
-    first one's outcome.
+    salts the send key with it, and it uses the *same* discriminator spelling:
+    ``None`` is an empty discriminator while ``0`` is ``"0"``. Collapsing them
+    would give two distinct orders one signal row.
     """
     return live_correlation_id(
         account_scope=ACCOUNT_SCOPE,
@@ -97,7 +97,7 @@ def mint_correlation_id(
         price=_to_decimal(price) or Decimal("0"),
         quantity=_to_decimal(quantity) or Decimal("0"),
         kst_trade_day=kst_trade_day or now_kst().strftime("%Y-%m-%d"),
-        rung=rung,
+        rung="" if rung is None else str(rung),
     )
 
 
@@ -134,7 +134,7 @@ def resolve_attribution(
             price=price,
             quantity=quantity,
             kst_trade_day=kst_trade_day,
-            rung=0 if rung is None else rung,
+            rung=rung,
         ),
         strategy=resolved_strategy,
         signal_source=_clean(signal_source) or DEFAULT_SIGNAL_SOURCE,

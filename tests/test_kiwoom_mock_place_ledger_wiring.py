@@ -717,3 +717,22 @@ async def test_a_deliberate_second_rung_gets_its_own_signal_row(monkeypatch):
     ]
     assert len(recorder.reserved) == 2
     assert len(stub.posts) == 2
+
+
+@pytest.mark.asyncio
+async def test_no_rung_and_explicit_zero_are_different_orders(monkeypatch):
+    """The send key spells None as "" and zero as "0"; the signal id must too."""
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+
+    first = await _place(mcp)
+    second = await _place(mcp, rung=0)
+
+    assert first["success"] is True and second["success"] is True
+    assert first["client_order_id"] != second["client_order_id"]
+    assert first["correlation_id"] != second["correlation_id"]
+    assert [row["correlation_id"] for row in recorder.signal.rows] == [
+        first["correlation_id"],
+        second["correlation_id"],
+    ]
+    assert len(recorder.reserved) == 2
+    assert len(stub.posts) == 2

@@ -69,10 +69,15 @@ def test_rung_separates_deliberate_identical_orders():
         ).correlation_id
         == rung_two.correlation_id
     )
-    # no rung means rung 0
+    # None and 0 are DIFFERENT send keys (build_client_order_id uses "" vs "0"),
+    # so they must be different signal correlation ids too.
+    explicit_zero = resolve_attribution(
+        **ORDER, strategy="s", kst_trade_day="2026-11-16", rung=0
+    )
+    assert explicit_zero.correlation_id != base.correlation_id
     assert (
         resolve_attribution(
-            **ORDER, strategy="s", kst_trade_day="2026-11-16", rung=0
+            **ORDER, strategy="s", kst_trade_day="2026-11-16", rung=""
         ).correlation_id
         == base.correlation_id
     )
