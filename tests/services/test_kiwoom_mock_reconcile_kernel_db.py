@@ -376,6 +376,18 @@ async def _fills(order_no: str) -> list[ExecutionLedger]:
         )
 
 
+async def _trade(order_no: str) -> Trade | None:
+    async with AsyncSessionLocal() as session:
+        return (
+            await session.execute(
+                select(Trade).where(
+                    Trade.account == kernel.JOURNAL_ACCOUNT,
+                    Trade.order_id == order_no,
+                )
+            )
+        ).scalar_one_or_none()
+
+
 async def _cleanup_full(
     *,
     client_order_id: str,
@@ -550,6 +562,14 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         )
         assert (await _fetch(client_order_id)).status == "filled"
 
+        trade = await _trade(order_no)
+        assert trade is not None
+        # One row per order, advanced to the cumulative figures: the second
+        # partial is not dropped by the (account, order_id) unique key.
+        assert trade.quantity == Decimal("10")
+        assert trade.price == Decimal("76000")
+        assert trade.total_amount == Decimal("760000")
+
         # The row is terminal and fully journaled now, so another pass finds no
         # candidate at all.
         settled = await _full_run(
@@ -603,6 +623,9 @@ async def test_full_mode_recovers_a_journal_after_a_failure(
         assert stored.filled_qty == Decimal("10")
         assert stored.journal_id is None
         assert stored.trade_id is None
+        # The journal step shares one transaction with the trade row and the
+        # progress marker, so the failure rolled all of it back.
+        assert await _trade(order_no) is None
         assert len(await _fills(order_no)) == 1
 
         # The journal store recovers; the fill is not booked again.
@@ -617,8 +640,13 @@ async def test_full_mode_recovers_a_journal_after_a_failure(
 
         stored = await _fetch(client_order_id)
         assert stored.journal_id is not None
-        # The trade row inserted by the failed attempt is found and linked.
         assert stored.trade_id is not None
+        trade = await _trade(order_no)
+        assert trade is not None
+        assert trade.id == stored.trade_id
+        assert trade.quantity == Decimal("10")
+        assert trade.price == Decimal("70000")
+        assert trade.total_amount == Decimal("700000")
         async with AsyncSessionLocal() as session:
             journal = (
                 await session.execute(

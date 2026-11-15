@@ -209,7 +209,14 @@ class FakeService:
         )
 
     async def attach_journal(
-        self, *, ledger_id, trade_id, journal_id, journaled_qty=None, journaled_avg=None
+        self,
+        *,
+        ledger_id,
+        trade_id,
+        journal_id,
+        journaled_qty=None,
+        journaled_avg=None,
+        commit: bool = True,
     ):
         row = next(item for item in type(self).rows if item.id == ledger_id)
         if trade_id is not None and getattr(row, "trade_id", None) is None:
@@ -419,8 +426,8 @@ def _patch_journal(
     """Replace the journal writers; record the exact kwargs the kernel passes."""
     from app.mcp_server.tooling import order_journal
 
-    async def save_order_fill(**kwargs: Any) -> int:
-        calls.append(("save_order_fill", kwargs))
+    async def record_trade(db: Any, **kwargs: Any) -> int:
+        calls.append(("record_trade", kwargs))
         return 501
 
     async def create_journal(**kwargs: Any) -> dict[str, Any]:
@@ -430,7 +437,12 @@ def _patch_journal(
         return {"journal_id": journal_id}
 
     async def link(
-        symbol: str, trade_id: int, *, account_type: str, account: str
+        symbol: str,
+        trade_id: int,
+        *,
+        account_type: str,
+        account: str,
+        db: Any = None,
     ) -> None:
         calls.append(
             (
@@ -454,7 +466,7 @@ def _patch_journal(
             "realized_pnl_basis": "journal_entry",
         }
 
-    monkeypatch.setattr(order_journal, "_save_order_fill", save_order_fill)
+    monkeypatch.setattr(order_journal, "_record_trade_for_fill", record_trade)
     monkeypatch.setattr(order_journal, "_create_trade_journal_for_buy", create_journal)
     monkeypatch.setattr(order_journal, "_link_journal_to_fill", link)
     monkeypatch.setattr(order_journal, "_close_journals_on_sell", close_journals)
@@ -533,7 +545,7 @@ async def test_full_mode_books_the_delta_and_journals_under_kiwoom_mock(
     assert outcome["execution_ledger_row_id"] == 901
     assert ("record_fill", 1, "booked_filled", None) in _writes(fake_ledger)
 
-    save = next(payload for name, payload in calls if name == "save_order_fill")
+    save = next(payload for name, payload in calls if name == "record_trade")
     assert save["account"] == JOURNAL_ACCOUNT == "kiwoom_mock"
     assert save["order_id"] == "0001"
     assert save["quantity"] == 10.0
@@ -614,7 +626,7 @@ async def test_full_mode_recovers_the_journal_of_an_already_filled_row(
     outcome = result["reconciled"][0]
     assert outcome["action"] == "noop_already_booked"
     # The whole cumulative fill is journaled now, not a zero delta.
-    save = next(payload for name, payload in calls if name == "save_order_fill")
+    save = next(payload for name, payload in calls if name == "record_trade")
     assert save["quantity"] == 10.0
     assert save["price"] == 70000.0
     assert ("attach_journal", 1, "55", None) in _writes(fake_ledger)

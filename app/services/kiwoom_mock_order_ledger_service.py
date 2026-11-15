@@ -661,6 +661,7 @@ class KiwoomMockOrderLedgerService:
         journal_id: int | None,
         journaled_qty: Decimal | None = None,
         journaled_avg: Decimal | None = None,
+        commit: bool = True,
     ) -> None:
         """Record the journal/trade a booked fill produced (add-only).
 
@@ -682,7 +683,8 @@ class KiwoomMockOrderLedgerService:
             if journaled_avg is not None:
                 detail["journaled_avg"] = str(journaled_avg)
             row.last_reconcile_detail = detail
-        await self._db.commit()
+        if commit:
+            await self._db.commit()
 
     @staticmethod
     def _apply_terminal(

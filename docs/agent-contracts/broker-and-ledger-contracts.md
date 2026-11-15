@@ -325,10 +325,12 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (부킹된 명목 합은 브로커 누적 명목과 같아진다).
   Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
   `fee_basis='not_provided'`·`filled_at_basis='observed_at'` 이고 0 으로 채우지 않는다.
-  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 저널 단계가 실패해도
-  체결 증거는 커밋된 채 남고, `last_reconcile_detail.journaled_qty` 가 `filled_qty` 보다
-  작은 `filled` 행은 다음 full 실행이 저널을 마무리한다(같은 실행이 실패를 숨기지 않고
-  `journal_error` 로 보고). 이 행들은 외부 HTTP
+  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 저널 단계는
+  `review.trades` 행(주문당 1행, 누적 수량·누적평균으로 부분 체결마다 갱신)·저널 기록·
+  `journaled_qty` 마커를 **한 트랜잭션**으로 커밋하므로 재실행이 FIFO를 두 번 닫거나 초안
+  저널을 남기지 않는다. 저널 단계가 실패하면 그 트랜잭션 전체가 롤백되고 체결 증거만 남으며,
+  `last_reconcile_detail.journaled_qty` 가 `filled_qty` 보다 작은 `filled` 행은 다음 full
+  실행이 저널을 마무리한다(같은 실행이 실패를 숨기지 않고 `journal_error` 로 보고). 이 행들은 외부 HTTP
   ingest 대상이 아니며(`source` 는 항상 `websocket` 강제) 이 예외는 위 멱등키·savepoint·
   원장 커밋 권한 규칙을 바꾸지 않는다.
 - **라우터/스키마**: `app/routers/execution_ledger_ingest.py`,

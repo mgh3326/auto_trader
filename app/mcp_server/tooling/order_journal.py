@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 from typing import cast as typing_cast
@@ -31,6 +33,23 @@ def _order_session_factory() -> async_sessionmaker[AsyncSession]:
     return typing_cast(
         async_sessionmaker[AsyncSession], typing_cast(object, AsyncSessionLocal)
     )
+
+
+@asynccontextmanager
+async def _own_or_caller_session(
+    db: AsyncSession | None,
+) -> AsyncIterator[AsyncSession]:
+    """Yield the caller's transaction, or a fresh session when none was given.
+
+    A caller transaction is never committed here; a self-opened session is left
+    for the caller of this context manager to commit only when it owned it (the
+    legacy helpers do, the reconcile path commits its own outer transaction).
+    """
+    if db is not None:
+        yield db
+        return
+    async with _order_session_factory()() as session:
+        yield session
 
 
 async def _save_order_fill(
@@ -81,46 +100,122 @@ async def _save_order_fill(
         return None
 
 
+async def _record_trade_for_fill(
+    db: AsyncSession,
+    *,
+    symbol: str,
+    instrument_type: str,
+    side: str,
+    price: float,
+    quantity: float,
+    total_amount: float,
+    fee: float,
+    currency: str,
+    account: str,
+    order_id: str | None,
+) -> int:
+    """Insert or update the order's single trade row to its cumulative figures.
+
+    ``review.trades`` is unique on ``(account, order_id)``, so a later partial
+    fill of the same order must advance the existing row instead of being
+    dropped by the unique conflict. The caller owns the transaction (this
+    function never commits), which is what lets a reconcile commit the trade,
+    the journal and its progress marker atomically.
+    """
+    stmt = (
+        pg_insert(Trade)
+        .values(
+            trade_date=now_kst(),
+            symbol=symbol,
+            instrument_type=instrument_type,
+            side=side,
+            price=price,
+            quantity=quantity,
+            total_amount=total_amount,
+            fee=fee,
+            currency=currency,
+            account=account,
+            order_id=order_id,
+        )
+        .on_conflict_do_update(
+            constraint="uq_review_trades_account_order",
+            set_={
+                "price": price,
+                "quantity": quantity,
+                "total_amount": total_amount,
+            },
+        )
+        .returning(Trade.id)
+    )
+    result = await db.execute(stmt)
+    return int(result.scalar_one())
+
+
+async def _link_journal_to_fill_in(
+    db: AsyncSession,
+    symbol: str,
+    trade_id: int,
+    account_type: str = "live",
+    account: str | None = None,
+) -> int | None:
+    """Link the newest matching draft journal; returns its id (no commit)."""
+    stmt = select(TradeJournal).where(
+        TradeJournal.symbol == symbol,
+        TradeJournal.status == JournalStatus.draft,
+        TradeJournal.account_type == account_type,
+    )
+    if account:
+        stmt = stmt.where(TradeJournal.account == account)
+
+    stmt = stmt.order_by(desc(TradeJournal.created_at)).limit(1)
+    result = await db.execute(stmt)
+    journal = result.scalars().first()
+
+    if journal is None:
+        return None
+
+    journal.status = JournalStatus.active
+    journal.trade_id = trade_id
+    if journal.min_hold_days:
+        from datetime import timedelta
+
+        journal.hold_until = now_kst() + timedelta(days=journal.min_hold_days)
+    await db.flush()
+    logger.info(
+        "Linked journal id=%s to trade id=%s for %s (account_type=%s, account=%s)",
+        journal.id,
+        trade_id,
+        symbol,
+        account_type,
+        account,
+    )
+    return int(journal.id)
+
+
 async def _link_journal_to_fill(
     symbol: str,
     trade_id: int,
     account_type: str = "live",
     account: str | None = None,
+    *,
+    db: AsyncSession | None = None,
 ) -> None:
-    """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until."""
+    """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until.
+
+    ``db`` is the caller's transaction (no commit, errors propagate). Without
+    it the historical own-session-and-commit behaviour is kept.
+    """
+    if db is not None:
+        await _link_journal_to_fill_in(
+            db, symbol, trade_id, account_type=account_type, account=account
+        )
+        return
     try:
-        async with _order_session_factory()() as db:
-            stmt = select(TradeJournal).where(
-                TradeJournal.symbol == symbol,
-                TradeJournal.status == JournalStatus.draft,
-                TradeJournal.account_type == account_type,
+        async with _order_session_factory()() as session:
+            await _link_journal_to_fill_in(
+                session, symbol, trade_id, account_type=account_type, account=account
             )
-            if account:
-                stmt = stmt.where(TradeJournal.account == account)
-
-            stmt = stmt.order_by(desc(TradeJournal.created_at)).limit(1)
-            result = await db.execute(stmt)
-            journal = result.scalars().first()
-
-            if journal is None:
-                return
-
-            journal.status = JournalStatus.active
-            journal.trade_id = trade_id
-            if journal.min_hold_days:
-                from datetime import timedelta
-
-                journal.hold_until = now_kst() + timedelta(days=journal.min_hold_days)
-
-            await db.commit()
-            logger.info(
-                "Linked journal id=%s to trade id=%s for %s (account_type=%s, account=%s)",
-                journal.id,
-                trade_id,
-                symbol,
-                account_type,
-                account,
-            )
+            await session.commit()
     except Exception as exc:
         logger.warning("Failed to link journal to fill: %s", exc)
 
@@ -159,6 +254,7 @@ async def _create_trade_journal_for_buy(
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
     correlation_id: str | None = None,
+    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Create a draft trade journal entry for a buy order.
 
@@ -200,10 +296,14 @@ async def _create_trade_journal_for_buy(
         correlation_id=correlation_id,
     )
 
-    async with _order_session_factory()() as db:
+    if db is not None:
         db.add(journal)
-        await db.commit()
-        await db.refresh(journal)
+        await db.flush()
+    else:
+        async with _order_session_factory()() as session:
+            session.add(journal)
+            await session.commit()
+            await session.refresh(journal)
 
     return {
         "journal_created": True,
@@ -224,6 +324,7 @@ async def _close_journals_on_sell(
     sell_fx_rate: float | None = None,
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
+    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -250,7 +351,7 @@ async def _close_journals_on_sell(
     remaining_qty = sell_qty_dec
     resolved_reason = (exit_reason or "").strip() or "sold_via_place_order"
 
-    async with _order_session_factory()() as db:
+    async with _own_or_caller_session(db) as session:
         stmt = select(TradeJournal).where(
             TradeJournal.symbol == symbol,
             TradeJournal.status == JournalStatus.active,
@@ -260,7 +361,7 @@ async def _close_journals_on_sell(
             stmt = stmt.where(TradeJournal.account == account)
 
         stmt = stmt.order_by(TradeJournal.created_at.asc())
-        result = await db.execute(stmt)
+        result = await session.execute(stmt)
         journals = list(result.scalars().all())
 
         closed_ids: list[int] = []
@@ -353,7 +454,12 @@ async def _close_journals_on_sell(
 
             closed_ids.append(journal.id)
 
-        await db.commit()
+        if db is None:
+            await session.commit()
+        else:
+            # The caller's transaction commits the journal close together with
+            # its progress marker, so a retry can never re-close the same lot.
+            await session.flush()
 
     # total_pnl_pct is quantity-weighted across the FIFO-closed journals'
     # per-lot entry_price (lot basis), NOT the position account-average. The
