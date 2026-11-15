@@ -298,11 +298,17 @@ def _attributes_us_rows(body: str) -> bool:
 def _kiwoom_writer_exists(
     table: str, class_name: str, app_sources: list[tuple[str, str]]
 ) -> bool:
-    """A service module outside app/models that references the ledger and writes."""
+    """A service module outside app/models that writes US-lane rows to the ledger.
+
+    The writer itself must record a US-attributable row (account_mode
+    'kiwoom_mock_us'). A KR-only writer into a table that could hold US rows
+    (3797 T-P2, #2430) produces no US-lane evidence.
+    """
 
     return any(
         (class_name in text or table in text)
         and any(token in text for token in _KIWOOM_WRITE_TOKENS)
+        and "kiwoom_mock_us" in text
         for _path, text in app_sources
     )
 
@@ -666,6 +672,32 @@ def test_kiwoom_evidence_needs_us_attribution_even_with_a_writer() -> None:
     )
 
 
+def test_kiwoom_evidence_needs_a_us_writer_not_only_a_us_capable_table() -> None:
+    models = (
+        "class KiwoomMockOrderLedger(Base):\n"
+        '    __tablename__ = "kiwoom_mock_order_ledger"\n'
+        "    account_mode: Mapped[str] = mapped_column(Text)\n"
+        "    CheckConstraint(\"account_mode IN ('kiwoom_mock', 'kiwoom_mock_us')\")\n"
+    )
+    kr_writer = (
+        "from app.models.review import KiwoomMockOrderLedger\n"
+        "ACCOUNT_MODE_KIWOOM_MOCK = 'kiwoom_mock'\n"
+        "def record(session):\n"
+        "    session.add(KiwoomMockOrderLedger(account_mode=ACCOUNT_MODE_KIWOOM_MOCK))\n"
+    )
+    assert (
+        _evidence_ground_truth(
+            "us.kiwoom.mock",
+            models=models,
+            app_sources=[
+                ("app/services/kiwoom_mock_order_ledger_service.py", kr_writer)
+            ],
+        )
+        == "ABSENT"
+    )
+
+
 def test_kiwoom_evidence_is_absent_in_this_tree() -> None:
-    # The repository has the ledger models but no writer yet (T-P2/T-P8 pending).
+    # The repository has the ledger models and a KR-only writer (T-P2, #2430);
+    # the US writer (T-P8) is pending.
     assert _evidence_ground_truth("us.kiwoom.mock") == "ABSENT"
