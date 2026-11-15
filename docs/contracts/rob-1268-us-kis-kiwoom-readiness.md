@@ -148,18 +148,18 @@ restart_rediscovery_trigger = ABSENT (query exists as OrderSendIntentReservation
 authoritative_readback_operation = PRESENT_CONSTRAINED (KiwoomUSAccountClient.get_today_orders api-id ust21510 and get_open_orders api-id ust21050 on path /api/us/acnt; constrained because Market.US_EQUITY is absent from BROKER_CAPABILITIES[Broker.KIWOOM] per rob-1266 §5.3)
 release_if_matches_condition = PRESENT (DurableSendClaimAdapter.release_with_terminal_evidence gated by _terminal_evidence_authorizes in COORDINATION_SOURCE)
 operator_visible_blocked_state = PRESENT (unreleased_authority_holds() in COORDINATION_SOURCE, with reason code terminal_evidence_required)
-unmet_lifecycle_items = (recovery_owner, restart_rediscovery_trigger, authoritative_readback_operation, lane_native_evidence)
+unmet_lifecycle_items = (recovery_owner, restart_rediscovery_trigger, authoritative_readback_operation)
 ```
 
 ```text
 # EVIDENCE
-ack = ABSENT (no Kiwoom order ledger exists; see §5.2)
-unknown = ABSENT (no Kiwoom order ledger exists; see §5.2)
-reject = ABSENT (no Kiwoom order ledger exists; see §5.2)
-expiry = ABSENT (no Kiwoom order ledger exists; see §5.2)
-partial_fill = ABSENT (no Kiwoom order ledger exists; see §5.2)
-cancel = ABSENT (no Kiwoom order ledger exists; see §5.2)
-terminal_reconciliation = ABSENT (no Kiwoom order ledger exists; see §5.2)
+ack = PRESENT (review.kiwoom_mock_order_ledger row with status='accepted' and broker_order_id, written by app/services/kiwoom_mock_order_ledger_service.py on the US account; see §5.2)
+unknown = PRESENT (the same table's status='uncertain' row, written when the send outcome is unproven and never resent; see §5.2)
+reject = PRESENT (the same table's status='rejected' row from an explicit broker rejection, plus the reconcile verdict that closes an open row the broker refused; see §5.2)
+expiry = PRESENT (the same table's status='expired' row, set only from positive broker evidence by app/services/kiwoom_mock_reconcile.py; see §5.2)
+partial_fill = PRESENT (the same table's status='partial' row with filled_qty, and the reconcile verdict that reports a cumulative fill without booking it; see §5.2)
+cancel = PRESENT (the same table's status='cancelled' row, written only when our own acknowledged cancel and a positive broker confirmation both hold; see §5.2)
+terminal_reconciliation = PRESENT (reconcile_attempts / last_reconcile_detail / reconciled_at on that table, written through the same service; see §5.2)
 ```
 
 ## 5. Evidence-surface findings
@@ -191,13 +191,28 @@ attribution problem above:
 
 Creating, altering, or backfilling any table is outside this contract.
 
-### 5.2 `us.kiwoom.mock` — no order ledger exists at all
+### 5.2 `us.kiwoom.mock` — the mock ledger is lane-separable
 
-No Kiwoom order ledger model exists.  The only occurrence of `kiwoom` in
-`app/models/review.py` is the `account_mode` CHECK list of
-`trade_retrospectives`, which is a retrospective-scoped table and not an order
-lifecycle ledger.  All seven evidence kinds are therefore absent for this lane
-by construction, not by omission of a lookup.
+`review.kiwoom_mock_order_ledger` holds both mock accounts and binds the identity
+columns together with a CHECK, so a row cannot be ambiguous about which account
+produced it: `account_mode` names the account, and `market`, `instrument_type`
+and `currency` must agree with it.  A row recorded for the US account is
+therefore attributable to this lane rather than to the KR one.
+
+The writer is lane-native.  `app/services/kiwoom_mock_order_ledger_service.py` is
+the only module that writes the table (hard rule 5) and it derives the identity
+from the account mode it is given; `app/services/kiwoom_mock_place.py` runs the
+send sequence that ends with that row (attribution signal, send reservation, the
+broker answer, then the ledger row); and `app/services/kiwoom_mock_reconcile.py`
+applies only evidence-backed terminal transitions through the same service.  The
+status vocabulary covers the seven evidence kinds above, including the
+`uncertain` row a send with an unproven outcome must leave behind and the
+`partial` row that carries a cumulative fill.
+
+Two limits of this evidence are recorded rather than glossed over: fills are
+reported by reconcile but never booked here (that is a later ticket), and a US
+trading day older than today has no listing to reconcile against, so such a row
+stays unclassified instead of being closed from absence.
 
 ### 5.3 `us.kis.mock` shares a credential namespace with `kr.kis.mock`
 

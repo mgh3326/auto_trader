@@ -10,6 +10,9 @@ proven without a database or network:
 * full mode needs both exact-true gates and refuses before any read otherwise;
 * full mode books the broker-evidence delta and journals it with
   ``account='kiwoom_mock'``/``account_type='mock'``;
+* the journal is written once per order, at its terminal fill, with the order's
+  cumulative quantity and cumulative average price (a partial writes none);
+* overlapping full runs apply the journal effects once;
 * a re-run of the same evidence books nothing new and journals nothing new;
 * a journal failure after a booked fill is surfaced, never hidden;
 * unknown rows never transition; paged listings are followed, and a page cap is
@@ -18,6 +21,8 @@ proven without a database or network:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -124,6 +129,14 @@ class FakeSession:
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
 
+    async def execute(self, statement: Any = None, params: Any = None) -> None:
+        # The full-mode run lock is a plain SELECT on its own session; the unit
+        # harness only needs it to not fail (the real ordering is a DB test).
+        type(self).statements.append(statement)
+        return None
+
+    statements: list[Any] = []
+
     async def commit(self) -> None:
         return None
 
@@ -193,19 +206,33 @@ class FakeService:
         self.writes: list[tuple[str, int, str, str | None]] = []
 
     async def list_reconcile_candidates(
-        self, *, limit: int, include_journal_recovery: bool = False
+        self,
+        *,
+        limit: int,
+        account_mode: str = "kiwoom_mock",
+        include_journal_recovery: bool = False,
     ):
+        self.account_mode = account_mode
         return list(type(self).rows[:limit]), type(self).total
 
-    async def list_acknowledged_cancels(self, *, original_order_ids: set[str]):
+    async def list_acknowledged_cancels(
+        self, *, original_order_ids: set[str], account_mode: str = "kiwoom_mock"
+    ):
         return type(self).cancels & original_order_ids
 
-    async def mark_terminal(self, *, ledger_id, status, reason, detail=None):
+    async def mark_terminal(
+        self, *, ledger_id, status, reason, detail=None, account_mode="kiwoom_mock"
+    ):
         self.writes.append(("mark_terminal", ledger_id, status, reason))
         return SimpleNamespace(id=ledger_id, status=status)
 
     async def promote_uncertain_to_accepted(
-        self, *, ledger_id, broker_order_id, detail=None
+        self,
+        *,
+        ledger_id,
+        broker_order_id,
+        detail=None,
+        account_mode="kiwoom_mock",
     ):
         self.writes.append(("promote", ledger_id, broker_order_id, None))
         return SimpleNamespace(id=ledger_id, status="accepted")
@@ -499,13 +526,33 @@ def _patch_journal(
     )
 
 
-def _filled_reader() -> FakeReader:
+def _filled_reader(average_price: int = 70000) -> FakeReader:
     return FakeReader(
         detail_pages={
             TODAY: [
                 _detail_payload(
                     _detail_row(
-                        ord_no="0001", cntr_qty="10", ord_remnq="0", cntr_uv="70000"
+                        ord_no="0001",
+                        cntr_qty="10",
+                        ord_remnq="0",
+                        cntr_uv=str(average_price),
+                    )
+                )
+            ]
+        }
+    )
+
+
+def _partial_reader(quantity: int = 4, average_price: int = 70000) -> FakeReader:
+    return FakeReader(
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(
+                        ord_no="0001",
+                        cntr_qty=str(quantity),
+                        ord_remnq=str(10 - quantity),
+                        cntr_uv=str(average_price),
                     )
                 )
             ]
@@ -686,6 +733,152 @@ async def test_full_mode_sell_closes_journals_under_kiwoom_mock(
     assert close["account"] == JOURNAL_ACCOUNT
     assert close["account_type"] == JOURNAL_ACCOUNT_TYPE
     assert close["sell_quantity"] == 10.0
+
+
+async def test_partial_fill_defers_the_journal_and_terminal_writes_it_once(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One journal per order, at its cumulative figures (hk 4734 review).
+
+    A partial verdict books the ledger delta only; the journal waits for the
+    order's terminal fill and then carries the whole cumulative quantity and
+    cumulative average — never a first partial that later fills outgrow.
+    """
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+
+    first = await _run(_partial_reader(), dry_run=False, terminal_only=False)
+    outcome = first["reconciled"][0]
+    assert outcome["action"] == "booked_partial"
+    assert outcome["delta_qty"] == "4"
+    assert outcome["journal"] == {"deferred": "awaiting_terminal_fill"}
+    assert calls == []
+    assert [
+        write for write in _writes(fake_ledger) if write[0] == "attach_journal"
+    ] == []
+
+    # 4 @ 70,000 then cumulative 10 @ 76,000: one journal of 10 at 76,000.
+    second = await _run(
+        _filled_reader(average_price=76000), dry_run=False, terminal_only=False
+    )
+    outcome = second["reconciled"][0]
+    assert outcome["action"] == "booked_filled"
+    assert outcome["delta_qty"] == "6"
+    save = next(payload for name, payload in calls if name == "record_trade")
+    assert save["quantity"] == 10.0
+    assert save["price"] == 76000.0
+    assert save["total_amount"] == 760000.0
+    create = next(payload for name, payload in calls if name == "create_journal")
+    assert create["preview"]["quantity"] == 10.0
+    assert create["preview"]["price"] == 76000.0
+    assert [
+        write for write in _writes(fake_ledger) if write[0] == "attach_journal"
+    ] == [("attach_journal", 1, "55", None)]
+
+    calls.clear()
+    third = await _run(
+        _filled_reader(average_price=76000), dry_run=False, terminal_only=False
+    )
+    outcome = third["reconciled"][0]
+    assert outcome["action"] == "noop_already_booked"
+    assert outcome["journal"] == {"skipped": "already_journaled"}
+    assert calls == []
+
+
+async def test_overlapping_full_runs_journal_the_order_exactly_once(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two overlapping full runs apply the journal effects once.
+
+    The run lock serializes them; the second run then re-reads the order's
+    journal progress under the row lock and finds it already journaled. The
+    real advisory lock and row lock are exercised in the DB test.
+    """
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+
+    run_lock = asyncio.Lock()
+    acquisitions: list[int] = []
+
+    @contextlib.asynccontextmanager
+    async def serialized(session_factory: Any):
+        async with run_lock:
+            acquisitions.append(1)
+            yield
+
+    monkeypatch.setattr(kernel, "_hold_full_run_lock", serialized)
+
+    first, second = await asyncio.gather(
+        _run(_filled_reader(), dry_run=False, terminal_only=False),
+        _run(_filled_reader(), dry_run=False, terminal_only=False),
+    )
+
+    assert acquisitions == [1, 1]
+    assert [name for name, _ in calls].count("record_trade") == 1
+    assert [name for name, _ in calls].count("create_journal") == 1
+    assert [
+        write for write in _writes(fake_ledger) if write[0] == "attach_journal"
+    ] == [("attach_journal", 1, "55", None)]
+    journals = [
+        outcome.get("journal")
+        for result in (first, second)
+        for outcome in result["reconciled"]
+    ]
+    assert any(entry and "trade_id" in entry for entry in journals)
+    assert {"skipped": "already_journaled"} in journals
+
+
+async def test_terminal_verdict_with_a_positive_fill_journals_before_the_close(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled/expired order that still filled journals its fill once.
+
+    The verdict table never pairs a terminal marker with a fill today; the
+    kernel still books and journals one when it appears, instead of closing the
+    row and stranding the shares.
+    """
+    from app.services.brokers.kiwoom.mock_reconcile import Verdict
+
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    FakeService.rows = [_row(1, broker_order_id="0001")]
+    FakeService.total = 1
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _patch_journal(monkeypatch, calls)
+    monkeypatch.setattr(
+        kernel,
+        "classify_verdict",
+        lambda **_: Verdict(
+            verdict="cancelled",
+            reason="own_cancel_acknowledged_and_broker_confirmed",
+            requires_manual_review=False,
+            filled_quantity=10,
+            average_price=76000,
+        ),
+    )
+
+    result = await _run(FakeReader(), dry_run=False, terminal_only=False)
+
+    outcome = result["reconciled"][0]
+    assert outcome["fill_action"] == "booked_filled"
+    assert outcome["action"] == "mark_cancelled"
+    save = next(payload for name, payload in calls if name == "record_trade")
+    assert save["quantity"] == 10.0
+    assert save["price"] == 76000.0
+    assert (
+        "mark_terminal",
+        1,
+        "cancelled",
+        "own_cancel_acknowledged_and_broker_confirmed",
+    ) in _writes(fake_ledger)
 
 
 async def test_terminal_gate_off_refuses_before_any_read(

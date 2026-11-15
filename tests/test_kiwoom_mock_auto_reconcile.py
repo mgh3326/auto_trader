@@ -207,12 +207,29 @@ def test_full_apply_with_both_gates_runs_full_mode(
 
     assert stub.calls == [
         {
+            "market": "kr",
             "dry_run": False,
             "terminal_only": False,
             "limit": 100,
             "min_request_interval_seconds": (cli.DEFAULT_MIN_REQUEST_INTERVAL_SECONDS),
         }
     ]
+
+
+def test_full_apply_is_refused_for_the_us_market(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full-mode fill booking is KR only (T-P4); the US scan stays terminal-only."""
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    stub = _Stub(_result(dry_run=False, scope="full"))
+    _install(monkeypatch, stub)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--apply", "--market", "us"])
+
+    assert excinfo.value.code == 2
+    assert stub.calls == []
 
 
 def test_apply_and_apply_terminal_only_are_mutually_exclusive(

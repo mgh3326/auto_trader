@@ -920,10 +920,18 @@ def test_the_strategy_loop_cli_is_the_only_run_tick_entry_point_and_wires_null_s
         "app/services/brokers/binance/h5/state.py",
         "app/services/brokers/binance/h5/strategy.py",
     }
+    # hk 4719 — the TREND-TSMOM-v1 lane's strategy plugin and its 4h history
+    # collector only *import* the loop package (StrategyPlugin/Signal and the
+    # complete-only bar builder). The lane has no runner yet (CT-5).
+    trend_type_consumers = {
+        "app/services/brokers/binance/trend/history.py",
+        "app/services/brokers/binance/trend/strategy.py",
+    }
     assert set(entry_points) == {
         "scripts/binance_demo_strategy_loop.py",
         "scripts/binance_h5_demo.py",
         *h5_type_consumers,
+        *trend_type_consumers,
     }
 
     # ...and the canonical entry point still wires the always-``None``
@@ -935,7 +943,7 @@ def test_the_strategy_loop_cli_is_the_only_run_tick_entry_point_and_wires_null_s
 
     # The lane's app/ modules may only *import* the loop package — a
     # run_tick call inside any of them is a hidden second driver.
-    for consumer in h5_type_consumers:
+    for consumer in (*h5_type_consumers, *trend_type_consumers):
         assert entry_points[consumer] == [], consumer
 
     # The registered manual runner's sole tick call goes to the H5

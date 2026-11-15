@@ -291,6 +291,9 @@ tests/services/test_kiwoom_mock_order_ledger_service.py
 tests/services/test_kiwoom_mock_order_ledger_service_db.py
 tests/services/test_kiwoom_mock_reconcile_kernel.py
 tests/services/test_kiwoom_mock_reconcile_kernel_db.py
+tests/services/test_kiwoom_mock_us_order_ledger_service_db.py
+tests/services/test_kiwoom_mock_us_place.py
+tests/services/test_kiwoom_mock_us_reconcile.py
 tests/services/test_krb1_p0_journal.py
 tests/services/test_krb1_selector_cli_exit_contract.py
 tests/services/test_krx_after_market.py

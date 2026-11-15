@@ -12,6 +12,7 @@ booking nothing new, journals under ``account='kiwoom_mock'`` and one
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -589,15 +590,13 @@ async def test_full_mode_partial_then_filled_books_two_deltas_and_a_rerun_none(
         assert trade.price == Decimal("76000")
         assert trade.total_amount == Decimal("760000")
 
-        # Every buy delta is its own lot journal at its own price: no filled
-        # share is missing from a journal.
+        # One journal per order, written at the terminal fill: the partial
+        # created nothing, and the journal holds every filled share at the
+        # order's cumulative quantity and average price (hk 4734 review).
         journals = await _journals(symbol)
-        assert [journal.quantity for journal in journals] == [
-            Decimal("4"),
-            Decimal("6"),
-        ]
-        assert journals[0].entry_price == Decimal("70000")
-        assert journals[1].entry_price == Decimal("80000")
+        assert [journal.quantity for journal in journals] == [Decimal("10")]
+        assert journals[0].entry_price == Decimal("76000")
+        assert journals[0].status == "active"
 
         # The row is terminal and fully journaled now, so another pass finds no
         # candidate at all.
@@ -758,3 +757,54 @@ async def test_full_mode_split_sell_consumes_one_lot_across_two_fills(
                 symbol=symbol,
                 run_ids=run_ids,
             )
+
+
+async def test_full_mode_overlapping_runs_journal_the_order_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two full runs started together apply the journal exactly once.
+
+    The run-level advisory lock serializes them: the run that ends up second
+    finds the order filled and journaled, so it books nothing and writes no
+    journal. The real lock, the order-row ``FOR UPDATE`` and the re-read before
+    any journal side effect are all exercised here.
+    """
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+        reader = FakeReader(_filled_detail(order_no, 10, symbol))
+        first, second = await asyncio.gather(
+            _full_run(reader),
+            _full_run(reader),
+        )
+        for result in (first, second):
+            if result.get("reconcile_run"):
+                run_ids.append(result["reconcile_run"]["run_id"])
+
+        fills = await _fills(order_no)
+        assert [fill.filled_qty for fill in fills] == [Decimal("10")]
+        trade = await _trade(order_no)
+        assert trade is not None
+        assert trade.quantity == Decimal("10")
+        journals = await _journals(symbol)
+        assert [journal.quantity for journal in journals] == [Decimal("10")]
+        assert journals[0].entry_price == Decimal("70000")
+        assert journals[0].status == "active"
+
+        actions = [
+            outcome["action"]
+            for result in (first, second)
+            for outcome in result["reconciled"]
+        ]
+        assert actions.count("booked_filled") == 1
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )

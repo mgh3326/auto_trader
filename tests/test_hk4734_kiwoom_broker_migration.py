@@ -22,7 +22,7 @@ from app.schemas.execution_ledger import Broker, ReconcileRunBroker
 REPO = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = REPO / "alembic" / "versions" / "20261115_hk4734_kiwoom_broker.py"
 REVISION = "20261115_hk4734_kiwoom_broker"
-PARENT_REVISION = "20261114_hk4702_trend_state"
+PARENT_REVISION = "20261116_hk4754_us_proposals"
 
 LEDGER_CHECK = "ck_execution_ledger_execution_ledger_broker"
 RUNS_CHECK = "ck_execution_ledger_reconcile_runs_runs_broker"

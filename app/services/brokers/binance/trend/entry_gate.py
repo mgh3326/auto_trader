@@ -14,9 +14,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from .constants import LOCKED_LIMITS, TrendLimits
-
-EXIT_HARD_STOP: Final = "hard_stop"
+from .constants import EXIT_HARD_STOP, LOCKED_LIMITS, TrendLimits
 
 # Signal states that occupy an exposure slot.
 ACTIVE_SIGNAL_STATES: Final = ("entry_reserved", "holding", "uncertain")

@@ -736,3 +736,296 @@ async def test_no_rung_and_explicit_zero_are_different_orders(monkeypatch):
     ]
     assert len(recorder.reserved) == 2
     assert len(stub.posts) == 2
+
+
+# --- pre-send refusals close the signal out as not sent (hk 4729) -----------
+#
+# 'recorded' must mean "committed, no outcome yet". A refusal after the signal
+# commit that provably sent no order is marked ``suppressed`` — the vocabulary's
+# not-sent value, the same one kis_mock uses for ``decision='no_order'`` — so a
+# 'recorded' row can no longer be mistaken for a dispatch that crashed before
+# marking. The write is a compare-and-set on 'recorded' (see the DB test in
+# tests/test_kiwoom_mock_attribution_db.py), so it never relabels a row an
+# earlier dispatch already closed.
+
+
+@pytest.mark.asyncio
+async def test_preflight_refusal_marks_the_signal_not_sent(monkeypatch):
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_CASH_INSUFFICIENT,
+        PreflightResult,
+    )
+
+    mod, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    async def refusing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_CASH_INSUFFICIENT,
+            error_detail="insufficient cash",
+            checks=[],
+        )
+
+    monkeypatch.setattr(mod, "_run_preflight_for_kiwoom_mock", refusing_preflight)
+
+    response = await _place(mcp)
+
+    assert stub.posts == []  # preflight is the only broker read; no order left
+    assert response["success"] is False
+    assert response["error"] == PREFLIGHT_CASH_INSUFFICIENT
+    assert recorder.signal.outcomes == [
+        {
+            "correlation_id": recorder.signal.rows[0]["correlation_id"],
+            "outcome_state": "suppressed",
+            "suppressed_reason": "preflight_refused",
+            "detail_patch": {
+                "status": "not_submitted",
+                "error_code": PREFLIGHT_CASH_INSUFFICIENT,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preflight_error_marks_the_signal_not_sent(monkeypatch):
+    mod, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    async def raising_preflight(**_kwargs):
+        raise KiwoomPreDispatchError(
+            stage="quote", api_id="ka10004", cause_type="ConnectError"
+        )
+
+    monkeypatch.setattr(mod, "_run_preflight_for_kiwoom_mock", raising_preflight)
+
+    response = await _place(mcp)
+
+    assert stub.posts == []
+    assert response["status"] == "not_submitted"
+    assert recorder.signal.outcomes == [
+        {
+            "correlation_id": response["correlation_id"],
+            "outcome_state": "suppressed",
+            "suppressed_reason": "preflight_refused",
+            "detail_patch": {
+                "status": "not_submitted",
+                "stage": "quote",
+                "cause_type": "ConnectError",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preflight_crash_marks_the_signal_not_sent(monkeypatch):
+    mod, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+
+    async def crashing_preflight(**_kwargs):
+        raise RuntimeError("quote reader exploded")
+
+    monkeypatch.setattr(mod, "_run_preflight_for_kiwoom_mock", crashing_preflight)
+
+    response = await _place(mcp)
+
+    assert stub.posts == []
+    assert response["error"] == "kiwoom_mock_place_order preflight failed: RuntimeError"
+    assert recorder.signal.outcomes == [
+        {
+            "correlation_id": response["correlation_id"],
+            "outcome_state": "suppressed",
+            "suppressed_reason": "preflight_refused",
+            "detail_patch": {
+                "status": "not_submitted",
+                "error_class": "RuntimeError",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_intent_marks_the_signal_not_sent(monkeypatch):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+    recorder.reserved[_key()] = 99  # an earlier attempt holds this key
+
+    response = await _place(mcp)
+
+    assert stub.posts == []
+    assert response["error"] == "kiwoom_mock_duplicate_order_intent"
+    assert recorder.signal.outcomes == [
+        {
+            "correlation_id": response["correlation_id"],
+            "outcome_state": "suppressed",
+            "suppressed_reason": "duplicate_intent",
+            "detail_patch": {
+                "status": "not_submitted",
+                "client_order_id": _key(),
+                "existing_ledger_status": None,
+                "reconcile_required": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reservation_unavailable_marks_the_signal_not_sent(monkeypatch):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK])
+    recorder.reserve_error = ConnectionError("db down")
+
+    response = await _place(mcp)
+
+    assert stub.posts == []
+    assert response["status"] == "not_submitted"
+    assert recorder.signal.outcomes == [
+        {
+            "correlation_id": response["correlation_id"],
+            "outcome_state": "suppressed",
+            "suppressed_reason": "send_intent_unavailable",
+            "detail_patch": {
+                "status": "not_submitted",
+                "client_order_id": _key(),
+                "error_class": "ConnectionError",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_pre_dispatch_error_marks_the_signal_not_sent(monkeypatch):
+    pre = KiwoomPreDispatchError(
+        stage="token", api_id="kt10000", cause_type="ConnectError"
+    )
+    _, mcp, recorder, stub = _wire(monkeypatch, [pre])
+
+    response = await _place(mcp)
+
+    # the order client was entered once; KiwoomPreDispatchError is raised
+    # before the HTTP send, which is what makes this "provably never sent".
+    assert len(stub.posts) == 1
+    assert response["status"] == "not_submitted"
+    assert response["reservation_released"] is True
+    assert recorder.signal.outcomes == [
+        {
+            "correlation_id": response["correlation_id"],
+            "outcome_state": "suppressed",
+            "suppressed_reason": "pre_dispatch_error",
+            "detail_patch": {
+                "status": "not_submitted",
+                "client_order_id": _key(),
+                "stage": "token",
+                "cause_type": "ConnectError",
+                "reservation_released": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unknown_dispatch_is_never_marked_not_sent(monkeypatch):
+    _, mcp, recorder, stub = _wire(monkeypatch, [TimeoutError("read timeout")])
+
+    response = await _place(mcp)
+
+    assert len(stub.posts) == 1
+    assert response["reconcile_required"] is True
+    # a dispatch that may have reached the broker keeps today's label
+    assert [
+        (outcome["outcome_state"], outcome["suppressed_reason"])
+        for outcome in recorder.signal.outcomes
+    ] == [("failed", "uncertain")]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_refusal_never_relabels_an_accepted_signal(monkeypatch):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+
+    first = await _place(mcp)
+    second = await _place(mcp)
+
+    assert second["error"] == "kiwoom_mock_duplicate_order_intent"
+    assert [outcome["outcome_state"] for outcome in recorder.signal.outcomes] == [
+        "submitted"
+    ]
+    assert recorder.signal.outcomes[0]["correlation_id"] == first["correlation_id"]
+    assert len(stub.posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_marking_failure_leaves_the_refusal_response_unchanged(monkeypatch):
+    _, mcp_ok, recorder_ok, stub_ok = _wire(monkeypatch, [ACK])
+    recorder_ok.reserve_error = ConnectionError("db down")
+    baseline = await _place(mcp_ok)
+
+    _, mcp_broken, recorder_broken, stub_broken = _wire(monkeypatch, [ACK])
+    recorder_broken.reserve_error = ConnectionError("db down")
+    recorder_broken.signal.mark_error = RuntimeError("signal update failed")
+    degraded = await _place(mcp_broken)
+
+    assert degraded == baseline
+    assert degraded["status"] == "not_submitted"
+    assert degraded["error"].startswith("kiwoom_mock_send_intent_unavailable")
+    assert stub_broken.posts == []
+    assert recorder_broken.signal.outcomes == []
+
+
+# --- a replayed correlation id is never relabelled (mergewake round 1) ------
+#
+# 'recorded' means "outcome unknown", not "not sent". A replay reuses the first
+# attempt's row, and that attempt may already have placed the order (an
+# accepted ACK whose best-effort mark failed, or a send still in flight).
+# Only a row THIS call created proves nothing was ever dispatched under the id.
+
+
+@pytest.mark.asyncio
+async def test_replayed_signal_is_not_marked_not_sent_by_a_duplicate_refusal(
+    monkeypatch,
+):
+    _, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+    recorder.signal.mark_error = RuntimeError("signal mark failed")
+
+    first = await _place(mcp)
+
+    assert first["success"] is True  # the order WAS accepted at the broker
+    assert recorder.signal.outcomes == []  # its mark failed: the row is 'recorded'
+
+    recorder.signal.mark_error = None
+    second = await _place(mcp)
+
+    assert second["error"] == "kiwoom_mock_duplicate_order_intent"
+    assert second["reconcile_required"] is True
+    # the replay must not claim "never sent" for the earlier attempt's order
+    assert recorder.signal.outcomes == []
+    assert len(recorder.signal.rows) == 1
+    assert len(stub.posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_replayed_signal_is_not_marked_not_sent_by_a_preflight_refusal(
+    monkeypatch,
+):
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_CASH_INSUFFICIENT,
+        PreflightResult,
+    )
+
+    mod, mcp, recorder, stub = _wire(monkeypatch, [ACK, ACK])
+    recorder.signal.mark_error = RuntimeError("signal mark failed")
+    await _place(mcp)  # accepted at the broker; the row stays 'recorded'
+
+    recorder.signal.mark_error = None
+
+    async def refusing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_CASH_INSUFFICIENT,
+            error_detail="insufficient cash",
+            checks=[],
+        )
+
+    monkeypatch.setattr(mod, "_run_preflight_for_kiwoom_mock", refusing_preflight)
+
+    second = await _place(mcp)
+
+    assert second["success"] is False
+    assert second["error"] == PREFLIGHT_CASH_INSUFFICIENT
+    assert recorder.signal.outcomes == []
+    assert len(recorder.signal.rows) == 1
+    assert len(stub.posts) == 1

@@ -158,14 +158,16 @@ async def test_same_strategy_replay_returns_the_existing_row():
     existing = SimpleNamespace(id=7, strategy="alpha")
     session = _FakeSession(existing)
 
-    row_id = await record_signal(
+    recorded = await record_signal(
         cast(Any, session),
         attribution=_attribution("alpha"),
         symbol="005930",
         decision="order",
     )
 
-    assert row_id == 7
+    assert recorded.row_id == 7
+    # the row already existed, so this call did not create it
+    assert recorded.created is False
     assert session.commits == 1
 
 

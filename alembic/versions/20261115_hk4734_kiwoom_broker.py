@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20261115_hk4734_kiwoom_broker"
-down_revision: str | Sequence[str] | None = "20261114_hk4702_trend_state"
+down_revision: str | Sequence[str] | None = "20261116_hk4754_us_proposals"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

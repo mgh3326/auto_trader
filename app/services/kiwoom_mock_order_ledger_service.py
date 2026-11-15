@@ -4,12 +4,16 @@ Design: ``docs/design/3797-kiwoom-mock-ledger.md`` §2.2 and §6.1.
 
 This module is the **only** writer of ``review.kiwoom_mock_order_ledger``
 (AGENTS.md hard rule 5). It also owns the pre-send reservation in
-``review.order_send_intents`` (``account_scope='kiwoom_mock'``) because the
-Kiwoom order body has no client idempotency field: the reservation is the only
-double-send defence.
+``review.order_send_intents`` (``account_scope='kiwoom_mock'`` for KR,
+``'kiwoom_mock_us'`` for US) because the Kiwoom order body has no client
+idempotency field: the reservation is the only double-send defence.
 
-Scope is KR ``place`` only. Modify/cancel rows, US, reconcile and attribution
-belong to later tickets.
+One table holds both mock accounts (hk 4703/4754). The account mode selects the
+rest of the row's identity — market, instrument type, currency, send-key prefix
+and trading day — from :data:`_ACCOUNT_PROFILES`, so a caller can never write a
+KR row with a US currency (the DB CHECK would refuse it anyway).
+
+Scope is ``place`` only. Modify/cancel rows belong to a later ticket.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Numeric, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -42,7 +47,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = (
     "ACCOUNT_MODE_KIWOOM_MOCK",
+    "ACCOUNT_MODE_KIWOOM_MOCK_US",
     "CLIENT_ORDER_ID_PREFIX",
+    "CLIENT_ORDER_ID_PREFIX_US",
     "DuplicateOrderIntent",
     "FillBooking",
     "KiwoomMockLedgerPayloadConflict",
@@ -51,15 +58,70 @@ __all__ = (
     "KiwoomMockTransitionRefused",
     "LedgerReceipt",
     "RESERVATION_ACCOUNT_SCOPE",
+    "RESERVATION_ACCOUNT_SCOPE_US",
     "SendReservation",
+    "account_profile",
     "build_client_order_id",
+    "build_us_client_order_id",
     "kr_trading_day",
+    "trading_day_for",
+    "us_trading_day",
 )
 
 ACCOUNT_MODE_KIWOOM_MOCK: Final = "kiwoom_mock"
+ACCOUNT_MODE_KIWOOM_MOCK_US: Final = "kiwoom_mock_us"
 #: ``review.order_send_intents.account_scope`` for KR Kiwoom mock places.
 RESERVATION_ACCOUNT_SCOPE: Final = "kiwoom_mock"
+#: ``review.order_send_intents.account_scope`` for US Kiwoom mock places.
+RESERVATION_ACCOUNT_SCOPE_US: Final = "kiwoom_mock_us"
 CLIENT_ORDER_ID_PREFIX: Final = "kwoomm"
+CLIENT_ORDER_ID_PREFIX_US: Final = "kwoomus"
+
+_US_EASTERN: Final = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True, slots=True)
+class AccountProfile:
+    """The ledger identity an account mode implies (design §2.1 CHECK triple)."""
+
+    market: str
+    instrument_type: str
+    currency: str
+    reservation_scope: str
+    client_order_id_prefix: str
+
+
+#: ``account_mode`` -> the rest of the row's identity. The DB CHECK binds the
+#: four identity columns together, so they are derived from one place instead
+#: of being passed in separately by each caller.
+_ACCOUNT_PROFILES: Final[dict[str, AccountProfile]] = {
+    ACCOUNT_MODE_KIWOOM_MOCK: AccountProfile(
+        market="kr",
+        instrument_type="equity_kr",
+        currency="KRW",
+        reservation_scope=RESERVATION_ACCOUNT_SCOPE,
+        client_order_id_prefix=CLIENT_ORDER_ID_PREFIX,
+    ),
+    ACCOUNT_MODE_KIWOOM_MOCK_US: AccountProfile(
+        market="us",
+        instrument_type="equity_us",
+        currency="USD",
+        reservation_scope=RESERVATION_ACCOUNT_SCOPE_US,
+        client_order_id_prefix=CLIENT_ORDER_ID_PREFIX_US,
+    ),
+}
+
+
+def account_profile(account_mode: str) -> AccountProfile:
+    """The identity for ``account_mode``; unknown modes are refused, not guessed."""
+    try:
+        return _ACCOUNT_PROFILES[account_mode]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown kiwoom mock account_mode {account_mode!r}; expected one of "
+            f"{sorted(_ACCOUNT_PROFILES)}"
+        ) from exc
+
 
 _SEND_STATUSES: Final = frozenset({"accepted", "rejected"})
 # kis_mock lifecycle vocabulary (design §2.1 ``lifecycle_state``). A rejected
@@ -135,6 +197,72 @@ class KiwoomMockTransitionRefused(Exception):
 def kr_trading_day(now: datetime) -> str:
     """KR trading day as KST ``YYYYMMDD`` (design §2.1 ``trading_day``)."""
     return now.astimezone(KST).strftime("%Y%m%d")
+
+
+def us_trading_day(now: datetime) -> str:
+    """US trading day as ``YYYYMMDD`` in the ET trading-date window.
+
+    Design §2.2: the US trading day is the ET date with the 20:00 ET rollover
+    ROB-1379 uses (``us_trading_day_window``), so an after-hours order belongs
+    to its own ET date and a KST-morning order belongs to the next one. The
+    rule itself is not restated here — the window's end instant *is* the
+    trading date at 20:00 ET.
+    """
+    from app.services.execution_ledger.kis_lots import us_trading_day_window
+
+    _, window_end = us_trading_day_window(now)
+    return window_end.astimezone(_US_EASTERN).strftime("%Y%m%d")
+
+
+def trading_day_for(account_mode: str, now: datetime) -> str:
+    """The ``trading_day`` label ``account_mode`` records (KST day or ET day)."""
+    if account_mode == ACCOUNT_MODE_KIWOOM_MOCK_US:
+        return us_trading_day(now)
+    account_profile(account_mode)  # unknown modes are refused, never defaulted
+    return kr_trading_day(now)
+
+
+def _exact_decimal(value: object) -> str:
+    """Exact decimal text for a send-key payload (never a float repr).
+
+    Normalized, so ``100`` and ``100.00`` produce one key: they are the same
+    order, and a trailing zero is not a different instruction.
+    """
+    return format(Decimal(str(value)).normalize(), "f")
+
+
+def build_us_client_order_id(
+    *,
+    symbol: str,
+    side: str,
+    quantity: int,
+    price: object | None,
+    exchange: str,
+    order_type: str,
+    trading_day: str,
+    rung: str | int | None = None,
+) -> str:
+    """``kwoomus-<sha16>(canonical|trading day salt|rung)`` for US mock orders.
+
+    Same derivation as :func:`build_client_order_id`; the payload additionally
+    names the market and the order type (US admits ``market`` orders, which
+    carry no price), and the price is exact decimal text so ``100`` and
+    ``100.00`` are one order. The KR canonical dict is deliberately untouched
+    so every already-issued ``kwoomm-`` key keeps its value.
+    """
+    canonical = {
+        "accountMode": ACCOUNT_MODE_KIWOOM_MOCK_US,
+        "exchange": str(exchange).strip().upper(),
+        "market": "us",
+        "orderType": str(order_type),
+        "price": None if price is None else _exact_decimal(price),
+        "quantity": int(quantity),
+        "side": str(side).lower(),
+        "symbol": str(symbol).strip().upper(),
+    }
+    disc = "" if rung is None else str(rung)
+    blob = f"{_canonical_json(canonical)}|{trading_day}|{disc}".encode()
+    return f"{CLIENT_ORDER_ID_PREFIX_US}-{hashlib.sha256(blob).hexdigest()[:16]}"
 
 
 def _canonical_json(canonical: dict[str, Any]) -> str:
@@ -254,7 +382,7 @@ class KiwoomMockOrderLedgerService:
         symbol: str,
         side: str,
         quantity: int,
-        price: int,
+        price: object | None,
         broker_order_id: str | None,
         response_code: str | None,
         response_message: str | None,
@@ -264,9 +392,15 @@ class KiwoomMockOrderLedgerService:
         approval_hash: str | None = None,
         strategy: str | None = None,
         reason: str | None = None,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+        order_type: str = "limit",
     ) -> KiwoomMockOrderLedger:
         """Record a broker answer: ``accepted`` (needs ``broker_order_id``) or
-        ``rejected``. Idempotent on ``client_order_id``."""
+        ``rejected``. Idempotent on ``client_order_id``.
+
+        ``account_mode`` selects market/instrument/currency and the trading-day
+        clock; ``price`` is optional because a US market order carries none.
+        """
         if status not in _SEND_STATUSES:
             raise ValueError(
                 f"record_send status must be one of {sorted(_SEND_STATUSES)}"
@@ -292,6 +426,8 @@ class KiwoomMockOrderLedgerService:
             approval_hash=approval_hash,
             strategy=strategy,
             reason=reason,
+            account_mode=account_mode,
+            order_type=order_type,
         )
 
     async def record_uncertain(
@@ -302,7 +438,7 @@ class KiwoomMockOrderLedgerService:
         symbol: str,
         side: str,
         quantity: int,
-        price: int,
+        price: object | None,
         broker_order_id: str | None = None,
         response_code: str | None = None,
         response_message: str | None = None,
@@ -312,6 +448,8 @@ class KiwoomMockOrderLedgerService:
         approval_hash: str | None = None,
         strategy: str | None = None,
         reason: str | None = None,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+        order_type: str = "limit",
     ) -> KiwoomMockOrderLedger:
         """Record a send whose outcome is unknown (I3). Never resent; only a
         later positive broker read may resolve it. Idempotent on
@@ -333,6 +471,8 @@ class KiwoomMockOrderLedgerService:
             approval_hash=approval_hash,
             strategy=strategy,
             reason=reason,
+            account_mode=account_mode,
+            order_type=order_type,
         )
 
     async def get_status(self, client_order_id: str) -> str | None:
@@ -350,17 +490,24 @@ class KiwoomMockOrderLedgerService:
     # ------------------------------------------------------------------
 
     async def list_reconcile_candidates(
-        self, *, limit: int, include_journal_recovery: bool = False
+        self,
+        *,
+        limit: int,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+        include_journal_recovery: bool = False,
     ) -> tuple[list[KiwoomMockOrderLedger], int]:
-        """Open + uncertain KR place rows, oldest first, plus the open total.
+        """Open + uncertain place rows, oldest first, plus the open total.
+
+        Scoped to one account mode: a KR scan must never classify a US row.
 
         ``include_journal_recovery`` also returns ``filled`` rows whose journal
         step never finished (``journaled_qty`` below ``filled_qty``): the fill
         evidence is committed, so only a later run can complete the projection.
         """
+        profile = account_profile(account_mode)
         where = [
-            KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
-            KiwoomMockOrderLedger.market == "kr",
+            KiwoomMockOrderLedger.account_mode == account_mode,
+            KiwoomMockOrderLedger.market == profile.market,
             KiwoomMockOrderLedger.operation_kind == "place",
         ]
         source = KiwoomMockOrderLedger.status.in_(_RECONCILE_SOURCE_STATUSES)
@@ -405,7 +552,10 @@ class KiwoomMockOrderLedgerService:
         return list(rows), int(total)
 
     async def list_acknowledged_cancels(
-        self, *, original_order_ids: set[str]
+        self,
+        *,
+        original_order_ids: set[str],
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
     ) -> set[str]:
         """Original order ids for which we hold our own acknowledged cancel.
 
@@ -418,7 +568,7 @@ class KiwoomMockOrderLedgerService:
         rows = (
             await self._db.execute(
                 select(KiwoomMockOrderLedger.original_order_id).where(
-                    KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
+                    KiwoomMockOrderLedger.account_mode == account_mode,
                     KiwoomMockOrderLedger.operation_kind == "cancel",
                     KiwoomMockOrderLedger.status == "accepted",
                     KiwoomMockOrderLedger.original_order_id.in_(
@@ -436,6 +586,7 @@ class KiwoomMockOrderLedgerService:
         status: str,
         reason: str,
         detail: dict[str, Any] | None = None,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
     ) -> KiwoomMockOrderLedger:
         """Close an open row as ``expired`` / ``cancelled`` / ``rejected``.
 
@@ -447,7 +598,7 @@ class KiwoomMockOrderLedgerService:
                 f"mark_terminal status must be one of "
                 f"{sorted(_RECONCILE_TERMINAL_TARGETS)}; got {status!r}"
             )
-        row = await self._lock_row(ledger_id)
+        row = await self._lock_row(ledger_id, account_mode=account_mode)
         if row.status not in _RECONCILE_TERMINAL_SOURCE_STATUSES:
             raise KiwoomMockTransitionRefused(
                 ledger_id=ledger_id,
@@ -465,6 +616,7 @@ class KiwoomMockOrderLedgerService:
         ledger_id: int,
         broker_order_id: str,
         detail: dict[str, Any] | None = None,
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
     ) -> KiwoomMockOrderLedger:
         """``uncertain → accepted`` on a positive, complete broker listing.
 
@@ -473,7 +625,7 @@ class KiwoomMockOrderLedgerService:
         """
         if not isinstance(broker_order_id, str) or not broker_order_id.strip():
             raise ValueError("promote_uncertain_to_accepted requires broker_order_id")
-        row = await self._lock_row(ledger_id)
+        row = await self._lock_row(ledger_id, account_mode=account_mode)
         if row.status != "uncertain":
             raise KiwoomMockTransitionRefused(
                 ledger_id=ledger_id,
@@ -752,14 +904,17 @@ class KiwoomMockOrderLedgerService:
             **(detail or {}),
         }
 
-    async def _lock_row(self, ledger_id: int) -> KiwoomMockOrderLedger:
+    async def _lock_row(
+        self, ledger_id: int, *, account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK
+    ) -> KiwoomMockOrderLedger:
+        profile = account_profile(account_mode)
         row = (
             await self._db.execute(
                 select(KiwoomMockOrderLedger)
                 .where(
                     KiwoomMockOrderLedger.id == ledger_id,
-                    KiwoomMockOrderLedger.account_mode == ACCOUNT_MODE_KIWOOM_MOCK,
-                    KiwoomMockOrderLedger.market == "kr",
+                    KiwoomMockOrderLedger.account_mode == account_mode,
+                    KiwoomMockOrderLedger.market == profile.market,
                 )
                 .with_for_update()
             )
@@ -803,7 +958,7 @@ class KiwoomMockOrderLedgerService:
         symbol: str,
         side: str,
         quantity: int,
-        price: int,
+        price: object | None,
         broker_order_id: str | None,
         response_code: str | None,
         response_message: str | None,
@@ -813,30 +968,35 @@ class KiwoomMockOrderLedgerService:
         approval_hash: str | None,
         strategy: str | None,
         reason: str | None,
+        account_mode: str,
+        order_type: str,
     ) -> KiwoomMockOrderLedger:
+        profile = account_profile(account_mode)
         now = datetime.now(UTC)
         qty = Decimal(int(quantity))
-        px = Decimal(int(price))
+        # Exact decimal text: a US price arrives as a Decimal and must not take
+        # a float round trip. ``None`` is a US market order (no price).
+        px = None if price is None else Decimal(_exact_decimal(price))
         row = KiwoomMockOrderLedger(
             trade_date=now,
-            trading_day=trading_day or kr_trading_day(now),
+            trading_day=trading_day or trading_day_for(account_mode, now),
             symbol=symbol,
             raw_symbol=symbol,
-            instrument_type="equity_kr",
-            market="kr",
+            instrument_type=profile.instrument_type,
+            market=profile.market,
             side=side,
-            order_type="limit",
+            order_type=order_type,
             operation_kind="place",
             quantity=qty,
             price=px,
-            amount=qty * px,
-            currency="KRW",
+            amount=None if px is None else qty * px,
+            currency=profile.currency,
             client_order_id=client_order_id,
             idempotency_key=idempotency_key,
             approval_hash=approval_hash,
             correlation_id=correlation_id,
             broker_order_id=broker_order_id,
-            account_mode=ACCOUNT_MODE_KIWOOM_MOCK,
+            account_mode=account_mode,
             broker="kiwoom",
             status=status,
             lifecycle_state=_LIFECYCLE_FOR_STATUS[status],
@@ -885,14 +1045,22 @@ class SendReservation:
 
 
 class KiwoomMockPlaceRecorder:
-    """Session-per-operation facade used by the KR place path.
+    """Session-per-operation facade used by the place path.
 
     Every method opens its own short session so a ledger or reservation error
-    can never leave a half-open transaction around the broker POST.
+    can never leave a half-open transaction around the broker POST. The account
+    mode selects the reservation scope and the ledger identity, so one facade
+    serves both mock accounts without a caller-side switch.
     """
 
-    def __init__(self, session_factory: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], Any],
+        account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK,
+    ) -> None:
         self._session_factory = session_factory
+        self._account_mode = account_mode
+        self._scope = account_profile(account_mode).reservation_scope
 
     async def reserve(
         self, *, idempotency_key: str, symbol: str, side: str
@@ -901,7 +1069,7 @@ class KiwoomMockPlaceRecorder:
         key was already reserved: refuse before any broker call (I2)."""
         async with self._session_factory() as db:
             row_id = await OrderSendIntentService(db).reserve(
-                account_scope=RESERVATION_ACCOUNT_SCOPE,
+                account_scope=self._scope,
                 idempotency_key=idempotency_key,
                 symbol=symbol,
                 side=side,
@@ -914,7 +1082,7 @@ class KiwoomMockPlaceRecorder:
         """Release exactly the observed reservation row (proven not sent)."""
         async with self._session_factory() as db:
             return await OrderSendIntentService(db).release_if_matches(
-                account_scope=RESERVATION_ACCOUNT_SCOPE,
+                account_scope=self._scope,
                 row_id=reservation.row_id,
                 idempotency_key=reservation.idempotency_key,
                 side=reservation.side,
@@ -927,10 +1095,14 @@ class KiwoomMockPlaceRecorder:
 
     async def record_send(self, **kwargs: Any) -> LedgerReceipt:
         async with self._session_factory() as db:
-            row = await KiwoomMockOrderLedgerService(db).record_send(**kwargs)
+            row = await KiwoomMockOrderLedgerService(db).record_send(
+                account_mode=self._account_mode, **kwargs
+            )
             return LedgerReceipt(row.id, row.status, row.client_order_id)
 
     async def record_uncertain(self, **kwargs: Any) -> LedgerReceipt:
         async with self._session_factory() as db:
-            row = await KiwoomMockOrderLedgerService(db).record_uncertain(**kwargs)
+            row = await KiwoomMockOrderLedgerService(db).record_uncertain(
+                account_mode=self._account_mode, **kwargs
+            )
             return LedgerReceipt(row.id, row.status, row.client_order_id)

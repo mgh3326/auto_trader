@@ -23,9 +23,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from app.core.config import validate_kiwoom_mock_config
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.orders_kiwoom_shared import (
-    _is_explicit_broker_rejection,
-)
-from app.mcp_server.tooling.orders_kiwoom_shared import (
     derive_broker_success as _derive_broker_success,
 )
 from app.mcp_server.tooling.orders_kiwoom_shared import (
@@ -45,25 +42,20 @@ from app.services.brokers.kiwoom.normalization import (
     redact_broker_response,
     validate_mock_response_provenance,
 )
-from app.services.brokers.kiwoom.order_preflight import (
-    PreflightResult,
-    run_order_preflight,
-)
+from app.services.brokers.kiwoom.order_preflight import PreflightResult
 from app.services.brokers.kiwoom.validation import normalize_krx_symbol
-from app.services.kiwoom_mock_attribution import (
-    KiwoomMockAttribution,
-    KiwoomMockSignalRecorder,
-    MissingAttribution,
+from app.services.kiwoom_mock_attribution import KiwoomMockSignalRecorder
+from app.services.kiwoom_mock_order_ledger_service import KiwoomMockPlaceRecorder
+from app.services.kiwoom_mock_place import (
+    KiwoomMockPlaceDeps,
+    place_kiwoom_mock_order,
+    run_kiwoom_mock_preflight,
 )
-from app.services.kiwoom_mock_attribution import (
-    resolve_attribution as resolve_kiwoom_attribution,
+from app.services.kiwoom_mock_place import (
+    not_submitted_response as _not_submitted_response,
 )
-from app.services.kiwoom_mock_order_ledger_service import (
-    DuplicateOrderIntent,
-    KiwoomMockPlaceRecorder,
-    SendReservation,
-    build_client_order_id,
-    kr_trading_day,
+from app.services.kiwoom_mock_place import (
+    preflight_to_response as _preflight_to_response,
 )
 
 if TYPE_CHECKING:
@@ -352,97 +344,6 @@ def _new_kiwoom_mock_client() -> KiwoomMockClient:
     return KiwoomMockClient.from_app_settings()
 
 
-async def _run_preflight_for_kiwoom_mock(
-    symbol: str,
-    side: str,
-    quantity: int,
-    price: int,
-    *,
-    account_client: Any | None = None,
-) -> PreflightResult:
-    quote_price, quote_freshness = await _fetch_kr_quote_for_preflight(symbol)
-    if account_client is None:
-        account_client = KiwoomDomesticAccountClient(
-            cast(Any, _new_kiwoom_mock_client())
-        )
-    return await run_order_preflight(
-        account_client=account_client,
-        symbol=symbol,
-        side=side,
-        quantity=quantity,
-        price=price,
-        quote_price=quote_price,
-        quote_freshness=quote_freshness,
-    )
-
-
-def _preflight_to_response(
-    result: PreflightResult,
-    *,
-    symbol: str,
-    side: str,
-    quantity: int,
-    price: int,
-    preview: bool,
-) -> dict[str, Any]:
-    response: dict[str, Any] = {
-        "success": result.ok,
-        "source": "kiwoom",
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-        "symbol": symbol,
-        "side": side,
-        "quantity": quantity,
-        "price": price,
-    }
-    if preview:
-        response["preview"] = True
-    if not result.ok:
-        response["error"] = result.error_code
-        response["error_detail"] = result.error_detail
-    response.update(result.to_response_extras())
-    return response
-
-
-def _not_submitted_response(
-    base: dict[str, Any], exc: KiwoomPreDispatchError
-) -> dict[str, Any]:
-    """Pre-dispatch failure: request provably never sent. No reconcile needed.
-
-    Reads ONLY the structured fields on exc — never str(exc) or exc.__cause__
-    (the redaction guarantee). token/secret/header/account/body/raw msg are
-    never surfaced.
-    """
-    return {
-        **base,
-        "success": False,
-        "error": f"kiwoom_mock_place_order failed: {exc.cause_type}",
-        "status": "not_submitted",
-        "dispatch_started": False,
-        "stage": exc.stage,
-        "api_id": exc.api_id,
-        "cause_type": exc.cause_type,
-        "reconcile_required": False,
-    }
-
-
-def _dispatch_unknown_response(base: dict[str, Any], exc: Exception) -> dict[str, Any]:
-    """Post-dispatch / unclassifiable failure: request MAY have been sent.
-
-    Conservative default (Oracle Q6): cannot prove the request wasn't
-    transmitted (send may have succeeded before response/parsing failed), so
-    reconciliation is REQUIRED. Only KiwoomPreDispatchError earns
-    reconcile_required=False.
-    """
-    return {
-        **base,
-        "success": False,
-        "error": f"kiwoom_mock_place_order failed: {type(exc).__name__}",
-        "status": "acceptance_uncertain",
-        "reconcile_required": True,
-        "retry_allowed": False,
-    }
-
-
 def _new_place_recorder() -> KiwoomMockPlaceRecorder:
     """Single chokepoint for the place-path persistence (tests inject a fake)."""
     return KiwoomMockPlaceRecorder(AsyncSessionLocal)
@@ -453,499 +354,81 @@ def _new_signal_recorder() -> KiwoomMockSignalRecorder:
     return KiwoomMockSignalRecorder(AsyncSessionLocal)
 
 
-def _kst_date(trading_day: str) -> str:
-    """``YYYYMMDD`` -> ``YYYY-MM-DD`` without a second clock read."""
-    return f"{trading_day[:4]}-{trading_day[4:6]}-{trading_day[6:]}"
+async def _run_preflight_for_kiwoom_mock(
+    symbol: str,
+    side: str,
+    quantity: int,
+    price: int,
+    *,
+    account_client: Any | None = None,
+    fetch_quote: Any | None = None,
+) -> PreflightResult:
+    """MCP-module preflight: binds this module's client + quote seams.
+
+    The quote read and the account client are the two things tests replace
+    here, so the wrapper resolves both from this module's globals and hands
+    them to the shared service implementation.
+    """
+    if account_client is None:
+        account_client = KiwoomDomesticAccountClient(
+            cast(Any, _new_kiwoom_mock_client())
+        )
+    return await run_kiwoom_mock_preflight(
+        symbol,
+        side,
+        quantity,
+        price,
+        account_client=account_client,
+        fetch_quote=fetch_quote or _fetch_kr_quote_for_preflight,
+    )
+
+
+def _kiwoom_place_deps() -> KiwoomMockPlaceDeps:
+    """The MCP module's seam set for the shared place service (hk 4732).
+
+    Built per call from module globals so every monkeypatch point in this
+    module (client, quote read, preflight, recorders, clock) keeps working.
+    The mock-config gate stays in the tool wrapper (`_mock_config_error`),
+    where it has always been - the impl never checked it.
+    """
+    return KiwoomMockPlaceDeps(
+        new_client=_new_kiwoom_mock_client,
+        account_client_cls=KiwoomDomesticAccountClient,
+        order_client_cls=KiwoomDomesticOrderClient,
+        preflight=_run_preflight_for_kiwoom_mock,
+        fetch_quote=_fetch_kr_quote_for_preflight,
+        place_recorder=_new_place_recorder,
+        signal_recorder=_new_signal_recorder,
+        utc_now=_utc_now,
+    )
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-_SAFE_BROKER_ORDER_ID_MAX_LEN = 32
-
-
-def _broker_order_id_from(broker_response: dict[str, Any]) -> str | None:
-    """The single acknowledged order number, or ``None`` when not provable.
-
-    Both ``ord_no`` and ``order_no`` are read; a missing, non-string, unsafe or
-    conflicting value is *not* an acknowledgement.
-    """
-    found: set[str] = set()
-    for key in ("ord_no", "order_no"):
-        if key not in broker_response:
-            continue
-        raw = broker_response.get(key)
-        if raw is None or raw == "":
-            continue
-        if not isinstance(raw, str):
-            return None
-        candidate = raw.strip()
-        if (
-            not candidate
-            or len(candidate) > _SAFE_BROKER_ORDER_ID_MAX_LEN
-            or not _SAFE_ORDER_ID_RE.fullmatch(candidate)
-        ):
-            return None
-        found.add(candidate)
-    return next(iter(found)) if len(found) == 1 else None
-
-
-def _classify_place_response(
-    broker_response: dict[str, Any],
-) -> tuple[Literal["accepted", "rejected", "uncertain"], str | None]:
-    """Three-way outcome of a place answer (design §2.2 item 2).
-
-    return_code == 0 with an order number -> accepted; return_code == 0 without
-    one -> uncertain; an explicit non-zero return_code -> rejected. A missing or
-    unparseable return_code proves neither, so it is uncertain.
-    """
-    if _derive_broker_success(broker_response):
-        order_id = _broker_order_id_from(broker_response)
-        return ("accepted", order_id) if order_id else ("uncertain", None)
-    if _is_explicit_broker_rejection(broker_response):
-        return "rejected", None
-    return "uncertain", None
-
-
-def _response_code_text(broker_response: dict[str, Any]) -> str | None:
-    value = broker_response.get("return_code")
-    return None if value is None else str(value)[:64]
-
-
-def _response_message_text(broker_response: dict[str, Any]) -> str | None:
-    value = broker_response.get("return_msg")
-    return None if value is None else str(value)[:500]
-
-
-async def _duplicate_intent_response(
-    base: dict[str, Any], client_order_id: str, recorder: KiwoomMockPlaceRecorder
-) -> dict[str, Any]:
-    """Same key already reserved: refused before any broker call (I2).
-
-    The earlier dispatch may have an unknown outcome (timeout, or a ledger write
-    that failed after the ACK), so reconciliation is required unless the ledger
-    proves a terminal broker rejection. A failed lookup is not a proof.
-    """
-    existing_status: str | None = None
-    try:
-        existing_status = await recorder.existing_status(client_order_id)
-    except Exception:  # noqa: BLE001 - an unreadable ledger proves nothing
-        logger.warning(
-            "kiwoom_mock duplicate-intent ledger lookup failed: key=%s", client_order_id
-        )
-    return {
-        **base,
-        "success": False,
-        "error": "kiwoom_mock_duplicate_order_intent",
-        "status": "not_submitted",
-        "dispatch_started": False,
-        "client_order_id": client_order_id,
-        "existing_ledger_status": existing_status,
-        "reconcile_required": existing_status != "rejected",
-        "retry_allowed": False,
-    }
-
-
-def _intent_unavailable_response(
-    base: dict[str, Any], client_order_id: str, exc: Exception
-) -> dict[str, Any]:
-    """Reservation could not be committed: fail closed, nothing was sent."""
-    return {
-        **base,
-        "success": False,
-        "error": f"kiwoom_mock_send_intent_unavailable: {type(exc).__name__}",
-        "status": "not_submitted",
-        "dispatch_started": False,
-        "client_order_id": client_order_id,
-        "reconcile_required": False,
-    }
-
-
-def _attribution_required_response(
-    base: dict[str, Any], exc: MissingAttribution
-) -> dict[str, Any]:
-    """No strategy: refused before the reservation and before any broker call.
-
-    The error text names the reason instead of echoing the exception message,
-    which is worded for the kis_mock lane.
-    """
-    return {
-        **base,
-        "success": False,
-        "error": (
-            "kiwoom_mock order is unattributed; refusing to send "
-            f"(missing={list(exc.missing)})"
-        ),
-        "error_code": getattr(exc, "error_code", "attribution_required"),
-        "missing_attribution": list(exc.missing),
-        "status": "not_submitted",
-        "dispatch_started": False,
-        "reconcile_required": False,
-    }
-
-
-def _signal_record_unavailable_response(
-    base: dict[str, Any], exc: Exception
-) -> dict[str, Any]:
-    """Attribution could not be committed: fail closed, nothing was sent."""
-    return {
-        **base,
-        "success": False,
-        "error": f"kiwoom_mock_signal_record_unavailable: {type(exc).__name__}",
-        "error_code": "signal_record_unavailable",
-        "status": "not_submitted",
-        "dispatch_started": False,
-        "reconcile_required": False,
-    }
-
-
-async def _mark_kiwoom_signal_outcome(
-    recorder: KiwoomMockSignalRecorder,
-    *,
-    attribution: KiwoomMockAttribution,
-    outcome: Literal["accepted", "rejected", "uncertain"],
-    broker_order_id: str | None,
-    ledger_id: Any,
-) -> None:
-    """Close the signal row out after the broker answered; never raises.
-
-    Best-effort by design: the attribution itself is already durable, so a
-    failure here degrades the outcome label, never the ownership of the order.
-    """
-    try:
-        await recorder.mark_outcome(
-            correlation_id=attribution.correlation_id,
-            outcome_state="submitted" if outcome == "accepted" else "failed",
-            suppressed_reason=None if outcome == "accepted" else str(outcome),
-            detail_patch={
-                "order_no": broker_order_id,
-                "status": outcome,
-                "ledger_id": ledger_id,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001 - must not mask the broker answer
-        logger.warning(
-            "kiwoom_mock signal outcome update failed correlation_id=%s: %s",
-            attribution.correlation_id,
-            type(exc).__name__,
-        )
-
-
-async def _release_after_pre_dispatch_error(
-    recorder: KiwoomMockPlaceRecorder, reservation: SendReservation
-) -> bool:
-    try:
-        await recorder.release(reservation)
-    except Exception:  # noqa: BLE001 - a kept reservation only blocks a retry
-        logger.warning(
-            "kiwoom_mock reservation release failed after pre-dispatch error: key=%s",
-            reservation.idempotency_key,
-        )
-        return False
-    return True
-
-
-async def _record_place_outcome(
-    recorder: KiwoomMockPlaceRecorder,
-    *,
-    outcome: Literal["accepted", "rejected", "uncertain"],
-    broker_response: dict[str, Any] | None,
-    broker_order_id: str | None,
-    ledger_kwargs: dict[str, Any],
-) -> dict[str, Any]:
-    """Write the ledger row AFTER the broker answered; never raises.
-
-    A recording failure must not change what the broker did: the caller keeps
-    the broker result and the reservation, and nothing is resent. The failure
-    is reported as ``ledger_recording_error``.
-    """
-    redacted = (
-        redact_broker_response(broker_response) if broker_response is not None else None
-    )
-    try:
-        if outcome == "uncertain":
-            receipt = await recorder.record_uncertain(
-                **ledger_kwargs,
-                broker_order_id=broker_order_id,
-                response_code=_response_code_text(broker_response or {}),
-                response_message=_response_message_text(broker_response or {}),
-                raw_response=redacted,
-            )
-        else:
-            receipt = await recorder.record_send(
-                status=outcome,
-                **ledger_kwargs,
-                broker_order_id=broker_order_id,
-                response_code=_response_code_text(broker_response or {}),
-                response_message=_response_message_text(broker_response or {}),
-                raw_response=redacted,
-            )
-    except Exception as exc:  # noqa: BLE001 - recording must not mask the ACK
-        logger.error(
-            "kiwoom_mock ledger recording failed after broker answer: key=%s outcome=%s error=%s",
-            ledger_kwargs.get("client_order_id"),
-            outcome,
-            type(exc).__name__,
-        )
-        return {
-            "ledger_recorded": False,
-            "ledger_recording_error": type(exc).__name__,
-            "reconcile_required": True,
-            "retry_allowed": False,
-        }
-    return {
-        "ledger_recorded": True,
-        "ledger_id": receipt.ledger_id,
-        "ledger_status": receipt.status,
-    }
-
-
 async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
-    symbol = str(kwargs.get("symbol") or "").strip()
-    side = kwargs.get("side")
-    quantity_value = kwargs.get("quantity")
-    price_value = kwargs.get("price")
-    if quantity_value is None or price_value is None:
-        raise ValueError("kiwoom_mock_place_order requires quantity and price")
-    quantity = int(quantity_value)
-    price = int(price_value)
-    dry_run = bool(kwargs.get("dry_run", True))
-    exchange = kwargs.get("exchange") or constants.MOCK_EXCHANGE_KRX
+    """Delegate to the shared KR mock place service (hk 4732).
 
-    base_response = {
-        "source": "kiwoom",
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-        "dry_run": dry_run,
-        "side": side,
-        "symbol": symbol,
-        "quantity": quantity,
-        "price": price,
-        "exchange": str(exchange).strip().upper(),
-    }
-    if side not in {"buy", "sell"}:
-        return {
-            "success": False,
-            **base_response,
-            "error": f"kiwoom_mock_place_order supports side='buy' or 'sell'; got {side!r}.",
-        }
-
-    # hk 4723 — pre-submit attribution gate (AGENTS.md hard rule 7 equivalent).
-    # Deliberately the FIRST step of the confirmed path: an unattributed mock
-    # order must not reach the broker at all, not even the preflight read.
-    # Resolution is pure and the signal row is committed before the reservation
-    # and the POST, so an order that exists at the broker always has a durable
-    # owner. ``dry_run`` is unaffected — like kis_mock's preview, it echoes the
-    # order without requiring attribution and writes nothing.
-    kiwoom_attribution: KiwoomMockAttribution | None = None
-    signal_recorder: KiwoomMockSignalRecorder | None = None
-    trading_day = kr_trading_day(_utc_now())
-    kst_date = _kst_date(trading_day)
-    if not dry_run:
-        try:
-            kiwoom_attribution = resolve_kiwoom_attribution(
-                symbol=symbol,
-                side=str(side),
-                price=price,
-                quantity=quantity,
-                strategy=kwargs.get("strategy"),
-                kst_trade_day=kst_date,
-                rung=kwargs.get("rung"),
-            )
-        except MissingAttribution as attribution_exc:
-            logger.warning(
-                "kiwoom_mock order blocked, unattributed: symbol=%s side=%s missing=%s",
-                symbol,
-                side,
-                list(attribution_exc.missing),
-            )
-            return _attribution_required_response(base_response, attribution_exc)
-
-        signal_recorder = _new_signal_recorder()
-        try:
-            await signal_recorder.record(
-                attribution=kiwoom_attribution,
-                symbol=symbol,
-                decision="order",
-                instrument_type="equity_kr",
-                side=str(side),
-                intended_quantity=quantity,
-                intended_price=price,
-                detail={"exchange": str(exchange).strip().upper()},
-                kst_date=kst_date,
-            )
-        except Exception as signal_exc:  # noqa: BLE001 — no record, no send
-            logger.error(
-                "kiwoom_mock signal record failed, refusing to send: "
-                "symbol=%s side=%s correlation_id=%s error=%s",
-                symbol,
-                side,
-                kiwoom_attribution.correlation_id,
-                type(signal_exc).__name__,
-            )
-            return _signal_record_unavailable_response(base_response, signal_exc)
-        base_response["correlation_id"] = kiwoom_attribution.correlation_id
-
-    # ONE request-scoped client shared across preflight + POST (ROB-893 v2).
-    client = _new_kiwoom_mock_client()
-    account_client = KiwoomDomesticAccountClient(cast(Any, client))
-    order_client = KiwoomDomesticOrderClient(cast(Any, client))
-
-    try:
-        preflight = await _run_preflight_for_kiwoom_mock(
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            account_client=account_client,
-        )
-    except KiwoomPreDispatchError as exc:
-        return _not_submitted_response(base_response, exc)
-    except Exception as exc:  # noqa: BLE001 - preflight must fail closed
-        return {
-            "success": False,
-            **base_response,
-            "error": f"kiwoom_mock_place_order preflight failed: {type(exc).__name__}",
-        }
-    if not preflight.ok:
-        response = _preflight_to_response(
-            preflight,
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            preview=dry_run,
-        )
-        response["dry_run"] = dry_run
-        response["exchange"] = str(exchange).strip().upper()
-        return response
-
-    if dry_run:
-        response = _preflight_to_response(
-            preflight,
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            preview=True,
-        )
-        response["dry_run"] = True
-        response["exchange"] = str(exchange).strip().upper()
-        return response
-
-    # Confirmed: the single preflight above IS the mutation-boundary check,
-    # run immediately before POST on the SAME client/auth/token. Attach its
-    # evidence as the authoritative snapshot.
-    base_response.update(preflight.to_response_extras())
-
-    # hk 4712 — the Kiwoom order body has no client idempotency field, so the
-    # pre-send reservation is the only double-send defence. It is committed
-    # after preflight and immediately before the POST; a duplicate refuses
-    # before any broker call.
-    exchange_text = str(exchange).strip().upper()
-    client_order_id = build_client_order_id(
-        symbol=symbol,
-        side=str(side),
-        quantity=quantity,
-        price=price,
-        exchange=exchange_text,
-        trading_day=trading_day,
+    The sequence itself - attribution signal, preflight, send reservation,
+    POST, ledger row, outcome marks - lives in
+    ``app.services.kiwoom_mock_place`` so the order_proposals submit adapter
+    runs the same boundary. This module keeps its own funnels
+    (client/preflight/recorders/clock) and hands them over, so every test seam
+    and every response byte stays what it was.
+    """
+    return await place_kiwoom_mock_order(
+        symbol=kwargs.get("symbol"),
+        side=kwargs.get("side"),
+        quantity=kwargs.get("quantity"),
+        price=kwargs.get("price"),
+        exchange=kwargs.get("exchange"),
+        dry_run=bool(kwargs.get("dry_run", True)),
+        strategy=kwargs.get("strategy"),
         rung=kwargs.get("rung"),
+        correlation_id=kwargs.get("correlation_id"),
+        deps=_kiwoom_place_deps(),
     )
-    base_response["client_order_id"] = client_order_id
-    recorder = _new_place_recorder()
-    try:
-        reservation = await recorder.reserve(
-            idempotency_key=client_order_id, symbol=symbol, side=str(side)
-        )
-    except DuplicateOrderIntent:
-        return await _duplicate_intent_response(
-            base_response, client_order_id, recorder
-        )
-    except Exception as exc:  # noqa: BLE001 - cannot prove the guard: do not send
-        return _intent_unavailable_response(base_response, client_order_id, exc)
-
-    ledger_kwargs: dict[str, Any] = {
-        "client_order_id": client_order_id,
-        "idempotency_key": client_order_id,
-        "symbol": symbol,
-        "side": str(side),
-        "quantity": quantity,
-        "price": price,
-        "trading_day": trading_day,
-    }
-
-    try:
-        if side == "buy":
-            broker_response = await order_client.place_buy_order(
-                symbol=symbol,
-                quantity=quantity,
-                price=price,
-                exchange=exchange,
-            )
-        else:
-            broker_response = await order_client.place_sell_order(
-                symbol=symbol,
-                quantity=quantity,
-                price=price,
-                exchange=exchange,
-            )
-    except KiwoomPreDispatchError as exc:
-        # Provably never sent: no ledger row, and the same key may retry.
-        released = await _release_after_pre_dispatch_error(recorder, reservation)
-        response = _not_submitted_response(base_response, exc)
-        response["reservation_released"] = released
-        return response
-    except Exception as exc:  # noqa: BLE001 - post-dispatch: may have been sent
-        # I3: uncertain row, reservation kept, never resent.
-        response = _dispatch_unknown_response(base_response, exc)
-        response.update(
-            await _record_place_outcome(
-                recorder,
-                outcome="uncertain",
-                broker_response=None,
-                broker_order_id=None,
-                ledger_kwargs=ledger_kwargs,
-            )
-        )
-        if signal_recorder is not None and kiwoom_attribution is not None:
-            await _mark_kiwoom_signal_outcome(
-                signal_recorder,
-                attribution=kiwoom_attribution,
-                outcome="uncertain",
-                broker_order_id=None,
-                ledger_id=response.get("ledger_id"),
-            )
-        return response
-
-    outcome, broker_order_id = _classify_place_response(broker_response)
-    response = _finalize_broker_response(base_response, broker_response)
-    if outcome == "uncertain":
-        # return_code 0 without a provable order number (or an unreadable
-        # return_code): the order may exist but cannot be tracked, so it is not
-        # a confirmed placement and must not be retried.
-        response["success"] = False
-        response["status"] = "acceptance_uncertain"
-        response["reconcile_required"] = True
-        response["retry_allowed"] = False
-    response.update(
-        await _record_place_outcome(
-            recorder,
-            outcome=outcome,
-            broker_response=broker_response,
-            broker_order_id=broker_order_id,
-            ledger_kwargs=ledger_kwargs,
-        )
-    )
-    if signal_recorder is not None and kiwoom_attribution is not None:
-        await _mark_kiwoom_signal_outcome(
-            signal_recorder,
-            attribution=kiwoom_attribution,
-            outcome=outcome,
-            broker_order_id=broker_order_id,
-            ledger_id=response.get("ledger_id"),
-        )
-    return response
 
 
 async def _kiwoom_mock_preview_impl(**kwargs: Any) -> dict[str, Any]:

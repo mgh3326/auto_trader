@@ -344,7 +344,19 @@ async def test_target_action_rejection_supported_matrix_is_action_accurate(db_se
     # independently -- assert both explicitly so a future divergence between
     # the two actions' capability sets is caught here.
     assert err.supported_matrix["replace"] == err.supported_matrix["cancel"]
-    assert err.supported_matrix["place"] == err.supported_matrix["cancel"]
+    # hk 4732 added kiwoom_mock×equity_kr to place; hk 4754 added
+    # kiwoom_mock_us×equity_us. The place set is the target-action set plus
+    # exactly those two pairs — nothing else.
+    cancel_pairs = {
+        (row["account_mode"], row["market"]) for row in err.supported_matrix["cancel"]
+    }
+    place_pairs = {
+        (row["account_mode"], row["market"]) for row in err.supported_matrix["place"]
+    }
+    assert place_pairs == cancel_pairs | {
+        ("kiwoom_mock", "equity_kr"),
+        ("kiwoom_mock_us", "equity_us"),
+    }
 
 
 @pytest.mark.asyncio
@@ -2360,8 +2372,9 @@ async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
         )
     assert str(exc_info.value) == (
         "unsupported account_mode/market/action: kis_mock/equity_kr/place "
-        "(allowed: kis_live×equity_kr|equity_us, "
-        "toss_live×equity_kr|equity_us, upbit×crypto; "
+        "(allowed: kis_live×equity_kr|equity_us, kiwoom_mock×equity_kr, "
+        "kiwoom_mock_us×equity_us, toss_live×equity_kr|equity_us, "
+        "upbit×crypto; "
         "market aliases kr→equity_kr, us→equity_us)"
     )
 

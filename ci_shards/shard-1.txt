@@ -251,6 +251,9 @@ tests/services/order_proposals/test_auto_approve_audit_reason_vocabulary.py
 tests/services/order_proposals/test_auto_approve_price_fallback_dispatch.py
 tests/services/order_proposals/test_cash_funding_exemption.py
 tests/services/order_proposals/test_dispatch_security_invariants.py
+tests/services/order_proposals/test_kiwoom_mock_dispatch_db.py
+tests/services/order_proposals/test_kiwoom_mock_submission.py
+tests/services/order_proposals/test_kiwoom_mock_us_submission.py
 tests/services/order_proposals/test_models_smoke.py
 tests/services/order_proposals/test_night_sweep_db.py
 tests/services/order_proposals/test_redispatch.py
@@ -418,6 +421,7 @@ tests/test_kis_websocket_monitor.py
 tests/test_kiwoom_constants.py
 tests/test_kiwoom_domestic_account.py
 tests/test_kiwoom_mock_config.py
+tests/test_kiwoom_mock_place_response_golden.py
 tests/test_kiwoom_us_account.py
 tests/test_kiwoom_us_orders.py
 tests/test_kr_candles_sync.py

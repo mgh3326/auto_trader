@@ -8,7 +8,7 @@
 - Binance Demo Order Ledger (ROB-298)
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
-- TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어 (hk 4702, 3796 CT-3)
+- TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어·실행기 (hk 4702 CT-3, hk 4719 CT-4)
 - Execution Intent Gateway (ROB-1440)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
@@ -263,17 +263,30 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
   core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
 
-### TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어 (hk 4702, 3796 CT-3)
+### TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어·실행기 (hk 4702 CT-3, hk 4719 CT-4)
 
-H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)의 **상태·상수 코어뿐**이다. 설계 `docs/design/3796-crypto-trend-demo.md` §4, 운영자 답 `decision/2026-11-15/at-3796-3797-design-answers`. 🔴 **주문 전송 경로가 아직 없다**: executor·`TrendStrategy`·CLI·알림·truth gate·env 게이트(`BINANCE_TREND_DEMO_ENABLED`)·스케줄러 연결은 CT-4/CT-5에서 게이트와 함께 들어온다. 그 전에는 이 패키지를 import 하는 코드가 패키지 밖에 없다(`tests/services/brokers/binance/trend/test_static_boundary.py`).
+H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)다. 설계 `docs/design/3796-crypto-trend-demo.md` §3.2·§4, 운영자 답 `decision/2026-11-15/at-3796-3797-design-answers`. CT-3(hk 4702)은 상태·상수 코어, CT-4(hk 4719)는 `TrendStrategy`와 **전송 경로가 있는 executor**다(아래 "실행기" 항목). 부분 체결 진입의 managed holding은 hk 4752가 **직렬화** 모델로 완성했다(아래 "부분 체결 진입 관리"). CLI·알림·truth gate·스케줄러·loop는 CT-5이며 아직 없다. 패키지 밖에서 이 패키지를 import 하는 코드는 없다(`tests/services/brokers/binance/trend/test_static_boundary.py`).
 
 - **identity·상수**: `IDENTITY = "TREND-TSMOM-v1"`. `constants.LOCKED_LIMITS`가 유니버스 `{BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT}`, leg notional 상한 60 USDT, 동시 포지션 4, gross 240 USDT, UTC일당 연속 hard-stop 2, UTC주당 conflict 3, 요구 레버리지 1x를 정한다(ROB-993 `LOCKED_LIMITS` 관용구). CLI·env·설정으로 바꾸는 경로가 없고 `assert_limits_locked`가 서비스 생성 시점에 DB·네트워크 이전에 거부한다. 레버리지·margin mode는 readback으로 요구만 하며 이 패키지는 설정을 바꾸지 않는다. ROB-993/H5/ROB-1474의 상수·allowlist·게이트는 건드리지 않는다.
 - **상태 테이블**: `review.binance_trend_signals`·`review.binance_trend_intents`(마이그레이션 `20261114_hk4702_trend_state`, 추가형, 모델 `app/models/binance_trend.py`). correlation id는 `binance-trend:<sha256 24hex>`(`keys.py`). conflict 기록은 신호 상태 `conflict_blocked`(자체 사전 차단)·`conflict_rejected`(브로커 거부)와 `conflict_at`·`conflict_detail`(<=200자)에 심볼과 시각으로 남는다.
 - **유일한 writer**: `state.TrendStateService`. 쓰기마다 자기 트랜잭션이고 하나의 advisory lock 아래서 직렬화된다. `reserve_entry`는 순수 판정 `entry_gate.decide_entry`로 동시 포지션 4·심볼당 1·gross 240·leg 상한·UTC일 연속 hard-stop 2·conflict 3·`uncertain` 의도가 있는 심볼 차단을 한 번에 판정하고 모든 사유를 돌려준다. `reserve_intent`는 `qty × reference_price`가 그 신호에 예약된 notional 안일 때만 의도를 만들고(전송 시점의 신선한 가격 재검사는 CT-4), `mark_sending`(send fence)은 같은 lock 아래서 자기 예약을 뺀 장부로 모든 진입 규칙을 다시 판정한 뒤에만 `sending`으로 옮긴다.
 - 🔴 **두 kill switch는 래치다**: 일일 hard-stop은 당일 청산을 시간순으로 훑어 연속 2회가 한 번이라도 있었으면 UTC일이 바뀔 때까지 멈춘다(다른 포지션의 이후 청산으로 풀리지 않는다). conflict 정지는 해소되지 않은 conflict 기록이 어느 UTC주에든 3건 모이면 걸리고 주 경계로 풀리지 않는다 — 운영자가 `resolve_conflicts`로 기록을 해소(한 번만, 식별자 필수)해야 풀린다(설계 §4.5). 해소는 종결 행의 유일하게 허용된 변경이며 DB 트리거가 그 외 모든 변경을 거부한다.
-- 🔴 **uncertain은 재전송하지 않는다**: 서비스는 의도를 `reserved`→`sending`(send fence) 한 방향으로만 옮기고, 전송 불명은 `uncertain`으로 보존한다. `uncertain`을 해소하려면 broker order/client id와 전계정 position 증거가 필요하며 그 경로는 CT-4다. DB 트리거도 `uncertain`→`reserved`/`sending`/`acknowledged`를 거부한다.
+- 🔴 **uncertain은 재전송하지 않는다**: 서비스는 의도를 `reserved`→`sending`(send fence) 한 방향으로만 옮기고, 전송 불명은 `uncertain`으로 보존한다. `uncertain`을 해소하려면 broker order/client id의 주문 증거와 완전한 position 읽기가 필요하며 그 경로는 `TrendStateService.apply_order_evidence`(CT-4)뿐이다. DB 트리거도 `uncertain`→`reserved`/`sending`/`acknowledged`를 거부한다.
 - **DB 가드(어떤 역할이든)**: 두 테이블 DELETE·TRUNCATE 거부, 신호는 `observed`로만 INSERT·식별 열 불변·종결 상태 동결, 의도는 미전송 `reserved`로만 INSERT·요청 열 불변·상태 전진만 허용. downgrade는 행이 하나라도 있으면 거부한다. `at_app`에는 조건부 GRANT(역할이 없을 수 있음)로 SELECT·INSERT·UPDATE만 주고 DELETE는 주지 않는다(하드룰 18). 이 트리거·거부를 완화하지 마라.
-- **범위 밖(후속)**: 체결·청산 기록(`holding`/`closed` 쓰기), uncertain 해소, 계정 전체 flat/conflict 감지의 브로커 읽기, 알림, 스케줄러는 CT-4/CT-5. 이 PR은 어떤 게이트도 열지 않는다.
+- **범위 밖(CT-5)**: CLI·`--loop`·알림·truth gate·스케줄러, L(룩백)·hard stop 비율의 값 확정(manifest seal 때). 어떤 게이트도 열지 않는다.
+- **실행기 (hk 4719, CT-4)**: `strategy.py`(`TrendStrategy(StrategyPlugin)`), `sizing.py`·`exits.py`·`exposure.py`(순수), `history.py`(ROB-993 complete-only 1m→4h 수집기), `executor.py`(**패키지에서 브로커에 닿는 유일한 모듈** — 선물 데모 실행 클라이언트 import·`submit_order` 이름·`os.environ` 읽기는 정적 테스트가 이 파일에만 허용한다). 기본 off, 스케줄러 연결 없음.
+  - **신호·크기**: 완성 4h bar 종가 `close_t/close_{t-L일}-1`의 부호(결측 bar = NO_SIGNAL, forward-fill 금지). `L ∈ {20,60,120}`와 hard stop 비율(0<f<1, Decimal)은 `TrendStrategy`의 **기본값 없는 필수 인자**이고 CT-5가 seal 때 값을 정한다. 크기는 `cap × min(1, σ*/σ̂)`(σ*=60%, σ̂=20일 EWMA 일수익률 연환산)이며 cap(60 USDT)을 넘는 확대는 없다. 필요한 bar는 `t-k일`(k=0..20)과 `t-L일`의 4h bucket 22개뿐이라 L=120도 심볼당 22요청이다.
+  - **전송 순서**: `BINANCE_TREND_DEMO_ENABLED` AND `BINANCE_FUTURES_DEMO_ENABLED`(둘 다 정확히 `"true"`) AND 호출별 `confirm=True`와 정확한 데모 origin·클라이언트 identity를 네트워크·DB 사용 전에 검사 → `reserve_entry` → **계정 전체 flat/conflict 게이트 #1**(완전한 positions+open orders) → 데모 원장 root(`BinanceDemoLedgerService`만) → `reserve_intent` → **게이트 #2 + 신선한 체결가 재검사(예약 notional 이하)** → `mark_sending`(committed fence, 진입 규칙 재판정) → 주문 정확히 1회 → 클라이언트 주문 ID 기준 bounded poll → position 읽기가 체결을 확인할 때만 `holding`/`closed`. 반응(echo) 불일치·미지 status·전송 예외는 fence 이후 전부 `uncertain`이며 재전송하지 않는다(Binance가 음수 `code`를 담은 4xx로 거절한 경우만 주문 부재 증거로 `rejected`; 408/418/429/5xx/읽기 불가 본문은 증거가 아니다). `uncertain`은 주문 not-found만으로 풀리지 않는다.
+  - **틱 소유권·복구**: 한 번에 한 틱만 레인을 소유한다(`TrendStateService.tick_lease`, 틱 전체 동안 잡는 세션 advisory lock, 두 번째 틱은 대기 없이 거부, 전송 fence 직전마다 `lease.check()`로 소유 재확인). lease는 충돌 완화이고 **복구의 안전성은 lease가 아니라 순서에서 나온다**: 미전송 예약 복구(`reserved` 의도, 의도 없는 `entry_reserved` 신호)는 **상태를 먼저 원자적으로 해제(claim)한 뒤** 데모 원장 root를 푼다 — 해제된 의도는 더 fence할 수 없고, 송신자가 먼저 fence했으면 claim이 실패해 아무것도 건드리지 않는다. 원장 해제가 실패하면 `list_released_client_order_ids`(최근 rejected 의도 + blocked/conflict 신호의 진입 root)를 매 틱 훑는 정리 경로가 pre-send 행을 다시 푼다. 이미 보내진(sending 이후) 의도는 복구가 건드리지 않는다.
+  - **부분 체결 진입 관리 — 직렬화 (hk 4752)**: `PARTIALLY_FILLED`로 남은 진입 의도는 `acknowledged`로 유지되고 진행(체결 수량·평균가)만 기록하며, **그 노출은 매 틱 관리된다** — hard stop(기록된 체결 평균가, 1m 극값·실패 시 4h 결정·현재 호가), signal flip, time exit을 holding과 같은 규칙으로 판정한다. 🔴 **직렬화**: 진입 주문이 살아 있는 동안 청산을 보내지 않는다(진입 체결과 청산 체결이 브로커 position 하나에 동시에 존재하면 상태가 각 흐름을 position에 독립 대조할 수 없다). 관리 동작은 **잔량 취소**(`TrendDemoClient.cancel_order` — submit과 같은 env 이중 게이트·호출별 `confirm=True`·정확한 데모 origin·trend 클라이언트 id·응답 echo 검증)뿐이고 진입 주문은 절대 재전송하지 않는다. 취소 응답이 불명확해도 주문 상태 재조회가 권한자이며, 상태를 못 읽는 `uncertain` 의도는 직렬화를 증명할 수 없으므로 취소·청산 어느 것도 보내지 않고 그 심볼을 차단한 채 `partial_entry_exposure_open`+`partial_entry_stop_breached`로만 보고한다. 진입이 종결(CANCELED/EXPIRED/FILLED)되면 그 시점의 체결 수량이 `holding`이 되고, 청산은 **브로커가 증명한 잔량 전부**를 lot step으로 내림해 보낸다 — 결정 시점 이후에 들어온 체결도 그 한 번의 청산이 덮는다. 비용 기준은 종결 시점 브로커 누적 평균가이며(청산이 진입보다 먼저 존재할 수 없으므로 청산 조정 기준이 필요 없다), 실현 손익은 (청산가−진입가)×청산수량을 체결마다 누적한다. 🔴 **hard stop은 래치**: `TrendStateService.record_exit_decision`이 결정 시점에 `exit_reason`/`exit_at`을 기록하고(첫 기록 고정 — `_apply_exit`가 덮어쓰지 않는다) 가격이 회복돼도 포지션을 청산한다. 일일 kill switch는 `state='closed'`가 아니라 **`exit_reason='hard_stop'`이고 `exit_at`이 그 UTC일인 신호**를 센다 — 진입이 다음 UTC일에 종결돼도 stop은 발생한 날에 계수되고 UTC일이 바뀌면 풀린다. `partial_entry_exposure_open`은 정보 이벤트로 남는다.
+  - **청산 수량 대사**: 청산은 레인 잔량이 브로커 position과 정확히 같을 때만 보낸다(수동 증감 등으로 다르면 fence 전에 거부 — 상태가 사후 position을 대사할 수 없다). 호가 조회 실패는 청산 판단을 막지 않는다(호가는 선택 증거). 시장가 lot 필터의 `minQty`/`maxQty`가 0(문서상 "시장가 제한 없음")이면 `LOT_SIZE` 값, 없으면 한 step(min)으로 대체한다. 진입 노출 시작 시각은 주문 마지막 갱신이 아니라 **예약 시각**(체결보다 늦지 않은 경계)이다. 원장 쓰기가 실패하면 공유 세션을 rollback한 뒤 계속한다.
+  - **부분 체결**: 양의 `executedQty`를 가진 종결 주문(CANCELED/EXPIRED 포함)은 그 수량의 체결로 `filled` 생명주기에 기록한다(`partial_terminal_fill` 메타). 되돌릴 수 없는 `anomaly`로 보내지 않는다 — 그러면 root를 닫을 수 없고 슬롯이 영구히 막힌다.
+  - **1m 연속성**: hard stop 1m 창은 기대하는 모든 완료 분이 있어야 `minutes_ok`다. 빈 응답·누락 분은 조회 실패와 같이 "4h 결정만" 폴백이다.
+  - **충돌**: 신호 심볼에 우리 것이 아닌 position·open order가 있으면 `conflict_blocked`(미전송), 브로커 거절 뒤 같은 증거가 보이면 `conflict_rejected`를 기록하며 둘 다 주 3건 래치로 센다.
+  - **청산**: 우선순위 hard stop → signal flip → time exit(30일). 모든 청산은 `reduceOnly` MARKET one-way, 수량은 `min(레인 잔량, 브로커 position)`을 lot step으로 내림한 값이며 브로커가 보유 방향을 보이지 않거나 해당 심볼에 미체결이 있으면 보내지 않는다. hard stop은 4h 마감 사이를 체결 분(分)을 포함한 이후 1m 극값(최대 24시간; 체결 분의 체결 이전 극값은 감시가 더 일찍 걸리는 쪽으로만 작용)과 현재 호가로 감시하고, 1m 조회가 실패한 틱은 **4h 결정(완성 bar 종가)만** 쓴다. `exit_reason`은 `constants.EXIT_REASONS={hard_stop, signal_flip, time_exit}` 하나뿐이며 `TrendStateService`가 모든 쓰기 전에 검증한다(DB CHECK 없음). 청산은 진입 규칙(kill switch·cap)에 막히지 않는다.
+  - **금지**: leverage·margin mode 변경, 부분 체결 진입의 잔량을 직렬화 목적으로 취소하는 것 외의 모든 주문 취소(취소는 이 한 경로뿐이고 청산·미해결 의도의 해소 수단이 아니다), smoke order-test(클라이언트가 거부), 기존 ROB-993/H5/ROB-1474 상수·allowlist·게이트 변경, 선물 데모 클라이언트의 호스트 allowlist 변경.
+  - **wire 계약 테스트**: `test_wire_contract.py`가 `wire_fixtures.py`의 **원문 JSON 텍스트**(문서 예시 기반, 출처 URL 병기, 실측 캡처 아님)를 실제 `httpx.Response`로 클라이언트 파싱 계층에 통과시킨다(주문 submit/query, positionRisk, positionSide/dual, openOrders, exchangeInfo 필터, bookTicker, klines, 오류 본문). 가짜가 파이썬 타입을 넣어 못 보던 문자열 필드·bool/문자열 혼재·누락 필드를 고정한다. 새 Binance 읽기 필드를 쓰면 픽스처부터 추가한다.
+  - **테스트**: `test_executor.py`(가짜 클라이언트·원장·상태, 모든 거부 경로의 전송 0건 단언), `test_client_history.py`, `test_strategy_sizing.py`, `test_exits_exposure.py`, DB 전이는 CI의 `test_state_exec_db.py`.
 - **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB).
 
 ### Execution Intent Gateway (ROB-1440)
@@ -325,13 +338,17 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (부킹된 명목 합은 브로커 누적 명목과 같아진다).
   Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
   `fee_basis='not_provided'`·`filled_at_basis='observed_at'` 이고 0 으로 채우지 않는다.
-  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 저널 단계는
-  `review.trades` 행(주문당 1행, 누적 수량·누적평균으로 부분 체결마다 갱신)·저널 기록·
-  `journaled_qty` 마커를 **한 트랜잭션**으로 커밋하므로 재실행이 FIFO를 두 번 닫거나 초안
-  저널을 남기지 않는다. 미저널 수량과 잔여 가격은 **주문행 잠금 안에서** 다시 계산하므로
-  동시 실행이 같은 수량을 두 번 저널링하지 않는다. 매수 델타는 각자의 수량·가격으로 lot
-  저널 1건을 만들고, 매도는 부분 소비 lot 의 수량만 줄이며 완전 소진 시 종결한다(부분 체결
-  매도가 lot 을 영원히 열어두지 않는다). 저널 단계가 실패하면 그 트랜잭션 전체가 롤백되고 체결 증거만 남으며,
+  저널·실현손익은 `account='kiwoom_mock'`(`account_type='mock'`)이다. 저널은 주문당
+  **한 번**, 그 체결이 종결일 때만(`filled`, 또는 양수 누적 체결이 있는 `cancelled`/`expired`)
+  주문의 **누적 체결수량·누적 명목 평균가**로 쓰인다 — 부분 체결 판정은
+  `execution_ledger` 델타만 부킹하고 저널은 건드리지 않는다. 저널 단계는 `review.trades`
+  행(주문당 1행, 누적 수량·누적평균)·저널 기록·`journaled_qty` 마커를 **한 트랜잭션**으로
+  커밋하므로 재실행이 FIFO를 두 번 닫거나 초안 저널을 남기지 않는다. 주문행을
+  `FOR UPDATE` 로 잠그고 `journaled_qty` 를 **저널 side effect 이전에** 다시 읽어 이미
+  저널링된 주문은 아무것도 하지 않으며, full 모드 실행 전체는 advisory lock 하나로
+  직렬화된다(겹친 두 실행이 같은 수량을 두 번 저널링하지 않는다). 매도는 부분 소비 lot 의
+  수량만 줄이며 완전 소진 시 종결한다(부분 체결 매도가 lot 을 영원히 열어두지 않는다).
+  저널 단계가 실패하면 그 트랜잭션 전체가 롤백되고 체결 증거만 남으며,
   `last_reconcile_detail.journaled_qty` 가 `filled_qty` 보다 작은 `filled` 행은 다음 full
   실행이 저널을 마무리한다(같은 실행이 실패를 숨기지 않고 `journal_error` 로 보고). 이 행들은 외부 HTTP
   ingest 대상이 아니며(`source` 는 항상 `websocket` 강제) 이 예외는 위 멱등키·savepoint·
@@ -917,6 +934,38 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 - **KR 도구는 KRX only**: `NXT`/`SOR`/비-KRX 거부 (네트워크 호출 전). US 도구는 별도 `kiwoom_mock_us_*` 경로만 사용
 - **No secrets printed**: CLI는 missing env key **이름만** 보고, 값 출력 없음
 - **Cancel-before-submit**: `full` 모드는 cancel이 wired이기에만 실주문 제출; finally-block에서 항상 cancel 시도 후 reconcile
+
+**US 모의 계좌 확장 (hk 4754, 3797 T-P8)**:
+- **하나의 송신 경계**: `kiwoom_mock_us_place_order` MCP 도구와 `order_proposals` 제출 어댑터는
+  `app/services/kiwoom_mock_place.py`의 `place_kiwoom_mock_us_order` 하나를 호출한다. 순서는 KR과
+  같다 — 귀속 신호(`account_mode='kiwoom_mock_us'`) → 사전 점검(`stex_tp` 해석 + `trde_tp`/가격 형식)
+  → 송신 전 예약(`order_send_intents.account_scope='kiwoom_mock_us'`) → 주문 정확히 1회 → 원장 행
+  → 신호 결과. 예약에서 끝까지 가는 공통 꼬리는 `_execute_reserved_send` 하나이므로 이중 송신
+  방어·미확정 처리·원장 쓰기 규율은 두 시장에서 같은 코드다.
+- **원장 정체성**: `review.kiwoom_mock_order_ledger` 한 테이블에 `account_mode='kiwoom_mock_us'` +
+  `market='us'` + `instrument_type='equity_us'` + `currency='USD'` 로 쓴다(테이블 CHECK가 네 값을
+  결속). `trading_day`는 ET 거래일이며 20:00 ET(서머타임 반영)에 넘어간다(ROB-1379
+  `us_trading_day_window`를 재사용한다). 송신 키는 `kwoomus-<sha16>`이고 `100`과 `100.00`은 같은
+  주문이다. 브로커 주문번호는 문서상 9자리 숫자이며 `validate_us_order_id`를 통과하지 못하는 값은
+  `accepted`가 아니라 `uncertain` 원장 행이 된다.
+- **대사**: `scripts/kiwoom_mock_auto_reconcile.py --market us`가 `ust21510`(당일 주문·체결, detail
+  역할)과 `ust21050`(미체결, status 역할)을 `cont_yn`/`next_key`로 끝까지 읽어 KR과 같은 순수 분류기
+  (`app/services/brokers/kiwoom/mock_reconcile.py`)로 판정한다. 쓰기는 `--apply-terminal-only` +
+  `KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED=true`(기본 off)일 때만 일어나며, KR 게이트를 켜도
+  US는 열리지 않는다(계좌·자격증명이 다르다). 🔴 지난 ET 거래일을 덮는 목록이 없으므로 지난 날짜
+  행은 부재로 종결하지 않고 `unknown`(수동 검토)으로 남긴다. 🔴 US 목록에는 체결 평균가가 없어
+  체결은 `deferred_fill_booking`으로 보고만 하고 부킹하지 않는다(T-P4 범위 밖).
+- **제안**: (`kiwoom_mock_us`, `equity_us`)는 place 전용 제출 가능 조합이고, 승인 창은 XNYS 정규장만
+  이며(프리·애프터 없음, Toss US 확장 키를 읽지 않는다) **수동 승인 전용**이다 — 자동승인·veto 어휘에
+  없다. `review.order_proposals.account_mode` CHECK는 마이그레이션
+  `20261116_hk4754_us_proposals`가 `'kiwoom_mock_us'`를 받는다(downgrade는 그런 행이 있으면
+  거부).
+- **게이트**: 주문 도구는 기존 `KIWOOM_MOCK_US_ENABLED` + US 앱키/계좌 4종 설정 + 호출별
+  `dry_run`/`confirm` 이중 게이트 뒤에 있고, 대사 쓰기만 위의 US 대사 게이트 뒤에 있다. 두 게이트 모두
+  기본 off이며 스케줄러 등록·호스트 allowlist·KR 경로·KRX 규칙 변경은 없다.
+- **준비도**: `docs/contracts/rob-1268-us-kis-kiwoom-readiness.md`의 `us.kiwoom.mock`은 이제 일곱
+  evidence 종류 모두 `PRESENT`(lane_native_evidence 충족)이며, 수명주기 verdict는 owner·재탐색
+  트리거·readback 제약 때문에 여전히 `AUTO_READY_BLOCKED_BY_LIFECYCLE`이다.
 
 ### Kiwoom Live Read-Only Market Data (Stage 1)
 
