@@ -604,3 +604,31 @@ def test_a_zero_market_step_and_max_fall_back_to_lot_size_and_junk_is_refused() 
             run(
                 make_client(_Transport(_filters_body(bad))).get_trend_filters("BTCUSDT")
             )
+
+
+@pytest.mark.parametrize(
+    ("wire", "hedge"),
+    [(True, True), (False, False), ("true", True), ("false", False)],
+)
+def test_position_mode_accepts_the_bool_and_the_string_wire_forms(wire, hedge) -> None:
+    client = make_client(
+        _Transport({"/fapi/v1/positionSide/dual": {"dualSidePosition": wire}})
+    )
+    assert run(client.get_position_mode()).is_hedge_mode is hedge
+
+
+@pytest.mark.parametrize("wire", [None, "True", "FALSE", 1, 0, "", "yes", [], {}])
+def test_position_mode_refuses_anything_else_and_never_reads_a_string_as_hedge(
+    wire,
+) -> None:
+    client = make_client(
+        _Transport({"/fapi/v1/positionSide/dual": {"dualSidePosition": wire}})
+    )
+    with pytest.raises(TrendBrokerTruthUnavailable):
+        run(client.get_position_mode())
+    with pytest.raises(TrendBrokerTruthUnavailable):
+        run(
+            make_client(
+                _Transport({"/fapi/v1/positionSide/dual": ["x"]})
+            ).get_position_mode()
+        )

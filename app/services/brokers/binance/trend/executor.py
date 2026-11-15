@@ -319,9 +319,16 @@ class TrendDemoClient(BinanceFuturesDemoExecutionClient):
 
     async def get_position_mode(self) -> FuturesDemoPositionModeResult:
         body = await self._signed_get("/fapi/v1/positionSide/dual")
-        if not isinstance(body, dict) or type(body.get("dualSidePosition")) is not bool:
+        flag = body.get("dualSidePosition") if isinstance(body, dict) else None
+        # Documented as a boolean, shown as "true"/"false" in some references:
+        # accept exactly those four spellings and nothing else.
+        if flag is True or flag == "true":
+            hedge = True
+        elif flag is False or flag == "false":
+            hedge = False
+        else:
             raise TrendBrokerTruthUnavailable("position mode evidence unavailable")
-        return FuturesDemoPositionModeResult(is_hedge_mode=body["dualSidePosition"])
+        return FuturesDemoPositionModeResult(is_hedge_mode=hedge)
 
     async def get_all_positions(self) -> list[FuturesDemoPositionResult]:
         body = await self._signed_get("/fapi/v2/positionRisk")
