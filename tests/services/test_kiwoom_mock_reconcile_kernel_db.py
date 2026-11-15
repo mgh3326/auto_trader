@@ -902,35 +902,31 @@ async def test_partial_sell_close_serializes_on_the_lot_pool() -> None:
 async def test_full_mode_terminal_verdict_with_fill_closes_after_the_journal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cancelled order that still filled is booked, journaled, then closed.
+    """A settled partial (4 of 10, expiry marker) is booked, journaled, closed.
 
-    ``record_fill`` moves the row off the no-fill source statuses, so the close
-    must go through ``close_filled_as_terminal`` (allowed only once the whole
-    fill is journaled). Otherwise the row would be re-scanned forever, repeating
-    a no-op booking and a refused close.
+    The verdict comes from the real classifier: a partial fill with no remaining
+    quantity is terminal and carries its fill, so the shares reach a journal and
+    the row closes. Before that, the row stayed ``partial`` forever, re-booked as
+    a no-op with an empty journal.
     """
-    from app.services.brokers.kiwoom.mock_reconcile import Verdict as BrokerVerdict
-
     _full_mode(monkeypatch)
     client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
     order_no = _order_no()
     symbol = _symbol()
     run_ids: list[str] = []
-    original = kernel.classify_verdict
     try:
         await _accepted(client_order_id, order_no, symbol=symbol)
-        monkeypatch.setattr(
-            kernel,
-            "classify_verdict",
-            lambda **_: BrokerVerdict(
-                verdict="cancelled",
-                reason="own_cancel_acknowledged_and_broker_confirmed",
-                requires_manual_review=False,
-                filled_quantity=10,
-                average_price=76000,
-            ),
+        detail = _detail_payload(
+            _detail_row(
+                order_no,
+                stk_cd=symbol,
+                ord_qty="10",
+                cntr_qty="4",
+                ord_remnq="0",
+                cntr_uv="70000",
+                mdfy_cncl="만료",
+            )
         )
-        detail = _filled_detail(order_no, 10, symbol, average_price=76000)
         result = await _full_run(FakeReader(detail))
         if result.get("reconcile_run"):
             run_ids.append(result["reconcile_run"]["run_id"])
@@ -940,23 +936,24 @@ async def test_full_mode_terminal_verdict_with_fill_closes_after_the_journal(
             for row in result["reconciled"]
             if row["client_order_id"] == client_order_id
         )
-        assert outcome["fill_action"] == "booked_filled"
-        assert outcome["action"] == "mark_cancelled"
+        assert outcome["verdict"] == "expired"
+        assert outcome["fill_action"] == "booked_partial"
+        assert outcome["action"] == "mark_expired"
         assert outcome["requires_manual_review"] is False
 
         stored = await _fetch(client_order_id)
-        assert stored.status == "cancelled"
-        assert stored.filled_qty == Decimal("10")
+        assert stored.status == "expired"
+        assert stored.filled_qty == Decimal("4")
         assert stored.journal_id is not None
-        assert len(await _fills(order_no)) == 1
+        fills = await _fills(order_no)
+        assert [fill.filled_qty for fill in fills] == [Decimal("4")]
         journals = await _journals(symbol)
-        assert [journal.quantity for journal in journals] == [Decimal("10")]
+        assert [journal.quantity for journal in journals] == [Decimal("4")]
 
         # The row left the scan: the next run finds nothing to do.
         settled = await _full_run(FakeReader(detail))
         assert settled["reconciled"] == []
     finally:
-        monkeypatch.setattr(kernel, "classify_verdict", original)
         await _cleanup_full(
             client_order_id=client_order_id,
             order_no=order_no,

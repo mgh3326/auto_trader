@@ -574,6 +574,27 @@ def _filled_reader(average_price: int = 70000) -> FakeReader:
     )
 
 
+def _expired_partial_reader(
+    quantity: int = 4, average_price: int = 70000
+) -> FakeReader:
+    """4 of 10 filled, nothing left working, broker expiry marker."""
+    return FakeReader(
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(
+                        ord_no="0001",
+                        cntr_qty=str(quantity),
+                        ord_remnq="0",
+                        cntr_uv=str(average_price),
+                        mdfy_cncl="만료",
+                    )
+                )
+            ]
+        }
+    )
+
+
 def _partial_reader(quantity: int = 4, average_price: int = 70000) -> FakeReader:
     return FakeReader(
         detail_pages={
@@ -870,47 +891,38 @@ async def test_overlapping_full_runs_journal_the_order_exactly_once(
 async def test_terminal_verdict_with_a_positive_fill_journals_before_the_close(
     fake_ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cancelled/expired order that still filled journals its fill once.
+    """A settled partial (4 of 10, expiry marker) is booked, journaled, closed.
 
-    The verdict table never pairs a terminal marker with a fill today; the
-    kernel still books and journals one when it appears, instead of closing the
-    row and stranding the shares.
+    The verdict comes from the real ``classify_verdict``: it carries the fill on
+    the terminal verdict, which is what makes the journal reachable at all.
     """
-    from app.services.brokers.kiwoom.mock_reconcile import Verdict
-
     for name in FULL_GATE_ENVS:
         monkeypatch.setenv(name, "true")
     FakeService.rows = [_row(1, broker_order_id="0001")]
     FakeService.total = 1
     calls: list[tuple[str, dict[str, Any]]] = []
     _patch_journal(monkeypatch, calls)
-    monkeypatch.setattr(
-        kernel,
-        "classify_verdict",
-        lambda **_: Verdict(
-            verdict="cancelled",
-            reason="own_cancel_acknowledged_and_broker_confirmed",
-            requires_manual_review=False,
-            filled_quantity=10,
-            average_price=76000,
-        ),
-    )
 
-    result = await _run(FakeReader(), dry_run=False, terminal_only=False)
+    result = await _run(_expired_partial_reader(), dry_run=False, terminal_only=False)
 
     outcome = result["reconciled"][0]
-    assert outcome["fill_action"] == "booked_filled"
-    assert outcome["action"] == "mark_cancelled"
+    assert outcome["verdict"] == "expired"
+    assert outcome["filled_qty"] == 4
+    assert outcome["fill_action"] == "booked_partial"
+    assert outcome["action"] == "mark_expired"
+    assert not outcome.get("requires_manual_review")
     save = next(payload for name, payload in calls if name == "record_trade")
-    assert save["quantity"] == 10.0
-    assert save["price"] == 76000.0
-    # record_fill moved the row to ``filled``/``partial`` first, so the close
-    # must go through close_filled_as_terminal, not mark_terminal.
+    assert save["quantity"] == 4.0
+    assert save["price"] == 70000.0
+    create = next(payload for name, payload in calls if name == "create_journal")
+    assert create["preview"]["quantity"] == 4.0
+    # record_fill moved the row to ``partial`` first, so the close must go
+    # through close_filled_as_terminal, not mark_terminal.
     assert (
         "close_filled",
         1,
-        "cancelled",
-        "own_cancel_acknowledged_and_broker_confirmed",
+        "expired",
+        "broker_expiry_confirmed",
     ) in _writes(fake_ledger)
     assert not any(write[0] == "mark_terminal" for write in _writes(fake_ledger))
 
@@ -919,27 +931,14 @@ async def test_terminal_with_fill_is_not_closed_before_its_journal(
     fake_ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The close waits for the journal: an unjournaled fill keeps the row open."""
-    from app.services.brokers.kiwoom.mock_reconcile import Verdict
-
     for name in FULL_GATE_ENVS:
         monkeypatch.setenv(name, "true")
     FakeService.rows = [_row(1, broker_order_id="0001")]
     FakeService.total = 1
     calls: list[tuple[str, dict[str, Any]]] = []
     _patch_journal(monkeypatch, calls, fail=True)
-    monkeypatch.setattr(
-        kernel,
-        "classify_verdict",
-        lambda **_: Verdict(
-            verdict="cancelled",
-            reason="own_cancel_acknowledged_and_broker_confirmed",
-            requires_manual_review=False,
-            filled_quantity=10,
-            average_price=76000,
-        ),
-    )
 
-    result = await _run(FakeReader(), dry_run=False, terminal_only=False)
+    result = await _run(_expired_partial_reader(), dry_run=False, terminal_only=False)
 
     outcome = result["reconciled"][0]
     assert outcome["action"] == "noop_transition_refused"

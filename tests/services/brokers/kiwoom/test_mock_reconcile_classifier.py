@@ -138,6 +138,55 @@ def test_partial_is_open_but_reported() -> None:
     assert verdict.filled_quantity == 4
 
 
+def test_settled_partial_fill_is_terminal_with_its_fill() -> None:
+    """4 of 10 filled and nothing left working: the fill rides the terminal row.
+
+    The journal is written only at the terminal fill (hk 4734), so a settled
+    partial that stayed ``partial`` would never journal its shares.
+    """
+    verdict = _classify(
+        detail=_detail_payload(
+            _detail_row(cntr_qty="4", ord_remnq="0", cntr_uv="70000", mdfy_cncl="만료")
+        )
+    )
+    assert verdict.verdict == "expired"
+    assert verdict.reason == "broker_expiry_confirmed"
+    assert verdict.filled_quantity == 4
+    assert verdict.average_price == 70000
+    assert verdict.requires_manual_review is False
+
+
+def test_settled_partial_cancel_still_needs_our_own_request() -> None:
+    detail = _detail_payload(
+        _detail_row(cntr_qty="4", ord_remnq="0", cntr_uv="70000", mdfy_cncl="취소")
+    )
+    assert _classify(detail=detail, own_cancel_acknowledged=True).verdict == "cancelled"
+    unacknowledged = _classify(detail=detail, own_cancel_acknowledged=False)
+    assert unacknowledged.verdict == "unknown"
+    assert unacknowledged.reason == "cancel_without_own_acknowledged_request"
+
+
+def test_settled_partial_without_a_marker_is_not_guessed() -> None:
+    verdict = _classify(
+        detail=_detail_payload(
+            _detail_row(cntr_qty="4", ord_remnq="0", cntr_uv="70000")
+        )
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "terminal_without_reason_marker"
+
+
+def test_settled_partial_with_a_ledger_overcount_is_unknown() -> None:
+    verdict = _classify(
+        ledger=_ledger(recorded_filled_quantity=10),
+        detail=_detail_payload(
+            _detail_row(cntr_qty="4", ord_remnq="0", cntr_uv="70000", mdfy_cncl="만료")
+        ),
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "recorded_fill_contradicts_broker"
+
+
 def test_fill_with_nan_price_is_not_filled() -> None:
     # Unparseable price must never become a fill verdict.
     verdict = _classify(detail=_detail_payload(_detail_row(cntr_qty="10", cntr_uv="")))
