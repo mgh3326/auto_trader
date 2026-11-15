@@ -24,6 +24,12 @@ EXTRA_ALLOWED = {
     "strategy.py": (f"{_BARS}.strategy", _ROB974),
     "history.py": (f"{_BARS}.bars", _ROB974),
     "exposure.py": (f"{_FUTURES}.dto",),
+    # CT-5a: alerting is the one module allowed to reach the ops webhook. It
+    # sends a Discord embed and nothing else; no broker, account or order code.
+    "alerting.py": (
+        "app.core.config",
+        "app.monitoring.trade_notifier.transports",
+    ),
     # Forecast rows are durable learning metadata, not broker access: the
     # forecast module may read the review model and reach the journal service
     # (the only write surface) plus its session — nothing else.
@@ -42,6 +48,8 @@ EXTRA_ALLOWED = {
         "app.services.brokers.binance.demo.ledger.service",
     ),
 }
+# Client libraries only the alert sender may import (it posts one webhook).
+NETWORK_ALLOWED = {"alerting.py": ("httpx",)}
 EXECUTION_CLIENT_MODULES = (f"{_FUTURES}.execution_client", f"{_FUTURES}.signing")
 # Anything that can open a socket or talk to a broker.
 FORBIDDEN_THIRD_PARTY = (
@@ -96,6 +104,7 @@ def test_every_module_imports_only_what_it_is_allowed_to() -> None:
     offenders: list[str] = []
     for path in _package_files():
         allowed = ALLOWED_FIRST_PARTY + EXTRA_ALLOWED.get(path.name, ())
+        network = NETWORK_ALLOWED.get(path.name, ())
         for module, line in _imports(path, in_package=True):
             top = module.split(".")[0]
             # `from app.models import X` would hide a model import: refuse it too.
@@ -103,10 +112,14 @@ def test_every_module_imports_only_what_it_is_allowed_to() -> None:
                 a.startswith(module + ".") for a in allowed
             )
             research_ok = top == "research" and first_party_ok
+            network_ok = any(
+                module == allowed_module or module.startswith(allowed_module + ".")
+                for allowed_module in network
+            )
             if (top == "app" and not first_party_ok) or (
                 top != "app"
                 and (
-                    module.startswith(FORBIDDEN_THIRD_PARTY)
+                    (module.startswith(FORBIDDEN_THIRD_PARTY) and not network_ok)
                     or top == "scripts"
                     or (top == "research" and not research_ok)
                 )
@@ -150,12 +163,15 @@ def test_only_the_executor_names_an_order_submission() -> None:
     assert len(calls) == 2
 
 
-def test_nothing_outside_the_package_imports_it() -> None:
-    """No CLI, task, scheduler or other module reaches the trend package yet."""
+def test_only_the_trend_scripts_import_the_package() -> None:
+    """No app module, task or scheduler reaches the trend package; only the
+    operator CLI, watcher and truth-gate scripts do (CT-5a)."""
     offenders: list[str] = []
     for base in ("app", "scripts", "research"):
         for path in (ROOT / base).rglob("*.py"):
             if PACKAGE in path.parents:
+                continue
+            if base == "scripts" and path.name.startswith("binance_trend"):
                 continue
             for module, _ in _imports(path):
                 if module.startswith(PACKAGE_MODULE):
@@ -185,15 +201,30 @@ def test_the_state_service_is_the_only_writer_of_the_trend_tables() -> None:
     assert not offenders
 
 
-def test_only_the_executor_reads_the_environment_and_nothing_is_a_cli() -> None:
+def test_only_the_executor_reads_the_environment_and_the_scripts_never_schedule() -> (
+    None
+):
+    # ALERTING_READS_SETTINGS is the one exception: the ops webhook URL comes
+    # from settings exactly like H5's alerting module.
     for path in _package_files():
         source = path.read_text()
         if path.name != "executor.py":
-            for needle in ("os.environ", "getenv", "get_settings", "settings."):
+            for needle in ("os.environ", "getenv", "get_settings"):
                 assert needle not in source, f"{path.name} reads {needle}"
+            if path.name != "alerting.py":
+                assert "settings." not in source, f"{path.name} reads settings."
         for needle in ("argparse", "__main__", "taskiq", "prefect", "crontab"):
             assert needle not in source, f"{path.name} wires {needle}"
-    assert not list(ROOT.glob("scripts/binance_trend*"))
+    scripts = sorted(ROOT.glob("scripts/binance_trend*.py"))
+    assert {p.name for p in scripts} == {
+        "binance_trend_demo.py",
+        "binance_trend_heartbeat_watch.py",
+        "binance_trend_truth_gate.py",
+    }
+    for path in scripts:
+        source = path.read_text()
+        for needle in ("taskiq", "prefect", "crontab", "APScheduler", "apscheduler"):
+            assert needle not in source, f"{path.name} wires {needle}"
 
 
 def test_the_closed_exit_vocabulary_is_one_constant_used_by_gate_and_state() -> None:

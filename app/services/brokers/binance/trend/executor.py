@@ -223,6 +223,10 @@ class TrendDemoClient(BinanceFuturesDemoExecutionClient):
         assert_trend_demo_url(self._base_url)
         assert_trend_demo_url(str(self._client.base_url).rstrip("/"))
 
+    def assert_demo_identity(self) -> None:
+        """Read-only identity check shared with the truth gate."""
+        self._assert_trend()
+
     def kline_transport(self) -> Any:
         """The unsigned market-data transport, origin re-validated per call."""
         self._assert_trend()
@@ -594,6 +598,7 @@ class TrendExecutor:
         self.demo_ledger = demo_ledger
         self.ledger_session = ledger_session
         self._lease: Any = None
+        self._manage_only = False
         self._poll_attempts = poll_attempts
         self._poll_interval_s = poll_interval_s
         self._sleep = sleep
@@ -1374,6 +1379,10 @@ class TrendExecutor:
         sigma_hat: Decimal,
         now: dt.datetime,
     ) -> str:
+        if self._manage_only:
+            # Defense in depth: the tick returns before this loop, but no
+            # caller may reach a send while a manage-only tick owns the flag.
+            raise TrendStateBlocked("manage-only tick cannot open an entry")
         symbol = record.symbol
         cid = self._entry_cid(record.signal_key)
         try:
@@ -1664,13 +1673,18 @@ class TrendExecutor:
     # ------------------------------------------------------------------ tick
 
     async def run_tick(
-        self, *, now: dt.datetime, confirm: bool = False
+        self,
+        *,
+        now: dt.datetime,
+        confirm: bool = False,
+        manage_only: bool = False,
     ) -> TrendTickResult:
         self._guard(confirm=confirm)
         if now.tzinfo is None:
             raise TrendStateBlocked("aware clock required")
         decision_ts = (now_ms(now) // FOUR_HOUR_MS) * FOUR_HOUR_MS
         events: list[TrendEvent] = []
+        self._manage_only = manage_only
         # One tick owns the lane at a time: recovery below treats an unfenced
         # reservation as abandoned, which is only true while no other tick lives.
         async with self.state.tick_lease() as lease, self._bound(lease):
@@ -1734,6 +1748,18 @@ class TrendExecutor:
                             type(exc).__name__,
                         )
                     )
+            if manage_only:
+                # Existing exposure and unresolved intents were handled above
+                # (including forecast repair); nothing below may observe a
+                # signal or open an entry.
+                events.append(
+                    TrendEvent(
+                        "*",
+                        "entries_skipped_manage_only",
+                        "manage-only mode: no signal evaluation or entry",
+                    )
+                )
+                return TrendTickResult(decision_ts=decision_ts, events=tuple(events))
             occupied = {
                 signal.symbol for signal in await self.state.list_active_signals()
             }
@@ -1756,7 +1782,11 @@ class TrendExecutor:
                 if sigma_hat is None:
                     continue
                 outcome = await self._enter(record, sigma_hat=sigma_hat, now=now)
-                events.append(TrendEvent(found.symbol, f"entry_{outcome}"))
+                # ``_enter`` already prefixes its refusal/abort results with
+                # ``entry_``; prefix only the bare outcomes so the emitted
+                # vocabulary is ``entry_refused:...``, not ``entry_entry_...``.
+                event = outcome if outcome.startswith("entry_") else f"entry_{outcome}"
+                events.append(TrendEvent(found.symbol, event))
                 if outcome == "uncertain":
                     break
         return TrendTickResult(decision_ts=decision_ts, events=tuple(events))
