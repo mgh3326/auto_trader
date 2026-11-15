@@ -597,10 +597,11 @@ class KiwoomMockOrderLedgerService:
                 reason="fill_not_booked",
             )
         # Keep the booked quantity in the terminal detail: it is the audit trail
-        # for what the close consumed.
+        # for what the close consumed. The verdict's exact int is stored because
+        # the column's ``numeric(20, 8)`` scale would render as "4.00000000".
         terminal_detail = {
             "verdict": status,
-            "booked_filled_qty": str(booked),
+            "booked_filled_qty": str(filled_quantity),
             **(detail or {}),
         }
         self._apply_terminal(row, status=status, reason=reason, detail=terminal_detail)
