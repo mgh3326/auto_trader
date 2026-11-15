@@ -108,6 +108,13 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
 
 _MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
 
+# Create-time buying-power advisory allow set (advisory only — never blocks
+# create or changes submission). KR reaches the reader as currency KRW via
+# currency_for_market (canonical market key "equity_kr").
+_BUYING_POWER_ADVISORY_ACCOUNT_MODES = frozenset(
+    {"toss_live", "kis_live", "kiwoom_mock"}
+)
+
 
 def _normalize_order_proposal_market(market: str) -> str:
     return _MARKET_ALIASES.get(market, market)
@@ -379,10 +386,12 @@ async def _complete_committed_proposal_create(
         # is the per-approval ladder, which needs no balance and is the half
         # that names the 2026-09-07 failure: three KIS adds created, two
         # approved, the third rejected by the balance precheck because the
-        # broker had already reserved the first two.
+        # broker had already reserved the first two. `kiwoom_mock` joins the
+        # same advisory with a kt00001 reader wired; the advisory stays
+        # advisory-only and never blocks create or changes submission.
         if (
             normalized_action == "place"
-            and account_mode in ("toss_live", "kis_live")
+            and account_mode in _BUYING_POWER_ADVISORY_ACCOUNT_MODES
             and side == "buy"
         ):
             try:

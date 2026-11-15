@@ -319,6 +319,7 @@ tests/services/test_fill_handoff_bundle_wiring.py
 tests/services/test_kis_mock_attribution_chain.py
 tests/services/test_kis_mock_inference_expiry_mutants.py
 tests/services/test_kis_mock_lifecycle_service.py
+tests/services/test_kiwoom_mock_attribution.py
 tests/services/test_legacy_stock_analysis_adapter.py
 tests/services/test_live_correlation.py
 tests/services/test_market_events_expected_sources.py
@@ -450,6 +451,7 @@ tests/test_kis_websocket_mock_smoke.py
 tests/test_kiwoom_client_endpoint_guard.py
 tests/test_kiwoom_does_not_change_ohlcv_default.py
 tests/test_kiwoom_live_readonly_guard.py
+tests/test_kiwoom_mock_attribution_db.py
 tests/test_kiwoom_mock_auto_reconcile.py
 tests/test_kiwoom_mock_ledger_migration.py
 tests/test_kiwoom_mock_ledger_schema_db.py
