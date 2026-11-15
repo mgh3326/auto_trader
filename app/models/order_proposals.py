@@ -38,7 +38,8 @@ from app.services.order_proposals.state_machine import GROUP_STATES, RUNG_STATES
 
 _MARKETS = "'equity_kr','equity_us','crypto','forex','index'"
 _ACCOUNT_MODES = (
-    "'kis_live','kis_mock','toss_live','upbit','db_simulated','kiwoom_mock'"
+    "'kis_live','kis_mock','toss_live','upbit','db_simulated','kiwoom_mock',"
+    "'kiwoom_mock_us'"
 )
 _GROUP_STATES_SQL = ",".join(f"'{s}'" for s in sorted(GROUP_STATES))
 _RUNG_STATES_SQL = ",".join(f"'{s}'" for s in sorted(RUNG_STATES))

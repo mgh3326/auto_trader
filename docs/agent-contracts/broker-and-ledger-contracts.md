@@ -906,6 +906,38 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 - **No secrets printed**: CLI는 missing env key **이름만** 보고, 값 출력 없음
 - **Cancel-before-submit**: `full` 모드는 cancel이 wired이기에만 실주문 제출; finally-block에서 항상 cancel 시도 후 reconcile
 
+**US 모의 계좌 확장 (hk 4754, 3797 T-P8)**:
+- **하나의 송신 경계**: `kiwoom_mock_us_place_order` MCP 도구와 `order_proposals` 제출 어댑터는
+  `app/services/kiwoom_mock_place.py`의 `place_kiwoom_mock_us_order` 하나를 호출한다. 순서는 KR과
+  같다 — 귀속 신호(`account_mode='kiwoom_mock_us'`) → 사전 점검(`stex_tp` 해석 + `trde_tp`/가격 형식)
+  → 송신 전 예약(`order_send_intents.account_scope='kiwoom_mock_us'`) → 주문 정확히 1회 → 원장 행
+  → 신호 결과. 예약에서 끝까지 가는 공통 꼬리는 `_execute_reserved_send` 하나이므로 이중 송신
+  방어·미확정 처리·원장 쓰기 규율은 두 시장에서 같은 코드다.
+- **원장 정체성**: `review.kiwoom_mock_order_ledger` 한 테이블에 `account_mode='kiwoom_mock_us'` +
+  `market='us'` + `instrument_type='equity_us'` + `currency='USD'` 로 쓴다(테이블 CHECK가 네 값을
+  결속). `trading_day`는 ET 거래일이며 20:00 ET(서머타임 반영)에 넘어간다(ROB-1379
+  `us_trading_day_window`를 재사용한다). 송신 키는 `kwoomus-<sha16>`이고 `100`과 `100.00`은 같은
+  주문이다. 브로커 주문번호는 문서상 9자리 숫자이며 `validate_us_order_id`를 통과하지 못하는 값은
+  `accepted`가 아니라 `uncertain` 원장 행이 된다.
+- **대사**: `scripts/kiwoom_mock_auto_reconcile.py --market us`가 `ust21510`(당일 주문·체결, detail
+  역할)과 `ust21050`(미체결, status 역할)을 `cont_yn`/`next_key`로 끝까지 읽어 KR과 같은 순수 분류기
+  (`app/services/brokers/kiwoom/mock_reconcile.py`)로 판정한다. 쓰기는 `--apply-terminal-only` +
+  `KIWOOM_MOCK_US_TERMINAL_AUTO_RECONCILE_ENABLED=true`(기본 off)일 때만 일어나며, KR 게이트를 켜도
+  US는 열리지 않는다(계좌·자격증명이 다르다). 🔴 지난 ET 거래일을 덮는 목록이 없으므로 지난 날짜
+  행은 부재로 종결하지 않고 `unknown`(수동 검토)으로 남긴다. 🔴 US 목록에는 체결 평균가가 없어
+  체결은 `deferred_fill_booking`으로 보고만 하고 부킹하지 않는다(T-P4 범위 밖).
+- **제안**: (`kiwoom_mock_us`, `equity_us`)는 place 전용 제출 가능 조합이고, 승인 창은 XNYS 정규장만
+  이며(프리·애프터 없음, Toss US 확장 키를 읽지 않는다) **수동 승인 전용**이다 — 자동승인·veto 어휘에
+  없다. `review.order_proposals.account_mode` CHECK는 마이그레이션
+  `20261116_hk4754_kiwoom_us_proposals`가 `'kiwoom_mock_us'`를 받는다(downgrade는 그런 행이 있으면
+  거부).
+- **게이트**: 주문 도구는 기존 `KIWOOM_MOCK_US_ENABLED` + US 앱키/계좌 4종 설정 + 호출별
+  `dry_run`/`confirm` 이중 게이트 뒤에 있고, 대사 쓰기만 위의 US 대사 게이트 뒤에 있다. 두 게이트 모두
+  기본 off이며 스케줄러 등록·호스트 allowlist·KR 경로·KRX 규칙 변경은 없다.
+- **준비도**: `docs/contracts/rob-1268-us-kis-kiwoom-readiness.md`의 `us.kiwoom.mock`은 이제 일곱
+  evidence 종류 모두 `PRESENT`(lane_native_evidence 충족)이며, 수명주기 verdict는 owner·재탐색
+  트리거·readback 제약 때문에 여전히 `AUTO_READY_BLOCKED_BY_LIFECYCLE`이다.
+
 ### Kiwoom Live Read-Only Market Data (Stage 1)
 
 🔴 **레포에서 주문 가능한 live 호스트 `https://api.kiwoom.com` 에 붙는 유일한 클라이언트.** 차트만 읽으며 그 외에는 아무것도 못 한다.

@@ -108,18 +108,30 @@ class FakeService:
         self.db = db
         self.writes: list[tuple[str, int, str, str | None]] = []
 
-    async def list_reconcile_candidates(self, *, limit: int):
+    async def list_reconcile_candidates(
+        self, *, limit: int, account_mode: str = "kiwoom_mock"
+    ):
+        self.account_mode = account_mode
         return list(type(self).rows[:limit]), type(self).total
 
-    async def list_acknowledged_cancels(self, *, original_order_ids: set[str]):
+    async def list_acknowledged_cancels(
+        self, *, original_order_ids: set[str], account_mode: str = "kiwoom_mock"
+    ):
         return type(self).cancels & original_order_ids
 
-    async def mark_terminal(self, *, ledger_id, status, reason, detail=None):
+    async def mark_terminal(
+        self, *, ledger_id, status, reason, detail=None, account_mode="kiwoom_mock"
+    ):
         self.writes.append(("mark_terminal", ledger_id, status, reason))
         return SimpleNamespace(id=ledger_id, status=status)
 
     async def promote_uncertain_to_accepted(
-        self, *, ledger_id, broker_order_id, detail=None
+        self,
+        *,
+        ledger_id,
+        broker_order_id,
+        detail=None,
+        account_mode="kiwoom_mock",
     ):
         self.writes.append(("promote", ledger_id, broker_order_id, None))
         return SimpleNamespace(id=ledger_id, status="accepted")

@@ -154,7 +154,9 @@ def test_orm_check_names_match_the_migration_pins() -> None:
     assert signal_names == SIGNAL_CHECKS
 
 
-def test_order_proposals_orm_admits_kiwoom_mock_and_not_kiwoom_mock_us() -> None:
+def test_order_proposals_orm_admits_both_kiwoom_mock_modes() -> None:
+    # hk 4703 admitted KR only; hk 4754 (T-P8) adds the US account, which needs
+    # the constraint (not just the service layer) to accept the row.
     checks = {
         c.name: str(c.sqltext)
         for c in OrderProposal.__table__.constraints
@@ -162,7 +164,7 @@ def test_order_proposals_orm_admits_kiwoom_mock_and_not_kiwoom_mock_us() -> None
     }
     definition = checks[PROPOSAL_CHECK]
     assert "'kiwoom_mock'" in definition
-    assert "kiwoom_mock_us" not in definition
+    assert "'kiwoom_mock_us'" in definition
     for mode in ("kis_live", "kis_mock", "toss_live", "upbit", "db_simulated"):
         assert f"'{mode}'" in definition
 

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from app.core.config import validate_kiwoom_mock_us_config
 from app.mcp_server.tooling.orders_kiwoom_shared import (
     finalize_broker_response,
     finalize_place_broker_response,
@@ -28,6 +28,13 @@ from app.services.brokers.kiwoom.us_orders import (
     KiwoomUsOrderRejected,
     build_us_place_order_body,
     validate_us_order_id,
+)
+from app.services.kiwoom_mock_place import (
+    KiwoomMockUsPlaceDeps,
+    UsPlacePreflight,
+    new_signal_recorder,
+    new_us_place_recorder,
+    place_kiwoom_mock_us_order,
 )
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
@@ -59,18 +66,75 @@ class _TrustedValidationError(ValueError):
 
 
 def _mock_us_config_error() -> dict[str, Any] | None:
-    missing = validate_kiwoom_mock_us_config()
-    if not missing:
-        return None
-    return {
-        "success": False,
-        "source": "kiwoom",
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK_US,
-        "error": (
-            "Kiwoom US mock account is disabled or missing required "
-            "configuration: " + ", ".join(missing)
-        ),
-    }
+    # One definition of the gate text (the proposals adapter shows the same).
+    # Imported here, not bound at module import: the gate must read whatever the
+    # defining module currently holds, so there is no second copy of its text.
+    from app.services.kiwoom_mock_place import us_config_error
+
+    return us_config_error()
+
+
+# ---------------------------------------------------------------------------
+# Place-path seams (hk 4754). The sequence itself lives in
+# ``app.services.kiwoom_mock_place`` so the order_proposals submit adapter runs
+# the same attribution → reservation → POST → ledger boundary. These names are
+# the monkeypatch points tests already use (client, exchange lookup) plus the
+# recorder/clock seams the KR tool has.
+# ---------------------------------------------------------------------------
+
+
+def _new_us_place_recorder() -> Any:
+    return new_us_place_recorder()
+
+
+def _new_signal_recorder() -> Any:
+    return new_signal_recorder()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _us_preflight(
+    symbol: str,
+    side: str,
+    quantity: int,
+    price: object | None,
+    trde_tp: str,
+) -> UsPlacePreflight:
+    """Resolve this module's exchange lookup and validate the order shape."""
+    try:
+        stex_tp = await _resolve_stex(symbol)
+        build_us_place_order_body(
+            side=side,
+            symbol=symbol,
+            stex_tp=stex_tp,
+            quantity=quantity,
+            trde_tp=trde_tp,
+            price=price,
+        )
+    except Exception as exc:  # noqa: BLE001 - a shape refusal, never a send
+        return UsPlacePreflight(
+            ok=False,
+            error_code="place_order_validation_failed",
+            error_detail=f"kiwoom_mock_us_place_order failed: {type(exc).__name__}",
+        )
+    return UsPlacePreflight(ok=True, stex_tp=stex_tp)
+
+
+def _us_finalize_for(side: str):
+    api_id = (
+        constants.US_ORDER_BUY_API_ID
+        if str(side).strip().lower() == "buy"
+        else constants.US_ORDER_SELL_API_ID
+    )
+
+    def finalize(
+        base: dict[str, Any], broker_response: dict[str, Any]
+    ) -> dict[str, Any]:
+        return _finalize_us(base, broker_response, api_id=api_id, tracked_order=True)
+
+    return finalize
 
 
 def _trade_type_error(trde_tp: str) -> dict[str, Any] | None:
@@ -262,7 +326,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="kiwoom_mock_us_place_order",
-        description="Place a Kiwoom US mock order; dry_run defaults to true.",
+        description=(
+            "Place a Kiwoom US mock order; dry_run defaults to true. A confirmed "
+            "order requires a non-blank strategy: the attribution is committed "
+            "to the signal ledger before the send reservation."
+        ),
     )
     async def place(
         symbol: str,
@@ -271,8 +339,10 @@ def register(mcp: FastMCP) -> None:
         price: float | None = None,
         trde_tp: str = "00",
         market: str = "us",
+        strategy: str | None = None,
         dry_run: bool = True,
         confirm: bool = False,
+        rung: str | int | None = None,
     ) -> dict[str, Any]:
         preview_result = await preview(
             symbol=symbol,
@@ -295,52 +365,31 @@ def register(mcp: FastMCP) -> None:
                     "when dry_run=False."
                 ),
             }
-        try:
-            client = get_client()
-            orders = KiwoomUsOrderClient(cast(Any, client))
-        except Exception as exc:  # noqa: BLE001 - no broker dispatch occurred
-            return _not_submitted_response("place_order", exc)
-        kwargs = {
-            "symbol": symbol,
-            "stex_tp": preview_result["stex_tp"],
-            "quantity": quantity,
-            "trde_tp": trde_tp,
-            "price": price,
-        }
-        try:
-            if side == "buy":
-                raw = await orders.place_buy_order(**kwargs)
-            else:
-                raw = await orders.place_sell_order(**kwargs)
-        except KiwoomPreDispatchError as exc:
-            return _not_submitted_response("place_order", exc)
-        except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
-            return {
-                **_exception_response("place_order", exc),
-                "status": "acceptance_uncertain",
-                "reconcile_required": True,
-                "retry_allowed": False,
-            }
-        return _finalize_us(
-            {
-                "source": "kiwoom",
-                "account_mode": ACCOUNT_MODE_KIWOOM_MOCK_US,
-                "dry_run": False,
-                "symbol": symbol.strip().upper(),
-                "side": side,
-                "quantity": quantity,
-                "price": price,
-                "requested_notional": preview_result["requested_notional"],
-                "trde_tp": trde_tp,
-                "stex_tp": preview_result["stex_tp"],
-            },
-            raw,
-            api_id=(
-                constants.US_ORDER_BUY_API_ID
-                if side == "buy"
-                else constants.US_ORDER_SELL_API_ID
-            ),
-            tracked_order=True,
+        # hk 4754: the confirmed sequence (attribution signal → preflight →
+        # reservation → POST → ledger row → outcome mark) is the shared
+        # service-layer pipeline, so the order_proposals submit adapter places
+        # through the same boundary. This tool keeps the seams (client,
+        # exchange lookup, recorders, clock) and the response envelope.
+        deps = KiwoomMockUsPlaceDeps(
+            new_client=get_client,
+            order_client_cls=KiwoomUsOrderClient,
+            preflight=_us_preflight,
+            place_recorder=_new_us_place_recorder,
+            signal_recorder=_new_signal_recorder,
+            utc_now=_utc_now,
+            finalize=_us_finalize_for(side),
+        )
+        return await place_kiwoom_mock_us_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            trde_tp=trde_tp,
+            market=market,
+            dry_run=False,
+            strategy=strategy,
+            rung=rung,
+            deps=deps,
         )
 
     @mcp.tool(

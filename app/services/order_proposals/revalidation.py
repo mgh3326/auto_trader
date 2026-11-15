@@ -630,6 +630,7 @@ def _adapt_live_submit_response(
 
 
 _KIWOOM_MOCK_ACCOUNT_MODE = "kiwoom_mock"
+_KIWOOM_MOCK_US_ACCOUNT_MODE = "kiwoom_mock_us"
 
 
 def _kiwoom_mock_refusal(error_code: str, message: str) -> dict[str, Any]:
@@ -769,6 +770,80 @@ async def _place_kiwoom_mock_proposal_order(
     )
     if dry_run:
         return _adapt_kiwoom_preview_response(response)
+    return _adapt_kiwoom_submit_response(response)
+
+
+def _kiwoom_mock_us_price(value: Any) -> Decimal | None:
+    """Exact positive decimal for a US mock limit price, else ``None``.
+
+    Unlike the KR lane the US body accepts fractional prices, so the check is
+    "positive and finite", not "integer". ``float(str(...))`` is never used:
+    the rung's Decimal is carried through unchanged.
+    """
+    if value is None:
+        return None
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not decimal_value.is_finite() or decimal_value <= 0:
+        return None
+    return decimal_value
+
+
+async def _place_kiwoom_mock_us_proposal_order(
+    *,
+    dry_run: bool,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Proposal binding for the US mock lane (hk 4754).
+
+    Calls the same service-layer place function the ``kiwoom_mock_us_*`` MCP
+    tool calls, so attribution, the send reservation and the ledger row land at
+    the same boundary on both paths. Every refusal below happens before any
+    broker call: the default-disabled US config gate, the US/limit shape, and
+    an exact positive quantity/price.
+    """
+    from app.services.kiwoom_mock_place import (
+        place_kiwoom_mock_us_order,
+        us_config_error,
+    )
+
+    config_error = us_config_error()
+    if config_error is not None:
+        return config_error
+    if str(kwargs.get("market") or "") != "equity_us":
+        return _kiwoom_mock_refusal(
+            "kiwoom_mock_us_market_unsupported",
+            "kiwoom_mock_us proposals support market='equity_us' only",
+        )
+    if str(kwargs.get("order_type") or "") != "limit":
+        return _kiwoom_mock_refusal(
+            "kiwoom_mock_us_order_type_unsupported",
+            "kiwoom_mock_us proposals support order_type='limit' only",
+        )
+    quantity = _kiwoom_mock_int_amount(kwargs.get("quantity"))
+    price = _kiwoom_mock_us_price(kwargs.get("price"))
+    if quantity is None or price is None:
+        return _kiwoom_mock_refusal(
+            "kiwoom_mock_us_quantity_price_invalid",
+            "kiwoom_mock_us requires a positive integer quantity and limit price",
+        )
+    response = await place_kiwoom_mock_us_order(
+        symbol=kwargs.get("symbol"),
+        side=kwargs.get("side"),
+        quantity=quantity,
+        price=price,
+        trde_tp="00",
+        market="us",
+        dry_run=dry_run,
+        strategy=kwargs.get("strategy"),
+        rung=kwargs.get("rung"),
+        correlation_id=kwargs.get("correlation_id"),
+        pre_send_hook=kwargs.get("pre_send_hook"),
+    )
+    if dry_run:
+        return response
     return _adapt_kiwoom_submit_response(response)
 
 
@@ -914,6 +989,14 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
         # KIS/Upbit fallback below, which has no mock client. Preview and submit
         # are the same call; ``dry_run`` decides whether anything is sent.
         return await _place_kiwoom_mock_proposal_order(
+            dry_run=kwargs.get("dry_run") is True,
+            kwargs=kwargs,
+        )
+
+    if account_mode == _KIWOOM_MOCK_US_ACCOUNT_MODE:
+        # hk 4754: same shared sequence, US seams (separate app keys, 9-digit
+        # ord_no, ET trading day).
+        return await _place_kiwoom_mock_us_proposal_order(
             dry_run=kwargs.get("dry_run") is True,
             kwargs=kwargs,
         )

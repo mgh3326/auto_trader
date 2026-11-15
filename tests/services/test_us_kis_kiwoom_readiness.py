@@ -697,7 +697,7 @@ def test_kiwoom_evidence_needs_a_us_writer_not_only_a_us_capable_table() -> None
     )
 
 
-def test_kiwoom_evidence_is_absent_in_this_tree() -> None:
-    # The repository has the ledger models and a KR-only writer (T-P2, #2430);
-    # the US writer (T-P8) is pending.
-    assert _evidence_ground_truth("us.kiwoom.mock") == "ABSENT"
+def test_kiwoom_evidence_is_present_in_this_tree() -> None:
+    # The ledger model attributes rows to the US account and the shared writer
+    # (T-P8, hk 4754) records them, so this lane now has lane-native evidence.
+    assert _evidence_ground_truth("us.kiwoom.mock") == "PRESENT"
