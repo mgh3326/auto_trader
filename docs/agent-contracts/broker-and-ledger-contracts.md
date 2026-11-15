@@ -8,7 +8,7 @@
 - Binance Demo Order Ledger (ROB-298)
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
-- TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어 (hk 4702, 3796 CT-3)
+- TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어·실행기 (hk 4702 CT-3, hk 4719 CT-4)
 - Execution Intent Gateway (ROB-1440)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
@@ -262,17 +262,24 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
   core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
 
-### TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어 (hk 4702, 3796 CT-3)
+### TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어·실행기 (hk 4702 CT-3, hk 4719 CT-4)
 
-H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)의 **상태·상수 코어뿐**이다. 설계 `docs/design/3796-crypto-trend-demo.md` §4, 운영자 답 `decision/2026-11-15/at-3796-3797-design-answers`. 🔴 **주문 전송 경로가 아직 없다**: executor·`TrendStrategy`·CLI·알림·truth gate·env 게이트(`BINANCE_TREND_DEMO_ENABLED`)·스케줄러 연결은 CT-4/CT-5에서 게이트와 함께 들어온다. 그 전에는 이 패키지를 import 하는 코드가 패키지 밖에 없다(`tests/services/brokers/binance/trend/test_static_boundary.py`).
+H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)다. 설계 `docs/design/3796-crypto-trend-demo.md` §3.2·§4, 운영자 답 `decision/2026-11-15/at-3796-3797-design-answers`. CT-3(hk 4702)은 상태·상수 코어, CT-4(hk 4719)는 `TrendStrategy`와 **전송 경로가 있는 executor**다(아래 "실행기" 항목). CLI·알림·truth gate·스케줄러·loop는 CT-5이며 아직 없다. 패키지 밖에서 이 패키지를 import 하는 코드는 없다(`tests/services/brokers/binance/trend/test_static_boundary.py`).
 
 - **identity·상수**: `IDENTITY = "TREND-TSMOM-v1"`. `constants.LOCKED_LIMITS`가 유니버스 `{BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT}`, leg notional 상한 60 USDT, 동시 포지션 4, gross 240 USDT, UTC일당 연속 hard-stop 2, UTC주당 conflict 3, 요구 레버리지 1x를 정한다(ROB-993 `LOCKED_LIMITS` 관용구). CLI·env·설정으로 바꾸는 경로가 없고 `assert_limits_locked`가 서비스 생성 시점에 DB·네트워크 이전에 거부한다. 레버리지·margin mode는 readback으로 요구만 하며 이 패키지는 설정을 바꾸지 않는다. ROB-993/H5/ROB-1474의 상수·allowlist·게이트는 건드리지 않는다.
 - **상태 테이블**: `review.binance_trend_signals`·`review.binance_trend_intents`(마이그레이션 `20261114_hk4702_trend_state`, 추가형, 모델 `app/models/binance_trend.py`). correlation id는 `binance-trend:<sha256 24hex>`(`keys.py`). conflict 기록은 신호 상태 `conflict_blocked`(자체 사전 차단)·`conflict_rejected`(브로커 거부)와 `conflict_at`·`conflict_detail`(<=200자)에 심볼과 시각으로 남는다.
 - **유일한 writer**: `state.TrendStateService`. 쓰기마다 자기 트랜잭션이고 하나의 advisory lock 아래서 직렬화된다. `reserve_entry`는 순수 판정 `entry_gate.decide_entry`로 동시 포지션 4·심볼당 1·gross 240·leg 상한·UTC일 연속 hard-stop 2·conflict 3·`uncertain` 의도가 있는 심볼 차단을 한 번에 판정하고 모든 사유를 돌려준다. `reserve_intent`는 `qty × reference_price`가 그 신호에 예약된 notional 안일 때만 의도를 만들고(전송 시점의 신선한 가격 재검사는 CT-4), `mark_sending`(send fence)은 같은 lock 아래서 자기 예약을 뺀 장부로 모든 진입 규칙을 다시 판정한 뒤에만 `sending`으로 옮긴다.
 - 🔴 **두 kill switch는 래치다**: 일일 hard-stop은 당일 청산을 시간순으로 훑어 연속 2회가 한 번이라도 있었으면 UTC일이 바뀔 때까지 멈춘다(다른 포지션의 이후 청산으로 풀리지 않는다). conflict 정지는 해소되지 않은 conflict 기록이 어느 UTC주에든 3건 모이면 걸리고 주 경계로 풀리지 않는다 — 운영자가 `resolve_conflicts`로 기록을 해소(한 번만, 식별자 필수)해야 풀린다(설계 §4.5). 해소는 종결 행의 유일하게 허용된 변경이며 DB 트리거가 그 외 모든 변경을 거부한다.
-- 🔴 **uncertain은 재전송하지 않는다**: 서비스는 의도를 `reserved`→`sending`(send fence) 한 방향으로만 옮기고, 전송 불명은 `uncertain`으로 보존한다. `uncertain`을 해소하려면 broker order/client id와 전계정 position 증거가 필요하며 그 경로는 CT-4다. DB 트리거도 `uncertain`→`reserved`/`sending`/`acknowledged`를 거부한다.
+- 🔴 **uncertain은 재전송하지 않는다**: 서비스는 의도를 `reserved`→`sending`(send fence) 한 방향으로만 옮기고, 전송 불명은 `uncertain`으로 보존한다. `uncertain`을 해소하려면 broker order/client id의 주문 증거와 완전한 position 읽기가 필요하며 그 경로는 `TrendStateService.apply_order_evidence`(CT-4)뿐이다. DB 트리거도 `uncertain`→`reserved`/`sending`/`acknowledged`를 거부한다.
 - **DB 가드(어떤 역할이든)**: 두 테이블 DELETE·TRUNCATE 거부, 신호는 `observed`로만 INSERT·식별 열 불변·종결 상태 동결, 의도는 미전송 `reserved`로만 INSERT·요청 열 불변·상태 전진만 허용. downgrade는 행이 하나라도 있으면 거부한다. `at_app`에는 조건부 GRANT(역할이 없을 수 있음)로 SELECT·INSERT·UPDATE만 주고 DELETE는 주지 않는다(하드룰 18). 이 트리거·거부를 완화하지 마라.
-- **범위 밖(후속)**: 체결·청산 기록(`holding`/`closed` 쓰기), uncertain 해소, 계정 전체 flat/conflict 감지의 브로커 읽기, 알림, 스케줄러는 CT-4/CT-5. 이 PR은 어떤 게이트도 열지 않는다.
+- **범위 밖(CT-5)**: CLI·`--loop`·알림·truth gate·스케줄러, L(룩백)·hard stop 비율의 값 확정(manifest seal 때). 어떤 게이트도 열지 않는다.
+- **실행기 (hk 4719, CT-4)**: `strategy.py`(`TrendStrategy(StrategyPlugin)`), `sizing.py`·`exits.py`·`exposure.py`(순수), `history.py`(ROB-993 complete-only 1m→4h 수집기), `executor.py`(**패키지에서 브로커에 닿는 유일한 모듈** — 선물 데모 실행 클라이언트 import·`submit_order` 이름·`os.environ` 읽기는 정적 테스트가 이 파일에만 허용한다). 기본 off, 스케줄러 연결 없음.
+  - **신호·크기**: 완성 4h bar 종가 `close_t/close_{t-L일}-1`의 부호(결측 bar = NO_SIGNAL, forward-fill 금지). `L ∈ {20,60,120}`와 hard stop 비율(0<f<1, Decimal)은 `TrendStrategy`의 **기본값 없는 필수 인자**이고 CT-5가 seal 때 값을 정한다. 크기는 `cap × min(1, σ*/σ̂)`(σ*=60%, σ̂=20일 EWMA 일수익률 연환산)이며 cap(60 USDT)을 넘는 확대는 없다. 필요한 bar는 `t-k일`(k=0..20)과 `t-L일`의 4h bucket 22개뿐이라 L=120도 심볼당 22요청이다.
+  - **전송 순서**: `BINANCE_TREND_DEMO_ENABLED` AND `BINANCE_FUTURES_DEMO_ENABLED`(둘 다 정확히 `"true"`) AND 호출별 `confirm=True`와 정확한 데모 origin·클라이언트 identity를 네트워크·DB 사용 전에 검사 → `reserve_entry` → **계정 전체 flat/conflict 게이트 #1**(완전한 positions+open orders) → 데모 원장 root(`BinanceDemoLedgerService`만) → `reserve_intent` → **게이트 #2 + 신선한 체결가 재검사(예약 notional 이하)** → `mark_sending`(committed fence, 진입 규칙 재판정) → 주문 정확히 1회 → 클라이언트 주문 ID 기준 bounded poll → position 읽기가 체결을 확인할 때만 `holding`/`closed`. 반응(echo) 불일치·미지 status·전송 예외는 fence 이후 전부 `uncertain`이며 재전송하지 않는다(Binance가 음수 `code`를 담은 4xx로 거절한 경우만 주문 부재 증거로 `rejected`; 408/418/429/5xx/읽기 불가 본문은 증거가 아니다). `uncertain`은 주문 not-found만으로 풀리지 않는다.
+  - **충돌**: 신호 심볼에 우리 것이 아닌 position·open order가 있으면 `conflict_blocked`(미전송), 브로커 거절 뒤 같은 증거가 보이면 `conflict_rejected`를 기록하며 둘 다 주 3건 래치로 센다.
+  - **청산**: 우선순위 hard stop → signal flip → time exit(30일). 모든 청산은 `reduceOnly` MARKET one-way, 수량은 `min(레인 잔량, 브로커 position)`을 lot step으로 내림한 값이며 브로커가 보유 방향을 보이지 않거나 해당 심볼에 미체결이 있으면 보내지 않는다. hard stop은 4h 마감 사이를 체결 이후 1m 극값(최대 24시간)과 현재 호가로 감시하고, 1m 조회가 실패한 틱은 **4h 결정(완성 bar 종가)만** 쓴다. `exit_reason`은 `constants.EXIT_REASONS={hard_stop, signal_flip, time_exit}` 하나뿐이며 `TrendStateService`가 모든 쓰기 전에 검증한다(DB CHECK 없음). 청산은 진입 규칙(kill switch·cap)에 막히지 않는다.
+  - **금지**: leverage·margin mode 변경, 주문 취소, smoke order-test(클라이언트가 거부), 기존 ROB-993/H5/ROB-1474 상수·allowlist·게이트 변경, 선물 데모 클라이언트의 호스트 allowlist 변경.
+  - **테스트**: `test_executor.py`(가짜 클라이언트·원장·상태, 모든 거부 경로의 전송 0건 단언), `test_client_history.py`, `test_strategy_sizing.py`, `test_exits_exposure.py`, DB 전이는 CI의 `test_state_exec_db.py`.
 - **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB).
 
 ### Execution Intent Gateway (ROB-1440)

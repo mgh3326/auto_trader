@@ -1,4 +1,4 @@
-"""CT-3 has no send path: static guards over the trend package and its callers."""
+"""Static guards over the trend package: only ``executor.py`` can reach a broker."""
 
 from __future__ import annotations
 
@@ -13,8 +13,28 @@ ROOT = Path(__file__).resolve().parents[5]
 PACKAGE = ROOT / "app/services/brokers/binance/trend"
 PACKAGE_MODULE = "app.services.brokers.binance.trend"
 
-# First-party imports the package may use: its own modules and its ORM models.
+# First-party imports every module may use: the package itself and its ORM models.
 ALLOWED_FIRST_PARTY = ("app.models.binance_trend", PACKAGE_MODULE)
+_BARS = "app.services.brokers.binance.demo_strategy_loop"
+_FUTURES = "app.services.brokers.binance.futures_demo"
+_ROB974 = "research.nautilus_scalping.rob974_features"
+# Extra first-party imports per module. Everything not listed here is refused,
+# so a new import of a broker, order or network module fails this test.
+EXTRA_ALLOWED = {
+    "strategy.py": (f"{_BARS}.strategy", _ROB974),
+    "history.py": (f"{_BARS}.bars", _ROB974),
+    "exposure.py": (f"{_FUTURES}.dto",),
+    "executor.py": (
+        _ROB974,
+        f"{_FUTURES}.dto",
+        f"{_FUTURES}.execution_client",
+        f"{_FUTURES}.signing",
+        "app.services.brokers.binance.demo.errors",
+        "app.services.brokers.binance.demo.quantity",
+        "app.services.brokers.binance.demo.ledger.service",
+    ),
+}
+EXECUTION_CLIENT_MODULES = (f"{_FUTURES}.execution_client", f"{_FUTURES}.signing")
 # Anything that can open a socket or talk to a broker.
 FORBIDDEN_THIRD_PARTY = (
     "httpx",
@@ -61,32 +81,62 @@ def _package_files() -> list[Path]:
     return files
 
 
-def test_the_package_imports_no_execution_client_order_module_or_network_library() -> (
-    None
-):
+def test_every_module_imports_only_what_it_is_allowed_to() -> None:
     offenders: list[str] = []
     for path in _package_files():
+        allowed = ALLOWED_FIRST_PARTY + EXTRA_ALLOWED.get(path.name, ())
         for module, line in _imports(path, in_package=True):
             top = module.split(".")[0]
             # `from app.models import X` would hide a model import: refuse it too.
-            first_party_ok = module.startswith(ALLOWED_FIRST_PARTY)
+            first_party_ok = module.startswith(allowed) or any(
+                a.startswith(module + ".") for a in allowed
+            )
+            research_ok = top == "research" and first_party_ok
             if (top == "app" and not first_party_ok) or (
                 top != "app"
                 and (
                     module.startswith(FORBIDDEN_THIRD_PARTY)
-                    or top in {"research", "scripts"}
+                    or top == "scripts"
+                    or (top == "research" and not research_ok)
                 )
             ):
                 offenders.append(f"{path.name}:{line} {module}")
     assert not offenders
 
 
-def test_the_package_never_references_an_order_submission_name() -> None:
+def test_only_the_executor_imports_the_execution_client() -> None:
+    offenders = []
+    for path in _package_files():
+        if path.name == "executor.py":
+            continue
+        for module, line in _imports(path, in_package=True):
+            if module.startswith(EXECUTION_CLIENT_MODULES) or module.endswith(
+                ".executor"
+            ):
+                offenders.append(f"{path.name}:{line} {module}")
+    assert not offenders
+    executor = _imports(PACKAGE / "executor.py", in_package=True)
+    assert any(m == EXECUTION_CLIENT_MODULES[0] for m, _ in executor)
+
+
+def test_only_the_executor_names_an_order_submission() -> None:
     banned = ("submit_order", "place_order", "new_order", "create_order", "newOrder")
     for path in _package_files():
+        if path.name == "executor.py":
+            continue
         source = path.read_text()
         for name in banned:
             assert name not in source, f"{path.name} mentions {name}"
+    tree = ast.parse((PACKAGE / "executor.py").read_text())
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "submit_order"
+    ]
+    # One send site (`self.client.submit_order`) and the gated super() call.
+    assert len(calls) == 2
 
 
 def test_nothing_outside_the_package_imports_it() -> None:
@@ -124,10 +174,26 @@ def test_the_state_service_is_the_only_writer_of_the_trend_tables() -> None:
     assert not offenders
 
 
-def test_the_package_has_no_env_gate_scheduler_or_cli_surface() -> None:
+def test_only_the_executor_reads_the_environment_and_nothing_is_a_cli() -> None:
     for path in _package_files():
         source = path.read_text()
-        for needle in ("os.environ", "getenv", "argparse", "get_settings", "settings."):
-            assert needle not in source, f"{path.name} reads {needle}"
-        assert "__main__" not in source
+        if path.name != "executor.py":
+            for needle in ("os.environ", "getenv", "get_settings", "settings."):
+                assert needle not in source, f"{path.name} reads {needle}"
+        for needle in ("argparse", "__main__", "taskiq", "prefect", "crontab"):
+            assert needle not in source, f"{path.name} wires {needle}"
     assert not list(ROOT.glob("scripts/binance_trend*"))
+
+
+def test_the_closed_exit_vocabulary_is_one_constant_used_by_gate_and_state() -> None:
+    from app.services.brokers.binance.trend import constants, entry_gate, state
+
+    assert constants.EXIT_REASONS == ("hard_stop", "signal_flip", "time_exit")
+    assert entry_gate.EXIT_HARD_STOP is constants.EXIT_HARD_STOP
+    assert state.EXIT_REASON_VOCABULARY is constants.EXIT_REASONS
+    for name in ("hard_stop", "signal_flip", "time_exit"):
+        # Literals live only in constants.py: everyone else uses the names.
+        for path in _package_files():
+            if path.name == "constants.py":
+                continue
+            assert f'"{name}"' not in path.read_text(), f"{path.name} hardcodes {name}"
