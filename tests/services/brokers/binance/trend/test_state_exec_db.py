@@ -336,94 +336,24 @@ async def test_released_ids_cover_rejected_intents_and_blocked_entries(svc) -> N
     assert intent.client_order_id in ids  # rejected intent and blocked entry id
 
 
-async def test_a_partially_filled_entry_enables_exits_but_stays_open(svc) -> None:
-    signal, intent = await to_sending(svc)
+async def test_a_partial_entry_is_progress_only_and_blocks_any_exit_leg(svc) -> None:
+    signal, entry = await to_sending(svc)
     held, still = await svc.apply_order_evidence(
-        evidence(intent, status="PARTIALLY_FILLED", executed="0.3"),
+        evidence(entry, status="PARTIALLY_FILLED", executed="0.3"),
         broker_position_amt=D("0.3"),
         now=NOW,
     )
-    assert held.state == "holding" and held.entry_qty == D("0.3")
-    assert still.state == "acknowledged"  # no resend, no cancel
-    exit_intent = await svc.reserve_exit_intent(
-        signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.3"), now=NOW
-    )
-    await svc.mark_sending(exit_intent.client_order_id, now=NOW)
-    closed, _ = await svc.apply_order_evidence(
-        evidence(exit_intent), broker_position_amt=D("0"), now=NOW
-    )
-    assert closed.state == "closed" and closed.exit_reason == EXIT_HARD_STOP
-    # an exit leg does not make a second exit leg possible while it is unresolved
-    other, other_intent = await to_sending(svc, symbol="ETHUSDT")
-    await svc.apply_order_evidence(
-        evidence(
-            other_intent, symbol="ETHUSDT", status="PARTIALLY_FILLED", executed="0.2"
-        ),
-        broker_position_amt=D("0.2"),
-        now=NOW,
-    )
-    first = await svc.reserve_exit_intent(
-        signal_key=other.signal_key, reason=EXIT_SIGNAL_FLIP, qty=D("0.2"), now=NOW
-    )
-    with pytest.raises(TrendStateBlocked, match="unresolved"):
+    # design decision B: no exposure record while the entry is working
+    assert (held.state, held.entry_qty) == ("entry_reserved", D(0))
+    assert still.state == "acknowledged" and still.executed_qty == D("0.3")
+    with pytest.raises(TrendStateBlocked, match="held"):
         await svc.reserve_exit_intent(
-            signal_key=other.signal_key, reason=EXIT_HARD_STOP, qty=D("0.1"), now=NOW
+            signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.3"), now=NOW
         )
-    assert first.reduce_only
-
-
-async def test_a_partial_entry_is_confirmed_by_the_position_and_closed_qty(svc) -> None:
-    signal, intent = await to_sending(svc)
-    with pytest.raises(TrendStateBlocked, match="position"):
-        await svc.apply_order_evidence(
-            evidence(intent, status="PARTIALLY_FILLED", executed="0.3"),
-            broker_position_amt=D("0.2"),
-            now=NOW,
-        )
-
-
-async def test_the_flat_interval_of_a_working_entry_keeps_the_signal_holding(
-    svc,
-) -> None:
-    signal, entry = await to_sending(svc)
-    await svc.apply_order_evidence(
-        evidence(entry, status="PARTIALLY_FILLED", executed="0.3"),
-        broker_position_amt=D("0.3"),
-        now=NOW,
-    )
-    stop = await svc.reserve_exit_intent(
-        signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.3"), now=NOW
-    )
-    await svc.mark_sending(stop.client_order_id, now=NOW)
-    flat, _ = await svc.apply_order_evidence(
-        evidence(stop, avg="95"), broker_position_amt=D("0"), now=NOW
-    )
-    assert flat.state == "holding" and flat.remaining_qty == 0  # entry still working
-    # the entry order ends without filling more: only now is the signal closed
-    closed, _ = await svc.apply_order_evidence(
+    # only terminal evidence turns the executed quantity into a holding
+    done, _ = await svc.apply_order_evidence(
         evidence(entry, status="CANCELED", executed="0.3"),
-        broker_position_amt=D("0"),
-        now=NOW,
-    )
-    assert closed.state == "closed" and closed.exit_reason == EXIT_HARD_STOP
-
-
-async def test_a_fill_after_the_interim_exit_becomes_a_holding_again(svc) -> None:
-    signal, entry = await to_sending(svc)
-    await svc.apply_order_evidence(
-        evidence(entry, status="PARTIALLY_FILLED", executed="0.3"),
         broker_position_amt=D("0.3"),
         now=NOW,
     )
-    stop = await svc.reserve_exit_intent(
-        signal_key=signal.signal_key, reason=EXIT_HARD_STOP, qty=D("0.3"), now=NOW
-    )
-    await svc.mark_sending(stop.client_order_id, now=NOW)
-    await svc.apply_order_evidence(
-        evidence(stop, avg="95"), broker_position_amt=D("0"), now=NOW
-    )
-    held, _ = await svc.apply_order_evidence(
-        evidence(entry, status="FILLED"), broker_position_amt=D("0.3"), now=NOW
-    )
-    assert held.state == "holding" and held.remaining_qty == D("0.3")
-    assert held.entry_qty == D("0.6")
+    assert done.state == "holding" and done.entry_qty == D("0.3")

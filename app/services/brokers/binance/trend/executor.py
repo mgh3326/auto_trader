@@ -65,7 +65,7 @@ from .constants import (
     LOCKED_LIMITS,
     assert_trend_demo_url,
 )
-from .exits import HardStopObservation, HeldPosition, choose_exit
+from .exits import HardStopObservation, HeldPosition, choose_exit, hard_stop_touched
 from .exposure import (
     TrendExposureMismatch,
     entry_conflicts,
@@ -540,7 +540,7 @@ class TrendExecutor:
         self.demo_ledger = demo_ledger
         self.ledger_session = ledger_session
         self._lease: Any = None
-        self._entry_only_blocked: set[str] = set()
+        self._partial_entries: dict[str, TrendIntentSnapshot] = {}
         self._poll_attempts = poll_attempts
         self._poll_interval_s = poll_interval_s
         self._sleep = sleep
@@ -926,13 +926,13 @@ class TrendExecutor:
                 not intent.reduce_only
                 and intent.state == "acknowledged"
                 and intent.executed_qty > 0
-                and signal.state == "holding"
             ):
-                # A working, partially filled entry: new entry sends on the
-                # symbol stay blocked, but exits of the filled quantity do not
-                # (a block that also stopped the exits would leave a position
-                # with no stop). Operator-visible, never resent or cancelled.
-                self._entry_only_blocked.add(signal.symbol)
+                # A still-working, partially filled entry: real exposure that no
+                # exit manages (entry and exit fills would be two streams on one
+                # broker position, which the state cannot reconcile; the managed
+                # holding is hk 4726). Everything on the symbol is blocked, the
+                # order is never resent or cancelled, and the operator sees it.
+                self._partial_entries[signal.symbol] = intent
                 events.append(
                     TrendEvent(
                         signal.symbol,
@@ -940,7 +940,6 @@ class TrendExecutor:
                         format(intent.executed_qty, "f"),
                     )
                 )
-                continue
             blocked.add(signal.symbol)
         for signal in await self.state.list_active_signals():
             if signal.state == "uncertain":
@@ -966,12 +965,64 @@ class TrendExecutor:
             except Exception:
                 logger.exception("trend demo ledger sweep release failed")
 
-    async def _own_order_ids(self, signal_key: str) -> frozenset[str]:
-        """Client ids of this signal's own lane orders (a working partial entry)."""
-        return frozenset(
-            intent.client_order_id
-            for intent in await self.state.list_intents(signal_key)
-        )
+    async def _alert_partial_entry_stops(
+        self,
+        histories: dict[str, tuple[Bar4h, ...]],
+        *,
+        decision_ts: int,
+        now: dt.datetime,
+        events: list[TrendEvent],
+    ) -> None:
+        """Alarm only: a blocked partial entry whose hard stop price is breached.
+
+        Nothing is sent. The same 1m watch (4h-only fallback) as for a holding
+        judges the stop from the average price of what has executed so far.
+        """
+        for symbol, intent in self._partial_entries.items():
+            if intent.avg_price is None or intent.created_at is None:
+                continue
+            side = intent.side
+            stop = self.strategy.hard_stop_price(
+                side=side,  # type: ignore[arg-type]
+                entry_price=intent.avg_price,
+            )
+            entered_ms = now_ms(intent.created_at)
+            bar_close_value: Decimal | None = None
+            for bar in histories.get(symbol, ()):
+                if bar.close_ts == decision_ts and decision_ts > entered_ms:
+                    bar_close_value = bar_close(bar)
+            try:
+                minutes = await collect_hard_stop_minutes(
+                    self.client.kline_transport(),
+                    symbol,
+                    entered_ms=entered_ms,
+                    now_ms=now_ms(now),
+                    check=self._check_origin,
+                )
+                observed = HardStopObservation(
+                    minutes_ok=True,
+                    minute_low=min((minute_low(m) for m in minutes), default=None),
+                    minute_high=max((minute_high(m) for m in minutes), default=None),
+                    bar_close=bar_close_value,
+                    quote=None,
+                )
+            except Exception:
+                logger.exception("trend partial-entry 1m watch unavailable")
+                observed = HardStopObservation(
+                    minutes_ok=False,
+                    minute_low=None,
+                    minute_high=None,
+                    bar_close=bar_close_value,
+                    quote=None,
+                )
+            if hard_stop_touched(
+                side=side,  # type: ignore[arg-type]
+                stop_price=stop,
+                observed=observed,
+            ):
+                events.append(
+                    TrendEvent(symbol, "partial_entry_stop_breached", format(stop, "f"))
+                )
 
     @asynccontextmanager
     async def _bound(self, lease: Any) -> AsyncIterator[None]:
@@ -1313,7 +1364,6 @@ class TrendExecutor:
                 expected_remaining=signal.remaining_qty,
                 positions=positions,
                 open_orders=orders,
-                own_order_ids=await self._own_order_ids(signal.signal_key),
             )
         except TrendExposureMismatch as exc:
             return TrendEvent(symbol, "exposure_mismatch", str(exc))
@@ -1385,7 +1435,6 @@ class TrendExecutor:
                 expected_remaining=signal.remaining_qty,
                 positions=positions,
                 open_orders=orders,
-                own_order_ids=await self._own_order_ids(signal.signal_key),
             )
             if floor_to_step(
                 bound, (await self.client.get_trend_filters(symbol)).step_size
@@ -1414,7 +1463,7 @@ class TrendExecutor:
         # One tick owns the lane at a time: recovery below treats an unfenced
         # reservation as abandoned, which is only true while no other tick lives.
         async with self.state.tick_lease() as lease, self._bound(lease):
-            self._entry_only_blocked = set()
+            self._partial_entries = {}
             blocked = await self._reconcile_unresolved(now, events)
             histories: dict[str, tuple[Bar4h, ...]] = {}
             for symbol in LOCKED_LIMITS.universe:
@@ -1432,6 +1481,9 @@ class TrendExecutor:
                     events.append(
                         TrendEvent(symbol, "bars_unavailable", type(exc).__name__)
                     )
+            await self._alert_partial_entry_stops(
+                histories, decision_ts=decision_ts, now=now, events=events
+            )
             # Manage what is held first; exits never wait for entry capacity.
             for signal in await self.state.list_active_signals():
                 if signal.state != "holding" or signal.symbol in blocked:
@@ -1459,11 +1511,7 @@ class TrendExecutor:
             for found in evaluate_all(
                 self.strategy, histories, decision_ts=decision_ts
             ):
-                if (
-                    found.symbol in blocked
-                    or found.symbol in self._entry_only_blocked
-                    or found.symbol in occupied
-                ):
+                if found.symbol in blocked or found.symbol in occupied:
                     continue
                 bars = histories[found.symbol]
                 decision_bar = next(bar for bar in bars if bar.close_ts == decision_ts)

@@ -375,11 +375,7 @@ class FakeState:
         if qty > row.entry_qty - row.closed_qty:
             raise TrendStateBlocked("exit exceeds the held quantity")
         if any(
-            i.signal_key == signal_key
-            and i.state in _ACTIVE_INTENTS
-            and not (
-                not i.reduce_only and i.state == "acknowledged" and i.executed_qty > 0
-            )
+            i.signal_key == signal_key and i.state in _ACTIVE_INTENTS
             for i in self.intents.values()
         ):
             raise TrendStateBlocked("previous intent unresolved")
@@ -491,38 +487,24 @@ class FakeState:
         if ev.status in {"NEW", "PARTIALLY_FILLED"}:
             if intent.state == "sending":
                 intent.state = "acknowledged"
-            if (
-                not intent.reduce_only
-                and ev.executed_qty > 0
-                and row.state in {"entry_reserved", "uncertain", "holding"}
-            ):
-                remaining = ev.executed_qty - row.closed_qty
-                expected = remaining if intent.side == "BUY" else -remaining
-                if broker_position_amt != expected:
-                    raise TrendStateBlocked("position mismatch")
-                row.state = "holding"
-                row.entry_qty = ev.executed_qty
-                row.entry_price = ev.avg_price
-                row.entered_at = row.entered_at or filled_at or now
             return self._snap_signal(row), self._snap_intent(intent)
         if ev.status == "FILLED" and ev.executed_qty != ev.orig_qty:
             raise TrendStateBlocked("FILLED without the full quantity")
         if ev.status not in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
             raise TrendStateBlocked("unknown order status")
         if not intent.reduce_only:
-            if row.state not in {"entry_reserved", "uncertain", "holding"}:
+            if row.state not in {"entry_reserved", "uncertain"}:
                 raise TrendStateBlocked("signal is not awaiting its entry")
             if ev.executed_qty == 0:
                 row.state = "blocked"
             else:
-                left = ev.executed_qty - row.closed_qty
-                expected = left if intent.side == "BUY" else -left
+                expected = ev.executed_qty if intent.side == "BUY" else -ev.executed_qty
                 if broker_position_amt != expected:
                     raise TrendStateBlocked("position mismatch")
-                row.state = "closed" if left == 0 and row.closed_qty > 0 else "holding"
+                row.state = "holding"
                 row.entry_qty = ev.executed_qty
                 row.entry_price = ev.avg_price
-                row.entered_at = row.entered_at or filled_at or now
+                row.entered_at = filled_at or now
         else:
             if ev.executed_qty == 0:
                 row.state = "holding"
@@ -533,16 +515,10 @@ class FakeState:
                 if broker_position_amt != expected:
                     raise TrendStateBlocked("position mismatch")
                 row.closed_qty = closed
-                entry = self.intents.get(row.entry_client_order_id)
-                working = entry is not None and entry.state in {
-                    "sending",
-                    "acknowledged",
-                    "uncertain",
-                }
                 if remaining == 0:
+                    row.state = "closed"
                     row.exit_reason = intent.leg_key.split(":")[0]
                     row.exit_at = filled_at or now
-                    row.state = "holding" if working else "closed"
                 else:
                     row.state = "holding"
         intent.state = "evidenced"
