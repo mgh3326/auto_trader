@@ -658,3 +658,31 @@ def test_only_changed_migrations_are_checked(tmp_path: Path) -> None:
     changed = lint.changed_migrations(tmp_path, head, new_head)
     assert changed == [forbidden]
     assert lint.check_paths(changed, "4200")
+
+
+def test_marker_text_inside_a_string_literal_is_not_a_marker() -> None:
+    # mergewake r4577123392: a marker-shaped line inside a triple-quoted string
+    # directly above a destructive call must not count as the contract marker.
+    source = (
+        "def upgrade():\n"
+        '    op.create_table("t", sa.Column("c", sa.Text,\n'
+        '        server_default=sa.text("""\n'
+        "# expand-contract: contract-step 4200\n"
+        '"""))); op.drop_table("old")\n'
+    )
+    assert _violations(source, "4200")
+
+
+def test_marker_text_inside_the_module_docstring_is_not_a_file_marker() -> None:
+    source = (
+        '"""Migration.\n'
+        "# expand-contract: contract-step 4200\n"
+        '"""\n'
+        "def helper():\n"
+        "    pass\n"
+        "def upgrade():\n"
+        "    helper()\n"
+    )
+    real = "# expand-contract: contract-step 4200\n" + source
+    assert _violations(source, "4200")
+    assert _violations(real, "4200") == []

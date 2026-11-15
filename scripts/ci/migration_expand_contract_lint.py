@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import re
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 CONTRACT_MARKER_RE = re.compile(r"^\s*# expand-contract: contract-step ([0-9]+)\s*$")
@@ -85,6 +87,27 @@ def _root_name(node: ast.AST) -> str | None:
     while isinstance(node, ast.Attribute):
         node = node.value
     return node.id if isinstance(node, ast.Name) else None
+
+
+def _comment_only_lines(source: str) -> list[str]:
+    """Source lines with every line that is not a comment-only line blanked.
+
+    A contract marker counts only when it is a real comment token that starts
+    the line. Text that merely looks like a marker inside a string literal or
+    docstring (hk 4200, mergewake r4577123392) must not satisfy the check.
+    """
+    lines = source.splitlines()
+    keep: set[int] = set()
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type != tokenize.COMMENT:
+                continue
+            row, col = token.start
+            if lines[row - 1][:col].strip() == "":
+                keep.add(row - 1)
+    except (tokenize.TokenError, IndentationError):
+        return ["" for _ in lines]
+    return [line if index in keep else "" for index, line in enumerate(lines)]
 
 
 def _matching_file_marker(
@@ -589,7 +612,7 @@ def violations(source: str, task_id: str) -> list[str]:
     except SyntaxError as exc:
         return [f"line {exc.lineno or 1}: migration is not valid Python: {exc.msg}"]
 
-    lines = source.splitlines()
+    lines = _comment_only_lines(source)
     shape_problem = _module_shape_problem(tree)
     if shape_problem:
         if _matching_file_marker(lines, tree, task_id):
