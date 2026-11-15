@@ -32,7 +32,7 @@ from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, InterfaceError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from .entry_gate import EntryRefusal
@@ -149,8 +149,13 @@ def _connection_lost(exc: BaseException) -> bool:
 
     A statement timeout, a cancelled statement or any other error on a live
     backend proves nothing about the lock and must not dispose the connection.
+    ``TimeoutError``/``asyncio.TimeoutError`` are deliberately NOT treated as
+    dead: asyncpg's ``command_timeout`` and caller-side ``wait_for`` raise them
+    while the connection stays healthy. Only a builtin ``ConnectionError``
+    (reset/refused/aborted/broken pipe) or a DBAPI error SQLAlchemy marked
+    ``connection_invalidated`` proves the backend is gone.
     """
-    if isinstance(exc, (ConnectionError, OSError, InterfaceError)):
+    if isinstance(exc, ConnectionError):
         return True
     return isinstance(exc, DBAPIError) and bool(exc.connection_invalidated)
 

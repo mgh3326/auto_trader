@@ -498,6 +498,19 @@ async def test_a_transient_stamp_error_rolls_back_and_the_next_stamp_works():
 
 
 @pytest.mark.asyncio
+async def test_a_statement_timeout_on_a_live_backend_does_not_stop_the_loop():
+    engine = FakeEngine(stamp_error=TimeoutError("command_timeout"))
+    heartbeat = RunnerHeartbeat(engine)
+    assert await heartbeat.open() is control.LivenessOpen.ACQUIRED
+    conn = engine.connections[0]
+    assert await heartbeat.stamp() is True  # rollback, not invalidation
+    assert conn.invalidated is False and conn.rollbacks == 1
+    assert heartbeat._conn is conn
+    assert await heartbeat.stamp() is True
+    assert conn.ok_stamps == 1
+
+
+@pytest.mark.asyncio
 async def test_only_a_proven_dead_backend_stops_the_loop_and_is_invalidated():
     engine = FakeEngine(stamp_error=ConnectionError("backend gone"))
     heartbeat = RunnerHeartbeat(engine)
