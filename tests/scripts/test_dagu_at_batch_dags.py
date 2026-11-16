@@ -191,10 +191,10 @@ JOBS: dict[str, dict] = {
     },
     "at-batch1-market-events-daily": {
         "deployment": "Market Events Daily/daily",
-        "prefect": "interval 1d (anchor unknown)",
+        "prefect": "interval 1d (anchor 15:41 KST)",
         "shift": 0,
-        "kst": "06:30",
-        "schedule": "30 21 * * *",
+        "kst": "15:41",
+        "schedule": "41 6 * * *",
         "gate": "none",
         "ping": "AT_BATCH_PING_URL_MARKET_EVENTS_DAILY",
         "steps": [
