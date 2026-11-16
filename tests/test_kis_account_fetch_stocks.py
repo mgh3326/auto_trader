@@ -167,3 +167,66 @@ async def test_inquire_mock_overseas_buyable_amount_uses_vtts3007_and_parses_usd
     kwargs = parent._request_with_rate_limit.await_args.kwargs
     assert kwargs["tr_id"] == "VTTS3007R"
     assert kwargs["api_name"] == "inquire_mock_overseas_buyable_amount"
+
+
+class TestFetchMyStocksCompletion:
+    def _parent(self, pages):
+        from unittest.mock import AsyncMock
+
+        parent = FakeParent()
+        parent._ensure_token = AsyncMock()
+        parent._kis_url = lambda path: f"https://mock.example{path}"
+        parent._request_with_rate_limit = AsyncMock(side_effect=list(pages))
+        return parent
+
+    @pytest.mark.asyncio
+    async def test_complete_when_pagination_ends_normally(self):
+        parent = self._parent(
+            [
+                {
+                    "rt_cd": "0",
+                    "output1": [{"pdno": "005930", "hldg_qty": "2"}],
+                    "CTX_AREA_NK100": "",
+                }
+            ]
+        )
+        result = await AccountClient(parent).fetch_my_stocks_with_completion()
+        assert result == {
+            "rows": [{"pdno": "005930", "hldg_qty": "2"}],
+            "complete": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_incomplete_when_filter_drops_malformed_rows(self):
+        parent = self._parent(
+            [
+                {
+                    "rt_cd": "0",
+                    "output1": [
+                        {"pdno": "005930", "hldg_qty": "2"},
+                        {"pdno": "005940", "hldg_qty": "-3"},
+                        {"pdno": "005950"},
+                    ],
+                    "CTX_AREA_NK100": "",
+                }
+            ]
+        )
+        result = await AccountClient(parent).fetch_my_stocks_with_completion()
+        assert result["rows"] == [{"pdno": "005930", "hldg_qty": "2"}]
+        assert result["complete"] is False
+
+    @pytest.mark.asyncio
+    async def test_incomplete_when_page_cap_hit_with_live_cursor(self):
+        parent = self._parent(
+            [
+                {
+                    "rt_cd": "0",
+                    "output1": [{"pdno": f"{i:06d}", "hldg_qty": "1"}],
+                    "CTX_AREA_NK100": f"cursor-{i}",
+                }
+                for i in range(10)
+            ]
+        )
+        result = await AccountClient(parent).fetch_my_stocks_with_completion()
+        assert len(result["rows"]) == 10
+        assert result["complete"] is False

@@ -332,21 +332,35 @@ class DailyCandleSyncService:
                         continue
                     exchange = str(raw_exchange or "").strip().upper()
                     if exchange not in {"NASD", "NYSE", "AMEX"}:
+                        # A held symbol missing from the active set may still be
+                        # registered (inactive) in the universe; read its
+                        # recorded exchange directly — the active-only resolver
+                        # could never succeed here by construction.
                         try:
-                            from app.services.us_symbol_universe_service import (
-                                get_us_exchange_by_symbol,
-                            )
-
-                            exchange = await get_us_exchange_by_symbol(
-                                symbol, db=session
+                            lookup = await session.execute(
+                                text(
+                                    "SELECT exchange FROM public.us_symbol_universe"
+                                    " WHERE symbol = :symbol"
+                                ),
+                                {"symbol": symbol},
                             )
                         except Exception:
+                            await session.rollback()
+                            logger.warning(
+                                "US daily sync: held symbol %s exchange lookup "
+                                "failed; skipping",
+                                symbol,
+                            )
+                            continue
+                        row = lookup.first()
+                        if row is None:
                             logger.warning(
                                 "US daily sync: held symbol %s has no resolvable "
                                 "exchange; skipping",
                                 symbol,
                             )
                             continue
+                        exchange = str(row.exchange)
                     exchanges[symbol] = exchange
             return [
                 SyncTarget(market=MarketKey.US, symbol=symbol, partition=exchange)
@@ -493,6 +507,9 @@ async def _build_default_service() -> DailyCandleSyncService:
             )
             pairs.extend((str(holding.ticker or ""), None) for holding in manual)
         except Exception:
+            # A failed statement aborts the shared transaction; roll back so
+            # the per-symbol exchange lookups in _resolve_universe still work.
+            await session.rollback()
             logger.warning(
                 "US daily sync: manual holdings fetch failed; continuing",
                 exc_info=True,

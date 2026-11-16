@@ -1080,10 +1080,11 @@ terminal-only는 기존 분류·전처리·scan과 같은 `limit` 상한과 취�
 `account_identity_unknown`이다.
 
 KIS 보유 관측(hk 4882): reader는 `fetch_my_stocks_with_completion` 하나만 추가로
-허용된 broker view 메서드로 읽는다. 반환 `complete`가 true(페이지 상한 도달 없이
-정상 종료)이고 파싱에 실패한 행이 0일 때만 관측이 완전하다 — 그 외(상한 도달·API
-예외·invalid 행)에는 `holdings_completeness_unknown`이 남는다. `fetch_my_stocks`
-자체의 동작은 다른 호출자에게 그대로다. KIS US 현금은 `inquire_overseas_margin`의
+허용된 broker view 메서드로 읽는다. 반환 `complete`가 true이고 파싱에 실패한
+행이 0일 때만 관측이 완전하다 — 페이지 상한 도달·API 예외·invalid 행·수량 필드가
+없거나 음수라 필터가 조용히 버린 행이 있으면 complete는 false이고
+`holdings_completeness_unknown`이 남는다. `fetch_my_stocks` 자체의 동작은 다른
+호출자에게 그대로다. KIS US 현금은 `inquire_overseas_margin`의
 선택 인자 `include_field_presence`로 브로커가 외화예수금 필드를 실제로 파싱
 가능하게 내려줬는지 구분하며, 증명된 0만 현금 0이고 결측·파싱 불가는
 `cash_unknown`으로 남는다. Upbit `KRW` 계정 행은 보유 종목이 아니라 원화 현금이다.
@@ -1091,8 +1092,8 @@ US 보유 마크는 `public.us_candles_1d`에서 가장 최근 종료된 XNYS �
 행을 읽으며 정확히 1행일 때만 사용하고 한 행 안의 소스를 섞지 않는다 — 0행이거나
 여러 행이면 `mark_unknown`이다. `us_candles_1d` 일봉 수집 대상은 활성
 `us_symbol_universe`와 현재 보유 심볼(KIS US 잔고 + 수동 보유)의 union이다 —
-유니버스에 없는 보유 심볼은 KIS 잔고 행의 거래소 코드 또는 유니버스 조회로
-해소될 때만 추가된다.
+활성 유니버스에 없는 보유 심볼은 KIS 잔고 행의 거래소 코드 또는 유니버스 행의
+거래소 필드(비활성 행 포함)로 해소될 때만 추가된다.
 
 외부 흐름 입력 완전성 확인은 아래 hk 4282/3817 규약에 따라 별도 기록한다. 잘못된 확인은 원본을 바꾸지 않고 추가 전용 철회 기록으로 무효화한다.
 

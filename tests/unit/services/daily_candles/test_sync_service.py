@@ -404,25 +404,34 @@ async def test_kr_kis_exception_without_toss_fetcher_reraises():
 
 
 @pytest.mark.asyncio
-async def test_us_universe_unions_held_symbols_with_resolved_exchange(
-    monkeypatch,
-) -> None:
-    """Held US symbols missing from us_symbol_universe join the daily targets."""
+async def test_us_universe_unions_held_symbols_with_resolved_exchange() -> None:
+    """Held US symbols missing from the active set still join the daily targets."""
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
     repo = MagicMock()
     repo.session = MagicMock()
     repo.session.execute = AsyncMock(
-        return_value=[SimpleNamespace(symbol="AAPL", exchange="NASD")]
-    )
-    exchange_lookup = AsyncMock(side_effect=ValueError("not registered"))
-    monkeypatch.setattr(
-        "app.services.us_symbol_universe_service.get_us_exchange_by_symbol",
-        exchange_lookup,
+        side_effect=[
+            _Result([SimpleNamespace(symbol="AAPL", exchange="NASD")]),
+            _Result([SimpleNamespace(exchange="NYSE")]),  # BNDX inactive row
+            _Result([]),  # ORPH: no universe row at all
+        ]
     )
     loader = AsyncMock(
         return_value=[
             ("AAPL", "NYSE"),  # already in universe: universe exchange wins
             ("sgov", "amex"),  # held ETF absent from universe: holdings exchange
-            ("BNDX", None),  # unresolvable: skipped
+            ("BNDX", None),  # registered but inactive: universe row resolves
+            ("ORPH", None),  # unresolvable: skipped
         ]
     )
     svc = DailyCandleSyncService(
@@ -438,7 +447,7 @@ async def test_us_universe_unions_held_symbols_with_resolved_exchange(
 
     assert targets == [
         SyncTarget(market=MarketKey.US, symbol="AAPL", partition="NASD"),
+        SyncTarget(market=MarketKey.US, symbol="BNDX", partition="NYSE"),
         SyncTarget(market=MarketKey.US, symbol="SGOV", partition="AMEX"),
     ]
     loader.assert_awaited_once()
-    exchange_lookup.assert_awaited_once()

@@ -421,8 +421,9 @@ class AccountClient:
 
         Returns:
             ``{"rows": [...], "complete": bool}``. ``complete``는 페이지
-            상한(``max_pages``)에 닿아 유효한 연속조회 커서를 남긴 채 중단된
-            경우에만 False다. API 예외는 기존처럼 그대로 전파된다.
+            상한(``max_pages``)에 닿아 유효한 연속조회 커서를 남긴 채 중단되거나,
+            수량 필드가 없거나 음수라서 0아닌 수량 필터가 조용히 버린 malformed
+            행이 있을 때 False다. API 예외는 기존처럼 그대로 전파된다.
         """
         stocks, complete = await self._fetch_my_stocks_rows(
             is_mock=is_mock,
@@ -566,7 +567,15 @@ class AccountClient:
 
         # The loop ends by ``break`` (empty page or no advancing cursor) or by
         # ``page`` exceeding ``max_pages`` with a fresh cursor still pending.
-        complete = page <= max_pages
+        # Rows the nonzero-quantity filter drops for a malformed quantity
+        # (missing key or negative value) are invalid evidence, not proof of
+        # completeness — an unparseable quantity propagates from the filter as
+        # before, and a zero quantity is a legitimate "not held" row.
+        qty_key = "ovrs_cblc_qty" if is_overseas else "hldg_qty"
+        malformed_dropped = any(
+            qty_key not in s or int(s.get(qty_key, 0)) < 0 for s in all_stocks
+        )
+        complete = page <= max_pages and not malformed_dropped
 
         all_stocks = self._filter_nonzero_holdings(all_stocks, is_overseas=is_overseas)
 
