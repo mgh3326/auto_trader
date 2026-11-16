@@ -79,7 +79,7 @@ hk 4881이 요구한 설계 문서이고, 상위 작업은 hk 3795다.
 | 자동승인 한도 로더(min_distance·per_order·daily·mode·policy hash) | `app/services/order_proposals/auto_approve.py:340-366` | 사실 | 캡은 그대로 쓴다. |
 | 자동승인 분류기 | `app/services/order_proposals/auto_approve.py:657-1297` | 사실 | §4.4의 게이트별 관계. |
 | `ORDER_PROPOSALS_AUTO_APPROVE_MODE`(`off`/`expanded`, 기본 `off`) | `app/core/config.py:1050` | 사실 | 계획 결속은 `expanded`에서만. |
-| 정책 per-order cap(kr 2,000,000 / us 1,500 / crypto 5,000,000), daily cap(kr 5,000,000 / us 20,000 / crypto 10,000,000) | `config/trading_policy.yaml:368-375` | 사실 | 계획 회차 금액(약 94만 = 235만 × 40%)은 KR per-order cap 아래다. |
+| 정책 per-order cap(kr 2,000,000 / us 1,500 / crypto 5,000,000), daily cap(kr 5,000,000 / us 20,000 / crypto 10,000,000) | `config/trading_policy.yaml:368-410`(per-order `:375`·`:381`·`:394`, daily `:396`·`:404`·`:410`) | 사실 | 계획 회차 금액(약 94만 = 235만 × 40%)은 KR per-order cap 아래다. |
 | 시장가 근접 매수 거부(`marketable_not_resting`), 파킹만 예외 | `app/services/order_proposals/auto_approve.py:1103-1124` | 사실 | **계획 결속이 푸는 핵심 게이트**. 선례는 파킹 해제(`:1109-1114`). |
 | 손실 매도 거부 `loss_cut_intent`, ROB-1460 결정 행만 해제 | `app/services/order_proposals/auto_approve.py:752-772`, `app/services/mechanical_loss_cut/gate.py:134-166` | 사실 | 결정 행 결속 자동승인의 선례이자 1b가 건드리지 않는 경로. |
 | approval-required 태그 스캔(`policy_deviation` 등, 두 모드 모두 거부만) | `app/services/order_proposals/auto_approve.py:373-418`, `:793-800` | 사실 | 계획 결속에도 그대로 적용. |
@@ -156,7 +156,7 @@ hk 4881이 요구한 설계 문서이고, 상위 작업은 hk 3795다.
 | `invalidation_conditions` | text[] ≤3, 논지 훼손 조건(반증 가능 문장) |
 | `sector_key` | 업종 키(업종 상한 판정용) |
 | `created_by`·`created_at` | 등록자 |
-| UNIQUE `(account_mode, market, symbol)` WHERE 활성 | **한 종목의 계획은 한 계좌에만**(수정 3). 활성 판정이 이벤트에 있으므로 부분 유니크 대신 트리거로 강제(§3.4) |
+| 활성 종목 예약 | **한 종목의 계획은 한 계좌에만**(수정 3). 존재 확인 트리거는 동시 INSERT를 막지 못하므로 별도 예약 테이블 `review.mandate_symbol_reservations`(`market`, 정규화 `symbol`, `plan_id`, `released_at` 없음 — 해제는 별도 append-only 해제 행)로 강제한다. 계획 INSERT와 종결 전이는 `pg_advisory_xact_lock(hashtextextended('mandate_symbol:'||market||':'||symbol,0))`를 **계좌와 무관하게** 먼저 잡고 활성 예약을 확인·기록한다(sleeve lock은 계좌별이라 직렬화하지 못한다, `app/services/strategy_sleeves/store.py:139-144`). 예약 판정은 같은 락 아래에서만 한다(§3.4) |
 
 `review.mandate_plan_tranches` (계획당 회차 행, 계획 INSERT와 같은 트랜잭션에 생성, 불변):
 
@@ -191,15 +191,28 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
                          active ──(3차 체결 또는 계획 소진)──▶ exhausted
                          active/exhausted ──(논지 훼손)──▶ thesis_broken ──(손실 매도 체결)──▶ closed
                          any ──(운영자 폐기)──▶ retired
+suspended ──(운영자 재개, 1차 미체결)──▶ approved
+suspended ──(운영자 재개, 1차 체결)──▶ active
+approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 상태(terms_rebound 이벤트)
 ```
 
-회차 단위 이벤트: `tranche_armed`(가격·시간 조건 충족) → `tranche_proposed`(제안 생성, proposal_id) → `tranche_filled`(원장 증거, 수량·평균가) 또는 `tranche_unfilled`(DAY 만료·취소 증거) → 미체결이면 다시 `tranche_armed` 가능(같은 날 1회).
+계획 단위 이벤트 어휘: `proposed`, `approved`(묶음 승인, `terms_id`·`effective_session` 포함), `rejected`, `first_tranche_settled`(→active), `suspended`(사유 코드), `resumed`(운영자, 대상 상태 approved|active), `terms_rebound`(운영자 재승인, 새 `terms_id`·`terms_sha256`·`effective_session`), `exhausted`, `thesis_broken`, `closed`, `retired`. INSERT 트리거는 위 다이어그램의 전이만 허용한다.
+
+"현재 결속 조항"은 원래 `approved_terms_id`가 아니라 **마지막 `approved` 또는 `terms_rebound` 이벤트의 `terms_id`**다. 계획 행 자체는 불변으로 두고 rebind를 이벤트로 남겨 회차·체결 이력을 보존한다(Q3).
+
+회차 단위 이벤트: `tranche_armed`(가격·시간 조건 충족) → `tranche_proposed`(제안 생성, proposal_id) → 제안 종결 시 원장 증거로 셋 중 하나:
+
+- `tranche_filled`: 그 회차의 누적 체결 금액이 회차 `amount`의 95% 이상(잔여가 1주 미만 포함). 회차 완료, 다음 회차 arming 가능(I7).
+- `tranche_partially_filled`: 0 < 누적 체결 < 95%이고 제안이 종결(DAY 만료·취소)됨. 수량·평균가를 기록한다. 회차는 **완료가 아니다** — I7은 다음 회차를 막고, 잔여(`amount` − 누적 체결)는 다음 거래일부터 같은 회차로 다시 `tranche_armed` 될 수 있다(I8이 잔여만 허용, I9가 열린 제안 1개를 보장). 회차 간 최소 간격(I6)은 회차 안 잔여 재제안에는 적용하지 않는다. 운영자는 `tranche_closed_partial`(잔여 포기, 회차 완료로 취급)을 기록할 수 있다.
+- `tranche_unfilled`: 체결 0으로 종결. 다음 거래일 다시 armed 가능.
+
+1차 회차의 `first_fill_price`는 1차가 `tranche_filled` 또는 `tranche_closed_partial`로 끝날 때의 누적 평균가다.
 
 ### 3.3 불변식 표
 
 | # | 불변식 | 입력 | 전이 | 강제 위치 | 관측 결과(위반 시) |
 |---|---|---|---|---|---|
-| I1 | 한 종목의 활성 계획은 전 계좌에서 1개 | 계획 INSERT | proposed | INSERT 트리거(같은 symbol·시장의 비종결 계획 존재 시 거부) + store | INSERT 거부, CLI 오류 |
+| I1 | 한 종목의 활성 계획은 전 계좌에서 1개 | 계획 INSERT, 종결 전이 | proposed / 종결 | 시장+심볼 키 advisory lock(계좌 무관) 아래 예약 테이블 확인·기록 + 예약 테이블 부분 UNIQUE(`market, symbol` WHERE 미해제) | INSERT 거부, CLI 오류 |
 | I2 | 계획 종목은 등록 시점 위임장 `allowed_symbols` 안 | 계획 INSERT | proposed | store | 거부 |
 | I3 | 계획 합계(바구니 내 비종결 계획 `planned_amount` 합) ≤ sleeve `budget_cap` | 계획 INSERT | proposed→approved | store, sleeve lock 아래 | 사람 카드 `mandate_budget_exceeded` |
 | I4 | 업종 비중 ≤ `sector_cap_pct`(바구니 평가액 + 계획 잔여 기준) | 회차 제안 | armed→proposed | 계획 게이트 | 사람 카드 `mandate_sector_cap` |
@@ -209,19 +222,22 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 | I8 | 회차 금액 초과 주문 없음: 제안 notional(max(limit, 현재가) × 수량) ≤ 회차 `amount` − 이미 체결된 회차 금액 | 제안 rung | armed→proposed | 계획 게이트 | 사람 카드 `mandate_tranche_amount` |
 | I9 | 같은 회차에 열린 제안은 1개 | 이벤트 | armed→proposed | sleeve lock + 이벤트 트리거 | 거부 |
 | I10 | "filled"는 브로커 증거로만(`execution_ledger_in_effect()`, authoritative) | 원장 | proposed→filled | 대사 후 투영 CLI | 증거 없으면 전이 없음(websocket 단독은 미확정) |
-| I11 | 낙폭 동결 중에는 매수 회차 armed/제안 불가, 보유·매도는 유지 | 낙폭 판정 | →suspended | 계획 게이트 | 사람 카드 `mandate_drawdown_frozen` |
+| I11 | 낙폭 동결 중에는 매수 회차 armed/제안/**전송** 불가(수동 승인 포함), 보유·매도는 유지 | 낙폭 판정 | →suspended | 제안 생성 + 공통 전송 직전 경계(§5.4) | 제안 생성 거부·전송 차단 `mandate_drawdown_frozen` + 운영자 알림 |
 | I12 | 위임장 버전이 live가 아니거나 만료면 자동승인 없음 | sleeve 버전·조항 | 모든 제안 | 계획 게이트 | 사람 카드 `mandate_not_live`/`mandate_expired` |
+| I15 | 제안의 심볼·시장·계좌는 결속된 계획과 같다 | 제안 INSERT, dispatch | 제안 생성 / 결속 소비 | `order_proposals` INSERT 트리거(정규화 심볼·`market`·`account_mode`를 계획·sleeve와 비교) + 계획 게이트 재비교 | INSERT 거부 / 사람 카드 `mandate_binding_mismatch` |
+| I16 | 계획 결속 제안은 전송 직전에 계획이 `approved`(1차) 또는 `active`(2·3차)이고 현재 결속 조항이 현재 live 버전의 조항이며 승인 효력 세션이 도래함 | 마지막 계획 이벤트 | 결속 소비 | 계획 게이트, sleeve lock 아래 | 사람 카드 `mandate_plan_not_active` |
+| I17 | 파킹 allowlist 심볼(459580·357870·SGOV·BIL)은 계획 대상이 아니다 | 계획 INSERT | proposed | store + `allowed_symbols` 검증(`parking_scope`) | 거부 |
 | I13 | 계획·회차·조항·이벤트 행은 수정·삭제 불가 | 모든 쓰기 | — | DB 트리거 | `restrict_violation` |
 | I14 | 손실 매도는 `thesis_broken` 이벤트 뒤에만, 처음 4주 사람 카드 | 이벤트, `loss_sell_mode` | →closed | 계획 게이트 | 사람 카드 `mandate_loss_sell_human` |
 
 ### 3.4 DB 가드와 GRANT
 
-- 네 테이블(`mandate_terms`, `mandate_plans`, `mandate_plan_tranches`, `mandate_plan_events`) 모두 UPDATE·DELETE·TRUNCATE 거부 트리거(모든 역할). 선례 `20261102_rob1470_strategy_sleeves.py:75-130`.
+- 다섯 테이블(`mandate_terms`, `mandate_plans`, `mandate_plan_tranches`, `mandate_plan_events`, `mandate_symbol_reservations`) 모두 UPDATE·DELETE·TRUNCATE 거부 트리거(모든 역할). 선례 `20261102_rob1470_strategy_sleeves.py:75-130`.
 - 이벤트 `seq`는 직전+1만, 이벤트 어휘·전이 표에 없는 전이는 INSERT 트리거가 거부.
-- I1을 INSERT 트리거로 강제(활성 판정은 마지막 이벤트가 종결 상태가 아님).
-- `order_proposals`에 `mandate_plan_id`·`mandate_tranche_index`(nullable) 추가, INSERT 때만 설정, `sleeve_id`와 계획의 sleeve가 같아야 함(트리거). 선례 `:157-164`.
+- I1은 존재 확인 트리거가 아니라 `review.mandate_symbol_reservations`의 부분 UNIQUE(미해제 예약)와 계좌 무관 시장+심볼 advisory lock으로 강제한다. 해제는 계획이 종결(rejected/exhausted 뒤 보유 0/closed/retired)될 때 같은 락 아래 append-only 해제 행으로 한다. 동시 INSERT 두 건은 UNIQUE 위반으로 하나만 성공한다.
+- `order_proposals`에 `mandate_plan_id`·`mandate_tranche_index`(nullable) 추가, INSERT 때만 설정, `sleeve_id`·`account_mode`·`market`·정규화 `symbol`이 계획(과 그 sleeve)과 같아야 함(트리거, I15). `order_proposal_create`는 `symbol`을 따로 받으므로(`app/mcp_server/tooling/order_proposal_tools.py:703`) 이 비교 없이는 다른 종목 제안이 회차에 결속될 수 있다. 선례 `:157-164`.
 - downgrade는 행이 하나라도 있으면 거부.
-- 하드룰 18: 같은 마이그레이션에 조건부 `at_app` GRANT — 네 테이블 SELECT·INSERT만, UPDATE·DELETE 없음. `order_proposals` 새 열은 기존 테이블 권한을 따른다.
+- 하드룰 18: 같은 마이그레이션에 조건부 `at_app` GRANT — 다섯 테이블 SELECT·INSERT만, UPDATE·DELETE 없음. `order_proposals` 새 열은 기존 테이블 권한을 따른다.
 
 ## 4. 계획 결속 자동승인
 
@@ -230,14 +246,15 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 아래가 **전부** 참일 때만 그 rung은 자동승인 적격이다(하나라도 거짓이면 기존과 같은 사람 카드, 사유 코드 기록).
 
 1. 스위치: `MANDATE_AUTO_APPROVE_ENABLED=true` AND 시장이 `MANDATE_AUTO_APPROVE_MARKETS`에, 계좌가 `MANDATE_AUTO_APPROVE_ACCOUNT_MODES`에 있음 AND `ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded`. 셋 다 기본 off/빈 값.
-2. 제안이 계획 결속: `mandate_plan_id`·`mandate_tranche_index` 설정, `sleeve_id` 일치, 해당 회차의 마지막 이벤트가 `tranche_proposed`이고 그 `proposal_id`가 이 제안.
+2. 제안이 계획 결속: `mandate_plan_id`·`mandate_tranche_index` 설정, `sleeve_id`·`account_mode`·`market`·정규화 `symbol`이 계획과 일치(I15, 생성 때와 결속 소비 때 두 번), 해당 회차의 마지막 이벤트가 `tranche_proposed`이고 그 `proposal_id`가 이 제안, 그리고 **계획 단위 마지막 이벤트가 `approved`(1차) 또는 `first_tranche_settled`/`resumed→active`/`terms_rebound`(2·3차)이며 suspended·thesis_broken·retired가 아님**(I16). 회차 이벤트 뒤에 계획이 정지·폐기·논지 훼손되면 이미 만든 제안도 사람 카드다.
 3. sleeve 게이트 통과(`gate.py:57-98`): live, 손실 한도 미만, 예산 안.
-4. 위임장 조항: 그 버전에 조항 행 있음, 만료 전, 계획의 `approved_terms_id`가 같은 sleeve의 현재 live 버전 조항이거나(위임장 변경 뒤 재승인 필요 여부는 §7 Q3) 해시가 같음.
+4. 위임장 조항: 현재 live 버전에 조항 행 있음, 만료 전, 계획의 **현재 결속 조항**(마지막 `approved`/`terms_rebound` 이벤트의 `terms_id`)이 **현재 live 버전의 조항 행 id와 같음**. 해시가 같다는 이유만으로 승계하지 않는다 — 버전이 바뀌면 해시가 같아도 재승인(`terms_rebound`)이 필요하다(Q3-B). 그 이벤트의 `effective_session`이 도래해야 한다.
 5. 주문 모양: `action='place'`, `order_type='limit'`, `side='buy'`, `exit_intent IS NULL`, 회차 1개당 rung 1개.
-6. 가격: 지정가 ≤ 신선한 preview의 매도 1호가 × (1 + `entry_max_premium_bps`/10000). 매도 1호가가 없으면 현재가로 대체하지 않고 사람 카드(`mandate_ask_unavailable`).
+6. 가격: 지정가 ≤ 전송 직전 매도 1호가 × (1 + `entry_max_premium_bps`/10000). 지금의 KIS·Toss preview는 `current_price`만 주고 매도 1호가가 없다(`app/mcp_server/tooling/order_validation.py:1078`, `app/mcp_server/tooling/orders_toss_variants.py:1471`). 그래서 venue별 호가 읽기(KIS 국내 호가 TR / Toss 호가, US는 해당 venue 호가)를 관측 시각과 함께 읽고 신선도 상한(권고 5초) 안일 때만 쓴다(티켓 T4b). 호가가 없거나 stale이면 현재가로 대체하지 않고 사람 카드(`mandate_ask_unavailable`).
 7. 회차 조건 재검: I5·I6·I7·I8 을 신선한 preview 가격으로 다시 판정.
 8. 금액: 제안 notional ≤ min(전역 per-order cap, 조항 `per_order_cap`), 그날 자동승인 누계 + notional ≤ min(전역 daily cap, 조항 `daily_cap`).
-9. 업종 상한(I4), 낙폭 동결 아님(I11).
+9. 업종 상한(I4), 낙폭 동결 아님(I11). 동결 판정(T6)이 없으면 이 조건은 참이 될 수 없다 — 판정 함수 부재·읽기 실패는 동결과 같다.
+9a. 파킹 면제 없음: 계획 대상 심볼은 파킹 allowlist 밖(I17)이고, 분류기는 결속이 있는 rung에 파킹 daily-cap 면제(`auto_approve.py:835`, `:1072`)를 적용하지 않으며, 자동승인 일 누계 reader도 계획 결속 rung을 일반 누계에 넣는다(`app/services/order_proposals/service.py:121`, `:4050`의 파킹 제외에 걸리지 않게).
 10. 기존 공통 게이트: approval-required 태그 스캔 통과, veto 가능 계좌·시장, thesis 존재, 정규장(KR XKRX 정규장, US XNYS 정규장), 신선한 preview `success=true`.
 
 ### 4.2 제안을 만드는 쪽
@@ -262,8 +279,9 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 | veto 가능 계좌·시장(Toss는 별도 arm) | `auto_approve.py:192-209`, `:773-790` | 그대로 요구 | 아니오 | 아니오 |
 | approval-required 태그 스캔(`policy_deviation` 등) | `auto_approve.py:793-800` | 그대로 적용. 계획 결속이 태그를 무시하지 않는다 | 아니오 | 아니오 |
 | preview `success` | `auto_approve.py` `:861-867` | 그대로 | 아니오 | 아니오 |
-| per-order cap(전역) | `auto_approve.py:984-990`, `config/trading_policy.yaml:368-371` | 그대로, 조항 cap이 더 작으면 그 값. notional은 `max(limit, current) × qty`(파킹·ROB-1460과 같은 실행가 기준) | 아니오(오히려 엄격) | 아니오 |
-| daily cap(전역) | `auto_approve.py:1072-1080`, `config/trading_policy.yaml:372-375` | 그대로 공유(계획 결속 주문도 전역 일 누계를 소비). 면제 없음 | 아니오 | 아니오 |
+| per-order cap(전역) | `auto_approve.py:984-990`, `config/trading_policy.yaml:368-394` | 그대로, 조항 cap이 더 작으면 그 값. notional은 `max(limit, current) × qty`(파킹·ROB-1460과 같은 실행가 기준) | 아니오(오히려 엄격) | 아니오 |
+| daily cap(전역) | `auto_approve.py:1072-1080`, `config/trading_policy.yaml:395-410` | 그대로 공유(계획 결속 주문도 전역 일 누계를 소비). 면제 없음 | 아니오 | 아니오 |
+| **KIS·Toss preview/submit의 '현재가 초과 매수' 거부** — 정상 KIS 지정가 매수가 현재가를 넘으면 분류기 전에 거부되고, 예외는 파킹뿐 | `app/mcp_server/tooling/order_validation.py:1118`, `app/mcp_server/tooling/order_execution.py:1986`, revalidation이 분류기 전에 preview를 얻음(`app/services/order_proposals/revalidation.py:1480`, `:1599`) | 매도 1호가 + N bp 지정가는 현재가를 넘을 수 있으므로 **결속된 계획 회차에 한해** preview와 submit 모두에서 상한을 `min(매도 1호가 × (1+N bp))`로 바꾼다. 파킹 예외 플래그를 넓히지 않고 별도 플래그 `allow_mandate_bound_buy`(결속 증거 필수)를 둔다 | **예 — 분류기와 별개의 두 번째 완화** | **예** |
 | **시장가 근접 매수 거부** `marketable_not_resting`(expanded) / `distance_below_minimum`(off) | `auto_approve.py:1103-1124` | **해제**: 결속이 있고 지정가 ≤ 매도 1호가 × (1+N bp) 일 때만. 파킹 해제(`:1109-1114`)와 같은 자리에 두 번째 해제를 추가 | **예 — 이 설계의 유일한 분류기 완화** | **예** |
 | 매수 체결이 veto 카드보다 먼저 날 수 있음(근접가 매수의 결과) | 위 해제의 결과 | 알림은 체결 뒤일 수 있다. veto 버튼은 미체결 잔량 취소만 가능 | **예**(사람 확인 전 체결 위험 수용) | **예**(위와 같은 record에 명시) |
 | `min_distance_pct` 3% 하한 | `config/trading_policy.yaml` `min_distance_pct: 3`(`auto_approve.py:1100-1102`) | expanded는 원래 0, 계획 결속도 0 | 아니오(expanded 기존 동작) | 아니오 |
@@ -275,7 +293,7 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 | 3792 승인 요청 4 / 결정 §1-3: KR·US 신규 매수 제안 off | 운영 결정(정책 YAML에 아직 없음, 결정 §5-1) | 계획 결속 매수만 예외로 연다 | **예 — 운영 결정 범위 안의 재개**(결정 3792-4가 "계획으로만 연다"고 명시) | **예**(같은 record에 근거 결정 인용) |
 | 모의 → 실전 승격 | 운영 결정 1c | 스위치·allowlist 변경은 사람 승인 | 해당 없음(활성화 절차) | record의 `effective_at` |
 
-정리: 완화는 (1) 계획 결속 매수에 한한 `marketable_not_resting` 해제와 (2) 그 결과인 veto 전 체결 위험 수용, (3) 신규 매수 off 결정에 대한 계획 결속 예외 셋이다. 캡·태그 스캔·세션·sleeve·손실매도 경로는 완화하지 않는다.
+정리: 완화는 (1) 계획 결속 매수에 한한 KIS·Toss preview/submit 현재가 초과 매수 거부 해제, (2) 분류기 `marketable_not_resting` 해제, (3) 그 결과인 veto 전 체결 위험 수용, (4) 신규 매수 off 결정에 대한 계획 결속 예외 넷이다. 파킹 daily-cap 면제는 계획 결속에 적용하지 않는다(§4.1 9a). 캡·태그 스캔·세션·sleeve·손실매도 경로는 완화하지 않는다.
 
 ### 4.5 deviation record 초안 위치와 활성화 절차
 
@@ -285,13 +303,13 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
   - `operator_decision_ref`: `decision/2026-11-10/at-new-strategy-go` §1-1·§3, `decision/2026-11-16/at-strategy-direction` "이 결정이 주지 않는 것", `report/2026-11-12/at-3792-holdings-classification` 승인 요청 4
   - `change_class: [auto_approval_guard_relaxation_behind_default_off_switch, marketable_buy_release_plan_bound]`
   - `affected_policy_keys`: 없음(새 env 스위치 3개, 정책 값 변경 0) — 위임장 수치는 DB 조항
-  - `consumer_paths`: `app/services/order_proposals/auto_approve.py`, `dispatch.py`, `app/services/mandate/`(신규)
+  - `consumer_paths`: `app/services/order_proposals/auto_approve.py`, `dispatch.py`, `revalidation.py`, `app/mcp_server/tooling/order_validation.py`, `order_execution.py`, `orders_toss_variants.py`, `app/services/mandate/`(신규)
   - `effective_at`: 마이그레이션 적용 + 위임장 버전 live + 운영자의 별도 활성화 승인(스위치 3개 설정) 뒤. 머지만으로는 아무것도 켜지지 않는다.
   - `rollback`: `MANDATE_AUTO_APPROVE_ENABLED=false` 다음 설정 로드부터 모든 계획 결속 제안은 사람 카드. 이미 브로커가 받은 주문은 되돌리지 않고 대사로 처리.
 - 활성화 승인 절차(순서, 각 단계 운영자 결정):
   1. 마이그레이션 적용(운영 마이그레이션 승인).
   2. 위임장 버전 생성(sleeve `shadow` + 조항) → 운영자 승인 → `live`.
-  3. 모의 검증: 키움 mock·KIS mock에서 같은 계획 경로로 4주, 30건, 자문 §2.1 기계 지표(체결률 ≥80%, 슬리피지 중앙값 ≤0.3%, uncertain·중복 0). 모의 계좌는 자동승인 대상이 아니므로 모의는 제안 경로 + 기계 지표만 본다(§7 Q6).
+  3. 모의 검증: 키움 mock에서 같은 계획 경로로 4주, 30건, 자문 §2.1 기계 지표(체결률 ≥80%, 슬리피지 중앙값 ≤0.3%, uncertain·중복 0). 지금 sleeve CHECK는 `kis_live`/`toss_live`/`upbit`만 받고(`app/models/strategy_sleeves.py:35-41`) KIS mock은 제안 제출 조합에 없다(`app/services/order_proposals/service.py:358`). 그래서 티켓 T1m이 sleeve 계좌 조합에 `kiwoom_mock`(KR)을 **모의 전용**으로 추가한다(추가형 CHECK 변경, live 조합·게이트 불변). 키움 mock 제안은 수동 승인 전용이므로(`approval-and-shadow-contracts.md` 키움 절) 모의는 계획 경로·호가 근접 지정가·체결 투영·기계 지표만 검증하고 분류기 해제는 검증하지 않는다(§7 Q6). KIS mock은 제안 조합이 생긴 뒤 별도.
   4. 실전 카나리: 스위치 3개를 시장·계좌 하나씩(권고: Toss KR 먼저), 1차 분할만, 종목 3~5개.
   5. 각 확대(시장·계좌 추가, 2·3차 회차 허용)는 별도 승인.
 
@@ -300,15 +318,16 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 ### 5.1 1a — 하루 1회 장 시작 전 묶음 승인
 
 - 대상: `proposed` 상태 계획(새 종목 등록)과 그날 armed가 될 회차 목록 요약.
-- 카드: 기존 ROB-870 batch 카드 경로를 재사용한다(`docs/agent-contracts/approval-and-shadow-contracts.md` "Approval batch health"). 카드 하나에 계획 N개, 승인 = 각 계획 `approved` 이벤트, 기각 = `rejected`. 콜백 인가·nonce 단일 소비는 기존 그대로.
+- 카드: ROB-870 batch 경로는 **재사용하지 않는다**. 그 멤버는 주문 제안에 FK로 묶이고 개별 승인 카드 게시를 요구하며(`app/models/order_proposals.py:531`, `app/services/order_proposals/service.py:487`), 승인 콜백이 멤버마다 `_handle_approve`를 불러 브로커 주문을 낼 수 있다(`app/services/order_proposals/telegram_callback.py:1223`, `:1388`). 대신 새 테이블 `review.mandate_plan_batches`(+멤버 행, 불변 스냅샷: 계획 id·조항 id·계획 해시)와 nonce 결속 콜백 `mpb`를 둔다. 이 콜백은 계획 이벤트(`approved`/`rejected`)만 append하고 주문·제안 모듈을 import하지 않는다(정적 테스트). 멤버 1개도 허용한다. 콜백 인가·nonce 단일 소비·chat allowlist는 기존 콜백과 같은 규칙을 쓰되 코드 경로는 분리한다.
 - 발송: 장 시작 전 운영자/세션이 CLI로 발송(scheduleless). 정기 실행은 §7 Q8.
 - 아무것도 바뀌지 않았으면 "오늘 적용 기준" 요약만(자문 §10).
 - 승인 마감: 그 거래일 정규장 개장 전. 마감 뒤 승인은 다음 거래일부터 유효(§7 Q4).
 
 ### 5.2 1b — 논지 훼손 손실 매도
 
-- 논지 훼손 판정: 계획의 `invalidation_conditions` + 결정론 검사(공시·실적 이벤트). 판정은 `thesis_broken` 이벤트를 쓰고 제안(`side=sell`, `exit_intent='thesis_broken'` — 새 exit intent 값)을 만든다.
-- 처음 4주(조항 `loss_sell_mode='human_card'`): 분류기의 `exit_intent_present` 거부(`auto_approve.py:771-772`)가 그대로 사람 카드로 보낸다. 손실매도 가드도 그대로 돈다. **추가 코드 없이 기존 거부가 1b를 강제한다.**
+- 논지 훼손 판정: 계획의 `invalidation_conditions` + 결정론 검사(공시·실적 이벤트). 판정은 `thesis_broken` 계획 이벤트를 쓴다.
+- 매도 경로: 새 exit intent를 만들지 않는다. 제안 생성은 `loss_cut` 외 exit intent의 손실 매도를 거부하고(`app/services/order_proposals/service.py:1139`) KIS·Toss preview/submit도 따로 거부하며(`app/mcp_server/tooling/order_execution.py:2056`, `orders_toss_variants.py:1213`), 평단 가드는 검증된 `loss_cut` 문맥만 완화한다(`app/mcp_server/tooling/order_validation.py:180`). 그래서 1b는 **기존 `exit_intent='loss_cut'` 사람 승인 의식**(손절 2클릭 카드, `INVEST_LOSS_CUT_APPROVAL_ENABLED`·Telegram 손절 콜백)을 그대로 쓰고, 근거로 계획 id와 `thesis_broken` 이벤트 id를 rationale에 싣는다. 이 경로는 게이트를 바꾸지 않는다.
+- 처음 4주(조항 `loss_sell_mode='human_card'`): `loss_cut` 제안은 분류기가 `loss_cut_intent`로 거부한다(`auto_approve.py:752-759`). ROB-1460 결정 행이 없으므로(바구니 ①은 ROB-1460 allowlist 밖, Q7) 해제되지 않는다. **기존 거부가 1b를 강제한다.**
 - 4주 뒤 `auto`로 바꾸는 것은 위임장 변경(새 버전)이자 별도 게이트 완화다 — 이 설계는 그 경로를 만들지 않는다(§7 Q5).
 - ROB-1460과의 관계: ROB-1460은 "기록된 손절가 이탈"이라는 가격 규칙이고, 1b는 "논지 조건 충족"이다. 같은 lot에 둘 다 해당할 수 있다. 바구니 ①의 결정 §2.1은 "논지 훼손이 유일한 손실 매도"이므로, [의견] 바구니 ① sleeve의 계좌·시장은 ROB-1460 live allowlist에 넣지 않는다(§7 Q7). ROB-1460 코드는 바꾸지 않는다.
 
@@ -320,11 +339,11 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 
 ### 5.4 2c — 낙폭 −25% 동결
 
-- 바구니 낙폭: sleeve book의 (평가액 + 실현손익)의 고점 대비 하락률. 고점은 `account_value` 일별 스냅샷(hk 3800, `scripts/account_value_snapshot.py`) 또는 sleeve report에서 일 1회 계산.
-- 전체 자산 낙폭: 계좌 가치 스냅샷 기준 계좌 전체의 고점 대비 하락률.
-- 동결은 **매수만** 막는다: 계획 게이트가 `mandate_drawdown_frozen`으로 매수 회차를 사람 카드로 보낸다. 보유·매도·대사·H6 보호는 그대로. 강제 매도 없음.
+- 바구니 낙폭: sleeve book에는 배정 현금이 없다(`app/services/strategy_sleeves/book.py:96`). 평가액 + 실현손익의 고점을 쓰면 매도·신규 회차가 성과처럼 보인다(100 중 50을 원가에 팔면 50% 하락으로 보임). 그래서 **바구니 자본 = sleeve `budget_cap`(고정 시작 자본) + 실현손익 + 미실현손익**으로 정의한다. 이는 "배정 예산 − 투입 원가 = 미투입 현금"으로 보는 것과 같고, 매수·매도(자본 이동)는 값을 바꾸지 않고 손익만 바꾼다. `budget_cap`이 새 버전에서 바뀌면 그 차이는 외부 흐름으로 보고 고점을 같은 비율로 조정한다(Modified Dietz와 같은 원칙). 낙폭 = 1 − 바구니 자본 / 그 고점. 미실현손익이 미측정(`pnl_unmeasured`)이면 측정 불가.
+- 전체 자산 낙폭: 계좌 가치 관측은 브로커 계좌별이다(`app/models/account_value.py:16`, `app/services/account_value/readers.py:265`). 결정 2c의 "전체 자산"은 **운영자가 지정한 계좌 집합 전체(KIS·Toss·Upbit, 필요하면 manual_cash)의 KRW 환산 합계**로 정의하고, 같은 날짜·같은 환율 출처로 합한 통합 고점 시계열에서 계산한다. 외부 입출금은 hk 3800 흐름 기록으로 조정한다. 구성 계좌 하나라도 그날 관측·환율이 없거나 흐름 확인이 없으면 측정 불가 = 동결.
+- 동결은 **매수만** 막고, 사람 카드로의 강등이 아니라 **차단**이다. 일반 Telegram 승인은 자동승인 분류기를 거치지 않고 `revalidate_and_submit`로 간다(`app/services/order_proposals/telegram_callback.py:879`, `app/services/order_proposals/revalidation.py:1361`). 그래서 (a) 동결 중 계획 회차 제안 생성 거부, (b) 공통 전송 직전 경계(revalidation, 수동·자동 공통)에서 sleeve가 동결 범위에 있는 매수 rung 차단, (c) 운영자에게 별도 알림. 전체 자산 동결은 바구니 ①에 한하지 않고 동결 대상 sleeve 전체(운영자가 조항으로 지정)에 적용한다. 보유·매도·대사·H6 보호는 그대로. 강제 매도 없음.
 - 측정 불가(스냅샷 없음·stale)는 동결과 같게 취급한다(측정 불가 = 0 아님, sleeve `pnl_unmeasured`와 같은 원칙).
-- 해제: 운영자 승인(위임장 변경과 같은 경로) 또는 낙폭이 기준 안으로 돌아온 뒤 운영자 확인(§7 Q2).
+- 해제: 운영자가 `resumed` 이벤트를 기록한다(1차 미체결 계획은 →approved, 체결된 계획은 →active, §3.2). 낙폭이 기준 안으로 돌아와도 자동 해제하지 않는다(§7 Q2).
 - 손실 한도(`loss_limit`, 금액)와 별개다. 손실 한도는 sleeve를 `stopped`로 만들고 매도도 사람 카드가 된다(`gate.py:18-20`).
 
 ## 6. 알림·관측
@@ -345,10 +364,10 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 |---|---|---|---|---|
 | Q1 | 위임장 조항을 어디에 두나 | A sleeve 버전에 열 추가 / B 버전에 1:1 결속된 별도 append-only 테이블 | **B** | 기존 sleeve 트리거·store·리포트를 건드리지 않는 추가형 변경(§3.1). |
 | Q2 | 낙폭 동결 해제 | A 기준 안으로 돌아오면 자동 해제 / B 운영자 확인 필요 | **B** | 2c는 "동결"이고 해제 시점은 운영자 판단이 맞다. 자동 해제는 등락에 따라 매수가 켜졌다 꺼졌다 한다. |
-| Q3 | 위임장 변경 뒤 기존 승인 계획 | A 새 버전에 그대로 승계 / B 다음 아침 묶음에서 재승인 / C 금액·규칙이 바뀐 조항만 재승인 | **B** | 단순하고 계획이 항상 현재 조항 아래 있다. 하루 지연은 가치 진입에 병목이 아니다(자문 §10). |
+| Q3 | 위임장 변경 뒤 기존 승인 계획 | A 새 버전에 그대로 승계 / B 다음 아침 묶음에서 재승인(`terms_rebound` 이벤트, 해시가 같아도) / C 금액·규칙이 바뀐 조항만 재승인 | **B** | 단순하고 계획이 항상 현재 조항 아래 있다. 하루 지연은 가치 진입에 병목이 아니다(자문 §10). |
 | Q4 | 묶음 승인 마감 뒤 승인 | A 당일 유효 / B 다음 거래일부터 | **B** | "장 시작 전" 결정 문언. 장중 승인을 허용하면 아침 묶음의 의미가 없다. |
 | Q5 | 1b 4주 뒤 | A 이 설계에 자동 경로를 미리 만든다(스위치 off) / B 4주 재검토 결과를 보고 별도 설계 | **B** | 결정 1b가 "이후 재검토". 미리 만든 해제 경로는 쓰이지 않는 완화 표면이다. |
-| Q6 | 모의 검증 장소 | A 키움 mock / B KIS mock / C 둘 다 | **A 먼저, 이후 C** | 결정 수정 2 자문 메모: 키움 mock 제안 집행이 hk 4732·4754로 이미 있다(`approval-and-shadow-contracts.md` 키움 절). KIS mock은 hk 3741 배포 뒤 병행. |
+| Q6 | 모의 검증 장소 | A 키움 mock / B KIS mock / C 둘 다 | **A 먼저, 이후 C** | 키움 mock 제안 집행이 hk 4732·4754로 이미 있다(`approval-and-shadow-contracts.md` 키움 절). sleeve 조합은 T1m으로 추가. KIS mock은 제안 조합(`service.py:358`)이 생긴 뒤. |
 | Q7 | 바구니 ① 계좌·시장을 ROB-1460 live allowlist에서 빼나 | A 뺀다 / B 넣는다 | **A** | 바구니 ①의 유일한 손실 매도는 논지 훼손(자문 §2.1). 가격 손절이 같이 돌면 물타기 계획과 충돌한다. |
 | Q8 | 아침 묶음·트리거·낙폭 계산 정기 실행 | A scheduleless CLI만 / B Dagu 제안 파일까지(미등록) | **A**, 정기 실행은 카나리 뒤 별도 승인 | 하드룰 6. |
 | Q9 | Upbit 소액 실험(2026-11-16 결정 1)의 자동 집행 | A 이 바구니 모델(계획 대신 신호 결속)로 같이 / B 별도 설계 | **B** | 추세 신호는 분할 계획이 아니다. 같은 sleeve·알림 인프라는 쓰되 결속 대상(신호 행)이 다르다. |
@@ -363,15 +382,17 @@ proposed ──(아침 묶음 승인, 1a)──▶ approved ──(1차 체결 �
 |---|---|---|---|---|---|---|---|
 | T1 | 위임장 조항·계획 모델 | §3의 네 테이블, 트리거, `order_proposals` 두 열, 조건부 GRANT, downgrade 거부, store(유일 writer), 순수 불변식 함수(I1~I9) | — | T2 | A | DB 가드 | **있음** |
 | T2 | 위임장·계획 CLI | `scripts/mandate.py`: 조항 생성(운영자 actor만), 계획 등록(proposed), preview 기본 `--commit`, 상태 조회 | T1 | T2 | B | 운영자 CLI | 없음 |
-| T3 | 아침 묶음 승인 카드 | proposed 계획 묶음 카드 발송 CLI, 승인/기각 콜백 → 이벤트. 기존 batch 경로 재사용 | T1, T2 | T2 | A | Telegram 콜백(인가·nonce 불변) | 없음 |
-| T4 | 계획 결속 제안 + 계획 게이트(사람 카드만) | `order_proposal_create(mandate_plan_id, tranche_index)`, dispatch의 계획 게이트(I4·I8·I9·I11·I12, 강등만), 회차 이벤트, 원장 체결 투영 CLI | T1 | T2 | A | dispatch(강등만, 완화 없음) | 없음 |
-| T5 | **분류기 해제(게이트 완화)** | `mandate_binding` + `marketable_not_resting` 해제, 스위치 3개(기본 off), deviation record, 정적 테스트(스위치 off면 바이트 동일) | T4 | **T3** | S | **자동승인 게이트** | 없음 |
-| T6 | 낙폭 동결 판정 | 바구니·계좌 낙폭 계산(측정 불가 = 동결), 계획 게이트 연결 | T4, hk 3800 스냅샷 | T2 | A | dispatch(강등만) | 없음 |
+| T3 | 아침 묶음 승인 카드 | `mandate_plan_batches`(+멤버) 불변 스냅샷, 발송 CLI, 주문 경로와 분리된 nonce 결속 콜백(계획 이벤트만 append, 주문 모듈 import 금지 정적 테스트) | T1, T2 | T2 | A | Telegram 콜백(새 경로, 기존 콜백 불변) | **있음** |
+| T1m | 모의 sleeve 조합 | sleeve 계좌 조합 CHECK에 `kiwoom_mock`/`equity_kr` 모의 전용 추가, live 조합·게이트 불변 | T1 | T2 | A | DB CHECK | **있음** |
+| T4 | 계획 결속 제안 + 계획 게이트(사람 카드만) | `order_proposal_create(mandate_plan_id, tranche_index)`, I15 트리거·재비교, dispatch의 계획 게이트(I4·I8·I9·I12·I16, 강등만), 회차 이벤트(부분 체결 포함), 원장 체결 투영 CLI | T1 | T2 | A | dispatch(강등만, 완화 없음) | 없음 |
+| T4b | 매도 1호가 소스 | venue별 호가 읽기(관측 시각·신선도 상한·fail-closed), 계획 게이트와 분류기에 입력 | T4 | T2 | A | 읽기 전용 브로커 시세 | 없음 |
+| T5 | **분류기·preview 해제(게이트 완화)** | `mandate_binding` + `marketable_not_resting` 해제, KIS·Toss preview/submit `allow_mandate_bound_buy`, 파킹 면제 비적용, 스위치 3개(기본 off), deviation record, 정적 테스트(스위치 off면 바이트 동일) | T4, T4b, T6 | **T3** | S | **자동승인·주문 게이트** | 없음 |
+| T6 | 낙폭 동결 판정·차단 | 바구니 자본(예산+손익) 낙폭, 통합 계좌 집합 낙폭(측정 불가 = 동결), 제안 생성 거부 + 공통 전송 직전 매수 차단(수동·자동) + 알림, `resumed` 이벤트 | T4, hk 3800 스냅샷 | **T3** | S | **전송 경계(차단 추가, 완화 없음)** | 없음 |
 | T7 | 2·3차 트리거 | 가격·시간 조건 판정(I5·I6·I7) → armed → 제안 생성. scheduleless CLI | T4 | T2 | A | 제안 생성만 | 없음 |
-| T8 | 논지 훼손 매도 제안(1b) | `thesis_broken` 이벤트, `exit_intent='thesis_broken'` 제안. 분류기는 기존 거부로 사람 카드 | T4 | T2 | A | 제안 생성만(완화 없음) | 없음(exit intent 어휘가 CHECK이면 **있음** — T1에 포함 권고) |
+| T8 | 논지 훼손 매도 제안(1b) | `thesis_broken` 이벤트, 기존 `exit_intent='loss_cut'` 사람 승인 의식으로 제안(rationale에 계획·이벤트 id). 새 exit intent 없음 | T4 | T2 | A | 제안 생성만(완화 없음) | 없음 |
 | T9 | 알림·관측 | 카드에 계획·회차·조항 해시, audit `mandate_*` 사유, retro/v1 읽기 연결 | T4 | T2 | B | 알림 | 없음 |
 
-Blocking: T1 → (T2, T4) → T3(T2 필요) / T5·T6·T7·T8·T9(T4 필요). T5는 T4가 모의에서 사람 카드로 끝까지 돈 뒤 머지한다. 실전 활성화는 어떤 티켓의 머지로도 일어나지 않는다(§4.5).
+Blocking: T1 → (T1m, T2, T4) → T3(T2 필요) / T4b·T6·T7·T8·T9(T4 필요) → T5(T4·T4b·T6 필요). T5는 T6의 동결 판정이 머지되고 T4가 키움 모의에서 사람 카드로 끝까지 돈 뒤에만 머지한다. 실전 활성화는 어떤 티켓의 머지로도 일어나지 않는다(§4.5).
 
 ## 9. 알았지만 건드리지 않은 것
 
