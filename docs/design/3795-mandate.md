@@ -357,7 +357,7 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 
 인터페이스(이 문서가 의존하는 유일한 지점):
 - 단일 판정 함수 `buy_freeze_state(session, *, account_mode, market, sleeve_id | None, now) -> FreezeVerdict(frozen: bool, reason: str, evidence: dict)`. 판정 실패는 `frozen=True`.
-- 계획 경로의 소비 지점: 회차 제안 생성(I11 거부)과 dispatch 계획 게이트(§4.1 조건 9). 그 밖의 매수 경계(untagged 제안, 직접 매수·정정 도구)에 거는 일은 4900의 범위다.
+- 계획 경로의 소비 지점 셋: 회차 제안 생성(I11 거부), dispatch 계획 게이트(§4.1 조건 9), 그리고 **공통 전송 직전 경계**(`revalidate_and_submit`, 수동·자동 승인 공통). 계획 제안이 동결 전에 사람 카드로 갔다가 동결 뒤 승인되면 승인 콜백이 분류기 없이 `revalidate_and_submit`로 가므로(`app/services/order_proposals/telegram_callback.py:893`, `app/services/order_proposals/revalidation.py:1361-1365`) dispatch 판정만으로는 막지 못한다. 그래서 계획 결속 매수 rung은 승인 방식과 무관하게 브로커 호출 직전 `buy_freeze_state`를 다시 읽고, `frozen` 또는 판정 실패면 전송하지 않는다(`mandate_drawdown_frozen`). 이 배선은 T4의 범위다(인터페이스가 4900 전에는 항상 `frozen=True`를 돌려주는 스텁이어도 차단 방향이라 안전). 그 밖의 매수 경계(untagged 제안, 직접 매수·정정 도구)에 거는 일은 4900의 범위다.
 - **4900이 머지되기 전에는 계획 결속 자동승인(T5)을 활성화하지 않는다.** T5는 4900에 blocked이고, 그 전까지 §4.1 조건 9는 참이 될 수 없다.
 
 ## 6. 알림·관측
@@ -398,7 +398,7 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 | T2 | 위임장·계획 CLI | `scripts/mandate.py`: 조항 생성(운영자 actor만), 계획 등록(proposed), preview 기본 `--commit`, 상태 조회 | T1 | T2 | B | 운영자 CLI | 없음 |
 | T3 | 아침 묶음 승인 카드 | `mandate_plan_batches`(+멤버) 불변 스냅샷, 발송 CLI, 주문 경로와 분리된 nonce 결속 콜백(계획 이벤트만 append, 주문 모듈 import 금지 정적 테스트) | T1, T2 | T2 | A | Telegram 콜백(새 경로, 기존 콜백 불변) | **있음** |
 | T1m | 모의 sleeve 조합 | 키움 체결 귀속을 계좌·거래일·주문번호·rung idempotency 키로 매칭(키움 주문번호는 계좌·거래일 안에서만 유일, `app/models/review.py:874-878`; 지금 로더는 KIS만 거래일을 붙이고 `execution_ledger/supersede.py:104-106`은 키움 거래일이 없다 — `store.py:599-605`, `:661-690`), 모호한 체결은 미측정. 그리고 sleeve 계좌 조합 DB CHECK와 런타임 어휘(`SLEEVE_ACCOUNT_MARKETS`, `app/models/strategy_sleeves.py:35-41`; `create_sleeve` 검사, `app/services/strategy_sleeves/store.py:303-308`)에 `kiwoom_mock`/`equity_kr` 추가, `LEDGER_IDENTITY`에 `kiwoom_mock → (kiwoom, mock)` 추가(`vocabulary.py:126-135`의 동치 단언 유지, `store.py:599` 로더), 키움 모의 원장·체결 귀속. live 조합·게이트 불변 | T1 | T2 | A | DB CHECK·sleeve 어휘 | **있음** |
-| T4 | 계획 결속 제안 + 계획 게이트(사람 카드만) | `order_proposal_create(mandate_plan_id, tranche_index)`, I15 트리거·재비교, dispatch의 계획 게이트(I4·I8·I9·I12·I16, 강등만), 회차 이벤트(부분 체결 포함), 원장 체결 투영 CLI | T1 | T2 | A | dispatch(강등만, 완화 없음) | 없음 |
+| T4 | 계획 결속 제안 + 계획 게이트(사람 카드만) | `order_proposal_create(mandate_plan_id, tranche_index)`, I15 트리거·재비교, dispatch의 계획 게이트(I4·I8·I9·I12·I16, 강등만), `revalidate_and_submit` 전송 직전 계획 결속 매수의 `buy_freeze_state` 재확인(수동·자동 공통, 실패=차단; 4900 전에는 항상 frozen 스텁), 회차 이벤트(부분 체결 포함), 원장 체결 투영 CLI | T1 | T2 | A | dispatch(강등만, 완화 없음) | 없음 |
 | T4b | 매도 1호가 소스 | venue별 호가 읽기(관측 시각·신선도 상한·fail-closed), 계획 게이트와 분류기에 입력 | T4 | T2 | A | 읽기 전용 브로커 시세 | 없음 |
 | T5 | **분류기·preview 해제(게이트 완화)** — **hk 4900에 blocked** | `mandate_binding` + `marketable_not_resting` 해제, KIS·Toss preview/submit `allow_mandate_bound_buy`, 파킹 면제 비적용, 스위치 3개(기본 off), deviation record, 정적 테스트(스위치 off면 바이트 동일) | T4, T4b, hk 4900 | **T3** | S | **자동승인·주문 게이트** | 없음 |
 | T6 | 낙폭 동결 | 설계·구현은 **hk 4900**. 이 문서는 `buy_freeze_state` 인터페이스만 요구한다(§5.4) | hk 4900 | — | — | — | 4900에서 |
