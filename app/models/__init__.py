@@ -138,7 +138,6 @@ from .research_pipeline import (
     ResearchSummary,
     StageAnalysis,
     SummaryStageLink,
-    UserResearchNote,
 )
 from .research_reports import ResearchReport, ResearchReportIngestionRun
 from .research_run import (
@@ -176,15 +175,11 @@ from .telegram_callback_inbox import (
 from .trade_journal import JournalStatus, TradeJournal
 from .trade_profile import (
     AssetProfile,
-    FilterName,
-    MarketFilter,
     ProfileChangeLog,
     ProfileName,
     SellMode,
-    TierParamType,
-    TierRuleParam,
 )
-from .trading import Exchange, Instrument, User, UserChannel, UserRole, UserWatchItem
+from .trading import Exchange, Instrument, User, UserRole, UserWatchItem
 from .trading_decision import (
     ActionKind,
     OutcomeHorizon,
@@ -249,7 +244,6 @@ __all__ = [
     "Instrument",
     "User",
     "UserRole",
-    "UserChannel",
     "UserWatchItem",
     "PromptResult",
     "LadderTouchEvent",
@@ -261,13 +255,9 @@ __all__ = [
     "ResearchStrategyLearningEvent",
     "ResearchSyncJob",
     "AssetProfile",
-    "TierRuleParam",
-    "MarketFilter",
     "ProfileChangeLog",
     "ProfileName",
     "SellMode",
-    "TierParamType",
-    "FilterName",
     "JournalStatus",
     "TradeJournal",
     "StockInfo",
@@ -394,7 +384,6 @@ __all__ = [
     "StageAnalysis",
     "ResearchSummary",
     "SummaryStageLink",
-    "UserResearchNote",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]

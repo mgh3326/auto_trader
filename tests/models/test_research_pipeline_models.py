@@ -6,7 +6,6 @@ from app.models.research_pipeline import (
     ResearchSummary,
     StageAnalysis,
     SummaryStageLink,
-    UserResearchNote,
 )
 
 
@@ -75,9 +74,3 @@ def test_summary_stage_link_columns():
         "direction",
         "rationale",
     } <= cols
-
-
-@pytest.mark.unit
-def test_user_research_note_columns():
-    cols = {c.name for c in inspect(UserResearchNote).columns}
-    assert {"id", "session_id", "user_id", "body", "created_at", "updated_at"} <= cols

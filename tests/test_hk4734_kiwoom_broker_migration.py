@@ -95,8 +95,13 @@ def test_revisions_chain_and_fit_the_version_table() -> None:
 
 
 def test_the_migration_graph_has_exactly_one_head() -> None:
+    # Pin the revision inside the single chain, not "is the head": a later
+    # migration (e.g. hk 4902) must not break this test.
     directory = script.ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
-    assert directory.get_heads() == [VALIDATE_REVISION]
+    heads = directory.get_heads()
+    assert len(heads) == 1, heads
+    ancestry = {rev.revision for rev in directory.walk_revisions("base", heads[0])}
+    assert {REVISION, VALIDATE_REVISION} <= ancestry
 
 
 def test_upgrade_adds_both_checks_not_valid_and_never_validates() -> None:

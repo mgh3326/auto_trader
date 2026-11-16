@@ -12,7 +12,6 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
-    Integer,
     Numeric,
     SmallInteger,
     String,
@@ -38,23 +37,6 @@ class SellMode(enum.StrEnum):
     any = "any"
     rebalance_only = "rebalance_only"
     none = "none"
-
-
-class TierParamType(enum.StrEnum):
-    buy = "buy"
-    sell = "sell"
-    stop = "stop"
-    rebalance = "rebalance"
-    common = "common"
-
-
-class FilterName(enum.StrEnum):
-    regime = "regime"
-    kill_switch = "kill_switch"
-    fear_greed = "fear_greed"
-    funding_rate = "funding_rate"
-    btc_filter = "btc_filter"
-    liquidity = "liquidity"
 
 
 class AssetProfile(Base):
@@ -113,97 +95,6 @@ class AssetProfile(Base):
         String(20), nullable=False, default=SellMode.any.value
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
-class TierRuleParam(Base):
-    __tablename__ = "tier_rule_params"
-    __table_args__ = (
-        CheckConstraint("tier BETWEEN 1 AND 4", name="tier_rule_params_tier_range"),
-        CheckConstraint(
-            "profile IN ('aggressive','balanced','conservative','exit','hold_only')",
-            name="tier_rule_params_profile_allowed",
-        ),
-        CheckConstraint(
-            "param_type IN ('buy','sell','stop','rebalance','common')",
-            name="tier_rule_params_param_type_allowed",
-        ),
-        Index(
-            "uq_tier_rule_params_key",
-            "user_id",
-            "instrument_type",
-            "tier",
-            "profile",
-            "param_type",
-            unique=True,
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    instrument_type: Mapped[InstrumentType] = mapped_column(
-        Enum(InstrumentType, name="instrument_type", create_type=False), nullable=False
-    )
-    tier: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    profile: Mapped[str] = mapped_column(String(24), nullable=False)
-    param_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    params: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
-class MarketFilter(Base):
-    __tablename__ = "market_filters"
-    __table_args__ = (
-        CheckConstraint(
-            r"filter_name ~ '^[a-z][a-z0-9_]{0,29}$'",
-            name="market_filters_filter_name_format",
-        ),
-        Index(
-            "ix_market_filters_user_instrument_enabled",
-            "user_id",
-            "instrument_type",
-            "enabled",
-        ),
-        Index(
-            "uq_market_filters_user_instrument_filter",
-            "user_id",
-            "instrument_type",
-            "filter_name",
-            unique=True,
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    instrument_type: Mapped[InstrumentType] = mapped_column(
-        Enum(InstrumentType, name="instrument_type", create_type=False), nullable=False
-    )
-    filter_name: Mapped[str] = mapped_column(String(32), nullable=False)
-    params: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False

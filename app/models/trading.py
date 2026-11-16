@@ -24,12 +24,6 @@ class InstrumentType(enum.StrEnum):
     index = "index"  # 지수
 
 
-class NotifyChannel(enum.StrEnum):
-    telegram = "telegram"
-    email = "email"
-    webhook = "webhook"
-
-
 class UserRole(enum.StrEnum):
     """User roles for permission management."""
 
@@ -101,20 +95,6 @@ class RefreshToken(Base):
     )
 
     user: Mapped[User] = relationship("User", backref="refresh_tokens")
-
-
-class UserChannel(Base):
-    __tablename__ = "user_channels"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    channel: Mapped[NotifyChannel] = mapped_column(
-        Enum(NotifyChannel, name="notify_channel"), nullable=False
-    )
-    handle: Mapped[str] = mapped_column(Text, nullable=False)
-    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
 class UserWatchItem(Base):

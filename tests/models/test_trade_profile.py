@@ -165,59 +165,10 @@ async def test_sell_mode_and_hold_only_checks() -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_param_type_common_and_filter_name_format_and_partial_unique() -> None:
+async def test_asset_profile_user_symbol_instrument_is_unique() -> None:
     await _ensure_trade_profile_tables()
     user_id, _, _ = await _create_user_and_accounts()
     try:
-        async with SessionLocal() as session:
-            await session.execute(
-                text(
-                    """
-                    INSERT INTO tier_rule_params
-                        (user_id, instrument_type, tier, profile, param_type, params, version)
-                    VALUES
-                        (:user_id, :instrument_type, 1, 'balanced', 'common', '{"max": 3}'::jsonb, 1)
-                    """
-                ),
-                {
-                    "user_id": user_id,
-                    "instrument_type": InstrumentType.crypto.value,
-                },
-            )
-            await session.execute(
-                text(
-                    """
-                        INSERT INTO market_filters
-                            (user_id, instrument_type, filter_name, params, enabled)
-                        VALUES
-                            (:user_id, :instrument_type, 'liquidity', '{"min": 1}'::jsonb, true)
-                        """
-                ),
-                {
-                    "user_id": user_id,
-                    "instrument_type": InstrumentType.equity_kr.value,
-                },
-            )
-            await session.commit()
-
-        async with SessionLocal() as session:
-            with pytest.raises(DBAPIError):
-                await session.execute(
-                    text(
-                        """
-                        INSERT INTO market_filters
-                            (user_id, instrument_type, filter_name, params, enabled)
-                        VALUES
-                            (:user_id, :instrument_type, 'INVALID-NAME', '{"x": 1}'::jsonb, true)
-                        """
-                    ),
-                    {
-                        "user_id": user_id,
-                        "instrument_type": InstrumentType.equity_kr.value,
-                    },
-                )
-                await session.commit()
-
         async with SessionLocal() as session:
             await session.execute(
                 text(
