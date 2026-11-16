@@ -2,7 +2,7 @@
 #   uv venv --python 3.13 "$ROOT/venv"
 #   VIRTUAL_ENV="$ROOT/venv" uv pip install -r research/kr_boosting/requirements-ml.txt
 lightgbm==4.6.0
-numpy==2.5.4
+numpy==2.5.5
 pandas==3.1.1
 pyarrow==26.0.1
 pyyaml==6.0.3
