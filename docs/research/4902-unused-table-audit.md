@@ -63,7 +63,7 @@ public.user_research_notes
 
 함께 바뀌는 것: `app/models/trade_profile.py`(`TierRuleParam`, `MarketFilter`, `TierParamType`, `FilterName` 제거), `app/models/trading.py`(`UserChannel`, `NotifyChannel` 제거), `app/models/research_pipeline.py`(`UserResearchNote` 와 `ResearchSession.notes` 관계 제거), `app/models/__init__.py`(export), `tests/models/test_trade_profile.py`(두 테이블을 만지던 부분 제거), `tests/models/test_research_pipeline_models.py`(`test_user_research_note_columns` 제거), `tests/test_hk4734_kiwoom_broker_migration.py`("head 가 곧 이 리비전" 핀을 "단일 체인 안에 있다" 로 완화 — 새 head 가 생기면 깨지는 닫힌 목록이었다).
 
-**적용 안전장치.** 마이그레이션은 테이블마다 `ACCESS EXCLUSIVE` 잠금을 잡고 행이 하나라도 있으면 `hk4902_<table>_rows_retained` 로 거부한다. `DROP TABLE` 은 `CASCADE` 없이 실행해 모르는 의존 객체가 있으면 실패한다. downgrade 는 네 테이블을 마지막 스키마(컬럼·제약·인덱스) 그대로 빈 채로 다시 만들고, `at_app` 역할이 있으면 DML·시퀀스 권한을 조건부로 부여한다(하드룰 18). 운영 적용은 pi 이전 뒤 최종 덤프 다음 운영자 승인으로만 한다.
+**적용 안전장치.** 마이그레이션은 테이블이 있으면 `ACCESS EXCLUSIVE` 잠금을 잡고(ORM 메타데이터로 만든 CI·테스트 DB 처럼 테이블이 없으면 건너뛴다) 행이 하나라도 있으면 `hk4902_<table>_rows_retained` 로 거부한다. `DROP TABLE` 은 `CASCADE` 없이 실행해 모르는 의존 객체가 있으면 실패한다. downgrade 는 네 테이블을 마지막 스키마(컬럼·제약·인덱스) 그대로 빈 채로 `IF NOT EXISTS` 로 다시 만들고, `at_app` 역할이 있으면 DML·시퀀스 권한을 조건부로 부여한다(하드룰 18). 운영 적용은 pi 이전 뒤 최종 덤프 다음 운영자 승인으로만 한다.
 
 ## 5. KEEP-live (68)
 
