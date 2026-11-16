@@ -27,7 +27,7 @@ Prefect 스케줄은 `flows/auto_trader/*.py` 의 `CronSchedule`(robin-prefect-a
 | 6 | `at-batch1-toss-warnings` | `Toss Warnings Sync/daily-preopen` | 07:30 매일 | `30 22 * * *` | 07:30 | `AT_BATCH_PING_URL_TOSS_WARNINGS` | — |
 | 7 | `at-batch1-toss-symbol-master` | `Toss Symbol Master Sync/weekday-preopen` | 07:20 평일 | `20 22 * * 0-4` | 07:20 월–금 | `AT_BATCH_PING_URL_TOSS_SYMBOL_MASTER` | — |
 | 8 | `at-batch1-us-fundamentals` | `US Financial Fundamentals Snapshots/weekly-sunday` | 일 09:00 | `0 0 * * 0` | 일 09:00 | `AT_BATCH_PING_URL_US_FUNDAMENTALS` | **hk 3846** |
-| 9 | `at-batch1-market-events-daily` | `Market Events Daily/daily` | 24시간 interval (고정 시각 없음) | `30 21 * * *` (임시) | 06:30 | `AT_BATCH_PING_URL_MARKET_EVENTS_DAILY` | — (아래 주의) |
+| 9 | `at-batch1-market-events-daily` | `Market Events Daily/daily` | 24시간 interval (anchor 15:41) | `41 6 * * *` | 15:41 | `AT_BATCH_PING_URL_MARKET_EVENTS_DAILY` | — (아래 주의) |
 | 10 | `at-batch1-dart-0700` | `Market Events KR Disclosures/dart-0700-kst` | 07:00 매일 | `0 22 * * *` | 07:00 | `AT_BATCH_PING_URL_DART_0700` | **hk 3845** |
 | 11 | `at-batch1-dart-1830` | `Market Events KR Disclosures/dart-1830-kst` | 18:30 매일 | `30 9 * * *` | 18:30 | `AT_BATCH_PING_URL_DART_1830` | **hk 3845** |
 
@@ -39,9 +39,9 @@ Prefect 스케줄은 `flows/auto_trader/*.py` 의 `CronSchedule`(robin-prefect-a
   단 간격은 *시작 시각*이다. data-plane-kr 는 한 번에 약 70분 걸리므로 실행 구간은 여전히 겹친다 —
   이 PR 이 한 일은 "같은 순간 동시 시작"을 없앤 것이다.
 
-**9번 주의 (interval 스케줄)**: Prefect 의 24시간 interval 은 배포 생성 시각이 anchor 라 고정 시각이 없다. 이 PR 은
-06:30 KST 를 *임시*로 골랐다(07:00 DART 와 겹치지 않게). 등록 전에 §잡별 절차 9 에서 Prefect 의 실제 다음 실행
-시각을 읽어 DAG 의 `schedule`·헤더(`dagu_schedule_kst`)·테스트 표를 같이 고친 뒤에 진행한다. 9번은 US 실적(finnhub)과
+**9번 주의 (interval 스케줄)**: Prefect 의 24시간 interval 은 배포 생성 시각이 anchor 라 고정 시각이 없다. 처음에는
+06:30 KST 를 *임시*로 골랐다가, hk 4956 에서 Prefect 실행 기록으로 anchor 15:41 KST 를 확인해 맞췄다. 등록 직전에 §잡별 절차 9 에서 Prefect 의 다음 실행
+시각이 아직 15:41 KST 인지 다시 읽는다(배포를 다시 만들면 anchor 가 바뀐다). 다르면 DAG 의 `schedule`·헤더(`dagu_schedule_kst`)·테스트 표를 같이 고친다. 9번은 US 실적(finnhub)과
 KR 공시(dart)를 함께 수집하므로 DART 수집이 깨진 동안(hk 3845)은 같은 증상을 보일 수 있다 — 이 이유로 9번도
 3845 머지 후로 미루는 편이 안전하다(운영자 판단, 게이트 목록에는 넣지 않았다).
 
@@ -202,7 +202,7 @@ sum by (dag) (count_over_time({source="journal", app="at-dagu-batch"} |= "status
 | `at-batch1-dart-1830` | `30 9 * * *` | 25h | 1h (900s) | — |
 | `at-batch1-kr-fundamentals` | `20 9 * * *` | 26h | 2h (7200s) | — |
 | `at-batch1-kr-investor-flow` | `10 9 * * 1-5` | 25h | 1h (1800s) | 토 00:00 → 월 10:10 |
-| `at-batch1-market-events-daily` | `30 21 * * *` | 25h | 1h (900s) | — |
+| `at-batch1-market-events-daily` | `41 6 * * *` | 25h | 1h (900s) | — |
 | `at-batch1-toss-symbol-master` | `20 22 * * 0-4` | 25h | 1h (700s) | 금 00:00 → 일 23:20 |
 | `at-batch1-toss-warnings` | `30 22 * * *` | 25h | 1h (3600s) | — |
 | `at-batch1-us-fundamentals` | `0 0 * * 0` | 171h | 3h (10800s) | — (주간) |
