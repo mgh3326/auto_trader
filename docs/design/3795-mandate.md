@@ -120,7 +120,7 @@ hk 4881이 요구한 설계 문서이고, 상위 작업은 hk 3795다.
 |---|---|---|
 | `sleeve_version_id` | FK → `strategy_sleeve_versions.id` | 이 조항이 속한 위임장 버전 |
 | `terms_version` | text | 조항 스키마 버전(`mandate-terms/v1`) |
-| `basket_key` | text | 바구니 정체성(예 `basket-1`). 같은 바구니의 sleeve(KIS KR, Toss KR …)가 같은 값을 갖는다. 바구니 낙폭·업종 상한은 이 키로 합산 |
+| `basket_key` | text | 바구니 정체성(예 `basket-1`). 같은 바구니의 sleeve(KIS KR, Toss KR …)가 같은 값을 갖는다. 바구니 낙폭·업종 상한은 이 키로 합산. **한 바구니는 한 통화만**(같은 `basket_key`의 조항은 같은 sleeve 통화여야 함, store가 거부) — 환산 없이 합산하기 위해서다. KR과 US는 다른 바구니다 |
 | `universe_rule` | text(≤500) | 대상 종목 조건(사람이 읽는 문장 + 규칙 id) |
 | `allowed_symbols` | text[] | 이 버전이 계획을 받을 수 있는 종목(정규화 심볼, `app/core/symbol.py` 경유). 비면 계획 등록 불가 |
 | `entry_max_premium_bps` | numeric | 근접가 상한: 지정가 ≤ 매도 1호가 × (1 + bp/10000). 자문 권고 30bp |
@@ -177,7 +177,7 @@ hk 4881이 요구한 설계 문서이고, 상위 작업은 hk 3795다.
 | `event` | 닫힌 어휘(아래 상태 전이) |
 | `tranche_index` | 회차 관련 이벤트일 때 |
 | `first_fill_price` | 1차 체결 확정 이벤트에만(트리거 기준가) |
-| `terms_id`·`terms_sha256` | `approved`·`terms_rebound` 이벤트에 필수(그 외 NULL, CHECK). `terms_id`는 `mandate_terms` FK, 해시는 그 행과 일치해야 함(트리거) |
+| `terms_id`·`terms_sha256` | `approved`·`terms_rebound` 이벤트에 필수, `rejected`·`retired`는 선택(묶음 스냅샷에서 왔을 때 기록), 그 외 NULL(CHECK). `terms_id`는 `mandate_terms` FK, 해시는 그 행과 일치해야 함(트리거) |
 | `effective_session` | `approved`·`terms_rebound`·`resumed`에 필수: 승인 효력이 시작되는 거래일(시장 달력) |
 | `resume_target` | `resumed`에 필수: `approved` 또는 `active` |
 | `batch_member_id` | 묶음 승인에서 온 이벤트면 그 멤버 스냅샷(§5.1) |
@@ -221,7 +221,7 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 |---|---|---|---|---|---|
 | I1 | 한 종목의 활성 계획은 전 계좌에서 1개 | 계획 INSERT, 종결 전이 | proposed / 종결 | 시장+심볼 키 advisory lock(계좌 무관) 아래 예약 테이블 확인·기록 + 예약 테이블 DB 트리거 검사(아래) | INSERT 거부, CLI 오류 |
 | I2 | 계획 종목은 등록 시점 위임장 `allowed_symbols` 안 | 계획 INSERT | proposed | store | 거부 |
-| I3 | 계획 합계(바구니 내 비종결 계획 `planned_amount` 합) ≤ sleeve `budget_cap` | 계획 INSERT | proposed→approved | store, sleeve lock 아래 | 사람 카드 `mandate_budget_exceeded` |
+| I3 | (a) 그 sleeve의 비종결 계획 `planned_amount` 합 ≤ 그 sleeve `budget_cap`, (b) 바구니(`basket_key`) 전체 비종결 계획 합 ≤ 구성 sleeve `budget_cap` 합 | 계획 INSERT | proposed→approved | store. (a)는 sleeve lock, (b)는 바구니 키 advisory lock(`mandate_basket:<key>`)을 sleeve lock보다 먼저 잡아 직렬화 | 거부 `mandate_budget_exceeded` |
 | I4 | 업종 비중 ≤ `sector_cap_pct`(바구니 평가액 + 계획 잔여 기준) | 회차 제안 | armed→proposed | 계획 게이트 | 사람 카드 `mandate_sector_cap` |
 | I5 | 회차 k(≥2)는 1차 체결가 × (1+trigger) 이하 가격에서만 armed | 일봉/현재가, `first_fill_price` | →armed | 트리거 판정(순수 함수) | armed 안 됨 |
 | I6 | 회차 간 최소 20거래일(직전 회차 체결 확정일 기준, 시장 달력) | 원장 체결일, 달력 | →armed | 순수 함수 | armed 안 됨 |
@@ -239,12 +239,12 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 
 ### 3.4 DB 가드와 GRANT
 
-- 다섯 테이블(`mandate_terms`, `mandate_plans`, `mandate_plan_tranches`, `mandate_plan_events`, `mandate_symbol_reservations`) 모두 UPDATE·DELETE·TRUNCATE 거부 트리거(모든 역할). 선례 `20261102_rob1470_strategy_sleeves.py:75-130`.
+- 일곱 테이블(`mandate_terms`, `mandate_plans`, `mandate_plan_tranches`, `mandate_plan_events`, `mandate_symbol_reservations`, `mandate_symbol_reservation_releases`, `mandate_global_freeze_events`) 모두 UPDATE·DELETE·TRUNCATE 거부 트리거(모든 역할). 선례 `20261102_rob1470_strategy_sleeves.py:75-130`.
 - 이벤트 `seq`는 직전+1만, 이벤트 어휘·전이 표에 없는 전이는 INSERT 트리거가 거부.
 - I1: 예약은 append-only 두 테이블 `review.mandate_symbol_reservations`(market, 정규화 symbol, plan_id)와 `review.mandate_symbol_reservation_releases`(reservation_id UNIQUE)로 기록하고 이력은 지우지 않는다. 부분 UNIQUE는 다른 테이블의 해제 행을 볼 수 없으므로 쓰지 않는다. 대신 예약 INSERT 트리거가 **스스로** `pg_advisory_xact_lock(hashtextextended('mandate_symbol:'||market||':'||symbol,0))`을 잡은 뒤 같은 market·symbol에 해제 행이 없는 예약이 있으면 거부한다. 해제 INSERT 트리거도 같은 락을 잡는다. 락이 트리거 안에 있으므로 어떤 writer도 우회할 수 없고, 두 동시 INSERT 중 뒤의 것은 앞의 커밋을 기다린 뒤(READ COMMITTED 재조회) 거부된다. 트리거는 READ COMMITTED가 아닌 트랜잭션을 거부한다(#1250 Q-46 게이트와 같은 이유). 해제는 계획이 종결(rejected / exhausted 뒤 보유 0 / closed / retired)될 때 한다.
 - `order_proposals`에 `mandate_plan_id`·`mandate_tranche_index`(nullable) 추가, INSERT 때만 설정, `sleeve_id`·`account_mode`·`market`·정규화 `symbol`이 계획(과 그 sleeve)과 같아야 함(트리거, I15). `order_proposal_create`는 `symbol`을 따로 받으므로(`app/mcp_server/tooling/order_proposal_tools.py:703`) 이 비교 없이는 다른 종목 제안이 회차에 결속될 수 있다. 선례 `:157-164`.
 - downgrade는 행이 하나라도 있으면 거부.
-- 하드룰 18: 같은 마이그레이션에 조건부 `at_app` GRANT — 다섯 테이블 SELECT·INSERT만, UPDATE·DELETE 없음. `order_proposals` 새 열은 기존 테이블 권한을 따른다.
+- 하드룰 18: 같은 마이그레이션에 조건부 `at_app` GRANT — 위 일곱 테이블과 T3의 묶음 테이블 SELECT·INSERT만, UPDATE·DELETE 없음. `order_proposals` 새 열은 기존 테이블 권한을 따른다.
 
 ## 4. 계획 결속 자동승인
 
@@ -347,10 +347,11 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 
 ### 5.4 2c — 낙폭 −25% 동결
 
-- 바구니 낙폭: sleeve book에는 배정 현금이 없다(`app/services/strategy_sleeves/book.py:96`). 평가액 + 실현손익의 고점을 쓰면 매도·신규 회차가 성과처럼 보인다(100 중 50을 원가에 팔면 50% 하락으로 보임). 그래서 **바구니 자본 = Σ(같은 `basket_key`의 각 sleeve `budget_cap` + 그 sleeve의 `net_pnl`)**로 정의한다. `net_pnl`은 sleeve book의 실현 + 미실현 − 수수료다(`app/services/strategy_sleeves/book.py:148-158`, `:233`) — 총손익을 쓰면 수수료만큼 낙폭이 작게 보여 동결이 늦게 걸린다. 구성 sleeve 하나라도 `net_pnl`이 미측정이거나 미귀속 rung이 있으면 바구니 전체가 측정 불가다. 이는 "배정 예산 − 투입 원가 = 미투입 현금"으로 보는 것과 같고, 매수·매도(자본 이동)는 값을 바꾸지 않고 손익만 바꾼다. `budget_cap`이 새 버전에서 바뀌면 그 차이는 외부 흐름으로 보고 고점을 같은 비율로 조정한다(Modified Dietz와 같은 원칙). 낙폭 = 1 − 바구니 자본 / 그 고점(바구니 단위 한 시계열). 기준 도달 시 그 바구니의 **모든** 구성 sleeve 매수를 동결한다.
+- 바구니 낙폭: sleeve book에는 배정 현금이 없다(`app/services/strategy_sleeves/book.py:96`). 평가액 + 실현손익의 고점을 쓰면 매도·신규 회차가 성과처럼 보인다(100 중 50을 원가에 팔면 50% 하락으로 보임). 그래서 **바구니 자본 = Σ(같은 `basket_key`의 각 sleeve `budget_cap` + 그 sleeve의 비용 완전 손익)**로 정의한다(한 통화, §3.1). 비용 완전 손익 = 실현 + 미실현 − 수수료 − 세금. 지금 sleeve book의 `net_pnl`(`app/services/strategy_sleeves/book.py:148-158`, `:233`)은 그대로 쓰지 않는다: 없는 수수료·외화 수수료를 0으로 바꾸고(`app/services/strategy_sleeves/store.py:696-700`) `execution_ledger.tax_amount`를 넣지 않는다(`book.py:73-84`). 낙폭 측정은 체결마다 `fee_basis`가 실측이고 수수료 통화가 sleeve 통화이며 세금(`tax_amount`, Toss 분리 저장; 매도 세금이 없는 시장은 0이 명시된 경우만)이 있을 때만 그 체결을 측정된 것으로 보고, `fee_basis='not_provided'`·과거 KIS reconciler `fee=0`·통화 불일치 체결이 하나라도 있으면 바구니를 측정 불가로 둔다(T6가 sleeve book과 별도의 비용 완전 측정 함수를 만든다, sleeve 게이트의 기존 `net_pnl` 동작은 바꾸지 않는다). KIS 실현 비용 출처는 아직 확인되지 않았으므로(`broker-and-ledger-contracts.md` L11, hk 4192) KIS sleeve는 그 출처가 생기거나 운영자가 추정 비용 사용을 승인하기 전까지 측정 불가 = 동결이다(§7 Q13). 구성 sleeve 하나라도 `net_pnl`이 미측정이거나 미귀속 rung이 있으면 바구니 전체가 측정 불가다. 이는 "배정 예산 − 투입 원가 = 미투입 현금"으로 보는 것과 같고, 매수·매도(자본 이동)는 값을 바꾸지 않고 손익만 바꾼다. `budget_cap`이 새 버전에서 바뀌면 그 차이는 외부 흐름으로 보고 고점을 같은 비율로 조정한다(Modified Dietz와 같은 원칙). 낙폭 = 1 − 바구니 자본 / 그 고점(바구니 단위 한 시계열). 기준 도달 시 그 바구니의 **모든** 구성 sleeve 매수를 동결한다.
 - 전체 자산 낙폭: 계좌 가치 관측은 브로커 계좌별이다(`app/models/account_value.py:16`, `app/services/account_value/readers.py:265`). 결정 2c의 "전체 자산"은 **운영자가 지정한 계좌 집합 전체(KIS·Toss·Upbit, 필요하면 manual_cash)의 KRW 환산 합계**로 정의하고, 같은 날짜·같은 환율 출처로 합한 통합 고점 시계열에서 계산한다. 외부 입출금은 hk 3800 흐름 기록으로 조정한다. 구성 계좌 하나라도 그날 관측·환율이 없거나 흐름 확인이 없으면 측정 불가 = 동결.
 - 동결은 **매수만** 막고, 사람 카드로의 강등이 아니라 **차단**이다. 일반 Telegram 승인은 자동승인 분류기를 거치지 않고 `revalidate_and_submit`로 간다(`app/services/order_proposals/telegram_callback.py:879`, `app/services/order_proposals/revalidation.py:1361`). 그래서 (a) 동결 중 계획 회차 제안 생성 거부, (b) 바구니 동결은 공통 전송 직전 경계(revalidation, 수동·자동 공통)에서 그 바구니 sleeve의 매수 rung 차단, (c) 운영자에게 별도 알림.
-- 전체 자산 동결은 sleeve 태그와 무관하게 **모든 신규 매수 전송 경계**에 걸린다: 제안 revalidation(`sleeve_id=NULL` 포함, `app/models/order_proposals.py:127-132`)과 직접 매수 도구(KIS `app/mcp_server/tooling/orders_kis_variants.py:321-322`, Toss `orders_toss_variants.py:2183-2214`, 공용 `order_execution`의 KIS·Upbit live 매수). 하나의 공용 판정 함수 `global_buy_freeze()`를 각 경계가 브로커 호출 전에 부른다. 매도·취소·정정(감액)은 막지 않는다. 범위(어느 시장·계좌의 매수를 막는지)와 파킹 매수·현금 규칙 B 매수 포함 여부는 §7 Q12. 보유·매도·대사·H6 보호는 그대로. 강제 매도 없음.
+- 전체 자산 동결은 sleeve 태그와 무관하게 **모든 신규 매수 전송 경계**에 걸린다: 제안 revalidation(`sleeve_id=NULL` 포함, `app/models/order_proposals.py:127-132`)과 직접 매수 도구(KIS `app/mcp_server/tooling/orders_kis_variants.py:321-322`, Toss `orders_toss_variants.py:2183-2214`, 공용 `order_execution`의 KIS·Upbit live 매수). 하나의 공용 판정 함수 `global_buy_freeze()`를 각 경계가 브로커 호출 전에 부른다. **노출을 늘리는 매수 정정**(가격 인상·수량 증가)도 막는다: Toss `toss_modify_order`(`app/mcp_server/tooling/orders_toss_variants.py:2249-2257`, `:2280-2297`, `:2479`), KIS 직접 정정 도구, 제안 경로의 `replace`. 매도·취소·증명된 감액 정정은 막지 않는다.
+- 전체 자산 동결은 계획과 무관한 **전역 래치**다: append-only `review.mandate_global_freeze_events`(`frozen`: 측정값·고점·시각 / `released`: 운영자 actor·사유, 운영자만). 판정이 기준을 넘거나 측정 불가면 `frozen`을 기록하고, 래치는 운영자 `released`가 있어야만 풀린다 — 낙폭이 회복돼도 스냅샷만으로 풀리지 않는다. 계획이 하나도 없어도 같다. `global_buy_freeze()`는 마지막 이벤트가 `frozen`이거나 현재 측정이 기준 초과/불가면 참이다. 계획 단위 `resumed`는 바구니 동결 해제용이고 전역 래치와 별개다. 범위(어느 시장·계좌의 매수를 막는지)와 파킹 매수·현금 규칙 B 매수 포함 여부는 §7 Q12. 보유·매도·대사·H6 보호는 그대로. 강제 매도 없음.
 - 측정 불가(스냅샷 없음·stale)는 동결과 같게 취급한다(측정 불가 = 0 아님, sleeve `pnl_unmeasured`와 같은 원칙).
 - 해제: 운영자가 `resumed` 이벤트를 기록한다(1차 미체결 계획은 →approved, 체결된 계획은 →active, §3.2). 낙폭이 기준 안으로 돌아와도 자동 해제하지 않는다(§7 Q2).
 - 손실 한도(`loss_limit`, 금액)와 별개다. 손실 한도는 sleeve를 `stopped`로 만들고 매도도 사람 카드가 된다(`gate.py:18-20`).
@@ -381,6 +382,7 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 | Q8 | 아침 묶음·트리거·낙폭 계산 정기 실행 | A scheduleless CLI만 / B Dagu 제안 파일까지(미등록) | **A**, 정기 실행은 카나리 뒤 별도 승인 | 하드룰 6. |
 | Q9 | Upbit 소액 실험(2026-11-16 결정 1)의 자동 집행 | A 이 바구니 모델(계획 대신 신호 결속)로 같이 / B 별도 설계 | **B** | 추세 신호는 분할 계획이 아니다. 같은 sleeve·알림 인프라는 쓰되 결속 대상(신호 행)이 다르다. |
 | Q10 | 근접가 프리미엄 N | 10 / 30 / 50 bp | **30 bp** (조항 값, 운영자 확정) | 자문 §2.1 "+0.3% 이내". 모의 슬리피지 실측 뒤 조정. |
+| Q13 | KIS 실현 비용 출처가 없는 동안 낙폭 측정 | A 측정 불가 = 동결 유지 / B 정책 `round_trip_cost_bps` 추정 비용을 `estimated`로 표시해 사용 | **A**, 카나리는 Toss KR 먼저 | 추정치를 실측처럼 쓰면 동결이 늦게 걸린다. Toss는 수수료·세금을 분리 저장한다. |
 | Q12 | 전체 자산 동결이 막는 매수 범위 | A 모든 live 매수(파킹 포함) / B 파킹·현금 규칙 B 매수 제외 모든 live 매수 / C 새 전략 sleeve 매수만 | **B** | 결정 2c는 "신규·추가매수 동결"이고 파킹은 현금 보관이라 신규 위험이 아니다. C는 untagged·직접 매수가 빠져 결정 문언을 못 지킨다. |
 | Q11 | 계획 결속 주문이 전역 daily cap을 공유하나 | A 공유 / B 바구니 전용 cap만 | **A** | 캡을 넓히지 않는다(하드룰 4). 1차 분할 총액(약 280~470만)은 KR daily cap 500만 안. |
 
@@ -393,11 +395,11 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 | T1 | 위임장 조항·계획 모델 | §3의 네 테이블, 트리거, `order_proposals` 두 열, 조건부 GRANT, downgrade 거부, store(유일 writer), 순수 불변식 함수(I1~I9) | — | T2 | A | DB 가드 | **있음** |
 | T2 | 위임장·계획 CLI | `scripts/mandate.py`: 조항 생성(운영자 actor만), 계획 등록(proposed), preview 기본 `--commit`, 상태 조회 | T1 | T2 | B | 운영자 CLI | 없음 |
 | T3 | 아침 묶음 승인 카드 | `mandate_plan_batches`(+멤버) 불변 스냅샷, 발송 CLI, 주문 경로와 분리된 nonce 결속 콜백(계획 이벤트만 append, 주문 모듈 import 금지 정적 테스트) | T1, T2 | T2 | A | Telegram 콜백(새 경로, 기존 콜백 불변) | **있음** |
-| T1m | 모의 sleeve 조합 | sleeve 계좌 조합 DB CHECK와 런타임 어휘(`SLEEVE_ACCOUNT_MARKETS`, `app/models/strategy_sleeves.py:35-41`; `create_sleeve` 검사, `app/services/strategy_sleeves/store.py:303-308`)에 `kiwoom_mock`/`equity_kr` 추가, `LEDGER_IDENTITY`에 `kiwoom_mock → (kiwoom, mock)` 추가(`vocabulary.py:126-135`의 동치 단언 유지, `store.py:599` 로더), 키움 모의 원장·체결 귀속. live 조합·게이트 불변 | T1 | T2 | A | DB CHECK·sleeve 어휘 | **있음** |
+| T1m | 모의 sleeve 조합 | 키움 체결 귀속을 계좌·거래일·주문번호·rung idempotency 키로 매칭(키움 주문번호는 계좌·거래일 안에서만 유일, `app/models/review.py:874-878`; 지금 로더는 KIS만 거래일을 붙이고 `execution_ledger/supersede.py:104-106`은 키움 거래일이 없다 — `store.py:599-605`, `:661-690`), 모호한 체결은 미측정. 그리고 sleeve 계좌 조합 DB CHECK와 런타임 어휘(`SLEEVE_ACCOUNT_MARKETS`, `app/models/strategy_sleeves.py:35-41`; `create_sleeve` 검사, `app/services/strategy_sleeves/store.py:303-308`)에 `kiwoom_mock`/`equity_kr` 추가, `LEDGER_IDENTITY`에 `kiwoom_mock → (kiwoom, mock)` 추가(`vocabulary.py:126-135`의 동치 단언 유지, `store.py:599` 로더), 키움 모의 원장·체결 귀속. live 조합·게이트 불변 | T1 | T2 | A | DB CHECK·sleeve 어휘 | **있음** |
 | T4 | 계획 결속 제안 + 계획 게이트(사람 카드만) | `order_proposal_create(mandate_plan_id, tranche_index)`, I15 트리거·재비교, dispatch의 계획 게이트(I4·I8·I9·I12·I16, 강등만), 회차 이벤트(부분 체결 포함), 원장 체결 투영 CLI | T1 | T2 | A | dispatch(강등만, 완화 없음) | 없음 |
 | T4b | 매도 1호가 소스 | venue별 호가 읽기(관측 시각·신선도 상한·fail-closed), 계획 게이트와 분류기에 입력 | T4 | T2 | A | 읽기 전용 브로커 시세 | 없음 |
 | T5 | **분류기·preview 해제(게이트 완화)** | `mandate_binding` + `marketable_not_resting` 해제, KIS·Toss preview/submit `allow_mandate_bound_buy`, 파킹 면제 비적용, 스위치 3개(기본 off), deviation record, 정적 테스트(스위치 off면 바이트 동일) | T4, T4b, T6 | **T3** | S | **자동승인·주문 게이트** | 없음 |
-| T6 | 낙폭 동결 판정·차단 | 바구니(`basket_key` 합산, 예산+net_pnl) 낙폭, 통합 계좌 집합 낙폭(측정 불가 = 동결), 제안 생성 거부 + 제안 전송 직전 매수 차단(수동·자동) + 전체 자산 동결은 직접 매수 도구와 untagged 제안까지 + 알림, `resumed` 이벤트 | T4, hk 3800 스냅샷 | **T3** | S | **전송 경계(차단 추가, 완화 없음)** | 없음 |
+| T6 | 낙폭 동결 판정·차단 | 바구니(`basket_key` 합산, 예산+비용 완전 손익, 한 통화) 낙폭, 통합 계좌 집합 낙폭(측정 불가 = 동결), 제안 생성 거부 + 제안 전송 직전 매수 차단(수동·자동) + 전체 자산 동결은 직접 매수 도구와 untagged 제안까지 + 매수 정정 차단 + 전역 래치 테이블·운영자 해제 CLI + 알림, `resumed` 이벤트 | T4, hk 3800 스냅샷 | **T3** | S | **전송 경계(차단 추가, 완화 없음)** | **있음** |
 | T7 | 2·3차 트리거 | 가격·시간 조건 판정(I5·I6·I7) → armed → 제안 생성. scheduleless CLI | T4 | T2 | A | 제안 생성만 | 없음 |
 | T8 | 논지 훼손 매도 제안(1b) | `thesis_broken` 이벤트, 기존 `exit_intent='loss_cut'` 사람 승인 의식으로 제안(rationale에 계획·이벤트 id). 새 exit intent 없음 | T4 | T2 | A | 제안 생성만(완화 없음) | 없음 |
 | T9 | 알림·관측 | 카드에 계획·회차·조항 해시, audit `mandate_*` 사유, retro/v1 읽기 연결 | T4 | T2 | B | 알림 | 없음 |
