@@ -371,6 +371,7 @@ tests/test_feed_news_crypto_filter.py
 tests/test_financial_fundamentals_snapshots_repository.py
 tests/test_forecast_recovery_unit.py
 tests/test_fundamentals_helpers.py
+tests/test_hk4902_drop_unused_tables_migration.py
 tests/test_intraday_order_review_jobs.py
 tests/test_invest_account_panel_router.py
 tests/test_invest_api_crypto_router.py

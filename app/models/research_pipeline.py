@@ -1,8 +1,8 @@
 """ROB-112 — Research pipeline ORM models.
 
-5 tables: research_sessions, stage_analysis, research_summaries,
-summary_stage_links, user_research_notes. All append-only except
-research_sessions (status transitions allowed).
+4 tables: research_sessions, stage_analysis, research_summaries,
+summary_stage_links. All append-only except research_sessions (status
+transitions allowed). (``user_research_notes`` was dropped by hk 4902.)
 """
 
 from sqlalchemy import (
@@ -65,9 +65,6 @@ class ResearchSession(Base):
     )
     summaries = relationship(
         "ResearchSummary", back_populates="session", cascade="all, delete-orphan"
-    )
-    notes = relationship(
-        "UserResearchNote", back_populates="session", cascade="all, delete-orphan"
     )
 
 
@@ -209,20 +206,3 @@ class SummaryStageLink(Base):
     )
 
     summary = relationship("ResearchSummary", back_populates="stage_links")
-
-
-class UserResearchNote(Base):
-    __tablename__ = "user_research_notes"
-
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(
-        Integer, ForeignKey("research_sessions.id"), nullable=False, index=True
-    )
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    body = Column(Text, nullable=False)
-    created_at = Column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    session = relationship("ResearchSession", back_populates="notes")
