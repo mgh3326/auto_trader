@@ -7,6 +7,7 @@ ALLOWED_METHODS = {
         {
             "fetch_my_stocks",
             "fetch_my_overseas_stocks",
+            "fetch_my_stocks_with_completion",
             "inquire_integrated_margin",
             "inquire_overseas_margin",
         }

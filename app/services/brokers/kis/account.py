@@ -402,6 +402,43 @@ class AccountClient:
             - frcr_evlu_pfls_amt: 외화평가손익금액
             - evlu_pfls_rt: 평가손익율
         """
+        stocks, _complete = await self._fetch_my_stocks_rows(
+            is_mock=is_mock,
+            is_overseas=is_overseas,
+            exchange_code=exchange_code,
+            currency_code=currency_code,
+        )
+        return stocks
+
+    async def fetch_my_stocks_with_completion(
+        self,
+        is_mock: bool = False,
+        is_overseas: bool = False,
+        exchange_code: str = "NASD",
+        currency_code: str = "USD",
+    ) -> dict:
+        """보유 주식 목록과 페이지네이션 완주 증거를 함께 반환한다.
+
+        Returns:
+            ``{"rows": [...], "complete": bool}``. ``complete``는 페이지
+            상한(``max_pages``)에 닿아 유효한 연속조회 커서를 남긴 채 중단된
+            경우에만 False다. API 예외는 기존처럼 그대로 전파된다.
+        """
+        stocks, complete = await self._fetch_my_stocks_rows(
+            is_mock=is_mock,
+            is_overseas=is_overseas,
+            exchange_code=exchange_code,
+            currency_code=currency_code,
+        )
+        return {"rows": stocks, "complete": complete}
+
+    async def _fetch_my_stocks_rows(
+        self,
+        is_mock: bool = False,
+        is_overseas: bool = False,
+        exchange_code: str = "NASD",
+        currency_code: str = "USD",
+    ) -> tuple[list[dict], bool]:
         await self._parent._ensure_token()
 
         cano, acnt_prdt_cd = self._resolve_account_parts()
@@ -527,6 +564,10 @@ class AccountClient:
 
             await asyncio.sleep(0.1)
 
+        # The loop ends by ``break`` (empty page or no advancing cursor) or by
+        # ``page`` exceeding ``max_pages`` with a fresh cursor still pending.
+        complete = page <= max_pages
+
         all_stocks = self._filter_nonzero_holdings(all_stocks, is_overseas=is_overseas)
 
         logging.info(
@@ -534,7 +575,7 @@ class AccountClient:
             f"총 {len(all_stocks)}건 (보유수량 > 0)"
         )
 
-        return all_stocks
+        return all_stocks, complete
 
     async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict:
         """
@@ -649,12 +690,18 @@ class AccountClient:
             "raw": raw,
         }
 
-    async def inquire_overseas_margin(self, is_mock: bool = False) -> list[dict]:
+    async def inquire_overseas_margin(
+        self, is_mock: bool = False, include_field_presence: bool = False
+    ) -> list[dict]:
         """
         해외증거금 통화별 조회
 
         Args:
             is_mock: True면 모의투자, False면 실전투자
+            include_field_presence: True면 각 행에 브로커가 외화예수금 필드를
+                실제로 파싱 가능한 값으로 내려줬는지 나타내는
+                ``frcr_dncl_amt1_present`` 키를 추가한다. 결측·빈 문자열·
+                파싱 불가 값은 False다.
 
         Returns:
             통화별 증거금 정보 리스트
@@ -700,7 +747,9 @@ class AccountClient:
                     hdr["authorization"].removeprefix("Bearer ")
                 )
                 await self._parent._ensure_token()
-                return await self.inquire_overseas_margin(is_mock)
+                return await self.inquire_overseas_margin(
+                    is_mock, include_field_presence
+                )
             raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
         output = js.get("output", [])
@@ -712,6 +761,14 @@ class AccountClient:
                 return float(val)
             except (ValueError, TypeError):
                 return default
+
+        def optional_float(val: Any) -> float | None:
+            if val in ("", None):
+                return None
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
 
         results: list[dict] = []
         for item in output:
@@ -732,6 +789,11 @@ class AccountClient:
                 "tot_evlu_pfls_amt": safe_float(item.get("tot_evlu_pfls_amt")),
                 "ovrs_tot_pfls": safe_float(item.get("ovrs_tot_pfls")),
             }
+            if include_field_presence:
+                result["frcr_dncl_amt1_present"] = (
+                    optional_float(item.get("frcr_dncl_amt1")) is not None
+                    or optional_float(item.get("frcr_dncl_amt_2")) is not None
+                )
             results.append(result)
 
         usd_rows = [

@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy.exc import InterfaceError, OperationalError
 
+from app.core.symbol import to_db_symbol
 from app.services.daily_candles.converters import frame_to_rows
 from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
 from app.services.daily_candles.repository import (
@@ -53,6 +54,9 @@ KISUsFetcher = Callable[..., Awaitable["pd.DataFrame"]]
 YahooUsFetcher = Callable[..., Awaitable[list[YahooFallbackRow]]]
 UpbitCryptoFetcher = Callable[..., Awaitable["pd.DataFrame"]]
 TossDailyFetcher = Callable[..., Awaitable["pd.DataFrame"]]
+# (symbol, exchange-or-None) pairs of currently held US symbols; see the
+# holdings-union docstring on ``sync_market_universe``.
+UsHoldingsLoader = Callable[[], Awaitable[list[tuple[str, str | None]]]]
 
 
 class DailyCandleSyncService:
@@ -66,6 +70,7 @@ class DailyCandleSyncService:
         upbit_crypto_fetcher: UpbitCryptoFetcher,
         toss_kr_fetcher: TossDailyFetcher | None = None,
         toss_us_fetcher: TossDailyFetcher | None = None,
+        us_holdings_loader: UsHoldingsLoader | None = None,
         close_callbacks: list[Callable[[], object]] | None = None,
     ) -> None:
         self._repository = repository
@@ -75,6 +80,7 @@ class DailyCandleSyncService:
         self._upbit = upbit_crypto_fetcher
         self._toss_kr = toss_kr_fetcher
         self._toss_us = toss_us_fetcher
+        self._us_holdings_loader = us_holdings_loader
         self._close_callbacks = close_callbacks or []
 
     async def close(self) -> None:
@@ -318,11 +324,33 @@ class DailyCandleSyncService:
                 " WHERE is_active = TRUE ORDER BY symbol"
             )
             result = await session.execute(sql)
+            exchanges = {str(row.symbol): str(row.exchange) for row in result}
+            if self._us_holdings_loader is not None:
+                for raw_symbol, raw_exchange in await self._us_holdings_loader():
+                    symbol = to_db_symbol(str(raw_symbol or "").strip().upper())
+                    if not symbol or symbol in exchanges:
+                        continue
+                    exchange = str(raw_exchange or "").strip().upper()
+                    if exchange not in {"NASD", "NYSE", "AMEX"}:
+                        try:
+                            from app.services.us_symbol_universe_service import (
+                                get_us_exchange_by_symbol,
+                            )
+
+                            exchange = await get_us_exchange_by_symbol(
+                                symbol, db=session
+                            )
+                        except Exception:
+                            logger.warning(
+                                "US daily sync: held symbol %s has no resolvable "
+                                "exchange; skipping",
+                                symbol,
+                            )
+                            continue
+                    exchanges[symbol] = exchange
             return [
-                SyncTarget(
-                    market=MarketKey.US, symbol=row.symbol, partition=row.exchange
-                )
-                for row in result
+                SyncTarget(market=MarketKey.US, symbol=symbol, partition=exchange)
+                for symbol, exchange in sorted(exchanges.items())
             ]
         if market == "crypto":
             sql = text(
@@ -434,6 +462,43 @@ async def _build_default_service() -> DailyCandleSyncService:
     async def _toss(*, symbol: str, n: int) -> pd.DataFrame:
         return await fetch_daily_toss_unclamped(symbol=symbol, n=n)
 
+    async def _us_holdings() -> list[tuple[str, str | None]]:
+        """Held US symbols for the target union (KIS + manual holdings).
+
+        Each pair is ``(raw_symbol, exchange_or_None)``; ``exchange_or_None``
+        comes from the KIS holdings row (``ovrs_excg_cd``) and falls back to
+        the universe lookup in ``_resolve_universe``. A failed loader leg is
+        additive-only: the universe targets still sync.
+        """
+        from app.models.manual_holdings import MarketType
+        from app.services.manual_holdings_service import ManualHoldingsService
+
+        pairs: list[tuple[str, str | None]] = []
+        try:
+            for row in await kis.fetch_my_us_stocks():
+                pairs.append(
+                    (
+                        str(row.get("ovrs_pdno") or ""),
+                        row.get("ovrs_excg_cd"),
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "US daily sync: KIS holdings fetch failed; universe targets only",
+                exc_info=True,
+            )
+        try:
+            manual = await ManualHoldingsService(session).get_holdings_by_user(
+                user_id=1, market_type=MarketType.US
+            )
+            pairs.extend((str(holding.ticker or ""), None) for holding in manual)
+        except Exception:
+            logger.warning(
+                "US daily sync: manual holdings fetch failed; continuing",
+                exc_info=True,
+            )
+        return pairs
+
     return DailyCandleSyncService(
         repository=DailyCandlesRepository(session=session),
         kis_kr_fetcher=_kr,
@@ -442,5 +507,6 @@ async def _build_default_service() -> DailyCandleSyncService:
         upbit_crypto_fetcher=_upbit,
         toss_kr_fetcher=_toss if settings.toss_api_enabled else None,
         toss_us_fetcher=_toss if settings.toss_api_enabled else None,
+        us_holdings_loader=_us_holdings,
         close_callbacks=[session.close, kis.close],
     )

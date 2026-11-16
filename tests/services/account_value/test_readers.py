@@ -6,23 +6,16 @@ import pytest
 from app.services.account_value.readers import BrokerReader
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("market", ["kr", "us"])
-async def test_kis_reader_marks_incomplete_source_unknown(monkeypatch, market):
-    import app.services.invest_home_readers as home_readers
-
+def _fake_kis_client(*, rows, complete, us_cash=None):
     class Account:
-        async def fetch_my_stocks(self):
-            return [{"pdno": "005930", "hldg_qty": "2"}]
+        async def fetch_my_stocks_with_completion(self, **kwargs):
+            return {"rows": rows, "complete": complete}
 
-        async def fetch_my_overseas_stocks(self):
-            return [{"ovrs_pdno": "BRK/B", "ovrs_cblc_qty": "2"}]
-
-        async def inquire_integrated_margin(self):
+        async def inquire_integrated_margin(self, **kwargs):
             return {"raw": {"stck_cash_objt_amt": "10"}}
 
-        async def inquire_overseas_margin(self):
-            return [{"crcy_cd": "USD", "frcr_dncl_amt1": 0}]
+        async def inquire_overseas_margin(self, **kwargs):
+            return [us_cash] if us_cash is not None else []
 
     class Client:
         account = Account()
@@ -30,20 +23,115 @@ async def test_kis_reader_marks_incomplete_source_unknown(monkeypatch, market):
         async def close(self):
             pass
 
-    monkeypatch.setattr(home_readers, "SafeKISClient", Client)
+    return Client
+
+
+async def _read_kis(monkeypatch, market, client):
+    import app.services.invest_home_readers as home_readers
+
+    monkeypatch.setattr(home_readers, "SafeKISClient", client)
     reader = BrokerReader(None, "kis", market)
 
     async def marks(*args):
         return {}
 
     monkeypatch.setattr(reader, "_marks", marks)
-    [observation] = await reader.read()
+    return (await reader.read())[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_kis_reader_marks_incomplete_source_unknown(monkeypatch, market):
+    rows = (
+        [{"pdno": "005930", "hldg_qty": "2"}]
+        if market == "kr"
+        else [{"ovrs_pdno": "BRK/B", "ovrs_cblc_qty": "2"}]
+    )
+    client = _fake_kis_client(
+        rows=rows,
+        complete=False,
+        us_cash={"crcy_cd": "USD", "frcr_dncl_amt1": 0},
+    )
+    observation = await _read_kis(monkeypatch, market, client)
     assert observation.holdings[0].symbol == ("005930" if market == "kr" else "BRK.B")
     assert observation.holdings[0].mark is None
     assert "cash_allocation_unknown" in observation.reasons
     assert "holdings_completeness_unknown" in observation.reasons
     if market == "us":
         assert observation.cash["USD"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_kis_reader_drops_completeness_reason_only_when_proven(
+    monkeypatch, market
+):
+    rows = (
+        [{"pdno": "005930", "hldg_qty": "2"}]
+        if market == "kr"
+        else [{"ovrs_pdno": "AAPL", "ovrs_cblc_qty": "2"}]
+    )
+    client = _fake_kis_client(
+        rows=rows,
+        complete=True,
+        us_cash={
+            "crcy_cd": "USD",
+            "frcr_dncl_amt1": 0,
+            "frcr_dncl_amt1_present": True,
+        },
+    )
+    observation = await _read_kis(monkeypatch, market, client)
+    assert "holdings_completeness_unknown" not in observation.reasons
+    if market == "us":
+        assert observation.cash["USD"] == Decimal(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_kis_reader_keeps_completeness_reason_on_invalid_row(monkeypatch, market):
+    rows = (
+        [{"pdno": "005930", "hldg_qty": "2"}, {"pdno": "", "hldg_qty": "3"}]
+        if market == "kr"
+        else [
+            {"ovrs_pdno": "AAPL", "ovrs_cblc_qty": "2"},
+            {"ovrs_pdno": "MSFT", "ovrs_cblc_qty": "bad"},
+        ]
+    )
+    client = _fake_kis_client(rows=rows, complete=True)
+    observation = await _read_kis(monkeypatch, market, client)
+    assert "invalid_broker_holding" in observation.reasons
+    assert "holdings_completeness_unknown" in observation.reasons
+
+
+@pytest.mark.asyncio
+async def test_kis_reader_us_cash_present_zero_is_zero(monkeypatch):
+    client = _fake_kis_client(
+        rows=[],
+        complete=True,
+        us_cash={
+            "crcy_cd": "USD",
+            "frcr_dncl_amt1": 0,
+            "frcr_dncl_amt1_present": True,
+        },
+    )
+    observation = await _read_kis(monkeypatch, "us", client)
+    assert observation.cash["USD"] == Decimal(0)
+    assert "holdings_completeness_unknown" not in observation.reasons
+
+
+@pytest.mark.asyncio
+async def test_kis_reader_us_cash_missing_field_stays_unknown(monkeypatch):
+    client = _fake_kis_client(
+        rows=[],
+        complete=True,
+        us_cash={
+            "crcy_cd": "USD",
+            "frcr_dncl_amt1": 0,
+            "frcr_dncl_amt1_present": False,
+        },
+    )
+    observation = await _read_kis(monkeypatch, "us", client)
+    assert observation.cash["USD"] is None
 
 
 @pytest.mark.asyncio
@@ -65,6 +153,7 @@ async def test_upbit_reader_includes_locked_cash_and_missing_mark(monkeypatch):
     monkeypatch.setattr(reader, "_marks", marks)
     [observation] = await reader.read()
     assert observation.cash["KRW"] == Decimal(15)
+    assert [holding.symbol for holding in observation.holdings] == ["KRW-BTC"]
     assert observation.holdings[0].quantity == Decimal(3)
     assert observation.holdings[0].mark is None
 
