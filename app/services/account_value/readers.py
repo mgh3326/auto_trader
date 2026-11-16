@@ -95,13 +95,11 @@ class BrokerReader:
             view = read_only_view("kis", client.account)
             closer = read_only_view("kis_close", client)
             try:
-                # The existing reader filters malformed quantities and caps pagination.
-                reasons.append("holdings_completeness_unknown")
-                rows = (
-                    (await view.fetch_my_stocks())
-                    if self.market == "kr"
-                    else (await view.fetch_my_overseas_stocks())
+                evidence = await view.fetch_my_stocks_with_completion(
+                    is_overseas=self.market == "us"
                 )
+                rows = evidence["rows"]
+                invalid_rows = 0
                 for row in rows:
                     code = row.get("pdno" if self.market == "kr" else "ovrs_pdno")
                     quantity = _decimal(
@@ -109,9 +107,15 @@ class BrokerReader:
                     )
                     if not code or quantity is None or quantity < 0:
                         reasons.append("invalid_broker_holding")
+                        invalid_rows += 1
                         continue
                     if quantity > 0:
                         holdings.append((to_db_symbol(str(code)).upper(), quantity))
+                # Completeness is only proven when the paginated fetch ended
+                # normally (no page-cap truncation, no exception) and every
+                # returned row parsed.
+                if not evidence.get("complete") or invalid_rows:
+                    reasons.append("holdings_completeness_unknown")
                 # This account's cash is not evidence of market allocation.
                 reasons.append("cash_allocation_unknown")
                 if self.market == "kr":
@@ -123,13 +127,19 @@ class BrokerReader:
                     )
                     cash["KRW"] = _decimal(raw.get("stck_cash_objt_amt"))
                 else:
-                    rows = await view.inquire_overseas_margin()
+                    rows = await view.inquire_overseas_margin(
+                        include_field_presence=True
+                    )
                     matches = [row for row in rows if row.get("crcy_cd") == "USD"]
                     if len(matches) == 1:
                         amount = _decimal(matches[0].get("frcr_dncl_amt1"))
-                        # The existing reader coalesces absent fields to zero.
+                        # A broker-supplied zero is cash 0; only an absent or
+                        # unparseable field stays unknown.
                         cash["USD"] = (
-                            amount if amount is not None and amount > 0 else None
+                            amount
+                            if matches[0].get("frcr_dncl_amt1_present")
+                            and amount is not None
+                            else None
                         )
             finally:
                 await closer.close()
