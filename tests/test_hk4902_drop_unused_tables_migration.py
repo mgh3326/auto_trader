@@ -123,15 +123,20 @@ def test_migration_drops_exactly_the_documented_drop_now_set() -> None:
     assert len(migration.DROPPED_TABLES) == len(set(migration.DROPPED_TABLES))
 
     upgrade_sql = _render(migration, "upgrade")
-    dropped = re.findall(r"^DROP TABLE public\.(\w+);$", upgrade_sql, re.M)
+    dropped = re.findall(r"EXECUTE 'DROP TABLE public\.(\w+)';", upgrade_sql)
     assert sorted(dropped) == sorted(documented)
     assert "CASCADE" not in upgrade_sql.upper().replace("ON DELETE CASCADE", "")
     for table in documented:
-        assert f"LOCK TABLE public.{table} IN ACCESS EXCLUSIVE MODE" in upgrade_sql
+        # Absent table (ORM-built CI/test databases) is a no-op, not an error.
+        assert f"IF to_regclass('public.{table}') IS NOT NULL THEN" in upgrade_sql
+        assert (
+            f"EXECUTE 'LOCK TABLE public.{table} IN ACCESS EXCLUSIVE MODE';"
+            in upgrade_sql
+        )
         assert f"hk4902_{table}_rows_retained" in upgrade_sql
         # The guard must run before the DROP of the same table.
         assert upgrade_sql.index(f"hk4902_{table}_rows_retained") < upgrade_sql.index(
-            f"DROP TABLE public.{table};"
+            f"EXECUTE 'DROP TABLE public.{table}';"
         )
 
 
@@ -140,7 +145,7 @@ def test_downgrade_recreates_the_same_set_empty_with_schema_and_grants() -> None
     documented = {t.split(".", 1)[1] for t in _sections()["DROP-now"]}
     sql = _render(migration, "downgrade")
 
-    created = re.findall(r"^CREATE TABLE (\w+) \(", sql, re.M)
+    created = re.findall(r"^CREATE TABLE IF NOT EXISTS (\w+) \(", sql, re.M)
     assert sorted(created) == sorted(documented)
     assert "INSERT" not in sql.replace("GRANT SELECT, INSERT", "")
 
@@ -151,13 +156,13 @@ def test_downgrade_recreates_the_same_set_empty_with_schema_and_grants() -> None
         "CONSTRAINT tier_rule_params_tier_range CHECK (tier BETWEEN 1 AND 4)",
         "CONSTRAINT pk_market_filters PRIMARY KEY",
         "CONSTRAINT market_filters_filter_name_format CHECK",
-        "CREATE INDEX ix_market_filters_user_instrument_enabled ON market_filters (user_id, instrument_type, enabled)",
-        "CREATE UNIQUE INDEX uq_market_filters_user_instrument_filter ON market_filters (user_id, instrument_type, filter_name)",
+        "CREATE INDEX IF NOT EXISTS ix_market_filters_user_instrument_enabled ON market_filters (user_id, instrument_type, enabled)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_market_filters_user_instrument_filter ON market_filters (user_id, instrument_type, filter_name)",
         "CONSTRAINT pk_user_channels PRIMARY KEY",
         "channel notify_channel NOT NULL",
         "CREATE TYPE public.notify_channel AS ENUM",
         "FOREIGN KEY(session_id) REFERENCES research_sessions (id)",
-        "CREATE INDEX ix_user_research_notes_session_id ON user_research_notes (session_id)",
+        "CREATE INDEX IF NOT EXISTS ix_user_research_notes_session_id ON user_research_notes (session_id)",
     ):
         assert fragment in sql, fragment
     # market_filters lost broker_account_id in a1b2c3d4e5f6; do not bring it back.

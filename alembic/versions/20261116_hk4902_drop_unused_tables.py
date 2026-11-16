@@ -11,7 +11,7 @@ Dropped (all in ``public``; the audit with the evidence for each is
 Each table has no runtime reader or writer in ``app/`` or ``scripts/`` and no
 other table references it. ROB-1488 counted 0 rows in production on
 2026-11-02; this migration does not trust that count. Upgrade takes an
-``ACCESS EXCLUSIVE`` lock on each table and refuses to drop one that holds a
+``ACCESS EXCLUSIVE`` lock on each existing table and refuses to drop one that holds a
 row, so a table that gained data since the audit is never dropped silently.
 ``DROP TABLE`` is issued without ``CASCADE``: an unknown dependent object
 makes the migration fail instead of disappearing.
@@ -57,12 +57,20 @@ DROPPED_TABLES: tuple[str, ...] = (
 )
 
 
-def _refuse_if_rows_exist(table: str) -> None:
-    op.execute(f"LOCK TABLE public.{table} IN ACCESS EXCLUSIVE MODE")
+def _drop_if_present_and_empty(table: str) -> None:
+    """Drop ``public.<table>`` when it exists; refuse when it holds a row.
+
+    A database built from the ORM metadata (CI, local test DBs) never had the
+    table, so absence is not an error. Presence with data is.
+    """
     op.execute(f"""
         DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM public.{table}) THEN
-                RAISE EXCEPTION 'hk4902_{table}_rows_retained';
+            IF to_regclass('public.{table}') IS NOT NULL THEN
+                EXECUTE 'LOCK TABLE public.{table} IN ACCESS EXCLUSIVE MODE';
+                IF EXISTS (SELECT 1 FROM public.{table}) THEN
+                    RAISE EXCEPTION 'hk4902_{table}_rows_retained';
+                END IF;
+                EXECUTE 'DROP TABLE public.{table}';
             END IF;
         END $$
     """)
@@ -70,8 +78,7 @@ def _refuse_if_rows_exist(table: str) -> None:
 
 def upgrade() -> None:
     for table in DROPPED_TABLES:
-        _refuse_if_rows_exist(table)
-        op.execute(f"DROP TABLE public.{table}")
+        _drop_if_present_and_empty(table)
 
 
 def _grant_at_app(table: str) -> None:
@@ -89,6 +96,15 @@ def _grant_at_app(table: str) -> None:
     """)
 
 
+def _create_table(*args, **kwargs) -> None:
+    """Idempotent: a database whose tables were never dropped keeps them."""
+    op.create_table(*args, if_not_exists=True, **kwargs)
+
+
+def _create_index(*args, **kwargs) -> None:
+    op.create_index(*args, if_not_exists=True, **kwargs)
+
+
 def downgrade() -> None:
     instrument_type = postgresql.ENUM(
         "equity_kr",
@@ -101,7 +117,7 @@ def downgrade() -> None:
     )
 
     # tier_rule_params (4d9f0b2c7a11)
-    op.create_table(
+    _create_table(
         "tier_rule_params",
         sa.Column("id", sa.BigInteger(), nullable=False),
         sa.Column("user_id", sa.BigInteger(), nullable=False),
@@ -151,7 +167,7 @@ def downgrade() -> None:
     )
 
     # market_filters (4d9f0b2c7a11, then a1b2c3d4e5f6 removed broker_account_id)
-    op.create_table(
+    _create_table(
         "market_filters",
         sa.Column("id", sa.BigInteger(), nullable=False),
         sa.Column("user_id", sa.BigInteger(), nullable=False),
@@ -186,13 +202,13 @@ def downgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_market_filters")),
     )
-    op.create_index(
+    _create_index(
         "ix_market_filters_user_instrument_enabled",
         "market_filters",
         ["user_id", "instrument_type", "enabled"],
         unique=False,
     )
-    op.create_index(
+    _create_index(
         "uq_market_filters_user_instrument_filter",
         "market_filters",
         ["user_id", "instrument_type", "filter_name"],
@@ -214,7 +230,7 @@ def downgrade() -> None:
             END IF;
         END $$
     """)
-    op.create_table(
+    _create_table(
         "user_channels",
         sa.Column("id", sa.BigInteger(), nullable=False),
         sa.Column("user_id", sa.BigInteger(), nullable=False),
@@ -232,7 +248,7 @@ def downgrade() -> None:
     )
 
     # user_research_notes (f7891bf9789f)
-    op.create_table(
+    _create_table(
         "user_research_notes",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("session_id", sa.Integer(), nullable=False),
@@ -249,16 +265,16 @@ def downgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
+    _create_index(
         op.f("ix_user_research_notes_id"), "user_research_notes", ["id"], unique=False
     )
-    op.create_index(
+    _create_index(
         op.f("ix_user_research_notes_session_id"),
         "user_research_notes",
         ["session_id"],
         unique=False,
     )
-    op.create_index(
+    _create_index(
         op.f("ix_user_research_notes_user_id"),
         "user_research_notes",
         ["user_id"],
