@@ -10,7 +10,7 @@ worker_selector:
   host: ncp
 steps:
   - name: sync
-    command: docker run --rm --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_kr_symbol_universe
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_kr_symbol_universe
     timeout_sec: 1800
     retry_policy:
       limit: 1
