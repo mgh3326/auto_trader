@@ -1,0 +1,22 @@
+# 등록됨(hk 4896, 운영자 승인 11-17 "새로 만들 Dagu 잡의 스케줄 등록 승인", hk:doc consult/2026-11-17/at-go-1117-fable52 §2).
+# at-scheduler(TaskIQ) 의 symbols.us.universe.sync (21:30 KST) 를 대신한다. 순서: Dagu 등록 → 첫 실행 확인 → at-scheduler 정지.
+# 처음 host=ncp(NCP DB), 이전 때 다른 15개와 함께 host=pi 로 바꾼다. 스케줄은 UTC 로 쓴다.
+# 실패 경로: journal 한 줄(logger -t at-dagu-batch)만. healthchecks 무료 한도가 차 있어 핑 URL 없음.
+description: "us symbol universe sync (public master files, DB write)"
+schedule: "CRON_TZ=UTC 30 12 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: ncp
+steps:
+  - name: sync
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_us_symbol_universe
+    timeout_sec: 1800
+    retry_policy:
+      limit: 1
+      interval_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-us-symbol-universe status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-us-symbol-universe status=failure"'

@@ -1,0 +1,26 @@
+# 등록됨(hk 4896, 운영자 승인 11-17 "새로 만들 Dagu 잡의 스케줄 등록 승인", hk:doc consult/2026-11-17/at-go-1117-fable52 §2).
+# at-scheduler(TaskIQ) 의 execution_ledger.reconcile_execution_ledger_recurring (*/30 KST, window 24h, kis 다음 upbit) 를 대신한다. 순서: Dagu 등록 → 첫 실행 확인 → at-scheduler 정지.
+# 처음 host=ncp(NCP DB), 이전 때 다른 15개와 함께 host=pi 로 바꾼다. 스케줄은 UTC 로 쓴다.
+# 실패 경로: journal 한 줄(logger -t at-dagu-batch)만. healthchecks 무료 한도가 차 있어 핑 URL 없음.
+# 태스크와 같게: .env.api 의 EXECUTION_LEDGER_COMMIT_ENABLED 가 참(true/1/yes/on)일 때만 --commit, 아니면 --dry-run (Dagu 가 명령 안의 \${VAR} 를 먼저 펼칠 수 있어 셸 변수를 쓰지 않는다). 커밋 뒤 보호 수량 추종 훅은 스크립트가 부른다(follow_committed_fills).
+# 분을 15·45 로 둬 at-scheduler 정지 전 0·30 실행과 겹치지 않게 한다.
+# kis·upbit 은 서로 기대지 않는 두 단계다(Dagu 기본 graph 형이라 함께 시작한다). 한쪽이 실패하면 run 이 failed 가 되어 failure 핸들러가 남는다
+# (continue_on 을 쓰면 partially_succeeded 가 success 핸들러로 가서 실패가 가려진다). --init: 시간 초과로 docker run 이 끝나면 컨테이너도 멈춘다.
+description: "Execution ledger reconcile KIS+Upbit (broker read, ledger write when EXECUTION_LEDGER_COMMIT_ENABLED)"
+schedule: "CRON_TZ=UTC 15,45 * * * *"
+max_active_runs: 1
+hist_retention_days: 14
+worker_selector:
+  host: ncp
+steps:
+  - name: kis
+    command: if grep -qixE 'EXECUTION_LEDGER_COMMIT_ENABLED=(true|1|yes|on)' /root/at-secrets/.env.api; then docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.reconcile_execution_ledger --broker kis --window-hours 24 --commit; else docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.reconcile_execution_ledger --broker kis --window-hours 24 --dry-run; fi
+    timeout_sec: 1200
+  - name: upbit
+    command: if grep -qixE 'EXECUTION_LEDGER_COMMIT_ENABLED=(true|1|yes|on)' /root/at-secrets/.env.api; then docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.reconcile_execution_ledger --broker upbit --window-hours 24 --commit; else docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.reconcile_execution_ledger --broker upbit --window-hours 24 --dry-run; fi
+    timeout_sec: 1200
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-execution-ledger-reconcile status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-execution-ledger-reconcile status=failure"'
