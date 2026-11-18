@@ -14,8 +14,32 @@ from app.services.account_value.completeness import (
     record_revocation,
 )
 from app.services.account_value.flows import ExternalFlow, record_flow
-from app.services.account_value.readers import CompleteBrokerReader
+from app.services.account_value.identity import valid_account
+from app.services.account_value.readers import (
+    CompleteBrokerReader,
+    resolve_account_key,
+)
 from app.services.account_value.snapshot import capture
+
+BROKER_ACCOUNTS = ("kis", "toss", "upbit")
+
+
+class AccountInputError(ValueError):
+    pass
+
+
+async def confirmation_account(value: str) -> str:
+    """Map a broker name to the snapshot writer's internal key; pass keys through."""
+    if value in BROKER_ACCOUNTS:
+        key = await resolve_account_key(value)
+        if key is None:
+            raise AccountInputError(
+                f"ACCOUNT: {value} 계좌 식별자를 확인할 수 없습니다"
+            )
+        return key
+    if valid_account(value) and not value.endswith(":identity_unknown"):
+        return value
+    raise AccountInputError("ACCOUNT: kis, toss, upbit 또는 내부 계좌 키여야 합니다")
 
 
 def parser():
@@ -81,6 +105,7 @@ async def run(args):
             account, start, end, confirmed_by, reason = args.confirm_flows
             if args.flow or args.account:
                 raise ValueError("하나의 작업만 지정해야 합니다")
+            account = await confirmation_account(account)
             status = await record_confirmation(
                 session,
                 account,
@@ -152,6 +177,9 @@ def main():
     args = parser().parse_args()
     try:
         asyncio.run(run(args))
+    except AccountInputError as exc:
+        print(f"실패: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     except Exception as exc:
         print(f"실패: {type(exc).__name__}", file=sys.stderr)
         raise SystemExit(1) from None
