@@ -1,0 +1,45 @@
+# 등록 대상(hk 3794, 운영자 결정 hk:doc decision/2026-11-18/at-3794-3795-recommended 항목 1~5).
+# 종료 상태 전용 대사: 증거가 있는 만료·취소·거절만 원장에 기록하고 체결 부기(fill booking)·저널·실현손익은 기존 두 플래그 게이트 뒤에 둔다.
+# 활성화 플래그는 이 잡의 docker run -e 에만 있다. 공유 .env.api 는 바꾸지 않는다(docker 는 -e 를 --env-file 보다 우선한다).
+# 스케줄(UTC 로 쓴다, OCI Dagu 는 bare cron 을 KST 로 읽는다): 01:40 UTC = 10:40 KST(미국 정규·애프터 20:00 ET 종료 뒤),
+# 11:40 UTC = 20:40 KST(KR NXT 20:00 종료 뒤). batch2 체결 대사(15·45분)와 겹치지 않게 40분.
+# 종료 코드: 0 완료, 3 주의 필요(체결 보류·미확인 행·잘린 scan) -> journal 에 status=attention 한 줄 남기고 단계는 성공,
+# 1·2 등 그 밖 -> 단계 실패(failure 핸들러). 3 을 실패로 두면 체결 보류 행·KIS US 6월 45행(hk 4178) 때문에 매번 실패가 되어 진짜 실패가 묻힌다.
+# 단계는 command 가 아니라 script 로 쓴다: Dagu 가 command 안의 $? 와 $rc 를 셸보다 먼저 펼쳐 종료 코드를 잃는다(로컬 dagu 2.21 로 확인).
+# script 는 errexit 로 돌므로 `|| rc=$?` 로 받는다.
+# KIS KR 과 KIS US 는 같은 KIS 키를 쓰므로 순서대로, Toss 는 따로 돈다. --init: 시간 초과로 docker run 이 끝나면 컨테이너도 멈춘다.
+description: "Terminal-only order ledger reconcile KIS KR, KIS US, Toss (expiry/cancel only; fill booking stays gated)"
+schedule: "CRON_TZ=UTC 40 1,11 * * *"
+max_active_runs: 1
+hist_retention_days: 14
+worker_selector:
+  host: pi
+steps:
+  - name: kis-kr
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e KIS_LIVE_AUTO_RECONCILE_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.kis_live_auto_reconcile --apply-terminal-only || rc=$?
+      if [ "$rc" -eq 3 ]; then logger -t at-dagu-batch "dag=at-terminal-reconcile step=kis-kr status=attention"; exit 0; fi
+      exit "$rc"
+    timeout_sec: 1200
+  - name: kis-us
+    depends:
+      - kis-kr
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.kis_us_auto_reconcile --apply-terminal-only || rc=$?
+      if [ "$rc" -eq 3 ]; then logger -t at-dagu-batch "dag=at-terminal-reconcile step=kis-us status=attention"; exit 0; fi
+      exit "$rc"
+    timeout_sec: 1200
+  - name: toss
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e TOSS_TERMINAL_AUTO_RECONCILE_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.toss_live_auto_reconcile --apply-terminal-only || rc=$?
+      if [ "$rc" -eq 3 ]; then logger -t at-dagu-batch "dag=at-terminal-reconcile step=toss status=attention"; exit 0; fi
+      exit "$rc"
+    timeout_sec: 1200
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-terminal-reconcile status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-terminal-reconcile status=failure"'
