@@ -1,13 +1,11 @@
 from types import SimpleNamespace
 
-from app.services.account_value.identity import configured_fingerprint
-from app.services.account_value.readers import kis_live_identity
-
 import pytest
 from pydantic import SecretStr
 
 from app.core.config import settings
-from app.services.account_value.readers import BrokerReader
+from app.services.account_value.identity import configured_fingerprint
+from app.services.account_value.readers import BrokerReader, kis_live_identity
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.upbit import client as upbit_client
 from scripts import account_value_snapshot
@@ -150,6 +148,7 @@ def test_unresolvable_broker_identity_fails_before_any_write(monkeypatch, capsys
     assert seen == [] and session.commits == 0
     assert "kis 계좌 식별자를 확인할 수 없습니다" in capsys.readouterr().err
 
+
 def test_fingerprint_golden_vectors():
     """Pin the exact bytes the account-key fingerprint is computed from.
 
@@ -160,7 +159,9 @@ def test_fingerprint_golden_vectors():
     computed once from the derivation and must not drift.
     """
     assert (
-        configured_fingerprint("kis", "kis_live", "12345678" + "01" + "app-key", "app-secret")
+        configured_fingerprint(
+            "kis", "kis_live", "12345678" + "01" + "app-key", "app-secret"
+        )
         == "kis:kis_live:19c87d5dba078a0f83bab7d3fcdf3683039979c9dc485756a556b27342b8a283"
     )
     assert (
@@ -171,6 +172,7 @@ def test_fingerprint_golden_vectors():
         configured_fingerprint("upbit", "upbit", "access", "secret")
         == "upbit:upbit:3be0842ef6dd337b69e71d3d7144c6eb11b49a3ddc387a32fa4e5f5d9994e9e6"
     )
+
 
 @pytest.mark.parametrize("app_key", ["", "   "])
 def test_empty_kis_app_key_yields_no_account_key(monkeypatch, capsys, app_key):
@@ -223,7 +225,14 @@ def test_invalid_dates_fail_before_account_resolution(monkeypatch, capsys, dates
     session, seen = _recording(monkeypatch)
     monkeypatch.setattr(
         "sys.argv",
-        ["account_value_snapshot.py", "--confirm-flows", "toss", *dates, "operator", "checked"],
+        [
+            "account_value_snapshot.py",
+            "--confirm-flows",
+            "toss",
+            *dates,
+            "operator",
+            "checked",
+        ],
     )
     with pytest.raises(SystemExit) as info:
         account_value_snapshot.main()
