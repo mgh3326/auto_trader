@@ -49,7 +49,9 @@ def test_schedule_and_worker() -> None:
 
 
 def test_steps_are_terminal_only_with_own_flag() -> None:
-    steps = {s["name"]: s for s in _dag()["steps"]}
+    raw = _dag()["steps"]
+    steps = {s["name"]: s for s in raw}
+    assert len(raw) == len(steps), "duplicate step names"
     assert set(steps) == set(STEPS)
     for name, (flag, module) in STEPS.items():
         step = steps[name]
@@ -66,7 +68,7 @@ def test_steps_are_terminal_only_with_own_flag() -> None:
         assert re.search(r"--apply(\s|$)", run) is None
         assert lines[2] == (
             'if [ "$rc" -eq 3 ]; then logger -t at-dagu-batch '
-            f'"dag=at-terminal-reconcile step={name} status=attention"; exit 0; fi'
+            f'"dag=at-terminal-reconcile step={name} status=attention" || true; exit 0; fi'
         )
         assert lines[3] == 'exit "$rc"'
         assert len(lines) == 4
