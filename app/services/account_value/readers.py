@@ -22,6 +22,64 @@ def _decimal(value):
     return amount if amount.is_finite() else None
 
 
+def upbit_live_identity() -> str | None:
+    from app.core.config import settings
+
+    return configured_fingerprint(
+        "upbit", "upbit", settings.upbit_access_key, settings.upbit_secret_key
+    )
+
+
+def kis_live_identity() -> str | None:
+    from app.core.config import settings
+    from app.services.brokers.kis.account_no import parse_kis_account_parts
+
+    try:
+        cano, product = parse_kis_account_parts(settings.kis_account_no, is_mock=False)
+        return configured_fingerprint(
+            "kis",
+            "kis_live",
+            cano + product + settings.kis_app_key,
+            settings.kis_app_secret,
+        )
+    except (ValueError, TypeError):
+        return None
+
+
+async def toss_live_identity(view) -> str | None:
+    from app.core.config import settings
+
+    accounts = await view.accounts()
+    selected = settings.toss_api_account_seq
+    secret = settings.toss_api_client_secret
+    if (
+        selected is not None
+        and any(account.account_seq == selected for account in accounts)
+        and secret is not None
+    ):
+        return configured_fingerprint(
+            "toss", "toss_live", str(selected), secret.get_secret_value()
+        )
+    return None
+
+
+async def resolve_account_key(broker: str) -> str | None:
+    """Internal account key that the snapshot writer stores for ``broker``."""
+    if broker == "kis":
+        return kis_live_identity()
+    if broker == "upbit":
+        return upbit_live_identity()
+    if broker == "toss":
+        from app.services.brokers.toss.client import TossReadClient
+
+        view = read_only_view("toss", TossReadClient.from_settings())
+        try:
+            return await toss_live_identity(view)
+        finally:
+            await view.aclose()
+    raise ValueError("unsupported broker")
+
+
 class BrokerReader:
     def __init__(self, session, account: str, market: str):
         self.session = session
@@ -44,12 +102,9 @@ class BrokerReader:
         currency = "USD" if self.market == "us" else "KRW"
         cash = {currency: None}
         if self.broker == "upbit" and self.market == "crypto":
-            from app.core.config import settings
             from app.services.brokers.upbit import client
 
-            identity = configured_fingerprint(
-                "upbit", "upbit", settings.upbit_access_key, settings.upbit_secret_key
-            )
+            identity = upbit_live_identity()
             view = read_only_view("upbit", client)
             rows = await view.fetch_my_coins()
             for row in rows:
@@ -75,22 +130,9 @@ class BrokerReader:
                 elif quantity > 0:
                     holdings.append((to_upbit_symbol(code), quantity))
         elif self.broker == "kis" and self.market in {"kr", "us"}:
-            from app.core.config import settings
-            from app.services.brokers.kis.account_no import parse_kis_account_parts
             from app.services.invest_home_readers import SafeKISClient
 
-            try:
-                cano, product = parse_kis_account_parts(
-                    settings.kis_account_no, is_mock=False
-                )
-                identity = configured_fingerprint(
-                    "kis",
-                    "kis_live",
-                    cano + product + settings.kis_app_key,
-                    settings.kis_app_secret,
-                )
-            except (ValueError, TypeError):
-                identity = None
+            identity = kis_live_identity()
             client = SafeKISClient()
             view = read_only_view("kis", client.account)
             closer = read_only_view("kis_close", client)
@@ -148,19 +190,7 @@ class BrokerReader:
 
             view = read_only_view("toss", TossReadClient.from_settings())
             try:
-                accounts = await view.accounts()
-                from app.core.config import settings
-
-                selected = settings.toss_api_account_seq
-                secret = settings.toss_api_client_secret
-                if (
-                    selected is not None
-                    and any(account.account_seq == selected for account in accounts)
-                    and secret is not None
-                ):
-                    identity = configured_fingerprint(
-                        "toss", "toss_live", str(selected), secret.get_secret_value()
-                    )
+                identity = await toss_live_identity(view)
                 response = await view.holdings()
                 for item in response.items:
                     if item.market_country.lower() != self.market:
