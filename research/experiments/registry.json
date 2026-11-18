@@ -163,6 +163,21 @@
       ],
       "k": 0,
       "test_looks": []
+    },
+    {
+      "id": "ROB-4885",
+      "title": "Long-only daily time-series momentum on Upbit KRW BTC, ETH, SOL and XRP in a 1,950,000 KRW strategy sleeve with per-order approval cards, against cash",
+      "tracker": "hk 4885",
+      "markets": [
+        "crypto"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-18",
+      "manifest": "research/experiments/manifests/rob-4885.json",
+      "manifest_sha256": "6c6caedc64ad6a8d4f83768a78c587db2f340de5dc3a386ed8af2684e19834d7",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }

@@ -1,0 +1,117 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "ROB-4885",
+  "version": 1,
+  "title": "Long-only daily time-series momentum on Upbit KRW BTC, ETH, SOL and XRP inside a 1,950,000 KRW strategy sleeve, per-order human approval cards, against cash",
+  "question": "Does the long-only version of the TREND-TSMOM sign rule, sized to a 60% EWMA volatility target inside fixed per-leg caps and executed only through human-approved proposal cards, earn a net return after fees and approval latency above the pre-registered minimum effect against cash at equal capital in a prospective live window on Upbit KRW spot?",
+  "status": "draft",
+  "markets": ["crypto"],
+  "hashes": {
+    "preregistration_text": "docs/design/4885-upbit-trend-long-live.md; operator record hk:doc decision/2026-11-16/at-strategy-direction section 1; Upbit facts hk:doc review/2026-11-16/dots-upbit-live-conditions",
+    "code_sha": {"pending": "no runner exists: execution is manual proposal cards through the existing order_proposal path. At seal, record the main commit that holds the sleeve rule id (design Q7) and the sleeve CLI used, and the sha256 of research decision-log tooling if any."},
+    "policy_version": {"pending": "recorded at seal from config/trading_policy.yaml version and content_hash (get_trading_policy echo); this design reads no policy key."},
+    "constants": {"pending": "at seal: LEG_CAP, sigma_star, EWMA span, floor and hard stop fraction as decided in design section 11 Q1-Q3 and Q8; recommended LEG_CAP 480000 KRW, sigma_star 0.60, EWMA 20 days, floor 50000 KRW, hard stop 0.10 of entry price, lookback 60 days."},
+    "cost_table_sha256": {"pending": "sha256 of the costs_fills.cost_table string at seal"},
+    "data_source": "Upbit KRW daily candles (daily_candles table / get_ohlcv day) for the four symbols; the same 00:00 UTC (09:00 KST) boundary as the demo's daily-equivalent closes",
+    "determinism": "the signal, the volatility scale and the sizing use no random number generator; seeds is [0], the schema-required placeholder"
+  },
+  "features": [
+    {
+      "name": "tsmom_sign_L (L recommended 60 days, open decision Q1)",
+      "available_at": "09:00 KST (00:00 UTC) close of the Upbit daily candle; decision at that close. A missing close for t or t-L is NO_SIGNAL (cash), never forward-filled",
+      "source": "Upbit KRW daily closes of KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP; sign of close_t / close_(t-L) - 1"
+    },
+    {
+      "name": "ewma_vol_20d",
+      "available_at": "09:00 KST close of the daily candle; decision at that close",
+      "source": "20-day EWMA realized volatility of daily returns, annualised with sqrt(365); scale = min(1, sigma_star / sigma_hat), sigma_star 0.60 (open decision Q8)"
+    },
+    {
+      "name": "hard_stop_observation",
+      "available_at": "the time an operator-started session reads the price at a check (at least the 09:00 KST decision and one evening check, open decision Q9); there is no exchange-side stop and no scheduler, so the stop only acts when it is observed",
+      "source": "Upbit KRW price read at the check against the sleeve entry price; the check time and the observed price are written to the decision log"
+    }
+  ],
+  "labels": [
+    {
+      "name": "episode_net_result_pct_of_budget",
+      "definition": "per ROB-1468 sleeve canary statistic: all fills of one episode up to the H-th completed daily close after its first signal, marked at that close, net of realized fees, divided by the sleeve budget in effect when the episode began. An unfilled or unapproved episode stays in the cohort with result 0; a matured episode without its H-th close is unmeasured, never zero. A cooldown-blocked signal is an unfilled episode and is counted separately as blocked_by_cooldown.",
+      "horizon_sessions": 30
+    }
+  ],
+  "calendar": {
+    "crypto": "24/7"
+  },
+  "splits": {
+    "scheme": "Prospective only, no fitting and no new exploration: the lookback L is the value chosen once by the ROB-3796 exploration (60 days) and is not re-selected on any other window. Folds stay empty because the test is prospective.",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 30,
+    "gap_sessions": 30,
+    "folds": [],
+    "test": {
+      "kind": "prospective_seal",
+      "period": {"pending": "start = UTC date of the merge of the seal PR (design section 10 step 6), end = start + max_duration_days - 1 with max_duration_days recommended 84 (open decision Q5); fixed at seal and never extended"},
+      "exposure_audit": "At scoring time compare each logged decision with the sleeve ledger rungs and the Upbit account fills; fills on the four symbols outside sleeve-tagged proposals make the window unverified (design section 8 item 5).",
+      "seal_rule": "Freeze time = merge of the seal PR into main; only decisions timestamped at or after the freeze count. Any change to rule, universe, caps, cost table, hard stop fraction or sleeve budget is a new manifest version and a new sleeve epoch."
+    }
+  },
+  "candidate_policies": [
+    {
+      "id": "candidate-long-tsmom",
+      "description": "Long-only daily TSMOM on KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP. Long when the sign is positive, cash when it is not (short or no signal). One entry and one exit per episode, no adds. Lookback L recommended 60 days. Notional = LEG_CAP x min(1, sigma_star / sigma_hat), never above LEG_CAP, skipped below the floor. Exits: signal flip, hard stop at the recommended 10% of entry price (observed only at checks), time exit at 30 days. Orders only as proposal cards approved one by one."
+    },
+    {
+      "id": "control-cash",
+      "description": "Primary control: the same capital held in cash; unspent capital earns zero. The primary comparison is candidate against this control (baseline is computed in research, not recorded in auto_trader)."
+    },
+    {
+      "id": "control-btc-hold",
+      "description": "Secondary control, computed in research: the same capital share held in KRW-BTC for the same window, net of one round trip of the same fee. Context only; it is not the pass criterion."
+    }
+  ],
+  "costs_fills": {
+    "cost_table": "{\"version\":\"upbit-trend-cost-table/v1\",\"cost_model\":{\"fill\":\"marketable limit at the best quote at card creation; the realized fill price supersedes any model\",\"fee_rate_per_side\":\"0.0005\",\"sides_per_round_trip\":2,\"slippage\":\"measured per episode against the decision-time reference quote, not modelled\",\"reserved_order_fee\":\"0.00139 not used: the experiment places no exchange reserved orders\"},\"measurement\":{\"fees\":\"the realized fee in the execution ledger supersedes the 0.0005 model\",\"unreadable\":\"unknown, never zero\"},\"source\":\"hk:doc review/2026-11-16/dots-upbit-live-conditions section 1 (public documentation read, not an account-level confirmation)\"}",
+    "fill_models": [
+      "prospective: broker fill evidence only (execution ledger rows attributed to the sleeve rungs); a card that is not approved or an order that does not fill is an unfilled episode",
+      "no touch-fill or backfill model is used for the candidate; the research controls use daily closes"
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 0,
+    "search": "none: L, the hard stop fraction, the volatility target, the caps and the horizon are fixed before the window and are not tuned on any data. The values are carried from the sealed ROB-3796 manifest and are open decisions Q1-Q3 and Q8 until sealed.",
+    "notes": "Any configuration compared counts against the budget; the budget is zero, so any comparison is a new manifest version."
+  },
+  "seeds": [0],
+  "metrics": {
+    "primary": "mean episode_net_result_pct_of_budget (ROB-1468 statistic, net of fees, horizon H sessions, baseline cash) at the end of the pre-registered maximum duration, with the matured-episode count reported; below the minimum sample the result is INSUFFICIENT_SAMPLE",
+    "secondary": [
+      "signal-to-fill rate",
+      "decision-to-approval and approval-to-fill latency",
+      "slippage against the decision-time reference quote",
+      "expired_unapproved, declined and blocked_by_cooldown card counts",
+      "loss_cut path usage",
+      "realized fee against the 0.0005 model",
+      "cumulative net result and maximum drawdown of the sleeve book",
+      "per-symbol split",
+      "agreement with the Binance demo (ROB-3796) long legs on the same signal"
+    ],
+    "family": ["ROB-4885 single primary: candidate-long-tsmom against control-cash; no multiple-comparison correction; no statistical significance is claimed"],
+    "alpha": "0.05",
+    "delta_min": {"pending": "recommended 0.5 percent of budget per episode (prereg_min_effect_pct, open decision Q4); confirmed by the operator before the sleeve goes live"}
+  },
+  "stopping_rules": [
+    "(i) Loss limit: sleeve cumulative net loss at or above 1,000,000 KRW stops the sleeve (loss gate appends a stopped version); the operator then declines buy cards and closes open positions by cards; resuming is a new sleeve epoch.",
+    "(ii) Leg overshoot: a leg closed at a loss beyond 15% of its entry price pauses new entries pending review of the check cadence and the caps.",
+    "(iii) Not executable by card: more than 30% of entry and exit cards in a 4-week block expire or are not acted on ends the experiment with the result not_executable_by_card.",
+    "(iv) Unmeasured state: sleeve_pnl_unmeasured, sleeve_used_unmeasured or unattributed fills lasting two days pauses the experiment; unmeasured is never zero.",
+    "(v) Account contamination: sleeve-external buys or holdings of the four symbols at start, or any such trade during the window, stop the start or pause the experiment (shared average cost, loss-sell guard and 8-day stop-loss cooldown are account-level).",
+    "(vi) Maximum duration reached (recommended 84 days): score against the pre-registration; fewer than 15 matured episodes is INSUFFICIENT_SAMPLE; open positions are closed by cards within 7 days.",
+    "(vii) The Binance live host is out of scope; this manifest registers no order path other than the existing order_proposal cards. No automatic execution, no scheduler, no env or gate change is authorised by this manifest.",
+    "(viii) Missing path-dependent daily candles make the decision NO_SIGNAL and the episode unverified, never zero.",
+    "(ix) No statistical promotion: passing the primary is a scoring outcome, not an authorisation for automatic execution, a larger budget or a mandate; those need a separate operator decision."
+  ],
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  }
+}
