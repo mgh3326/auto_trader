@@ -34,12 +34,15 @@ def kis_live_identity() -> str | None:
     from app.core.config import settings
     from app.services.brokers.kis.account_no import parse_kis_account_parts
 
+    app_key = settings.kis_app_key
+    if not isinstance(app_key, str) or not app_key.strip():
+        return None
     try:
         cano, product = parse_kis_account_parts(settings.kis_account_no, is_mock=False)
         return configured_fingerprint(
             "kis",
             "kis_live",
-            cano + product + settings.kis_app_key,
+            cano + product + app_key,
             settings.kis_app_secret,
         )
     except (ValueError, TypeError):
@@ -71,8 +74,16 @@ async def resolve_account_key(broker: str) -> str | None:
         return upbit_live_identity()
     if broker == "toss":
         from app.services.brokers.toss.client import TossReadClient
+        from app.services.brokers.toss.errors import (
+            TossApiDisabled,
+            TossMissingCredentials,
+        )
 
-        view = read_only_view("toss", TossReadClient.from_settings())
+        try:
+            client = TossReadClient.from_settings()
+        except (TossApiDisabled, TossMissingCredentials):
+            return None
+        view = read_only_view("toss", client)
         try:
             return await toss_live_identity(view)
         finally:

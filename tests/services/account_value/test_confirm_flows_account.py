@@ -4,7 +4,8 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import settings
-from app.services.account_value.readers import BrokerReader
+from app.services.account_value.identity import configured_fingerprint
+from app.services.account_value.readers import BrokerReader, kis_live_identity
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.upbit import client as upbit_client
 from scripts import account_value_snapshot
@@ -146,3 +147,94 @@ def test_unresolvable_broker_identity_fails_before_any_write(monkeypatch, capsys
     _run_main(monkeypatch, ["kis", "--commit"])
     assert seen == [] and session.commits == 0
     assert "kis 계좌 식별자를 확인할 수 없습니다" in capsys.readouterr().err
+
+
+def test_fingerprint_golden_vectors():
+    """Pin the exact bytes the account-key fingerprint is computed from.
+
+    The identifiers mirror what each broker identity feeds
+    ``configured_fingerprint`` (KIS: cano+product+app_key; Toss: account seq;
+    Upbit: access key). A silent change to those inputs starts a separate
+    series (contract: "지문이 바뀌면 별개 시리즈다"), so the digests below are
+    computed once from the derivation and must not drift.
+    """
+    assert (
+        configured_fingerprint(
+            "kis", "kis_live", "12345678" + "01" + "app-key", "app-secret"
+        )
+        == "kis:kis_live:19c87d5dba078a0f83bab7d3fcdf3683039979c9dc485756a556b27342b8a283"
+    )
+    assert (
+        configured_fingerprint("toss", "toss_live", "7", "secret")
+        == "toss:toss_live:a512e3a15e24839a18c7169142e311a242455d04fe8915b333b3d1cab9b70981"
+    )
+    assert (
+        configured_fingerprint("upbit", "upbit", "access", "secret")
+        == "upbit:upbit:3be0842ef6dd337b69e71d3d7144c6eb11b49a3ddc387a32fa4e5f5d9994e9e6"
+    )
+
+
+@pytest.mark.parametrize("app_key", ["", "   "])
+def test_empty_kis_app_key_yields_no_account_key(monkeypatch, capsys, app_key):
+    monkeypatch.setattr(settings, "kis_account_no", "12345678-01")
+    monkeypatch.setattr(settings, "kis_app_key", app_key)
+    monkeypatch.setattr(settings, "kis_app_secret", "app-secret")
+    assert kis_live_identity() is None
+    session, seen = _recording(monkeypatch)
+    _run_main(monkeypatch, ["kis", "--commit"])
+    assert seen == [] and session.commits == 0
+    assert "kis 계좌 식별자를 확인할 수 없습니다" in capsys.readouterr().err
+
+
+def test_configured_kis_key_matches_golden_vector(monkeypatch):
+    monkeypatch.setattr(settings, "kis_account_no", "12345678-01")
+    monkeypatch.setattr(settings, "kis_app_key", "app-key")
+    monkeypatch.setattr(settings, "kis_app_secret", "app-secret")
+    assert (
+        kis_live_identity()
+        == "kis:kis_live:19c87d5dba078a0f83bab7d3fcdf3683039979c9dc485756a556b27342b8a283"
+    )
+
+
+def test_missing_toss_secret_is_account_error_without_exception_text(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_api_client_id", "test-client-id")
+    monkeypatch.setattr(settings, "toss_api_client_secret", None)
+    monkeypatch.setattr(settings, "toss_api_account_seq", 7)
+    session, seen = _recording(monkeypatch)
+    _run_main(monkeypatch, ["toss", "--commit"])
+    assert seen == [] and session.commits == 0
+    captured = capsys.readouterr()
+    assert "toss 계좌 식별자를 확인할 수 없습니다" in captured.err
+    assert "TossMissingCredentials" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    "dates", [["2026-02-30", "2026-03-01"], ["2026-03-01", "2026-02-30"]]
+)
+def test_invalid_dates_fail_before_account_resolution(monkeypatch, capsys, dates):
+    calls = []
+
+    async def counting_resolve(broker):
+        calls.append(broker)
+        return INTERNAL_KEY
+
+    monkeypatch.setattr(account_value_snapshot, "resolve_account_key", counting_resolve)
+    session, seen = _recording(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "account_value_snapshot.py",
+            "--confirm-flows",
+            "toss",
+            *dates,
+            "operator",
+            "checked",
+        ],
+    )
+    with pytest.raises(SystemExit) as info:
+        account_value_snapshot.main()
+    assert info.value.code != 0
+    assert calls == [] and seen == [] and session.commits == 0
