@@ -105,12 +105,14 @@ async def run(args):
             account, start, end, confirmed_by, reason = args.confirm_flows
             if args.flow or args.account:
                 raise ValueError("하나의 작업만 지정해야 합니다")
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
             account = await confirmation_account(account)
             status = await record_confirmation(
                 session,
                 account,
-                date.fromisoformat(start),
-                date.fromisoformat(end),
+                start_date,
+                end_date,
                 confirmed_by,
                 reason,
                 commit=args.commit,
