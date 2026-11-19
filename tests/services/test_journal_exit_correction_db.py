@@ -103,6 +103,22 @@ def _symbol() -> str:
     return f"Q{uuid.uuid4().hex[:5].upper()}"
 
 
+def _evidence(jid: int, symbol: str, **over) -> jec.Evidence:
+    order_id = f"S{symbol[1:]}0001"
+    data = {
+        "journal_id": jid,
+        "evidence_ref": "hk:doc/reconcile-result-test",
+        "record_order_id": order_id,
+        "record_closed_journal_ids": (jid,),
+        "venue": "krx",
+        "broker_order_id": order_id,
+        "fill_seq": 0,
+        "allocated_quantity": Decimal("2"),
+    }
+    data.update(over)
+    return jec.Evidence(**data)
+
+
 async def _journal(db, jid: int) -> TradeJournal:
     await db.rollback()
     db.expire_all()
@@ -112,9 +128,11 @@ async def _journal(db, jid: int) -> TradeJournal:
 
 
 async def test_preview_commit_and_second_commit(db_session, seed) -> None:
-    jid, lid = await seed.lot(_symbol())
+    symbol = _symbol()
+    jid, lid = await seed.lot(symbol)
+    ev = {jid: _evidence(jid, symbol)}
 
-    prev = await jec.preview(db_session, [jid])
+    prev = await jec.preview(db_session, [jid], ev)
     assert prev.status == "eligible"
     [plan] = prev.plan.plans
     assert plan.ledger_id == lid
@@ -123,7 +141,12 @@ async def test_preview_commit_and_second_commit(db_session, seed) -> None:
     assert (await _journal(db_session, jid)).total_pnl_krw is None  # preview: no write
 
     done = await jec.commit(
-        db_session, [jid], expected_digest=prev.plan.digest, reason=REASON, actor=ACTOR
+        db_session,
+        [jid],
+        ev,
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
     )
     assert done.status == "committed"
     row = await _journal(db_session, jid)
@@ -133,29 +156,39 @@ async def test_preview_commit_and_second_commit(db_session, seed) -> None:
     assert f"ledger_id={lid}" in row.notes and "decision=hk 5357" in row.notes
     notes = row.notes
 
-    again = await jec.preview(db_session, [jid])
-    assert again.status == "noop"
-    second = await jec.commit(
-        db_session, [jid], expected_digest=again.plan.digest, reason=REASON, actor=ACTOR
+    # the identical retry with the original digest and no new preview
+    retry = await jec.commit(
+        db_session,
+        [jid],
+        ev,
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
     )
-    assert second.status == "noop"
+    assert retry.status == "noop"
     assert (await _journal(db_session, jid)).notes == notes
 
 
 async def test_a_provisional_only_sell_leaves_the_whole_batch_untouched(
     db_session, seed
 ) -> None:
-    good_jid, _ = await seed.lot(_symbol())
-    bad_jid, _ = await seed.lot(_symbol(), source="websocket")
+    good_symbol, bad_symbol = _symbol(), _symbol()
+    good_jid, _ = await seed.lot(good_symbol)
+    bad_jid, _ = await seed.lot(bad_symbol, source="websocket")
+    ev = {
+        good_jid: _evidence(good_jid, good_symbol),
+        bad_jid: _evidence(bad_jid, bad_symbol),
+    }
 
-    prev = await jec.preview(db_session, [good_jid, bad_jid])
+    prev = await jec.preview(db_session, [good_jid, bad_jid], ev)
     assert prev.status == "refused"
     assert {p.journal_id: p.reason for p in prev.plan.plans}[bad_jid] == (
-        "no_matching_ledger_row"
+        "ledger_row_not_in_effect_authoritative"
     )
     out = await jec.commit(
         db_session,
         [good_jid, bad_jid],
+        ev,
         expected_digest=prev.plan.digest,
         reason=REASON,
         actor=ACTOR,
@@ -164,61 +197,32 @@ async def test_a_provisional_only_sell_leaves_the_whole_batch_untouched(
     assert (await _journal(db_session, good_jid)).total_pnl_krw is None
 
 
-def _other_sell(symbol: str, **over) -> ExecutionLedger:
-    data = {
-        "symbol": symbol,
-        "order_no": f"X{symbol[1:]}0002",
-        "side": "sell",
-        "source": "reconciler",
-        "raw_payload_json": None,
-        "fill_seq": 0,
-        "filled_qty": "10",
-        "filled_price": "91000",
-        "filled_notional": "910000",
-        "filled_at": (FILLED - timedelta(hours=1)).isoformat(),
-    }
-    data.update(over)
-    return ExecutionLedger(**ExecutionLedgerUpsert(**row_kwargs(**data)).model_dump())
-
-
-async def test_commit_waits_for_a_ledger_writer_and_refuses_the_new_sell(
+async def test_a_sell_before_the_journal_was_created_is_found_by_its_identity(
     db_session, seed
 ) -> None:
-    """A sell inserted (not yet committed) after the preview is seen, not missed."""
+    """The cited fill may predate the lot's journal; identity, not time, finds it."""
     symbol = _symbol()
-    jid, _ = await seed.lot(symbol)
-    prev = await jec.preview(db_session, [jid])
+    jid, lid = await seed.lot(symbol)
+    await db_session.execute(
+        update(TradeJournal)
+        .where(TradeJournal.id == jid)
+        .values(created_at=FILLED + timedelta(hours=1))
+    )
+    await db_session.commit()
+
+    prev = await jec.preview(db_session, [jid], {jid: _evidence(jid, symbol)})
     assert prev.status == "eligible"
-
-    async with AsyncSessionLocal() as writer:
-        writer.add(_other_sell(symbol))
-        await writer.flush()  # row-exclusive lock held, row invisible to others
-        task = asyncio.create_task(
-            jec.commit(
-                db_session,
-                [jid],
-                expected_digest=prev.plan.digest,
-                reason=REASON,
-                actor=ACTOR,
-            )
-        )
-        await asyncio.sleep(0.5)
-        assert not task.done(), "commit must wait for the in-flight ledger writer"
-        await writer.commit()
-        result = await asyncio.wait_for(task, timeout=15)
-
-    assert result.status == "refused"
-    assert result.plan.plans[0].reason == "other_sells_since_lot_created"
-    assert (await _journal(db_session, jid)).total_pnl_krw is None
+    assert prev.plan.plans[0].ledger_id == lid
 
 
 async def test_commit_waits_for_a_ledger_writer_and_notices_the_changed_fill(
     db_session, seed
 ) -> None:
-    """The selected fill moving after the preview rolls the correction back."""
+    """The cited fill moving after the preview rolls the correction back."""
     symbol = _symbol()
     jid, lid = await seed.lot(symbol)
-    prev = await jec.preview(db_session, [jid])
+    ev = {jid: _evidence(jid, symbol)}
+    prev = await jec.preview(db_session, [jid], ev)
 
     async with AsyncSessionLocal() as writer:
         await writer.execute(
@@ -230,13 +234,14 @@ async def test_commit_waits_for_a_ledger_writer_and_notices_the_changed_fill(
             jec.commit(
                 db_session,
                 [jid],
+                ev,
                 expected_digest=prev.plan.digest,
                 reason=REASON,
                 actor=ACTOR,
             )
         )
         await asyncio.sleep(0.5)
-        assert not task.done()
+        assert not task.done(), "commit must wait for the in-flight ledger writer"
         await writer.commit()
         result = await asyncio.wait_for(task, timeout=15)
 
@@ -244,52 +249,73 @@ async def test_commit_waits_for_a_ledger_writer_and_notices_the_changed_fill(
     assert (await _journal(db_session, jid)).total_pnl_krw is None
 
 
+async def test_a_writer_that_starts_after_the_revalidation_waits_for_the_commit(
+    db_session, seed, monkeypatch
+) -> None:
+    """The lock is held from revalidation to commit, not just while reading."""
+    symbol = _symbol()
+    jid, lid = await seed.lot(symbol)
+    ev = {jid: _evidence(jid, symbol)}
+    prev = await jec.preview(db_session, [jid], ev)
+
+    real_apply = jec.apply_plan
+    writer_state: dict = {}
+
+    async def late_writer() -> None:
+        async with AsyncSessionLocal() as writer:
+            await writer.execute(
+                update(ExecutionLedger)
+                .where(ExecutionLedger.id == lid)
+                .values(filled_at=FILLED - timedelta(minutes=5))
+            )
+            await writer.commit()
+
+    def apply_then_start_writer(*args, **kwargs):
+        # runs after the plan was revalidated and before the commit
+        writer_state["task"] = asyncio.get_running_loop().create_task(late_writer())
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(jec, "apply_plan", apply_then_start_writer)
+    result = await jec.commit(
+        db_session,
+        [jid],
+        ev,
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
+    )
+    assert result.status == "committed"
+    task = writer_state["task"]
+    await asyncio.wait_for(
+        task, timeout=15
+    )  # it ran only once the commit released the lock
+    row = await _journal(db_session, jid)
+    assert row.exit_date == FILLED  # the correction used the revalidated fill
+
+
 async def test_a_stuck_ledger_writer_makes_commit_fail_closed(
     db_session, seed, monkeypatch
 ) -> None:
     symbol = _symbol()
-    jid, _ = await seed.lot(symbol)
-    prev = await jec.preview(db_session, [jid])
+    jid, lid = await seed.lot(symbol)
+    ev = {jid: _evidence(jid, symbol)}
+    prev = await jec.preview(db_session, [jid], ev)
     monkeypatch.setattr(jec, "LOCK_TIMEOUT_MS", 200)
 
     async with AsyncSessionLocal() as writer:
-        writer.add(_other_sell(symbol))
-        await writer.flush()
+        await writer.execute(
+            update(ExecutionLedger)
+            .where(ExecutionLedger.id == lid)
+            .values(filled_at=FILLED + timedelta(minutes=1))
+        )
         with pytest.raises(DBAPIError):
             await jec.commit(
                 db_session,
                 [jid],
+                ev,
                 expected_digest=prev.plan.digest,
                 reason=REASON,
                 actor=ACTOR,
             )
         await writer.rollback()
     assert (await _journal(db_session, jid)).total_pnl_krw is None
-
-
-async def test_the_identical_retry_without_a_new_preview_is_a_noop(
-    db_session, seed
-) -> None:
-    jid, _ = await seed.lot(_symbol())
-    prev = await jec.preview(db_session, [jid])
-    kwargs = {"expected_digest": prev.plan.digest, "reason": REASON, "actor": ACTOR}
-    assert (await jec.commit(db_session, [jid], **kwargs)).status == "committed"
-    notes = (await _journal(db_session, jid)).notes
-    assert (await jec.commit(db_session, [jid], **kwargs)).status == "noop"
-    assert (await _journal(db_session, jid)).notes == notes
-
-
-async def test_an_older_larger_sell_since_the_lot_was_created_blocks_the_match(
-    db_session, seed
-) -> None:
-    """A late booking: the real closer is older than the match window."""
-    symbol = _symbol()
-    jid, _ = await seed.lot(symbol)
-    db_session.add(
-        _other_sell(symbol, filled_at=(FILLED - timedelta(days=4)).isoformat())
-    )
-    await db_session.commit()
-
-    prev = await jec.preview(db_session, [jid])
-    assert prev.status == "refused"
-    assert prev.plan.plans[0].reason == "other_sells_since_lot_created"

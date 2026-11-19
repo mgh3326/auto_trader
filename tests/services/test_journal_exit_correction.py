@@ -7,6 +7,7 @@ database. The SQL reader is covered by ``test_journal_exit_correction_db.py``.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -56,9 +57,13 @@ def ledger(lid: int, **over: Any) -> SimpleNamespace:
         "id": lid,
         "broker": "kis",
         "account_mode": "live",
+        "venue": "krx",
+        "broker_order_id": f"ORD{lid}",
+        "fill_seq": 0,
         "instrument_type": InstrumentType.equity_kr,
         "symbol": "041510",
         "side": "sell",
+        "currency": "KRW",
         "source": "reconciler",
         "quarantined_at": None,
         "filled_qty": Decimal("2"),
@@ -70,15 +75,27 @@ def ledger(lid: int, **over: Any) -> SimpleNamespace:
     return SimpleNamespace(**data)
 
 
-def three() -> tuple[dict[int, TradeJournal], dict[int, list[SimpleNamespace]]]:
+def evidence(jid: int, row: SimpleNamespace, **over: Any) -> jec.Evidence:
+    data: dict[str, Any] = {
+        "journal_id": jid,
+        "evidence_ref": f"hk:doc/reconcile-result-{row.id}",
+        "record_order_id": row.broker_order_id,
+        "record_closed_journal_ids": (jid,),
+        "venue": row.venue,
+        "broker_order_id": row.broker_order_id,
+        "fill_seq": row.fill_seq,
+        "allocated_quantity": Decimal("2"),
+    }
+    data.update(over)
+    return jec.Evidence(**data)
+
+
+def three() -> tuple[
+    dict[int, TradeJournal], dict[int, SimpleNamespace], dict[int, jec.Evidence]
+]:
     """Journals shaped like 243 (Toss 1), 244 (KIS 30) and 245 (KIS 2)."""
     journals = {
-        243: journal(
-            243,
-            account="toss",
-            quantity=Decimal("1"),
-            exit_date=datetime(2026, 11, 19, 0, 52, tzinfo=UTC),
-        ),
+        243: journal(243, account="toss", quantity=Decimal("1")),
         244: journal(
             244,
             symbol="012030",
@@ -89,25 +106,26 @@ def three() -> tuple[dict[int, TradeJournal], dict[int, list[SimpleNamespace]]]:
         245: journal(245),
     }
     rows = {
-        243: [
-            ledger(
-                501,
-                broker="toss",
-                filled_qty=Decimal("1"),
-                filled_at=datetime(2026, 11, 18, 7, 14, 14, tzinfo=UTC),
-            )
-        ],
-        244: [
-            ledger(
-                271,
-                symbol="012030",
-                filled_qty=Decimal("30"),
-                filled_price=Decimal("1620"),
-            )
-        ],
-        245: [ledger(272)],
+        243: ledger(
+            501,
+            broker="toss",
+            filled_qty=Decimal("1"),
+            filled_at=datetime(2026, 11, 18, 7, 14, 14, tzinfo=UTC),
+        ),
+        244: ledger(
+            271,
+            symbol="012030",
+            filled_qty=Decimal("30"),
+            filled_price=Decimal("1620"),
+        ),
+        245: ledger(272),
     }
-    return journals, rows
+    ev = {
+        243: evidence(243, rows[243], allocated_quantity=Decimal("1")),
+        244: evidence(244, rows[244], allocated_quantity=Decimal("30")),
+        245: evidence(245, rows[245]),
+    }
+    return journals, rows, ev
 
 
 class FakeSession:
@@ -129,18 +147,18 @@ class FakeSession:
 
 @pytest.fixture
 def world(monkeypatch):
-    journals, rows = three()
+    journals, rows, ev = three()
 
     async def load_journals(session, ids, *, lock):
         session.calls.append(f"load_journals:lock={lock}")
         return {i: journals[i] for i in ids if i in journals}
 
-    async def load_candidates(session, j):
-        return list(rows.get(int(j.id), []))
+    async def load_fill(session, j, evidence_item):
+        return rows.get(int(j.id))
 
     monkeypatch.setattr(jec, "load_journals", load_journals)
-    monkeypatch.setattr(jec, "load_candidates", load_candidates)
-    return SimpleNamespace(journals=journals, rows=rows)
+    monkeypatch.setattr(jec, "load_fill", load_fill)
+    return SimpleNamespace(journals=journals, rows=rows, ev=ev)
 
 
 def snapshot(journals: dict[int, TradeJournal]) -> dict[int, tuple]:
@@ -150,6 +168,8 @@ def snapshot(journals: dict[int, TradeJournal]) -> dict[int, tuple]:
     }
 
 
+IDS = [243, 244, 245]
+
 # 1. preview shows new values and writes nothing -----------------------------
 
 
@@ -157,7 +177,7 @@ def snapshot(journals: dict[int, TradeJournal]) -> dict[int, tuple]:
 async def test_preview_prints_new_values_and_writes_nothing(world) -> None:
     before = snapshot(world.journals)
     session = FakeSession()
-    result = await jec.preview(session, [243, 244, 245])
+    result = await jec.preview(session, IDS, world.ev)
 
     assert result.status == "eligible"
     by_id = {p.journal_id: p for p in result.plan.plans}
@@ -179,62 +199,58 @@ async def test_preview_prints_new_values_and_writes_nothing(world) -> None:
         "exit_date": FILLED.isoformat(),
         "total_pnl_krw": "17600.0000",
     }
+    assert printed["evidence"]["evidence_ref"] == "hk:doc/reconcile-result-272"
 
 
-# 2. refusals leave the whole batch untouched --------------------------------
-
-
-def _refused(rows: list[SimpleNamespace], **journal_over: Any) -> jec.JournalPlan:
-    return jec.plan_journal(journal(1, **journal_over), rows)
+# 2. refusals -------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("rows", "reason"),
+    ("row_over", "reason"),
     [
-        ([], "no_matching_ledger_row"),
-        ([ledger(1), ledger(2)], "ambiguous_ledger_rows"),
-        ([ledger(1, quarantined_at=BOOKED)], "no_matching_ledger_row"),
-        ([ledger(1, source="websocket")], "no_matching_ledger_row"),
-        ([ledger(1, filled_qty=Decimal("3"))], "no_matching_ledger_row"),
-        ([ledger(1, filled_price=Decimal("90000"))], "no_matching_ledger_row"),
-        ([ledger(1, side="buy")], "no_matching_ledger_row"),
-        ([ledger(1, broker="toss")], "no_matching_ledger_row"),
-        ([ledger(1, account_mode="mock")], "no_matching_ledger_row"),
-        (
-            [ledger(1, filled_at=BOOKED + timedelta(minutes=1))],
-            "no_matching_ledger_row",
-        ),
-        ([ledger(1, filled_at=BOOKED - timedelta(days=4))], "no_matching_ledger_row"),
-        ([ledger(1, filled_at=CREATED - timedelta(days=1))], "no_matching_ledger_row"),
+        ({"quarantined_at": BOOKED}, "ledger_row_not_in_effect_authoritative"),
+        ({"source": "websocket"}, "ledger_row_not_in_effect_authoritative"),
+        ({"broker": "toss"}, "ledger_row_not_in_effect_authoritative"),
+        ({"account_mode": "mock"}, "ledger_row_not_in_effect_authoritative"),
+        ({"venue": "nasd"}, "ledger_row_not_in_effect_authoritative"),
+        ({"fill_seq": 3}, "ledger_row_not_in_effect_authoritative"),
+        ({"symbol": "005930"}, "ledger_row_is_not_this_sell"),
+        ({"side": "buy"}, "ledger_row_is_not_this_sell"),
+        ({"currency": "USD"}, "ledger_row_is_not_this_sell"),
+        ({"filled_qty": Decimal("1")}, "allocation_exceeds_fill"),
+        ({"filled_price": Decimal("90000")}, "ledger_price_mismatch"),
+        ({"filled_at": BOOKED + timedelta(minutes=1)}, "fill_after_booking"),
     ],
 )
-def test_candidate_rules(rows, reason) -> None:
-    plan = _refused(rows)
+def test_ledger_row_rules(row_over, reason) -> None:
+    row = ledger(9, **row_over)
+    ev = evidence(1, ledger(9))  # the evidence names the identity of a clean row
+    plan = jec.plan_journal(journal(1), ev, row)
     assert (plan.status, plan.reason) == ("ineligible", reason)
 
 
-def test_a_bigger_fill_in_the_window_makes_the_attribution_unprovable() -> None:
-    """A 10-share sell can close a 2-share lot; an unrelated 2-share sell must not win."""
-    unrelated = ledger(1, filled_at=FILLED - timedelta(hours=20))
-    bigger = ledger(2, filled_qty=Decimal("10"))
-    plan = _refused([unrelated, bigger])
-    assert (plan.status, plan.reason) == ("ineligible", "other_sells_since_lot_created")
-    # a late booking: the real closer is older than the match window, the unrelated
-    # two-share fill is inside it; the older fill still blocks the attribution
-    late_closer = ledger(
-        3, filled_qty=Decimal("10"), filled_at=BOOKED - timedelta(days=4)
-    )
-    assert _refused([ledger(1), late_closer]).reason == "other_sells_since_lot_created"
-    # a sell before the lot existed cannot have closed it
-    assert (
-        _refused([ledger(1), ledger(4, filled_at=CREATED - timedelta(days=1))]).status
-        == "eligible"
-    )
-    # the same unrelated row alone is still the unique candidate
-    assert _refused([unrelated]).status == "eligible"
-    # a sell of another account or symbol is not in the way
-    assert _refused([ledger(1), ledger(2, symbol="005930")]).status == "eligible"
-    assert _refused([ledger(1), ledger(2, broker="toss")]).status == "eligible"
+def test_a_clean_row_with_clean_evidence_is_eligible() -> None:
+    row = ledger(9)
+    assert jec.plan_journal(journal(1), evidence(1, row), row).status == "eligible"
+
+
+def test_no_ledger_row_is_refused() -> None:
+    plan = jec.plan_journal(journal(1), evidence(1, ledger(9)), None)
+    assert (plan.status, plan.reason) == ("ineligible", "ledger_row_not_found")
+
+
+@pytest.mark.parametrize(
+    ("ev_over", "reason"),
+    [
+        ({"record_closed_journal_ids": (7, 8)}, "evidence_does_not_list_journal"),
+        ({"record_order_id": "OTHER"}, "evidence_order_mismatch"),
+        ({"allocated_quantity": Decimal("1")}, "allocation_quantity_mismatch"),
+    ],
+)
+def test_evidence_rules(ev_over, reason) -> None:
+    row = ledger(9)
+    plan = jec.plan_journal(journal(1), evidence(1, row, **ev_over), row)
+    assert (plan.status, plan.reason) == ("ineligible", reason)
 
 
 @pytest.mark.parametrize(
@@ -254,97 +270,143 @@ def test_a_bigger_fill_in_the_window_makes_the_attribution_unprovable() -> None:
     ],
 )
 def test_journal_rules(over, reason) -> None:
-    plan = _refused([ledger(1)], **over)
+    row = ledger(9)
+    plan = jec.plan_journal(journal(1, **over), evidence(1, row), row)
     assert (plan.status, plan.reason) == ("ineligible", reason)
 
 
-@pytest.mark.parametrize(
-    "bad_rows",
-    [
-        {245: []},  # zero ledger rows
-        {245: [ledger(272), ledger(273)]},  # two rows
-        {245: [ledger(272, quarantined_at=BOOKED)]},  # quarantined only
-    ],
-)
+# The reviewed attribution cases ------------------------------------------------
+
+
+def test_a_fill_before_the_journal_was_created_can_be_the_closer() -> None:
+    """A late buy journal is closed by an earlier 10-share sell (booked later).
+
+    No time or quantity rule may hide it; the evidence names it and the P&L uses
+    the allocated quantity, not the fill's.
+    """
+    closer = ledger(10, filled_qty=Decimal("10"), filled_at=CREATED - timedelta(days=2))
+    j = journal(1, created_at=CREATED)
+    plan = jec.plan_journal(
+        j, evidence(1, closer, allocated_quantity=Decimal("2")), closer
+    )
+    assert plan.status == "eligible"
+    assert plan.new_exit_date == CREATED - timedelta(days=2)
+    assert plan.new_total_pnl_krw == Decimal("17600.0000")  # (91000-82200) * 2
+
+
+def test_an_unrelated_sell_is_never_picked_by_quantity_price_or_time() -> None:
+    """The unrelated 2-share sell matches by qty, price and time but is not evidence."""
+    closer = ledger(10, filled_qty=Decimal("10"), filled_at=CREATED - timedelta(days=2))
+    unrelated = ledger(11)
+    j = journal(1)
+    # evidence naming the real closer: the unrelated row is irrelevant
+    ok = jec.plan_journal(j, evidence(1, closer), closer)
+    assert (ok.ledger_id, ok.new_exit_date) == (10, CREATED - timedelta(days=2))
+    # a bare ledger id has no evidence entry and cannot be expressed at all
+    with pytest.raises(jec.CorrectionInputError):
+        jec.parse_evidence(json.dumps([{"journal_id": 1, "ledger_id": 11}]), [1])
+    assert unrelated.id == 11
+
+
+def test_one_fill_may_close_several_lots_within_what_it_booked() -> None:
+    row = ledger(10, filled_qty=Decimal("10"))
+    journals = {1: journal(1), 2: journal(2, quantity=Decimal("8"))}
+    ev = {
+        1: evidence(1, row, allocated_quantity=Decimal("2")),
+        2: evidence(2, row, allocated_quantity=Decimal("8")),
+    }
+    batch = jec.plan_batch([1, 2], journals, ev, {1: row, 2: row})
+    assert batch.status == "eligible"
+    assert [p.new_total_pnl_krw for p in batch.plans] == [
+        Decimal("17600.0000"),
+        Decimal("70400.0000"),
+    ]
+    over = {
+        1: evidence(1, row, allocated_quantity=Decimal("2")),
+        2: evidence(2, row, allocated_quantity=Decimal("9")),
+    }
+    journals[2].quantity = Decimal("9")
+    refused = jec.plan_batch([1, 2], journals, over, {1: row, 2: row})
+    assert refused.status == "refused"
+    assert {p.reason for p in refused.plans} == {"allocations_exceed_fill"}
+
+
+@pytest.mark.parametrize("member", [243, 244, 245])
 @pytest.mark.asyncio
-async def test_one_bad_journal_blocks_the_whole_batch(world, bad_rows) -> None:
-    world.rows.update(bad_rows)
+async def test_one_bad_member_blocks_the_whole_batch(world, member) -> None:
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
+    assert prev.status == "eligible"
+    world.ev[member] = evidence(
+        member, world.rows[member], record_closed_journal_ids=(999,)
+    )
     before = snapshot(world.journals)
     session = FakeSession()
-    prev = await jec.preview(FakeSession(), [243, 244, 245])
-    assert prev.status == "refused"
-    assert {p.journal_id: p.status for p in prev.plan.plans} == {
-        243: "eligible",
-        244: "eligible",
-        245: "ineligible",
-    }
-
     result = await jec.commit(
         session,
-        [243, 244, 245],
+        IDS,
+        world.ev,
         expected_digest=prev.plan.digest,
         reason=REASON,
         actor=ACTOR,
     )
     assert result.status == "refused"
+    assert {p.journal_id: p.status for p in result.plan.plans}[member] == "ineligible"
     assert result.written == ()
+    assert snapshot(world.journals) == before
+    assert "commit" not in session.calls
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda w: w.rows.pop(245),  # no ledger row at all
+        lambda w: setattr(w.rows[245], "quarantined_at", BOOKED),  # quarantined only
+        lambda w: setattr(w.rows[245], "source", "websocket"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_missing_or_unusable_ledger_row_leaves_the_batch_untouched(
+    world, mutate
+) -> None:
+    mutate(world)
+    before = snapshot(world.journals)
+    session = FakeSession()
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
+    assert prev.status == "refused"
+    result = await jec.commit(
+        session,
+        IDS,
+        world.ev,
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
+    )
+    assert result.status == "refused"
     assert snapshot(world.journals) == before
     assert "commit" not in session.calls
 
 
 @pytest.mark.asyncio
 async def test_unknown_journal_id_refuses_the_batch(world) -> None:
-    prev = await jec.preview(FakeSession(), [243, 999])
+    ev = {**world.ev, 999: evidence(999, ledger(9))}
+    prev = await jec.preview(FakeSession(), [243, 999], ev)
     assert prev.status == "refused"
     assert prev.plan.plans[1].reason == "journal_not_found"
-
-
-@pytest.mark.asyncio
-async def test_a_ledger_row_cannot_close_two_journals(world) -> None:
-    world.journals[246] = journal(246)
-    world.rows[246] = [ledger(272)]
-    prev = await jec.preview(FakeSession(), [245, 246])
-    assert prev.status == "refused"
-    assert {p.reason for p in prev.plan.plans} == {"ledger_row_shared_by_journals"}
 
 
 # 3. facts changed between preview and commit --------------------------------
 
 
 @pytest.mark.asyncio
-async def test_commit_rolls_back_when_the_facts_changed_after_the_preview(
-    world,
-) -> None:
-    prev = await jec.preview(FakeSession(), [243, 244, 245])
-    world.rows[244][0].quarantined_at = BOOKED  # quarantined after the preview
-    # a second eligible-looking row appears for 245
-    world.rows[245].append(ledger(999, filled_qty=Decimal("5")))
-    before = snapshot(world.journals)
-    session = FakeSession()
-
-    result = await jec.commit(
-        session,
-        [243, 244, 245],
-        expected_digest=prev.plan.digest,
-        reason=REASON,
-        actor=ACTOR,
-    )
-    assert result.status in {"refused", "plan_changed"}
-    assert snapshot(world.journals) == before
-    assert "commit" not in session.calls and "rollback" in session.calls
-
-
-@pytest.mark.asyncio
-async def test_commit_rolls_back_when_the_journal_changed_after_the_preview(
-    world,
-) -> None:
-    prev = await jec.preview(FakeSession(), [243, 244, 245])
-    world.journals[245].notes = "edited by someone else"
+async def test_commit_rolls_back_when_the_fill_changed_after_the_preview(world) -> None:
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
+    world.rows[244].filled_at = FILLED + timedelta(minutes=1)  # a writer moved it
     before = snapshot(world.journals)
     session = FakeSession()
     result = await jec.commit(
         session,
-        [243, 244, 245],
+        IDS,
+        world.ev,
         expected_digest=prev.plan.digest,
         reason=REASON,
         actor=ACTOR,
@@ -355,11 +417,49 @@ async def test_commit_rolls_back_when_the_journal_changed_after_the_preview(
 
 
 @pytest.mark.asyncio
+async def test_commit_rolls_back_when_the_journal_changed_after_the_preview(
+    world,
+) -> None:
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
+    world.journals[245].notes = "edited by someone else"
+    before = snapshot(world.journals)
+    session = FakeSession()
+    result = await jec.commit(
+        session,
+        IDS,
+        world.ev,
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
+    )
+    assert result.status == "plan_changed"
+    assert snapshot(world.journals) == before
+    assert "commit" not in session.calls and "rollback" in session.calls
+
+
+@pytest.mark.asyncio
+async def test_other_evidence_than_the_previewed_one_writes_nothing(world) -> None:
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
+    world.ev[245] = evidence(245, world.rows[245], evidence_ref="hk:doc/another-record")
+    before = snapshot(world.journals)
+    result = await jec.commit(
+        FakeSession(),
+        IDS,
+        world.ev,
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
+    )
+    assert result.status == "plan_changed"
+    assert snapshot(world.journals) == before
+
+
+@pytest.mark.asyncio
 async def test_a_wrong_digest_writes_nothing(world) -> None:
     before = snapshot(world.journals)
     session = FakeSession()
     result = await jec.commit(
-        session, [245], expected_digest="0" * 64, reason=REASON, actor=ACTOR
+        session, IDS, world.ev, expected_digest="0" * 64, reason=REASON, actor=ACTOR
     )
     assert result.status == "plan_changed"
     assert snapshot(world.journals) == before
@@ -370,11 +470,12 @@ async def test_a_wrong_digest_writes_nothing(world) -> None:
 
 @pytest.mark.asyncio
 async def test_commit_writes_the_corrected_fields_and_an_audit_note(world) -> None:
-    prev = await jec.preview(FakeSession(), [243, 244, 245])
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
     session = FakeSession()
     result = await jec.commit(
         session,
-        [243, 244, 245],
+        IDS,
+        world.ev,
         expected_digest=prev.plan.digest,
         reason=REASON,
         actor=ACTOR,
@@ -396,10 +497,11 @@ async def test_commit_writes_the_corrected_fields_and_an_audit_note(world) -> No
     assert j.pnl_pct == Decimal("10.7056")  # untouched
     assert j.notes is not None
     for part in (
-        "exit_correction:hk5357 ledger_id=272",
+        "exit_correction:hk5357 ledger_id=272 evidence=hk:doc/reconcile-result-272",
         BOOKED.isoformat(),
         FILLED.isoformat(),
         "total_pnl_krw None -> 17600.0000",
+        "fill=krx/ORD272/0 allocated=2",
         f"reason={REASON}",
         f"actor={ACTOR}",
         "decision=hk 5357",
@@ -410,10 +512,11 @@ async def test_commit_writes_the_corrected_fields_and_an_audit_note(world) -> No
 @pytest.mark.asyncio
 async def test_existing_notes_are_kept(world) -> None:
     world.journals[245].notes = "thesis note"
-    prev = await jec.preview(FakeSession(), [245])
+    prev = await jec.preview(FakeSession(), [245], {245: world.ev[245]})
     await jec.commit(
         FakeSession(),
         [245],
+        {245: world.ev[245]},
         expected_digest=prev.plan.digest,
         reason=REASON,
         actor=ACTOR,
@@ -423,29 +526,31 @@ async def test_existing_notes_are_kept(world) -> None:
     )
 
 
-# 4. second commit is a no-op ---------------------------------------------------
+# 4. retries are no-ops ---------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_second_commit_changes_nothing(world) -> None:
-    first = await jec.preview(FakeSession(), [243, 244, 245])
+    first = await jec.preview(FakeSession(), IDS, world.ev)
     await jec.commit(
         FakeSession(),
-        [243, 244, 245],
+        IDS,
+        world.ev,
         expected_digest=first.plan.digest,
         reason=REASON,
         actor=ACTOR,
     )
     after_first = snapshot(world.journals)
 
-    again = await jec.preview(FakeSession(), [243, 244, 245])
+    again = await jec.preview(FakeSession(), IDS, world.ev)
     assert again.status == "noop"
     assert all(p.status == "already_corrected" for p in again.plan.plans)
 
     session = FakeSession()
     second = await jec.commit(
         session,
-        [243, 244, 245],
+        IDS,
+        world.ev,
         expected_digest=again.plan.digest,
         reason=REASON,
         actor=ACTOR,
@@ -457,12 +562,12 @@ async def test_second_commit_changes_nothing(world) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_the_identical_retry_after_a_lost_response_is_a_noop(world) -> None:
-    prev = await jec.preview(FakeSession(), [243, 244, 245])
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
     first = await jec.commit(
         FakeSession(),
-        [243, 244, 245],
+        IDS,
+        world.ev,
         expected_digest=prev.plan.digest,
         reason=REASON,
         actor=ACTOR,
@@ -473,7 +578,8 @@ async def test_the_identical_retry_after_a_lost_response_is_a_noop(world) -> Non
     session = FakeSession()
     retry = await jec.commit(
         session,
-        [243, 244, 245],
+        IDS,
+        world.ev,
         expected_digest=prev.plan.digest,  # the original preview digest, no new preview
         reason=REASON,
         actor=ACTOR,
@@ -485,11 +591,87 @@ async def test_the_identical_retry_after_a_lost_response_is_a_noop(world) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_receipt_for_other_evidence_is_not_a_noop(world) -> None:
+    prev = await jec.preview(FakeSession(), [245], {245: world.ev[245]})
+    await jec.commit(
+        FakeSession(),
+        [245],
+        {245: world.ev[245]},
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
+    )
+    other = {245: evidence(245, world.rows[245], evidence_ref="hk:doc/another-record")}
+    again = await jec.preview(FakeSession(), [245], other)
+    assert again.status == "eligible"
+
+
+@pytest.mark.asyncio
 async def test_same_values_without_the_audit_note_still_get_the_note(world) -> None:
     world.journals[245].exit_date = FILLED
     world.journals[245].total_pnl_krw = Decimal("17600")
-    plan = jec.plan_journal(world.journals[245], world.rows[245])
+    plan = jec.plan_journal(world.journals[245], world.ev[245], world.rows[245])
     assert plan.status == "eligible"
+
+
+# evidence parsing --------------------------------------------------------------
+
+
+def _entry(jid: int = 1, **over: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "journal_id": jid,
+        "evidence_ref": "hk:doc/reconcile-result-1",
+        "record_order_id": "ORD1",
+        "record_closed_journal_ids": [jid],
+        "ledger": {"venue": "krx", "broker_order_id": "ORD1", "fill_seq": 0},
+        "allocated_quantity": "2",
+    }
+    data.update(over)
+    return data
+
+
+def test_a_valid_evidence_file_parses() -> None:
+    parsed = jec.parse_evidence(json.dumps([_entry(1), _entry(2)]), [1, 2])
+    assert parsed[1].allocated_quantity == Decimal("2")
+    assert parsed[2].fill_seq == 0 and parsed[2].venue == "krx"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        "{}",
+        json.dumps([]),
+        json.dumps([_entry(1)]),  # ids 1,2 requested but one entry
+        json.dumps([_entry(1), _entry(2), _entry(3)]),  # an extra journal
+        json.dumps([_entry(1), _entry(1)]),  # repeated journal
+        json.dumps([{**_entry(1), "extra": 1}, _entry(2)]),  # unknown key
+        json.dumps([{"journal_id": 1, "ledger_id": 11}, _entry(2)]),  # a bare ledger id
+        json.dumps(
+            [_entry(1, ledger={"venue": "krx", "broker_order_id": "O"}), _entry(2)]
+        ),
+        json.dumps(
+            [
+                _entry(
+                    1, ledger={"venue": "krx", "broker_order_id": "O", "fill_seq": True}
+                ),
+                _entry(2),
+            ]
+        ),
+        json.dumps([_entry(1, allocated_quantity="two"), _entry(2)]),
+        json.dumps([_entry(1, allocated_quantity="0"), _entry(2)]),
+        json.dumps([_entry(1, allocated_quantity=2), _entry(2)]),
+        json.dumps([_entry(1, evidence_ref="has space"), _entry(2)]),
+        json.dumps([_entry(1, evidence_ref=""), _entry(2)]),
+        json.dumps([_entry(1, record_closed_journal_ids=[]), _entry(2)]),
+        json.dumps([_entry(1, journal_id="1"), _entry(2)]),
+        "[" + '{"a":' * 3 + "]",
+        " " * (jec.MAX_EVIDENCE_BYTES + 1),
+    ],
+)
+def test_bad_evidence_is_refused_before_any_database_access(raw) -> None:
+    with pytest.raises(jec.CorrectionInputError):
+        jec.parse_evidence(raw, [1, 2])
 
 
 # 5. input validation -----------------------------------------------------------

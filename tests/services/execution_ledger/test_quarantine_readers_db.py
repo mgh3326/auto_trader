@@ -708,15 +708,25 @@ async def test_mechanical_loss_cut_lots_drop_the_quarantined_row(
 async def test_journal_exit_correction_drops_the_quarantined_row(
     db_session, seed
 ) -> None:
-    """hk 5357: a quarantined sell never closes a lot journal.
+    """hk 5357: a quarantined sell is not found as a journal's closing fill.
 
-    The reader also keeps only authoritative sources, and only a websocket row
-    can be quarantined, so the source filter would catch this row too (the same
-    position as the ROB-1460 reader). The contract still ANDs the in-effect
-    predicate. The reconciler sell of the same symbol is kept, which shows the
-    reader is not simply empty.
+    The reader names a fill by its full ledger identity and only authoritative
+    sources are accepted by the planner; only a websocket row can be
+    quarantined, so the source rule would catch this row too (the same position
+    as the ROB-1460 reader). The contract still ANDs the in-effect predicate. The
+    reconciler sell of the same symbol is found, which shows the reader is not
+    simply empty.
     """
     scenario = await seed.scenario(phantom_side="sell")
+    phantom_seq = int(
+        (
+            await db_session.execute(
+                sa.select(ExecutionLedger.fill_seq).where(
+                    ExecutionLedger.id == scenario.phantom_id
+                )
+            )
+        ).scalar_one()
+    )
     await _quarantine(db_session, scenario)
     sell = ExecutionLedger(
         **ExecutionLedgerUpsert(
@@ -737,20 +747,36 @@ async def test_journal_exit_correction_drops_the_quarantined_row(
     db_session.add(sell)
     await db_session.flush()
     sell_id = int(sell.id)
+    sell_order_id = sell.broker_order_id
     await db_session.commit()
 
-    journal = SimpleNamespace(
-        account="kis",
-        symbol=scenario.symbol,
-        instrument_type=journal_exit_correction.InstrumentType.equity_kr,
-        created_at=NOW - timedelta(days=30),
-        exit_date=NOW,
+    journal = SimpleNamespace(account="kis")
+
+    def cite(order_id: str, fill_seq: int) -> journal_exit_correction.Evidence:
+        return journal_exit_correction.Evidence(
+            journal_id=1,
+            evidence_ref="hk:doc/test",
+            record_order_id=order_id,
+            record_closed_journal_ids=(1,),
+            venue="krx",
+            broker_order_id=order_id,
+            fill_seq=fill_seq,
+            allocated_quantity=Decimal("3"),
+        )
+
+    found = await journal_exit_correction.load_fill(
+        db_session, journal, cite(sell_order_id, 0)
     )
-    rows = await journal_exit_correction.load_candidates(db_session, journal)
-    loaded_ids = {int(r.id) for r in rows}  # before rollback expires the rows
+    found_id = None if found is None else int(found.id)
     await db_session.rollback()
-    assert loaded_ids == {sell_id}
-    assert scenario.phantom_id not in loaded_ids
+    assert found_id == sell_id
+
+    phantom = await journal_exit_correction.load_fill(
+        db_session, journal, cite(scenario.phantom_order_no, phantom_seq)
+    )
+    phantom_found = phantom is not None
+    await db_session.rollback()
+    assert phantom_found is False
 
 
 async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) -> None:

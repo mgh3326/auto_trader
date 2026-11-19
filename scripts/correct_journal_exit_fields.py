@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Correct exit_date and total_pnl_krw on lots closed by a late reconcile (hk 5357).
 
+A closed lot journal keeps no link to the sell that closed it, so nothing is
+guessed: ``--evidence-file`` is a JSON list with exactly one entry per journal,
+each citing the retained close record (``evidence_ref``, the order id and
+``closed_journal_ids`` it lists), the sell's ledger identity (venue, broker order
+id, fill_seq) and the quantity allocated to that journal. See the runbook.
+
 Preview is the default and writes nothing: for every requested journal it prints
-the current values, the new values, the ledger row that closed it and whether it
-is eligible. ``--commit`` applies exactly the previewed plan in one transaction
+the current values, the new values, the ledger row it names and whether it is
+eligible. ``--commit`` applies exactly the previewed plan in one transaction
 and only if every journal is eligible and the facts still equal the preview
 (``--expect-digest`` takes the ``plan_digest`` the preview printed); otherwise it
 changes nothing. A journal that already has the new values and its audit note is
@@ -33,9 +39,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.services.journal_exit_correction import (
     MAX_ACTOR_CHARS,
+    MAX_EVIDENCE_BYTES,
     MAX_REASON_CHARS,
     CorrectionInputError,
     commit,
+    parse_evidence,
     parse_ids,
     preview,
     validate_text,
@@ -52,6 +60,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--database-url-env", required=True, metavar="NAME")
     parser.add_argument("--ids", required=True, metavar="ID[,ID...]")
+    parser.add_argument(
+        "--evidence-file",
+        required=True,
+        metavar="PATH",
+        help="JSON list: one evidence entry per journal in --ids",
+    )
     parser.add_argument("--reason", required=True)
     parser.add_argument("--actor", required=True)
     parser.add_argument("--commit", action="store_true")
@@ -71,14 +85,25 @@ def _database_url(env_name: str) -> str:
         raise CorrectionInputError(f"environment variable {env_name} is not set")
     try:
         url = make_url(raw.strip())
-        if url.get_backend_name() != "postgresql" or not url.database:
+        # A bare ``postgresql://`` resolves to a synchronous driver that cannot
+        # run on the async engine; refuse it here instead of failing later.
+        if url.drivername != "postgresql+asyncpg" or not url.database:
             raise ValueError
         return url.render_as_string(hide_password=False)
     except Exception:
         # Parser messages can quote the URL; never chain or repeat them.
         raise CorrectionInputError(
-            f"environment variable {env_name} is not a complete PostgreSQL URL"
+            f"environment variable {env_name} must be a complete "
+            "postgresql+asyncpg:// URL"
         ) from None
+
+
+def _read_evidence(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read(MAX_EVIDENCE_BYTES + 1)
+    except (OSError, UnicodeDecodeError):
+        raise CorrectionInputError("evidence file cannot be read") from None
 
 
 async def run(
@@ -88,6 +113,7 @@ async def run(
     ids = parse_ids(args.ids)
     reason = validate_text("reason", args.reason, max_chars=MAX_REASON_CHARS)
     actor = validate_text("actor", args.actor, max_chars=MAX_ACTOR_CHARS)
+    evidence = parse_evidence(_read_evidence(args.evidence_file), ids)
     if args.commit and not (
         args.expect_digest and _DIGEST.fullmatch(args.expect_digest)
     ):
@@ -106,12 +132,13 @@ async def run(
                 result = await commit(
                     session,
                     ids,
+                    evidence,
                     expected_digest=args.expect_digest,
                     reason=reason,
                     actor=actor,
                 )
             else:
-                result = await preview(session, ids)
+                result = await preview(session, ids, evidence)
     finally:
         if engine is not None:
             await engine.dispose()
