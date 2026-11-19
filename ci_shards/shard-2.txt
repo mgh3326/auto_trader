@@ -418,6 +418,7 @@ tests/test_kis_mock_reconciliation_job_scope.py
 tests/test_kis_mock_reconciliation_periodic_task.py
 tests/test_kis_mock_scalping_sell_guard.py
 tests/test_kis_ohlcv_cache.py
+tests/test_kis_overseas_incomplete_history_hk5342.py
 tests/test_kis_overseas_orders_retry.py
 tests/test_kis_overseas_pending_mock.py
 tests/test_kis_settings_view_isolation.py
