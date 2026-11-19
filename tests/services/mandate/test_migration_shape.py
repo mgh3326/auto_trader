@@ -296,3 +296,18 @@ def test_review_round2_guards_are_in_the_rendered_triggers() -> None:
     assert "ap.sleeve_id = pl.sleeve_id" in ddl
     # a live plan scopes two real accounts, a mock plan one
     assert "CASE sl.realm WHEN 'live' THEN 2 ELSE 1 END" in ddl
+
+
+def test_i1_the_released_event_takes_the_symbol_lock_before_reading_reservations() -> (
+    None
+):
+    ddl = _norm("\n".join(_load().GUARD_DDL))
+    start = ddl.index("CREATE OR REPLACE FUNCTION review.mandate_plan_events_guard()")
+    body = ddl[start : ddl.index("$$ LANGUAGE plpgsql", start)]
+    lock = "IF NEW.event = 'released' THEN"
+    assert lock in body
+    key = "'mandate_symbol:' || lk.realm || ':' || lk.market || ':' || lk.symbol"
+    assert key in body
+    assert "the released event needs READ COMMITTED" in body
+    # the lock comes before the first read of the plan's authority state
+    assert body.index(key) < body.index("st := review.mandate_plan_auth_state")

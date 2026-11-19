@@ -49,14 +49,20 @@ async def seed(db_session):
         await helper.cleanup()
 
 
-async def refused(db, statement: str, match: str | None = None, **params) -> None:
-    """The statement is refused by a trigger or constraint; the transaction rolls back."""
+async def refused(
+    db, statement: str, match: str | tuple[str, ...] | None = None, **params
+) -> None:
+    """The statement is refused by a trigger or constraint; the transaction rolls back.
+
+    ``match`` is one expected substring or a tuple of acceptable ones.
+    """
     with pytest.raises(DBAPIError) as caught:
         await raw(db, statement, **params)
         await db.flush()
     await db.rollback()
     if match:
-        assert match in str(caught.value)
+        wanted = (match,) if isinstance(match, str) else match
+        assert any(m in str(caught.value) for m in wanted), str(caught.value)[:300]
 
 
 def err(code: v.MandateRefusal):
@@ -1136,14 +1142,14 @@ async def test_i15_a_live_plan_scopes_both_real_accounts(db_session, seed) -> No
         db_session,
         _PLAN_INSERT,
         "scopes both real accounts",
-        scope="{" + terms.account_ref + "}",
+        scope=[terms.account_ref],
         **params,
     )
     await refused(
         db_session,
         _PLAN_INSERT,
         "scopes both real accounts",
-        scope="{" + terms.account_ref + "," + terms.account_ref + "}",
+        scope=[terms.account_ref, terms.account_ref],
         **params,
     )
 
@@ -1230,3 +1236,64 @@ async def test_i16_an_auto_fence_cannot_cite_another_sleeves_profile(
         att=uuid.uuid4(),
         prof=profile_id,
     )
+
+
+async def test_i1_a_concurrent_reservation_and_released_event_leave_no_stranded_claim(
+    db_session, seed
+) -> None:
+    """The released event takes the symbol lock before it reads reservations."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,))
+    plan_id = (
+        await db_session.execute(
+            sa.text(_PLAN_INSERT + " RETURNING id"),
+            {
+                "s": sleeve.id,
+                "y": sym,
+                "t": terms.id,
+                "a": terms.account_ref,
+                "scope": [terms.account_ref, "second-acct"],
+            },
+        )
+    ).scalar_one()
+    for seq, event in ((1, "proposed"), (2, "retired"), (3, "orders_settled")):
+        await _insert_event(db_session, plan_id, seq, event)
+    await raw(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, evidence) "
+        "VALUES (:p, 4, 'holdings_disposed', 'operator:test', "
+        "CAST(:ev AS jsonb))",
+        p=plan_id,
+        ev=json.dumps({"holdings_disposition": "kept_outside_basket"}),
+    )
+    await db_session.commit()
+
+    async with AsyncSessionLocal() as writer:
+        # A takes the symbol lock through its reservation insert and stays open.
+        await raw(
+            writer,
+            "INSERT INTO review.mandate_symbol_reservations (realm, market, symbol, plan_id) "
+            "VALUES ('live', 'equity_kr', :y, :p)",
+            y=sym,
+            p=plan_id,
+        )
+        await writer.flush()
+
+        async def release() -> None:
+            async with AsyncSessionLocal() as other:
+                await _insert_event(other, plan_id, 5, "released")
+                await other.commit()
+
+        task = asyncio.create_task(release())
+        await asyncio.sleep(0.5)
+        assert not task.done()  # blocked on the symbol lock
+        await writer.commit()
+    await asyncio.wait_for(task, timeout=15)
+    unreleased = await count(
+        db_session,
+        "mandate_symbol_reservations r",
+        "r.plan_id = :p AND NOT EXISTS (SELECT 1 FROM review.mandate_symbol_reservation_releases "
+        "x WHERE x.reservation_id = r.id)",
+        p=plan_id,
+    )
+    assert unreleased == 0

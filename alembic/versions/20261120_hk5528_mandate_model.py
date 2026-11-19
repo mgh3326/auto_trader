@@ -297,6 +297,7 @@ def _events_guard_ddl() -> str:
         tm record;
         k smallint := NEW.tranche_index;
         eff date;
+        lk record;
         prior_amount numeric;
         prior_quantity numeric;
     BEGIN
@@ -311,6 +312,21 @@ def _events_guard_ddl() -> str:
         IF NOT FOUND THEN
             RAISE EXCEPTION 'mandate_plan_events names no plan'
                 USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NEW.event = 'released' THEN
+            -- Same symbol lock as the reservation writers, taken before any read
+            -- of reservations, so a concurrent reservation insert cannot be missed.
+            IF current_setting('transaction_isolation') <> 'read committed' THEN
+                RAISE EXCEPTION 'the released event needs READ COMMITTED'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            SELECT review.mandate_realm(s.account_mode) AS realm, s.market, p.symbol
+              INTO lk
+              FROM review.mandate_plans p
+              JOIN review.strategy_sleeves s ON s.id = p.sleeve_id
+             WHERE p.id = NEW.plan_id;
+            PERFORM pg_advisory_xact_lock(hashtextextended(
+                'mandate_symbol:' || lk.realm || ':' || lk.market || ':' || lk.symbol, 0));
         END IF;
         st := review.mandate_plan_auth_state(NEW.plan_id);
         IF st IS NULL THEN
