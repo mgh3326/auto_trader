@@ -600,6 +600,38 @@ def test_original_own_terminal_evidence_stands_despite_an_unresolved_child() -> 
     assert verdict.verdict == "expired"
 
 
+@pytest.mark.parametrize("other_ref", ["000000000", None, "000000099"])
+def test_us_child_view_missing_or_contradicting_the_original_reference_fails_closed(
+    other_ref: str | None,
+) -> None:
+    """ust21510 names the original; ust21050 shows the same child without it."""
+    other_view = _us_row(
+        ord_no=US_CONFIRM, orig_ord_no=other_ref, ord_stat="접수", ord_cntr_tp="12"
+    )
+    if other_ref is None:
+        del other_view["orig_ord_no"]
+    verdict = _us_verdict([_us_row(), _us_cancel_confirm()], open_=[other_view])
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_kr_child_view_without_the_original_reference_fails_closed() -> None:
+    verdict = _kr_verdict(
+        detail=[_kr_detail(), _kr_cancel_confirm_detail()],
+        status=[
+            _kr_status(),
+            _kr_status(
+                ord_no=KR_CONFIRM,
+                orig_ord_no="0000000",
+                mdfy_cncl_tp="취소주문",
+                cnfm_qty="1",
+            ),
+        ],
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
 # --- US 무효주문 -----------------------------------------------------------
 
 

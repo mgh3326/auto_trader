@@ -632,11 +632,15 @@ def _exact_rows(
     matched = [row for row in evidence.rows if row.order_id == order_id]
     detail = [row for row in matched if row.role == ROLE_DETAIL]
     status = [row for row in matched if row.role == ROLE_STATUS]
-    confirmations = tuple(
-        row
+    # Child orders are identified by the rows that name this order; every view
+    # of such a child is then evidence, including a row whose own original-order
+    # field is missing, zero or names another order (a conflicting reference).
+    child_ids = {
+        row.order_id
         for row in evidence.rows
         if row.original_order_id == order_id and row.order_id != order_id
-    )
+    }
+    confirmations = tuple(row for row in evidence.rows if row.order_id in child_ids)
     if len(detail) > 1 or len(status) > 1:
         return None, None, (), "ambiguous_rows"
     if any(row.symbol != ledger.symbol for row in (*matched, *confirmations)):
@@ -662,6 +666,7 @@ def _terminal_marker(
     detail_row: BrokerRow | None,
     status_row: BrokerRow | None,
     confirmations: tuple[BrokerRow, ...],
+    order_id: str | None,
 ) -> tuple[str | None, str | None, bool]:
     """``(marker, unknown_reason, child_derived)`` for the order.
 
@@ -690,7 +695,11 @@ def _terminal_marker(
     unresolved = False
     modified = False
     for child_rows in children.values():
-        if all(_is_clean_cancel_confirmation(row) for row in child_rows):
+        if any(row.original_order_id != order_id for row in child_rows):
+            # A view of this child that omits or contradicts the original-order
+            # reference: the views disagree about what the child acted on.
+            unresolved = True
+        elif all(_is_clean_cancel_confirmation(row) for row in child_rows):
             confirmed = True
         elif all(_is_modify_only(row) for row in child_rows):
             modified = True
@@ -851,7 +860,7 @@ def classify_verdict(
         if (status_row.filled_quantity or 0) > 0:
             return _unknown("status_listing_reports_fill")
         status_marker, marker_unknown, child_derived = _terminal_marker(
-            None, status_row, confirmations
+            None, status_row, confirmations, ledger.broker_order_id
         )
         if marker_unknown is not None:
             return _unknown(marker_unknown)
@@ -920,7 +929,7 @@ def classify_verdict(
                 # The ledger claims more than the broker ever filled.
                 return _unknown("recorded_fill_contradicts_broker")
             marker, marker_unknown, child_derived = _terminal_marker(
-                detail_row, status_row, confirmations
+                detail_row, status_row, confirmations, ledger.broker_order_id
             )
             if marker_unknown is not None:
                 return _unknown(marker_unknown)
@@ -979,7 +988,7 @@ def classify_verdict(
         # strand the fill outside every T-P4 booking reader.
         return _unknown("recorded_fill_contradicts_broker")
     marker, marker_unknown, child_derived = _terminal_marker(
-        detail_row, status_row, confirmations
+        detail_row, status_row, confirmations, ledger.broker_order_id
     )
     if marker_unknown is not None:
         return _unknown(marker_unknown)
