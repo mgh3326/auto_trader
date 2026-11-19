@@ -147,6 +147,13 @@ TRANCHE_COMPLETION_EVENTS: tuple[str, ...] = (
 #: Operator-side tranche events may run while the plan is paused.
 CLOSED_PARTIAL_AUTH: tuple[str, ...] = ("approved", "active", "suspended")
 
+#: Morning batch cards (§5.1): what a card asks and which plan events answer it.
+BATCH_KINDS: tuple[str, ...] = ("new_plan", "reapproval")
+BATCH_ANSWER_EVENTS: dict[str, tuple[str, str]] = {
+    "new_plan": ("approved", "rejected"),
+    "reapproval": ("terms_rebound", "retired"),
+}
+
 APPROVAL_MODES: tuple[str, ...] = ("auto", "human")
 HOLDINGS_DISPOSITIONS: tuple[str, ...] = (
     "zero_holdings",
@@ -258,3 +265,9 @@ class MandateRefusal(StrEnum):
     TRANCHE_UNCERTAIN = "mandate_tranche_uncertain"
     SCOPE_UNKNOWN = "mandate_scope_unknown"
     UNSUPPORTED = "mandate_unsupported"
+    BATCH_OPEN = "mandate_batch_open"
+    BATCH_EXPIRED = "mandate_batch_expired"
+    BATCH_ANSWERED = "mandate_batch_answered"
+    CARD_SUPERSEDED = "mandate_card_superseded"
+    NONCE_MISMATCH = "mandate_nonce_mismatch"
+    CALENDAR_UNKNOWN = "mandate_calendar_unknown"

@@ -1,7 +1,8 @@
 """Mandate model tables (hk 3795 ticket T1): clauses, approvals, activation profiles
 and split plans.
 
-Nine ``review`` tables, all append-only: no UPDATE, DELETE or TRUNCATE for any
+Nine ``review`` tables (T1) plus the two morning-batch tables of T3a
+(``MandatePlanBatch``, ``MandatePlanBatchMember``), all append-only: no UPDATE, DELETE or TRUNCATE for any
 role (DB triggers in ``alembic/versions/20261120_hk5528_mandate_model.py``). A plan's
 state is the fold of its events (``app.services.mandate.fold``). All writes go
 through ``app.services.mandate.store``.
@@ -588,6 +589,112 @@ class MandateSymbolReservationRelease(Base):
         ForeignKey("review.mandate_symbol_reservations.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MandatePlanBatch(Base):
+    """One morning approval batch of a basket for one target session (I22, §5.1).
+
+    ``UNIQUE(realm, basket_key, target_session)`` plus the insert trigger of
+    ``20261120_hk5648_mandate_batches`` ("a new batch only after the basket's earlier
+    batch is closed") keep a basket to one open batch. Both deadlines are fixed
+    here: approvals before ``approval_deadline_at`` (the open of the target
+    session) take effect on it, approvals up to ``expires_at`` (its close) on the
+    next session, and nothing is answered after ``expires_at``.
+    """
+
+    __tablename__ = "mandate_plan_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "realm",
+            "basket_key",
+            "target_session",
+            name="uq_mandate_plan_batches_basket_session",
+        ),
+        CheckConstraint(f"realm IN ({_in(v.REALMS)})", name="realm"),
+        CheckConstraint(f"market IN ({_in(v.PLAN_MARKETS)})", name="market"),
+        CheckConstraint(
+            "char_length(btrim(basket_key)) BETWEEN 1 AND 100",
+            name="basket_key_nonblank",
+        ),
+        CheckConstraint("approval_deadline_at < expires_at", name="deadlines_ordered"),
+        CheckConstraint(
+            "char_length(btrim(created_by)) BETWEEN 1 AND 128",
+            name="created_by_nonblank",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    realm: Mapped[str] = mapped_column(Text, nullable=False)
+    basket_key: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    target_session: Mapped[date] = mapped_column(Date, nullable=False)
+    approval_deadline_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MandatePlanBatchMember(Base):
+    """One card issued for one plan of a batch (the immutable snapshot, §5.1).
+
+    ``card_no`` 1 is written with the batch. A re-send appends the next ``card_no``
+    with a new nonce digest and the same snapshot; only the highest card of a
+    (batch, plan) is answerable. The decision itself is the plan event that carries
+    the card's id in ``batch_member_id``: at most one per (batch, plan), which is
+    also what makes a nonce single-use. Nothing here is ever updated.
+    """
+
+    __tablename__ = "mandate_plan_batch_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", "plan_id", "card_no", name="uq_mandate_plan_batch_members_card"
+        ),
+        UniqueConstraint("nonce_digest", name="uq_mandate_plan_batch_members_nonce"),
+        CheckConstraint("card_no >= 1", name="card_no_positive"),
+        CheckConstraint("kind IN ('new_plan','reapproval')", name="kind"),
+        CheckConstraint("terms_sha256 ~ '^[0-9a-f]{64}$'", name="terms_sha256_format"),
+        CheckConstraint("plan_sha256 ~ '^[0-9a-f]{64}$'", name="plan_sha256_format"),
+        CheckConstraint("nonce_digest ~ '^[0-9a-f]{64}$'", name="nonce_digest_format"),
+        CheckConstraint(
+            "char_length(btrim(created_by)) BETWEEN 1 AND 128",
+            name="created_by_nonblank",
+        ),
+        Index("ix_mandate_plan_batch_members_plan", "plan_id"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.mandate_plan_batches.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    plan_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.mandate_plans.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    card_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    terms_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.mandate_terms.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    terms_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    nonce_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
