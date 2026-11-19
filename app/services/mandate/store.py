@@ -763,10 +763,9 @@ async def record_approval(
 ) -> ApprovalResult:
     """Record one authenticated decision; an approval writes the clause or profile.
 
-    The caller (the callback, T3b) has already checked the operator principal
-    list and consumed the nonce; this function checks shape and staleness. A stale
-    request (the sleeve moved on) writes nothing. All rows are written in the
-    caller's transaction.
+    The callback authenticates the principal and the card. This function checks
+    staleness and consumes the nonce by recording the request's single decision.
+    All rows are written in the caller's transaction.
     """
     if decision not in v.APPROVAL_DECISIONS:
         raise MandateError(
@@ -787,15 +786,6 @@ async def record_approval(
         raise MandateError(
             v.MandateRefusal.BINDING_BROKEN, "the request content changed"
         )
-    already = (
-        await session.execute(
-            select(MandateApproval.id).where(MandateApproval.request_id == request_id)
-        )
-    ).first()
-    if already is not None:
-        raise MandateError(
-            v.MandateRefusal.REQUEST_STALE, "the request already has a decision"
-        )
     sleeve = await _sleeve(session, request.sleeve_id)
     realm, _market = realm_and_market(sleeve)
 
@@ -809,6 +799,13 @@ async def record_approval(
         await acquire_basket_lock(session, realm, basket_key)
     await acquire_sleeve_lock(session, request.sleeve_id)
 
+    already = await session.execute(
+        select(MandateApproval.id).where(MandateApproval.request_id == request_id)
+    )
+    if already.first() is not None:
+        raise MandateError(
+            v.MandateRefusal.REQUEST_STALE, "the request already has a decision"
+        )
     version = await sleeve_store.current_version(session, request.sleeve_id)
     if version is None or version.version != request.base_sleeve_version:
         raise MandateError(

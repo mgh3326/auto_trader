@@ -95,3 +95,11 @@ def test_the_package_writes_no_ledger_table() -> None:
         ):
             assert f"insert({table}" not in text.lower()
             assert f"INSERT INTO review.{table}" not in text
+
+
+def test_i21_mta_callback_has_no_direct_order_or_proposal_imports() -> None:
+    imports = _imports(PACKAGE / "telegram_approval.py")
+    assert not any(
+        name.startswith(("app.services.order_proposals", "app.models.order_proposals"))
+        for name in imports
+    )

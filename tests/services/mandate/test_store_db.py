@@ -1409,3 +1409,138 @@ async def test_t4a_I4_dispatch_reads_the_strictest_current_basket_cap(
     assert Decimal(detail["mandate_sector_denominator"]) == Decimal("20000000")
     assert Decimal(detail["mandate_sector_cap_pct"]) == Decimal("5")
     await db_session.rollback()
+
+
+async def test_i21_v8_mta_stale_request_and_concurrent_replay_write_nothing_extra(
+    db_session, seed, monkeypatch
+) -> None:
+    from app.core.config import settings
+    from app.services.mandate import telegram_approval
+
+    monkeypatch.setattr(settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", PRINCIPAL)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "-123")
+    sleeve = await seed.sleeve(state="shadow")
+
+    async def make_request():
+        return await ms.create_terms_request(
+            db_session,
+            sleeve_id=sleeve.id,
+            data=_terms_input(new_symbol()),
+            global_caps=ms.GlobalCaps(2_000_000, 5_000_000),
+            approval_ref="hk:5649",
+            requested_by="operator:test",
+        )
+
+    first = await make_request()
+    stale = await make_request()
+    now = datetime.now(UTC)
+
+    def update(request, message_id):
+        markup = telegram_approval.card_markup(request, -123, message_id, now)
+        return {
+            "update_id": message_id,
+            "callback_query": {
+                "from": {"id": int(PRINCIPAL)},
+                "message": {"chat": {"id": -123}, "message_id": message_id},
+                "data": markup["inline_keyboard"][0][1]["callback_data"],
+            },
+        }
+
+    first_id, stale_id, sleeve_id = first.id, stale.id, sleeve.id
+    first_update, stale_update = update(first, 7), update(stale, 8)
+    await db_session.commit()
+
+    async def click(payload):
+        return await telegram_approval.handle_mandate_update(
+            payload, now=now, session_factory=AsyncSessionLocal
+        )
+
+    first_update["callback_query"]["from"]["id"] = 123
+    assert await click(first_update) == "mandate_approver_not_allowed"
+    monkeypatch.setattr(settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", "")
+    first_update["callback_query"]["from"]["id"] = int(PRINCIPAL)
+    assert await click(first_update) == "mandate_approver_not_allowed"
+    monkeypatch.setattr(settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", PRINCIPAL)
+    first_update["callback_query"]["message"]["chat"]["id"] = -456
+    assert await click(first_update) == "chat_not_allowed"
+    first_update["callback_query"]["message"]["chat"]["id"] = -123
+    assert (
+        await count(db_session, "mandate_approvals", "request_id = :r", r=first_id) == 0
+    )
+    await db_session.rollback()
+
+    assert sorted(await asyncio.gather(click(first_update), click(first_update))) == [
+        "mandate_decision_recorded",
+        "mandate_request_stale",
+    ]
+    assert await click(first_update) == "mandate_request_stale"
+    assert await click(stale_update) == "mandate_request_stale"
+    for request_id, expected in ((first_id, 1), (stale_id, 0)):
+        assert (
+            await count(
+                db_session, "mandate_approvals", "request_id = :r", r=request_id
+            )
+            == expected
+        )
+    version, terms = await ms.current_terms(db_session, sleeve_id)
+    assert version.state == "live"
+    assert version.set_by == f"operator:telegram:{PRINCIPAL}"
+    assert terms is not None
+
+
+@pytest.mark.parametrize("approve", [True, False])
+async def test_i18_i21_mta_activation_profile_records_only_the_selected_decision(
+    db_session, seed, monkeypatch, approve
+) -> None:
+    from app.core.config import settings
+    from app.services.mandate import telegram_approval
+
+    monkeypatch.setattr(settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", PRINCIPAL)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "-123")
+    sleeve, terms = await seed.clause_sleeve(symbols=(new_symbol(),))
+    now = datetime.now(UTC)
+    request = await ms.create_profile_request(
+        db_session,
+        sleeve_id=sleeve.id,
+        terms_id=terms.id,
+        max_tranche_index=1,
+        effective_session=EFFECTIVE,
+        expires_at=now + timedelta(days=30),
+        approval_ref="hk:5649",
+        requested_by="operator:test",
+        now=now,
+    )
+    request_id = request.id
+    markup = telegram_approval.card_markup(request, -123, 7, now)
+    await db_session.commit()
+    update = {
+        "callback_query": {
+            "from": {"id": int(PRINCIPAL)},
+            "message": {"chat": {"id": -123}, "message_id": 7},
+            "data": markup["inline_keyboard"][0][int(approve)]["callback_data"],
+        }
+    }
+    assert (
+        await telegram_approval.handle_mandate_update(
+            update, now=now, session_factory=AsyncSessionLocal
+        )
+        == "mandate_decision_recorded"
+    )
+    approval = (
+        await db_session.execute(
+            sa.text(
+                "SELECT decision, principal, nonce_digest FROM review.mandate_approvals WHERE request_id = :r"
+            ),
+            {"r": request_id},
+        )
+    ).one()
+    assert approval.decision == ("approved" if approve else "denied")
+    assert approval.principal == PRINCIPAL
+    assert len(approval.nonce_digest) == 64
+    profile = await ms.latest_profile(db_session, sleeve.id)
+    if approve:
+        assert profile is not None
+        assert profile.max_tranche_index == 1
+        assert profile.terms_id == terms.id
+    else:
+        assert profile is None

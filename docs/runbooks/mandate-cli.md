@@ -1,5 +1,10 @@
 # 위임장·계획 운영 CLI (hk 3795 T2)
 
+`send-approval-card`는 `--request-id`의 승인 요청을 `--chat-id`에 게시할 카드로
+미리 보여 준다. `--actor`는 운영자 식별자이며, `--commit`을 지정하면 허용된
+채팅에 Telegram 카드를 게시한다. 버튼은 게시된 메시지에 결속되며 15분 후 만료된다.
+승인과 거절은 위임장 승인자 목록에 있는 Telegram 사용자가 카드에서만 기록할 수 있다.
+
 `scripts/mandate.py`는 위임장 조항·활성화 프로필의 승인 요청, 분할 매수 계획 등록, 운영자 계획 이벤트, 상태 조회를 담는 수동 CLI다. 스케줄러 연결이 없고, 주문·브로커 모듈을 import하지 않는다. 설계 정본은 `docs/design/3795-mandate.md`의 §3.2·§3.5·§5.2·§8 T2다.
 
 ## 공통 규칙
@@ -85,7 +90,7 @@ uv run python -m scripts.mandate --database-url-env MANDATE_DB_URL status --slee
 
 ## 하지 않는 것
 
-- 승인 기록(`mandate_approvals`)을 만들지 않는다. 승인은 Telegram 카드(T3b)에서만 생긴다.
+- CLI는 승인 기록(`mandate_approvals`)을 만들지 않는다. 결정은 Telegram 카드에서만 기록된다.
 - 주문 제안을 만들지 않고 주문을 내지 않는다. 계획 결속 제안(T4a)과 전송(T4c·T5)은 별도 티켓이다.
 - 스케줄러·cron·TaskIQ에 등록하지 않는다. 실행은 운영자가 직접 한다(하드룰 6).
 - 원장(`execution_ledger` 등)에 쓰지 않는다.
