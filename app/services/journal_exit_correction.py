@@ -45,10 +45,11 @@ NOTE_TOKEN = "hk5357"
 MAX_IDS = 20
 MAX_REASON_CHARS = 500
 MAX_ACTOR_CHARS = 100
-#: How long before the recorded ``exit_date`` the closing fill may sit. The
-#: three known rows were booked about a day after the fill. Any other
-#: authoritative sell of the same account and symbol inside this window makes the
-#: attribution unprovable (a larger fill may have closed this lot with others).
+#: How long before the recorded ``exit_date`` the matching fill may sit. The
+#: three known rows were booked about a day after the fill. This bounds the
+#: match only: a delayed booking can have closed the lot with an older fill, so
+#: competing sells are looked for over the whole period the lot could have been
+#: closed, from its creation to ``exit_date``.
 FILL_WINDOW = timedelta(days=3)
 #: ``commit`` waits at most this long for ledger writers before giving up.
 LOCK_TIMEOUT_MS = 5000
@@ -216,8 +217,10 @@ def plan_journal(journal: Any, candidates: Iterable[LedgerRowLike]) -> JournalPl
 
     quantity = Decimal(journal.quantity)
     exit_price = _q(Decimal(journal.exit_price))
-    low = max(journal.exit_date - FILL_WINDOW, journal.created_at)
-    in_window = [
+    # Every sell of the account and symbol between the lot's creation and its
+    # booking could have closed it (the FIFO closer takes multi-lot fills and
+    # imposes no bound on how late a booking runs).
+    period = [
         row
         for row in candidates
         if row.quarantined_at is None
@@ -227,23 +230,24 @@ def plan_journal(journal: Any, candidates: Iterable[LedgerRowLike]) -> JournalPl
         and row.instrument_type == InstrumentType.equity_kr
         and row.symbol == journal.symbol
         and row.side == "sell"
-        and low <= row.filled_at <= journal.exit_date
+        and journal.created_at <= row.filled_at <= journal.exit_date
     ]
     matches = [
         row
-        for row in in_window
-        if Decimal(row.filled_qty) == quantity
+        for row in period
+        if row.filled_at >= journal.exit_date - FILL_WINDOW
+        and Decimal(row.filled_qty) == quantity
         and _q(Decimal(row.filled_price)) == exit_price
     ]
     if not matches:
         return _ineligible(jid, "no_matching_ledger_row", journal)
     if len(matches) > 1:
         return _ineligible(jid, "ambiguous_ledger_rows", journal)
-    if len(in_window) > 1:
+    if len(period) > 1:
         # A fill can close several FIFO lots, so its quantity need not equal this
         # lot's. A unique quantity/price match is proof only when nothing else
-        # sold in the window could have closed the lot.
-        return _ineligible(jid, "other_sells_in_window", journal)
+        # sold between the lot's creation and its booking.
+        return _ineligible(jid, "other_sells_since_lot_created", journal)
     [row] = matches
 
     entry_price = Decimal(journal.entry_price)
@@ -342,6 +346,8 @@ async def load_candidates(
 ) -> list[ExecutionLedger]:
     """In-effect authoritative KR sell rows that could have closed ``journal``.
 
+    That is every one between the lot's creation and its recorded ``exit_date``.
+
     Reads only; every fill reader ANDs ``execution_ledger_in_effect`` (#1175).
     The pure planner narrows by quantity and price.
     """
@@ -349,6 +355,7 @@ async def load_candidates(
     if (
         broker is None
         or journal.exit_date is None
+        or journal.created_at is None
         or journal.instrument_type != InstrumentType.equity_kr
     ):
         return []
@@ -363,7 +370,7 @@ async def load_candidates(
             ExecutionLedger.side == "sell",
             ExecutionLedger.source.in_(sorted(AUTHORITATIVE_SOURCES)),
             ExecutionLedger.filled_at <= journal.exit_date,
-            ExecutionLedger.filled_at >= journal.exit_date - FILL_WINDOW,
+            ExecutionLedger.filled_at >= journal.created_at,
         )
         .order_by(ExecutionLedger.id)
         .execution_options(populate_existing=True)

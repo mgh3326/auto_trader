@@ -218,7 +218,18 @@ def test_a_bigger_fill_in_the_window_makes_the_attribution_unprovable() -> None:
     unrelated = ledger(1, filled_at=FILLED - timedelta(hours=20))
     bigger = ledger(2, filled_qty=Decimal("10"))
     plan = _refused([unrelated, bigger])
-    assert (plan.status, plan.reason) == ("ineligible", "other_sells_in_window")
+    assert (plan.status, plan.reason) == ("ineligible", "other_sells_since_lot_created")
+    # a late booking: the real closer is older than the match window, the unrelated
+    # two-share fill is inside it; the older fill still blocks the attribution
+    late_closer = ledger(
+        3, filled_qty=Decimal("10"), filled_at=BOOKED - timedelta(days=4)
+    )
+    assert _refused([ledger(1), late_closer]).reason == "other_sells_since_lot_created"
+    # a sell before the lot existed cannot have closed it
+    assert (
+        _refused([ledger(1), ledger(4, filled_at=CREATED - timedelta(days=1))]).status
+        == "eligible"
+    )
     # the same unrelated row alone is still the unique candidate
     assert _refused([unrelated]).status == "eligible"
     # a sell of another account or symbol is not in the way

@@ -208,7 +208,7 @@ async def test_commit_waits_for_a_ledger_writer_and_refuses_the_new_sell(
         result = await asyncio.wait_for(task, timeout=15)
 
     assert result.status == "refused"
-    assert result.plan.plans[0].reason == "other_sells_in_window"
+    assert result.plan.plans[0].reason == "other_sells_since_lot_created"
     assert (await _journal(db_session, jid)).total_pnl_krw is None
 
 
@@ -277,3 +277,19 @@ async def test_the_identical_retry_without_a_new_preview_is_a_noop(
     notes = (await _journal(db_session, jid)).notes
     assert (await jec.commit(db_session, [jid], **kwargs)).status == "noop"
     assert (await _journal(db_session, jid)).notes == notes
+
+
+async def test_an_older_larger_sell_since_the_lot_was_created_blocks_the_match(
+    db_session, seed
+) -> None:
+    """A late booking: the real closer is older than the match window."""
+    symbol = _symbol()
+    jid, _ = await seed.lot(symbol)
+    db_session.add(
+        _other_sell(symbol, filled_at=(FILLED - timedelta(days=4)).isoformat())
+    )
+    await db_session.commit()
+
+    prev = await jec.preview(db_session, [jid])
+    assert prev.status == "refused"
+    assert prev.plan.plans[0].reason == "other_sells_since_lot_created"
