@@ -181,15 +181,6 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 | S6 | **운영자 청산(operator exit).** `scripts/execution_mandates.py exit --mandate ... --symbol ... --max-quantity ...`(preview 기본, `--commit`, 사람 actor만)가 `review.execution_operator_exits(mandate_id, symbol, max_quantity, reason, created_by, expires_at ≤ 1시간)` append-only 행을 쓰고, 그 행을 가리키는 매도 intent(`origin='operator_exit'`)를 저장한다. 이 intent의 `expires_at`은 현재보다 미래이고 운영자 청산 행의 `expires_at` 이하여야 하며, §3.2·I3의 "위임장 만료 이전" 비교는 `origin='operator_exit'`이고 유효한 운영자 청산 행을 가리킬 때만 스키마와 DB 트리거 양쪽에서 면제된다(만료된 위임장에서도 청산 intent를 저장할 수 있게). 이 intent에 한해 `store_intent`·child 예약·전송 직전 검사가 **sleeve 상태 검사 대신** 다음을 본다: 운영자 청산 행 존재·미만료, 매도뿐, 수량 ≤ 행의 `max_quantity` 및 증명된 자기 보유, S2(살아 있는 매도 하나), S5(열린 인계 없음), B12 계좌 대조, kill (a)(b)(d). 위임장 철회·만료·sleeve `paused`/`stopped`는 이 intent를 막지 않는다(보유를 남기지 않기 위함). `strategy_sleeves.gate.evaluate_sleeve_gate`는 이 intent에 쓰지 않고, 별도 함수 `evaluate_operator_exit`가 위 조건을 한 곳에서 판정한다 — `store_intent`·예약·pre-send hook이 같은 함수를 호출한다. 평단 아래면 운영자 청산도 S5 인계로 간다. 리뷰 r4627665327을 닫는다 | 5441 |
 | S7 | **경로는 sleeve 생성 시 고정.** `review.strategy_sleeves`(정체성 불변 테이블)에 `execution_path text NOT NULL DEFAULT 'card' CHECK IN ('card','go')`를 더하고(추가형 마이그레이션, 기존 행은 `card`) 생성 뒤 변경을 기존 불변 트리거가 거부한다. 위임장은 `execution_path='go'`이고 귀속 이력이 0인 sleeve에만 결속된다. `review.order_proposals` INSERT 트리거: `sleeve_id`가 `go` sleeve를 가리키면 `exit_handoff_id`가 `card_claimed` 상태이고 `proposal_id`가 이 제안 id인 인계를 가리키며 side=sell·수량 ≤ 인계 수량일 때만 허용, 그 밖은 거부. 경로가 생성 시점에 정해지므로 "위임장 결속 직전에 카드가 생기는" 경쟁 창이 없다 — 위임장보다 먼저 생긴 `go` sleeve에도 일반 카드는 처음부터 붙을 수 없다. 리뷰 r4627665310을 닫는다 | 5441 |
 
-### 2.6 5441이 닫을 열린 요구 (리뷰 7회차 범위 축소, 설계 세션 결정)
-
-S5(d)·(e)의 카드 종결 판정에서 남은 두 경계를 구현 티켓 5441의 요구로 고정한다. §2.5와 충돌하면 이 절이 우선한다.
-
-| # | 요구 | 실패 방향 |
-|---|---|---|
-| O1 | **브로커 전송 없이 끝난 인계 카드.** 승인 전 만료나 거절처럼, 내구 승인·전송 경계(승인 콜백 durable inbox의 코어 진입 마커와 송신 원장 행)가 "브로커 전송 없음"을 증명할 때만 인계를 `ready_for_card`로 되돌린다. 코어 진입 이후 결과가 불명이면(W5 `internal_error`·`dead_letter` 등) 전송 여부를 모르므로 `card_claimed`를 유지한다 | 코어 진입 후 불명 → `card_claimed` 유지, 새 claim 거부 |
-| O2 | **잔량 재claim의 증거.** 잔량 재claim(`ready_for_card` 복귀)은 그 제안 rung에 귀속된 in-effect authoritative `execution_ledger` 체결 합이 브로커 누적 체결 수량과 **정확히 같을 때만** 한다. 다르거나 어느 한쪽을 읽지 못하면 인계는 `card_claimed`에 머물고 그 심볼의 sleeve 장부는 `unmeasured`로 표시된다(0으로 보지 않음) | 체결 합 ≠ 브로커 누적 → `card_claimed` + `unmeasured` |
-
 ### 2.6 5441이 닫을 열린 요구 (리뷰 7회차, 범위 자르기 — §2.5보다 우선)
 
 리뷰가 7회차까지 같은 영역(S5 카드 수명주기)에서 지적을 냈다. fleet-review 사다리의 7회차 규칙대로 이 문서는 아래 요구를 확정하고, 그 세부 구현·검증은 5441의 T3 구현 리뷰(blocking 경로 2 pass)가 닫는다. 이 문서는 주문을 보내지 않는다.
@@ -197,7 +188,7 @@ S5(d)·(e)의 카드 종결 판정에서 남은 두 경계를 구현 티켓 5441
 | # | 요구 | 소유 |
 |---|---|---|
 | O1 | **무전송 카드의 인계 복귀.** 인계 카드가 브로커 전송 없이 끝났음이 승인·전송 경계의 내구 증거로 증명되면(승인 전 만료 `expire_if_needed`, 운영자 거절, 승인 콜백 코어 진입 전 종결) 인계는 `ready_for_card`로 돌아간다. 승인 콜백 코어 진입 뒤 결과가 불명인 경우(W5 `dead_letter`·`internal_error` 포함)는 미전송 증거가 아니므로 `card_claimed`를 유지하고 운영자 조사로 남긴다 | 5441 |
-| O2 | **부분 체결 귀속 합계 대조 뒤에만 잔량 재claim.** 카드 주문이 종결되면, 그 제안 rung에 귀속된 in-effect 권위 `execution_ledger` 체결 수량 합이 브로커가 보고한 누적 체결 수량과 같을 때만 잔량으로 재claim한다. 다르면(원장 대사 지연·trade 창 누락) 인계는 `card_claimed`를 유지하고 그 심볼의 sleeve 보유는 `unmeasured`로 표시해 새 매도·카드를 막는다 | 5441 |
+| O2 | **부분 체결 귀속 합계 대조 뒤에만 잔량 재claim.** 이 규칙은 브로커에 전송된 카드 주문에만 적용한다 — 전송 없음이 증명된 카드는 O1만으로 `ready_for_card`로 돌아가며 브로커 누적 체결량을 요구하지 않는다(O1이 우선). 전송된 카드 주문이 종결되면, 그 제안 rung에 귀속된 in-effect 권위 `execution_ledger` 체결 수량 합이 브로커가 보고한 누적 체결 수량과 같을 때만 잔량으로 재claim한다. 다르면(원장 대사 지연·trade 창 누락) 인계는 `card_claimed`를 유지하고 그 심볼의 sleeve 보유는 `unmeasured`로 표시해 새 매도·카드를 막는다 | 5441 |
 
 ## 3. Upbit child wire 계약 변경
 
@@ -407,7 +398,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 손실매도 가드·쿨다운·loss_cut 코드와 상수는 diff에 없다.
 6. 위임장 CLI는 preview 기본, `--commit` 필요, live 위임장 행은 §4.3 결정(D2)대로만 생긴다.
 7. 마이그레이션 downgrade는 행이 있으면 거부한다.
-8. §2.2~§2.6 B2~B5·B7·B9~B12·B17·B18·B20·B23·B28~B30·B34·S1~S7·O1·O2 각각에 실패 방향 테스트가 있다. S5는 인계 `open` 동안 매수·매도 예약 거부, 미해결 child가 있으면 `ready_for_card`로 못 감, rung 2개 이상·인계 예약 초과 rung 카드 커밋 거부, 부분 체결 후 취소된 카드의 잔량이 `ready_for_card`로 돌아감, §2.6 O1(코어 진입 후 불명 결과는 `card_claimed` 유지, 전송 없음이 증명된 만료·거절만 복귀)·O2(원장 체결 합 ≠ 브로커 누적이면 `card_claimed` + `unmeasured`), `ready_for_card` 없이 `go` sleeve 카드 INSERT 거부를 포함한다. 추가로: 한 인계에서 두 번째 카드 claim 거부(S5 d), 카드 발송 뒤 자격증명이 바뀌면 승인 재검증·POST 직전 지문 불일치로 전송 0(S5 d), 만료된 위임장에서 운영자 청산 intent 저장·전송 성공(S6). S6은 `paused`/`stopped`·위임장 철회 상태에서 운영자 청산 매도가 저장·예약·전송 직전 모두 같은 `evaluate_operator_exit`로 통과하고 매수는 거부됨을 포함한다. S7은 `execution_path` 변경 거부와 `card` sleeve 위임장 결속 거부를 포함한다. O1은 승인 전 만료·거절 카드 → `ready_for_card` 복귀와, 코어 진입 뒤 불명 → `card_claimed` 유지를 각각 시험한다. O2는 원장 귀속 합계 < 브로커 누적 체결일 때 재claim 거부·`unmeasured` 표시를 시험한다.
+8. §2.2~§2.6 B2~B5·B7·B9~B12·B17·B18·B20·B23·B28~B30·B34·S1~S7·O1·O2 각각에 실패 방향 테스트가 있다. S5는 인계 `open` 동안 매수·매도 예약 거부, 미해결 child가 있으면 `ready_for_card`로 못 감, rung 2개 이상·인계 예약 초과 rung 카드 커밋 거부, 부분 체결 후 취소된 카드의 잔량이 `ready_for_card`로 돌아감, §2.6 O1(코어 진입 후 불명 결과는 `card_claimed` 유지, 전송 없음이 증명된 만료·거절만 복귀)·O2(원장 체결 합 ≠ 브로커 누적이면 `card_claimed` + `unmeasured`), `ready_for_card` 없이 `go` sleeve 카드 INSERT 거부를 포함한다. 추가로: 한 인계에서 두 번째 카드 claim 거부(S5 d), 카드 발송 뒤 자격증명이 바뀌면 승인 재검증·POST 직전 지문 불일치로 전송 0(S5 d), 만료된 위임장에서 운영자 청산 intent 저장·전송 성공(S6). S6은 `paused`/`stopped`·위임장 철회 상태에서 운영자 청산 매도가 저장·예약·전송 직전 모두 같은 `evaluate_operator_exit`로 통과하고 매수는 거부됨을 포함한다. S7은 `execution_path` 변경 거부와 `card` sleeve 위임장 결속 거부를 포함한다. O1은 승인 전 만료·거절 카드 → `ready_for_card` 복귀와, 코어 진입 뒤 불명 → `card_claimed` 유지를 각각 시험한다. O2는 전송된 카드에서 원장 귀속 합계 < 브로커 누적 체결일 때 재claim 거부·`unmeasured` 표시를, 승인 전 만료 카드는 브로커 조회 없이 O1로 복귀함을 시험한다.
 9. §1.4 sleeve 귀속 두 번째 출처와 §1.5 Upbit 체결 증거 질의, §3.6 `shadow_positions`가 있고, 기존 rung 귀속 결과가 바이트 동일하다(골든).
 10. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
 
