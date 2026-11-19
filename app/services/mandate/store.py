@@ -1345,17 +1345,6 @@ async def append_plan_event(
         raise MandateError(
             v.MandateRefusal.INVALID_TRANSITION, f"unknown event {event!r}"
         )
-    problem = _event_field_problem(event, fields)
-    if problem is not None:
-        raise MandateError(v.MandateRefusal.INVALID_FIELDS, problem)
-    if event == "holdings_disposed":
-        validate_holdings_evidence(
-            clean_evidence, scope_account_refs=list(plan.scope_account_refs), actor=who
-        )
-    if event == "tranche_send_fenced" and fields.get("account_ref") != plan.account_ref:
-        raise MandateError(
-            v.MandateRefusal.ACCOUNT_MISMATCH, "the fence account is not the plan's"
-        )
     if fields.get("terms_id") is not None:
         terms = await session.get(MandateTerms, int(fields["terms_id"]))
         version = (
@@ -1382,6 +1371,17 @@ async def append_plan_event(
                 "a clause with another account cannot rebind",
             )
 
+    problem = _event_field_problem(event, fields)
+    if problem is not None:
+        raise MandateError(v.MandateRefusal.INVALID_FIELDS, problem)
+    if event == "holdings_disposed":
+        validate_holdings_evidence(
+            clean_evidence, scope_account_refs=list(plan.scope_account_refs), actor=who
+        )
+    if event == "tranche_send_fenced" and fields.get("account_ref") != plan.account_ref:
+        raise MandateError(
+            v.MandateRefusal.ACCOUNT_MISMATCH, "the fence account is not the plan's"
+        )
     state = await plan_state(session, plan_id)
     candidate = PlanEvent(
         event=event,

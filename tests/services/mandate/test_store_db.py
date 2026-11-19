@@ -8,6 +8,7 @@ Test names carry the invariant they pin (I1, I2, I3 ...).
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -31,6 +32,10 @@ from tests.services.mandate.db_support import (
 from tests.services.strategy_sleeves.db_support import raw
 
 validate_run_owned_database_url(engine.url)
+
+TRANCHE_JSON = json.dumps(
+    {"weights": [1], "triggers_pct_from_first": [0], "min_gap_sessions": 0}
+)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -71,7 +76,9 @@ async def test_i21_terms_row_needs_an_approved_approval_of_the_same_content(
     db_session, seed
 ) -> None:
     sleeve = await seed.sleeve(state="live")  # a live version 1 to bind a clause to
-    version = await ms.sleeve_store.current_version(db_session, sleeve.id)
+    sleeve_id = sleeve.id
+    version = await ms.sleeve_store.current_version(db_session, sleeve_id)
+    version_id = version.id
     request_id = (
         await db_session.execute(
             sa.text(
@@ -79,7 +86,7 @@ async def test_i21_terms_row_needs_an_approved_approval_of_the_same_content(
                 "base_sleeve_version, content, content_sha256, approval_ref, requested_by) "
                 "VALUES ('terms', :s, 1, '{}'::jsonb, :h, 'ref', 'op') RETURNING id"
             ),
-            {"s": sleeve.id, "h": "a" * 64},
+            {"s": sleeve_id, "h": "a" * 64},
         )
     ).scalar_one()
     denied = (
@@ -98,12 +105,11 @@ async def test_i21_terms_row_needs_an_approved_approval_of_the_same_content(
         "daily_cap, sector_cap_pct, basket_drawdown_freeze_pct, account_drawdown_freeze_pct, "
         "tranche_rule, loss_sell_mode, expires_at, approval_id, content_sha256) VALUES "
         "(:v, 'mandate-terms/v1', 'b-i21', 'a', 'u', ARRAY['X'], 30, 1, 1, 35, 25, 25, "
-        '\'{"weights":[1],"triggers_pct_from_first":[0],"min_gap_sessions":0}\'::jsonb, '
-        "'human_card', now() + interval '1 day', :a, :h)"
+        "CAST(:tr AS jsonb), 'human_card', now() + interval '1 day', :a, :h)"
     )
     # a denied approval does not open a clause
     await refused(
-        db_session, insert, "approved approval", v=version.id, a=denied, h="a" * 64
+        db_session, insert, "approved approval", v=version_id, a=denied, h="a" * 64
     )
     # a different content hash does not either
     approved_req = (
@@ -113,7 +119,7 @@ async def test_i21_terms_row_needs_an_approved_approval_of_the_same_content(
                 "base_sleeve_version, content, content_sha256, approval_ref, requested_by) "
                 "VALUES ('terms', :s, 1, '{}'::jsonb, :h, 'ref', 'op') RETURNING id"
             ),
-            {"s": sleeve.id, "h": "b" * 64},
+            {"s": sleeve_id, "h": "b" * 64},
         )
     ).scalar_one()
     approved = (
@@ -127,7 +133,7 @@ async def test_i21_terms_row_needs_an_approved_approval_of_the_same_content(
     ).scalar_one()
     await db_session.commit()
     await refused(
-        db_session, insert, "approved approval", v=version.id, a=approved, h="c" * 64
+        db_session, insert, "approved approval", v=version_id, a=approved, h="c" * 64
     )
 
 
@@ -188,7 +194,6 @@ async def test_i21_denied_request_writes_no_clause_and_a_request_decides_once(
         nonce_digest=digest("n"),
     )
     await db_session.commit()
-    assert await count(db_session, "mandate_terms") >= 0
     assert (await ms.current_terms(db_session, sleeve.id))[1] is None
     with err(v.MandateRefusal.REQUEST_STALE):
         await ms.record_approval(
@@ -214,6 +219,7 @@ async def test_i21_a_request_goes_stale_when_the_sleeve_moves_on(
         requested_by="operator:test",
     )
     await db_session.commit()
+    request_id = request.id
     await ms.sleeve_store.set_sleeve_version(
         db_session, sleeve_id=sleeve.id, budget_cap="1", reason="r", actor="op"
     )
@@ -221,14 +227,14 @@ async def test_i21_a_request_goes_stale_when_the_sleeve_moves_on(
     with err(v.MandateRefusal.REQUEST_STALE):
         await ms.record_approval(
             db_session,
-            request_id=request.id,
+            request_id=request_id,
             decision="approved",
             principal=PRINCIPAL,
             nonce_digest=digest("n"),
         )
     await db_session.rollback()
     assert (
-        await count(db_session, "mandate_approvals", "request_id = :r", r=request.id)
+        await count(db_session, "mandate_approvals", "request_id = :r", r=request_id)
         == 0
     )
 
@@ -380,7 +386,9 @@ async def test_i3_unreleased_new_money_counts_against_the_sleeve_budget(
     db_session, seed
 ) -> None:
     a, b = new_symbol(), new_symbol()
-    sleeve, terms = await seed.clause_sleeve(symbols=(a, b), budget_cap="3000000")
+    sleeve, terms = await seed.clause_sleeve(
+        symbols=(a, b), budget_cap="3000000", sector_cap_pct="100"
+    )
     await seed.register(sleeve, terms, a, planned="2350000")
     with err(v.MandateRefusal.BUDGET_EXCEEDED):
         await ms.register_plan(
@@ -388,9 +396,10 @@ async def test_i3_unreleased_new_money_counts_against_the_sleeve_budget(
             seed.plan_input(sleeve, terms, b, planned="2350000", sector="other"),
         )
     await db_session.rollback()
-    # adopted holdings are not new money: 2,350,000 planned with 1,000,000 held fits
+    # adopted holdings are not new money: 1,300,000 planned with 1,000,000 held
+    # adds only 300,000 and fits (2.65M <= 3M)
     await seed.register(
-        sleeve, terms, b, planned="3350000", adopted="1000000", sector="other"
+        sleeve, terms, b, planned="1300000", adopted="1000000", sector="other"
     )
 
 
@@ -526,7 +535,7 @@ async def test_one_share_price_gate(db_session, seed) -> None:
 async def _approved(seed, db, **kw):
     sym = new_symbol()
     sleeve, terms = await seed.clause_sleeve(symbols=(sym,), **kw)
-    plan = (await seed.register(sleeve, terms, sym)).plan
+    plan = seed.plan_snapshot((await seed.register(sleeve, terms, sym)).plan)
     await seed.approve_plan(plan.id, terms)
     return sleeve, terms, plan
 
@@ -626,7 +635,7 @@ async def test_i16_i24_a_fence_after_retirement_is_refused_by_the_trigger(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, tranche_index, "
         "proposal_id, notional, kst_day, approval_mode, account_ref, attempt_id) VALUES "
-        "(:p, 5, 'tranche_send_fenced', 'o', :tranche_index, :proposal_id, :notional, "
+        "(:p, 6, 'tranche_send_fenced', 'o', :tranche_index, :proposal_id, :notional, "
         ":kst_day, :approval_mode, :account_ref, :attempt_id)",
         "sending authority",
         p=plan.id,
@@ -637,7 +646,7 @@ async def test_i16_i24_a_fence_after_retirement_is_refused_by_the_trigger(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, tranche_index, "
         "proposal_id, notional, kst_day, approval_mode, account_ref, attempt_id) VALUES "
-        "(:p, 4, 'tranche_send_fenced', 'o', :tranche_index, :proposal_id, :notional, "
+        "(:p, 5, 'tranche_send_fenced', 'o', :tranche_index, :proposal_id, :notional, "
         ":kst_day, :approval_mode, :account_ref, :attempt_id)",
         None,
         p=plan.id,
@@ -666,7 +675,7 @@ async def test_i16_a_fence_before_the_effective_session_is_refused(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, tranche_index, "
         "proposal_id, notional, kst_day, approval_mode, account_ref, attempt_id) VALUES "
-        "(:p, 4, 'tranche_send_fenced', 'o', 1, :pid, 1, :day, 'human', :a, :att)",
+        "(:p, 5, 'tranche_send_fenced', 'o', 1, :pid, 1, :day, 'human', :a, :att)",
         "effective session",
         p=plan.id,
         pid=pid,
@@ -709,14 +718,14 @@ async def test_i9_the_trigger_allows_one_open_proposal_per_tranche(
     await refused(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, tranche_index) "
-        "VALUES (:p, 4, 'tranche_armed', 'o', 1)",
+        "VALUES (:p, 5, 'tranche_armed', 'o', 1)",
         "cannot be armed",
         p=plan.id,
     )
     await refused(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, tranche_index, "
-        "proposal_id) VALUES (:p, 4, 'tranche_proposed', 'o', 1, :pid)",
+        "proposal_id) VALUES (:p, 5, 'tranche_proposed', 'o', 1, :pid)",
         "armed tranche",
         p=plan.id,
         pid=uuid.uuid4(),
@@ -766,7 +775,7 @@ async def test_i9_an_unclosed_fence_blocks_a_second_fence_and_a_release_closes_i
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, tranche_index, "
         "proposal_id, notional, kst_day, approval_mode, account_ref, attempt_id) VALUES "
-        "(:p, 5, 'tranche_send_fenced', 'o', 1, :pid, 1, :day, 'human', :a, :att)",
+        "(:p, 6, 'tranche_send_fenced', 'o', 1, :pid, 1, :day, 'human', :a, :att)",
         "not closed",
         p=plan.id,
         pid=pid,
@@ -852,7 +861,7 @@ async def _retire_and_dispose(
 async def test_i19_release_needs_settled_orders_disposed_holdings_and_frees_the_symbol(
     db_session, seed
 ) -> None:
-    sleeve, terms, plan = await _approved(seed, db_session, budget_cap="3000000")
+    sleeve, terms, plan = await _approved(seed, db_session)
     # retired but not released: the symbol, budget and sector stay claimed
     await ms.append_plan_event(db_session, plan_id=plan.id, event="retired", actor="o")
     await db_session.commit()
@@ -862,8 +871,8 @@ async def test_i19_release_needs_settled_orders_disposed_holdings_and_frees_the_
     await refused(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor) "
-        "VALUES (:p, 3, 'released', 'o')",
-        "cleanup",
+        "VALUES (:p, 5, 'released', 'o')",
+        "released needs",
         p=plan.id,
     )
     await ms.append_plan_event(

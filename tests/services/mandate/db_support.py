@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import sqlalchemy as sa
@@ -104,7 +105,18 @@ class MandateSeed(SleeveSeed):
         )
         await self.db.commit()
         assert result.terms is not None
-        return sleeve, result.terms
+        # Plain snapshots: a later rollback expires ORM objects, and an async
+        # session cannot lazy-load them.
+        return (
+            SimpleNamespace(
+                id=sleeve.id, market=sleeve.market, account_mode=sleeve.account_mode
+            ),
+            SimpleNamespace(
+                id=result.terms.id,
+                account_ref=result.terms.account_ref,
+                basket_key=result.terms.basket_key,
+            ),
+        )
 
     def plan_input(
         self,
@@ -153,6 +165,16 @@ class MandateSeed(SleeveSeed):
         )
         await self.db.commit()
         return plan
+
+    @staticmethod
+    def plan_snapshot(plan) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=plan.id,
+            symbol=plan.symbol,
+            account_ref=plan.account_ref,
+            scope_account_refs=list(plan.scope_account_refs),
+            sleeve_id=plan.sleeve_id,
+        )
 
     async def approve_plan(self, plan_id: int, terms) -> None:
         await ms.append_plan_event(
