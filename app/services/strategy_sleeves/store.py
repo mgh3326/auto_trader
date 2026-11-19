@@ -18,12 +18,20 @@ Fill attribution reads execution_ledger evidence only:
   day of the rung's own order. That day comes from the rung's send-ledger row
   (``kis_live_order_ledger`` for KR, ``live_order_ledger`` for US), matched by
   the rung's idempotency key or correlation id *and* its order number -- never
-  by the order number alone.
+  by the order number alone;
+* for Kiwoom mock (hk 5529), whose order numbers are unique only within an
+  account and trading day, the same day rule with a stricter match: the day
+  comes from the rung's ``kiwoom_mock_order_ledger`` place row, matched by the
+  sleeve's own account, the rung's idempotency key *and* its normalized order
+  number. A Kiwoom fill row carries only the time the reconcile observed it, so
+  its trading day is the KST (KR) or ET-rollover (US) day of that instant.
 
 A fill that fails any of these is not the sleeve's fill. The diagnostics count
 what was skipped and why. A KIS fill that matches a rung whose order day is
 unknown is not guessed onto it either: the rung is reported as unattributed and
-the sleeve's P&L becomes unmeasured (unknown is never zero).
+the sleeve's P&L becomes unmeasured (unknown is never zero). The same holds
+for Kiwoom, and a Kiwoom fill that more than one rung could own is never
+guessed onto one of them either.
 """
 
 from __future__ import annotations
@@ -31,17 +39,23 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
+from app.core.timezone import trade_day_kst
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.order_proposals import OrderProposal, OrderProposalRung
-from app.models.review import KISLiveOrderLedger, LiveOrderLedger
+from app.models.review import (
+    KISLiveOrderLedger,
+    KiwoomMockOrderLedger,
+    LiveOrderLedger,
+)
 from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
 from app.services.execution_ledger.supersede import (
     AUTHORITATIVE_SOURCES,
@@ -61,6 +75,7 @@ from app.services.strategy_sleeves.vocabulary import (
 
 ZERO = Decimal("0")
 _CRYPTO_PREFIX = "KRW-"
+_US_EASTERN = ZoneInfo("America/New_York")
 #: NUMERIC(20, 4) holds at most 16 integer digits.
 _MAX_AMOUNT = Decimal("1e16")
 
@@ -500,6 +515,49 @@ def _key_text(value: Any) -> str | None:
     return text_value or None
 
 
+def kiwoom_rung_order_days(
+    *, rungs: Sequence[_SendKeys], send_rows: Sequence[Any], account_mode: str
+) -> dict[int, str]:
+    """rung id -> the Kiwoom trading day of the rung's own order (pure).
+
+    A place row belongs to a rung only if it is on the sleeve's own account,
+    carries the rung's idempotency key *and* the rung's normalized order number.
+    A rung with no such row, or with rows on more than one trading day, gets no
+    day. Kiwoom order numbers repeat across accounts and days, so the order
+    number alone never matches.
+    """
+    days: dict[int, str] = {}
+    for rung in rungs:
+        if rung.idempotency_key is None:
+            continue
+        found = {
+            _key_text(row.trading_day)
+            for row in send_rows
+            if row.account_mode == account_mode
+            and getattr(row, "operation_kind", "place") == "place"
+            and normalize_order_id(row.broker_order_id) == rung.order_id
+            and _key_text(row.idempotency_key) == rung.idempotency_key
+        }
+        if len(found) == 1 and None not in found:
+            days[rung.rung_id] = next(iter(found))  # type: ignore[arg-type]
+    return days
+
+
+def _fill_trading_day(row: ExecutionLedger, instrument: str) -> Any:
+    """The trading day a fill row belongs to; ``None`` where no rule exists."""
+    if row.broker == "kiwoom":
+        when = row.filled_at
+        if instrument == "equity_us":
+            from app.services.execution_ledger.kis_lots import us_trading_day_window
+
+            end = us_trading_day_window(
+                when if when.tzinfo else when.replace(tzinfo=UTC)
+            )[1]
+            return end.astimezone(_US_EASTERN).strftime("%Y%m%d")
+        return trade_day_kst(when)
+    return order_trading_day(row.broker, instrument, row.filled_at)
+
+
 def rung_order_days(
     *, rungs: Sequence[_SendKeys], send_rows: Sequence[Any], instrument: str
 ) -> dict[int, Any]:
@@ -558,6 +616,28 @@ async def _kis_send_rows(
     return list((await session.execute(stmt)).all())
 
 
+async def _kiwoom_send_rows(
+    session: AsyncSession, sleeve: StrategySleeve, rungs: Sequence[_SendKeys]
+) -> list[Any]:
+    """Place rows of the sleeve's own Kiwoom mock account for the rungs' keys."""
+    idem = sorted({r.idempotency_key for r in rungs if r.idempotency_key})
+    if not idem:
+        return []
+    stmt = select(
+        KiwoomMockOrderLedger.broker_order_id,
+        KiwoomMockOrderLedger.idempotency_key,
+        KiwoomMockOrderLedger.trading_day,
+        KiwoomMockOrderLedger.account_mode,
+        KiwoomMockOrderLedger.operation_kind,
+    ).where(
+        KiwoomMockOrderLedger.broker == "kiwoom",
+        KiwoomMockOrderLedger.account_mode == sleeve.account_mode,
+        KiwoomMockOrderLedger.operation_kind == "place",
+        KiwoomMockOrderLedger.idempotency_key.in_(idem),
+    )
+    return list((await session.execute(stmt)).all())
+
+
 async def load_sleeve_inputs(
     session: AsyncSession, sleeve: StrategySleeve
 ) -> SleeveInputs:
@@ -603,6 +683,12 @@ async def load_sleeve_inputs(
             rungs=send_keys,
             send_rows=await _kis_send_rows(session, sleeve, send_keys),
             instrument="equity_us" if sleeve.market == "equity_us" else "equity_kr",
+        )
+    elif broker == "kiwoom" and send_keys:
+        order_days = kiwoom_rung_order_days(
+            rungs=send_keys,
+            send_rows=await _kiwoom_send_rows(session, sleeve, send_keys),
+            account_mode=sleeve.account_mode,
         )
     by_order_id: dict[str, list[_RungRef]] = defaultdict(list)
     for order, created_at, order_id in orders:
@@ -668,7 +754,7 @@ def attribute_fills(
             and ref.order.symbol in symbols
             and row.filled_at >= ref.created_at
         ]
-        day = order_trading_day(row.broker, instrument, row.filled_at)
+        day = _fill_trading_day(row, instrument)
         if day is not None and matches:
             # KIS reuses order numbers on other days: the fill must be on the
             # trading day of the rung's own order.
@@ -676,7 +762,11 @@ def attribute_fills(
             # another candidate's day matches: ambiguous, so never guessed.
             unknown = [ref for ref in matches if ref.order_day is None]
             if unknown:
-                skipped["kis_order_day_unknown"] += 1
+                skipped[
+                    "kiwoom_order_day_unknown"
+                    if row.broker == "kiwoom"
+                    else "kis_order_day_unknown"
+                ] += 1
                 unattributed.update(ref.order.rung_id for ref in unknown)
                 continue
             same_day = [ref for ref in matches if ref.order_day == day]
@@ -684,6 +774,12 @@ def attribute_fills(
                 skipped["order_id_reused_on_another_day"] += 1
                 continue
             matches = same_day
+            if row.broker == "kiwoom" and len(matches) > 1:
+                # Account + day + number is unique at the broker: two rungs
+                # claiming it cannot both be right, and neither is guessed.
+                skipped["kiwoom_order_match_ambiguous"] += 1
+                unattributed.update(ref.order.rung_id for ref in matches)
+                continue
         if not matches:
             skipped["no_matching_order"] += 1
             continue
