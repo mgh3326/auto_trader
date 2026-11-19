@@ -170,12 +170,15 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # review.execution_ledger_reconcile_runs.broker admit 'kiwoom' (additive
 # migration 20261115_hk4734_kiwoom_broker). The mirror below widens a persistent
 # test DB whose execution_ledger predates the change.
+# v73 (hk 5637): review.strategy_sleeves account/market CHECK gains
+# kiwoom_mock/equity_kr; create_all never alters an existing table's CHECK, so
+# the production migration's idempotent DROP/ADD is mirrored below.
 # v72 (hk 5528): review.mandate_* (nine new ORM tables via create_all), the
 # nullable review.order_proposals.mandate_plan_id / mandate_tranche_index columns
 # (ADD COLUMN IF NOT EXISTS for a persistent test DB) and the guard triggers,
 # loaded from the production migration 20261120_hk5528_mandate so the DB tests run
 # its exact DDL.
-SCHEMA_BOOTSTRAP_VERSION = 72
+SCHEMA_BOOTSTRAP_VERSION = 73
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2550,6 +2553,25 @@ def _mandate_model_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _mandate_model_ddl()
+
+
+def _sleeve_kiwoom_ddl() -> tuple[str, ...]:
+    """hk 5637 CHECK DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261120_hk5637_sleeve_kiwoom.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk5637_sleeve_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.CHECK_DDL
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _sleeve_kiwoom_ddl()
 
 
 # --------------------------------------------------------------------------- #

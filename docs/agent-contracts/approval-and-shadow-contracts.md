@@ -328,6 +328,7 @@ wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, 
   `unmeasured`(0 으로 평균 금지).
   비교 기준선은 auto_trader 에 없어 `baseline=not_recorded`, D 는 비움. 통화별 합계만. 🔴 안전 상태(손실 한도·예산·정지)와
   통계 판정은 별개 필드이고 판정은 "통과"를 내지 않는다(`final_date_reached` = 사전등록 대비 채점 대상).
+- **키움 모의 조합 (hk 5637, 3795 T1m-b)**: sleeve 계좌 조합에 `kiwoom_mock`/`equity_kr` 하나를 모의 전용으로 더했다(DB CHECK `ck_strategy_sleeves_account_market`, `SLEEVE_ACCOUNT_MARKETS`, `create_sleeve` 검사, `LEDGER_IDENTITY["kiwoom_mock"] = ("kiwoom","mock")`, 마이그레이션 `20261120_hk5637_sleeve_kiwoom` — 추가형, 새 객체 없음, downgrade는 `kiwoom_mock` sleeve가 있으면 거부). 키움 US·실계좌·다른 모의 계좌 조합은 없고 live 조합·게이트는 불변이다. 사용액·손익은 T1m-a의 키움 체결 귀속(계좌·거래일·주문번호·rung 키)으로만 측정되고 모호하면 미측정이다.
 - 직접 주문 도구는 슬리브를 받지 않는다(슬리브 주문은 제안 경로만). 스케줄러 연결 없음. ROB-1460 exit plan 연결은 #2266 머지 후 후속.
 
 ### 위임장 모델 — 조항·승인·활성화 프로필·분할 계획 (hk 3795 T1, hk 5528)

@@ -143,5 +143,8 @@ LEDGER_IDENTITY: dict[str, tuple[str, str]] = {
     "kis_live": ("kis", "live"),
     "toss_live": ("toss", "live"),
     "upbit": ("upbit", "live"),
+    # hk 5637 (3795 T1m-b): Kiwoom mock fills are execution_ledger rows with
+    # broker "kiwoom" and account_mode "mock" (hk 4734).
+    "kiwoom_mock": ("kiwoom", "mock"),
 }
 assert {mode for mode, _market in SLEEVE_ACCOUNT_MARKETS} == set(LEDGER_IDENTITY)

@@ -38,6 +38,9 @@ SLEEVE_ACCOUNT_MARKETS: tuple[tuple[str, str], ...] = (
     ("toss_live", "equity_kr"),
     ("toss_live", "equity_us"),
     ("upbit", "crypto"),
+    # hk 5637 (3795 T1m-b): the Kiwoom mock account, KR only, mock only. It adds
+    # one combination; no live combination or gate changes.
+    ("kiwoom_mock", "equity_kr"),
 )
 SLEEVE_CURRENCY_BY_MARKET: dict[str, str] = {
     "equity_kr": "KRW",

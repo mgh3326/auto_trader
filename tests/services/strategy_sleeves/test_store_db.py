@@ -323,3 +323,51 @@ async def test_preregistration_is_frozen_once_the_sleeve_has_been_live(
     )
     assert (row.version, row.prereg_horizon_sessions) == (5, 10)
     await db_session.commit()
+
+
+async def test_the_kiwoom_mock_kr_combination_is_accepted_and_no_other_kiwoom_one(
+    db_session, seed
+) -> None:
+    sleeve = await seed.sleeve(account_mode="kiwoom_mock", market="equity_kr")
+    sleeve_id = sleeve.id
+    assert (sleeve.account_mode, sleeve.market, sleeve.currency) == (
+        "kiwoom_mock",
+        "equity_kr",
+        "KRW",
+    )
+    # The DB CHECK refuses what the vocabulary would also refuse: no US pair,
+    # no live Kiwoom account, no crypto.
+    for account_mode, market, currency in (
+        ("kiwoom_mock", "equity_us", "USD"),
+        ("kiwoom_mock_us", "equity_us", "USD"),
+        ("kiwoom_live", "equity_kr", "KRW"),
+        ("kiwoom_mock", "crypto", "KRW"),
+    ):
+        with pytest.raises(DBAPIError, match="account_market"):
+            await raw(
+                db_session,
+                "INSERT INTO review.strategy_sleeves (sleeve_key, rule_id, "
+                "account_mode, market, currency, created_by) "
+                "VALUES (:k, 'rob1458.kr_cut_minus20', :a, :m, :c, 'test')",
+                k=f"never-{account_mode}-{market}",
+                a=account_mode,
+                m=market,
+                c=currency,
+            )
+        await db_session.rollback()
+    assert [r.version for r in await store.history(db_session, sleeve_id)] == [1]
+    # create_sleeve's own check names the combination for the other Kiwoom pairs.
+    with pytest.raises(store.SleeveError, match="unsupported account/market"):
+        await store.create_sleeve(
+            db_session,
+            sleeve_key="never-written-us",
+            rule_id="rob1458.us_near_market_entry",
+            account_mode="kiwoom_mock",
+            market="equity_us",
+            state="shadow",
+            budget_cap="1",
+            loss_limit="1",
+            reason="r",
+            actor="op",
+        )
+    await db_session.rollback()

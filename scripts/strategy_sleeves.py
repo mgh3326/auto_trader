@@ -107,7 +107,9 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--sleeve-key", required=True)
     create.add_argument("--rule-id", required=True, choices=sorted(CANARY_RULES))
     create.add_argument(
-        "--account-mode", required=True, choices=["kis_live", "toss_live", "upbit"]
+        "--account-mode",
+        required=True,
+        choices=["kis_live", "toss_live", "upbit", "kiwoom_mock"],
     )
     create.add_argument(
         "--market", required=True, choices=["equity_kr", "equity_us", "crypto"]
