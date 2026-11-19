@@ -224,6 +224,32 @@ class KiwoomMockTransitionRefused(Exception):
         )
 
 
+async def place_rows_for_idempotency_keys(
+    session: AsyncSession, *, account_mode: str, idempotency_keys: list[str]
+) -> list[Any]:
+    """Read-only: place rows of one Kiwoom mock account for the given keys.
+
+    Readers outside this module (the sleeve book, hk 5529) call this instead of
+    touching the ledger model, so this module stays the only one that
+    references the ledger (hard rule 5 guard).
+    """
+    if not idempotency_keys:
+        return []
+    stmt = select(
+        KiwoomMockOrderLedger.broker_order_id,
+        KiwoomMockOrderLedger.idempotency_key,
+        KiwoomMockOrderLedger.trading_day,
+        KiwoomMockOrderLedger.account_mode,
+        KiwoomMockOrderLedger.operation_kind,
+    ).where(
+        KiwoomMockOrderLedger.broker == "kiwoom",
+        KiwoomMockOrderLedger.account_mode == account_mode,
+        KiwoomMockOrderLedger.operation_kind == "place",
+        KiwoomMockOrderLedger.idempotency_key.in_(idempotency_keys),
+    )
+    return list((await session.execute(stmt)).all())
+
+
 def kr_trading_day(now: datetime) -> str:
     """KR trading day as KST ``YYYYMMDD`` (design §2.1 ``trading_day``)."""
     return now.astimezone(KST).strftime("%Y%m%d")

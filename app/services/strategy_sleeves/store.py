@@ -21,8 +21,8 @@ Fill attribution reads execution_ledger evidence only:
   by the order number alone;
 * for Kiwoom mock (hk 5529), whose order numbers are unique only within an
   account and trading day, the same day rule with a stricter match: the day
-  comes from the rung's ``kiwoom_mock_order_ledger`` place row, matched by the
-  sleeve's own account, the rung's idempotency key *and* its normalized order
+  comes from the rung's Kiwoom mock ledger place row (read through the ledger
+  service), matched by the sleeve's own account, the rung's idempotency key *and* its normalized order
   number. A Kiwoom fill row carries only the time the reconcile observed it, so
   its trading day is the KST (KR) or ET-rollover (US) day of that instant.
 
@@ -53,7 +53,6 @@ from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_eff
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import (
     KISLiveOrderLedger,
-    KiwoomMockOrderLedger,
     LiveOrderLedger,
 )
 from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
@@ -61,6 +60,9 @@ from app.services.execution_ledger.supersede import (
     AUTHORITATIVE_SOURCES,
     normalize_order_id,
     order_trading_day,
+)
+from app.services.kiwoom_mock_order_ledger_service import (
+    place_rows_for_idempotency_keys,
 )
 from app.services.strategy_sleeves.book import SleeveFill, SleeveOrder
 from app.services.strategy_sleeves.gate import SleeveVersionView
@@ -621,21 +623,9 @@ async def _kiwoom_send_rows(
 ) -> list[Any]:
     """Place rows of the sleeve's own Kiwoom mock account for the rungs' keys."""
     idem = sorted({r.idempotency_key for r in rungs if r.idempotency_key})
-    if not idem:
-        return []
-    stmt = select(
-        KiwoomMockOrderLedger.broker_order_id,
-        KiwoomMockOrderLedger.idempotency_key,
-        KiwoomMockOrderLedger.trading_day,
-        KiwoomMockOrderLedger.account_mode,
-        KiwoomMockOrderLedger.operation_kind,
-    ).where(
-        KiwoomMockOrderLedger.broker == "kiwoom",
-        KiwoomMockOrderLedger.account_mode == sleeve.account_mode,
-        KiwoomMockOrderLedger.operation_kind == "place",
-        KiwoomMockOrderLedger.idempotency_key.in_(idem),
+    return await place_rows_for_idempotency_keys(
+        session, account_mode=sleeve.account_mode, idempotency_keys=idem
     )
-    return list((await session.execute(stmt)).all())
 
 
 async def load_sleeve_inputs(
