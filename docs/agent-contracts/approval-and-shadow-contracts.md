@@ -330,6 +330,18 @@ wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, 
   통계 판정은 별개 필드이고 판정은 "통과"를 내지 않는다(`final_date_reached` = 사전등록 대비 채점 대상).
 - 직접 주문 도구는 슬리브를 받지 않는다(슬리브 주문은 제안 경로만). 스케줄러 연결 없음. ROB-1460 exit plan 연결은 #2266 머지 후 후속.
 
+### 위임장 모델 — 조항·승인·활성화 프로필·분할 계획 (hk 3795 T1, hk 5528)
+
+설계 정본 `docs/design/3795-mandate.md`. T1은 **데이터 모델과 유일 writer만**이다. 주문·승인 게이트·분류기·스케줄러·env는 바뀌지 않고, 계획 결속 자동승인(T5)과 활성화는 별도 승인이다(하드룰 4).
+
+- **테이블**: `review.mandate_{approval_requests,approvals,terms,activation_profiles,plans,plan_tranches,plan_events,symbol_reservations,symbol_reservation_releases}` + `order_proposals.mandate_plan_id`/`mandate_tranche_index`(nullable, INSERT 때만 설정). 마이그레이션 `20261120_hk5528_mandate`. 🔴 아홉 테이블 모두 UPDATE·DELETE·TRUNCATE 거부(모든 역할), at_app 은 SELECT·INSERT 만(하드룰 18), downgrade 는 행이 있으면 거부. 새 열이 NULL 인 제안 쓰기는 트리거 코드를 실행하지 않는다(WHEN 에 함수 호출 없음).
+- **코드**: `app/services/mandate/` — `vocabulary`(닫힌 어휘·전이표, 마이그레이션이 같은 표를 리터럴로 복사하고 테스트가 일치를 고정) · `fold`(`fold_plan_events`/`apply_event`: 계획 상태는 이벤트 스트림 전체의 fold 이고 마지막 이벤트 이름이 아니다) · `invariants`(I2·I3·I4·I5·I6·I7·I15·I17 순수 함수) · `hashing`(조항·프로필 내용 해시, 십진·시각·집합 정규화) · `locks`(L1 종목 → L2 바구니 → L3 sleeve) · `store`(유일 writer). 주문·브로커 모듈 import 없음(`tests/services/mandate/test_static_boundary.py`).
+- **바구니·영역**: 바구니의 정체성은 (영역, `basket_key`), 영역은 계좌 모드에서 정해진다(`kis_live`·`toss_live`=live, `kiwoom_mock`=mock). 그 밖의 계좌 모드(Upbit·KIS mock 등)는 영역이 없어 거부한다. 같은 이름이라도 영역이 다르면 다른 바구니이고 종목 예약도 영역별이다.
+- **승인 기록(I21)**: 조항·프로필 행은 내용 해시가 같은 `approved` 승인 기록 없이는 INSERT 되지 않는다(트리거). 승인 요청의 `content_sha256`을 DB 열에서 다시 계산한 값과 대조한다. 운영자 principal 대조(`MANDATE_APPROVER_TELEGRAM_USER_IDS`)와 nonce 소비는 콜백(T3b)의 몫이고 store 는 `principal` 의 형식(정확한 십진 문자열, ≤2^52−1)만 검증한다.
+- **계획 등록**: 종목 lock(L1) → 바구니 lock(L2) → sleeve lock(L3) 뒤에 I1(영역 안 종목당 미해제 계획 1개, 예약 INSERT 트리거도 같은 lock 을 스스로 잡는다)·I2·I3·I4(계획 금액 기준, §3.8)·I17·열린 `loss_cut` 제안 거부(`mandate_open_loss_cut`, 실계좌 영역만)·회차 금액이 등록 시점 1주 값 이상인지를 판정한다. 계좌 참조(`account_ref`)와 보유 범위 참조(`scope_account_refs`)와 1주 값은 호출자가 읽어 넘기는 값이다(store 는 브로커를 읽지 않는다).
+- **이벤트 트리거(I7·I9·I16·I19·I24)**: `seq` 는 직전+1, 권한 상태 전이표·회차 순서·회차당 열린 제안 1개를 DB 가 강제한다. 권한 상태가 `approved`/`active` 가 아닌 계획에는 전송 fence(`tranche_send_fenced`)가 INSERT 되지 않고, `released` 는 `orders_settled` → `holdings_disposed` 뒤 닫히지 않은 fence 0일 때만, 그리고 그 INSERT 가 같은 트랜잭션에서 예약 해제 행을 쓴다. fence 영역 lock(F1~F4)·권한 행·mutex·자동 fence 의 최신 프로필 트리거는 T4c/T5 몫이다.
+- **sleeve 규칙 id**: `at3795.basket1_value_split_entry`(KR·US)를 `CANARY_RULES`에 더했다. metric·horizon 은 참고 문구이고 구속력 있는 사전등록은 sleeve 버전마다 운영자가 정한다.
+
 ### Daily strategy forward shadow (ROB-1473 phases 1–2)
 
 `scripts/paper_forward/run.py` → `research/paper_forward/` records hypothetical
